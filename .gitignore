@@ -1,0 +1,36 @@
+# Generated, never tracked.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Local-only configuration. A real data root is named here, never in tracked
+# bytes.
+.env
+.env.*
+*.local.yaml
+*.local.json
+
+# The derived store is rebuildable from the canonical files and is never
+# committed. Canon is files; a database in history would make that untrue.
+*.db
+*.sqlite
+*.sqlite3
+
+# OS noise.
+.DS_Store
+
+# A contributor's user-global ignore file is outside this repository's control.
+# One observed in practice excludes *.jsonl, which this project uses for
+# manifests and golden fixtures. A silently untracked file works perfectly for
+# whoever wrote it and is missing for everyone who clones, so the extension is
+# restored for the directories that must be tracked -- narrowly, because a
+# blanket negation would also re-include build artifacts.
+!src/**/*.jsonl
+!tests/**/*.jsonl
+!schemas/**/*.jsonl
+!fixtures/synthetic/**/*.jsonl
