@@ -34,7 +34,8 @@ These are constraints the code is tested against, not aspirations.
 | Ingestion: append-only ledger, versioning, invalidation | present |
 | Derived index, rebuildable from the files alone | present |
 | Measuring instrument and cross-language baseline | present |
-| Context compilation, interfaces | not yet built |
+| Context compilation, with a measured default | present |
+| Interfaces | not yet built |
 
 The command surface is currently `--version`. Operations will arrive with the
 work that defines and tests them.
@@ -45,6 +46,15 @@ history of a source is a plain append-only file, so recovering it means reading
 it. Content that arrives from a source is held in its own type that cannot stand
 in for text this project wrote — text that reads as an instruction is labelled
 and still stored, because refusing it would quietly lose part of your corpus.
+
+**How context is assembled.** A pack is built from a ranking, and every pack
+records what went into it — reproducibly, so the same inputs always yield the
+same record. Which assembly strategy is the default was decided by measurement
+rather than by preference: six were compared, none beat the plain one, and the
+plain one stayed. Two numbers are always reported apart — whether both documents
+of a pair made it in, and whether the specific passages that ground the claim
+made it in — because reading the first as evidence about the second is a mistake
+that has already been made once here, and it took real work to notice.
 
 **How results are measured.** The instrument is built before the things it
 judges, so it cannot be shaped by the answers it later reports. Expected results
@@ -125,7 +135,10 @@ src/
     ├── ledger.py         append-only ingest record and version chains
     ├── derived.py        the rebuildable index over everything above
     ├── aliases.py        interchangeable ways of relating terms across languages
-    └── measure.py        the measuring instrument, and its third answer
+    ├── measure.py        the measuring instrument, and its third answer
+    ├── chunking.py       pieces of a document that remember where they came from
+    ├── compile.py        assembling a pack, and recording what went into it
+    └── ablation.py       comparing assembly strategies without combining the numbers
 tests/                    the suite described above
 fixtures/
 └── synthetic/
