@@ -32,7 +32,8 @@ These are constraints the code is tested against, not aspirations.
 | Canonical record: identity, content hashing, provenance | present |
 | Immutable source snapshots | present |
 | Ingestion: append-only ledger, versioning, invalidation | present |
-| Retrieval, context compilation, interfaces | not yet built |
+| Derived index, rebuildable from the files alone | present |
+| Retrieval quality, context compilation, interfaces | not yet built |
 
 The command surface is currently `--version`. Operations will arrive with the
 work that defines and tests them.
@@ -43,6 +44,12 @@ history of a source is a plain append-only file, so recovering it means reading
 it. Content that arrives from a source is held in its own type that cannot stand
 in for text this project wrote — text that reads as an instruction is labelled
 and still stored, because refusing it would quietly lose part of your corpus.
+
+**What the index guarantees.** It is built from the files and holds nothing they
+do not already say, so deleting it loses nothing: rebuilding produces the same
+bytes, not merely the same answers. If it could differ between rebuilds, then
+something in it came from somewhere other than your files, and nobody would know
+what. A rebuild refuses rather than quietly indexing around a gap.
 
 **What the canonical record holds.** A claim, the source it came from, the exact
 bytes it quotes, when it was true, and when this system learned it. Identity is
@@ -104,7 +111,8 @@ src/
     ├── provenance.py     citations, byte-range locators, quote-lint
     ├── canonical.py      the assertion record
     ├── untrusted.py      the boundary around content from outside
-    └── ledger.py         append-only ingest record and version chains
+    ├── ledger.py         append-only ingest record and version chains
+    └── derived.py        the rebuildable index over everything above
 tests/                    the suite described above
 fixtures/
 └── synthetic/
