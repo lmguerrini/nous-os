@@ -10,9 +10,12 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import nous_os
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: The directory the package was imported from, so the child process finds the
 #: same code this process is testing -- installed or not, and without naming a
@@ -32,6 +35,17 @@ def _child_env() -> dict[str, str]:
 def test_package_reports_a_version() -> None:
     assert isinstance(nous_os.__version__, str)
     assert nous_os.__version__
+
+
+def test_package_version_matches_pyproject() -> None:
+    """Two sources of truth, one of which is unchecked, drift silently.
+
+    ``__init__.__version__`` and ``pyproject.toml``'s ``project.version`` are
+    both hand-written today; nothing before this test noticed if they
+    disagreed.
+    """
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert nous_os.__version__ == pyproject["project"]["version"]
 
 
 def test_version_flag_prints_the_same_version() -> None:

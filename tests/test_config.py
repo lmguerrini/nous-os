@@ -58,11 +58,34 @@ def test_a_blank_environment_variable_is_not_a_root() -> None:
         resolve_data_root(environ={ENV_VAR: "   "})
 
 
+def test_resolve_data_root_honours_the_real_process_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route an end user actually has: no explicit argument, no injected environ.
+
+    Every other test in this module calls ``resolve_data_root`` with an
+    ``environ=`` override, which leaves the real-process-environment branch of
+    resolution completely unexercised. There is no ``--data-root`` flag, so
+    this environment variable is the only handle an end user has, and this is
+    the only test that calls ``resolve_data_root()`` the way an end user does.
+    """
+    monkeypatch.setenv(ENV_VAR, str(tmp_path))
+    resolved = resolve_data_root()
+    assert resolved.path == tmp_path.resolve()
+
+
 def test_a_root_that_is_not_a_directory_is_refused(tmp_path: Path) -> None:
     file_path = tmp_path / "a-file.md"
     file_path.write_text("x\n", encoding="utf-8")
     with pytest.raises(DataRootNotADirectory):
         resolve_data_root(file_path)
+
+
+def test_a_tilde_root_is_expanded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller who passes ``~/notes`` gets their home directory, not a literal ``~``."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    resolved = resolve_data_root("~")
+    assert resolved.path == tmp_path.resolve()
 
 
 def test_no_default_names_a_location(tmp_path: Path) -> None:
@@ -136,6 +159,12 @@ def test_listing_is_sorted_and_root_relative(tmp_path: Path) -> None:
     listed = list_documents(DataRoot(tmp_path.resolve()))
     assert listed == ("notes/first.md", "second.md")
     assert not any(str(tmp_path) in entry for entry in listed)
+
+
+def test_an_uppercase_suffix_is_still_canonical(tmp_path: Path) -> None:
+    """The suffix comparison is case-insensitive: a ``.MD`` file is canon too."""
+    (tmp_path / "SHOUTED.MD").write_text("# Shouted\n", encoding="utf-8")
+    assert list_documents(DataRoot(tmp_path.resolve())) == ("SHOUTED.MD",)
 
 
 def test_an_empty_root_lists_nothing_and_does_not_raise(tmp_path: Path) -> None:

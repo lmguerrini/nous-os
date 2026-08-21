@@ -23,6 +23,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_ROOT = REPO_ROOT / "src" / "nous_os"
 
@@ -65,14 +67,23 @@ def test_the_package_works_with_only_a_copy_of_itself_on_the_path(tmp_path: Path
     """The literal test: run the work where nothing else is reachable.
 
     The package is copied to an isolated directory and the interpreter is
-    started from an unrelated working directory with ``-P`` (do not prepend the
-    working directory) and ``-s`` (ignore the user site directory), so the only
-    importable location besides the standard library is that copy. Any reliance
-    on a tree outside the package fails here.
+    started from an unrelated working directory with ``-P`` (do not prepend
+    the working directory) and ``-S`` (do not import ``site`` at all), so the
+    only importable location besides the standard library is that copy. Any
+    reliance on a tree outside the package fails here.
 
-    ``-I`` is deliberately not used: isolated mode also implies ``-E``, which
-    discards ``PYTHONPATH`` and would leave the package unreachable, turning a
-    real check into one that cannot run.
+    ``-s`` (ignore only the *user* site directory) is deliberately not used in
+    its place: global site-packages stay on ``sys.path`` under ``-s``, so a
+    package that quietly depended on something installed system-wide would
+    still import and this check would pass regardless. Verified: with ``-s``
+    alone, ``import pytest`` still succeeds even with ``PYTHONPATH`` pointed
+    at a directory that does not exist; with ``-S``, the same import raises
+    ``ModuleNotFoundError`` and the standard library still works. Do not
+    "simplify" this back to ``-s`` -- it silently reopens the hole.
+
+    ``-I`` is deliberately not used either: isolated mode also implies ``-E``,
+    which discards ``PYTHONPATH`` and would leave the package unreachable,
+    turning a real check into one that cannot run.
     """
     island = tmp_path / "island"
     island.mkdir()
@@ -110,7 +121,7 @@ def test_the_package_works_with_only_a_copy_of_itself_on_the_path(tmp_path: Path
     )
 
     result = subprocess.run(
-        [sys.executable, "-P", "-s", "-c", program, str(corpus), str(island)],
+        [sys.executable, "-P", "-S", "-c", program, str(corpus), str(island)],
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -124,6 +135,8 @@ def test_the_package_works_with_only_a_copy_of_itself_on_the_path(tmp_path: Path
 
 def test_no_tracked_file_reaches_outside_the_repository() -> None:
     """No tracked path escapes the repository, by symlink or by parent traversal."""
+    if not (REPO_ROOT / ".git").exists():
+        pytest.skip("requires a git checkout: .git is not present")
     listed = subprocess.run(
         ["git", "ls-files", "-z"],
         cwd=REPO_ROOT,

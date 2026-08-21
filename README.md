@@ -54,8 +54,8 @@ python3 -m pip install .
 
 ## Tests
 
-`pytest` is the only requirement. The suite runs from a clean clone with no
-installation and no machine-specific setup:
+Installing this package is not required to run the suite; `pytest` is. The
+suite runs from a clean clone with no machine-specific setup:
 
 ```bash
 python3 -m pip install pytest
@@ -63,10 +63,10 @@ python3 -m pytest tests/ -q
 ```
 
 Some tests exist to keep the repository honest rather than to check behaviour:
-one refuses any absolute machine path or personal identifier in tracked files,
-one proves the data root really is configuration by running the same operation
-against two different roots, and one proves the package imports and works with
-no external tree present.
+one refuses any absolute machine path, personal identifier or credential in
+tracked file content or names, one proves the data root really is
+configuration by running the same operation against two different roots, and
+one proves the package imports and works with no external tree present.
 
 ## Fixtures
 

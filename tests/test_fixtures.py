@@ -17,6 +17,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from nous_os.config import DataRoot, describe_corpus, list_documents
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -26,6 +28,8 @@ MANIFEST = FIXTURE_ROOT / "MANIFEST.jsonl"
 
 
 def _tracked() -> set[str]:
+    if not (REPO_ROOT / ".git").exists():
+        pytest.skip("requires a git checkout: .git is not present")
     listed = subprocess.run(
         ["git", "ls-files", "-z"],
         cwd=REPO_ROOT,
