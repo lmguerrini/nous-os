@@ -28,7 +28,7 @@ gap into a fact.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from nous_os.identity import ASSERTION_PREFIX, digest_payload, require_id
@@ -71,6 +71,20 @@ class SupportClass(Enum):
     INFERRED = "inferred"
     #: Support has not been established. Not "weak support" — no answer yet.
     UNKNOWN = "unknown"
+
+
+def _as_utc(value: datetime) -> str:
+    """One instant, one representation.
+
+    ``datetime.isoformat`` serialises how an instant was *written*, not which
+    instant it is: ``12:00+00:00`` and ``13:00+01:00`` are equal datetimes that
+    format differently. Hashing that directly would make the content digest
+    move when nothing about the content moved, which breaks the only property
+    that makes digests useful -- that they change exactly when the content
+    does. Normalising to UTC first means the digest is a function of the
+    instant rather than of the offset whoever recorded it happened to use.
+    """
+    return value.astimezone(timezone.utc).isoformat()
 
 
 def _require_instant(value: datetime, field: str) -> datetime:
@@ -133,14 +147,20 @@ class Assertion:
         This is therefore a **content digest, not a tamper seal** over the whole
         record. It detects edits to what is claimed and where it came from. It
         does not, and is not meant to, detect an altered id or state.
+
+        Instants are normalised to UTC before hashing, so the digest is a
+        function of *which instant* rather than of the offset it was written
+        in. Text is **not** normalised: NFC and NFD forms of the same word are
+        different strings and different bytes, and quietly folding them would
+        be the system rewriting what a source actually said.
         """
         return {
             "text": self.text,
             "citation": self.citation.as_payload(),
             "support": self.support.value,
-            "recorded_at": self.recorded_at.isoformat(),
-            "valid_from": None if self.valid_from is None else self.valid_from.isoformat(),
-            "valid_to": None if self.valid_to is None else self.valid_to.isoformat(),
+            "recorded_at": _as_utc(self.recorded_at),
+            "valid_from": None if self.valid_from is None else _as_utc(self.valid_from),
+            "valid_to": None if self.valid_to is None else _as_utc(self.valid_to),
         }
 
     @property
