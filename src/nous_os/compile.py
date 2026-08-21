@@ -1,5 +1,12 @@
 """The context compiler: turning a ranking into a pack, and saying what it saw.
 
+A note on what is *not* here: there was a post-walk hook for strategies whose
+condition is a property of the whole selection. Every strategy returned nothing
+from it, and the one that needed it turned out to need the opposite — to act
+*during* the walk, while budget remained. A protocol member that nothing
+implements and nothing calls reads as an extension point and is dead weight, so
+it was removed rather than left as furniture.
+
 **Three stages, kept separate.** Retrieval decides what is *relevant*.
 Compilation decides what actually *goes in the pack*. Reasoning does something
 with the result. This module is the middle one, and it never performs the first:
@@ -50,14 +57,26 @@ class CohesionStrategy(Protocol):
         spent, which is indistinguishable from never deciding at all.
         """
 
-    def finalise(
-        self, selected: tuple[str, ...], chunks: tuple[Chunk, ...]
-    ) -> tuple[str, ...]:
-        """Further ids to consider once the ranked walk is done."""
+
+
+def canonical_order(chunks: tuple[Chunk, ...]) -> tuple[Chunk, ...]:
+    """The one order a corpus is considered in.
+
+    Companion selection used to walk the caller's tuple in whatever order it
+    arrived, so handing the same corpus over reversed produced a different pack
+    and a different manifest for six of the thirteen arms. The reproducibility
+    claim is an absolute — a manifest that varies disqualifies a strategy
+    regardless of its scores — and it was false.
+
+    The ranker already carried this rule in a comment: the corpus is a fact, not
+    a property of the order someone happened to pass it in. The compiler was
+    held to a weaker standard than the ranker, and this is that gap closed.
+    """
+    return tuple(sorted(chunks, key=lambda c: (c.source_id, c.ordinal)))
 
 
 def _same_source(chunks: tuple[Chunk, ...], source_id: str) -> tuple[Chunk, ...]:
-    return tuple(c for c in chunks if c.source_id == source_id)
+    return tuple(c for c in canonical_order(chunks) if c.source_id == source_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,8 +95,6 @@ class FlatTopK:
     def companions(self, chunk: Chunk, chunks: tuple[Chunk, ...], selected: tuple[str, ...]) -> tuple[str, ...]:
         return ()
 
-    def finalise(self, selected: tuple[str, ...], chunks: tuple[Chunk, ...]) -> tuple[str, ...]:
-        return ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,12 +112,10 @@ class HeadingAware:
             if c.id != chunk.id and c.heading_path == chunk.heading_path
         )
 
-    def finalise(self, selected: tuple[str, ...], chunks: tuple[Chunk, ...]) -> tuple[str, ...]:
-        return ()
 
 
 @dataclass(frozen=True, slots=True)
-class ParentEnvelope:
+class ParentSection:
     """**S2** — pull in the parent section, up to a size cap.
 
     So that a chunk is never delivered stripped of the frame that gives it its
@@ -123,13 +138,15 @@ class ParentEnvelope:
             if c.id == chunk.id or c.heading_path[: len(parent)] != parent:
                 continue
             if spent + c.tokens > self.cap_tokens:
-                break
+                # `continue`, not `break`. A single oversized block used to end
+                # the section, so one long paragraph made this arm silently
+                # inert for the whole document -- indistinguishable, from the
+                # outside, from an arm that had decided to add nothing.
+                continue
             taken.append(c.id)
             spent += c.tokens
         return tuple(taken)
 
-    def finalise(self, selected: tuple[str, ...], chunks: tuple[Chunk, ...]) -> tuple[str, ...]:
-        return ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,11 +169,9 @@ class AdjacentContext:
             c.id for c in siblings if abs(c.ordinal - chunk.ordinal) == 1
         )
 
-    def finalise(self, selected: tuple[str, ...], chunks: tuple[Chunk, ...]) -> tuple[str, ...]:
-        return ()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CrossReference:
     """**S4** — chunks a selected chunk points at become eligible. One hop.
 
@@ -187,8 +202,6 @@ class CrossReference:
             return ()
         return tuple(c.id for c in chunks if c.source_id in wanted and c.id != chunk.id)
 
-    def finalise(self, selected: tuple[str, ...], chunks: tuple[Chunk, ...]) -> tuple[str, ...]:
-        return ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,8 +238,6 @@ class WholeDocumentEscalation:
             return tuple(c.id for c in in_source if c.id not in chosen)
         return ()
 
-    def finalise(self, selected: tuple[str, ...], chunks: tuple[Chunk, ...]) -> tuple[str, ...]:
-        return ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +295,7 @@ def compile_pack(
         raise CompileError("a budget must be a positive number of tokens")
     if not isinstance(strategy, CohesionStrategy):
         raise CompileError("compilation needs a cohesion strategy")
+    chunks = canonical_order(chunks)
     index = {c.id: c for c in chunks}
     if len(index) != len(chunks):
         raise CompileError("two chunks share an identifier")
@@ -314,9 +326,6 @@ def compile_pack(
         for companion in strategy.companions(index[cid], chunks, tuple(chosen)):
             take(companion, True)
 
-    for addition in strategy.finalise(tuple(chosen), chunks):
-        take(addition, True)
-
     manifest = InclusionManifest(
         strategy=strategy.name,
         budget_tokens=budget_tokens,
@@ -329,15 +338,24 @@ def compile_pack(
     return Pack(tuple(index[cid] for cid in chosen), manifest)
 
 
+#: The default assembly strategy, chosen by measurement rather than preference.
+#:
+#: Six families were compared on a private corpus. Five were measured and none
+#: beat the plain one; the sixth could not be measured on that corpus and is
+#: recorded as unmeasured rather than as a tie. So the plain one stayed —
+#: which is the outcome the experiment's design named in advance as a complete
+#: result rather than a failure to find something.
+DEFAULT_STRATEGY: CohesionStrategy = FlatTopK()
+
 #: The six preregistered arms, with the pre-declared parameter grid expanded
 #: into labelled sub-arms. Declared here as data so that the set of arms cannot
 #: drift from the frozen document without the difference being visible.
 PREREGISTERED_ARMS: tuple[CohesionStrategy, ...] = (
     FlatTopK(),
     HeadingAware(),
-    ParentEnvelope(256),
-    ParentEnvelope(512),
-    ParentEnvelope(1024),
+    ParentSection(256),
+    ParentSection(512),
+    ParentSection(1024),
     AdjacentContext(),
     CrossReference({}),
     WholeDocumentEscalation(2, 0.25),

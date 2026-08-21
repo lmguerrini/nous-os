@@ -50,8 +50,10 @@ and still stored, because refusing it would quietly lose part of your corpus.
 **How context is assembled.** A pack is built from a ranking, and every pack
 records what went into it — reproducibly, so the same inputs always yield the
 same record. Which assembly strategy is the default was decided by measurement
-rather than by preference: six were compared, none beat the plain one, and the
-plain one stayed. Two numbers are always reported apart — whether both documents
+rather than by preference: of six families, five were measured and none beat the
+plain one, so the plain one stayed. The sixth could not be measured at all on
+that corpus and is recorded as
+unmeasured rather than as a tie, because those are different facts. Two numbers are always reported apart — whether both documents
 of a pair made it in, and whether the specific passages that ground the claim
 made it in — because reading the first as evidence about the second is a mistake
 that has already been made once here, and it took real work to notice.

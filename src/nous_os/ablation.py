@@ -66,10 +66,16 @@ class BridgeOutcome:
     anchor_both: bool
     #: Exactly one anchor chunk present. Neither success nor failure.
     anchor_one: bool
+    #: Whether both anchors exist in the corpus at all. A bridge whose anchor
+    #: text is absent cannot be delivered by any strategy, and recording it as a
+    #: partial delivery would charge every arm for a property of the evidence.
+    anchors_resolvable: bool = True
 
     def __post_init__(self) -> None:
         if self.anchor_both and self.anchor_one:
             raise AblationError("a bridge cannot have both anchors and exactly one")
+        if not self.anchors_resolvable and (self.anchor_both or self.anchor_one):
+            raise AblationError("an unresolvable anchor cannot have been delivered")
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +103,11 @@ class ArmResult:
     @property
     def anchor_one_count(self) -> int:
         return sum(1 for o in self.outcomes if o.anchor_one)
+
+    @property
+    def unresolvable_count(self) -> int:
+        """Bridges whose anchors are not in the corpus. Not any arm's failure."""
+        return sum(1 for o in self.outcomes if not o.anchors_resolvable)
 
     @property
     def budget_fraction(self) -> float:
@@ -127,7 +138,10 @@ def resolve_anchor(chunks: tuple[Chunk, ...], doc: str, anchor: str) -> str | No
     needle = " ".join(anchor.split()).casefold()
     if not needle:
         return None
-    for chunk in chunks:
+    # Lowest ordinal, not first-in-input-order. The same anchor text can occur
+    # in two chunks of one document, and returning whichever the caller happened
+    # to pass first made the headline metric depend on tuple order.
+    for chunk in sorted(chunks, key=lambda c: c.ordinal):
         if chunk.source_id != doc:
             continue
         if needle in " ".join(chunk.text.split()).casefold():
@@ -142,14 +156,29 @@ def run_arm(
     budget_tokens: int,
     bridges: Iterable[Bridge],
 ) -> ArmResult:
-    """Compile one pack and measure what it delivered, bridge by bridge."""
+    """Compile one pack and measure what it delivered, bridge by bridge.
+
+    ``ranking`` must be the corpus-only ordering. A ranking built from the
+    anchors being measured would make every arm score perfectly while measuring
+    nothing, which is the circularity this whole design refuses — so the ranking
+    is checked against the one producer that cannot see them, rather than
+    trusted.
+    """
+    if ranking != stratified_ranking(chunks):
+        raise AblationError(
+            "the ranking is not the corpus-only ordering; a ranking derived "
+            "from what is being measured would score every arm perfectly and "
+            "measure nothing"
+        )
     started = time.perf_counter()
     pack = compile_pack(chunks, ranking, strategy, budget_tokens)
     latency_ms = (time.perf_counter() - started) * 1000.0
 
-    # Recompiled once more, from unchanged inputs. A manifest that differs is a
-    # defect and disqualifies the arm regardless of its other numbers.
-    again = compile_pack(chunks, ranking, strategy, budget_tokens)
+    # Recompiled from the same corpus handed over in a **different order**. The
+    # previous version recompiled from the same tuple object, so it could only
+    # ever catch a strategy that was stateful between calls -- it was blind to
+    # ordering, which is the way this actually failed.
+    again = compile_pack(tuple(reversed(chunks)), ranking, strategy, budget_tokens)
     deterministic = pack.manifest.digest == again.manifest.digest
 
     present_chunks = set(pack.manifest.chunk_ids)
@@ -159,16 +188,18 @@ def run_arm(
     for bridge in bridges:
         a_chunk = resolve_anchor(chunks, bridge.a_doc, bridge.a_anchor)
         b_chunk = resolve_anchor(chunks, bridge.b_doc, bridge.b_anchor)
-        anchors_present = sum(
-            1 for cid in (a_chunk, b_chunk) if cid is not None and cid in present_chunks
+        resolvable = a_chunk is not None and b_chunk is not None
+        anchors_present = (
+            sum(1 for cid in (a_chunk, b_chunk) if cid in present_chunks) if resolvable else 0
         )
         outcomes.append(
             BridgeOutcome(
                 bridge_id=bridge.id,
                 lang_pair=bridge.lang_pair,
                 doc_inclusion=bridge.a_doc in present_docs and bridge.b_doc in present_docs,
-                anchor_both=anchors_present == 2,
-                anchor_one=anchors_present == 1,
+                anchor_both=resolvable and anchors_present == 2,
+                anchor_one=resolvable and anchors_present == 1,
+                anchors_resolvable=resolvable,
             )
         )
 
@@ -194,6 +225,10 @@ class Verdict:
     reasons: tuple[str, ...]
     structural_additions: int
     tokens_used: int
+    #: Other winners this one could not be separated from. The preregistration
+    #: says a surviving tie is escalated rather than broken by preference, and a
+    #: docstring saying so is not an affordance — this is.
+    tied_with: tuple[str, ...] = ()
 
 
 def judge(baseline: ArmResult, candidate: ArmResult) -> Verdict:
@@ -218,12 +253,20 @@ def judge(baseline: ArmResult, candidate: ArmResult) -> Verdict:
             f"document count {candidate.doc_inclusion_count} is below "
             f"the baseline's {baseline.doc_inclusion_count}"
         )
+    if {o.bridge_id for o in baseline.outcomes} != {o.bridge_id for o in candidate.outcomes}:
+        raise AblationError("the two arms did not score the same bridges")
     base_strata = baseline.by_lang_pair()
-    for lang_pair, row in candidate.by_lang_pair().items():
+    cand_strata = candidate.by_lang_pair()
+    # The union, not the candidate's keys. Iterating only the candidate's strata
+    # made a stratum it had emptied invisible: one went from three to absent and
+    # the rule declared a winner. A vanished stratum is the largest possible
+    # regression, and it was the only one that could not be seen.
+    for lang_pair in sorted(set(base_strata) | set(cand_strata)):
         was = base_strata.get(lang_pair, {}).get("anchor_both", 0)
-        if row["anchor_both"] < was:
+        now = cand_strata.get(lang_pair, {}).get("anchor_both", 0)
+        if now < was:
             reasons.append(
-                f"it regresses {lang_pair}: {row['anchor_both']} both-anchor against {was}"
+                f"it regresses {lang_pair}: {now} both-anchor against {was}"
             )
     return Verdict(
         arm=candidate.arm,
@@ -249,7 +292,13 @@ def smallest_winner(verdicts: Iterable[Verdict]) -> Verdict | None:
     winners = [v for v in verdicts if v.wins]
     if not winners:
         return None
-    return sorted(winners, key=lambda v: (v.structural_additions, v.tokens_used, v.arm))[0]
+    ordered = sorted(winners, key=lambda v: (v.structural_additions, v.tokens_used, v.arm))
+    best = ordered[0]
+    tied = tuple(
+        v.arm for v in ordered[1:]
+        if (v.structural_additions, v.tokens_used) == (best.structural_additions, best.tokens_used)
+    )
+    return Verdict(best.arm, True, best.reasons, best.structural_additions, best.tokens_used, tied)
 
 
 def stratified_ranking(chunks: tuple[Chunk, ...]) -> tuple[str, ...]:
