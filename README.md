@@ -33,7 +33,8 @@ These are constraints the code is tested against, not aspirations.
 | Immutable source snapshots | present |
 | Ingestion: append-only ledger, versioning, invalidation | present |
 | Derived index, rebuildable from the files alone | present |
-| Retrieval quality, context compilation, interfaces | not yet built |
+| Measuring instrument and cross-language baseline | present |
+| Context compilation, interfaces | not yet built |
 
 The command surface is currently `--version`. Operations will arrive with the
 work that defines and tests them.
@@ -44,6 +45,16 @@ history of a source is a plain append-only file, so recovering it means reading
 it. Content that arrives from a source is held in its own type that cannot stand
 in for text this project wrote — text that reads as an instruction is labelled
 and still stored, because refusing it would quietly lose part of your corpus.
+
+**How results are measured.** The instrument is built before the things it
+judges, so it cannot be shaped by the answers it later reports. Expected results
+are written down from reading the documents, never recorded from a run — a
+golden file regenerated from the code it constrains cannot fail. Every
+measurement carries a third answer: a check that could not run says so, and
+never reports a pass. Relating terms across languages is a pluggable layer with
+no default, because the fixed hand-written table is *measured* insufficient and
+its proposed replacement is unmeasured, and preferring an unmeasured design to a
+measured-poor one is still a guess.
 
 **What the index guarantees.** It is built from the files and holds nothing they
 do not already say, so deleting it loses nothing: rebuilding produces the same
@@ -112,12 +123,16 @@ src/
     ├── canonical.py      the assertion record
     ├── untrusted.py      the boundary around content from outside
     ├── ledger.py         append-only ingest record and version chains
-    └── derived.py        the rebuildable index over everything above
+    ├── derived.py        the rebuildable index over everything above
+    ├── aliases.py        interchangeable ways of relating terms across languages
+    └── measure.py        the measuring instrument, and its third answer
 tests/                    the suite described above
 fixtures/
 └── synthetic/
     ├── MANIFEST.jsonl    path and content digest per document
-    └── corpus/           public, invented test documents
+    ├── GOLDEN.md         what a correct search must return, and why
+    ├── corpus/           public, invented test documents
+    └── bilingual/        the same subjects in two languages
 ```
 
 ## License
