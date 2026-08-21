@@ -262,3 +262,65 @@ def test_the_scanner_detects_what_it_claims_to() -> None:
     )
     for pattern, sample in samples.items():
         assert pattern.search(sample), f"pattern {pattern.pattern!r} missed {sample!r}"
+
+
+# --- the README must describe the repository that exists -------------------
+#
+# A stale README has now been an audit finding three times. Each was repaired by
+# editing the document, which fixes that instance and prevents nothing. The
+# document states its own contract -- "this document describes what exists
+# rather than what is planned" -- so that contract is checkable, and this is the
+# check.
+
+
+def _readme_layout_entries() -> set[str]:
+    """Module filenames named inside the README's layout block."""
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    inside = text.split("```", 2)
+    block = next((part for part in inside if "src/" in part and "nous_os/" in part), "")
+    return {
+        word
+        for line in block.splitlines()
+        for word in [line.strip().lstrip("├└─│ ").split()[0] if line.strip().lstrip("├└─│ ") else ""]
+        if word.endswith(".py")
+    }
+
+
+def test_the_readme_layout_names_every_tracked_module() -> None:
+    tracked = {
+        path.name
+        for path in (REPO_ROOT / "src" / "nous_os").glob("*.py")
+        if path.name != "__init__.py" or True
+    }
+    described = _readme_layout_entries()
+    missing = tracked - described
+    assert not missing, (
+        f"the README's layout omits modules that exist: {sorted(missing)}. "
+        "The document claims to describe what exists."
+    )
+
+
+def test_the_readme_layout_names_nothing_that_does_not_exist() -> None:
+    tracked = {path.name for path in (REPO_ROOT / "src" / "nous_os").glob("*.py")}
+    invented = _readme_layout_entries() - tracked
+    assert not invented, f"the README's layout names files that do not exist: {sorted(invented)}"
+
+
+def test_the_readme_does_not_call_a_shipped_area_unbuilt() -> None:
+    """Guard against the specific shape the finding took, three times."""
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    shipped_modules = {path.stem for path in (REPO_ROOT / "src" / "nous_os").glob("*.py")}
+    claims = [
+        line
+        for line in text.splitlines()
+        if "not yet built" in line
+    ]
+    for line in claims:
+        lowered = line.lower()
+        for module in shipped_modules:
+            if module in ("__init__", "__main__", "config"):
+                continue
+            assert module not in lowered, (
+                f"the README says {module!r} is not yet built, but "
+                f"src/nous_os/{module}.py is tracked"
+            )

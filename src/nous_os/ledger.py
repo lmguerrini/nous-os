@@ -27,15 +27,34 @@ re-run, not a quarantine reason — may invalidate anything.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
+import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from nous_os.identity import SOURCE_PREFIX, canonical_bytes, require_id
+from nous_os.identity import (
+    ASSERTION_PREFIX,
+    SOURCE_PREFIX,
+    canonical_bytes,
+    digest_bytes,
+    require_id,
+)
 from nous_os.snapshots import SnapshotStore
 from nous_os.untrusted import QuarantineReason, UntrustedText, inspect_shape
+
+
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+#: A sentinel distinct from every value a caller could supply. ``None`` cannot
+#: serve: ``dict.get`` returns it for an absent key *and* for a key stored with
+#: a ``None`` value, so a first registration of ``None`` read as "never seen"
+#: and let a different record claim the identifier afterwards.
+_ABSENT: object = object()
 
 
 class LedgerError(Exception):
@@ -47,8 +66,8 @@ class IdentifierCollision(LedgerError):
 
     Uniqueness is a property of a **collection**, so it is enforced here rather
     than on the record: a single assertion cannot know about another one. This
-    is the obligation the canonical-model capability recorded and could not
-    discharge, because it deliberately ships no collection.
+    is an obligation the record model itself cannot meet, because a lone
+    record has no collection to be unique within.
     """
 
 
@@ -86,10 +105,24 @@ class LedgerEntry:
 
     def __post_init__(self) -> None:
         require_id(self.source_id, SOURCE_PREFIX)
-        if type(self.snapshot_digest) is not str or len(self.snapshot_digest) != 64:
-            raise LedgerError("snapshot_digest must be a 64-character digest")
-        if self.previous_digest is not None and type(self.previous_digest) is not str:
-            raise LedgerError("previous_digest must be a digest or None")
+        # 64 lowercase hex characters, not merely 64 characters. A digest that
+        # cannot name any content is an impossible identity, and a ledger that
+        # accepts one reports a history nothing can resolve.
+        if type(self.snapshot_digest) is not str or not _HEX64.fullmatch(
+            self.snapshot_digest
+        ):
+            raise LedgerError(
+                f"snapshot_digest must be 64 lowercase hex characters: "
+                f"{self.snapshot_digest!r}"
+            )
+        if self.previous_digest is not None and (
+            type(self.previous_digest) is not str
+            or not _HEX64.fullmatch(self.previous_digest)
+        ):
+            raise LedgerError(
+                f"previous_digest must be 64 lowercase hex characters or None: "
+                f"{self.previous_digest!r}"
+            )
         if self.previous_digest == self.snapshot_digest:
             raise LedgerError(
                 "an entry cannot supersede itself; identical bytes are not a new version"
@@ -147,24 +180,59 @@ class Ledger:
         for number, line in enumerate(
             self._path.read_text(encoding="utf-8").splitlines(), start=1
         ):
-            if not line.strip():
+            if not line:
+                # Only a genuinely empty line is skipped -- a trailing newline.
+                # Whitespace is content that failed to parse, and "a line nobody
+                # can parse is not an absent line".
                 continue
             try:
                 payload = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise LedgerError(f"ledger line {number} is not readable") from error
-            found.append(
-                LedgerEntry(
-                    source_id=payload["source_id"],
-                    snapshot_digest=payload["snapshot_digest"],
-                    previous_digest=payload["previous_digest"],
-                    recorded_at=datetime.fromisoformat(payload["recorded_at"]),
-                    quarantine=tuple(
-                        QuarantineReason(value) for value in payload["quarantine"]
-                    ),
+                found.append(
+                    LedgerEntry(
+                        source_id=payload["source_id"],
+                        snapshot_digest=payload["snapshot_digest"],
+                        previous_digest=payload["previous_digest"],
+                        recorded_at=datetime.fromisoformat(payload["recorded_at"]),
+                        quarantine=tuple(
+                            QuarantineReason(value) for value in payload["quarantine"]
+                        ),
+                    )
                 )
-            )
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+                # One wrap for the whole construction, not only for the JSON
+                # parse. A caller that catches LedgerError to report a corrupt
+                # ledger should not crash on a raw KeyError instead -- and the
+                # line number is the useful part, which an unwrapped exception
+                # does not carry.
+                raise LedgerError(
+                    f"ledger line {number} is not readable: {error}"
+                ) from error
         return tuple(found)
+
+    @contextlib.contextmanager
+    def exclusive(self):
+        """Hold an advisory lock for the read-tip/append pair.
+
+        Ingest reads the current tip and then appends an entry naming it as
+        predecessor. Two processes doing that concurrently both read the same
+        tip and both claim it, and the resulting chain is **permanently**
+        broken: every later `chain`, `current_digest` and `ingest` for that
+        source raises, and because the ledger is append-only by design there is
+        no in-band repair. Reproduced 3 times out of 3 before this lock existed.
+
+        Advisory rather than mandatory, and POSIX-only. It makes concurrent
+        ingest safe on this platform; it does not make the ledger a database,
+        and it is not a substitute for stating that this is a single-writer
+        design.
+        """
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.open(str(self._path) + ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
 
     def append(self, entry: LedgerEntry) -> None:
         """Append one entry. The only way the ledger grows."""
@@ -226,7 +294,7 @@ def ingest(
     stops being a matter of anyone's memory.
     """
     require_id(source_id, SOURCE_PREFIX)
-    if not isinstance(content, UntrustedText):
+    if type(content) is not UntrustedText:
         raise LedgerError(
             "ingest takes UntrustedText; a bare str would make ingested content "
             "indistinguishable from text this system wrote itself"
@@ -234,15 +302,22 @@ def ingest(
     _instant(recorded_at, "recorded_at")
 
     data = content.as_data().encode("utf-8")
-    snapshot = store.put(source_id, data)
+    digest = digest_bytes(data)
+    with ledger.exclusive():
+        return _ingest_locked(store, ledger, source_id, data, digest, recorded_at, content)
+
+
+def _ingest_locked(store, ledger, source_id, data, digest, recorded_at, content):
     held = ledger.current_digest(source_id)
 
-    if held == snapshot.digest:
-        # Idempotent. Nothing is appended: a second identical ingest is not a
-        # second version, and recording it would make the chain describe how
-        # often ingest was run rather than how often the source changed.
+    if held == digest:
+        # Idempotent, and the store is not touched. Hashing before writing is
+        # the whole of it: an earlier version called put() first, so a ledger
+        # restored alongside an empty store wrote a snapshot and then reported
+        # UNCHANGED -- true about the ledger and false about the filesystem.
         return IngestResult(IngestStatus.UNCHANGED, None, None)
 
+    snapshot = store.put(source_id, data)
     entry = LedgerEntry(
         source_id=source_id,
         snapshot_digest=snapshot.digest,
@@ -273,8 +348,14 @@ class AssertionRegistry:
         self._seen: dict[str, str] = {}
 
     def register(self, assertion_id: str, content_digest: str) -> None:
-        existing = self._seen.get(assertion_id)
-        if existing is None:
+        # Not merely a non-empty string: an assertion registry that accepts a
+        # source id, or "not-an-identifier", enforces "a dict key names one
+        # thing" rather than "an identifier names one thing".
+        require_id(assertion_id, ASSERTION_PREFIX)
+        if type(content_digest) is not str or not content_digest:
+            raise LedgerError("a content digest must be a non-empty string")
+        existing = self._seen.get(assertion_id, _ABSENT)
+        if existing is _ABSENT:
             self._seen[assertion_id] = content_digest
             return
         if existing != content_digest:

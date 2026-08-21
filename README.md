@@ -31,10 +31,18 @@ These are constraints the code is tested against, not aspirations.
 | Public synthetic fixtures | present |
 | Canonical record: identity, content hashing, provenance | present |
 | Immutable source snapshots | present |
-| Ingestion, retrieval, interfaces | not yet built |
+| Ingestion: append-only ledger, versioning, invalidation | present |
+| Retrieval, context compilation, interfaces | not yet built |
 
 The command surface is currently `--version`. Operations will arrive with the
 work that defines and tests them.
+
+**What ingestion guarantees.** Taking a source in twice changes nothing the
+second time, and a version is recorded only when the bytes actually differ. The
+history of a source is a plain append-only file, so recovering it means reading
+it. Content that arrives from a source is held in its own type that cannot stand
+in for text this project wrote — text that reads as an instruction is labelled
+and still stored, because refusing it would quietly lose part of your corpus.
 
 **What the canonical record holds.** A claim, the source it came from, the exact
 bytes it quotes, when it was true, and when this system learned it. Identity is
@@ -94,7 +102,9 @@ src/
     ├── identity.py       stable ids and content hashing
     ├── snapshots.py      immutable, content-addressed source snapshots
     ├── provenance.py     citations, byte-range locators, quote-lint
-    └── canonical.py      the assertion record
+    ├── canonical.py      the assertion record
+    ├── untrusted.py      the boundary around content from outside
+    └── ledger.py         append-only ingest record and version chains
 tests/                    the suite described above
 fixtures/
 └── synthetic/

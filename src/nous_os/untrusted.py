@@ -13,7 +13,7 @@ indistinguishable from a `str` carrying a prompt. So ingested content gets a
 * it fails ``isinstance(value, str)``, so any function that checks refuses it;
 * it does not concatenate, format, or iterate as text;
 * **its ``__str__`` is a placeholder, not the content.** Interpolating it into a
-  message produces ``<untrusted content: 412 bytes>`` rather than the text, so
+  message produces ``<untrusted content: 412 characters>`` rather than the text, so
   the accident that would matter most is visible instead of silent.
 
 Reading the content is possible and is meant to be — ``as_data()`` returns the
@@ -30,6 +30,7 @@ protect against a risk the type boundary already handles.
 from __future__ import annotations
 
 import re
+import unicodedata
 from enum import Enum
 from typing import Final
 
@@ -95,6 +96,27 @@ _SHAPES: Final[tuple[tuple[QuarantineReason, re.Pattern[str]], ...]] = (
 )
 
 
+def _for_matching(text: str) -> str:
+    """The content as it would be *read*, for shape inspection only.
+
+    Never stored, never returned to a caller, and never written anywhere: the
+    stored bytes stay exactly as the source had them, because rewriting a
+    source is the thing provenance forbids. This is a view used to answer one
+    question -- what does this look like to whoever reads it?
+
+    Two things are folded. Unicode format characters (category ``Cf``, which
+    includes the zero-width space) are removed, because they are invisible to a
+    reader and a sentence carrying one reads identically to a sentence without
+    it -- so ``Ignore all<ZWSP> previous instructions`` matched nothing while
+    being indistinguishable on screen from text that matched. Compatibility
+    normalisation then folds the lookalike forms that survive that.
+    """
+    stripped = "".join(
+        character for character in text if unicodedata.category(character) != "Cf"
+    )
+    return unicodedata.normalize("NFKC", stripped)
+
+
 class UntrustedText:
     """Text from a source. Data, never instruction.
 
@@ -104,6 +126,18 @@ class UntrustedText:
     """
 
     __slots__ = ("_text",)
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        # Subclassing is refused, not discouraged. A subclass can override
+        # __str__, as_data or the immutability guard while still satisfying
+        # isinstance -- which turns the boundary into a suggestion. The same
+        # defect was found and fixed once already in this project's canonical
+        # record, and was not carried across to this type; refusing the
+        # mechanism outright is what stops it recurring a third time.
+        raise UntrustedContentError(
+            "UntrustedText may not be subclassed: a subclass could satisfy every "
+            "check while rendering its content as trusted text"
+        )
 
     def __init__(self, text: str) -> None:
         if type(text) is not str:
@@ -145,6 +179,28 @@ class UntrustedText:
     def __setattr__(self, name: str, value: object) -> None:
         raise UntrustedContentError("untrusted content is immutable once ingested")
 
+    def __copy__(self) -> "UntrustedText":
+        """An immutable value is its own copy.
+
+        Without this, the immutability guard intercepts the attribute write that
+        copying uses, and `copy.deepcopy` of any structure containing ingested
+        content fails with a message about a mutation nobody attempted. Failing
+        closed is safe; failing closed for the wrong stated reason is a trap.
+        """
+        return self
+
+    def __deepcopy__(self, memo: dict) -> "UntrustedText":
+        return self
+
+    def __reduce__(self) -> tuple:
+        """Rebuild by construction, so the type survives the round trip.
+
+        Restoring slots goes through `setattr`, which the guard refuses. Naming
+        the constructor keeps a pickled value arriving back as UntrustedText
+        rather than as something that merely looks like it.
+        """
+        return (UntrustedText, (self._text,))
+
 
 def inspect_shape(content: UntrustedText) -> tuple[QuarantineReason, ...]:
     """Which quarantine shapes this content matches. Sorted, deduplicated.
@@ -152,10 +208,10 @@ def inspect_shape(content: UntrustedText) -> tuple[QuarantineReason, ...]:
     Deterministic: the same content always yields the same tuple in the same
     order, because a set's iteration order is not a fact about the content.
     """
-    if not isinstance(content, UntrustedText):
+    if type(content) is not UntrustedText:
         raise UntrustedContentError(
             "inspect_shape reads untrusted content; pass UntrustedText, not a bare str"
         )
-    text = content.as_data()
+    text = _for_matching(content.as_data())
     found = {reason for reason, pattern in _SHAPES if pattern.search(text)}
     return tuple(sorted(found, key=lambda reason: reason.value))
