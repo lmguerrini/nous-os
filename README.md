@@ -38,18 +38,27 @@ work that defines and tests them.
 
 Python 3.11 or newer. No third-party runtime dependencies.
 
-## Install and run
+## Run
+
+No installation step is required. From a clone:
 
 ```bash
-python3 -m pip install -e '.[test]'
-python3 -m nous_os --version
+PYTHONPATH=src python3 -m nous_os --version
+```
+
+Installing the package works too and nothing here depends on it:
+
+```bash
+python3 -m pip install .
 ```
 
 ## Tests
 
-The suite runs from a clean clone with no machine-specific setup:
+`pytest` is the only requirement. The suite runs from a clean clone with no
+installation and no machine-specific setup:
 
 ```bash
+python3 -m pip install pytest
 python3 -m pytest tests/ -q
 ```
 
@@ -68,11 +77,16 @@ private corpus stays outside this repository and is never committed.
 ## Layout
 
 ```
-src/nous_os/          the package
-tests/                the suite described above
-fixtures/synthetic/   public, invented test documents
-schemas/              reserved; no schema is defined yet
-docs/                 reserved
+src/
+└── nous_os/
+    ├── __init__.py       the version surface
+    ├── __main__.py       the command surface
+    └── config.py         data-root resolution
+tests/                    the suite described above
+fixtures/
+└── synthetic/
+    ├── MANIFEST.jsonl    path and content digest per document
+    └── corpus/           public, invented test documents
 ```
 
 ## License
