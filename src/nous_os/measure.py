@@ -24,7 +24,7 @@ from enum import Enum
 from pathlib import Path
 
 from nous_os.aliases import AliasTable, expand_query
-from nous_os.derived import DerivedStoreError, search
+from nous_os.derived import DerivedStoreError, QueryError, search, verify
 from nous_os.identity import canonical_bytes, digest_payload
 
 
@@ -33,14 +33,23 @@ class MeasurementError(Exception):
 
 
 class Outcome(Enum):
-    """What one golden case did. Three answers, not two."""
+    """What one golden case did.
+
+    Two answers, and that is deliberate after checking. A third — "this case was
+    not evaluated" — was carried here for a while and had **no reachable
+    cause**: terms are case-folded before they reach the index, and the query
+    language only rejects reserved words in upper case, so no expansion can
+    produce a case where nothing was asked. An unreachable member reads as a
+    state the caller should handle and is really a state that cannot occur.
+
+    "Did not run" is a property of the **run**, not of a case, and it lives on
+    ``RunStatus`` where it is both reachable and load-bearing.
+    """
 
     #: Every expected document was found.
     HIT = "hit"
     #: At least one expected document was not found.
     MISS = "miss"
-    #: The case was not evaluated. Not a miss, and certainly not a hit.
-    NOT_RUN = "not_run"
 
 
 class RunStatus(Enum):
@@ -60,6 +69,11 @@ class GoldenCase:
     #: regenerating expectations from the run they are meant to constrain.
     query: str
     expect: tuple[str, ...]
+    #: Whether the documented expectation is "these and no others".
+    #: The published criterion for exact retrieval says "and no other", and an
+    #: instrument that only checked containment would score a system returning
+    #: everything as a perfect run.
+    exact: bool = False
 
     def __post_init__(self) -> None:
         if type(self.query) is not str or not self.query.strip():
@@ -68,6 +82,15 @@ class GoldenCase:
             raise MeasurementError(f"case {self.query!r} must expect at least one document")
         if len(set(self.expect)) != len(self.expect):
             raise MeasurementError(f"case {self.query!r} lists a document twice")
+        for name in self.expect:
+            # A typo in an expectation is otherwise indistinguishable from a
+            # retrieval failure: the case simply misses, forever, quietly.
+            if type(name) is not str or not name.strip():
+                raise MeasurementError(
+                    f"case {self.query!r} expects {name!r}, which is not an identifier"
+                )
+        if type(self.exact) is not bool:
+            raise MeasurementError("exact must be a bool")
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +119,18 @@ class RunResult:
     @property
     def hits(self) -> int:
         return sum(1 for r in self.results if r.outcome is Outcome.HIT)
+
+    @property
+    def passed(self) -> bool | None:
+        """Whether every case hit, or **None** if the run did not happen.
+
+        A caller reading ``not result.misses`` or ``result.hits == len(...)``
+        on a run that never happened gets ``True`` from both, vacuously. This
+        is the property that cannot be read without consulting the status.
+        """
+        if self.status is not RunStatus.COMPLETE:
+            return None
+        return all(r.outcome is Outcome.HIT for r in self.results)
 
     @property
     def misses(self) -> tuple[CaseResult, ...]:
@@ -153,9 +188,21 @@ def run_golden(
     """
     if not cases:
         raise MeasurementError("a run needs at least one case; an empty run scores perfectly")
+    seen_cases = set()
+    for case in cases:
+        key = (case.query, case.expect)
+        if key in seen_cases:
+            raise MeasurementError(f"case {case.query!r} appears twice with the same expectation")
+        seen_cases.add(key)
+
     path = Path(store_path)
-    if not path.is_file():
-        return not_run(table.name, f"no derived store at {path.name}")
+    try:
+        # Once, before the loop. Asking during the loop cannot tell "this term
+        # is unparseable" from "nothing here is readable", and the second one
+        # must never come back as a completed run.
+        verify(path)
+    except DerivedStoreError as error:
+        return not_run(table.name, str(error))
 
     results = []
     for case in cases:
@@ -163,16 +210,20 @@ def run_golden(
         for term in expand_query(table, case.query):
             try:
                 hits = search(path, term, limit=limit)
-            except DerivedStoreError:
-                # A term the query language cannot parse contributes nothing.
-                # It is not an error in the case, and it is not a silent pass:
-                # the case still succeeds or fails on what the other terms found.
+            except QueryError:
+                # Only a term the query language cannot parse. A store-level
+                # failure is deliberately not caught here: it is not something
+                # this case can carry on without.
                 continue
             for hit in hits:
                 if hit.source_id not in found:
                     found.append(hit.source_id)
         ordered = tuple(sorted(found))
-        outcome = Outcome.HIT if set(case.expect) <= set(ordered) else Outcome.MISS
+        if case.exact:
+            hit = set(case.expect) == set(ordered)
+        else:
+            hit = set(case.expect) <= set(ordered)
+        outcome = Outcome.HIT if hit else Outcome.MISS
         results.append(CaseResult(case.query, outcome, case.expect, ordered))
     return RunResult(RunStatus.COMPLETE, table.name, tuple(results))
 
@@ -229,17 +280,26 @@ def measure_rescue(baseline: RunResult, candidate: RunResult) -> RescueMeasureme
             candidate.derivation, 0, 0, RunStatus.NOT_RUN,
             f"the candidate did not run: {candidate.reason}",
         )
-    by_query = {r.query: r for r in candidate.results}
-    missing = [r.query for r in baseline.results if r.query not in by_query]
-    if missing:
+    # Keyed on the whole case, not on the query string. Two cases legitimately
+    # share a query with different expectations -- the two published case sets
+    # both use "tide" -- and keying on the string alone silently kept one, then
+    # reported a rescue that had not happened.
+    def key(result: CaseResult) -> tuple[str, tuple[str, ...]]:
+        return (result.query, result.expected)
+
+    by_case = {key(r): r for r in candidate.results}
+    absent = [key(r) for r in baseline.results if key(r) not in by_case]
+    extra = [k for k in by_case if k not in {key(r) for r in baseline.results}]
+    if absent or extra:
         raise MeasurementError(
-            f"the two runs do not cover the same cases; {len(missing)} absent from the candidate"
+            f"the two runs do not cover the same cases; {len(absent)} absent from the "
+            f"candidate and {len(extra)} absent from the baseline"
         )
     baseline_misses = [r for r in baseline.results if r.outcome is Outcome.MISS]
     broke = [
         r.query
         for r in baseline.results
-        if r.outcome is Outcome.HIT and by_query[r.query].outcome is Outcome.MISS
+        if r.outcome is Outcome.HIT and by_case[key(r)].outcome is Outcome.MISS
     ]
     if broke:
         return RescueMeasurement(
@@ -248,7 +308,7 @@ def measure_rescue(baseline: RunResult, candidate: RunResult) -> RescueMeasureme
             "a net figure would hide that",
         )
     rescued = sum(
-        1 for r in baseline_misses if by_query[r.query].outcome is Outcome.HIT
+        1 for r in baseline_misses if by_case[key(r)].outcome is Outcome.HIT
     )
     return RescueMeasurement(
         candidate.derivation, rescued, len(baseline_misses), RunStatus.COMPLETE

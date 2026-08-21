@@ -35,7 +35,9 @@ from nous_os.aliases import (
     normalise,
 )
 from nous_os.derived import build
+from nous_os.identity import digest_bytes
 from nous_os.measure import (
+    CaseResult,
     GoldenCase,
     MeasurementError,
     Outcome,
@@ -66,10 +68,10 @@ DOCS = {
 
 # Expectations read from the fixture text, not recorded from a run.
 G_RETR = (
-    GoldenCase("tide", (DOCS["en-tides"],)),
-    GoldenCase("marea", (DOCS["it-maree"],)),
-    GoldenCase("lighthouse", (DOCS["en-lighthouse"],)),
-    GoldenCase("faro", (DOCS["it-faro"],)),
+    GoldenCase("tide", (DOCS["en-tides"],), exact=True),
+    GoldenCase("marea", (DOCS["it-maree"],), exact=True),
+    GoldenCase("lighthouse", (DOCS["en-lighthouse"],), exact=True),
+    GoldenCase("faro", (DOCS["it-faro"],), exact=True),
 )
 G_ITEN = (
     GoldenCase("tide", (DOCS["en-tides"], DOCS["it-maree"])),
@@ -115,7 +117,7 @@ def test_the_public_fixture_is_too_small_to_be_a_benchmark() -> None:
     matters was taken on a corpus this repository does not contain.
     """
     documents = sorted(BILINGUAL.glob("*.md"))
-    assert len(documents) <= 8, (
+    assert len(documents) == 4, (
         "the public fixture has grown large enough to be mistaken for a benchmark; "
         "if it is meant to be one, it needs preregistered expectations, not this guard"
     )
@@ -227,14 +229,62 @@ def test_a_derivation_rescues_and_the_measurement_reports_both_counts(build_tabl
 
 
 def test_a_derivation_that_loses_a_case_refuses_to_report_a_rate() -> None:
-    """A net figure would hide a derivation trading one document for another."""
+    """The baseline must have misses, or this passes for the wrong reason.
+
+    An earlier version built its baseline from cases that all hit, so
+    `baseline_misses` was zero and `rate is None` was satisfied by the
+    *denominator* clause. The status clause was dead, and deleting it left the
+    suite green while a refused measurement reported `0.0`.
+    """
     path = _indexed()
-    baseline = run_golden(path, G_RETR, NoAliases())
-    broken = run_golden(path, tuple(GoldenCase(c.query, c.expect + ("src_" + "Z" * 26,)) for c in G_RETR), NoAliases())
-    measured = measure_rescue(baseline, broken)
+    # Exact, because expansion only ever *adds* documents: under a containment
+    # rule an alias layer cannot lose a case, so the losing state this test
+    # exists for is only reachable where extra results are themselves a failure.
+    kept = GoldenCase("marea", (DOCS["it-maree"],), exact=True)
+    unrescuable = GoldenCase("tide", (DOCS["en-tides"], DOCS["it-faro"]))
+    cases = (kept, unrescuable)
+
+    baseline = run_golden(path, cases, NoAliases())
+    assert [c.outcome for c in baseline.results] == [Outcome.HIT, Outcome.MISS]
+
+    # This derivation drags a second document into an exact case the baseline
+    # answered correctly, and rescues nothing.
+    losing = HandGlossary({"marea": "tide"})
+    candidate = run_golden(path, cases, losing)
+    measured = measure_rescue(baseline, candidate)
+
     assert measured.status is RunStatus.NOT_RUN
-    assert "lost" in (measured.reason or "")
+    assert measured.baseline_misses > 0, "the dead-clause bug hides when there are no misses"
     assert measured.rate is None
+    assert "lost" in (measured.reason or "")
+
+
+def test_a_partial_rescue_reports_the_real_numerator_and_denominator() -> None:
+    """Every other rescue case rescues everything, so numerator, denominator and
+    total are indistinguishable and a constant satisfies all three."""
+    path = _indexed()
+    baseline = run_golden(path, G_ITEN, NoAliases())
+    assert len(baseline.misses) == 2
+    half = HandGlossary({"tide": "marea"})  # says nothing about lighthouse/faro
+    measured = measure_rescue(baseline, run_golden(path, G_ITEN, half))
+    assert measured.status is RunStatus.COMPLETE
+    assert (measured.rescued, measured.baseline_misses) == (1, 2)
+    assert measured.rate == 0.5
+    assert "1/2" in measured.describe()
+    assert "2/2" not in measured.describe()
+
+
+def test_a_run_with_a_mix_of_hits_and_misses_counts_only_the_misses() -> None:
+    path = _indexed()
+    mixed = (
+        GoldenCase("marea", (DOCS["it-maree"],)),
+        GoldenCase("faro", (DOCS["it-faro"],)),
+        G_ITEN[0],
+    )
+    baseline = run_golden(path, mixed, NoAliases())
+    assert baseline.hits == 2 and len(baseline.misses) == 1
+    measured = measure_rescue(baseline, run_golden(path, mixed, _hand()))
+    assert (measured.rescued, measured.baseline_misses) == (1, 1)
 
 
 def test_two_runs_over_different_cases_cannot_be_compared() -> None:
@@ -365,3 +415,295 @@ def test_a_corpus_derivation_folds_case_when_pairing_terms() -> None:
     derived = CorpusDerivedAliases.from_aligned_pairs((("The Tide rises", "La Marea sale"),))
     assert derived.expand("tide") == derived.expand("TIDE")
     assert derived.expand("tide") != ()
+
+
+# --- the digest must be a function of the run, not a constant --------------
+#
+# Both determinism tests above compare a digest with another digest of the same
+# thing, so a constant satisfies them. Six mutants rode on that: the digest, the
+# serialisation, and four payload fields could each be replaced and the suite
+# stayed green.
+
+
+def test_runs_that_differ_produce_different_digests() -> None:
+    path = _indexed()
+    digests = {
+        run_golden(path, G_RETR, NoAliases()).digest,
+        run_golden(path, G_ITEN, NoAliases()).digest,
+        run_golden(path, G_ITEN, _hand()).digest,
+        run_golden(Path(tempfile.mkdtemp()) / "absent.db", G_ITEN, NoAliases()).digest,
+    }
+    assert len(digests) == 4, "runs differing in cases, derivation or status share a digest"
+
+
+def test_the_payload_carries_every_field_a_reader_would_check() -> None:
+    payload = run_golden(_indexed(), G_ITEN, _hand()).as_payload()
+    assert payload["status"] == "complete"
+    assert payload["derivation"] == "hand-glossary"
+    assert len(payload["cases"]) == len(G_ITEN)
+    first = payload["cases"][0]
+    assert first["query"] == G_ITEN[0].query
+    assert set(first["expected"]) == set(G_ITEN[0].expect)
+    assert first["found"], "the payload records nothing about what was found"
+    assert first["outcome"] in {"hit", "miss"}
+
+
+def test_the_serialised_form_is_not_empty_and_round_trips_to_the_digest() -> None:
+    result = run_golden(_indexed(), G_ITEN, _hand())
+    raw = result.to_bytes()
+    assert len(raw) > 100
+    assert digest_bytes(raw) == result.digest
+
+
+# --- a run that did not happen cannot be read as a pass -------------------
+
+
+def test_a_not_run_result_reports_none_rather_than_a_vacuous_pass() -> None:
+    """`not r.misses`, `r.hits == len(r.results)` and an `all(...)` over an
+    empty tuple are all True for a run that never happened. `passed` is the
+    reading that cannot be taken without consulting the status."""
+    absent = run_golden(Path(tempfile.mkdtemp()) / "absent.db", G_ITEN, NoAliases())
+    assert not absent.misses and absent.hits == len(absent.results)  # the vacuous readings
+    assert absent.passed is None
+    assert run_golden(_indexed(), G_RETR, NoAliases()).passed is True
+    assert run_golden(_indexed(), G_ITEN, NoAliases()).passed is False
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        lambda p: p.write_bytes(b""),
+        lambda p: p.write_bytes(b"not a database at all" * 40),
+        lambda p: None,
+    ],
+    ids=["zero-byte", "garbage", "absent"],
+)
+def test_an_unreadable_store_is_a_run_that_did_not_happen(prepare) -> None:
+    """SQLite accepts a zero-byte file as a valid empty database, so every query
+    against one fails with "no such table" — and a loop that skipped unparseable
+    terms skipped all of them and reported a completed run over nothing."""
+    path = Path(tempfile.mkdtemp()) / "store.db"
+    prepare(path)
+    result = run_golden(path, G_ITEN, NoAliases())
+    assert result.status is RunStatus.NOT_RUN
+    assert result.passed is None
+    assert result.reason
+    measured = measure_rescue(result, run_golden(_indexed(), G_ITEN, _hand()))
+    assert measured.status is RunStatus.NOT_RUN
+    assert measured.rate is None
+
+
+def test_a_bad_query_term_is_skipped_but_a_bad_store_is_not() -> None:
+    """The distinction the collapse destroyed."""
+    path = _indexed()
+    with_bad_term = GoldenCase('tide "', (DOCS["en-tides"],))
+    result = run_golden(path, (with_bad_term,), NoAliases())
+    assert result.status is RunStatus.COMPLETE, "an unparseable term is not a broken store"
+
+
+def test_the_candidate_failing_to_run_is_reported_too() -> None:
+    baseline = run_golden(_indexed(), G_ITEN, NoAliases())
+    absent = run_golden(Path(tempfile.mkdtemp()) / "absent.db", G_ITEN, _hand())
+    measured = measure_rescue(baseline, absent)
+    assert measured.status is RunStatus.NOT_RUN
+    assert "candidate" in (measured.reason or "")
+
+
+def test_a_candidate_covering_extra_cases_is_refused() -> None:
+    path = _indexed()
+    baseline = run_golden(path, G_ITEN, NoAliases())
+    with pytest.raises(MeasurementError):
+        measure_rescue(baseline, run_golden(path, G_ITEN + (G_RETR[1],), _hand()))
+
+
+def test_a_case_set_with_a_repeated_case_is_refused() -> None:
+    with pytest.raises(MeasurementError):
+        run_golden(_indexed(), (G_ITEN[0], G_ITEN[0]), NoAliases())
+
+
+def test_a_case_expecting_something_that_is_not_an_identifier_is_refused() -> None:
+    """A typo in an expectation is otherwise a permanent, silent miss."""
+    for bad in ((None,), (123,), ("",), ("   ",)):
+        with pytest.raises(MeasurementError):
+            GoldenCase("tide", bad)  # type: ignore[arg-type]
+
+
+# --- the documented criterion, encoded in the instrument ------------------
+
+
+def test_an_exact_case_refuses_extra_documents() -> None:
+    """The published criterion says "and no other". A containment rule would
+    score a system returning everything as a perfect run."""
+    path = _indexed()
+    loose = GoldenCase("tide", (DOCS["en-tides"],))
+    strict = GoldenCase("tide", (DOCS["en-tides"],), exact=True)
+    assert run_golden(path, (loose,), _hand()).results[0].outcome is Outcome.HIT
+    assert run_golden(path, (strict,), _hand()).results[0].outcome is Outcome.MISS
+
+
+# --- the published golden file is load-bearing ----------------------------
+
+
+def _parse_golden_tables() -> dict[str, list[tuple[str, tuple[str, ...]]]]:
+    """Read the expectations out of the published document."""
+    text = (REPO_ROOT / "fixtures" / "synthetic" / "GOLDEN.md").read_text(encoding="utf-8")
+    section = None
+    tables: dict[str, list[tuple[str, tuple[str, ...]]]] = {"G-RETR": [], "G-ITEN": []}
+    for line in text.splitlines():
+        if line.startswith("## G-RETR"):
+            section = "G-RETR"
+        elif line.startswith("## G-ITEN"):
+            section = "G-ITEN"
+        elif section and line.startswith("| `"):
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            query = cells[0].strip("` ")
+            expect = tuple(name.strip("` ") for name in cells[1].split(","))
+            tables[section].append((query, expect))
+    return tables
+
+
+def test_the_executable_cases_are_the_documented_ones() -> None:
+    """A golden file with no machine link to the code cannot fail either.
+
+    Every documented row could be inverted, or deleted, with the suite green.
+    The published document is what downstream work cites, so it is parsed here
+    and compared against the cases that actually run.
+    """
+    tables = _parse_golden_tables()
+    assert tables["G-RETR"] and tables["G-ITEN"], "no rows parsed; the document shape changed"
+
+    documented_retr = {(q, tuple(sorted(DOCS[n] for n in e))) for q, e in tables["G-RETR"]}
+    executed_retr = {(c.query, tuple(sorted(c.expect))) for c in G_RETR}
+    assert documented_retr == executed_retr
+
+    documented_iten = {(q, tuple(sorted(DOCS[n] for n in e))) for q, e in tables["G-ITEN"]}
+    executed_iten = {(c.query, tuple(sorted(c.expect))) for c in G_ITEN}
+    assert documented_iten == executed_iten
+
+
+def test_every_documented_document_name_exists_as_a_fixture() -> None:
+    for rows in _parse_golden_tables().values():
+        for _, expect in rows:
+            for name in expect:
+                assert (BILINGUAL / f"{name}.md").is_file(), f"{name} is documented but absent"
+
+
+def test_a_case_outcome_is_one_of_exactly_two_answers() -> None:
+    """A third member was carried here and had no reachable cause.
+
+    Terms are case-folded before they reach the index and the query language
+    rejects reserved words only in upper case, so no expansion can produce a
+    case where nothing was asked. "Did not run" belongs to the run.
+    """
+    assert {member.value for member in Outcome} == {"hit", "miss"}
+    result = run_golden(_indexed(), G_ITEN, NoAliases())
+    assert all(r.outcome in (Outcome.HIT, Outcome.MISS) for r in result.results)
+
+
+# --- alias-layer contracts the single-alias fixture could not exercise ----
+
+
+def test_an_expansion_with_several_aliases_is_sorted() -> None:
+    """Every fixture value is a one-tuple, so the sort contract reduced to a
+    tautology on a singleton."""
+    many = HandGlossary({"tide": "marea", "marea": "zephyr", "aqua": "marea"})
+    expanded = many.expand("marea")
+    assert len(expanded) >= 3
+    assert list(expanded) == sorted(expanded)
+
+
+def test_expansion_order_holds_across_processes_for_several_aliases() -> None:
+    package_root = str(Path(nous_os.__file__).resolve().parent.parent)
+    program = (
+        f"import sys;sys.path.insert(0,{package_root!r});"
+        "from nous_os.aliases import HandGlossary;"
+        "g=HandGlossary({'tide':'marea','marea':'zephyr','aqua':'marea','marea2':'x'});"
+        "print(','.join(g.expand('marea')))"
+    )
+    seen = set()
+    for seed in ("0", "1", "2", "3", "4", "5"):
+        seen.add(subprocess.run([sys.executable, "-c", program], capture_output=True,
+                                text=True, env=dict(os.environ, PYTHONHASHSEED=seed),
+                                check=True).stdout.strip())
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    "raw,folded",
+    [("Ｍａｒｅａ", "marea"), ("①", "1"), ("㎡", "m2"), ("ﬁ", "fi")],
+    ids=["fullwidth", "circled", "squared", "ligature"],
+)
+def test_compatibility_normalisation_is_real_not_just_case_folding(raw: str, folded: str) -> None:
+    """`"ﬁ".casefold()` is already `"fi"`, so the old example proved nothing."""
+    assert normalise(raw) == folded
+
+
+def test_the_corpus_derivation_skips_terms_the_two_sides_share() -> None:
+    """Both fixture pairs share no terms, so the filter was never exercised."""
+    derived = CorpusDerivedAliases.from_aligned_pairs(
+        (("Kestrel tide rises", "Kestrel marea sale"),)
+    )
+    assert derived.expand("kestrel") == (), "a term present on both sides is not a translation"
+    assert "marea" in derived.expand("tide")
+
+
+def test_no_module_level_alias_instance_can_become_a_default() -> None:
+    """The old guard was a list of four exact names; anything else got through."""
+    import nous_os.aliases as module
+
+    for name in dir(module):
+        if name.startswith("_"):
+            continue
+        value = getattr(module, name)
+        assert not isinstance(value, AliasTable) or isinstance(value, type), (
+            f"{name} is a ready-made alias table at module level, which a caller "
+            "would reach for without choosing"
+        )
+
+
+def test_the_result_cap_is_validated_and_actually_caps() -> None:
+    path = _indexed()
+    # One term matching several documents. With four documents in total, a
+    # per-term cap of one can still reach all four through four terms, so a
+    # multi-term query cannot demonstrate a cap at all.
+    case = GoldenCase("the", (DOCS["en-tides"],))
+    wide = run_golden(path, (case,), NoAliases(), limit=20).results[0].found
+    narrow = run_golden(path, (case,), NoAliases(), limit=1).results[0].found
+    assert len(wide) > len(narrow), "the cap does not cap"
+    for bad in (0, -1, True, "3", None):
+        with pytest.raises(Exception):
+            run_golden(path, (case,), _hand(), limit=bad)  # type: ignore[arg-type]
+
+
+def test_the_missing_list_is_sorted() -> None:
+    result = run_golden(_indexed(), (GoldenCase("zzz", (DOCS["it-faro"], DOCS["en-tides"])),), NoAliases())
+    missing = result.results[0].missing
+    assert list(missing) == sorted(missing)
+    assert len(missing) == 2
+
+
+def test_the_payload_of_a_run_that_did_not_happen_says_so() -> None:
+    """The status field was only ever asserted on a completed run, so a constant
+    `"complete"` satisfied it."""
+    payload = run_golden(Path(tempfile.mkdtemp()) / "absent.db", G_ITEN, NoAliases()).as_payload()
+    assert payload["status"] == "not_run"
+    assert payload["reason"]
+    assert payload["cases"] == []
+
+
+def test_the_shared_term_filter_bites_when_shared_terms_sit_at_different_positions() -> None:
+    """The earlier fixture put the shared term first on both sides, so removing
+    the filter changed nothing: the crude positional pairing lined it up with
+    itself and the identity guard dropped it anyway."""
+    derived = CorpusDerivedAliases.from_aligned_pairs(
+        (("tide Kestrel rises", "Kestrel marea sale"),)
+    )
+    assert derived.expand("kestrel") == (), "a term present on both sides is not a translation"
+    assert derived.expand("tide") == ("marea",)
+
+
+def test_the_default_result_cap_is_wide_enough_to_see_more_than_one_document() -> None:
+    """Every cap test passed `limit` explicitly, so the default was unexercised
+    and could be narrowed to one with the suite green."""
+    result = run_golden(_indexed(), (GoldenCase("the", (DOCS["en-tides"],)),), NoAliases())
+    assert len(result.results[0].found) > 1, "the default cap hides documents"

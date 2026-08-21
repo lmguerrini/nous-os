@@ -75,6 +75,20 @@ class DerivedStoreError(Exception):
     """Raised when the derived store cannot be built truthfully."""
 
 
+class QueryError(DerivedStoreError):
+    """The query could not be parsed. **Not** a statement about the store.
+
+    Kept distinct because a caller looping over many query terms will
+    reasonably skip one the query language rejects — and must not skip an
+    unreadable store the same way. Collapsing the two let a run that read
+    nothing at all report itself as complete.
+    """
+
+
+class StoreUnusable(DerivedStoreError):
+    """The store cannot be read: absent, empty, corrupt, or not this schema."""
+
+
 class CanonDivergence(DerivedStoreError):
     """The canonical layer does not hold something the ledger names.
 
@@ -258,12 +272,50 @@ def search(path: Path, query: str, limit: int = 10) -> tuple[SearchHit, ...]:
     except sqlite3.OperationalError as error:
         # A malformed query is this module's failure to report, not the storage
         # engine's to leak.
-        raise DerivedStoreError(f"the query could not be run: {error}") from error
+        raise QueryError(f"the query could not be run: {error}") from error
+    except sqlite3.DatabaseError as error:
+        # DatabaseError is OperationalError's parent: "file is not a database"
+        # and "disk image is malformed" arrive here, and are facts about the
+        # store rather than about the query.
+        raise StoreUnusable(f"the store could not be read: {error}") from error
     finally:
         connection.close()
     return tuple(
         SearchHit(snapshot_digest=row[0], source_id=row[1], excerpt=row[2]) for row in rows
     )
+
+
+#: The tables a usable store must have. Checked rather than assumed: SQLite
+#: accepts a zero-byte file as a valid empty database, so "the file is there"
+#: says nothing about whether anything can be read out of it.
+_REQUIRED_TABLES = ("source", "version", "content", "search")
+
+
+def verify(path: Path) -> None:
+    """Raise unless ``path`` is a store this module can actually read.
+
+    Called before a run rather than discovered during one. A zero-byte file is
+    a valid empty SQLite database, so every query against it fails with
+    "no such table" — and a caller skipping unparseable terms would skip all of
+    them and report a completed run over nothing.
+    """
+    connection = _open_for_reading(path)
+    try:
+        present = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+            ).fetchall()
+        }
+    except sqlite3.DatabaseError as error:
+        raise StoreUnusable(f"the store could not be read: {error}") from error
+    finally:
+        connection.close()
+    absent = [name for name in _REQUIRED_TABLES if name not in present]
+    if absent:
+        raise StoreUnusable(
+            f"{Path(path).name} is not a derived store; it is missing {', '.join(absent)}"
+        )
 
 
 def sources(path: Path) -> tuple[str, ...]:
