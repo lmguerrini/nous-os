@@ -29,10 +29,19 @@ These are constraints the code is tested against, not aspirations.
 | Package skeleton and version surface | present |
 | Data-root resolution from configuration | present |
 | Public synthetic fixtures | present |
-| Canonical model, ingestion, retrieval, interfaces | not yet built |
+| Canonical record: identity, content hashing, provenance | present |
+| Immutable source snapshots | present |
+| Ingestion, retrieval, interfaces | not yet built |
 
 The command surface is currently `--version`. Operations will arrive with the
 work that defines and tests them.
+
+**What the canonical record holds.** A claim, the source it came from, the exact
+bytes it quotes, when it was true, and when this system learned it. Identity is
+minted independently of content, so correcting a typo does not rename the thing;
+the content digest is exactly a function of content, so an edit is detectable.
+Support for a claim is a typed class — there is no confidence score anywhere,
+because a scalar invites arithmetic over evidence.
 
 ## Requirements
 
@@ -81,7 +90,11 @@ src/
 └── nous_os/
     ├── __init__.py       the version surface
     ├── __main__.py       the command surface
-    └── config.py         data-root resolution
+    ├── config.py         data-root resolution
+    ├── identity.py       stable ids and content hashing
+    ├── snapshots.py      immutable, content-addressed source snapshots
+    ├── provenance.py     citations, byte-range locators, quote-lint
+    └── canonical.py      the assertion record
 tests/                    the suite described above
 fixtures/
 └── synthetic/

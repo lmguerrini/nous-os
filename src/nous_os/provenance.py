@@ -16,10 +16,15 @@ information a person needs to fix it.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass
 
 from nous_os.identity import SOURCE_PREFIX, require_id
-from nous_os.snapshots import SnapshotNotFound, SnapshotStore
+from nous_os.snapshots import SnapshotCorrupt, SnapshotNotFound, SnapshotStore
+
+
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 class ProvenanceError(Exception):
@@ -39,11 +44,30 @@ class LocatorSplitsCharacter(ProvenanceError):
     """
 
 
+class SnapshotNotText(ProvenanceError):
+    """The snapshot is not UTF-8 text at all.
+
+    Its own failure. Reporting this as a split character would say the offsets
+    are wrong when the offsets are fine and the *file* is not text -- a
+    confidently wrong reason, which is the thing this module refuses to give.
+    """
+
+
+class LocatorSplitsGrapheme(ProvenanceError):
+    """The cited range begins or ends part-way through a written character.
+
+    Distinct from splitting a codepoint. ``café`` in decomposed form is five
+    codepoints, and a range covering the first four decodes cleanly to
+    ``cafe`` -- a quote that drops the accent and changes the word, which
+    quote-lint would otherwise certify as exact.
+    """
+
+
 class SpanMismatch(ProvenanceError):
     """The snapshot holds different text at the cited offsets."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Locator:
     """A half-open byte range into a snapshot: ``[start, end)``.
 
@@ -56,8 +80,15 @@ class Locator:
     end_byte: int
 
     def __post_init__(self) -> None:
-        if not isinstance(self.start_byte, int) or not isinstance(self.end_byte, int):
-            raise ProvenanceError("locator offsets must be integers")
+        for name, value in (("start_byte", self.start_byte), ("end_byte", self.end_byte)):
+            # bool is a subclass of int, so isinstance would accept True/False.
+            # They compare equal to 1/0 but serialise as `true`/`false`, which
+            # would give two digests to one offset -- an "if and only if"
+            # broken by a type nobody meant to allow.
+            if type(value) is not int:
+                raise ProvenanceError(
+                    f"{name} must be an int, not {type(value).__name__}"
+                )
         if self.start_byte < 0:
             raise ProvenanceError(f"negative start offset: {self.start_byte}")
         if self.end_byte <= self.start_byte:
@@ -66,7 +97,7 @@ class Locator:
             )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Citation:
     """A claim about what a named snapshot says at a named place."""
 
@@ -77,8 +108,25 @@ class Citation:
 
     def __post_init__(self) -> None:
         require_id(self.source_id, SOURCE_PREFIX)
-        if not self.snapshot_digest:
-            raise ProvenanceError("a citation must name a snapshot digest")
+        # Exact types, not isinstance. The canonical schema is closed on
+        # purpose: a subclass can override a method or shadow a field, and a
+        # record whose shape depends on what someone passed in is not a schema.
+        if type(self.locator) is not Locator:
+            raise ProvenanceError(
+                f"locator must be a Locator, not {type(self.locator).__name__}"
+            )
+        if type(self.span) is not str:
+            raise ProvenanceError(f"span must be a str, not {type(self.span).__name__}")
+        if type(self.snapshot_digest) is not str:
+            raise ProvenanceError("snapshot_digest must be a str")
+        # A digest is 64 lowercase hex characters and nothing else. Unvalidated
+        # it reaches a filesystem path, where a relative traversal escapes the
+        # store entirely and reads a file that is not a snapshot at all.
+        if not _HEX64.fullmatch(self.snapshot_digest):
+            raise ProvenanceError(
+                f"snapshot_digest must be 64 lowercase hex characters: "
+                f"{self.snapshot_digest!r}"
+            )
         if not self.span:
             raise ProvenanceError("a citation must carry the span it claims to quote")
 
@@ -107,14 +155,44 @@ def read_span(store: SnapshotStore, citation: Citation) -> str:
             f"range [{citation.locator.start_byte}, {citation.locator.end_byte}) "
             f"exceeds the {len(data)}-byte snapshot"
         )
-    fragment = data[citation.locator.start_byte : citation.locator.end_byte]
+    start, end = citation.locator.start_byte, citation.locator.end_byte
+    fragment = data[start:end]
     try:
-        return fragment.decode("utf-8")
+        text = fragment.decode("utf-8")
     except UnicodeDecodeError as error:
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise SnapshotNotText(
+                f"snapshot {citation.snapshot_digest} is not UTF-8 text, so no "
+                "byte range in it names a span"
+            ) from error
         raise LocatorSplitsCharacter(
-            f"range [{citation.locator.start_byte}, {citation.locator.end_byte}) "
-            "does not begin and end on character boundaries"
+            f"range [{start}, {end}) does not begin and end on character boundaries"
         ) from error
+
+    # Codepoint boundaries are not character boundaries. A range may decode
+    # cleanly and still cut a written character in half, when what follows is a
+    # combining mark that belongs to the last codepoint inside the range.
+    whole = data.decode("utf-8")
+    if text and unicodedata.combining(text[0]):
+        raise LocatorSplitsGrapheme(
+            f"range [{start}, {end}) begins on a combining mark, part-way "
+            "through a written character"
+        )
+    trailing = data[end:end + 4]
+    if trailing:
+        try:
+            following = trailing.decode("utf-8", errors="ignore")
+        except UnicodeDecodeError:  # pragma: no cover - errors="ignore" cannot raise
+            following = ""
+        if following and unicodedata.combining(following[0]):
+            raise LocatorSplitsGrapheme(
+                f"range [{start}, {end}) ends immediately before a combining "
+                "mark, cutting a written character in half"
+            )
+    del whole
+    return text
 
 
 def quote_lint(store: SnapshotStore, citation: Citation) -> None:
@@ -141,6 +219,10 @@ def resolves(store: SnapshotStore, citation: Citation) -> bool:
     """
     try:
         quote_lint(store, citation)
-    except (ProvenanceError, SnapshotNotFound):
+    except (ProvenanceError, SnapshotNotFound, SnapshotCorrupt):
+        # SnapshotCorrupt belongs here too. This function exists to count
+        # across many citations, and a bulk report that aborts on the first
+        # corrupt snapshot fails at exactly the condition it was built to
+        # surface.
         return False
     return True

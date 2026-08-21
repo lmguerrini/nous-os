@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from nous_os.identity import ASSERTION_PREFIX, digest_payload, require_id
-from nous_os.provenance import Citation
+from nous_os.provenance import Citation, Locator
 
 
 class CanonicalError(Exception):
@@ -73,6 +73,25 @@ class SupportClass(Enum):
     UNKNOWN = "unknown"
 
 
+def _citation_payload(citation: Citation) -> dict[str, object]:
+    """Build the citation's hashed form here, from its fields.
+
+    Deliberately not ``citation.as_payload()``. Calling a method on a value
+    that arrived from outside means the shape of canonical content is decided
+    by whoever constructed the value, and an override returning
+    ``{"confidence": 0.7}`` would put a scalar score into canonical content
+    through the one door this model leaves open. Reading the fields directly,
+    behind an exact-type check, closes it.
+    """
+    return {
+        "source_id": citation.source_id,
+        "snapshot_digest": citation.snapshot_digest,
+        "start_byte": citation.locator.start_byte,
+        "end_byte": citation.locator.end_byte,
+        "span": citation.span,
+    }
+
+
 def _as_utc(value: datetime) -> str:
     """One instant, one representation.
 
@@ -84,7 +103,16 @@ def _as_utc(value: datetime) -> str:
     does. Normalising to UTC first means the digest is a function of the
     instant rather than of the offset whoever recorded it happened to use.
     """
-    return value.astimezone(timezone.utc).isoformat()
+    try:
+        return value.astimezone(timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError) as error:
+        # datetime.max at a negative offset cannot be shifted to UTC. That is a
+        # record this model cannot represent, and saying so is this module's
+        # job -- letting a raw OverflowError out names arithmetic when the
+        # problem is a value.
+        raise CanonicalError(
+            f"instant {value!r} cannot be normalised to UTC"
+        ) from error
 
 
 def _require_instant(value: datetime, field: str) -> datetime:
@@ -98,7 +126,7 @@ def _require_instant(value: datetime, field: str) -> datetime:
     return value
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Assertion:
     """One claim, its provenance, its validity, and its lifecycle state."""
 
@@ -113,13 +141,22 @@ class Assertion:
 
     def __post_init__(self) -> None:
         require_id(self.id, ASSERTION_PREFIX)
-        if not self.text or not self.text.strip():
+        # Exact type. A Citation subclass could override the method that
+        # produces its hashed form and inject anything at all into canonical
+        # content -- including the scalar score this model exists to exclude.
+        if type(self.citation) is not Citation:
+            raise CanonicalError(
+                f"citation must be a Citation, not {type(self.citation).__name__}"
+            )
+        if type(self.text) is not str or not self.text.strip():
             raise CanonicalError("an assertion must carry a claim")
         if not isinstance(self.support, SupportClass):
             raise CanonicalError("support must be a SupportClass, never a scalar")
         if not isinstance(self.state, LifecycleState):
             raise CanonicalError("state must be a LifecycleState")
         _require_instant(self.recorded_at, "recorded_at")
+        # Normalising must be possible now, not at hashing time.
+        _as_utc(self.recorded_at)
         if self.valid_from is not None:
             _require_instant(self.valid_from, "valid_from")
         if self.valid_to is not None:
@@ -127,7 +164,8 @@ class Assertion:
         if (
             self.valid_from is not None
             and self.valid_to is not None
-            and self.valid_to <= self.valid_from
+            and self.valid_to.astimezone(timezone.utc)
+            <= self.valid_from.astimezone(timezone.utc)
         ):
             raise CanonicalError(
                 f"valid_to {self.valid_to.isoformat()} does not follow "
@@ -156,7 +194,7 @@ class Assertion:
         """
         return {
             "text": self.text,
-            "citation": self.citation.as_payload(),
+            "citation": _citation_payload(self.citation),
             "support": self.support.value,
             "recorded_at": _as_utc(self.recorded_at),
             "valid_from": None if self.valid_from is None else _as_utc(self.valid_from),

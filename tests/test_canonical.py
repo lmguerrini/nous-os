@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import FrozenInstanceError, dataclass, fields, is_dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -101,26 +102,48 @@ def test_p13_support_is_a_closed_enum_with_no_ordering() -> None:
         _ = SupportClass.DIRECT_QUOTE < SupportClass.PARAPHRASE  # type: ignore[operator]
 
 
+def _candidate_record() -> Assertion:
+    return _assertion(state=LifecycleState.CANDIDATE)
+
+
+def _promotes(candidate_callable: object) -> bool:
+    """Whether calling this actually yields a record in a different state.
+
+    Detected by **behaviour**, not by annotation. The previous version of this
+    scan matched on type hints and a declared return type, so an unannotated
+    module function and a method on the record itself both went unseen -- and
+    both are the natural shape a transition would take if someone added one.
+    A scan that only recognises the well-labelled version of the thing it
+    forbids is not a scan.
+    """
+    record = _candidate_record()
+    for arguments in ((record,), ()):
+        try:
+            result = candidate_callable(*arguments)  # type: ignore[operator]
+        except Exception:
+            continue
+        if isinstance(result, Assertion) and result.state is not record.state:
+            return True
+    return False
+
+
 def _transition_callables() -> list[str]:
     findings = []
     for module in MODEL_MODULES:
-        for name, callable_object in inspect.getmembers(module, inspect.isfunction):
-            hints = get_type_hints(callable_object)
-            parameters = inspect.signature(callable_object).parameters
-            takes_record = any(hints.get(parameter.name) is Assertion for parameter in parameters.values())
-            if takes_record and hints.get("return") is Assertion:
+        for name, function in inspect.getmembers(module, inspect.isfunction):
+            if name.startswith("_"):
+                continue
+            if _promotes(function):
                 findings.append(f"{module.__name__}.{name}")
     return findings
 
 
 def _state_setting_methods() -> list[str]:
     findings = []
-    for name, method in inspect.getmembers(Assertion, inspect.isfunction):
-        if name == "__init__":
+    for name, method in inspect.getmembers(Assertion, callable):
+        if name.startswith("__"):
             continue
-        hints = get_type_hints(method)
-        parameters = inspect.signature(method).parameters
-        if any(hints.get(parameter.name) is LifecycleState for parameter in parameters.values()):
+        if _promotes(getattr(_candidate_record(), name, None)) or _promotes(method):
             findings.append(name)
     return findings
 
@@ -134,6 +157,15 @@ def test_p14_no_lifecycle_transition_callable_or_state_setting_record_method_exi
         LifecycleState("unlisted")
     assert _transition_callables() == []
     assert _state_setting_methods() == []
+    # replace() and object.__setattr__ are standard-library facilities over any
+    # dataclass, not code authored here. slots=True removes the __dict__ route
+    # entirely; replace() cannot be blocked without making the record unusable,
+    # so it is named here rather than left to silence. Constructing an in-memory
+    # object whose state reads "canonical" is not promotion to canon: promotion
+    # is a store admitting a record, and that gate belongs to a later capability.
+    promoted = dataclasses.replace(record, state=LifecycleState.CANONICAL)
+    assert promoted.state is LifecycleState.CANONICAL
+    assert not hasattr(record, "__dict__"), "slots=True must remove the __dict__ route"
     with pytest.raises(FrozenInstanceError):
         record.state = LifecycleState.CANONICAL  # type: ignore[misc]
 

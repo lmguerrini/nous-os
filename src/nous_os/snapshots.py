@@ -39,7 +39,7 @@ class SnapshotCorrupt(Exception):
     """Raised when a stored snapshot's bytes do not hash to its own name."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Snapshot:
     """One immutable capture of a source's bytes."""
 
@@ -49,6 +49,14 @@ class Snapshot:
 
     def __post_init__(self) -> None:
         require_id(self.source_id, SOURCE_PREFIX)
+        # Exactly bytes. A bytearray satisfies the annotation and every
+        # isinstance check, and then the caller can edit it afterwards -- the
+        # digest was verified once, at construction, against contents that no
+        # longer exist. An immutable value has to actually be immutable.
+        if type(self.data) is not bytes:
+            raise SnapshotCorrupt(
+                f"snapshot data must be immutable bytes, not {type(self.data).__name__}"
+            )
         actual = digest_bytes(self.data)
         if actual != self.digest:
             raise SnapshotCorrupt(
