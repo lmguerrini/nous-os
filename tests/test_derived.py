@@ -33,6 +33,7 @@ import pytest
 
 import nous_os
 from nous_os.derived import (
+    PAGE_SIZE,
     CanonDivergence,
     DerivedStoreError,
     build,
@@ -69,7 +70,7 @@ _CANON = (
 )
 
 PINNED_SQLITE = "3.50.4"
-PINNED_DIGEST = "62bb0f3d02c1f09c1f6da8513ad9c6624708676d8b0f495eb01bc46ecec2dea7"
+PINNED_DIGEST = "90550481b2657025f78982f62016dae61eb9c26a8e45fad74241e80a4af32fec"
 
 
 def _canon(root: Path | None = None) -> tuple[SnapshotStore, Ledger, Path]:
@@ -273,3 +274,225 @@ def test_versions_refuses_a_malformed_source_identifier() -> None:
     build(store, ledger, path)
     with pytest.raises(Exception):
         versions(path, "not-an-identifier")
+
+
+# --- what the store holds, asserted without the version-guarded pin --------
+#
+# The pinned-layout test is skipped on any SQLite other than the one it was
+# taken under. Six mutants rode on that skip, and four of them were the store
+# **holding something canon does not say** — a fabricated timestamp on every
+# version row, emptied quarantine labels, a zeroed byte length, and a
+# `state_digest` measuring a text dump instead of the file. On a machine with a
+# different SQLite the suite reported green through all four.
+#
+# These assertions are version-independent on purpose: they read the tables back
+# and compare them with canon, so they hold everywhere the code runs rather than
+# only where the pin happens to apply.
+
+
+def _rows(path: Path, statement: str) -> list[tuple]:
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return connection.execute(statement).fetchall()
+    finally:
+        connection.close()
+
+
+def test_the_version_rows_carry_what_the_ledger_says() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    expected = []
+    for source_id in sorted({entry.source_id for entry in ledger.entries()}):
+        for sequence, entry in enumerate(ledger.chain(source_id)):
+            expected.append(
+                (
+                    entry.source_id,
+                    sequence,
+                    entry.snapshot_digest,
+                    entry.previous_digest,
+                    entry.recorded_at.isoformat(),
+                    ",".join(reason.value for reason in entry.quarantine),
+                )
+            )
+    observed = _rows(path, "SELECT * FROM version ORDER BY source_id, sequence")
+    assert observed == sorted(expected, key=lambda row: (row[0], row[1]))
+
+
+def test_the_recorded_instants_are_not_a_constant() -> None:
+    """A fabricated timestamp on every row is the mutant that rode the skip."""
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    instants = {row[0] for row in _rows(path, "SELECT recorded_at FROM version")}
+    assert len(instants) > 1, "every version carries the same instant; canon does not"
+
+
+def test_the_quarantine_labels_reach_the_store() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    labelled = [row[0] for row in _rows(path, "SELECT quarantine FROM version") if row[0]]
+    assert labelled, "canon carries quarantine reasons and the store recorded none"
+
+
+def test_the_byte_lengths_are_the_real_ones() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    for digest, source_id, byte_length, body in _rows(
+        path, "SELECT snapshot_digest, source_id, byte_length, body FROM content"
+    ):
+        assert byte_length == len(store.get(source_id, digest).data)
+        assert byte_length > 0
+
+
+def test_the_state_digest_measures_the_file_and_not_a_summary() -> None:
+    """The substitution the docstring warns against, made checkable.
+
+    Hashing a text dump instead of the bytes would "prove a weaker thing while
+    sounding like the same one" — and nothing noticed off the pinned version.
+    """
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    before = state_digest(path)
+    raw = bytearray(path.read_bytes())
+    raw[-1] ^= 0xFF  # a byte no logical dump would ever surface
+    path.write_bytes(bytes(raw))
+    assert state_digest(path) != before
+
+
+def test_the_page_size_is_the_declared_one() -> None:
+    """Unconditional, because the pragma exists for machines the pin skips."""
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    assert _rows(path, "PRAGMA page_size")[0][0] == PAGE_SIZE
+
+
+def test_versions_come_back_in_chain_order_not_insertion_order() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    observed = versions(path, SOURCE_A)
+    assert observed == tuple(e.snapshot_digest for e in ledger.chain(SOURCE_A))
+    assert len(observed) > 1, "one version cannot demonstrate an order"
+
+
+def test_sources_come_back_sorted() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    observed = sources(path)
+    assert observed == tuple(sorted(observed))
+    assert len(observed) >= 4
+
+
+# --- two sources may hold the same bytes -----------------------------------
+
+
+def _shared_bytes_canon(delete_second: bool = False):
+    base = Path(tempfile.mkdtemp())
+    store = SnapshotStore(base / "snapshots")
+    ledger = Ledger(base / "ledger.jsonl")
+    shared = "The harbour office keeps the tide records."
+    ingest(store, ledger, SOURCE_A, UntrustedText(shared), T0)
+    ingest(store, ledger, SOURCE_B, UntrustedText(shared), T0)
+    if delete_second:
+        sorted((base / "snapshots" / SOURCE_B).iterdir())[0].unlink()
+    return store, ledger, base
+
+
+def test_two_sources_holding_the_same_bytes_both_reach_the_store() -> None:
+    """A digest is a function of bytes; a snapshot belongs to a source.
+
+    Keyed on the digest alone, the second source's document vanished from the
+    index and its text was attributed to the first — the store holding *less*
+    than canon, silently.
+    """
+    store, ledger, base = _shared_bytes_canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    rows = _rows(path, "SELECT snapshot_digest, source_id FROM content ORDER BY source_id")
+    assert len(rows) == 2
+    assert {row[1] for row in rows} == {SOURCE_A, SOURCE_B}
+    assert {hit.source_id for hit in search(path, "harbour")} == {SOURCE_A, SOURCE_B}
+
+
+def test_a_missing_snapshot_is_caught_even_when_another_source_shares_its_bytes() -> None:
+    """The existence check used to sit behind the dedup, so this path skipped it."""
+    store, ledger, base = _shared_bytes_canon(delete_second=True)
+    with pytest.raises(CanonDivergence):
+        build(store, ledger, base / "derived.db")
+
+
+# --- reading a store that is not there -------------------------------------
+
+
+def test_querying_a_deleted_store_refuses_instead_of_creating_one() -> None:
+    """`sqlite3.connect` creates the file, which turned one stray read into a
+    permanent refusal: `build` then reported a previous build that never was."""
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    path.unlink()
+    for call in (lambda: search(path, "bay"), lambda: sources(path), lambda: versions(path, SOURCE_A)):
+        with pytest.raises(DerivedStoreError):
+            call()
+        assert not path.exists(), "a read recreated the store as an empty file"
+    rebuild(store, ledger, path)
+    assert sources(path)
+
+
+@pytest.mark.parametrize("query", ['"', "bay AND", "*", "NEAR("])
+def test_a_malformed_query_is_reported_by_this_module(query: str) -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    with pytest.raises(DerivedStoreError):
+        search(path, query)
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, "3", None, 2.5])
+def test_a_nonsensical_limit_is_refused(limit: object) -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    with pytest.raises(DerivedStoreError):
+        search(path, "bay", limit)  # type: ignore[arg-type]
+
+
+def test_the_limit_actually_limits() -> None:
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    assert len(search(path, "coral", limit=1)) == 1
+    assert len(search(path, "coral", limit=2)) == 2
+
+
+def test_the_store_carries_no_free_pages() -> None:
+    """What VACUUM guarantees, asserted without depending on a pinned layout.
+
+    Skipping the final VACUUM left build-time free pages in the file. Only the
+    version-guarded pin noticed, so on any other SQLite the store carried the
+    history of its own construction and nothing failed.
+    """
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    assert _rows(path, "PRAGMA freelist_count")[0][0] == 0
+
+
+def test_content_is_stored_in_its_canonical_order() -> None:
+    """Insertion order is a fact about canon, checked without the pin.
+
+    Removing the sort left rows in ledger-walk order. The bytes differ, so the
+    pinned digest caught it here — and nowhere else.
+    """
+    store, ledger, base = _canon()
+    path = base / "derived.db"
+    build(store, ledger, path)
+    stored = _rows(path, "SELECT snapshot_digest, source_id FROM content ORDER BY rowid")
+    assert stored == sorted(stored), "content was not inserted in (digest, source) order"
+    assert len(stored) > 1, "one row cannot demonstrate an order"

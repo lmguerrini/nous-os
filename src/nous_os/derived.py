@@ -14,6 +14,11 @@ Byte-identical rebuilds need every source of incidental variation closed:
   directory listing or a dictionary's iteration;
 * no timestamps, no row ids that depend on insertion history, no ``AUTOINCREMENT``;
 * ``VACUUM`` at the end, so free-page history from the build itself is discarded.
+  On a build this shape it removes nothing — the build only inserts, so there
+  are no free pages to reclaim, and measurement confirms page count, free list
+  and file size are unchanged by it. It is kept as a guarantee about the shape
+  of the output rather than as an optimisation, and the property it promises
+  (no free pages) is asserted directly rather than inferred from the layout.
 
 **A divergence is reported, not indexed around.** If the ledger names a snapshot
 the store does not hold, this refuses to build. An index that quietly skipped it
@@ -47,14 +52,21 @@ SCHEMA = (
     " quarantine TEXT NOT NULL,"
     " PRIMARY KEY (source_id, sequence)"
     ")",
+    # Keyed on the PAIR, not on the digest alone. A digest is a function of
+    # bytes; a snapshot belongs to a source. Two sources quoting the same
+    # sentence -- shared boilerplate, a mirrored feed, a document copied across
+    # -- share a digest and are two different facts. Keyed on the digest, the
+    # second one silently disappeared from the index and its text was attributed
+    # to the first.
     "CREATE TABLE content ("
-    " snapshot_digest TEXT PRIMARY KEY NOT NULL,"
+    " snapshot_digest TEXT NOT NULL,"
     " source_id TEXT NOT NULL,"
     " byte_length INTEGER NOT NULL,"
-    " body TEXT NOT NULL"
+    " body TEXT NOT NULL,"
+    " PRIMARY KEY (snapshot_digest, source_id)"
     ")",
     "CREATE VIRTUAL TABLE search USING fts5("
-    " body, snapshot_digest UNINDEXED, tokenize='unicode61'"
+    " body, snapshot_digest UNINDEXED, source_id UNINDEXED, tokenize='unicode61'"
     ")",
 )
 
@@ -71,6 +83,20 @@ class CanonDivergence(DerivedStoreError):
     incomplete snapshot store. Repairing it silently here would hide it in the
     one place designed to notice.
     """
+
+
+def _open_for_reading(path: Path) -> sqlite3.Connection:
+    """Open read-only, and refuse rather than conjuring an empty database.
+
+    `sqlite3.connect` creates the file. Querying a store that has been deleted
+    therefore left a zero-byte file behind, and `build` then refused forever
+    with a message about a previous build that never happened -- turning the
+    documented recovery path into a permanent failure after one stray read.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise DerivedStoreError(f"no derived store at {path.name}; build it first")
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +118,7 @@ def _canonical_rows(store: SnapshotStore, ledger: Ledger) -> tuple[list, list, l
     sources = sorted({entry.source_id for entry in ledger.entries()})
     versions: list[tuple] = []
     contents: list[tuple] = []
-    seen_digests: set[str] = set()
+    seen: set[tuple[str, str]] = set()
 
     for source_id in sources:
         for sequence, entry in enumerate(ledger.chain(source_id)):
@@ -106,9 +132,11 @@ def _canonical_rows(store: SnapshotStore, ledger: Ledger) -> tuple[list, list, l
                     ",".join(reason.value for reason in entry.quarantine),
                 )
             )
-            if entry.snapshot_digest in seen_digests:
-                continue
-            seen_digests.add(entry.snapshot_digest)
+            # The existence check runs for EVERY entry, before any dedup. It
+            # used to sit after it, so an entry whose digest had already been
+            # seen from another source skipped the check entirely and a build
+            # succeeded with canon incomplete -- the exact thing this refusal
+            # exists to prevent.
             try:
                 snapshot = store.get(entry.source_id, entry.snapshot_digest)
             except SnapshotNotFound as error:
@@ -118,16 +146,27 @@ def _canonical_rows(store: SnapshotStore, ledger: Ledger) -> tuple[list, list, l
                     "canon is incomplete and an index built now would answer as "
                     "though that version never existed"
                 ) from error
+            if (entry.snapshot_digest, entry.source_id) in seen:
+                continue
+            seen.add((entry.snapshot_digest, entry.source_id))
+            try:
+                body = snapshot.data.decode("utf-8")
+            except UnicodeDecodeError as error:
+                # Not a silent substitution. Replacing undecodable bytes with
+                # U+FFFD would index text no source ever contained, in the one
+                # module whose whole claim is that it holds nothing canon does
+                # not say.
+                raise DerivedStoreError(
+                    f"snapshot {entry.snapshot_digest} of {entry.source_id} is "
+                    "not UTF-8 text and cannot be indexed as text"
+                ) from error
             contents.append(
-                (
-                    entry.snapshot_digest,
-                    entry.source_id,
-                    len(snapshot.data),
-                    snapshot.data.decode("utf-8", errors="replace"),
-                )
+                (entry.snapshot_digest, entry.source_id, len(snapshot.data), body)
             )
 
-    contents.sort(key=lambda row: row[0])
+    # Sorted by the same pair the table is keyed on, so the insertion order is a
+    # fact about canon rather than about how the ledger happened to be walked.
+    contents.sort(key=lambda row: (row[0], row[1]))
     return [(source_id,) for source_id in sources], versions, contents
 
 
@@ -157,8 +196,8 @@ def build(store: SnapshotStore, ledger: Ledger, path: Path) -> Path:
         connection.executemany("INSERT INTO version VALUES (?,?,?,?,?,?)", versions)
         connection.executemany("INSERT INTO content VALUES (?,?,?,?)", contents)
         connection.executemany(
-            "INSERT INTO search (body, snapshot_digest) VALUES (?,?)",
-            [(row[3], row[0]) for row in contents],
+            "INSERT INTO search (body, snapshot_digest, source_id) VALUES (?,?,?)",
+            [(row[3], row[0], row[1]) for row in contents],
         )
         connection.commit()
         connection.execute("VACUUM")
@@ -189,23 +228,37 @@ def state_digest(path: Path) -> str:
 def search(path: Path, query: str, limit: int = 10) -> tuple[SearchHit, ...]:
     """Full-text search, ordered deterministically.
 
-    Ranked by relevance and then by digest, because two equally-ranked rows
-    would otherwise come back in whatever order the index walked them, and a
-    result order that varies is not reproducible evidence.
+    Ranked by relevance, then by digest and source, so equally-ranked rows have
+    one order rather than whatever order the index walked them in.
+
+    **This clause cannot be observed to matter on the current build, and that is
+    stated rather than glossed.** Rows are inserted in digest order, so the
+    index's own walk order already *is* digest order and removing the secondary
+    key changes nothing measurable. It is kept because SQLite specifies no order
+    for equal sort keys: the current behaviour is an observation about one
+    engine, not a contract, and relying on it would make result order depend on
+    something nobody agreed to.
     """
     if type(query) is not str or not query.strip():
         raise DerivedStoreError("a search needs a query")
-    connection = sqlite3.connect(Path(path))
+    if type(limit) is not int or isinstance(limit, bool) or limit < 1:
+        raise DerivedStoreError(f"limit must be a positive integer, not {limit!r}")
+    connection = _open_for_reading(path)
     try:
         rows = connection.execute(
-            "SELECT s.snapshot_digest, c.source_id,"
+            "SELECT s.snapshot_digest, s.source_id,"
             " substr(c.body, 1, 120), rank"
             " FROM search s JOIN content c ON c.snapshot_digest = s.snapshot_digest"
+            "  AND c.source_id = s.source_id"
             " WHERE search MATCH ?"
-            " ORDER BY rank, s.snapshot_digest"
+            " ORDER BY rank, s.snapshot_digest, s.source_id"
             " LIMIT ?",
             (query, limit),
         ).fetchall()
+    except sqlite3.OperationalError as error:
+        # A malformed query is this module's failure to report, not the storage
+        # engine's to leak.
+        raise DerivedStoreError(f"the query could not be run: {error}") from error
     finally:
         connection.close()
     return tuple(
@@ -215,7 +268,7 @@ def search(path: Path, query: str, limit: int = 10) -> tuple[SearchHit, ...]:
 
 def sources(path: Path) -> tuple[str, ...]:
     """Every source the store holds, sorted."""
-    connection = sqlite3.connect(Path(path))
+    connection = _open_for_reading(path)
     try:
         rows = connection.execute("SELECT source_id FROM source ORDER BY source_id").fetchall()
     finally:
@@ -226,7 +279,7 @@ def sources(path: Path) -> tuple[str, ...]:
 def versions(path: Path, source_id: str) -> tuple[str, ...]:
     """One source's snapshot digests, oldest first."""
     require_id(source_id, SOURCE_PREFIX)
-    connection = sqlite3.connect(Path(path))
+    connection = _open_for_reading(path)
     try:
         rows = connection.execute(
             "SELECT snapshot_digest FROM version WHERE source_id = ? ORDER BY sequence",
