@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from datetime import datetime, timedelta, timezone
 import inspect
 from typing import get_type_hints
@@ -17,6 +17,7 @@ from nous_os.temporal import (
     ClaimKey,
     ClaimKeyError,
     Conflict,
+    NonCanonicalAssertion,
     Overlap,
     RankingDivergence,
     TemporalError,
@@ -127,6 +128,30 @@ def test_add_uses_exact_types_and_preserves_one_identifier_one_subject() -> None
     earlier = ClaimKey("a-subject")
     index.add(earlier, _assertion(2))
     assert index.keys() == (earlier, key)
+
+
+def test_add_accepts_only_canonical_assertions() -> None:
+    key = ClaimKey("canonical-only")
+    index = TemporalIndex()
+    states = tuple(LifecycleState)
+    assert len(states) == 3
+    canonical_states = tuple(
+        state for state in states if state is LifecycleState.CANONICAL
+    )
+    assert canonical_states == (LifecycleState.CANONICAL,)
+    canonical = _assertion(3)
+    index.add(key, canonical)
+    assert index.assertions(key) == (canonical,)
+
+    non_canonical_states = tuple(
+        state for state in states if state is not LifecycleState.CANONICAL
+    )
+    assert len(non_canonical_states) == 2
+    for number, state in enumerate(non_canonical_states, start=4):
+        assertion = replace(_assertion(number), state=state)
+        with pytest.raises(NonCanonicalAssertion, match=state.name):
+            index.add(key, assertion)
+    assert index.assertions(key) == (canonical,)
 
 
 def test_partition_is_total_and_disjoint_for_every_generated_bound_and_axis_case() -> None:
@@ -317,6 +342,31 @@ def test_supersession_uses_recorded_time_only_and_keeps_every_assertion() -> Non
     assert len(index.conflicts(key)) == 1
 
 
+def test_supersession_uses_content_digest_to_break_equal_recorded_times() -> None:
+    earlier = _assertion(120, recorded_at=BASE, text="early")
+    tied = (
+        _assertion(121, recorded_at=BASE + timedelta(days=1), text="amber"),
+        _assertion(122, recorded_at=BASE + timedelta(days=1), text="basil"),
+        _assertion(123, recorded_at=BASE + timedelta(days=1), text="cedar"),
+    )
+    assert len(tied) == 3
+    assert len({assertion.recorded_at for assertion in tied}) == 1
+    digest_order = tuple(
+        assertion.id for assertion in sorted(tied, key=lambda assertion: assertion.content_digest)
+    )
+    text_order = tuple(
+        assertion.id for assertion in sorted(tied, key=lambda assertion: assertion.text)
+    )
+    assert digest_order != text_order
+    index = _index(ClaimKey("tied-history"), (tied[2], earlier, tied[0], tied[1]))
+    assert _ids(index.supersession(ClaimKey("tied-history"))) == (
+        "asr_00000000000000000000000078",
+        "asr_0000000000000000000000007A",
+        "asr_0000000000000000000000007B",
+        "asr_00000000000000000000000079",
+    )
+
+
 def test_conflicts_keep_both_distinct_cited_sides_and_report_undetermined_overlap() -> None:
     first = _assertion(80, valid_from=BASE, valid_to=BASE + timedelta(days=3))
     second = _assertion(81, valid_from=None, valid_to=BASE + timedelta(days=4))
@@ -384,17 +434,38 @@ def test_no_public_temporal_name_or_conflict_field_can_express_a_resolution() ->
     import nous_os.temporal as temporal
 
     forbidden = ("winner", "preferred", "latest", "resolve", "resolver")
+
+    def is_resolution_free(model: type[object]) -> bool:
+        return all(
+            not any(word in name.lower() for word in forbidden)
+            for name in dir(model)
+            if not name.startswith("_")
+        )
+
     public = tuple(name for name in dir(temporal) if not name.startswith("_"))
     assert len(public) > 0
     for name in public:
         assert not any(word in name.lower() for word in forbidden)
+    public_classes = tuple(
+        model
+        for _, model in inspect.getmembers(temporal, inspect.isclass)
+        if model.__module__ == temporal.__name__ and not model.__name__.startswith("_")
+    )
+    assert len(public_classes) > 0
+    assert all(is_resolution_free(model) for model in public_classes)
     conflict_fields = fields(Conflict)
     assert len(conflict_fields) == 3
-    def is_resolution_free(model: type[object]) -> bool:
+    def is_conflict_shape_safe(model: type[object]) -> bool:
         annotations = get_type_hints(model)
         return all(annotations[field.name] is not float for field in fields(model))
 
-    assert is_resolution_free(Conflict)
+    assert is_conflict_shape_safe(Conflict)
+
+    class ResolvingProbe:
+        def resolve(self) -> None:
+            pass
+
+    assert not is_resolution_free(ResolvingProbe)
 
     @dataclass
     class FloatConflict:
@@ -403,7 +474,7 @@ def test_no_public_temporal_name_or_conflict_field_can_express_a_resolution() ->
         overlap: Overlap
         resolution: float
 
-    assert not is_resolution_free(FloatConflict)
+    assert not is_conflict_shape_safe(FloatConflict)
     assert inspect.signature(Conflict).return_annotation is None
 
 

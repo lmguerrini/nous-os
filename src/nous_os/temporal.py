@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import re
 
-from nous_os.canonical import Assertion
+from nous_os.canonical import Assertion, LifecycleState
 
 
 _CLAIM_KEY = re.compile(r"[a-z0-9]+(?:[.-][a-z0-9]+)*\Z")
@@ -42,6 +42,10 @@ class TemporalTypeError(TemporalError):
 
 class AssertionIdentityConflict(TemporalError):
     """Raised when one assertion identifier is made to name different content."""
+
+
+class NonCanonicalAssertion(TemporalError):
+    """Raised when a temporal projection is given a non-canonical assertion."""
 
 
 class RankingDivergence(TemporalError):
@@ -162,6 +166,11 @@ class TemporalIndex:
         if type(assertion) is not Assertion:
             raise TemporalTypeError(
                 f"assertion must be an Assertion, not {type(assertion).__name__}"
+            )
+        if assertion.state is not LifecycleState.CANONICAL:
+            raise NonCanonicalAssertion(
+                "assertion state must be CANONICAL, not "
+                f"{assertion.state.name}"
             )
         for held_key, held in self._by_key.items():
             prior = held.get(assertion.id, _ABSENT)
