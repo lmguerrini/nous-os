@@ -32,6 +32,9 @@ REPOSITORY = Path(__file__).resolve().parent.parent
 PACKAGE = REPOSITORY / "src" / "nous_os"
 SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 RECORDED_AT = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
+_ACCOUNTED_TEST_REGISTRATION_MODULES = frozenset(
+    {"test_capability", "tests.test_capability"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +62,33 @@ class _ModuleBinding:
     module: str
 
 
+@dataclass(frozen=True, slots=True)
+class _CanonDigest:
+    """A digest together with the byte counts that produced it."""
+
+    value: str
+    snapshot_bytes: int
+    ledger_bytes: int
+
+
+def _resolve_import_from(
+    module: str,
+    is_package: bool,
+    node: ast.ImportFrom,
+) -> str | None:
+    """Resolve one import-from module against the scanned module's package."""
+    if node.level == 0:
+        return node.module
+    package_parts = module.split(".") if is_package else module.split(".")[:-1]
+    ascents = node.level - 1
+    if ascents >= len(package_parts):
+        return None
+    resolved = package_parts[: len(package_parts) - ascents]
+    if node.module is not None:
+        resolved.extend(node.module.split("."))
+    return ".".join(resolved)
+
+
 class _Scope:
     """A lexical scope whose bindings can be resolved at each use site."""
 
@@ -81,6 +111,11 @@ class _Scope:
         if self.parent is None:
             return None
         return self.parent.resolve(name)
+
+    def binds(self, name: str) -> bool:
+        if name in self.bindings:
+            return True
+        return self.parent is not None and self.parent.binds(name)
 
 
 class _FunctionLocalNames(ast.NodeVisitor):
@@ -157,8 +192,15 @@ def _function_local_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[s
 class _BindingUseScanner:
     """Find actual uses of governed function bindings in one parsed module."""
 
-    def __init__(self, module: str, governed: frozenset[_FunctionBinding]) -> None:
+    def __init__(
+        self,
+        module: str,
+        governed: frozenset[_FunctionBinding],
+        *,
+        is_package: bool = False,
+    ) -> None:
         self._module = module
+        self._is_package = is_package
         self._governed = governed
         self._governed_by_name = {(item.module, item.qualname): item for item in governed}
         module_names = {item.module for item in governed}
@@ -180,6 +222,22 @@ class _BindingUseScanner:
     ) -> _FunctionBinding | _ModuleBinding | None:
         if isinstance(node, ast.Name):
             return scope.resolve(node.id)
+        if isinstance(node, ast.Call):
+            if (
+                not isinstance(node.func, ast.Name)
+                or node.func.id != "getattr"
+                or scope.binds("getattr")
+                or len(node.args) < 2
+            ):
+                return None
+            attribute = node.args[1]
+            if not isinstance(attribute, ast.Constant) or type(attribute.value) is not str:
+                # A computed attribute name is not statically resolvable, so do not guess.
+                return None
+            base = self._binding_for_expression(node.args[0], scope)
+            if not isinstance(base, _ModuleBinding):
+                return None
+            return self._import_binding(base.module, attribute.value)
         if not isinstance(node, ast.Attribute):
             return None
         base = self._binding_for_expression(node.value, scope)
@@ -279,11 +337,23 @@ class _BindingUseScanner:
                 )
             return
         if isinstance(node, ast.ImportFrom):
-            if node.module is None or node.level:
-                return
+            module = _resolve_import_from(self._module, self._is_package, node)
             for alias in node.names:
                 if alias.name != "*":
-                    scope.bind(alias.asname or alias.name, self._import_binding(node.module, alias.name))
+                    binding = (
+                        self._import_binding(module, alias.name)
+                        if module is not None
+                        else None
+                    )
+                    scope.bind(alias.asname or alias.name, binding)
+            return
+        if isinstance(node, ast.Call):
+            if isinstance(
+                self._binding_for_expression(node.func, scope), _FunctionBinding
+            ):
+                self.used = True
+            for child in ast.iter_child_nodes(node):
+                self._visit(child, scope)
             return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             self._visit_function(node, scope)
@@ -369,10 +439,17 @@ def _project_operations() -> tuple[_Operation, ...]:
     registry = authority._REGISTRY
     assert registry, "the operation registry is empty; no boundary can be scanned"
     found = []
+    excluded: list[str] = []
     for name, entry in registry.items():
         tier, implementation = entry
         module = getattr(implementation, "__module__", None)
-        if type(module) is not str or not module.startswith("nous_os"):
+        if type(module) is not str or not (
+            module == "nous_os" or module.startswith("nous_os.")
+        ):
+            if module in _ACCOUNTED_TEST_REGISTRATION_MODULES:
+                # These permanent registrations are exercised by their defining tests.
+                continue
+            excluded.append(name)
             continue
         source = _source_for_module(module)
         assert source is not None and source.is_file(), (
@@ -383,6 +460,10 @@ def _project_operations() -> tuple[_Operation, ...]:
             f"registered implementation {name!r} has no qualified name"
         )
         found.append(_Operation(name, tier, module, qualname))
+    assert not excluded, (
+        "registered entries excluded from package operation enumeration: "
+        f"{sorted(excluded)!r}"
+    )
     assert found, "the registry contains no implementation defined in the package"
     return tuple(sorted(found, key=lambda operation: operation.name))
 
@@ -407,18 +488,22 @@ def _parsed_package_sources() -> dict[Path, ast.Module]:
     return parsed
 
 
-def _canon_digest(root: Path, ledger: Ledger) -> str:
+def _canon_digest(root: Path, ledger: Ledger) -> _CanonDigest:
     """Hash all snapshot bytes and the ledger bytes, in deterministic order."""
     digest = hashlib.sha256()
     snapshots = root / "snapshots"
+    snapshot_bytes = 0
     for path in sorted(path for path in snapshots.rglob("*") if path.is_file()):
+        payload = path.read_bytes()
+        snapshot_bytes += len(payload)
         digest.update(path.relative_to(root).as_posix().encode("utf-8"))
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(payload)
         digest.update(b"\0")
+    ledger_payload = ledger.path.read_bytes() if ledger.path.is_file() else b""
     digest.update(b"ledger\0")
-    digest.update(ledger.path.read_bytes() if ledger.path.is_file() else b"")
-    return digest.hexdigest()
+    digest.update(ledger_payload)
+    return _CanonDigest(digest.hexdigest(), snapshot_bytes, len(ledger_payload))
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,6 +587,8 @@ def _promote_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
 
 def _authority_offences(path: Path, tree: ast.Module) -> list[str]:
     """Find authority use by binding, not unrelated methods named execute."""
+    module_name = _module_name(path)
+    is_package = path.name == "__init__.py"
     imported_modules: dict[str, str] = {}
     authority_functions: dict[str, str] = {}
     offences: list[str] = []
@@ -514,12 +601,13 @@ def _authority_offences(path: Path, tree: ast.Module) -> list[str]:
                     )
                     offences.append(f"{path.name} imports the authority module")
         if isinstance(node, ast.ImportFrom):
-            if node.module == "nous_os.capability":
+            imported_from = _resolve_import_from(module_name, is_package, node)
+            if imported_from == "nous_os.capability":
                 offences.append(f"{path.name} imports the authority module")
                 for alias in node.names:
                     if alias.name in {"Grant", "execute"}:
                         authority_functions[alias.asname or alias.name] = alias.name
-            if node.module == "nous_os":
+            if imported_from == "nous_os":
                 for alias in node.names:
                     if alias.name == "capability":
                         imported_modules[alias.asname or alias.name] = "nous_os.capability"
@@ -577,7 +665,11 @@ def test_governed_implementation_bindings_are_limited_to_the_pinned_modules() ->
     holding = {
         path.relative_to(PACKAGE).as_posix()
         for path, tree in parsed.items()
-        if _BindingUseScanner(_module_name(path), governed).scans(tree)
+        if _BindingUseScanner(
+            _module_name(path),
+            governed,
+            is_package=path.name == "__init__.py",
+        ).scans(tree)
     }
     expected = {
         "operations.py",  # Registration site: it alone imports implementations to register them.
@@ -589,6 +681,89 @@ def test_governed_implementation_bindings_are_limited_to_the_pinned_modules() ->
         "governed implementation bindings changed: "
         f"unexpected={sorted(holding - expected)}, missing={sorted(expected - holding)}"
     )
+
+
+def test_relative_imports_and_literal_getattr_reveal_governed_uses() -> None:
+    """Relative or literal-indirect binding syntax cannot hide a governed use."""
+    governed = _governed_implementations()
+    sources = (
+        (
+            "nous_os.synthetic",
+            "from .derived import search\nsearch(path=None, query='alpha')\n",
+        ),
+        (
+            "nous_os.synthetic",
+            "from . import derived\nderived.search(path=None, query='alpha')\n",
+        ),
+        (
+            "nous_os.nested.synthetic",
+            "from ..derived import search\nsearch(path=None, query='alpha')\n",
+        ),
+        (
+            "nous_os.synthetic",
+            "import nous_os.derived as derived\n"
+            "getattr(derived, 'search')(path=None, query='alpha')\n",
+        ),
+    )
+    assert all(
+        _BindingUseScanner(module, governed).scans(ast.parse(source))
+        for module, source in sources
+    )
+
+
+def test_colliding_names_and_unrelated_attributes_are_not_governed_uses() -> None:
+    """Local collisions, regular-expression methods, and dynamic names stay clear."""
+    governed = _governed_implementations()
+    sources = (
+        "def use(search):\n    return search('alpha')\n",
+        "import re\ncompiled = re.compile('alpha')\ncompiled.search('alpha')\n",
+        "import nous_os.derived as derived\n"
+        "name = 'search'\ngetattr(derived, name)(path=None, query='alpha')\n",
+        "import nous_os.derived as derived\n"
+        "def getattr(module, name):\n    return lambda **kwargs: None\n"
+        "getattr(derived, 'search')(path=None, query='alpha')\n",
+    )
+    assert not any(
+        _BindingUseScanner("nous_os.synthetic", governed).scans(ast.parse(source))
+        for source in sources
+    )
+
+
+def test_relative_authority_imports_reveal_imports_and_calls() -> None:
+    """Relative direct and package imports cannot hide self-authorization."""
+    sources = (
+        "from .capability import Grant, execute\n"
+        "execute(Grant('reader', frozenset()), 'search')\n",
+        "from . import capability as authority\n"
+        "authority.execute(authority.Grant('reader', frozenset()), 'search')\n",
+    )
+    for source in sources:
+        offences = _authority_offences(PACKAGE / "synthetic.py", ast.parse(source))
+        assert any("imports the authority module" in offence for offence in offences)
+        assert any("calls execute" in offence for offence in offences)
+        assert any("calls Grant" in offence for offence in offences)
+
+
+def test_local_authority_names_and_unrelated_calls_are_not_offences() -> None:
+    """Unimported local collisions and unrelated methods do not create offences."""
+    source = (
+        "class Grant:\n    pass\n"
+        "def execute(value):\n    return value\n"
+        "class Worker:\n"
+        "    def execute(self, value):\n        return value\n"
+        "execute(Grant())\nWorker().execute(Grant())\n"
+    )
+    assert _authority_offences(PACKAGE / "synthetic.py", ast.parse(source)) == []
+
+
+def test_project_operation_enumeration_rejects_an_external_implementation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A foreign registry entry cannot disappear before the pinned map is checked."""
+    monkeypatch.setattr(authority, "_REGISTRY", dict(authority._REGISTRY))
+    authority.register("review_unchecked_unlink", Tier.READ, Path.unlink)
+    with pytest.raises(AssertionError, match="review_unchecked_unlink"):
+        _project_operations()
 
 
 def test_governed_defining_modules_cannot_issue_or_use_their_own_authority() -> None:
@@ -609,6 +784,39 @@ def test_governed_defining_modules_cannot_issue_or_use_their_own_authority() -> 
         tree = parsed[path]
         offences.extend(_authority_offences(path, tree))
     assert not offences, "defining modules may not self-authorize:\n" + "\n".join(offences)
+
+
+def test_the_canon_digest_is_stable_and_sensitive_to_every_input(
+    tmp_path: Path,
+) -> None:
+    """An empty, constant, or random digest instrument cannot support canon checks."""
+    canon = _temporary_canon(tmp_path)
+    first = _canon_digest(canon.root, canon.ledger)
+    unchanged = _canon_digest(canon.root, canon.ledger)
+    assert first.snapshot_bytes > 0
+    assert first.ledger_bytes > 0
+    assert unchanged == first
+
+    snapshot_files = tuple(
+        sorted(
+            path
+            for path in (canon.root / "snapshots").rglob("*")
+            if path.is_file()
+        )
+    )
+    assert snapshot_files
+    snapshot_payload = snapshot_files[0].read_bytes()
+    assert snapshot_payload
+    snapshot_files[0].write_bytes(
+        bytes((snapshot_payload[0] ^ 1,)) + snapshot_payload[1:]
+    )
+    snapshot_changed = _canon_digest(canon.root, canon.ledger)
+    assert snapshot_changed != first
+
+    ledger_payload = canon.ledger.path.read_bytes()
+    canon.ledger.path.write_bytes(ledger_payload + b" ")
+    ledger_changed = _canon_digest(canon.root, canon.ledger)
+    assert ledger_changed != snapshot_changed
 
 
 def test_every_read_operation_executes_without_changing_canon(tmp_path: Path) -> None:

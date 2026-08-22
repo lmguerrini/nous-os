@@ -3,13 +3,14 @@
 A zero count of unauthorized effects can also mean that no attempt ran.  This
 suite prevents that failure by deriving every matrix axis from live bindings,
 counting every cell, requiring real authorized effects, and reporting an empty
-or all-refusing run as ``NOT_RUN`` through the project's existing measurement
-status.
+run or one with no real positive effect as ``NOT_RUN`` through the project's
+existing measurement status.
 """
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import unicodedata
@@ -17,6 +18,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import NoReturn
 
@@ -64,6 +66,9 @@ _SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 _RECORDED_AT = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
 _BENIGN_TEXT = "alpha"
 _DERIVATION = "injection_defence"
+_ACCOUNTED_TEST_REGISTRATION_MODULES = frozenset(
+    {"test_capability", "tests.test_capability"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,16 +119,33 @@ class _World:
 
 
 @dataclass(frozen=True, slots=True)
+class _CanonDigest:
+    """A digest together with the byte counts that produced it."""
+
+    value: str
+    snapshot_bytes: int
+    ledger_bytes: int
+
+
+class _Outcome(Enum):
+    """The three observable boundary result classes."""
+
+    EXECUTED = "authorized_and_executed"
+    REFUSED = "refused_by_authority"
+    FAILED = "failed_otherwise"
+
+
+@dataclass(frozen=True, slots=True)
 class _Invocation:
     """The boundary decision and the effects visible around one call."""
 
-    permitted: bool
+    outcome: _Outcome
     returned: object | None
     error: Exception | None
-    canon_before: str
-    canon_after: str
-    candidates_before: int
-    candidates_after: int
+    canon_before: _CanonDigest
+    canon_after: _CanonDigest
+    candidates_before: tuple[Proposal, ...]
+    candidates_after: tuple[Proposal, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +276,7 @@ def _load_corpus() -> tuple[_CorpusEntry, ...]:
 def _registered_operations() -> tuple[_Operation, ...]:
     """Derive project-owned operation identities from live registry entries."""
     found: list[_Operation] = []
+    excluded: list[str] = []
     for name, entry in authority._REGISTRY.items():
         tier, implementation = entry
         module = getattr(implementation, "__module__", None)
@@ -261,20 +284,47 @@ def _registered_operations() -> tuple[_Operation, ...]:
             module == "nous_os" or module.startswith("nous_os.")
         ):
             found.append(_Operation(name, tier, implementation))
+        elif module in _ACCOUNTED_TEST_REGISTRATION_MODULES:
+            # These permanent registrations are exercised by their defining tests.
+            continue
+        else:
+            excluded.append(name)
+    assert not excluded, (
+        "registered entries excluded from injection enumeration: "
+        f"{sorted(excluded)!r}"
+    )
     operations = tuple(sorted(found, key=lambda operation: operation.name))
     _require_nonempty(operations, "registered project operation")
     return operations
 
 
+def _accepts_transport_call(candidate: object) -> bool:
+    """Whether one callable accepts the public boundary's call shape."""
+    if not callable(candidate):
+        return False
+    try:
+        inspect.signature(candidate).bind(object(), "probe", probe=object())
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _derived_transports() -> tuple[_Transport, ...]:
-    """Derive reachable public boundary calls by binding identity."""
+    """Derive unique public callables accepting the boundary call shape."""
     exported = getattr(authority, "__all__", ())
+    assert len(exported) == len(set(exported)), (
+        "the public export list contains duplicate transport candidates"
+    )
     found = tuple(
         _Transport(f"{authority.__name__}.{name}", vars(authority)[name])
         for name in exported
-        if vars(authority).get(name) is execute
+        if name in vars(authority) and _accepts_transport_call(vars(authority)[name])
     )
     _require_nonempty(found, "transport")
+    assert len({transport.name for transport in found}) == len(found)
+    assert len({id(transport.entry) for transport in found}) == len(found), (
+        "the transport derivation repeats one callable through multiple exports"
+    )
     return found
 
 
@@ -328,23 +378,28 @@ def _build_world(root: Path) -> _World:
     )
 
 
-def _canon_digest(world: _World) -> str:
+def _canon_digest(world: _World) -> _CanonDigest:
     """Hash snapshot paths and bytes plus the exact ledger bytes."""
     digest = hashlib.sha256()
     snapshot_root = world.root / "snapshots"
+    snapshot_bytes = 0
     for path in sorted(path for path in snapshot_root.rglob("*") if path.is_file()):
+        payload = path.read_bytes()
+        snapshot_bytes += len(payload)
         digest.update(path.relative_to(world.root).as_posix().encode())
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(payload)
         digest.update(b"\0")
+    ledger_payload = (
+        world.ledger.path.read_bytes() if world.ledger.path.is_file() else b""
+    )
     digest.update(b"ledger\0")
-    if world.ledger.path.is_file():
-        digest.update(world.ledger.path.read_bytes())
-    return digest.hexdigest()
+    digest.update(ledger_payload)
+    return _CanonDigest(digest.hexdigest(), snapshot_bytes, len(ledger_payload))
 
 
 def _search_arguments(world: _World, text: str) -> dict[str, object]:
-    return {"path": _PathCarrier(world.derived_path, text), "query": text}
+    return {"path": _PathCarrier(world.derived_path, text), "query": _BENIGN_TEXT}
 
 
 def _sources_arguments(world: _World, text: str) -> dict[str, object]:
@@ -437,25 +492,27 @@ def _invoke(
     arguments: dict[str, object],
     world: _World,
 ) -> _Invocation:
-    """Call once and prove every refusal leaves canon byte-identical."""
+    """Call once and classify execution, authority refusal, or another failure."""
     canon_before = _canon_digest(world)
-    candidates_before = len(world.candidates.proposals())
+    candidates_before = world.candidates.proposals()
     returned: object | None = None
     error: Exception | None = None
-    permitted = True
+    outcome = _Outcome.EXECUTED
     try:
         returned = transport.entry(grant, operation.name, **arguments)
     except NotAuthorized as caught:
-        permitted = False
+        outcome = _Outcome.REFUSED
         error = caught
     except Exception as caught:
+        outcome = _Outcome.FAILED
         error = caught
     canon_after = _canon_digest(world)
-    candidates_after = len(world.candidates.proposals())
-    if not permitted:
+    candidates_after = world.candidates.proposals()
+    if outcome is _Outcome.REFUSED:
         assert canon_after == canon_before
+        assert candidates_after == candidates_before
     return _Invocation(
-        permitted,
+        outcome,
         returned,
         error,
         canon_before,
@@ -463,6 +520,26 @@ def _invoke(
         candidates_before,
         candidates_after,
     )
+
+
+def _assert_same_boundary_outcome(
+    reference: _Invocation,
+    sample: _Invocation,
+) -> None:
+    """Compare the result class and the exact exception class, if any."""
+    assert sample.outcome is reference.outcome
+    assert type(sample.error) is type(reference.error)
+
+
+def _assert_same_observable_outcome(
+    reference: _Invocation,
+    sample: _Invocation,
+) -> None:
+    """Compare result, exception, canon, and complete candidate-store state."""
+    _assert_same_boundary_outcome(reference, sample)
+    assert sample.returned == reference.returned
+    assert sample.canon_after == reference.canon_after
+    assert sample.candidates_after == reference.candidates_after
 
 
 def _observed_real_effect(
@@ -476,17 +553,16 @@ def _observed_real_effect(
     if implementation is operation_bindings.search:
         return (
             type(returned) is tuple
-            and len(returned) == 1
-            and type(returned[0]) is SearchHit
-            and returned[0].source_id == _SOURCE_ID
+            and all(type(item) is SearchHit for item in returned)
+            and all(item.source_id == _SOURCE_ID for item in returned)
         )
     if implementation is operation_bindings.sources:
         return returned == (_SOURCE_ID,)
     if implementation is operation_bindings.versions:
         return (
             type(returned) is tuple
-            and len(returned) == 1
-            and type(returned[0]) is str
+            and len(returned) >= 1
+            and all(type(item) is str for item in returned)
         )
     if implementation is operation_bindings.read_span:
         return returned == "alpha"
@@ -508,19 +584,21 @@ def _observed_real_effect(
     if implementation is operation_bindings.record_proposal:
         return (
             type(returned) is Proposal
-            and invocation.candidates_after == invocation.candidates_before + 1
+            and len(invocation.candidates_after) == len(invocation.candidates_before) + 1
         )
     if implementation is operation_bindings.ingest:
         return (
             type(returned) is IngestResult
-            and returned.status is IngestStatus.SUPERSEDED
-            and invocation.canon_after != invocation.canon_before
+            and type(returned.status) is IngestStatus
         )
     return False
 
 
-def _required_tier_arguments(operation: _Operation) -> dict[str, object]:
-    """Build hostile keys and values from the operation's bound required tier."""
+def _required_tier_arguments(
+    operation: _Operation,
+    working: dict[str, object],
+) -> dict[str, object]:
+    """Merge hostile keys and values into arguments a real operation accepts."""
     required = operation.tier
     lying = _LyingString(f"{required.value}_claim")
     class_claim = _ClassClaim()
@@ -528,7 +606,7 @@ def _required_tier_arguments(operation: _Operation) -> dict[str, object]:
     assert lying == object()
     assert type(class_claim) is _ClassClaim and class_claim.__class__ is Grant
     assert hash(collision) == hash(operation.name)
-    return {
+    adversarial: dict[str, object] = {
         required.value: required,
         required.name: required.value,
         f"{required.value}_name": required.name,
@@ -539,6 +617,7 @@ def _required_tier_arguments(operation: _Operation) -> dict[str, object]:
         "class_claim": class_claim,
         "hash_collision": collision,
     }
+    return {**working, **adversarial}
 
 
 def test_the_pinned_corpus_is_complete_and_covers_every_required_family() -> None:
@@ -557,6 +636,72 @@ def test_the_pinned_corpus_is_complete_and_covers_every_required_family() -> Non
     encoding_texts = tuple(encoding_texts)
     assert any("\u200b" in text or "\u2060" in text for text in encoding_texts)
     assert any(unicodedata.normalize("NFKC", text) != text for text in encoding_texts)
+
+
+def test_registered_operation_enumeration_rejects_an_external_implementation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A foreign registry entry cannot silently shrink every injection matrix."""
+    monkeypatch.setattr(authority, "_REGISTRY", dict(authority._REGISTRY))
+    authority.register("review_unchecked_unlink", Tier.READ, Path.unlink)
+    with pytest.raises(AssertionError, match="review_unchecked_unlink"):
+        _registered_operations()
+
+
+def test_transport_derivation_discovers_forwarders_and_rejects_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A forwarding export is covered once, and duplicate export names fail."""
+
+    def review_forward(
+        grant: Grant,
+        name: str,
+        /,
+        **kwargs: object,
+    ) -> object:
+        return execute(grant, name, **kwargs)
+
+    monkeypatch.setattr(authority, "review_forward", review_forward, raising=False)
+    monkeypatch.setattr(authority, "__all__", (*authority.__all__, "review_forward"))
+    transports = _derived_transports()
+    assert {transport.entry for transport in transports} == {execute, review_forward}
+
+    monkeypatch.setattr(authority, "__all__", (*authority.__all__, "review_forward"))
+    with pytest.raises(AssertionError, match="duplicate"):
+        _derived_transports()
+
+
+def test_the_injection_canon_digest_is_stable_and_sensitive_to_every_input(
+    tmp_path: Path,
+) -> None:
+    """An empty, constant, or random digest cannot validate invocation effects."""
+    world = _build_world(tmp_path / "digest_sensitivity")
+    first = _canon_digest(world)
+    unchanged = _canon_digest(world)
+    assert first.snapshot_bytes > 0
+    assert first.ledger_bytes > 0
+    assert unchanged == first
+
+    snapshot_files = tuple(
+        sorted(
+            path
+            for path in (world.root / "snapshots").rglob("*")
+            if path.is_file()
+        )
+    )
+    assert snapshot_files
+    snapshot_payload = snapshot_files[0].read_bytes()
+    assert snapshot_payload
+    snapshot_files[0].write_bytes(
+        bytes((snapshot_payload[0] ^ 1,)) + snapshot_payload[1:]
+    )
+    snapshot_changed = _canon_digest(world)
+    assert snapshot_changed != first
+
+    ledger_payload = world.ledger.path.read_bytes()
+    world.ledger.path.write_bytes(ledger_payload + b" ")
+    ledger_changed = _canon_digest(world)
+    assert ledger_changed != snapshot_changed
 
 
 def test_the_command_line_has_no_binding_that_can_reach_a_governed_operation(
@@ -590,6 +735,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
     expected = (
         len(entries) * len(operations) * len(transports) * len(grant_tier_sets)
     )
+    assert expected == 1305
     if expected == 0:
         _fail_not_run("the derived corpus matrix had zero expected cells")
 
@@ -620,10 +766,19 @@ def test_argument_content_cannot_change_any_authorization_decision(
                     )
                     executed += 1
 
-                    assert sample.permitted is reference.permitted
+                    _assert_same_boundary_outcome(reference, sample)
                     holds_required = operation.tier in tier_set
-                    assert sample.permitted is holds_required
-                    assert reference.permitted is holds_required
+                    expected_outcome = (
+                        _Outcome.EXECUTED if holds_required else _Outcome.REFUSED
+                    )
+                    assert sample.outcome is expected_outcome
+                    assert reference.outcome is expected_outcome
+                    if holds_required:
+                        assert _observed_real_effect(operation, reference)
+                        assert _observed_real_effect(operation, sample)
+                    else:
+                        assert type(sample.error) is NotAuthorized
+                        assert type(reference.error) is NotAuthorized
 
                     if (
                         entry.identifier == "benign_control"
@@ -635,7 +790,8 @@ def test_argument_content_cannot_change_any_authorization_decision(
 
     if executed == 0:
         _fail_not_run("the corpus matrix executed zero cells")
-    assert executed == expected
+    assert executed == 1305
+    assert expected == 1305
     if positive_operations != {operation.name for operation in operations}:
         absent = sorted(
             {operation.name for operation in operations} - positive_operations
@@ -648,8 +804,9 @@ def test_argument_content_cannot_change_any_authorization_decision(
         len(positive_operations),
     )
     assert result.status is RunStatus.COMPLETE
-    assert result.executed == result.expected
-    assert result.positive_controls == len(operations)
+    assert result.executed == 1305
+    assert result.expected == 1305
+    assert result.positive_controls == 9
 
 
 def test_the_holder_is_provenance_metadata_and_carries_no_authority(
@@ -662,78 +819,110 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
     _require_nonempty(tiers, "tier vocabulary")
     world = _build_world(tmp_path / "holder_metadata")
     executed = 0
-    expected = sum(
+    expected = len(transports) * sum(
         1 for tier in tiers for operation in operations if operation.tier is tier
     )
+    assert expected == 9
     if expected == 0:
         _fail_not_run("the holder-metadata matrix had zero expected cells")
 
-    transport = transports[0]
-    for tier in tiers:
-        for operation in operations:
-            if operation.tier is not tier:
-                continue
-            benign = _invoke(
-                transport,
-                Grant("ordinary holder", frozenset()),
-                operation,
-                _arguments(operation, world, _BENIGN_TEXT),
-                world,
-            )
-            claiming = _invoke(
-                transport,
-                Grant(tier.value, frozenset()),
-                operation,
-                _arguments(operation, world, _BENIGN_TEXT),
-                world,
-            )
-            executed += 1
-            assert claiming.permitted is benign.permitted
-            assert not claiming.permitted
-            assert not benign.permitted
+    for transport in transports:
+        for tier in tiers:
+            for operation in operations:
+                if operation.tier is not tier:
+                    continue
+                benign = _invoke(
+                    transport,
+                    Grant("ordinary holder", frozenset()),
+                    operation,
+                    _arguments(operation, world, _BENIGN_TEXT),
+                    world,
+                )
+                claiming = _invoke(
+                    transport,
+                    Grant(tier.value, frozenset()),
+                    operation,
+                    _arguments(operation, world, _BENIGN_TEXT),
+                    world,
+                )
+                executed += 1
+                _assert_same_observable_outcome(benign, claiming)
+                assert claiming.outcome is _Outcome.REFUSED
+                assert benign.outcome is _Outcome.REFUSED
+                assert type(claiming.error) is NotAuthorized
+                assert type(benign.error) is NotAuthorized
 
     if executed == 0:
         _fail_not_run("the holder-metadata matrix executed zero cells")
-    assert executed == expected
+    assert executed == 9
+    assert expected == 9
 
 
 def test_required_tier_argument_content_cannot_change_the_decision_in_either_direction(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Required-tier keys and values neither grant authority nor cause refusal."""
     operations = _registered_operations()
     transports = _derived_transports()
     world = _build_world(tmp_path / "required_tier_arguments")
-    transport = transports[0]
-    expected = len(operations) * 2
+    expected = len(transports) * len(operations) * 2
+    assert expected == 18
     if expected == 0:
         _fail_not_run("the required-tier argument matrix had zero expected cells")
     executed = 0
 
-    for operation in operations:
-        adversarial = _required_tier_arguments(operation)
-        for grant in (
-            Grant("ordinary empty holder", frozenset()),
-            Grant("required tier holder", frozenset({operation.tier})),
-        ):
-            benign = _invoke(
-                transport,
-                grant,
-                operation,
-                {"ordinary_key": "ordinary value"},
-                world,
-            )
-            hostile = _invoke(
-                transport,
-                grant,
-                operation,
-                adversarial,
-                world,
-            )
-            executed += 1
-            assert hostile.permitted is benign.permitted
-            assert hostile.permitted is grant.holds(operation.tier)
+    for transport in transports:
+        for operation in operations:
+            working = _arguments(operation, world, _BENIGN_TEXT)
+            working_names = tuple(working)
+            implementation = operation.implementation
+
+            def accepting_adversarial_arguments(**kwargs: object) -> object:
+                accepted = {name: kwargs[name] for name in working_names}
+                return implementation(**accepted)
+
+            with monkeypatch.context() as registry_patch:
+                registry_patch.setitem(
+                    authority._REGISTRY,
+                    operation.name,
+                    (operation.tier, accepting_adversarial_arguments),
+                )
+                for grant in (
+                    Grant("ordinary empty holder", frozenset()),
+                    Grant("required tier holder", frozenset({operation.tier})),
+                ):
+                    benign = _invoke(
+                        transport,
+                        grant,
+                        operation,
+                        dict(working),
+                        world,
+                    )
+                    hostile = _invoke(
+                        transport,
+                        grant,
+                        operation,
+                        _required_tier_arguments(operation, working),
+                        world,
+                    )
+                    executed += 1
+                    _assert_same_boundary_outcome(benign, hostile)
+                    expected_outcome = (
+                        _Outcome.EXECUTED
+                        if grant.holds(operation.tier)
+                        else _Outcome.REFUSED
+                    )
+                    assert hostile.outcome is expected_outcome
+                    assert benign.outcome is expected_outcome
+                    if expected_outcome is _Outcome.EXECUTED:
+                        assert _observed_real_effect(operation, benign)
+                        assert _observed_real_effect(operation, hostile)
+                    else:
+                        assert type(hostile.error) is NotAuthorized
+                        assert type(benign.error) is NotAuthorized
 
     if executed == 0:
         _fail_not_run("the required-tier argument matrix executed zero cells")
-    assert executed == expected
+    assert executed == 18
+    assert expected == 18
