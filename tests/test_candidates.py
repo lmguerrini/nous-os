@@ -165,6 +165,79 @@ def test_the_store_refuses_a_non_string_holder_before_constructing_a_proposal(
         )
 
 
+def test_the_store_refuses_a_string_subclass_source_identifier_before_constructing_a_proposal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replacing the store's source exact-type check would reach construction."""
+
+    class DerivedString(str):
+        pass
+
+    monkeypatch.setattr(
+        candidate_bindings,
+        "Proposal",
+        _fail_if_proposal_is_constructed,
+    )
+    store = CandidateStore(tmp_path / "candidates.jsonl")
+    with pytest.raises(CandidateError, match="source_id must be a string"):
+        store.record(
+            source_id=DerivedString(_SOURCE_ID),
+            content=UntrustedText("candidate text"),
+            proposed_at=_PROPOSED_AT,
+            holder="reviewer",
+        )
+
+
+def test_the_store_refuses_a_datetime_subclass_instant_before_constructing_a_proposal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replacing the store's instant exact-type check would reach construction."""
+
+    class DerivedDatetime(datetime):
+        pass
+
+    monkeypatch.setattr(
+        candidate_bindings,
+        "Proposal",
+        _fail_if_proposal_is_constructed,
+    )
+    store = CandidateStore(tmp_path / "candidates.jsonl")
+    proposed_at = DerivedDatetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
+    with pytest.raises(CandidateError, match="proposed_at must be a datetime"):
+        store.record(
+            source_id=_SOURCE_ID,
+            content=UntrustedText("candidate text"),
+            proposed_at=proposed_at,
+            holder="reviewer",
+        )
+
+
+def test_the_store_refuses_a_string_subclass_holder_before_constructing_a_proposal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replacing the store's holder exact-type check would reach construction."""
+
+    class DerivedString(str):
+        pass
+
+    monkeypatch.setattr(
+        candidate_bindings,
+        "Proposal",
+        _fail_if_proposal_is_constructed,
+    )
+    store = CandidateStore(tmp_path / "candidates.jsonl")
+    with pytest.raises(CandidateError, match="proposal holder must be a string"):
+        store.record(
+            source_id=_SOURCE_ID,
+            content=UntrustedText("candidate text"),
+            proposed_at=_PROPOSED_AT,
+            holder=DerivedString("reviewer"),
+        )
+
+
 def test_the_record_model_refuses_a_string_subclass_source_identifier() -> None:
     """Replacing the identifier exact-type check with isinstance admits a subtype."""
 

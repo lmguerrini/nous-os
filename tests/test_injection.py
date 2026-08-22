@@ -409,10 +409,11 @@ def _canon_digest(world: _World) -> _CanonDigest:
 
 def _search_arguments(world: _World, text: str) -> dict[str, object]:
     # Raw corpus punctuation is often full-text query syntax and can be invalid.
-    # Quote hostile text as one literal expression so search executes; the path
-    # carrier separately preserves the original fixture text exactly.
+    # Quote hostile text as one literal expression and join the seeded control
+    # term so every authorized query has an observable, non-empty search effect.
+    # The path carrier separately preserves the original fixture text exactly.
     escaped = text.replace('"', '""')
-    query = text if text == _BENIGN_TEXT else f'"{escaped}"'
+    query = text if text == _BENIGN_TEXT else f'{_BENIGN_TEXT} OR "{escaped}"'
     return {"path": _PathCarrier(world.derived_path, text), "query": query}
 
 
@@ -596,6 +597,57 @@ def _assert_same_observable_outcome(
     assert sample.candidates_after == reference.candidates_after
 
 
+def _nonempty_items_satisfy(
+    values: object,
+    condition: Callable[[object], bool],
+    *,
+    expected_count: int | None = None,
+) -> bool:
+    """Require an exact, non-empty tuple whose every item meets one condition."""
+    if type(values) is not tuple or not values:
+        return False
+    if expected_count is not None and len(values) != expected_count:
+        return False
+    return all(condition(value) for value in values)
+
+
+def _matches_seeded_proposal(value: object) -> bool:
+    """Whether one exact proposal is the complete seeded proposal."""
+    return (
+        type(value) is Proposal
+        and value.source_id == _SOURCE_ID
+        and value.content == UntrustedText(_SEEDED_PROPOSAL_CONTENT)
+        and value.proposed_at == _RECORDED_AT
+        and value.holder == _SEEDED_PROPOSAL_HOLDER
+    )
+
+
+def _matches_recorded_proposal(
+    value: object,
+    invocation: _Invocation,
+    text: str,
+) -> bool:
+    """Whether one exact proposal is the complete append made by this call."""
+    return (
+        type(value) is Proposal
+        and invocation.candidates_after
+        == invocation.candidates_before + (value,)
+        and value.source_id == _SOURCE_ID
+        and value.content == UntrustedText(text)
+        and value.proposed_at == _RECORDED_AT
+        and value.holder == "matrix holder"
+    )
+
+
+def _matches_effectful_ingest(value: object, invocation: _Invocation) -> bool:
+    """Whether one exact ingest result superseded canon and changed its bytes."""
+    return (
+        type(value) is IngestResult
+        and value.status is IngestStatus.SUPERSEDED
+        and invocation.canon_after != invocation.canon_before
+    )
+
+
 def _observed_real_effect(
     operation: _Operation,
     invocation: _Invocation,
@@ -607,52 +659,112 @@ def _observed_real_effect(
     implementation = operation.implementation
     returned = invocation.returned
     if implementation is operation_bindings.search:
-        if text == _BENIGN_TEXT:
-            return returned == (
-                SearchHit(_SEEDED_DIGEST, _SOURCE_ID, _SEEDED_CONTENT),
-            )
-        # Corpus text is the functional query, so it legitimately changes the
-        # result. Execution still has a well-formed result and raises no error.
-        return type(returned) is tuple and all(
-            type(hit) is SearchHit for hit in returned
+        expected_hit = SearchHit(_SEEDED_DIGEST, _SOURCE_ID, _SEEDED_CONTENT)
+        items = returned
+        expected_count = 1
+        condition = lambda value: (
+            type(value) is SearchHit and value == expected_hit
         )
+    elif implementation is operation_bindings.sources:
+        items = returned
+        expected_count = 1
+        condition = lambda value: type(value) is str and value == _SOURCE_ID
+    elif implementation is operation_bindings.versions:
+        items = returned
+        expected_count = 1
+        condition = lambda value: type(value) is str and value == _SEEDED_DIGEST
+    elif implementation is operation_bindings.read_span:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: type(value) is str and value == "alpha"
+    elif implementation is operation_bindings.list_documents:
+        items = returned
+        expected_count = 1
+        condition = lambda value: type(value) is str and value == "source.md"
+    elif implementation is operation_bindings.describe_corpus:
+        items = returned
+        expected_count = 1
+        condition = lambda value: (
+            type(value) is tuple
+            and len(value) == 2
+            and type(value[0]) is str
+            and value[0] == "source.md"
+            and type(value[1]) is str
+            and value[1] == _SEEDED_DIGEST
+        )
+    elif implementation is operation_bindings.proposals:
+        items = returned
+        expected_count = 1
+        condition = _matches_seeded_proposal
+    elif implementation is operation_bindings.record_proposal:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: _matches_recorded_proposal(
+            value,
+            invocation,
+            text,
+        )
+    elif implementation is operation_bindings.ingest:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: _matches_effectful_ingest(value, invocation)
+    else:
+        return False
+    return _nonempty_items_satisfy(
+        items,
+        condition,
+        expected_count=expected_count,
+    )
+
+
+def _well_formed_wrong_result(operation: _Operation) -> object:
+    """Return a correctly shaped result that is false for one operation."""
+    implementation = operation.implementation
+    if implementation is operation_bindings.search:
+        return (SearchHit(_SEEDED_DIGEST, _SOURCE_ID, "unrelated excerpt"),)
     if implementation is operation_bindings.sources:
-        return returned == (_SOURCE_ID,)
+        return ("src_01ARZ3NDEKTSV4RRFFQ69G5FAW",)
     if implementation is operation_bindings.versions:
-        return returned == (_SEEDED_DIGEST,)
+        return ("0" * 64,)
     if implementation is operation_bindings.read_span:
-        return returned == "alpha"
+        return "beta"
     if implementation is operation_bindings.list_documents:
-        return returned == ("source.md",)
+        return ("other.md",)
     if implementation is operation_bindings.describe_corpus:
-        return returned == (("source.md", _SEEDED_DIGEST),)
-    if implementation is operation_bindings.proposals:
-        return (
-            type(returned) is tuple
-            and len(returned) == 1
-            and type(returned[0]) is Proposal
-            and returned[0].source_id == _SOURCE_ID
-            and returned[0].content == UntrustedText(_SEEDED_PROPOSAL_CONTENT)
-            and returned[0].proposed_at == _RECORDED_AT
-            and returned[0].holder == _SEEDED_PROPOSAL_HOLDER
+        return (("other.md", "0" * 64),)
+    if implementation in (
+        operation_bindings.proposals,
+        operation_bindings.record_proposal,
+    ):
+        proposal = Proposal(
+            proposal_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+            source_id=_SOURCE_ID,
+            content=UntrustedText("unrelated proposal"),
+            proposed_at=_RECORDED_AT,
+            holder="other holder",
         )
-    if implementation is operation_bindings.record_proposal:
-        return (
-            type(returned) is Proposal
-            and invocation.candidates_after
-            == invocation.candidates_before + (returned,)
-            and returned.source_id == _SOURCE_ID
-            and returned.content == UntrustedText(text)
-            and returned.proposed_at == _RECORDED_AT
-            and returned.holder == "matrix holder"
-        )
+        if implementation is operation_bindings.proposals:
+            return (proposal,)
+        return proposal
     if implementation is operation_bindings.ingest:
-        return (
-            type(returned) is IngestResult
-            and returned.status is IngestStatus.SUPERSEDED
-            and invocation.canon_after != invocation.canon_before
-        )
-    return False
+        return IngestResult(IngestStatus.UNCHANGED, None, None)
+    pytest.fail(f"registered operation {operation.name!r} has no wrong result")
+
+
+def _invocation_returning(returned: object | None) -> _Invocation:
+    """Build an executed call with changed state around one supplied result."""
+    canon_before = _CanonDigest("0" * 64, 0, 0)
+    canon_after = _CanonDigest("1" * 64, 1, 1)
+    candidates_after = (returned,) if type(returned) is Proposal else ()
+    return _Invocation(
+        _Outcome.EXECUTED,
+        returned,
+        None,
+        canon_before,
+        canon_after,
+        (),
+        candidates_after,
+    )
 
 
 def _required_tier_arguments(
@@ -769,6 +881,22 @@ def test_registered_operation_enumeration_rejects_an_external_implementation(
     authority.register("review_unchecked_unlink", Tier.READ, Path.unlink)
     with pytest.raises(AssertionError, match="review_unchecked_unlink"):
         _registered_operations()
+
+
+def test_every_registered_operation_rejects_each_degenerate_effect_result() -> None:
+    """An empty, absent, or wrong result cannot vacuously prove execution."""
+    operations = _registered_operations()
+    _require_nonempty(operations, "effect predicate operation")
+    probe_text = "hostile effect probe"
+
+    for operation in operations:
+        wrong = _well_formed_wrong_result(operation)
+        for returned in ((), None, wrong):
+            assert _observed_real_effect(
+                operation,
+                _invocation_returning(returned),
+                probe_text,
+            ) is False
 
 
 def test_transport_derivation_discovers_forwarders_and_rejects_duplicates(
