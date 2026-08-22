@@ -591,6 +591,13 @@ def test_no_public_temporal_name_or_conflict_field_can_express_a_resolution() ->
     assert not is_allowlisted(ChosenProbe, frozenset({"safe"}))
     assert is_allowlisted(SafeProbe, frozenset({"safe"}))
 
+    assert tuple(field.name for field in fields(Conflict)) == ("key", "members", "overlap")
+    assert tuple(field.name for field in fields(AsOf)) == (
+        "established",
+        "excluded",
+        "undetermined",
+    )
+
     def is_conflict_shape_safe(model: type[object]) -> bool:
         annotations = get_type_hints(model)
         return all(

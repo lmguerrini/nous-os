@@ -343,25 +343,36 @@ def test_the_published_temporal_tables_are_the_executable_cases() -> None:
     assert _temporal_tables_match(tables)
 
 
-def test_the_temporal_document_comparison_rejects_a_wrong_expectation() -> None:
-    sample = (
-        "## G-TIME\n\n"
-        "| Assertion id | Validity | Recorded at | Why, from the text |\n"
-        "|---|---|---|---|\n"
-        "| asr_right | `[B, A)` | `B` | sample |\n\n"
-        "| Query | Established | Excluded | Undetermined |\n"
-        "|---|---|---|---|\n"
-        "| valid_at=2026-01-01T00:00:00+00:00 | `asr_right` | — | — |\n"
-    )
-    tables = _parse_temporal_tables(sample)
-    assert tables["G-TIME-ASSERTIONS"] == [("asr_right", "[B, A)", "B")]
-    assert tables["G-TIME"] == [
-        (
-            "valid_at=2026-01-01T00:00:00+00:00",
-            frozenset({"asr_right"}),
-            frozenset(),
-            frozenset(),
-        )
-    ]
-    wrong_time = (("sample", {"valid_at": B}, ("asr_wrong",), (), ()),)
-    assert not _temporal_tables_match(tables, wrong_time, ())
+def test_the_temporal_document_comparison_rejects_a_wrong_query_expectation() -> None:
+    tables = _published_temporal_tables()
+    name, query, _, excluded, undetermined = G_TIME_ROWS[0]
+    wrong_time = G_TIME_ROWS[:1] + (
+        (name, query, ("asr_wrong",), excluded, undetermined),
+    ) + G_TIME_ROWS[1:]
+    expected_time, expected_contra = _expected_temporal_tables(wrong_time)
+    assert tables["G-TIME-ASSERTIONS"] == _executable_g_time_assertion_rows()
+    assert Counter(tables["G-CONTRA"]) == expected_contra
+    assert Counter(tables["G-TIME"]) != expected_time
+    assert not _temporal_tables_match(tables, wrong_time)
+
+
+def test_the_temporal_document_comparison_rejects_a_wrong_assertion_definition() -> None:
+    tables = _published_temporal_tables()
+    assertion_id, validity, recorded_at = tables["G-TIME-ASSERTIONS"][0]
+    tables["G-TIME-ASSERTIONS"][0] = ("asr_wrong_definition", validity, recorded_at)
+    expected_time, expected_contra = _expected_temporal_tables()
+    assert Counter(tables["G-TIME"]) == expected_time
+    assert Counter(tables["G-CONTRA"]) == expected_contra
+    assert tables["G-TIME-ASSERTIONS"][0][0] != assertion_id
+    assert not _temporal_tables_match(tables)
+
+
+def test_the_temporal_document_comparison_rejects_a_wrong_conflict_expectation() -> None:
+    tables = _published_temporal_tables()
+    key, members, overlap, is_conflict = tables["G-CONTRA"][0]
+    tables["G-CONTRA"][0] = (key, members, overlap, not is_conflict)
+    expected_time, expected_contra = _expected_temporal_tables()
+    assert Counter(tables["G-TIME"]) == expected_time
+    assert tables["G-TIME-ASSERTIONS"] == _executable_g_time_assertion_rows()
+    assert Counter(tables["G-CONTRA"]) != expected_contra
+    assert not _temporal_tables_match(tables)
