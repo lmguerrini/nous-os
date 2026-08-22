@@ -33,6 +33,27 @@ from nous_os.capability import Grant, NotAuthorized, Tier, execute
 from nous_os.canonical import Assertion, LifecycleState, SupportClass
 from nous_os.config import DataRoot
 from nous_os.derived import SearchHit, build
+from nous_os.adjudication import (
+    HumanDecision,
+    PromotionRecord,
+    Rejection,
+    RejectionMemory,
+    Verdict,
+)
+from nous_os.attribution import AttributedKey, KeyOrigin
+from nous_os.discovery import (
+    BridgeCard,
+    BridgeRegistry,
+    Depth,
+    Endpoint,
+    EpistemicClass,
+    Gate,
+    GateOutcome,
+    GateVector,
+    RoundResult,
+    RoundStatus,
+)
+from nous_os.identity import canonical_bytes
 from nous_os.ledger import IngestResult, IngestStatus, Ledger
 from nous_os.measure import RunStatus, not_run
 from nous_os.provenance import Citation, Locator
@@ -125,6 +146,14 @@ class _World:
     citation: Citation
     candidates: CandidateStore
     temporal: TemporalIndex
+    bridges: BridgeRegistry
+    rejections: RejectionMemory
+    rejection_reads: RejectionMemory
+    rejected_card: BridgeCard
+    discovery_card: BridgeCard
+    attributed_key: AttributedKey
+    decision: HumanDecision
+    authorizations: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +184,8 @@ class _Invocation:
     canon_after: _CanonDigest
     candidates_before: tuple[Proposal, ...]
     candidates_after: tuple[Proposal, ...]
+    authorizations_before: bytes
+    authorizations_after: bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +249,33 @@ class _CandidateCarrier:
 
     def proposals(self) -> tuple[Proposal, ...]:
         return self._store.proposals()
+
+
+class _RejectionMemoryCarrier:
+    """A rejection-memory argument carrying text while delegating real reads."""
+
+    __slots__ = ("_memory", "injection_text")
+
+    def __init__(self, memory: RejectionMemory, text: str) -> None:
+        self._memory = memory
+        self.injection_text = UntrustedText(text)
+
+    def rejections(self) -> tuple[Rejection, ...]:
+        return self._memory.rejections()
+
+
+class _BridgeRegistryCarrier:
+    """Attach fixture text to an exact bridge registry without proxying it.
+
+    ``run_round`` deliberately accepts only an exact ``BridgeRegistry``.  The
+    carrier therefore marks the real instance, so the same typed argument can
+    exercise both the read and discovery operations.
+    """
+
+    def __new__(cls, registry: BridgeRegistry, text: str) -> BridgeRegistry:
+        del cls
+        registry.injection_text = UntrustedText(text)
+        return registry
 
 
 class _TemporalCarrier:
@@ -377,6 +435,37 @@ def _grant_tier_sets() -> tuple[frozenset[Tier], ...]:
     return grants
 
 
+def _bridge_card(*, card_id: str, cluster_id: str, failed: Gate | None) -> BridgeCard:
+    """Build one exact candidate card used to observe registry-layer effects."""
+    outcomes = {gate: GateOutcome.PASS for gate in Gate}
+    reasons: dict[Gate, str] = {}
+    if failed is not None:
+        outcomes[failed] = GateOutcome.FAIL
+        reasons[failed] = f"{failed.value} failed in the seeded fixture"
+    endpoint = Endpoint(
+        "seeded project",
+        Citation(_SOURCE_ID, _SEEDED_DIGEST, Locator(0, 5), "alpha"),
+        "alpha",
+    )
+    return BridgeCard(
+        card_id=card_id,
+        cluster_id=cluster_id,
+        left=endpoint,
+        right=Endpoint(
+            "second seeded project",
+            Citation(_SOURCE_ID, _SEEDED_DIGEST, Locator(0, 5), "alpha"),
+            "alpha",
+        ),
+        epistemic_class=EpistemicClass.DERIVED,
+        depth=Depth.DEEP,
+        non_triviality="The fixture crosses two seeded projects.",
+        consequence="The fixture changes a reviewable relationship.",
+        noise_objection="The shared seeded word may be coincidental.",
+        gates=GateVector(outcomes, reasons),
+        origin_round=1,
+    )
+
+
 def _build_world(root: Path) -> _World:
     """Create one canonical source, a readable index, and one proposal."""
     canon_root = root / "canon"
@@ -421,6 +510,42 @@ def _build_world(root: Path) -> _World:
                 valid_from=_RECORDED_AT,
             ),
         )
+    bridges = BridgeRegistry(root / "bridges.jsonl")
+    rejections = RejectionMemory(root / "rejections.jsonl")
+    rejection_reads = RejectionMemory(root / "rejection-reads.jsonl")
+    rejected_card = _bridge_card(
+        card_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAA",
+        cluster_id="seeded-rejected-cluster",
+        failed=Gate.G1,
+    )
+    discovery_card = _bridge_card(
+        card_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAB",
+        cluster_id="seeded-discovery-cluster",
+        failed=None,
+    )
+    bridges.record(rejected_card)
+    rejections.record(
+        cluster_id=rejected_card.cluster_id,
+        failed_gate=Gate.G1.value,
+        reason="cross_project failed in the seeded fixture",
+        round_number=1,
+        rejected_at=_RECORDED_AT,
+    )
+    rejection_reads.record(
+        cluster_id=rejected_card.cluster_id,
+        failed_gate=Gate.G1.value,
+        reason="cross_project failed in the seeded fixture",
+        round_number=1,
+        rejected_at=_RECORDED_AT,
+    )
+    attributed_key = AttributedKey(ClaimKey("seeded-promotion"), KeyOrigin.OPERATOR)
+    decision = HumanDecision(
+        "seeded adjudicator",
+        Verdict.PROMOTE,
+        _RECORDED_AT,
+        "The seeded fixture received a valid human decision.",
+        attributed_key,
+    )
     return _World(
         root=canon_root,
         snapshots=snapshots,
@@ -430,6 +555,14 @@ def _build_world(root: Path) -> _World:
         citation=citation,
         candidates=candidates,
         temporal=temporal,
+        bridges=bridges,
+        rejections=rejections,
+        rejection_reads=rejection_reads,
+        rejected_card=rejected_card,
+        discovery_card=discovery_card,
+        attributed_key=attributed_key,
+        decision=decision,
+        authorizations=root / "authorizations.jsonl",
     )
 
 
@@ -451,6 +584,11 @@ def _canon_digest(world: _World) -> _CanonDigest:
     digest.update(b"ledger\0")
     digest.update(ledger_payload)
     return _CanonDigest(digest.hexdigest(), snapshot_bytes, len(ledger_payload))
+
+
+def _authorization_bytes(world: _World) -> bytes:
+    """Read the complete authorization record, including an absent-file zero."""
+    return world.authorizations.read_bytes() if world.authorizations.is_file() else b""
 
 
 def _search_arguments(world: _World, text: str) -> dict[str, object]:
@@ -495,6 +633,49 @@ def _documents_arguments(world: _World, text: str) -> dict[str, object]:
 def _proposals_arguments(world: _World, text: str) -> dict[str, object]:
     # Its only argument is the store itself, so text travels in the carrier.
     return {"store": _CandidateCarrier(world.candidates, text)}
+
+
+def _rejections_arguments(world: _World, text: str) -> dict[str, object]:
+    """Its only argument is the store, so text travels in the carrier."""
+    return {"memory": _RejectionMemoryCarrier(world.rejection_reads, text)}
+
+
+def _bridges_arguments(world: _World, text: str) -> dict[str, object]:
+    """Its only argument is the registry, so text travels in the carrier."""
+    return {"registry": _BridgeRegistryCarrier(world.bridges, text)}
+
+
+def _discover_arguments(world: _World, text: str) -> dict[str, object]:
+    """The exact registry carries text while recording an accepted card."""
+    return {
+        "round_number": 1,
+        "candidates": (world.discovery_card,),
+        "registry": _BridgeRegistryCarrier(world.bridges, text),
+        "memory": world.rejections,
+        "at": _RECORDED_AT,
+        "consult_memory": False,
+    }
+
+
+def _adjudicate_arguments(world: _World, text: str) -> dict[str, object]:
+    """The durable rejection reason is the typed functional text argument."""
+    return {
+        "memory": world.rejections,
+        "cluster_id": "matrix-adjudication-cluster",
+        "failed_gate": Gate.G2.value,
+        "reason": text,
+        "round_number": 2,
+        "rejected_at": _RECORDED_AT,
+    }
+
+
+def _promote_candidate_arguments(world: _World, text: str) -> dict[str, object]:
+    """A path carrier preserves text while selecting the real record destination."""
+    return {
+        "decision": world.decision,
+        "candidate": world.candidates.proposals()[0],
+        "authorizations": _PathCarrier(world.authorizations, text),
+    }
 
 
 def _as_of_arguments(world: _World, text: str) -> dict[str, object]:
@@ -548,6 +729,11 @@ _ARGUMENT_BUILDERS: Mapping[
     operation_bindings.list_documents: _documents_arguments,
     operation_bindings.describe_corpus: _documents_arguments,
     operation_bindings.proposals: _proposals_arguments,
+    operation_bindings.rejections: _rejections_arguments,
+    operation_bindings.bridges: _bridges_arguments,
+    operation_bindings.discover: _discover_arguments,
+    operation_bindings.adjudicate: _adjudicate_arguments,
+    operation_bindings.promote_candidate: _promote_candidate_arguments,
     operation_bindings.as_of: _as_of_arguments,
     operation_bindings.conflicts: _conflicts_arguments,
     operation_bindings.supersession: _supersession_arguments,
@@ -604,6 +790,7 @@ def _invoke(
     """Call once and classify execution, authority refusal, or another failure."""
     canon_before = _canon_digest(world)
     candidates_before = world.candidates.proposals()
+    authorizations_before = _authorization_bytes(world)
     returned: object | None = None
     error: Exception | None = None
     outcome = _Outcome.EXECUTED
@@ -617,9 +804,11 @@ def _invoke(
         error = caught
     canon_after = _canon_digest(world)
     candidates_after = world.candidates.proposals()
+    authorizations_after = _authorization_bytes(world)
     if outcome is _Outcome.REFUSED:
         assert canon_after == canon_before
         assert candidates_after == candidates_before
+        assert authorizations_after == authorizations_before
     return _Invocation(
         outcome,
         returned,
@@ -628,6 +817,8 @@ def _invoke(
         canon_after,
         candidates_before,
         candidates_after,
+        authorizations_before,
+        authorizations_after,
     )
 
 
@@ -662,6 +853,7 @@ def _assert_same_observable_outcome(
     assert sample.returned == reference.returned
     assert sample.canon_after == reference.canon_after
     assert sample.candidates_after == reference.candidates_after
+    assert sample.authorizations_after == reference.authorizations_after
 
 
 def _nonempty_items_satisfy(
@@ -712,6 +904,71 @@ def _matches_effectful_ingest(value: object, invocation: _Invocation) -> bool:
         type(value) is IngestResult
         and value.status is IngestStatus.SUPERSEDED
         and invocation.canon_after != invocation.canon_before
+    )
+
+
+def _seeded_rejected_card() -> BridgeCard:
+    """Return the one rejected bridge card seeded into every test world."""
+    return _bridge_card(
+        card_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAA",
+        cluster_id="seeded-rejected-cluster",
+        failed=Gate.G1,
+    )
+
+
+def _seeded_discovery_card() -> BridgeCard:
+    """Return the one accepted bridge card proposed by every discovery call."""
+    return _bridge_card(
+        card_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAB",
+        cluster_id="seeded-discovery-cluster",
+        failed=None,
+    )
+
+
+def _matches_seeded_rejection(value: object) -> bool:
+    """Whether one exact seeded rejection survives the memory read."""
+    return value == Rejection(
+        cluster_id="seeded-rejected-cluster",
+        failed_gate=Gate.G1.value,
+        reason="cross_project failed in the seeded fixture",
+        round_number=1,
+        rejected_at=_RECORDED_AT,
+    )
+
+
+def _matches_adjudicated_rejection(value: object, text: str) -> bool:
+    """Whether one exact new rejection records this call's typed reason."""
+    return value == Rejection(
+        cluster_id="matrix-adjudication-cluster",
+        failed_gate=Gate.G2.value,
+        reason=text,
+        round_number=2,
+        rejected_at=_RECORDED_AT,
+    )
+
+
+def _matches_discovery_result(value: object) -> bool:
+    """Whether discovery wrote exactly one accepted candidate-layer card."""
+    card = _seeded_discovery_card()
+    return value == RoundResult(1, RoundStatus.COMPLETE, (card,), (card,), (), ())
+
+
+def _matches_effectful_promotion(value: object, invocation: _Invocation) -> bool:
+    """Whether one exact authorization record was appended for this candidate."""
+    if not invocation.candidates_before:
+        return False
+    expected = PromotionRecord(
+        proposal_id=invocation.candidates_before[0].proposal_id,
+        adjudicator="seeded adjudicator",
+        decided_at=_RECORDED_AT,
+        verdict=Verdict.PROMOTE,
+        subject_key="seeded-promotion",
+        subject_origin=KeyOrigin.OPERATOR,
+    )
+    return (
+        value == expected
+        and invocation.authorizations_after
+        == invocation.authorizations_before + canonical_bytes(expected.as_payload()) + b"\n"
     )
 
 
@@ -808,6 +1065,26 @@ def _observed_real_effect(
         items = returned
         expected_count = 1
         condition = _matches_seeded_proposal
+    elif implementation is operation_bindings.rejections:
+        items = returned
+        expected_count = 1
+        condition = _matches_seeded_rejection
+    elif implementation is operation_bindings.bridges:
+        items = returned
+        expected_count = 1
+        condition = lambda value: value == _seeded_rejected_card()
+    elif implementation is operation_bindings.discover:
+        items = (returned,)
+        expected_count = 1
+        condition = _matches_discovery_result
+    elif implementation is operation_bindings.adjudicate:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: _matches_adjudicated_rejection(value, text)
+    elif implementation is operation_bindings.promote_candidate:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: _matches_effectful_promotion(value, invocation)
     elif implementation is operation_bindings.as_of:
         items = (returned,)
         expected_count = 1
@@ -856,6 +1133,44 @@ def _well_formed_wrong_result(operation: _Operation) -> object:
         return ("other.md",)
     if implementation is operation_bindings.describe_corpus:
         return (("other.md", "0" * 64),)
+    if implementation is operation_bindings.rejections:
+        return (
+            Rejection(
+                cluster_id="other-rejected-cluster",
+                failed_gate=Gate.G1.value,
+                reason="a plausible but wrong rejection",
+                round_number=1,
+                rejected_at=_RECORDED_AT,
+            ),
+        )
+    if implementation is operation_bindings.bridges:
+        return (
+            _bridge_card(
+                card_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+                cluster_id="other-bridge-cluster",
+                failed=Gate.G1,
+            ),
+        )
+    if implementation is operation_bindings.discover:
+        card = _seeded_discovery_card()
+        return RoundResult(1, RoundStatus.COMPLETE, (card,), (), (card,), ())
+    if implementation is operation_bindings.adjudicate:
+        return Rejection(
+            cluster_id="matrix-adjudication-cluster",
+            failed_gate=Gate.G2.value,
+            reason="a plausible but wrong rejection",
+            round_number=2,
+            rejected_at=_RECORDED_AT,
+        )
+    if implementation is operation_bindings.promote_candidate:
+        return PromotionRecord(
+            proposal_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAD",
+            adjudicator="other adjudicator",
+            decided_at=_RECORDED_AT,
+            verdict=Verdict.PROMOTE,
+            subject_key="other-subject",
+            subject_origin=KeyOrigin.OPERATOR,
+        )
     if implementation in (
         operation_bindings.proposals,
         operation_bindings.record_proposal,
@@ -914,6 +1229,8 @@ def _invocation_returning(returned: object | None) -> _Invocation:
         canon_after,
         (),
         candidates_after,
+        b"",
+        b"authorization effect",
     )
 
 
@@ -1033,6 +1350,46 @@ def test_registered_operation_enumeration_rejects_an_external_implementation(
         _registered_operations()
 
 
+def test_registered_operations_have_the_decided_names_and_tiers() -> None:
+    """Every matrix operation has the fixed authority tier chosen for it."""
+    assert {operation.name: operation.tier for operation in _registered_operations()} == {
+        "search": Tier.READ,
+        "sources": Tier.READ,
+        "versions": Tier.READ,
+        "read_span": Tier.READ,
+        "list_documents": Tier.READ,
+        "describe_corpus": Tier.READ,
+        "proposals": Tier.READ,
+        "rejections": Tier.READ,
+        "bridges": Tier.READ,
+        "as_of": Tier.READ,
+        "conflicts": Tier.READ,
+        "supersession": Tier.READ,
+        "record_proposal": Tier.PROPOSE,
+        "discover": Tier.PROPOSE,
+        "adjudicate": Tier.PROPOSE,
+        "ingest_source": Tier.PROMOTE,
+        "promote_candidate": Tier.PROMOTE,
+    }
+
+
+def test_discover_exposes_only_its_operational_keyword_arguments() -> None:
+    """Discovery's governed surface may not advertise discarded content."""
+    parameters = inspect.signature(operation_bindings.discover).parameters
+    assert tuple(parameters) == (
+        "round_number",
+        "candidates",
+        "registry",
+        "memory",
+        "at",
+        "consult_memory",
+    )
+    assert all(
+        parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        for parameter in parameters.values()
+    )
+
+
 def test_every_registered_operation_rejects_each_degenerate_effect_result() -> None:
     """An empty, absent, or wrong result cannot vacuously prove execution."""
     operations = _registered_operations()
@@ -1123,6 +1480,48 @@ def test_the_command_line_has_no_binding_that_can_reach_a_governed_operation(
     assert captured.out
 
 
+def test_propose_cannot_reach_promotion_and_promote_changes_authorization_record(
+    tmp_path: Path,
+) -> None:
+    """Every transport refuses PROPOSE before a PROMOTE control appends bytes."""
+    operation = next(
+        operation
+        for operation in _registered_operations()
+        if operation.implementation is operation_bindings.promote_candidate
+    )
+    assert operation.name == "promote_candidate"
+    assert operation.tier is Tier.PROMOTE
+
+    for transport in _derived_transports():
+        world = _build_world(tmp_path / transport.name.replace(".", "_"))
+        before = _authorization_bytes(world)
+        refused = _invoke(
+            transport,
+            Grant("propose holder", frozenset({Tier.PROPOSE})),
+            operation,
+            _arguments(operation, world, _BENIGN_TEXT),
+            world,
+        )
+        assert refused.outcome is _Outcome.REFUSED
+        assert type(refused.error) is NotAuthorized
+        assert refused.authorizations_before == before
+        assert refused.authorizations_after == before
+        assert _authorization_bytes(world) == before
+
+        promoted = _invoke(
+            transport,
+            Grant("promote holder", frozenset({Tier.PROMOTE})),
+            operation,
+            _arguments(operation, world, _BENIGN_TEXT),
+            world,
+        )
+        assert promoted.outcome is _Outcome.EXECUTED
+        assert _observed_real_effect(operation, promoted)
+        assert promoted.authorizations_before == before
+        assert promoted.authorizations_after != before
+        assert _authorization_bytes(world) == promoted.authorizations_after
+
+
 def test_argument_content_cannot_change_any_authorization_decision(
     tmp_path: Path,
 ) -> None:
@@ -1136,7 +1535,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
     expected = (
         len(entries) * len(operations) * len(transports) * len(grant_tier_sets)
     )
-    assert expected == 5568
+    assert expected == 7888
     if expected == 0:
         _fail_not_run("the derived corpus matrix had zero expected cells")
 
@@ -1194,8 +1593,8 @@ def test_argument_content_cannot_change_any_authorization_decision(
 
     if executed == 0:
         _fail_not_run("the corpus matrix executed zero cells")
-    assert executed == 5568
-    assert expected == 5568
+    assert executed == 7888
+    assert expected == 7888
     expected_positive_controls = {
         (transport.name, operation.name, tier_set)
         for transport in transports
@@ -1203,7 +1602,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
         for tier_set in grant_tier_sets
         if operation.tier in tier_set
     }
-    assert len(expected_positive_controls) == 96
+    assert len(expected_positive_controls) == 136
     if positive_controls != expected_positive_controls:
         absent = sorted(
             (transport, operation, sorted(tier.value for tier in tier_set))
@@ -1219,9 +1618,9 @@ def test_argument_content_cannot_change_any_authorization_decision(
         len(positive_controls),
     )
     assert result.status is RunStatus.COMPLETE
-    assert result.executed == 5568
-    assert result.expected == 5568
-    assert result.positive_controls == 96
+    assert result.executed == 7888
+    assert result.expected == 7888
+    assert result.positive_controls == 136
 
 
 def test_the_holder_is_provenance_metadata_and_carries_no_authority(
@@ -1237,7 +1636,7 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
     expected = len(transports) * sum(
         1 for tier in tiers for operation in operations if operation.tier is tier
     )
-    assert expected == 12
+    assert expected == 17
     if expected == 0:
         _fail_not_run("the holder-metadata matrix had zero expected cells")
 
@@ -1269,8 +1668,8 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
 
     if executed == 0:
         _fail_not_run("the holder-metadata matrix executed zero cells")
-    assert executed == 12
-    assert expected == 12
+    assert executed == 17
+    assert expected == 17
 
 
 def test_required_tier_argument_content_cannot_change_the_decision_in_either_direction(
@@ -1282,7 +1681,7 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
     transports = _derived_transports()
     world = _build_world(tmp_path / "required_tier_arguments")
     expected = len(transports) * len(operations) * 2
-    assert expected == 24
+    assert expected == 34
     if expected == 0:
         _fail_not_run("the required-tier argument matrix had zero expected cells")
     executed = 0
@@ -1341,5 +1740,5 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
 
     if executed == 0:
         _fail_not_run("the required-tier argument matrix executed zero cells")
-    assert executed == 24
-    assert expected == 24
+    assert executed == 34
+    assert expected == 34

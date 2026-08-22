@@ -60,6 +60,73 @@ def record_proposal(
     )
 
 
+def rejections(*, memory: RejectionMemory) -> tuple[Rejection, ...]:
+    """Keep rejection-memory reads behind the registry's single door."""
+    return memory.rejections()
+
+
+def bridges(*, registry: BridgeRegistry) -> tuple[BridgeCard, ...]:
+    """Keep bridge-registry reads behind the registry's single door."""
+    return registry.cards()
+
+
+def discover(
+    *,
+    round_number: int,
+    candidates,
+    registry: BridgeRegistry,
+    memory: RejectionMemory,
+    at: datetime,
+    consult_memory: bool = True,
+) -> RoundResult:
+    """Keep candidate-layer discovery writes behind the registry's single door."""
+    from nous_os.discovery import run_round
+
+    return run_round(
+        round_number=round_number,
+        candidates=candidates,
+        registry=registry,
+        memory=memory,
+        at=at,
+        consult_memory=consult_memory,
+    )
+
+
+def adjudicate(
+    *,
+    memory: RejectionMemory,
+    cluster_id: str,
+    failed_gate: str,
+    reason: str,
+    round_number: int,
+    rejected_at: datetime,
+) -> Rejection:
+    """Keep rejection verdict recording behind the registry's single door."""
+    return memory.record(
+        cluster_id=cluster_id,
+        failed_gate=failed_gate,
+        reason=reason,
+        round_number=round_number,
+        rejected_at=rejected_at,
+    )
+
+
+def promote_candidate(
+    *,
+    decision: HumanDecision,
+    candidate: Proposal,
+    authorizations,
+) -> PromotionRecord:
+    """Keep promotion authorization records behind the registry's single door."""
+    from nous_os.adjudication import promote
+
+    return promote(
+        decision=decision,
+        candidate=candidate,
+        authorizations=authorizations,
+    )
+
+
 register("search", Tier.READ, search)
 register("sources", Tier.READ, sources)
 register("versions", Tier.READ, versions)
@@ -72,3 +139,8 @@ register("conflicts", Tier.READ, conflicts)
 register("supersession", Tier.READ, supersession)
 register("record_proposal", Tier.PROPOSE, record_proposal)
 register("ingest_source", Tier.PROMOTE, ingest)
+register("rejections", Tier.READ, rejections)
+register("bridges", Tier.READ, bridges)
+register("discover", Tier.PROPOSE, discover)
+register("adjudicate", Tier.PROPOSE, adjudicate)
+register("promote_candidate", Tier.PROMOTE, promote_candidate)

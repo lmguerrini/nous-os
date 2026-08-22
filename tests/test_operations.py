@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import inspect
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,11 +19,23 @@ import pytest
 
 import nous_os.capability as authority
 import nous_os.operations
+from nous_os.adjudication import HumanDecision, RejectionMemory, Verdict
+from nous_os.attribution import AttributedKey, KeyOrigin
 from nous_os.capability import Grant, NotAuthorized, Tier, execute
 from nous_os.canonical import Assertion, LifecycleState, SupportClass
 from nous_os.candidates import CandidateStore, Proposal
 from nous_os.config import DataRoot
 from nous_os.derived import build
+from nous_os.discovery import (
+    BridgeCard,
+    BridgeRegistry,
+    Depth,
+    Endpoint,
+    EpistemicClass,
+    Gate,
+    GateOutcome,
+    GateVector,
+)
 from nous_os.ledger import IngestResult, IngestStatus, Ledger, ingest
 from nous_os.provenance import Citation, Locator
 from nous_os.snapshots import SnapshotStore
@@ -521,6 +534,11 @@ class _TemporaryCanon:
     citation: Citation
     candidates: CandidateStore
     temporal: TemporalIndex
+    bridges: BridgeRegistry
+    rejections: RejectionMemory
+    decision: HumanDecision
+    candidate: Proposal
+    authorizations: Path
 
 
 def _temporal_index(citation: Citation) -> TemporalIndex:
@@ -593,6 +611,13 @@ def _temporary_canon(tmp_path: Path) -> _TemporaryCanon:
         Locator(0, 5),
         "alpha",
     )
+    candidate = Proposal(
+        "asr_01ARZ3NDEKTSV4RRFFQ69G5FAB",
+        SOURCE_ID,
+        UntrustedText("candidate material awaiting authorization"),
+        RECORDED_AT,
+        "fixture holder",
+    )
     return _TemporaryCanon(
         root=root,
         snapshots=snapshots,
@@ -602,6 +627,35 @@ def _temporary_canon(tmp_path: Path) -> _TemporaryCanon:
         citation=citation,
         candidates=CandidateStore(tmp_path / "candidates.jsonl"),
         temporal=_temporal_index(citation),
+        bridges=BridgeRegistry(tmp_path / "bridges.jsonl"),
+        rejections=RejectionMemory(tmp_path / "rejections.jsonl"),
+        decision=HumanDecision(
+            "fixture adjudicator",
+            Verdict.PROMOTE,
+            RECORDED_AT,
+            "The fixture authorizes this candidate.",
+            AttributedKey(ClaimKey("fixture-promotion"), KeyOrigin.OPERATOR),
+        ),
+        candidate=candidate,
+        authorizations=tmp_path / "authorizations.jsonl",
+    )
+
+
+def _discovery_card(citation: Citation) -> BridgeCard:
+    """Build one accepted bridge card for a real deterministic round."""
+    endpoint = Endpoint("fixture project", citation, "alpha")
+    return BridgeCard(
+        card_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+        cluster_id="fixture-discovery-cluster",
+        left=endpoint,
+        right=Endpoint("second fixture project", citation, "alpha"),
+        epistemic_class=EpistemicClass.DERIVED,
+        depth=Depth.DEEP,
+        non_triviality="The fixture relates two distinct projects.",
+        consequence="The fixture produces a reviewable bridge.",
+        noise_objection="The shared fixture word could be coincidental.",
+        gates=GateVector({gate: GateOutcome.PASS for gate in Gate}, {}),
+        origin_round=1,
     )
 
 
@@ -615,6 +669,8 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
         "list_documents": {"root": canon.data_root},
         "describe_corpus": {"root": canon.data_root},
         "proposals": {"store": canon.candidates},
+        "rejections": {"memory": canon.rejections},
+        "bridges": {"registry": canon.bridges},
         "as_of": {
             "index": canon.temporal,
             "valid_at": RECORDED_AT,
@@ -628,6 +684,38 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
     return arguments[name]
 
 
+def _propose_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
+    """Supply real arguments for every current proposal-tier operation."""
+    arguments = {
+        "record_proposal": {
+            "store": canon.candidates,
+            "source_id": SOURCE_ID,
+            "content": UntrustedText("this is a proposal, not a fact"),
+            "proposed_at": RECORDED_AT,
+            "holder": "proposer",
+        },
+        "discover": {
+            "round_number": 1,
+            "candidates": (_discovery_card(canon.citation),),
+            "registry": canon.bridges,
+            "memory": canon.rejections,
+            "at": RECORDED_AT,
+            "consult_memory": False,
+        },
+        "adjudicate": {
+            "memory": canon.rejections,
+            "cluster_id": "fixture-adjudication-cluster",
+            "failed_gate": Gate.G1.value,
+            "reason": "the fixture records a durable failed gate",
+            "round_number": 1,
+            "rejected_at": RECORDED_AT,
+        },
+    }
+    if name not in arguments:
+        pytest.fail(f"propose operation {name!r} has no executable test arguments")
+    return arguments[name]
+
+
 def _promote_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
     """Supply an effectful argument set for every known promotion operation."""
     arguments = {
@@ -637,7 +725,12 @@ def _promote_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
             "source_id": SOURCE_ID,
             "content": UntrustedText("a later version that must be stored"),
             "recorded_at": RECORDED_AT,
-        }
+        },
+        "promote_candidate": {
+            "decision": canon.decision,
+            "candidate": canon.candidate,
+            "authorizations": canon.authorizations,
+        },
     }
     if name not in arguments:
         pytest.fail(f"promote operation {name!r} has no executable test arguments")
@@ -700,7 +793,7 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
     """A missing entry or changed tier would leave a real function ungoverned."""
     operations = _project_operations()
     assert operations, "the registered entry-point enumeration is empty"
-    assert {operation.name: operation.tier for operation in operations} == {
+    expected = {
         "search": Tier.READ,
         "sources": Tier.READ,
         "versions": Tier.READ,
@@ -708,12 +801,20 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "list_documents": Tier.READ,
         "describe_corpus": Tier.READ,
         "proposals": Tier.READ,
+        "rejections": Tier.READ,
+        "bridges": Tier.READ,
         "as_of": Tier.READ,
         "conflicts": Tier.READ,
         "supersession": Tier.READ,
         "record_proposal": Tier.PROPOSE,
+        "discover": Tier.PROPOSE,
+        "adjudicate": Tier.PROPOSE,
         "ingest_source": Tier.PROMOTE,
+        "promote_candidate": Tier.PROMOTE,
     }
+    assert len(expected) == 17
+    assert len(operations) == 17
+    assert {operation.name: operation.tier for operation in operations} == expected
     assert all(
         operation.tier is not Tier.EXTERNAL_CONSEQUENTIAL_ACTION
         for operation in operations
@@ -941,6 +1042,17 @@ def test_a_propose_grant_is_refused_by_every_promote_operation(tmp_path: Path) -
         assert after == before
 
 
+def _mutates_canonical_snapshot_and_ledger(operation: _Operation) -> bool:
+    """Select promotions whose inputs are both canonical write stores.
+
+    Authorization-only promotion writes an ``authorizations`` ledger, not the
+    canonical snapshot store and canonical ledger measured by this test.
+    """
+    implementation = authority._REGISTRY[operation.name][1]
+    parameters = inspect.signature(implementation).parameters
+    return operation.tier is Tier.PROMOTE and {"store", "ledger"} <= parameters.keys()
+
+
 def test_every_permitted_promote_operation_grows_both_parts_of_canon(
     tmp_path: Path,
 ) -> None:
@@ -948,7 +1060,7 @@ def test_every_permitted_promote_operation_grows_both_parts_of_canon(
     promotions = tuple(
         operation
         for operation in _project_operations()
-        if operation.tier is Tier.PROMOTE
+        if _mutates_canonical_snapshot_and_ledger(operation)
     )
     assert promotions, "the promote-operation derivation is empty"
     grant = Grant("promoter", frozenset({Tier.PROMOTE}))
@@ -972,21 +1084,21 @@ def test_every_permitted_promote_operation_grows_both_parts_of_canon(
         assert canon.ledger.entries()[-1] == returned.entry
 
 
-def test_a_propose_grant_records_a_proposal_without_changing_canon(tmp_path: Path) -> None:
-    """Proposal authority must work, while its recorded result remains outside canon."""
-    canon = _temporary_canon(tmp_path)
-    before = _canon_digest(canon.root, canon.ledger)
-    grant = Grant("proposer", frozenset({Tier.PROPOSE}))
-    recorded = execute(
-        grant,
-        "record_proposal",
-        store=canon.candidates,
-        source_id=SOURCE_ID,
-        content=UntrustedText("this is a proposal, not a fact"),
-        proposed_at=RECORDED_AT,
-        holder="proposer",
+def test_every_permitted_propose_operation_writes_outside_canon(tmp_path: Path) -> None:
+    """Proposal authority must work while its records remain outside canon."""
+    proposals = tuple(
+        operation for operation in _project_operations() if operation.tier is Tier.PROPOSE
     )
-    assert type(recorded) is Proposal
-    assert canon.candidates.proposals() == (recorded,)
-    after = _canon_digest(canon.root, canon.ledger)
-    assert after == before
+    assert proposals, "the propose-operation derivation is empty"
+    grant = Grant("proposer", frozenset({Tier.PROPOSE}))
+    for operation in proposals:
+        canon = _temporary_canon(tmp_path / operation.name)
+        before = _canon_digest(canon.root, canon.ledger)
+        returned = execute(
+            grant,
+            operation.name,
+            **_propose_arguments(operation.name, canon),
+        )
+        after = _canon_digest(canon.root, canon.ledger)
+        assert returned is not None
+        assert after == before
