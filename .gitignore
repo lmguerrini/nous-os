@@ -15,6 +15,9 @@ build/
 *.local.yaml
 *.local.json
 
+# Local review-tool state is machine-specific and never tracked.
+.claude/
+
 # The derived store is rebuildable from the canonical files and is never
 # committed. Canon is files; a database in history would make that untrue.
 *.db

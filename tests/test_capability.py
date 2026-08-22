@@ -1041,9 +1041,10 @@ def test_a_registration_name_cannot_have_edge_whitespace(
 
 def test_an_internal_character_from_each_refused_category_is_refused() -> None:
     """A missing category guard would admit an internal character as a registry key."""
-    # Cc is explicit because this test also guards its presence in the set;
-    # every other case is derived from the set maintained by the contract.
-    categories_to_test = {*_capability._REFUSED_OPERATION_NAME_CATEGORIES, "Cc"}
+    categories_to_test = frozenset(
+        {"Cc", "Cf", "Cs", "Cn", "Co", "Zl", "Zp"}
+    )
+    assert _capability._REFUSED_OPERATION_NAME_CATEGORIES == categories_to_test
     for category in sorted(categories_to_test):
         representative = next(
             (
@@ -1140,6 +1141,7 @@ def test_lookup_is_exact_bytes_and_normalization_at_lookup_is_a_defect() -> None
         "\u3000",
         "\u1680",
         "\u2028",
+        "\u2029",
         "\u034f",
         "\u180b",
         "\ufe00",

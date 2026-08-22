@@ -19,6 +19,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from itertools import combinations
 from pathlib import Path
 from typing import NoReturn
 
@@ -64,7 +65,11 @@ _REQUIRED_FAMILIES = frozenset(
 )
 _SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 _RECORDED_AT = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
-_BENIGN_TEXT = "alpha"
+_BENIGN_TEXT = "beta"
+_SEEDED_CONTENT = "alpha beta signal in a source document"
+_SEEDED_DIGEST = hashlib.sha256(_SEEDED_CONTENT.encode("utf-8")).hexdigest()
+_SEEDED_PROPOSAL_CONTENT = "alpha proposal"
+_SEEDED_PROPOSAL_HOLDER = "fixture holder"
 _DERIVATION = "injection_defence"
 _ACCOUNTED_TEST_REGISTRATION_MODULES = frozenset(
     {"test_capability", "tests.test_capability"}
@@ -329,10 +334,14 @@ def _derived_transports() -> tuple[_Transport, ...]:
 
 
 def _grant_tier_sets() -> tuple[frozenset[Tier], ...]:
-    """Derive the empty and every singleton grant from the tier vocabulary."""
+    """Derive every tier combination, including pairs and the full set."""
     tiers = tuple(Tier)
     _require_nonempty(tiers, "tier vocabulary")
-    grants = (frozenset(), *(frozenset({tier}) for tier in tiers))
+    grants = tuple(
+        frozenset(selected)
+        for size in range(len(tiers) + 1)
+        for selected in combinations(tiers, size)
+    )
     _require_nonempty(grants, "grant")
     return grants
 
@@ -346,20 +355,20 @@ def _build_world(root: Path) -> _World:
         snapshots,
         ledger,
         _SOURCE_ID,
-        UntrustedText("alpha signal in a source document"),
+        UntrustedText(_SEEDED_CONTENT),
         _RECORDED_AT,
     )
     assert seeded.entry is not None
     derived_path = build(snapshots, ledger, root / "derived.sqlite")
     documents = root / "documents"
     documents.mkdir()
-    (documents / "source.md").write_text("alpha signal in a source document")
+    (documents / "source.md").write_text(_SEEDED_CONTENT)
     candidates = CandidateStore(root / "candidates.jsonl")
     candidates.record(
         source_id=_SOURCE_ID,
-        content=UntrustedText("alpha proposal"),
+        content=UntrustedText(_SEEDED_PROPOSAL_CONTENT),
         proposed_at=_RECORDED_AT,
-        holder="fixture holder",
+        holder=_SEEDED_PROPOSAL_HOLDER,
     )
     citation = Citation(
         _SOURCE_ID,
@@ -399,14 +408,18 @@ def _canon_digest(world: _World) -> _CanonDigest:
 
 
 def _search_arguments(world: _World, text: str) -> dict[str, object]:
-    return {"path": _PathCarrier(world.derived_path, text), "query": _BENIGN_TEXT}
+    # The query is arbitrary functional text and is consumed by the search.
+    return {"path": world.derived_path, "query": text}
 
 
 def _sources_arguments(world: _World, text: str) -> dict[str, object]:
+    # Its only argument is a path; changing it to corpus text changes the store.
     return {"path": _PathCarrier(world.derived_path, text)}
 
 
 def _versions_arguments(world: _World, text: str) -> dict[str, object]:
+    # A path and source identifier cannot carry arbitrary text without
+    # changing identity.
     return {
         "path": _PathCarrier(world.derived_path, text),
         "source_id": _SOURCE_ID,
@@ -414,6 +427,8 @@ def _versions_arguments(world: _World, text: str) -> dict[str, object]:
 
 
 def _span_arguments(world: _World, text: str) -> dict[str, object]:
+    # Store identity and citation coordinates cannot vary without changing
+    # the read.
     return {
         "store": _SnapshotCarrier(world.snapshots, text),
         "citation": world.citation,
@@ -421,14 +436,18 @@ def _span_arguments(world: _World, text: str) -> dict[str, object]:
 
 
 def _documents_arguments(world: _World, text: str) -> dict[str, object]:
+    # The root is a path; replacing it with corpus text selects a different
+    # corpus.
     return {"root": _DataRootCarrier(world.data_root, text)}
 
 
 def _proposals_arguments(world: _World, text: str) -> dict[str, object]:
+    # Its only argument is the store itself, so text travels in the carrier.
     return {"store": _CandidateCarrier(world.candidates, text)}
 
 
 def _record_arguments(world: _World, text: str) -> dict[str, object]:
+    # Content is arbitrary functional text and is written into the proposal.
     return {
         "store": world.candidates,
         "source_id": _SOURCE_ID,
@@ -439,11 +458,13 @@ def _record_arguments(world: _World, text: str) -> dict[str, object]:
 
 
 def _ingest_arguments(world: _World, text: str) -> dict[str, object]:
+    # Content is arbitrary functional text and is written into canon.
+    revision = world.ledger.path.stat().st_size
     return {
         "store": world.snapshots,
         "ledger": world.ledger,
         "source_id": _SOURCE_ID,
-        "content": UntrustedText(text),
+        "content": UntrustedText(f"{text}\nrevision {revision}"),
         "recorded_at": _RECORDED_AT,
     }
 
@@ -464,11 +485,11 @@ _ARGUMENT_BUILDERS: Mapping[
 
 
 def _argument_carries_text(value: object, text: str) -> bool:
-    """Whether an argument carries the exact fixture text as typed data."""
+    """Whether an argument carries the fixture text as typed data."""
     if type(value) is str:
-        return value == text
+        return text in value
     if type(value) is UntrustedText:
-        return value.as_data() == text
+        return text in value.as_data()
     marker = getattr(value, "injection_text", None)
     return type(marker) is UntrustedText and marker.as_data() == text
 
@@ -531,6 +552,19 @@ def _assert_same_boundary_outcome(
     assert type(sample.error) is type(reference.error)
 
 
+def _assert_same_authorization_decision(
+    reference: _Invocation,
+    sample: _Invocation,
+) -> None:
+    """Compare permit or refusal while allowing ordinary operation failures."""
+    assert (sample.outcome is _Outcome.REFUSED) is (
+        reference.outcome is _Outcome.REFUSED
+    )
+    if reference.outcome is _Outcome.REFUSED:
+        assert type(reference.error) is NotAuthorized
+        assert type(sample.error) is NotAuthorized
+
+
 def _assert_same_observable_outcome(
     reference: _Invocation,
     sample: _Invocation,
@@ -551,45 +585,44 @@ def _observed_real_effect(
     implementation = operation.implementation
     returned = invocation.returned
     if implementation is operation_bindings.search:
-        return (
-            type(returned) is tuple
-            and all(type(item) is SearchHit for item in returned)
-            and all(item.source_id == _SOURCE_ID for item in returned)
+        return returned == (
+            SearchHit(_SEEDED_DIGEST, _SOURCE_ID, _SEEDED_CONTENT),
         )
     if implementation is operation_bindings.sources:
         return returned == (_SOURCE_ID,)
     if implementation is operation_bindings.versions:
-        return (
-            type(returned) is tuple
-            and len(returned) >= 1
-            and all(type(item) is str for item in returned)
-        )
+        return returned == (_SEEDED_DIGEST,)
     if implementation is operation_bindings.read_span:
         return returned == "alpha"
     if implementation is operation_bindings.list_documents:
         return returned == ("source.md",)
     if implementation is operation_bindings.describe_corpus:
-        return (
-            type(returned) is tuple
-            and len(returned) == 1
-            and returned[0][0] == "source.md"
-            and len(returned[0][1]) == 64
-        )
+        return returned == (("source.md", _SEEDED_DIGEST),)
     if implementation is operation_bindings.proposals:
         return (
             type(returned) is tuple
-            and len(returned) >= 1
-            and all(type(item) is Proposal for item in returned)
+            and len(returned) == 1
+            and type(returned[0]) is Proposal
+            and returned[0].source_id == _SOURCE_ID
+            and returned[0].content == UntrustedText(_SEEDED_PROPOSAL_CONTENT)
+            and returned[0].proposed_at == _RECORDED_AT
+            and returned[0].holder == _SEEDED_PROPOSAL_HOLDER
         )
     if implementation is operation_bindings.record_proposal:
         return (
             type(returned) is Proposal
-            and len(invocation.candidates_after) == len(invocation.candidates_before) + 1
+            and invocation.candidates_after
+            == invocation.candidates_before + (returned,)
+            and returned.source_id == _SOURCE_ID
+            and returned.content == UntrustedText(_BENIGN_TEXT)
+            and returned.proposed_at == _RECORDED_AT
+            and returned.holder == "matrix holder"
         )
     if implementation is operation_bindings.ingest:
         return (
             type(returned) is IngestResult
-            and type(returned.status) is IngestStatus
+            and returned.status is IngestStatus.SUPERSEDED
+            and invocation.canon_after != invocation.canon_before
         )
     return False
 
@@ -735,18 +768,25 @@ def test_argument_content_cannot_change_any_authorization_decision(
     expected = (
         len(entries) * len(operations) * len(transports) * len(grant_tier_sets)
     )
-    assert expected == 1305
+    assert expected == 4176
     if expected == 0:
         _fail_not_run("the derived corpus matrix had zero expected cells")
 
-    reference_world = _build_world(tmp_path / "reference")
-    sample_world = _build_world(tmp_path / "sample")
+    reference_worlds = {
+        operation.name: _build_world(tmp_path / "reference" / operation.name)
+        for operation in operations
+    }
+    sample_worlds = {
+        operation.name: _build_world(tmp_path / "sample" / operation.name)
+        for operation in operations
+    }
     executed = 0
-    positive_operations: set[str] = set()
-    first_transport = transports[0]
+    positive_controls: set[tuple[str, str, frozenset[Tier]]] = set()
 
     for entry in entries:
         for operation in operations:
+            reference_world = reference_worlds[operation.name]
+            sample_world = sample_worlds[operation.name]
             for transport in transports:
                 for tier_set in grant_tier_sets:
                     grant = Grant("matrix holder", tier_set)
@@ -766,47 +806,57 @@ def test_argument_content_cannot_change_any_authorization_decision(
                     )
                     executed += 1
 
-                    _assert_same_boundary_outcome(reference, sample)
+                    _assert_same_authorization_decision(reference, sample)
                     holds_required = operation.tier in tier_set
-                    expected_outcome = (
-                        _Outcome.EXECUTED if holds_required else _Outcome.REFUSED
-                    )
-                    assert sample.outcome is expected_outcome
-                    assert reference.outcome is expected_outcome
                     if holds_required:
-                        assert _observed_real_effect(operation, reference)
-                        assert _observed_real_effect(operation, sample)
+                        assert reference.outcome is not _Outcome.REFUSED
+                        assert sample.outcome is not _Outcome.REFUSED
                     else:
+                        assert reference.outcome is _Outcome.REFUSED
+                        assert sample.outcome is _Outcome.REFUSED
                         assert type(sample.error) is NotAuthorized
                         assert type(reference.error) is NotAuthorized
 
                     if (
                         entry.identifier == "benign_control"
-                        and transport is first_transport
-                        and tier_set == frozenset({operation.tier})
-                        and _observed_real_effect(operation, sample)
+                        and holds_required
                     ):
-                        positive_operations.add(operation.name)
+                        assert _observed_real_effect(operation, reference)
+                        assert _observed_real_effect(operation, sample)
+                        positive_controls.add(
+                            (transport.name, operation.name, tier_set)
+                        )
 
     if executed == 0:
         _fail_not_run("the corpus matrix executed zero cells")
-    assert executed == 1305
-    assert expected == 1305
-    if positive_operations != {operation.name for operation in operations}:
+    assert executed == 4176
+    assert expected == 4176
+    expected_positive_controls = {
+        (transport.name, operation.name, tier_set)
+        for transport in transports
+        for operation in operations
+        for tier_set in grant_tier_sets
+        if operation.tier in tier_set
+    }
+    assert len(expected_positive_controls) == 72
+    if positive_controls != expected_positive_controls:
         absent = sorted(
-            {operation.name for operation in operations} - positive_operations
+            (transport, operation, sorted(tier.value for tier in tier_set))
+            for transport, operation, tier_set in (
+                expected_positive_controls - positive_controls
+            )
         )
         _fail_not_run(f"real positive controls did not fire for {absent!r}")
     result = _MatrixResult(
         RunStatus.COMPLETE,
         executed,
         expected,
-        len(positive_operations),
+        len(positive_controls),
     )
     assert result.status is RunStatus.COMPLETE
-    assert result.executed == 1305
-    assert result.expected == 1305
-    assert result.positive_controls == 9
+    assert result.executed == 4176
+    assert result.expected == 4176
+    assert result.positive_controls == 72
 
 
 def test_the_holder_is_provenance_metadata_and_carries_no_authority(
@@ -892,18 +942,20 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
                     Grant("ordinary empty holder", frozenset()),
                     Grant("required tier holder", frozenset({operation.tier})),
                 ):
+                    benign_arguments = _arguments(operation, world, _BENIGN_TEXT)
                     benign = _invoke(
                         transport,
                         grant,
                         operation,
-                        dict(working),
+                        benign_arguments,
                         world,
                     )
+                    hostile_arguments = _arguments(operation, world, _BENIGN_TEXT)
                     hostile = _invoke(
                         transport,
                         grant,
                         operation,
-                        _required_tier_arguments(operation, working),
+                        _required_tier_arguments(operation, hostile_arguments),
                         world,
                     )
                     executed += 1

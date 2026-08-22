@@ -22,7 +22,7 @@ from nous_os.capability import Grant, NotAuthorized, Tier, execute
 from nous_os.candidates import CandidateStore, Proposal
 from nous_os.config import DataRoot
 from nous_os.derived import build
-from nous_os.ledger import Ledger, ingest
+from nous_os.ledger import IngestResult, IngestStatus, Ledger, ingest
 from nous_os.provenance import Citation, Locator
 from nous_os.snapshots import SnapshotStore
 from nous_os.untrusted import UntrustedText
@@ -576,7 +576,7 @@ def _promote_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
             "store": canon.snapshots,
             "ledger": canon.ledger,
             "source_id": SOURCE_ID,
-            "content": UntrustedText("a later version that must not be stored"),
+            "content": UntrustedText("a later version that must be stored"),
             "recorded_at": RECORDED_AT,
         }
     }
@@ -848,6 +848,37 @@ def test_a_propose_grant_is_refused_by_every_promote_operation(tmp_path: Path) -
             execute(grant, operation.name, **_promote_arguments(operation.name, canon))
         after = _canon_digest(canon.root, canon.ledger)
         assert after == before
+
+
+def test_every_permitted_promote_operation_grows_both_parts_of_canon(
+    tmp_path: Path,
+) -> None:
+    """A no-op or snapshot-only boundary call cannot count as promotion."""
+    promotions = tuple(
+        operation
+        for operation in _project_operations()
+        if operation.tier is Tier.PROMOTE
+    )
+    assert promotions, "the promote-operation derivation is empty"
+    grant = Grant("promoter", frozenset({Tier.PROMOTE}))
+
+    for operation in promotions:
+        canon = _temporary_canon(tmp_path / operation.name)
+        before = _canon_digest(canon.root, canon.ledger)
+        returned = execute(
+            grant,
+            operation.name,
+            **_promote_arguments(operation.name, canon),
+        )
+        after = _canon_digest(canon.root, canon.ledger)
+
+        assert after.value != before.value
+        assert after.snapshot_bytes > before.snapshot_bytes
+        assert after.ledger_bytes > before.ledger_bytes
+        assert type(returned) is IngestResult
+        assert returned.status is IngestStatus.SUPERSEDED
+        assert returned.entry is not None
+        assert canon.ledger.entries()[-1] == returned.entry
 
 
 def test_a_propose_grant_records_a_proposal_without_changing_canon(tmp_path: Path) -> None:
