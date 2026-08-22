@@ -19,12 +19,14 @@ import pytest
 import nous_os.capability as authority
 import nous_os.operations
 from nous_os.capability import Grant, NotAuthorized, Tier, execute
+from nous_os.canonical import Assertion, LifecycleState, SupportClass
 from nous_os.candidates import CandidateStore, Proposal
 from nous_os.config import DataRoot
 from nous_os.derived import build
 from nous_os.ledger import IngestResult, IngestStatus, Ledger, ingest
 from nous_os.provenance import Citation, Locator
 from nous_os.snapshots import SnapshotStore
+from nous_os.temporal import ClaimKey, TemporalIndex
 from nous_os.untrusted import UntrustedText
 
 
@@ -32,6 +34,7 @@ REPOSITORY = Path(__file__).resolve().parent.parent
 PACKAGE = REPOSITORY / "src" / "nous_os"
 SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 RECORDED_AT = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
+TEMPORAL_KEY = ClaimKey("seeded-claim")
 _ACCOUNTED_TEST_REGISTRATION_MODULES = frozenset(
     {"test_capability", "tests.test_capability"}
 )
@@ -517,6 +520,26 @@ class _TemporaryCanon:
     data_root: DataRoot
     citation: Citation
     candidates: CandidateStore
+    temporal: TemporalIndex
+
+
+def _temporal_index(citation: Citation) -> TemporalIndex:
+    """Seed overlapping canonical assertions so temporal reads prove a result."""
+    index = TemporalIndex()
+    for number in (1, 2):
+        index.add(
+            TEMPORAL_KEY,
+            Assertion(
+                id=f"asr_{number:026X}",
+                text=f"temporal assertion {number}",
+                citation=citation,
+                support=SupportClass.DIRECT_QUOTE,
+                recorded_at=RECORDED_AT,
+                state=LifecycleState.CANONICAL,
+                valid_from=RECORDED_AT,
+            ),
+        )
+    return index
 
 
 def _temporary_canon(tmp_path: Path) -> _TemporaryCanon:
@@ -550,6 +573,7 @@ def _temporary_canon(tmp_path: Path) -> _TemporaryCanon:
         data_root=DataRoot(documents),
         citation=citation,
         candidates=CandidateStore(tmp_path / "candidates.jsonl"),
+        temporal=_temporal_index(citation),
     )
 
 
@@ -563,6 +587,9 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
         "list_documents": {"root": canon.data_root},
         "describe_corpus": {"root": canon.data_root},
         "proposals": {"store": canon.candidates},
+        "as_of": {"index": canon.temporal},
+        "conflicts": {"index": canon.temporal, "key": TEMPORAL_KEY},
+        "supersession": {"index": canon.temporal, "key": TEMPORAL_KEY},
     }
     if name not in arguments:
         pytest.fail(f"read operation {name!r} has no executable test arguments")
@@ -649,6 +676,9 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "list_documents": Tier.READ,
         "describe_corpus": Tier.READ,
         "proposals": Tier.READ,
+        "as_of": Tier.READ,
+        "conflicts": Tier.READ,
+        "supersession": Tier.READ,
         "record_proposal": Tier.PROPOSE,
         "ingest_source": Tier.PROMOTE,
     }

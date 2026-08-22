@@ -30,12 +30,14 @@ import nous_os.capability as authority
 import nous_os.operations as operation_bindings
 from nous_os.candidates import CandidateStore, Proposal
 from nous_os.capability import Grant, NotAuthorized, Tier, execute
+from nous_os.canonical import Assertion, LifecycleState, SupportClass
 from nous_os.config import DataRoot
 from nous_os.derived import SearchHit, build
 from nous_os.ledger import IngestResult, IngestStatus, Ledger
 from nous_os.measure import RunStatus, not_run
 from nous_os.provenance import Citation, Locator
 from nous_os.snapshots import SnapshotStore
+from nous_os.temporal import AsOf, ClaimKey, Conflict, Overlap, TemporalIndex
 from nous_os.untrusted import UntrustedText
 
 
@@ -65,6 +67,7 @@ _REQUIRED_FAMILIES = frozenset(
 )
 _SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 _RECORDED_AT = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
+_TEMPORAL_KEY = ClaimKey("seeded-claim")
 _BENIGN_TEXT = "beta"
 _SEEDED_CONTENT = "alpha beta signal in a source document"
 _SEEDED_DIGEST = hashlib.sha256(_SEEDED_CONTENT.encode("utf-8")).hexdigest()
@@ -121,6 +124,7 @@ class _World:
     data_root: DataRoot
     citation: Citation
     candidates: CandidateStore
+    temporal: TemporalIndex
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +218,33 @@ class _CandidateCarrier:
 
     def proposals(self) -> tuple[Proposal, ...]:
         return self._store.proposals()
+
+
+class _TemporalCarrier:
+    """A real temporal index that carries text without changing its query."""
+
+    __slots__ = ("_index", "injection_text")
+
+    def __init__(self, index: TemporalIndex, text: str) -> None:
+        self._index = index
+        self.injection_text = UntrustedText(text)
+
+    def as_of(
+        self,
+        *,
+        valid_at: datetime | None = None,
+        recorded_as_of: datetime | None = None,
+    ) -> AsOf:
+        return self._index.as_of(
+            valid_at=valid_at,
+            recorded_as_of=recorded_as_of,
+        )
+
+    def conflicts(self, key: ClaimKey | None = None) -> tuple[Conflict, ...]:
+        return self._index.conflicts(key)
+
+    def supersession(self, key: ClaimKey) -> tuple[Assertion, ...]:
+        return self._index.supersession(key)
 
 
 class _LyingString(str):
@@ -376,6 +407,20 @@ def _build_world(root: Path) -> _World:
         Locator(0, 5),
         "alpha",
     )
+    temporal = TemporalIndex()
+    for number in (1, 2):
+        temporal.add(
+            _TEMPORAL_KEY,
+            Assertion(
+                id=f"asr_{number:026X}",
+                text=f"temporal assertion {number}",
+                citation=citation,
+                support=SupportClass.DIRECT_QUOTE,
+                recorded_at=_RECORDED_AT,
+                state=LifecycleState.CANONICAL,
+                valid_from=_RECORDED_AT,
+            ),
+        )
     return _World(
         root=canon_root,
         snapshots=snapshots,
@@ -384,6 +429,7 @@ def _build_world(root: Path) -> _World:
         data_root=DataRoot(documents),
         citation=citation,
         candidates=candidates,
+        temporal=temporal,
     )
 
 
@@ -451,6 +497,21 @@ def _proposals_arguments(world: _World, text: str) -> dict[str, object]:
     return {"store": _CandidateCarrier(world.candidates, text)}
 
 
+def _as_of_arguments(world: _World, text: str) -> dict[str, object]:
+    """Keep hostile text in the carrier while querying established assertions."""
+    return {"index": _TemporalCarrier(world.temporal, text)}
+
+
+def _conflicts_arguments(world: _World, text: str) -> dict[str, object]:
+    """Keep hostile text in the carrier while querying seeded disagreement."""
+    return {"index": _TemporalCarrier(world.temporal, text), "key": _TEMPORAL_KEY}
+
+
+def _supersession_arguments(world: _World, text: str) -> dict[str, object]:
+    """Keep hostile text in the carrier while querying seeded history."""
+    return {"index": _TemporalCarrier(world.temporal, text), "key": _TEMPORAL_KEY}
+
+
 def _record_arguments(world: _World, text: str) -> dict[str, object]:
     # Content is arbitrary functional text and is written into the proposal.
     return {
@@ -484,6 +545,9 @@ _ARGUMENT_BUILDERS: Mapping[
     operation_bindings.list_documents: _documents_arguments,
     operation_bindings.describe_corpus: _documents_arguments,
     operation_bindings.proposals: _proposals_arguments,
+    operation_bindings.as_of: _as_of_arguments,
+    operation_bindings.conflicts: _conflicts_arguments,
+    operation_bindings.supersession: _supersession_arguments,
     operation_bindings.record_proposal: _record_arguments,
     operation_bindings.ingest: _ingest_arguments,
 }
@@ -648,6 +712,51 @@ def _matches_effectful_ingest(value: object, invocation: _Invocation) -> bool:
     )
 
 
+def _is_seeded_temporal_assertion(value: object) -> bool:
+    """Recognize one assertion from the seeded temporal disagreement."""
+    if type(value) is not Assertion:
+        return False
+    if value.id not in {f"asr_{number:026X}" for number in (1, 2)}:
+        return False
+    number = int(value.id.removeprefix("asr_"), 16)
+    return (
+        value.text == f"temporal assertion {number}"
+        and value.recorded_at == _RECORDED_AT
+        and value.valid_from == _RECORDED_AT
+        and value.valid_to is None
+        and value.state is LifecycleState.CANONICAL
+        and value.support is SupportClass.DIRECT_QUOTE
+    )
+
+
+def _matches_as_of_result(value: object) -> bool:
+    """Require two established assertions, never an empty temporal partition."""
+    return (
+        type(value) is AsOf
+        and value.excluded == ()
+        and value.undetermined == ()
+        and _nonempty_items_satisfy(
+            value.established,
+            _is_seeded_temporal_assertion,
+            expected_count=2,
+        )
+    )
+
+
+def _matches_conflict(value: object) -> bool:
+    """Require the populated, unresolved conflict instead of any tuple shape."""
+    return (
+        type(value) is Conflict
+        and value.key == _TEMPORAL_KEY
+        and value.overlap is Overlap.UNDETERMINED
+        and _nonempty_items_satisfy(
+            value.members,
+            _is_seeded_temporal_assertion,
+            expected_count=2,
+        )
+    )
+
+
 def _observed_real_effect(
     operation: _Operation,
     invocation: _Invocation,
@@ -696,6 +805,18 @@ def _observed_real_effect(
         items = returned
         expected_count = 1
         condition = _matches_seeded_proposal
+    elif implementation is operation_bindings.as_of:
+        items = (returned,)
+        expected_count = 1
+        condition = _matches_as_of_result
+    elif implementation is operation_bindings.conflicts:
+        items = returned
+        expected_count = 1
+        condition = _matches_conflict
+    elif implementation is operation_bindings.supersession:
+        items = returned
+        expected_count = 2
+        condition = _is_seeded_temporal_assertion
     elif implementation is operation_bindings.record_proposal:
         items = (returned,)
         expected_count = 1
@@ -746,6 +867,32 @@ def _well_formed_wrong_result(operation: _Operation) -> object:
         if implementation is operation_bindings.proposals:
             return (proposal,)
         return proposal
+    wrong_temporal_assertion = Assertion(
+        id=f"asr_{3:026X}",
+        text="temporal assertion 3",
+        citation=Citation(
+            _SOURCE_ID,
+            "3" * 64,
+            Locator(0, 5),
+            "other",
+        ),
+        support=SupportClass.DIRECT_QUOTE,
+        recorded_at=_RECORDED_AT,
+        state=LifecycleState.CANONICAL,
+        valid_from=_RECORDED_AT,
+    )
+    if implementation is operation_bindings.as_of:
+        return AsOf((wrong_temporal_assertion,), (), ())
+    if implementation is operation_bindings.conflicts:
+        return (
+            Conflict(
+                _TEMPORAL_KEY,
+                (wrong_temporal_assertion,),
+                Overlap.UNDETERMINED,
+            ),
+        )
+    if implementation is operation_bindings.supersession:
+        return (wrong_temporal_assertion,)
     if implementation is operation_bindings.ingest:
         return IngestResult(IngestStatus.UNCHANGED, None, None)
     pytest.fail(f"registered operation {operation.name!r} has no wrong result")
@@ -986,7 +1133,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
     expected = (
         len(entries) * len(operations) * len(transports) * len(grant_tier_sets)
     )
-    assert expected == 4176
+    assert expected == 5568
     if expected == 0:
         _fail_not_run("the derived corpus matrix had zero expected cells")
 
@@ -1044,8 +1191,8 @@ def test_argument_content_cannot_change_any_authorization_decision(
 
     if executed == 0:
         _fail_not_run("the corpus matrix executed zero cells")
-    assert executed == 4176
-    assert expected == 4176
+    assert executed == 5568
+    assert expected == 5568
     expected_positive_controls = {
         (transport.name, operation.name, tier_set)
         for transport in transports
@@ -1053,7 +1200,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
         for tier_set in grant_tier_sets
         if operation.tier in tier_set
     }
-    assert len(expected_positive_controls) == 72
+    assert len(expected_positive_controls) == 96
     if positive_controls != expected_positive_controls:
         absent = sorted(
             (transport, operation, sorted(tier.value for tier in tier_set))
@@ -1069,9 +1216,9 @@ def test_argument_content_cannot_change_any_authorization_decision(
         len(positive_controls),
     )
     assert result.status is RunStatus.COMPLETE
-    assert result.executed == 4176
-    assert result.expected == 4176
-    assert result.positive_controls == 72
+    assert result.executed == 5568
+    assert result.expected == 5568
+    assert result.positive_controls == 96
 
 
 def test_the_holder_is_provenance_metadata_and_carries_no_authority(
@@ -1087,7 +1234,7 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
     expected = len(transports) * sum(
         1 for tier in tiers for operation in operations if operation.tier is tier
     )
-    assert expected == 9
+    assert expected == 12
     if expected == 0:
         _fail_not_run("the holder-metadata matrix had zero expected cells")
 
@@ -1119,8 +1266,8 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
 
     if executed == 0:
         _fail_not_run("the holder-metadata matrix executed zero cells")
-    assert executed == 9
-    assert expected == 9
+    assert executed == 12
+    assert expected == 12
 
 
 def test_required_tier_argument_content_cannot_change_the_decision_in_either_direction(
@@ -1132,7 +1279,7 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
     transports = _derived_transports()
     world = _build_world(tmp_path / "required_tier_arguments")
     expected = len(transports) * len(operations) * 2
-    assert expected == 18
+    assert expected == 24
     if expected == 0:
         _fail_not_run("the required-tier argument matrix had zero expected cells")
     executed = 0
@@ -1191,5 +1338,5 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
 
     if executed == 0:
         _fail_not_run("the required-tier argument matrix executed zero cells")
-    assert executed == 18
-    assert expected == 18
+    assert executed == 24
+    assert expected == 24

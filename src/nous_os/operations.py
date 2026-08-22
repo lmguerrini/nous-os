@@ -29,6 +29,21 @@ def proposals(*, store: CandidateStore) -> tuple[Proposal, ...]:
     return store.proposals()
 
 
+def as_of(*, index, valid_at=None, recorded_as_of=None):
+    """Keep temporal history queries behind the registry's single door."""
+    return index.as_of(valid_at=valid_at, recorded_as_of=recorded_as_of)
+
+
+def conflicts(*, index, key=None):
+    """Prevent direct temporal disagreement reads from bypassing authority."""
+    return index.conflicts(key)
+
+
+def supersession(*, index, key):
+    """Prevent direct temporal history reads from bypassing authority."""
+    return index.supersession(key)
+
+
 def record_proposal(
     *,
     store: CandidateStore,
@@ -52,5 +67,8 @@ register("read_span", Tier.READ, read_span)
 register("list_documents", Tier.READ, list_documents)
 register("describe_corpus", Tier.READ, describe_corpus)
 register("proposals", Tier.READ, proposals)
+register("as_of", Tier.READ, as_of)
+register("conflicts", Tier.READ, conflicts)
+register("supersession", Tier.READ, supersession)
 register("record_proposal", Tier.PROPOSE, record_proposal)
 register("ingest_source", Tier.PROMOTE, ingest)
