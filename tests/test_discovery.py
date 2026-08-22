@@ -529,11 +529,78 @@ def test_round_dispositions_are_total_disjoint_and_known_before_any_write(
     )
     dispositions = result.accepted + result.rejected + result.undetermined
     assert Counter(dispositions) == Counter(result.proposed)
-    assert not (set(result.accepted) & set(result.rejected))
-    assert not (set(result.accepted) & set(result.undetermined))
-    assert not (set(result.rejected) & set(result.undetermined))
     skipped_cards = tuple(card for card in (accepted, rejected, undetermined, skipped) if card.cluster_id in result.skipped)
     assert Counter(skipped_cards + dispositions) == Counter((accepted, rejected, undetermined, skipped))
+
+
+def test_round_result_constructor_rejects_non_partitioned_complete_and_nonempty_not_run() -> None:
+    """RoundResult itself, rather than only run_round, owns these status invariants."""
+    accepted = _card("N", cluster="complete-accepted")
+    rejected = _card("P", cluster="complete-rejected", failed=Gate.G1)
+    with pytest.raises(DiscoveryError, match="dispositions must partition"):
+        discovery.RoundResult(
+            round_number=1,
+            status=RoundStatus.COMPLETE,
+            proposed=(accepted, rejected),
+            accepted=(accepted,),
+            rejected=(),
+            skipped=(),
+        )
+    with pytest.raises(DiscoveryError, match="not-run round cannot"):
+        discovery.RoundResult(
+            round_number=1,
+            status=RoundStatus.NOT_RUN,
+            proposed=(accepted,),
+            accepted=(),
+            rejected=(),
+            skipped=(),
+        )
+
+
+def test_round_write_failure_leaves_at_most_one_registry_card_without_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-card appends limit a rejected-memory failure to its current card."""
+    candidates = (
+        _card("Q", cluster="cl-A", failed=Gate.G1),
+        _card("R", cluster="cl-B", failed=Gate.G2),
+        _card("S", cluster="cl-C", failed=Gate.G3),
+    )
+    registry = BridgeRegistry(tmp_path / "bridges.jsonl")
+    memory = RejectionMemory(tmp_path / "rejections.jsonl")
+    original_record = RejectionMemory.record
+
+    def fail_memory_write(*args: object, **kwargs: object) -> object:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(RejectionMemory, "record", fail_memory_write)
+    with pytest.raises(OSError, match="disk full"):
+        run_round(
+            round_number=1,
+            candidates=candidates,
+            registry=registry,
+            memory=memory,
+            at=_WHEN,
+        )
+    monkeypatch.setattr(RejectionMemory, "record", original_record)
+    assert len(registry.cards()) <= len(memory.rejections()) + 1
+
+
+def test_round_registry_records_mixed_dispositions_in_canonical_card_order(tmp_path: Path) -> None:
+    """The append-only registry layout ignores the accepted/rejected grouping."""
+    alpha = _card("T", cluster="alpha")
+    beta = _card("V", cluster="beta", failed=Gate.G1)
+    delta = _card("W", cluster="delta")
+    gamma = _card("X", cluster="gamma", failed=Gate.G2)
+    registry = BridgeRegistry(tmp_path / "bridges.jsonl")
+    run_round(
+        round_number=1,
+        candidates=(gamma, delta, beta, alpha),
+        registry=registry,
+        memory=RejectionMemory(tmp_path / "rejections.jsonl"),
+        at=_WHEN,
+    )
+    assert registry.cards() == (alpha, beta, delta, gamma)
 
 
 def test_round_registry_appends_are_deterministic_for_the_same_candidate_order(tmp_path: Path) -> None:

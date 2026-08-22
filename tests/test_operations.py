@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib
 import inspect
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -271,6 +272,13 @@ class _BindingUseScanner:
         direct = self._governed_by_name.get((base.module, node.attr))
         if direct is not None:
             return direct
+        reexport = (
+            self._operations_reexports.get(node.attr)
+            if base.module == "nous_os.operations"
+            else None
+        )
+        if reexport is not None:
+            return reexport
         module_name = f"{base.module}.{node.attr}"
         if module_name in self._module_names:
             return _ModuleBinding(module_name)
@@ -864,32 +872,49 @@ def test_governed_implementation_bindings_are_limited_to_the_pinned_modules() ->
 
 
 def test_registered_wrapper_annotations_resolve_without_importing_discovery_at_runtime() -> None:
-    """TYPE_CHECKING keeps the circular discovery types explicit and resolvable."""
+    """The module's own TYPE_CHECKING names resolve every circular wrapper hint."""
     hint_globals = dict(vars(nous_os.operations))
-    hint_globals.update(
-        {
-            "BridgeCard": BridgeCard,
-            "BridgeRegistry": BridgeRegistry,
-            "HumanDecision": HumanDecision,
-            "PromotionRecord": PromotionRecord,
-            "Rejection": Rejection,
-            "RejectionMemory": RejectionMemory,
-            "RoundResult": RoundResult,
-        }
-    )
+    tree = ast.parse(inspect.getsource(nous_os.operations))
+    type_checking_blocks = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "TYPE_CHECKING"
+    ]
+    assert len(type_checking_blocks) == 1
+    for statement in type_checking_blocks[0].body:
+        if isinstance(statement, ast.ImportFrom) and statement.module is not None:
+            module = importlib.import_module(statement.module)
+            hint_globals.update(
+                {
+                    alias.asname or alias.name: getattr(module, alias.name)
+                    for alias in statement.names
+                }
+            )
     wrappers = tuple(
         authority._REGISTRY[operation.name][1] for operation in _project_operations()
     )
     assert len(wrappers) == 17
-    resolved = tuple(
-        get_type_hints(
+    resolved = {
+        wrapper.__name__: get_type_hints(
             wrapper,
             globalns=hint_globals if wrapper.__module__ == nous_os.operations.__name__ else None,
         )
         for wrapper in wrappers
-    )
-    assert all(hints is not None for hints in resolved)
-    assert get_type_hints(nous_os.operations.discover, globalns=hint_globals)["return"] is RoundResult
+    }
+    assert set(resolved) >= {
+        "rejections",
+        "bridges",
+        "discover",
+        "adjudicate",
+        "promote_candidate",
+    }
+    assert resolved["rejections"]["return"] == tuple[Rejection, ...]
+    assert resolved["bridges"]["return"] == tuple[BridgeCard, ...]
+    assert resolved["discover"]["return"] is RoundResult
+    assert resolved["adjudicate"]["return"] is Rejection
+    assert resolved["promote_candidate"]["return"] is PromotionRecord
 
 
 def test_relative_imports_and_literal_getattr_reveal_governed_uses() -> None:
@@ -920,6 +945,18 @@ def test_relative_imports_and_literal_getattr_reveal_governed_uses() -> None:
         (
             "nous_os.synthetic",
             "from nous_os.operations import read_span\nread_span(store, citation)\n",
+        ),
+        (
+            "nous_os.synthetic",
+            "import nous_os.operations as ops\nops.read_span(store, citation)\n",
+        ),
+        (
+            "nous_os.synthetic",
+            "from nous_os import operations\noperations.read_span(store, citation)\n",
+        ),
+        (
+            "nous_os.synthetic",
+            "import nous_os.operations\nnous_os.operations.read_span(store, citation)\n",
         ),
     )
     assert all(

@@ -512,10 +512,13 @@ def run_round(
 ) -> RoundResult:
     """Classify a deterministic round before durable writes.
 
-    Accepted and failed cards are written in deterministic order. A card with
-    no failed gate is undetermined: absent evidence is neither a rejection nor
-    a mined trace, so it is returned without a registry or memory write and
-    remains eligible for a later round.
+    All cards are classified before durable writes begin. Recorded cards are
+    then written one at a time in canonical content order: a rejected card's
+    registry append precedes its memory append, so a write failure can leave
+    at most that one card only partially recorded. A card with no failed gate
+    is undetermined: absent evidence is neither a rejection nor a mined trace,
+    so it is returned without a registry or memory write and remains eligible
+    for a later round.
     """
     if type(round_number) is not int or round_number < 1:
         raise DiscoveryError("round_number must be an int of at least one")
@@ -562,19 +565,21 @@ def run_round(
         undetermined.append(card)
 
     # Every disposition is known before either append-only store is touched.
-    for card in accepted + rejected:
+    # Keep each card's two appends adjacent to bound a failed memory write to
+    # that card, while preserving the durable registry's canonical order.
+    for card in sorted(accepted + rejected, key=_card_sort_key):
         registry.record(card)
-    for card in rejected:
-        failed_gate = next(
-            gate for gate in Gate if card.gates.outcome(gate) is GateOutcome.FAIL
-        )
-        memory.record(
-            cluster_id=card.cluster_id,
-            failed_gate=failed_gate.value,
-            reason=card.gates.reasons[failed_gate],
-            round_number=round_number,
-            rejected_at=at,
-        )
+        if card in rejected:
+            failed_gate = next(
+                gate for gate in Gate if card.gates.outcome(gate) is GateOutcome.FAIL
+            )
+            memory.record(
+                cluster_id=card.cluster_id,
+                failed_gate=failed_gate.value,
+                reason=card.gates.reasons[failed_gate],
+                round_number=round_number,
+                rejected_at=at,
+            )
     return RoundResult(
         round_number=round_number,
         status=RoundStatus.COMPLETE,

@@ -35,6 +35,7 @@ from nous_os.adjudication import (
 from nous_os.attribution import AttributionError, AttributedKey, KeyOrigin, is_promotable
 from nous_os.candidates import Proposal
 from nous_os.canonical import Assertion
+from nous_os.discovery import BridgeCard
 from nous_os.provenance import Citation, Locator
 from nous_os.temporal import ClaimKey
 from nous_os.untrusted import UntrustedText
@@ -170,13 +171,13 @@ def test_no_module_imports_the_src_prefixed_package() -> None:
 
 
 class _AssertionWriteScanner(ast.NodeVisitor):
-    """Find a durable-write call fed directly by an Assertion-typed argument."""
+    """Find a durable write fed directly by an Assertion-typed visible name."""
 
     _WRITE_METHODS = frozenset({"write", "write_text", "write_bytes"})
 
     def __init__(self) -> None:
         self._assertion_names = {"Assertion"}
-        self._assertion_arguments: list[set[str]] = []
+        self._assertion_arguments: list[set[str]] = [set()]
         self.findings: list[int] = []
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -200,14 +201,23 @@ class _AssertionWriteScanner(ast.NodeVisitor):
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if (
+            isinstance(node.target, ast.Name)
+            and isinstance(node.annotation, ast.Name)
+            and node.annotation.id in self._assertion_names
+        ):
+            self._assertion_arguments[-1].add(node.target.id)
+        self.generic_visit(node)
+
     def visit_Call(self, node: ast.Call) -> None:
         if (
-            self._assertion_arguments
-            and isinstance(node.func, ast.Attribute)
+            isinstance(node.func, ast.Attribute)
             and node.func.attr in self._WRITE_METHODS
             and any(
-                isinstance(name, ast.Name) and name.id in self._assertion_arguments[-1]
-                for argument in node.args
+                isinstance(name, ast.Name)
+                and name.id in set().union(*self._assertion_arguments)
+                for argument in (*node.args, *(keyword.value for keyword in node.keywords))
                 for name in ast.walk(argument)
             )
         ):
@@ -231,6 +241,29 @@ def test_no_module_durably_writes_an_assertion_until_a_later_capability_wires_it
         and scanner.findings
     }
     assert findings == {}
+
+
+def test_assertion_write_tripwire_covers_keyword_nested_and_module_scopes() -> None:
+    """Ordinary argument syntax and lexical scope cannot hide Assertion writes."""
+    sources = (
+        "from nous_os.canonical import Assertion\n"
+        "def save(assertion: Assertion, path):\n"
+        "    path.write_text(data=assertion.subject)\n",
+        "from nous_os.canonical import Assertion\n"
+        "def save(assertion: Assertion, path):\n"
+        "    def write():\n"
+        "        path.write_text(assertion.subject)\n"
+        "    write()\n",
+        "from nous_os.canonical import Assertion\n"
+        "assertion: Assertion\n"
+        "path.write_text(assertion.subject)\n",
+    )
+    findings = []
+    for source in sources:
+        scanner = _AssertionWriteScanner()
+        scanner.visit(ast.parse(source))
+        findings.append(scanner.findings)
+    assert findings == [[3], [4], [3]]
 
 
 def _walk_codes(code: CodeType) -> Iterable[CodeType]:
@@ -878,7 +911,7 @@ def _allows_round_number(
     *,
     disabled: frozenset[str] = frozenset(),
 ) -> bool:
-    """Evaluate the top-level class-and-field scope of the one allowance."""
+    """Allow only Rejection and discovery-record discrete round counters."""
     rejection_counter = {
         "rejection_class": cls is Rejection,
         "round_number_field": field_name == "round_number",
@@ -986,7 +1019,7 @@ def test_public_cap09_dataclasses_carry_no_scalar_and_the_guard_is_live() -> Non
 
 
 def test_round_number_allowance_is_top_level_only() -> None:
-    """The exact Rejection round counter allowance does not cover nested ints."""
+    """Only the four explicit discrete-round clauses allow a top-level int."""
     _assert_each_clause_is_necessary(
         lambda disabled, sample: _allows_round_number(
             sample[0],
@@ -996,6 +1029,8 @@ def test_round_number_allowance_is_top_level_only() -> None:
         {
             "rejection_class": (object, "round_number", int),
             "round_number_field": (Rejection, "not_round_number", int),
+            "discovery_round_record": (Rejection, "origin_round", int),
+            "round_counter_field": (BridgeCard, "weight", int),
         },
     )
     _assert_each_clause_is_necessary(
