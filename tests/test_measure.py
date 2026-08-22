@@ -554,6 +554,8 @@ def _parse_golden_tables() -> dict[str, list[tuple[str, tuple[str, ...]]]]:
             section = "G-RETR"
         elif line.startswith("## G-ITEN"):
             section = "G-ITEN"
+        elif line.startswith("## "):
+            section = None
         elif section and line.startswith("| `"):
             cells = [c.strip() for c in line.strip("|").split("|")]
             query = cells[0].strip("` ")
