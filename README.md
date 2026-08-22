@@ -35,6 +35,7 @@ These are constraints the code is tested against, not aspirations.
 | Derived index, rebuildable from the files alone | present |
 | Measuring instrument and cross-language baseline | present |
 | Context compilation, with a measured default | present |
+| Authority boundary for governed operations | present |
 | Interfaces | not yet built |
 
 The command surface is currently `--version`. Operations will arrive with the
@@ -140,7 +141,8 @@ src/
     ├── measure.py        the measuring instrument, and its third answer
     ├── chunking.py       pieces of a document that remember where they came from
     ├── compile.py        assembling a pack, and recording what went into it
-    └── ablation.py       comparing assembly strategies without combining the numbers
+    ├── ablation.py       comparing assembly strategies without combining the numbers
+    └── capability.py     four kinds of authority, and the one door they are checked at
 tests/                    the suite described above
 fixtures/
 └── synthetic/
