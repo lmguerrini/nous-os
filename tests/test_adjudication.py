@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import copy
 import importlib
+import re
 import inspect
 import json
 import pickle
@@ -37,6 +38,7 @@ from nous_os.provenance import Citation, Locator
 from nous_os.temporal import ClaimKey
 from nous_os.untrusted import UntrustedText
 from tests.probes import decision_probes
+from tests.probes import no_global_decision
 
 
 _WHEN = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
@@ -141,10 +143,22 @@ def test_promote_refuses_anything_not_exactly_a_decision_before_other_work(
 
 def test_pytest_pythonpath_keeps_source_and_repository_imports_available() -> None:
     """Bare pytest needs src imports and tests.probes without package installation."""
-    configuration = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    project_file = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    configuration = tomllib.loads(project_file.read_text(encoding="utf-8"))
     pythonpath = configuration["tool"]["pytest"]["ini_options"]["pythonpath"]
     assert "src" in pythonpath
-    assert "." in pythonpath
+    assert importlib.util.find_spec("tests.probes") is not None
+
+
+def test_no_module_imports_the_src_prefixed_package() -> None:
+    """The source and installed package names must not create split identities."""
+    root = Path(__file__).resolve().parents[1]
+    offenders = []
+    for path in root.rglob("*.py"):
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"^\s*(?:from|import)\s+src(?:\.|\s|$)", line):
+                offenders.append(f"{path.relative_to(root)}:{line_number}")
+    assert offenders == []
 
 
 def _walk_codes(code: CodeType) -> Iterable[CodeType]:
@@ -155,7 +169,9 @@ def _walk_codes(code: CodeType) -> Iterable[CodeType]:
             yield from _walk_codes(constant)
 
 
-def _constructs_decision(callable_: object) -> bool:
+def _constructs_decision(
+    callable_: object, disabled: frozenset[str] = frozenset()
+) -> bool:
     """Find resolved aliases and literal class-name references in nested code.
 
     This is a union: changing a guard must only add coverage, never exchange
@@ -167,10 +183,27 @@ def _constructs_decision(callable_: object) -> bool:
     code = getattr(callable_, "__code__", None)
     globals_ = getattr(callable_, "__globals__", {})
     return type(code) is CodeType and any(
-        globals_.get(name) is HumanDecision or name == "HumanDecision"
+        ("alias" not in disabled and globals_.get(name) is HumanDecision)
+        or ("literal" not in disabled and name == "HumanDecision")
         for nested in _walk_codes(code)
         for name in nested.co_names
     )
+
+
+def _assert_each_clause_is_necessary(
+    guard: object, discriminating_samples: dict[str, object]
+) -> None:
+    """Each named clause must change its own discriminating guard verdict.
+
+    The sample set is required to be non-empty: a caller that supplies none
+    would otherwise pass this helper without any clause being exercised, which
+    is the vacuity this helper exists to prevent one level down.
+    """
+    assert callable(guard)
+    assert discriminating_samples, "clause-necessity needs at least one sample"
+    for clause, sample in discriminating_samples.items():
+        baseline = guard(frozenset(), sample)
+        assert guard(frozenset({clause}), sample) is not baseline
 
 
 def _package_callables() -> tuple[tuple[str, object], frozenset[str], frozenset[str]]:
@@ -245,6 +278,9 @@ _PROBE_CASES = (
     ("type check", decision_probes.type_checks_decision, True),
     ("module qualified", decision_probes.module_qualified_constructor, True),
     ("function local import", decision_probes.function_local_import_constructor, True),
+    ("alias only", decision_probes.alias_only_constructor, True),
+    ("isolated module qualified", no_global_decision.module_qualified_constructor, True),
+    ("isolated function local import", no_global_decision.function_local_import_constructor, True),
 )
 
 
@@ -253,8 +289,21 @@ def test_decision_reference_probe_cases_are_pinned(
     label: str, probe: object, expected: bool
 ) -> None:
     """The same identity detector catches capabilities, not text or spellings."""
-    assert len(_PROBE_CASES) == 7
+    assert len(_PROBE_CASES) == 10
     assert _constructs_decision(probe) is expected, label
+
+
+def test_decision_reference_union_pins_each_half() -> None:
+    """The identity and literal halves each detect a shape the other misses."""
+    assert "HumanDecision" not in vars(no_global_decision)
+    assert vars(decision_probes)["Decision"] is HumanDecision
+    _assert_each_clause_is_necessary(
+        lambda disabled, sample: _constructs_decision(sample, disabled),
+        {
+            "alias": decision_probes.alias_only_constructor,
+            "literal": no_global_decision.module_qualified_constructor,
+        },
+    )
 
 
 def test_no_public_package_callable_constructs_a_human_decision() -> None:
@@ -267,7 +316,8 @@ def test_no_public_package_callable_constructs_a_human_decision() -> None:
     assert any(name.endswith(".fget") for name in coverage)
     assert skipped == frozenset()
     visited = len(callables)
-    assert visited > 40, f"structural walk visited only {visited} callables"
+    # Floor recomputed from a real run: 511 callables were visited.
+    assert visited > 500, f"structural walk visited only {visited} callables"
     observed = frozenset(name for name, value in callables if _constructs_decision(value))
     assert observed == _MAY_REFERENCE_DECISION
 
@@ -285,6 +335,45 @@ def test_decision_reference_walk_refuses_unanalysable_callable_members(
     monkeypatch.setattr(adjudication, "DecisionMint", DecisionMint, raising=False)
     _callables, _coverage, skipped = _package_callables()
     assert skipped == frozenset({"nous_os.adjudication.DecisionMint.make"})
+
+
+def test_static_allowlist_and_runtime_counter_are_independent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """References may be allowlisted, while an executed construction is still observable."""
+    assert _constructs_decision(promote) is True
+    assert "nous_os.adjudication.promote" in _MAY_REFERENCE_DECISION
+
+    calls = 0
+    original_init = HumanDecision.__init__
+
+    def counting_init(self: HumanDecision, *args: object, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(HumanDecision, "__init__", counting_init)
+
+    def runtime_construction(callable_: object) -> bool:
+        before = calls
+        try:
+            callable_()
+        except TypeError:
+            pass
+        return calls > before
+
+    _assert_each_clause_is_necessary(
+        lambda disabled, sample: (
+            "references" not in disabled and _constructs_decision(sample)
+            if sample is decision_probes.direct_constructor
+            else "constructions" not in disabled
+            and runtime_construction(sample)
+        ),
+        {
+            "references": decision_probes.direct_constructor,
+            "constructions": decision_probes.PartialDecisionMint.make,
+        },
+    )
 
 
 def test_decision_reference_counter_covers_executed_public_paths(
@@ -336,6 +425,13 @@ def test_decision_reference_counter_covers_executed_public_paths(
         ),
         "nous_os.adjudication.AgentMemory.notes": agent_memory.notes,
     }
+    public_classes = tuple(
+        value
+        for name, value in vars(adjudication).items()
+        if not name.startswith("_")
+        and inspect.isclass(value)
+        and value.__module__ == adjudication.__name__
+    )
     entry_points = (
         tuple(
             f"{adjudication.__name__}.{name}"
@@ -346,15 +442,64 @@ def test_decision_reference_counter_covers_executed_public_paths(
         )
         + tuple(
             f"nous_os.adjudication.{cls.__name__}.{name}"
-            for cls in (RejectionMemory, AgentMemory)
+            for cls in public_classes
             for name, value in vars(cls).items()
             if not name.startswith("_") and inspect.isfunction(value)
         )
     )
-    assert len(entry_points) == 7
+    authorizations = tmp_path / "authorizations.jsonl"
+    promotion_record = PromotionRecord(
+        proposal_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        adjudicator="human reviewer",
+        decided_at=_WHEN,
+        verdict=Verdict.PROMOTE,
+        subject_key="subject",
+        subject_origin=KeyOrigin.OPERATOR,
+    )
+    rejection_record = Rejection(
+        cluster_id="cluster",
+        failed_gate="origin",
+        reason="unknown",
+        round_number=1,
+        rejected_at=_WHEN,
+    )
+
+    def drive_promote() -> PromotionRecord:
+        result = promote(decision=accepted, candidate=candidate, authorizations=authorizations)
+        assert authorizations.is_file()
+        return result
+
+    def drive_record() -> Rejection:
+        return rejection_memory.record(
+            cluster_id="cluster",
+            failed_gate="origin",
+            reason="unknown",
+            round_number=1,
+            rejected_at=_WHEN,
+        )
+
+    def drive_remember() -> tuple[tuple[str, str, str], ...]:
+        agent_memory.remember(session="session", note="note", at=_WHEN)
+        result = agent_memory.notes()
+        assert result == (("session", "note", _WHEN.isoformat()),)
+        return result
+
+    drivers.update(
+        {
+            "nous_os.adjudication.PromotionRecord.as_payload": promotion_record.as_payload,
+            "nous_os.adjudication.Rejection.as_payload": rejection_record.as_payload,
+            "nous_os.adjudication.promote": drive_promote,
+            "nous_os.adjudication.RejectionMemory.record": drive_record,
+            "nous_os.adjudication.AgentMemory.remember": drive_remember,
+        }
+    )
+    assert len(entry_points) == 9
     assert frozenset(drivers) == frozenset(entry_points)
-    for entry_point in entry_points:
-        drivers[entry_point]()
+    observations = [drivers[entry_point]() for entry_point in entry_points]
+    assert len(observations) == len(entry_points) == 9
+    assert all(observation is not None for observation in observations)
+    assert rejection_memory.rejections() == (rejection_record,)
+    assert agent_memory.notes() == (("session", "note", _WHEN.isoformat()),)
 
     with pytest.raises(AdjudicationError, match="unknown"):
         promote(decision=refused, candidate=candidate, authorizations=tmp_path / "refused.jsonl")
@@ -450,7 +595,7 @@ def test_promote_revalidates_each_fabricated_decision_field(
         object.__setattr__(fabricated, name, getattr(valid, name))
     object.__setattr__(fabricated, field_name, object())
     target = tmp_path / field_name / "authorization.jsonl"
-    with pytest.raises(AdjudicationError):
+    with pytest.raises(AdjudicationError, match=field_name):
         promote(decision=fabricated, candidate=_candidate(), authorizations=target)
     assert not target.parent.exists()
 
@@ -633,28 +778,47 @@ def test_agent_memory_returns_only_plain_strings_and_no_promotion_value(tmp_path
     assert _contains_promotion_value(ProbeMemory().notes())
 
 
+def _allows_round_number(
+    cls: type[object],
+    field_name: str,
+    *,
+    disabled: frozenset[str] = frozenset(),
+) -> bool:
+    """Evaluate the top-level class-and-field scope of the one allowance."""
+    clauses = {
+        "rejection_class": cls is Rejection,
+        "round_number_field": field_name == "round_number",
+    }
+    return all(value for name, value in clauses.items() if name not in disabled)
+
+
+def _allows_scalar_int(
+    annotation: object, *, disabled: frozenset[str] = frozenset()
+) -> bool:
+    """Evaluate the scalar type clause at the sole enforcement point."""
+    return "annotation_is_int" not in disabled and annotation is int
+
+
 def _scalar_violations(classes: Iterable[type[object]]) -> tuple[str, ...]:
     """Reject a forbidden scalar anywhere in a resolved type expression."""
     forbidden = {float, int, complex, Decimal}
 
-    def contains_forbidden(
-        annotation: object, *, top_level: bool, allow_top_level_int: bool
-    ) -> bool:
+    def contains_forbidden(annotation: object, *, allow_top_level_int: bool) -> bool:
         if type(annotation) is type and annotation in forbidden:
-            return not (top_level and allow_top_level_int and annotation is int)
+            return not (allow_top_level_int and _allows_scalar_int(annotation))
         origin = get_origin(annotation)
         args = get_args(annotation)
         if origin is not None or args:
             return any(
                 contains_forbidden(
-                    argument, top_level=False, allow_top_level_int=False
+                    argument, allow_top_level_int=False
                 )
                 for argument in args
             )
         if isinstance(annotation, (tuple, list)):
             return any(
                 contains_forbidden(
-                    argument, top_level=False, allow_top_level_int=False
+                    argument, allow_top_level_int=False
                 )
                 for argument in annotation
             )
@@ -665,14 +829,9 @@ def _scalar_violations(classes: Iterable[type[object]]) -> tuple[str, ...]:
         for field_name, annotation in get_type_hints(cls).items():
             # Round count is a discrete event sequence, not confidence, score,
             # weight, or probability; this exact top-level field is the sole allowance.
-            allow_top_level_int = (
-                cls is Rejection
-                and field_name == "round_number"
-                and annotation is int
-            )
+            allow_top_level_int = _allows_round_number(cls, field_name)
             if contains_forbidden(
                 annotation,
-                top_level=True,
                 allow_top_level_int=allow_top_level_int,
             ):
                 violations.append(f"{cls.__name__}.{field_name}")
@@ -704,8 +863,9 @@ def test_public_cap09_dataclasses_carry_no_scalar_and_the_guard_is_live() -> Non
         ("scores", dict[str, float]),
         ("score", Decimal | None),
         ("nested", tuple[tuple[float, ...], ...]),
+        ("count", int),
     )
-    assert len(positive_shapes) == 8
+    assert len(positive_shapes) == 9
     for field_name, annotation in positive_shapes:
         probe = dataclasses.make_dataclass("ScalarProbe", [(field_name, annotation)])
         assert _scalar_violations((probe,)) == (f"ScalarProbe.{field_name}",)
@@ -725,8 +885,28 @@ def test_public_cap09_dataclasses_carry_no_scalar_and_the_guard_is_live() -> Non
 
 def test_round_number_allowance_is_top_level_only() -> None:
     """The exact Rejection round counter allowance does not cover nested ints."""
+    _assert_each_clause_is_necessary(
+        lambda disabled, sample: _allows_round_number(
+            sample[0],
+            sample[1],
+            disabled=disabled,
+        ),
+        {
+            "rejection_class": (object, "round_number", int),
+            "round_number_field": (Rejection, "not_round_number", int),
+        },
+    )
+    _assert_each_clause_is_necessary(
+        lambda disabled, sample: _allows_scalar_int(sample, disabled=disabled),
+        {"annotation_is_int": int},
+    )
     original = Rejection.__annotations__["round_number"]
     Rejection.__annotations__["round_number"] = "tuple[int, ...]"
+    try:
+        assert _scalar_violations((Rejection,)) == ("Rejection.round_number",)
+    finally:
+        Rejection.__annotations__["round_number"] = original
+    Rejection.__annotations__["round_number"] = "float"
     try:
         assert _scalar_violations((Rejection,)) == ("Rejection.round_number",)
     finally:

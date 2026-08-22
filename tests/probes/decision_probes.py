@@ -5,11 +5,17 @@ from __future__ import annotations
 import functools
 
 from nous_os.adjudication import HumanDecision
+from nous_os.adjudication import HumanDecision as Decision
 
 
 def direct_constructor() -> object:
     """Call the decision class by its exported name."""
     return HumanDecision()
+
+
+def alias_only_constructor() -> object:
+    """Call the decision class through a module-global alias only."""
+    return Decision()
 
 
 def local_alias_constructor() -> object:
