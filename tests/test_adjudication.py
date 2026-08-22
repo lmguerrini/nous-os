@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import ast
 import copy
 import importlib
 import re
@@ -31,7 +32,7 @@ from nous_os.adjudication import (
     Verdict,
     promote,
 )
-from nous_os.attribution import AttributedKey, KeyOrigin, is_promotable
+from nous_os.attribution import AttributionError, AttributedKey, KeyOrigin, is_promotable
 from nous_os.candidates import Proposal
 from nous_os.canonical import Assertion
 from nous_os.provenance import Citation, Locator
@@ -166,6 +167,70 @@ def test_no_module_imports_the_src_prefixed_package() -> None:
             if re.search(r"^\s*(?:from|import)\s+src(?:\.|\s|$)", line):
                 offenders.append(f"{path.relative_to(root)}:{line_number}")
     assert offenders == []
+
+
+class _AssertionWriteScanner(ast.NodeVisitor):
+    """Find a durable-write call fed directly by an Assertion-typed argument."""
+
+    _WRITE_METHODS = frozenset({"write", "write_text", "write_bytes"})
+
+    def __init__(self) -> None:
+        self._assertion_names = {"Assertion"}
+        self._assertion_arguments: list[set[str]] = []
+        self.findings: list[int] = []
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module == "nous_os.canonical":
+            self._assertion_names.update(
+                alias.asname or alias.name for alias in node.names if alias.name == "Assertion"
+            )
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        arguments = (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+        assertion_arguments = {
+            argument.arg
+            for argument in arguments
+            if isinstance(argument.annotation, ast.Name)
+            and argument.annotation.id in self._assertion_names
+        }
+        self._assertion_arguments.append(assertion_arguments)
+        self.generic_visit(node)
+        self._assertion_arguments.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if (
+            self._assertion_arguments
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in self._WRITE_METHODS
+            and any(
+                isinstance(name, ast.Name) and name.id in self._assertion_arguments[-1]
+                for argument in node.args
+                for name in ast.walk(argument)
+            )
+        ):
+            self.findings.append(node.lineno)
+        self.generic_visit(node)
+
+
+def test_no_module_durably_writes_an_assertion_until_a_later_capability_wires_it() -> None:
+    """Canon is files today only in concept: promotion writes authorization, not Assertion data.
+
+    This is a forward obligation, not a present defect. When a capability adds
+    durable Assertion storage, this guard must fail so its authorization and
+    temporal wiring are decided at the point that path becomes real.
+    """
+    root = Path(__file__).resolve().parents[1] / "src" / "nous_os"
+    findings = {
+        path.relative_to(root).as_posix(): scanner.findings
+        for path in root.rglob("*.py")
+        for scanner in [_AssertionWriteScanner()]
+        if not (scanner.visit(ast.parse(path.read_text(encoding="utf-8"))) or False)
+        and scanner.findings
+    }
+    assert findings == {}
 
 
 def _walk_codes(code: CodeType) -> Iterable[CodeType]:
@@ -323,8 +388,9 @@ def test_no_public_package_callable_constructs_a_human_decision() -> None:
     assert any(name.endswith(".fget") for name in coverage)
     assert skipped == frozenset()
     visited = len(callables)
-    # Floor recomputed from a real run: 511 callables were visited.
-    assert visited > 500, f"structural walk visited only {visited} callables"
+    # Floor recomputed from a real run: 577 callables were visited. Recompute
+    # it whenever the package gains a module or public callable surface.
+    assert visited > 576, f"structural walk visited only {visited} callables"
     observed = frozenset(name for name, value in callables if _constructs_decision(value))
     assert observed == _MAY_REFERENCE_DECISION
 
@@ -721,6 +787,32 @@ def test_unknown_refusal_is_an_isolated_negative_control(tmp_path: Path) -> None
         )
 
 
+def test_uninitialised_enum_lookalikes_are_not_canonical_members() -> None:
+    """Identity guards reject enum-shaped objects with no declared member value."""
+    fabricated_verdict = object.__new__(Verdict)
+    fabricated_origin = object.__new__(KeyOrigin)
+    import nous_os.adjudication as adjudication
+    import nous_os.attribution as attribution
+
+    assert adjudication._is_canonical_verdict(fabricated_verdict) is False
+    assert attribution._is_canonical_origin(fabricated_origin) is False
+    with pytest.raises(AdjudicationError, match="Verdict"):
+        HumanDecision(
+            adjudicator="human reviewer",
+            verdict=fabricated_verdict,
+            decided_at=_WHEN,
+            rationale="The stated evidence was reviewed.",
+            subject=_subject(KeyOrigin.OPERATOR),
+        )
+    with pytest.raises(AttributionError, match="origin"):
+        AttributedKey(ClaimKey("subject"), fabricated_origin)
+    fabricated_key = object.__new__(AttributedKey)
+    object.__setattr__(fabricated_key, "key", ClaimKey("subject"))
+    object.__setattr__(fabricated_key, "origin", fabricated_origin)
+    object.__setattr__(fabricated_key, "citation", None)
+    assert is_promotable(fabricated_key) is False
+
+
 def test_rejection_memory_is_append_only_and_non_vacuous(tmp_path: Path) -> None:
     """An empty store says False, while a recorded cluster supplies the positive control."""
     memory = RejectionMemory(tmp_path / "rejections.jsonl")
@@ -787,11 +879,18 @@ def _allows_round_number(
     disabled: frozenset[str] = frozenset(),
 ) -> bool:
     """Evaluate the top-level class-and-field scope of the one allowance."""
-    clauses = {
+    rejection_counter = {
         "rejection_class": cls is Rejection,
         "round_number_field": field_name == "round_number",
     }
-    return all(value for name, value in clauses.items() if name not in disabled)
+    discovery_counter = {
+        "discovery_round_record": cls.__module__ == "nous_os.discovery"
+        and cls.__name__ in {"BridgeCard", "RoundResult"},
+        "round_counter_field": field_name in {"origin_round", "round_number"},
+    }
+    return all(value for name, value in rejection_counter.items() if name not in disabled) or all(
+        value for name, value in discovery_counter.items() if name not in disabled
+    )
 
 
 def _allows_scalar_int(
@@ -844,10 +943,11 @@ def test_public_cap09_dataclasses_carry_no_scalar_and_the_guard_is_live() -> Non
     """Resolved hints, rather than postponed field strings, enforce no scalar fields."""
     import nous_os.adjudication as adjudication
     import nous_os.attribution as attribution
+    import nous_os.discovery as discovery
 
     records = tuple(
         cls
-        for module in (attribution, adjudication)
+        for module in (attribution, adjudication, discovery)
         for name, cls in vars(module).items()
         if not name.startswith("_")
         and inspect.isclass(cls)

@@ -14,12 +14,13 @@ import inspect
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 
 import nous_os.capability as authority
 import nous_os.operations
-from nous_os.adjudication import HumanDecision, RejectionMemory, Verdict
+from nous_os.adjudication import HumanDecision, PromotionRecord, Rejection, RejectionMemory, Verdict
 from nous_os.attribution import AttributedKey, KeyOrigin
 from nous_os.capability import Grant, NotAuthorized, Tier, execute
 from nous_os.canonical import Assertion, LifecycleState, SupportClass
@@ -35,6 +36,7 @@ from nous_os.discovery import (
     Gate,
     GateOutcome,
     GateVector,
+    RoundResult,
 )
 from nous_os.ledger import IngestResult, IngestStatus, Ledger, ingest
 from nous_os.provenance import Citation, Locator
@@ -219,6 +221,13 @@ class _BindingUseScanner:
         self._is_package = is_package
         self._governed = governed
         self._governed_by_name = {(item.module, item.qualname): item for item in governed}
+        self._operations_reexports = {
+            name: binding
+            for name, value in vars(nous_os.operations).items()
+            for binding in governed
+            if getattr(value, "__module__", None) == binding.module
+            and getattr(value, "__qualname__", None) == binding.qualname
+        }
         module_names = {item.module for item in governed}
         self._module_names = {
             ".".join(parts[:length])
@@ -271,6 +280,13 @@ class _BindingUseScanner:
         direct = self._governed_by_name.get((module, name))
         if direct is not None:
             return direct
+        reexport = (
+            self._operations_reexports.get(name)
+            if module == "nous_os.operations"
+            else None
+        )
+        if reexport is not None:
+            return reexport
         module_name = f"{module}.{name}" if module else name
         if module_name in self._module_names:
             return _ModuleBinding(module_name)
@@ -839,11 +855,41 @@ def test_governed_implementation_bindings_are_limited_to_the_pinned_modules() ->
         "measure.py",  # Existing measurement code imports and calls search; a forward obligation.
         "config.py",  # describe_corpus calls the governed list_documents function.
         "provenance.py",  # quote_lint calls governed read_span while remaining unguided itself.
+        "discovery.py",  # Mechanical gates call governed read_span and search while remaining unguided.
     }
     assert holding == expected, (
         "governed implementation bindings changed: "
         f"unexpected={sorted(holding - expected)}, missing={sorted(expected - holding)}"
     )
+
+
+def test_registered_wrapper_annotations_resolve_without_importing_discovery_at_runtime() -> None:
+    """TYPE_CHECKING keeps the circular discovery types explicit and resolvable."""
+    hint_globals = dict(vars(nous_os.operations))
+    hint_globals.update(
+        {
+            "BridgeCard": BridgeCard,
+            "BridgeRegistry": BridgeRegistry,
+            "HumanDecision": HumanDecision,
+            "PromotionRecord": PromotionRecord,
+            "Rejection": Rejection,
+            "RejectionMemory": RejectionMemory,
+            "RoundResult": RoundResult,
+        }
+    )
+    wrappers = tuple(
+        authority._REGISTRY[operation.name][1] for operation in _project_operations()
+    )
+    assert len(wrappers) == 17
+    resolved = tuple(
+        get_type_hints(
+            wrapper,
+            globalns=hint_globals if wrapper.__module__ == nous_os.operations.__name__ else None,
+        )
+        for wrapper in wrappers
+    )
+    assert all(hints is not None for hints in resolved)
+    assert get_type_hints(nous_os.operations.discover, globalns=hint_globals)["return"] is RoundResult
 
 
 def test_relative_imports_and_literal_getattr_reveal_governed_uses() -> None:
@@ -866,6 +912,14 @@ def test_relative_imports_and_literal_getattr_reveal_governed_uses() -> None:
             "nous_os.synthetic",
             "import nous_os.derived as derived\n"
             "getattr(derived, 'search')(path=None, query='alpha')\n",
+        ),
+        (
+            "nous_os.synthetic",
+            "from nous_os.provenance import read_span\nread_span(store, citation)\n",
+        ),
+        (
+            "nous_os.synthetic",
+            "from nous_os.operations import read_span\nread_span(store, citation)\n",
         ),
     )
     assert all(

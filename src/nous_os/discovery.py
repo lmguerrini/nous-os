@@ -28,8 +28,16 @@ from typing import Mapping, Sequence
 from nous_os.adjudication import RejectionMemory
 from nous_os.identity import ASSERTION_PREFIX, canonical_bytes, require_id
 from nous_os.operations import read_span, search
-from nous_os.provenance import Citation, Locator, resolves
-from nous_os.snapshots import SnapshotNotFound, SnapshotStore
+from nous_os.provenance import (
+    Citation,
+    Locator,
+    LocatorOutOfRange,
+    LocatorSplitsCharacter,
+    LocatorSplitsGrapheme,
+    SnapshotNotText,
+    resolves,
+)
+from nous_os.snapshots import SnapshotCorrupt, SnapshotNotFound, SnapshotStore
 
 
 class DiscoveryError(Exception):
@@ -387,7 +395,13 @@ class BridgeRegistry:
 
 
 def check_grounded(store: SnapshotStore, endpoint: Endpoint) -> GateOutcome:
-    """Mechanically check G2, preserving an absent snapshot as the third answer."""
+    """Mechanically check G2 as PASS, FAIL, or unavailable evidence.
+
+    Missing, corrupt, and non-text snapshots are UNKNOWN because their bytes
+    cannot be read as evidence. Out-of-range and split-boundary locators are
+    FAIL because the citation itself cannot name the asserted bytes. A
+    readable span whose recorded citation or endpoint quote disagrees is FAIL.
+    """
     if type(store) is not SnapshotStore:
         raise DiscoveryError("store must be an exact SnapshotStore")
     if type(endpoint) is not Endpoint:
@@ -395,8 +409,10 @@ def check_grounded(store: SnapshotStore, endpoint: Endpoint) -> GateOutcome:
     try:
         citation_resolves = resolves(store, endpoint.citation)
         found = read_span(store, endpoint.citation)
-    except SnapshotNotFound:
+    except (SnapshotNotFound, SnapshotCorrupt, SnapshotNotText):
         return GateOutcome.UNKNOWN
+    except (LocatorOutOfRange, LocatorSplitsCharacter, LocatorSplitsGrapheme):
+        return GateOutcome.FAIL
     if not citation_resolves or found != endpoint.quote:
         return GateOutcome.FAIL
     return GateOutcome.PASS
@@ -440,7 +456,7 @@ def check_not_already_stated(
 
 @dataclass(frozen=True, slots=True)
 class RoundResult:
-    """The observable result of one proposed round, including exclusion evidence."""
+    """The observable result of one round after exclusion and full disposition."""
 
     round_number: int
     status: RoundStatus
@@ -448,19 +464,34 @@ class RoundResult:
     accepted: tuple[BridgeCard, ...]
     rejected: tuple[BridgeCard, ...]
     skipped: tuple[str, ...]
+    undetermined: tuple[BridgeCard, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.round_number) is not int or self.round_number < 1:
             raise DiscoveryError("round_number must be an int of at least one")
         if not _is_member(self.status, _ROUND_STATUS_MEMBERS):
             raise DiscoveryError("status must be a declared RoundStatus member")
-        for field, cards in (("proposed", self.proposed), ("accepted", self.accepted), ("rejected", self.rejected)):
+        for field, cards in (
+            ("proposed", self.proposed),
+            ("accepted", self.accepted),
+            ("rejected", self.rejected),
+            ("undetermined", self.undetermined),
+        ):
             if type(cards) is not tuple or any(type(card) is not BridgeCard for card in cards):
                 raise DiscoveryError(f"{field} must be a tuple of exact BridgeCard records")
         if type(self.skipped) is not tuple:
             raise DiscoveryError("skipped must be a tuple")
         for cluster_id in self.skipped:
             _non_blank(cluster_id, "skipped cluster_id")
+        partition = self.accepted + self.rejected + self.undetermined
+        if self.status is RoundStatus.COMPLETE and sorted(
+            partition, key=_card_sort_key
+        ) != sorted(self.proposed, key=_card_sort_key):
+            raise DiscoveryError("complete round dispositions must partition proposed cards")
+        if self.status is RoundStatus.NOT_RUN and any(
+            (self.proposed, self.accepted, self.rejected, self.undetermined)
+        ):
+            raise DiscoveryError("a not-run round cannot contain proposed cards")
 
 
 def _card_sort_key(card: BridgeCard) -> tuple[bytes, str]:
@@ -479,7 +510,13 @@ def run_round(
     at: datetime,
     consult_memory: bool = True,
 ) -> RoundResult:
-    """Record one deterministic round, including byte-stable registry and memory writes."""
+    """Classify a deterministic round before durable writes.
+
+    Accepted and failed cards are written in deterministic order. A card with
+    no failed gate is undetermined: absent evidence is neither a rejection nor
+    a mined trace, so it is returned without a registry or memory write and
+    remains eligible for a later round.
+    """
     if type(round_number) is not int or round_number < 1:
         raise DiscoveryError("round_number must be an int of at least one")
     if type(candidates) not in (tuple, list):
@@ -509,17 +546,28 @@ def run_round(
             proposed=(),
             accepted=(),
             rejected=(),
+            undetermined=(),
             skipped=skipped,
         )
     accepted: list[BridgeCard] = []
     rejected: list[BridgeCard] = []
+    undetermined: list[BridgeCard] = []
     for card in sorted(proposed, key=_card_sort_key):
-        registry.record(card)
         if card.accepted:
             accepted.append(card)
             continue
-        rejected.append(card)
-        failed_gate = next(gate for gate in Gate if card.gates.outcome(gate) is GateOutcome.FAIL)
+        if any(card.gates.outcome(gate) is GateOutcome.FAIL for gate in Gate):
+            rejected.append(card)
+            continue
+        undetermined.append(card)
+
+    # Every disposition is known before either append-only store is touched.
+    for card in accepted + rejected:
+        registry.record(card)
+    for card in rejected:
+        failed_gate = next(
+            gate for gate in Gate if card.gates.outcome(gate) is GateOutcome.FAIL
+        )
         memory.record(
             cluster_id=card.cluster_id,
             failed_gate=failed_gate.value,
@@ -533,6 +581,7 @@ def run_round(
         proposed=proposed,
         accepted=tuple(accepted),
         rejected=tuple(rejected),
+        undetermined=tuple(undetermined),
         skipped=skipped,
     )
 

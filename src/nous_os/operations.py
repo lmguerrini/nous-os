@@ -15,6 +15,7 @@ would make the tier look exercised when it is not.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from nous_os.capability import Tier, register
 from nous_os.candidates import CandidateStore, Proposal
@@ -23,6 +24,10 @@ from nous_os.derived import search, sources, versions
 from nous_os.ledger import ingest
 from nous_os.provenance import read_span
 from nous_os.untrusted import UntrustedText
+
+if TYPE_CHECKING:
+    from nous_os.adjudication import HumanDecision, PromotionRecord, Rejection, RejectionMemory
+    from nous_os.discovery import BridgeCard, BridgeRegistry, RoundResult
 
 
 def proposals(*, store: CandidateStore) -> tuple[Proposal, ...]:

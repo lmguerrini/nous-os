@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import get_type_hints
@@ -188,7 +188,6 @@ def test_published_discovery_tables_are_the_executable_cases() -> None:
 
 
 def test_g_promote_rows_drive_adjudication_and_attribution(tmp_path: Path) -> None:
-    assert len(G_PROMOTE_ROWS) == 5
     candidate = _candidate()
     authorizations = tmp_path / "authorizations.jsonl"
     with pytest.raises(AdjudicationError):
@@ -198,18 +197,22 @@ def test_g_promote_rows_drive_adjudication_and_attribution(tmp_path: Path) -> No
     assert record.verdict is Verdict.PROMOTE
     assert authorizations.read_bytes()
 
+    refused_verdicts = []
     for verdict in (Verdict.REJECT, Verdict.DEFER):
         before = authorizations.read_bytes()
         with pytest.raises(AdjudicationError):
             promote(decision=_decision(verdict), candidate=candidate, authorizations=authorizations)
         assert authorizations.read_bytes() == before
+        refused_verdicts.append(verdict)
 
+    refused_origins = []
     for origin in (KeyOrigin.CONTENT, KeyOrigin.UNKNOWN):
         assert is_promotable(_subject(origin)) is False
         before = authorizations.read_bytes()
         with pytest.raises(AdjudicationError):
             promote(decision=_decision(origin=origin), candidate=candidate, authorizations=authorizations)
         assert authorizations.read_bytes() == before
+        refused_origins.append(origin)
 
     memory = AgentMemory(tmp_path / "session-notes.jsonl")
     memory.remember(session="fixture session", note="review later", at=WHEN)
@@ -218,6 +221,15 @@ def test_g_promote_rows_drive_adjudication_and_attribution(tmp_path: Path) -> No
     assert type(note) is tuple and all(type(value) is str for value in note)
     with pytest.raises(AdjudicationError):
         promote(decision=note, candidate=candidate, authorizations=authorizations)  # type: ignore[arg-type]
+    drivers = {
+        G_PROMOTE_ROWS[0][0]: record.verdict is Verdict.PROMOTE,
+        G_PROMOTE_ROWS[1][0]: refused_verdicts == [Verdict.REJECT, Verdict.DEFER],
+        G_PROMOTE_ROWS[2][0]: refused_origins == [KeyOrigin.CONTENT, KeyOrigin.UNKNOWN],
+        G_PROMOTE_ROWS[3][0]: authorizations.read_bytes() == before,
+        G_PROMOTE_ROWS[4][0]: type(note) is tuple and all(type(value) is str for value in note),
+    }
+    assert tuple(drivers) == tuple(row[0] for row in G_PROMOTE_ROWS)
+    assert all(drivers[row[0]] for row in G_PROMOTE_ROWS)
 
 
 def test_g_neg_discriminates_documented_refusals_from_passes() -> None:
@@ -244,7 +256,6 @@ def test_g_neg_discriminates_documented_refusals_from_passes() -> None:
 
 
 def test_g_iter_rows_drive_recorded_round_behaviour(tmp_path: Path) -> None:
-    assert len(G_ITER_ROWS) == 6
     rejected = _card(G_NEG_ROWS[0], 0)
     first_pass = _card(G_NEG_ROWS[8], 8, origin_round=1)
     later_pass = _card(G_NEG_ROWS[9], 9, origin_round=2)
@@ -268,7 +279,18 @@ def test_g_iter_rows_drive_recorded_round_behaviour(tmp_path: Path) -> None:
 
     unseen_one = _card(G_NEG_ROWS[10], 10)
     unseen_two = _card(G_NEG_ROWS[7], 7)
-    assert rotation_order(registry, (rejected, unseen_one, first_pass, unseen_two)) == (unseen_one, unseen_two, rejected, first_pass)
+    rotated = rotation_order(registry, (rejected, unseen_one, first_pass, unseen_two))
+    drivers = {
+        G_ITER_ROWS[0][0]: second.skipped == (rejected.cluster_id,),
+        G_ITER_ROWS[1][0]: seeded.status is RoundStatus.NOT_RUN and seeded.skipped == (preseeded.cluster_id,),
+        G_ITER_ROWS[2][0]: first_pass in registry.accepted() and later_pass in registry.accepted(),
+        G_ITER_ROWS[3][0]: {card.cluster_id for card in second.proposed} - {card.cluster_id for card in first.proposed}
+        == {later_pass.cluster_id},
+        G_ITER_ROWS[4][0]: tuple(card.origin_round for card in registry.accepted()) == (1, 2),
+        G_ITER_ROWS[5][0]: rotated == (unseen_one, unseen_two, rejected, first_pass),
+    }
+    assert tuple(drivers) == tuple(row[0] for row in G_ITER_ROWS)
+    assert all(drivers[row[0]] for row in G_ITER_ROWS)
 
 
 def test_g_disc_schema_validity_is_checked_and_trigger_is_not_reached() -> None:
@@ -283,6 +305,11 @@ def test_g_disc_schema_validity_is_checked_and_trigger_is_not_reached() -> None:
         endpoint: Endpoint
 
     assert get_type_hints(PositiveControl)["endpoint"] is Endpoint
-    assert [field.name for field in fields(BridgeCard)]
-    trigger_reached = False
+    condition = "at least one novel gate-passing bridge and at least eight schema-valid cards"
+    text = " ".join(DISCOVERY_GOLDEN.read_text(encoding="utf-8").split())
+    assert condition in text
+    assert "The novel-bridge half requires a model run that this capability does not perform." in text
+    schema_valid = all(type(card) is BridgeCard for card in cards) and len(cards) >= 8
+    model_run_performed = False
+    trigger_reached = schema_valid and model_run_performed
     assert trigger_reached is False, "G-DISC is NOT REACHED: this capability performs no model run"
