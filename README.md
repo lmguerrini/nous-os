@@ -145,6 +145,8 @@ src/
     ├── capability.py     four kinds of authority, and the one door they are checked at
     ├── candidates.py     append-only proposals that are explicitly not canon
     ├── temporal.py       two time axes, supersession, and disagreement kept visible
+    ├── attribution.py    a claim key that carries where it came from
+    ├── adjudication.py   the human-gated boundary between a proposal and canon
     └── operations.py     registration of the project's governed operations
 tests/                    the suite described above
 fixtures/
