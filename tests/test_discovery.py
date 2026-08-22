@@ -586,6 +586,52 @@ def test_round_write_failure_leaves_at_most_one_registry_card_without_memory(
     assert len(registry.cards()) <= len(memory.rejections()) + 1
 
 
+def test_a_rejection_trace_never_exists_without_its_registry_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The registry append must precede the memory append for the same card.
+
+    The two orders fail differently, and only one of them is recoverable. With
+    the registry written first, a failed memory write leaves a card whose
+    cluster is not remembered: the next round proposes it again and records it
+    again, which is wasteful but self-correcting. With the memory written
+    first, a failed registry write leaves a rejection trace for a cluster that
+    was never recorded, and ``consult_memory`` then skips that cluster in every
+    later round, so it can never be recorded at all.
+
+    The docstring of ``run_round`` states this ordering. Without this test the
+    claim was true and unverified, and swapping the two appends left the whole
+    suite green.
+    """
+    candidates = (
+        _card("Q", cluster="cl-A", failed=Gate.G1),
+        _card("R", cluster="cl-B", failed=Gate.G2),
+    )
+    registry = BridgeRegistry(tmp_path / "bridges.jsonl")
+    memory = RejectionMemory(tmp_path / "rejections.jsonl")
+    original_record = BridgeRegistry.record
+
+    def fail_registry_write(*args: object, **kwargs: object) -> object:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(BridgeRegistry, "record", fail_registry_write)
+    with pytest.raises(OSError, match="disk full"):
+        run_round(
+            round_number=1,
+            candidates=candidates,
+            registry=registry,
+            memory=memory,
+            at=_WHEN,
+        )
+    monkeypatch.setattr(BridgeRegistry, "record", original_record)
+    recorded = {card.cluster_id for card in registry.cards()}
+    remembered = {rejection.cluster_id for rejection in memory.rejections()}
+    assert remembered <= recorded, (
+        "a cluster is remembered as rejected but holds no registry card, so a "
+        "later round will skip it forever"
+    )
+
+
 def test_round_registry_records_mixed_dispositions_in_canonical_card_order(tmp_path: Path) -> None:
     """The append-only registry layout ignores the accepted/rejected grouping."""
     alpha = _card("T", cluster="alpha")
