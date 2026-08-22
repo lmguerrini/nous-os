@@ -564,6 +564,23 @@ def _parse_golden_tables() -> dict[str, list[tuple[str, tuple[str, ...]]]]:
     return tables
 
 
+def test_golden_table_parser_stops_at_the_next_heading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rows under another heading must not remain attributed to the prior table."""
+    sample = (
+        "## G-RETR\n"
+        "| `kept` | `en-tides` |\n"
+        "## unrelated\n"
+        "| `leaked` | `it-maree` |\n"
+    )
+    monkeypatch.setattr(Path, "read_text", lambda *args, **kwargs: sample)
+    assert _parse_golden_tables() == {
+        "G-RETR": [("kept", ("en-tides",))],
+        "G-ITEN": [],
+    }
+
+
 def test_the_executable_cases_are_the_documented_ones() -> None:
     """A golden file with no machine link to the code cannot fail either.
 

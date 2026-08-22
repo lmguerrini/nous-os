@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import re
 
-from nous_os.canonical import Assertion, LifecycleState
+from nous_os.canonical import Assertion, CanonicalError as _CanonicalError, LifecycleState
 
 
 _CLAIM_KEY = re.compile(r"[a-z0-9]+(?:[.-][a-z0-9]+)*\Z")
@@ -50,6 +50,10 @@ class NonCanonicalAssertion(TemporalError):
 
 class RankingDivergence(TemporalError):
     """Raised when a caller's ranking names an assertion this index does not hold."""
+
+
+class TemporalAssertionError(TemporalError):
+    """Raised when one named assertion cannot support a temporal read."""
 
 
 @dataclass(frozen=True, slots=True, order=True, init=False)
@@ -89,6 +93,15 @@ class AsOf:
     established: tuple[Assertion, ...]
     excluded: tuple[Assertion, ...]
     undetermined: tuple[Assertion, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AsOfRanking:
+    """A caller-ranked three-way temporal answer, without a chosen assertion."""
+
+    kept: tuple[str, ...]
+    excluded: tuple[str, ...]
+    undetermined: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,12 +160,28 @@ def _interval_overlap(left: Assertion, right: Assertion) -> Overlap:
     return Overlap.UNDETERMINED
 
 
-def _assertion_order(assertion: Assertion) -> tuple[datetime, str]:
-    return (_utc(assertion.recorded_at, "recorded_at"), assertion.content_digest)
+def _content_digest(assertion: Assertion) -> str:
+    try:
+        return assertion.content_digest
+    except _CanonicalError as error:
+        raise TemporalAssertionError(
+            f"assertion {assertion.id} cannot support a temporal read"
+        ) from error
+
+
+def _assertion_order(assertion: Assertion) -> tuple[datetime, str, str]:
+    return (
+        _utc(assertion.recorded_at, "recorded_at"),
+        _content_digest(assertion),
+        assertion.id,
+    )
 
 
 class TemporalIndex:
-    """A rebuildable temporal projection which holds only canonical assertions."""
+    """A temporal projection holding only canonical assertions.
+
+    Callers that need a rebuilt projection re-add assertions from canon.
+    """
 
     def __init__(self) -> None:
         self._by_key: dict[ClaimKey, dict[str, Assertion]] = {}
@@ -259,13 +288,16 @@ class TemporalIndex:
         keys = (key,) if key is not None else self.keys()
         found: list[Conflict] = []
         for subject in keys:
-            assert subject is not None
-            assertions = self.assertions(subject)
+            if subject is None:
+                raise TemporalError("conflict query selected an absent claim key")
+            assertions = tuple(self._by_key.get(subject, {}).values())
+            for assertion in assertions:
+                _content_digest(assertion)
             edges: list[tuple[int, int, Overlap]] = []
             for left_index, left in enumerate(assertions):
                 for right_index in range(left_index + 1, len(assertions)):
                     right = assertions[right_index]
-                    if left.content_digest == right.content_digest:
+                    if _content_digest(left) == _content_digest(right):
                         continue
                     relation = _interval_overlap(left, right)
                     if relation is not Overlap.DISJOINT:
@@ -291,7 +323,7 @@ class TemporalIndex:
                 members = tuple(
                     sorted(
                         (assertions[position] for position in positions),
-                        key=lambda assertion: assertion.content_digest,
+                        key=lambda assertion: (_content_digest(assertion), assertion.id),
                     )
                 )
                 member_positions = set(positions)
@@ -306,7 +338,18 @@ class TemporalIndex:
                     else Overlap.UNDETERMINED
                 )
                 found.append(Conflict(subject, members, group_overlap))
-        return tuple(sorted(found, key=lambda conflict: conflict.key))
+        return tuple(
+            sorted(
+                found,
+                key=lambda conflict: (
+                    conflict.key,
+                    tuple(
+                        (_content_digest(member), member.id)
+                        for member in conflict.members
+                    ),
+                ),
+            )
+        )
 
 
 def as_of_ranking(
@@ -315,8 +358,12 @@ def as_of_ranking(
     *,
     valid_at: datetime | None = None,
     recorded_as_of: datetime | None = None,
-) -> tuple[str, ...]:
-    """Keep a caller's order while refusing a ranking that diverges from canon."""
+) -> AsOfRanking:
+    """Partition a caller ranking into kept, excluded, and undetermined ids.
+
+    Each tuple preserves the supplied ranking order, and together the tuples
+    contain every supplied id exactly once.
+    """
     if type(index) is not TemporalIndex:
         raise TemporalTypeError(
             f"index must be a TemporalIndex, not {type(index).__name__}"
@@ -336,7 +383,14 @@ def as_of_ranking(
             raise RankingDivergence(
                 f"ranking names assertion id {assertion_id} which the index does not hold"
             )
-    established = {assertion.id for assertion in index.as_of(
+    answer = index.as_of(
         valid_at=valid_at, recorded_as_of=recorded_as_of
-    ).established}
-    return tuple(assertion_id for assertion_id in ranking if assertion_id in established)
+    )
+    established = {assertion.id for assertion in answer.established}
+    excluded = {assertion.id for assertion in answer.excluded}
+    undetermined = {assertion.id for assertion in answer.undetermined}
+    return AsOfRanking(
+        tuple(assertion_id for assertion_id in ranking if assertion_id in established),
+        tuple(assertion_id for assertion_id in ranking if assertion_id in excluded),
+        tuple(assertion_id for assertion_id in ranking if assertion_id in undetermined),
+    )

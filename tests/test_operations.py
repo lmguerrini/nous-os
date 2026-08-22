@@ -542,6 +542,34 @@ def _temporal_index(citation: Citation) -> TemporalIndex:
     return index
 
 
+def _axis_temporal_index(citation: Citation) -> TemporalIndex:
+    """Seed one assertion included at the query instant and one excluded by it."""
+    index = TemporalIndex()
+    established = Assertion(
+        id="asr_0000000000000000000000000A",
+        text="established at the operation query instant",
+        citation=citation,
+        support=SupportClass.DIRECT_QUOTE,
+        recorded_at=RECORDED_AT,
+        state=LifecycleState.CANONICAL,
+        valid_from=RECORDED_AT,
+        valid_to=RECORDED_AT.replace(day=3),
+    )
+    excluded = Assertion(
+        id="asr_0000000000000000000000000B",
+        text="excluded at the operation query instant",
+        citation=citation,
+        support=SupportClass.DIRECT_QUOTE,
+        recorded_at=RECORDED_AT.replace(day=3),
+        state=LifecycleState.CANONICAL,
+        valid_from=RECORDED_AT.replace(day=3),
+        valid_to=RECORDED_AT.replace(day=4),
+    )
+    index.add(TEMPORAL_KEY, established)
+    index.add(TEMPORAL_KEY, excluded)
+    return index
+
+
 def _temporary_canon(tmp_path: Path) -> _TemporaryCanon:
     """Build one small canonical record and its disposable derived index."""
     root = tmp_path / "canon"
@@ -587,7 +615,11 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
         "list_documents": {"root": canon.data_root},
         "describe_corpus": {"root": canon.data_root},
         "proposals": {"store": canon.candidates},
-        "as_of": {"index": canon.temporal},
+        "as_of": {
+            "index": canon.temporal,
+            "valid_at": RECORDED_AT,
+            "recorded_as_of": RECORDED_AT,
+        },
         "conflicts": {"index": canon.temporal, "key": TEMPORAL_KEY},
         "supersession": {"index": canon.temporal, "key": TEMPORAL_KEY},
     }
@@ -862,6 +894,35 @@ def test_every_read_operation_executes_without_changing_canon(tmp_path: Path) ->
         execute(grant, operation.name, **_read_arguments(operation.name, canon))
     after = _canon_digest(canon.root, canon.ledger)
     assert after == before
+
+
+def test_registered_as_of_forwards_each_temporal_axis(tmp_path: Path) -> None:
+    """The registry operation must preserve both temporal filters, not omit them."""
+    canon = _temporary_canon(tmp_path)
+    index = _axis_temporal_index(canon.citation)
+    grant = Grant("reader", frozenset({Tier.READ}))
+    expected_established = ("asr_0000000000000000000000000A",)
+    expected_excluded = ("asr_0000000000000000000000000B",)
+
+    valid_answer = execute(
+        grant,
+        "as_of",
+        index=index,
+        valid_at=RECORDED_AT,
+    )
+    assert tuple(assertion.id for assertion in valid_answer.established) == expected_established
+    assert tuple(assertion.id for assertion in valid_answer.excluded) == expected_excluded
+    assert tuple(assertion.id for assertion in valid_answer.undetermined) == ()
+
+    recorded_answer = execute(
+        grant,
+        "as_of",
+        index=index,
+        recorded_as_of=RECORDED_AT,
+    )
+    assert tuple(assertion.id for assertion in recorded_answer.established) == expected_established
+    assert tuple(assertion.id for assertion in recorded_answer.excluded) == expected_excluded
+    assert tuple(assertion.id for assertion in recorded_answer.undetermined) == ()
 
 
 def test_a_propose_grant_is_refused_by_every_promote_operation(tmp_path: Path) -> None:

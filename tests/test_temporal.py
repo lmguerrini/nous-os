@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, replace
+from dataclasses import FrozenInstanceError, dataclass, fields, replace
 from datetime import datetime, timedelta, timezone
 import inspect
 from typing import get_type_hints
 
 import pytest
 
-from nous_os.canonical import Assertion, LifecycleState, SupportClass
+from nous_os.canonical import Assertion, CanonicalError, LifecycleState, SupportClass
 from nous_os.provenance import Citation, Locator
 from nous_os.temporal import (
     AsOf,
+    AsOfRanking,
     AssertionIdentityConflict,
     ClaimKey,
     ClaimKeyError,
@@ -21,6 +22,7 @@ from nous_os.temporal import (
     Overlap,
     RankingDivergence,
     TemporalError,
+    TemporalAssertionError,
     TemporalIndex,
     TemporalTypeError,
     as_of_ranking,
@@ -319,6 +321,42 @@ def test_add_order_cannot_change_temporal_answers_or_conflict_membership() -> No
     assert observed[0] == observed[1] == observed[2]
 
 
+def test_identical_content_ids_have_total_reproducible_history_and_conflict_order() -> None:
+    shared = _assertion(63, recorded_at=BASE, text="same cited claim")
+    same_content_different_id = replace(shared, id="asr_00000000000000000000000040")
+    different_content = _assertion(65, recorded_at=BASE, text="different cited claim")
+    assert shared.id != same_content_different_id.id
+    assert shared.content_digest == same_content_different_id.content_digest
+    assert shared.content_digest != different_content.content_digest
+
+    key = ClaimKey("identical-content-order")
+    added_shared_first = _index(
+        key, (shared, same_content_different_id, different_content)
+    )
+    added_same_content_first = _index(
+        key, (same_content_different_id, shared, different_content)
+    )
+    first_answers = (
+        added_shared_first.assertions(key),
+        added_shared_first.supersession(key),
+        added_shared_first.conflicts(key),
+    )
+    second_answers = (
+        added_same_content_first.assertions(key),
+        added_same_content_first.supersession(key),
+        added_same_content_first.conflicts(key),
+    )
+    assert first_answers == second_answers
+    assert len(first_answers[2]) == 1
+    assert _ids(first_answers[2][0].members) == tuple(
+        assertion.id
+        for assertion in sorted(
+            (shared, same_content_different_id, different_content),
+            key=lambda assertion: (assertion.content_digest, assertion.id),
+        )
+    )
+
+
 def test_supersession_uses_recorded_time_only_and_keeps_every_assertion() -> None:
     newest_valid_early = _assertion(
         70,
@@ -434,16 +472,100 @@ def test_no_public_temporal_name_or_conflict_field_can_express_a_resolution() ->
     import nous_os.temporal as temporal
 
     forbidden = ("winner", "preferred", "latest", "resolve", "resolver")
+    scalar_types = (bool, int, float, complex)
+
+    def public_attribute_names(value: object) -> frozenset[str]:
+        return frozenset(name for name in dir(value) if not name.startswith("_"))
 
     def is_resolution_free(model: type[object]) -> bool:
         return all(
             not any(word in name.lower() for word in forbidden)
-            for name in dir(model)
-            if not name.startswith("_")
+            for name in public_attribute_names(model)
         )
 
-    public = tuple(name for name in dir(temporal) if not name.startswith("_"))
-    assert len(public) > 0
+    def public_temporal_surface(module: object) -> frozenset[str]:
+        module_names = {
+            f"module:{name}" for name in public_attribute_names(module)
+        }
+        class_names = {
+            f"{model.__name__}.{name}"
+            for _, model in inspect.getmembers(module, inspect.isclass)
+            if model.__module__ == temporal.__name__
+            and not model.__name__.startswith("_")
+            for name in public_attribute_names(model)
+        }
+        return frozenset((*module_names, *class_names))
+
+    expected_surface = frozenset(
+        {
+            "module:AsOf",
+            "module:AsOfRanking",
+            "module:Assertion",
+            "module:AssertionIdentityConflict",
+            "module:ClaimKey",
+            "module:ClaimKeyError",
+            "module:Conflict",
+            "module:Enum",
+            "module:LifecycleState",
+            "module:NonCanonicalAssertion",
+            "module:Overlap",
+            "module:RankingDivergence",
+            "module:TemporalAssertionError",
+            "module:TemporalError",
+            "module:TemporalIndex",
+            "module:TemporalTypeError",
+            "module:annotations",
+            "module:as_of_ranking",
+            "module:dataclass",
+            "module:datetime",
+            "module:re",
+            "module:timezone",
+            "AsOf.established",
+            "AsOf.excluded",
+            "AsOf.undetermined",
+            "AsOfRanking.excluded",
+            "AsOfRanking.kept",
+            "AsOfRanking.undetermined",
+            "AssertionIdentityConflict.add_note",
+            "AssertionIdentityConflict.args",
+            "AssertionIdentityConflict.with_traceback",
+            "ClaimKey.value",
+            "ClaimKeyError.add_note",
+            "ClaimKeyError.args",
+            "ClaimKeyError.with_traceback",
+            "Conflict.key",
+            "Conflict.members",
+            "Conflict.overlap",
+            "NonCanonicalAssertion.add_note",
+            "NonCanonicalAssertion.args",
+            "NonCanonicalAssertion.with_traceback",
+            "Overlap.DISJOINT",
+            "Overlap.OVERLAPS",
+            "Overlap.UNDETERMINED",
+            "RankingDivergence.add_note",
+            "RankingDivergence.args",
+            "RankingDivergence.with_traceback",
+            "TemporalAssertionError.add_note",
+            "TemporalAssertionError.args",
+            "TemporalAssertionError.with_traceback",
+            "TemporalError.add_note",
+            "TemporalError.args",
+            "TemporalError.with_traceback",
+            "TemporalIndex.add",
+            "TemporalIndex.as_of",
+            "TemporalIndex.assertions",
+            "TemporalIndex.conflicts",
+            "TemporalIndex.keys",
+            "TemporalIndex.supersession",
+            "TemporalTypeError.add_note",
+            "TemporalTypeError.args",
+            "TemporalTypeError.with_traceback",
+        }
+    )
+    assert public_temporal_surface(temporal) == expected_surface
+
+    public = public_attribute_names(temporal)
+    assert public
     for name in public:
         assert not any(word in name.lower() for word in forbidden)
     public_classes = tuple(
@@ -453,11 +575,27 @@ def test_no_public_temporal_name_or_conflict_field_can_express_a_resolution() ->
     )
     assert len(public_classes) > 0
     assert all(is_resolution_free(model) for model in public_classes)
-    conflict_fields = fields(Conflict)
-    assert len(conflict_fields) == 3
+
+    class ChosenProbe:
+        @property
+        def chosen(self) -> object:
+            return object()
+
+    class SafeProbe:
+        def safe(self) -> None:
+            pass
+
+    def is_allowlisted(model: type[object], allowed: frozenset[str]) -> bool:
+        return public_attribute_names(model) <= allowed
+
+    assert not is_allowlisted(ChosenProbe, frozenset({"safe"}))
+    assert is_allowlisted(SafeProbe, frozenset({"safe"}))
+
     def is_conflict_shape_safe(model: type[object]) -> bool:
         annotations = get_type_hints(model)
-        return all(annotations[field.name] is not float for field in fields(model))
+        return all(
+            annotations[field.name] not in scalar_types for field in fields(model)
+        )
 
     assert is_conflict_shape_safe(Conflict)
 
@@ -467,31 +605,146 @@ def test_no_public_temporal_name_or_conflict_field_can_express_a_resolution() ->
 
     assert not is_resolution_free(ResolvingProbe)
 
-    @dataclass
-    class FloatConflict:
-        key: ClaimKey
-        members: tuple[Assertion, ...]
-        overlap: Overlap
-        resolution: float
-
-    assert not is_conflict_shape_safe(FloatConflict)
-    assert inspect.signature(Conflict).return_annotation is None
+    for scalar_type in scalar_types:
+        ScalarConflict = dataclass(
+            type(
+                "ScalarConflict",
+                (),
+                {
+                    "__annotations__": {
+                        "key": ClaimKey,
+                        "members": tuple[Assertion, ...],
+                        "overlap": Overlap,
+                        "resolution": scalar_type,
+                    }
+                },
+            )
+        )
+        assert not is_conflict_shape_safe(ScalarConflict)
 
 
 def test_as_of_ranking_preserves_caller_order_and_reports_divergence() -> None:
-    established = _assertion(100, valid_from=BASE, valid_to=BASE + timedelta(days=3))
-    excluded = _assertion(101, valid_from=BASE + timedelta(days=2), valid_to=BASE + timedelta(days=3))
-    index = _index(ClaimKey("ranking"), (established, excluded))
-    ranking = (excluded.id, established.id)
-    assert as_of_ranking(index, ranking, valid_at=BASE) == (established.id,)
+    first = _assertion(
+        100,
+        recorded_at=BASE + timedelta(days=1),
+        valid_from=BASE,
+        valid_to=BASE + timedelta(days=3),
+        text="first established",
+    )
+    second = _assertion(
+        101,
+        recorded_at=BASE + timedelta(days=3),
+        valid_from=BASE,
+        valid_to=BASE + timedelta(days=3),
+        text="second established",
+    )
+    third = _assertion(
+        102,
+        recorded_at=BASE + timedelta(days=2),
+        valid_from=BASE,
+        valid_to=BASE + timedelta(days=3),
+        text="third established",
+    )
+    excluded = _assertion(
+        103,
+        valid_from=BASE + timedelta(days=2),
+        valid_to=BASE + timedelta(days=3),
+    )
+    undetermined = _assertion(
+        104, valid_from=None, valid_to=BASE + timedelta(days=3)
+    )
+    established = (first, second, third)
+    index = _index(
+        ClaimKey("ranking"), (*established, excluded, undetermined)
+    )
+    ranking = (second.id, excluded.id, third.id, undetermined.id, first.id)
+    expected_kept = (
+        "asr_00000000000000000000000065",
+        "asr_00000000000000000000000066",
+        "asr_00000000000000000000000064",
+    )
+    assert expected_kept != tuple(sorted(expected_kept))
+    assert expected_kept != tuple(
+        assertion.id
+        for assertion in sorted(established, key=lambda assertion: assertion.content_digest)
+    )
+    assert expected_kept != tuple(
+        assertion.id
+        for assertion in sorted(established, key=lambda assertion: assertion.recorded_at)
+    )
+    answer = as_of_ranking(index, ranking, valid_at=BASE)
+    assert answer == AsOfRanking(
+        expected_kept,
+        ("asr_00000000000000000000000067",),
+        ("asr_00000000000000000000000068",),
+    )
     with pytest.raises(RankingDivergence, match="asr_000000000000000000000000ZZ"):
-        as_of_ranking(index, (established.id, "asr_000000000000000000000000ZZ"))
-    with pytest.raises(RankingDivergence, match=established.id):
-        as_of_ranking(index, (established.id, established.id))
+        as_of_ranking(index, (first.id, "asr_000000000000000000000000ZZ"))
+    with pytest.raises(RankingDivergence, match=first.id):
+        as_of_ranking(index, (first.id, first.id))
     with pytest.raises(TemporalTypeError):
-        as_of_ranking(index, [established.id])  # type: ignore[arg-type]
+        as_of_ranking(index, [first.id])  # type: ignore[arg-type]
     with pytest.raises(TemporalTypeError):
-        as_of_ranking(index, (UntrustedText(established.id),))  # type: ignore[arg-type]
+        as_of_ranking(index, (UntrustedText(first.id),))  # type: ignore[arg-type]
+
+
+def test_as_of_ranking_partition_is_total_disjoint_and_caller_ordered() -> None:
+    t1 = BASE + timedelta(days=1)
+    t2 = BASE + timedelta(days=2)
+    assertions = (
+        _assertion(105, valid_from=t1, valid_to=t2),
+        _assertion(106, valid_from=None, valid_to=t2),
+        _assertion(107, valid_from=t1, valid_to=None),
+        _assertion(108, valid_from=None, valid_to=None),
+    )
+    index = _index(ClaimKey("ranking-partition"), assertions)
+    ranking = (assertions[3].id, assertions[1].id, assertions[0].id, assertions[2].id)
+    queries = tuple(
+        (valid_at, recorded_at)
+        for valid_at in (None, BASE, t1, t2)
+        for recorded_at in (None, BASE - timedelta(seconds=1), BASE)
+    )
+    assert len(queries) == 12
+    for valid_at, recorded_at in queries:
+        answer = index.as_of(valid_at=valid_at, recorded_as_of=recorded_at)
+        ranked = as_of_ranking(
+            index,
+            ranking,
+            valid_at=valid_at,
+            recorded_as_of=recorded_at,
+        )
+        assert type(ranked) is AsOfRanking
+        expected = (
+            tuple(item for item in ranking if item in _ids(answer.established)),
+            tuple(item for item in ranking if item in _ids(answer.excluded)),
+            tuple(item for item in ranking if item in _ids(answer.undetermined)),
+        )
+        assert (ranked.kept, ranked.excluded, ranked.undetermined) == expected
+        partitions = (set(ranked.kept), set(ranked.excluded), set(ranked.undetermined))
+        assert partitions[0] | partitions[1] | partitions[2] == set(ranking)
+        assert partitions[0].isdisjoint(partitions[1])
+        assert partitions[0].isdisjoint(partitions[2])
+        assert partitions[1].isdisjoint(partitions[2])
+        ranked_ids = (*ranked.kept, *ranked.excluded, *ranked.undetermined)
+        assert tuple(item for item in ranking if item in set(ranked_ids)) == ranking
+        with pytest.raises(FrozenInstanceError):
+            ranked.kept = ()  # type: ignore[misc]
+
+
+def test_temporal_reads_wrap_canonical_content_errors_with_the_assertion_identity() -> None:
+    unnormalisable = datetime.max.replace(tzinfo=timezone(-timedelta(hours=1)))
+    assertion = _assertion(109, valid_from=unnormalisable)
+    key = ClaimKey("broken-canonical-content")
+    index = _index(key, (assertion,))
+    reads = (
+        lambda: index.assertions(key),
+        lambda: index.as_of(valid_at=BASE),
+        lambda: index.conflicts(key),
+    )
+    for read in reads:
+        with pytest.raises(TemporalAssertionError, match=assertion.id) as raised:
+            read()
+        assert isinstance(raised.value.__cause__, CanonicalError)
 
 
 def test_query_instants_require_exact_timezone_aware_datetimes() -> None:

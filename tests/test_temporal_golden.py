@@ -97,7 +97,11 @@ def _parse_ids(cell: str) -> frozenset[str]:
 
 
 def _parse_temporal_tables(text: str) -> dict[str, list[tuple]]:
-    tables: dict[str, list[tuple]] = {"G-TIME": [], "G-CONTRA": []}
+    tables: dict[str, list[tuple]] = {
+        "G-TIME-ASSERTIONS": [],
+        "G-TIME": [],
+        "G-CONTRA": [],
+    }
     section = None
     table = None
     for line in text.splitlines():
@@ -110,13 +114,25 @@ def _parse_temporal_tables(text: str) -> dict[str, list[tuple]]:
         elif line.startswith("## "):
             section = None
             table = None
+        elif section == "G-TIME" and line.startswith(
+            "| Assertion id | Validity | Recorded at | Why, from the text |"
+        ):
+            table = "G-TIME-ASSERTIONS"
         elif section == "G-TIME" and line.startswith("| Query | Established | Excluded | Undetermined |"):
             table = "G-TIME"
         elif section == "G-CONTRA" and line.startswith("| Claim key | Members | Overlap | Conflict? |"):
             table = "G-CONTRA"
         elif table and line.startswith("|") and not line.startswith("|---"):
             cells = [cell.strip() for cell in line.strip("|").split("|")]
-            if table == "G-TIME":
+            if table == "G-TIME-ASSERTIONS":
+                tables[table].append(
+                    (
+                        cells[0].strip("` "),
+                        cells[1].strip("` "),
+                        cells[2].strip("` "),
+                    )
+                )
+            elif table == "G-TIME":
                 tables[table].append(
                     (cells[0], _parse_ids(cells[1]), _parse_ids(cells[2]), _parse_ids(cells[3]))
                 )
@@ -154,11 +170,42 @@ def _expected_temporal_tables(time_rows=G_TIME_ROWS, contra_rows=G_CONTRA_ROWS) 
     return expected_time, expected_contra
 
 
+def _fixture_instant_label(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    if value == B:
+        return "B"
+    if value == A:
+        return "A"
+    return value.isoformat()
+
+
+def _executable_g_time_assertion_rows() -> list[tuple[str, str, str]]:
+    rows = []
+    for assertion in sorted(_time_index()._all_assertions(), key=lambda item: item.id):
+        validity = (
+            f"[{_fixture_instant_label(assertion.valid_from)}, "
+            f"{_fixture_instant_label(assertion.valid_to)})"
+        )
+        rows.append(
+            (
+                assertion.id,
+                validity,
+                _fixture_instant_label(assertion.recorded_at),
+            )
+        )
+    return rows
+
+
 def _temporal_tables_match(
     tables: dict[str, list[tuple]], time_rows=G_TIME_ROWS, contra_rows=G_CONTRA_ROWS
 ) -> bool:
     expected_time, expected_contra = _expected_temporal_tables(time_rows, contra_rows)
-    return Counter(tables["G-TIME"]) == expected_time and Counter(tables["G-CONTRA"]) == expected_contra
+    return (
+        tables["G-TIME-ASSERTIONS"] == _executable_g_time_assertion_rows()
+        and Counter(tables["G-TIME"]) == expected_time
+        and Counter(tables["G-CONTRA"]) == expected_contra
+    )
 
 
 def _published_temporal_tables() -> dict[str, list[tuple]]:
@@ -268,7 +315,13 @@ def test_g_contra_reports_the_documented_groups_and_every_cited_side() -> None:
     assert set(by_key) == expected_conflict_keys
     for key, member_ids, overlap, is_conflict in G_CONTRA_ROWS:
         if not is_conflict:
-            assert key not in by_key, key
+            keys = (
+                ("office-records", "lighthouse-status")
+                if key == "office-records and lighthouse-status"
+                else (key,)
+            )
+            for isolated_key in keys:
+                assert isolated_key not in by_key, isolated_key
             continue
         conflict = by_key[key]
         assert _ids(conflict.members) == set(member_ids), key
@@ -280,7 +333,10 @@ def test_g_contra_reports_the_documented_groups_and_every_cited_side() -> None:
 
 def test_the_published_temporal_tables_are_the_executable_cases() -> None:
     tables = _published_temporal_tables()
-    assert tables["G-TIME"] and tables["G-CONTRA"], "no rows parsed; the document shape changed"
+    assert (
+        tables["G-TIME-ASSERTIONS"] and tables["G-TIME"] and tables["G-CONTRA"]
+    ), "no rows parsed; the document shape changed"
+    assert len(tables["G-TIME-ASSERTIONS"]) == 5
     assert len(tables["G-TIME"]) == 5
     assert len(tables["G-CONTRA"]) == 5
     assert sum(row[3] for row in tables["G-CONTRA"]) == 3
@@ -290,11 +346,15 @@ def test_the_published_temporal_tables_are_the_executable_cases() -> None:
 def test_the_temporal_document_comparison_rejects_a_wrong_expectation() -> None:
     sample = (
         "## G-TIME\n\n"
+        "| Assertion id | Validity | Recorded at | Why, from the text |\n"
+        "|---|---|---|---|\n"
+        "| asr_right | `[B, A)` | `B` | sample |\n\n"
         "| Query | Established | Excluded | Undetermined |\n"
         "|---|---|---|---|\n"
         "| valid_at=2026-01-01T00:00:00+00:00 | `asr_right` | — | — |\n"
     )
     tables = _parse_temporal_tables(sample)
+    assert tables["G-TIME-ASSERTIONS"] == [("asr_right", "[B, A)", "B")]
     assert tables["G-TIME"] == [
         (
             "valid_at=2026-01-01T00:00:00+00:00",

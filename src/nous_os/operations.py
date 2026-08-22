@@ -35,12 +35,12 @@ def as_of(*, index, valid_at=None, recorded_as_of=None):
 
 
 def conflicts(*, index, key=None):
-    """Prevent direct temporal disagreement reads from bypassing authority."""
+    """Register a temporal disagreement read at the governed boundary."""
     return index.conflicts(key)
 
 
 def supersession(*, index, key):
-    """Prevent direct temporal history reads from bypassing authority."""
+    """Register a temporal-history read at the governed boundary."""
     return index.supersession(key)
 
 

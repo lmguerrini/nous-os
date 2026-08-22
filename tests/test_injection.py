@@ -499,7 +499,10 @@ def _proposals_arguments(world: _World, text: str) -> dict[str, object]:
 
 def _as_of_arguments(world: _World, text: str) -> dict[str, object]:
     """Keep hostile text in the carrier while querying established assertions."""
-    return {"index": _TemporalCarrier(world.temporal, text)}
+    return {
+        "index": _TemporalCarrier(world.temporal, text),
+        "recorded_as_of": _RECORDED_AT,
+    }
 
 
 def _conflicts_arguments(world: _World, text: str) -> dict[str, object]:
