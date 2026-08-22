@@ -247,10 +247,11 @@ def register(name: str, tier: Tier, implementation: _Callable[..., object]) -> N
 
     Exact strings give lookup and storage ordinary string identity, and
     ``setdefault`` makes them one operation so callbacks cannot run between.
-    Names outside NFC, names with leading or trailing whitespace, and names
-    containing a Default_Ignorable_Code_Point, a control, format, surrogate,
+    Names outside NFC, names with leading or trailing whitespace, blank names,
+    and non-string names are refused, as are names containing a
+    Default_Ignorable_Code_Point, a control, format, surrogate,
     unassigned, private-use, or separator character, a non-ASCII space, or a
-    listed blank-rendering character are refused. Two operation names that a
+    listed blank-rendering character. Two operation names that a
     reviewer cannot tell apart must not be able to carry different authority.
     This guard reduces that hazard but does not eliminate it. Homoglyphs and
     confusable scripts are not covered because they require UTS #39 data that

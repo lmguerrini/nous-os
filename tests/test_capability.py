@@ -16,6 +16,7 @@ from itertools import count
 import pickle
 import sys
 import threading
+import unicodedata
 
 import pytest
 
@@ -1013,6 +1014,7 @@ def test_a_registration_with_an_empty_name_is_refused() -> None:
     """An unnamed registry entry could not be addressed unambiguously."""
     with pytest.raises(RegistrationError):
         register("", Tier.READ, lambda: None)
+    assert "" not in registered_names()
 
 
 @pytest.mark.parametrize("name", (" ", "\t\n"))
@@ -1037,6 +1039,63 @@ def test_a_registration_name_cannot_have_edge_whitespace(
         register(operation_name, Tier.READ, lambda: None)
 
 
+def test_an_internal_character_from_each_refused_category_is_refused() -> None:
+    """A missing category guard would admit an internal character as a registry key."""
+    # Cc is explicit because this test also guards its presence in the set;
+    # every other case is derived from the set maintained by the contract.
+    categories_to_test = {*_capability._REFUSED_OPERATION_NAME_CATEGORIES, "Cc"}
+    for category in sorted(categories_to_test):
+        representative = next(
+            (
+                chr(code_point)
+                for code_point in range(sys.maxunicode + 1)
+                if unicodedata.category(chr(code_point)) == category
+            ),
+            None,
+        )
+        if representative is None:
+            # A category without an embeddable representative must never be omitted silently.
+            pytest.fail(f"no representative character exists for {category}")
+
+        operation_name = (
+            f"{_operation_name('registration_rejects_internal_category')}"
+            f"left{representative}right"
+        )
+        assert operation_name == operation_name.strip()
+        with pytest.raises(RegistrationError):
+            register(operation_name, Tier.READ, lambda: None)
+
+    control_characters = (
+        chr(code_point)
+        for code_point in range(sys.maxunicode + 1)
+        if unicodedata.category(chr(code_point)) == "Cc"
+    )
+    control_not_removed = next(
+        character
+        for character in control_characters
+        if f"{character}ordinary".strip() == f"{character}ordinary"
+    )
+    control_characters = (
+        chr(code_point)
+        for code_point in range(sys.maxunicode + 1)
+        if unicodedata.category(chr(code_point)) == "Cc"
+    )
+    control_removed = next(
+        character
+        for character in control_characters
+        if f"{character}ordinary".strip() != f"{character}ordinary"
+    )
+
+    for control_character in (control_not_removed, control_removed):
+        operation_name = (
+            f"{_operation_name('registration_rejects_internal_control')}"
+            f"left{control_character}right"
+        )
+        assert operation_name == operation_name.strip()
+        with pytest.raises(RegistrationError):
+            register(operation_name, Tier.READ, lambda: None)
+
+
 def test_an_internal_ascii_space_in_a_registration_name_is_accepted() -> None:
     """Refusing visible internal separation would over-broaden the name guard."""
     operation_name = _operation_name("internal space remains visible")
@@ -1056,6 +1115,21 @@ def test_a_registration_name_must_be_in_normalization_form_c() -> None:
     register(composed_name, Tier.READ, lambda: sentinel)
     assert required_tier(composed_name) is Tier.READ
     assert execute(Grant("reader", frozenset({Tier.READ})), composed_name) is sentinel
+
+
+def test_lookup_is_exact_bytes_and_normalization_at_lookup_is_a_defect() -> None:
+    """Normalizing a lookup key would reach an operation through an unapproved spelling."""
+    nfc_name = _operation_name("lookup_caf" + "\u00e9" + "_exact_bytes")
+    nfd_name = unicodedata.normalize("NFD", nfc_name)
+    sentinel = object()
+
+    assert nfc_name != nfd_name
+    register(nfc_name, Tier.READ, lambda: sentinel)
+    grant = Grant("reader", frozenset({Tier.READ}))
+
+    assert execute(grant, nfc_name) is sentinel
+    with pytest.raises(UnknownOperation):
+        execute(grant, nfd_name)
 
 
 @pytest.mark.parametrize(
@@ -1190,8 +1264,10 @@ def test_a_visible_registration_name_cannot_have_an_invisible_suffix() -> None:
 
 def test_a_registration_with_a_nontext_name_is_refused() -> None:
     """Coercing a name would make registry identity depend on caller behaviour."""
+    operation_name: object = 17
     with pytest.raises(RegistrationError):
-        register(17, Tier.READ, lambda: None)  # type: ignore[arg-type]
+        register(operation_name, Tier.READ, lambda: None)  # type: ignore[arg-type]
+    assert operation_name not in registered_names()
 
 
 def test_an_unregistered_name_reaches_no_implementation() -> None:
