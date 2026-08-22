@@ -6,6 +6,7 @@ import inspect
 import sqlite3
 import types
 from dataclasses import dataclass, fields, is_dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
@@ -34,12 +35,14 @@ from nous_os.discovery import (
     run_round,
 )
 from nous_os.derived import search
+from nous_os.identity import canonical_bytes
 from nous_os.provenance import Citation, Locator
 from nous_os.snapshots import SnapshotStore
 
 
 SOURCE_A = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 SOURCE_B = "src_01BRZ3NDEKTSV4RRFFQ69G5FAV"
+_WHEN = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
 
 
 def _citation(*, source_id: str = SOURCE_A, span: str = "quoted words", start: int = 0) -> Citation:
@@ -213,11 +216,11 @@ def test_rejection_memory_excludes_a_cluster_and_positive_control_reproposes_it(
     registry = BridgeRegistry(tmp_path / "bridges.jsonl")
     memory = RejectionMemory(tmp_path / "rejections.jsonl")
     rejected = _card("A", cluster="X", failed=Gate.G1)
-    first = run_round(round_number=1, candidates=(rejected,), registry=registry, memory=memory)
+    first = run_round(round_number=1, candidates=(rejected,), registry=registry, memory=memory, at=_WHEN)
     assert first.status is RoundStatus.COMPLETE
     assert first.rejected == (rejected,)
     before = registry.cards()
-    second = run_round(round_number=2, candidates=(rejected,), registry=registry, memory=memory)
+    second = run_round(round_number=2, candidates=(rejected,), registry=registry, memory=memory, at=_WHEN)
     assert second.status is RoundStatus.NOT_RUN
     assert second.skipped == ("X",)
     assert second.accepted == ()
@@ -229,6 +232,7 @@ def test_rejection_memory_excludes_a_cluster_and_positive_control_reproposes_it(
         candidates=(rejected,),
         registry=registry,
         memory=memory,
+        at=_WHEN,
         consult_memory=False,
     )
     assert control.status is RoundStatus.COMPLETE
@@ -236,6 +240,100 @@ def test_rejection_memory_excludes_a_cluster_and_positive_control_reproposes_it(
     assert control.proposed == (rejected,)
     assert control.rejected == (rejected,)
     assert len(registry.cards()) == 2
+
+
+def test_preseeded_rejection_memory_is_consulted_in_round_one_with_positive_control(tmp_path: Path) -> None:
+    candidate = _card("A", cluster="preseeded", failed=Gate.G1)
+    memory = RejectionMemory(tmp_path / "rejections.jsonl")
+    memory.record(
+        cluster_id=candidate.cluster_id,
+        failed_gate=Gate.G1.value,
+        reason="The cluster was rejected by the spike.",
+        round_number=1,
+        rejected_at=_WHEN,
+    )
+    registry = BridgeRegistry(tmp_path / "bridges.jsonl")
+
+    skipped = run_round(
+        round_number=1,
+        candidates=(candidate,),
+        registry=registry,
+        memory=memory,
+        at=_WHEN,
+    )
+    assert skipped.status is RoundStatus.NOT_RUN
+    assert skipped.skipped == (candidate.cluster_id,)
+    assert skipped.accepted == ()
+    assert skipped.rejected == ()
+    assert registry.cards() == ()
+
+    control = run_round(
+        round_number=1,
+        candidates=(candidate,),
+        registry=registry,
+        memory=memory,
+        at=_WHEN,
+        consult_memory=False,
+    )
+    assert control.status is RoundStatus.COMPLETE
+    assert control.skipped == ()
+    assert control.accepted == ()
+    assert control.rejected == (candidate,)
+    assert registry.cards() == (candidate,)
+
+
+def test_card_sort_key_and_round_registry_pin_card_id_tie_break(tmp_path: Path) -> None:
+    lower_id = _card("A", cluster="identical-payload")
+    higher_id = _card("B", cluster="identical-payload")
+    lower_payload = lower_id.as_payload()
+    higher_payload = higher_id.as_payload()
+    lower_payload.pop("card_id")
+    higher_payload.pop("card_id")
+    assert canonical_bytes(lower_payload) == canonical_bytes(higher_payload)
+    supplied_order = (higher_id, lower_id)
+    expected_card_id_order = (lower_id, higher_id)
+    assert tuple(card.card_id for card in supplied_order) == (
+        "asr_01ARZ3NDEKTSV4RRFFQ69G5FB",
+        "asr_01ARZ3NDEKTSV4RRFFQ69G5FA",
+    )
+    assert tuple(card.card_id for card in expected_card_id_order) == (
+        "asr_01ARZ3NDEKTSV4RRFFQ69G5FA",
+        "asr_01ARZ3NDEKTSV4RRFFQ69G5FB",
+    )
+    assert tuple(sorted(supplied_order, key=discovery._card_sort_key)) == expected_card_id_order
+
+    first_path = tmp_path / "first.jsonl"
+    second_path = tmp_path / "second.jsonl"
+    first = run_round(
+        round_number=1,
+        candidates=supplied_order,
+        registry=BridgeRegistry(first_path),
+        memory=RejectionMemory(tmp_path / "first-rejections.jsonl"),
+        at=_WHEN,
+    )
+    second = run_round(
+        round_number=1,
+        candidates=expected_card_id_order,
+        registry=BridgeRegistry(second_path),
+        memory=RejectionMemory(tmp_path / "second-rejections.jsonl"),
+        at=_WHEN,
+    )
+    assert first.accepted == expected_card_id_order
+    assert second.accepted == expected_card_id_order
+    assert first_path.read_bytes() == second_path.read_bytes()
+
+
+def test_run_round_requires_a_timezone_aware_at(tmp_path: Path) -> None:
+    kwargs = dict(
+        round_number=1,
+        candidates=(),
+        registry=BridgeRegistry(tmp_path / "bridges.jsonl"),
+        memory=RejectionMemory(tmp_path / "rejections.jsonl"),
+    )
+    with pytest.raises(TypeError):
+        run_round(**kwargs)  # type: ignore[arg-type]
+    with pytest.raises(DiscoveryError, match="at must carry a timezone"):
+        run_round(**kwargs, at=_WHEN.replace(tzinfo=None))
 
 
 def test_round_skip_clause_is_necessary() -> None:
@@ -274,6 +372,7 @@ def test_rejection_memory_records_the_first_failing_gate_in_closed_order(tmp_pat
         candidates=(card,),
         registry=BridgeRegistry(tmp_path / "bridges.jsonl"),
         memory=memory,
+        at=_WHEN,
     )
     assert result.rejected == (card,)
     recorded = memory.rejections()
@@ -281,6 +380,7 @@ def test_rejection_memory_records_the_first_failing_gate_in_closed_order(tmp_pat
     assert recorded[0].failed_gate == Gate.G2.value
     assert recorded[0].reason == "The span was not re-found."
     assert recorded[0].round_number == 4
+    assert recorded[0].rejected_at == _WHEN
 
 
 def test_round_registry_appends_are_deterministic_for_the_same_candidate_order(tmp_path: Path) -> None:
@@ -292,12 +392,14 @@ def test_round_registry_appends_are_deterministic_for_the_same_candidate_order(t
         candidates=candidates,
         registry=BridgeRegistry(first_path),
         memory=RejectionMemory(tmp_path / "first-rejections.jsonl"),
+        at=_WHEN,
     )
     second = run_round(
         round_number=1,
         candidates=candidates,
         registry=BridgeRegistry(second_path),
         memory=RejectionMemory(tmp_path / "second-rejections.jsonl"),
+        at=_WHEN,
     )
     assert len((first, second)) == 2
     assert first.accepted == second.accepted
@@ -310,11 +412,11 @@ def test_accumulation_is_monotone_and_preserves_origin_round(tmp_path: Path) -> 
     first_card = _card("C", cluster="round-one", origin_round=1)
     second_card = _card("D", cluster="round-two", origin_round=2)
     third_card = _card("E", cluster="round-three", origin_round=3)
-    first = run_round(round_number=1, candidates=(first_card,), registry=registry, memory=memory)
+    first = run_round(round_number=1, candidates=(first_card,), registry=registry, memory=memory, at=_WHEN)
     accepted_after_first = registry.accepted()
-    second = run_round(round_number=2, candidates=(second_card,), registry=registry, memory=memory)
+    second = run_round(round_number=2, candidates=(second_card,), registry=registry, memory=memory, at=_WHEN)
     accepted_after_second = registry.accepted()
-    third = run_round(round_number=3, candidates=(third_card,), registry=registry, memory=memory)
+    third = run_round(round_number=3, candidates=(third_card,), registry=registry, memory=memory, at=_WHEN)
     accepted_after_third = registry.accepted()
     assert len((first, second, third)) == 3
     assert {card.cluster_id for card in second.proposed} - {card.cluster_id for card in first.proposed} == {"round-two"}
@@ -329,6 +431,7 @@ def test_empty_round_is_not_run(tmp_path: Path) -> None:
         candidates=(),
         registry=BridgeRegistry(tmp_path / "bridges.jsonl"),
         memory=RejectionMemory(tmp_path / "rejections.jsonl"),
+        at=_WHEN,
     )
     assert result.status is RoundStatus.NOT_RUN
     assert result.proposed == ()

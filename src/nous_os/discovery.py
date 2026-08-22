@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
@@ -476,9 +476,10 @@ def run_round(
     candidates: Sequence[BridgeCard],
     registry: BridgeRegistry,
     memory: RejectionMemory,
+    at: datetime,
     consult_memory: bool = True,
 ) -> RoundResult:
-    """Record one deterministic round and retain the first recorded failing gate in memory."""
+    """Record one deterministic round, including byte-stable registry and memory writes."""
     if type(round_number) is not int or round_number < 1:
         raise DiscoveryError("round_number must be an int of at least one")
     if type(candidates) not in (tuple, list):
@@ -489,6 +490,12 @@ def run_round(
         raise DiscoveryError("registry must be an exact BridgeRegistry")
     if type(memory) is not RejectionMemory:
         raise DiscoveryError("memory must be an exact RejectionMemory")
+    if type(at) is not datetime:
+        raise DiscoveryError("at must be a datetime")
+    if at.tzinfo is None or at.tzinfo.utcoffset(at) is None:
+        raise DiscoveryError(
+            "at must carry a timezone; a naive timestamp means different instants on different machines"
+        )
     if type(consult_memory) is not bool:
         raise DiscoveryError("consult_memory must be a bool")
 
@@ -518,7 +525,7 @@ def run_round(
             failed_gate=failed_gate.value,
             reason=card.gates.reasons[failed_gate],
             round_number=round_number,
-            rejected_at=datetime.now(timezone.utc),
+            rejected_at=at,
         )
     return RoundResult(
         round_number=round_number,
