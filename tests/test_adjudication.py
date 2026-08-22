@@ -147,6 +147,11 @@ def test_pytest_pythonpath_keeps_source_and_repository_imports_available() -> No
     configuration = tomllib.loads(project_file.read_text(encoding="utf-8"))
     pythonpath = configuration["tool"]["pytest"]["ini_options"]["pythonpath"]
     assert "src" in pythonpath
+    # Both entries are asserted against the file's own text, because that is the
+    # only check that can fail under BOTH invocations. `find_spec` cannot: this
+    # module imports `tests.probes` at module scope, so it is already in
+    # sys.modules and the spec is returned without consulting sys.path at all.
+    assert "." in pythonpath
     assert importlib.util.find_spec("tests.probes") is not None
 
 
@@ -154,7 +159,9 @@ def test_no_module_imports_the_src_prefixed_package() -> None:
     """The source and installed package names must not create split identities."""
     root = Path(__file__).resolve().parents[1]
     offenders = []
-    for path in root.rglob("*.py"):
+    # Scoped to the two source roots: an in-tree virtualenv or vendored
+    # dependency under the repository root would otherwise be scanned.
+    for path in [q for directory in ("src", "tests") for q in (root / directory).rglob("*.py")]:
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if re.search(r"^\s*(?:from|import)\s+src(?:\.|\s|$)", line):
                 offenders.append(f"{path.relative_to(root)}:{line_number}")
@@ -362,18 +369,13 @@ def test_static_allowlist_and_runtime_counter_are_independent(
             pass
         return calls > before
 
-    _assert_each_clause_is_necessary(
-        lambda disabled, sample: (
-            "references" not in disabled and _constructs_decision(sample)
-            if sample is decision_probes.direct_constructor
-            else "constructions" not in disabled
-            and runtime_construction(sample)
-        ),
-        {
-            "references": decision_probes.direct_constructor,
-            "constructions": decision_probes.PartialDecisionMint.make,
-        },
-    )
+    # Two direct assertions, not a clause-necessity harness. These are not the
+    # clauses of any one guard: they are two SEPARATE oracles, and the property
+    # worth stating is that each sees what the other cannot. Dressing that as a
+    # clause harness would claim a structure this check does not have.
+    assert _constructs_decision(decision_probes.PartialDecisionMint.make) is False
+    assert runtime_construction(decision_probes.PartialDecisionMint.make) is True
+    assert _constructs_decision(decision_probes.direct_constructor) is True
 
 
 def test_decision_reference_counter_covers_executed_public_paths(
