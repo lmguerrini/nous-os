@@ -86,6 +86,25 @@ def test_key_and_optional_citation_are_exact_boundary_types() -> None:
     else:  # pragma: no cover
         raise AssertionError("a ClaimKey subclass crossed the boundary")
 
+    class CitationSubclass(Citation):
+        pass
+
+    try:
+        AttributedKey(
+            ClaimKey("subject"),
+            KeyOrigin.CONTENT,
+            CitationSubclass(
+                source_id=_CITATION.source_id,
+                snapshot_digest=_CITATION.snapshot_digest,
+                locator=_CITATION.locator,
+                span=_CITATION.span,
+            ),
+        )
+    except AttributionError as error:
+        assert "content origin requires an exact Citation" in str(error)
+    else:  # pragma: no cover
+        raise AssertionError("a Citation subclass crossed the boundary")
+
 
 def test_eligibility_refuses_a_wrong_argument_instead_of_hiding_a_caller_bug() -> None:
     """The origin allowlist only answers questions about the exact carrier type."""

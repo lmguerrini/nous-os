@@ -14,6 +14,12 @@ failed.  Agent memory is a physically separate string-only store: that
 absence of promotion-shaped values is a mechanism, not a convention.  These
 records cannot establish that a named person made a truthful decision; they
 ensure that no provider identity or remembered note is mistaken for authority.
+
+A decision is not an unforgeable token and does not prove a human was present:
+in-process code able to fabricate an object can fabricate anything.  The
+value-side defences here instead close ordinary restoration routes (pickle,
+copy, and in-place state restoration) and make an unvalidated value unusable
+at the promotion boundary rather than silently acceptable.
 """
 
 from __future__ import annotations
@@ -71,6 +77,33 @@ def _non_blank(value: object, field: str) -> str:
     return value
 
 
+_MISSING = object()
+
+
+def _validated_decision_fields(
+    decision: object,
+) -> tuple[str, Verdict, datetime, str, AttributedKey]:
+    """Read and validate every decision field before it is trusted.
+
+    This shared validation keeps construction and boundary re-validation in
+    lockstep, including objects whose frozen slots were fabricated or left
+    unset without running ``__init__``.
+    """
+    adjudicator = _non_blank(getattr(decision, "adjudicator", _MISSING), "adjudicator")
+    verdict = getattr(decision, "verdict", _MISSING)
+    if not _is_canonical_verdict(verdict):
+        raise AdjudicationError("verdict must be a declared Verdict member")
+    decided_at = getattr(decision, "decided_at", _MISSING)
+    _instant(decided_at, "decided_at")
+    rationale = _non_blank(getattr(decision, "rationale", _MISSING), "rationale")
+    subject = getattr(decision, "subject", _MISSING)
+    if type(subject) is not AttributedKey:
+        raise AdjudicationError(
+            f"subject must be an AttributedKey, not {type(subject).__name__}"
+        )
+    return adjudicator, verdict, decided_at, rationale, subject
+
+
 @dataclass(frozen=True, slots=True)
 class HumanDecision:
     """A decision supplied by a person at the adjudication boundary."""
@@ -82,21 +115,26 @@ class HumanDecision:
     subject: AttributedKey
 
     def __post_init__(self) -> None:
-        _non_blank(self.adjudicator, "adjudicator")
-        if not _is_canonical_verdict(self.verdict):
-            raise AdjudicationError("verdict must be a declared Verdict member")
-        _instant(self.decided_at, "decided_at")
-        _non_blank(self.rationale, "rationale")
-        if type(self.subject) is not AttributedKey:
-            raise AdjudicationError(
-                f"subject must be an AttributedKey, not {type(self.subject).__name__}"
-            )
+        _validated_decision_fields(self)
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
         raise AdjudicationError(
             "decision records may not be subclassed: a subtype could report a "
             "verdict it does not hold"
+        )
+
+    def __setstate__(self, state: object) -> None:
+        """Refuse slot restoration that would bypass decision validation."""
+        raise AdjudicationError(
+            "decision state cannot be restored in place; construct a new HumanDecision"
+        )
+
+    def __reduce__(self) -> tuple:
+        """Rebuild through the validating constructor, never by restoring slots."""
+        return (
+            _DECISION_TYPE,
+            (self.adjudicator, self.verdict, self.decided_at, self.rationale, self.subject),
         )
 
 
@@ -140,19 +178,24 @@ class PromotionRecord:
         }
 
 
-def promote(*, decision: HumanDecision, candidate: Proposal, canon: Path) -> PromotionRecord:
-    """Append authorization for a valid human promotion; never write canon itself."""
+def promote(
+    *, decision: HumanDecision, candidate: Proposal, authorizations: Path
+) -> PromotionRecord:
+    """Append only the authorization ledger record to ``authorizations``; never write canonical content."""
     # This is intentionally first: a malformed decision must not cause any
     # candidate inspection, path coercion, or filesystem activity.
     if type(decision) is not _DECISION_TYPE:
         raise AdjudicationError("decision must be an exact adjudication record")
-    if decision.verdict is not Verdict.PROMOTE:
+    adjudicator, verdict, decided_at, _rationale, subject = _validated_decision_fields(
+        decision
+    )
+    if verdict is not Verdict.PROMOTE:
         raise AdjudicationError(
-            f"decision verdict {decision.verdict.value!r} does not authorize promotion"
+            f"decision verdict {verdict.value!r} does not authorize promotion"
         )
-    if not is_promotable(decision.subject):
+    if not is_promotable(subject):
         raise AdjudicationError(
-            f"key origin {decision.subject.origin.value!r} does not authorize promotion"
+            f"key origin {subject.origin.value!r} does not authorize promotion"
         )
     if type(candidate) is not Proposal:
         raise AdjudicationError(
@@ -161,13 +204,13 @@ def promote(*, decision: HumanDecision, candidate: Proposal, canon: Path) -> Pro
 
     record = PromotionRecord(
         proposal_id=candidate.proposal_id,
-        adjudicator=decision.adjudicator,
-        decided_at=decision.decided_at,
-        verdict=decision.verdict,
-        subject_key=decision.subject.key.value,
-        subject_origin=decision.subject.origin,
+        adjudicator=adjudicator,
+        decided_at=decided_at,
+        verdict=verdict,
+        subject_key=subject.key.value,
+        subject_origin=subject.origin,
     )
-    path = Path(canon)
+    path = Path(authorizations)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("ab") as handle:
         handle.write(canonical_bytes(record.as_payload()) + b"\n")

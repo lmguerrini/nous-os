@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import dataclasses
+import copy
 import importlib
 import inspect
+import json
+import pickle
 import pkgutil
+import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import CodeType, SimpleNamespace
-from typing import Iterable, get_type_hints
+from typing import Iterable, Optional, get_args, get_origin, get_type_hints
 
 import pytest
 
@@ -20,17 +24,19 @@ from nous_os.adjudication import (
     AgentMemory,
     AdjudicationError,
     HumanDecision,
+    PromotionRecord,
     Rejection,
     RejectionMemory,
     Verdict,
     promote,
 )
-from nous_os.attribution import AttributedKey, KeyOrigin
+from nous_os.attribution import AttributedKey, KeyOrigin, is_promotable
 from nous_os.candidates import Proposal
 from nous_os.canonical import Assertion
 from nous_os.provenance import Citation, Locator
 from nous_os.temporal import ClaimKey
 from nous_os.untrusted import UntrustedText
+from tests.probes import decision_probes
 
 
 _WHEN = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
@@ -127,10 +133,18 @@ def test_promote_refuses_anything_not_exactly_a_decision_before_other_work(
         promote(
             decision=bad_decision,  # type: ignore[arg-type]
             candidate=object(),  # type: ignore[arg-type]
-            canon=tmp_path / "must-not-exist.jsonl",
+            authorizations=tmp_path / "must-not-exist.jsonl",
         )
     assert "candidate" not in str(raised.value)
     assert not (tmp_path / "must-not-exist.jsonl").exists()
+
+
+def test_pytest_pythonpath_keeps_source_and_repository_imports_available() -> None:
+    """Bare pytest needs src imports and tests.probes without package installation."""
+    configuration = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    pythonpath = configuration["tool"]["pytest"]["ini_options"]["pythonpath"]
+    assert "src" in pythonpath
+    assert "." in pythonpath
 
 
 def _walk_codes(code: CodeType) -> Iterable[CodeType]:
@@ -142,24 +156,45 @@ def _walk_codes(code: CodeType) -> Iterable[CodeType]:
 
 
 def _constructs_decision(callable_: object) -> bool:
-    """Detect a function body that directly names the decision constructor."""
+    """Find resolved aliases and literal class-name references in nested code.
+
+    This is a union: changing a guard must only add coverage, never exchange
+    one reference shape for another.  It detects the shapes enumerated here,
+    but is secondary evidence rather than a completeness proof (for example,
+    container-held references are outside this walk).  Value-side validation
+    at ``promote`` is the primary control.
+    """
     code = getattr(callable_, "__code__", None)
+    globals_ = getattr(callable_, "__globals__", {})
     return type(code) is CodeType and any(
-        "HumanDecision" in nested.co_names for nested in _walk_codes(code)
+        globals_.get(name) is HumanDecision or name == "HumanDecision"
+        for nested in _walk_codes(code)
+        for name in nested.co_names
     )
 
 
-def _package_callables() -> tuple[tuple[str, object], frozenset[str]]:
-    """Walk package-owned public Python functions and public class methods.
+def _package_callables() -> tuple[tuple[str, object], frozenset[str], frozenset[str]]:
+    """Walk every package module and every reachable callable member.
 
-    Imported standard-library callables are inspected in their defining module,
-    not again through every re-export.  Classes are traversed for their public
-    methods rather than treated as a callable constructor target themselves.
-    The explicit empty skipped set pins that no discovered package function was
-    silently omitted for lacking bytecode.
+    Public module functions and public classes are discovered from the package;
+    every callable member of each public class is retained, including dunders.
+    Descriptor wrappers are opened before bytecode is inspected, and nested code
+    objects are handled by ``_walk_codes``.
     """
     found: list[tuple[str, object]] = []
+    coverage: set[str] = set()
     skipped: set[str] = set()
+
+    def retain(qualified: str, callable_: object) -> None:
+        """Keep analysable callables and name every unanalysable one."""
+        coverage.add(qualified)
+        if not callable(callable_):
+            return
+        if type(getattr(callable_, "__code__", None)) is CodeType:
+            found.append((qualified, callable_))
+        else:
+            skipped.add(qualified)
+
     modules = [nous_os]
     modules.extend(
         importlib.import_module(info.name)
@@ -171,71 +206,320 @@ def _package_callables() -> tuple[tuple[str, object], frozenset[str]]:
                 continue
             qualified = f"{module.__name__}.{name}"
             if inspect.isfunction(value):
-                found.append((qualified, value))
+                retain(qualified, value)
             elif inspect.isclass(value):
                 for method_name, method in vars(value).items():
-                    if method_name.startswith("_"):
+                    if method_name.startswith("_") and not (
+                        method_name.startswith("__") and method_name.endswith("__")
+                    ):
                         continue
                     if isinstance(method, (staticmethod, classmethod)):
                         method = method.__func__
-                    method_qualified = f"{qualified}.{method_name}"
-                    if inspect.isfunction(method):
-                        found.append((method_qualified, method))
-                    elif callable(method):
-                        skipped.add(method_qualified)
-    return tuple(found), frozenset(skipped)
+                        method_qualified = f"{qualified}.{method_name}"
+                        retain(method_qualified, method)
+                    elif isinstance(method, property):
+                        for accessor_name in ("fget", "fset", "fdel"):
+                            accessor = getattr(method, accessor_name)
+                            if accessor is not None:
+                                method_qualified = f"{qualified}.{method_name}.{accessor_name}"
+                                retain(method_qualified, accessor)
+                    else:
+                        method_qualified = f"{qualified}.{method_name}"
+                        retain(method_qualified, method)
+    return tuple(found), frozenset(coverage), frozenset(skipped)
+
+
+# ``promote`` is allowed to reference the class only to enforce an exact-type
+# boundary, while ``__reduce__`` may reference it only to reconstruct through
+# validation; any other reference, including a type-checking helper, is drift.
+_MAY_REFERENCE_DECISION = frozenset(
+    {"nous_os.adjudication.promote", "nous_os.adjudication.HumanDecision.__reduce__"}
+)
+
+
+_PROBE_CASES = (
+    ("direct constructor", decision_probes.direct_constructor, True),
+    ("local alias constructor", decision_probes.local_alias_constructor, True),
+    ("dunder constructor", decision_probes.DecisionFactory.__call__, True),
+    ("text mention", decision_probes.mentions_decision_in_text, False),
+    ("type check", decision_probes.type_checks_decision, True),
+    ("module qualified", decision_probes.module_qualified_constructor, True),
+    ("function local import", decision_probes.function_local_import_constructor, True),
+)
+
+
+@pytest.mark.parametrize("label, probe, expected", _PROBE_CASES, ids=[case[0] for case in _PROBE_CASES])
+def test_decision_reference_probe_cases_are_pinned(
+    label: str, probe: object, expected: bool
+) -> None:
+    """The same identity detector catches capabilities, not text or spellings."""
+    assert len(_PROBE_CASES) == 7
+    assert _constructs_decision(probe) is expected, label
 
 
 def test_no_public_package_callable_constructs_a_human_decision() -> None:
-    """The package has no route that can manufacture the required human value."""
-    def positive_control() -> HumanDecision:
-        return HumanDecision(
-            adjudicator="probe human",
-            verdict=Verdict.PROMOTE,
-            decided_at=_WHEN,
-            rationale="probe",
-            subject=_subject(KeyOrigin.OPERATOR),
-        )
-
-    assert _constructs_decision(positive_control)
-    callables, skipped = _package_callables()
-    # All package-defined public functions have Python bytecode; an unexpected
-    # extension descriptor must be named here rather than silently ignored.
+    """The static oracle pins reachable references by resolved object identity."""
+    callables, coverage, skipped = _package_callables()
+    assert "nous_os.adjudication.HumanDecision.__init_subclass__" in coverage
+    assert "nous_os.adjudication.HumanDecision.__post_init__" in coverage
+    assert "nous_os.adjudication.PromotionRecord.as_payload" in coverage
+    assert "nous_os.adjudication.Verdict.__new__" in coverage
+    assert any(name.endswith(".fget") for name in coverage)
     assert skipped == frozenset()
     visited = len(callables)
     assert visited > 40, f"structural walk visited only {visited} callables"
-    offenders = [name for name, value in callables if _constructs_decision(value)]
-    assert offenders == []
+    observed = frozenset(name for name, value in callables if _constructs_decision(value))
+    assert observed == _MAY_REFERENCE_DECISION
+
+
+def test_decision_reference_walk_refuses_unanalysable_callable_members(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partial factory has no code object, so package coverage must fail closed."""
+    import nous_os.adjudication as adjudication
+
+    class DecisionMint:
+        make = decision_probes.PartialDecisionMint.make
+
+    DecisionMint.__module__ = adjudication.__name__
+    monkeypatch.setattr(adjudication, "DecisionMint", DecisionMint, raising=False)
+    _callables, _coverage, skipped = _package_callables()
+    assert skipped == frozenset({"nous_os.adjudication.DecisionMint.make"})
+
+
+def test_decision_reference_counter_covers_executed_public_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The behavioural oracle covers executed paths; static analysis covers reachable references.
+
+    Neither oracle alone is a completeness proof: one observes execution and
+    the other observes reachable references.
+    """
+    accepted = _decision()
+    refused = _decision(origin=KeyOrigin.UNKNOWN)
+    candidate = _candidate()
+    counter = 0
+    original_init = HumanDecision.__init__
+
+    def counting_init(self: HumanDecision, *args: object, **kwargs: object) -> None:
+        nonlocal counter
+        counter += 1
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(HumanDecision, "__init__", counting_init)
+    _ = HumanDecision(
+        adjudicator="positive control",
+        verdict=Verdict.PROMOTE,
+        decided_at=_WHEN,
+        rationale="counter control",
+        subject=_subject(KeyOrigin.OPERATOR),
+    )
+    assert counter == 1
+    counter = 0
+
+    rejection_memory = RejectionMemory(tmp_path / "rejections.jsonl")
+    agent_memory = AgentMemory(tmp_path / "agent.jsonl")
+    import nous_os.adjudication as adjudication
+
+    drivers = {
+        "nous_os.adjudication.promote": lambda: promote(
+            decision=accepted, candidate=candidate, authorizations=tmp_path / "authorizations.jsonl"
+        ),
+        "nous_os.adjudication.RejectionMemory.record": lambda: rejection_memory.record(
+            cluster_id="cluster", failed_gate="origin", reason="unknown", round_number=1, rejected_at=_WHEN
+        ),
+        "nous_os.adjudication.RejectionMemory.rejections": rejection_memory.rejections,
+        "nous_os.adjudication.RejectionMemory.is_rejected": lambda: rejection_memory.is_rejected("cluster"),
+        "nous_os.adjudication.RejectionMemory.rejected_clusters": rejection_memory.rejected_clusters,
+        "nous_os.adjudication.AgentMemory.remember": lambda: agent_memory.remember(
+            session="session", note="note", at=_WHEN
+        ),
+        "nous_os.adjudication.AgentMemory.notes": agent_memory.notes,
+    }
+    entry_points = (
+        tuple(
+            f"{adjudication.__name__}.{name}"
+            for name, value in vars(adjudication).items()
+            if not name.startswith("_")
+            and inspect.isfunction(value)
+            and value.__module__ == adjudication.__name__
+        )
+        + tuple(
+            f"nous_os.adjudication.{cls.__name__}.{name}"
+            for cls in (RejectionMemory, AgentMemory)
+            for name, value in vars(cls).items()
+            if not name.startswith("_") and inspect.isfunction(value)
+        )
+    )
+    assert len(entry_points) == 7
+    assert frozenset(drivers) == frozenset(entry_points)
+    for entry_point in entry_points:
+        drivers[entry_point]()
+
+    with pytest.raises(AdjudicationError, match="unknown"):
+        promote(decision=refused, candidate=candidate, authorizations=tmp_path / "refused.jsonl")
+
+    for origin in KeyOrigin:
+        AttributedKey(
+            key=ClaimKey("subject"),
+            origin=origin,
+            citation=_CITATION if origin is KeyOrigin.CONTENT else None,
+        )
+    assert counter == 0
 
 
 def test_promote_accepts_only_the_promote_verdict(tmp_path: Path) -> None:
-    """The positive control proves the gate does not refuse every decision."""
+    """The accepted control writes exactly one matching authorization line."""
     decision = _decision(verdict=Verdict.PROMOTE)
     candidate = _candidate()
-    record = promote(decision=decision, candidate=candidate, canon=tmp_path / "promotions.jsonl")
+    target = tmp_path / "promotions.jsonl"
+    before = b"existing line\n"
+    target.write_bytes(before)
+    record = promote(
+        decision=decision,
+        candidate=candidate,
+        authorizations=target,
+    )
     assert record.verdict is Verdict.PROMOTE
+    written = target.read_bytes()
+    lines = written.splitlines(keepends=True)
+    assert len(lines) == 2
+    assert lines[0] == before
+    assert written.endswith(b"\n")
+    assert len(written) - len(before) == len(lines[-1])
+    assert json.loads(lines[-1]) == {
+        "proposal_id": "asr_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "adjudicator": "human reviewer",
+        "decided_at": "2026-01-02T12:00:00+00:00",
+        "verdict": "promote",
+        "subject_key": "subject",
+        "subject_origin": "operator",
+    }
 
 
-def test_reject_does_not_promote(tmp_path: Path) -> None:
-    """A complete reject decision is refused only because of its verdict."""
-    decision = _decision(verdict=Verdict.REJECT)
+def test_human_decision_restoration_revalidates_for_pickle_and_copies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pickle, shallow copy, and deep copy rebuild through validating construction."""
+    decision = _decision()
+    original_post_init = HumanDecision.__post_init__
+    calls = 0
+
+    def counting_post_init(self: HumanDecision) -> None:
+        nonlocal calls
+        calls += 1
+        original_post_init(self)
+
+    monkeypatch.setattr(HumanDecision, "__post_init__", counting_post_init)
+    round_trips = (
+        ("pickle", lambda value: pickle.loads(pickle.dumps(value))),
+        ("copy", copy.copy),
+        ("deepcopy", copy.deepcopy),
+    )
+    for label, round_trip in round_trips:
+        calls = 0
+        restored = round_trip(decision)
+        assert type(restored) is HumanDecision, label
+        assert restored == decision, label
+        assert calls == 1, label
+
+
+def test_human_decision_refuses_in_place_state_restoration() -> None:
+    """Slot state cannot be restored around the validating constructor."""
+    with pytest.raises(AdjudicationError, match="state cannot be restored"):
+        _decision().__setstate__({})
+
+
+def test_promote_refuses_unset_fabricated_decision_without_writing(tmp_path: Path) -> None:
+    """Unset slots raise the domain error before any candidate or filesystem work."""
+    target = tmp_path / "deep" / "nested" / "authorization.jsonl"
+    fabricated = object.__new__(HumanDecision)
+    with pytest.raises(AdjudicationError, match="adjudicator"):
+        promote(decision=fabricated, candidate=_candidate(), authorizations=target)
+    assert not target.parent.exists()
+
+
+@pytest.mark.parametrize("field_name", ("adjudicator", "verdict", "decided_at", "rationale", "subject"))
+def test_promote_revalidates_each_fabricated_decision_field(
+    field_name: str, tmp_path: Path
+) -> None:
+    """Every field is checked at the boundary, not merely during construction."""
+    valid = _decision()
+    fabricated = object.__new__(HumanDecision)
+    for name in ("adjudicator", "verdict", "decided_at", "rationale", "subject"):
+        object.__setattr__(fabricated, name, getattr(valid, name))
+    object.__setattr__(fabricated, field_name, object())
+    target = tmp_path / field_name / "authorization.jsonl"
+    with pytest.raises(AdjudicationError):
+        promote(decision=fabricated, candidate=_candidate(), authorizations=target)
+    assert not target.parent.exists()
+
+
+_REFUSAL_CASES = ("decision", "reject", "defer", "content", "unknown", "candidate")
+
+
+@pytest.mark.parametrize("refusal", _REFUSAL_CASES)
+@pytest.mark.parametrize("target_exists", (False, True))
+def test_every_refusal_leaves_authorizations_byte_identical(
+    refusal: str, target_exists: bool, tmp_path: Path
+) -> None:
+    """Each isolated refusal leaves both absent and existing targets untouched."""
+    assert len(_REFUSAL_CASES) == 6
+    target = tmp_path / "deep" / refusal / "authorization.jsonl"
+    original = b"known authorization bytes\n"
+    if target_exists:
+        target.parent.mkdir(parents=True)
+        target.write_bytes(original)
+
     candidate = _candidate()
-    assert type(decision) is HumanDecision
-    assert type(candidate) is Proposal
-    assert decision.subject.origin is KeyOrigin.OPERATOR
-    with pytest.raises(AdjudicationError, match="'reject'"):
-        promote(decision=decision, candidate=candidate, canon=tmp_path / "promotions.jsonl")
+    if refusal == "decision":
+        decision: object = object()
+        assert type(candidate) is Proposal
+    else:
+        decision = _decision(
+            verdict={
+                "reject": Verdict.REJECT,
+                "defer": Verdict.DEFER,
+            }.get(refusal, Verdict.PROMOTE),
+            origin={
+                "content": KeyOrigin.CONTENT,
+                "unknown": KeyOrigin.UNKNOWN,
+            }.get(refusal, KeyOrigin.OPERATOR),
+        )
+        assert type(decision) is HumanDecision
+        if refusal in {"reject", "defer"}:
+            assert decision.verdict is {"reject": Verdict.REJECT, "defer": Verdict.DEFER}[refusal]
+        else:
+            assert decision.verdict is Verdict.PROMOTE
+        if refusal in {"reject", "defer", "candidate"}:
+            assert decision.subject.origin is KeyOrigin.OPERATOR
+        if refusal in {"content", "unknown"}:
+            assert is_promotable(decision.subject) is False
+        else:
+            assert is_promotable(decision.subject) is True
+    if refusal == "candidate":
+        candidate = object()
+        assert type(decision) is HumanDecision
+        assert decision.verdict is Verdict.PROMOTE
+        assert is_promotable(decision.subject) is True
+    else:
+        assert type(candidate) is Proposal
 
+    with pytest.raises(AdjudicationError, match={
+        "decision": "decision",
+        "reject": "'reject'",
+        "defer": "'defer'",
+        "content": "content",
+        "unknown": "unknown",
+        "candidate": "candidate",
+    }[refusal]):
+        promote(decision=decision, candidate=candidate, authorizations=target)  # type: ignore[arg-type]
 
-def test_defer_does_not_promote(tmp_path: Path) -> None:
-    """Defer is a real outcome and cannot read as a pending promotion."""
-    decision = _decision(verdict=Verdict.DEFER)
-    candidate = _candidate()
-    assert type(decision) is HumanDecision
-    assert type(candidate) is Proposal
-    assert decision.subject.origin is KeyOrigin.OPERATOR
-    with pytest.raises(AdjudicationError, match="'defer'"):
-        promote(decision=decision, candidate=candidate, canon=tmp_path / "promotions.jsonl")
+    assert target.exists() is target_exists
+    if target_exists:
+        assert target.read_bytes() == original
+    else:
+        assert not target.parent.exists()
 
 
 def test_origin_discrimination_is_driven_by_the_closed_enumeration(tmp_path: Path) -> None:
@@ -248,10 +532,14 @@ def test_origin_discrimination_is_driven_by_the_closed_enumeration(tmp_path: Pat
         assert type(candidate) is Proposal
         destination = tmp_path / f"{origin.value}.jsonl"
         if origin in {KeyOrigin.OPERATOR, KeyOrigin.DERIVED}:
-            assert promote(decision=decision, candidate=candidate, canon=destination).subject_origin is origin
+            assert promote(
+                decision=decision,
+                candidate=candidate,
+                authorizations=destination,
+            ).subject_origin is origin
         else:
             with pytest.raises(AdjudicationError, match=origin.value):
-                promote(decision=decision, candidate=candidate, canon=destination)
+                promote(decision=decision, candidate=candidate, authorizations=destination)
 
 
 def test_content_refusal_is_an_isolated_negative_control(tmp_path: Path) -> None:
@@ -263,7 +551,11 @@ def test_content_refusal_is_an_isolated_negative_control(tmp_path: Path) -> None
     assert type(candidate) is Proposal
     assert decision.subject.citation is _CITATION
     with pytest.raises(AdjudicationError, match="content"):
-        promote(decision=decision, candidate=candidate, canon=tmp_path / "promotion.jsonl")
+        promote(
+            decision=decision,
+            candidate=candidate,
+            authorizations=tmp_path / "promotion.jsonl",
+        )
 
 
 def test_unknown_refusal_is_an_isolated_negative_control(tmp_path: Path) -> None:
@@ -275,7 +567,11 @@ def test_unknown_refusal_is_an_isolated_negative_control(tmp_path: Path) -> None
     assert type(candidate) is Proposal
     assert decision.subject.citation is None
     with pytest.raises(AdjudicationError, match="unknown"):
-        promote(decision=decision, candidate=candidate, canon=tmp_path / "promotion.jsonl")
+        promote(
+            decision=decision,
+            candidate=candidate,
+            authorizations=tmp_path / "promotion.jsonl",
+        )
 
 
 def test_rejection_memory_is_append_only_and_non_vacuous(tmp_path: Path) -> None:
@@ -338,16 +634,47 @@ def test_agent_memory_returns_only_plain_strings_and_no_promotion_value(tmp_path
 
 
 def _scalar_violations(classes: Iterable[type[object]]) -> tuple[str, ...]:
-    """Resolve postponed annotations before rejecting scalar-bearing data shapes."""
+    """Reject a forbidden scalar anywhere in a resolved type expression."""
     forbidden = {float, int, complex, Decimal}
+
+    def contains_forbidden(
+        annotation: object, *, top_level: bool, allow_top_level_int: bool
+    ) -> bool:
+        if type(annotation) is type and annotation in forbidden:
+            return not (top_level and allow_top_level_int and annotation is int)
+        origin = get_origin(annotation)
+        args = get_args(annotation)
+        if origin is not None or args:
+            return any(
+                contains_forbidden(
+                    argument, top_level=False, allow_top_level_int=False
+                )
+                for argument in args
+            )
+        if isinstance(annotation, (tuple, list)):
+            return any(
+                contains_forbidden(
+                    argument, top_level=False, allow_top_level_int=False
+                )
+                for argument in annotation
+            )
+        return False
+
     violations: list[str] = []
     for cls in classes:
         for field_name, annotation in get_type_hints(cls).items():
             # Round count is a discrete event sequence, not confidence, score,
-            # weight, or probability; this exact field is the sole allowance.
-            if cls is Rejection and field_name == "round_number" and annotation is int:
-                continue
-            if annotation in forbidden:
+            # weight, or probability; this exact top-level field is the sole allowance.
+            allow_top_level_int = (
+                cls is Rejection
+                and field_name == "round_number"
+                and annotation is int
+            )
+            if contains_forbidden(
+                annotation,
+                top_level=True,
+                allow_top_level_int=allow_top_level_int,
+            ):
                 violations.append(f"{cls.__name__}.{field_name}")
     return tuple(violations)
 
@@ -368,8 +695,111 @@ def test_public_cap09_dataclasses_carry_no_scalar_and_the_guard_is_live() -> Non
     )
     assert _scalar_violations(records) == ()
 
-    @dataclass
-    class ScalarProbe:
-        score: float
+    positive_shapes = (
+        ("score", float),
+        ("score", float | None),
+        ("score", Optional[float]),
+        ("scores", tuple[float, ...]),
+        ("scores", list[float]),
+        ("scores", dict[str, float]),
+        ("score", Decimal | None),
+        ("nested", tuple[tuple[float, ...], ...]),
+    )
+    assert len(positive_shapes) == 8
+    for field_name, annotation in positive_shapes:
+        probe = dataclasses.make_dataclass("ScalarProbe", [(field_name, annotation)])
+        assert _scalar_violations((probe,)) == (f"ScalarProbe.{field_name}",)
 
-    assert _scalar_violations((ScalarProbe,)) == ("ScalarProbe.score",)
+    negative_shapes = (
+        ("citation", Citation | None),
+        ("subject", AttributedKey),
+        ("verdict", Verdict),
+        ("decided_at", datetime),
+        ("origin", KeyOrigin),
+    )
+    assert len(negative_shapes) == 5
+    for field_name, annotation in negative_shapes:
+        probe = dataclasses.make_dataclass("NonScalarProbe", [(field_name, annotation)])
+        assert _scalar_violations((probe,)) == ()
+
+
+def test_round_number_allowance_is_top_level_only() -> None:
+    """The exact Rejection round counter allowance does not cover nested ints."""
+    original = Rejection.__annotations__["round_number"]
+    Rejection.__annotations__["round_number"] = "tuple[int, ...]"
+    try:
+        assert _scalar_violations((Rejection,)) == ("Rejection.round_number",)
+    finally:
+        Rejection.__annotations__["round_number"] = original
+
+
+_NAIVE_ENTRY_POINTS = (
+    (
+        "HumanDecision.decided_at",
+        lambda _tmp: HumanDecision(
+            adjudicator="human reviewer",
+            verdict=Verdict.PROMOTE,
+            decided_at=_WHEN.replace(tzinfo=None),
+            rationale="reviewed",
+            subject=_subject(KeyOrigin.OPERATOR),
+        ),
+    ),
+    (
+        "Rejection.rejected_at",
+        lambda _tmp: Rejection(
+            cluster_id="cluster",
+            failed_gate="origin",
+            reason="unknown",
+            round_number=1,
+            rejected_at=_WHEN.replace(tzinfo=None),
+        ),
+    ),
+    (
+        "RejectionMemory.record(rejected_at=...)",
+        lambda tmp: RejectionMemory(tmp / "rejections.jsonl").record(
+            cluster_id="cluster",
+            failed_gate="origin",
+            reason="unknown",
+            round_number=1,
+            rejected_at=_WHEN.replace(tzinfo=None),
+        ),
+    ),
+    (
+        "AgentMemory.remember(at=...)",
+        lambda tmp: AgentMemory(tmp / "agent.jsonl").remember(
+            session="session",
+            note="note",
+            at=_WHEN.replace(tzinfo=None),
+        ),
+    ),
+    (
+        "PromotionRecord.decided_at",
+        lambda _tmp: PromotionRecord(
+            proposal_id="proposal",
+            adjudicator="human reviewer",
+            decided_at=_WHEN.replace(tzinfo=None),
+            verdict=Verdict.PROMOTE,
+            subject_key="subject",
+            subject_origin=KeyOrigin.OPERATOR,
+        ),
+    ),
+)
+
+
+@pytest.mark.parametrize("entry_name, entry_point", _NAIVE_ENTRY_POINTS)
+def test_every_datetime_entry_point_refuses_a_naive_instant(
+    entry_name: str, entry_point: object, tmp_path: Path
+) -> None:
+    """Every public datetime boundary routes through the timezone refusal."""
+    assert len(_NAIVE_ENTRY_POINTS) == 5
+    assert entry_name
+    with pytest.raises(AdjudicationError, match="timezone"):
+        entry_point(tmp_path)  # type: ignore[operator]
+
+
+def test_human_decision_subclasses_are_refused_at_class_creation() -> None:
+    """Subclass refusal pins the first layer before promote's exact-type check."""
+    # ``promote``'s exact-type check is the second layer; this pins the first.
+    with pytest.raises(AdjudicationError, match="may not be subclassed"):
+        class DecisionSubclass(HumanDecision):
+            pass
