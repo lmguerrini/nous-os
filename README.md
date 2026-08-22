@@ -154,6 +154,7 @@ fixtures/
 └── synthetic/
     ├── MANIFEST.jsonl    path and content digest per document
     ├── GOLDEN.md         what a correct search must return, and why
+    ├── DISCOVERY.md      published candidate-lifecycle and discovery expectations
     ├── corpus/           public, invented test documents
     └── bilingual/        the same subjects in two languages
 ```
