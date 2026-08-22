@@ -408,8 +408,12 @@ def _canon_digest(world: _World) -> _CanonDigest:
 
 
 def _search_arguments(world: _World, text: str) -> dict[str, object]:
-    # The query is arbitrary functional text and is consumed by the search.
-    return {"path": world.derived_path, "query": text}
+    # Raw corpus punctuation is often full-text query syntax and can be invalid.
+    # Quote hostile text as one literal expression so search executes; the path
+    # carrier separately preserves the original fixture text exactly.
+    escaped = text.replace('"', '""')
+    query = text if text == _BENIGN_TEXT else f'"{escaped}"'
+    return {"path": _PathCarrier(world.derived_path, text), "query": query}
 
 
 def _sources_arguments(world: _World, text: str) -> dict[str, object]:
@@ -484,12 +488,25 @@ _ARGUMENT_BUILDERS: Mapping[
 }
 
 
-def _argument_carries_text(value: object, text: str) -> bool:
+def _argument_carries_text(
+    operation: _Operation,
+    value: object,
+    text: str,
+) -> bool:
     """Whether an argument carries the fixture text as typed data."""
     if type(value) is str:
-        return text in value
+        return value == text
     if type(value) is UntrustedText:
-        return text in value.as_data()
+        data = value.as_data()
+        if operation.implementation is operation_bindings.ingest:
+            # Ingesting identical bytes is a no-op, so a structured revision
+            # suffix is required to make every authorized call produce an effect.
+            prefix = f"{text}\nrevision "
+            if not data.startswith(prefix):
+                return False
+            revision = data[len(prefix) :]
+            return revision.isascii() and revision.isdecimal()
+        return data == text
     marker = getattr(value, "injection_text", None)
     return type(marker) is UntrustedText and marker.as_data() == text
 
@@ -502,7 +519,10 @@ def _arguments(operation: _Operation, world: _World, text: str) -> dict[str, obj
             f"registered operation {operation.name!r} has no bound argument builder"
         )
     arguments = builder(world, text)
-    assert any(_argument_carries_text(value, text) for value in arguments.values())
+    assert any(
+        _argument_carries_text(operation, value, text)
+        for value in arguments.values()
+    )
     return arguments
 
 
@@ -577,7 +597,9 @@ def _assert_same_observable_outcome(
 
 
 def _observed_real_effect(
-    operation: _Operation, invocation: _Invocation
+    operation: _Operation,
+    invocation: _Invocation,
+    text: str = _BENIGN_TEXT,
 ) -> bool:
     """Recognize a result or state change specific to each real binding."""
     if invocation.error is not None:
@@ -585,8 +607,14 @@ def _observed_real_effect(
     implementation = operation.implementation
     returned = invocation.returned
     if implementation is operation_bindings.search:
-        return returned == (
-            SearchHit(_SEEDED_DIGEST, _SOURCE_ID, _SEEDED_CONTENT),
+        if text == _BENIGN_TEXT:
+            return returned == (
+                SearchHit(_SEEDED_DIGEST, _SOURCE_ID, _SEEDED_CONTENT),
+            )
+        # Corpus text is the functional query, so it legitimately changes the
+        # result. Execution still has a well-formed result and raises no error.
+        return type(returned) is tuple and all(
+            type(hit) is SearchHit for hit in returned
         )
     if implementation is operation_bindings.sources:
         return returned == (_SOURCE_ID,)
@@ -614,7 +642,7 @@ def _observed_real_effect(
             and invocation.candidates_after
             == invocation.candidates_before + (returned,)
             and returned.source_id == _SOURCE_ID
-            and returned.content == UntrustedText(_BENIGN_TEXT)
+            and returned.content == UntrustedText(text)
             and returned.proposed_at == _RECORDED_AT
             and returned.holder == "matrix holder"
         )
@@ -669,6 +697,68 @@ def test_the_pinned_corpus_is_complete_and_covers_every_required_family() -> Non
     encoding_texts = tuple(encoding_texts)
     assert any("\u200b" in text or "\u2060" in text for text in encoding_texts)
     assert any(unicodedata.normalize("NFKC", text) != text for text in encoding_texts)
+
+
+def test_argument_carriage_is_exact_except_for_the_ingest_revision_suffix() -> None:
+    """Replacing exact carriage with substring containment admits wrapped text."""
+    search_operation = _Operation("search", Tier.READ, operation_bindings.search)
+    record_operation = _Operation(
+        "record_proposal",
+        Tier.PROPOSE,
+        operation_bindings.record_proposal,
+    )
+    ingest_operation = _Operation(
+        "ingest_source",
+        Tier.PROMOTE,
+        operation_bindings.ingest,
+    )
+
+    assert _argument_carries_text(search_operation, _BENIGN_TEXT, _BENIGN_TEXT)
+    assert not _argument_carries_text(
+        search_operation,
+        f"prefix {_BENIGN_TEXT}",
+        _BENIGN_TEXT,
+    )
+    assert not _argument_carries_text(
+        search_operation,
+        f"{_BENIGN_TEXT} suffix",
+        _BENIGN_TEXT,
+    )
+    assert _argument_carries_text(
+        record_operation,
+        UntrustedText(_BENIGN_TEXT),
+        _BENIGN_TEXT,
+    )
+    assert not _argument_carries_text(
+        record_operation,
+        UntrustedText(f"prefix {_BENIGN_TEXT}"),
+        _BENIGN_TEXT,
+    )
+    assert not _argument_carries_text(
+        record_operation,
+        UntrustedText(f"{_BENIGN_TEXT} suffix"),
+        _BENIGN_TEXT,
+    )
+    assert _argument_carries_text(
+        ingest_operation,
+        UntrustedText(f"{_BENIGN_TEXT}\nrevision 42"),
+        _BENIGN_TEXT,
+    )
+    assert not _argument_carries_text(
+        ingest_operation,
+        UntrustedText(f"prefix {_BENIGN_TEXT}\nrevision 42"),
+        _BENIGN_TEXT,
+    )
+    assert not _argument_carries_text(
+        ingest_operation,
+        UntrustedText(f"{_BENIGN_TEXT}\nother 42"),
+        _BENIGN_TEXT,
+    )
+    assert not _argument_carries_text(
+        ingest_operation,
+        UntrustedText(f"{_BENIGN_TEXT}\nrevision arbitrary"),
+        _BENIGN_TEXT,
+    )
 
 
 def test_registered_operation_enumeration_rejects_an_external_implementation(
@@ -809,20 +899,17 @@ def test_argument_content_cannot_change_any_authorization_decision(
                     _assert_same_authorization_decision(reference, sample)
                     holds_required = operation.tier in tier_set
                     if holds_required:
-                        assert reference.outcome is not _Outcome.REFUSED
-                        assert sample.outcome is not _Outcome.REFUSED
+                        assert reference.outcome is _Outcome.EXECUTED
+                        assert sample.outcome is _Outcome.EXECUTED
+                        assert _observed_real_effect(operation, reference)
+                        assert _observed_real_effect(operation, sample, entry.text)
                     else:
                         assert reference.outcome is _Outcome.REFUSED
                         assert sample.outcome is _Outcome.REFUSED
                         assert type(sample.error) is NotAuthorized
                         assert type(reference.error) is NotAuthorized
 
-                    if (
-                        entry.identifier == "benign_control"
-                        and holds_required
-                    ):
-                        assert _observed_real_effect(operation, reference)
-                        assert _observed_real_effect(operation, sample)
+                    if entry.identifier == "benign_control" and holds_required:
                         positive_controls.add(
                             (transport.name, operation.name, tier_set)
                         )
