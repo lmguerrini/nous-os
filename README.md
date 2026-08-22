@@ -147,6 +147,7 @@ src/
     ├── temporal.py       two time axes, supersession, and disagreement kept visible
     ├── attribution.py    a claim key that carries where it came from
     ├── adjudication.py   the human-gated boundary between a proposal and canon
+    ├── discovery.py      bridge candidates, gates, and append-only rounds
     └── operations.py     registration of the project's governed operations
 tests/                    the suite described above
 fixtures/
