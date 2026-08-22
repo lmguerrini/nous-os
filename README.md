@@ -142,7 +142,9 @@ src/
     ├── chunking.py       pieces of a document that remember where they came from
     ├── compile.py        assembling a pack, and recording what went into it
     ├── ablation.py       comparing assembly strategies without combining the numbers
-    └── capability.py     four kinds of authority, and the one door they are checked at
+    ├── capability.py     four kinds of authority, and the one door they are checked at
+    ├── candidates.py     append-only proposals that are explicitly not canon
+    └── operations.py     registration of the project's governed operations
 tests/                    the suite described above
 fixtures/
 └── synthetic/
