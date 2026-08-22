@@ -144,6 +144,7 @@ src/
     ├── ablation.py       comparing assembly strategies without combining the numbers
     ├── capability.py     four kinds of authority, and the one door they are checked at
     ├── candidates.py     append-only proposals that are explicitly not canon
+    ├── temporal.py       two time axes, supersession, and disagreement kept visible
     └── operations.py     registration of the project's governed operations
 tests/                    the suite described above
 fixtures/
