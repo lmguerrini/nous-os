@@ -9,6 +9,7 @@ for refusals, and derive all separation cases from the tier vocabulary itself.
 
 from __future__ import annotations
 
+import builtins
 import copy
 from dataclasses import FrozenInstanceError, replace
 import inspect
@@ -944,6 +945,84 @@ def test_two_threads_racing_one_name_elect_one_winner_and_report_its_tier() -> N
     assert execute(Grant("winner", frozenset({winner_tier})), operation_name) is winner_sentinel
     with pytest.raises(NotAuthorized):
         execute(Grant("loser", frozenset({loser_tier})), operation_name)
+
+
+def test_concurrent_registration_and_name_reporting_preserve_complete_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing lock would let registration mutate the dictionary during iteration."""
+    writer_count = 8
+    reader_count = 8
+    registrations_per_writer = 400
+    observations_per_reader = 800
+    barrier = threading.Barrier(writer_count + reader_count + 1)
+    reader_entered = threading.Event()
+    yield_to_writer = threading.Event()
+    errors: list[BaseException] = []
+
+    register(_operation_name("concurrent_snapshot_seed"), Tier.READ, lambda: None)
+    original_sorted = builtins.sorted
+
+    def slow_sorted(values: object) -> list[object]:
+        if values is not _capability._REGISTRY or reader_entered.is_set():
+            return original_sorted(values)  # type: ignore[arg-type]
+        names: list[object] = []
+        for name in values:  # type: ignore[union-attr]
+            names.append(name)
+            reader_entered.set()
+            yield_to_writer.wait(0.01)
+        return original_sorted(names)
+
+    monkeypatch.setattr(builtins, "sorted", slow_sorted)
+
+    def record_snapshot() -> None:
+        names = registered_names()
+        assert names == tuple(sorted(names))
+        assert len(names) == len(set(names))
+        assert all(
+            type(name) is str
+            and bool(name)
+            and name == name.strip()
+            and name == unicodedata.normalize("NFC", name)
+            for name in names
+        )
+
+    def register_from_worker(worker_number: int) -> None:
+        try:
+            barrier.wait()
+            reader_entered.wait()
+            for registration_number in range(registrations_per_writer):
+                register(
+                    _operation_name(
+                        f"concurrent_registration_{worker_number}_{registration_number}"
+                    ),
+                    Tier.READ,
+                    lambda: None,
+                )
+        except BaseException as error:
+            errors.append(error)
+
+    def report_from_worker() -> None:
+        try:
+            barrier.wait()
+            for _ in range(observations_per_reader):
+                record_snapshot()
+        except BaseException as error:
+            errors.append(error)
+
+    writers = [
+        threading.Thread(target=register_from_worker, args=(worker_number,))
+        for worker_number in range(writer_count)
+    ]
+    readers = [threading.Thread(target=report_from_worker) for _ in range(reader_count)]
+
+    for worker in (*writers, *readers):
+        worker.start()
+    barrier.wait()
+    for worker in (*writers, *readers):
+        worker.join()
+
+    assert errors == []
 
 
 def test_a_registration_with_a_nonmember_tier_is_refused() -> None:
