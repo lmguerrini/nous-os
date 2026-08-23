@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+import ast
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime, timedelta, timezone
+import inspect
 from pathlib import Path
 import copy
 import os
@@ -13,7 +15,9 @@ import sys
 import pytest
 
 import nous_os.projection as projection_module
+import nous_os.operations as operations_module
 from nous_os.adjudication import Rejection, RejectionMemory
+from nous_os.capability import Grant, NotAuthorized, Tier, execute, required_tier
 from nous_os.canonical import Assertion, LifecycleState, SupportClass
 from nous_os.discovery import (
     BridgeCard,
@@ -838,3 +842,571 @@ print(substrate(KnowledgeState(i)).ir_digest)
         digests.append(completed.stdout.strip())
     assert len(digests) == 4
     assert len(set(digests)) == 1
+
+
+_DERIVATION_RULES = frozenset(
+    {
+        "node-id-namespacing",
+        "node-kind",
+        "edge-id-about",
+        "edge-id-cites",
+        "edge-id-member",
+        "edge-id-side",
+        "edge-id-in-cluster",
+        "edge-id-rejects",
+        "edge-kind",
+        "edge-endpoint",
+        "conflict-id",
+        "rejection-id",
+        "temporal-disposition",
+        "bridge-disposition",
+        "side",
+        "schema-version",
+        "policy-id",
+        "temporal-question-context",
+    }
+)
+
+
+def _ir_dataclasses(module: object) -> tuple[type[object], ...]:
+    """Inspect the module for emitted-record dataclasses, not an authored class list."""
+    return tuple(
+        value
+        for _name, value in inspect.getmembers(module, inspect.isclass)
+        if value.__module__ == module.__name__
+        and is_dataclass(value)
+        and (
+            value.__name__.endswith("Attributes")
+            or value.__name__
+            in {"ProvenanceRef", "ProjectionNode", "ProjectionEdge", "ProjectionIR", "TemporalQuestion"}
+        )
+    )
+
+
+_FIELD_REGISTER = {
+    "ProvenanceRef.source_id": "source:nous_os.provenance.Citation.source_id",
+    "ProvenanceRef.snapshot_digest": "source:nous_os.provenance.Citation.snapshot_digest",
+    "ProvenanceRef.start_byte": "source:nous_os.provenance.Locator.start_byte",
+    "ProvenanceRef.end_byte": "source:nous_os.provenance.Locator.end_byte",
+    "ProvenanceRef.span": "source:nous_os.provenance.Citation.span",
+    "SourceAttributes.source_id": "source:nous_os.provenance.Citation.source_id",
+    "SubjectAttributes.key": "source:nous_os.temporal.ClaimKey.value",
+    "ClusterAttributes.cluster_id": "source:nous_os.discovery.BridgeCard.cluster_id",
+    "AssertionAttributes.assertion_id": "source:nous_os.canonical.Assertion.id",
+    "AssertionAttributes.text": "source:nous_os.canonical.Assertion.text",
+    "AssertionAttributes.support": "source:nous_os.canonical.Assertion.support",
+    "AssertionAttributes.lifecycle": "source:nous_os.canonical.Assertion.state",
+    "AssertionAttributes.recorded_at": "source:nous_os.canonical.Assertion.recorded_at",
+    "AssertionAttributes.valid_from": "source:nous_os.canonical.Assertion.valid_from",
+    "AssertionAttributes.valid_to": "source:nous_os.canonical.Assertion.valid_to",
+    "AssertionAttributes.provenance": "source:nous_os.canonical.Assertion.citation",
+    "AssertionAttributes.temporal": "derived:temporal-disposition",
+    "ConflictAttributes.subject_key": "source:nous_os.temporal.Conflict.key",
+    "ConflictAttributes.overlap": "source:nous_os.temporal.Conflict.overlap",
+    "ConflictAttributes.members": "source:nous_os.temporal.Conflict.members",
+    "BridgeAttributes.card_id": "source:nous_os.discovery.BridgeCard.card_id",
+    "BridgeAttributes.cluster_id": "source:nous_os.discovery.BridgeCard.cluster_id",
+    "BridgeAttributes.epistemic_class": "source:nous_os.discovery.BridgeCard.epistemic_class",
+    "BridgeAttributes.depth": "source:nous_os.discovery.BridgeCard.depth",
+    "BridgeAttributes.non_triviality": "source:nous_os.discovery.BridgeCard.non_triviality",
+    "BridgeAttributes.consequence": "source:nous_os.discovery.BridgeCard.consequence",
+    "BridgeAttributes.noise_objection": "source:nous_os.discovery.BridgeCard.noise_objection",
+    "BridgeAttributes.origin_round": "source:nous_os.discovery.BridgeCard.origin_round",
+    "BridgeAttributes.gate_outcomes": "source:nous_os.discovery.GateVector.outcomes",
+    "BridgeAttributes.gate_reasons": "source:nous_os.discovery.GateVector.reasons",
+    "BridgeAttributes.triviality": "source:nous_os.discovery.GateVector.triviality",
+    "BridgeAttributes.disposition": "derived:bridge-disposition",
+    "RejectionAttributes.cluster_id": "source:nous_os.adjudication.Rejection.cluster_id",
+    "RejectionAttributes.failed_gate": "source:nous_os.adjudication.Rejection.failed_gate",
+    "RejectionAttributes.reason": "source:nous_os.adjudication.Rejection.reason",
+    "RejectionAttributes.round_number": "source:nous_os.adjudication.Rejection.round_number",
+    "RejectionAttributes.rejected_at": "source:nous_os.adjudication.Rejection.rejected_at",
+    "_BridgeSideAttributes.side": "derived:side",
+    "_BridgeSideAttributes.project": "source:nous_os.discovery.Endpoint.project",
+    "_BridgeSideAttributes.quote": "source:nous_os.discovery.Endpoint.quote",
+    "_BridgeSideAttributes.provenance": "source:nous_os.discovery.Endpoint.citation",
+    "ProjectionNode.id": "derived:node-id-namespacing",
+    "ProjectionNode.kind": "derived:node-kind",
+    "ProjectionNode.attributes": "source:nous_os.projection.ProjectionNode.attributes",
+    "ProjectionEdge.id": "derived:edge-id-about",
+    "ProjectionEdge.kind": "derived:edge-kind",
+    "ProjectionEdge.source": "derived:edge-endpoint",
+    "ProjectionEdge.target": "derived:edge-endpoint",
+    "ProjectionEdge.attributes": "source:nous_os.projection.ProjectionEdge.attributes",
+    "TemporalQuestion.valid_at": "source:nous_os.projection.TemporalQuestion.valid_at",
+    "TemporalQuestion.recorded_as_of": "source:nous_os.projection.TemporalQuestion.recorded_as_of",
+    "ProjectionIR.schema_version": "derived:schema-version",
+    "ProjectionIR.policy_id": "derived:policy-id",
+    "ProjectionIR.question": "derived:temporal-question-context",
+    "ProjectionIR.nodes": "source:nous_os.projection.ProjectionIR.nodes",
+    "ProjectionIR.edges": "source:nous_os.projection.ProjectionIR.edges",
+}
+
+
+_RULE_PINNING_TESTS = {
+    "node-id-namespacing": "test_projection_namespaces_hostile_cluster_labels_and_refuses_identity_conflicts",
+    "node-kind": "test_substrate_emits_a_small_canonical_assertion_graph",
+    "edge-id-about": "test_substrate_emits_a_small_canonical_assertion_graph",
+    "edge-id-cites": "test_substrate_emits_a_small_canonical_assertion_graph",
+    "edge-id-member": "test_substrate_neither_omits_nor_invents_known_ids",
+    "edge-id-side": "test_substrate_neither_omits_nor_invents_known_ids",
+    "edge-id-in-cluster": "test_substrate_neither_omits_nor_invents_known_ids",
+    "edge-id-rejects": "test_substrate_neither_omits_nor_invents_known_ids",
+    "edge-kind": "test_policy_filters_substrate_elements_without_reinterpreting_them",
+    "edge-endpoint": "test_whole_graph_validation_rejects_each_named_defect_on_both_routes",
+    "conflict-id": "test_conflict_is_projected_whole_or_not_at_all_after_temporal_filtering",
+    "rejection-id": "test_substrate_neither_omits_nor_invents_known_ids",
+    "temporal-disposition": "test_third_states_survive_in_payload_and_unknown_gate_has_its_own_disposition",
+    "bridge-disposition": "test_bridge_disposition_agrees_card_for_card_with_run_round",
+    "side": "test_substrate_neither_omits_nor_invents_known_ids",
+    "schema-version": "test_projection_round_trip_accepts_semantic_payload_change_and_refuses_broken_graph",
+    "policy-id": "test_projection_context_carries_both_temporal_axes_and_policy_when_graph_is_identical",
+    "temporal-question-context": "test_projection_context_carries_both_temporal_axes_and_policy_when_graph_is_identical",
+}
+
+
+def _register_keys(classes: tuple[type[object], ...]) -> set[str]:
+    return {f"{cls.__name__}.{field.name}" for cls in classes for field in fields(cls)}
+
+
+def _assert_register_coverage(classes: tuple[type[object], ...], register: dict[str, str]) -> None:
+    assert set(register) == _register_keys(classes)
+
+
+def _assert_source_register_resolves(register: dict[str, str]) -> None:
+    for mapping in register.values():
+        if not mapping.startswith("source:"):
+            continue
+        module_name, class_name, attribute = mapping.removeprefix("source:").rsplit(".", 2)
+        source_module = __import__(module_name, fromlist=[class_name])
+        source_class = getattr(source_module, class_name)
+        assert attribute in {field.name for field in fields(source_class)} or isinstance(
+            getattr(source_class, attribute, None), property
+        )
+
+
+def test_field_register_covers_declared_ir_fields_and_only_uses_pinned_derivations() -> None:
+    """This mechanical register catches undeclared drift, not renderer coupling or mapping honesty."""
+    classes = _ir_dataclasses(projection_module)
+    assert len(classes) == 13
+    _assert_register_coverage(classes, _FIELD_REGISTER)
+    _assert_source_register_resolves(_FIELD_REGISTER)
+    assert len(_DERIVATION_RULES) == 18
+    derived = {value.removeprefix("derived:") for value in _FIELD_REGISTER.values() if value.startswith("derived:")}
+    assert derived
+    assert derived <= _DERIVATION_RULES
+    test_names = {
+        name
+        for name, value in inspect.getmembers(sys.modules[__name__], inspect.isfunction)
+        if name.startswith("test_") and value.__module__ == __name__
+    }
+    assert len(_RULE_PINNING_TESTS) == len(_DERIVATION_RULES)
+    assert set(_RULE_PINNING_TESTS) == _DERIVATION_RULES
+    assert set(_RULE_PINNING_TESTS.values()) <= test_names
+
+    @dataclass(frozen=True)
+    class SyntheticRecord:
+        missing: str
+
+    with pytest.raises(AssertionError):
+        _assert_register_coverage((SyntheticRecord,), {})
+    with pytest.raises(AssertionError):
+        _assert_source_register_resolves({"SyntheticRecord.missing": "source:nous_os.canonical.Assertion.colour"})
+
+
+def test_field_register_refused_vocabulary_is_a_secondary_sample_not_a_euphemism_detector() -> None:
+    """Secondary sample only: obvious renderer words are refused, but a euphemism can evade it."""
+    refused = {"colour", "color", "display", "geometry", "layout", "renderer", "theme"}
+    names = {
+        field.name.lower()
+        for cls in _ir_dataclasses(projection_module)
+        for field in fields(cls)
+    }
+    values = {
+        member.value.lower()
+        for _name, enum_class in inspect.getmembers(projection_module, inspect.isclass)
+        if enum_class.__module__ == projection_module.__name__ and issubclass(enum_class, projection_module.Enum)
+        for member in enum_class
+    }
+    assert len(_register_keys(_ir_dataclasses(projection_module))) == 56
+    assert names
+    assert values
+    assert not any(token in name for token in refused for name in names | values)
+
+
+def _graph_payload(
+    nodes: tuple[object, ...], edges: tuple[object, ...]
+) -> dict[str, object]:
+    """Serialize hand-built graph records for the independent restore route."""
+    return {
+        "schema_version": projection_module.SCHEMA_VERSION,
+        "policy_id": PolicyId.DISCOVERY.value,
+        "question": {"valid_at": None, "recorded_as_of": None},
+        "nodes": [projection_module._node_payload(node) for node in nodes],
+        "edges": [projection_module._edge_payload(edge) for edge in edges],
+    }
+
+
+def _invalid_graph_cases() -> tuple[tuple[str, tuple[object, ...], tuple[object, ...]], ...]:
+    """Change precisely one invariant from a complete valid graph per case."""
+    first = _assertion("asr_01ARZ3NDEKTSV4RRFFQ69G5FAA", "first", valid_to=4)
+    second = _assertion("asr_01ARZ3NDEKTSV4RRFFQ69G5FAB", "second", valid_from=2, valid_to=5)
+    base = substrate(
+        _state(
+            (("subject-a", first), ("subject-a", second)),
+            bridges=(_card("C"),),
+            rejections=(_rejection("cluster-b"),),
+        )
+    )
+    nodes, edges = base.nodes, base.edges
+    node = {item.id: item for item in nodes}
+    edge = {item.id: item for item in edges}
+    assertion = next(item for item in nodes if item.kind is NodeKind.ASSERTION)
+    conflict = next(item for item in nodes if item.kind is NodeKind.CONFLICT)
+    bridge = next(item for item in nodes if item.kind is NodeKind.BRIDGE)
+    rejection = next(item for item in nodes if item.kind is NodeKind.REJECTION)
+    about = next(item for item in edges if item.kind is EdgeKind.ABOUT)
+    cites = next(item for item in edges if item.kind is EdgeKind.CITES)
+    member = next(item for item in edges if item.kind is EdgeKind.CONFLICT_MEMBER)
+    left = next(
+        item
+        for item in edges
+        if item.kind is EdgeKind.BRIDGE_SIDE and item.attributes.side is projection_module.Side.LEFT
+    )
+    right = next(
+        item
+        for item in edges
+        if item.kind is EdgeKind.BRIDGE_SIDE and item.attributes.side is projection_module.Side.RIGHT
+    )
+    in_cluster = next(item for item in edges if item.kind is EdgeKind.IN_CLUSTER)
+    rejects = next(item for item in edges if item.kind is EdgeKind.REJECTS)
+    changed_ref = projection_module.ProvenanceRef(_SOURCE_B, _DIGEST, 0, 1, "x")
+
+    def replace_edge(original: object, changed: object) -> tuple[object, ...]:
+        return tuple(changed if item is original else item for item in edges)
+
+    return (
+        ("duplicate node id", nodes + (replace(node["subject:subject-a"], id=assertion.id),), edges),
+        ("duplicate edge id", nodes, edges + (replace(about, source=about.source),)),
+        ("absent endpoint", nodes, replace_edge(about, replace(about, target="subject:absent"))),
+        ("ABOUT wrong endpoint", nodes, replace_edge(about, replace(about, target=f"source:{_SOURCE}"))),
+        ("BRIDGE only LEFT", nodes, tuple(item for item in edges if item is not right)),
+        (
+            "BRIDGE two LEFT",
+            nodes,
+            replace_edge(right, replace(right, attributes=replace(right.attributes, side=projection_module.Side.LEFT))),
+        ),
+        (
+            "IN_CLUSTER wrong bridge cluster",
+            nodes,
+            replace_edge(in_cluster, replace(in_cluster, target="cluster:cluster-b")),
+        ),
+        ("CITES provenance mismatch", nodes, replace_edge(cites, replace(cites, attributes=changed_ref))),
+        ("CONFLICT missing member", nodes, tuple(item for item in edges if item is not member)),
+        (
+            "orphan SOURCE",
+            nodes + (projection_module.ProjectionNode("source:orphan", NodeKind.SOURCE, projection_module.SourceAttributes("orphan")),),
+            edges,
+        ),
+        ("BRIDGE_SIDE overflow", nodes, edges + (replace(right, id="side:overflow", attributes=right.attributes),)),
+        ("ABOUT overflow", nodes, edges + (replace(about, id="about:overflow"),)),
+        ("CITES overflow", nodes, edges + (replace(cites, id="cites:overflow"),)),
+        ("IN_CLUSTER overflow", nodes, edges + (replace(in_cluster, id="in-cluster:overflow"),)),
+        ("REJECTS overflow", nodes, edges + (replace(rejects, id="rejects:overflow"),)),
+        ("CONFLICT_MEMBER overflow", nodes, edges + (replace(member, id="member:overflow"),)),
+        ("CITES wrong endpoint", nodes, replace_edge(cites, replace(cites, target="subject:subject-a"))),
+        ("CONFLICT_MEMBER wrong endpoint", nodes, replace_edge(member, replace(member, target="subject:subject-a"))),
+        ("BRIDGE_SIDE wrong endpoint", nodes, replace_edge(left, replace(left, target="cluster:cluster-a"))),
+        ("IN_CLUSTER wrong endpoint", nodes, replace_edge(in_cluster, replace(in_cluster, target=f"source:{_SOURCE}"))),
+        ("REJECTS wrong endpoint", nodes, replace_edge(rejects, replace(rejects, target=f"source:{_SOURCE}"))),
+    )
+
+
+def test_whole_graph_validation_rejects_each_named_defect_on_both_routes() -> None:
+    """Direct construction and payload restoration reject the same one-variable graph defects."""
+    repaired = substrate(_all_kind_state())
+    assert len(repaired.nodes) == 9
+    assert len(repaired.edges) == 10
+    assert projection_module.ProjectionIR(
+        repaired.schema_version, repaired.policy_id, repaired.question, repaired.nodes, repaired.edges
+    ) == repaired
+    assert from_payload(repaired.as_payload()) == repaired
+
+    cases = _invalid_graph_cases()
+    assert len(cases) == 21
+    assert {name for name, _nodes, _edges in cases} >= {
+        "ABOUT wrong endpoint",
+        "CITES wrong endpoint",
+        "CONFLICT_MEMBER wrong endpoint",
+        "BRIDGE_SIDE wrong endpoint",
+        "IN_CLUSTER wrong endpoint",
+        "REJECTS wrong endpoint",
+    }
+    for name, nodes, edges in cases:
+        assert projection_module.ProjectionIR(
+            repaired.schema_version, repaired.policy_id, repaired.question, repaired.nodes, repaired.edges
+        ) == repaired
+        with pytest.raises(projection_module.ProjectionError) as direct:
+            projection_module.ProjectionIR(projection_module.SCHEMA_VERSION, PolicyId.DISCOVERY, ALL_TIME, nodes, edges)
+        with pytest.raises(type(direct.value)) as restored:
+            from_payload(_graph_payload(nodes, edges))
+        assert str(restored.value) == str(direct.value), name
+
+
+def _imports_in(tree: ast.AST) -> set[str]:
+    imports: set[str] = set()
+    for item in ast.walk(tree):
+        if type(item) is ast.Import:
+            imports.update(f"import:{alias.name}" for alias in item.names)
+        elif type(item) is ast.ImportFrom:
+            imports.add(f"from:{item.module}")
+    return imports
+
+
+def _nonliteral_dynamic_accesses(tree: ast.AST) -> set[str]:
+    refused: set[str] = set()
+    for item in ast.walk(tree):
+        if type(item) is not ast.Call or type(item.func) is not ast.Name:
+            continue
+        if item.func.id in {"getattr", "setattr"}:
+            position = 1
+        elif item.func.id == "__import__":
+            position = 0
+        else:
+            continue
+        if len(item.args) <= position or not (
+            type(item.args[position]) is ast.Constant and type(item.args[position].value) is str
+        ):
+            refused.add(item.func.id)
+    for item in ast.walk(tree):
+        if type(item) is ast.Attribute and type(item.value) is ast.Name and item.value.id == "importlib":
+            refused.add("importlib")
+    return refused
+
+
+def _expression_name(expression: ast.expr, aliases: dict[str, str]) -> str | None:
+    if type(expression) is ast.Name:
+        return aliases.get(expression.id, expression.id)
+    if type(expression) is ast.Attribute:
+        parent = _expression_name(expression.value, aliases)
+        return None if parent is None else f"{parent}.{expression.attr}"
+    return None
+
+
+def _clock_and_io_hits(tree: ast.AST) -> set[str]:
+    """Resolve simple imports, aliases, and re-exports before applying this secondary net."""
+    aliases: dict[str, str] = {}
+    for item in tree.body:  # type: ignore[union-attr]
+        if type(item) is ast.Import:
+            for alias in item.names:
+                aliases[alias.asname or alias.name] = alias.name
+        elif type(item) is ast.ImportFrom and item.module is not None:
+            for alias in item.names:
+                aliases[alias.asname or alias.name] = f"{item.module}.{alias.name}"
+        elif type(item) is ast.Assign and len(item.targets) == 1 and type(item.targets[0]) is ast.Name:
+            source = _expression_name(item.value, aliases)
+            if source is not None:
+                aliases[item.targets[0].id] = source
+    forbidden = {
+        "datetime.datetime.now",
+        "datetime.datetime.utcnow",
+        "datetime.datetime.today",
+        "datetime.date.today",
+        "time.time",
+        "time.monotonic",
+        "time.perf_counter",
+        "time.clock_gettime",
+        "open",
+        "pathlib.Path.open",
+        "pathlib.Path.read_bytes",
+        "pathlib.Path.read_text",
+    }
+    hits = set()
+    for item in ast.walk(tree):
+        if type(item) is ast.Call:
+            name = _expression_name(item.func, aliases)
+            if name in forbidden or (name is not None and (name.startswith("random.") or name.startswith("secrets."))):
+                hits.add(name)
+        elif type(item) is ast.Attribute and _expression_name(item, aliases) == "os.environ":
+            hits.add("os.environ")
+    return hits
+
+
+def test_projection_module_has_the_pinned_import_and_dynamic_call_surface() -> None:
+    """The exact allow-list is the purity property; the clock deny-list below is only a sample."""
+    tree = ast.parse(Path(projection_module.__file__).read_text(encoding="utf-8"))
+    allowed_imports = {
+        "from:__future__",
+        "from:dataclasses",
+        "from:datetime",
+        "from:enum",
+        "from:typing",
+        "from:nous_os.adjudication",
+        "from:nous_os.canonical",
+        "from:nous_os.discovery",
+        "from:nous_os.identity",
+        "from:nous_os.provenance",
+        "from:nous_os.temporal",
+    }
+    assert _imports_in(tree) == allowed_imports
+    assert not _nonliteral_dynamic_accesses(tree)
+
+    control = ast.parse("\n".join((
+        "def bad(name, value):",
+        "    getattr(value, name)",
+        "    setattr(value, name, value)",
+        "    __import__(name)",
+        "    importlib.import_module(name)",
+    )))
+    assert _nonliteral_dynamic_accesses(control) == {"getattr", "setattr", "__import__", "importlib"}
+
+
+def test_projection_clock_deny_list_is_a_secondary_net_with_alias_and_reexport_control() -> None:
+    """Secondary net only: it samples clock and IO hazards and cannot establish purity by itself."""
+    tree = ast.parse(Path(projection_module.__file__).read_text(encoding="utf-8"))
+    assert not _clock_and_io_hits(tree)
+    control = ast.parse("\n".join((
+        "from datetime import datetime as _dt",
+        "clock = _dt",
+        "_dt.now()",
+        "clock.utcnow()",
+    )))
+    assert _clock_and_io_hits(control) == {"datetime.datetime.now", "datetime.datetime.utcnow"}
+
+    state = _all_kind_state()
+    assert canonical_bytes(project(state, DISCOVERY).as_payload()) == canonical_bytes(project(state, DISCOVERY).as_payload())
+
+
+def _state_canon_digest(state: KnowledgeState) -> str:
+    """A test-local read-only digest of the projection's canonical assertion input."""
+    rows = []
+    for key in state.index.keys():
+        rows.extend((key.value, assertion.content_payload()) for assertion in state.index.assertions(key))
+    return digest_payload(rows)
+
+
+def test_project_is_governed_as_a_read_without_mutating_canon() -> None:
+    """Well-formed calls isolate READ authority from projection semantics and canonical input."""
+    assert operations_module is not None
+    state = _small_state()
+    before = _state_canon_digest(state)
+    kwargs = {"state": state, "policy": RELIABILITY, "question": ALL_TIME}
+    assert required_tier("project") is Tier.READ
+    expected = project(**kwargs)
+    assert execute(Grant("reader", frozenset({Tier.READ})), "project", **kwargs) == expected
+    assert _state_canon_digest(state) == before
+    for grant in (Grant("empty", frozenset()), Grant("proposer", frozenset({Tier.PROPOSE}))):
+        assert project(**kwargs) == expected
+        with pytest.raises(NotAuthorized):
+            execute(grant, "project", **kwargs)
+        assert _state_canon_digest(state) == before
+
+
+def _functions_referencing_state_index(tree: ast.AST) -> set[str]:
+    hits: set[str] = set()
+    for function in (item for item in tree.body if type(item) in {ast.FunctionDef, ast.AsyncFunctionDef}):  # type: ignore[union-attr]
+        if any(
+            type(item) is ast.Attribute and type(item.value) is ast.Name and item.value.id == "state" and item.attr == "index"
+            for item in ast.walk(function)
+        ):
+            hits.add(function.name)
+    return hits
+
+
+def test_only_read_state_references_the_knowledge_state_index() -> None:
+    """This pins one materialisation boundary only; it does not claim atomicity or thread safety."""
+    tree = ast.parse(Path(projection_module.__file__).read_text(encoding="utf-8"))
+    assert _functions_referencing_state_index(tree) == {"_read_state"}
+    control = ast.parse("\n".join((
+        "def snapshot(state):",
+        "    return state.index.keys()",
+        "def emit(state):",
+        "    return state.index.conflicts()",
+    )))
+    assert _functions_referencing_state_index(control) == {"snapshot", "emit"}
+
+
+def _policy_with(
+    *,
+    kinds: frozenset[NodeKind] | None = None,
+    temporal: frozenset[TemporalDisposition] | None = None,
+    bridge_dispositions: frozenset[BridgeDisposition] | None = None,
+    epistemic: frozenset[EpistemicClass] | None = None,
+) -> ProjectionPolicy:
+    return ProjectionPolicy(
+        PolicyId.EXPERIMENTAL,
+        frozenset(NodeKind) if kinds is None else kinds,
+        frozenset(TemporalDisposition) if temporal is None else temporal,
+        frozenset(BridgeDisposition) if bridge_dispositions is None else bridge_dispositions,
+        frozenset(EpistemicClass) if epistemic is None else epistemic,
+    )
+
+
+def test_projection_policy_clauses_each_have_a_single_subject_control() -> None:
+    """Each coherence and admission clause gets a refusal and an identical accepted subject control."""
+    all_kinds = frozenset(NodeKind)
+    all_temporal = frozenset(TemporalDisposition)
+    all_dispositions = frozenset(BridgeDisposition)
+    all_epistemic = frozenset(EpistemicClass)
+    cases = (
+        (
+            "ASSERTION admission requires SUBJECT admission",
+            dict(kinds=frozenset({NodeKind.SOURCE, NodeKind.ASSERTION}), temporal=all_temporal,
+                 bridge_dispositions=frozenset(), epistemic=frozenset()),
+            dict(kinds=frozenset({NodeKind.SOURCE}), temporal=all_temporal,
+                 bridge_dispositions=frozenset(), epistemic=frozenset()),
+        ),
+        (
+            "CONFLICT admission requires ASSERTION admission",
+            dict(kinds=frozenset({NodeKind.SOURCE, NodeKind.CONFLICT}), temporal=all_temporal,
+                 bridge_dispositions=frozenset(), epistemic=frozenset()),
+            dict(kinds=frozenset({NodeKind.SOURCE}), temporal=all_temporal,
+                 bridge_dispositions=frozenset(), epistemic=frozenset()),
+        ),
+        (
+            "BRIDGE admission requires CLUSTER admission",
+            dict(kinds=frozenset({NodeKind.SOURCE, NodeKind.BRIDGE}), temporal=all_temporal,
+                 bridge_dispositions=all_dispositions, epistemic=all_epistemic),
+            dict(kinds=frozenset({NodeKind.SOURCE, NodeKind.BRIDGE, NodeKind.CLUSTER}), temporal=all_temporal,
+                 bridge_dispositions=all_dispositions, epistemic=all_epistemic),
+        ),
+        (
+            "REJECTION admission requires CLUSTER admission",
+            dict(kinds=frozenset({NodeKind.SOURCE, NodeKind.REJECTION}), temporal=all_temporal,
+                 bridge_dispositions=frozenset(), epistemic=frozenset()),
+            dict(kinds=frozenset({NodeKind.SOURCE, NodeKind.REJECTION, NodeKind.CLUSTER}), temporal=all_temporal,
+                 bridge_dispositions=frozenset(), epistemic=frozenset()),
+        ),
+        (
+            "SOURCE must be admitted by kind",
+            dict(kinds=all_kinds - {NodeKind.SOURCE}, temporal=all_temporal,
+                 bridge_dispositions=all_dispositions, epistemic=all_epistemic),
+            dict(kinds=all_kinds, temporal=all_temporal,
+                 bridge_dispositions=all_dispositions, epistemic=all_epistemic),
+        ),
+        (
+            "bridge admission and both bridge predicates must agree",
+            dict(kinds=frozenset({NodeKind.SOURCE, NodeKind.BRIDGE, NodeKind.CLUSTER}), temporal=all_temporal,
+                 bridge_dispositions=frozenset(), epistemic=all_epistemic),
+            dict(kinds=frozenset({NodeKind.SOURCE, NodeKind.BRIDGE, NodeKind.CLUSTER}), temporal=all_temporal,
+                 bridge_dispositions=all_dispositions, epistemic=all_epistemic),
+        ),
+        (
+            "bridge admission and both bridge predicates must agree",
+            dict(kinds=frozenset({NodeKind.SOURCE, NodeKind.BRIDGE, NodeKind.CLUSTER}), temporal=all_temporal,
+                 bridge_dispositions=all_dispositions, epistemic=frozenset()),
+            dict(kinds=frozenset({NodeKind.SOURCE, NodeKind.BRIDGE, NodeKind.CLUSTER}), temporal=all_temporal,
+                 bridge_dispositions=all_dispositions, epistemic=all_epistemic),
+        ),
+        (
+            "admit_temporal must not be empty",
+            dict(kinds=all_kinds, temporal=frozenset(), bridge_dispositions=all_dispositions, epistemic=all_epistemic),
+            dict(kinds=all_kinds, temporal=frozenset({TemporalDisposition.ESTABLISHED}),
+                 bridge_dispositions=all_dispositions, epistemic=all_epistemic),
+        ),
+    )
+    assert len(cases) == 8
+    for message, bad, good in cases:
+        with pytest.raises(ProjectionPolicyError, match=message):
+            _policy_with(**bad)
+        assert _policy_with(**good).policy_id is PolicyId.EXPERIMENTAL
