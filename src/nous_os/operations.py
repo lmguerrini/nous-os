@@ -28,6 +28,7 @@ from nous_os.untrusted import UntrustedText
 if TYPE_CHECKING:
     from nous_os.adjudication import HumanDecision, PromotionRecord, Rejection, RejectionMemory
     from nous_os.discovery import BridgeCard, BridgeRegistry, RoundResult
+    from nous_os.projection import KnowledgeState, ProjectionIR, ProjectionPolicy, TemporalQuestion
 
 
 def proposals(*, store: CandidateStore) -> tuple[Proposal, ...]:
@@ -47,6 +48,18 @@ def conflicts(*, index, key=None):
 def supersession(*, index, key):
     """Register a temporal-history read at the governed boundary."""
     return index.supersession(key)
+
+
+def project_knowledge(
+    *,
+    state: KnowledgeState,
+    policy: ProjectionPolicy,
+    question: TemporalQuestion | None = None,
+) -> ProjectionIR:
+    """Keep renderer-independent projection behind the registry's single door."""
+    from nous_os.projection import ALL_TIME, project
+
+    return project(state, policy, question=ALL_TIME if question is None else question)
 
 
 def record_proposal(
@@ -142,6 +155,7 @@ register("proposals", Tier.READ, proposals)
 register("as_of", Tier.READ, as_of)
 register("conflicts", Tier.READ, conflicts)
 register("supersession", Tier.READ, supersession)
+register("project", Tier.READ, project_knowledge)
 register("record_proposal", Tier.PROPOSE, record_proposal)
 register("ingest_source", Tier.PROMOTE, ingest)
 register("rejections", Tier.READ, rejections)

@@ -16,7 +16,7 @@ import os
 import unicodedata
 from collections import Counter
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from itertools import combinations
@@ -57,6 +57,15 @@ from nous_os.identity import canonical_bytes
 from nous_os.ledger import IngestResult, IngestStatus, Ledger
 from nous_os.measure import RunStatus, not_run
 from nous_os.provenance import Citation, Locator
+from nous_os.projection import (
+    ALL_TIME,
+    KnowledgeState,
+    PolicyId,
+    ProjectionIR,
+    RELIABILITY,
+    SCHEMA_VERSION,
+    substrate,
+)
 from nous_os.snapshots import SnapshotStore
 from nous_os.temporal import AsOf, ClaimKey, Conflict, Overlap, TemporalIndex
 from nous_os.untrusted import UntrustedText
@@ -696,6 +705,16 @@ def _supersession_arguments(world: _World, text: str) -> dict[str, object]:
     return {"index": _TemporalCarrier(world.temporal, text), "key": _TEMPORAL_KEY}
 
 
+def _project_arguments(world: _World, text: str) -> dict[str, object]:
+    """Carry text in a typed bridge endpoint read by the projection substrate."""
+    card = world.bridges.cards()[0]
+    text_card = replace(card, left=replace(card.left, quote=text))
+    return {
+        "state": KnowledgeState(world.temporal, bridges=(text_card,)),
+        "policy": RELIABILITY,
+    }
+
+
 def _record_arguments(world: _World, text: str) -> dict[str, object]:
     # Content is arbitrary functional text and is written into the proposal.
     return {
@@ -737,6 +756,7 @@ _ARGUMENT_BUILDERS: Mapping[
     operation_bindings.as_of: _as_of_arguments,
     operation_bindings.conflicts: _conflicts_arguments,
     operation_bindings.supersession: _supersession_arguments,
+    operation_bindings.project_knowledge: _project_arguments,
     operation_bindings.record_proposal: _record_arguments,
     operation_bindings.ingest: _ingest_arguments,
 }
@@ -761,6 +781,12 @@ def _argument_carries_text(
             revision = data[len(prefix) :]
             return revision.isascii() and revision.isdecimal()
         return data == text
+    if type(value) is KnowledgeState:
+        return any(
+            endpoint.quote == text
+            for card in value.bridges
+            for endpoint in (card.left, card.right)
+        )
     marker = getattr(value, "injection_text", None)
     return type(marker) is UntrustedText and marker.as_data() == text
 
@@ -1097,6 +1123,20 @@ def _observed_real_effect(
         items = returned
         expected_count = 2
         condition = _is_seeded_temporal_assertion
+    elif implementation is operation_bindings.project_knowledge:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: (
+            type(value) is ProjectionIR
+            and value.schema_version == SCHEMA_VERSION
+            and value.policy_id is PolicyId.RELIABILITY
+            and value.question == ALL_TIME
+            # bool(edges) is deliberately NOT asserted beside this: a valid ProjectionIR
+            # has nodes iff it has edges, because every node kind requires an incident
+            # edge and every edge requires its endpoints. Asserting both would leave
+            # each unpinnable by any single control.
+            and bool(value.nodes)
+        )
     elif implementation is operation_bindings.record_proposal:
         items = (returned,)
         expected_count = 1
@@ -1118,23 +1158,23 @@ def _observed_real_effect(
     )
 
 
-def _well_formed_wrong_result(operation: _Operation) -> object:
-    """Return a correctly shaped result that is false for one operation."""
+def _well_formed_wrong_results(operation: _Operation) -> tuple[object, ...]:
+    """Return isolated correctly shaped false results for one operation."""
     implementation = operation.implementation
     if implementation is operation_bindings.search:
-        return (SearchHit(_SEEDED_DIGEST, _SOURCE_ID, "unrelated excerpt"),)
+        return ((SearchHit(_SEEDED_DIGEST, _SOURCE_ID, "unrelated excerpt"),),)
     if implementation is operation_bindings.sources:
-        return ("src_01ARZ3NDEKTSV4RRFFQ69G5FAW",)
+        return (("src_01ARZ3NDEKTSV4RRFFQ69G5FAW",),)
     if implementation is operation_bindings.versions:
-        return ("0" * 64,)
+        return (("0" * 64,),)
     if implementation is operation_bindings.read_span:
-        return "beta"
+        return ("beta",)
     if implementation is operation_bindings.list_documents:
-        return ("other.md",)
+        return (("other.md",),)
     if implementation is operation_bindings.describe_corpus:
-        return (("other.md", "0" * 64),)
+        return ((("other.md", "0" * 64),),)
     if implementation is operation_bindings.rejections:
-        return (
+        return ((
             Rejection(
                 cluster_id="other-rejected-cluster",
                 failed_gate=Gate.G1.value,
@@ -1142,35 +1182,35 @@ def _well_formed_wrong_result(operation: _Operation) -> object:
                 round_number=1,
                 rejected_at=_RECORDED_AT,
             ),
-        )
+        ),)
     if implementation is operation_bindings.bridges:
-        return (
+        return ((
             _bridge_card(
                 card_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAC",
                 cluster_id="other-bridge-cluster",
                 failed=Gate.G1,
             ),
-        )
+        ),)
     if implementation is operation_bindings.discover:
         card = _seeded_discovery_card()
-        return RoundResult(1, RoundStatus.COMPLETE, (card,), (), (card,), ())
+        return (RoundResult(1, RoundStatus.COMPLETE, (card,), (), (card,), ()),)
     if implementation is operation_bindings.adjudicate:
-        return Rejection(
+        return (Rejection(
             cluster_id="matrix-adjudication-cluster",
             failed_gate=Gate.G2.value,
             reason="a plausible but wrong rejection",
             round_number=2,
             rejected_at=_RECORDED_AT,
-        )
+        ),)
     if implementation is operation_bindings.promote_candidate:
-        return PromotionRecord(
+        return (PromotionRecord(
             proposal_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAD",
             adjudicator="other adjudicator",
             decided_at=_RECORDED_AT,
             verdict=Verdict.PROMOTE,
             subject_key="other-subject",
             subject_origin=KeyOrigin.OPERATOR,
-        )
+        ),)
     if implementation in (
         operation_bindings.proposals,
         operation_bindings.record_proposal,
@@ -1183,8 +1223,8 @@ def _well_formed_wrong_result(operation: _Operation) -> object:
             holder="other holder",
         )
         if implementation is operation_bindings.proposals:
-            return (proposal,)
-        return proposal
+            return ((proposal,),)
+        return (proposal,)
     wrong_temporal_assertion = Assertion(
         id=f"asr_{3:026X}",
         text="temporal assertion 3",
@@ -1200,19 +1240,32 @@ def _well_formed_wrong_result(operation: _Operation) -> object:
         valid_from=_RECORDED_AT,
     )
     if implementation is operation_bindings.as_of:
-        return AsOf((wrong_temporal_assertion,), (), ())
+        return (AsOf((wrong_temporal_assertion,), (), ()),)
     if implementation is operation_bindings.conflicts:
-        return (
+        return ((
             Conflict(
                 _TEMPORAL_KEY,
                 (wrong_temporal_assertion,),
                 Overlap.UNDETERMINED,
             ),
+        ),)
+    if implementation is operation_bindings.project_knowledge:
+        index = TemporalIndex()
+        index.add(_TEMPORAL_KEY, wrong_temporal_assertion)
+        non_empty = substrate(KnowledgeState(index))
+        wrong_policy = ProjectionIR(
+            non_empty.schema_version,
+            PolicyId.DISCOVERY,
+            non_empty.question,
+            non_empty.nodes,
+            non_empty.edges,
         )
+        empty = ProjectionIR(SCHEMA_VERSION, PolicyId.RELIABILITY, ALL_TIME, (), ())
+        return (wrong_policy, empty)
     if implementation is operation_bindings.supersession:
-        return (wrong_temporal_assertion,)
+        return ((wrong_temporal_assertion,),)
     if implementation is operation_bindings.ingest:
-        return IngestResult(IngestStatus.UNCHANGED, None, None)
+        return (IngestResult(IngestStatus.UNCHANGED, None, None),)
     pytest.fail(f"registered operation {operation.name!r} has no wrong result")
 
 
@@ -1365,6 +1418,7 @@ def test_registered_operations_have_the_decided_names_and_tiers() -> None:
         "as_of": Tier.READ,
         "conflicts": Tier.READ,
         "supersession": Tier.READ,
+        "project": Tier.READ,
         "record_proposal": Tier.PROPOSE,
         "discover": Tier.PROPOSE,
         "adjudicate": Tier.PROPOSE,
@@ -1397,8 +1451,7 @@ def test_every_registered_operation_rejects_each_degenerate_effect_result() -> N
     probe_text = "hostile effect probe"
 
     for operation in operations:
-        wrong = _well_formed_wrong_result(operation)
-        for returned in ((), None, wrong):
+        for returned in ((), None, *_well_formed_wrong_results(operation)):
             assert _observed_real_effect(
                 operation,
                 _invocation_returning(returned),
@@ -1535,7 +1588,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
     expected = (
         len(entries) * len(operations) * len(transports) * len(grant_tier_sets)
     )
-    assert expected == 7888
+    assert expected == 8352
     if expected == 0:
         _fail_not_run("the derived corpus matrix had zero expected cells")
 
@@ -1593,8 +1646,8 @@ def test_argument_content_cannot_change_any_authorization_decision(
 
     if executed == 0:
         _fail_not_run("the corpus matrix executed zero cells")
-    assert executed == 7888
-    assert expected == 7888
+    assert executed == 8352
+    assert expected == 8352
     expected_positive_controls = {
         (transport.name, operation.name, tier_set)
         for transport in transports
@@ -1602,7 +1655,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
         for tier_set in grant_tier_sets
         if operation.tier in tier_set
     }
-    assert len(expected_positive_controls) == 136
+    assert len(expected_positive_controls) == 144
     if positive_controls != expected_positive_controls:
         absent = sorted(
             (transport, operation, sorted(tier.value for tier in tier_set))
@@ -1618,9 +1671,9 @@ def test_argument_content_cannot_change_any_authorization_decision(
         len(positive_controls),
     )
     assert result.status is RunStatus.COMPLETE
-    assert result.executed == 7888
-    assert result.expected == 7888
-    assert result.positive_controls == 136
+    assert result.executed == 8352
+    assert result.expected == 8352
+    assert result.positive_controls == 144
 
 
 def test_the_holder_is_provenance_metadata_and_carries_no_authority(
@@ -1636,7 +1689,7 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
     expected = len(transports) * sum(
         1 for tier in tiers for operation in operations if operation.tier is tier
     )
-    assert expected == 17
+    assert expected == 18
     if expected == 0:
         _fail_not_run("the holder-metadata matrix had zero expected cells")
 
@@ -1668,8 +1721,8 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
 
     if executed == 0:
         _fail_not_run("the holder-metadata matrix executed zero cells")
-    assert executed == 17
-    assert expected == 17
+    assert executed == 18
+    assert expected == 18
 
 
 def test_required_tier_argument_content_cannot_change_the_decision_in_either_direction(
@@ -1681,7 +1734,7 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
     transports = _derived_transports()
     world = _build_world(tmp_path / "required_tier_arguments")
     expected = len(transports) * len(operations) * 2
-    assert expected == 34
+    assert expected == 36
     if expected == 0:
         _fail_not_run("the required-tier argument matrix had zero expected cells")
     executed = 0
@@ -1740,5 +1793,5 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
 
     if executed == 0:
         _fail_not_run("the required-tier argument matrix executed zero cells")
-    assert executed == 34
-    assert expected == 34
+    assert executed == 36
+    assert expected == 36

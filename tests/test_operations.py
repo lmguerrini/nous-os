@@ -41,6 +41,7 @@ from nous_os.discovery import (
 )
 from nous_os.ledger import IngestResult, IngestStatus, Ledger, ingest
 from nous_os.provenance import Citation, Locator
+from nous_os.projection import KnowledgeState, RELIABILITY
 from nous_os.snapshots import SnapshotStore
 from nous_os.temporal import ClaimKey, TemporalIndex
 from nous_os.untrusted import UntrustedText
@@ -702,6 +703,7 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
         },
         "conflicts": {"index": canon.temporal, "key": TEMPORAL_KEY},
         "supersession": {"index": canon.temporal, "key": TEMPORAL_KEY},
+        "project": {"state": KnowledgeState(canon.temporal), "policy": RELIABILITY},
     }
     if name not in arguments:
         pytest.fail(f"read operation {name!r} has no executable test arguments")
@@ -830,14 +832,15 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "as_of": Tier.READ,
         "conflicts": Tier.READ,
         "supersession": Tier.READ,
+        "project": Tier.READ,
         "record_proposal": Tier.PROPOSE,
         "discover": Tier.PROPOSE,
         "adjudicate": Tier.PROPOSE,
         "ingest_source": Tier.PROMOTE,
         "promote_candidate": Tier.PROMOTE,
     }
-    assert len(expected) == 17
-    assert len(operations) == 17
+    assert len(expected) == 18
+    assert len(operations) == 18
     assert {operation.name: operation.tier for operation in operations} == expected
     assert all(
         operation.tier is not Tier.EXTERNAL_CONSEQUENTIAL_ACTION
@@ -895,7 +898,7 @@ def test_registered_wrapper_annotations_resolve_without_importing_discovery_at_r
     wrappers = tuple(
         authority._REGISTRY[operation.name][1] for operation in _project_operations()
     )
-    assert len(wrappers) == 17
+    assert len(wrappers) == 18
     resolved = {
         wrapper.__name__: get_type_hints(
             wrapper,
