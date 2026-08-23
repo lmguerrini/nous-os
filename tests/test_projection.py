@@ -220,6 +220,102 @@ def test_payload_round_trip_and_digest_are_stable() -> None:
     assert ir.ir_digest == ir.ir_digest
 
 
+def test_restore_refuses_noncanonical_assertion_lifecycle_with_repaired_control() -> None:
+    ir = substrate(_small_state())
+    payload = copy.deepcopy(ir.as_payload())
+    assertion = next(item for item in payload["nodes"] if item["kind"] == "assertion")
+    assertion["attributes"]["lifecycle"] = LifecycleState.REJECTED.value
+
+    with pytest.raises(projection_module.ProjectionError) as refused:
+        from_payload(payload)
+    assert str(refused.value) == "only canonical assertions can be restored"
+    assert from_payload(ir.as_payload()) == ir
+
+
+def test_restore_refuses_failed_gate_without_reason_with_repaired_control() -> None:
+    ir = substrate(_state(bridges=(_card("H"),)))
+    payload = copy.deepcopy(ir.as_payload())
+    bridge = next(item for item in payload["nodes"] if item["kind"] == "bridge")
+    bridge["attributes"]["gate_outcomes"][0][1] = GateOutcome.FAIL.value
+    bridge["attributes"]["gate_reasons"] = []
+
+    with pytest.raises(projection_module.ProjectionError) as refused:
+        from_payload(payload)
+    assert str(refused.value) == "failed gate cross_project needs a reason"
+    assert from_payload(ir.as_payload()) == ir
+
+
+def test_restore_refuses_invalid_triviality_archetype_with_repaired_control() -> None:
+    ir = substrate(_state(bridges=(_card("K"),)))
+    payload = copy.deepcopy(ir.as_payload())
+    bridge = next(item for item in payload["nodes"] if item["kind"] == "bridge")
+    bridge["attributes"]["triviality"] = "not-an-archetype"
+
+    with pytest.raises(projection_module.ProjectionError) as refused:
+        from_payload(payload)
+    assert str(refused.value) == "'not-an-archetype' is not a valid TrivialityArchetype"
+    assert from_payload(ir.as_payload()) == ir
+
+
+def test_restore_refuses_stated_bridge_disposition_mismatch_with_repaired_control() -> None:
+    ir = substrate(_state(bridges=(_card("J"),)))
+    payload = copy.deepcopy(ir.as_payload())
+    bridge = next(item for item in payload["nodes"] if item["kind"] == "bridge")
+    bridge["attributes"]["disposition"] = BridgeDisposition.REJECTED.value
+
+    with pytest.raises(projection_module.ProjectionError) as refused:
+        from_payload(payload)
+    assert str(refused.value) == (
+        "bridge disposition disagrees with gate vector: rejected != accepted"
+    )
+    assert from_payload(ir.as_payload()) == ir
+
+
+def test_restore_refuses_invalid_snapshot_digest_in_both_copies_with_repaired_control() -> None:
+    ir = substrate(_small_state())
+    payload = copy.deepcopy(ir.as_payload())
+    assertion = next(item for item in payload["nodes"] if item["kind"] == "assertion")
+    cites = next(item for item in payload["edges"] if item["kind"] == "cites")
+    assertion["attributes"]["provenance"]["snapshot_digest"] = "not-a-digest"
+    cites["attributes"]["snapshot_digest"] = "not-a-digest"
+
+    with pytest.raises(projection_module.ProjectionError) as refused:
+        from_payload(payload)
+    assert str(refused.value) == (
+        "snapshot_digest must be 64 lowercase hex characters: 'not-a-digest'"
+    )
+    assert from_payload(ir.as_payload()) == ir
+
+
+def test_restore_refuses_coherent_id_rewrite_that_disagrees_with_assertion_attribute() -> None:
+    assertion_a = "asr_01ARZ3NDEKTSV4RRFFQ69G5FAA"
+    assertion_b = "asr_01ARZ3NDEKTSV4RRFFQ69G5FAB"
+    ir = substrate(
+        _state((("subject-a", _assertion(assertion_b, "assertion b")),))
+    )
+    payload = copy.deepcopy(ir.as_payload())
+    assertion = next(item for item in payload["nodes"] if item["kind"] == "assertion")
+    assertion["id"] = f"assertion:{assertion_a}"
+    for edge in payload["edges"]:
+        if edge["kind"] in {"about", "cites"}:
+            edge["id"] = edge["id"].replace(assertion_b, assertion_a)
+            edge["source"] = f"assertion:{assertion_a}"
+
+    with pytest.raises(projection_module.ProjectionError) as refused:
+        from_payload(payload)
+    assert str(refused.value) == "assertion node id must agree with assertion_id"
+    assert from_payload(ir.as_payload()) == ir
+
+
+def test_strict_restore_round_trip_preserves_all_kind_ir_and_digest() -> None:
+    ir = substrate(_all_kind_state())
+
+    assert {node.kind for node in ir.nodes} == set(NodeKind)
+    assert from_payload(ir.as_payload()) == ir
+    assert from_payload(ir.as_payload()).ir_digest == ir.ir_digest
+    assert ir.ir_digest == "7cbc8d9f5870a7ec7bf905768965f7b27abd0700915a52a9bab726a4bd4b7383"
+
+
 def test_policy_refuses_a_dead_bridge_admission_knob() -> None:
     with pytest.raises(ProjectionPolicyError):
         ProjectionPolicy(
