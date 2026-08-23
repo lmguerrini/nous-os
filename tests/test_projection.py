@@ -225,6 +225,12 @@ def test_restore_refuses_noncanonical_assertion_lifecycle_with_repaired_control(
     payload = copy.deepcopy(ir.as_payload())
     assertion = next(item for item in payload["nodes"] if item["kind"] == "assertion")
     assertion["attributes"]["lifecycle"] = LifecycleState.REJECTED.value
+    attributes = next(node.attributes for node in ir.nodes if node.kind is NodeKind.ASSERTION)
+
+    assert replace(attributes) == attributes
+    with pytest.raises(projection_module.ProjectionError) as direct:
+        replace(attributes, lifecycle=LifecycleState.REJECTED)
+    assert str(direct.value) == "only canonical assertions can be restored"
 
     with pytest.raises(projection_module.ProjectionError) as refused:
         from_payload(payload)
@@ -238,6 +244,7 @@ def test_restore_refuses_failed_gate_without_reason_with_repaired_control() -> N
     bridge = next(item for item in payload["nodes"] if item["kind"] == "bridge")
     bridge["attributes"]["gate_outcomes"][0][1] = GateOutcome.FAIL.value
     bridge["attributes"]["gate_reasons"] = []
+    bridge["attributes"]["disposition"] = BridgeDisposition.REJECTED.value
 
     with pytest.raises(projection_module.ProjectionError) as refused:
         from_payload(payload)
@@ -285,6 +292,187 @@ def test_restore_refuses_invalid_snapshot_digest_in_both_copies_with_repaired_co
         "snapshot_digest must be 64 lowercase hex characters: 'not-a-digest'"
     )
     assert from_payload(ir.as_payload()) == ir
+
+
+def test_provenance_ref_refuses_invalid_source_and_digest_on_both_routes() -> None:
+    """Citation validation belongs to ProvenanceRef, whether decoded or constructed."""
+    ir = substrate(_small_state())
+    valid = next(edge.attributes for edge in ir.edges if edge.kind is EdgeKind.CITES)
+
+    for field, defective in (
+        ("source_id", "not-a-source-id"),
+        ("snapshot_digest", "not-a-digest"),
+    ):
+        assert replace(valid) == valid
+        assert from_payload(ir.as_payload()) == ir
+        with pytest.raises(projection_module.ProjectionError) as direct:
+            replace(valid, **{field: defective})
+
+        payload = copy.deepcopy(ir.as_payload())
+        cites = next(item for item in payload["edges"] if item["kind"] == "cites")
+        cites["attributes"][field] = defective
+        with pytest.raises(projection_module.ProjectionError) as restored:
+            from_payload(payload)
+        assert str(restored.value) == str(direct.value)
+
+
+def test_bridge_attributes_refuse_card_and_gate_defects_on_both_routes() -> None:
+    """The bridge record owns identity, gate-vector, and derived-label validation."""
+    ir = substrate(_state(bridges=(_card("P"),)))
+    attributes = next(node.attributes for node in ir.nodes if node.kind is NodeKind.BRIDGE)
+
+    cases = (
+        (
+            "card_id",
+            lambda value: replace(value, card_id="not-a-valid-assertion-id"),
+            lambda value: value.__setitem__("card_id", "not-a-valid-assertion-id"),
+        ),
+        (
+            "failed gate without a reason",
+            lambda value: replace(
+                value,
+                gate_outcomes=((Gate.G1, GateOutcome.FAIL),) + value.gate_outcomes[1:],
+                gate_reasons=(),
+                disposition=BridgeDisposition.REJECTED,
+            ),
+            lambda value: (
+                value["gate_outcomes"][0].__setitem__(1, GateOutcome.FAIL.value),
+                value.__setitem__("gate_reasons", []),
+                value.__setitem__("disposition", BridgeDisposition.REJECTED.value),
+            ),
+        ),
+        (
+            "stated disposition mismatch",
+            lambda value: replace(value, disposition=BridgeDisposition.REJECTED),
+            lambda value: value.__setitem__("disposition", BridgeDisposition.REJECTED.value),
+        ),
+    )
+    for _name, direct_change, payload_change in cases:
+        assert replace(attributes) == attributes
+        assert from_payload(ir.as_payload()) == ir
+        with pytest.raises(projection_module.ProjectionError) as direct:
+            direct_change(attributes)
+
+        payload = copy.deepcopy(ir.as_payload())
+        bridge = next(item for item in payload["nodes"] if item["kind"] == "bridge")
+        payload_change(bridge["attributes"])
+        with pytest.raises(projection_module.ProjectionError) as restored:
+            from_payload(payload)
+        assert str(restored.value) == str(direct.value), _name
+
+
+def test_bridge_gate_wire_shape_is_refused_on_both_routes() -> None:
+    """A payload must name every gate once and in the closed Gate order."""
+    ir = substrate(_state(bridges=(_card("M"),)))
+    attributes = next(node.attributes for node in ir.nodes if node.kind is NodeKind.BRIDGE)
+
+    cases = (
+        (
+            "missing gate",
+            lambda value: replace(value, gate_outcomes=value.gate_outcomes[:-1]),
+            lambda value: value["gate_outcomes"].pop(),
+        ),
+        (
+            "out-of-order gate",
+            lambda value: replace(
+                value, gate_outcomes=(value.gate_outcomes[1], value.gate_outcomes[0]) + value.gate_outcomes[2:]
+            ),
+            lambda value: value["gate_outcomes"].__setitem__(
+                slice(0, 2), [value["gate_outcomes"][1], value["gate_outcomes"][0]]
+            ),
+        ),
+    )
+    for _name, direct_change, payload_change in cases:
+        assert replace(attributes) == attributes
+        assert from_payload(ir.as_payload()) == ir
+        with pytest.raises(projection_module.ProjectionError) as direct:
+            direct_change(attributes)
+
+        payload = copy.deepcopy(ir.as_payload())
+        bridge = next(item for item in payload["nodes"] if item["kind"] == "bridge")
+        payload_change(bridge["attributes"])
+        with pytest.raises(projection_module.ProjectionError) as restored:
+            from_payload(payload)
+        assert str(restored.value) == str(direct.value), _name
+
+
+def test_bridge_side_quote_bound_is_refused_on_both_routes() -> None:
+    """Projection bridge-side text retains Endpoint's 25-word bound."""
+    ir = substrate(_state(bridges=(_card("N"),)))
+    attributes = next(edge.attributes for edge in ir.edges if edge.kind is EdgeKind.BRIDGE_SIDE)
+    too_long = " ".join("word" for _ in range(26))
+
+    assert replace(attributes) == attributes
+    assert from_payload(ir.as_payload()) == ir
+    with pytest.raises(projection_module.ProjectionError) as direct:
+        replace(attributes, quote=too_long)
+
+    payload = copy.deepcopy(ir.as_payload())
+    side = next(item for item in payload["edges"] if item["kind"] == "bridge_side")
+    side["attributes"]["quote"] = too_long
+    with pytest.raises(projection_module.ProjectionError) as restored:
+        from_payload(payload)
+    assert str(restored.value) == str(direct.value)
+
+
+def test_projection_ir_refuses_provenance_targets_and_temporal_label_on_both_routes() -> None:
+    """Whole-graph relations are checked identically after decoding and direct construction."""
+    repaired = substrate(_all_kind_state())
+    nodes = repaired.nodes
+    edges = repaired.edges
+    cites = next(edge for edge in edges if edge.kind is EdgeKind.CITES)
+    side = next(
+        edge
+        for edge in edges
+        if edge.kind is EdgeKind.BRIDGE_SIDE and edge.attributes.side is projection_module.Side.LEFT
+    )
+    assertion = next(node for node in nodes if node.kind is NodeKind.ASSERTION)
+
+    def replace_edge(original: object, changed: object) -> tuple[object, ...]:
+        return tuple(changed if edge is original else edge for edge in edges)
+
+    def replace_node(original: object, changed: object) -> tuple[object, ...]:
+        return tuple(changed if node is original else node for node in nodes)
+
+    cases = (
+        (
+            "CITES source target",
+            nodes,
+            replace_edge(cites, replace(cites, target=f"source:{_SOURCE_B}")),
+        ),
+        (
+            "BRIDGE_SIDE source target",
+            nodes,
+            replace_edge(side, replace(side, target=f"source:{_SOURCE_B}")),
+        ),
+        (
+            "temporal disposition",
+            replace_node(
+                assertion,
+                replace(
+                    assertion,
+                    attributes=replace(assertion.attributes, temporal=TemporalDisposition.EXCLUDED),
+                ),
+            ),
+            edges,
+        ),
+    )
+    for _name, changed_nodes, changed_edges in cases:
+        assert projection_module.ProjectionIR(
+            repaired.schema_version, repaired.policy_id, repaired.question, repaired.nodes, repaired.edges
+        ) == repaired
+        assert from_payload(repaired.as_payload()) == repaired
+        with pytest.raises(projection_module.ProjectionError) as direct:
+            projection_module.ProjectionIR(
+                repaired.schema_version,
+                repaired.policy_id,
+                repaired.question,
+                changed_nodes,
+                changed_edges,
+            )
+        with pytest.raises(projection_module.ProjectionError) as restored:
+            from_payload(_graph_payload(changed_nodes, changed_edges))
+        assert str(restored.value) == str(direct.value), _name
 
 
 def test_restore_refuses_coherent_id_rewrite_that_disagrees_with_assertion_attribute() -> None:

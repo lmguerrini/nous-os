@@ -20,7 +20,7 @@ from nous_os.discovery import (
     GateVector,
     TrivialityArchetype,
 )
-from nous_os.identity import InvalidIdentifier, canonical_bytes, digest_payload
+from nous_os.identity import ASSERTION_PREFIX, InvalidIdentifier, canonical_bytes, digest_payload, require_id
 from nous_os.provenance import Citation, Locator, ProvenanceError
 from nous_os.temporal import ClaimKey, Conflict, Overlap, TemporalIndex
 
@@ -149,12 +149,15 @@ class ProvenanceRef:
     span: str
 
     def __post_init__(self) -> None:
-        _text(self.source_id, "source_id")
-        _text(self.snapshot_digest, "snapshot_digest")
-        if type(self.start_byte) is not int or type(self.end_byte) is not int:
-            raise ProjectionError("citation offsets must be exact ints")
-        if self.start_byte < 0 or self.end_byte <= self.start_byte:
-            raise ProjectionError("citation offsets must form a non-empty range")
+        try:
+            Citation(
+                self.source_id,
+                self.snapshot_digest,
+                Locator(self.start_byte, self.end_byte),
+                self.span,
+            )
+        except (InvalidIdentifier, ProvenanceError) as error:
+            raise ProjectionError(str(error)) from error
         _text(self.span, "span")
 
 
@@ -264,7 +267,10 @@ class BridgeAttributes:
     disposition: BridgeDisposition
 
     def __post_init__(self) -> None:
-        _text(self.card_id, "card_id")
+        try:
+            require_id(self.card_id, ASSERTION_PREFIX)
+        except InvalidIdentifier as error:
+            raise ProjectionError(f"card_id is not valid: {error}") from error
         _text(self.cluster_id, "cluster_id")
         if not _is_member(self.epistemic_class, _EPISTEMIC_CLASSES):
             raise ProjectionError("epistemic_class must be a declared EpistemicClass member")
@@ -299,6 +305,20 @@ class BridgeAttributes:
             _text(self.triviality, "triviality")
         if not _is_member(self.disposition, _BRIDGE_DISPOSITIONS):
             raise ProjectionError("disposition must be a declared BridgeDisposition member")
+        try:
+            gates = GateVector(
+                dict(self.gate_outcomes),
+                dict(self.gate_reasons),
+                None if self.triviality is None else TrivialityArchetype(self.triviality),
+            )
+        except (DiscoveryError, TypeError, ValueError) as error:
+            raise ProjectionError(str(error)) from error
+        derived = _bridge_disposition(gates)
+        if self.disposition is not derived:
+            raise ProjectionError(
+                f"bridge disposition disagrees with gate vector: "
+                f"{self.disposition.value} != {derived.value}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +352,8 @@ class _BridgeSideAttributes:
             raise ProjectionError("side must be a declared Side member")
         _text(self.project, "project")
         _text(self.quote, "quote")
+        if len(self.quote.split()) > 25:
+            raise ProjectionError("quote must contain at most 25 words")
         if type(self.provenance) is not ProvenanceRef:
             raise ProjectionError("side provenance must be an exact ProvenanceRef")
 
@@ -500,6 +522,42 @@ def _bridge_disposition(card: BridgeCard | GateVector) -> BridgeDisposition:
     return BridgeDisposition.UNDETERMINED
 
 
+def _temporal_disposition(
+    attributes: AssertionAttributes, question: TemporalQuestion
+) -> TemporalDisposition:
+    """Mirror TemporalIndex.as_of for one projected assertion.
+
+    TemporalIndex exposes only collection classification and requires a canonical
+    Assertion plus a ClaimKey. ProjectionIR deliberately retains neither, so it
+    cannot call that public API without imposing unrelated construction rules.
+    """
+    validity_undetermined = False
+    if question.valid_at is not None:
+        valid_at = question.valid_at.astimezone(timezone.utc)
+        valid_from = (
+            None
+            if attributes.valid_from is None
+            else attributes.valid_from.astimezone(timezone.utc)
+        )
+        valid_to = (
+            None
+            if attributes.valid_to is None
+            else attributes.valid_to.astimezone(timezone.utc)
+        )
+        if (valid_from is not None and valid_at < valid_from) or (
+            valid_to is not None and valid_at >= valid_to
+        ):
+            return TemporalDisposition.EXCLUDED
+        validity_undetermined = valid_from is None or valid_to is None
+    if question.recorded_as_of is not None and attributes.recorded_at.astimezone(
+        timezone.utc
+    ) > question.recorded_as_of.astimezone(timezone.utc):
+        return TemporalDisposition.EXCLUDED
+    if validity_undetermined:
+        return TemporalDisposition.UNDETERMINED
+    return TemporalDisposition.ESTABLISHED
+
+
 def _node_payload(node: ProjectionNode) -> dict[str, object]:
     return {"id": node.id, "kind": node.kind.value, "attributes": _attributes_payload(node.attributes)}
 
@@ -619,6 +677,14 @@ class ProjectionIR:
                 raise ProjectionError("cluster node id must agree with cluster_id")
             if node.kind is NodeKind.ASSERTION and node.id != f"assertion:{node.attributes.assertion_id}":  # type: ignore[union-attr]
                 raise ProjectionError("assertion node id must agree with assertion_id")
+            if node.kind is NodeKind.ASSERTION:
+                attributes = node.attributes  # type: ignore[assignment]
+                derived = _temporal_disposition(attributes, self.question)
+                if attributes.temporal is not derived:
+                    raise ProjectionError(
+                        "assertion temporal disposition disagrees with question: "
+                        f"{attributes.temporal.value} != {derived.value}"
+                    )
             if node.kind is NodeKind.BRIDGE and node.id != f"bridge:{node.attributes.card_id}":  # type: ignore[union-attr]
                 raise ProjectionError("bridge node id must agree with card_id")
         signatures = {
@@ -658,6 +724,8 @@ class ProjectionIR:
                 assertion = node.attributes
                 if cites[0].attributes != assertion.provenance:  # type: ignore[union-attr]
                     raise ProjectionError("CITES provenance must equal assertion provenance")
+                if cites[0].target != f"source:{assertion.provenance.source_id}":  # type: ignore[union-attr]
+                    raise ProjectionError("CITES target must name its provenance source")
             elif node.kind is NodeKind.CONFLICT:
                 members = node.attributes.members  # type: ignore[union-attr]
                 actual = [edge for edge in edges if edge.kind is EdgeKind.CONFLICT_MEMBER]
@@ -672,6 +740,11 @@ class ProjectionIR:
                 side_values = {edge.attributes.side for edge in sides}  # type: ignore[union-attr]
                 if side_values != {Side.LEFT, Side.RIGHT}:
                     raise ProjectionError("bridge sides must contain one LEFT and one RIGHT")
+                if any(
+                    edge.target != f"source:{edge.attributes.provenance.source_id}"
+                    for edge in sides
+                ):
+                    raise ProjectionError("BRIDGE_SIDE target must name its provenance source")
                 if clusters[0].target != f"cluster:{node.attributes.cluster_id}":  # type: ignore[union-attr]
                     raise ProjectionError("IN_CLUSTER must name the bridge cluster")
             elif node.kind is NodeKind.REJECTION:
@@ -954,46 +1027,37 @@ def _from_instant(value: object, field: str) -> datetime | None:
 
 def _from_provenance(payload: object) -> ProvenanceRef:
     value = _object(payload, ("source_id", "snapshot_digest", "start_byte", "end_byte", "span"), "provenance")
-    try:
-        locator = Locator(value["start_byte"], value["end_byte"])
-        citation = Citation(
-            value["source_id"],
-            value["snapshot_digest"],
-            locator,
-            value["span"],
-        )
-    except (InvalidIdentifier, ProvenanceError) as error:
-        raise ProjectionError(str(error)) from error
     return ProvenanceRef(
-        citation.source_id,
-        citation.snapshot_digest,
-        citation.locator.start_byte,
-        citation.locator.end_byte,
-        citation.span,
+        value["source_id"],
+        value["snapshot_digest"],
+        value["start_byte"],
+        value["end_byte"],
+        value["span"],
     )
 
 
-def _from_gate_vector(outcomes_payload: object, reasons_payload: object, triviality: object) -> GateVector:
+def _from_gate_vector(
+    outcomes_payload: object, reasons_payload: object, triviality: object
+) -> tuple[tuple[tuple[Gate, GateOutcome], ...], tuple[tuple[Gate, str], ...], object]:
     if type(outcomes_payload) is not list or type(reasons_payload) is not list:
         raise ProjectionError("bridge gate payloads must be arrays")
     try:
-        outcomes = {
-            Gate(pair[0]): GateOutcome(pair[1])
+        outcomes = tuple(
+            (Gate(pair[0]), GateOutcome(pair[1]))
             for pair in outcomes_payload
             if type(pair) is list and len(pair) == 2
-        }
-        reasons = {
-            Gate(pair[0]): pair[1]
+        )
+        reasons = tuple(
+            (Gate(pair[0]), pair[1])
             for pair in reasons_payload
             if type(pair) is list and len(pair) == 2
-        }
+        )
         if len(outcomes) != len(outcomes_payload) or len(reasons) != len(reasons_payload):
             raise ProjectionError("bridge gate entries must be two-item arrays")
-        archetype = None if triviality is None else TrivialityArchetype(triviality)
-        return GateVector(outcomes, reasons, archetype)
+        return outcomes, reasons, triviality
     except ProjectionError:
         raise
-    except (DiscoveryError, TypeError, ValueError) as error:
+    except (TypeError, ValueError) as error:
         raise ProjectionError(str(error)) from error
 
 
@@ -1026,21 +1090,14 @@ def _from_attributes(kind: NodeKind | EdgeKind, payload: object) -> object:
         return ConflictAttributes(value["subject_key"], Overlap(value["overlap"]), tuple(value["members"]))
     if kind is NodeKind.BRIDGE:
         value = _object(payload, ("card_id", "cluster_id", "epistemic_class", "depth", "non_triviality", "consequence", "noise_objection", "origin_round", "gate_outcomes", "gate_reasons", "triviality", "disposition"), "bridge attributes")
-        gates = _from_gate_vector(
+        outcomes, reasons, triviality = _from_gate_vector(
             value["gate_outcomes"], value["gate_reasons"], value["triviality"]
         )
         try:
             stated = BridgeDisposition(value["disposition"])
-            derived = _bridge_disposition(gates)
         except (TypeError, ValueError) as error:
             raise ProjectionError(str(error)) from error
-        if stated is not derived:
-            raise ProjectionError(
-                f"bridge disposition disagrees with gate vector: {stated.value} != {derived.value}"
-            )
-        outcomes = tuple((gate, gates.outcome(gate)) for gate in Gate)
-        reasons = tuple((gate, gates.reasons[gate]) for gate in Gate if gate in gates.reasons)
-        return BridgeAttributes(value["card_id"], value["cluster_id"], EpistemicClass(value["epistemic_class"]), Depth(value["depth"]), value["non_triviality"], value["consequence"], value["noise_objection"], value["origin_round"], outcomes, reasons, None if gates.triviality is None else gates.triviality.value, derived)
+        return BridgeAttributes(value["card_id"], value["cluster_id"], EpistemicClass(value["epistemic_class"]), Depth(value["depth"]), value["non_triviality"], value["consequence"], value["noise_objection"], value["origin_round"], outcomes, reasons, triviality, stated)
     if kind is NodeKind.REJECTION:
         value = _object(payload, ("cluster_id", "failed_gate", "reason", "round_number", "rejected_at"), "rejection attributes")
         return RejectionAttributes(value["cluster_id"], value["failed_gate"], value["reason"], value["round_number"], _from_instant(value["rejected_at"], "rejected_at"))
