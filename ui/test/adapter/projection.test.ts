@@ -1,0 +1,268 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import test from "node:test";
+import { canonicalBytes } from "#engine/canonical.ts";
+import {
+  assertReliabilityRederivation,
+  neutralProjection,
+  toVisualGraph,
+} from "#adapter/projection.ts";
+import {
+  assertNoPassthrough,
+  assertVisualGraphFieldRegister,
+  readSemantic,
+  semanticDigest,
+} from "#engine/contract.ts";
+
+type FixtureNode = {
+  readonly id: string;
+  readonly kind: string;
+  readonly attributes: Record<string, unknown>;
+};
+
+type FixtureEdge = {
+  readonly id: string;
+  readonly kind: string;
+  readonly source: string;
+  readonly target: string;
+  readonly attributes: Record<string, unknown> | null;
+};
+
+type FixturePayload = {
+  readonly schema_version: string;
+  readonly policy_id: string;
+  readonly question: { readonly valid_at: string | null; readonly recorded_as_of: string | null };
+  readonly nodes: readonly FixtureNode[];
+  readonly edges: readonly FixtureEdge[];
+};
+
+const FIXTURES = [
+  "discovery-all-time.json",
+  "discovery-at-question.json",
+  "reliability-all-time.json",
+  "reliability-at-question.json",
+  "substrate-all-time.json",
+] as const;
+
+const NODE_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  source: ["source_id"],
+  subject: ["key"],
+  cluster: ["cluster_id"],
+  assertion: ["assertion_id", "text", "support", "lifecycle", "recorded_at", "valid_from", "valid_to", "provenance", "temporal"],
+  conflict: ["subject_key", "overlap", "members"],
+  bridge: ["card_id", "cluster_id", "epistemic_class", "depth", "non_triviality", "consequence", "noise_objection", "origin_round", "gate_outcomes", "gate_reasons", "triviality", "disposition"],
+  rejection: ["cluster_id", "failed_gate", "reason", "round_number", "rejected_at"],
+};
+
+const EDGE_FIELDS: Readonly<Record<string, readonly string[] | null>> = {
+  about: null,
+  conflict_member: null,
+  in_cluster: null,
+  rejects: null,
+  cites: ["source_id", "snapshot_digest", "start_byte", "end_byte", "span"],
+  bridge_side: ["side", "project", "quote", "provenance"],
+};
+
+/** This reads one checked-in payload and does not create expected adapter output. */
+function fixture(name: typeof FIXTURES[number]): FixturePayload {
+  return JSON.parse(readFileSync(join(process.cwd(), "..", "fixtures", "synthetic", "projection", name), "utf8")) as FixturePayload;
+}
+
+/** This compares canonical records and does not apply an omission predicate. */
+function assertSameCanonical(left: unknown, right: unknown): void {
+  assert.deepEqual(canonicalBytes(left), canonicalBytes(right));
+}
+
+/** This makes one deliberately configurable predicate result and does not call adapter code. */
+function localReliability(
+  source: FixturePayload,
+  options: { readonly admitUndetermined: boolean; readonly keepBrokenConflicts: boolean; readonly keepOrphans: boolean },
+): FixturePayload {
+  const admitted = new Set<string>();
+  for (const node of source.nodes) {
+    const temporal = node.kind === "assertion" ? node.attributes.temporal : undefined;
+    if (node.kind === "source" || node.kind === "subject" || node.kind === "conflict"
+      || (node.kind === "assertion" && (temporal === "established" || (options.admitUndetermined && temporal === "undetermined")))) {
+      admitted.add(node.id);
+    }
+  }
+  if (!options.keepBrokenConflicts) {
+    for (const node of source.nodes) {
+      if (node.kind !== "conflict") {
+        continue;
+      }
+      const members = node.attributes.members;
+      assert.ok(Array.isArray(members));
+      if (members.some((member) => typeof member !== "string" || !admitted.has(`assertion:${member}`))) {
+        admitted.delete(node.id);
+      }
+    }
+  }
+  const edges = source.edges.filter((edge) => admitted.has(edge.source) && admitted.has(edge.target));
+  if (!options.keepOrphans) {
+    const incident = new Set<string>();
+    for (const edge of edges) {
+      incident.add(edge.source);
+      incident.add(edge.target);
+    }
+    for (const node of source.nodes) {
+      if ((node.kind === "source" || node.kind === "subject" || node.kind === "cluster") && !incident.has(node.id)) {
+        admitted.delete(node.id);
+      }
+    }
+  }
+  return {
+    schema_version: source.schema_version,
+    policy_id: "reliability",
+    question: source.question,
+    nodes: source.nodes.filter((node) => admitted.has(node.id)).sort(compareIds),
+    edges: edges.sort(compareIds),
+  };
+}
+
+function compareIds(left: { readonly id: string }, right: { readonly id: string }): number {
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+function assertNoFloats(value: unknown): void {
+  if (typeof value === "number") {
+    assert.ok(Number.isInteger(value));
+  } else if (Array.isArray(value)) {
+    for (const item of value) {
+      assertNoFloats(item);
+    }
+  } else if (typeof value === "object" && value !== null) {
+    for (const item of Object.values(value)) {
+      assertNoFloats(item);
+    }
+  }
+}
+
+test("every fixture maps into the exhaustive neutral semantic projection", () => {
+  assert.equal(FIXTURES.length, 5);
+  for (const name of FIXTURES) {
+    const raw = fixture(name);
+    const neutral = neutralProjection(raw);
+    assert.equal(neutral.nodes.length, raw.nodes.length);
+    assert.equal(neutral.edges.length, raw.edges.length);
+    assert.deepEqual(neutral.question, raw.question);
+    assert.ok(neutral.question.valid_at === null || typeof neutral.question.valid_at === "string");
+    assert.ok(neutral.question.recorded_as_of === null || typeof neutral.question.recorded_as_of === "string");
+    assert.deepEqual(neutral.nodes.map((node) => node.id), [...neutral.nodes].map((node) => node.id).sort());
+    assert.deepEqual(neutral.edges.map((edge) => edge.id), [...neutral.edges].map((edge) => edge.id).sort());
+    for (const node of neutral.nodes) {
+      const fields = NODE_FIELDS[node.kind];
+      assert.ok(fields !== undefined);
+      assert.deepEqual(Object.keys(node.semantic as object).sort(), [...fields].sort());
+    }
+    assert.equal(neutral.nodes.length, raw.nodes.length);
+    for (const edge of neutral.edges) {
+      const fields = EDGE_FIELDS[edge.kind];
+      if (fields === undefined) {
+        throw new TypeError(`missing edge register for ${edge.kind}`);
+      }
+      if (fields === null) {
+        assert.equal(edge.semantic, null);
+      } else {
+        assert.deepEqual(Object.keys(edge.semantic as object).sort(), [...fields].sort());
+      }
+    }
+    assert.equal(neutral.edges.length, raw.edges.length);
+    assert.deepEqual(
+      neutral.nodes,
+      [...raw.nodes].sort(compareIds).map((node) => ({ id: node.id, kind: node.kind, semantic: node.attributes })),
+    );
+    assert.deepEqual(
+      neutral.edges,
+      [...raw.edges].sort(compareIds).map((edge) => ({
+        id: edge.id,
+        kind: edge.kind,
+        source: edge.source,
+        target: edge.target,
+        semantic: edge.attributes,
+      })),
+    );
+    assertNoFloats(neutral);
+    for (const node of neutral.nodes) {
+      if (node.kind === "assertion" || node.kind === "rejection") {
+        const semantic = node.semantic as Record<string, unknown>;
+        for (const field of node.kind === "assertion" ? ["recorded_at", "valid_from", "valid_to"] : ["rejected_at"]) {
+          assert.ok(semantic[field] === null || typeof semantic[field] === "string");
+        }
+      }
+    }
+  }
+});
+
+test("visual graphs meet the boundary register without retaining payload or digest", () => {
+  assert.equal(FIXTURES.length, 5);
+  for (const name of FIXTURES) {
+    const raw = fixture(name);
+    const graph = toVisualGraph(raw);
+    assertVisualGraphFieldRegister(graph);
+    assertNoPassthrough(graph, raw, semanticDigest(graph));
+    assert.equal(graph.nodes.length, raw.nodes.length);
+    assert.equal(graph.edges.length, raw.edges.length);
+    const firstNode = graph.nodes[0];
+    const firstNeutralNode = neutralProjection(raw).nodes[0];
+    if (firstNode === undefined || firstNeutralNode === undefined) {
+      throw new TypeError("fixture unexpectedly has no nodes");
+    }
+    assert.deepEqual(readSemantic(firstNode.semantic), firstNeutralNode.semantic);
+  }
+});
+
+test("semantic digests are stable across repeated adapter construction", () => {
+  assert.equal(FIXTURES.length, 5);
+  for (const name of FIXTURES) {
+    const raw = fixture(name);
+    assert.equal(semanticDigest(toVisualGraph(raw)), semanticDigest(toVisualGraph(raw)));
+  }
+});
+
+test("Reliability is re-derived by canonical equality for both temporal questions", () => {
+  const pairs = [
+    ["discovery-all-time.json", "reliability-all-time.json"],
+    ["discovery-at-question.json", "reliability-at-question.json"],
+  ] as const;
+  assert.equal(pairs.length, 2);
+  for (const [discoveryName, reliabilityName] of pairs) {
+    assert.doesNotThrow(() => assertReliabilityRederivation(fixture(discoveryName), fixture(reliabilityName)));
+  }
+});
+
+test("a labelled empty Reliability graph cannot pass equality by containment", () => {
+  const discovery = fixture("discovery-all-time.json");
+  const empty: FixturePayload = { ...fixture("reliability-all-time.json"), nodes: [], edges: [] };
+  assert.equal(empty.nodes.length, 0);
+  assert.throws(() => assertReliabilityRederivation(discovery, empty), /does not equal/);
+});
+
+test("each predicate negative control differs in only its named clause", () => {
+  const discovery = fixture("discovery-at-question.json");
+  const reliability = fixture("reliability-at-question.json");
+  const established = discovery.nodes.filter((node) => node.kind === "assertion" && node.attributes.temporal === "established");
+  const undetermined = discovery.nodes.filter((node) => node.kind === "assertion" && node.attributes.temporal === "undetermined");
+  const conflictsWithDroppedMembers = discovery.nodes.filter((node) => node.kind === "conflict" && Array.isArray(node.attributes.members)
+    && node.attributes.members.some((member) => typeof member === "string" && !established.some((assertion) => assertion.id === `assertion:${member}`)));
+  assert.equal(established.length, 3);
+  assert.equal(undetermined.length, 1);
+  assert.equal(conflictsWithDroppedMembers.length, 2);
+
+  const wrongTemporal = localReliability(discovery, { admitUndetermined: true, keepBrokenConflicts: false, keepOrphans: false });
+  const wrongConflict = localReliability(discovery, { admitUndetermined: false, keepBrokenConflicts: true, keepOrphans: false });
+  const wrongOrphan = localReliability(discovery, { admitUndetermined: false, keepBrokenConflicts: false, keepOrphans: true });
+  assert.throws(() => assertSameCanonical(wrongTemporal, reliability));
+  assert.throws(() => assertSameCanonical(wrongConflict, reliability));
+  assert.throws(() => assertSameCanonical(wrongOrphan, reliability));
+});
+
+test("experimental projections render alone but are refused as a re-derivation half", () => {
+  const discovery = { ...fixture("discovery-all-time.json"), policy_id: "experimental" };
+  const reliability = { ...fixture("reliability-all-time.json"), policy_id: "experimental" };
+  assert.equal(toVisualGraph(discovery).nodes.length, discovery.nodes.length);
+  assert.equal(toVisualGraph(reliability).nodes.length, reliability.nodes.length);
+  assert.throws(() => assertReliabilityRederivation(discovery, fixture("reliability-all-time.json")), /experimental/);
+  assert.throws(() => assertReliabilityRederivation(fixture("discovery-all-time.json"), reliability), /experimental/);
+});
