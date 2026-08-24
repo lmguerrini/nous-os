@@ -42,7 +42,8 @@ type Snapshot = {
   readonly edges: readonly string[];
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly edgeSamples: Readonly<Record<string, readonly { readonly x: number; readonly y: number }[]>>;
-  readonly propagation: Readonly<Record<string, { readonly continuous: boolean; readonly endpointExpressed: boolean }>>;
+  readonly propagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: boolean; readonly endpointExpressed: boolean }>>;
+  readonly renderedPropagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: number; readonly afterglowDecayPermille: number }>>;
   readonly windows: readonly {
     readonly id: string;
     readonly members: readonly string[];
@@ -408,13 +409,23 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   });
   await run("reduced-motion", async () => {
     const moving = await invoke<Snapshot>("setReducedMotion", false);
+    const movingImage = await capture("#evidence-renderer");
     const stopped = await invoke<Snapshot>("setReducedMotion", true);
+    const stoppedImage = await capture("#evidence-renderer");
     for (const id of stopped.edges) {
       expect(moving.propagation[id]?.continuous).toBe(true);
       expect(stopped.propagation[id]?.continuous).toBe(false);
       expect(stopped.propagation[id]?.endpointExpressed).toBe(true);
+      expect(moving.renderedPropagation[id]?.arcPosition).toBe(moving.propagation[id]?.arcPosition);
+      expect(stopped.renderedPropagation[id]?.arcPosition).toBe(stopped.propagation[id]?.arcPosition);
+      expect(moving.renderedPropagation[id]?.continuous).toBe(1);
+      expect(stopped.renderedPropagation[id]?.continuous).toBe(0);
+      expect(moving.renderedPropagation[id]?.afterglowDecayPermille).toBe(DEFAULT_CALIBRATION.motion.afterglowDecayPermille);
     }
-    return "continuous travel stopped and every endpoint remained expressed";
+    const pixelDeltaBound = minimumReducedMotionPixelDeltaBound(movingImage);
+    const differingPixelCount = countDifferingPixels(movingImage, stoppedImage);
+    expect(differingPixelCount, "reduced-motion composited pixel delta must exceed the calibrated bound").toBeGreaterThan(pixelDeltaBound);
+    return `differing pixels: ${differingPixelCount}`;
   });
   await run("console", async () => {
     const evidence = await api();
@@ -694,6 +705,10 @@ function countLitPixels(image: DecodedPng): number {
 
 function minimumPixelDeltaBound(image: DecodedPng): number {
   return (image.width * image.height * DEFAULT_CALIBRATION.lod.minimumAdjacentPixelDeltaPermille) / DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
+}
+
+function minimumReducedMotionPixelDeltaBound(image: DecodedPng): number {
+  return (image.width * image.height * DEFAULT_CALIBRATION.motion.minimumReducedMotionPixelDeltaPermille) / DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
 }
 
 function countDifferingPixels(left: DecodedPng, right: DecodedPng): number {

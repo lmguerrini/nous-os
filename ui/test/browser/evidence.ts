@@ -89,7 +89,8 @@ type Snapshot = {
   readonly nodes: readonly string[];
   readonly edges: readonly string[];
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
-  readonly propagation: Readonly<Record<string, { readonly continuous: boolean; readonly endpointExpressed: boolean }>>;
+  readonly propagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: boolean; readonly endpointExpressed: boolean }>>;
+  readonly renderedPropagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: number; readonly afterglowDecayPermille: number }>>;
   readonly windows: readonly {
     readonly id: string;
     readonly members: readonly string[];
@@ -277,9 +278,16 @@ async function boot(): Promise<void> {
         return { x: point.x, y: point.y };
       });
     }
-    const propagation: Record<string, { continuous: boolean; endpointExpressed: boolean }> = {};
+    const propagation: Record<string, { arcPosition: number; continuous: boolean; endpointExpressed: boolean }> = {};
+    const renderedPropagation: Record<string, { arcPosition: number; continuous: number; afterglowDecayPermille: number }> = {};
     for (const [id, state] of handle.model.propagation) {
-      propagation[id] = { continuous: state.continuous, endpointExpressed: state.endpointExpressed };
+      propagation[id] = { arcPosition: state.arcPosition, continuous: state.continuous, endpointExpressed: state.endpointExpressed };
+      const attributes = handle.model.graph.getEdgeAttributes(id);
+      renderedPropagation[id] = {
+        arcPosition: attributes.propagationArcPosition,
+        continuous: attributes.propagationContinuous,
+        afterglowDecayPermille: attributes.afterglowDecayPermille,
+      };
     }
     return {
       policy,
@@ -292,6 +300,7 @@ async function boot(): Promise<void> {
       edges: handle.model.graph.edges(),
       positions,
       propagation,
+      renderedPropagation,
       windows: handle.model.windows.map((window) => {
         const viewportCenter = handle.graphToViewport(window.center);
         const radiusPoint = handle.graphToViewport({ x: window.center.x + window.radius, y: window.center.y, z: window.center.z });

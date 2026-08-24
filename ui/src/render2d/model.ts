@@ -37,6 +37,9 @@ export type RenderEdgeAttributes = {
   readonly color: string;
   readonly type: string;
   readonly curvature: number;
+  readonly propagationArcPosition: number;
+  readonly propagationContinuous: number;
+  readonly afterglowDecayPermille: number;
   readonly label: string;
   readonly labelColor: string;
   readonly zIndex: number;
@@ -59,6 +62,7 @@ export type RenderOptions = {
 export type FilamentPropagation = {
   readonly position: Coordinates;
   readonly length: number;
+  readonly arcPosition: number;
   readonly continuous: boolean;
   readonly endpointExpressed: boolean;
 };
@@ -159,10 +163,13 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
     const path = { controlPoints: sampleFilament(filament, calibration) };
     const travelledDistance = propagationDistance(options.elapsedMilliseconds, calibration);
     const state = reducedMotionPosition(path, travelledDistance, options.reducedMotion || calibration.motion.reducedMotionSwitch);
+    const length = arcLength(path);
+    const arcPosition = state.continuous ? normalisedPropagationPosition(travelledDistance, length) : 1;
     filaments.set(edge.id, filament);
     propagation.set(edge.id, {
       position: state.position,
-      length: arcLength(path),
+      length,
+      arcPosition,
       continuous: state.continuous,
       endpointExpressed: state.endpointExpressed,
     });
@@ -172,6 +179,9 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
       color: edgeColorForMaterial(tokens, edgeMaterial, view.material, calibration),
       type: "filament",
       curvature,
+      propagationArcPosition: arcPosition,
+      propagationContinuous: state.continuous ? 1 : 0,
+      afterglowDecayPermille: calibration.motion.afterglowDecayPermille,
       label: edge.visual.role,
       labelColor: requiredTokenColor(tokenColors, "textMuted"),
       zIndex: edge.visual.label_priority,
@@ -527,4 +537,9 @@ function permilleScale(calibration: CalibrationProfile): number {
 /** This turns elapsed time into calibrated path distance and does not schedule continuous movement. */
 function propagationDistance(elapsedMilliseconds: number, calibration: CalibrationProfile): number {
   return (calibration.motion.propagationSpeedPxPerSecond * elapsedMilliseconds) / permilleScale(calibration);
+}
+
+/** This normalises travelled distance to the sampled arc and does not use vertex index spacing. */
+function normalisedPropagationPosition(travelledDistance: number, length: number): number {
+  return length === 0 ? 1 : Math.max(0, Math.min(travelledDistance / length, 1));
 }

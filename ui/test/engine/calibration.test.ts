@@ -19,7 +19,7 @@ const EXPECTED_PATHS = [
   "lod.bandThresholds", "lod.hysteresisMarginPermille", "lod.crossfadeDurationMs", "lod.macroNodeSizeMultiplierPermille", "lod.macroFilamentWidthMultiplierPermille", "lod.macroAggregateOutlineWidthMultiplierPermille", "lod.macroAggregateOutlineAlphaPermille", "lod.microHopDistanceLightnessStepPermille", "lod.minimumAdjacentPixelDeltaPermille",
   "labels.densityCap", "labels.priorityWeights.node", "labels.priorityWeights.edge", "labels.priorityWeights.assertion", "labels.priorityWeights.bridge", "labels.collisionPaddingPx",
   "aggregate.disclosureThreshold", "aggregate.windowPaddingPx", "aggregate.windowStrokeAlphaPermille",
-  "motion.propagationSpeedPxPerSecond", "motion.afterglowDecayPermille", "motion.reducedMotionSwitch",
+  "motion.propagationSpeedPxPerSecond", "motion.afterglowDecayPermille", "motion.minimumReducedMotionPixelDeltaPermille", "motion.reducedMotionSwitch",
   "selection.emphasisMultiplierPermille", "selection.focusDimFactorPermille",
   "budget.maxNodesBeforeLodForcesAggregation", "budget.targetFrameMs",
 ] as const;
@@ -27,7 +27,7 @@ const EXPECTED_PATHS = [
 test("calibration register is an exact pinned set in both directions", () => {
   assert.deepEqual([...CALIBRATION_PARAMETER_PATHS].sort(), [...EXPECTED_PATHS].sort());
   assert.deepEqual([...EXPECTED_PATHS].sort(), [...CALIBRATION_PARAMETER_PATHS].sort());
-  assert.equal(CALIBRATION_PARAMETER_PATHS.length, 72);
+  assert.equal(CALIBRATION_PARAMETER_PATHS.length, 73);
 });
 
 test("calibration validator refuses one unknown path", () => {

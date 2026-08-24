@@ -58,6 +58,9 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
         { name: "a_thickness", size: 1, type: WebGLRenderingContext.FLOAT },
         { name: "a_curvature", size: 1, type: WebGLRenderingContext.FLOAT },
         { name: "a_pickTolerance", size: 1, type: WebGLRenderingContext.FLOAT },
+        { name: "a_propagationArcPosition", size: 1, type: WebGLRenderingContext.FLOAT },
+        { name: "a_propagationContinuous", size: 1, type: WebGLRenderingContext.FLOAT },
+        { name: "a_afterglowDecayPermille", size: 1, type: WebGLRenderingContext.FLOAT },
         { name: "a_color", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
         { name: "a_id", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
       ],
@@ -70,7 +73,13 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
   }
 
   processVisibleItem(edgeIndex: number, startIndex: number, sourceData: NodeDisplayData, targetData: NodeDisplayData, data: EdgeDisplayData): void {
-    const edgeData = data as EdgeDisplayData & { readonly curvature?: number; readonly pickTolerancePx?: number };
+    const edgeData = data as EdgeDisplayData & {
+      readonly curvature?: number;
+      readonly pickTolerancePx?: number;
+      readonly propagationArcPosition?: number;
+      readonly propagationContinuous?: number;
+      readonly afterglowDecayPermille?: number;
+    };
     const array = this.array;
     array[startIndex++] = sourceData.x;
     array[startIndex++] = sourceData.y;
@@ -86,6 +95,9 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     array[startIndex++] = edgeData.size;
     array[startIndex++] = edgeData.curvature ?? 0;
     array[startIndex++] = edgeData.pickTolerancePx ?? DEFAULT_CALIBRATION.filament.pickTolerancePx;
+    array[startIndex++] = edgeData.propagationArcPosition ?? 1;
+    array[startIndex++] = edgeData.propagationContinuous ?? 0;
+    array[startIndex++] = edgeData.afterglowDecayPermille ?? DEFAULT_CALIBRATION.motion.afterglowDecayPermille;
     array[startIndex++] = floatColor(edgeData.color);
     array[startIndex] = edgeIndex;
   }
@@ -114,6 +126,9 @@ attribute vec2 a_control;
 attribute float a_current;
 attribute float a_curvature;
 attribute float a_pickTolerance;
+attribute float a_propagationArcPosition;
+attribute float a_propagationContinuous;
+attribute float a_afterglowDecayPermille;
 uniform mat3 u_matrix;
 uniform float u_sizeRatio;
 uniform float u_pixelRatio;
@@ -125,6 +140,9 @@ varying float v_thickness;
 varying float v_pickTolerance;
 varying float v_feather;
 varying float v_arcFraction;
+varying float v_propagationArcPosition;
+varying float v_propagationContinuous;
+varying float v_afterglowDecayPermille;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
@@ -152,6 +170,9 @@ void main() {
   v_pickTolerance = a_pickTolerance * u_pixelRatio;
   v_feather = u_feather;
   v_arcFraction = a_current;
+  v_propagationArcPosition = a_propagationArcPosition;
+  v_propagationContinuous = a_propagationContinuous;
+  v_afterglowDecayPermille = a_afterglowDecayPermille;
   v_cpA = viewportSource;
   v_cpB = clipspaceToViewport(control, u_dimensions);
   v_cpC = viewportTarget;
@@ -174,6 +195,9 @@ varying float v_thickness;
 varying float v_pickTolerance;
 varying float v_feather;
 varying float v_arcFraction;
+varying float v_propagationArcPosition;
+varying float v_propagationContinuous;
+varying float v_afterglowDecayPermille;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
@@ -189,9 +213,13 @@ void main(void) {
     #ifdef PICKING_MODE
     gl_FragColor = v_color;
     #else
+    // PICKING_MODE assigns v_color = a_id and never uses alpha; propagation stays in this branch, preserving pick/draw parity by construction.
     float feather = smoothstep(halfThickness - v_feather, halfThickness, distance);
+    float lightPosition = v_propagationContinuous > 0.5 ? v_propagationArcPosition : 1.0;
+    float afterglowDecay = max(v_afterglowDecayPermille, 1.0) / 1000.0;
+    float propagationAlpha = max(afterglowDecay, 1.0 - (abs(v_arcFraction - lightPosition) / afterglowDecay));
     vec4 gradientColor = v_color;
-    gradientColor.a *= v_arcFraction;
+    gradientColor.a *= propagationAlpha;
     gl_FragColor = mix(gradientColor, vec4(0.0, 0.0, 0.0, 0.0), feather);
     #endif
   } else {

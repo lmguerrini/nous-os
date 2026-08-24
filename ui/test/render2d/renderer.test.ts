@@ -298,7 +298,8 @@ test("reduced motion changes propagation output and leaves all other render deci
   const visualGraph = graph();
   const ordinary = buildRenderModel(visualGraph, options(false));
   const reduced = buildRenderModel(visualGraph, options(true));
-  assert.deepEqual(ordinary.graph.export(), reduced.graph.export());
+  assert.deepEqual(ordinary.graph.nodes(), reduced.graph.nodes());
+  assert.deepEqual(ordinary.graph.edges(), reduced.graph.edges());
   assert.deepEqual(ordinary.anchors, reduced.anchors);
   assert.deepEqual(ordinary.windows, reduced.windows);
   assert.deepEqual(ordinary.organization, reduced.organization);
@@ -315,6 +316,37 @@ test("reduced motion changes propagation output and leaves all other render deci
     assert.equal(ordinaryState.endpointExpressed, false);
     assert.equal(reducedState.continuous, false);
     assert.equal(reducedState.endpointExpressed, true);
+    const ordinaryAttributes = ordinary.graph.getEdgeAttributes(edge.id);
+    const reducedAttributes = reduced.graph.getEdgeAttributes(edge.id);
+    const {
+      propagationArcPosition: ordinaryArcPosition,
+      propagationContinuous: ordinaryContinuous,
+      ...ordinaryAppearance
+    } = ordinaryAttributes;
+    const {
+      propagationArcPosition: reducedArcPosition,
+      propagationContinuous: reducedContinuous,
+      ...reducedAppearance
+    } = reducedAttributes;
+    assert.deepEqual(ordinaryAppearance, reducedAppearance);
+    assert.equal(ordinaryArcPosition, ordinaryState.arcPosition);
+    assert.equal(reducedArcPosition, reducedState.arcPosition);
+    assert.equal(ordinaryContinuous, 1);
+    assert.equal(reducedContinuous, 0);
+  }
+});
+
+test("filament program declares propagated light attributes in its definition and both shader sources", () => {
+  const source = readFileSync(join(process.cwd(), "src", "render2d", "filament-program.ts"), "utf8");
+  const attributes = [
+    ["a_propagationArcPosition", "v_propagationArcPosition"],
+    ["a_propagationContinuous", "v_propagationContinuous"],
+    ["a_afterglowDecayPermille", "v_afterglowDecayPermille"],
+  ] as const;
+  for (const [attribute, varying] of attributes) {
+    assert.match(source, new RegExp(`\\{ name: "${attribute}", size: 1, type: WebGLRenderingContext\\.FLOAT \\}`));
+    assert.match(source, new RegExp(`attribute float ${attribute};`));
+    assert.equal((source.match(new RegExp(`varying float ${varying};`, "g")) ?? []).length, 2);
   }
 });
 

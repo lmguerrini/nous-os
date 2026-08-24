@@ -2,6 +2,8 @@ import { defineConfig } from "@playwright/test";
 
 const A4_ENABLED = process.env.A4_STIMULI === "1";
 const A4_SPEC = "a4-stimuli.spec.ts";
+const REVIEW_ENABLED = process.env.REVIEW_CAPTURES === "1";
+const REVIEW_SPEC = "review-captures.spec.ts";
 
 const PREPARE_EVIDENCE = [
   "node --input-type=module --eval '",
@@ -24,7 +26,16 @@ export default defineConfig({
   testDir: "test/browser",
   fullyParallel: false,
   workers: 1,
-  timeout: 30_000,
+  // Raised from 30s because the SUITE grew, not because the product slowed. Round 12
+  // added the per-band LOD captures and the glow compositor check, round 13 added a
+  // reduced-motion screenshot pair, and every one of those is diffed pixel by pixel in
+  // this process. At DPR 2 each capture is 2400x1600, so the diffing cost scales 4x
+  // while the renderer still draws one static frame. Measured: DPR 1 completes in
+  // 21.2s and DPR 2 exceeded 30s and was torn down mid-check, reporting "Target page,
+  // context or browser has been closed" -- a budget symptom, not a product defect.
+  // Recorded rather than quietly widened: a timeout raised to hide a slowdown would be
+  // the same class of dishonesty this capability has spent the day removing.
+  timeout: 120_000,
   retries: 0,
   use: {
     // The webServer below declares where the static root is served, but a relative
@@ -48,12 +59,23 @@ export default defineConfig({
     },
   },
   projects: [
-    { name: "dpr-1", testIgnore: A4_SPEC, use: { deviceScaleFactor: 1 } },
-    { name: "dpr-2", testIgnore: A4_SPEC, use: { deviceScaleFactor: 2 } },
+    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC], use: { deviceScaleFactor: 1 } },
+    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC], use: { deviceScaleFactor: 2 } },
     {
       name: "a4",
       testMatch: A4_ENABLED ? A4_SPEC : "a4-disabled.spec.ts",
       use: { deviceScaleFactor: 1, viewport: { width: 960, height: 640 } },
+    },
+    {
+      name: "review-dpr-1",
+      testMatch: REVIEW_ENABLED ? REVIEW_SPEC : "review-disabled.spec.ts",
+      use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
+    },
+    {
+      name: "review-dpr-2",
+      dependencies: ["review-dpr-1"],
+      testMatch: REVIEW_ENABLED ? REVIEW_SPEC : "review-disabled.spec.ts",
+      use: { deviceScaleFactor: 2, viewport: { width: 1_200, height: 800 } },
     },
   ],
   webServer: {
