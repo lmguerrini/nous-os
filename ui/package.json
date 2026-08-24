@@ -7,7 +7,8 @@
   "imports": {
     "#engine/*": "./src/engine/*",
     "#adapter/*": "./src/adapter/*",
-    "#render2d/*": "./src/render2d/*"
+    "#render2d/*": "./src/render2d/*",
+    "#browser/*": "./test/browser/*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

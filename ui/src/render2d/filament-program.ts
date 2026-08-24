@@ -12,6 +12,15 @@ const COLOR_CHANNEL_COUNT = ["red", "green", "blue", "alpha"].length;
 /** This is the live filament distance definition and does not distinguish normal from picking passes. */
 export const FILAMENT_DISTANCE_FUNCTION = `
 vec2 filamentDistanceVector(vec2 b0, vec2 b1, vec2 b2) {
+  vec2 chord = b2 - b0;
+  vec2 controlOffset = b1 - b0;
+  float chordLength = length(chord);
+  float controlArea = abs(chord.x * controlOffset.y - chord.y * controlOffset.x);
+  if (controlArea <= chordLength / max(u_dimensions.x, u_dimensions.y)) {
+    float chordSquared = dot(chord, chord);
+    float parameter = chordSquared == 0.0 ? 0.0 : clamp(-dot(b0, chord) / chordSquared, 0.0, 1.0);
+    return b0 + chord * parameter;
+  }
   float a = b0.x * b2.y - b0.y * b2.x;
   float b = 2.0 * (b1.x * b0.y - b1.y * b0.x);
   float d = 2.0 * (b2.x * b1.y - b2.y * b1.x);
@@ -105,6 +114,7 @@ uniform mat3 u_matrix;
 uniform float u_sizeRatio;
 uniform float u_pixelRatio;
 uniform vec2 u_dimensions;
+uniform float u_feather;
 uniform float u_minEdgeThickness;
 varying vec4 v_color;
 varying float v_thickness;
@@ -160,6 +170,7 @@ varying float v_arcFraction;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
+uniform vec2 u_dimensions;
 ${FILAMENT_DISTANCE_FUNCTION}
 void main(void) {
   float distance = filamentDistance(gl_FragCoord.xy, v_cpA, v_cpB, v_cpC);
