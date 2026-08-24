@@ -1,5 +1,8 @@
 import { defineConfig } from "@playwright/test";
 
+const A4_ENABLED = process.env.A4_STIMULI === "1";
+const A4_SPEC = "a4-stimuli.spec.ts";
+
 const PREPARE_EVIDENCE = [
   "node --input-type=module --eval '",
   "import { mkdir, readFile, writeFile } from \"node:fs/promises\";",
@@ -45,8 +48,13 @@ export default defineConfig({
     },
   },
   projects: [
-    { name: "dpr-1", use: { deviceScaleFactor: 1 } },
-    { name: "dpr-2", use: { deviceScaleFactor: 2 } },
+    { name: "dpr-1", testIgnore: A4_SPEC, use: { deviceScaleFactor: 1 } },
+    { name: "dpr-2", testIgnore: A4_SPEC, use: { deviceScaleFactor: 2 } },
+    {
+      name: "a4",
+      testMatch: A4_ENABLED ? A4_SPEC : "a4-disabled.spec.ts",
+      use: { deviceScaleFactor: 1, viewport: { width: 960, height: 640 } },
+    },
   ],
   webServer: {
     command: `${PREPARE_EVIDENCE} && python3 -m http.server 4173 --directory ..`,
