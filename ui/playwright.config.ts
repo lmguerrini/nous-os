@@ -12,7 +12,7 @@ const PREPARE_EVIDENCE = [
   "if(head.startsWith(\"ref: \")){const ref=head.slice(5);try{sha=(await readFile(gitDir+\"/\"+ref,\"utf8\")).trim();}catch{const packed=await readFile(gitDir+\"/packed-refs\",\"utf8\");const line=packed.split(\"\\n\").find((item)=>item.endsWith(\" \"+ref));sha=line?.split(\" \")[0]??\"\";}}",
   "if(!/^[0-9a-f]{40,64}$/i.test(sha))throw new Error(\"evidence run cannot determine the current commit SHA\");",
   "await mkdir(\"dist/evidence\",{recursive:true});",
-  "const data={run:{commitSha:sha,timestamp:new Date().toISOString()},summary:{passing:false,projectsComplete:false,requiredChecks:0,passed:0,notRun:0,failed:0,rule:\"Evidence is non-passing until both DPR projects complete; NOT_RUN is distinct from PASS.\"},projects:{},dprWitnesses:{},checks:[]};",
+  "const data={run:{commitSha:sha,timestamp:new Date().toISOString()},summary:{passing:false,projectsComplete:false,requiredChecks:0,passed:0,failed:0,notRun:0,unknown:0,rule:\"The evidence run passes only when both DPR projects complete and every recorded check is PASS; PASS, FAIL, NOT_RUN, and UNKNOWN are counted separately.\"},projects:{},dprWitnesses:{},checks:[]};",
   "await writeFile(\"dist/evidence/evidence.json\",JSON.stringify(data,null,2)+\"\\n\");",
   "'",
 ].join("");

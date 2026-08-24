@@ -4,9 +4,11 @@ import Sigma from "sigma";
 import { MultiDirectedGraph } from "graphology";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { canonicalBytes } from "#engine/canonical.ts";
 import {
   assertNoPassthrough,
   assertVisualGraphFieldRegister,
+  readSemantic,
   semanticDigest,
 } from "#engine/contract.ts";
 import type { Coordinates, VisualGraph } from "#engine/contract.ts";
@@ -17,7 +19,8 @@ import type { Morphology } from "#engine/morphology.ts";
 import type { Organization } from "#engine/organization.ts";
 import { mount, restoreCameraState } from "#render2d/index.ts";
 import { FilamentProgram } from "#render2d/filament-program.ts";
-import { distanceToFilament, quadraticPoint } from "#render2d/geometry.ts";
+import { quadraticPoint } from "#render2d/geometry.ts";
+import type { FilamentGeometry } from "#render2d/geometry.ts";
 import type { RenderCameraState, RenderFramingBox, RenderHandle } from "#render2d/index.ts";
 import type { RenderOptions as ModelRenderOptions } from "#render2d/model.ts";
 
@@ -28,8 +31,7 @@ type FixtureFacts = {
   readonly edges: number;
   readonly sha256: string;
   readonly semanticDigest: string;
-  readonly fieldRegister: true;
-  readonly noPassthrough: true;
+  readonly semanticProjectionCanonical: string;
 };
 
 type RenderLayerWitness = {
@@ -55,6 +57,28 @@ type PickWitness = {
   readonly onScreen?: boolean;
 };
 
+type DenseFilamentDistance = {
+  readonly distancePx: number;
+  readonly deviationBoundPx: number;
+};
+
+type PickingCell = {
+  readonly minimumX: number;
+  readonly maximumX: number;
+  readonly minimumY: number;
+  readonly maximumY: number;
+  /** The point the picking pass actually shaded for this cell. */
+  readonly centre: Coordinates;
+};
+
+type PickingSigmaInternals = {
+  readonly webGLContexts: {
+    readonly edges: {
+      readonly drawingBufferHeight: number;
+    };
+  };
+};
+
 type Snapshot = {
   readonly policy: Policy;
   readonly morphology: Morphology;
@@ -66,7 +90,13 @@ type Snapshot = {
   readonly edges: readonly string[];
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly propagation: Readonly<Record<string, { readonly continuous: boolean; readonly endpointExpressed: boolean }>>;
-  readonly windows: readonly { readonly id: string; readonly members: readonly string[]; readonly bounds: { readonly minimumX: number; readonly minimumY: number; readonly maximumX: number; readonly maximumY: number } }[];
+  readonly windows: readonly {
+    readonly id: string;
+    readonly members: readonly string[];
+    readonly bounds: { readonly minimumX: number; readonly minimumY: number; readonly maximumX: number; readonly maximumY: number };
+    readonly viewportCenter: { readonly x: number; readonly y: number };
+    readonly viewportRadius: number;
+  }[];
   readonly rejectionBounds: readonly { readonly id: string; readonly bounds: { readonly minimumX: number; readonly minimumY: number; readonly maximumX: number; readonly maximumY: number } }[];
   readonly fixtureFacts: Readonly<Record<string, FixtureFacts>>;
   readonly rendering: RenderWitness;
@@ -86,6 +116,8 @@ type EvidenceApi = {
   selectNode(id: string): Promise<Snapshot>;
   read(): Snapshot;
   pick(edgeId: string, parameter: number, offsetPixels?: number): PickWitness;
+  unambiguousParameters(edgeId: string): readonly number[];
+  coincidentPartners(edgeId: string): readonly string[] | null;
   pickChord(edgeId: string): PickWitness;
   pickStraightControl(): Promise<string | null>;
   showEmptyGraphControl(): Promise<void>;
@@ -130,6 +162,9 @@ const EMPTY_VISUAL_GRAPH: VisualGraph = {
 
 const errors: string[] = [];
 const checks: string[] = [];
+const DENSE_FILAMENT_TOLERANCE_PX = 0.05;
+const MAX_DENSE_FILAMENT_SEGMENTS = 1024;
+const EDGE_SAMPLE_PARAMETERS = Array.from({ length: 33 }, (_, index) => 0.02 + (index * 0.03));
 // Counts frames that actually FIRE after shutdown, which is the property wanted:
 // destroy must leave nothing still animating. The previous instrument counted
 // scheduled-minus-fired at one instant, and Sigma's kill() *cancels* in-flight
@@ -179,8 +214,7 @@ async function boot(): Promise<void> {
       edges: fixture.edges.length,
       sha256: await sha256(text),
       semanticDigest: graphDigest,
-      fieldRegister: true as const,
-      noPassthrough: true as const,
+      semanticProjectionCanonical: semanticProjectionCanonical(graph),
     }] as const;
   }));
   const graphs = new Map<Policy, VisualGraph>();
@@ -256,7 +290,17 @@ async function boot(): Promise<void> {
       edges: handle.model.graph.edges(),
       positions,
       propagation,
-      windows: handle.model.windows.map((window) => ({ id: window.id, members: window.members, bounds: window.bounds })),
+      windows: handle.model.windows.map((window) => {
+        const viewportCenter = handle.graphToViewport(window.center);
+        const radiusPoint = handle.graphToViewport({ x: window.center.x + window.radius, y: window.center.y, z: window.center.z });
+        return {
+          id: window.id,
+          members: window.members,
+          bounds: window.bounds,
+          viewportCenter,
+          viewportRadius: Math.hypot(radiusPoint.x - viewportCenter.x, radiusPoint.y - viewportCenter.y),
+        };
+      }),
       rejectionBounds: handle.model.organization.rejectionBounds,
       fixtureFacts,
       rendering: renderWitness(container),
@@ -324,8 +368,6 @@ async function boot(): Promise<void> {
       // check can tell "nothing is there" from "the sample fell off the canvas".
       const size = auditor.getDimensions();
       const onScreen = point.x >= 0 && point.y >= 0 && point.x <= size.width && point.y <= size.height;
-      const coverageRadiusPx = (DEFAULT_CALIBRATION.filament.baseWidthPx / 2)
-        + DEFAULT_CALIBRATION.filament.pickTolerancePx;
       const privateSigma = auditor as unknown as { getEdgeAtPoint(x: number, y: number): string | null };
       const picked = privateSigma.getEdgeAtPoint(point.x, point.y);
       // Whether the edge that was returned actually covers the sampled point.
@@ -339,19 +381,32 @@ async function boot(): Promise<void> {
       // quantity while filament control points are world coordinates -- comparing
       // the two directly is a unit error, and at this world scale one world unit is
       // well under a pixel.
-      const covers = pickedFilament === undefined
+      //
+      // Measured against the picking CELL rather than the queried point. Sigma
+      // renders the picking pass at half the CSS width and height, so one picking
+      // pixel answers for a 2x2 block of CSS pixels: the identity returned is the
+      // one rasterised for the cell, not for the exact point asked about. Requiring
+      // the returned edge to cover the unquantised point therefore fails a correct
+      // renderer whenever the edge reaches the cell without reaching that point --
+      // measured, on the near-coincident pair OG-CAP-11-2 recorded. The property
+      // that IS true of the instrument is kept and is still falsifiable: picking
+      // must never return an edge that does not reach the cell it answered for.
+      const pickedGeometry = picked === null || pickedFilament === undefined
+        ? undefined
+        : viewportFilament(pickedFilament, auditor);
+      const covers = picked === null || pickedGeometry === undefined
         ? false
-        : distanceToFilament(
-            {
-              source: { ...auditor.graphToViewport(pickedFilament.source), z: 0 },
-              control: { ...auditor.graphToViewport(pickedFilament.control), z: 0 },
-              target: { ...auditor.graphToViewport(pickedFilament.target), z: 0 },
-              curvature: pickedFilament.curvature,
-            },
-            { ...point, z: 0 },
-            DEFAULT_CALIBRATION,
-          ) <= coverageRadiusPx;
+        : denseDistanceToFilament(
+            pickedGeometry,
+            pickingCellForPoint(auditor, { ...point, z: 0 }).centre,
+          ).distancePx <= pickingRadiusPx(auditor, picked);
       return { edgeId: picked, point, pickedCoversPoint: covers, onScreen };
+    },
+    unambiguousParameters(edgeId): readonly number[] {
+      return unambiguousParametersFor(requiredHandle(product), requiredSigma(picking), edgeId);
+    },
+    coincidentPartners(edgeId): readonly string[] | null {
+      return coincidentPartnersFor(requiredHandle(product), requiredSigma(picking), edgeId);
     },
     pickChord(edgeId): PickWitness {
       const handle = requiredHandle(product);
@@ -463,6 +518,280 @@ function normalAt(source: Coordinates, control: Coordinates, target: Coordinates
   return { x: -tangentY / length, y: tangentX / length };
 }
 
+function unambiguousParametersFor(handle: RenderHandle, auditor: Sigma, edgeId: string): readonly number[] {
+  const filament = handle.model.filaments.get(edgeId);
+  if (filament === undefined) {
+    throw new Error(`unknown edge ${edgeId}`);
+  }
+  return EDGE_SAMPLE_PARAMETERS.filter((parameter) => coversAlone(handle, auditor, edgeId, filament, parameter));
+}
+
+// The picking pass is rasterised at half the CSS width and height, so one picking
+// pixel answers for a 2x2 block of CSS pixels -- and the fragment that produced it
+// was shaded at that cell's CENTRE, not at the point the caller asked about. So the
+// centre is where the GPU's own test was evaluated, and it is the only place an
+// analytic model can reproduce it. Measuring at the queried point instead is what
+// made the identity check disagree with a correct renderer; requiring the WHOLE
+// cell instead is sound but far stricter than the rasteriser, and it left a real
+// edge with no testable point at all.
+//
+// Distances are viewport pixels because the ribbon half-width and the pick
+// tolerance are pixel quantities while filament control points are world-space.
+// The competitor's own radius decides whether the competitor can claim the cell,
+// so it is computed per competitor, and its polyline deviation bound is added in
+// the conservative direction: it can only reject candidates, never admit one.
+function coversAlone(
+  handle: RenderHandle,
+  auditor: Sigma,
+  edgeId: string,
+  filament: FilamentGeometry,
+  parameter: number,
+): boolean {
+  const centre = sampledCellCentre(handle, auditor, filament, parameter);
+  if (denseDistanceToFilament(viewportFilament(filament, auditor), centre).distancePx > pickingRadiusPx(auditor, edgeId)) {
+    return false;
+  }
+  return competitorsReaching(handle, auditor, edgeId, centre).length === 0;
+}
+
+/** This lists the other edges whose ribbons reach one shaded cell centre and does not read the picking framebuffer. */
+function competitorsReaching(
+  handle: RenderHandle,
+  auditor: Sigma,
+  edgeId: string,
+  centre: Coordinates,
+): readonly string[] {
+  const reaching: string[] = [];
+  for (const [otherEdgeId, otherFilament] of handle.model.filaments) {
+    if (otherEdgeId === edgeId) {
+      continue;
+    }
+    const distance = denseDistanceToFilament(viewportFilament(otherFilament, auditor), centre);
+    if (distance.distancePx <= pickingRadiusPx(auditor, otherEdgeId) + distance.deviationBoundPx) {
+      reaching.push(otherEdgeId);
+    }
+  }
+  return reaching;
+}
+
+/** This locates the cell centre the picking pass shaded for one curve parameter and does not offset from the curve. */
+function sampledCellCentre(
+  handle: RenderHandle,
+  auditor: Sigma,
+  filament: FilamentGeometry,
+  parameter: number,
+): Coordinates {
+  const point = auditor.graphToViewport(quadraticPoint(filament, parameter));
+  return pickingCellForPoint(auditor, { ...point, z: 0 }).centre;
+}
+
+// An edge with no unambiguous cell is only accepted with an analytic certificate:
+// model geometry, the live camera transform, and live edge attributes, but no
+// rasterised output. At EVERY sampled parameter, the edge's own analytic ribbon
+// and at least one other analytic ribbon must reach the picking cell centre, which
+// makes the cell ambiguous. If either fails anywhere, the edge is not certified
+// and the check fails naming it.
+function coincidentPartnersFor(handle: RenderHandle, auditor: Sigma, edgeId: string): readonly string[] | null {
+  const filament = handle.model.filaments.get(edgeId);
+  if (filament === undefined) {
+    throw new Error(`unknown edge ${edgeId}`);
+  }
+  const geometry = viewportFilament(filament, auditor);
+  const radius = pickingRadiusPx(auditor, edgeId);
+  const partners = new Set<string>();
+  for (const parameter of EDGE_SAMPLE_PARAMETERS) {
+    const centre = sampledCellCentre(handle, auditor, filament, parameter);
+    if (denseDistanceToFilament(geometry, centre).distancePx > radius) {
+      return null;
+    }
+    const reaching = competitorsReaching(handle, auditor, edgeId, centre);
+    if (reaching.length === 0) {
+      return null;
+    }
+    for (const partner of reaching) {
+      partners.add(partner);
+    }
+  }
+  return [...partners].sort();
+}
+
+function pickingCellForPoint(sigma: Sigma, point: Coordinates): PickingCell {
+  const { pixelRatio, downSizingRatio } = sigma.getRenderParams();
+  const livePixelRatio = requiredPositiveNumber(pixelRatio, "picking Sigma pixel ratio");
+  const liveDownSizingRatio = requiredPositiveNumber(downSizingRatio, "picking Sigma down-sizing ratio");
+  const pickingHeight = requiredPositiveNumber(
+    (sigma as unknown as PickingSigmaInternals).webGLContexts.edges.drawingBufferHeight,
+    "picking Sigma drawing-buffer height",
+  );
+  const cellSize = liveDownSizingRatio / livePixelRatio;
+  // Sigma's getPixelColor computes bx = floor(x / downSizingRatio * pixelRatio)
+  // and by = floor(drawingBufferHeight / downSizingRatio - y / downSizingRatio * pixelRatio).
+  // Solving those floor intervals in CSS coordinates gives x in [bx * cellSize,
+  // (bx + 1) * cellSize) and, after the y flip, y in ((height / downSizingRatio -
+  // by - 1) * cellSize, (height / downSizingRatio - by) * cellSize].
+  const bufferX = Math.floor((point.x / liveDownSizingRatio) * livePixelRatio);
+  const bufferY = Math.floor(
+    (pickingHeight / liveDownSizingRatio) - ((point.y / liveDownSizingRatio) * livePixelRatio),
+  );
+  const minimumX = bufferX * cellSize;
+  const maximumX = (bufferX + 1) * cellSize;
+  const minimumY = ((pickingHeight / liveDownSizingRatio) - bufferY - 1) * cellSize;
+  const maximumY = ((pickingHeight / liveDownSizingRatio) - bufferY) * cellSize;
+  const centreX = (minimumX + maximumX) / 2;
+  const centreY = (minimumY + maximumY) / 2;
+  return {
+    centre: { x: centreX, y: centreY, z: 0 },
+    minimumX,
+    maximumX,
+    minimumY,
+    maximumY,
+  };
+}
+
+function denseDistanceToFilament(geometry: FilamentGeometry, point: Coordinates): DenseFilamentDistance {
+  const controlOffset = filamentControlOffsetPx(geometry);
+  const segments = denseFilamentSegments(controlOffset);
+  let closest = Number.POSITIVE_INFINITY;
+  let source = quadraticPoint(geometry, 0);
+  for (let index = 1; index <= segments; index += 1) {
+    const target = quadraticPoint(geometry, index / segments);
+    closest = Math.min(closest, distanceToViewportSegment(point, source, target));
+    source = target;
+  }
+  return {
+    distancePx: closest,
+    deviationBoundPx: controlOffset / (2 * segments * segments),
+  };
+}
+
+function filamentControlOffsetPx(geometry: FilamentGeometry): number {
+  const midpointX = (geometry.source.x + geometry.target.x) / 2;
+  const midpointY = (geometry.source.y + geometry.target.y) / 2;
+  return Math.hypot(geometry.control.x - midpointX, geometry.control.y - midpointY);
+}
+
+function denseFilamentSegments(controlOffsetPx: number): number {
+  let segments = 1;
+  // An N-segment quadratic polyline deviates by at most controlOffset / (2 * N²).
+  while (
+    controlOffsetPx / (2 * segments * segments) > DENSE_FILAMENT_TOLERANCE_PX
+    && segments < MAX_DENSE_FILAMENT_SEGMENTS
+  ) {
+    segments *= 2;
+  }
+  return segments;
+}
+
+function distanceToViewportSegment(point: Coordinates, source: Coordinates, target: Coordinates): number {
+  const deltaX = target.x - source.x;
+  const deltaY = target.y - source.y;
+  const denominator = (deltaX * deltaX) + (deltaY * deltaY);
+  if (denominator === 0) {
+    return Math.hypot(point.x - source.x, point.y - source.y);
+  }
+  const projection = ((point.x - source.x) * deltaX) + ((point.y - source.y) * deltaY);
+  const parameter = Math.max(0, Math.min(1, projection / denominator));
+  return Math.hypot(
+    point.x - (source.x + (deltaX * parameter)),
+    point.y - (source.y + (deltaY * parameter)),
+  );
+}
+
+function pickingRadiusPx(sigma: Sigma, edgeId: string): number {
+  const { sizeRatio, minEdgeThickness } = sigma.getRenderParams();
+  const attributes = sigma.getGraph().getEdgeAttributes(edgeId) as {
+    readonly size?: unknown;
+    readonly pickTolerancePx?: unknown;
+  };
+  const edgeWidthPx = requiredNonNegativeNumber(attributes.size, `edge ${edgeId} size`);
+  const pickTolerancePx = requiredNonNegativeNumber(attributes.pickTolerancePx, `edge ${edgeId} pick tolerance`);
+  const liveSizeRatio = requiredPositiveNumber(sizeRatio, "picking Sigma size ratio");
+  const liveMinimumThickness = requiredNonNegativeNumber(minEdgeThickness, "picking Sigma minimum edge thickness");
+  // A fixed CSS radius is wrong: each edge's uploaded size is scaled by the live
+  // camera ratio before picking, so a competitor can claim a point beyond 3 px.
+  // The model uploads baseWidthPx times one morphology width multiplier per 1,000;
+  // the shader divides that width by the live sizeRatio, halves it, and adds the
+  // calibrated pickTolerancePx. These calibrated lower and upper bounds reject
+  // inflated live edge attributes. The shader uses distance < halfThickness while
+  // this analytic oracle uses <=, a measure-zero difference at the boundary.
+  const calibratedWidthsPx = [
+    DEFAULT_CALIBRATION.morphology.stellar.filamentWidthMultiplierPermille,
+    DEFAULT_CALIBRATION.morphology.neural.filamentWidthMultiplierPermille,
+    DEFAULT_CALIBRATION.morphology.mycelium.filamentWidthMultiplierPermille,
+  ].map((widthMultiplierPermille) => (
+    (DEFAULT_CALIBRATION.filament.baseWidthPx * widthMultiplierPermille) / 1_000
+  ));
+  const minimumCalibratedRadiusPx = (
+    Math.min(...calibratedWidthsPx) / liveSizeRatio / 2
+  ) + DEFAULT_CALIBRATION.filament.pickTolerancePx;
+  const maximumCalibratedRadiusPx = (
+    Math.max(...calibratedWidthsPx) / liveSizeRatio / 2
+  ) + DEFAULT_CALIBRATION.filament.pickTolerancePx;
+  const radiusPx = (Math.max(liveMinimumThickness, edgeWidthPx / liveSizeRatio) / 2) + pickTolerancePx;
+  if (radiusPx < minimumCalibratedRadiusPx || radiusPx > maximumCalibratedRadiusPx) {
+    throw new Error(
+      `edge ${edgeId} picking radius ${radiusPx}px is outside calibrated bounds [${minimumCalibratedRadiusPx}px, ${maximumCalibratedRadiusPx}px]`,
+    );
+  }
+  return radiusPx;
+}
+
+function requiredPositiveNumber(value: number, name: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be a positive finite number`);
+  }
+  return value;
+}
+
+function requiredNonNegativeNumber(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative finite number`);
+  }
+  return value;
+}
+
+function viewportFilament(filament: FilamentGeometry, sigma: Sigma): FilamentGeometry {
+  return {
+    source: { ...sigma.graphToViewport(filament.source), z: 0 },
+    control: { ...sigma.graphToViewport(filament.control), z: 0 },
+    target: { ...sigma.graphToViewport(filament.target), z: 0 },
+    curvature: filament.curvature,
+  };
+}
+
+function semanticProjectionCanonical(graph: VisualGraph): string {
+  return new TextDecoder().decode(canonicalBytes({
+    schema_version: graph.schema_version,
+    policy_id: graph.policy_id,
+    question: {
+      valid_at: graph.question.valid_at,
+      recorded_as_of: graph.question.recorded_as_of,
+    },
+    nodes: graph.nodes
+      .map((node) => ({ id: node.id, kind: node.kind, semantic: readSemantic(node.semantic) }))
+      .sort(compareIds),
+    edges: graph.edges
+      .map((edge) => ({
+        id: edge.id,
+        kind: edge.kind,
+        source: edge.source,
+        target: edge.target,
+        semantic: readSemantic(edge.semantic),
+      }))
+      .sort(compareIds),
+  }));
+}
+
+function compareIds(left: { readonly id: string }, right: { readonly id: string }): number {
+  if (left.id < right.id) {
+    return -1;
+  }
+  if (left.id > right.id) {
+    return 1;
+  }
+  return 0;
+}
+
 async function waitForNonZeroBox(container: HTMLElement): Promise<void> {
   for (let frame = 0; frame < 180; frame += 1) {
     const box = container.getBoundingClientRect();
@@ -535,6 +864,8 @@ function failedApi(): EvidenceApi {
     selectNode: async () => unavailable(),
     read: unavailable,
     pick: unavailable,
+    unambiguousParameters: unavailable,
+    coincidentPartners: unavailable,
     pickChord: unavailable,
     pickStraightControl: async () => unavailable(),
     showEmptyGraphControl: async () => unavailable(),

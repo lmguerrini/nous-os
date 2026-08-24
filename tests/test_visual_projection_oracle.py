@@ -223,6 +223,17 @@ def test_fixtures_restore_to_the_exhaustive_normalised_shape() -> None:
     assert edge_kinds == set(EdgeKind)
 
 
+def test_neutral_digest_expectations_are_pinned_to_this_oracle() -> None:
+    expectations = json.loads((FIXTURE_DIR / "expectations" / "neutral-digests.json").read_bytes())
+    assert type(expectations) is dict
+    recorded = expectations["neutral_digests"]
+    assert type(recorded) is dict
+    assert set(recorded) == set(FIXTURE_NAMES)
+    assert set(FIXTURE_NAMES) == set(recorded)
+    for filename in FIXTURE_NAMES:
+        assert recorded[filename] == neutral_digest(from_payload(_payload(filename)))
+
+
 def test_field_completeness_is_derived_from_the_source_dataclasses() -> None:
     assert len(_NODE_ATTRIBUTE_TYPES) == 7
     assert len(_EDGE_ATTRIBUTE_TYPES) == 6

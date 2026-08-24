@@ -1,0 +1,11 @@
+{
+  "algorithm": "sha256 of canonical JSON bytes of the neutral semantic projection built from the typed ProjectionIR",
+  "neutral_digests": {
+    "discovery-all-time.json": "bd4f125d6cc955c1319b1ab2635a7e9bbd34c67a37b4a6e188496c87a865dd56",
+    "discovery-at-question.json": "900f358335cf7ddb8ffd1af80a35a97882d5a4777fd3697833251c4fdaf0f51a",
+    "reliability-all-time.json": "6de6ae5c63e54c0c8c663735e75967925fd403c2d674b0b8fb4830558680aa9b",
+    "reliability-at-question.json": "1e6448484a78b5f1cede64c4b91c6e6c6200b5ab85201c0489d28efacb2de50a",
+    "substrate-all-time.json": "bd4f125d6cc955c1319b1ab2635a7e9bbd34c67a37b4a6e188496c87a865dd56"
+  },
+  "produced_by": "tests/visual_neutral_projection.py"
+}

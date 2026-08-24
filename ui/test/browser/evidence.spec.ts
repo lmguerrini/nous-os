@@ -41,9 +41,21 @@ type Snapshot = {
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly edgeSamples: Readonly<Record<string, readonly { readonly x: number; readonly y: number }[]>>;
   readonly propagation: Readonly<Record<string, { readonly continuous: boolean; readonly endpointExpressed: boolean }>>;
-  readonly windows: readonly { readonly id: string; readonly members: readonly string[]; readonly bounds: { readonly minimumX: number; readonly minimumY: number; readonly maximumX: number; readonly maximumY: number } }[];
+  readonly windows: readonly {
+    readonly id: string;
+    readonly members: readonly string[];
+    readonly bounds: { readonly minimumX: number; readonly minimumY: number; readonly maximumX: number; readonly maximumY: number };
+    readonly viewportCenter: { readonly x: number; readonly y: number };
+    readonly viewportRadius: number;
+  }[];
   readonly rejectionBounds: readonly { readonly id: string; readonly bounds: { readonly minimumX: number; readonly minimumY: number; readonly maximumX: number; readonly maximumY: number } }[];
-  readonly fixtureFacts: Readonly<Record<string, { readonly nodes: number; readonly edges: number; readonly sha256: string; readonly semanticDigest: string; readonly fieldRegister: true; readonly noPassthrough: true }>>;
+  readonly fixtureFacts: Readonly<Record<string, {
+    readonly nodes: number;
+    readonly edges: number;
+    readonly sha256: string;
+    readonly semanticDigest: string;
+    readonly semanticProjectionCanonical: string;
+  }>>;
   readonly rendering: RenderWitness;
 };
 
@@ -58,7 +70,14 @@ type PageEvidence = {
   setReducedMotion(reducedMotion: boolean): Promise<Snapshot>;
   selectNode(id: string): Promise<Snapshot>;
   read(): Snapshot;
-  pick(edgeId: string, parameter: number, offsetPixels?: number): { readonly edgeId: string | null; readonly point: { readonly x: number; readonly y: number } };
+  pick(edgeId: string, parameter: number, offsetPixels?: number): {
+    readonly edgeId: string | null;
+    readonly point: { readonly x: number; readonly y: number };
+    readonly pickedCoversPoint?: boolean;
+    readonly onScreen?: boolean;
+  };
+  unambiguousParameters(edgeId: string): readonly number[];
+  coincidentPartners(edgeId: string): readonly string[] | null;
   pickChord(edgeId: string): { readonly edgeId: string | null; readonly point: { readonly x: number; readonly y: number } };
   pickStraightControl(): Promise<string | null>;
   showEmptyGraphControl(): Promise<void>;
@@ -86,12 +105,34 @@ type EvidenceRun = {
   readonly dprWitnesses?: Readonly<Record<string, DprWitness>>;
 };
 
+type NeutralDigestExpectations = {
+  readonly neutral_digests: Readonly<Record<string, string>>;
+};
+
+type SemanticProjection = {
+  readonly nodes: readonly { readonly id: string }[];
+  readonly edges: readonly { readonly id: string }[];
+};
+
+type PageInvoke = <Value>(method: string, ...arguments_: unknown[]) => Promise<Value>;
+
+type EdgeIdentityPartition = {
+  readonly categoryA: readonly { readonly edgeId: string; readonly points: number }[];
+  readonly categoryB: readonly { readonly edgeId: string; readonly partnerId: string }[];
+};
+
 const COMMAND = "npm --prefix ui run test:browser";
 const EVIDENCE_FILE = "dist/evidence/evidence.json";
+const NEUTRAL_DIGESTS_FILE = ["..", "fixtures", "synthetic", "projection", "expectations", "neutral-digests.json"].join("/");
 const REQUIRED_PROJECTS = ["dpr-1", "dpr-2"] as const;
+const EDGE_SAMPLE_PARAMETERS = Array.from({ length: 33 }, (_, index) => 0.02 + (index * 0.03));
 const FIXTURE_EXPECTATIONS = {
   Discovery: { nodes: 22, edges: 27, sha256: "afdb1a7e50c6aaf12ad53b16dbbb5b72ff1f0d6b3bd471a6a790eca09077cec6" },
   Reliability: { nodes: 16, edges: 17, sha256: "62008582db18a4e79115c4c744b73f5c9ab24ff4bb0144e729141fb7312980cb" },
+} as const;
+const FIXTURE_DIGEST_KEYS = {
+  Discovery: "discovery-all-time.json",
+  Reliability: "reliability-all-time.json",
 } as const;
 
 test("browser evidence and full app smoke", async ({ page, browserName }, testInfo) => {
@@ -188,21 +229,26 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     return "renderer constructed after a non-zero container layout box";
   });
   await run("fixture-load", async () => {
-    const snapshot = await invoke<Snapshot>("read");
-    for (const [policy, expected] of Object.entries(FIXTURE_EXPECTATIONS)) {
+    const neutralDigests = await loadNeutralDigests();
+    for (const policy of ["Discovery", "Reliability"] as const) {
+      const snapshot = await invoke<Snapshot>("switchPolicy", policy);
+      const expected = FIXTURE_EXPECTATIONS[policy];
       const actual = snapshot.fixtureFacts[policy];
       expect(actual).toBeDefined();
       if (actual === undefined) {
         throw new Error(`missing ${policy} fixture facts`);
       }
-      const { semanticDigest, fieldRegister, noPassthrough, ...fixture } = actual;
+      const { semanticDigest, semanticProjectionCanonical, ...fixture } = actual;
       expect(fixture).toEqual(expected);
-      expect(fieldRegister).toBe(true);
-      expect(noPassthrough).toBe(true);
       expect(semanticDigest).toMatch(/^[0-9a-f]{64}$/);
+      const expectedDigest = neutralDigests[FIXTURE_DIGEST_KEYS[policy]];
+      expect(expectedDigest, `missing independently authored neutral digest for ${policy}`).toMatch(/^[0-9a-f]{64}$/);
+      expect(createHash("sha256").update(Buffer.from(semanticProjectionCanonical, "utf8")).digest("hex")).toBe(expectedDigest);
+      assertSemanticProjectionIds(snapshot, policy, JSON.parse(semanticProjectionCanonical) as SemanticProjection);
       artefacts[`fixture-${policy}`] = actual.sha256;
     }
-    return "governed fixtures were transformed by the real adapter and passed field-register, semantic-digest, and no-passthrough assertions";
+    await invoke<Snapshot>("switchPolicy", "Discovery");
+    return "fixture facts matched counts and source hashes; the SHA-256 of each page canonical semantic-byte sequence matched its independently read neutral digest, then its node and edge ids matched the mounted renderer graph";
   });
   await run("graph-present", async () => {
     const snapshot = await invoke<Snapshot>("read");
@@ -210,7 +256,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     assertElementPixels(snapshot, initialImage);
     await assertEmptyGraphFails(snapshot, "graph-present");
     dprWitness = witnessFor(snapshot, initialImage);
-    return `final compositor screenshot contains sampled nodes and edge paths; backing store has ${snapshot.rendering.backingStorePixels} pixels`;
+    return `final compositor screenshot contains sampled nodes and three specified samples on every edge; backing store has ${snapshot.rendering.backingStorePixels} pixels`;
   });
   if (testInfo.project.name === "dpr-2") {
     const prior = await loadEvidenceRun();
@@ -241,7 +287,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       expect(after).toBeDefined();
       expect(Math.hypot((before?.x ?? 0) - (after?.x ?? 0), (before?.y ?? 0) - (after?.y ?? 0))).toBeLessThanOrEqual(0.5);
     }
-    return `camera-frozen shared nodes: ${shared.length}`;
+    return `shared-node viewport positions changed by at most 0.5 CSS pixels: ${shared.length}`;
   });
   await run("morphology", async () => {
     const expected = await invoke<Snapshot>("switchMorphology", "stellar");
@@ -249,6 +295,8 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     assertBackingStores(expected, stellarImage);
     assertElementPixels(expected, stellarImage);
     await assertEmptyGraphFails(expected, "morphology");
+    await assertPickCoverage(expected, invoke);
+    const identityPartitions = [await assertUnambiguousEdgeIdentity(expected, invoke)];
     for (const morphology of ["neural", "mycelium"] as const) {
       const snapshot = await invoke<Snapshot>("switchMorphology", morphology);
       expect(snapshot.nodes).toEqual(expected.nodes);
@@ -256,18 +304,18 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       const image = await capture("#evidence-renderer");
       assertBackingStores(snapshot, image);
       assertElementPixels(snapshot, image);
-      for (const edgeId of snapshot.edges) {
-        // Picking must never return an edge that does not cover the point. Requiring
-        // the SPECIFIC edge whose midpoint it is fails a correct renderer: two
-        // relations sharing an endpoint are genuinely near-coincident ribbons
-        // (measured 1.0367 apart against a half-width of 1.0). See OG-CAP-11-2.
-        const witness = await invoke<{ readonly edgeId: string | null; readonly pickedCoversPoint?: boolean }>("pick", edgeId, 0.5);
-        expect(witness.edgeId).not.toBeNull();
-        expect(witness.pickedCoversPoint).toBe(true);
-      }
+      await assertPickCoverage(snapshot, invoke);
+      identityPartitions.push(await assertUnambiguousEdgeIdentity(snapshot, invoke));
     }
     await invoke<Snapshot>("switchMorphology", "stellar");
-    return "all three morphologies retained sampled final-compositor pixels and pickable identifiers";
+    const categoryA = identityPartitions.flatMap((partition) => partition.categoryA.map(({ points }) => points));
+    const categoryB = identityPartitions.flatMap((partition) => partition.categoryB);
+    const minimumUnambiguousPoints = Math.min(...categoryA);
+    const medianUnambiguousPoints = median(categoryA);
+    const partners = categoryB.length === 0
+      ? "Category B is empty"
+      : categoryB.map(({ edgeId, partnerId }) => `${edgeId} -> ${partnerId}`).join(", ");
+    return `${categoryA.length + categoryB.length} edges tested; Category A count ${categoryA.length}; minimum ${minimumUnambiguousPoints} and median ${medianUnambiguousPoints} unambiguous points per Category A edge; Category B count ${categoryB.length}; ${partners}`;
   });
   await run("organization", async () => {
     const indra = await invoke<Snapshot>("switchOrganization", "indra");
@@ -282,13 +330,14 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     assertBackingStores(flat, flatImage);
     assertElementPixels(flat, flatImage);
     expect(indra.windows.length).toBeGreaterThan(0);
+    const ringWitnesses = assertAggregateWindowPixels(indra, indraImage, flatImage);
     for (const rejection of indra.rejectionBounds) {
       for (const window of indra.windows) {
         expect(contains(window.bounds, rejection.bounds)).toBe(false);
       }
     }
     await invoke<Snapshot>("switchOrganization", "indra");
-    return "Indra aggregate windows and every sampled graph element are present in the final compositor screenshot";
+    return `aggregate-window cleanliness measured ${ringWitnesses.length} windows; clean circumference points per window: ${ringWitnesses.map((witness) => `${witness.id}=${witness.points}`).join(", ")}`;
   });
   await run("lod", async () => {
     const bands = [] as Snapshot[];
@@ -299,7 +348,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       expect(snapshot.nodes).toEqual(bands[0]?.nodes);
       expect(snapshot.edges).toEqual(bands[0]?.edges);
     }
-    return "macro, meso, and micro captures retained ids while both threshold directions crossed hysteresis boundaries";
+    return "the 11-step zoom sequence 0, 260, 510, 740, 490, 230, 260, 510, 740, 490, 230 retained identical node and edge ids at every step";
   });
   await run("picking-parity", async () => {
     const snapshot = await invoke<Snapshot>("read");
@@ -334,8 +383,6 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const launch = await invoke<Snapshot>("switchPolicy", "Discovery");
     const discoveryFacts = launch.fixtureFacts.Discovery;
     expect(discoveryFacts).toBeDefined();
-    expect(discoveryFacts?.fieldRegister).toBe(true);
-    expect(discoveryFacts?.noPassthrough).toBe(true);
     expect(discoveryFacts?.semanticDigest).toMatch(/^[0-9a-f]{64}$/);
     const launchImage = await capture("#evidence-renderer");
     assertBackingStores(launch, launchImage);
@@ -353,7 +400,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const shutdown = await invoke<{ readonly canvases: number; readonly framesAfterShutdown: number }>("shutdown");
     expect(shutdown.canvases).toBe(0);
     expect(shutdown.framesAfterShutdown).toBe(0);
-    return "launch -> governed fixture -> real adapter -> renderer boot -> graph present -> policy -> morphology/organization -> selection -> LOD -> reduced motion -> no material errors -> clean shutdown";
+    return "policy, morphology, organization, selection, LOD, and reduced-motion operations completed without recorded errors; shutdown removed all canvases and fired no frames";
   });
 
   const prior = await loadEvidenceRun();
@@ -372,17 +419,19 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   const passed = checks.filter((entry) => entry.status === "PASS").length;
   const failed = checks.filter((entry) => entry.status === "FAIL").length;
   const notRun = checks.filter((entry) => entry.status === "NOT_RUN").length;
+  const unknown = checks.filter((entry) => entry.status === "UNKNOWN").length;
   const projectsComplete = REQUIRED_PROJECTS.every((project) => projects[project] !== undefined);
   await writeFile(EVIDENCE_FILE, `${JSON.stringify({
     run: prior.run,
     summary: {
-      passing: projectsComplete && failed === 0 && notRun === 0,
+      passing: projectsComplete && checks.every((entry) => entry.status === "PASS"),
       projectsComplete,
-      requiredChecks: passed + failed,
+      requiredChecks: checks.length,
       passed,
-      notRun,
       failed,
-      rule: "NOT_RUN is distinct from PASS, is excluded from the passing tally, and leaves the full evidence run non-passing.",
+      notRun,
+      unknown,
+      rule: "The evidence run passes only when both DPR projects complete and every recorded check is PASS; PASS, FAIL, NOT_RUN, and UNKNOWN are counted separately.",
     },
     projects,
     dprWitnesses,
@@ -422,16 +471,120 @@ function assertElementPixels(snapshot: Snapshot, image: DecodedPng): void {
     }
     expect(hasLitPixelNear(image, point, snapshot.rendering.devicePixelRatio, 10), `final screenshot has no lit pixel near node ${id}`).toBe(true);
   }
-  for (const id of sample(snapshot.edges, 6)) {
+  const sampledEdgeIds = Object.keys(snapshot.edgeSamples);
+  expect(sampledEdgeIds.length, "edge sample set is non-empty").toBeGreaterThan(0);
+  expect(sampledEdgeIds.sort(), "edge sample ids must exactly match graph edge ids").toEqual([...snapshot.edges].sort());
+  for (const id of snapshot.edges) {
     const points = snapshot.edgeSamples[id];
     expect(points, `renderer path samples for edge ${id}`).toBeDefined();
     if (points === undefined) {
       throw new Error(`renderer path samples for edge ${id} are missing`);
     }
+    expect(points, `edge ${id} must expose exactly three path samples`).toHaveLength(3);
+    expect(new Set(points.map((point) => `${point.x},${point.y}`)).size, `edge ${id} path samples must be pairwise distinct`).toBe(3);
     for (const point of points) {
       expect(hasLitPixelNear(image, point, snapshot.rendering.devicePixelRatio, 4), `final screenshot has no lit pixel on edge ${id}`).toBe(true);
     }
   }
+}
+
+async function assertUnambiguousEdgeIdentity(snapshot: Snapshot, invoke: PageInvoke): Promise<EdgeIdentityPartition> {
+  const categoryA: { edgeId: string; points: number }[] = [];
+  const categoryB: { edgeId: string; partnerId: string }[] = [];
+  for (const edgeId of snapshot.edges) {
+    const parameters = await invoke<readonly number[]>("unambiguousParameters", edgeId);
+    if (parameters.length === 0) {
+      // Category B is not an escape hatch: its analytic certificate uses model
+      // geometry, the live camera transform, and live edge attributes; it observes
+      // no rasterised output. The GPU clause below accepts only this edge or a
+      // certified analytic partner at every sampled parameter. It cannot separate
+      // this edge being drawn from its partner being drawn, because either result
+      // satisfies that membership.
+      const partnerIds = await invoke<readonly string[] | null>("coincidentPartners", edgeId);
+      expect(partnerIds, `edge ${edgeId} has no unambiguous viewport point and must be certified coincident at every sampled parameter`).not.toBeNull();
+      if (partnerIds !== null) {
+        expect(partnerIds.length, `edge ${edgeId} must name at least one coincident partner`).toBeGreaterThan(0);
+        expect(partnerIds.includes(edgeId), `edge ${edgeId} must not certify itself as coincident`).toBe(false);
+        for (const partnerId of partnerIds) {
+          expect(snapshot.edges.includes(partnerId), `coincident partner ${partnerId} for edge ${edgeId} must belong to the edge set`).toBe(true);
+        }
+        for (const parameter of EDGE_SAMPLE_PARAMETERS) {
+          const witness = await invoke<{ readonly edgeId: string | null }>("pick", edgeId, parameter);
+          expect(
+            witness.edgeId !== null && [edgeId, ...partnerIds].includes(witness.edgeId),
+            `coincident point ${parameter} on edge ${edgeId} must return the edge or a certified analytic partner`,
+          ).toBe(true);
+        }
+        categoryB.push({ edgeId, partnerId: partnerIds.join("+") });
+      }
+      continue;
+    }
+    for (const parameter of parameters) {
+      const witness = await invoke<{
+        readonly edgeId: string | null;
+        readonly pickedCoversPoint?: boolean;
+        readonly onScreen?: boolean;
+      }>("pick", edgeId, parameter);
+      expect(witness.onScreen, `unambiguous point ${parameter} on edge ${edgeId} must be on the picking viewport`).toBe(true);
+      expect(witness.edgeId, `unambiguous point ${parameter} on edge ${edgeId} must return an edge`).not.toBeNull();
+      expect(witness.edgeId, `unambiguous point ${parameter} must return its own edge ${edgeId}`).toBe(edgeId);
+    }
+    categoryA.push({ edgeId, points: parameters.length });
+  }
+  expect(categoryA.length, "Category A must contain at least one edge").toBeGreaterThan(0);
+  expect(categoryB.length, "Category B must be a strict minority: most edges must be identity-checkable or the identity property is not being exercised").toBeLessThan(categoryA.length);
+  const categoryAIds = categoryA.map(({ edgeId }) => edgeId);
+  const categoryBIds = categoryB.map(({ edgeId }) => edgeId);
+  expect([...new Set([...categoryAIds, ...categoryBIds])].sort(), "Category A and Category B must together equal the edge set").toEqual([...snapshot.edges].sort());
+  for (const edgeId of snapshot.edges) {
+    const memberships = Number(categoryAIds.includes(edgeId)) + Number(categoryBIds.includes(edgeId));
+    expect(memberships, `edge ${edgeId} must belong to exactly one identity category`).toBe(1);
+  }
+  return { categoryA, categoryB };
+}
+
+function median(values: readonly number[]): number {
+  expect(values.length, "unambiguous edge counts are non-empty").toBeGreaterThan(0);
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2
+    : sorted[middle] ?? 0;
+}
+
+async function assertPickCoverage(snapshot: Snapshot, invoke: PageInvoke): Promise<void> {
+  for (const edgeId of snapshot.edges) {
+    const witness = await invoke<{
+      readonly edgeId: string | null;
+      readonly pickedCoversPoint?: boolean;
+    }>("pick", edgeId, 0.5);
+    expect(witness.edgeId, `midpoint on edge ${edgeId} must return an edge`).not.toBeNull();
+    expect(witness.pickedCoversPoint, `edge returned at midpoint on ${edgeId} must cover the point`).toBe(true);
+  }
+}
+
+function assertAggregateWindowPixels(indra: Snapshot, indraImage: DecodedPng, flatImage: DecodedPng): readonly { readonly id: string; readonly points: number }[] {
+  return indra.windows.map((window) => {
+    const clean = ringCandidates(window.viewportCenter, window.viewportRadius)
+      .filter((point) => !hasLitPixelNear(flatImage, point, indra.rendering.devicePixelRatio, 2));
+    expect(clean.length, `aggregate window ${window.id} must yield at least four clean circumference points`).toBeGreaterThanOrEqual(4);
+    for (const point of clean) {
+      expect(hasLitPixelNear(indraImage, point, indra.rendering.devicePixelRatio, 2), `Indra compositor screenshot has no lit aggregate-window stroke at ${window.id}`).toBe(true);
+    }
+    return { id: window.id, points: clean.length };
+  });
+}
+
+function ringCandidates(center: { readonly x: number; readonly y: number }, radius: number): readonly { readonly x: number; readonly y: number }[] {
+  return Array.from({ length: 48 }, (_, index) => {
+    const angle = (index / 48) * Math.PI * 2;
+    return { x: center.x + (Math.cos(angle) * radius), y: center.y + (Math.sin(angle) * radius) };
+  });
+}
+
+function assertSemanticProjectionIds(snapshot: Snapshot, policy: string, projection: SemanticProjection): void {
+  expect(projection.nodes.map((node) => node.id), `neutral semantic node ids for ${policy} must equal the mounted renderer graph`).toEqual([...snapshot.nodes].sort());
+  expect(projection.edges.map((edge) => edge.id), `neutral semantic edge ids for ${policy} must equal the mounted renderer graph`).toEqual([...snapshot.edges].sort());
 }
 
 function sample<Value>(items: readonly Value[], maximum: number): readonly Value[] {
@@ -603,6 +756,11 @@ async function loadEvidenceRun(): Promise<EvidenceRun> {
   } catch {
     return {};
   }
+}
+
+async function loadNeutralDigests(): Promise<Readonly<Record<string, string>>> {
+  const expectations = JSON.parse(await readFile(NEUTRAL_DIGESTS_FILE, "utf8")) as NeutralDigestExpectations;
+  return expectations.neutral_digests;
 }
 
 function message(error: unknown): string {

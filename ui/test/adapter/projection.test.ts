@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { canonicalBytes } from "#engine/canonical.ts";
+import { canonicalBytes, digestPayload } from "#engine/canonical.ts";
 import {
   assertReliabilityRederivation,
   neutralProjection,
@@ -37,6 +37,10 @@ type FixturePayload = {
   readonly edges: readonly FixtureEdge[];
 };
 
+type NeutralDigestExpectations = {
+  readonly neutral_digests: Readonly<Record<string, string>>;
+};
+
 const FIXTURES = [
   "discovery-all-time.json",
   "discovery-at-question.json",
@@ -67,6 +71,19 @@ const EDGE_FIELDS: Readonly<Record<string, readonly string[] | null>> = {
 /** This reads one checked-in payload and does not create expected adapter output. */
 function fixture(name: typeof FIXTURES[number]): FixturePayload {
   return JSON.parse(readFileSync(join(process.cwd(), "..", "fixtures", "synthetic", "projection", name), "utf8")) as FixturePayload;
+}
+
+/** This reads one Python-authored neutral digest and does not derive expectations from the adapter. */
+function neutralDigest(name: typeof FIXTURES[number]): string {
+  const expectations = JSON.parse(readFileSync(
+    join(process.cwd(), "..", "fixtures", "synthetic", "projection", "expectations", "neutral-digests.json"),
+    "utf8",
+  )) as NeutralDigestExpectations;
+  const digest = expectations.neutral_digests[name];
+  if (digest === undefined) {
+    throw new TypeError(`missing neutral digest for ${name}`);
+  }
+  return digest;
 }
 
 /** This compares canonical records and does not apply an omission predicate. */
@@ -200,16 +217,78 @@ test("visual graphs meet the boundary register without retaining payload or dige
   for (const name of FIXTURES) {
     const raw = fixture(name);
     const graph = toVisualGraph(raw);
+    const neutral = neutralProjection(raw);
     assertVisualGraphFieldRegister(graph);
     assertNoPassthrough(graph, raw, semanticDigest(graph));
     assert.equal(graph.nodes.length, raw.nodes.length);
     assert.equal(graph.edges.length, raw.edges.length);
-    const firstNode = graph.nodes[0];
-    const firstNeutralNode = neutralProjection(raw).nodes[0];
-    if (firstNode === undefined || firstNeutralNode === undefined) {
-      throw new TypeError("fixture unexpectedly has no nodes");
+    assert.deepEqual(
+      graph.nodes.map((node) => node.id),
+      neutral.nodes.map((node) => node.id),
+      "Property L node ids from the visual graph must equal the neutral projection in order",
+    );
+    assert.deepEqual(
+      neutral.nodes.map((node) => node.id),
+      graph.nodes.map((node) => node.id),
+      "Property L neutral node ids must equal the visual graph in order",
+    );
+    assert.deepEqual(
+      graph.edges.map((edge) => edge.id),
+      neutral.edges.map((edge) => edge.id),
+      "Property L edge ids from the visual graph must equal the neutral projection in order",
+    );
+    assert.deepEqual(
+      neutral.edges.map((edge) => edge.id),
+      graph.edges.map((edge) => edge.id),
+      "Property L neutral edge ids must equal the visual graph in order",
+    );
+    assert.equal(graph.schema_version, neutral.schema_version);
+    assert.equal(graph.policy_id, neutral.policy_id);
+    assert.deepEqual(graph.question, neutral.question);
+    for (const [index, node] of graph.nodes.entries()) {
+      const expected = neutral.nodes[index];
+      if (expected === undefined) {
+        throw new TypeError("Property L visual node has no neutral counterpart");
+      }
+      assert.deepEqual(
+        readSemantic(node.semantic),
+        expected.semantic,
+        `Property L node ${node.id} semantic content must be complete and exact`,
+      );
     }
-    assert.deepEqual(readSemantic(firstNode.semantic), firstNeutralNode.semantic);
+    for (const [index, edge] of graph.edges.entries()) {
+      const expected = neutral.edges[index];
+      if (expected === undefined) {
+        throw new TypeError("Property L visual edge has no neutral counterpart");
+      }
+      assert.deepEqual(
+        readSemantic(edge.semantic),
+        expected.semantic,
+        `Property L edge ${edge.id} semantic content must be complete and exact`,
+      );
+    }
+    const reconstructed = {
+      schema_version: graph.schema_version,
+      policy_id: graph.policy_id,
+      question: graph.question,
+      nodes: graph.nodes.map((node) => ({
+        id: node.id,
+        kind: node.kind,
+        semantic: readSemantic(node.semantic),
+      })).sort(compareIds),
+      edges: graph.edges.map((edge) => ({
+        id: edge.id,
+        kind: edge.kind,
+        source: edge.source,
+        target: edge.target,
+        semantic: readSemantic(edge.semantic),
+      })).sort(compareIds),
+    };
+    assert.equal(
+      digestPayload(reconstructed),
+      neutralDigest(name),
+      `Property L reconstructed visual graph digest must match the Python expectation for ${name}`,
+    );
   }
 });
 
