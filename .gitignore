@@ -15,14 +15,20 @@ build/
 *.local.yaml
 *.local.json
 
-# Local review-tool state is machine-specific and never tracked.
-.claude/
-
 # The derived store is rebuildable from the canonical files and is never
 # committed. Canon is files; a database in history would make that untrue.
 *.db
 *.sqlite
 *.sqlite3
+
+# Frontend toolchain. Declared in the project contract under D-029 so the
+# workspace gate can classify them; being ignored by Git is not a
+# classification, and an undeclared generated directory reports as unknown.
+node_modules/
+ui/dist/
+.playwright/
+playwright-report/
+test-results/
 
 # OS noise.
 .DS_Store

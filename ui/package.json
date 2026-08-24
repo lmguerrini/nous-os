@@ -1,0 +1,29 @@
+{
+  "name": "nous-os-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Renderer-neutral visual engine and 2D renderer over the projection IR.",
+  "imports": {
+    "#engine/*": "./src/engine/*",
+    "#adapter/*": "./src/adapter/*",
+    "#render2d/*": "./src/render2d/*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node --test \"test/**/*.test.ts\"",
+    "build:evidence": "esbuild test/browser/evidence.ts --bundle --format=esm --target=es2022 --outfile=dist/evidence.js",
+    "test:browser": "playwright test"
+  },
+  "dependencies": {
+    "@sigma/edge-curve": "3.1.0",
+    "graphology": "0.26.0",
+    "sigma": "3.0.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "^26.2.0",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}
