@@ -21,7 +21,7 @@ import { mount, restoreCameraState } from "#render2d/index.ts";
 import { FilamentProgram } from "#render2d/filament-program.ts";
 import { quadraticPoint } from "#render2d/geometry.ts";
 import type { FilamentGeometry } from "#render2d/geometry.ts";
-import type { RenderCameraState, RenderFramingBox, RenderHandle } from "#render2d/index.ts";
+import type { RenderCameraState, RenderFramingBox, RenderHandle, RenderNodeGlowWitness } from "#render2d/index.ts";
 import type { RenderOptions as ModelRenderOptions } from "#render2d/model.ts";
 
 type Policy = "Reliability" | "Discovery";
@@ -100,6 +100,7 @@ type Snapshot = {
   readonly rejectionBounds: readonly { readonly id: string; readonly bounds: { readonly minimumX: number; readonly minimumY: number; readonly maximumX: number; readonly maximumY: number } }[];
   readonly fixtureFacts: Readonly<Record<string, FixtureFacts>>;
   readonly rendering: RenderWitness;
+  readonly glowNodes: readonly RenderNodeGlowWitness[];
   readonly edgeSamples: Readonly<Record<string, readonly { readonly x: number; readonly y: number }[]>>;
 };
 
@@ -112,6 +113,7 @@ type EvidenceApi = {
   switchOrganization(organization: Organization): Promise<Snapshot>;
   setLodBand(band: LodBand): Promise<Snapshot>;
   setLodZoom(zoom: number): Promise<Snapshot>;
+  setGlowSuppressed(suppressed: boolean): Promise<Snapshot>;
   setReducedMotion(reducedMotion: boolean): Promise<Snapshot>;
   selectNode(id: string): Promise<Snapshot>;
   read(): Snapshot;
@@ -249,7 +251,7 @@ async function boot(): Promise<void> {
     picking = new Sigma(product.model.graph, pickingContainer, {
       defaultEdgeType: "filament",
       edgeProgramClasses: { filament: FilamentProgram },
-      renderLabels: product.model.lodBand === "micro",
+      renderLabels: product.model.material.node.includes("label"),
       zIndex: true,
       enableEdgeEvents: true,
     });
@@ -304,6 +306,7 @@ async function boot(): Promise<void> {
       rejectionBounds: handle.model.organization.rejectionBounds,
       fixtureFacts,
       rendering: renderWitness(container),
+      glowNodes: handle.readGlowWitnesses(),
       edgeSamples,
     };
   };
@@ -337,6 +340,12 @@ async function boot(): Promise<void> {
     async setLodZoom(zoom): Promise<Snapshot> {
       options.lodBand = resolveLodBand(zoom, options.lodBand, DEFAULT_CALIBRATION);
       await remount();
+      return read();
+    },
+    async setGlowSuppressed(suppressed): Promise<Snapshot> {
+      requiredHandle(product).setGlowVisible(!suppressed);
+      await nextPaint();
+      await nextPaint();
       return read();
     },
     async setReducedMotion(next): Promise<Snapshot> {
@@ -711,9 +720,11 @@ function pickingRadiusPx(sigma: Sigma, edgeId: string): number {
   // camera ratio before picking, so a competitor can claim a point beyond 3 px.
   // The model uploads baseWidthPx times one morphology width multiplier per 1,000;
   // the shader divides that width by the live sizeRatio, halves it, and adds the
-  // calibrated pickTolerancePx. These calibrated lower and upper bounds reject
-  // inflated live edge attributes. The shader uses distance < halfThickness while
-  // this analytic oracle uses <=, a measure-zero difference at the boundary.
+  // calibrated pickTolerancePx. The lower bound comes from the shader's max,
+  // not from calibration widths: minEdgeThickness / 2 + pickTolerancePx is exact
+  // for every edge. The upper bound remains calibration-derived. The shader uses
+  // distance < halfThickness while this analytic oracle uses <=, a measure-zero
+  // difference at the boundary.
   const calibratedWidthsPx = [
     DEFAULT_CALIBRATION.morphology.stellar.filamentWidthMultiplierPermille,
     DEFAULT_CALIBRATION.morphology.neural.filamentWidthMultiplierPermille,
@@ -721,16 +732,14 @@ function pickingRadiusPx(sigma: Sigma, edgeId: string): number {
   ].map((widthMultiplierPermille) => (
     (DEFAULT_CALIBRATION.filament.baseWidthPx * widthMultiplierPermille) / 1_000
   ));
-  const minimumCalibratedRadiusPx = (
-    Math.min(...calibratedWidthsPx) / liveSizeRatio / 2
-  ) + DEFAULT_CALIBRATION.filament.pickTolerancePx;
+  const minimumShaderRadiusPx = (liveMinimumThickness / 2) + DEFAULT_CALIBRATION.filament.pickTolerancePx;
   const maximumCalibratedRadiusPx = (
     Math.max(...calibratedWidthsPx) / liveSizeRatio / 2
   ) + DEFAULT_CALIBRATION.filament.pickTolerancePx;
   const radiusPx = (Math.max(liveMinimumThickness, edgeWidthPx / liveSizeRatio) / 2) + pickTolerancePx;
-  if (radiusPx < minimumCalibratedRadiusPx || radiusPx > maximumCalibratedRadiusPx) {
+  if (radiusPx < minimumShaderRadiusPx || radiusPx > maximumCalibratedRadiusPx) {
     throw new Error(
-      `edge ${edgeId} picking radius ${radiusPx}px is outside calibrated bounds [${minimumCalibratedRadiusPx}px, ${maximumCalibratedRadiusPx}px]`,
+      `edge ${edgeId} picking radius ${radiusPx}px is outside calibrated bounds [${minimumShaderRadiusPx}px, ${maximumCalibratedRadiusPx}px]`,
     );
   }
   return radiusPx;
@@ -829,21 +838,21 @@ function requiredSigma(sigma: Sigma | undefined): Sigma {
   return sigma;
 }
 
-/** This frames the complete Discovery universe once and does not fit a policy subset. */
+/** This frames the complete Discovery universe with calibrated margins and does not fit a policy subset. */
 function framingBoxFor(graph: VisualGraph): RenderFramingBox {
   const anchors = [...layoutAnchors(graph).values()];
   if (anchors.length === 0) {
     throw new Error("a shared framing graph requires anchors");
   }
+  const minimumX = Math.min(...anchors.map((anchor) => anchor.x));
+  const maximumX = Math.max(...anchors.map((anchor) => anchor.x));
+  const minimumY = Math.min(...anchors.map((anchor) => anchor.y));
+  const maximumY = Math.max(...anchors.map((anchor) => anchor.y));
+  const marginX = ((maximumX - minimumX) * DEFAULT_CALIBRATION.layout.framingMarginPermille) / 1_000;
+  const marginY = ((maximumY - minimumY) * DEFAULT_CALIBRATION.layout.framingMarginPermille) / 1_000;
   return {
-    x: [
-      Math.min(...anchors.map((anchor) => anchor.x)),
-      Math.max(...anchors.map((anchor) => anchor.x)),
-    ],
-    y: [
-      Math.min(...anchors.map((anchor) => anchor.y)),
-      Math.max(...anchors.map((anchor) => anchor.y)),
-    ],
+    x: [minimumX - marginX, maximumX + marginX],
+    y: [minimumY - marginY, maximumY + marginY],
   };
 }
 
@@ -860,6 +869,7 @@ function failedApi(): EvidenceApi {
     switchOrganization: async () => unavailable(),
     setLodBand: async () => unavailable(),
     setLodZoom: async () => unavailable(),
+    setGlowSuppressed: async () => unavailable(),
     setReducedMotion: async () => unavailable(),
     selectNode: async () => unavailable(),
     read: unavailable,

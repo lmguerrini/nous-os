@@ -5,7 +5,15 @@ import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_AGGREGATE_LAYOUT_CALIBRATION } from "#engine/calibration.ts";
 import type { Coordinates, VisualGraph } from "#engine/contract.ts";
-import { layoutAnchors, sharedAnchors } from "#engine/layout.ts";
+import { aggregateDiscs, aggregateMemberships, layoutAnchors, sharedAnchors } from "#engine/layout.ts";
+
+const FIXTURE_NAMES = [
+  "discovery-all-time.json",
+  "discovery-at-question.json",
+  "reliability-all-time.json",
+  "reliability-at-question.json",
+  "substrate-all-time.json",
+] as const;
 
 /** This reads a checked-in projection and does not manufacture graph structure. */
 function graph(name: string): VisualGraph {
@@ -39,7 +47,35 @@ test("layout anchors occupy a plane rather than a correlated diagonal", () => {
   const anchors = [...layoutAnchors(graph("discovery-at-question.json")).values()];
   assert.ok(anchors.length > 1, "a one-node graph cannot measure correlation");
   const correlation = pearson(anchors.map((anchor) => anchor.x), anchors.map((anchor) => anchor.y));
-  assert.ok(Math.abs(correlation) < 0.6, `expected |Pearson r| < 0.6, received ${Math.abs(correlation)}`);
+  assert.ok(Math.abs(correlation) < 0.5, `expected |Pearson r| < 0.5, received ${Math.abs(correlation)}`);
+});
+
+test("jitter keeps every non-member anchor outside aggregate discs and every fixture below the correlation bound", () => {
+  assert.equal(FIXTURE_NAMES.length, 5);
+  for (const name of FIXTURE_NAMES) {
+    const visualGraph = graph(name);
+    const anchors = layoutAnchors(visualGraph);
+    const members = new Set([...aggregateMemberships(visualGraph).values()].flat());
+    const discs = aggregateDiscs(visualGraph);
+    for (const node of visualGraph.nodes) {
+      if (members.has(node.id)) {
+        continue;
+      }
+      const anchor = anchors.get(node.id);
+      assert.ok(anchor !== undefined, `${name} is missing anchor ${node.id}`);
+      if (anchor === undefined) {
+        continue;
+      }
+      for (const disc of discs) {
+        const distance = Math.hypot(anchor.x - disc.center.x, anchor.y - disc.center.y);
+        assert.ok(distance >= disc.radius, `${name} placed non-member ${node.id} inside aggregate ${disc.id}`);
+      }
+    }
+    const values = [...anchors.values()];
+    assert.ok(values.length > 1, `${name} needs multiple anchors for correlation`);
+    const correlation = pearson(values.map((anchor) => anchor.x), values.map((anchor) => anchor.y));
+    assert.ok(Math.abs(correlation) < 0.5, `${name} expected |Pearson r| < 0.5, received ${Math.abs(correlation)}`);
+  }
 });
 
 test("layout anchors stay within the calibrated aspect-ratio tolerance", () => {

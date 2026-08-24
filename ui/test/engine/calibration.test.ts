@@ -8,15 +8,15 @@ import {
 } from "#engine/calibration.ts";
 
 const EXPECTED_PATHS = [
-  "layout.forceStrengthPermille", "layout.idealEdgeLengthPx", "layout.iterations", "layout.gravityPermille", "layout.seed",
+  "layout.forceStrengthPermille", "layout.idealEdgeLengthPx", "layout.iterations", "layout.gravityPermille", "layout.seed", "layout.cellJitterPermille", "layout.framingMarginPermille",
   "salience.degreeExponentPermille", "salience.minNodeSizePx", "salience.maxNodeSizePx",
-  "luminance.haloRadiusFactorPermille", "luminance.haloFalloffPermille", "luminance.coreBeforeHaloMinimumPx",
+  "luminance.haloRadiusFactorPermille", "luminance.haloFalloffPermille", "luminance.haloSampleCount", "luminance.coreBeforeHaloMinimumPx", "luminance.prominenceLightnessGainPermille", "luminance.prominenceChromaFalloffPermille", "luminance.haloProbeRadiusFractionPermille", "luminance.minimumNodeContrastPermille",
   "filament.baseWidthPx",
   "filament.pickTolerancePx", "filament.opacityPermille", "filament.curvatureMagnitudePermille", "filament.medialOffsetAmplitudePx",
-  "morphology.stellar.nodeSizeMultiplierPermille", "morphology.stellar.filamentWidthMultiplierPermille", "morphology.stellar.opacityPermille", "morphology.stellar.curvatureMagnitudePermille", "morphology.stellar.medialOffsetAmplitudePermille",
-  "morphology.neural.nodeSizeMultiplierPermille", "morphology.neural.filamentWidthMultiplierPermille", "morphology.neural.opacityPermille", "morphology.neural.curvatureMagnitudePermille", "morphology.neural.medialOffsetAmplitudePermille",
-  "morphology.mycelium.nodeSizeMultiplierPermille", "morphology.mycelium.filamentWidthMultiplierPermille", "morphology.mycelium.opacityPermille", "morphology.mycelium.curvatureMagnitudePermille", "morphology.mycelium.medialOffsetAmplitudePermille",
-  "lod.bandThresholds", "lod.hysteresisMarginPermille", "lod.crossfadeDurationMs",
+  "morphology.stellar.nodeSizeMultiplierPermille", "morphology.stellar.filamentWidthMultiplierPermille", "morphology.stellar.opacityPermille", "morphology.stellar.curvatureMagnitudePermille", "morphology.stellar.medialOffsetAmplitudePermille", "morphology.stellar.haloRadiusMultiplierPermille", "morphology.stellar.haloIntensityPermille", "morphology.stellar.terminalSizeMultiplierPermille",
+  "morphology.neural.nodeSizeMultiplierPermille", "morphology.neural.filamentWidthMultiplierPermille", "morphology.neural.opacityPermille", "morphology.neural.curvatureMagnitudePermille", "morphology.neural.medialOffsetAmplitudePermille", "morphology.neural.haloRadiusMultiplierPermille", "morphology.neural.haloIntensityPermille", "morphology.neural.terminalSizeMultiplierPermille",
+  "morphology.mycelium.nodeSizeMultiplierPermille", "morphology.mycelium.filamentWidthMultiplierPermille", "morphology.mycelium.opacityPermille", "morphology.mycelium.curvatureMagnitudePermille", "morphology.mycelium.medialOffsetAmplitudePermille", "morphology.mycelium.haloRadiusMultiplierPermille", "morphology.mycelium.haloIntensityPermille", "morphology.mycelium.terminalSizeMultiplierPermille",
+  "lod.bandThresholds", "lod.hysteresisMarginPermille", "lod.crossfadeDurationMs", "lod.macroNodeSizeMultiplierPermille", "lod.macroFilamentWidthMultiplierPermille", "lod.macroAggregateOutlineWidthMultiplierPermille", "lod.macroAggregateOutlineAlphaPermille", "lod.microHopDistanceLightnessStepPermille", "lod.minimumAdjacentPixelDeltaPermille",
   "labels.densityCap", "labels.priorityWeights.node", "labels.priorityWeights.edge", "labels.priorityWeights.assertion", "labels.priorityWeights.bridge", "labels.collisionPaddingPx",
   "aggregate.disclosureThreshold", "aggregate.windowPaddingPx", "aggregate.windowStrokeAlphaPermille",
   "motion.propagationSpeedPxPerSecond", "motion.afterglowDecayPermille", "motion.reducedMotionSwitch",
@@ -27,7 +27,7 @@ const EXPECTED_PATHS = [
 test("calibration register is an exact pinned set in both directions", () => {
   assert.deepEqual([...CALIBRATION_PARAMETER_PATHS].sort(), [...EXPECTED_PATHS].sort());
   assert.deepEqual([...EXPECTED_PATHS].sort(), [...CALIBRATION_PARAMETER_PATHS].sort());
-  assert.equal(CALIBRATION_PARAMETER_PATHS.length, 50);
+  assert.equal(CALIBRATION_PARAMETER_PATHS.length, 72);
 });
 
 test("calibration validator refuses one unknown path", () => {

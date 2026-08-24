@@ -40,6 +40,7 @@ export type StructuralFacts = {
   readonly degree: DerivedValue;
   readonly hopDistanceFromHub: DerivedValue;
   readonly terminal: DerivedValue;
+  readonly prominence: DerivedValue;
 };
 
 /** This is material for one node and does not add or remove a node. */
@@ -47,6 +48,8 @@ export type NodeMaterial = {
   readonly id: string;
   readonly coreSizePx: number;
   readonly haloRadiusPx: number;
+  readonly haloIntensityPermille: number;
+  readonly prominencePermille: number;
   readonly opacityPermille: number;
   readonly junctionGeometry: string;
   readonly terminalTreatment: string;
@@ -86,19 +89,26 @@ export function applyMorphology(
   const material = calibration.morphology[morphology.id];
   const nodeIds = graph.nodes.map((node) => node.id);
   const edgeIds = graph.edges.map((edge) => edge.id);
+  const minimumDegree = Math.min(...degree.values());
+  const maximumDegree = Math.max(...degree.values());
   const nodes = graph.nodes.map((node) => {
     const nodeDegree = degree.get(node.id) ?? 0;
     const hopDistance = hops.get(node.id) ?? 0;
     const terminal = nodeDegree <= TERMINAL_DEGREE;
     const sizeRange = calibration.salience.maxNodeSizePx - calibration.salience.minNodeSizePx;
-    const salience = Math.pow(nodeDegree + TERMINAL_DEGREE, calibration.salience.degreeExponentPermille / PERMILLE);
-    const baseSize = calibration.salience.minNodeSizePx + Math.min(sizeRange, salience);
-    const coreSize = (baseSize * material.nodeSizeMultiplierPermille) / PERMILLE;
-    const neuralCore = Math.max(coreSize, calibration.luminance.coreBeforeHaloMinimumPx);
+    const prominence = normalisedProminence(nodeDegree, minimumDegree, maximumDegree, calibration);
+    const baseSize = calibration.salience.minNodeSizePx + (prominence * sizeRange);
+    const terminalSizeMultiplier = terminal ? material.terminalSizeMultiplierPermille : PERMILLE;
+    const coreSize = ((baseSize * material.nodeSizeMultiplierPermille) / PERMILLE * terminalSizeMultiplier) / PERMILLE;
+    const renderedCore = morphology.id === NEURAL.id
+      ? Math.max(coreSize, calibration.luminance.coreBeforeHaloMinimumPx)
+      : coreSize;
     return {
       id: node.id,
-      coreSizePx: morphology.id === NEURAL.id ? neuralCore : coreSize,
-      haloRadiusPx: (coreSize * calibration.luminance.haloRadiusFactorPermille) / PERMILLE,
+      coreSizePx: renderedCore,
+      haloRadiusPx: ((renderedCore * calibration.luminance.haloRadiusFactorPermille) / PERMILLE * material.haloRadiusMultiplierPermille) / PERMILLE,
+      haloIntensityPermille: material.haloIntensityPermille,
+      prominencePermille: Math.round(prominence * PERMILLE),
       opacityPermille: material.opacityPermille,
       junctionGeometry: morphology.junctionGeometry,
       terminalTreatment: morphology.terminalTreatment,
@@ -107,6 +117,7 @@ export function applyMorphology(
         degree: { value: nodeDegree, origin: "morphology:edge-incidence" },
         hopDistanceFromHub: { value: hopDistance, origin: "morphology:shortest-hop-from-max-degree-node" },
         terminal: { value: terminal, origin: "morphology:edge-incidence" },
+        prominence: { value: Math.round(prominence * PERMILLE), origin: "morphology:edge-incidence-normalised-within-rendered-graph-degree-range-not-authority" },
       },
     };
   });
@@ -115,12 +126,13 @@ export function applyMorphology(
     const targetHop = hops.get(edge.target) ?? 0;
     const hopDistance = Math.max(sourceHop, targetHop);
     const neuralTaper = PERMILLE / (hopDistance + TERMINAL_DEGREE);
+    const taperPermille = morphology.id === NEURAL.id ? neuralTaper : PERMILLE;
     return {
       id: edge.id,
-      widthPx: (calibration.filament.baseWidthPx * material.filamentWidthMultiplierPermille) / PERMILLE,
+      widthPx: ((calibration.filament.baseWidthPx * material.filamentWidthMultiplierPermille) / PERMILLE * taperPermille) / PERMILLE,
       opacityPermille: (calibration.filament.opacityPermille * material.opacityPermille) / PERMILLE,
       curvaturePermille: (calibration.filament.curvatureMagnitudePermille * material.curvatureMagnitudePermille) / PERMILLE,
-      taperPermille: morphology.id === NEURAL.id ? neuralTaper : PERMILLE,
+      taperPermille,
       medialOffsetPx: (calibration.filament.medialOffsetAmplitudePx * material.medialOffsetAmplitudePermille) / PERMILLE,
       kind: { value: edge.kind, origin: "morphology:visual-edge-kind" },
     };
@@ -133,6 +145,20 @@ export function applyMorphology(
     nodes,
     edges,
   };
+}
+
+function normalisedProminence(
+  degree: number,
+  minimumDegree: number,
+  maximumDegree: number,
+  calibration: CalibrationProfile,
+): number {
+  if (maximumDegree === minimumDegree) {
+    return 0;
+  }
+  const exponent = calibration.salience.degreeExponentPermille / PERMILLE;
+  const raw = (value: number): number => Math.pow(value + TERMINAL_DEGREE, exponent);
+  return (raw(degree) - raw(minimumDegree)) / (raw(maximumDegree) - raw(minimumDegree));
 }
 
 /** This verifies the material binding against a graph and does not accept a topology rewrite. */

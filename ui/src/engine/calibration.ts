@@ -6,6 +6,9 @@ export type MorphologyMaterial = {
   readonly opacityPermille: number;
   readonly curvatureMagnitudePermille: number;
   readonly medialOffsetAmplitudePermille: number;
+  readonly haloRadiusMultiplierPermille: number;
+  readonly haloIntensityPermille: number;
+  readonly terminalSizeMultiplierPermille: number;
 };
 
 /** This tunes the aggregate layout region and does not alter aggregate membership. */
@@ -27,6 +30,8 @@ export type CalibrationProfile = {
     readonly iterations: number;
     readonly gravityPermille: number;
     readonly seed: number;
+    readonly cellJitterPermille: number;
+    readonly framingMarginPermille: number;
   };
   readonly salience: {
     readonly degreeExponentPermille: number;
@@ -36,7 +41,12 @@ export type CalibrationProfile = {
   readonly luminance: {
     readonly haloRadiusFactorPermille: number;
     readonly haloFalloffPermille: number;
+    readonly haloSampleCount: number;
     readonly coreBeforeHaloMinimumPx: number;
+    readonly prominenceLightnessGainPermille: number;
+    readonly prominenceChromaFalloffPermille: number;
+    readonly haloProbeRadiusFractionPermille: number;
+    readonly minimumNodeContrastPermille: number;
   };
   readonly filament: {
     readonly baseWidthPx: number;
@@ -54,6 +64,12 @@ export type CalibrationProfile = {
     readonly bandThresholds: readonly number[];
     readonly hysteresisMarginPermille: number;
     readonly crossfadeDurationMs: number;
+    readonly macroNodeSizeMultiplierPermille: number;
+    readonly macroFilamentWidthMultiplierPermille: number;
+    readonly macroAggregateOutlineWidthMultiplierPermille: number;
+    readonly macroAggregateOutlineAlphaPermille: number;
+    readonly microHopDistanceLightnessStepPermille: number;
+    readonly minimumAdjacentPixelDeltaPermille: number;
   };
   readonly labels: {
     readonly densityCap: number;
@@ -92,12 +108,19 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "layout.iterations",
   "layout.gravityPermille",
   "layout.seed",
+  "layout.cellJitterPermille",
+  "layout.framingMarginPermille",
   "salience.degreeExponentPermille",
   "salience.minNodeSizePx",
   "salience.maxNodeSizePx",
   "luminance.haloRadiusFactorPermille",
   "luminance.haloFalloffPermille",
+  "luminance.haloSampleCount",
   "luminance.coreBeforeHaloMinimumPx",
+  "luminance.prominenceLightnessGainPermille",
+  "luminance.prominenceChromaFalloffPermille",
+  "luminance.haloProbeRadiusFractionPermille",
+  "luminance.minimumNodeContrastPermille",
   "filament.baseWidthPx",
   "filament.pickTolerancePx",
   "filament.opacityPermille",
@@ -108,19 +131,34 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "morphology.stellar.opacityPermille",
   "morphology.stellar.curvatureMagnitudePermille",
   "morphology.stellar.medialOffsetAmplitudePermille",
+  "morphology.stellar.haloRadiusMultiplierPermille",
+  "morphology.stellar.haloIntensityPermille",
+  "morphology.stellar.terminalSizeMultiplierPermille",
   "morphology.neural.nodeSizeMultiplierPermille",
   "morphology.neural.filamentWidthMultiplierPermille",
   "morphology.neural.opacityPermille",
   "morphology.neural.curvatureMagnitudePermille",
   "morphology.neural.medialOffsetAmplitudePermille",
+  "morphology.neural.haloRadiusMultiplierPermille",
+  "morphology.neural.haloIntensityPermille",
+  "morphology.neural.terminalSizeMultiplierPermille",
   "morphology.mycelium.nodeSizeMultiplierPermille",
   "morphology.mycelium.filamentWidthMultiplierPermille",
   "morphology.mycelium.opacityPermille",
   "morphology.mycelium.curvatureMagnitudePermille",
   "morphology.mycelium.medialOffsetAmplitudePermille",
+  "morphology.mycelium.haloRadiusMultiplierPermille",
+  "morphology.mycelium.haloIntensityPermille",
+  "morphology.mycelium.terminalSizeMultiplierPermille",
   "lod.bandThresholds",
   "lod.hysteresisMarginPermille",
   "lod.crossfadeDurationMs",
+  "lod.macroNodeSizeMultiplierPermille",
+  "lod.macroFilamentWidthMultiplierPermille",
+  "lod.macroAggregateOutlineWidthMultiplierPermille",
+  "lod.macroAggregateOutlineAlphaPermille",
+  "lod.microHopDistanceLightnessStepPermille",
+  "lod.minimumAdjacentPixelDeltaPermille",
   "labels.densityCap",
   "labels.priorityWeights.node",
   "labels.priorityWeights.edge",
@@ -141,17 +179,17 @@ export const CALIBRATION_PARAMETER_PATHS = [
 
 /** This is the default renderer profile and does not choose a semantic interpretation. All fractional values are scaled integers because canonical JSON accepts only integers. */
 export const DEFAULT_CALIBRATION: CalibrationProfile = {
-  layout: { forceStrengthPermille: 850, idealEdgeLengthPx: 120, iterations: 180, gravityPermille: 90, seed: 17 },
+  layout: { forceStrengthPermille: 850, idealEdgeLengthPx: 120, iterations: 180, gravityPermille: 90, seed: 17, cellJitterPermille: 340, framingMarginPermille: 150 },
   salience: { degreeExponentPermille: 650, minNodeSizePx: 4, maxNodeSizePx: 28 },
-  luminance: { haloRadiusFactorPermille: 1800, haloFalloffPermille: 720, coreBeforeHaloMinimumPx: 2 },
+  luminance: { haloRadiusFactorPermille: 1800, haloFalloffPermille: 180, haloSampleCount: 12, coreBeforeHaloMinimumPx: 2, prominenceLightnessGainPermille: 900, prominenceChromaFalloffPermille: 1000, haloProbeRadiusFractionPermille: 700, minimumNodeContrastPermille: 1200 },
   filament: { baseWidthPx: 2,
     pickTolerancePx: 2, opacityPermille: 620, curvatureMagnitudePermille: 240, medialOffsetAmplitudePx: 6 },
   morphology: {
-    stellar: { nodeSizeMultiplierPermille: 1100, filamentWidthMultiplierPermille: 900, opacityPermille: 1000, curvatureMagnitudePermille: 700, medialOffsetAmplitudePermille: 500 },
-    neural: { nodeSizeMultiplierPermille: 900, filamentWidthMultiplierPermille: 1050, opacityPermille: 900, curvatureMagnitudePermille: 1150, medialOffsetAmplitudePermille: 1000 },
-    mycelium: { nodeSizeMultiplierPermille: 1000, filamentWidthMultiplierPermille: 950, opacityPermille: 820, curvatureMagnitudePermille: 1350, medialOffsetAmplitudePermille: 1250 },
+    stellar: { nodeSizeMultiplierPermille: 1100, filamentWidthMultiplierPermille: 900, opacityPermille: 1000, curvatureMagnitudePermille: 700, medialOffsetAmplitudePermille: 500, haloRadiusMultiplierPermille: 2000, haloIntensityPermille: 440, terminalSizeMultiplierPermille: 1000 },
+    neural: { nodeSizeMultiplierPermille: 900, filamentWidthMultiplierPermille: 1050, opacityPermille: 900, curvatureMagnitudePermille: 1150, medialOffsetAmplitudePermille: 1000, haloRadiusMultiplierPermille: 1000, haloIntensityPermille: 900, terminalSizeMultiplierPermille: 1000 },
+    mycelium: { nodeSizeMultiplierPermille: 1000, filamentWidthMultiplierPermille: 950, opacityPermille: 820, curvatureMagnitudePermille: 1350, medialOffsetAmplitudePermille: 1250, haloRadiusMultiplierPermille: 620, haloIntensityPermille: 170, terminalSizeMultiplierPermille: 500 },
   },
-  lod: { bandThresholds: [0, 250, 500, 750], hysteresisMarginPermille: 50, crossfadeDurationMs: 220 },
+  lod: { bandThresholds: [0, 250, 500, 750], hysteresisMarginPermille: 50, crossfadeDurationMs: 220, macroNodeSizeMultiplierPermille: 1250, macroFilamentWidthMultiplierPermille: 500, macroAggregateOutlineWidthMultiplierPermille: 500, macroAggregateOutlineAlphaPermille: 500, microHopDistanceLightnessStepPermille: 80, minimumAdjacentPixelDeltaPermille: 1 },
   labels: { densityCap: 36, priorityWeights: { node: 1000, edge: 500, assertion: 900, bridge: 1100 }, collisionPaddingPx: 5 },
   aggregate: { disclosureThreshold: 12, windowPaddingPx: 14, windowStrokeAlphaPermille: 700 },
   motion: { propagationSpeedPxPerSecond: 240, afterglowDecayPermille: 180, reducedMotionSwitch: false },

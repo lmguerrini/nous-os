@@ -59,3 +59,64 @@ test("a morphology writing a semantic capability fails the semantic invariant", 
   assertMorphologyBinding(visualGraph, binding);
   assert.notEqual(semanticDigest(visualGraph), before);
 });
+
+test("morphology normalises prominence from rendered graph incidence and carries terminal and taper material", () => {
+  const visualGraph = graph();
+  const bindings = new Map([
+    [STELLAR.id, applyMorphology(visualGraph, STELLAR, DEFAULT_CALIBRATION)],
+    [NEURAL.id, applyMorphology(visualGraph, NEURAL, DEFAULT_CALIBRATION)],
+    [MYCELIUM.id, applyMorphology(visualGraph, MYCELIUM, DEFAULT_CALIBRATION)],
+  ]);
+  const stellar = requiredBinding(bindings, STELLAR.id);
+  const neural = requiredBinding(bindings, NEURAL.id);
+  const mycelium = requiredBinding(bindings, MYCELIUM.id);
+  const prominence = stellar.nodes.map((node) => node.prominencePermille);
+  assert.equal(Math.min(...prominence), 0);
+  assert.equal(Math.max(...prominence), 1000);
+  for (const node of stellar.nodes) {
+    assert.equal(node.facts.prominence.value, node.prominencePermille);
+    assert.equal(node.facts.prominence.origin, "morphology:edge-incidence-normalised-within-rendered-graph-degree-range-not-authority");
+  }
+  const terminal = stellar.nodes.find((node) => node.facts.terminal.value === true);
+  assert.ok(terminal !== undefined);
+  const myceliumTerminal = requiredNode(mycelium, terminal.id);
+  assert.ok(myceliumTerminal.coreSizePx < terminal.coreSizePx);
+  assert.ok(neural.edges.some((edge) => edge.taperPermille < 1000));
+  for (const edge of neural.edges) {
+    const expected = DEFAULT_CALIBRATION.filament.baseWidthPx
+      * DEFAULT_CALIBRATION.morphology.neural.filamentWidthMultiplierPermille
+      * edge.taperPermille
+      / (1000 * 1000);
+    assert.equal(edge.widthPx, expected);
+  }
+  assert.notDeepEqual(
+    stellar.nodes.map((node) => [node.coreSizePx, node.haloRadiusPx]),
+    neural.nodes.map((node) => [node.coreSizePx, node.haloRadiusPx]),
+  );
+  assert.notDeepEqual(
+    neural.nodes.map((node) => [node.coreSizePx, node.haloRadiusPx]),
+    mycelium.nodes.map((node) => [node.coreSizePx, node.haloRadiusPx]),
+  );
+});
+
+function requiredBinding(
+  bindings: ReadonlyMap<string, ReturnType<typeof applyMorphology>>,
+  id: string,
+): ReturnType<typeof applyMorphology> {
+  const binding = bindings.get(id);
+  if (binding === undefined) {
+    throw new TypeError("morphology binding is unavailable");
+  }
+  return binding;
+}
+
+function requiredNode(
+  binding: ReturnType<typeof applyMorphology>,
+  id: string,
+): ReturnType<typeof applyMorphology>["nodes"][number] {
+  const node = binding.nodes.find((candidate) => candidate.id === id);
+  if (node === undefined) {
+    throw new TypeError("morphology node is unavailable");
+  }
+  return node;
+}

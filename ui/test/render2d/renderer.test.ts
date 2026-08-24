@@ -5,8 +5,10 @@ import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import type { Coordinates, VisualGraph } from "#engine/contract.ts";
-import { PALETTES, TEMPERATURES, THEMES, TOKEN_RAMPS } from "#engine/tokens.ts";
+import { applyMorphology, MYCELIUM, NEURAL, STELLAR } from "#engine/morphology.ts";
+import { PALETTES, TEMPERATURES, THEMES, TOKEN_RAMPS, contrastRatio, relativeLuminance } from "#engine/tokens.ts";
 import type { TokenMap } from "#engine/tokens.ts";
+import type { LodBand } from "#engine/lod.ts";
 import { parseColor } from "sigma/utils";
 import {
   curveControlPoint,
@@ -18,7 +20,7 @@ import {
   pickableAt,
   sampleFilament,
 } from "#render2d/geometry.ts";
-import { buildRenderModel } from "#render2d/model.ts";
+import { buildRenderModel, nodeTokenForMaterial, resolveLabelIds } from "#render2d/model.ts";
 import type { RenderOptions } from "#render2d/model.ts";
 
 /** This reads one renderer input and does not create display attributes from the fixture directly. */
@@ -114,6 +116,165 @@ test("the Sigma colour assertion rejects an unparseable OKLCH literal", () => {
     () => assertSemanticTokenColors(tokens, new Map(Object.keys(tokens).map((name) => [name, "oklch(78% 0.15 218deg)"]))),
     /collapsed|pure black|distinct parsed/,
   );
+});
+
+test("renderer uses graph-normalised prominence for both node mass and OKLCH luminance", () => {
+  const visualGraph = graph();
+  const degree = nodeDegrees(visualGraph);
+  const maximumDegree = Math.max(...degree.values());
+  const profiles = ["stellar", "neural", "mycelium"] as const;
+  for (const morphology of profiles) {
+    const model = buildRenderModel(visualGraph, { ...options(false), morphology });
+    const nodes = model.graph.nodes().map((id) => ({
+      id,
+      attributes: model.graph.getNodeAttributes(id),
+    }));
+    const colors = new Set(nodes.map(({ attributes }) => attributes.color));
+    assert.ok(colors.size > 1, `${morphology} emitted only one node colour`);
+    const minimumSize = Math.min(...nodes.map(({ attributes }) => attributes.size));
+    const maximumSize = Math.max(...nodes.map(({ attributes }) => attributes.size));
+    assert.ok(maximumSize > minimumSize, `${morphology} did not vary node mass`);
+    const brightest = nodes.reduce((current, candidate) => (
+      parsedOklabLightness(parseColor(candidate.attributes.color)) > parsedOklabLightness(parseColor(current.attributes.color))
+        ? candidate
+        : current
+    ));
+    assert.equal(degree.get(brightest.id), maximumDegree, `${morphology} brightest node is not highest-degree`);
+  }
+});
+
+test("every rendered node token stays above the background contrast floor across the full cross-product", () => {
+  const result = assertNodeContrastCrossProduct(graph(), DEFAULT_CALIBRATION, DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille);
+  const expectedCombinations = PALETTES.length * TEMPERATURES.length * THEMES.length * MORPHOLOGIES.length * LOD_BANDS.length;
+  assert.equal(result.combinations, expectedCombinations);
+  assert.ok(result.checked > 0);
+});
+
+test("the node contrast assertion rejects a deliberately too-dark ramp endpoint", () => {
+  const tooDarkCalibration = {
+    ...DEFAULT_CALIBRATION,
+    luminance: {
+      ...DEFAULT_CALIBRATION.luminance,
+      minimumNodeContrastPermille: DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille
+        - DEFAULT_CALIBRATION.luminance.prominenceLightnessGainPermille,
+    },
+  };
+  assert.throws(
+    () => assertNodeContrastCrossProduct(
+      graph(),
+      tooDarkCalibration,
+      DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille,
+    ),
+    /relative luminance|contrast ratio/,
+  );
+});
+
+test("resolved LOD material changes render attributes without changing graph identifiers", () => {
+  const visualGraph = graph();
+  const macro = buildRenderModel(visualGraph, { ...options(false), lodBand: "macro" });
+  const meso = buildRenderModel(visualGraph, { ...options(false), lodBand: "meso" });
+  const micro = buildRenderModel(visualGraph, { ...options(false), lodBand: "micro" });
+  assert.deepEqual(macro.graph.nodes(), visualGraph.nodes.map((node) => node.id));
+  assert.deepEqual(meso.graph.nodes(), visualGraph.nodes.map((node) => node.id));
+  assert.deepEqual(micro.graph.nodes(), visualGraph.nodes.map((node) => node.id));
+  assert.deepEqual(macro.graph.edges(), visualGraph.edges.map((edge) => edge.id));
+  assert.deepEqual(meso.graph.edges(), visualGraph.edges.map((edge) => edge.id));
+  assert.deepEqual(micro.graph.edges(), visualGraph.edges.map((edge) => edge.id));
+  const firstNode = visualGraph.nodes[0]?.id;
+  const firstEdge = visualGraph.edges[0]?.id;
+  assert.ok(firstNode !== undefined && firstEdge !== undefined);
+  const macroNode = macro.graph.getNodeAttributes(firstNode);
+  const mesoNode = meso.graph.getNodeAttributes(firstNode);
+  const microNode = micro.graph.getNodeAttributes(firstNode);
+  assert.notEqual(macroNode.size, mesoNode.size);
+  assert.equal(macroNode.haloIntensityPermille, 0);
+  assert.equal(mesoNode.haloIntensityPermille, 0);
+  assert.ok(microNode.haloIntensityPermille > 0);
+  assert.equal(macroNode.labelText, "");
+  assert.equal(mesoNode.labelText, "");
+  assert.notEqual(microNode.labelText, "");
+  assert.ok(macro.graph.getEdgeAttributes(firstEdge).size < meso.graph.getEdgeAttributes(firstEdge).size);
+  assert.equal(meso.graph.getEdgeAttributes(firstEdge).curvature, 0);
+  assert.notEqual(micro.graph.getEdgeAttributes(firstEdge).curvature, 0);
+  assert.notDeepEqual(macro.material, meso.material);
+  assert.notDeepEqual(meso.material, micro.material);
+});
+
+test("label selection caps colliding labels and retains the highest-priority candidate", () => {
+  const model = buildRenderModel(graph(), options(false));
+  const calibration = {
+    ...DEFAULT_CALIBRATION,
+    labels: { ...DEFAULT_CALIBRATION.labels, densityCap: 1 },
+  };
+  const candidates = model.graph.nodes().map((id) => {
+    const attributes = model.graph.getNodeAttributes(id);
+    return {
+      id,
+      priority: attributes.labelPriority,
+      minimumX: 0,
+      minimumY: 0,
+      maximumX: DEFAULT_CALIBRATION.labels.collisionPaddingPx,
+      maximumY: DEFAULT_CALIBRATION.labels.collisionPaddingPx,
+    };
+  });
+  const selected = resolveLabelIds(candidates, calibration);
+  const expected = [...candidates].sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id))[0]?.id;
+  assert.ok(expected !== undefined);
+  assert.equal(selected.length, calibration.labels.densityCap);
+  assert.deepEqual(selected, [expected]);
+});
+
+test("renderer exposes distinct halo material and inserts the glow canvas below aggregate windows and edges", () => {
+  const visualGraph = graph();
+  const stellar = buildRenderModel(visualGraph, { ...options(false), morphology: "stellar" });
+  const neural = buildRenderModel(visualGraph, { ...options(false), morphology: "neural" });
+  const mycelium = buildRenderModel(visualGraph, { ...options(false), morphology: "mycelium" });
+  const haloValues = (model: ReturnType<typeof buildRenderModel>): readonly [number, number][] =>
+    model.graph.nodes().map((id) => {
+      const attributes = model.graph.getNodeAttributes(id);
+      return [attributes.haloRadiusPx, attributes.haloIntensityPermille];
+    });
+  assert.notDeepEqual(haloValues(stellar), haloValues(neural));
+  assert.notDeepEqual(haloValues(neural), haloValues(mycelium));
+  // Assert the INSERTION TARGET, which is what fixes DOM order, not the order in
+  // which the two mount calls appear in the source. Creation order is a separate
+  // concern -- each layer's resize clears the other, so the glow is created LAST
+  // and inserted BELOW -- and pinning it by source position made this test fail
+  // for a change that fixed a real defect. Where the glow actually lands in the
+  // composited output is asserted in the browser oracle, which can see it.
+  const boundary = readFileSync(join(process.cwd(), "src", "render2d", "index.ts"), "utf8");
+  assert.ok(boundary.includes('createCanvasContext("node-glow")'));
+  assert.ok(boundary.includes('requiredCanvas(sigma, "aggregate-windows").before(canvas)'));
+  assert.ok(boundary.includes('requiredCanvas(sigma, "edges").before(canvas)'));
+  assert.ok(boundary.indexOf('requiredCanvas(sigma, "aggregate-windows").before(canvas)') < boundary.indexOf('sigma.killLayer("node-glow")'));
+});
+
+test("halo alpha stops strictly diminish from the peak to transparent without renderer state", async () => {
+  const peakAlpha = DEFAULT_CALIBRATION.morphology.neural.haloIntensityPermille / DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
+  const first = await haloAlphaStops(DEFAULT_CALIBRATION, peakAlpha);
+  const second = await haloAlphaStops(structuredClone(DEFAULT_CALIBRATION), peakAlpha);
+  assert.deepEqual(first, second);
+  assert.equal(first[0]?.offset, 0);
+  assert.equal(first[0]?.alpha, peakAlpha);
+  assert.equal(first[first.length - 1]?.offset, 1);
+  assert.equal(first[first.length - 1]?.alpha, 0);
+  // Cap the alpha AT half the radius, obtained by interpolating between the two
+  // stops that straddle it rather than by looking for a stop exactly on 0.5.
+  // Whether 0.5 is sampled at all depends on haloSampleCount, so requiring a stop
+  // there made this test fail on a pure calibration retune -- the one thing the
+  // calibration surface exists to make safe. Interpolation is mildly conservative
+  // on a convex decreasing curve, since a chord lies above it.
+  const before = first.filter((stop) => stop.offset <= 0.5).at(-1);
+  const after = first.find((stop) => stop.offset >= 0.5);
+  assert.ok(before !== undefined && after !== undefined);
+  const span = after.offset - before.offset;
+  const halfwayAlpha = span === 0
+    ? before.alpha
+    : before.alpha + (((0.5 - before.offset) / span) * (after.alpha - before.alpha));
+  assert.ok(halfwayAlpha <= peakAlpha / 4, `alpha at half the halo radius ${halfwayAlpha} must not exceed a quarter of the peak ${peakAlpha / 4}`);
+  for (let index = 1; index < first.length; index += 1) {
+    assert.ok((first[index]?.alpha ?? peakAlpha) < (first[index - 1]?.alpha ?? peakAlpha));
+  }
 });
 
 test("draw and pick bind the same quadratic geometry, including a straight filament", () => {
@@ -220,6 +381,64 @@ function requiredTokenColor(tokenColors: ReadonlyMap<string, string>, name: stri
   return color;
 }
 
+const MORPHOLOGIES = [STELLAR, NEURAL, MYCELIUM] as const;
+const LOD_BANDS = ["macro", "meso", "micro"] as const satisfies readonly LodBand[];
+
+function assertNodeContrastCrossProduct(
+  visualGraph: VisualGraph,
+  calibration: typeof DEFAULT_CALIBRATION,
+  minimumContrastPermille: number,
+): { readonly combinations: number; readonly checked: number } {
+  let combinations = 0;
+  let checked = 0;
+  const scale = calibration.morphology.stellar.opacityPermille;
+  const minimumContrast = minimumContrastPermille / scale;
+  for (const palette of PALETTES) {
+    for (const temperature of TEMPERATURES) {
+      for (const theme of THEMES) {
+        for (const morphology of MORPHOLOGIES) {
+          const morphologyMaterial = applyMorphology(visualGraph, morphology, calibration);
+          const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
+          for (const lodBand of LOD_BANDS) {
+            combinations += 1;
+            const model = buildRenderModel(visualGraph, {
+              ...options(false),
+              palette,
+              temperature,
+              theme,
+              morphology: morphology.id,
+              lodBand,
+              calibration,
+            });
+            const distinctColours = new Set(model.graph.nodes().map((id) => model.graph.getNodeAttributes(id).color));
+            assert.ok(distinctColours.size > 1, `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} collapsed node colours`);
+            const background = model.tokens.background;
+            if (background === undefined) {
+              throw new TypeError("contrast assertion background token is unavailable");
+            }
+            const backgroundLuminance = relativeLuminance(background);
+            let checkedInCombination = 0;
+            for (const node of visualGraph.nodes) {
+              const material = nodeMaterials.get(node.id);
+              if (material === undefined) {
+                throw new TypeError("contrast assertion node material is unavailable");
+              }
+              const renderedToken = nodeTokenForMaterial(model.tokens, node, material, model.material, calibration);
+              const nodeLuminance = relativeLuminance(renderedToken);
+              assert.ok(nodeLuminance > backgroundLuminance, `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} node is not brighter than background`);
+              assert.ok(contrastRatio(renderedToken, background) >= minimumContrast, `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} node contrast ratio is below calibration`);
+              checkedInCombination += 1;
+              checked += 1;
+            }
+            assert.ok(checkedInCombination > 0, `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} checked no node colours`);
+          }
+        }
+      }
+    }
+  }
+  return { combinations, checked };
+}
+
 function parsedOklabLightness(color: ReturnType<typeof parseColor>): number {
   const red = srgbToLinear(color.r / 255);
   const green = srgbToLinear(color.g / 255);
@@ -232,4 +451,35 @@ function parsedOklabLightness(color: ReturnType<typeof parseColor>): number {
 
 function srgbToLinear(channel: number): number {
   return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+}
+
+function nodeDegrees(visualGraph: VisualGraph): ReadonlyMap<string, number> {
+  const degree = new Map(visualGraph.nodes.map((node) => [node.id, 0]));
+  for (const edge of visualGraph.edges) {
+    degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+  }
+  return degree;
+}
+
+async function haloAlphaStops(
+  calibration: typeof DEFAULT_CALIBRATION,
+  peakAlpha: number,
+): Promise<readonly { readonly offset: number; readonly alpha: number }[]> {
+  const globals = globalThis as unknown as {
+    WebGL2RenderingContext?: unknown;
+    WebGLRenderingContext?: unknown;
+  };
+  globals.WebGL2RenderingContext ??= {
+    BOOL: 1,
+    BYTE: 2,
+    UNSIGNED_BYTE: 3,
+    SHORT: 4,
+    UNSIGNED_SHORT: 5,
+    INT: 6,
+    UNSIGNED_INT: 7,
+    FLOAT: 8,
+  };
+  globals.WebGLRenderingContext ??= { TRIANGLES: 9 };
+  return (await import("#render2d/index.ts")).haloAlphaStops(calibration, peakAlpha);
 }

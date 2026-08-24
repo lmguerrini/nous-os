@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
+import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { minimumResolvedMaterialDifference, resolvedMaterial, resolvedMaterialDifference } from "#engine/lod.ts";
 
 type Status = "PASS" | "FAIL" | "NOT_RUN" | "UNKNOWN";
 
@@ -57,6 +59,12 @@ type Snapshot = {
     readonly semanticProjectionCanonical: string;
   }>>;
   readonly rendering: RenderWitness;
+  readonly glowNodes: readonly {
+    readonly id: string;
+    readonly viewportCenter: { readonly x: number; readonly y: number };
+    readonly coreRadiusPx: number;
+    readonly haloRadiusPx: number;
+  }[];
 };
 
 type PageEvidence = {
@@ -67,6 +75,7 @@ type PageEvidence = {
   switchOrganization(organization: "flat" | "indra"): Promise<Snapshot>;
   setLodBand(band: "macro" | "meso" | "micro"): Promise<Snapshot>;
   setLodZoom(zoom: number): Promise<Snapshot>;
+  setGlowSuppressed(suppressed: boolean): Promise<Snapshot>;
   setReducedMotion(reducedMotion: boolean): Promise<Snapshot>;
   selectNode(id: string): Promise<Snapshot>;
   read(): Snapshot;
@@ -348,7 +357,41 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       expect(snapshot.nodes).toEqual(bands[0]?.nodes);
       expect(snapshot.edges).toEqual(bands[0]?.edges);
     }
-    return "the 11-step zoom sequence 0, 260, 510, 740, 490, 230, 260, 510, 740, 490, 230 retained identical node and edge ids at every step";
+    await invoke<Snapshot>("setReducedMotion", true);
+    const macro = await invoke<Snapshot>("setLodBand", "macro");
+    const macroImage = await capture("#evidence-renderer");
+    const meso = await invoke<Snapshot>("setLodBand", "meso");
+    const mesoImage = await capture("#evidence-renderer");
+    const micro = await invoke<Snapshot>("setLodBand", "micro");
+    const microImage = await capture("#evidence-renderer");
+    expect(macro.nodes).toEqual(meso.nodes);
+    expect(meso.nodes).toEqual(micro.nodes);
+    expect(macro.edges).toEqual(meso.edges);
+    expect(meso.edges).toEqual(micro.edges);
+    const pixelDeltaBound = minimumPixelDeltaBound(macroImage);
+    const macroToMeso = countDifferingPixels(macroImage, mesoImage);
+    const mesoToMicro = countDifferingPixels(mesoImage, microImage);
+    expect(macroToMeso, "macro-to-meso composited pixel delta must exceed the calibrated bound").toBeGreaterThan(pixelDeltaBound);
+    expect(mesoToMicro, "meso-to-micro composited pixel delta must exceed the calibrated bound").toBeGreaterThan(pixelDeltaBound);
+    const corroboratingMinimum = minimumResolvedMaterialDifference(DEFAULT_CALIBRATION);
+    expect(
+      resolvedMaterialDifference(resolvedMaterial("macro"), resolvedMaterial("meso")),
+      "corroborating string-set material-profile assertion for macro and meso",
+    ).toBeGreaterThanOrEqual(corroboratingMinimum);
+    expect(
+      resolvedMaterialDifference(resolvedMaterial("meso"), resolvedMaterial("micro")),
+      "corroborating string-set material-profile assertion for meso and micro",
+    ).toBeGreaterThanOrEqual(corroboratingMinimum);
+    return `macro-to-meso differing pixels: ${macroToMeso}; meso-to-micro differing pixels: ${mesoToMicro}; bound: ${pixelDeltaBound}`;
+  });
+  await run("glow-compositor", async () => {
+    const snapshot = await invoke<Snapshot>("setLodBand", "micro");
+    const visible = await capture("#evidence-renderer");
+    await invoke<Snapshot>("setGlowSuppressed", true);
+    const suppressed = await capture("#evidence-renderer");
+    const witnesses = assertGlowPixels(snapshot, visible, suppressed);
+    await invoke<Snapshot>("setGlowSuppressed", false);
+    return `nodes measured: ${witnesses.map((witness) => witness.id).join(", ")}; clean annulus points: ${witnesses.map((witness) => `${witness.id}=${witness.points}`).join(", ")}`;
   });
   await run("picking-parity", async () => {
     const snapshot = await invoke<Snapshot>("read");
@@ -575,6 +618,32 @@ function assertAggregateWindowPixels(indra: Snapshot, indraImage: DecodedPng, fl
   });
 }
 
+function assertGlowPixels(
+  snapshot: Snapshot,
+  visible: DecodedPng,
+  suppressed: DecodedPng,
+): readonly { readonly id: string; readonly points: number }[] {
+  const measured = snapshot.glowNodes.filter((node) => node.haloRadiusPx > node.coreRadiusPx);
+  expect(measured.length, "the live renderer must expose glow nodes with a halo outside the core").toBeGreaterThanOrEqual(3);
+  const witnesses = measured.map((node) => {
+    const cleanLit = glowRingCandidates(node).filter((point) => (
+      !hasLitPixelNear(suppressed, point, snapshot.rendering.devicePixelRatio, 2)
+      && hasLitPixelNear(visible, point, snapshot.rendering.devicePixelRatio, 2)
+    ));
+    expect(cleanLit.length, `glow node ${node.id} has no clean lit annulus point`).toBeGreaterThan(0);
+    return { id: node.id, points: cleanLit.length };
+  });
+  expect(witnesses.filter((witness) => witness.points > 0).length, "glow compositor must light clean annulus points on at least three distinct nodes").toBeGreaterThanOrEqual(3);
+  expect(witnesses.reduce((total, witness) => total + witness.points, 0), "glow compositor must light at least four clean annulus points").toBeGreaterThanOrEqual(4);
+  return witnesses;
+}
+
+function glowRingCandidates(node: Snapshot["glowNodes"][number]): readonly { readonly x: number; readonly y: number }[] {
+  const scale = DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
+  const radius = node.coreRadiusPx + ((node.haloRadiusPx - node.coreRadiusPx) * DEFAULT_CALIBRATION.luminance.haloProbeRadiusFractionPermille / scale);
+  return ringCandidates(node.viewportCenter, radius);
+}
+
 function ringCandidates(center: { readonly x: number; readonly y: number }, radius: number): readonly { readonly x: number; readonly y: number }[] {
   return Array.from({ length: 48 }, (_, index) => {
     const angle = (index / 48) * Math.PI * 2;
@@ -618,6 +687,27 @@ function countLitPixels(image: DecodedPng): number {
       if (isLitPixel(image, x, y)) {
         count += 1;
       }
+    }
+  }
+  return count;
+}
+
+function minimumPixelDeltaBound(image: DecodedPng): number {
+  return (image.width * image.height * DEFAULT_CALIBRATION.lod.minimumAdjacentPixelDeltaPermille) / DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
+}
+
+function countDifferingPixels(left: DecodedPng, right: DecodedPng): number {
+  expect(left.width, "adjacent LOD captures must have equal widths").toBe(right.width);
+  expect(left.height, "adjacent LOD captures must have equal heights").toBe(right.height);
+  let count = 0;
+  for (let index = 0; index < left.data.length; index += 4) {
+    if (
+      left.data[index] !== right.data[index]
+      || left.data[index + 1] !== right.data[index + 1]
+      || left.data[index + 2] !== right.data[index + 2]
+      || left.data[index + 3] !== right.data[index + 3]
+    ) {
+      count += 1;
     }
   }
   return count;

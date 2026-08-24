@@ -16,11 +16,11 @@ export type AggregateDisc = {
 
 const UINT32_RANGE = 0x1_0000_0000;
 const PERMILLE = 1000;
-const sharedAnchorSets = new WeakMap<VisualGraph, LayoutAnchors>();
+const sharedAnchorSets = new WeakMap<VisualGraph, WeakMap<CalibrationProfile, LayoutAnchors>>();
 
 /** This derives stable world anchors from identity and reserved aggregate discs and does not inspect semantic content. */
 export function layoutAnchors(graph: VisualGraph, calibration: CalibrationProfile = DEFAULT_CALIBRATION): LayoutAnchors {
-  const shared = sharedAnchorSets.get(graph);
+  const shared = sharedAnchorSets.get(graph)?.get(calibration);
   if (shared !== undefined) {
     return new Map(shared);
   }
@@ -37,7 +37,7 @@ export function layoutAnchors(graph: VisualGraph, calibration: CalibrationProfil
   for (const node of [...graph.nodes].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
     const disc = memberDiscs.get(node.id);
     anchors.set(node.id, disc === undefined
-      ? outsideDiscAnchor(node.id, reservedCenters)
+      ? outsideDiscAnchor(node.id, reservedCenters, discs, calibration)
       : memberAnchor(node.id, disc, calibration));
   }
   return anchors;
@@ -57,8 +57,8 @@ export function sharedAnchors(
       shared.set(node.id, anchor);
     }
   }
-  sharedAnchorSets.set(discovery, discoveryAnchors);
-  sharedAnchorSets.set(reliability, shared);
+  setSharedAnchors(discovery, calibration, discoveryAnchors);
+  setSharedAnchors(reliability, calibration, shared);
   return new Map(shared);
 }
 
@@ -121,8 +121,56 @@ function memberAnchor(id: string, disc: AggregateDisc, calibration: CalibrationP
   };
 }
 
-function outsideDiscAnchor(id: string, reservedCenters: ReadonlyMap<string, Coordinates>): Coordinates {
-  return requiredCenter(reservedCenters, nodeSlot(id));
+function outsideDiscAnchor(
+  id: string,
+  reservedCenters: ReadonlyMap<string, Coordinates>,
+  discs: readonly AggregateDisc[],
+  calibration: CalibrationProfile,
+): Coordinates {
+  const center = requiredCenter(reservedCenters, nodeSlot(id));
+  const maximumDisplacement = Math.min(
+    halfNearestCenterDistance(center, reservedCenters),
+    nearestDiscClearance(center, discs),
+  );
+  const displacement = Math.max(0, maximumDisplacement) * calibration.layout.cellJitterPermille / PERMILLE;
+  const xComponent = (unitHash(`x:${id}`) * PERMILLE) - (PERMILLE / MIDPOINT_DIVISOR);
+  const yComponent = (unitHash(`y:${id}`) * PERMILLE) - (PERMILLE / MIDPOINT_DIVISOR);
+  const componentLength = Math.hypot(xComponent, yComponent);
+  if (componentLength === 0) {
+    return center;
+  }
+  return {
+    x: center.x + ((xComponent / componentLength) * displacement),
+    y: center.y + ((yComponent / componentLength) * displacement),
+    z: 0,
+  };
+}
+
+const MIDPOINT_DIVISOR = 2;
+
+function halfNearestCenterDistance(center: Coordinates, centers: ReadonlyMap<string, Coordinates>): number {
+  let nearest = Number.POSITIVE_INFINITY;
+  for (const candidate of centers.values()) {
+    const distance = Math.hypot(candidate.x - center.x, candidate.y - center.y);
+    if (distance > 0) {
+      nearest = Math.min(nearest, distance);
+    }
+  }
+  return Number.isFinite(nearest) ? nearest / MIDPOINT_DIVISOR : 0;
+}
+
+function nearestDiscClearance(center: Coordinates, discs: readonly AggregateDisc[]): number {
+  let clearance = Number.POSITIVE_INFINITY;
+  for (const disc of discs) {
+    clearance = Math.min(clearance, Math.hypot(disc.center.x - center.x, disc.center.y - center.y) - disc.radius);
+  }
+  return clearance;
+}
+
+function setSharedAnchors(graph: VisualGraph, calibration: CalibrationProfile, anchors: LayoutAnchors): void {
+  const byCalibration = sharedAnchorSets.get(graph) ?? new WeakMap<CalibrationProfile, LayoutAnchors>();
+  byCalibration.set(calibration, anchors);
+  sharedAnchorSets.set(graph, byCalibration);
 }
 
 function layoutExtent(calibration: CalibrationProfile): number {

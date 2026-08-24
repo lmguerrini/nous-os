@@ -4,13 +4,13 @@ import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import type { Coordinates, VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
 import { lodView } from "#engine/lod.ts";
-import type { LodBand } from "#engine/lod.ts";
+import type { LodBand, ResolvedMaterial } from "#engine/lod.ts";
 import { applyMorphology, MYCELIUM, NEURAL, STELLAR } from "#engine/morphology.ts";
-import type { Morphology, MorphologyProfile } from "#engine/morphology.ts";
+import type { EdgeMaterial, Morphology, MorphologyProfile, NodeMaterial } from "#engine/morphology.ts";
 import { assertIndraOrganization, flatOrganization, indraOrganization } from "#engine/organization.ts";
 import type { AggregateWindow, Organization, OrganizationResult } from "#engine/organization.ts";
 import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
-import { resolveTokens } from "#engine/tokens.ts";
+import { contrastRatio, relativeLuminance, resolveTokens } from "#engine/tokens.ts";
 import type { OklchToken, Palette, Temperature, Theme, TokenMap } from "#engine/tokens.ts";
 import { filamentGeometry, sampleFilament } from "#render2d/geometry.ts";
 import type { FilamentGeometry } from "#render2d/geometry.ts";
@@ -21,7 +21,11 @@ export type RenderNodeAttributes = {
   readonly y: number;
   readonly size: number;
   readonly color: string;
+  readonly haloRadiusPx: number;
+  readonly haloIntensityPermille: number;
   readonly label: string;
+  readonly labelText: string;
+  readonly labelPriority: number;
   readonly labelColor: string;
   readonly zIndex: number;
 };
@@ -68,15 +72,45 @@ export type RenderModel = {
   readonly tokens: TokenMap;
   readonly tokenColors: ReadonlyMap<string, string>;
   readonly lodBand: LodBand;
+  readonly material: ResolvedMaterial;
   readonly filaments: ReadonlyMap<string, FilamentGeometry>;
   readonly propagation: ReadonlyMap<string, FilamentPropagation>;
 };
+
+/** This is one screen-space label candidate and does not create a visual node. */
+export type LabelPlacementCandidate = {
+  readonly id: string;
+  readonly priority: number;
+  readonly minimumX: number;
+  readonly minimumY: number;
+  readonly maximumX: number;
+  readonly maximumY: number;
+};
+
+/** This selects non-colliding labels by calibrated priority and does not alter node material. */
+export function resolveLabelIds(
+  candidates: readonly LabelPlacementCandidate[],
+  calibration: CalibrationProfile,
+): readonly string[] {
+  const selected: LabelPlacementCandidate[] = [];
+  const sorted = [...candidates].sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id));
+  for (const candidate of sorted) {
+    if (selected.length >= calibration.labels.densityCap) {
+      break;
+    }
+    if (selected.every((placed) => !labelBoxesCollide(candidate, placed, calibration.labels.collisionPaddingPx))) {
+      selected.push(candidate);
+    }
+  }
+  return selected.map((candidate) => candidate.id);
+}
 
 /** This creates a Sigma graph from the engine state and does not inspect semantic values. */
 export function buildRenderModel(graph: VisualGraph, options: RenderOptions): RenderModel {
   const calibration = options.calibration ?? DEFAULT_CALIBRATION;
   const anchors = layoutAnchors(graph, calibration);
-  const material = applyMorphology(graph, morphologyProfile(options.morphology), calibration);
+  const morphology = morphologyProfile(options.morphology);
+  const morphologyMaterial = applyMorphology(graph, morphology, calibration);
   const tokens = resolveTokens(options.palette, options.temperature, options.theme);
   const tokenColors = new Map(Object.entries(tokens).map(([name, token]) => [name, tokenColor(token, permilleScale(calibration), calibration)]));
   const organization = options.organization === "indra"
@@ -87,8 +121,8 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
   }
   const view = lodView(graph, anchors, options.lodBand);
   const sigmaGraph = new MultiDirectedGraph<RenderNodeAttributes, RenderEdgeAttributes>();
-  const nodeMaterials = new Map(material.nodes.map((node) => [node.id, node]));
-  const edgeMaterials = new Map(material.edges.map((edge) => [edge.id, edge]));
+  const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
+  const edgeMaterials = new Map(morphologyMaterial.edges.map((edge) => [edge.id, edge]));
   const filaments = new Map<string, FilamentGeometry>();
   const propagation = new Map<string, FilamentPropagation>();
 
@@ -98,12 +132,17 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
     if (anchor === undefined || nodeMaterial === undefined) {
       throw new TypeError("renderer node material lacks an engine anchor");
     }
+    const size = nodeSizeForMaterial(nodeMaterial, view.material, morphology, calibration);
     sigmaGraph.addNode(node.id, {
       x: anchor.x,
       y: anchor.y,
-      size: nodeMaterial.coreSizePx,
-      color: withOpacity(requiredTokenColor(tokenColors, "accent4"), nodeMaterial.opacityPermille, calibration),
-      label: node.visual.role,
+      size,
+      color: nodeColorForMaterial(tokens, node, nodeMaterial, view.material, calibration),
+      haloRadiusPx: materialIncludes(view.material.node, "halo") ? nodeMaterial.haloRadiusPx : size,
+      haloIntensityPermille: materialIncludes(view.material.node, "halo") ? nodeMaterial.haloIntensityPermille : 0,
+      label: "",
+      labelText: materialIncludes(view.material.node, "label") ? node.visual.role : "",
+      labelPriority: labelPriority(node.kind, nodeMaterial.prominencePermille, calibration),
       labelColor: requiredTokenColor(tokenColors, "text"),
       zIndex: node.visual.label_priority,
     });
@@ -115,7 +154,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
     if (source === undefined || target === undefined || edgeMaterial === undefined) {
       throw new TypeError("renderer edge material lacks an engine anchor");
     }
-    const curvature = edgeMaterial.curvaturePermille / permilleScale(calibration);
+    const curvature = edgeCurvatureForMaterial(edgeMaterial, view.material, calibration);
     const filament = filamentGeometry(source, target, curvature);
     const path = { controlPoints: sampleFilament(filament, calibration) };
     const travelledDistance = propagationDistance(options.elapsedMilliseconds, calibration);
@@ -128,9 +167,9 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
       endpointExpressed: state.endpointExpressed,
     });
     sigmaGraph.addEdgeWithKey(edge.id, edge.source, edge.target, {
-      size: edgeMaterial.widthPx,
+      size: edgeWidthForMaterial(edgeMaterial, view.material, calibration),
       pickTolerancePx: calibration.filament.pickTolerancePx,
-      color: withOpacity(requiredTokenColor(tokenColors, "edge"), edgeMaterial.opacityPermille, calibration),
+      color: edgeColorForMaterial(tokens, edgeMaterial, view.material, calibration),
       type: "filament",
       curvature,
       label: edge.visual.role,
@@ -138,7 +177,203 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
       zIndex: edge.visual.label_priority,
     });
   }
-  return { graph: sigmaGraph, anchors, windows: organization.windows, organization, tokens, tokenColors, lodBand: view.band, filaments, propagation };
+  return { graph: sigmaGraph, anchors, windows: organization.windows, organization, tokens, tokenColors, lodBand: view.band, material: view.material, filaments, propagation };
+}
+
+const ROLE_TOKEN_NAMES = ["accent1", "accent2", "accent3", "accent4"] as const;
+
+function materialIncludes(items: readonly string[], item: string): boolean {
+  return items.includes(item);
+}
+
+function nodeSizeForMaterial(
+  node: NodeMaterial,
+  material: ResolvedMaterial,
+  morphology: MorphologyProfile,
+  calibration: CalibrationProfile,
+): number {
+  if (materialIncludes(material.node, "core")) {
+    return node.coreSizePx;
+  }
+  const scale = permilleScale(calibration);
+  const range = calibration.salience.maxNodeSizePx - calibration.salience.minNodeSizePx;
+  const mass = calibration.salience.minNodeSizePx + ((node.prominencePermille * range) / scale);
+  const morphologyMultiplier = calibration.morphology[morphology.id].nodeSizeMultiplierPermille;
+  return (mass * morphologyMultiplier * calibration.lod.macroNodeSizeMultiplierPermille) / (scale * scale);
+}
+
+function nodeColorForMaterial(
+  tokens: TokenMap,
+  node: VisualGraph["nodes"][number],
+  material: NodeMaterial,
+  resolved: ResolvedMaterial,
+  calibration: CalibrationProfile,
+): string {
+  return tokenColor(nodeTokenForMaterial(tokens, node, material, resolved, calibration), material.opacityPermille, calibration);
+}
+
+/** This resolves the node token in OKLCH and does not convert it to renderer bytes. */
+export function nodeTokenForMaterial(
+  tokens: TokenMap,
+  node: VisualGraph["nodes"][number],
+  material: NodeMaterial,
+  resolved: ResolvedMaterial,
+  calibration: CalibrationProfile,
+): OklchToken {
+  if (materialIncludes(resolved.node, "role")) {
+    return minimumNodeContrastToken(roleToken(tokens, node.visual.role), requiredToken(tokens, "background"), calibration);
+  }
+  const prominence = prominenceToken(tokens, material.prominencePermille, calibration);
+  return materialIncludes(resolved.node, "hop-distance")
+    ? hopDistanceToken(prominence, material, requiredToken(tokens, "background"), calibration)
+    : prominence;
+}
+
+function edgeWidthForMaterial(edge: EdgeMaterial, material: ResolvedMaterial, calibration: CalibrationProfile): number {
+  const resolvedKindWidth = kindWidth(edge, calibration);
+  if (materialIncludes(material.edge, "skeleton")) {
+    return (resolvedKindWidth * calibration.lod.macroFilamentWidthMultiplierPermille) / permilleScale(calibration);
+  }
+  return materialIncludes(material.edge, "taper") ? edge.widthPx : resolvedKindWidth;
+}
+
+function edgeCurvatureForMaterial(edge: EdgeMaterial, material: ResolvedMaterial, calibration: CalibrationProfile): number {
+  return materialIncludes(material.edge, "curvature")
+    ? edge.curvaturePermille / permilleScale(calibration)
+    : 0;
+}
+
+function edgeColorForMaterial(
+  tokens: TokenMap,
+  edge: EdgeMaterial,
+  material: ResolvedMaterial,
+  calibration: CalibrationProfile,
+): string {
+  const token = materialIncludes(material.edge, "kind")
+    ? roleToken(tokens, requiredMaterialKind(edge))
+    : requiredToken(tokens, "edge");
+  return tokenColor(token, edge.opacityPermille, calibration);
+}
+
+function kindWidth(edge: EdgeMaterial, calibration: CalibrationProfile): number {
+  if (edge.taperPermille === 0) {
+    throw new TypeError("renderer taper material must be non-zero");
+  }
+  return (edge.widthPx * permilleScale(calibration)) / edge.taperPermille;
+}
+
+function requiredMaterialKind(edge: EdgeMaterial): string {
+  if (typeof edge.kind.value !== "string") {
+    throw new TypeError("renderer edge kind material is unavailable");
+  }
+  return edge.kind.value;
+}
+
+function roleToken(tokens: TokenMap, role: string): OklchToken {
+  const index = [...role].reduce((total, character) => total + character.charCodeAt(0), 0) % ROLE_TOKEN_NAMES.length;
+  const tokenName = ROLE_TOKEN_NAMES[index];
+  if (tokenName === undefined) {
+    throw new TypeError("renderer role token is unavailable");
+  }
+  return requiredToken(tokens, tokenName);
+}
+
+function hopDistanceToken(
+  token: OklchToken,
+  material: NodeMaterial,
+  background: OklchToken,
+  calibration: CalibrationProfile,
+): OklchToken {
+  const hopDistance = requiredHopDistance(material.facts.hopDistanceFromHub.value);
+  const darkened = {
+    ...token,
+    lightnessPermille: Math.max(0, token.lightnessPermille - (hopDistance * calibration.lod.microHopDistanceLightnessStepPermille)),
+  };
+  return minimumNodeContrastToken(darkened, background, calibration);
+}
+
+function requiredHopDistance(value: unknown): number {
+  if (!Number.isSafeInteger(value)) {
+    throw new TypeError("renderer hop-distance material is unavailable");
+  }
+  const hopDistance = Number(value);
+  if (hopDistance < 0) {
+    throw new TypeError("renderer hop-distance material is unavailable");
+  }
+  return hopDistance;
+}
+
+function labelPriority(kind: string, prominencePermille: number, calibration: CalibrationProfile): number {
+  const weights = calibration.labels.priorityWeights;
+  const kindWeight = kind === "assertion"
+    ? weights.assertion
+    : kind === "bridge" ? weights.bridge : weights.node;
+  return (kindWeight * permilleScale(calibration)) + prominencePermille;
+}
+
+function labelBoxesCollide(
+  candidate: LabelPlacementCandidate,
+  placed: LabelPlacementCandidate,
+  padding: number,
+): boolean {
+  return candidate.minimumX <= placed.maximumX + padding
+    && candidate.maximumX + padding >= placed.minimumX
+    && candidate.minimumY <= placed.maximumY + padding
+    && candidate.maximumY + padding >= placed.minimumY;
+}
+
+function prominenceToken(tokens: TokenMap, prominencePermille: number, calibration: CalibrationProfile): OklchToken {
+  const background = requiredToken(tokens, "background");
+  const lowProminence = minimumNodeContrastToken(requiredToken(tokens, "accent2"), background, calibration);
+  const highProminence = requiredToken(tokens, "peak");
+  const lightnessTravel = prominenceTravel(
+    prominencePermille,
+    calibration.luminance.prominenceLightnessGainPermille,
+    calibration,
+  );
+  const chromaTravel = prominenceTravel(
+    prominencePermille,
+    calibration.luminance.prominenceChromaFalloffPermille,
+    calibration,
+  );
+  return {
+    lightnessPermille: Math.round(lowProminence.lightnessPermille + ((highProminence.lightnessPermille - lowProminence.lightnessPermille) * lightnessTravel / permilleScale(calibration))),
+    chromaPermille: Math.round(lowProminence.chromaPermille + ((highProminence.chromaPermille - lowProminence.chromaPermille) * chromaTravel / permilleScale(calibration))),
+    hueDegrees: lowProminence.hueDegrees,
+  };
+}
+
+function minimumNodeContrastToken(
+  token: OklchToken,
+  background: OklchToken,
+  calibration: CalibrationProfile,
+): OklchToken {
+  const scale = permilleScale(calibration);
+  const minimumContrast = calibration.luminance.minimumNodeContrastPermille / scale;
+  const backgroundLuminance = relativeLuminance(background);
+  let candidate = token;
+  while (
+    (relativeLuminance(candidate) <= backgroundLuminance || contrastRatio(candidate, background) < minimumContrast)
+    && candidate.lightnessPermille < scale
+  ) {
+    candidate = { ...candidate, lightnessPermille: candidate.lightnessPermille + 1 };
+  }
+  if (relativeLuminance(candidate) <= backgroundLuminance || contrastRatio(candidate, background) < minimumContrast) {
+    throw new TypeError("renderer node contrast calibration is unreachable");
+  }
+  return candidate;
+}
+
+function prominenceTravel(prominencePermille: number, gainPermille: number, calibration: CalibrationProfile): number {
+  return Math.max(0, Math.min(permilleScale(calibration), (prominencePermille * gainPermille) / permilleScale(calibration)));
+}
+
+function requiredToken(tokens: TokenMap, name: string): OklchToken {
+  const token = tokens[name];
+  if (token === undefined) {
+    throw new TypeError("renderer prominence token is unavailable");
+  }
+  return token;
 }
 
 /** This resolves material morphology and does not derive topology from a name. */
