@@ -2,16 +2,23 @@
 import { armFrameCounter, firedSinceArming, settleUncounted } from "#browser/frame-counter.ts";
 import Sigma from "sigma";
 import { MultiDirectedGraph } from "graphology";
+import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
-import type { Coordinates, Semantic, VisualGraph } from "#engine/contract.ts";
+import {
+  assertNoPassthrough,
+  assertVisualGraphFieldRegister,
+  semanticDigest,
+} from "#engine/contract.ts";
+import type { Coordinates, VisualGraph } from "#engine/contract.ts";
 import { resolveLodBand } from "#engine/lod.ts";
 import type { LodBand } from "#engine/lod.ts";
+import { layoutAnchors, sharedAnchors } from "#engine/layout.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { Organization } from "#engine/organization.ts";
-import { mount, readCameraState, restoreCameraState } from "#render2d/index.ts";
+import { mount, restoreCameraState } from "#render2d/index.ts";
 import { FilamentProgram } from "#render2d/filament-program.ts";
-import { quadraticPoint } from "#render2d/geometry.ts";
-import type { RenderCameraState, RenderHandle } from "#render2d/index.ts";
+import { distanceToFilament, quadraticPoint } from "#render2d/geometry.ts";
+import type { RenderCameraState, RenderFramingBox, RenderHandle } from "#render2d/index.ts";
 import type { RenderOptions as ModelRenderOptions } from "#render2d/model.ts";
 
 type Policy = "Reliability" | "Discovery";
@@ -20,17 +27,32 @@ type FixtureFacts = {
   readonly nodes: number;
   readonly edges: number;
   readonly sha256: string;
+  readonly semanticDigest: string;
+  readonly fieldRegister: true;
+  readonly noPassthrough: true;
 };
 
-type PixelWitness = {
+type RenderLayerWitness = {
+  readonly name: string;
+  readonly width: number;
+  readonly height: number;
+};
+
+type RenderWitness = {
+  readonly cssWidth: number;
+  readonly cssHeight: number;
+  readonly devicePixelRatio: number;
   readonly canvasCount: number;
-  readonly nonTransparentPixels: number;
-  readonly colouredPixels: number;
+  readonly backingStorePixels: number;
+  readonly layers: readonly RenderLayerWitness[];
 };
 
 type PickWitness = {
   readonly edgeId: string | null;
   readonly point: { readonly x: number; readonly y: number };
+  /** Whether the edge that was returned actually covers the sampled point. See OG-CAP-11-2. */
+  readonly pickedCoversPoint?: boolean;
+  readonly onScreen?: boolean;
 };
 
 type Snapshot = {
@@ -47,7 +69,8 @@ type Snapshot = {
   readonly windows: readonly { readonly id: string; readonly members: readonly string[]; readonly bounds: { readonly minimumX: number; readonly minimumY: number; readonly maximumX: number; readonly maximumY: number } }[];
   readonly rejectionBounds: readonly { readonly id: string; readonly bounds: { readonly minimumX: number; readonly minimumY: number; readonly maximumX: number; readonly maximumY: number } }[];
   readonly fixtureFacts: Readonly<Record<string, FixtureFacts>>;
-  readonly pixels: PixelWitness;
+  readonly rendering: RenderWitness;
+  readonly edgeSamples: Readonly<Record<string, readonly { readonly x: number; readonly y: number }[]>>;
 };
 
 type EvidenceApi = {
@@ -65,6 +88,8 @@ type EvidenceApi = {
   pick(edgeId: string, parameter: number, offsetPixels?: number): PickWitness;
   pickChord(edgeId: string): PickWitness;
   pickStraightControl(): Promise<string | null>;
+  showEmptyGraphControl(): Promise<void>;
+  hideEmptyGraphControl(): void;
   shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }>;
 };
 
@@ -93,6 +118,14 @@ const options: MutableRenderOptions = {
   lodBand: "micro",
   reducedMotion: false,
   elapsedMilliseconds: DEFAULT_CALIBRATION.lod.crossfadeDurationMs,
+};
+
+const EMPTY_VISUAL_GRAPH: VisualGraph = {
+  schema_version: "nous-projection-ir/1",
+  policy_id: "empty-control",
+  question: { valid_at: null, recorded_as_of: null },
+  nodes: [],
+  edges: [],
 };
 
 const errors: string[] = [];
@@ -136,12 +169,18 @@ async function boot(): Promise<void> {
     }
     const text = await response.text();
     const payload = JSON.parse(text) as unknown;
-    const graph = browserProjectionAdapter(payload);
+    const graph = toVisualGraph(payload);
+    assertVisualGraphFieldRegister(graph);
+    const graphDigest = semanticDigest(graph);
+    assertNoPassthrough(graph, payload, graphDigest);
     const fixture = payload as { readonly nodes: readonly unknown[]; readonly edges: readonly unknown[] };
     return [policy as Policy, graph, {
       nodes: fixture.nodes.length,
       edges: fixture.edges.length,
       sha256: await sha256(text),
+      semanticDigest: graphDigest,
+      fieldRegister: true as const,
+      noPassthrough: true as const,
     }] as const;
   }));
   const graphs = new Map<Policy, VisualGraph>();
@@ -150,12 +189,18 @@ async function boot(): Promise<void> {
     graphs.set(policy, graph);
     fixtureFacts[policy] = facts;
   }
-  checks.push("governed fixtures fetched from the served root");
+  checks.push("governed fixtures passed the real projection adapter, field register, semantic digest, and passthrough boundary");
+  const discoveryGraph = requiredGraph(graphs, "Discovery");
+  const reliabilityGraph = requiredGraph(graphs, "Reliability");
+  sharedAnchors(discoveryGraph, reliabilityGraph);
+  const discoveryFramingBox = framingBoxFor(discoveryGraph);
 
   let policy: Policy = "Discovery";
   let selectedNode: string | null = null;
   let product: RenderHandle | undefined;
   let picking: Sigma | undefined;
+  let emptyControl: RenderHandle | undefined;
+  let emptyContainer: HTMLElement | undefined;
 
   const remount = async (cameraState?: RenderCameraState): Promise<void> => {
     product?.destroy();
@@ -164,9 +209,9 @@ async function boot(): Promise<void> {
     picking = undefined;
     await waitForNonZeroBox(container);
     const graph = requiredGraph(graphs, policy);
-    product = mount(container, graph, options);
-    // This separate surface is the actual Sigma edge-picking framebuffer.  The
-    // product mount remains the surface inspected for rendered pixels.
+    product = mount(container, graph, options, discoveryFramingBox);
+    // This separate surface is the actual Sigma edge-picking framebuffer. The
+    // product mount provides the viewport coordinates used by screenshot checks.
     picking = new Sigma(product.model.graph, pickingContainer, {
       defaultEdgeType: "filament",
       edgeProgramClasses: { filament: FilamentProgram },
@@ -184,11 +229,17 @@ async function boot(): Promise<void> {
 
   const read = (): Snapshot => {
     const handle = requiredHandle(product);
-    const auditor = requiredSigma(picking);
     const positions: Record<string, { x: number; y: number }> = {};
     for (const [id, anchor] of handle.model.anchors) {
-      const point = auditor.graphToViewport(anchor);
+      const point = handle.graphToViewport(anchor);
       positions[id] = { x: point.x, y: point.y };
+    }
+    const edgeSamples: Record<string, readonly { x: number; y: number }[]> = {};
+    for (const [id, filament] of handle.model.filaments) {
+      edgeSamples[id] = [0.25, 0.5, 0.75].map((parameter) => {
+        const point = handle.graphToViewport(quadraticPoint(filament, parameter));
+        return { x: point.x, y: point.y };
+      });
     }
     const propagation: Record<string, { continuous: boolean; endpointExpressed: boolean }> = {};
     for (const [id, state] of handle.model.propagation) {
@@ -208,7 +259,8 @@ async function boot(): Promise<void> {
       windows: handle.model.windows.map((window) => ({ id: window.id, members: window.members, bounds: window.bounds })),
       rejectionBounds: handle.model.organization.rejectionBounds,
       fixtureFacts,
-      pixels: renderedPixels(container),
+      rendering: renderWitness(container),
+      edgeSamples,
     };
   };
 
@@ -268,8 +320,38 @@ async function boot(): Promise<void> {
       const viewport = auditor.graphToViewport(world);
       const normal = normalAt(filament.source, filament.control, filament.target, parameter);
       const point = { x: viewport.x + (normal.x * offsetPixels), y: viewport.y + (normal.y * offsetPixels) };
+      // A point outside the drawn area cannot be picked by anything; report it so a
+      // check can tell "nothing is there" from "the sample fell off the canvas".
+      const size = auditor.getDimensions();
+      const onScreen = point.x >= 0 && point.y >= 0 && point.x <= size.width && point.y <= size.height;
+      const coverageRadiusPx = (DEFAULT_CALIBRATION.filament.baseWidthPx / 2)
+        + DEFAULT_CALIBRATION.filament.pickTolerancePx;
       const privateSigma = auditor as unknown as { getEdgeAtPoint(x: number, y: number): string | null };
-      return { edgeId: privateSigma.getEdgeAtPoint(point.x, point.y), point };
+      const picked = privateSigma.getEdgeAtPoint(point.x, point.y);
+      // Whether the edge that was returned actually covers the sampled point.
+      // Two relations that share an endpoint can be near-coincident ribbons -- one
+      // measured pair sits 1.0367 apart against a half-width of 1.0 -- so demanding
+      // that a point return the specific edge whose midpoint it is fails a correct
+      // renderer. What must never happen is picking an edge that does NOT cover the
+      // point. See OG-CAP-11-2.
+      const pickedFilament = picked === null ? undefined : handle.model.filaments.get(picked);
+      // Measured in VIEWPORT space, because the ribbon half-width is a pixel
+      // quantity while filament control points are world coordinates -- comparing
+      // the two directly is a unit error, and at this world scale one world unit is
+      // well under a pixel.
+      const covers = pickedFilament === undefined
+        ? false
+        : distanceToFilament(
+            {
+              source: { ...auditor.graphToViewport(pickedFilament.source), z: 0 },
+              control: { ...auditor.graphToViewport(pickedFilament.control), z: 0 },
+              target: { ...auditor.graphToViewport(pickedFilament.target), z: 0 },
+              curvature: pickedFilament.curvature,
+            },
+            { ...point, z: 0 },
+            DEFAULT_CALIBRATION,
+          ) <= coverageRadiusPx;
+      return { edgeId: picked, point, pickedCoversPoint: covers, onScreen };
     },
     pickChord(edgeId): PickWitness {
       const handle = requiredHandle(product);
@@ -306,7 +388,30 @@ async function boot(): Promise<void> {
       controlContainer.remove();
       return picked;
     },
+    async showEmptyGraphControl(): Promise<void> {
+      emptyControl?.destroy();
+      emptyContainer?.remove();
+      const control = document.createElement("div");
+      control.id = "evidence-empty-renderer";
+      control.style.cssText = "width:960px;height:640px;position:fixed;left:0;top:0;background:#111827";
+      document.body.append(control);
+      await waitForNonZeroBox(control);
+      emptyContainer = control;
+      emptyControl = mount(control, EMPTY_VISUAL_GRAPH, options);
+      await nextPaint();
+      await nextPaint();
+    },
+    hideEmptyGraphControl(): void {
+      emptyControl?.destroy();
+      emptyContainer?.remove();
+      emptyControl = undefined;
+      emptyContainer = undefined;
+    },
     async shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }> {
+      emptyControl?.destroy();
+      emptyContainer?.remove();
+      emptyControl = undefined;
+      emptyContainer = undefined;
       product?.destroy();
       picking?.kill();
       product = undefined;
@@ -329,34 +434,22 @@ async function boot(): Promise<void> {
   window.__evidence = { ...api, ready: true };
 }
 
-function renderedPixels(container: HTMLElement): PixelWitness {
+function renderWitness(container: HTMLElement): RenderWitness {
   const canvases = [...container.querySelectorAll("canvas")];
-  let nonTransparentPixels = 0;
-  let colouredPixels = 0;
-  for (const canvas of canvases) {
-    const sensor = document.createElement("canvas");
-    sensor.width = canvas.width;
-    sensor.height = canvas.height;
-    const context = sensor.getContext("2d", { willReadFrequently: true });
-    if (context === null || sensor.width === 0 || sensor.height === 0) {
-      continue;
-    }
-    context.drawImage(canvas, 0, 0);
-    const pixels = context.getImageData(0, 0, sensor.width, sensor.height).data;
-    for (let index = 0; index < pixels.length; index += 4) {
-      const red = pixels[index] ?? 0;
-      const green = pixels[index + 1] ?? 0;
-      const blue = pixels[index + 2] ?? 0;
-      const alpha = pixels[index + 3] ?? 0;
-      if (alpha !== 0) {
-        nonTransparentPixels += 1;
-      }
-      if (alpha !== 0 && (red !== 0 || green !== 0 || blue !== 0)) {
-        colouredPixels += 1;
-      }
-    }
-  }
-  return { canvasCount: canvases.length, nonTransparentPixels, colouredPixels };
+  const box = container.getBoundingClientRect();
+  const layers = canvases.map((canvas) => ({
+    name: [...canvas.classList].find((name) => name.startsWith("sigma-")) ?? "unidentified",
+    width: canvas.width,
+    height: canvas.height,
+  }));
+  return {
+    cssWidth: box.width,
+    cssHeight: box.height,
+    devicePixelRatio: window.devicePixelRatio,
+    canvasCount: canvases.length,
+    backingStorePixels: layers.reduce((total, layer) => total + (layer.width * layer.height), 0),
+    layers,
+  };
 }
 
 function normalAt(source: Coordinates, control: Coordinates, target: Coordinates, parameter: number): { readonly x: number; readonly y: number } {
@@ -407,6 +500,24 @@ function requiredSigma(sigma: Sigma | undefined): Sigma {
   return sigma;
 }
 
+/** This frames the complete Discovery universe once and does not fit a policy subset. */
+function framingBoxFor(graph: VisualGraph): RenderFramingBox {
+  const anchors = [...layoutAnchors(graph).values()];
+  if (anchors.length === 0) {
+    throw new Error("a shared framing graph requires anchors");
+  }
+  return {
+    x: [
+      Math.min(...anchors.map((anchor) => anchor.x)),
+      Math.max(...anchors.map((anchor) => anchor.x)),
+    ],
+    y: [
+      Math.min(...anchors.map((anchor) => anchor.y)),
+      Math.max(...anchors.map((anchor) => anchor.y)),
+    ],
+  };
+}
+
 function failedApi(): EvidenceApi {
   const unavailable = (): never => {
     throw new Error("evidence boot failed");
@@ -426,6 +537,8 @@ function failedApi(): EvidenceApi {
     pick: unavailable,
     pickChord: unavailable,
     pickStraightControl: async () => unavailable(),
+    showEmptyGraphControl: async () => unavailable(),
+    hideEmptyGraphControl: unavailable,
     shutdown: async () => unavailable(),
   };
 }
@@ -438,58 +551,4 @@ async function sha256(value: string): Promise<string> {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * This is the browser-safe execution of the adapter's visual boundary.  The
- * production adapter's top-level canonical SHA-256 import is Node-only, while
- * the visual mapping below is the same adapter mapping and deliberately keeps
- * opaque semantic values unreadable by the renderer.
- */
-function browserProjectionAdapter(payload: unknown): VisualGraph {
-  const wire = payload as {
-    readonly schema_version: string;
-    readonly policy_id: string;
-    readonly question: { readonly valid_at: string | null; readonly recorded_as_of: string | null };
-    readonly nodes: readonly { readonly id: string; readonly kind: string }[];
-    readonly edges: readonly { readonly id: string; readonly kind: string; readonly source: string; readonly target: string }[];
-  };
-  if (!Array.isArray(wire.nodes) || !Array.isArray(wire.edges)) {
-    throw new TypeError("projection payload has no node or edge arrays");
-  }
-  return {
-    schema_version: wire.schema_version,
-    policy_id: wire.policy_id,
-    question: { valid_at: wire.question.valid_at, recorded_as_of: wire.question.recorded_as_of },
-    nodes: wire.nodes.slice().sort(compareId).map((node, index) => ({
-      id: node.id,
-      kind: node.kind,
-      semantic: Object.freeze({}) as Semantic,
-      derived: { value: null, origin: "projection-adapter" },
-      visual: visualMetadata(node.kind, index),
-    })),
-    edges: wire.edges.slice().sort(compareId).map((edge, index) => ({
-      id: edge.id,
-      kind: edge.kind,
-      source: edge.source,
-      target: edge.target,
-      semantic: Object.freeze({}) as Semantic,
-      derived: { value: null, origin: "projection-adapter" },
-      visual: visualMetadata(edge.kind, index),
-    })),
-  };
-}
-
-function visualMetadata(role: string, index: number): VisualGraph["nodes"][number]["visual"] {
-  return {
-    role,
-    anchor: { x: index, y: 0, z: 0 },
-    path: [{ x: index, y: 0, z: 0 }],
-    lod: { minimum: 0, maximum: 1 },
-    label_priority: 0,
-  };
-}
-
-function compareId(left: { readonly id: string }, right: { readonly id: string }): number {
-  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 }

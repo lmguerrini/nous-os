@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
+import { DEFAULT_AGGREGATE_LAYOUT_CALIBRATION } from "#engine/calibration.ts";
 import type { Coordinates, VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors, sharedAnchors } from "#engine/layout.ts";
 
@@ -32,6 +33,26 @@ test("layout anchors are bit-identical across runs and input order", () => {
     assert.equal(anchor.z, 0);
   }
   assert.equal([...first.values()].length, discovery.nodes.length);
+});
+
+test("layout anchors occupy a plane rather than a correlated diagonal", () => {
+  const anchors = [...layoutAnchors(graph("discovery-at-question.json")).values()];
+  assert.ok(anchors.length > 1, "a one-node graph cannot measure correlation");
+  const correlation = pearson(anchors.map((anchor) => anchor.x), anchors.map((anchor) => anchor.y));
+  assert.ok(Math.abs(correlation) < 0.6, `expected |Pearson r| < 0.6, received ${Math.abs(correlation)}`);
+});
+
+test("layout anchors stay within the calibrated aspect-ratio tolerance", () => {
+  const anchors = [...layoutAnchors(graph("discovery-at-question.json")).values()];
+  const bounds = {
+    width: Math.max(...anchors.map((anchor) => anchor.x)) - Math.min(...anchors.map((anchor) => anchor.x)),
+    height: Math.max(...anchors.map((anchor) => anchor.y)) - Math.min(...anchors.map((anchor) => anchor.y)),
+  };
+  const aspectRatio = bounds.width / bounds.height;
+  const target = DEFAULT_AGGREGATE_LAYOUT_CALIBRATION.aspectRatioTargetPermille / 1000;
+  const tolerance = DEFAULT_AGGREGATE_LAYOUT_CALIBRATION.aspectRatioTolerancePermille / 1000;
+  assert.ok(Math.abs(aspectRatio - target) <= tolerance, `expected aspect ratio ${aspectRatio} within ${tolerance} of ${target}`);
+  assert.ok(Math.abs(5.6 - target) > tolerance, "the measured 5.6:1 smear must not meet the configured tolerance");
 });
 
 test("Reliability reads the complete shared Discovery anchor set", () => {
@@ -79,3 +100,14 @@ test("anchors serialise identically however the node array is ordered", () => {
   assert.ok(forward.nodes.length > 1, "a one-node graph cannot detect an ordering defect");
   assert.equal(serialise(layoutAnchors(reversed)), serialise(layoutAnchors(forward)));
 });
+
+function pearson(left: readonly number[], right: readonly number[]): number {
+  assert.equal(left.length, right.length);
+  const count = left.length;
+  const leftMean = left.reduce((sum, value) => sum + value, 0) / count;
+  const rightMean = right.reduce((sum, value) => sum + value, 0) / count;
+  const covariance = left.reduce((sum, value, index) => sum + ((value - leftMean) * ((right[index] ?? rightMean) - rightMean)), 0);
+  const leftDeviation = left.reduce((sum, value) => sum + ((value - leftMean) ** 2), 0);
+  const rightDeviation = right.reduce((sum, value) => sum + ((value - rightMean) ** 2), 0);
+  return covariance / Math.sqrt(leftDeviation * rightDeviation);
+}

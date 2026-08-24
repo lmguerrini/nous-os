@@ -8,6 +8,18 @@ export type MorphologyMaterial = {
   readonly medialOffsetAmplitudePermille: number;
 };
 
+/** This tunes the aggregate layout region and does not alter aggregate membership. */
+export type AggregateLayoutCalibrationProfile = {
+  readonly aspectRatioTargetPermille: number;
+  readonly aspectRatioTolerancePermille: number;
+};
+
+/** This is the aggregate layout register whose values remain independently retunable from material calibration. */
+export const DEFAULT_AGGREGATE_LAYOUT_CALIBRATION: AggregateLayoutCalibrationProfile = {
+  aspectRatioTargetPermille: 1500,
+  aspectRatioTolerancePermille: 300,
+};
+
 export type CalibrationProfile = {
   readonly layout: {
     readonly forceStrengthPermille: number;
@@ -28,6 +40,7 @@ export type CalibrationProfile = {
   };
   readonly filament: {
     readonly baseWidthPx: number;
+    readonly pickTolerancePx: number;
     readonly opacityPermille: number;
     readonly curvatureMagnitudePermille: number;
     readonly medialOffsetAmplitudePx: number;
@@ -86,6 +99,7 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "luminance.haloFalloffPermille",
   "luminance.coreBeforeHaloMinimumPx",
   "filament.baseWidthPx",
+  "filament.pickTolerancePx",
   "filament.opacityPermille",
   "filament.curvatureMagnitudePermille",
   "filament.medialOffsetAmplitudePx",
@@ -130,7 +144,8 @@ export const DEFAULT_CALIBRATION: CalibrationProfile = {
   layout: { forceStrengthPermille: 850, idealEdgeLengthPx: 120, iterations: 180, gravityPermille: 90, seed: 17 },
   salience: { degreeExponentPermille: 650, minNodeSizePx: 4, maxNodeSizePx: 28 },
   luminance: { haloRadiusFactorPermille: 1800, haloFalloffPermille: 720, coreBeforeHaloMinimumPx: 2 },
-  filament: { baseWidthPx: 2, opacityPermille: 620, curvatureMagnitudePermille: 240, medialOffsetAmplitudePx: 6 },
+  filament: { baseWidthPx: 2,
+    pickTolerancePx: 2, opacityPermille: 620, curvatureMagnitudePermille: 240, medialOffsetAmplitudePx: 6 },
   morphology: {
     stellar: { nodeSizeMultiplierPermille: 1100, filamentWidthMultiplierPermille: 900, opacityPermille: 1000, curvatureMagnitudePermille: 700, medialOffsetAmplitudePermille: 500 },
     neural: { nodeSizeMultiplierPermille: 900, filamentWidthMultiplierPermille: 1050, opacityPermille: 900, curvatureMagnitudePermille: 1150, medialOffsetAmplitudePermille: 1000 },

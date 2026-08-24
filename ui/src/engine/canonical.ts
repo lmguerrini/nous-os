@@ -1,14 +1,9 @@
-import { createHash } from "node:crypto";
-
 /** This is Python-compatible JSON bytes and does not accept JavaScript-only values. */
 export function canonicalBytes(value: unknown): Uint8Array {
   return new TextEncoder().encode(encode(value));
 }
 
-/** This is the SHA-256 of canonical JSON bytes and does not identify any wider artifact. */
-export function digestPayload(value: unknown): string {
-  return createHash("sha256").update(canonicalBytes(value)).digest("hex");
-}
+export { digestPayload } from "#engine/digest.ts";
 
 function encode(value: unknown): string {
   if (value === null) {

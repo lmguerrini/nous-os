@@ -2,6 +2,7 @@ import { EdgeProgram } from "sigma/rendering";
 import { floatColor } from "sigma/utils";
 import type { EdgeDisplayData, NodeDisplayData, RenderParams } from "sigma/types";
 import type { InstancedProgramDefinition, ProgramInfo } from "sigma/rendering";
+import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { liveFilamentGeometry } from "#render2d/geometry.ts";
 
 const FILAMENT_VERTEX_DATA = [[0, 1], [0, -1], [1, 1], [0, -1], [1, 1], [1, -1]];
@@ -56,6 +57,7 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
         { name: "a_control", size: 2, type: WebGLRenderingContext.FLOAT },
         { name: "a_thickness", size: 1, type: WebGLRenderingContext.FLOAT },
         { name: "a_curvature", size: 1, type: WebGLRenderingContext.FLOAT },
+        { name: "a_pickTolerance", size: 1, type: WebGLRenderingContext.FLOAT },
         { name: "a_color", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
         { name: "a_id", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
       ],
@@ -68,7 +70,7 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
   }
 
   processVisibleItem(edgeIndex: number, startIndex: number, sourceData: NodeDisplayData, targetData: NodeDisplayData, data: EdgeDisplayData): void {
-    const edgeData = data as EdgeDisplayData & { readonly curvature?: number };
+    const edgeData = data as EdgeDisplayData & { readonly curvature?: number; readonly pickTolerancePx?: number };
     const array = this.array;
     array[startIndex++] = sourceData.x;
     array[startIndex++] = sourceData.y;
@@ -83,6 +85,7 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     array[startIndex++] = geometry.control.y;
     array[startIndex++] = edgeData.size;
     array[startIndex++] = edgeData.curvature ?? 0;
+    array[startIndex++] = edgeData.pickTolerancePx ?? DEFAULT_CALIBRATION.filament.pickTolerancePx;
     array[startIndex++] = floatColor(edgeData.color);
     array[startIndex] = edgeIndex;
   }
@@ -110,6 +113,7 @@ attribute vec2 a_target;
 attribute vec2 a_control;
 attribute float a_current;
 attribute float a_curvature;
+attribute float a_pickTolerance;
 uniform mat3 u_matrix;
 uniform float u_sizeRatio;
 uniform float u_pixelRatio;
@@ -118,6 +122,7 @@ uniform float u_feather;
 uniform float u_minEdgeThickness;
 varying vec4 v_color;
 varying float v_thickness;
+varying float v_pickTolerance;
 varying float v_feather;
 varying float v_arcFraction;
 varying vec2 v_cpA;
@@ -144,6 +149,7 @@ void main() {
   float curveOffset = lengthDelta * a_curvature;
   float curveThickness = max(u_minEdgeThickness, a_thickness / u_sizeRatio);
   v_thickness = curveThickness * u_pixelRatio;
+  v_pickTolerance = a_pickTolerance * u_pixelRatio;
   v_feather = u_feather;
   v_arcFraction = a_current;
   v_cpA = viewportSource;
@@ -165,6 +171,7 @@ function fragmentShader(): string {
 precision highp float;
 varying vec4 v_color;
 varying float v_thickness;
+varying float v_pickTolerance;
 varying float v_feather;
 varying float v_arcFraction;
 varying vec2 v_cpA;
@@ -175,6 +182,9 @@ ${FILAMENT_DISTANCE_FUNCTION}
 void main(void) {
   float distance = filamentDistance(gl_FragCoord.xy, v_cpA, v_cpB, v_cpC);
   float halfThickness = v_thickness / 2.0;
+  #ifdef PICKING_MODE
+  halfThickness += v_pickTolerance;
+  #endif
   if (distance < halfThickness) {
     #ifdef PICKING_MODE
     gl_FragColor = v_color;

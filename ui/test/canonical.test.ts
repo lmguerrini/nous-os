@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { canonicalBytes, digestPayload } from "#engine/canonical.ts";
+import { canonicalBytes } from "#engine/canonical.ts";
+import { digestPayload } from "#engine/digest.ts";
 
 type Manifest = {
   readonly fixtures: Record<string, { readonly sha256: string }>;

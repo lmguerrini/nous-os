@@ -2,7 +2,7 @@ import Sigma from "sigma";
 import type { CameraState } from "sigma/types";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
-import type { VisualGraph } from "#engine/contract.ts";
+import type { Coordinates, VisualGraph } from "#engine/contract.ts";
 import { FilamentProgram } from "#render2d/filament-program.ts";
 import { buildRenderModel } from "#render2d/model.ts";
 import type { RenderModel, RenderOptions } from "#render2d/model.ts";
@@ -10,6 +10,7 @@ import type { RenderModel, RenderOptions } from "#render2d/model.ts";
 /** This is one mounted renderer and does not retain an independent graph copy. */
 export type RenderHandle = {
   readonly model: RenderModel;
+  graphToViewport(point: Coordinates): { readonly x: number; readonly y: number };
   readCameraState(): RenderCameraState;
   restoreCameraState(state: RenderCameraState): void;
   destroy(): void;
@@ -23,18 +24,39 @@ export type RenderCameraState = CameraState & {
   };
 };
 
+/** This is one explicit Sigma framing box and does not change world anchors. */
+export type RenderFramingBox = {
+  readonly x: readonly [number, number];
+  readonly y: readonly [number, number];
+};
+
 /** This mounts the WebGL boundary and does not create visual data outside the render model. */
-export function mount(container: HTMLElement, visualGraph: VisualGraph, options: RenderOptions): RenderHandle {
+export function mount(
+  container: HTMLElement,
+  visualGraph: VisualGraph,
+  options: RenderOptions,
+  framingBox?: RenderFramingBox,
+): RenderHandle {
   const model = buildRenderModel(visualGraph, options);
+  const calibration = options.calibration ?? DEFAULT_CALIBRATION;
   const sigma = new Sigma(model.graph, container, {
     defaultEdgeType: "filament",
     edgeProgramClasses: { filament: FilamentProgram },
     renderLabels: model.lodBand === "micro",
+    labelColor: { attribute: "labelColor", color: requiredTokenColor(model, "text") },
+    edgeLabelColor: { attribute: "labelColor", color: requiredTokenColor(model, "textMuted") },
     zIndex: true,
   });
+  if (framingBox !== undefined) {
+    sigma.setCustomBBox(copyFramingBox(framingBox));
+    sigma.refresh();
+  }
   const windows = mountAggregateWindows(sigma, model, options.calibration);
   return {
     model,
+    graphToViewport(point: Coordinates): { readonly x: number; readonly y: number } {
+      return sigma.graphToViewport(point);
+    },
     readCameraState(): RenderCameraState {
       return readCameraState(sigma);
     },
@@ -70,14 +92,17 @@ export function restoreCameraState(sigma: Sigma, state: RenderCameraState): void
   sigma.refresh();
 }
 
-/** This draws engine aggregate bounds in Sigma coordinates and does not infer window membership. */
+/** This draws engine aggregate discs in Sigma coordinates and does not infer window membership. */
 function mountAggregateWindows(
   sigma: Sigma,
   model: RenderModel,
   calibration: CalibrationProfile | undefined,
 ): { readonly destroy: () => void } {
   const profile = calibration ?? DEFAULT_CALIBRATION;
-  const canvas = sigma.createCanvas("aggregate-windows", { beforeLayer: "edges" });
+  sigma.createCanvasContext("aggregate-windows");
+  const canvas = requiredCanvas(sigma, "aggregate-windows");
+  requiredCanvas(sigma, "edges").before(canvas);
+  sigma.resize(true);
   const context = canvas.getContext("2d");
   const draw = (): void => {
     if (context === null) {
@@ -86,11 +111,14 @@ function mountAggregateWindows(
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.lineWidth = profile.filament.baseWidthPx;
     context.globalAlpha = profile.aggregate.windowStrokeAlphaPermille / profile.morphology.stellar.opacityPermille;
-    context.strokeStyle = tokenCss(model.tokens.accent3, profile);
+    context.strokeStyle = requiredTokenColor(model, "accent3");
     for (const window of model.windows) {
-      const minimum = sigma.graphToViewport({ x: window.bounds.minimumX, y: window.bounds.minimumY });
-      const maximum = sigma.graphToViewport({ x: window.bounds.maximumX, y: window.bounds.maximumY });
-      context.strokeRect(minimum.x, minimum.y, maximum.x - minimum.x, maximum.y - minimum.y);
+      const center = sigma.graphToViewport(window.center);
+      const radiusPoint = sigma.graphToViewport({ x: window.center.x + window.radius, y: window.center.y });
+      const radius = Math.hypot(radiusPoint.x - center.x, radiusPoint.y - center.y);
+      context.beginPath();
+      context.arc(center.x, center.y, radius, 0, Math.PI * 2);
+      context.stroke();
     }
   };
   sigma.on("afterRender", draw);
@@ -103,11 +131,26 @@ function mountAggregateWindows(
   };
 }
 
+function requiredCanvas(sigma: Sigma, id: string): HTMLCanvasElement {
+  const canvas = sigma.getCanvases()[id];
+  if (canvas === undefined) {
+    throw new TypeError(`Sigma canvas ${id} is unavailable`);
+  }
+  return canvas;
+}
+
 /** This formats one resolved token for the canvas and does not establish an alpha policy. */
-function tokenCss(token: RenderModel["tokens"][string] | undefined, calibration: CalibrationProfile): string {
-  if (token === undefined) {
+function requiredTokenColor(model: RenderModel, name: string): string {
+  const color = model.tokenColors.get(name);
+  if (color === undefined) {
     throw new TypeError("aggregate stroke token is unavailable");
   }
-  const scale = calibration.morphology.stellar.opacityPermille;
-  return `oklch(${token.lightnessPermille / scale}% ${token.chromaPermille / scale} ${token.hueDegrees}deg)`;
+  return color;
+}
+
+function copyFramingBox(box: RenderFramingBox): { readonly x: [number, number]; readonly y: [number, number] } {
+  return {
+    x: [box.x[0], box.x[1]],
+    y: [box.y[0], box.y[1]],
+  };
 }

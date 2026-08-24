@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { layoutAnchors } from "#engine/layout.ts";
 import {
   INDRA,
   assertIndraOrganization,
@@ -33,6 +34,33 @@ test("Indra windows are exactly the fixture's real aggregates and memberships", 
   assert.equal(flat.windows.length, 0);
   assert.equal(flat.nodeIds.length, visualGraph.nodes.length);
   assert.equal(flat.edgeIds.length, visualGraph.edges.length);
+});
+
+test("Indra reserves disjoint discs before placing members and non-members", () => {
+  const visualGraph = graph();
+  const anchors = layoutAnchors(visualGraph, DEFAULT_CALIBRATION);
+  const result = indraOrganization(visualGraph, DEFAULT_CALIBRATION, anchors);
+  const members = new Set(result.windows.flatMap((window) => window.members));
+  assert.ok(members.size > 0, "the fixture needs aggregate members to prove containment");
+  for (const window of result.windows) {
+    for (const member of window.members) {
+      const anchor = anchors.get(member);
+      assert.ok(anchor !== undefined);
+      assert.ok(distance(anchor, window.center) <= window.radius, `${member} escaped ${window.id}`);
+    }
+  }
+  for (const node of visualGraph.nodes.filter((node) => !members.has(node.id))) {
+    const anchor = anchors.get(node.id);
+    assert.ok(anchor !== undefined);
+    for (const window of result.windows) {
+      assert.ok(distance(anchor, window.center) > window.radius, `${node.id} entered ${window.id}`);
+    }
+  }
+  for (const [index, window] of result.windows.entries()) {
+    for (const other of result.windows.slice(index + 1)) {
+      assert.ok(distance(window.center, other.center) > window.radius + other.radius, `${window.id} overlaps ${other.id}`);
+    }
+  }
 });
 
 test("a rejection inside an aggregate window fails the geometric predicate", () => {
@@ -80,3 +108,7 @@ test("the predicate accepts the shape the organization result actually exposes",
   assert.equal(wrapped, bare);
   assert.equal(wrapped, true);
 });
+
+function distance(left: { readonly x: number; readonly y: number }, right: { readonly x: number; readonly y: number }): number {
+  return Math.hypot(left.x - right.x, left.y - right.y);
+}
