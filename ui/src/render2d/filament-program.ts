@@ -220,6 +220,8 @@ void main(void) {
     float propagationAlpha = max(afterglowDecay, 1.0 - (abs(v_arcFraction - lightPosition) / afterglowDecay));
     vec4 gradientColor = v_color;
     gradientColor.a *= propagationAlpha;
+    // Sigma's blend operator expects premultiplied colour.
+    gradientColor.rgb *= gradientColor.a;
     gl_FragColor = mix(gradientColor, vec4(0.0, 0.0, 0.0, 0.0), feather);
     #endif
   } else {

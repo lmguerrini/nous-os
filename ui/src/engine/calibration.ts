@@ -194,7 +194,7 @@ export const DEFAULT_CALIBRATION: CalibrationProfile = {
   lod: { bandThresholds: [0, 250, 500, 750], hysteresisMarginPermille: 50, crossfadeDurationMs: 220, macroNodeSizeMultiplierPermille: 1250, macroFilamentWidthMultiplierPermille: 500, macroAggregateOutlineWidthMultiplierPermille: 500, macroAggregateOutlineAlphaPermille: 500, microHopDistanceLightnessStepPermille: 80, minimumAdjacentPixelDeltaPermille: 1 },
   labels: { densityCap: 36, priorityWeights: { node: 1000, edge: 500, assertion: 900, bridge: 1100 }, collisionPaddingPx: 5 },
   aggregate: { disclosureThreshold: 12, windowPaddingPx: 14, windowStrokeAlphaPermille: 700 },
-  motion: { propagationSpeedPxPerSecond: 240, afterglowDecayPermille: 180, minimumReducedMotionPixelDeltaPermille: 1, reducedMotionSwitch: false },
+  motion: { propagationSpeedPxPerSecond: 240, afterglowDecayPermille: 850, minimumReducedMotionPixelDeltaPermille: 1, reducedMotionSwitch: false },
   selection: { emphasisMultiplierPermille: 1450, focusDimFactorPermille: 320 },
   budget: { maxNodesBeforeLodForcesAggregation: 2400, targetFrameMs: 16 },
 };
