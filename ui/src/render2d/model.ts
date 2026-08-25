@@ -171,12 +171,12 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
       x: anchor.x,
       y: anchor.y,
       size,
-      color: nodeColorForMaterial(tokens, node, nodeMaterial, view.material, calibration),
+      color: nodeColorForMaterial(tokens, nodeMaterial, view.material, calibration),
       haloRadiusPx: materialIncludes(view.material.node, "halo") ? nodeMaterial.haloRadiusPx : size,
       haloIntensityPermille: materialIncludes(view.material.node, "halo") ? nodeMaterial.haloIntensityPermille : 0,
       label: "",
       labelText: materialIncludes(view.material.node, "label") ? node.visual.role : "",
-      labelPriority: labelPriority(node.kind, nodeMaterial.prominencePermille, calibration),
+      labelPriority: labelPriority(nodeMaterial.prominencePermille),
       labelColor: requiredTokenColor(tokenColors, "text"),
       zIndex: node.visual.label_priority,
     };
@@ -213,7 +213,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
       junctionEnd: edgeMaterial.junctionEndPermille / materialScale,
       wobblePhase: (edgeMaterial.phasePermille / materialScale) * Math.PI * 2,
       hotCore: edgeMaterial.hotCorePermille / materialScale,
-      color: edgeColorForMaterial(tokens, edgeMaterial, view.material, calibration),
+      color: edgeColorForMaterial(tokens, edgeMaterial, calibration),
       type: "filament",
       curvature,
       propagationArcPosition: arcPosition,
@@ -299,8 +299,6 @@ export function edgeAttributesForVisualState(
   };
 }
 
-const ROLE_TOKEN_NAMES = ["accent1", "accent2", "accent3", "accent4"] as const;
-
 function materialIncludes(items: readonly string[], item: string): boolean {
   return items.includes(item);
 }
@@ -323,25 +321,20 @@ function nodeSizeForMaterial(
 
 function nodeColorForMaterial(
   tokens: TokenMap,
-  node: VisualGraph["nodes"][number],
   material: NodeMaterial,
   resolved: ResolvedMaterial,
   calibration: CalibrationProfile,
 ): string {
-  return tokenColor(nodeTokenForMaterial(tokens, node, material, resolved, calibration), material.opacityPermille, calibration);
+  return tokenColor(nodeTokenForMaterial(tokens, material, resolved, calibration), material.opacityPermille, calibration);
 }
 
 /** This resolves the node token in OKLCH and does not convert it to renderer bytes. */
 export function nodeTokenForMaterial(
   tokens: TokenMap,
-  node: VisualGraph["nodes"][number],
   material: NodeMaterial,
   resolved: ResolvedMaterial,
   calibration: CalibrationProfile,
 ): OklchToken {
-  if (materialIncludes(resolved.node, "role")) {
-    return minimumNodeContrastToken(roleToken(tokens, node.visual.role), requiredToken(tokens, "background"), calibration);
-  }
   const prominence = prominenceToken(tokens, material.prominencePermille, calibration);
   return materialIncludes(resolved.node, "hop-distance")
     ? hopDistanceToken(prominence, material, requiredToken(tokens, "background"), calibration)
@@ -365,14 +358,10 @@ function edgeCurvatureForMaterial(edge: EdgeMaterial, material: ResolvedMaterial
 function edgeColorForMaterial(
   tokens: TokenMap,
   edge: EdgeMaterial,
-  material: ResolvedMaterial,
   calibration: CalibrationProfile,
 ): string {
-  const token = materialIncludes(material.edge, "kind")
-    ? roleToken(tokens, requiredMaterialKind(edge))
-    : requiredToken(tokens, "edge");
   return tokenColor(
-    minimumNodeContrastToken(token, requiredToken(tokens, "background"), calibration),
+    minimumNodeContrastToken(requiredToken(tokens, "edge"), requiredToken(tokens, "background"), calibration),
     edge.opacityPermille,
     calibration,
   );
@@ -383,22 +372,6 @@ function kindWidth(edge: EdgeMaterial, calibration: CalibrationProfile): number 
     throw new TypeError("renderer taper material must be non-zero");
   }
   return (edge.widthPx * permilleScale(calibration)) / edge.taperPermille;
-}
-
-function requiredMaterialKind(edge: EdgeMaterial): string {
-  if (typeof edge.kind.value !== "string") {
-    throw new TypeError("renderer edge kind material is unavailable");
-  }
-  return edge.kind.value;
-}
-
-function roleToken(tokens: TokenMap, role: string): OklchToken {
-  const index = [...role].reduce((total, character) => total + character.charCodeAt(0), 0) % ROLE_TOKEN_NAMES.length;
-  const tokenName = ROLE_TOKEN_NAMES[index];
-  if (tokenName === undefined) {
-    throw new TypeError("renderer role token is unavailable");
-  }
-  return requiredToken(tokens, tokenName);
 }
 
 function hopDistanceToken(
@@ -426,12 +399,8 @@ function requiredHopDistance(value: unknown): number {
   return hopDistance;
 }
 
-function labelPriority(kind: string, prominencePermille: number, calibration: CalibrationProfile): number {
-  const weights = calibration.labels.priorityWeights;
-  const kindWeight = kind === "assertion"
-    ? weights.assertion
-    : kind === "bridge" ? weights.bridge : weights.node;
-  return (kindWeight * permilleScale(calibration)) + prominencePermille;
+function labelPriority(prominencePermille: number): number {
+  return prominencePermille;
 }
 
 function labelBoxesCollide(

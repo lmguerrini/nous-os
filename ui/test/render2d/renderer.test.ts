@@ -89,6 +89,32 @@ test("display decisions reject semantic access", () => {
   assert.equal(model.graph.order, model.anchors.size);
 });
 
+const TYPE_QUALIFIED_KIND_VOCABULARY = [
+  "node:assertion", "node:bridge", "node:cluster", "node:conflict", "node:rejection", "node:source", "node:subject",
+  "edge:about", "edge:bridge_side", "edge:cites", "edge:conflict_member", "edge:in_cluster", "edge:rejects",
+] as const;
+
+const RENDERED_KIND_VOCABULARY = [] as const;
+
+const INSPECTED_KIND_VOCABULARY = [
+  "node:assertion", "node:bridge", "node:cluster", "node:conflict", "node:rejection", "node:source", "node:subject",
+  "edge:about", "edge:bridge_side", "edge:cites", "edge:conflict_member", "edge:in_cluster", "edge:rejects",
+] as const;
+
+test("the type-qualified kind vocabulary is an exact rendered or inspected partition", () => {
+  const visualGraph = graph();
+  const observed = [
+    ...visualGraph.nodes.map((node) => `node:${node.kind}`),
+    ...visualGraph.edges.map((edge) => `edge:${edge.kind}`),
+  ];
+  const partition = [...RENDERED_KIND_VOCABULARY, ...INSPECTED_KIND_VOCABULARY];
+  assert.deepEqual([...new Set(observed)].sort(), [...TYPE_QUALIFIED_KIND_VOCABULARY].sort());
+  assert.deepEqual([...partition].sort(), [...TYPE_QUALIFIED_KIND_VOCABULARY].sort());
+  assert.deepEqual([...TYPE_QUALIFIED_KIND_VOCABULARY].sort(), [...partition].sort());
+  assert.equal(new Set(partition).size, partition.length);
+  assert.deepEqual(RENDERED_KIND_VOCABULARY, []);
+});
+
 test("renderer emits Sigma-parseable sRGB token colours across every palette selection", () => {
   for (const palette of PALETTES) {
     for (const temperature of TEMPERATURES) {
@@ -148,6 +174,13 @@ test("every rendered node token stays above the background contrast floor across
   const expectedCombinations = PALETTES.length * TEMPERATURES.length * THEMES.length * MORPHOLOGIES.length * LOD_BANDS.length;
   assert.equal(result.combinations, expectedCombinations);
   assert.ok(result.checked > 0);
+});
+
+test("the rendered prominence hierarchy remains pairwise separable without hue", () => {
+  const result = assertNonHueProminenceSeparationCrossProduct(graph(), DEFAULT_CALIBRATION);
+  const expectedCombinations = PALETTES.length * TEMPERATURES.length * THEMES.length * MORPHOLOGIES.length * LOD_BANDS.length;
+  assert.equal(result.combinations, expectedCombinations);
+  assert.ok(result.comparedPairs > 0);
 });
 
 test("the node contrast assertion rejects a deliberately too-dark ramp endpoint", () => {
@@ -455,7 +488,7 @@ function assertNodeContrastCrossProduct(
               if (material === undefined) {
                 throw new TypeError("contrast assertion node material is unavailable");
               }
-              const renderedToken = nodeTokenForMaterial(model.tokens, node, material, model.material, calibration);
+              const renderedToken = nodeTokenForMaterial(model.tokens, material, model.material, calibration);
               const nodeLuminance = relativeLuminance(renderedToken);
               assert.ok(nodeLuminance > backgroundLuminance, `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} node is not brighter than background`);
               assert.ok(contrastRatio(renderedToken, background) >= minimumContrast, `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} node contrast ratio is below calibration`);
@@ -469,6 +502,78 @@ function assertNodeContrastCrossProduct(
     }
   }
   return { combinations, checked };
+}
+
+function assertNonHueProminenceSeparationCrossProduct(
+  visualGraph: VisualGraph,
+  calibration: typeof DEFAULT_CALIBRATION,
+): { readonly combinations: number; readonly comparedPairs: number } {
+  let combinations = 0;
+  let comparedPairs = 0;
+  const scale = calibration.morphology.stellar.opacityPermille;
+  const minimumSeparation = calibration.lod.minimumAdjacentPixelDeltaPermille / scale;
+  for (const palette of PALETTES) {
+    for (const temperature of TEMPERATURES) {
+      for (const theme of THEMES) {
+        for (const morphology of MORPHOLOGIES) {
+          const morphologyMaterial = applyMorphology(visualGraph, morphology, calibration);
+          const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
+          for (const lodBand of LOD_BANDS) {
+            combinations += 1;
+            const model = buildRenderModel(visualGraph, {
+              ...options(false),
+              palette,
+              temperature,
+              theme,
+              morphology: morphology.id,
+              lodBand,
+              calibration,
+            });
+            const hierarchies = new Map<number, { readonly prominencePermille: number; readonly grey: number }[]>();
+            for (const node of visualGraph.nodes) {
+                const material = nodeMaterials.get(node.id);
+                if (material === undefined) {
+                  throw new TypeError("non-hue separation node material is unavailable");
+                }
+                const hopDistance = material.facts.hopDistanceFromHub.value;
+                if (!Number.isSafeInteger(hopDistance)) {
+                  throw new TypeError("non-hue separation hop-distance material is unavailable");
+                }
+                const numericHopDistance = Number(hopDistance);
+                const color = model.graph.getNodeAttributes(node.id).color;
+                const hierarchy = hierarchies.get(numericHopDistance) ?? [];
+                hierarchy.push({ prominencePermille: material.prominencePermille, grey: grayscaleLuminance(parseColor(color)) });
+                hierarchies.set(numericHopDistance, hierarchy);
+            }
+            for (const hierarchy of hierarchies.values()) {
+              hierarchy.sort((left, right) => left.prominencePermille - right.prominencePermille);
+              for (let lowerIndex = 0; lowerIndex < hierarchy.length; lowerIndex += 1) {
+                for (let upperIndex = lowerIndex + 1; upperIndex < hierarchy.length; upperIndex += 1) {
+                  const previous = hierarchy[lowerIndex];
+                  const current = hierarchy[upperIndex];
+                  if (previous === undefined || current === undefined || previous.prominencePermille === current.prominencePermille) {
+                    continue;
+                  }
+                  assert.ok(
+                    Math.abs(current.grey - previous.grey) >= minimumSeparation,
+                    `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} prominence levels ${previous.prominencePermille} and ${current.prominencePermille} are not separable in greyscale: ${previous.grey} to ${current.grey}, minimum ${minimumSeparation}`,
+                  );
+                  comparedPairs += 1;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return { combinations, comparedPairs };
+}
+
+function grayscaleLuminance(color: ReturnType<typeof parseColor>): number {
+  return (0.2126 * srgbToLinear(color.r / 255))
+    + (0.7152 * srgbToLinear(color.g / 255))
+    + (0.0722 * srgbToLinear(color.b / 255));
 }
 
 function parsedOklabLightness(color: ReturnType<typeof parseColor>): number {
