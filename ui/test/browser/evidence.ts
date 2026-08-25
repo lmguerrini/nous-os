@@ -860,20 +860,33 @@ function pickingTargetWitness(handle: RenderHandle): PickingTargetWitness {
     }
     incidence[id] = { source, target: targetId };
     const filament = filamentGeometry(sourceAnchor, targetAnchor, curvature);
-    const pixels = Array.from({ length: witnessCount }, (_, index) => {
-      const parameter = (index + 1) / (witnessCount + 1);
+    // A relation can legitimately be occluded where another relation shares its
+    // picking cell.  Prefer the same analytically unambiguous parameters used by
+    // the identity checks.  A relation with none is sampled across the complete
+    // set instead; the browser assertion then requires the existing coincident-
+    // partner certificate before accepting any of those ambiguous returns.
+    const candidates = unambiguousParametersFor(handle, id);
+    const parameters = calibratedRelationWitnessParameters(
+      candidates.length === 0 ? EDGE_SAMPLE_PARAMETERS : candidates,
+      witnessCount,
+    );
+    const pixels = parameters.map((parameter) => {
       const point = handle.graphToViewport(quadraticPoint(filament, parameter));
       return { x: point.x, y: point.y };
     });
     edgePixels[id] = pixels;
     const geometry = viewportFilament(filament, handle);
     const samples = pixels.map((point, index) => {
+      const parameter = parameters[index];
+      if (parameter === undefined) {
+        throw new Error(`picking edge ${id} lost its calibrated witness parameter`);
+      }
       const cell = pickingCellForPoint(handle.readPickingSurface(), { ...point, z: 0 });
       const shaderParameter = filamentShaderParameter(handle.readPickingSurface(), geometry, cell.centre);
       const extents = filamentInteractionExtents(handle, id, shaderParameter, material);
       const returnedEdgeId = handle.pickEdgeAtPoint(point.x, point.y);
       return {
-        parameter: (index + 1) / (witnessCount + 1),
+        parameter,
         shaderParameter,
         returnedEdgeId,
         centrelineDistancePx: denseDistanceToFilament(geometry, cell.centre).distancePx,
@@ -994,6 +1007,24 @@ function unambiguousParametersFor(handle: RenderHandle, edgeId: string): readonl
     throw new Error(`unknown edge ${edgeId}`);
   }
   return EDGE_SAMPLE_PARAMETERS.filter((parameter) => coversAlone(handle, edgeId, filament, parameter));
+}
+
+/** Selects the calibrated number of relation witnesses without introducing an ambiguous parameter. */
+function calibratedRelationWitnessParameters(
+  candidates: readonly number[],
+  witnessCount: number,
+): readonly number[] {
+  if (candidates.length === 0) {
+    throw new Error("relation witness candidates must be non-empty");
+  }
+  return Array.from({ length: witnessCount }, (_, index) => {
+    const candidateIndex = Math.floor(((index + 1) * candidates.length) / (witnessCount + 1));
+    const parameter = candidates[candidateIndex];
+    if (parameter === undefined) {
+      throw new Error("relation witness candidate is unavailable");
+    }
+    return parameter;
+  });
 }
 
 // The picking pass is rasterised at half the CSS width and height, so one picking

@@ -422,6 +422,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     expect(new Set(sampled.map(crossProductKey)).size).toBe(sampled.length);
     let reference: { readonly state: CrossProductState; readonly target: Snapshot["pickingTarget"] } | undefined;
     const anchorCentreIdChanges: string[] = [];
+    const coincidentRelationDiagnostics: string[] = [];
     const pd3Diagnostics: string[] = [pd3RasterDiagnostic(pd3Snapshot, pd3Image) ?? "PD-3 raster diagnostic was not produced"];
     for (const state of sampled) {
       const snapshot = await invoke<Snapshot>("setCrossProductState", state.morphology, state.palette, state.temperature, state.theme, state.lodBand);
@@ -429,6 +430,17 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       const pd3Diagnostic = pd3RasterDiagnostic(snapshot, image);
       if (pd3Diagnostic !== undefined) {
         pd3Diagnostics.push(pd3Diagnostic);
+      }
+      let identityPartition: EdgeIdentityPartition;
+      try {
+        identityPartition = await assertUnambiguousEdgeIdentity(snapshot, invoke);
+      } catch (error: unknown) {
+        throw new Error(`${crossProductKey(state)} failed its unambiguous/coincident relation witnesses: ${message(error)}`);
+      }
+      if (identityPartition.categoryB.length > 0) {
+        coincidentRelationDiagnostics.push(
+          `${crossProductKey(state)} no-unambiguous=[${identityPartition.categoryB.map(({ edgeId, partnerId }) => `${edgeId}->${partnerId}`).join(",")}]`,
+        );
       }
       try {
         assertPickingTargetPixels(snapshot, image);
@@ -458,7 +470,10 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const anchorCentreDiagnostic = anchorCentreIdChanges.length === 0
       ? "anchor-centre returned ids were stable"
       : `anchor-centre returned-id changes (diagnostic only): ${anchorCentreIdChanges.join("; ")}`;
-    return `full morphology×palette×temperature×theme×LOD product=${product.length}; browser-budget sample=${sampled.length}; deterministic seed=${DEFAULT_CALIBRATION.budget.oracleCrossProductSamplingSeed}; every sampled state read rendered/pickable ids, incidence, and anchors from the picking target and checked ${DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount} composited pixel witness(es) per relation; ${anchorCentreDiagnostic}${pd3Diagnostics.length === 0 ? "" : `; ${pd3Diagnostics.join("; ")}`}`;
+    const coincidenceDiagnostic = coincidentRelationDiagnostics.length === 0
+      ? "every relation had an unambiguous witness parameter"
+      : `certified no-unambiguous relations: ${coincidentRelationDiagnostics.join("; ")}`;
+    return `full morphology×palette×temperature×theme×LOD product=${product.length}; browser-budget sample=${sampled.length}; deterministic seed=${DEFAULT_CALIBRATION.budget.oracleCrossProductSamplingSeed}; every sampled state read rendered/pickable ids, incidence, and anchors from the picking target and checked ${DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount} composited pixel witness(es) per relation at unambiguous parameters where available; relations without one accepted only their certified coincident partners; ${coincidenceDiagnostic}; ${anchorCentreDiagnostic}${pd3Diagnostics.length === 0 ? "" : `; ${pd3Diagnostics.join("; ")}`}`;
   });
   await run("policy-transition", async () => {
     const discovery = await invoke<Snapshot>("switchPolicy", "Discovery");
