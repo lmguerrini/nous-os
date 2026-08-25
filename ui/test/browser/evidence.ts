@@ -87,8 +87,13 @@ type Snapshot = {
   readonly reducedMotion: boolean;
   readonly fieldColor: string;
   readonly selectedNode: string | null;
+  readonly selectedElement: string | null;
+  readonly focusedElement: string | null;
   readonly nodes: readonly string[];
   readonly edges: readonly string[];
+  readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
+  readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
+  readonly semanticDigest: string;
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly propagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: boolean; readonly endpointExpressed: boolean }>>;
   readonly renderedPropagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: number; readonly afterglowDecayPermille: number }>>;
@@ -118,6 +123,10 @@ type EvidenceApi = {
   setGlowSuppressed(suppressed: boolean): Promise<Snapshot>;
   setReducedMotion(reducedMotion: boolean): Promise<Snapshot>;
   selectNode(id: string): Promise<Snapshot>;
+  selectElement(id: string): Promise<Snapshot>;
+  clearSelection(): Promise<Snapshot>;
+  focusElement(id: string): Promise<Snapshot>;
+  clearFocus(): Promise<Snapshot>;
   read(): Snapshot;
   pick(edgeId: string, parameter: number, offsetPixels?: number): PickWitness;
   unambiguousParameters(edgeId: string): readonly number[];
@@ -126,6 +135,9 @@ type EvidenceApi = {
   pickStraightControl(): Promise<string | null>;
   showEmptyGraphControl(): Promise<void>;
   hideEmptyGraphControl(): void;
+  showSelectionFocusNoopControl(): Promise<Snapshot>;
+  setSelectionFocusNoopControl(selection: string | null, focus: string | null): Promise<Snapshot>;
+  hideSelectionFocusNoopControl(): void;
   shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }>;
 };
 
@@ -154,6 +166,15 @@ const options: MutableRenderOptions = {
   lodBand: "micro",
   reducedMotion: false,
   elapsedMilliseconds: DEFAULT_CALIBRATION.lod.crossfadeDurationMs,
+};
+
+const SELECTION_FOCUS_NOOP_CALIBRATION = {
+  ...DEFAULT_CALIBRATION,
+  selection: {
+    ...DEFAULT_CALIBRATION.selection,
+    emphasisMultiplierPermille: 1_000,
+    focusDimFactorPermille: 1_000,
+  },
 };
 
 const EMPTY_VISUAL_GRAPH: VisualGraph = {
@@ -235,10 +256,16 @@ async function boot(): Promise<void> {
 
   let policy: Policy = "Discovery";
   let selectedNode: string | null = null;
+  let selectedElement: string | null = null;
+  let focusedElement: string | null = null;
   let product: RenderHandle | undefined;
   let picking: Sigma | undefined;
   let emptyControl: RenderHandle | undefined;
   let emptyContainer: HTMLElement | undefined;
+  let selectionFocusNoopControl: RenderHandle | undefined;
+  let selectionFocusNoopPreviousSelection: string | null | undefined;
+  let selectionFocusNoopPreviousFocus: string | null | undefined;
+  let selectionFocusNoopPreviousContainerId: string | undefined;
 
   const remount = async (cameraState?: RenderCameraState): Promise<void> => {
     product?.destroy();
@@ -248,6 +275,12 @@ async function boot(): Promise<void> {
     await waitForNonZeroBox(container);
     const graph = requiredGraph(graphs, policy);
     product = mount(container, graph, options, discoveryFramingBox);
+    if (selectedElement !== null) {
+      product.setSelection(selectedElement);
+    }
+    if (focusedElement !== null) {
+      product.setFocus(focusedElement);
+    }
     shell.style.background = product.model.fieldColor;
     // This separate surface is the actual Sigma edge-picking framebuffer. The
     // product mount provides the viewport coordinates used by screenshot checks.
@@ -266,12 +299,24 @@ async function boot(): Promise<void> {
     await nextPaint();
   };
 
-  const read = (): Snapshot => {
-    const handle = requiredHandle(product);
+  const snapshotFor = (
+    handle: RenderHandle,
+    renderContainer: HTMLElement,
+    reportedSelectedNode: string | null,
+  ): Snapshot => {
     const positions: Record<string, { x: number; y: number }> = {};
+    const anchors: Record<string, { x: number; y: number }> = {};
     for (const [id, anchor] of handle.model.anchors) {
       const point = handle.graphToViewport(anchor);
       positions[id] = { x: point.x, y: point.y };
+      anchors[id] = { x: anchor.x, y: anchor.y };
+    }
+    const incidence: Record<string, { source: string; target: string }> = {};
+    for (const id of handle.model.graph.edges()) {
+      incidence[id] = {
+        source: handle.model.graph.source(id),
+        target: handle.model.graph.target(id),
+      };
     }
     const edgeSamples: Record<string, readonly { x: number; y: number }[]> = {};
     for (const [id, filament] of handle.model.filaments) {
@@ -291,6 +336,10 @@ async function boot(): Promise<void> {
         afterglowDecayPermille: attributes.afterglowDecayPermille,
       };
     }
+    const activeFixtureFacts = fixtureFacts[policy];
+    if (activeFixtureFacts === undefined) {
+      throw new Error(`missing fixture facts for ${policy}`);
+    }
     return {
       policy,
       morphology: options.morphology,
@@ -298,9 +347,14 @@ async function boot(): Promise<void> {
       lodBand: options.lodBand,
       reducedMotion: options.reducedMotion,
       fieldColor: handle.model.fieldColor,
-      selectedNode,
+      selectedNode: reportedSelectedNode,
+      selectedElement: handle.getSelection(),
+      focusedElement: handle.getFocus(),
       nodes: handle.model.graph.nodes(),
       edges: handle.model.graph.edges(),
+      anchors,
+      incidence,
+      semanticDigest: semanticDigest(requiredGraph(graphs, policy)),
       positions,
       propagation,
       renderedPropagation,
@@ -317,11 +371,13 @@ async function boot(): Promise<void> {
       }),
       rejectionBounds: handle.model.organization.rejectionBounds,
       fixtureFacts,
-      rendering: renderWitness(container),
+      rendering: renderWitness(renderContainer),
       glowNodes: handle.readGlowWitnesses(),
       edgeSamples,
     };
   };
+
+  const read = (): Snapshot => snapshotFor(requiredHandle(product), container, selectedNode);
 
   const api: EvidenceApi = {
     ready: false,
@@ -331,6 +387,8 @@ async function boot(): Promise<void> {
       const cameraState = requiredHandle(product).readCameraState();
       policy = next;
       selectedNode = null;
+      selectedElement = null;
+      focusedElement = null;
       await remount(cameraState);
       return read();
     },
@@ -370,7 +428,49 @@ async function boot(): Promise<void> {
         throw new Error(`unknown node ${id}`);
       }
       selectedNode = id;
+      selectedElement = id;
+      requiredHandle(product).setSelection(id);
       checks.push(`selected ${id}`);
+      await nextPaint();
+      await nextPaint();
+      return read();
+    },
+    async selectElement(id): Promise<Snapshot> {
+      const handle = requiredHandle(product);
+      if (!handle.model.graph.hasNode(id) && !handle.model.graph.hasEdge(id)) {
+        throw new Error(`unknown graph element ${id}`);
+      }
+      selectedNode = handle.model.graph.hasNode(id) ? id : null;
+      selectedElement = id;
+      handle.setSelection(id);
+      await nextPaint();
+      await nextPaint();
+      return read();
+    },
+    async clearSelection(): Promise<Snapshot> {
+      selectedNode = null;
+      selectedElement = null;
+      requiredHandle(product).clearSelection();
+      await nextPaint();
+      await nextPaint();
+      return read();
+    },
+    async focusElement(id): Promise<Snapshot> {
+      const handle = requiredHandle(product);
+      if (!handle.model.graph.hasNode(id) && !handle.model.graph.hasEdge(id)) {
+        throw new Error(`unknown graph element ${id}`);
+      }
+      focusedElement = id;
+      handle.setFocus(id);
+      await nextPaint();
+      await nextPaint();
+      return read();
+    },
+    async clearFocus(): Promise<Snapshot> {
+      focusedElement = null;
+      requiredHandle(product).clearFocus();
+      await nextPaint();
+      await nextPaint();
       return read();
     },
     read,
@@ -489,11 +589,71 @@ async function boot(): Promise<void> {
       emptyControl = undefined;
       emptyContainer = undefined;
     },
+    async showSelectionFocusNoopControl(): Promise<Snapshot> {
+      if (selectionFocusNoopControl !== undefined) {
+        throw new Error("selection/focus no-op control is already active");
+      }
+      const control = requiredHandle(product);
+      selectionFocusNoopControl = control;
+      selectionFocusNoopPreviousSelection = control.getSelection();
+      selectionFocusNoopPreviousFocus = control.getFocus();
+      selectionFocusNoopPreviousContainerId = container.id;
+      container.id = "evidence-selection-focus-noop-renderer";
+      control.setSelectionFocusFactors(SELECTION_FOCUS_NOOP_CALIBRATION.selection);
+      await nextPaint();
+      await nextPaint();
+      return snapshotFor(control, container, null);
+    },
+    async setSelectionFocusNoopControl(selection, focus): Promise<Snapshot> {
+      const control = requiredHandle(selectionFocusNoopControl);
+      for (const id of [selection, focus]) {
+        if (id !== null && !control.model.graph.hasNode(id) && !control.model.graph.hasEdge(id)) {
+          throw new Error(`unknown graph element ${id}`);
+        }
+      }
+      if (selection === null) {
+        control.clearSelection();
+      } else {
+        control.setSelection(selection);
+      }
+      if (focus === null) {
+        control.clearFocus();
+      } else {
+        control.setFocus(focus);
+      }
+      await nextPaint();
+      await nextPaint();
+      return snapshotFor(control, container, null);
+    },
+    hideSelectionFocusNoopControl(): void {
+      const control = selectionFocusNoopControl;
+      if (control !== undefined) {
+        control.setSelectionFocusFactors(undefined);
+        if (selectionFocusNoopPreviousSelection === null) {
+          control.clearSelection();
+        } else if (selectionFocusNoopPreviousSelection !== undefined) {
+          control.setSelection(selectionFocusNoopPreviousSelection);
+        }
+        if (selectionFocusNoopPreviousFocus === null) {
+          control.clearFocus();
+        } else if (selectionFocusNoopPreviousFocus !== undefined) {
+          control.setFocus(selectionFocusNoopPreviousFocus);
+        }
+      }
+      if (selectionFocusNoopPreviousContainerId !== undefined) {
+        container.id = selectionFocusNoopPreviousContainerId;
+      }
+      selectionFocusNoopControl = undefined;
+      selectionFocusNoopPreviousSelection = undefined;
+      selectionFocusNoopPreviousFocus = undefined;
+      selectionFocusNoopPreviousContainerId = undefined;
+    },
     async shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }> {
       emptyControl?.destroy();
       emptyContainer?.remove();
       emptyControl = undefined;
       emptyContainer = undefined;
+      api.hideSelectionFocusNoopControl();
       product?.destroy();
       picking?.kill();
       product = undefined;
@@ -930,6 +1090,13 @@ function requiredHandle(handle: RenderHandle | undefined): RenderHandle {
   return handle;
 }
 
+function requiredElement(element: HTMLElement | undefined, name: string): HTMLElement {
+  if (element === undefined) {
+    throw new Error(`${name} has not mounted`);
+  }
+  return element;
+}
+
 function requiredSigma(sigma: Sigma | undefined): Sigma {
   if (sigma === undefined) {
     throw new Error("picking surface has not mounted");
@@ -971,6 +1138,10 @@ function failedApi(): EvidenceApi {
     setGlowSuppressed: async () => unavailable(),
     setReducedMotion: async () => unavailable(),
     selectNode: async () => unavailable(),
+    selectElement: async () => unavailable(),
+    clearSelection: async () => unavailable(),
+    focusElement: async () => unavailable(),
+    clearFocus: async () => unavailable(),
     read: unavailable,
     pick: unavailable,
     unambiguousParameters: unavailable,
@@ -979,6 +1150,9 @@ function failedApi(): EvidenceApi {
     pickStraightControl: async () => unavailable(),
     showEmptyGraphControl: async () => unavailable(),
     hideEmptyGraphControl: unavailable,
+    showSelectionFocusNoopControl: async () => unavailable(),
+    setSelectionFocusNoopControl: async () => unavailable(),
+    hideSelectionFocusNoopControl: unavailable,
     shutdown: async () => unavailable(),
   };
 }

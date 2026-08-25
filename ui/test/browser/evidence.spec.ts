@@ -39,8 +39,13 @@ type Snapshot = {
   readonly reducedMotion: boolean;
   readonly fieldColor: string;
   readonly selectedNode: string | null;
+  readonly selectedElement: string | null;
+  readonly focusedElement: string | null;
   readonly nodes: readonly string[];
   readonly edges: readonly string[];
+  readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
+  readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
+  readonly semanticDigest: string;
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly edgeSamples: Readonly<Record<string, readonly { readonly x: number; readonly y: number }[]>>;
   readonly propagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: boolean; readonly endpointExpressed: boolean }>>;
@@ -80,6 +85,10 @@ type PageEvidence = {
   setGlowSuppressed(suppressed: boolean): Promise<Snapshot>;
   setReducedMotion(reducedMotion: boolean): Promise<Snapshot>;
   selectNode(id: string): Promise<Snapshot>;
+  selectElement(id: string): Promise<Snapshot>;
+  clearSelection(): Promise<Snapshot>;
+  focusElement(id: string): Promise<Snapshot>;
+  clearFocus(): Promise<Snapshot>;
   read(): Snapshot;
   pick(edgeId: string, parameter: number, offsetPixels?: number): {
     readonly edgeId: string | null;
@@ -93,6 +102,9 @@ type PageEvidence = {
   pickStraightControl(): Promise<string | null>;
   showEmptyGraphControl(): Promise<void>;
   hideEmptyGraphControl(): void;
+  showSelectionFocusNoopControl(): Promise<Snapshot>;
+  setSelectionFocusNoopControl(selection: string | null, focus: string | null): Promise<Snapshot>;
+  hideSelectionFocusNoopControl(): void;
   shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }>;
 };
 
@@ -434,6 +446,111 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     expect(differingPixelCount, "reduced-motion composited pixel delta must exceed the calibrated bound").toBeGreaterThan(pixelDeltaBound);
     return `differing pixels: ${differingPixelCount}`;
   });
+  await run("selection-compositor", async () => {
+    await invoke<Snapshot>("clearSelection");
+    const baseline = await invoke<Snapshot>("clearFocus");
+    const baselineImage = await capture("#evidence-renderer");
+    const nodeId = requiredGraphElementId(baseline.nodes[0], "selection node");
+    const edgeId = requiredGraphElementId(baseline.edges[0], "selection edge");
+    const pixelDeltaBound = minimumSelectionPixelDeltaBound();
+
+    const selectedNode = await invoke<Snapshot>("selectElement", nodeId);
+    expect(selectedNode.selectedElement).toBe(nodeId);
+    assertTopologyUnchanged(baseline, selectedNode, "selecting a node");
+    const selectedNodeImage = await capture("#evidence-renderer");
+    const selectedNodePixels = countDifferingPixels(baselineImage, selectedNodeImage);
+    expect(selectedNodePixels, "selected-node composited pixel delta must exceed the calibrated bound").toBeGreaterThan(pixelDeltaBound);
+
+    const nodeCleared = await invoke<Snapshot>("clearSelection");
+    expect(nodeCleared.selectedElement).toBeNull();
+    assertTopologyUnchanged(baseline, nodeCleared, "clearing a node selection");
+    const nodeClearedImage = await capture("#evidence-renderer");
+    expect(countDifferingPixels(baselineImage, nodeClearedImage), "clearing node selection must restore the unselected compositor image").toBe(0);
+
+    const selectedEdge = await invoke<Snapshot>("selectElement", edgeId);
+    expect(selectedEdge.selectedElement).toBe(edgeId);
+    assertTopologyUnchanged(baseline, selectedEdge, "selecting an edge");
+    const selectedEdgeImage = await capture("#evidence-renderer");
+    const selectedEdgePixels = countDifferingPixels(baselineImage, selectedEdgeImage);
+    expect(selectedEdgePixels, "selected-edge composited pixel delta must exceed the calibrated bound").toBeGreaterThan(pixelDeltaBound);
+
+    const edgeCleared = await invoke<Snapshot>("clearSelection");
+    expect(edgeCleared.selectedElement).toBeNull();
+    assertTopologyUnchanged(baseline, edgeCleared, "clearing an edge selection");
+    const edgeClearedImage = await capture("#evidence-renderer");
+    expect(countDifferingPixels(baselineImage, edgeClearedImage), "clearing edge selection must restore the unselected compositor image").toBe(0);
+    return `selected node ${nodeId}: ${selectedNodePixels} differing pixels; selected edge ${edgeId}: ${selectedEdgePixels} differing pixels; calibrated bound: ${pixelDeltaBound}; clearing either selection returned zero differing pixels`;
+  });
+  await run("focus-compositor", async () => {
+    await invoke<Snapshot>("clearSelection");
+    const baseline = await invoke<Snapshot>("clearFocus");
+    const baselineImage = await capture("#evidence-renderer");
+    const nodeId = requiredGraphElementId(baseline.nodes[0], "focus node");
+    const edgeId = requiredGraphElementId(baseline.edges[0], "focus edge");
+    const pixelDeltaBound = minimumSelectionPixelDeltaBound();
+
+    const focusedNode = await invoke<Snapshot>("focusElement", nodeId);
+    expect(focusedNode.focusedElement).toBe(nodeId);
+    assertTopologyUnchanged(baseline, focusedNode, "focusing a node");
+    const focusedNodeImage = await capture("#evidence-renderer");
+    const focusedNodePixels = countDifferingPixels(baselineImage, focusedNodeImage);
+    expect(focusedNodePixels, "focused-node composited pixel delta must exceed the calibrated bound").toBeGreaterThan(pixelDeltaBound);
+
+    const nodeCleared = await invoke<Snapshot>("clearFocus");
+    expect(nodeCleared.focusedElement).toBeNull();
+    assertTopologyUnchanged(baseline, nodeCleared, "clearing a node focus");
+    const nodeClearedImage = await capture("#evidence-renderer");
+    expect(countDifferingPixels(baselineImage, nodeClearedImage), "clearing node focus must restore the unfocused compositor image").toBe(0);
+
+    const focusedEdge = await invoke<Snapshot>("focusElement", edgeId);
+    expect(focusedEdge.focusedElement).toBe(edgeId);
+    assertTopologyUnchanged(baseline, focusedEdge, "focusing an edge");
+    const focusedEdgeImage = await capture("#evidence-renderer");
+    const focusedEdgePixels = countDifferingPixels(baselineImage, focusedEdgeImage);
+    expect(focusedEdgePixels, "focused-edge composited pixel delta must exceed the calibrated bound").toBeGreaterThan(pixelDeltaBound);
+
+    const edgeCleared = await invoke<Snapshot>("clearFocus");
+    expect(edgeCleared.focusedElement).toBeNull();
+    assertTopologyUnchanged(baseline, edgeCleared, "clearing an edge focus");
+    const edgeClearedImage = await capture("#evidence-renderer");
+    expect(countDifferingPixels(baselineImage, edgeClearedImage), "clearing edge focus must restore the unfocused compositor image").toBe(0);
+    return `focused node ${nodeId}: ${focusedNodePixels} differing pixels; focused edge ${edgeId}: ${focusedEdgePixels} differing pixels; calibrated bound: ${pixelDeltaBound}; clearing either focus returned zero differing pixels`;
+  });
+  await run("selection-focus-noop-control", async () => {
+    const pixelDeltaBound = minimumSelectionPixelDeltaBound();
+    const productBaseline = await invoke<Snapshot>("read");
+    const nodeId = requiredGraphElementId(productBaseline.nodes[0], "selection/focus control node");
+    const edgeId = requiredGraphElementId(productBaseline.edges[0], "selection/focus control edge");
+    try {
+      const controlBaseline = await invoke<Snapshot>("showSelectionFocusNoopControl");
+      assertTopologyUnchanged(productBaseline, controlBaseline, "mounting the selection/focus no-op control");
+      const baselineImage = await capture("#evidence-selection-focus-noop-renderer");
+      const nodeSelection = await invoke<Snapshot>("setSelectionFocusNoopControl", nodeId, null);
+      assertTopologyUnchanged(controlBaseline, nodeSelection, "selecting a node in the no-op control");
+      const nodeSelectionPixels = countDifferingPixels(baselineImage, await capture("#evidence-selection-focus-noop-renderer"));
+      const edgeSelection = await invoke<Snapshot>("setSelectionFocusNoopControl", edgeId, null);
+      assertTopologyUnchanged(controlBaseline, edgeSelection, "selecting an edge in the no-op control");
+      const edgeSelectionPixels = countDifferingPixels(baselineImage, await capture("#evidence-selection-focus-noop-renderer"));
+      const nodeFocus = await invoke<Snapshot>("setSelectionFocusNoopControl", null, nodeId);
+      assertTopologyUnchanged(controlBaseline, nodeFocus, "focusing a node in the no-op control");
+      const nodeFocusPixels = countDifferingPixels(baselineImage, await capture("#evidence-selection-focus-noop-renderer"));
+      const edgeFocus = await invoke<Snapshot>("setSelectionFocusNoopControl", null, edgeId);
+      assertTopologyUnchanged(controlBaseline, edgeFocus, "focusing an edge in the no-op control");
+      const edgeFocusPixels = countDifferingPixels(baselineImage, await capture("#evidence-selection-focus-noop-renderer"));
+      for (const [name, differingPixels] of [
+        ["node selection", nodeSelectionPixels],
+        ["edge selection", edgeSelectionPixels],
+        ["node focus", nodeFocusPixels],
+        ["edge focus", edgeFocusPixels],
+      ] as const) {
+        expect(differingPixels, `${name} with no-op emphasis and dim factors must fall at or below the calibrated bound`).toBeLessThanOrEqual(pixelDeltaBound);
+        expect(differingPixels > pixelDeltaBound, `${name} with no-op emphasis and dim factors must fail its compositor-delta check`).toBe(false);
+      }
+      return `forced emphasisMultiplierPermille and focusDimFactorPermille to no-op values; node-selection=${nodeSelectionPixels}, edge-selection=${edgeSelectionPixels}, node-focus=${nodeFocusPixels}, edge-focus=${edgeFocusPixels}, all at or below calibrated bound ${pixelDeltaBound} and therefore unable to pass the compositor checks`;
+    } finally {
+      await invoke<void>("hideSelectionFocusNoopControl");
+    }
+  });
   await run("console", async () => {
     const evidence = await api();
     expect(evidence.errors).toEqual([]);
@@ -461,7 +578,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const shutdown = await invoke<{ readonly canvases: number; readonly framesAfterShutdown: number }>("shutdown");
     expect(shutdown.canvases).toBe(0);
     expect(shutdown.framesAfterShutdown).toBe(0);
-    return "policy, morphology, organization, selection, LOD, and reduced-motion operations completed without recorded errors; shutdown removed all canvases and fired no frames";
+    return "policy, morphology, organization, LOD, and reduced-motion operations completed without recorded errors; shutdown removed all canvases and fired no frames";
   });
 
   const prior = await loadEvidenceRun();
@@ -548,6 +665,22 @@ function assertElementPixels(snapshot: Snapshot, image: DecodedPng): void {
       expect(hasLitPixelNear(image, point, snapshot.rendering.devicePixelRatio, 4, fieldColor), `final screenshot has no lit pixel on edge ${id}`).toBe(true);
     }
   }
+}
+
+function assertTopologyUnchanged(reference: Snapshot, actual: Snapshot, operation: string): void {
+  expect(actual.policy, `${operation} must preserve the active fixture policy`).toBe(reference.policy);
+  expect([...actual.nodes].sort(), `${operation} must preserve node ids`).toEqual([...reference.nodes].sort());
+  expect([...actual.edges].sort(), `${operation} must preserve edge ids`).toEqual([...reference.edges].sort());
+  expect(actual.incidence, `${operation} must preserve edge incidence`).toEqual(reference.incidence);
+  expect(actual.anchors, `${operation} must preserve layout anchors`).toEqual(reference.anchors);
+  expect(actual.semanticDigest, `${operation} must preserve the semantic digest`).toBe(reference.semanticDigest);
+}
+
+function requiredGraphElementId(id: string | undefined, kind: string): string {
+  if (id === undefined) {
+    throw new Error(`${kind} is unavailable`);
+  }
+  return id;
 }
 
 async function assertUnambiguousEdgeIdentity(snapshot: Snapshot, invoke: PageInvoke): Promise<EdgeIdentityPartition> {
@@ -723,6 +856,10 @@ function minimumPixelDeltaBound(image: DecodedPng): number {
 
 function minimumReducedMotionPixelDeltaBound(image: DecodedPng): number {
   return (image.width * image.height * DEFAULT_CALIBRATION.motion.minimumReducedMotionPixelDeltaPermille) / DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
+}
+
+function minimumSelectionPixelDeltaBound(): number {
+  return DEFAULT_CALIBRATION.selection.minimumDifferingPixelCount;
 }
 
 function countDifferingPixels(left: DecodedPng, right: DecodedPng): number {

@@ -20,14 +20,14 @@ const EXPECTED_PATHS = [
   "labels.densityCap", "labels.priorityWeights.node", "labels.priorityWeights.edge", "labels.priorityWeights.assertion", "labels.priorityWeights.bridge", "labels.collisionPaddingPx",
   "aggregate.disclosureThreshold", "aggregate.windowPaddingPx", "aggregate.windowStrokeAlphaPermille",
   "motion.propagationSpeedPxPerSecond", "motion.afterglowDecayPermille", "motion.minimumReducedMotionPixelDeltaPermille", "motion.reducedMotionSwitch",
-  "selection.emphasisMultiplierPermille", "selection.focusDimFactorPermille",
+  "selection.emphasisMultiplierPermille", "selection.focusDimFactorPermille", "selection.minimumDifferingPixelCount",
   "budget.maxNodesBeforeLodForcesAggregation", "budget.targetFrameMs",
 ] as const;
 
 test("calibration register is an exact pinned set in both directions", () => {
   assert.deepEqual([...CALIBRATION_PARAMETER_PATHS].sort(), [...EXPECTED_PATHS].sort());
   assert.deepEqual([...EXPECTED_PATHS].sort(), [...CALIBRATION_PARAMETER_PATHS].sort());
-  assert.equal(CALIBRATION_PARAMETER_PATHS.length, 106);
+  assert.equal(CALIBRATION_PARAMETER_PATHS.length, 107);
 });
 
 test("calibration validator refuses one unknown path", () => {

@@ -106,6 +106,7 @@ export type CalibrationProfile = {
   readonly selection: {
     readonly emphasisMultiplierPermille: number;
     readonly focusDimFactorPermille: number;
+    readonly minimumDifferingPixelCount: number;
   };
   readonly budget: {
     readonly maxNodesBeforeLodForcesAggregation: number;
@@ -219,6 +220,7 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "motion.reducedMotionSwitch",
   "selection.emphasisMultiplierPermille",
   "selection.focusDimFactorPermille",
+  "selection.minimumDifferingPixelCount",
   "budget.maxNodesBeforeLodForcesAggregation",
   "budget.targetFrameMs",
 ] as const;
@@ -239,7 +241,7 @@ export const DEFAULT_CALIBRATION: CalibrationProfile = {
   labels: { densityCap: 36, priorityWeights: { node: 1000, edge: 500, assertion: 900, bridge: 1100 }, collisionPaddingPx: 5 },
   aggregate: { disclosureThreshold: 12, windowPaddingPx: 14, windowStrokeAlphaPermille: 700 },
   motion: { propagationSpeedPxPerSecond: 240, afterglowDecayPermille: 850, minimumReducedMotionPixelDeltaPermille: 1, reducedMotionSwitch: false },
-  selection: { emphasisMultiplierPermille: 1450, focusDimFactorPermille: 320 },
+  selection: { emphasisMultiplierPermille: 1450, focusDimFactorPermille: 320, minimumDifferingPixelCount: 16 },
   budget: { maxNodesBeforeLodForcesAggregation: 2400, targetFrameMs: 16 },
 };
 

@@ -1,7 +1,7 @@
 import { MultiDirectedGraph } from "graphology";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
-import type { Coordinates, VisualGraph } from "#engine/contract.ts";
+import type { Coordinates, DerivedValue, VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
 import { lodView } from "#engine/lod.ts";
 import type { LodBand, ResolvedMaterial } from "#engine/lod.ts";
@@ -12,6 +12,8 @@ import type { AggregateWindow, Organization, OrganizationResult } from "#engine/
 import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
 import { contrastRatio, relativeLuminance, resolveTokens } from "#engine/tokens.ts";
 import type { OklchToken, Palette, Temperature, Theme, TokenMap } from "#engine/tokens.ts";
+import { assertVisualState } from "#engine/visual-state.ts";
+import type { VisualState } from "#engine/visual-state.ts";
 import { filamentGeometry, sampleFilament } from "#render2d/geometry.ts";
 import type { FilamentGeometry } from "#render2d/geometry.ts";
 import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
@@ -120,21 +122,25 @@ export function resolveLabelIds(
 }
 
 /** This creates a Sigma graph from the engine state and does not inspect semantic values. */
-export function buildRenderModel(graph: VisualGraph, options: RenderOptions): RenderModel {
-  const calibration = options.calibration ?? DEFAULT_CALIBRATION;
+export function buildRenderModel(graph: VisualGraph, options: RenderOptions, visualState?: VisualState): RenderModel {
+  if (visualState !== undefined) {
+    assertVisualState(graph, visualState);
+  }
+  const activeOptions = visualState === undefined ? options : renderOptionsForVisualState(options, visualState);
+  const calibration = activeOptions.calibration ?? DEFAULT_CALIBRATION;
   const anchors = layoutAnchors(graph, calibration);
-  const morphology = morphologyProfile(options.morphology);
+  const morphology = morphologyProfile(activeOptions.morphology);
   const morphologyMaterial = applyMorphology(graph, morphology, calibration);
-  const tokens = resolveTokens(options.palette, options.temperature, options.theme);
+  const tokens = resolveTokens(activeOptions.palette, activeOptions.temperature, activeOptions.theme);
   const tokenColors = new Map(Object.entries(tokens).map(([name, token]) => [name, tokenColor(token, permilleScale(calibration), calibration)]));
   const fieldColor = requiredTokenColor(tokenColors, "background");
-  const organization = options.organization === "indra"
+  const organization = activeOptions.organization === "indra"
     ? indraOrganization(graph, calibration, anchors)
     : flatOrganization(graph, anchors);
-  if (options.organization === "indra") {
+  if (activeOptions.organization === "indra") {
     assertIndraOrganization(graph, organization);
   }
-  const view = lodView(graph, anchors, options.lodBand);
+  const view = lodView(graph, anchors, activeOptions.lodBand);
   const sigmaGraph = new MultiDirectedGraph<RenderNodeAttributes, RenderEdgeAttributes>();
   const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
   const edgeMaterials = new Map(morphologyMaterial.edges.map((edge) => [edge.id, edge]));
@@ -161,7 +167,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
       throw new TypeError("renderer node material lacks an engine anchor");
     }
     const size = nodeSizeForMaterial(nodeMaterial, view.material, morphology, calibration);
-    sigmaGraph.addNode(node.id, {
+    const attributes: RenderNodeAttributes = {
       x: anchor.x,
       y: anchor.y,
       size,
@@ -173,7 +179,8 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
       labelPriority: labelPriority(node.kind, nodeMaterial.prominencePermille, calibration),
       labelColor: requiredTokenColor(tokenColors, "text"),
       zIndex: node.visual.label_priority,
-    });
+    };
+    sigmaGraph.addNode(node.id, nodeAttributesForVisualState(attributes, node.id, visualState, calibration));
   }
   for (const edge of graph.edges) {
     const source = view.anchors.get(edge.source);
@@ -185,8 +192,8 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
     const curvature = edgeCurvatureForMaterial(edgeMaterial, view.material, calibration);
     const filament = filamentGeometry(source, target, curvature);
     const path = { controlPoints: sampleFilament(filament, calibration) };
-    const travelledDistance = propagationDistance(options.elapsedMilliseconds, calibration);
-    const state = reducedMotionPosition(path, travelledDistance, options.reducedMotion || calibration.motion.reducedMotionSwitch);
+    const travelledDistance = propagationDistance(activeOptions.elapsedMilliseconds, calibration);
+    const state = reducedMotionPosition(path, travelledDistance, activeOptions.reducedMotion || calibration.motion.reducedMotionSwitch);
     const length = arcLength(path);
     const arcPosition = state.continuous ? normalisedPropagationPosition(travelledDistance, length) : 1;
     filaments.set(edge.id, filament);
@@ -197,7 +204,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
       continuous: state.continuous,
       endpointExpressed: state.endpointExpressed,
     });
-    sigmaGraph.addEdgeWithKey(edge.id, edge.source, edge.target, {
+    const attributes: RenderEdgeAttributes = {
       size: edgeWidthForMaterial(edgeMaterial, view.material, calibration),
       pickTolerancePx: calibration.filament.pickTolerancePx,
       widthStart: edgeMaterial.widthStartPermille / materialScale,
@@ -215,9 +222,81 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
       label: edge.visual.role,
       labelColor: requiredTokenColor(tokenColors, "textMuted"),
       zIndex: edge.visual.label_priority,
-    });
+    };
+    sigmaGraph.addEdgeWithKey(edge.id, edge.source, edge.target, edgeAttributesForVisualState(attributes, edge.id, visualState, calibration));
   }
   return { graph: sigmaGraph, anchors, windows: organization.windows, organization, tokens, tokenColors, fieldColor, lodBand: view.band, material: view.material, filamentMaterial: filamentUniformMaterial, filaments, propagation };
+}
+
+/** This applies VisualState's active view settings and leaves elapsed runtime settings unchanged. */
+export function renderOptionsForVisualState(options: RenderOptions, state: VisualState): RenderOptions {
+  return {
+    ...options,
+    morphology: state.morphology,
+    organization: state.organization,
+    palette: state.palette,
+    temperature: state.temperature,
+    theme: state.theme,
+    lodBand: state.lodBand,
+    reducedMotion: state.reducedMotion,
+  };
+}
+
+/** This returns the selected element's existing derivation record and does not synthesise provenance. */
+export function selectedProvenanceForVisualState(
+  graph: VisualGraph,
+  state: VisualState,
+): DerivedValue | null {
+  if (state.selectedId === null) {
+    return null;
+  }
+  const element = [...graph.nodes, ...graph.edges].find((candidate) => candidate.id === state.selectedId);
+  if (element === undefined) {
+    throw new TypeError("selected graph element provenance is unavailable");
+  }
+  return element.derived;
+}
+
+/** This changes selected node material only and does not change a node id, anchor, or label. */
+export function nodeAttributesForVisualState(
+  attributes: RenderNodeAttributes,
+  id: string,
+  state: VisualState | undefined,
+  calibration: CalibrationProfile,
+): RenderNodeAttributes {
+  if (state === undefined) {
+    return attributes;
+  }
+  const selected = state.selectedId === id;
+  const scale = permilleScale(calibration);
+  const emphasis = selected ? calibration.selection.emphasisMultiplierPermille / scale : scale / scale;
+  return {
+    ...attributes,
+    size: attributes.size * emphasis,
+    haloRadiusPx: attributes.haloRadiusPx * emphasis,
+    color: focusAdjustedColor(attributes.color, state.focusedId === id, state.focusedId !== null, calibration),
+  };
+}
+
+/** This changes selected edge material only and does not change edge incidence or geometry. */
+export function edgeAttributesForVisualState(
+  attributes: RenderEdgeAttributes,
+  id: string,
+  state: VisualState | undefined,
+  calibration: CalibrationProfile,
+): RenderEdgeAttributes {
+  if (state === undefined) {
+    return attributes;
+  }
+  const scale = permilleScale(calibration);
+  const emphasis = state.selectedId === id
+    ? calibration.selection.emphasisMultiplierPermille / scale
+    : scale / scale;
+  return {
+    ...attributes,
+    size: attributes.size * emphasis,
+    color: focusAdjustedColor(attributes.color, state.focusedId === id, state.focusedId !== null, calibration),
+  };
 }
 
 const ROLE_TOKEN_NAMES = ["accent1", "accent2", "accent3", "accent4"] as const;
@@ -457,13 +536,24 @@ function requiredTokenColor(tokenColors: ReadonlyMap<string, string>, name: stri
   return color;
 }
 
-function withOpacity(color: string, opacityPermille: number, calibration: CalibrationProfile): string {
-  const opacity = opacityPermille / permilleScale(calibration);
-  const parsed = color.match(/^rgb\((\d+), (\d+), (\d+)\)$/);
-  if (parsed === null) {
-    throw new TypeError("opaque renderer token colour is unavailable");
+function focusAdjustedColor(
+  color: string,
+  isFocused: boolean,
+  hasFocus: boolean,
+  calibration: CalibrationProfile,
+): string {
+  if (!hasFocus || isFocused) {
+    return color;
   }
-  return opacity === 1 ? color : `rgba(${parsed[1]}, ${parsed[2]}, ${parsed[3]}, ${opacity})`;
+  const parsed = color.match(/^rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?\)$/);
+  if (parsed === null) {
+    throw new TypeError("renderer focus colour is unavailable");
+  }
+  const scale = permilleScale(calibration);
+  const encodedOpacity = parsed.at(-Number("1"));
+  const sourceOpacity = encodedOpacity === undefined ? scale / scale : Number(encodedOpacity);
+  const opacity = sourceOpacity * calibration.selection.focusDimFactorPermille / scale;
+  return `rgba(${parsed[1]}, ${parsed[2]}, ${parsed[3]}, ${opacity})`;
 }
 
 type LinearSrgb = {

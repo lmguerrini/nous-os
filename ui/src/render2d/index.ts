@@ -3,10 +3,25 @@ import type { CameraState } from "sigma/types";
 import { parseColor } from "sigma/utils";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
-import type { Coordinates, VisualGraph } from "#engine/contract.ts";
+import type { Coordinates, DerivedValue, VisualGraph } from "#engine/contract.ts";
+import { createVisualState } from "#engine/visual-state.ts";
+import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
 import { createFilamentProgram } from "#render2d/filament-program.ts";
-import { buildRenderModel, resolveLabelIds } from "#render2d/model.ts";
-import type { LabelPlacementCandidate, RenderModel, RenderOptions } from "#render2d/model.ts";
+import {
+  buildRenderModel,
+  edgeAttributesForVisualState,
+  nodeAttributesForVisualState,
+  renderOptionsForVisualState,
+  resolveLabelIds,
+  selectedProvenanceForVisualState,
+} from "#render2d/model.ts";
+import type {
+  LabelPlacementCandidate,
+  RenderEdgeAttributes,
+  RenderModel,
+  RenderNodeAttributes,
+  RenderOptions,
+} from "#render2d/model.ts";
 
 /** This reports one live glow footprint and does not expose graph semantics. */
 export type RenderNodeGlowWitness = {
@@ -22,6 +37,24 @@ export type RenderHandle = {
   graphToViewport(point: Coordinates): { readonly x: number; readonly y: number };
   readCameraState(): RenderCameraState;
   restoreCameraState(state: RenderCameraState): void;
+  /** This reports the serialisable view state and does not expose graph semantics. */
+  readVisualState(): VisualState;
+  /** This selects one existing graph element and changes material only. */
+  setSelection(id: string): void;
+  /** This clears selection and restores the unselected material. */
+  clearSelection(): void;
+  /** This reports the selected graph element id without returning graph contents. */
+  getSelection(): string | null;
+  /** This focuses one existing graph element and dims material outside that singleton focus set. */
+  setFocus(id: string): void;
+  /** This clears focus and restores undimmed material. */
+  clearFocus(): void;
+  /** This reports the focused graph element id without returning graph contents. */
+  getFocus(): string | null;
+  /** This changes only selection/focus material factors and preserves the mounted graph and its anchors. */
+  setSelectionFocusFactors(factors: Readonly<Pick<CalibrationProfile["selection"], "emphasisMultiplierPermille" | "focusDimFactorPermille">> | undefined): void;
+  /** This returns the selected element's existing graph derivation record and does not synthesise provenance. */
+  readSelectedProvenance(): DerivedValue | null;
   /** This reports live glow geometry and does not inspect an offscreen canvas. */
   readGlowWitnesses(): readonly RenderNodeGlowWitness[];
   /** This controls glow compositing and does not change graph material. */
@@ -49,9 +82,20 @@ export function mount(
   visualGraph: VisualGraph,
   options: RenderOptions,
   framingBox?: RenderFramingBox,
+  initialVisualState?: VisualState,
 ): RenderHandle {
-  const model = buildRenderModel(visualGraph, options);
-  const calibration = options.calibration ?? DEFAULT_CALIBRATION;
+  const suppliedState = initialVisualState === undefined
+    ? undefined
+    : createVisualState(visualGraph, initialVisualState);
+  const activeOptions = suppliedState === undefined ? options : renderOptionsForVisualState(options, suppliedState);
+  const model = buildRenderModel(visualGraph, activeOptions);
+  const calibration = activeOptions.calibration ?? DEFAULT_CALIBRATION;
+  const baseNodeAttributes = new Map<string, RenderNodeAttributes>(
+    model.graph.nodes().map((id) => [id, model.graph.getNodeAttributes(id)]),
+  );
+  const baseEdgeAttributes = new Map<string, RenderEdgeAttributes>(
+    model.graph.edges().map((id) => [id, model.graph.getEdgeAttributes(id)]),
+  );
   const sigma = new Sigma(model.graph, container, {
     defaultEdgeType: "filament",
     edgeProgramClasses: { filament: createFilamentProgram(model.filamentMaterial) },
@@ -63,6 +107,46 @@ export function mount(
   if (framingBox !== undefined) {
     sigma.setCustomBBox(copyFramingBox(framingBox));
     sigma.refresh();
+  }
+  if (suppliedState !== undefined) {
+    restoreCameraState(sigma, cameraStateFromVisualState(suppliedState.camera));
+  }
+  let currentState = suppliedState ?? createVisualState(visualGraph, {
+    selectedId: null,
+    focusedId: null,
+    camera: readCameraState(sigma),
+    morphology: activeOptions.morphology,
+    organization: activeOptions.organization,
+    palette: activeOptions.palette,
+    temperature: activeOptions.temperature,
+    theme: activeOptions.theme,
+    lodBand: activeOptions.lodBand,
+    reducedMotion: activeOptions.reducedMotion,
+  });
+  let appearanceCalibration = calibration;
+  const applyVisualStateAppearance = (): void => {
+    for (const [id, attributes] of baseNodeAttributes) {
+      model.graph.replaceNodeAttributes(id, nodeAttributesForVisualState(attributes, id, currentState, appearanceCalibration));
+    }
+    for (const [id, attributes] of baseEdgeAttributes) {
+      model.graph.replaceEdgeAttributes(id, edgeAttributesForVisualState(attributes, id, currentState, appearanceCalibration));
+    }
+    sigma.refresh();
+  };
+  const refreshCameraInVisualState = (): VisualState => createVisualState(visualGraph, {
+    ...currentState,
+    camera: readCameraState(sigma),
+  });
+  const updateVisualState = (selection: string | null, focus: string | null): void => {
+    currentState = createVisualState(visualGraph, {
+      ...refreshCameraInVisualState(),
+      selectedId: selection,
+      focusedId: focus,
+    });
+    applyVisualStateAppearance();
+  };
+  if (currentState.selectedId !== null || currentState.focusedId !== null) {
+    applyVisualStateAppearance();
   }
   placeNodeLabels(sigma, model, calibration);
   // Mount the aggregate windows FIRST and the glow second, then render once more.
@@ -89,7 +173,45 @@ export function mount(
     },
     restoreCameraState(state: RenderCameraState): void {
       restoreCameraState(sigma, state);
+      currentState = createVisualState(visualGraph, { ...currentState, camera: state });
       placeNodeLabels(sigma, model, calibration);
+    },
+    readVisualState(): VisualState {
+      currentState = refreshCameraInVisualState();
+      return currentState;
+    },
+    setSelection(id: string): void {
+      updateVisualState(id, currentState.focusedId);
+    },
+    clearSelection(): void {
+      updateVisualState(null, currentState.focusedId);
+    },
+    getSelection(): string | null {
+      return currentState.selectedId;
+    },
+    setFocus(id: string): void {
+      updateVisualState(currentState.selectedId, id);
+    },
+    clearFocus(): void {
+      updateVisualState(currentState.selectedId, null);
+    },
+    getFocus(): string | null {
+      return currentState.focusedId;
+    },
+    setSelectionFocusFactors(factors): void {
+      appearanceCalibration = factors === undefined
+        ? calibration
+        : {
+            ...calibration,
+            selection: {
+              ...calibration.selection,
+              ...factors,
+            },
+          };
+      applyVisualStateAppearance();
+    },
+    readSelectedProvenance(): DerivedValue | null {
+      return selectedProvenanceForVisualState(visualGraph, currentState);
     },
     readGlowWitnesses(): readonly RenderNodeGlowWitness[] {
       return glow.readWitnesses();
@@ -218,6 +340,19 @@ export function restoreCameraState(sigma: Sigma, state: RenderCameraState): void
   });
   sigma.getCamera().setState(state);
   sigma.refresh();
+}
+
+function cameraStateFromVisualState(camera: VisualStateCamera): RenderCameraState {
+  return {
+    x: camera.x,
+    y: camera.y,
+    angle: camera.angle,
+    ratio: camera.ratio,
+    bounds: {
+      x: [camera.bounds.x[0], camera.bounds.x[1]],
+      y: [camera.bounds.y[0], camera.bounds.y[1]],
+    },
+  };
 }
 
 function placeNodeLabels(sigma: Sigma, model: RenderModel, calibration: CalibrationProfile): void {
