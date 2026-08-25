@@ -59,6 +59,10 @@ export type CalibrationProfile = {
     readonly haloProbeRadiusFractionPermille: number;
     readonly minimumNodeContrastPermille: number;
     readonly minimumCompositedPixelChannelDelta: number;
+    /** This is the hue-independent minimum separation among distinct rendered prominence levels, scaled by one million. */
+    readonly minimumRenderedNonHueSeparationMicro: number;
+    /** This is the colour-vision-deficiency minimum separation among distinct rendered prominence levels, scaled by one million. */
+    readonly minimumRenderedCvdSeparationMicro: number;
   };
   readonly filament: {
     readonly baseWidthPx: number;
@@ -141,6 +145,8 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "luminance.haloProbeRadiusFractionPermille",
   "luminance.minimumNodeContrastPermille",
   "luminance.minimumCompositedPixelChannelDelta",
+  "luminance.minimumRenderedNonHueSeparationMicro",
+  "luminance.minimumRenderedCvdSeparationMicro",
   "filament.baseWidthPx",
   "filament.pickTolerancePx",
   "filament.opacityPermille",
@@ -240,7 +246,7 @@ export const CALIBRATION_PARAMETER_PATHS = [
 export const DEFAULT_CALIBRATION: CalibrationProfile = {
   layout: { forceStrengthPermille: 850, idealEdgeLengthPx: 120, iterations: 180, gravityPermille: 90, seed: 17, cellJitterPermille: 340, framingMarginPermille: 150 },
   salience: { degreeExponentPermille: 650, minNodeSizePx: 4, maxNodeSizePx: 28 },
-  luminance: { haloRadiusFactorPermille: 1800, haloFalloffPermille: 180, haloSampleCount: 12, coreBeforeHaloMinimumPx: 2, prominenceLightnessGainPermille: 900, prominenceChromaFalloffPermille: 1000, haloProbeRadiusFractionPermille: 700, minimumNodeContrastPermille: 1200, minimumCompositedPixelChannelDelta: 6 },
+  luminance: { haloRadiusFactorPermille: 1800, haloFalloffPermille: 180, haloSampleCount: 12, coreBeforeHaloMinimumPx: 2, prominenceLightnessGainPermille: 900, prominenceChromaFalloffPermille: 1000, haloProbeRadiusFractionPermille: 700, minimumNodeContrastPermille: 1200, minimumCompositedPixelChannelDelta: 6, minimumRenderedNonHueSeparationMicro: 10, minimumRenderedCvdSeparationMicro: 100 },
   filament: { baseWidthPx: 2,
     pickTolerancePx: 2, opacityPermille: 620, curvatureMagnitudePermille: 240, minimumWidthFactorPermille: 120, minimumDeviceWidthPermille: 1000 },
   morphology: {

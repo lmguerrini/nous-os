@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { INSPECTED, RENDERED } from "#engine/partition.ts";
 import {
   ENGINE_ELEMENT_FIELD_ALLOW_LIST,
   assertEngineAccessTrace,
@@ -176,30 +177,20 @@ test("engine elements expose only the structural allow-list, trace no semantic r
   assert.throws(() => assertEngineAccessTrace(forced.trace), /outside the structural allow-list: node\.semantic/);
 });
 
-const TYPE_QUALIFIED_KIND_VOCABULARY = [
-  "node:assertion", "node:bridge", "node:cluster", "node:conflict", "node:rejection", "node:source", "node:subject",
-  "edge:about", "edge:bridge_side", "edge:cites", "edge:conflict_member", "edge:in_cluster", "edge:rejects",
-] as const;
-
-const RENDERED_KIND_VOCABULARY = [] as const;
-
-const INSPECTED_KIND_VOCABULARY = [
-  "node:assertion", "node:bridge", "node:cluster", "node:conflict", "node:rejection", "node:source", "node:subject",
-  "edge:about", "edge:bridge_side", "edge:cites", "edge:conflict_member", "edge:in_cluster", "edge:rejects",
-] as const;
-
-test("the type-qualified kind vocabulary is an exact rendered or inspected partition", () => {
+test("the type-qualified kind vocabulary exactly matches production's governed partition", () => {
   const visualGraph = graph();
-  const observed = [
+  const observed = uniqueSorted([
     ...visualGraph.nodes.map((node) => `node:${node.kind}`),
     ...visualGraph.edges.map((edge) => `edge:${edge.kind}`),
-  ];
-  const partition = [...RENDERED_KIND_VOCABULARY, ...INSPECTED_KIND_VOCABULARY];
-  assert.deepEqual([...new Set(observed)].sort(), [...TYPE_QUALIFIED_KIND_VOCABULARY].sort());
-  assert.deepEqual([...partition].sort(), [...TYPE_QUALIFIED_KIND_VOCABULARY].sort());
-  assert.deepEqual([...TYPE_QUALIFIED_KIND_VOCABULARY].sort(), [...partition].sort());
-  assert.equal(new Set(partition).size, partition.length);
-  assert.deepEqual(RENDERED_KIND_VOCABULARY, []);
+  ]);
+  const rendered = typeQualifiedKinds(RENDERED);
+  const inspected = typeQualifiedKinds(INSPECTED);
+  const partition = uniqueSorted([...rendered, ...inspected]);
+  assert.deepEqual(partition, observed);
+  assert.deepEqual(observed, partition);
+  assert.equal(partition.length, rendered.length + inspected.length);
+  assert.deepEqual(rendered, []);
+  assert.deepEqual(inspected, observed);
 });
 
 test("renderer emits Sigma-parseable sRGB token colours across every palette selection", () => {
@@ -268,6 +259,42 @@ test("the rendered prominence hierarchy remains pairwise separable without hue",
   const expectedCombinations = PALETTES.length * TEMPERATURES.length * THEMES.length * MORPHOLOGIES.length * LOD_BANDS.length;
   assert.equal(result.combinations, expectedCombinations);
   assert.ok(result.comparedPairs > 0);
+});
+
+test("the rendered prominence hierarchy remains pairwise separable under named colour-vision deficiencies", () => {
+  const result = assertCvdProminenceSeparationCrossProduct(graph(), DEFAULT_CALIBRATION);
+  const expectedCombinations = PALETTES.length * TEMPERATURES.length * THEMES.length * MORPHOLOGIES.length * LOD_BANDS.length;
+  assert.equal(result.combinations, expectedCombinations);
+  assert.deepEqual(result.deficiencies, ["deuteranopia", "protanopia", "tritanopia"]);
+  assert.ok(result.comparedPairs > 0);
+});
+
+test("the calibrated non-hue separation control rejects an unattainable threshold", () => {
+  const unattainableCalibration = {
+    ...DEFAULT_CALIBRATION,
+    luminance: {
+      ...DEFAULT_CALIBRATION.luminance,
+      minimumRenderedNonHueSeparationMicro: DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille,
+    },
+  };
+  assert.throws(
+    () => assertNonHueProminenceSeparationCrossProduct(graph(), unattainableCalibration),
+    /not separable/,
+  );
+});
+
+test("the calibrated CVD separation control rejects an unattainable threshold", () => {
+  const unattainableCalibration = {
+    ...DEFAULT_CALIBRATION,
+    luminance: {
+      ...DEFAULT_CALIBRATION.luminance,
+      minimumRenderedCvdSeparationMicro: DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille,
+    },
+  };
+  assert.throws(
+    () => assertCvdProminenceSeparationCrossProduct(graph(), unattainableCalibration),
+    /not separable/,
+  );
 });
 
 test("the node contrast assertion rejects a deliberately too-dark ramp endpoint", () => {
@@ -533,6 +560,22 @@ function requiredTokenColor(tokenColors: ReadonlyMap<string, string>, name: stri
   return color;
 }
 
+function typeQualifiedKinds(states: readonly (typeof RENDERED)[number][]): readonly string[] {
+  return uniqueSorted(states.flatMap((state) => {
+    if (state.enumType === "NodeKind") {
+      return [`node:${state.member}`];
+    }
+    if (state.enumType === "EdgeKind") {
+      return [`edge:${state.member}`];
+    }
+    return [];
+  }));
+}
+
+function uniqueSorted(values: readonly string[]): readonly string[] {
+  return [...new Set(values)].sort();
+}
+
 const MORPHOLOGIES = [STELLAR, NEURAL, MYCELIUM] as const;
 const LOD_BANDS = ["macro", "meso", "micro"] as const satisfies readonly LodBand[];
 
@@ -598,7 +641,7 @@ function assertNonHueProminenceSeparationCrossProduct(
   let combinations = 0;
   let comparedPairs = 0;
   const scale = calibration.morphology.stellar.opacityPermille;
-  const minimumSeparation = calibration.lod.minimumAdjacentPixelDeltaPermille / scale;
+  const minimumSeparation = calibration.luminance.minimumRenderedNonHueSeparationMicro / (scale * scale);
   for (const palette of PALETTES) {
     for (const temperature of TEMPERATURES) {
       for (const theme of THEMES) {
@@ -616,39 +659,15 @@ function assertNonHueProminenceSeparationCrossProduct(
               lodBand,
               calibration,
             });
-            const hierarchies = new Map<number, { readonly prominencePermille: number; readonly grey: number }[]>();
-            for (const node of visualGraph.nodes) {
-                const material = nodeMaterials.get(node.id);
-                if (material === undefined) {
-                  throw new TypeError("non-hue separation node material is unavailable");
-                }
-                const hopDistance = material.facts.hopDistanceFromHub.value;
-                if (!Number.isSafeInteger(hopDistance)) {
-                  throw new TypeError("non-hue separation hop-distance material is unavailable");
-                }
-                const numericHopDistance = Number(hopDistance);
-                const color = model.graph.getNodeAttributes(node.id).color;
-                const hierarchy = hierarchies.get(numericHopDistance) ?? [];
-                hierarchy.push({ prominencePermille: material.prominencePermille, grey: grayscaleLuminance(parseColor(color)) });
-                hierarchies.set(numericHopDistance, hierarchy);
-            }
-            for (const hierarchy of hierarchies.values()) {
-              hierarchy.sort((left, right) => left.prominencePermille - right.prominencePermille);
-              for (let lowerIndex = 0; lowerIndex < hierarchy.length; lowerIndex += 1) {
-                for (let upperIndex = lowerIndex + 1; upperIndex < hierarchy.length; upperIndex += 1) {
-                  const previous = hierarchy[lowerIndex];
-                  const current = hierarchy[upperIndex];
-                  if (previous === undefined || current === undefined || previous.prominencePermille === current.prominencePermille) {
-                    continue;
-                  }
-                  assert.ok(
-                    Math.abs(current.grey - previous.grey) >= minimumSeparation,
-                    `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} prominence levels ${previous.prominencePermille} and ${current.prominencePermille} are not separable in greyscale: ${previous.grey} to ${current.grey}, minimum ${minimumSeparation}`,
-                  );
-                  comparedPairs += 1;
-                }
-              }
-            }
+            const rendered = renderedProminenceDomain(model, nodeMaterials);
+            forEachDistinctProminencePair(rendered, (lower, upper) => {
+              const separation = Math.abs(grayscaleLuminance(upper.color) - grayscaleLuminance(lower.color));
+              assert.ok(
+                separation >= minimumSeparation,
+                `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} rendered prominence levels ${lower.prominencePermille} and ${upper.prominencePermille} are not separable in greyscale: ${separation}, minimum ${minimumSeparation}`,
+              );
+              comparedPairs += 1;
+            });
           }
         }
       }
@@ -657,10 +676,158 @@ function assertNonHueProminenceSeparationCrossProduct(
   return { combinations, comparedPairs };
 }
 
-function grayscaleLuminance(color: ReturnType<typeof parseColor>): number {
-  return (0.2126 * srgbToLinear(color.r / 255))
-    + (0.7152 * srgbToLinear(color.g / 255))
-    + (0.0722 * srgbToLinear(color.b / 255));
+type CvdDeficiency = "deuteranopia" | "protanopia" | "tritanopia";
+type Rgb = readonly [number, number, number];
+type RenderedProminence = {
+  readonly id: string;
+  readonly prominencePermille: number;
+  readonly color: Rgb;
+};
+
+const CVD_DEFICIENCIES = ["deuteranopia", "protanopia", "tritanopia"] as const satisfies readonly CvdDeficiency[];
+
+// Machado, Oliveira, and Fernandes, "A Physiologically-based Model for Simulation
+// of Color Vision Deficiency" (IEEE TVCG, 2009), 100% severity matrices:
+// https://doi.org/10.1109/TVCG.2009.113
+const MACHADO_CVD_MATRICES: Readonly<Record<CvdDeficiency, readonly [Rgb, Rgb, Rgb]>> = {
+  deuteranopia: [
+    [0.367322, 0.860646, -0.227968],
+    [0.280085, 0.672501, 0.047413],
+    [-0.011820, 0.042940, 0.968881],
+  ],
+  protanopia: [
+    [0.152286, 1.052583, -0.204868],
+    [0.114503, 0.786281, 0.099216],
+    [-0.003882, -0.048116, 1.051998],
+  ],
+  tritanopia: [
+    [1.255528, -0.076749, -0.178779],
+    [-0.078411, 0.930809, 0.147602],
+    [0.004733, 0.691367, 0.303900],
+  ],
+};
+
+function assertCvdProminenceSeparationCrossProduct(
+  visualGraph: VisualGraph,
+  calibration: typeof DEFAULT_CALIBRATION,
+): { readonly combinations: number; readonly deficiencies: readonly CvdDeficiency[]; readonly comparedPairs: number } {
+  let combinations = 0;
+  let comparedPairs = 0;
+  const scale = calibration.morphology.stellar.opacityPermille;
+  const minimumSeparation = calibration.luminance.minimumRenderedCvdSeparationMicro / (scale * scale);
+  for (const palette of PALETTES) {
+    for (const temperature of TEMPERATURES) {
+      for (const theme of THEMES) {
+        for (const morphology of MORPHOLOGIES) {
+          const morphologyMaterial = applyMorphology(visualGraph, morphology, calibration);
+          const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
+          for (const lodBand of LOD_BANDS) {
+            combinations += 1;
+            const model = buildRenderModel(visualGraph, {
+              ...options(false),
+              palette,
+              temperature,
+              theme,
+              morphology: morphology.id,
+              lodBand,
+              calibration,
+            });
+            const rendered = renderedProminenceDomain(model, nodeMaterials);
+            for (const deficiency of CVD_DEFICIENCIES) {
+              forEachDistinctProminencePair(rendered, (lower, upper) => {
+                const separation = rgbDistance(simulateCvd(lower.color, deficiency), simulateCvd(upper.color, deficiency));
+                assert.ok(
+                  separation >= minimumSeparation,
+                  `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand}/${deficiency} rendered prominence levels ${lower.prominencePermille} and ${upper.prominencePermille} are not separable: ${separation}, minimum ${minimumSeparation}`,
+                );
+                comparedPairs += 1;
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+  return { combinations, deficiencies: CVD_DEFICIENCIES, comparedPairs };
+}
+
+function renderedProminenceDomain(
+  model: ReturnType<typeof buildRenderModel>,
+  nodeMaterials: ReadonlyMap<string, { readonly prominencePermille: number }>,
+): readonly RenderedProminence[] {
+  const background = parseColor(model.fieldColor);
+  const rendered = model.graph.nodes().map((id) => {
+    const material = nodeMaterials.get(id);
+    if (material === undefined) {
+      throw new TypeError("rendered prominence material is unavailable");
+    }
+    return {
+      id,
+      prominencePermille: material.prominencePermille,
+      color: compositeSrgb(parseColor(model.graph.getNodeAttributes(id).color), background),
+    };
+  }).sort((left, right) => left.prominencePermille - right.prominencePermille || left.id.localeCompare(right.id));
+  if (rendered.length !== model.graph.order) {
+    throw new TypeError("rendered prominence domain does not cover every rendered node");
+  }
+  return rendered;
+}
+
+function forEachDistinctProminencePair(
+  rendered: readonly RenderedProminence[],
+  inspect: (lower: RenderedProminence, upper: RenderedProminence) => void,
+): void {
+  for (let lowerIndex = 0; lowerIndex < rendered.length; lowerIndex += 1) {
+    for (let upperIndex = lowerIndex + 1; upperIndex < rendered.length; upperIndex += 1) {
+      const lower = rendered[lowerIndex];
+      const upper = rendered[upperIndex];
+      if (lower === undefined || upper === undefined || lower.prominencePermille === upper.prominencePermille) {
+        continue;
+      }
+      inspect(lower, upper);
+    }
+  }
+}
+
+function compositeSrgb(foreground: ReturnType<typeof parseColor>, background: ReturnType<typeof parseColor>): Rgb {
+  const alpha = foreground.a;
+  return [
+    ((foreground.r * alpha) + (background.r * (1 - alpha))) / 255,
+    ((foreground.g * alpha) + (background.g * (1 - alpha))) / 255,
+    ((foreground.b * alpha) + (background.b * (1 - alpha))) / 255,
+  ];
+}
+
+function grayscaleLuminance(color: Rgb): number {
+  return (0.2126 * srgbToLinear(color[0]))
+    + (0.7152 * srgbToLinear(color[1]))
+    + (0.0722 * srgbToLinear(color[2]));
+}
+
+function simulateCvd(color: Rgb, deficiency: CvdDeficiency): Rgb {
+  const linear: Rgb = [srgbToLinear(color[0]), srgbToLinear(color[1]), srgbToLinear(color[2])];
+  const matrix = MACHADO_CVD_MATRICES[deficiency];
+  return [
+    simulatedChannel(matrix[0], linear),
+    simulatedChannel(matrix[1], linear),
+    simulatedChannel(matrix[2], linear),
+  ];
+}
+
+function simulatedChannel(matrixRow: Rgb, linear: Rgb): number {
+  return linearToSrgb(clamp01((matrixRow[0] * linear[0]) + (matrixRow[1] * linear[1]) + (matrixRow[2] * linear[2])));
+}
+
+function rgbDistance(left: Rgb, right: Rgb): number {
+  return Math.hypot(left[0] - right[0], left[1] - right[1], left[2] - right[2]);
+}
+
+function linearToSrgb(channel: number): number {
+  return channel <= 0.0031308 ? channel * 12.92 : (1.055 * (channel ** (1 / 2.4))) - 0.055;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
 function parsedOklabLightness(color: ReturnType<typeof parseColor>): number {

@@ -353,7 +353,7 @@ _DISCRIMINATION_REGISTRY = (
 )
 
 
-def _changed_value(path: str, value: object) -> object:
+def _changed_value(path: str, value: object, failed_gate_text: str | None = None) -> object:
     field = path.rsplit(".", 1)[-1]
     if field == "source_id":
         return "src_changed"
@@ -369,7 +369,11 @@ def _changed_value(path: str, value: object) -> object:
         assert type(value) is str
         return value + " changed"
     if field == "failed_gate":
-        return "changed-gate"
+        assert type(value) is str
+        if failed_gate_text is not None:
+            assert type(failed_gate_text) is str
+            return failed_gate_text
+        return value + "\x00"
     if field == "snapshot_digest":
         assert type(value) is str
         return value[:-1] + ("0" if value[-1] != "0" else "1")
@@ -427,7 +431,7 @@ def _find_node(ir: ProjectionIR, kind: NodeKind, path: str) -> ProjectionNode:
     return candidates[0]
 
 
-def _mutate(ir: ProjectionIR, path: str) -> ProjectionIR:
+def _mutate(ir: ProjectionIR, path: str, failed_gate_text: str | None = None) -> ProjectionIR:
     parts = path.split(".")
     if parts[0] == "node":
         kind = NodeKind(parts[1])
@@ -439,7 +443,7 @@ def _mutate(ir: ProjectionIR, path: str) -> ProjectionIR:
             changed_attribute = replace(attribute, provenance=nested)
         else:
             field = parts[2]
-            changed_attribute = replace(attribute, **{field: _changed_value(path, getattr(attribute, field))})
+            changed_attribute = replace(attribute, **{field: _changed_value(path, getattr(attribute, field), failed_gate_text)})
         changed_node = replace(node, attributes=changed_attribute)
         return replace(ir, nodes=tuple(changed_node if item is node else item for item in ir.nodes))
 
@@ -465,6 +469,42 @@ def _mutate(ir: ProjectionIR, path: str) -> ProjectionIR:
     raise AssertionError(f"unknown registry path: {path}")
 
 
+def _unbounded_text(seed: int, length: int) -> str:
+    """Generate arbitrary free text for any requested non-negative length; this imposes no schema bound."""
+    assert seed >= 0
+    assert length >= 0
+    alphabet = "\x00\x01\x1f\n\r\t aZé雪🧠"
+    return "".join(alphabet[(seed + index) % len(alphabet)] for index in range(length))
+
+
+def _generated_failed_gate_texts() -> tuple[str, ...]:
+    values = tuple(
+        _unbounded_text(seed, length)
+        for seed, length in ((0, 0), (1, 1), (2, 23), (3, 16_384))
+    )
+    assert "" in values
+    assert any(len(value) >= 16_384 for value in values)
+    assert any(any(ord(character) < 32 for character in value) for value in values)
+    assert any("\n" in value for value in values)
+    assert any(any(ord(character) > 127 for character in value) for value in values)
+    return values
+
+
+def _assert_failed_gate_property(base: ProjectionIR, failed_gate_text: str) -> None:
+    path = "node.rejection.failed_gate"
+    original = _find_node(base, NodeKind.REJECTION, path).attributes
+    assert type(original) is RejectionAttributes
+    assert failed_gate_text != original.failed_gate
+    if not failed_gate_text.strip():
+        try:
+            _mutate(base, path, failed_gate_text)
+        except ProjectionError:
+            return
+        raise AssertionError("failed_gate property accepted blank free text")
+    changed = _mutate(base, path, failed_gate_text)
+    assert neutral_digest(changed) != neutral_digest(base)
+
+
 def test_pinned_discrimination_registry_covers_and_runs_every_semantic_leaf() -> None:
     assert len(_DISCRIMINATION_REGISTRY) == len(set(entry.path for entry in _DISCRIMINATION_REGISTRY))
     assert {entry.path for entry in _DISCRIMINATION_REGISTRY} == _all_semantic_fields()
@@ -483,6 +523,29 @@ def test_pinned_discrimination_registry_covers_and_runs_every_semantic_leaf() ->
             assert neutral_digest(changed) != neutral_digest(base), entry.path
         ran += 1
     assert ran == len(_DISCRIMINATION_REGISTRY)
+
+
+def test_rejection_failed_gate_property_preserves_unbounded_free_text_discrimination() -> None:
+    base = from_payload(_payload("substrate-all-time.json"))
+    original = _find_node(base, NodeKind.REJECTION, "node.rejection.failed_gate").attributes
+    assert type(original) is RejectionAttributes
+    generated = _generated_failed_gate_texts()
+    assert len(generated) == len(set(generated))
+    for failed_gate_text in generated:
+        candidate = failed_gate_text if failed_gate_text != original.failed_gate else failed_gate_text + "\x00"
+        _assert_failed_gate_property(base, candidate)
+
+
+def test_rejection_failed_gate_property_control_rejects_an_unchanged_value() -> None:
+    base = from_payload(_payload("substrate-all-time.json"))
+    original = _find_node(base, NodeKind.REJECTION, "node.rejection.failed_gate").attributes
+    assert type(original) is RejectionAttributes
+    try:
+        _assert_failed_gate_property(base, original.failed_gate)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("failed_gate property control accepted an unchanged value")
 
 
 def test_oracle_source_does_not_call_the_producer_encoder() -> None:

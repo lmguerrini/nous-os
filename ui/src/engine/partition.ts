@@ -7,14 +7,14 @@ export type StateKey = {
 export type VocabularyProvider = () => readonly StateKey[];
 
 const rendered = [
-  ...members("NodeKind", ["source", "subject", "cluster", "assertion", "conflict", "bridge", "rejection"]),
-  ...members("EdgeKind", ["about", "cites", "conflict_member", "bridge_side", "in_cluster", "rejects"]),
   ...members("TemporalDisposition", ["established", "excluded", "undetermined"]),
   ...members("BridgeDisposition", ["accepted", "rejected", "undetermined"]),
   ...members("EpistemicClass", ["explicit", "derived", "speculative"]),
 ] as const;
 
 const inspected = [
+  ...members("NodeKind", ["source", "subject", "cluster", "assertion", "conflict", "bridge", "rejection"]),
+  ...members("EdgeKind", ["about", "cites", "conflict_member", "bridge_side", "in_cluster", "rejects"]),
   ...members("Gate", ["cross_project", "grounded", "not_already_stated", "non_trivial", "consequential", "survives_noise_objection"]),
   ...members("GateOutcome", ["pass", "fail", "unknown"]),
   ...members("Depth", ["obvious", "moderate", "deep"]),

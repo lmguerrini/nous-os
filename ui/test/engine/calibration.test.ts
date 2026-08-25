@@ -10,7 +10,7 @@ import {
 const EXPECTED_PATHS = [
   "layout.forceStrengthPermille", "layout.idealEdgeLengthPx", "layout.iterations", "layout.gravityPermille", "layout.seed", "layout.cellJitterPermille", "layout.framingMarginPermille",
   "salience.degreeExponentPermille", "salience.minNodeSizePx", "salience.maxNodeSizePx",
-  "luminance.haloRadiusFactorPermille", "luminance.haloFalloffPermille", "luminance.haloSampleCount", "luminance.coreBeforeHaloMinimumPx", "luminance.prominenceLightnessGainPermille", "luminance.prominenceChromaFalloffPermille", "luminance.haloProbeRadiusFractionPermille", "luminance.minimumNodeContrastPermille", "luminance.minimumCompositedPixelChannelDelta",
+  "luminance.haloRadiusFactorPermille", "luminance.haloFalloffPermille", "luminance.haloSampleCount", "luminance.coreBeforeHaloMinimumPx", "luminance.prominenceLightnessGainPermille", "luminance.prominenceChromaFalloffPermille", "luminance.haloProbeRadiusFractionPermille", "luminance.minimumNodeContrastPermille", "luminance.minimumCompositedPixelChannelDelta", "luminance.minimumRenderedNonHueSeparationMicro", "luminance.minimumRenderedCvdSeparationMicro",
   "filament.baseWidthPx",
   "filament.pickTolerancePx", "filament.opacityPermille", "filament.curvatureMagnitudePermille", "filament.minimumWidthFactorPermille", "filament.minimumDeviceWidthPermille",
   "morphology.stellar.nodeSizeMultiplierPermille", "morphology.stellar.filamentWidthMultiplierPermille", "morphology.stellar.filamentWidthStartPermille", "morphology.stellar.filamentWidthEndPermille", "morphology.stellar.filamentWobbleAmplitudePermille", "morphology.stellar.junctionThickeningPermille", "morphology.stellar.sheathScalePermille", "morphology.stellar.sheathAlphaPermille", "morphology.stellar.coreScalePermille", "morphology.stellar.hotMixPermille", "morphology.stellar.hotAlphaPermille", "morphology.stellar.hotCoreMaximumHop", "morphology.stellar.filamentPhaseSeed", "morphology.stellar.wobbleFrequencyMilliradians", "morphology.stellar.opacityPermille", "morphology.stellar.curvatureMagnitudePermille", "morphology.stellar.haloRadiusMultiplierPermille", "morphology.stellar.haloIntensityPermille", "morphology.stellar.terminalSizeMultiplierPermille",
@@ -27,7 +27,7 @@ const EXPECTED_PATHS = [
 test("calibration register is an exact pinned set in both directions", () => {
   assert.deepEqual([...CALIBRATION_PARAMETER_PATHS].sort(), [...EXPECTED_PATHS].sort());
   assert.deepEqual([...EXPECTED_PATHS].sort(), [...CALIBRATION_PARAMETER_PATHS].sort());
-  assert.equal(CALIBRATION_PARAMETER_PATHS.length, 112);
+  assert.equal(CALIBRATION_PARAMETER_PATHS.length, 114);
 });
 
 test("calibration validator refuses one unknown path", () => {
