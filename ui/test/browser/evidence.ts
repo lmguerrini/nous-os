@@ -85,6 +85,7 @@ type Snapshot = {
   readonly organization: Organization;
   readonly lodBand: LodBand;
   readonly reducedMotion: boolean;
+  readonly fieldColor: string;
   readonly selectedNode: string | null;
   readonly nodes: readonly string[];
   readonly edges: readonly string[];
@@ -190,7 +191,7 @@ void boot().catch((error: unknown) => {
 async function boot(): Promise<void> {
   const shell = document.createElement("main");
   shell.id = "evidence-shell";
-  shell.style.cssText = "width:960px;height:640px;position:relative;background:#111827";
+  shell.style.cssText = "width:960px;height:640px;position:relative";
   const container = document.createElement("div");
   container.id = "evidence-renderer";
   container.style.cssText = "width:100%;height:100%;position:relative";
@@ -247,6 +248,7 @@ async function boot(): Promise<void> {
     await waitForNonZeroBox(container);
     const graph = requiredGraph(graphs, policy);
     product = mount(container, graph, options, discoveryFramingBox);
+    shell.style.background = product.model.fieldColor;
     // This separate surface is the actual Sigma edge-picking framebuffer. The
     // product mount provides the viewport coordinates used by screenshot checks.
     picking = new Sigma(product.model.graph, pickingContainer, {
@@ -295,6 +297,7 @@ async function boot(): Promise<void> {
       organization: options.organization,
       lodBand: options.lodBand,
       reducedMotion: options.reducedMotion,
+      fieldColor: handle.model.fieldColor,
       selectedNode,
       nodes: handle.model.graph.nodes(),
       edges: handle.model.graph.edges(),
@@ -471,11 +474,12 @@ async function boot(): Promise<void> {
       emptyContainer?.remove();
       const control = document.createElement("div");
       control.id = "evidence-empty-renderer";
-      control.style.cssText = "width:960px;height:640px;position:fixed;left:0;top:0;background:#111827";
+      control.style.cssText = "width:960px;height:640px;position:fixed;left:0;top:0";
       document.body.append(control);
       await waitForNonZeroBox(control);
       emptyContainer = control;
       emptyControl = mount(control, EMPTY_VISUAL_GRAPH, options);
+      control.style.background = emptyControl.model.fieldColor;
       await nextPaint();
       await nextPaint();
     },

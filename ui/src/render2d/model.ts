@@ -82,6 +82,8 @@ export type RenderModel = {
   readonly organization: OrganizationResult;
   readonly tokens: TokenMap;
   readonly tokenColors: ReadonlyMap<string, string>;
+  /** This is the resolved shell field and does not create a renderer layer. */
+  readonly fieldColor: string;
   readonly lodBand: LodBand;
   readonly material: ResolvedMaterial;
   readonly filamentMaterial: FilamentUniformMaterial;
@@ -125,6 +127,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
   const morphologyMaterial = applyMorphology(graph, morphology, calibration);
   const tokens = resolveTokens(options.palette, options.temperature, options.theme);
   const tokenColors = new Map(Object.entries(tokens).map(([name, token]) => [name, tokenColor(token, permilleScale(calibration), calibration)]));
+  const fieldColor = requiredTokenColor(tokenColors, "background");
   const organization = options.organization === "indra"
     ? indraOrganization(graph, calibration, anchors)
     : flatOrganization(graph, anchors);
@@ -214,7 +217,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
       zIndex: edge.visual.label_priority,
     });
   }
-  return { graph: sigmaGraph, anchors, windows: organization.windows, organization, tokens, tokenColors, lodBand: view.band, material: view.material, filamentMaterial: filamentUniformMaterial, filaments, propagation };
+  return { graph: sigmaGraph, anchors, windows: organization.windows, organization, tokens, tokenColors, fieldColor, lodBand: view.band, material: view.material, filamentMaterial: filamentUniformMaterial, filaments, propagation };
 }
 
 const ROLE_TOKEN_NAMES = ["accent1", "accent2", "accent3", "accent4"] as const;
@@ -289,7 +292,11 @@ function edgeColorForMaterial(
   const token = materialIncludes(material.edge, "kind")
     ? roleToken(tokens, requiredMaterialKind(edge))
     : requiredToken(tokens, "edge");
-  return tokenColor(token, edge.opacityPermille, calibration);
+  return tokenColor(
+    minimumNodeContrastToken(token, requiredToken(tokens, "background"), calibration),
+    edge.opacityPermille,
+    calibration,
+  );
 }
 
 function kindWidth(edge: EdgeMaterial, calibration: CalibrationProfile): number {

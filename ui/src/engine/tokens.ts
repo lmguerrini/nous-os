@@ -80,7 +80,7 @@ function makeBase(hueDegrees: number, chromaPermille: number): TokenMap {
   const neutralLightness = [70, 250, 430, 610, 790, 970];
   const accentLightness = [120, 290, 460, 630, 800, 970];
   const tokens: Record<string, OklchToken> = {
-    background: { lightnessPermille: 70, chromaPermille: Math.min(35, chromaPermille), hueDegrees },
+    background: { lightnessPermille: 35, chromaPermille: 0, hueDegrees },
     surface: { lightnessPermille: 170, chromaPermille: Math.min(45, chromaPermille), hueDegrees },
     textMuted: { lightnessPermille: 570, chromaPermille: Math.min(55, chromaPermille), hueDegrees },
     text: { lightnessPermille: 820, chromaPermille: Math.min(70, chromaPermille), hueDegrees },

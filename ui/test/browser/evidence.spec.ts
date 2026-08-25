@@ -37,6 +37,7 @@ type Snapshot = {
   readonly organization: "flat" | "indra";
   readonly lodBand: "macro" | "meso" | "micro";
   readonly reducedMotion: boolean;
+  readonly fieldColor: string;
   readonly selectedNode: string | null;
   readonly nodes: readonly string[];
   readonly edges: readonly string[];
@@ -99,6 +100,12 @@ type DecodedPng = {
   readonly width: number;
   readonly height: number;
   readonly data: Uint8Array;
+};
+
+type RgbColor = {
+  readonly red: number;
+  readonly green: number;
+  readonly blue: number;
 };
 
 type DprWitness = {
@@ -223,7 +230,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       await invoke<void>("showEmptyGraphControl");
       emptyGraphCapture = await capture("#evidence-empty-renderer");
       await invoke<void>("hideEmptyGraphControl");
-      expect(countLitPixels(emptyGraphCapture)).toBe(0);
+      expect(countLitPixels(emptyGraphCapture, parseFieldColor(snapshot.fieldColor))).toBe(0);
     }
     expect(() => assertElementPixels(snapshot, emptyGraphCapture as DecodedPng), `${check} must reject an empty renderer screenshot`).toThrow();
   };
@@ -340,7 +347,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     assertBackingStores(flat, flatImage);
     assertElementPixels(flat, flatImage);
     expect(indra.windows.length).toBeGreaterThan(0);
-    const ringWitnesses = assertAggregateWindowPixels(indra, indraImage, flatImage);
+    const ringWitnesses = assertAggregateWindowPixels(indra, indraImage, flat, flatImage);
     for (const rejection of indra.rejectionBounds) {
       for (const window of indra.windows) {
         expect(contains(window.bounds, rejection.bounds)).toBe(false);
@@ -388,9 +395,9 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   await run("glow-compositor", async () => {
     const snapshot = await invoke<Snapshot>("setLodBand", "micro");
     const visible = await capture("#evidence-renderer");
-    await invoke<Snapshot>("setGlowSuppressed", true);
+    const suppressedSnapshot = await invoke<Snapshot>("setGlowSuppressed", true);
     const suppressed = await capture("#evidence-renderer");
-    const witnesses = assertGlowPixels(snapshot, visible, suppressed);
+    const witnesses = assertGlowPixels(snapshot, visible, suppressedSnapshot, suppressed);
     await invoke<Snapshot>("setGlowSuppressed", false);
     return `nodes measured: ${witnesses.map((witness) => witness.id).join(", ")}; clean annulus points: ${witnesses.map((witness) => `${witness.id}=${witness.points}`).join(", ")}`;
   });
@@ -515,6 +522,7 @@ function assertBackingStores(snapshot: Snapshot, image: DecodedPng): void {
 }
 
 function assertElementPixels(snapshot: Snapshot, image: DecodedPng): void {
+  const fieldColor = parseFieldColor(snapshot.fieldColor);
   expect(snapshot.nodes.length).toBeGreaterThan(0);
   expect(snapshot.edges.length).toBeGreaterThan(0);
   for (const id of sample(snapshot.nodes, 6)) {
@@ -523,7 +531,7 @@ function assertElementPixels(snapshot: Snapshot, image: DecodedPng): void {
     if (point === undefined) {
       throw new Error(`renderer position for node ${id} is missing`);
     }
-    expect(hasLitPixelNear(image, point, snapshot.rendering.devicePixelRatio, 10), `final screenshot has no lit pixel near node ${id}`).toBe(true);
+    expect(hasLitPixelNear(image, point, snapshot.rendering.devicePixelRatio, 10, fieldColor), `final screenshot has no lit pixel near node ${id}`).toBe(true);
   }
   const sampledEdgeIds = Object.keys(snapshot.edgeSamples);
   expect(sampledEdgeIds.length, "edge sample set is non-empty").toBeGreaterThan(0);
@@ -537,7 +545,7 @@ function assertElementPixels(snapshot: Snapshot, image: DecodedPng): void {
     expect(points, `edge ${id} must expose exactly three path samples`).toHaveLength(3);
     expect(new Set(points.map((point) => `${point.x},${point.y}`)).size, `edge ${id} path samples must be pairwise distinct`).toBe(3);
     for (const point of points) {
-      expect(hasLitPixelNear(image, point, snapshot.rendering.devicePixelRatio, 4), `final screenshot has no lit pixel on edge ${id}`).toBe(true);
+      expect(hasLitPixelNear(image, point, snapshot.rendering.devicePixelRatio, 4, fieldColor), `final screenshot has no lit pixel on edge ${id}`).toBe(true);
     }
   }
 }
@@ -617,13 +625,15 @@ async function assertPickCoverage(snapshot: Snapshot, invoke: PageInvoke): Promi
   }
 }
 
-function assertAggregateWindowPixels(indra: Snapshot, indraImage: DecodedPng, flatImage: DecodedPng): readonly { readonly id: string; readonly points: number }[] {
+function assertAggregateWindowPixels(indra: Snapshot, indraImage: DecodedPng, flat: Snapshot, flatImage: DecodedPng): readonly { readonly id: string; readonly points: number }[] {
+  const indraFieldColor = parseFieldColor(indra.fieldColor);
+  const flatFieldColor = parseFieldColor(flat.fieldColor);
   return indra.windows.map((window) => {
     const clean = ringCandidates(window.viewportCenter, window.viewportRadius)
-      .filter((point) => !hasLitPixelNear(flatImage, point, indra.rendering.devicePixelRatio, 2));
+      .filter((point) => !hasLitPixelNear(flatImage, point, indra.rendering.devicePixelRatio, 2, flatFieldColor));
     expect(clean.length, `aggregate window ${window.id} must yield at least four clean circumference points`).toBeGreaterThanOrEqual(4);
     for (const point of clean) {
-      expect(hasLitPixelNear(indraImage, point, indra.rendering.devicePixelRatio, 2), `Indra compositor screenshot has no lit aggregate-window stroke at ${window.id}`).toBe(true);
+      expect(hasLitPixelNear(indraImage, point, indra.rendering.devicePixelRatio, 2, indraFieldColor), `Indra compositor screenshot has no lit aggregate-window stroke at ${window.id}`).toBe(true);
     }
     return { id: window.id, points: clean.length };
   });
@@ -632,14 +642,17 @@ function assertAggregateWindowPixels(indra: Snapshot, indraImage: DecodedPng, fl
 function assertGlowPixels(
   snapshot: Snapshot,
   visible: DecodedPng,
+  suppressedSnapshot: Snapshot,
   suppressed: DecodedPng,
 ): readonly { readonly id: string; readonly points: number }[] {
+  const visibleFieldColor = parseFieldColor(snapshot.fieldColor);
+  const suppressedFieldColor = parseFieldColor(suppressedSnapshot.fieldColor);
   const measured = snapshot.glowNodes.filter((node) => node.haloRadiusPx > node.coreRadiusPx);
   expect(measured.length, "the live renderer must expose glow nodes with a halo outside the core").toBeGreaterThanOrEqual(3);
   const witnesses = measured.map((node) => {
     const cleanLit = glowRingCandidates(node).filter((point) => (
-      !hasLitPixelNear(suppressed, point, snapshot.rendering.devicePixelRatio, 2)
-      && hasLitPixelNear(visible, point, snapshot.rendering.devicePixelRatio, 2)
+      !hasLitPixelNear(suppressed, point, snapshot.rendering.devicePixelRatio, 2, suppressedFieldColor)
+      && hasLitPixelNear(visible, point, snapshot.rendering.devicePixelRatio, 2, visibleFieldColor)
     ));
     expect(cleanLit.length, `glow node ${node.id} has no clean lit annulus point`).toBeGreaterThan(0);
     return { id: node.id, points: cleanLit.length };
@@ -677,13 +690,14 @@ function hasLitPixelNear(
   point: { readonly x: number; readonly y: number },
   devicePixelRatio: number,
   radiusCssPixels: number,
+  fieldColor: RgbColor,
 ): boolean {
   const centerX = Math.round(point.x * devicePixelRatio);
   const centerY = Math.round(point.y * devicePixelRatio);
   const radius = Math.ceil(radiusCssPixels * devicePixelRatio);
   for (let y = Math.max(0, centerY - radius); y <= Math.min(image.height - 1, centerY + radius); y += 1) {
     for (let x = Math.max(0, centerX - radius); x <= Math.min(image.width - 1, centerX + radius); x += 1) {
-      if (isLitPixel(image, x, y)) {
+      if (isLitPixel(image, x, y, fieldColor)) {
         return true;
       }
     }
@@ -691,11 +705,11 @@ function hasLitPixelNear(
   return false;
 }
 
-function countLitPixels(image: DecodedPng): number {
+function countLitPixels(image: DecodedPng, fieldColor: RgbColor): number {
   let count = 0;
   for (let y = 0; y < image.height; y += 1) {
     for (let x = 0; x < image.width; x += 1) {
-      if (isLitPixel(image, x, y)) {
+      if (isLitPixel(image, x, y, fieldColor)) {
         count += 1;
       }
     }
@@ -728,13 +742,29 @@ function countDifferingPixels(left: DecodedPng, right: DecodedPng): number {
   return count;
 }
 
-function isLitPixel(image: DecodedPng, x: number, y: number): boolean {
+function parseFieldColor(color: string): RgbColor {
+  const channels = color.match(/^rgb\((\d+), (\d+), (\d+)\)$/);
+  if (channels === null) {
+    throw new Error(`renderer field color is not an opaque rgb value: ${color}`);
+  }
+  return {
+    red: Number(channels[1]),
+    green: Number(channels[2]),
+    blue: Number(channels[3]),
+  };
+}
+
+function isLitPixel(image: DecodedPng, x: number, y: number, fieldColor: RgbColor): boolean {
   const index = ((y * image.width) + x) * 4;
   const red = image.data[index] ?? 0;
   const green = image.data[index + 1] ?? 0;
   const blue = image.data[index + 2] ?? 0;
   const alpha = image.data[index + 3] ?? 0;
-  return alpha !== 0 && Math.max(Math.abs(red - 17), Math.abs(green - 24), Math.abs(blue - 39)) >= 6;
+  return alpha !== 0 && Math.max(
+    Math.abs(red - fieldColor.red),
+    Math.abs(green - fieldColor.green),
+    Math.abs(blue - fieldColor.blue),
+  ) >= 6;
 }
 
 function witnessFor(snapshot: Snapshot, image: DecodedPng): DprWitness {

@@ -85,7 +85,7 @@ type ImageMeasurements = {
   readonly litPixels: {
     readonly count: number;
     readonly fraction: number;
-    readonly shellBackgroundRgb: readonly [number, number, number];
+    readonly fieldRgb: readonly [number, number, number];
     readonly channelMargin: number;
   };
   readonly distinctColourCount: number;
@@ -168,7 +168,6 @@ type ReviewMetadata = {
       readonly width: number;
       readonly height: number;
     };
-    readonly shellBackgroundRgb: readonly [number, number, number];
     readonly litPixelChannelMargin: number;
     readonly elapsedMilliseconds: number;
     readonly dprProjects: readonly ReviewProject[];
@@ -219,7 +218,6 @@ const CONTACT_SHEET_DIRECTORY = join(REVIEW_DIRECTORY, "contact-sheet");
 const CONTACT_SHEET_FILE = join(CONTACT_SHEET_DIRECTORY, "overview.png");
 const METADATA_FILE = join(REVIEW_DIRECTORY, "evidence", "capture-metadata.json");
 const MANIFEST_FILE = join(REVIEW_DIRECTORY, "MANIFEST.json");
-const SHELL_BACKGROUND_RGB = [17, 24, 39] as const;
 const LIT_PIXEL_CHANNEL_MARGIN = 12;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const MORPHOLOGIES = ["stellar", "neural", "mycelium"] as const satisfies readonly Morphology[];
@@ -240,6 +238,7 @@ const WIDTH = 1200;
 const HEIGHT = 800;
 
 let container;
+let shell;
 let framing;
 let graphs;
 let product;
@@ -375,9 +374,9 @@ window.__review = {
     // pixel -- both numbers correct, one call apart. See CO-17.
     sharedAnchors(requiredGraph("Discovery"), requiredGraph("Reliability"));
     framing = frameFor([...graphs.values()]);
-    const shell = document.createElement("main");
+    shell = document.createElement("main");
     shell.id = "review-shell";
-    shell.style.cssText = "width:1200px;height:800px;position:relative;overflow:hidden;background:rgb(17,24,39)";
+    shell.style.cssText = "width:1200px;height:800px;position:relative;overflow:hidden";
     container = document.createElement("div");
     container.id = "review-renderer";
     container.style.cssText = "width:100%;height:100%;position:relative";
@@ -387,7 +386,7 @@ window.__review = {
     await nextPaint();
   },
   async render(settings, focus) {
-    if (container === undefined || framing === undefined) {
+    if (container === undefined || framing === undefined || shell === undefined) {
       throw new Error("review capture was not initialized");
     }
     product?.destroy();
@@ -402,6 +401,7 @@ window.__review = {
       elapsedMilliseconds: settings.elapsedMilliseconds,
     }, framing);
     const live = requiredProduct();
+    shell.style.background = live.model.fieldColor;
     let focusWitness = null;
     if (focus === "base") {
       live.restoreCameraState(baseCamera());
@@ -821,7 +821,6 @@ function emptyMetadata(): ReviewMetadata {
     schemaVersion: 1,
     captureConfiguration: {
       viewport: { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT },
-      shellBackgroundRgb: SHELL_BACKGROUND_RGB,
       litPixelChannelMargin: LIT_PIXEL_CHANNEL_MARGIN,
       elapsedMilliseconds: FIXED_ELAPSED_MILLISECONDS,
       dprProjects: REVIEW_PROJECTS,
@@ -890,12 +889,13 @@ function measureImage(image: DecodedPng): ImageMeasurements {
   let darkest: PixelMeasurement | undefined;
   let brightest: PixelMeasurement | undefined;
   const distinct = new Set<number>();
+  const field = fieldPixel(image);
   for (let offset = 0; offset < image.data.length; offset += 4) {
     const red = image.data[offset] ?? 0;
     const green = image.data[offset + 1] ?? 0;
     const blue = image.data[offset + 2] ?? 0;
     distinct.add((red * 65_536) + (green * 256) + blue);
-    if (!differsFromBackground(red, green, blue)) {
+    if (!isLitPixel(red, green, blue, field)) {
       continue;
     }
     litPixels += 1;
@@ -914,7 +914,7 @@ function measureImage(image: DecodedPng): ImageMeasurements {
     litPixels: {
       count: litPixels,
       fraction: litPixels / (image.width * image.height),
-      shellBackgroundRgb: SHELL_BACKGROUND_RGB,
+      fieldRgb: field,
       channelMargin: LIT_PIXEL_CHANNEL_MARGIN,
     },
     distinctColourCount: distinct.size,
@@ -923,11 +923,20 @@ function measureImage(image: DecodedPng): ImageMeasurements {
   };
 }
 
-function differsFromBackground(red: number, green: number, blue: number): boolean {
+function fieldPixel(image: DecodedPng): readonly [number, number, number] {
+  return [image.data[0] ?? 0, image.data[1] ?? 0, image.data[2] ?? 0];
+}
+
+function isLitPixel(
+  red: number,
+  green: number,
+  blue: number,
+  field: readonly [number, number, number],
+): boolean {
   return Math.max(
-    Math.abs(red - SHELL_BACKGROUND_RGB[0]),
-    Math.abs(green - SHELL_BACKGROUND_RGB[1]),
-    Math.abs(blue - SHELL_BACKGROUND_RGB[2]),
+    Math.abs(red - field[0]),
+    Math.abs(green - field[1]),
+    Math.abs(blue - field[2]),
   ) > LIT_PIXEL_CHANNEL_MARGIN;
 }
 
