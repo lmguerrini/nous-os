@@ -95,6 +95,17 @@ type RelationPickMeasurement = {
   readonly samples: readonly RelationPickSample[];
 };
 
+/** This explains whether a relation's live target returns established its own coverage. */
+type RelationPickCoverage = {
+  readonly edgeId: string;
+  /** Every calibrated probe return, including nulls, so a failed check names the wrong answer. */
+  readonly returnedEdgeIds: readonly (string | null)[];
+  /** The self id or certified partner that covered this relation; null means no valid identity returned. */
+  readonly coveringEdgeId: string | null;
+  /** The analytic coincident-partner certificate consulted when no direct self return existed. */
+  readonly certifiedCoincidentPartnerIds: readonly string[];
+};
+
 /** The no-screenshot portion of the live production picking-target observation. */
 type PickingTargetSetWitness = {
   readonly nodeIds: readonly string[];
@@ -106,7 +117,9 @@ type PickingTargetSetWitness = {
   readonly nodeAnchorPickIds: Readonly<Record<string, string | null>>;
   /** These are rendered ids for which the live target returned that exact id at a per-id interior witness point. */
   readonly nodePickCoverageIds: readonly string[];
+  /** Each relation is covered only by itself or a named certified coincident partner. */
   readonly edgePickCoverageIds: readonly string[];
+  readonly edgePickCoverage: Readonly<Record<string, RelationPickCoverage>>;
   readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
   readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
 };
@@ -195,6 +208,7 @@ type EvidenceApi = {
   pick(edgeId: string, parameter: number, offsetPixels?: number): PickWitness;
   unambiguousParameters(edgeId: string): readonly number[];
   coincidentPartners(edgeId: string): readonly string[] | null;
+  wrongRelationPickCoverageControl(): RelationPickCoverage;
   pickChord(edgeId: string): PickWitness;
   pickStraightControl(): Promise<string | null>;
   showEmptyGraphControl(): Promise<void>;
@@ -648,6 +662,18 @@ async function boot(): Promise<void> {
     coincidentPartners(edgeId): readonly string[] | null {
       return coincidentPartnersFor(requiredHandle(product), edgeId);
     },
+    wrongRelationPickCoverageControl(): RelationPickCoverage {
+      const handle = requiredHandle(product);
+      const edgeIds = [...handle.model.graph.edges()].sort();
+      for (const edgeId of edgeIds) {
+        const certifiedCoincidentPartnerIds = coincidentPartnersFor(handle, edgeId) ?? [];
+        const returnedEdgeId = edgeIds.find((candidate) => candidate !== edgeId && !certifiedCoincidentPartnerIds.includes(candidate));
+        if (returnedEdgeId !== undefined) {
+          return relationPickCoverage(edgeId, [returnedEdgeId], certifiedCoincidentPartnerIds);
+        }
+      }
+      throw new Error("wrong relation-pick coverage control requires a non-coincident relation id");
+    },
     pickChord(edgeId): PickWitness {
       const handle = requiredHandle(product);
       const filament = handle.model.filaments.get(edgeId);
@@ -907,6 +933,7 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
   const nodeAnchorPickIds: Record<string, string | null> = {};
   const edgePixels: Record<string, readonly { x: number; y: number }[]> = {};
   const edgePickMeasurements: Record<string, RelationPickMeasurement> = {};
+  const edgePickCoverage: Record<string, RelationPickCoverage> = {};
   const pickableNodeIds = new Set<string>();
   const pickableEdgeIds = new Set<string>();
   const nodePickCoverageIds: string[] = [];
@@ -959,11 +986,21 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
       const point = handle.graphToViewport(quadraticPoint(filament, parameter));
       return { parameter, point: { x: point.x, y: point.y }, returnedEdgeId: handle.pickEdgeAtPoint(point.x, point.y) };
     });
-    const picked = probes.map((probe) => probe.returnedEdgeId).filter((candidate): candidate is string => candidate !== null);
+    const returnedEdgeIds = probes.map((probe) => probe.returnedEdgeId);
+    const picked = returnedEdgeIds.filter((candidate): candidate is string => candidate !== null);
     for (const pickedId of picked) {
       pickableEdgeIds.add(pickedId);
     }
-    if (picked.length > 0) {
+    // A non-null id alone is not coverage for this relation.  A relation can be
+    // covered by its own return, or only by a partner proved coincident by the
+    // existing all-parameter analytic certificate.  Do not spend certificate
+    // work when no probe returned an id: no certificate can make null a hit.
+    const certifiedCoincidentPartnerIds = picked.includes(id) || picked.length === 0
+      ? []
+      : coincidentPartnersFor(handle, id) ?? [];
+    const coverage = relationPickCoverage(id, returnedEdgeIds, certifiedCoincidentPartnerIds);
+    edgePickCoverage[id] = coverage;
+    if (coverage.coveringEdgeId !== null) {
       edgePickCoverageIds.push(id);
     }
     if (includePixelWitnesses) {
@@ -998,6 +1035,7 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
     nodeAnchorPickIds,
     nodePickCoverageIds: nodePickCoverageIds.sort(),
     edgePickCoverageIds: edgePickCoverageIds.sort(),
+    edgePickCoverage,
     anchors,
     incidence,
   };
@@ -1009,6 +1047,24 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
     edgePickMeasurements,
     nodePixels,
     edgePixels,
+  };
+}
+
+/** Classifies a relation's raw returned ids without allowing another relation to satisfy its coverage. */
+function relationPickCoverage(
+  edgeId: string,
+  returnedEdgeIds: readonly (string | null)[],
+  certifiedCoincidentPartnerIds: readonly string[],
+): RelationPickCoverage {
+  const coveringEdgeId = returnedEdgeIds.find((returnedEdgeId) => (
+    returnedEdgeId === edgeId
+    || (returnedEdgeId !== null && certifiedCoincidentPartnerIds.includes(returnedEdgeId))
+  )) ?? null;
+  return {
+    edgeId,
+    returnedEdgeIds,
+    coveringEdgeId,
+    certifiedCoincidentPartnerIds,
   };
 }
 
@@ -1563,6 +1619,7 @@ function failedApi(): EvidenceApi {
     pick: unavailable,
     unambiguousParameters: unavailable,
     coincidentPartners: unavailable,
+    wrongRelationPickCoverageControl: unavailable,
     pickChord: unavailable,
     pickStraightControl: async () => unavailable(),
     showEmptyGraphControl: async () => unavailable(),

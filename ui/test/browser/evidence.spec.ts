@@ -79,6 +79,13 @@ type Snapshot = {
   readonly pickingTarget: PickingTargetWitness;
 };
 
+type RelationPickCoverage = {
+  readonly edgeId: string;
+  readonly returnedEdgeIds: readonly (string | null)[];
+  readonly coveringEdgeId: string | null;
+  readonly certifiedCoincidentPartnerIds: readonly string[];
+};
+
 /** The no-screenshot portion of the live production picking-target observation. */
 type PickingTargetSetWitness = {
     readonly nodeIds: readonly string[];
@@ -88,6 +95,7 @@ type PickingTargetSetWitness = {
     readonly nodeAnchorPickIds: Readonly<Record<string, string | null>>;
     readonly nodePickCoverageIds: readonly string[];
     readonly edgePickCoverageIds: readonly string[];
+    readonly edgePickCoverage: Readonly<Record<string, RelationPickCoverage>>;
     readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
     readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
 };
@@ -152,6 +160,7 @@ type PageEvidence = {
   };
   unambiguousParameters(edgeId: string): readonly number[];
   coincidentPartners(edgeId: string): readonly string[] | null;
+  wrongRelationPickCoverageControl(): RelationPickCoverage;
   pickChord(edgeId: string): { readonly edgeId: string | null; readonly point: { readonly x: number; readonly y: number } };
   pickStraightControl(): Promise<string | null>;
   showEmptyGraphControl(): Promise<void>;
@@ -571,6 +580,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     let directRelationWitnesses = 0;
     let certifiedRelationWitnesses = 0;
     let cheapInvariantStates = 0;
+    let wrongRelationPickCoverageControlDetail: string | undefined;
     for (const state of cheapInvariantStatesToRun) {
       const stateKey = shippingCrossProductKey(state);
       const setSnapshot = await invoke<ShippingPickingSetSnapshot>(
@@ -583,6 +593,37 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       );
       expect(setSnapshot.policy, `${stateKey} mounted its requested policy`).toBe(state.policy);
       expect(setSnapshot.morphology, `${stateKey} keeps the single shipping morphology`).toBe(SHIPPING_MORPHOLOGY);
+      if (wrongRelationPickCoverageControlDetail === undefined) {
+        const control = await invoke<RelationPickCoverage>("wrongRelationPickCoverageControl");
+        expect(control.returnedEdgeIds, "wrong relation-id control feeds exactly one returned relation id").toHaveLength(1);
+        const returnedEdgeId = control.returnedEdgeIds[0];
+        expect(returnedEdgeId, "wrong relation-id control feeds a non-null relation id").not.toBeNull();
+        if (returnedEdgeId === undefined || returnedEdgeId === null) {
+          throw new Error("wrong relation-id control did not produce a returned relation id");
+        }
+        expect(returnedEdgeId, "wrong relation-id control does not return the source relation").not.toBe(control.edgeId);
+        expect(control.certifiedCoincidentPartnerIds.includes(returnedEdgeId), "wrong relation-id control does not use a certified coincident partner").toBe(false);
+        expect(control.coveringEdgeId, "wrong relation-id control is not marked covered").toBeNull();
+        let rejection: string | undefined;
+        try {
+          assertShippingPickingTargetSet({
+            ...setSnapshot,
+            pickingTarget: {
+              ...setSnapshot.pickingTarget,
+              edgePickCoverageIds: setSnapshot.pickingTarget.edgePickCoverageIds.filter((edgeId) => edgeId !== control.edgeId),
+              edgePickCoverage: { ...setSnapshot.pickingTarget.edgePickCoverage, [control.edgeId]: control },
+            },
+          }, `${stateKey} wrong relation-id control`);
+        } catch (error: unknown) {
+          rejection = message(error);
+        }
+        expect(rejection, "A3 relation coverage assertion rejects a deliberately wrong returned id").toBeDefined();
+        if (rejection === undefined) {
+          throw new Error("A3 relation coverage assertion accepted a deliberately wrong returned id");
+        }
+        expect(rejection, "wrong relation-id rejection names the id that came back instead").toContain(`returned=[${returnedEdgeId}]`);
+        wrongRelationPickCoverageControlDetail = `${control.edgeId} returned ${returnedEdgeId} without a certificate and was rejected: ${rejection}`;
+      }
       assertShippingPickingTargetSet(setSnapshot, stateKey);
       const reference = references.get(state.policy);
       if (reference === undefined) {
@@ -641,6 +682,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
         : "DPR 2 cheap picking-target set invariant covers its disclosed deterministic sample",
     ).toBe(cheapInvariantStatesToRun.length);
     expect(pd3Diagnostics, "the known hard shipping-master state was included in the deterministic compositor sample").toHaveLength(1);
+    expect(wrongRelationPickCoverageControlDetail, "A3 ran its deliberately wrong returned-id control").toBeDefined();
     const restore = product[0];
     if (restore === undefined) {
       throw new Error("shipping cross-product is empty");
@@ -655,7 +697,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const coverageDisclosure = hasFullShippingSetCoverage
       ? `DPR 1 full-space set coverage: the cheap invariant covered all ${cheapInvariantStates}/${SHIPPING_CROSS_PRODUCT_SIZE} shipping policy×palette×temperature×theme×LOD states (no morphology axis)`
       : `DPR 2 sampled coverage: the cheap invariant covered a deterministic sample of twelve (${cheapInvariantStates}) of ${SHIPPING_CROSS_PRODUCT_SIZE} shipping policy×palette×temperature×theme×LOD states (no morphology axis), selected with recorded seed ${A3_PIXEL_WITNESS_SAMPLE_SEED} (0x${A3_PIXEL_WITNESS_SAMPLE_SEED.toString(16)}); DPR 2 is sampled, not full coverage`;
-    return `${coverageDisclosure}: production-model rendered ids and live-picking-target rendered/pickable id sets, endpoint incidence, and anchors; per-id composited pixel witnesses are the same deterministic sample of ${pixelWitnessSample.length}/${SHIPPING_CROSS_PRODUCT_SIZE} states, not the whole space, seed=${A3_PIXEL_WITNESS_SAMPLE_SEED} (0x${A3_PIXEL_WITNESS_SAMPLE_SEED.toString(16)}), forced states=${A3_FORCED_PIXEL_WITNESS_STATES.map(shippingCrossProductKey).join(", ")} (the same shipping-master hard state first; macro and micro extrema next); direct relation witnesses=${directRelationWitnesses}; failed direct witnesses certified=${certifiedRelationWitnesses}; certificate cache entries=${occlusionCertificateCache.size} (sample policy×LOD only); ${coincidenceDiagnostic}; ${anchorCentreDiagnostic}${pd3Diagnostics.length === 0 ? "" : `; ${pd3Diagnostics.join("; ")}`}`;
+    return `${coverageDisclosure}: production-model rendered ids and live-picking-target rendered/pickable id sets, endpoint incidence, and anchors; per-id composited pixel witnesses are the same deterministic sample of ${pixelWitnessSample.length}/${SHIPPING_CROSS_PRODUCT_SIZE} states, not the whole space, seed=${A3_PIXEL_WITNESS_SAMPLE_SEED} (0x${A3_PIXEL_WITNESS_SAMPLE_SEED.toString(16)}), forced states=${A3_FORCED_PIXEL_WITNESS_STATES.map(shippingCrossProductKey).join(", ")} (the same shipping-master hard state first; macro and micro extrema next); direct relation witnesses=${directRelationWitnesses}; failed direct witnesses certified=${certifiedRelationWitnesses}; certificate cache entries=${occlusionCertificateCache.size} (sample policy×LOD only); wrong returned-id control=${wrongRelationPickCoverageControlDetail}; ${coincidenceDiagnostic}; ${anchorCentreDiagnostic}${pd3Diagnostics.length === 0 ? "" : `; ${pd3Diagnostics.join("; ")}`}`;
   });
   await run("policy-transition", async () => {
     const discovery = await invoke<Snapshot>("switchPolicy", "Discovery");
@@ -1112,7 +1154,11 @@ function assertPickingTargetPixels(snapshot: Snapshot, image: DecodedPng): void 
   expect(target.nodeIds.length, "picking target has rendered nodes").toBeGreaterThan(0);
   expect(target.edgeIds.length, "picking target has rendered relations").toBeGreaterThan(0);
   expect([...target.nodePickCoverageIds].sort(), "every rendered node has an actual picking-target hit").toEqual([...target.nodeIds].sort());
-  expect([...target.edgePickCoverageIds].sort(), "every rendered relation has an actual picking-target hit").toEqual([...target.edgeIds].sort());
+  expect(Object.keys(target.edgePickCoverage).sort(), "relation-picking coverage detail names every rendered relation").toEqual([...target.edgeIds].sort());
+  expect(
+    [...target.edgePickCoverageIds].sort(),
+    `every rendered relation has an own-id or certified-coincident live picking-target hit; ${formatRelationPickCoverage(target.edgePickCoverage)}`,
+  ).toEqual([...target.edgeIds].sort());
   expect(target.pickableNodeIds.every((id) => target.nodeIds.includes(id)), "the picking target cannot return an unknown node id").toBe(true);
   expect(target.pickableEdgeIds.every((id) => target.edgeIds.includes(id)), "the picking target cannot return an unknown relation id").toBe(true);
   expect(Object.keys(target.anchors).sort(), "picking target anchors name every rendered node").toEqual([...target.nodeIds].sort());
@@ -1239,7 +1285,11 @@ function assertShippingPickingTargetSet(snapshot: ShippingPickingSetSnapshot, st
   expect(target.nodeIds.length, `${state} production model has rendered nodes`).toBeGreaterThan(0);
   expect(target.edgeIds.length, `${state} production model has rendered relations`).toBeGreaterThan(0);
   expect([...target.nodePickCoverageIds].sort(), `${state} every rendered node has an actual live picking-target hit`).toEqual([...target.nodeIds].sort());
-  expect([...target.edgePickCoverageIds].sort(), `${state} every rendered relation has an actual live picking-target hit`).toEqual([...target.edgeIds].sort());
+  expect(Object.keys(target.edgePickCoverage).sort(), `${state} relation-picking coverage detail names every rendered relation`).toEqual([...target.edgeIds].sort());
+  expect(
+    [...target.edgePickCoverageIds].sort(),
+    `${state} every rendered relation has an own-id or certified-coincident live picking-target hit; ${formatRelationPickCoverage(target.edgePickCoverage)}`,
+  ).toEqual([...target.edgeIds].sort());
   expect(target.pickableNodeIds.every((id) => target.nodeIds.includes(id)), `${state} live picking target cannot return an unknown node id`).toBe(true);
   expect(target.pickableEdgeIds.every((id) => target.edgeIds.includes(id)), `${state} live picking target cannot return an unknown relation id`).toBe(true);
   expect(Object.keys(target.anchors).sort(), `${state} live picking-target anchors name every rendered node`).toEqual([...target.nodeIds].sort());
@@ -1269,6 +1319,13 @@ function formatRelationPickMeasurement(
     `t=${sample.parameter.toFixed(3)}, shader-t=${sample.shaderParameter.toFixed(3)}, returned=${sample.returnedEdgeId ?? "null"}, distance=${sample.centrelineDistancePx.toFixed(3)}px, body=${sample.bodyWidthPx.toFixed(3)}px, visible=${sample.visibleWidthPx.toFixed(3)}px, pick-radius=${sample.pickRadiusPx.toFixed(3)}px`
   )).join(" | ");
   return `returned=[${measurement.returnedEdgeIds.join(",")}]; samples=${samples}`;
+}
+
+/** This makes identity failures falsifiable by naming raw returns and the certificate that may justify one. */
+function formatRelationPickCoverage(coverage: Readonly<Record<string, RelationPickCoverage>>): string {
+  return Object.entries(coverage).sort(([left], [right]) => left.localeCompare(right)).map(([edgeId, witness]) => (
+    `${edgeId}: covered-by=${witness.coveringEdgeId ?? "none"}; returned=[${witness.returnedEdgeIds.map((returnedEdgeId) => returnedEdgeId ?? "null").join(",")}]; certified-coincident-partners=[${witness.certifiedCoincidentPartnerIds.join(",")}]`
+  )).join(" | ");
 }
 
 /** This reports centre-probe aliases without treating their material-sensitive result as an invariant. */
