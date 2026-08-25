@@ -84,6 +84,46 @@ export type VisualGraph = {
   readonly edges: readonly VisualEdge[];
 };
 
+/** This is the only structural element surface supplied to rendering engines and excludes semantic and derived payloads. */
+export type EngineNode = {
+  readonly id: string;
+  readonly kind: string;
+  readonly visual: {
+    readonly role: string;
+    readonly label_priority: number;
+  };
+};
+
+/** This is the only structural relation surface supplied to rendering engines and excludes semantic and derived payloads. */
+export type EngineEdge = {
+  readonly id: string;
+  readonly kind: string;
+  readonly source: string;
+  readonly target: string;
+  readonly visual: {
+    readonly role: string;
+    readonly label_priority: number;
+  };
+};
+
+/** This is the structural graph view consumed by rendering engines and contains no semantic payload. */
+export type EngineGraph = {
+  readonly nodes: readonly EngineNode[];
+  readonly edges: readonly EngineEdge[];
+};
+
+/** This records every field access made through the engine's structural view. */
+export type EngineAccessTrace = {
+  readonly reads: readonly string[];
+};
+
+/** This is the closed structural allow-list for every engine-visible graph element. */
+export const ENGINE_ELEMENT_FIELD_ALLOW_LIST = {
+  node: ["id", "kind", "visual"],
+  edge: ["id", "kind", "source", "target", "visual"],
+  visual: ["role", "label_priority"],
+} as const;
+
 /** This is the complete literal field register and does not permit extension fields. */
 export const VISUAL_GRAPH_FIELD_REGISTER = {
   graph: ["schema_version", "policy_id", "question", "nodes", "edges"],
@@ -96,6 +136,48 @@ export const VISUAL_GRAPH_FIELD_REGISTER = {
   lod: ["minimum", "maximum"],
   semantic: [],
 } as const;
+
+/** This creates a traced structural engine view and does not expose semantic or derived values. */
+export function createEngineGraphView(graph: VisualGraph): { readonly graph: EngineGraph; readonly trace: EngineAccessTrace } {
+  const reads: string[] = [];
+  const trace: EngineAccessTrace = { reads };
+  const node = (value: VisualNode): EngineNode => tracedElement({
+    id: value.id,
+    kind: value.kind,
+    visual: tracedVisual(value.visual, "node", reads),
+  }, "node", reads);
+  const edge = (value: VisualEdge): EngineEdge => tracedElement({
+    id: value.id,
+    kind: value.kind,
+    source: value.source,
+    target: value.target,
+    visual: tracedVisual(value.visual, "edge", reads),
+  }, "edge", reads);
+  return {
+    graph: {
+      nodes: graph.nodes.map(node),
+      edges: graph.edges.map(edge),
+    },
+    trace,
+  };
+}
+
+/** This verifies every recorded engine read is in the structural allow-list and therefore cannot be semantic. */
+export function assertEngineAccessTrace(trace: EngineAccessTrace): void {
+  for (const read of trace.reads) {
+    const [element, field, nested, extra] = read.split(".");
+    const allowedElement = element === "node" || element === "edge" ? element : undefined;
+    if (allowedElement === undefined || field === undefined || !(ENGINE_ELEMENT_FIELD_ALLOW_LIST[allowedElement] as readonly string[]).includes(field)) {
+      throw new TypeError(`engine read is outside the structural allow-list: ${read}`);
+    }
+    if (field !== "visual" && nested !== undefined) {
+      throw new TypeError(`engine read is outside the structural allow-list: ${read}`);
+    }
+    if (field === "visual" && nested !== undefined && (extra !== undefined || !(ENGINE_ELEMENT_FIELD_ALLOW_LIST.visual as readonly string[]).includes(nested))) {
+      throw new TypeError(`engine read is outside the structural allow-list: ${read}`);
+    }
+  }
+}
 
 /** This refuses graph fields outside the pinned register and does not validate domain semantics. */
 export function assertVisualGraphFieldRegister(graph: unknown): asserts graph is VisualGraph {
@@ -176,6 +258,35 @@ function assertEdgeFields(value: unknown, path: string): void {
 
 function assertDerivedFields(value: unknown, path: string): void {
   assertExactFields(value, path, VISUAL_GRAPH_FIELD_REGISTER.derived);
+  const derived = value as Record<string, unknown>;
+  if (typeof derived.origin !== "string" || derived.origin.trim() === "") {
+    throw new TypeError(`${path}.origin must be a non-empty string`);
+  }
+}
+
+function tracedElement<Value extends object>(value: Value, element: "node" | "edge", reads: string[]): Value {
+  return new Proxy(value, {
+    get(target, property, receiver): unknown {
+      if (typeof property === "string") {
+        reads.push(`${element}.${property}`);
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+}
+
+function tracedVisual(value: VisualMetadata, element: "node" | "edge", reads: string[]): EngineNode["visual"] {
+  return new Proxy({
+    role: value.role,
+    label_priority: value.label_priority,
+  }, {
+    get(target, property, receiver): unknown {
+      if (typeof property === "string") {
+        reads.push(`${element}.visual.${property}`);
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
 }
 
 function assertVisualFields(value: unknown, path: string): void {
@@ -204,6 +315,10 @@ function assertArray(value: unknown, path: string): asserts value is readonly un
 function assertExactFields(value: unknown, path: string, fields: readonly string[]): void {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError(`${path} must be an object`);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(`${path} must be a plain object`);
   }
   const ownKeys = Reflect.ownKeys(value);
   const actual: string[] = [];

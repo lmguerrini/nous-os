@@ -31,6 +31,12 @@ export type RenderNodeGlowWitness = {
   readonly haloRadiusPx: number;
 };
 
+/** This records the live material programs bound to one relation and does not expose graph semantics. */
+export type RelationMaterialBinding = {
+  readonly relationId: string;
+  readonly materialTypes: readonly string[];
+};
+
 /** This is one mounted renderer and does not retain an independent graph copy. */
 export type RenderHandle = {
   readonly model: RenderModel;
@@ -59,6 +65,10 @@ export type RenderHandle = {
   readGlowWitnesses(): readonly RenderNodeGlowWitness[];
   /** This controls glow compositing and does not change graph material. */
   setGlowVisible(visible: boolean): void;
+  /** This reports the material programs bound to each live relation and does not expose semantic payload. */
+  readRelationMaterialBindings(): readonly RelationMaterialBinding[];
+  /** This forces a duplicate material on one live relation binding and confirms the single-material assertion rejects it. */
+  proveStackedMaterialControlRejects(): { readonly relationId: string; readonly message: string };
   destroy(): void;
 };
 
@@ -96,9 +106,10 @@ export function mount(
   const baseEdgeAttributes = new Map<string, RenderEdgeAttributes>(
     model.graph.edges().map((id) => [id, model.graph.getEdgeAttributes(id)]),
   );
+  const edgeProgramClasses = { filament: createFilamentProgram(model.filamentMaterial) };
   const sigma = new Sigma(model.graph, container, {
     defaultEdgeType: "filament",
-    edgeProgramClasses: { filament: createFilamentProgram(model.filamentMaterial) },
+    edgeProgramClasses,
     renderLabels: model.material.node.includes("label"),
     labelColor: { attribute: "labelColor", color: requiredTokenColor(model, "text") },
     edgeLabelColor: { attribute: "labelColor", color: requiredTokenColor(model, "textMuted") },
@@ -111,6 +122,7 @@ export function mount(
   if (suppliedState !== undefined) {
     restoreCameraState(sigma, cameraStateFromVisualState(suppliedState.camera));
   }
+  assertSingleMaterialPerRelation(liveRelationMaterialBindings(sigma, Object.keys(edgeProgramClasses)));
   let currentState = suppliedState ?? createVisualState(visualGraph, {
     selectedId: null,
     focusedId: null,
@@ -219,12 +231,57 @@ export function mount(
     setGlowVisible(visible: boolean): void {
       glow.setVisible(visible);
     },
+    readRelationMaterialBindings(): readonly RelationMaterialBinding[] {
+      return liveRelationMaterialBindings(sigma, Object.keys(edgeProgramClasses));
+    },
+    proveStackedMaterialControlRejects(): { readonly relationId: string; readonly message: string } {
+      const bindings = liveRelationMaterialBindings(sigma, Object.keys(edgeProgramClasses));
+      const relation = bindings[0];
+      if (relation === undefined || relation.materialTypes[0] === undefined) {
+        throw new TypeError("stacked-material control requires one live relation binding");
+      }
+      const stacked = bindings.map((binding) => binding.relationId === relation.relationId
+        ? { ...binding, materialTypes: [...binding.materialTypes, relation.materialTypes[0] as string] }
+        : binding);
+      try {
+        assertSingleMaterialPerRelation(stacked);
+      } catch (error: unknown) {
+        return { relationId: relation.relationId, message: error instanceof Error ? error.message : String(error) };
+      }
+      throw new TypeError("stacked-material control did not fail the live material assertion");
+    },
     destroy(): void {
       glow.destroy();
       windows.destroy();
       sigma.kill();
     },
   };
+}
+
+/** This reads the material type bound in the mounted Sigma pipeline and does not inspect source graph semantics. */
+function liveRelationMaterialBindings(sigma: Sigma, registeredMaterialTypes: readonly string[]): readonly RelationMaterialBinding[] {
+  const graph = sigma.getGraph();
+  return graph.edges().map((relationId) => {
+    const materialType = graph.getEdgeAttribute(relationId, "type");
+    if (typeof materialType !== "string" || !registeredMaterialTypes.includes(materialType)) {
+      throw new TypeError(`live relation ${relationId} has no registered material program`);
+    }
+    return { relationId, materialTypes: [materialType] };
+  });
+}
+
+/** This refuses material stacking for each live relation binding. */
+export function assertSingleMaterialPerRelation(bindings: readonly RelationMaterialBinding[]): void {
+  const seen = new Set<string>();
+  for (const binding of bindings) {
+    if (seen.has(binding.relationId)) {
+      throw new TypeError(`relation ${binding.relationId} has multiple material bindings`);
+    }
+    seen.add(binding.relationId);
+    if (binding.materialTypes.length !== 1) {
+      throw new TypeError(`relation ${binding.relationId} must bind exactly one material program`);
+    }
+  }
 }
 
 /** This draws morphology-shaped node halos below edges and does not introduce a second node topology. */

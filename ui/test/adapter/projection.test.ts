@@ -220,6 +220,10 @@ test("visual graphs meet the boundary register without retaining payload or dige
     const neutral = neutralProjection(raw);
     assertVisualGraphFieldRegister(graph);
     assertNoPassthrough(graph, raw, semanticDigest(graph));
+    for (const element of [...graph.nodes, ...graph.edges]) {
+      assert.equal(element.derived.origin, "projection-adapter");
+      assert.ok(element.derived.origin.length > 0);
+    }
     assert.equal(graph.nodes.length, raw.nodes.length);
     assert.equal(graph.edges.length, raw.edges.length);
     assert.deepEqual(

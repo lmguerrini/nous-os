@@ -1,5 +1,5 @@
 import type { CalibrationProfile } from "#engine/calibration.ts";
-import type { Coordinates, VisualGraph } from "#engine/contract.ts";
+import type { Coordinates, EngineGraph } from "#engine/contract.ts";
 
 const PERMILLE = 1000;
 
@@ -82,7 +82,7 @@ export function resolvedMaterial(band: LodBand): ResolvedMaterial {
 
 /** This creates a fixed-id LOD view and does not add or remove visual graph elements. */
 export function lodView(
-  graph: VisualGraph,
+  graph: EngineGraph,
   anchors: ReadonlyMap<string, Coordinates>,
   band: LodBand,
 ): LodView {
@@ -97,7 +97,7 @@ export function lodView(
 
 /** This verifies a fixed-id LOD view and does not judge which material a renderer draws. */
 export function assertLodView(
-  graph: VisualGraph,
+  graph: EngineGraph,
   anchors: ReadonlyMap<string, Coordinates>,
   view: LodView,
 ): void {

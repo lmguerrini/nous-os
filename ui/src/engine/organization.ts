@@ -1,5 +1,5 @@
 import type { CalibrationProfile } from "#engine/calibration.ts";
-import type { Coordinates, VisualGraph } from "#engine/contract.ts";
+import type { Coordinates, EngineGraph } from "#engine/contract.ts";
 import { aggregateDiscs, aggregateMemberships, layoutAnchors } from "#engine/layout.ts";
 import type { LayoutAnchors } from "#engine/layout.ts";
 
@@ -40,7 +40,7 @@ export type OrganizationResult = {
 };
 
 /** This renders no aggregate windows and does not conceal aggregate nodes or edges. */
-export function flatOrganization(graph: VisualGraph, anchors: LayoutAnchors = layoutAnchors(graph)): OrganizationResult {
+export function flatOrganization(graph: EngineGraph, anchors: LayoutAnchors = layoutAnchors(graph)): OrganizationResult {
   return {
     organization: FLAT,
     nodeIds: graph.nodes.map((node) => node.id),
@@ -58,7 +58,7 @@ export function flatOrganization(graph: VisualGraph, anchors: LayoutAnchors = la
 
 /** This renders one-level discs over real members and does not treat rejection as containment. */
 export function indraOrganization(
-  graph: VisualGraph,
+  graph: EngineGraph,
   calibration: CalibrationProfile,
   anchors: LayoutAnchors = layoutAnchors(graph, calibration),
 ): OrganizationResult {
@@ -96,7 +96,7 @@ export function indraOrganization(
 }
 
 /** This verifies real aggregate membership and does not infer containment from a relation target. */
-export function assertIndraOrganization(graph: VisualGraph, result: OrganizationResult): void {
+export function assertIndraOrganization(graph: EngineGraph, result: OrganizationResult): void {
   if (result.organization !== INDRA) {
     throw new TypeError("organization is not Indra");
   }

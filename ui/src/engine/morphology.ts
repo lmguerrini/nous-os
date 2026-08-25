@@ -1,5 +1,5 @@
 import type { CalibrationProfile } from "#engine/calibration.ts";
-import type { DerivedValue, VisualGraph } from "#engine/contract.ts";
+import type { DerivedValue, EngineGraph } from "#engine/contract.ts";
 
 const PERMILLE = 1000;
 const TERMINAL_DEGREE = 1;
@@ -84,7 +84,7 @@ export type MorphologyMaterial = {
 
 /** This applies visual material from existing structure and does not modify the graph. */
 export function applyMorphology(
-  graph: VisualGraph,
+  graph: EngineGraph,
   morphology: MorphologyProfile,
   calibration: CalibrationProfile,
 ): MorphologyMaterial {
@@ -215,7 +215,7 @@ function normalisedProminence(
 }
 
 /** This verifies the material binding against a graph and does not accept a topology rewrite. */
-export function assertMorphologyBinding(graph: VisualGraph, binding: MorphologyMaterial): void {
+export function assertMorphologyBinding(graph: EngineGraph, binding: MorphologyMaterial): void {
   assertExactIds(binding.nodeIds, graph.nodes.map((node) => node.id), "node");
   assertExactIds(binding.edgeIds, graph.edges.map((edge) => edge.id), "edge");
   if (binding.incidence.length !== graph.edges.length) {
@@ -229,7 +229,7 @@ export function assertMorphologyBinding(graph: VisualGraph, binding: MorphologyM
   }
 }
 
-function degrees(graph: VisualGraph): Map<string, number> {
+function degrees(graph: EngineGraph): Map<string, number> {
   const degree = new Map<string, number>();
   for (const node of graph.nodes) {
     degree.set(node.id, 0);
@@ -241,7 +241,7 @@ function degrees(graph: VisualGraph): Map<string, number> {
   return degree;
 }
 
-function hopDistances(graph: VisualGraph, degree: ReadonlyMap<string, number>): Map<string, number> {
+function hopDistances(graph: EngineGraph, degree: ReadonlyMap<string, number>): Map<string, number> {
   const maximumDegree = Math.max(...degree.values());
   const hubs = graph.nodes.filter((node) => degree.get(node.id) === maximumDegree).map((node) => node.id).sort();
   const adjacency = new Map<string, string[]>();

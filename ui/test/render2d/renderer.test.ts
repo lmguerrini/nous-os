@@ -4,7 +4,16 @@ import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import {
+  ENGINE_ELEMENT_FIELD_ALLOW_LIST,
+  assertEngineAccessTrace,
+  createEngineGraphView,
+  createSemantic,
+  readSemantic,
+  semanticDigest,
+} from "#engine/contract.ts";
 import type { Coordinates, VisualGraph } from "#engine/contract.ts";
+import { sharedAnchors } from "#engine/layout.ts";
 import { applyMorphology, MYCELIUM, NEURAL, STELLAR } from "#engine/morphology.ts";
 import { PALETTES, TEMPERATURES, THEMES, TOKEN_RAMPS, contrastRatio, relativeLuminance } from "#engine/tokens.ts";
 import type { TokenMap } from "#engine/tokens.ts";
@@ -24,8 +33,8 @@ import { buildRenderModel, nodeTokenForMaterial, resolveLabelIds } from "#render
 import type { RenderOptions } from "#render2d/model.ts";
 
 /** This reads one renderer input and does not create display attributes from the fixture directly. */
-function graph(): VisualGraph {
-  return toVisualGraph(JSON.parse(readFileSync(join(process.cwd(), "..", "fixtures", "synthetic", "projection", "discovery-at-question.json"), "utf8")) as unknown);
+function graph(fixture = "discovery-at-question.json"): VisualGraph {
+  return toVisualGraph(JSON.parse(readFileSync(join(process.cwd(), "..", "fixtures", "synthetic", "projection", fixture), "utf8")) as unknown);
 }
 
 /** This supplies one complete renderer selection and does not select an animation frame. */
@@ -63,6 +72,45 @@ function forbidEdgeSemantic(edge: VisualGraph["edges"][number]): VisualGraph["ed
   return protectedEdge;
 }
 
+/** This permutes opaque payloads across elements without changing any structural renderer input. */
+function graphWithPermutedSemanticAssignments(input: VisualGraph): VisualGraph {
+  const elements = [...input.nodes, ...input.edges];
+  const payloads = elements.map((element) => readSemantic(element.semantic));
+  if (payloads.length < 2) {
+    throw new TypeError("semantic permutation requires at least two graph elements");
+  }
+  const replacement = (index: number): ReturnType<typeof createSemantic> => {
+    const value = payloads[(index + 1) % payloads.length];
+    if (value === undefined) {
+      throw new TypeError("semantic permutation lost a payload");
+    }
+    return createSemantic(value);
+  };
+  return {
+    ...input,
+    nodes: input.nodes.map((node, index) => ({ ...node, semantic: replacement(index) })),
+    edges: input.edges.map((edge, index) => ({ ...edge, semantic: replacement(input.nodes.length + index) })),
+  };
+}
+
+/** This records renderer output without retaining source graph semantics. */
+function engineOutput(model: ReturnType<typeof buildRenderModel>): object {
+  return {
+    nodeIds: model.graph.nodes(),
+    edgeIds: model.graph.edges(),
+    nodeAttributes: model.graph.nodes().map((id) => [id, model.graph.getNodeAttributes(id)]),
+    edgeAttributes: model.graph.edges().map((id) => [id, model.graph.getEdgeAttributes(id)]),
+    anchors: Object.fromEntries(model.anchors),
+    organization: model.organization,
+    windows: model.windows,
+    lodBand: model.lodBand,
+    material: model.material,
+    filamentMaterial: model.filamentMaterial,
+    filaments: Object.fromEntries(model.filaments),
+    propagation: Object.fromEntries(model.propagation),
+  };
+}
+
 test("the graphology graph retains every visual graph id and engine anchor", () => {
   const visualGraph = graph();
   const model = buildRenderModel(visualGraph, options(false));
@@ -82,11 +130,50 @@ test("the graphology graph retains every visual graph id and engine anchor", () 
   assert.equal(model.organization.rejectionBounds.length, visualGraph.nodes.filter((node) => node.kind === "rejection").length);
 });
 
+test("the renderer carries source-graph shared anchors across its structural engine boundary", () => {
+  const discovery = graph("discovery-all-time.json");
+  const reliability = graph("reliability-all-time.json");
+  const expected = sharedAnchors(discovery, reliability);
+  const model = buildRenderModel(reliability, options(false));
+  assert.deepEqual(Object.fromEntries(model.anchors), Object.fromEntries(expected));
+});
+
 test("display decisions reject semantic access", () => {
   const model = buildRenderModel(graphWithForbiddenSemantic(graph()), options(false));
   assert.ok(model.graph.order > 0);
   assert.ok(model.graph.size > 0);
   assert.equal(model.graph.order, model.anchors.size);
+});
+
+test("engine elements expose only the structural allow-list, trace no semantic reads, and ignore non-isomorphic semantic assignments", () => {
+  assert.deepEqual(ENGINE_ELEMENT_FIELD_ALLOW_LIST, {
+    node: ["id", "kind", "visual"],
+    edge: ["id", "kind", "source", "target", "visual"],
+    visual: ["role", "label_priority"],
+  });
+  assert.deepEqual({
+    node: ["id", "kind", "visual"],
+    edge: ["id", "kind", "source", "target", "visual"],
+    visual: ["role", "label_priority"],
+  }, ENGINE_ELEMENT_FIELD_ALLOW_LIST);
+
+  const original = graph();
+  const permuted = graphWithPermutedSemanticAssignments(original);
+  assert.notEqual(semanticDigest(permuted), semanticDigest(original), "the non-isomorphic control must alter semantic assignment");
+  const originalModel = buildRenderModel(original, options(false));
+  const permutedModel = buildRenderModel(permuted, options(false));
+  assertEngineAccessTrace(originalModel.engineAccessTrace);
+  assertEngineAccessTrace(permutedModel.engineAccessTrace);
+  assert.ok(originalModel.engineAccessTrace.reads.length > 0);
+  assert.equal(originalModel.engineAccessTrace.reads.some((read) => read.includes("semantic")), false);
+  assert.equal(permutedModel.engineAccessTrace.reads.some((read) => read.includes("semantic")), false);
+  assert.deepEqual(engineOutput(originalModel), engineOutput(permutedModel));
+
+  const forced = createEngineGraphView(original);
+  const forcedNode = forced.graph.nodes[0] as (typeof forced.graph.nodes)[number] & { readonly semantic?: unknown } | undefined;
+  assert.ok(forcedNode !== undefined);
+  void forcedNode.semantic;
+  assert.throws(() => assertEngineAccessTrace(forced.trace), /outside the structural allow-list: node\.semantic/);
 });
 
 const TYPE_QUALIFIED_KIND_VOCABULARY = [

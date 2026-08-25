@@ -1,5 +1,5 @@
 import { canonicalBytes } from "#engine/canonical.ts";
-import { createSemantic } from "#engine/contract.ts";
+import { assertVisualGraphFieldRegister, createSemantic } from "#engine/contract.ts";
 import type { Semantic, VisualEdge, VisualGraph, VisualNode } from "#engine/contract.ts";
 
 type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
@@ -98,13 +98,15 @@ export function neutralProjection(payload: unknown): NeutralProjection {
 /** This creates a renderer-neutral graph and does not retain the projection payload or its digest. */
 export function toVisualGraph(payload: unknown): VisualGraph {
   const neutral = neutralProjection(payload);
-  return {
+  const graph: VisualGraph = {
     schema_version: neutral.schema_version,
     policy_id: neutral.policy_id,
     question: cloneQuestion(neutral.question),
     nodes: neutral.nodes.map((node, index) => visualNode(node, index)),
     edges: neutral.edges.map((edge, index) => visualEdge(edge, index)),
   };
+  assertVisualGraphFieldRegister(graph);
+  return graph;
 }
 
 /** This re-applies the Reliability predicate and does not infer policy intent from a label. */

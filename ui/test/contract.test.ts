@@ -203,6 +203,38 @@ test("the field register refuses missing fields", () => {
   assert.doesNotThrow(() => assertVisualGraphFieldRegister(graph));
 });
 
+test("derived origins are non-null named sources and every nested register refuses unknown keys", () => {
+  const graph = makeGraph();
+  const node = graph.nodes[0];
+  const edge = graph.edges[0];
+  assert.ok(node !== undefined && edge !== undefined);
+  const pathPoint = node.visual.path[0];
+  assert.ok(pathPoint !== undefined);
+  const cases: readonly { readonly name: string; readonly value: unknown; readonly rule: RegExp }[] = [
+    { name: "graph", value: { ...graph, unknown: true }, rule: /graph fields do not match the pinned register/ },
+    { name: "question", value: { ...graph, question: { ...graph.question, unknown: true } }, rule: /question fields do not match the pinned register/ },
+    { name: "node", value: { ...graph, nodes: [{ ...node, unknown: true }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\] fields do not match the pinned register/ },
+    { name: "edge", value: { ...graph, edges: [{ ...edge, unknown: true }, ...graph.edges.slice(1)] }, rule: /edges\[0\] fields do not match the pinned register/ },
+    { name: "node derived", value: { ...graph, nodes: [{ ...node, derived: { ...node.derived, unknown: true } }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.derived fields do not match the pinned register/ },
+    { name: "inherited derived key", value: { ...graph, nodes: [{ ...node, derived: Object.assign(Object.create({ unknown: true }), node.derived) }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.derived must be a plain object/ },
+    { name: "edge derived", value: { ...graph, edges: [{ ...edge, derived: { ...edge.derived, unknown: true } }, ...graph.edges.slice(1)] }, rule: /edges\[0\]\.derived fields do not match the pinned register/ },
+    { name: "visual", value: { ...graph, nodes: [{ ...node, visual: { ...node.visual, unknown: true } }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.visual fields do not match the pinned register/ },
+    { name: "anchor", value: { ...graph, nodes: [{ ...node, visual: { ...node.visual, anchor: { ...node.visual.anchor, unknown: true } } }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.visual\.anchor fields do not match the pinned register/ },
+    { name: "path coordinate", value: { ...graph, nodes: [{ ...node, visual: { ...node.visual, path: [{ ...pathPoint, unknown: true }] } }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.visual\.path\[0\] fields do not match the pinned register/ },
+    { name: "lod", value: { ...graph, nodes: [{ ...node, visual: { ...node.visual, lod: { ...node.visual.lod, unknown: true } } }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.visual\.lod fields do not match the pinned register/ },
+    { name: "node null origin", value: { ...graph, nodes: [{ ...node, derived: { ...node.derived, origin: null } }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.derived\.origin must be a non-empty string/ },
+    { name: "node absent origin", value: { ...graph, nodes: [{ ...node, derived: { value: node.derived.value } }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.derived fields do not match the pinned register/ },
+    { name: "edge null origin", value: { ...graph, edges: [{ ...edge, derived: { ...edge.derived, origin: null } }] }, rule: /edges\[0\]\.derived\.origin must be a non-empty string/ },
+    { name: "edge absent origin", value: { ...graph, edges: [{ ...edge, derived: { value: edge.derived.value } }] }, rule: /edges\[0\]\.derived fields do not match the pinned register/ },
+    { name: "blank origin", value: { ...graph, nodes: [{ ...node, derived: { ...node.derived, origin: "" } }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.derived\.origin must be a non-empty string/ },
+  ];
+  assert.equal(cases.length, 16);
+  for (const invalid of cases) {
+    assert.throws(() => assertVisualGraphFieldRegister(invalid.value), invalid.rule, invalid.name);
+  }
+  assert.doesNotThrow(() => assertVisualGraphFieldRegister(graph));
+});
+
 test("the passthrough ban refuses a retained raw payload", () => {
   const graph = makeGraph();
   const rawPayload = { source: "raw" };

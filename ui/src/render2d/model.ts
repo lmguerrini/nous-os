@@ -1,7 +1,8 @@
 import { MultiDirectedGraph } from "graphology";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
-import type { Coordinates, DerivedValue, VisualGraph } from "#engine/contract.ts";
+import { assertEngineAccessTrace, createEngineGraphView } from "#engine/contract.ts";
+import type { Coordinates, DerivedValue, EngineAccessTrace, VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
 import { lodView } from "#engine/lod.ts";
 import type { LodBand, ResolvedMaterial } from "#engine/lod.ts";
@@ -91,6 +92,8 @@ export type RenderModel = {
   readonly filamentMaterial: FilamentUniformMaterial;
   readonly filaments: ReadonlyMap<string, FilamentGeometry>;
   readonly propagation: ReadonlyMap<string, FilamentPropagation>;
+  /** This records the engine-view fields read while this model was built and does not expose semantic values. */
+  readonly engineAccessTrace: EngineAccessTrace;
 };
 
 /** This is one screen-space label candidate and does not create a visual node. */
@@ -126,21 +129,28 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
   if (visualState !== undefined) {
     assertVisualState(graph, visualState);
   }
+  const { graph: engineGraph, trace: engineAccessTrace } = createEngineGraphView(graph);
   const activeOptions = visualState === undefined ? options : renderOptionsForVisualState(options, visualState);
   const calibration = activeOptions.calibration ?? DEFAULT_CALIBRATION;
+  // Anchor sharing is established at the visual-graph boundary before a renderer
+  // receives its structural engine view.  `sharedAnchors(Discovery, Reliability)`
+  // records the policy transition on those two source graph identities; a fresh
+  // EngineGraph is intentionally created for every render and cannot carry that
+  // transition cache.  The resulting anchors remain the only layout input exposed
+  // to the engine below.
   const anchors = layoutAnchors(graph, calibration);
   const morphology = morphologyProfile(activeOptions.morphology);
-  const morphologyMaterial = applyMorphology(graph, morphology, calibration);
+  const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration);
   const tokens = resolveTokens(activeOptions.palette, activeOptions.temperature, activeOptions.theme);
   const tokenColors = new Map(Object.entries(tokens).map(([name, token]) => [name, tokenColor(token, permilleScale(calibration), calibration)]));
   const fieldColor = requiredTokenColor(tokenColors, "background");
   const organization = activeOptions.organization === "indra"
-    ? indraOrganization(graph, calibration, anchors)
-    : flatOrganization(graph, anchors);
+    ? indraOrganization(engineGraph, calibration, anchors)
+    : flatOrganization(engineGraph, anchors);
   if (activeOptions.organization === "indra") {
-    assertIndraOrganization(graph, organization);
+    assertIndraOrganization(engineGraph, organization);
   }
-  const view = lodView(graph, anchors, activeOptions.lodBand);
+  const view = lodView(engineGraph, anchors, activeOptions.lodBand);
   const sigmaGraph = new MultiDirectedGraph<RenderNodeAttributes, RenderEdgeAttributes>();
   const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
   const edgeMaterials = new Map(morphologyMaterial.edges.map((edge) => [edge.id, edge]));
@@ -148,6 +158,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
   const materialScale = permilleScale(calibration);
   const filamentUniformMaterial: FilamentUniformMaterial = {
     minimumWidthFactor: calibration.filament.minimumWidthFactorPermille / materialScale,
+    minimumBodyWidth: calibration.filament.minimumDeviceWidthPermille / materialScale,
     sheathScale: filamentMaterial.sheathScalePermille / materialScale,
     sheathAlpha: filamentMaterial.sheathAlphaPermille / materialScale,
     coreScale: filamentMaterial.coreScalePermille / materialScale,
@@ -160,7 +171,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
   const filaments = new Map<string, FilamentGeometry>();
   const propagation = new Map<string, FilamentPropagation>();
 
-  for (const node of graph.nodes) {
+  for (const node of engineGraph.nodes) {
     const anchor = view.anchors.get(node.id);
     const nodeMaterial = nodeMaterials.get(node.id);
     if (anchor === undefined || nodeMaterial === undefined) {
@@ -182,7 +193,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
     };
     sigmaGraph.addNode(node.id, nodeAttributesForVisualState(attributes, node.id, visualState, calibration));
   }
-  for (const edge of graph.edges) {
+  for (const edge of engineGraph.edges) {
     const source = view.anchors.get(edge.source);
     const target = view.anchors.get(edge.target);
     const edgeMaterial = edgeMaterials.get(edge.id);
@@ -225,7 +236,8 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
     };
     sigmaGraph.addEdgeWithKey(edge.id, edge.source, edge.target, edgeAttributesForVisualState(attributes, edge.id, visualState, calibration));
   }
-  return { graph: sigmaGraph, anchors, windows: organization.windows, organization, tokens, tokenColors, fieldColor, lodBand: view.band, material: view.material, filamentMaterial: filamentUniformMaterial, filaments, propagation };
+  assertEngineAccessTrace(engineAccessTrace);
+  return { graph: sigmaGraph, anchors, windows: organization.windows, organization, tokens, tokenColors, fieldColor, lodBand: view.band, material: view.material, filamentMaterial: filamentUniformMaterial, filaments, propagation, engineAccessTrace };
 }
 
 /** This applies VisualState's active view settings and leaves elapsed runtime settings unchanged. */

@@ -16,6 +16,7 @@ const FILAMENT_UNIFORMS = [
   "u_feather",
   "u_minEdgeThickness",
   "u_minimumWidthFactor",
+  "u_minimumBodyWidth",
   "u_sheathScale",
   "u_sheathAlpha",
   "u_coreScale",
@@ -30,6 +31,8 @@ const COLOR_BYTE_MAXIMUM = Number("255");
 
 export type FilamentUniformMaterial = {
   readonly minimumWidthFactor: number;
+  /** This is the absolute body-width floor in device pixels. */
+  readonly minimumBodyWidth: number;
   readonly sheathScale: number;
   readonly sheathAlpha: number;
   readonly coreScale: number;
@@ -43,6 +46,7 @@ export type FilamentUniformMaterial = {
 const DEFAULT_MATERIAL_SCALE = DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
 const DEFAULT_FILAMENT_UNIFORM_MATERIAL: FilamentUniformMaterial = {
   minimumWidthFactor: DEFAULT_CALIBRATION.filament.minimumWidthFactorPermille / DEFAULT_MATERIAL_SCALE,
+  minimumBodyWidth: DEFAULT_CALIBRATION.filament.minimumDeviceWidthPermille / DEFAULT_MATERIAL_SCALE,
   sheathScale: DEFAULT_CALIBRATION.morphology.stellar.sheathScalePermille / DEFAULT_MATERIAL_SCALE,
   sheathAlpha: DEFAULT_CALIBRATION.morphology.stellar.sheathAlphaPermille / DEFAULT_MATERIAL_SCALE,
   coreScale: DEFAULT_CALIBRATION.morphology.stellar.coreScalePermille / DEFAULT_MATERIAL_SCALE,
@@ -184,6 +188,7 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     gl.uniform1f(programInfo.uniformLocations.u_wobbleAmplitude, uniformMaterial.wobbleAmplitude);
     gl.uniform1f(programInfo.uniformLocations.u_wobbleFrequency, uniformMaterial.wobbleFrequency);
     if (!programInfo.isPicking) {
+      gl.uniform1f(programInfo.uniformLocations.u_minimumBodyWidth, uniformMaterial.minimumBodyWidth);
       gl.uniform1f(programInfo.uniformLocations.u_sheathAlpha, uniformMaterial.sheathAlpha);
       gl.uniform1f(programInfo.uniformLocations.u_coreScale, uniformMaterial.coreScale);
       gl.uniform1f(programInfo.uniformLocations.u_hotMix, uniformMaterial.hotMix);
@@ -235,12 +240,18 @@ uniform vec2 u_dimensions;
 uniform float u_feather;
 uniform float u_minEdgeThickness;
 uniform float u_minimumWidthFactor;
+#ifndef PICKING_MODE
+uniform float u_minimumBodyWidth;
+#endif
 uniform float u_sheathScale;
 uniform float u_wobbleAmplitude;
 varying vec4 v_color;
 varying float v_thickness;
 varying float v_pickTolerance;
 varying float v_feather;
+#ifndef PICKING_MODE
+varying float v_minimumBodyWidth;
+#endif
 varying float v_arcFraction;
 varying float v_propagationArcPosition;
 varying float v_propagationContinuous;
@@ -277,6 +288,9 @@ void main() {
   v_thickness = curveThickness * u_pixelRatio;
   v_pickTolerance = a_pickTolerance * u_pixelRatio;
   v_feather = u_feather;
+#ifndef PICKING_MODE
+  v_minimumBodyWidth = u_minimumBodyWidth;
+#endif
   v_arcFraction = a_current;
   v_propagationArcPosition = a_propagationArcPosition;
   v_propagationContinuous = a_propagationContinuous;
@@ -291,6 +305,9 @@ void main() {
     max(a_materialWidths.x, a_materialWidths.y) + abs(u_wobbleAmplitude) + max(a_materialWidths.z, a_materialWidths.w)
   );
   float maximumBodyHalfWidth = v_thickness * 0.5 * maximumWidthFactor;
+  #ifndef PICKING_MODE
+  maximumBodyHalfWidth = max(maximumBodyHalfWidth, v_minimumBodyWidth * 0.5);
+  #endif
   float maximumMaterialExtent = max(
     maximumBodyHalfWidth * u_sheathScale,
     maximumBodyHalfWidth + a_pickTolerance * u_pixelRatio
@@ -313,6 +330,9 @@ varying vec4 v_color;
 varying float v_thickness;
 varying float v_pickTolerance;
 varying float v_feather;
+#ifndef PICKING_MODE
+varying float v_minimumBodyWidth;
+#endif
 varying float v_arcFraction;
 varying float v_propagationArcPosition;
 varying float v_propagationContinuous;
@@ -351,6 +371,7 @@ void main(void) {
     gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
   }
   #else
+  halfThickness = max(halfThickness, v_minimumBodyWidth * 0.5);
   float sheathHalfThickness = halfThickness * u_sheathScale;
   if (distance < sheathHalfThickness) {
     float sheathCoverage = 1.0 - smoothstep(sheathHalfThickness - v_feather, sheathHalfThickness, distance);

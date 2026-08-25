@@ -58,6 +58,7 @@ export type CalibrationProfile = {
     readonly prominenceChromaFalloffPermille: number;
     readonly haloProbeRadiusFractionPermille: number;
     readonly minimumNodeContrastPermille: number;
+    readonly minimumCompositedPixelChannelDelta: number;
   };
   readonly filament: {
     readonly baseWidthPx: number;
@@ -65,6 +66,8 @@ export type CalibrationProfile = {
     readonly opacityPermille: number;
     readonly curvatureMagnitudePermille: number;
     readonly minimumWidthFactorPermille: number;
+    /** This is the absolute filament body floor in device pixels, scaled by one thousand. */
+    readonly minimumDeviceWidthPermille: number;
   };
   readonly morphology: {
     readonly stellar: MorphologyMaterial;
@@ -111,6 +114,9 @@ export type CalibrationProfile = {
   readonly budget: {
     readonly maxNodesBeforeLodForcesAggregation: number;
     readonly targetFrameMs: number;
+    readonly oracleCrossProductSampleSize: number;
+    readonly oracleCrossProductSamplingSeed: number;
+    readonly oracleCrossProductPixelWitnessCount: number;
   };
 };
 
@@ -134,11 +140,13 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "luminance.prominenceChromaFalloffPermille",
   "luminance.haloProbeRadiusFractionPermille",
   "luminance.minimumNodeContrastPermille",
+  "luminance.minimumCompositedPixelChannelDelta",
   "filament.baseWidthPx",
   "filament.pickTolerancePx",
   "filament.opacityPermille",
   "filament.curvatureMagnitudePermille",
   "filament.minimumWidthFactorPermille",
+  "filament.minimumDeviceWidthPermille",
   "morphology.stellar.nodeSizeMultiplierPermille",
   "morphology.stellar.filamentWidthMultiplierPermille",
   "morphology.stellar.filamentWidthStartPermille",
@@ -223,15 +231,18 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "selection.minimumDifferingPixelCount",
   "budget.maxNodesBeforeLodForcesAggregation",
   "budget.targetFrameMs",
+  "budget.oracleCrossProductSampleSize",
+  "budget.oracleCrossProductSamplingSeed",
+  "budget.oracleCrossProductPixelWitnessCount",
 ] as const;
 
 /** This is the default renderer profile and does not choose a semantic interpretation. All fractional values are scaled integers because canonical JSON accepts only integers. */
 export const DEFAULT_CALIBRATION: CalibrationProfile = {
   layout: { forceStrengthPermille: 850, idealEdgeLengthPx: 120, iterations: 180, gravityPermille: 90, seed: 17, cellJitterPermille: 340, framingMarginPermille: 150 },
   salience: { degreeExponentPermille: 650, minNodeSizePx: 4, maxNodeSizePx: 28 },
-  luminance: { haloRadiusFactorPermille: 1800, haloFalloffPermille: 180, haloSampleCount: 12, coreBeforeHaloMinimumPx: 2, prominenceLightnessGainPermille: 900, prominenceChromaFalloffPermille: 1000, haloProbeRadiusFractionPermille: 700, minimumNodeContrastPermille: 1200 },
+  luminance: { haloRadiusFactorPermille: 1800, haloFalloffPermille: 180, haloSampleCount: 12, coreBeforeHaloMinimumPx: 2, prominenceLightnessGainPermille: 900, prominenceChromaFalloffPermille: 1000, haloProbeRadiusFractionPermille: 700, minimumNodeContrastPermille: 1200, minimumCompositedPixelChannelDelta: 6 },
   filament: { baseWidthPx: 2,
-    pickTolerancePx: 2, opacityPermille: 620, curvatureMagnitudePermille: 240, minimumWidthFactorPermille: 120 },
+    pickTolerancePx: 2, opacityPermille: 620, curvatureMagnitudePermille: 240, minimumWidthFactorPermille: 120, minimumDeviceWidthPermille: 1000 },
   morphology: {
     stellar: { nodeSizeMultiplierPermille: 1100, filamentWidthMultiplierPermille: 900, filamentWidthStartPermille: 650, filamentWidthEndPermille: 650, filamentWobbleAmplitudePermille: 15, junctionThickeningPermille: 0, sheathScalePermille: 2700, sheathAlphaPermille: 60, coreScalePermille: 400, hotMixPermille: 0, hotAlphaPermille: 0, hotCoreMaximumHop: 0, filamentPhaseSeed: 17, wobbleFrequencyMilliradians: 6283, opacityPermille: 1000, curvatureMagnitudePermille: 700, haloRadiusMultiplierPermille: 2000, haloIntensityPermille: 440, terminalSizeMultiplierPermille: 1000 },
     neural: { nodeSizeMultiplierPermille: 900, filamentWidthMultiplierPermille: 1050, filamentWidthStartPermille: 1800, filamentWidthEndPermille: 500, filamentWobbleAmplitudePermille: 80, junctionThickeningPermille: 800, sheathScalePermille: 2700, sheathAlphaPermille: 130, coreScalePermille: 400, hotMixPermille: 850, hotAlphaPermille: 950, hotCoreMaximumHop: 2, filamentPhaseSeed: 31, wobbleFrequencyMilliradians: 9425, opacityPermille: 900, curvatureMagnitudePermille: 1150, haloRadiusMultiplierPermille: 1000, haloIntensityPermille: 900, terminalSizeMultiplierPermille: 1000 },
@@ -242,7 +253,7 @@ export const DEFAULT_CALIBRATION: CalibrationProfile = {
   aggregate: { disclosureThreshold: 12, windowPaddingPx: 14, windowStrokeAlphaPermille: 700 },
   motion: { propagationSpeedPxPerSecond: 240, afterglowDecayPermille: 850, minimumReducedMotionPixelDeltaPermille: 1, reducedMotionSwitch: false },
   selection: { emphasisMultiplierPermille: 1450, focusDimFactorPermille: 320, minimumDifferingPixelCount: 16 },
-  budget: { maxNodesBeforeLodForcesAggregation: 2400, targetFrameMs: 16 },
+  budget: { maxNodesBeforeLodForcesAggregation: 2400, targetFrameMs: 16, oracleCrossProductSampleSize: 27, oracleCrossProductSamplingSeed: 1103, oracleCrossProductPixelWitnessCount: 3 },
 };
 
 /** This validates the pinned profile shape and does not validate how a renderer uses it. */

@@ -8,20 +8,26 @@ import { canonicalBytes } from "#engine/canonical.ts";
 import {
   assertNoPassthrough,
   assertVisualGraphFieldRegister,
+  assertEngineAccessTrace,
+  createEngineGraphView,
+  createSemantic,
   readSemantic,
   semanticDigest,
 } from "#engine/contract.ts";
 import type { Coordinates, VisualGraph } from "#engine/contract.ts";
 import { resolveLodBand } from "#engine/lod.ts";
 import type { LodBand } from "#engine/lod.ts";
+import type { Palette, Temperature, Theme } from "#engine/tokens.ts";
 import { layoutAnchors, sharedAnchors } from "#engine/layout.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { Organization } from "#engine/organization.ts";
 import { mount, restoreCameraState } from "#render2d/index.ts";
-import { FilamentProgram } from "#render2d/filament-program.ts";
-import { quadraticPoint } from "#render2d/geometry.ts";
+import { createFilamentProgram, FilamentProgram } from "#render2d/filament-program.ts";
+import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
+import { filamentGeometry, quadraticPoint } from "#render2d/geometry.ts";
 import type { FilamentGeometry } from "#render2d/geometry.ts";
 import type { RenderCameraState, RenderFramingBox, RenderHandle, RenderNodeGlowWitness } from "#render2d/index.ts";
+import { buildRenderModel } from "#render2d/model.ts";
 import type { RenderOptions as ModelRenderOptions } from "#render2d/model.ts";
 
 type Policy = "Reliability" | "Discovery";
@@ -71,6 +77,24 @@ type PickingCell = {
   readonly centre: Coordinates;
 };
 
+/** This is one live edge-target sample and records its CSS-space visual and picking extents. */
+type RelationPickSample = {
+  readonly parameter: number;
+  readonly shaderParameter: number;
+  readonly returnedEdgeId: string | null;
+  readonly centrelineDistancePx: number;
+  readonly bodyWidthPx: number;
+  readonly visibleWidthPx: number;
+  readonly pickRadiusPx: number;
+};
+
+/** This records why a named relation did or did not appear in the live target's returned-id set. */
+type RelationPickMeasurement = {
+  readonly edgeId: string;
+  readonly returnedEdgeIds: readonly string[];
+  readonly samples: readonly RelationPickSample[];
+};
+
 type PickingSigmaInternals = {
   readonly webGLContexts: {
     readonly edges: {
@@ -79,10 +103,32 @@ type PickingSigmaInternals = {
   };
 };
 
+type PickingTargetWitness = {
+  readonly nodeIds: readonly string[];
+  readonly edgeIds: readonly string[];
+  /** These are ids actually returned by the live picking target. */
+  readonly pickableNodeIds: readonly string[];
+  readonly pickableEdgeIds: readonly string[];
+  /** This records the raw anchor-centre return for diagnostics; it is not an own-node pickability claim. */
+  readonly nodeAnchorPickIds: Readonly<Record<string, string | null>>;
+  /** These are rendered ids for which the live target returned that exact id at a per-id interior witness point. */
+  readonly nodePickCoverageIds: readonly string[];
+  readonly edgePickCoverageIds: readonly string[];
+  /** Per-relation live-target samples, including drawn body/visible widths and picking radius. */
+  readonly edgePickMeasurements: Readonly<Record<string, RelationPickMeasurement>>;
+  readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
+  readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
+  readonly nodePixels: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
+  readonly edgePixels: Readonly<Record<string, readonly { readonly x: number; readonly y: number }[]>>;
+};
+
 type Snapshot = {
   readonly policy: Policy;
   readonly morphology: Morphology;
   readonly organization: Organization;
+  readonly palette: Palette;
+  readonly temperature: Temperature;
+  readonly theme: Theme;
   readonly lodBand: LodBand;
   readonly reducedMotion: boolean;
   readonly fieldColor: string;
@@ -109,6 +155,8 @@ type Snapshot = {
   readonly rendering: RenderWitness;
   readonly glowNodes: readonly RenderNodeGlowWitness[];
   readonly edgeSamples: Readonly<Record<string, readonly { readonly x: number; readonly y: number }[]>>;
+  /** This is read from the live edge-picking target and never from the render model. */
+  readonly pickingTarget: PickingTargetWitness;
 };
 
 type EvidenceApi = {
@@ -118,6 +166,7 @@ type EvidenceApi = {
   switchPolicy(policy: Policy): Promise<Snapshot>;
   switchMorphology(morphology: Morphology): Promise<Snapshot>;
   switchOrganization(organization: Organization): Promise<Snapshot>;
+  setCrossProductState(morphology: Morphology, palette: Palette, temperature: Temperature, theme: Theme, lodBand: LodBand): Promise<Snapshot>;
   setLodBand(band: LodBand): Promise<Snapshot>;
   setLodZoom(zoom: number): Promise<Snapshot>;
   setGlowSuppressed(suppressed: boolean): Promise<Snapshot>;
@@ -138,6 +187,10 @@ type EvidenceApi = {
   showSelectionFocusNoopControl(): Promise<Snapshot>;
   setSelectionFocusNoopControl(selection: string | null, focus: string | null): Promise<Snapshot>;
   hideSelectionFocusNoopControl(): void;
+  assertDerivedOriginRefusalControl(): number;
+  assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean };
+  readLiveRelationMaterialBindings(): readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[];
+  proveStackedMaterialControlRejects(): { readonly relationId: string; readonly message: string };
   shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }>;
 };
 
@@ -283,18 +336,23 @@ async function boot(): Promise<void> {
     }
     shell.style.background = product.model.fieldColor;
     // This separate surface is the actual Sigma edge-picking framebuffer. The
-    // product mount provides the viewport coordinates used by screenshot checks.
+    // product mount provides the viewport coordinates and morphology-specific
+    // filament program used by screenshot checks.
     picking = new Sigma(product.model.graph, pickingContainer, {
       defaultEdgeType: "filament",
-      edgeProgramClasses: { filament: FilamentProgram },
+      edgeProgramClasses: { filament: createFilamentProgram(product.model.filamentMaterial) },
       renderLabels: product.model.material.node.includes("label"),
       zIndex: true,
       enableEdgeEvents: true,
     });
     if (cameraState !== undefined) {
       product.restoreCameraState(cameraState);
-      restoreCameraState(picking, cameraState);
     }
+    // The target must share the product camera even on the first mount. A picking
+    // point from a target with its own auto-fit box is not a witness for a product
+    // pixel: its coordinates can name a different CSS location. Read the mounted
+    // product camera after any restoration and bind that exact live state here.
+    restoreCameraState(picking, product.readCameraState());
     await nextPaint();
     await nextPaint();
   };
@@ -344,6 +402,9 @@ async function boot(): Promise<void> {
       policy,
       morphology: options.morphology,
       organization: options.organization,
+      palette: options.palette,
+      temperature: options.temperature,
+      theme: options.theme,
       lodBand: options.lodBand,
       reducedMotion: options.reducedMotion,
       fieldColor: handle.model.fieldColor,
@@ -374,6 +435,7 @@ async function boot(): Promise<void> {
       rendering: renderWitness(renderContainer),
       glowNodes: handle.readGlowWitnesses(),
       edgeSamples,
+      pickingTarget: pickingTargetWitness(requiredSigma(picking), handle.model.filamentMaterial),
     };
   };
 
@@ -399,6 +461,15 @@ async function boot(): Promise<void> {
     },
     async switchOrganization(next): Promise<Snapshot> {
       options.organization = next;
+      await remount();
+      return read();
+    },
+    async setCrossProductState(morphology, palette, temperature, theme, lodBand): Promise<Snapshot> {
+      options.morphology = morphology;
+      options.palette = palette;
+      options.temperature = temperature;
+      options.theme = theme;
+      options.lodBand = lodBand;
       await remount();
       return read();
     },
@@ -525,6 +596,7 @@ async function boot(): Promise<void> {
             auditor,
             picked,
             filamentShaderParameter(auditor, pickedGeometry, pickedCellCentre),
+            handle.model.filamentMaterial,
           );
       return { edgeId: picked, point, pickedCoversPoint: covers, onScreen };
     },
@@ -574,7 +646,11 @@ async function boot(): Promise<void> {
       emptyContainer?.remove();
       const control = document.createElement("div");
       control.id = "evidence-empty-renderer";
-      control.style.cssText = "width:960px;height:640px;position:fixed;left:0;top:0";
+      // The product's WebGL canvases establish their own positive stacking
+      // contexts. Keep this opaque control in an isolated, higher context so a
+      // screenshot can never see product pixels through an otherwise empty
+      // renderer; that would make the negative control vacuous.
+      control.style.cssText = "width:960px;height:640px;position:fixed;left:0;top:0;z-index:2147483647;isolation:isolate";
       document.body.append(control);
       await waitForNonZeroBox(control);
       emptyContainer = control;
@@ -648,6 +724,75 @@ async function boot(): Promise<void> {
       selectionFocusNoopPreviousFocus = undefined;
       selectionFocusNoopPreviousContainerId = undefined;
     },
+    assertDerivedOriginRefusalControl(): number {
+      const graph = requiredGraph(graphs, policy);
+      const node = graph.nodes[0];
+      const edge = graph.edges[0];
+      if (node === undefined || edge === undefined) {
+        throw new Error("derived-origin control requires one node and one edge");
+      }
+      const invalid = [
+        { ...graph, nodes: [{ ...node, derived: { ...node.derived, origin: null } }, ...graph.nodes.slice(1)] },
+        { ...graph, nodes: [{ ...node, derived: { value: node.derived.value } }, ...graph.nodes.slice(1)] },
+        { ...graph, edges: [{ ...edge, derived: { ...edge.derived, origin: null } }, ...graph.edges.slice(1)] },
+        { ...graph, edges: [{ ...edge, derived: { value: edge.derived.value } }, ...graph.edges.slice(1)] },
+      ];
+      for (const candidate of invalid) {
+        expectThrow(() => assertVisualGraphFieldRegister(candidate), "derived-origin refusal control");
+      }
+      return invalid.length;
+    },
+    assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean } {
+      const original = requiredGraph(graphs, policy);
+      const elements = [...original.nodes, ...original.edges];
+      const payloads = elements.map((element) => readSemantic(element.semantic));
+      if (payloads.length < 2) {
+        throw new Error("engine semantic-isolation control requires at least two elements");
+      }
+      const replacement = (index: number) => createSemantic(payloads[(index + 1) % payloads.length]);
+      const permuted: VisualGraph = {
+        ...original,
+        nodes: original.nodes.map((node, index) => ({ ...node, semantic: replacement(index) })),
+        edges: original.edges.map((edge, index) => ({ ...edge, semantic: replacement(original.nodes.length + index) })),
+      };
+      const originalDigest = semanticDigest(original);
+      const permutedDigest = semanticDigest(permuted);
+      if (originalDigest === permutedDigest) {
+        throw new Error("engine semantic-isolation control did not produce a non-isomorphic semantic assignment");
+      }
+      const view = createEngineGraphView(original);
+      const node = view.graph.nodes[0] as (typeof view.graph.nodes)[number] & { readonly semantic?: unknown } | undefined;
+      if (node === undefined) {
+        throw new Error("engine semantic-isolation control requires one node");
+      }
+      void node.semantic;
+      expectThrow(() => assertEngineAccessTrace(view.trace), "engine semantic access control");
+      // Compare the same engine boundary on both inputs.  A mounted RenderHandle
+      // has already run label placement, which writes presentation labels into its
+      // Graphology graph; an unmounted model has not.  Comparing those lifecycle
+      // states can change this signature without reading the permuted semantic
+      // payload, so it is not an A10 result.
+      const originalModel = buildRenderModel(original, options);
+      const permutedModel = buildRenderModel(permuted, options);
+      const before = semanticIndependentSignature(originalModel);
+      const after = semanticIndependentSignature(permutedModel);
+      if (before !== after) {
+        throw new Error("engine output changed after semantic permutation");
+      }
+      for (const trace of [originalModel.engineAccessTrace, permutedModel.engineAccessTrace]) {
+        assertEngineAccessTrace(trace);
+        if (trace.reads.some((read) => read.includes("semantic"))) {
+          throw new Error("engine access trace read semantic data");
+        }
+      }
+      return { reads: originalModel.engineAccessTrace.reads.length, changedSemanticDigest: true };
+    },
+    readLiveRelationMaterialBindings(): readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[] {
+      return requiredHandle(product).readRelationMaterialBindings();
+    },
+    proveStackedMaterialControlRejects(): { readonly relationId: string; readonly message: string } {
+      return requiredHandle(product).proveStackedMaterialControlRejects();
+    },
     async shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }> {
       emptyControl?.destroy();
       emptyContainer?.remove();
@@ -694,6 +839,178 @@ function renderWitness(container: HTMLElement): RenderWitness {
   };
 }
 
+/** This samples ids, incidence, anchors, and pixel locations from the mounted picking target rather than the render model. */
+function pickingTargetWitness(auditor: Sigma, material: FilamentUniformMaterial): PickingTargetWitness {
+  const graph = auditor.getGraph();
+  const nodeIds = [...graph.nodes()].sort();
+  const edgeIds = [...graph.edges()].sort();
+  const anchors: Record<string, { x: number; y: number; z: number }> = {};
+  const incidence: Record<string, { source: string; target: string }> = {};
+  const nodePixels: Record<string, { x: number; y: number }> = {};
+  const nodeAnchorPickIds: Record<string, string | null> = {};
+  const edgePixels: Record<string, readonly { x: number; y: number }[]> = {};
+  const edgePickMeasurements: Record<string, RelationPickMeasurement> = {};
+  const pickableNodeIds = new Set<string>();
+  const pickableEdgeIds = new Set<string>();
+  const nodePickCoverageIds: string[] = [];
+  const edgePickCoverageIds: string[] = [];
+  const target = auditor as unknown as {
+    getNodeAtPosition(position: { readonly x: number; readonly y: number }): string | null;
+    getEdgeAtPoint(x: number, y: number): string | null;
+  };
+  for (const id of nodeIds) {
+    const attributes = graph.getNodeAttributes(id);
+    const anchor = targetAnchor(attributes, `picking node ${id}`);
+    const point = auditor.graphToViewport(anchor);
+    anchors[id] = anchor;
+    nodeAnchorPickIds[id] = target.getNodeAtPosition(point);
+    const ownPoint = nodePickCandidates(auditor, attributes, point, `picking node ${id}`)
+      .find((candidate) => target.getNodeAtPosition(candidate) === id);
+    // One anchor centre can fall inside a larger neighbouring node.  That reports
+    // the neighbour as pickable even when the queried node is present, and makes
+    // the result depend on morphology's material radius.  An interior witness is
+    // an actual live-target hit for the named node, not a coverage proxy.
+    nodePixels[id] = ownPoint ?? { x: point.x, y: point.y };
+    if (ownPoint !== undefined) {
+      pickableNodeIds.add(id);
+      nodePickCoverageIds.push(id);
+    }
+  }
+  const witnessCount = DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount;
+  if (witnessCount < 1) {
+    throw new Error("cross-product pixel witness calibration must be positive");
+  }
+  for (const id of edgeIds) {
+    const source = graph.source(id);
+    const targetId = graph.target(id);
+    const sourceAnchor = anchors[source];
+    const targetAnchor = anchors[targetId];
+    if (sourceAnchor === undefined || targetAnchor === undefined) {
+      throw new Error(`picking edge ${id} lacks a target anchor`);
+    }
+    const curvature = graph.getEdgeAttribute(id, "curvature");
+    if (typeof curvature !== "number" || !Number.isFinite(curvature)) {
+      throw new Error(`picking edge ${id} has no finite curvature`);
+    }
+    incidence[id] = { source, target: targetId };
+    const filament = filamentGeometry(sourceAnchor, targetAnchor, curvature);
+    const pixels = Array.from({ length: witnessCount }, (_, index) => {
+      const parameter = (index + 1) / (witnessCount + 1);
+      const point = auditor.graphToViewport(quadraticPoint(filament, parameter));
+      return { x: point.x, y: point.y };
+    });
+    edgePixels[id] = pixels;
+    const geometry = viewportFilament(filament, auditor);
+    const samples = pixels.map((point, index) => {
+      const cell = pickingCellForPoint(auditor, { ...point, z: 0 });
+      const shaderParameter = filamentShaderParameter(auditor, geometry, cell.centre);
+      const extents = filamentInteractionExtents(auditor, id, shaderParameter, material);
+      const returnedEdgeId = target.getEdgeAtPoint(point.x, point.y);
+      return {
+        parameter: (index + 1) / (witnessCount + 1),
+        shaderParameter,
+        returnedEdgeId,
+        centrelineDistancePx: denseDistanceToFilament(geometry, cell.centre).distancePx,
+        bodyWidthPx: extents.bodyWidthPx,
+        visibleWidthPx: extents.visibleWidthPx,
+        pickRadiusPx: extents.pickRadiusPx,
+      };
+    });
+    edgePickMeasurements[id] = {
+      edgeId: id,
+      returnedEdgeIds: [...new Set(samples.map((sample) => sample.returnedEdgeId).filter((candidate): candidate is string => candidate !== null))].sort(),
+      samples,
+    };
+    const picked = samples.map((sample) => sample.returnedEdgeId).filter((candidate): candidate is string => candidate !== null);
+    for (const pickedId of picked) {
+      pickableEdgeIds.add(pickedId);
+    }
+    if (picked.length > 0) {
+      edgePickCoverageIds.push(id);
+    }
+  }
+  return {
+    nodeIds,
+    edgeIds,
+    pickableNodeIds: [...pickableNodeIds].sort(),
+    pickableEdgeIds: [...pickableEdgeIds].sort(),
+    nodeAnchorPickIds,
+    nodePickCoverageIds: nodePickCoverageIds.sort(),
+    edgePickCoverageIds: edgePickCoverageIds.sort(),
+    edgePickMeasurements,
+    anchors,
+    incidence,
+    nodePixels,
+    edgePixels,
+  };
+}
+
+/** This generates live-target interior probes and does not read render-model geometry. */
+function nodePickCandidates(
+  auditor: Sigma,
+  attributes: unknown,
+  center: { readonly x: number; readonly y: number },
+  name: string,
+): readonly { readonly x: number; readonly y: number }[] {
+  if (typeof attributes !== "object" || attributes === null) {
+    throw new Error(`${name} attributes are unavailable`);
+  }
+  const size = (attributes as Record<string, unknown>).size;
+  if (typeof size !== "number" || !Number.isFinite(size) || size <= 0) {
+    throw new Error(`${name} size is unavailable`);
+  }
+  const radius = auditor.scaleSize(size);
+  if (!Number.isFinite(radius) || radius <= 0) {
+    throw new Error(`${name} scaled radius is unavailable`);
+  }
+  return [
+    center,
+    ...[0.5, 0.75].flatMap((fraction) => Array.from({ length: 8 }, (_, index) => {
+      const angle = (index * Math.PI) / 4;
+      return {
+        x: center.x + (Math.cos(angle) * radius * fraction),
+        y: center.y + (Math.sin(angle) * radius * fraction),
+      };
+    })),
+  ];
+}
+
+/** This reads one target anchor from the picking graph and does not inspect the render model. */
+function targetAnchor(attributes: unknown, name: string): { readonly x: number; readonly y: number; readonly z: number } {
+  if (typeof attributes !== "object" || attributes === null) {
+    throw new Error(`${name} attributes are unavailable`);
+  }
+  const record = attributes as Record<string, unknown>;
+  if (typeof record.x !== "number" || typeof record.y !== "number" || !Number.isFinite(record.x) || !Number.isFinite(record.y)) {
+    throw new Error(`${name} anchor is unavailable`);
+  }
+  return { x: record.x, y: record.y, z: 0 };
+}
+
+/** This captures engine output only and does not retain source graph semantic values. */
+function semanticIndependentSignature(model: ReturnType<typeof buildRenderModel>): string {
+  return JSON.stringify({
+    nodes: model.graph.nodes().map((id) => [id, model.graph.getNodeAttributes(id)]),
+    edges: model.graph.edges().map((id) => [id, model.graph.getEdgeAttributes(id)]),
+    anchors: Object.fromEntries(model.anchors),
+    organization: model.organization,
+    windows: model.windows,
+    material: model.material,
+    filaments: Object.fromEntries(model.filaments),
+    propagation: Object.fromEntries(model.propagation),
+  });
+}
+
+/** This confirms a control actually throws instead of merely assuming a negative result. */
+function expectThrow(operation: () => void, name: string): void {
+  try {
+    operation();
+  } catch {
+    return;
+  }
+  throw new Error(`${name} did not fail`);
+}
+
 function normalAt(source: Coordinates, control: Coordinates, target: Coordinates, parameter: number): { readonly x: number; readonly y: number } {
   const inverse = 1 - parameter;
   const tangentX = (2 * inverse * (control.x - source.x)) + (2 * parameter * (target.x - control.x));
@@ -737,7 +1054,7 @@ function coversAlone(
   const centre = sampledCellCentre(handle, auditor, filament, parameter);
   const geometry = viewportFilament(filament, auditor);
   const curveParameter = filamentShaderParameter(auditor, geometry, centre);
-  if (denseDistanceToFilament(geometry, centre).distancePx > pickingRadiusPx(auditor, edgeId, curveParameter)) {
+  if (denseDistanceToFilament(geometry, centre).distancePx > pickingRadiusPx(auditor, edgeId, curveParameter, handle.model.filamentMaterial)) {
     return false;
   }
   return competitorsReaching(handle, auditor, edgeId, centre).length === 0;
@@ -758,7 +1075,7 @@ function competitorsReaching(
     const geometry = viewportFilament(otherFilament, auditor);
     const distance = denseDistanceToFilament(geometry, centre);
     const curveParameter = filamentShaderParameter(auditor, geometry, centre);
-    if (distance.distancePx <= pickingRadiusPx(auditor, otherEdgeId, curveParameter) + distance.deviationBoundPx) {
+    if (distance.distancePx <= pickingRadiusPx(auditor, otherEdgeId, curveParameter, handle.model.filamentMaterial) + distance.deviationBoundPx) {
       reaching.push(otherEdgeId);
     }
   }
@@ -792,7 +1109,7 @@ function coincidentPartnersFor(handle: RenderHandle, auditor: Sigma, edgeId: str
   for (const parameter of EDGE_SAMPLE_PARAMETERS) {
     const centre = sampledCellCentre(handle, auditor, filament, parameter);
     const curveParameter = filamentShaderParameter(auditor, geometry, centre);
-    const radius = pickingRadiusPx(auditor, edgeId, curveParameter);
+    const radius = pickingRadiusPx(auditor, edgeId, curveParameter, handle.model.filamentMaterial);
     if (denseDistanceToFilament(geometry, centre).distancePx > radius) {
       return null;
     }
@@ -889,7 +1206,19 @@ function distanceToViewportSegment(point: Coordinates, source: Coordinates, targ
   );
 }
 
-function pickingRadiusPx(sigma: Sigma, edgeId: string, parameter: number): number {
+type FilamentInteractionExtents = {
+  readonly bodyWidthPx: number;
+  readonly visibleWidthPx: number;
+  readonly pickRadiusPx: number;
+};
+
+/** This mirrors the one live filament shader to measure visual and picking extents at its closest-point parameter. */
+function filamentInteractionExtents(
+  sigma: Sigma,
+  edgeId: string,
+  parameter: number,
+  material: FilamentUniformMaterial,
+): FilamentInteractionExtents {
   const { sizeRatio, minEdgeThickness } = sigma.getRenderParams();
   const attributes = sigma.getGraph().getEdgeAttributes(edgeId) as {
     readonly size?: unknown;
@@ -912,23 +1241,21 @@ function pickingRadiusPx(sigma: Sigma, edgeId: string, parameter: number): numbe
   const liveMinimumThickness = requiredNonNegativeNumber(minEdgeThickness, "picking Sigma minimum edge thickness");
   // A fixed CSS radius is wrong: each edge's uploaded size is scaled by the live
   // camera ratio before picking. The model also uploads taper, junction, and phase
-  // attributes, while FilamentProgram binds the calibrated minimum width, wobble
-  // amplitude, and wobble frequency as uniforms. Mirror the fragment shader at its
-  // own closest-point parameter: mix the endpoint widths, add wobble and endpoint
-  // junctions, clamp to the minimum factor, multiply the live shader thickness by
-  // half, and add the uploaded pick tolerance. The shader uses distance < radius
-  // while this analytic oracle uses <=, a measure-zero difference at the boundary.
-  const materialScale = DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
-  const minimumWidthFactor = DEFAULT_CALIBRATION.filament.minimumWidthFactorPermille / materialScale;
-  const wobbleAmplitude = DEFAULT_CALIBRATION.morphology.stellar.filamentWobbleAmplitudePermille / materialScale;
-  const wobbleFrequency = DEFAULT_CALIBRATION.morphology.stellar.wobbleFrequencyMilliradians / materialScale;
+  // attributes, while the mounted program binds morphology-specific minimum width,
+  // wobble, and sheath uniforms. Mirror the fragment shader at its own closest-
+  // point parameter. The shader uses distance < radius while this analytic oracle
+  // uses <=, a measure-zero difference at the boundary.
+  const minimumWidthFactor = material.minimumWidthFactor;
+  const wobbleAmplitude = material.wobbleAmplitude;
+  const wobbleFrequency = material.wobbleFrequency;
   const taper = (widthStart * (1 - curveParameter)) + (widthEnd * curveParameter);
   const wobble = wobbleAmplitude * Math.sin((wobbleFrequency * curveParameter) + wobblePhase);
   const junction = (junctionStart * Math.max(0, 1 - (curveParameter / 0.13)))
     + (junctionEnd * Math.max(0, 1 - ((1 - curveParameter) / 0.13)));
   const widthFactor = Math.max(minimumWidthFactor, taper + wobble + junction);
   const shaderThicknessPx = Math.max(liveMinimumThickness, edgeWidthPx / liveSizeRatio);
-  const radiusPx = (shaderThicknessPx * widthFactor / 2) + pickTolerancePx;
+  const bodyWidthPx = shaderThicknessPx * widthFactor;
+  const radiusPx = (bodyWidthPx / 2) + pickTolerancePx;
   const minimumShaderRadiusPx = (shaderThicknessPx * minimumWidthFactor / 2) + pickTolerancePx;
   const maximumWidthFactor = Math.max(
     minimumWidthFactor,
@@ -940,7 +1267,21 @@ function pickingRadiusPx(sigma: Sigma, edgeId: string, parameter: number): numbe
       `edge ${edgeId} picking radius ${radiusPx}px is outside calibrated bounds [${minimumShaderRadiusPx}px, ${maximumCalibratedRadiusPx}px]`,
     );
   }
-  return radiusPx;
+  return {
+    bodyWidthPx,
+    visibleWidthPx: bodyWidthPx * material.sheathScale,
+    pickRadiusPx: radiusPx,
+  };
+}
+
+/** This returns the live shader's CSS-space picking radius without choosing a visual width. */
+function pickingRadiusPx(
+  sigma: Sigma,
+  edgeId: string,
+  parameter: number,
+  material: FilamentUniformMaterial,
+): number {
+  return filamentInteractionExtents(sigma, edgeId, parameter, material).pickRadiusPx;
 }
 
 // The width mirror must use the same t as the fragment shader, not the caller's
@@ -1133,6 +1474,7 @@ function failedApi(): EvidenceApi {
     switchPolicy: async () => unavailable(),
     switchMorphology: async () => unavailable(),
     switchOrganization: async () => unavailable(),
+    setCrossProductState: async () => unavailable(),
     setLodBand: async () => unavailable(),
     setLodZoom: async () => unavailable(),
     setGlowSuppressed: async () => unavailable(),
@@ -1153,6 +1495,10 @@ function failedApi(): EvidenceApi {
     showSelectionFocusNoopControl: async () => unavailable(),
     setSelectionFocusNoopControl: async () => unavailable(),
     hideSelectionFocusNoopControl: unavailable,
+    assertDerivedOriginRefusalControl: unavailable,
+    assertEngineSemanticIsolationControl: unavailable,
+    readLiveRelationMaterialBindings: unavailable,
+    proveStackedMaterialControlRejects: unavailable,
     shutdown: async () => unavailable(),
   };
 }

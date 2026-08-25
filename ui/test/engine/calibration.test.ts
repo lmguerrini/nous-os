@@ -10,9 +10,9 @@ import {
 const EXPECTED_PATHS = [
   "layout.forceStrengthPermille", "layout.idealEdgeLengthPx", "layout.iterations", "layout.gravityPermille", "layout.seed", "layout.cellJitterPermille", "layout.framingMarginPermille",
   "salience.degreeExponentPermille", "salience.minNodeSizePx", "salience.maxNodeSizePx",
-  "luminance.haloRadiusFactorPermille", "luminance.haloFalloffPermille", "luminance.haloSampleCount", "luminance.coreBeforeHaloMinimumPx", "luminance.prominenceLightnessGainPermille", "luminance.prominenceChromaFalloffPermille", "luminance.haloProbeRadiusFractionPermille", "luminance.minimumNodeContrastPermille",
+  "luminance.haloRadiusFactorPermille", "luminance.haloFalloffPermille", "luminance.haloSampleCount", "luminance.coreBeforeHaloMinimumPx", "luminance.prominenceLightnessGainPermille", "luminance.prominenceChromaFalloffPermille", "luminance.haloProbeRadiusFractionPermille", "luminance.minimumNodeContrastPermille", "luminance.minimumCompositedPixelChannelDelta",
   "filament.baseWidthPx",
-  "filament.pickTolerancePx", "filament.opacityPermille", "filament.curvatureMagnitudePermille", "filament.minimumWidthFactorPermille",
+  "filament.pickTolerancePx", "filament.opacityPermille", "filament.curvatureMagnitudePermille", "filament.minimumWidthFactorPermille", "filament.minimumDeviceWidthPermille",
   "morphology.stellar.nodeSizeMultiplierPermille", "morphology.stellar.filamentWidthMultiplierPermille", "morphology.stellar.filamentWidthStartPermille", "morphology.stellar.filamentWidthEndPermille", "morphology.stellar.filamentWobbleAmplitudePermille", "morphology.stellar.junctionThickeningPermille", "morphology.stellar.sheathScalePermille", "morphology.stellar.sheathAlphaPermille", "morphology.stellar.coreScalePermille", "morphology.stellar.hotMixPermille", "morphology.stellar.hotAlphaPermille", "morphology.stellar.hotCoreMaximumHop", "morphology.stellar.filamentPhaseSeed", "morphology.stellar.wobbleFrequencyMilliradians", "morphology.stellar.opacityPermille", "morphology.stellar.curvatureMagnitudePermille", "morphology.stellar.haloRadiusMultiplierPermille", "morphology.stellar.haloIntensityPermille", "morphology.stellar.terminalSizeMultiplierPermille",
   "morphology.neural.nodeSizeMultiplierPermille", "morphology.neural.filamentWidthMultiplierPermille", "morphology.neural.filamentWidthStartPermille", "morphology.neural.filamentWidthEndPermille", "morphology.neural.filamentWobbleAmplitudePermille", "morphology.neural.junctionThickeningPermille", "morphology.neural.sheathScalePermille", "morphology.neural.sheathAlphaPermille", "morphology.neural.coreScalePermille", "morphology.neural.hotMixPermille", "morphology.neural.hotAlphaPermille", "morphology.neural.hotCoreMaximumHop", "morphology.neural.filamentPhaseSeed", "morphology.neural.wobbleFrequencyMilliradians", "morphology.neural.opacityPermille", "morphology.neural.curvatureMagnitudePermille", "morphology.neural.haloRadiusMultiplierPermille", "morphology.neural.haloIntensityPermille", "morphology.neural.terminalSizeMultiplierPermille",
   "morphology.mycelium.nodeSizeMultiplierPermille", "morphology.mycelium.filamentWidthMultiplierPermille", "morphology.mycelium.filamentWidthStartPermille", "morphology.mycelium.filamentWidthEndPermille", "morphology.mycelium.filamentWobbleAmplitudePermille", "morphology.mycelium.junctionThickeningPermille", "morphology.mycelium.sheathScalePermille", "morphology.mycelium.sheathAlphaPermille", "morphology.mycelium.coreScalePermille", "morphology.mycelium.hotMixPermille", "morphology.mycelium.hotAlphaPermille", "morphology.mycelium.hotCoreMaximumHop", "morphology.mycelium.filamentPhaseSeed", "morphology.mycelium.wobbleFrequencyMilliradians", "morphology.mycelium.opacityPermille", "morphology.mycelium.curvatureMagnitudePermille", "morphology.mycelium.haloRadiusMultiplierPermille", "morphology.mycelium.haloIntensityPermille", "morphology.mycelium.terminalSizeMultiplierPermille",
@@ -21,13 +21,13 @@ const EXPECTED_PATHS = [
   "aggregate.disclosureThreshold", "aggregate.windowPaddingPx", "aggregate.windowStrokeAlphaPermille",
   "motion.propagationSpeedPxPerSecond", "motion.afterglowDecayPermille", "motion.minimumReducedMotionPixelDeltaPermille", "motion.reducedMotionSwitch",
   "selection.emphasisMultiplierPermille", "selection.focusDimFactorPermille", "selection.minimumDifferingPixelCount",
-  "budget.maxNodesBeforeLodForcesAggregation", "budget.targetFrameMs",
+  "budget.maxNodesBeforeLodForcesAggregation", "budget.targetFrameMs", "budget.oracleCrossProductSampleSize", "budget.oracleCrossProductSamplingSeed", "budget.oracleCrossProductPixelWitnessCount",
 ] as const;
 
 test("calibration register is an exact pinned set in both directions", () => {
   assert.deepEqual([...CALIBRATION_PARAMETER_PATHS].sort(), [...EXPECTED_PATHS].sort());
   assert.deepEqual([...EXPECTED_PATHS].sort(), [...CALIBRATION_PARAMETER_PATHS].sort());
-  assert.equal(CALIBRATION_PARAMETER_PATHS.length, 107);
+  assert.equal(CALIBRATION_PARAMETER_PATHS.length, 112);
 });
 
 test("calibration validator refuses one unknown path", () => {

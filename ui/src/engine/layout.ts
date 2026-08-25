@@ -1,6 +1,6 @@
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_AGGREGATE_LAYOUT_CALIBRATION, DEFAULT_CALIBRATION } from "#engine/calibration.ts";
-import type { Coordinates, VisualGraph } from "#engine/contract.ts";
+import type { Coordinates, EngineGraph } from "#engine/contract.ts";
 
 /** This is an id-indexed set of world anchors and does not establish screen placement. */
 export type LayoutAnchors = ReadonlyMap<string, Coordinates>;
@@ -16,10 +16,10 @@ export type AggregateDisc = {
 
 const UINT32_RANGE = 0x1_0000_0000;
 const PERMILLE = 1000;
-const sharedAnchorSets = new WeakMap<VisualGraph, WeakMap<CalibrationProfile, LayoutAnchors>>();
+const sharedAnchorSets = new WeakMap<EngineGraph, WeakMap<CalibrationProfile, LayoutAnchors>>();
 
 /** This derives stable world anchors from identity and reserved aggregate discs and does not inspect semantic content. */
-export function layoutAnchors(graph: VisualGraph, calibration: CalibrationProfile = DEFAULT_CALIBRATION): LayoutAnchors {
+export function layoutAnchors(graph: EngineGraph, calibration: CalibrationProfile = DEFAULT_CALIBRATION): LayoutAnchors {
   const shared = sharedAnchorSets.get(graph)?.get(calibration);
   if (shared !== undefined) {
     return new Map(shared);
@@ -45,8 +45,8 @@ export function layoutAnchors(graph: VisualGraph, calibration: CalibrationProfil
 
 /** This selects Reliability anchors from Discovery and does not recompute their positions. */
 export function sharedAnchors(
-  discovery: VisualGraph,
-  reliability: VisualGraph,
+  discovery: EngineGraph,
+  reliability: EngineGraph,
   calibration: CalibrationProfile = DEFAULT_CALIBRATION,
 ): LayoutAnchors {
   const discoveryAnchors = layoutAnchors(discovery, calibration);
@@ -63,7 +63,7 @@ export function sharedAnchors(
 }
 
 /** This reserves disjoint aggregate discs from actual membership relations and does not place non-members inside them. */
-export function aggregateDiscs(graph: VisualGraph, calibration: CalibrationProfile = DEFAULT_CALIBRATION): readonly AggregateDisc[] {
+export function aggregateDiscs(graph: EngineGraph, calibration: CalibrationProfile = DEFAULT_CALIBRATION): readonly AggregateDisc[] {
   const memberships = aggregateMemberships(graph);
   const extent = layoutExtent(calibration);
   const padding = calibration.aggregate.windowPaddingPx;
@@ -78,7 +78,7 @@ export function aggregateDiscs(graph: VisualGraph, calibration: CalibrationProfi
 }
 
 /** This derives exact aggregate members from their typed relations and does not treat rejects as membership. */
-export function aggregateMemberships(graph: VisualGraph): ReadonlyMap<string, readonly string[]> {
+export function aggregateMemberships(graph: EngineGraph): ReadonlyMap<string, readonly string[]> {
   const kindsById = new Map(graph.nodes.map((node) => [node.id, node.kind]));
   const memberships = new Map<string, string[]>();
   for (const node of [...graph.nodes].sort(compareIds)) {
@@ -167,7 +167,7 @@ function nearestDiscClearance(center: Coordinates, discs: readonly AggregateDisc
   return clearance;
 }
 
-function setSharedAnchors(graph: VisualGraph, calibration: CalibrationProfile, anchors: LayoutAnchors): void {
+function setSharedAnchors(graph: EngineGraph, calibration: CalibrationProfile, anchors: LayoutAnchors): void {
   const byCalibration = sharedAnchorSets.get(graph) ?? new WeakMap<CalibrationProfile, LayoutAnchors>();
   byCalibration.set(calibration, anchors);
   sharedAnchorSets.set(graph, byCalibration);
@@ -179,7 +179,7 @@ function layoutExtent(calibration: CalibrationProfile): number {
 
 /** This assigns finite grid cells to aggregate discs and non-members without iterative collision resolution. */
 function reservedCentersFor(
-  graph: VisualGraph,
+  graph: EngineGraph,
   memberships: ReadonlyMap<string, readonly string[]>,
   discsOrRadii: readonly AggregateDisc[] | ReadonlyMap<string, number>,
   calibration: CalibrationProfile,
@@ -238,7 +238,7 @@ function requiredRadius(radii: ReadonlyMap<string, number>, id: string): number 
   return radius;
 }
 
-function aggregateKind(graph: VisualGraph, id: string): "cluster" | "conflict" {
+function aggregateKind(graph: EngineGraph, id: string): "cluster" | "conflict" {
   const kind = graph.nodes.find((node) => node.id === id)?.kind;
   if (kind === "cluster" || kind === "conflict") {
     return kind;

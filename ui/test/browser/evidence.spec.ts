@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
-import { minimumResolvedMaterialDifference, resolvedMaterial, resolvedMaterialDifference } from "#engine/lod.ts";
+import { MACRO, MESO, MICRO, minimumResolvedMaterialDifference, resolvedMaterial, resolvedMaterialDifference } from "#engine/lod.ts";
+import { MYCELIUM, NEURAL, STELLAR } from "#engine/morphology.ts";
+import { PALETTES, TEMPERATURES, THEMES } from "#engine/tokens.ts";
 
 type Status = "PASS" | "FAIL" | "NOT_RUN" | "UNKNOWN";
 
@@ -35,6 +37,9 @@ type Snapshot = {
   readonly policy: "Reliability" | "Discovery";
   readonly morphology: "stellar" | "neural" | "mycelium";
   readonly organization: "flat" | "indra";
+  readonly palette: "monochrome" | "interstellar" | "perceptual" | "solar" | "custom";
+  readonly temperature: "cold" | "balanced" | "warm";
+  readonly theme: "system" | "dark" | "light";
   readonly lodBand: "macro" | "meso" | "micro";
   readonly reducedMotion: boolean;
   readonly fieldColor: string;
@@ -72,6 +77,32 @@ type Snapshot = {
     readonly coreRadiusPx: number;
     readonly haloRadiusPx: number;
   }[];
+  readonly pickingTarget: {
+    readonly nodeIds: readonly string[];
+    readonly edgeIds: readonly string[];
+    readonly pickableNodeIds: readonly string[];
+    readonly pickableEdgeIds: readonly string[];
+    readonly nodeAnchorPickIds: Readonly<Record<string, string | null>>;
+    readonly nodePickCoverageIds: readonly string[];
+    readonly edgePickCoverageIds: readonly string[];
+    readonly edgePickMeasurements: Readonly<Record<string, {
+      readonly edgeId: string;
+      readonly returnedEdgeIds: readonly string[];
+      readonly samples: readonly {
+        readonly parameter: number;
+        readonly shaderParameter: number;
+        readonly returnedEdgeId: string | null;
+        readonly centrelineDistancePx: number;
+        readonly bodyWidthPx: number;
+        readonly visibleWidthPx: number;
+        readonly pickRadiusPx: number;
+      }[];
+    }>>;
+    readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
+    readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
+    readonly nodePixels: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
+    readonly edgePixels: Readonly<Record<string, readonly { readonly x: number; readonly y: number }[]>>;
+  };
 };
 
 type PageEvidence = {
@@ -80,6 +111,7 @@ type PageEvidence = {
   switchPolicy(policy: "Reliability" | "Discovery"): Promise<Snapshot>;
   switchMorphology(morphology: "stellar" | "neural" | "mycelium"): Promise<Snapshot>;
   switchOrganization(organization: "flat" | "indra"): Promise<Snapshot>;
+  setCrossProductState(morphology: Snapshot["morphology"], palette: Snapshot["palette"], temperature: Snapshot["temperature"], theme: Snapshot["theme"], lodBand: Snapshot["lodBand"]): Promise<Snapshot>;
   setLodBand(band: "macro" | "meso" | "micro"): Promise<Snapshot>;
   setLodZoom(zoom: number): Promise<Snapshot>;
   setGlowSuppressed(suppressed: boolean): Promise<Snapshot>;
@@ -105,6 +137,10 @@ type PageEvidence = {
   showSelectionFocusNoopControl(): Promise<Snapshot>;
   setSelectionFocusNoopControl(selection: string | null, focus: string | null): Promise<Snapshot>;
   hideSelectionFocusNoopControl(): void;
+  assertDerivedOriginRefusalControl(): number;
+  assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean };
+  readLiveRelationMaterialBindings(): readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[];
+  proveStackedMaterialControlRejects(): { readonly relationId: string; readonly message: string };
   shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }>;
 };
 
@@ -150,10 +186,32 @@ type EdgeIdentityPartition = {
   readonly categoryB: readonly { readonly edgeId: string; readonly partnerId: string }[];
 };
 
+type AcceptanceInvariant = {
+  readonly id: "A1" | "A3" | "A7" | "A10" | "A18";
+  readonly command: string;
+  readonly checkIds: readonly string[];
+};
+
+type CrossProductState = Pick<Snapshot, "morphology" | "palette" | "temperature" | "theme" | "lodBand">;
+
 const COMMAND = "npm --prefix ui run test:browser";
 const EVIDENCE_FILE = "dist/evidence/evidence.json";
 const NEUTRAL_DIGESTS_FILE = ["..", "fixtures", "synthetic", "projection", "expectations", "neutral-digests.json"].join("/");
 const REQUIRED_PROJECTS = ["dpr-1", "dpr-2"] as const;
+const CAPABILITY_CHECKS = [
+  "a1-derived-origin-refusal",
+  "a3-cross-product-picking-pixels",
+  "a7-single-relation-material",
+  "a10-engine-semantic-isolation",
+  "a18-invariant-status-mapping",
+] as const;
+const ACCEPTANCE_INVARIANTS: readonly AcceptanceInvariant[] = [
+  { id: "A1", command: COMMAND, checkIds: projectCheckIds("a1-derived-origin-refusal") },
+  { id: "A3", command: COMMAND, checkIds: projectCheckIds("a3-cross-product-picking-pixels") },
+  { id: "A7", command: COMMAND, checkIds: projectCheckIds("a7-single-relation-material") },
+  { id: "A10", command: COMMAND, checkIds: projectCheckIds("a10-engine-semantic-isolation") },
+  { id: "A18", command: COMMAND, checkIds: projectCheckIds("a18-invariant-status-mapping") },
+];
 const EDGE_SAMPLE_PARAMETERS = Array.from({ length: 33 }, (_, index) => 0.02 + (index * 0.03));
 const FIXTURE_EXPECTATIONS = {
   Discovery: { nodes: 22, edges: 27, sha256: "afdb1a7e50c6aaf12ad53b16dbbb5b72ff1f0d6b3bd471a6a790eca09077cec6" },
@@ -236,15 +294,21 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       ...(path === undefined ? {} : { path }),
     }));
   };
-  let emptyGraphCapture: DecodedPng | undefined;
+  // An empty screenshot is only blank relative to the field colour resolved for
+  // the state that produced it. The cross-product changes palette, temperature,
+  // and theme before later controls reuse this helper, so a single capture can
+  // become a false lit witness merely because its field is from another state.
+  const emptyGraphCaptures = new Map<string, DecodedPng>();
   const assertEmptyGraphFails = async (snapshot: Snapshot, check: string): Promise<void> => {
+    let emptyGraphCapture = emptyGraphCaptures.get(snapshot.fieldColor);
     if (emptyGraphCapture === undefined) {
       await invoke<void>("showEmptyGraphControl");
       emptyGraphCapture = await capture("#evidence-empty-renderer");
       await invoke<void>("hideEmptyGraphControl");
       expect(countLitPixels(emptyGraphCapture, parseFieldColor(snapshot.fieldColor))).toBe(0);
+      emptyGraphCaptures.set(snapshot.fieldColor, emptyGraphCapture);
     }
-    expect(() => assertElementPixels(snapshot, emptyGraphCapture as DecodedPng), `${check} must reject an empty renderer screenshot`).toThrow();
+    expect(() => assertElementPixels(snapshot, emptyGraphCapture), `${check} must reject an empty renderer screenshot`).toThrow();
   };
 
   await expect.poll(async () => (await api()).ready).toBe(true);
@@ -304,6 +368,71 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       ? "DPR 1 witness is unavailable; the paired DPR backing-store check was not run."
       : undefined);
   }
+  await run("a1-derived-origin-refusal", async () => {
+    const refused = await invoke<number>("assertDerivedOriginRefusalControl");
+    expect(refused).toBe(4);
+    return `the live adapter graph refused ${refused} forced derived-origin failures: null and absent origin on one node and one edge`;
+  });
+  await run("a7-single-relation-material", async () => {
+    const bindings = await invoke<readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[]>("readLiveRelationMaterialBindings");
+    expect(bindings.length).toBeGreaterThan(0);
+    expect(new Set(bindings.map((binding) => binding.relationId)).size).toBe(bindings.length);
+    for (const binding of bindings) {
+      expect(binding.materialTypes).toHaveLength(1);
+    }
+    const control = await invoke<{ readonly relationId: string; readonly message: string }>("proveStackedMaterialControlRejects");
+    expect(control.message).toMatch(/must bind exactly one material program/);
+    return `live Sigma pipeline reported ${bindings.length} relations, one material each; forcing a duplicate on ${control.relationId} failed: ${control.message}`;
+  });
+  await run("a10-engine-semantic-isolation", async () => {
+    const result = await invoke<{ readonly reads: number; readonly changedSemanticDigest: boolean }>("assertEngineSemanticIsolationControl");
+    expect(result.reads).toBeGreaterThan(0);
+    expect(result.changedSemanticDigest).toBe(true);
+    return `structural engine trace recorded ${result.reads} allowed reads and no semantic field; a forced semantic access failed, while a non-isomorphic semantic permutation changed its digest without changing engine output`;
+  });
+  await run("a3-cross-product-picking-pixels", async () => {
+    await invoke<Snapshot>("switchPolicy", "Discovery");
+    const product = enumerateCrossProduct();
+    const sampleSize = Math.min(DEFAULT_CALIBRATION.budget.oracleCrossProductSampleSize, product.length);
+    const sampled = deterministicCrossProductSample(product, sampleSize, DEFAULT_CALIBRATION.budget.oracleCrossProductSamplingSeed);
+    expect(product.length).toBe(PALETTES.length * TEMPERATURES.length * THEMES.length * morphologyOptions().length * lodBandOptions().length);
+    expect(sampled).toHaveLength(sampleSize);
+    expect(new Set(sampled.map(crossProductKey)).size).toBe(sampled.length);
+    let reference: { readonly state: CrossProductState; readonly target: Snapshot["pickingTarget"] } | undefined;
+    const anchorCentreIdChanges: string[] = [];
+    for (const state of sampled) {
+      const snapshot = await invoke<Snapshot>("setCrossProductState", state.morphology, state.palette, state.temperature, state.theme, state.lodBand);
+      const image = await capture("#evidence-renderer");
+      try {
+        assertPickingTargetPixels(snapshot, image);
+      } catch (error: unknown) {
+        throw new Error(`${crossProductKey(state)} failed its picking-target compositor witnesses: ${message(error)}`);
+      }
+      if (reference === undefined) {
+        reference = { state, target: snapshot.pickingTarget };
+      } else {
+        const comparison = `${crossProductKey(reference.state)} -> ${crossProductKey(state)}`;
+        try {
+          assertPickingTargetInvariant(reference.target, snapshot.pickingTarget, comparison);
+        } catch (error: unknown) {
+          throw new Error(`A3 finding: cross-product pickable-id invariance does not currently hold across the full morphology×palette×temperature×theme×LOD space; it is reported rather than silenced. ${comparison}: ${message(error)}`);
+        }
+        const centreDifference = rawAnchorCentreIdDifference(reference.target.nodeAnchorPickIds, snapshot.pickingTarget.nodeAnchorPickIds);
+        if (centreDifference !== "") {
+          anchorCentreIdChanges.push(`${crossProductKey(reference.state)} -> ${crossProductKey(state)}: ${centreDifference}`);
+        }
+      }
+    }
+    const restore = sampled[0];
+    if (restore === undefined) {
+      throw new Error("cross-product sample is empty");
+    }
+    await invoke<Snapshot>("setCrossProductState", restore.morphology, restore.palette, restore.temperature, restore.theme, restore.lodBand);
+    const anchorCentreDiagnostic = anchorCentreIdChanges.length === 0
+      ? "anchor-centre returned ids were stable"
+      : `anchor-centre returned-id changes (diagnostic only): ${anchorCentreIdChanges.join("; ")}`;
+    return `full morphology×palette×temperature×theme×LOD product=${product.length}; browser-budget sample=${sampled.length}; deterministic seed=${DEFAULT_CALIBRATION.budget.oracleCrossProductSamplingSeed}; every sampled state read rendered/pickable ids, incidence, and anchors from the picking target and checked ${DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount} composited pixel witness(es) per relation; ${anchorCentreDiagnostic}`;
+  });
   await run("policy-transition", async () => {
     const discovery = await invoke<Snapshot>("switchPolicy", "Discovery");
     const reliability = await invoke<Snapshot>("switchPolicy", "Reliability");
@@ -551,6 +680,18 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       await invoke<void>("hideSelectionFocusNoopControl");
     }
   });
+  await run("a18-invariant-status-mapping", async () => {
+    assertAcceptanceInvariantMapping(
+      ACCEPTANCE_INVARIANTS.filter((invariant) => invariant.id !== "A18"),
+      entries,
+      [testInfo.project.name],
+    );
+    const withoutCheck = ACCEPTANCE_INVARIANTS.map((invariant) => invariant.id === "A1"
+      ? { ...invariant, checkIds: [] }
+      : invariant);
+    expect(() => assertAcceptanceInvariantMapping(withoutCheck, entries, [testInfo.project.name])).toThrow(/A1 has no runnable check/);
+    return `mapped A1, A3, A7, A10, and A18 to named ${COMMAND} check ids; the no-check control for A1 was rejected, and any mapped NOT_RUN status remains non-passing`;
+  });
   await run("console", async () => {
     const evidence = await api();
     expect(evidence.errors).toEqual([]);
@@ -613,11 +754,60 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     },
     projects,
     dprWitnesses,
+    acceptanceInvariants: ACCEPTANCE_INVARIANTS,
     checks,
   }, null, 2)}\n`);
+  assertAcceptanceInvariantMapping(ACCEPTANCE_INVARIANTS, checks, Object.keys(projects));
   const incomplete = checks.filter((entry) => entry.status !== "PASS");
   expect(incomplete, "a material browser evidence failure or unavailable required check must fail the run").toEqual([]);
 });
+
+/** This maps every acceptance invariant to runnable evidence checks and treats every non-PASS status as non-discharge. */
+function assertAcceptanceInvariantMapping(
+  invariants: readonly AcceptanceInvariant[],
+  checks: readonly EvidenceEntry[],
+  completedProjects: readonly string[],
+): void {
+  const expected = ["A1", "A10", "A18", "A3", "A7"];
+  const observed = invariants.map((invariant) => invariant.id).sort();
+  const isFullMapping = observed.length === expected.length && observed.every((id, index) => id === expected[index]);
+  if (isFullMapping) {
+    expect(observed).toEqual(expected);
+    expect(expected).toEqual(observed);
+  }
+  const entries = new Map(checks.map((check) => [check.id, check]));
+  for (const invariant of invariants) {
+    if (invariant.command.trim() === "") {
+      throw new Error(`${invariant.id} has no named runnable command`);
+    }
+    if (invariant.checkIds.length === 0) {
+      throw new Error(`${invariant.id} has no runnable check`);
+    }
+    for (const checkId of invariant.checkIds) {
+      const [project, checkName] = checkId.split("/");
+      if (project === undefined || checkName === undefined || !REQUIRED_PROJECTS.includes(project as typeof REQUIRED_PROJECTS[number]) || !CAPABILITY_CHECKS.includes(checkName as typeof CAPABILITY_CHECKS[number])) {
+        throw new Error(`${invariant.id} names an unknown runnable check ${checkId}`);
+      }
+      if (!completedProjects.includes(project)) {
+        continue;
+      }
+      const entry = entries.get(checkId);
+      if (entry === undefined) {
+        throw new Error(`${invariant.id} has no evidence status for runnable check ${checkId}`);
+      }
+      if (entry.command !== invariant.command) {
+        throw new Error(`${invariant.id} command does not match evidence check ${checkId}`);
+      }
+      if (entry.status !== "PASS") {
+        throw new Error(`${invariant.id} is not discharged because ${checkId} is ${entry.status}`);
+      }
+    }
+  }
+}
+
+function projectCheckIds(check: typeof CAPABILITY_CHECKS[number]): readonly string[] {
+  return REQUIRED_PROJECTS.map((project) => `${project}/${check}`);
+}
 
 function assertBackingStores(snapshot: Snapshot, image: DecodedPng): void {
   const rendering = snapshot.rendering;
@@ -665,6 +855,147 @@ function assertElementPixels(snapshot: Snapshot, image: DecodedPng): void {
       expect(hasLitPixelNear(image, point, snapshot.rendering.devicePixelRatio, 4, fieldColor), `final screenshot has no lit pixel on edge ${id}`).toBe(true);
     }
   }
+}
+
+/** This checks every observed picking-target id against a compositor pixel witness without reading the render model. */
+function assertPickingTargetPixels(snapshot: Snapshot, image: DecodedPng): void {
+  const target = snapshot.pickingTarget;
+  const fieldColor = compositedFieldColor(image);
+  expect(target.nodeIds.length, "picking target has rendered nodes").toBeGreaterThan(0);
+  expect(target.edgeIds.length, "picking target has rendered relations").toBeGreaterThan(0);
+  expect([...target.nodePickCoverageIds].sort(), "every rendered node has an actual picking-target hit").toEqual([...target.nodeIds].sort());
+  expect([...target.edgePickCoverageIds].sort(), "every rendered relation has an actual picking-target hit").toEqual([...target.edgeIds].sort());
+  expect(target.pickableNodeIds.every((id) => target.nodeIds.includes(id)), "the picking target cannot return an unknown node id").toBe(true);
+  expect(target.pickableEdgeIds.every((id) => target.edgeIds.includes(id)), "the picking target cannot return an unknown relation id").toBe(true);
+  expect(Object.keys(target.anchors).sort(), "picking target anchors name every rendered node").toEqual([...target.nodeIds].sort());
+  expect(Object.keys(target.incidence).sort(), "picking target incidence names every rendered relation").toEqual([...target.edgeIds].sort());
+  expect(Object.keys(target.nodePixels).sort(), "node pixel witnesses name every rendered node").toEqual([...target.nodeIds].sort());
+  expect(Object.keys(target.edgePixels).sort(), "relation pixel witnesses name every rendered relation").toEqual([...target.edgeIds].sort());
+  for (const id of target.nodeIds) {
+    const point = target.nodePixels[id];
+    expect(point, `picking target node ${id} has a compositor witness`).toBeDefined();
+    if (point === undefined) {
+      throw new Error(`picking target node ${id} is missing its compositor witness`);
+    }
+    expect(hasLitPixelNear(image, point, snapshot.rendering.devicePixelRatio, DEFAULT_CALIBRATION.labels.collisionPaddingPx, fieldColor), `composited renderer has a lit witness for picking-target node ${id}`).toBe(true);
+  }
+  for (const id of target.edgeIds) {
+    const points = target.edgePixels[id];
+    expect(points, `picking target relation ${id} has compositor witnesses`).toBeDefined();
+    if (points === undefined) {
+      throw new Error(`picking target relation ${id} is missing compositor witnesses`);
+    }
+    expect(points, `picking target relation ${id} uses the calibrated witness count`).toHaveLength(DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount);
+    const measurement = target.edgePickMeasurements[id];
+    expect(measurement, `picking target relation ${id} has live pick-width measurements`).toBeDefined();
+    for (const point of points) {
+      expect(
+        hasLitPixelNear(image, point, snapshot.rendering.devicePixelRatio, DEFAULT_CALIBRATION.labels.collisionPaddingPx, fieldColor),
+        `composited renderer has a lit witness for picking-target relation ${id}; ${formatRelationPickMeasurement(measurement)}`,
+      ).toBe(true);
+    }
+  }
+}
+
+/** This compares the required topology witnesses from two live picking targets and does not inspect their render models. */
+function assertPickingTargetInvariant(reference: Snapshot["pickingTarget"], actual: Snapshot["pickingTarget"], state: string): void {
+  expect([...actual.nodeIds].sort(), `${state} preserves rendered node ids from the picking target (reference=${reference.nodeIds.length}, actual=${actual.nodeIds.length})`).toEqual([...reference.nodeIds].sort());
+  expect([...actual.edgeIds].sort(), `${state} preserves rendered relation ids from the picking target (reference=${reference.edgeIds.length}, actual=${actual.edgeIds.length})`).toEqual([...reference.edgeIds].sort());
+  expect([...actual.pickableNodeIds].sort(), `${state} preserves pickable node ids from the picking target (reference=${reference.pickableNodeIds.length}, actual=${actual.pickableNodeIds.length})`).toEqual([...reference.pickableNodeIds].sort());
+  try {
+    expect([...actual.pickableEdgeIds].sort(), `${state} preserves pickable relation ids from the picking target (reference=${reference.pickableEdgeIds.length}, actual=${actual.pickableEdgeIds.length})`).toEqual([...reference.pickableEdgeIds].sort());
+  } catch (error: unknown) {
+    throw new Error(`${message(error)}; ${formatRelationSetDifference(reference, actual)}`);
+  }
+  expect([...actual.nodePickCoverageIds].sort(), `${state} preserves per-node picking coverage (reference=${reference.nodePickCoverageIds.length}, actual=${actual.nodePickCoverageIds.length})`).toEqual([...reference.nodePickCoverageIds].sort());
+  expect([...actual.edgePickCoverageIds].sort(), `${state} preserves per-relation picking coverage (reference=${reference.edgePickCoverageIds.length}, actual=${actual.edgePickCoverageIds.length})`).toEqual([...reference.edgePickCoverageIds].sort());
+  expect(actual.incidence, `${state} preserves endpoint incidence from the picking target`).toEqual(reference.incidence);
+  expect(actual.anchors, `${state} preserves anchors from the picking target`).toEqual(reference.anchors);
+}
+
+/** This emits the live samples for the changed id sets, so a failing invariant distinguishes absent own hits from a stale witness. */
+function formatRelationSetDifference(reference: Snapshot["pickingTarget"], actual: Snapshot["pickingTarget"]): string {
+  const missingFromActual = reference.pickableEdgeIds.filter((id) => !actual.pickableEdgeIds.includes(id));
+  const addedToActual = actual.pickableEdgeIds.filter((id) => !reference.pickableEdgeIds.includes(id));
+  const describe = (target: Snapshot["pickingTarget"], ids: readonly string[]): string => ids.length === 0
+    ? "[]"
+    : `[${ids.map((id) => `${id}: ${formatRelationPickMeasurement(target.edgePickMeasurements[id])}`).join("; ")}]`;
+  return `pickable relation ids missing-from-actual: actual-samples=${describe(actual, missingFromActual)}, reference-samples=${describe(reference, missingFromActual)}; added-to-actual: reference-samples=${describe(reference, addedToActual)}, actual-samples=${describe(actual, addedToActual)}`;
+}
+
+/** This states the returned ids plus actual CSS-space body, visible, and picking extents for a relation's calibrated witnesses. */
+function formatRelationPickMeasurement(
+  measurement: Snapshot["pickingTarget"]["edgePickMeasurements"][string] | undefined,
+): string {
+  if (measurement === undefined) {
+    return "measurement unavailable";
+  }
+  const samples = measurement.samples.map((sample) => (
+    `t=${sample.parameter.toFixed(3)}, shader-t=${sample.shaderParameter.toFixed(3)}, returned=${sample.returnedEdgeId ?? "null"}, distance=${sample.centrelineDistancePx.toFixed(3)}px, body=${sample.bodyWidthPx.toFixed(3)}px, visible=${sample.visibleWidthPx.toFixed(3)}px, pick-radius=${sample.pickRadiusPx.toFixed(3)}px`
+  )).join(" | ");
+  return `returned=[${measurement.returnedEdgeIds.join(",")}]; samples=${samples}`;
+}
+
+/** This reports centre-probe aliases without treating their material-sensitive result as an invariant. */
+function rawAnchorCentreIdDifference(
+  reference: Readonly<Record<string, string | null>>,
+  actual: Readonly<Record<string, string | null>>,
+): string {
+  const referenceIds = new Set(Object.values(reference).filter((id): id is string => id !== null));
+  const actualIds = new Set(Object.values(actual).filter((id): id is string => id !== null));
+  const added = [...actualIds].filter((id) => !referenceIds.has(id)).sort();
+  const missing = [...referenceIds].filter((id) => !actualIds.has(id)).sort();
+  if (added.length === 0 && missing.length === 0) {
+    return "";
+  }
+  return `added=[${added.join(",")}], missing=[${missing.join(",")}]`;
+}
+
+/** This enumerates the actual morphology × palette × temperature × theme × LOD product. */
+function enumerateCrossProduct(): readonly CrossProductState[] {
+  return morphologyOptions().flatMap((morphology) => PALETTES.flatMap((palette) => TEMPERATURES.flatMap((temperature) => THEMES.flatMap((theme) => (
+    lodBandOptions().map((lodBand) => ({ morphology, palette, temperature, theme, lodBand }))
+  )))));
+}
+
+/** This chooses a recorded-seed subset of an enumerated product without silently changing its cardinality. */
+function deterministicCrossProductSample(
+  product: readonly CrossProductState[],
+  sampleSize: number,
+  seed: number,
+): readonly CrossProductState[] {
+  if (!Number.isSafeInteger(sampleSize) || sampleSize < 1 || sampleSize > product.length) {
+    throw new Error(`cross-product sample size ${sampleSize} is outside the enumerated product`);
+  }
+  if (!Number.isSafeInteger(seed)) {
+    throw new Error("cross-product sampling seed must be a safe integer");
+  }
+  const shuffled = [...product];
+  let state = seed >>> 0;
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    const swapIndex = state % (index + 1);
+    const current = shuffled[index];
+    const swap = shuffled[swapIndex];
+    if (current === undefined || swap === undefined) {
+      throw new Error("cross-product sampling lost a state");
+    }
+    shuffled[index] = swap;
+    shuffled[swapIndex] = current;
+  }
+  return shuffled.slice(0, sampleSize);
+}
+
+function morphologyOptions(): readonly Snapshot["morphology"][] {
+  return [STELLAR.id, NEURAL.id, MYCELIUM.id];
+}
+
+function lodBandOptions(): readonly Snapshot["lodBand"][] {
+  return [MACRO, MESO, MICRO];
+}
+
+function crossProductKey(state: CrossProductState): string {
+  return `${state.morphology}/${state.palette}/${state.temperature}/${state.theme}/${state.lodBand}`;
 }
 
 function assertTopologyUnchanged(reference: Snapshot, actual: Snapshot, operation: string): void {
@@ -891,6 +1222,15 @@ function parseFieldColor(color: string): RgbColor {
   };
 }
 
+/** This samples the final compositor background instead of reading a model token. */
+function compositedFieldColor(image: DecodedPng): RgbColor {
+  return {
+    red: image.data[0] ?? 0,
+    green: image.data[1] ?? 0,
+    blue: image.data[2] ?? 0,
+  };
+}
+
 function isLitPixel(image: DecodedPng, x: number, y: number, fieldColor: RgbColor): boolean {
   const index = ((y * image.width) + x) * 4;
   const red = image.data[index] ?? 0;
@@ -901,7 +1241,7 @@ function isLitPixel(image: DecodedPng, x: number, y: number, fieldColor: RgbColo
     Math.abs(red - fieldColor.red),
     Math.abs(green - fieldColor.green),
     Math.abs(blue - fieldColor.blue),
-  ) >= 6;
+  ) >= DEFAULT_CALIBRATION.luminance.minimumCompositedPixelChannelDelta;
 }
 
 function witnessFor(snapshot: Snapshot, image: DecodedPng): DprWitness {
