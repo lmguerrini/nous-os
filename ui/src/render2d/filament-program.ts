@@ -1,5 +1,5 @@
 import { EdgeProgram } from "sigma/rendering";
-import { floatColor } from "sigma/utils";
+import { floatColor, parseColor } from "sigma/utils";
 import type { EdgeDisplayData, NodeDisplayData, RenderParams } from "sigma/types";
 import type { InstancedProgramDefinition, ProgramInfo } from "sigma/rendering";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
@@ -7,43 +7,97 @@ import { liveFilamentGeometry } from "#render2d/geometry.ts";
 
 const FILAMENT_VERTEX_DATA = [[0, 1], [0, -1], [1, 1], [0, -1], [1, 1], [1, -1]];
 const FILAMENT_VERTEX_COUNT = FILAMENT_VERTEX_DATA.length;
-const FILAMENT_UNIFORMS = ["u_matrix", "u_sizeRatio", "u_dimensions", "u_pixelRatio", "u_feather", "u_minEdgeThickness"] as const;
+const MATERIAL_VARIATION_COMPONENT_COUNT = ["phase", "hotCore"].length;
+const FILAMENT_UNIFORMS = [
+  "u_matrix",
+  "u_sizeRatio",
+  "u_dimensions",
+  "u_pixelRatio",
+  "u_feather",
+  "u_minEdgeThickness",
+  "u_minimumWidthFactor",
+  "u_sheathScale",
+  "u_sheathAlpha",
+  "u_coreScale",
+  "u_hotMix",
+  "u_hotAlpha",
+  "u_wobbleAmplitude",
+  "u_wobbleFrequency",
+  "u_hotColor",
+] as const;
 const COLOR_CHANNEL_COUNT = ["red", "green", "blue", "alpha"].length;
+const COLOR_BYTE_MAXIMUM = Number("255");
+
+export type FilamentUniformMaterial = {
+  readonly minimumWidthFactor: number;
+  readonly sheathScale: number;
+  readonly sheathAlpha: number;
+  readonly coreScale: number;
+  readonly hotMix: number;
+  readonly hotAlpha: number;
+  readonly wobbleAmplitude: number;
+  readonly wobbleFrequency: number;
+  readonly hotColor?: string;
+};
+
+const DEFAULT_MATERIAL_SCALE = DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
+const DEFAULT_FILAMENT_UNIFORM_MATERIAL: FilamentUniformMaterial = {
+  minimumWidthFactor: DEFAULT_CALIBRATION.filament.minimumWidthFactorPermille / DEFAULT_MATERIAL_SCALE,
+  sheathScale: DEFAULT_CALIBRATION.morphology.stellar.sheathScalePermille / DEFAULT_MATERIAL_SCALE,
+  sheathAlpha: DEFAULT_CALIBRATION.morphology.stellar.sheathAlphaPermille / DEFAULT_MATERIAL_SCALE,
+  coreScale: DEFAULT_CALIBRATION.morphology.stellar.coreScalePermille / DEFAULT_MATERIAL_SCALE,
+  hotMix: DEFAULT_CALIBRATION.morphology.stellar.hotMixPermille / DEFAULT_MATERIAL_SCALE,
+  hotAlpha: DEFAULT_CALIBRATION.morphology.stellar.hotAlphaPermille / DEFAULT_MATERIAL_SCALE,
+  wobbleAmplitude: DEFAULT_CALIBRATION.morphology.stellar.filamentWobbleAmplitudePermille / DEFAULT_MATERIAL_SCALE,
+  wobbleFrequency: DEFAULT_CALIBRATION.morphology.stellar.wobbleFrequencyMilliradians / DEFAULT_MATERIAL_SCALE,
+};
 
 /** This is the live filament distance definition and does not distinguish normal from picking passes. */
 export const FILAMENT_DISTANCE_FUNCTION = `
-vec2 filamentDistanceVector(vec2 b0, vec2 b1, vec2 b2) {
-  vec2 chord = b2 - b0;
-  vec2 controlOffset = b1 - b0;
+vec3 filamentClosestPoint(vec2 point, vec2 b0, vec2 b1, vec2 b2) {
+  vec2 relativeB0 = b0 - point;
+  vec2 relativeB1 = b1 - point;
+  vec2 relativeB2 = b2 - point;
+  vec2 chord = relativeB2 - relativeB0;
+  vec2 controlOffset = relativeB1 - relativeB0;
   float chordLength = length(chord);
   float controlArea = abs(chord.x * controlOffset.y - chord.y * controlOffset.x);
   if (controlArea <= chordLength / max(u_dimensions.x, u_dimensions.y)) {
     float chordSquared = dot(chord, chord);
-    float parameter = chordSquared == 0.0 ? 0.0 : clamp(-dot(b0, chord) / chordSquared, 0.0, 1.0);
-    return b0 + chord * parameter;
+    float parameter = chordSquared == 0.0 ? 0.0 : clamp(-dot(relativeB0, chord) / chordSquared, 0.0, 1.0);
+    return vec3(relativeB0 + chord * parameter, parameter);
   }
-  float a = b0.x * b2.y - b0.y * b2.x;
-  float b = 2.0 * (b1.x * b0.y - b1.y * b0.x);
-  float d = 2.0 * (b2.x * b1.y - b2.y * b1.x);
+  float a = relativeB0.x * relativeB2.y - relativeB0.y * relativeB2.x;
+  float b = 2.0 * (relativeB1.x * relativeB0.y - relativeB1.y * relativeB0.x);
+  float d = 2.0 * (relativeB2.x * relativeB1.y - relativeB2.y * relativeB1.x);
   float f = b * d - a * a;
-  vec2 d21 = b2 - b1;
-  vec2 d10 = b1 - b0;
-  vec2 d20 = b2 - b0;
+  vec2 d21 = relativeB2 - relativeB1;
+  vec2 d10 = relativeB1 - relativeB0;
+  vec2 d20 = relativeB2 - relativeB0;
   vec2 gradient = 2.0 * (b * d21 + d * d10 + a * d20);
   gradient = vec2(gradient.y, -gradient.x);
   vec2 closest = -f * gradient / dot(gradient, gradient);
-  vec2 d0p = b0 - closest;
+  vec2 d0p = relativeB0 - closest;
   float ap = d0p.x * d20.y - d0p.y * d20.x;
   float bp = 2.0 * (d10.x * d0p.y - d10.y * d0p.x);
   float t = clamp((ap + bp) / (2.0 * a + b + d), 0.0, 1.0);
-  return mix(mix(b0, b1, t), mix(b1, b2, t), t);
+  vec2 curvePoint = mix(mix(relativeB0, relativeB1, t), mix(relativeB1, relativeB2, t), t);
+  return vec3(curvePoint, t);
 }
-float filamentDistance(vec2 point, vec2 b0, vec2 b1, vec2 b2) {
-  return length(filamentDistanceVector(b0 - point, b1 - point, b2 - point));
+vec2 filamentDistance(vec2 point, vec2 b0, vec2 b1, vec2 b2) {
+  vec3 closest = filamentClosestPoint(point, b0, b1, b2);
+  vec2 tangent = 2.0 * mix(b1 - b0, b2 - b1, closest.z);
+  vec2 pointFromClosest = -closest.xy;
+  float crossProduct = tangent.x * pointFromClosest.y - tangent.y * pointFromClosest.x;
+  return vec2(sign(crossProduct) * length(pointFromClosest), closest.z);
 }`;
 
 /** This is the custom curved filament program and does not create graph attributes. */
 export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[number]> {
+  protected getUniformMaterial(): FilamentUniformMaterial {
+    return DEFAULT_FILAMENT_UNIFORM_MATERIAL;
+  }
+
   getDefinition(): InstancedProgramDefinition<(typeof FILAMENT_UNIFORMS)[number]> {
     return {
       VERTICES: FILAMENT_VERTEX_COUNT,
@@ -61,6 +115,8 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
         { name: "a_propagationArcPosition", size: 1, type: WebGLRenderingContext.FLOAT },
         { name: "a_propagationContinuous", size: 1, type: WebGLRenderingContext.FLOAT },
         { name: "a_afterglowDecayPermille", size: 1, type: WebGLRenderingContext.FLOAT },
+        { name: "a_materialWidths", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.FLOAT },
+        { name: "a_materialVariation", size: MATERIAL_VARIATION_COMPONENT_COUNT, type: WebGLRenderingContext.FLOAT },
         { name: "a_color", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
         { name: "a_id", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
       ],
@@ -79,6 +135,12 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
       readonly propagationArcPosition?: number;
       readonly propagationContinuous?: number;
       readonly afterglowDecayPermille?: number;
+      readonly widthStart?: number;
+      readonly widthEnd?: number;
+      readonly junctionStart?: number;
+      readonly junctionEnd?: number;
+      readonly wobblePhase?: number;
+      readonly hotCore?: number;
     };
     const array = this.array;
     array[startIndex++] = sourceData.x;
@@ -98,19 +160,54 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     array[startIndex++] = edgeData.propagationArcPosition ?? 1;
     array[startIndex++] = edgeData.propagationContinuous ?? 0;
     array[startIndex++] = edgeData.afterglowDecayPermille ?? DEFAULT_CALIBRATION.motion.afterglowDecayPermille;
+    array[startIndex++] = edgeData.widthStart ?? 1;
+    array[startIndex++] = edgeData.widthEnd ?? 1;
+    array[startIndex++] = edgeData.junctionStart ?? 0;
+    array[startIndex++] = edgeData.junctionEnd ?? 0;
+    array[startIndex++] = edgeData.wobblePhase ?? 0;
+    array[startIndex++] = edgeData.hotCore ?? 0;
     array[startIndex++] = floatColor(edgeData.color);
     array[startIndex] = edgeIndex;
   }
 
   setUniforms(params: RenderParams, programInfo: ProgramInfo<(typeof FILAMENT_UNIFORMS)[number]>): void {
     const gl = programInfo.gl;
+    const uniformMaterial = this.getUniformMaterial();
     gl.uniformMatrix3fv(programInfo.uniformLocations.u_matrix, false, params.matrix);
     gl.uniform1f(programInfo.uniformLocations.u_pixelRatio, params.pixelRatio);
     gl.uniform1f(programInfo.uniformLocations.u_sizeRatio, params.sizeRatio);
     gl.uniform1f(programInfo.uniformLocations.u_feather, params.antiAliasingFeather);
     gl.uniform2f(programInfo.uniformLocations.u_dimensions, params.width * params.pixelRatio, params.height * params.pixelRatio);
     gl.uniform1f(programInfo.uniformLocations.u_minEdgeThickness, params.minEdgeThickness);
+    gl.uniform1f(programInfo.uniformLocations.u_minimumWidthFactor, uniformMaterial.minimumWidthFactor);
+    gl.uniform1f(programInfo.uniformLocations.u_sheathScale, uniformMaterial.sheathScale);
+    gl.uniform1f(programInfo.uniformLocations.u_wobbleAmplitude, uniformMaterial.wobbleAmplitude);
+    gl.uniform1f(programInfo.uniformLocations.u_wobbleFrequency, uniformMaterial.wobbleFrequency);
+    if (!programInfo.isPicking) {
+      gl.uniform1f(programInfo.uniformLocations.u_sheathAlpha, uniformMaterial.sheathAlpha);
+      gl.uniform1f(programInfo.uniformLocations.u_coreScale, uniformMaterial.coreScale);
+      gl.uniform1f(programInfo.uniformLocations.u_hotMix, uniformMaterial.hotMix);
+      gl.uniform1f(programInfo.uniformLocations.u_hotAlpha, uniformMaterial.hotAlpha);
+      if (uniformMaterial.hotColor !== undefined) {
+        const hotColor = parseColor(uniformMaterial.hotColor);
+        gl.uniform3f(
+          programInfo.uniformLocations.u_hotColor,
+          hotColor.r / COLOR_BYTE_MAXIMUM,
+          hotColor.g / COLOR_BYTE_MAXIMUM,
+          hotColor.b / COLOR_BYTE_MAXIMUM,
+        );
+      }
+    }
   }
+}
+
+/** This binds one render-wide morphology profile to uniforms and does not add a second edge program. */
+export function createFilamentProgram(uniformMaterial: FilamentUniformMaterial): typeof FilamentProgram {
+  return class extends FilamentProgram {
+    protected override getUniformMaterial(): FilamentUniformMaterial {
+      return uniformMaterial;
+    }
+  };
 }
 
 /** This creates clip-space control points and does not choose a normal or picking pass. */
@@ -129,12 +226,17 @@ attribute float a_pickTolerance;
 attribute float a_propagationArcPosition;
 attribute float a_propagationContinuous;
 attribute float a_afterglowDecayPermille;
+attribute vec4 a_materialWidths;
+attribute vec2 a_materialVariation;
 uniform mat3 u_matrix;
 uniform float u_sizeRatio;
 uniform float u_pixelRatio;
 uniform vec2 u_dimensions;
 uniform float u_feather;
 uniform float u_minEdgeThickness;
+uniform float u_minimumWidthFactor;
+uniform float u_sheathScale;
+uniform float u_wobbleAmplitude;
 varying vec4 v_color;
 varying float v_thickness;
 varying float v_pickTolerance;
@@ -143,6 +245,8 @@ varying float v_arcFraction;
 varying float v_propagationArcPosition;
 varying float v_propagationContinuous;
 varying float v_afterglowDecayPermille;
+varying vec4 v_materialWidths;
+varying vec2 v_materialVariation;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
@@ -164,7 +268,11 @@ void main() {
   vec2 delta = viewportTarget - viewportSource;
   float lengthDelta = length(delta);
   vec2 normal = vec2(-delta.y, delta.x) / lengthDelta;
-  float curveOffset = lengthDelta * a_curvature;
+  vec2 viewportControl = clipspaceToViewport(control, u_dimensions);
+  float curveOffset = max(
+    abs(lengthDelta * a_curvature),
+    abs(dot(viewportControl - ((viewportSource + viewportTarget) * 0.5), normal))
+  );
   float curveThickness = max(u_minEdgeThickness, a_thickness / u_sizeRatio);
   v_thickness = curveThickness * u_pixelRatio;
   v_pickTolerance = a_pickTolerance * u_pixelRatio;
@@ -173,10 +281,21 @@ void main() {
   v_propagationArcPosition = a_propagationArcPosition;
   v_propagationContinuous = a_propagationContinuous;
   v_afterglowDecayPermille = a_afterglowDecayPermille;
+  v_materialWidths = a_materialWidths;
+  v_materialVariation = a_materialVariation;
   v_cpA = viewportSource;
-  v_cpB = clipspaceToViewport(control, u_dimensions);
+  v_cpB = viewportControl;
   v_cpC = viewportTarget;
-  vec2 offsetPosition = viewportPosition + normal * (abs(curveOffset) / 2.0 + curveThickness) * a_direction;
+  float maximumWidthFactor = max(
+    u_minimumWidthFactor,
+    max(a_materialWidths.x, a_materialWidths.y) + abs(u_wobbleAmplitude) + max(a_materialWidths.z, a_materialWidths.w)
+  );
+  float maximumBodyHalfWidth = v_thickness * 0.5 * maximumWidthFactor;
+  float maximumMaterialExtent = max(
+    maximumBodyHalfWidth * u_sheathScale,
+    maximumBodyHalfWidth + a_pickTolerance * u_pixelRatio
+  ) + u_feather;
+  vec2 offsetPosition = viewportPosition + normal * (abs(curveOffset) / 2.0 + maximumMaterialExtent) * a_direction;
   gl_Position = vec4(viewportToClipspace(offsetPosition, u_dimensions), 0.0, 1.0);
   #ifdef PICKING_MODE
   v_color = a_id;
@@ -198,34 +317,65 @@ varying float v_arcFraction;
 varying float v_propagationArcPosition;
 varying float v_propagationContinuous;
 varying float v_afterglowDecayPermille;
+varying vec4 v_materialWidths;
+varying vec2 v_materialVariation;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
 uniform vec2 u_dimensions;
+uniform float u_minimumWidthFactor;
+uniform float u_sheathScale;
+uniform float u_sheathAlpha;
+uniform float u_coreScale;
+uniform float u_hotMix;
+uniform float u_hotAlpha;
+uniform float u_wobbleAmplitude;
+uniform float u_wobbleFrequency;
+uniform vec3 u_hotColor;
 ${FILAMENT_DISTANCE_FUNCTION}
 void main(void) {
-  float distance = filamentDistance(gl_FragCoord.xy, v_cpA, v_cpB, v_cpC);
-  float halfThickness = v_thickness / 2.0;
+  vec2 distanceSample = filamentDistance(gl_FragCoord.xy, v_cpA, v_cpB, v_cpC);
+  float curveT = distanceSample.y;
+  float taper = mix(v_materialWidths.x, v_materialWidths.y, curveT);
+  float wobble = u_wobbleAmplitude * sin(u_wobbleFrequency * curveT + v_materialVariation.x);
+  float junction = v_materialWidths.z * max(0.0, 1.0 - curveT / 0.13)
+    + v_materialWidths.w * max(0.0, 1.0 - (1.0 - curveT) / 0.13);
+  float widthFactor = max(u_minimumWidthFactor, taper + wobble + junction);
+  float halfThickness = 0.5 * v_thickness * widthFactor;
+  float distance = abs(distanceSample.x);
   #ifdef PICKING_MODE
-  halfThickness += v_pickTolerance;
-  #endif
-  if (distance < halfThickness) {
-    #ifdef PICKING_MODE
+  float pickHalfThickness = halfThickness + v_pickTolerance;
+  if (distance < pickHalfThickness) {
     gl_FragColor = v_color;
-    #else
-    // PICKING_MODE assigns v_color = a_id and never uses alpha; propagation stays in this branch, preserving pick/draw parity by construction.
-    float feather = smoothstep(halfThickness - v_feather, halfThickness, distance);
-    float lightPosition = v_propagationContinuous > 0.5 ? v_propagationArcPosition : 1.0;
-    float afterglowDecay = max(v_afterglowDecayPermille, 1.0) / 1000.0;
-    float propagationAlpha = max(afterglowDecay, 1.0 - (abs(v_arcFraction - lightPosition) / afterglowDecay));
-    vec4 gradientColor = v_color;
-    gradientColor.a *= propagationAlpha;
-    // Sigma's blend operator expects premultiplied colour.
-    gradientColor.rgb *= gradientColor.a;
-    gl_FragColor = mix(gradientColor, vec4(0.0, 0.0, 0.0, 0.0), feather);
-    #endif
   } else {
     gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
   }
+  #else
+  float sheathHalfThickness = halfThickness * u_sheathScale;
+  if (distance < sheathHalfThickness) {
+    float sheathCoverage = 1.0 - smoothstep(sheathHalfThickness - v_feather, sheathHalfThickness, distance);
+    float bodyCoverage = distance < halfThickness ? 1.0 : 0.0;
+    float coreCoverage = distance < halfThickness * u_coreScale ? 1.0 : 0.0;
+    float lightPosition = v_propagationContinuous > 0.5 ? v_propagationArcPosition : 1.0;
+    float afterglowDecay = max(v_afterglowDecayPermille, 1.0) / 1000.0;
+    float propagationAlpha = max(afterglowDecay, 1.0 - (abs(curveT - lightPosition) / afterglowDecay));
+    vec4 sheathColor = v_color;
+    sheathColor.a *= propagationAlpha * u_sheathAlpha * sheathCoverage;
+    sheathColor.rgb *= sheathColor.a;
+    vec4 gradientColor = v_color;
+    gradientColor.a *= propagationAlpha * bodyCoverage;
+    // Sigma's blend operator expects every material band to be premultiplied before source-over composition.
+    gradientColor.rgb *= gradientColor.a;
+    vec4 coreColor = vec4(mix(v_color.rgb, u_hotColor, u_hotMix), v_color.a);
+    coreColor.a *= propagationAlpha * u_hotAlpha * v_materialVariation.y * coreCoverage;
+    coreColor.rgb *= coreColor.a;
+    vec4 composedColor = sheathColor;
+    composedColor = gradientColor + composedColor * (1.0 - gradientColor.a);
+    composedColor = coreColor + composedColor * (1.0 - coreColor.a);
+    gl_FragColor = composedColor;
+  } else {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
+  }
+  #endif
 }`;
 }

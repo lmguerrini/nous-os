@@ -53,7 +53,6 @@ export type NodeMaterial = {
   readonly opacityPermille: number;
   readonly junctionGeometry: string;
   readonly terminalTreatment: string;
-  readonly medialOffsetPx: number;
   readonly facts: StructuralFacts;
 };
 
@@ -61,10 +60,15 @@ export type NodeMaterial = {
 export type EdgeMaterial = {
   readonly id: string;
   readonly widthPx: number;
+  readonly widthStartPermille: number;
+  readonly widthEndPermille: number;
+  readonly junctionStartPermille: number;
+  readonly junctionEndPermille: number;
   readonly opacityPermille: number;
   readonly curvaturePermille: number;
   readonly taperPermille: number;
-  readonly medialOffsetPx: number;
+  readonly phasePermille: number;
+  readonly hotCorePermille: number;
   readonly kind: DerivedValue;
 };
 
@@ -112,7 +116,6 @@ export function applyMorphology(
       opacityPermille: material.opacityPermille,
       junctionGeometry: morphology.junctionGeometry,
       terminalTreatment: morphology.terminalTreatment,
-      medialOffsetPx: (calibration.filament.medialOffsetAmplitudePx * material.medialOffsetAmplitudePermille) / PERMILLE,
       facts: {
         degree: { value: nodeDegree, origin: "morphology:edge-incidence" },
         hopDistanceFromHub: { value: hopDistance, origin: "morphology:shortest-hop-from-max-degree-node" },
@@ -127,13 +130,43 @@ export function applyMorphology(
     const hopDistance = Math.max(sourceHop, targetHop);
     const neuralTaper = PERMILLE / (hopDistance + TERMINAL_DEGREE);
     const taperPermille = morphology.id === NEURAL.id ? neuralTaper : PERMILLE;
+    const sourceDegree = degree.get(edge.source) ?? 0;
+    const targetDegree = degree.get(edge.target) ?? 0;
+    const sourceProminence = normalisedProminence(sourceDegree, minimumDegree, maximumDegree, calibration);
+    const targetProminence = normalisedProminence(targetDegree, minimumDegree, maximumDegree, calibration);
+    const sourceIsProximal = sourceHop <= targetHop;
+    const widthStartPermille = morphology.id === NEURAL.id && !sourceIsProximal
+      ? material.filamentWidthEndPermille
+      : material.filamentWidthStartPermille;
+    const widthEndPermille = morphology.id === NEURAL.id && !sourceIsProximal
+      ? material.filamentWidthStartPermille
+      : material.filamentWidthEndPermille;
+    const junctionStartPermille = junctionThickening(
+      morphology,
+      sourceHop,
+      targetHop,
+      sourceProminence,
+      material.junctionThickeningPermille,
+    );
+    const junctionEndPermille = junctionThickening(
+      morphology,
+      targetHop,
+      sourceHop,
+      targetProminence,
+      material.junctionThickeningPermille,
+    );
     return {
       id: edge.id,
       widthPx: ((calibration.filament.baseWidthPx * material.filamentWidthMultiplierPermille) / PERMILLE * taperPermille) / PERMILLE,
+      widthStartPermille,
+      widthEndPermille,
+      junctionStartPermille,
+      junctionEndPermille,
       opacityPermille: (calibration.filament.opacityPermille * material.opacityPermille) / PERMILLE,
       curvaturePermille: (calibration.filament.curvatureMagnitudePermille * material.curvatureMagnitudePermille) / PERMILLE,
       taperPermille,
-      medialOffsetPx: (calibration.filament.medialOffsetAmplitudePx * material.medialOffsetAmplitudePermille) / PERMILLE,
+      phasePermille: phaseSeedPermille(edge.id, material.filamentPhaseSeed),
+      hotCorePermille: morphology.id === NEURAL.id && hopDistance <= material.hotCoreMaximumHop ? PERMILLE : 0,
       kind: { value: edge.kind, origin: "morphology:visual-edge-kind" },
     };
   });
@@ -145,6 +178,26 @@ export function applyMorphology(
     nodes,
     edges,
   };
+}
+
+function junctionThickening(
+  morphology: MorphologyProfile,
+  endpointHop: number,
+  otherHop: number,
+  prominence: number,
+  thickeningPermille: number,
+): number {
+  if (morphology.id === STELLAR.id || (morphology.id === NEURAL.id && endpointHop > otherHop)) {
+    return 0;
+  }
+  return Math.round(thickeningPermille * prominence);
+}
+
+function phaseSeedPermille(id: string, morphologySeed: number): number {
+  return [...id].reduce(
+    (seed, character, index) => (seed + (character.charCodeAt(0) * (index + TERMINAL_DEGREE))) % PERMILLE,
+    morphologySeed % PERMILLE,
+  );
 }
 
 function normalisedProminence(

@@ -412,12 +412,17 @@ async function boot(): Promise<void> {
       const pickedGeometry = picked === null || pickedFilament === undefined
         ? undefined
         : viewportFilament(pickedFilament, auditor);
+      const pickedCellCentre = pickingCellForPoint(auditor, { ...point, z: 0 }).centre;
       const covers = picked === null || pickedGeometry === undefined
         ? false
         : denseDistanceToFilament(
             pickedGeometry,
-            pickingCellForPoint(auditor, { ...point, z: 0 }).centre,
-          ).distancePx <= pickingRadiusPx(auditor, picked);
+            pickedCellCentre,
+          ).distancePx <= pickingRadiusPx(
+            auditor,
+            picked,
+            filamentShaderParameter(auditor, pickedGeometry, pickedCellCentre),
+          );
       return { edgeId: picked, point, pickedCoversPoint: covers, onScreen };
     },
     unambiguousParameters(edgeId): readonly number[] {
@@ -566,7 +571,9 @@ function coversAlone(
   parameter: number,
 ): boolean {
   const centre = sampledCellCentre(handle, auditor, filament, parameter);
-  if (denseDistanceToFilament(viewportFilament(filament, auditor), centre).distancePx > pickingRadiusPx(auditor, edgeId)) {
+  const geometry = viewportFilament(filament, auditor);
+  const curveParameter = filamentShaderParameter(auditor, geometry, centre);
+  if (denseDistanceToFilament(geometry, centre).distancePx > pickingRadiusPx(auditor, edgeId, curveParameter)) {
     return false;
   }
   return competitorsReaching(handle, auditor, edgeId, centre).length === 0;
@@ -584,8 +591,10 @@ function competitorsReaching(
     if (otherEdgeId === edgeId) {
       continue;
     }
-    const distance = denseDistanceToFilament(viewportFilament(otherFilament, auditor), centre);
-    if (distance.distancePx <= pickingRadiusPx(auditor, otherEdgeId) + distance.deviationBoundPx) {
+    const geometry = viewportFilament(otherFilament, auditor);
+    const distance = denseDistanceToFilament(geometry, centre);
+    const curveParameter = filamentShaderParameter(auditor, geometry, centre);
+    if (distance.distancePx <= pickingRadiusPx(auditor, otherEdgeId, curveParameter) + distance.deviationBoundPx) {
       reaching.push(otherEdgeId);
     }
   }
@@ -615,10 +624,11 @@ function coincidentPartnersFor(handle: RenderHandle, auditor: Sigma, edgeId: str
     throw new Error(`unknown edge ${edgeId}`);
   }
   const geometry = viewportFilament(filament, auditor);
-  const radius = pickingRadiusPx(auditor, edgeId);
   const partners = new Set<string>();
   for (const parameter of EDGE_SAMPLE_PARAMETERS) {
     const centre = sampledCellCentre(handle, auditor, filament, parameter);
+    const curveParameter = filamentShaderParameter(auditor, geometry, centre);
+    const radius = pickingRadiusPx(auditor, edgeId, curveParameter);
     if (denseDistanceToFilament(geometry, centre).distancePx > radius) {
       return null;
     }
@@ -715,43 +725,112 @@ function distanceToViewportSegment(point: Coordinates, source: Coordinates, targ
   );
 }
 
-function pickingRadiusPx(sigma: Sigma, edgeId: string): number {
+function pickingRadiusPx(sigma: Sigma, edgeId: string, parameter: number): number {
   const { sizeRatio, minEdgeThickness } = sigma.getRenderParams();
   const attributes = sigma.getGraph().getEdgeAttributes(edgeId) as {
     readonly size?: unknown;
     readonly pickTolerancePx?: unknown;
+    readonly widthStart?: unknown;
+    readonly widthEnd?: unknown;
+    readonly junctionStart?: unknown;
+    readonly junctionEnd?: unknown;
+    readonly wobblePhase?: unknown;
   };
   const edgeWidthPx = requiredNonNegativeNumber(attributes.size, `edge ${edgeId} size`);
   const pickTolerancePx = requiredNonNegativeNumber(attributes.pickTolerancePx, `edge ${edgeId} pick tolerance`);
+  const widthStart = requiredNonNegativeNumber(attributes.widthStart, `edge ${edgeId} start width`);
+  const widthEnd = requiredNonNegativeNumber(attributes.widthEnd, `edge ${edgeId} end width`);
+  const junctionStart = requiredNonNegativeNumber(attributes.junctionStart, `edge ${edgeId} start junction`);
+  const junctionEnd = requiredNonNegativeNumber(attributes.junctionEnd, `edge ${edgeId} end junction`);
+  const wobblePhase = requiredNonNegativeNumber(attributes.wobblePhase, `edge ${edgeId} wobble phase`);
+  const curveParameter = requiredUnitIntervalNumber(parameter, `edge ${edgeId} curve parameter`);
   const liveSizeRatio = requiredPositiveNumber(sizeRatio, "picking Sigma size ratio");
   const liveMinimumThickness = requiredNonNegativeNumber(minEdgeThickness, "picking Sigma minimum edge thickness");
   // A fixed CSS radius is wrong: each edge's uploaded size is scaled by the live
-  // camera ratio before picking, so a competitor can claim a point beyond 3 px.
-  // The model uploads baseWidthPx times one morphology width multiplier per 1,000;
-  // the shader divides that width by the live sizeRatio, halves it, and adds the
-  // calibrated pickTolerancePx. The lower bound comes from the shader's max,
-  // not from calibration widths: minEdgeThickness / 2 + pickTolerancePx is exact
-  // for every edge. The upper bound remains calibration-derived. The shader uses
-  // distance < halfThickness while this analytic oracle uses <=, a measure-zero
-  // difference at the boundary.
-  const calibratedWidthsPx = [
-    DEFAULT_CALIBRATION.morphology.stellar.filamentWidthMultiplierPermille,
-    DEFAULT_CALIBRATION.morphology.neural.filamentWidthMultiplierPermille,
-    DEFAULT_CALIBRATION.morphology.mycelium.filamentWidthMultiplierPermille,
-  ].map((widthMultiplierPermille) => (
-    (DEFAULT_CALIBRATION.filament.baseWidthPx * widthMultiplierPermille) / 1_000
-  ));
-  const minimumShaderRadiusPx = (liveMinimumThickness / 2) + DEFAULT_CALIBRATION.filament.pickTolerancePx;
-  const maximumCalibratedRadiusPx = (
-    Math.max(...calibratedWidthsPx) / liveSizeRatio / 2
-  ) + DEFAULT_CALIBRATION.filament.pickTolerancePx;
-  const radiusPx = (Math.max(liveMinimumThickness, edgeWidthPx / liveSizeRatio) / 2) + pickTolerancePx;
+  // camera ratio before picking. The model also uploads taper, junction, and phase
+  // attributes, while FilamentProgram binds the calibrated minimum width, wobble
+  // amplitude, and wobble frequency as uniforms. Mirror the fragment shader at its
+  // own closest-point parameter: mix the endpoint widths, add wobble and endpoint
+  // junctions, clamp to the minimum factor, multiply the live shader thickness by
+  // half, and add the uploaded pick tolerance. The shader uses distance < radius
+  // while this analytic oracle uses <=, a measure-zero difference at the boundary.
+  const materialScale = DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
+  const minimumWidthFactor = DEFAULT_CALIBRATION.filament.minimumWidthFactorPermille / materialScale;
+  const wobbleAmplitude = DEFAULT_CALIBRATION.morphology.stellar.filamentWobbleAmplitudePermille / materialScale;
+  const wobbleFrequency = DEFAULT_CALIBRATION.morphology.stellar.wobbleFrequencyMilliradians / materialScale;
+  const taper = (widthStart * (1 - curveParameter)) + (widthEnd * curveParameter);
+  const wobble = wobbleAmplitude * Math.sin((wobbleFrequency * curveParameter) + wobblePhase);
+  const junction = (junctionStart * Math.max(0, 1 - (curveParameter / 0.13)))
+    + (junctionEnd * Math.max(0, 1 - ((1 - curveParameter) / 0.13)));
+  const widthFactor = Math.max(minimumWidthFactor, taper + wobble + junction);
+  const shaderThicknessPx = Math.max(liveMinimumThickness, edgeWidthPx / liveSizeRatio);
+  const radiusPx = (shaderThicknessPx * widthFactor / 2) + pickTolerancePx;
+  const minimumShaderRadiusPx = (shaderThicknessPx * minimumWidthFactor / 2) + pickTolerancePx;
+  const maximumWidthFactor = Math.max(
+    minimumWidthFactor,
+    Math.max(widthStart, widthEnd) + Math.abs(wobbleAmplitude) + Math.max(junctionStart, junctionEnd),
+  );
+  const maximumCalibratedRadiusPx = (shaderThicknessPx * maximumWidthFactor / 2) + pickTolerancePx;
   if (radiusPx < minimumShaderRadiusPx || radiusPx > maximumCalibratedRadiusPx) {
     throw new Error(
       `edge ${edgeId} picking radius ${radiusPx}px is outside calibrated bounds [${minimumShaderRadiusPx}px, ${maximumCalibratedRadiusPx}px]`,
     );
   }
   return radiusPx;
+}
+
+// The width mirror must use the same t as the fragment shader, not the caller's
+// sampled t: picking-cell quantisation and competing curves can move the closest
+// point. This is the scalar part of FILAMENT_DISTANCE_FUNCTION, in picking-buffer
+// coordinates, including its straight-curve branch and final clamp.
+function filamentShaderParameter(sigma: Sigma, geometry: FilamentGeometry, point: Coordinates): number {
+  const { pixelRatio, downSizingRatio } = sigma.getRenderParams();
+  const livePixelRatio = requiredPositiveNumber(pixelRatio, "picking Sigma pixel ratio");
+  const liveDownSizingRatio = requiredPositiveNumber(downSizingRatio, "picking Sigma down-sizing ratio");
+  const scale = livePixelRatio / liveDownSizingRatio;
+  const dimensions = sigma.getDimensions();
+  const shaderWidth = requiredPositiveNumber(dimensions.width * scale, "picking shader width");
+  const shaderHeight = requiredPositiveNumber(dimensions.height * scale, "picking shader height");
+  const relativeB0X = (geometry.source.x - point.x) * scale;
+  const relativeB0Y = (geometry.source.y - point.y) * scale;
+  const relativeB1X = (geometry.control.x - point.x) * scale;
+  const relativeB1Y = (geometry.control.y - point.y) * scale;
+  const relativeB2X = (geometry.target.x - point.x) * scale;
+  const relativeB2Y = (geometry.target.y - point.y) * scale;
+  const chordX = relativeB2X - relativeB0X;
+  const chordY = relativeB2Y - relativeB0Y;
+  const controlOffsetX = relativeB1X - relativeB0X;
+  const controlOffsetY = relativeB1Y - relativeB0Y;
+  const chordLength = Math.hypot(chordX, chordY);
+  const controlArea = Math.abs((chordX * controlOffsetY) - (chordY * controlOffsetX));
+  if (controlArea <= chordLength / Math.max(shaderWidth, shaderHeight)) {
+    const chordSquared = (chordX * chordX) + (chordY * chordY);
+    const parameter = chordSquared === 0
+      ? 0
+      : -((relativeB0X * chordX) + (relativeB0Y * chordY)) / chordSquared;
+    return requiredUnitIntervalNumber(Math.max(0, Math.min(1, parameter)), "picking shader curve parameter");
+  }
+  const a = (relativeB0X * relativeB2Y) - (relativeB0Y * relativeB2X);
+  const b = 2 * ((relativeB1X * relativeB0Y) - (relativeB1Y * relativeB0X));
+  const d = 2 * ((relativeB2X * relativeB1Y) - (relativeB2Y * relativeB1X));
+  const f = (b * d) - (a * a);
+  const d21X = relativeB2X - relativeB1X;
+  const d21Y = relativeB2Y - relativeB1Y;
+  const d10X = relativeB1X - relativeB0X;
+  const d10Y = relativeB1Y - relativeB0Y;
+  const gradientX = 2 * ((b * d21X) + (d * d10X) + (a * chordX));
+  const gradientY = 2 * ((b * d21Y) + (d * d10Y) + (a * chordY));
+  const rotatedGradientX = gradientY;
+  const rotatedGradientY = -gradientX;
+  const gradientSquared = (rotatedGradientX * rotatedGradientX) + (rotatedGradientY * rotatedGradientY);
+  const closestX = (-f * rotatedGradientX) / gradientSquared;
+  const closestY = (-f * rotatedGradientY) / gradientSquared;
+  const d0pX = relativeB0X - closestX;
+  const d0pY = relativeB0Y - closestY;
+  const ap = (d0pX * chordY) - (d0pY * chordX);
+  const bp = 2 * ((d10X * d0pY) - (d10Y * d0pX));
+  const parameter = (ap + bp) / ((2 * a) + b + d);
+  return requiredUnitIntervalNumber(Math.max(0, Math.min(1, parameter)), "picking shader curve parameter");
 }
 
 function requiredPositiveNumber(value: number, name: string): number {
@@ -764,6 +843,13 @@ function requiredPositiveNumber(value: number, name: string): number {
 function requiredNonNegativeNumber(value: unknown, name: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     throw new Error(`${name} must be a non-negative finite number`);
+  }
+  return value;
+}
+
+function requiredUnitIntervalNumber(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`${name} must be a finite number between zero and one`);
   }
   return value;
 }

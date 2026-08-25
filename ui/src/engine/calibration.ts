@@ -3,9 +3,20 @@
 export type MorphologyMaterial = {
   readonly nodeSizeMultiplierPermille: number;
   readonly filamentWidthMultiplierPermille: number;
+  readonly filamentWidthStartPermille: number;
+  readonly filamentWidthEndPermille: number;
+  readonly filamentWobbleAmplitudePermille: number;
+  readonly junctionThickeningPermille: number;
+  readonly sheathScalePermille: number;
+  readonly sheathAlphaPermille: number;
+  readonly coreScalePermille: number;
+  readonly hotMixPermille: number;
+  readonly hotAlphaPermille: number;
+  readonly hotCoreMaximumHop: number;
+  readonly filamentPhaseSeed: number;
+  readonly wobbleFrequencyMilliradians: number;
   readonly opacityPermille: number;
   readonly curvatureMagnitudePermille: number;
-  readonly medialOffsetAmplitudePermille: number;
   readonly haloRadiusMultiplierPermille: number;
   readonly haloIntensityPermille: number;
   readonly terminalSizeMultiplierPermille: number;
@@ -53,7 +64,7 @@ export type CalibrationProfile = {
     readonly pickTolerancePx: number;
     readonly opacityPermille: number;
     readonly curvatureMagnitudePermille: number;
-    readonly medialOffsetAmplitudePx: number;
+    readonly minimumWidthFactorPermille: number;
   };
   readonly morphology: {
     readonly stellar: MorphologyMaterial;
@@ -126,28 +137,61 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "filament.pickTolerancePx",
   "filament.opacityPermille",
   "filament.curvatureMagnitudePermille",
-  "filament.medialOffsetAmplitudePx",
+  "filament.minimumWidthFactorPermille",
   "morphology.stellar.nodeSizeMultiplierPermille",
   "morphology.stellar.filamentWidthMultiplierPermille",
+  "morphology.stellar.filamentWidthStartPermille",
+  "morphology.stellar.filamentWidthEndPermille",
+  "morphology.stellar.filamentWobbleAmplitudePermille",
+  "morphology.stellar.junctionThickeningPermille",
+  "morphology.stellar.sheathScalePermille",
+  "morphology.stellar.sheathAlphaPermille",
+  "morphology.stellar.coreScalePermille",
+  "morphology.stellar.hotMixPermille",
+  "morphology.stellar.hotAlphaPermille",
+  "morphology.stellar.hotCoreMaximumHop",
+  "morphology.stellar.filamentPhaseSeed",
+  "morphology.stellar.wobbleFrequencyMilliradians",
   "morphology.stellar.opacityPermille",
   "morphology.stellar.curvatureMagnitudePermille",
-  "morphology.stellar.medialOffsetAmplitudePermille",
   "morphology.stellar.haloRadiusMultiplierPermille",
   "morphology.stellar.haloIntensityPermille",
   "morphology.stellar.terminalSizeMultiplierPermille",
   "morphology.neural.nodeSizeMultiplierPermille",
   "morphology.neural.filamentWidthMultiplierPermille",
+  "morphology.neural.filamentWidthStartPermille",
+  "morphology.neural.filamentWidthEndPermille",
+  "morphology.neural.filamentWobbleAmplitudePermille",
+  "morphology.neural.junctionThickeningPermille",
+  "morphology.neural.sheathScalePermille",
+  "morphology.neural.sheathAlphaPermille",
+  "morphology.neural.coreScalePermille",
+  "morphology.neural.hotMixPermille",
+  "morphology.neural.hotAlphaPermille",
+  "morphology.neural.hotCoreMaximumHop",
+  "morphology.neural.filamentPhaseSeed",
+  "morphology.neural.wobbleFrequencyMilliradians",
   "morphology.neural.opacityPermille",
   "morphology.neural.curvatureMagnitudePermille",
-  "morphology.neural.medialOffsetAmplitudePermille",
   "morphology.neural.haloRadiusMultiplierPermille",
   "morphology.neural.haloIntensityPermille",
   "morphology.neural.terminalSizeMultiplierPermille",
   "morphology.mycelium.nodeSizeMultiplierPermille",
   "morphology.mycelium.filamentWidthMultiplierPermille",
+  "morphology.mycelium.filamentWidthStartPermille",
+  "morphology.mycelium.filamentWidthEndPermille",
+  "morphology.mycelium.filamentWobbleAmplitudePermille",
+  "morphology.mycelium.junctionThickeningPermille",
+  "morphology.mycelium.sheathScalePermille",
+  "morphology.mycelium.sheathAlphaPermille",
+  "morphology.mycelium.coreScalePermille",
+  "morphology.mycelium.hotMixPermille",
+  "morphology.mycelium.hotAlphaPermille",
+  "morphology.mycelium.hotCoreMaximumHop",
+  "morphology.mycelium.filamentPhaseSeed",
+  "morphology.mycelium.wobbleFrequencyMilliradians",
   "morphology.mycelium.opacityPermille",
   "morphology.mycelium.curvatureMagnitudePermille",
-  "morphology.mycelium.medialOffsetAmplitudePermille",
   "morphology.mycelium.haloRadiusMultiplierPermille",
   "morphology.mycelium.haloIntensityPermille",
   "morphology.mycelium.terminalSizeMultiplierPermille",
@@ -185,11 +229,11 @@ export const DEFAULT_CALIBRATION: CalibrationProfile = {
   salience: { degreeExponentPermille: 650, minNodeSizePx: 4, maxNodeSizePx: 28 },
   luminance: { haloRadiusFactorPermille: 1800, haloFalloffPermille: 180, haloSampleCount: 12, coreBeforeHaloMinimumPx: 2, prominenceLightnessGainPermille: 900, prominenceChromaFalloffPermille: 1000, haloProbeRadiusFractionPermille: 700, minimumNodeContrastPermille: 1200 },
   filament: { baseWidthPx: 2,
-    pickTolerancePx: 2, opacityPermille: 620, curvatureMagnitudePermille: 240, medialOffsetAmplitudePx: 6 },
+    pickTolerancePx: 2, opacityPermille: 620, curvatureMagnitudePermille: 240, minimumWidthFactorPermille: 120 },
   morphology: {
-    stellar: { nodeSizeMultiplierPermille: 1100, filamentWidthMultiplierPermille: 900, opacityPermille: 1000, curvatureMagnitudePermille: 700, medialOffsetAmplitudePermille: 500, haloRadiusMultiplierPermille: 2000, haloIntensityPermille: 440, terminalSizeMultiplierPermille: 1000 },
-    neural: { nodeSizeMultiplierPermille: 900, filamentWidthMultiplierPermille: 1050, opacityPermille: 900, curvatureMagnitudePermille: 1150, medialOffsetAmplitudePermille: 1000, haloRadiusMultiplierPermille: 1000, haloIntensityPermille: 900, terminalSizeMultiplierPermille: 1000 },
-    mycelium: { nodeSizeMultiplierPermille: 1000, filamentWidthMultiplierPermille: 950, opacityPermille: 820, curvatureMagnitudePermille: 1350, medialOffsetAmplitudePermille: 1250, haloRadiusMultiplierPermille: 620, haloIntensityPermille: 170, terminalSizeMultiplierPermille: 500 },
+    stellar: { nodeSizeMultiplierPermille: 1100, filamentWidthMultiplierPermille: 900, filamentWidthStartPermille: 650, filamentWidthEndPermille: 650, filamentWobbleAmplitudePermille: 15, junctionThickeningPermille: 0, sheathScalePermille: 2700, sheathAlphaPermille: 60, coreScalePermille: 400, hotMixPermille: 0, hotAlphaPermille: 0, hotCoreMaximumHop: 0, filamentPhaseSeed: 17, wobbleFrequencyMilliradians: 6283, opacityPermille: 1000, curvatureMagnitudePermille: 700, haloRadiusMultiplierPermille: 2000, haloIntensityPermille: 440, terminalSizeMultiplierPermille: 1000 },
+    neural: { nodeSizeMultiplierPermille: 900, filamentWidthMultiplierPermille: 1050, filamentWidthStartPermille: 1800, filamentWidthEndPermille: 500, filamentWobbleAmplitudePermille: 80, junctionThickeningPermille: 800, sheathScalePermille: 2700, sheathAlphaPermille: 130, coreScalePermille: 400, hotMixPermille: 850, hotAlphaPermille: 950, hotCoreMaximumHop: 2, filamentPhaseSeed: 31, wobbleFrequencyMilliradians: 9425, opacityPermille: 900, curvatureMagnitudePermille: 1150, haloRadiusMultiplierPermille: 1000, haloIntensityPermille: 900, terminalSizeMultiplierPermille: 1000 },
+    mycelium: { nodeSizeMultiplierPermille: 1000, filamentWidthMultiplierPermille: 950, filamentWidthStartPermille: 1250, filamentWidthEndPermille: 1250, filamentWobbleAmplitudePermille: 240, junctionThickeningPermille: 750, sheathScalePermille: 2700, sheathAlphaPermille: 200, coreScalePermille: 400, hotMixPermille: 0, hotAlphaPermille: 0, hotCoreMaximumHop: 0, filamentPhaseSeed: 47, wobbleFrequencyMilliradians: 18850, opacityPermille: 820, curvatureMagnitudePermille: 1350, haloRadiusMultiplierPermille: 620, haloIntensityPermille: 170, terminalSizeMultiplierPermille: 500 },
   },
   lod: { bandThresholds: [0, 250, 500, 750], hysteresisMarginPermille: 50, crossfadeDurationMs: 220, macroNodeSizeMultiplierPermille: 1250, macroFilamentWidthMultiplierPermille: 500, macroAggregateOutlineWidthMultiplierPermille: 500, macroAggregateOutlineAlphaPermille: 500, microHopDistanceLightnessStepPermille: 80, minimumAdjacentPixelDeltaPermille: 1 },
   labels: { densityCap: 36, priorityWeights: { node: 1000, edge: 500, assertion: 900, bridge: 1100 }, collisionPaddingPx: 5 },

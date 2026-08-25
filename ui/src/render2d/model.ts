@@ -14,6 +14,7 @@ import { contrastRatio, relativeLuminance, resolveTokens } from "#engine/tokens.
 import type { OklchToken, Palette, Temperature, Theme, TokenMap } from "#engine/tokens.ts";
 import { filamentGeometry, sampleFilament } from "#render2d/geometry.ts";
 import type { FilamentGeometry } from "#render2d/geometry.ts";
+import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
 
 /** This is one Sigma node payload and does not retain opaque semantic content. */
 export type RenderNodeAttributes = {
@@ -34,6 +35,12 @@ export type RenderNodeAttributes = {
 export type RenderEdgeAttributes = {
   readonly size: number;
   readonly pickTolerancePx: number;
+  readonly widthStart: number;
+  readonly widthEnd: number;
+  readonly junctionStart: number;
+  readonly junctionEnd: number;
+  readonly wobblePhase: number;
+  readonly hotCore: number;
   readonly color: string;
   readonly type: string;
   readonly curvature: number;
@@ -77,6 +84,7 @@ export type RenderModel = {
   readonly tokenColors: ReadonlyMap<string, string>;
   readonly lodBand: LodBand;
   readonly material: ResolvedMaterial;
+  readonly filamentMaterial: FilamentUniformMaterial;
   readonly filaments: ReadonlyMap<string, FilamentGeometry>;
   readonly propagation: ReadonlyMap<string, FilamentPropagation>;
 };
@@ -127,6 +135,19 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
   const sigmaGraph = new MultiDirectedGraph<RenderNodeAttributes, RenderEdgeAttributes>();
   const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
   const edgeMaterials = new Map(morphologyMaterial.edges.map((edge) => [edge.id, edge]));
+  const filamentMaterial = calibration.morphology[morphology.id];
+  const materialScale = permilleScale(calibration);
+  const filamentUniformMaterial: FilamentUniformMaterial = {
+    minimumWidthFactor: calibration.filament.minimumWidthFactorPermille / materialScale,
+    sheathScale: filamentMaterial.sheathScalePermille / materialScale,
+    sheathAlpha: filamentMaterial.sheathAlphaPermille / materialScale,
+    coreScale: filamentMaterial.coreScalePermille / materialScale,
+    hotMix: filamentMaterial.hotMixPermille / materialScale,
+    hotAlpha: filamentMaterial.hotAlphaPermille / materialScale,
+    wobbleAmplitude: filamentMaterial.filamentWobbleAmplitudePermille / materialScale,
+    wobbleFrequency: filamentMaterial.wobbleFrequencyMilliradians / materialScale,
+    hotColor: requiredTokenColor(tokenColors, "peak"),
+  };
   const filaments = new Map<string, FilamentGeometry>();
   const propagation = new Map<string, FilamentPropagation>();
 
@@ -176,6 +197,12 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
     sigmaGraph.addEdgeWithKey(edge.id, edge.source, edge.target, {
       size: edgeWidthForMaterial(edgeMaterial, view.material, calibration),
       pickTolerancePx: calibration.filament.pickTolerancePx,
+      widthStart: edgeMaterial.widthStartPermille / materialScale,
+      widthEnd: edgeMaterial.widthEndPermille / materialScale,
+      junctionStart: edgeMaterial.junctionStartPermille / materialScale,
+      junctionEnd: edgeMaterial.junctionEndPermille / materialScale,
+      wobblePhase: (edgeMaterial.phasePermille / materialScale) * Math.PI * 2,
+      hotCore: edgeMaterial.hotCorePermille / materialScale,
       color: edgeColorForMaterial(tokens, edgeMaterial, view.material, calibration),
       type: "filament",
       curvature,
@@ -187,7 +214,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions): Re
       zIndex: edge.visual.label_priority,
     });
   }
-  return { graph: sigmaGraph, anchors, windows: organization.windows, organization, tokens, tokenColors, lodBand: view.band, material: view.material, filaments, propagation };
+  return { graph: sigmaGraph, anchors, windows: organization.windows, organization, tokens, tokenColors, lodBand: view.band, material: view.material, filamentMaterial: filamentUniformMaterial, filaments, propagation };
 }
 
 const ROLE_TOKEN_NAMES = ["accent1", "accent2", "accent3", "accent4"] as const;

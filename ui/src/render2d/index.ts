@@ -4,7 +4,7 @@ import { parseColor } from "sigma/utils";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import type { Coordinates, VisualGraph } from "#engine/contract.ts";
-import { FilamentProgram } from "#render2d/filament-program.ts";
+import { createFilamentProgram } from "#render2d/filament-program.ts";
 import { buildRenderModel, resolveLabelIds } from "#render2d/model.ts";
 import type { LabelPlacementCandidate, RenderModel, RenderOptions } from "#render2d/model.ts";
 
@@ -54,7 +54,7 @@ export function mount(
   const calibration = options.calibration ?? DEFAULT_CALIBRATION;
   const sigma = new Sigma(model.graph, container, {
     defaultEdgeType: "filament",
-    edgeProgramClasses: { filament: FilamentProgram },
+    edgeProgramClasses: { filament: createFilamentProgram(model.filamentMaterial) },
     renderLabels: model.material.node.includes("label"),
     labelColor: { attribute: "labelColor", color: requiredTokenColor(model, "text") },
     edgeLabelColor: { attribute: "labelColor", color: requiredTokenColor(model, "textMuted") },
