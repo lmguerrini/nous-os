@@ -37,6 +37,17 @@ export type RelationMaterialBinding = {
   readonly materialTypes: readonly string[];
 };
 
+/** This reports the mounted renderer's live picking surface without exposing its Sigma instance. */
+export type RenderPickingSurface = {
+  readonly pixelRatio: number;
+  readonly downSizingRatio: number;
+  readonly drawingBufferHeight: number;
+  readonly width: number;
+  readonly height: number;
+  readonly sizeRatio: number;
+  readonly minEdgeThickness: number;
+};
+
 /** This is one mounted renderer and does not retain an independent graph copy. */
 export type RenderHandle = {
   readonly model: RenderModel;
@@ -69,6 +80,14 @@ export type RenderHandle = {
   readRelationMaterialBindings(): readonly RelationMaterialBinding[];
   /** This forces a duplicate material on one live relation binding and confirms the single-material assertion rejects it. */
   proveStackedMaterialControlRejects(): { readonly relationId: string; readonly message: string };
+  /** This returns the node the mounted renderer itself picks at one viewport position. */
+  pickNodeAtPosition(position: { readonly x: number; readonly y: number }): string | null;
+  /** This returns the edge the mounted renderer itself picks at one viewport position. */
+  pickEdgeAtPoint(x: number, y: number): string | null;
+  /** This reports the mounted renderer's picking metrics without creating a second renderer. */
+  readPickingSurface(): RenderPickingSurface;
+  /** This converts a live node size into the mounted renderer's viewport scale. */
+  scaleSize(size: number): number;
   destroy(): void;
 };
 
@@ -114,7 +133,17 @@ export function mount(
     labelColor: { attribute: "labelColor", color: requiredTokenColor(model, "text") },
     edgeLabelColor: { attribute: "labelColor", color: requiredTokenColor(model, "textMuted") },
     zIndex: true,
+    enableEdgeEvents: true,
   });
+  const picking = sigma as unknown as {
+    getNodeAtPosition(position: { readonly x: number; readonly y: number }): string | null;
+    getEdgeAtPoint(x: number, y: number): string | null;
+    readonly webGLContexts: {
+      readonly edges: {
+        readonly drawingBufferHeight: number;
+      };
+    };
+  };
   if (framingBox !== undefined) {
     sigma.setCustomBBox(copyFramingBox(framingBox));
     sigma.refresh();
@@ -249,6 +278,28 @@ export function mount(
         return { relationId: relation.relationId, message: error instanceof Error ? error.message : String(error) };
       }
       throw new TypeError("stacked-material control did not fail the live material assertion");
+    },
+    pickNodeAtPosition(position): string | null {
+      return picking.getNodeAtPosition(position);
+    },
+    pickEdgeAtPoint(x: number, y: number): string | null {
+      return picking.getEdgeAtPoint(x, y);
+    },
+    readPickingSurface(): RenderPickingSurface {
+      const { pixelRatio, downSizingRatio, sizeRatio, minEdgeThickness } = sigma.getRenderParams();
+      const dimensions = sigma.getDimensions();
+      return {
+        pixelRatio,
+        downSizingRatio,
+        drawingBufferHeight: picking.webGLContexts.edges.drawingBufferHeight,
+        width: dimensions.width,
+        height: dimensions.height,
+        sizeRatio,
+        minEdgeThickness,
+      };
+    },
+    scaleSize(size: number): number {
+      return sigma.scaleSize(size);
     },
     destroy(): void {
       glow.destroy();

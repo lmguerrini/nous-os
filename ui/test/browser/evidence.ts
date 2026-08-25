@@ -21,12 +21,12 @@ import type { Palette, Temperature, Theme } from "#engine/tokens.ts";
 import { layoutAnchors, sharedAnchors } from "#engine/layout.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { Organization } from "#engine/organization.ts";
-import { mount, restoreCameraState } from "#render2d/index.ts";
-import { createFilamentProgram, FilamentProgram } from "#render2d/filament-program.ts";
+import { mount } from "#render2d/index.ts";
+import { FilamentProgram } from "#render2d/filament-program.ts";
 import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
 import { filamentGeometry, quadraticPoint } from "#render2d/geometry.ts";
 import type { FilamentGeometry } from "#render2d/geometry.ts";
-import type { RenderCameraState, RenderFramingBox, RenderHandle, RenderNodeGlowWitness } from "#render2d/index.ts";
+import type { RenderCameraState, RenderFramingBox, RenderHandle, RenderNodeGlowWitness, RenderPickingSurface } from "#render2d/index.ts";
 import { buildRenderModel } from "#render2d/model.ts";
 import type { RenderOptions as ModelRenderOptions } from "#render2d/model.ts";
 
@@ -93,14 +93,6 @@ type RelationPickMeasurement = {
   readonly edgeId: string;
   readonly returnedEdgeIds: readonly string[];
   readonly samples: readonly RelationPickSample[];
-};
-
-type PickingSigmaInternals = {
-  readonly webGLContexts: {
-    readonly edges: {
-      readonly drawingBufferHeight: number;
-    };
-  };
 };
 
 type PickingTargetWitness = {
@@ -269,10 +261,7 @@ async function boot(): Promise<void> {
   const container = document.createElement("div");
   container.id = "evidence-renderer";
   container.style.cssText = "width:100%;height:100%;position:relative";
-  const pickingContainer = document.createElement("div");
-  pickingContainer.id = "evidence-picking-target";
-  pickingContainer.style.cssText = "width:960px;height:640px;position:fixed;left:-2000px;top:0";
-  shell.append(container, pickingContainer);
+  shell.append(container);
   document.body.replaceChildren(shell);
 
   const loaded = await Promise.all(Object.entries(FIXTURE_URLS).map(async ([policy, url]) => {
@@ -312,7 +301,6 @@ async function boot(): Promise<void> {
   let selectedElement: string | null = null;
   let focusedElement: string | null = null;
   let product: RenderHandle | undefined;
-  let picking: Sigma | undefined;
   let emptyControl: RenderHandle | undefined;
   let emptyContainer: HTMLElement | undefined;
   let selectionFocusNoopControl: RenderHandle | undefined;
@@ -322,9 +310,7 @@ async function boot(): Promise<void> {
 
   const remount = async (cameraState?: RenderCameraState): Promise<void> => {
     product?.destroy();
-    picking?.kill();
     product = undefined;
-    picking = undefined;
     await waitForNonZeroBox(container);
     const graph = requiredGraph(graphs, policy);
     product = mount(container, graph, options, discoveryFramingBox);
@@ -335,24 +321,9 @@ async function boot(): Promise<void> {
       product.setFocus(focusedElement);
     }
     shell.style.background = product.model.fieldColor;
-    // This separate surface is the actual Sigma edge-picking framebuffer. The
-    // product mount provides the viewport coordinates and morphology-specific
-    // filament program used by screenshot checks.
-    picking = new Sigma(product.model.graph, pickingContainer, {
-      defaultEdgeType: "filament",
-      edgeProgramClasses: { filament: createFilamentProgram(product.model.filamentMaterial) },
-      renderLabels: product.model.material.node.includes("label"),
-      zIndex: true,
-      enableEdgeEvents: true,
-    });
     if (cameraState !== undefined) {
       product.restoreCameraState(cameraState);
     }
-    // The target must share the product camera even on the first mount. A picking
-    // point from a target with its own auto-fit box is not a witness for a product
-    // pixel: its coordinates can name a different CSS location. Read the mounted
-    // product camera after any restoration and bind that exact live state here.
-    restoreCameraState(picking, product.readCameraState());
     await nextPaint();
     await nextPaint();
   };
@@ -435,7 +406,7 @@ async function boot(): Promise<void> {
       rendering: renderWitness(renderContainer),
       glowNodes: handle.readGlowWitnesses(),
       edgeSamples,
-      pickingTarget: pickingTargetWitness(requiredSigma(picking), handle.model.filamentMaterial),
+      pickingTarget: pickingTargetWitness(handle),
     };
   };
 
@@ -547,21 +518,19 @@ async function boot(): Promise<void> {
     read,
     pick(edgeId, parameter, offsetPixels = 0): PickWitness {
       const handle = requiredHandle(product);
-      const auditor = requiredSigma(picking);
       const filament = handle.model.filaments.get(edgeId);
       if (filament === undefined) {
         throw new Error(`unknown edge ${edgeId}`);
       }
       const world = quadraticPoint(filament, parameter);
-      const viewport = auditor.graphToViewport(world);
+      const viewport = handle.graphToViewport(world);
       const normal = normalAt(filament.source, filament.control, filament.target, parameter);
       const point = { x: viewport.x + (normal.x * offsetPixels), y: viewport.y + (normal.y * offsetPixels) };
       // A point outside the drawn area cannot be picked by anything; report it so a
       // check can tell "nothing is there" from "the sample fell off the canvas".
-      const size = auditor.getDimensions();
+      const size = handle.readPickingSurface();
       const onScreen = point.x >= 0 && point.y >= 0 && point.x <= size.width && point.y <= size.height;
-      const privateSigma = auditor as unknown as { getEdgeAtPoint(x: number, y: number): string | null };
-      const picked = privateSigma.getEdgeAtPoint(point.x, point.y);
+      const picked = handle.pickEdgeAtPoint(point.x, point.y);
       // Whether the edge that was returned actually covers the sampled point.
       // Two relations that share an endpoint can be near-coincident ribbons -- one
       // measured pair sits 1.0367 apart against a half-width of 1.0 -- so demanding
@@ -585,41 +554,43 @@ async function boot(): Promise<void> {
       // must never return an edge that does not reach the cell it answered for.
       const pickedGeometry = picked === null || pickedFilament === undefined
         ? undefined
-        : viewportFilament(pickedFilament, auditor);
-      const pickedCellCentre = pickingCellForPoint(auditor, { ...point, z: 0 }).centre;
+        : viewportFilament(pickedFilament, handle);
+      const pickedCellCentre = pickingCellForPoint(handle.readPickingSurface(), { ...point, z: 0 }).centre;
       const covers = picked === null || pickedGeometry === undefined
         ? false
         : denseDistanceToFilament(
             pickedGeometry,
             pickedCellCentre,
           ).distancePx <= pickingRadiusPx(
-            auditor,
+            handle,
             picked,
-            filamentShaderParameter(auditor, pickedGeometry, pickedCellCentre),
+            filamentShaderParameter(handle.readPickingSurface(), pickedGeometry, pickedCellCentre),
             handle.model.filamentMaterial,
           );
       return { edgeId: picked, point, pickedCoversPoint: covers, onScreen };
     },
     unambiguousParameters(edgeId): readonly number[] {
-      return unambiguousParametersFor(requiredHandle(product), requiredSigma(picking), edgeId);
+      return unambiguousParametersFor(requiredHandle(product), edgeId);
     },
     coincidentPartners(edgeId): readonly string[] | null {
-      return coincidentPartnersFor(requiredHandle(product), requiredSigma(picking), edgeId);
+      return coincidentPartnersFor(requiredHandle(product), edgeId);
     },
     pickChord(edgeId): PickWitness {
       const handle = requiredHandle(product);
-      const auditor = requiredSigma(picking);
       const filament = handle.model.filaments.get(edgeId);
       if (filament === undefined) {
         throw new Error(`unknown edge ${edgeId}`);
       }
-      const source = auditor.graphToViewport(filament.source);
-      const target = auditor.graphToViewport(filament.target);
+      const source = handle.graphToViewport(filament.source);
+      const target = handle.graphToViewport(filament.target);
       const point = { x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 };
-      const privateSigma = auditor as unknown as { getEdgeAtPoint(x: number, y: number): string | null };
-      return { edgeId: privateSigma.getEdgeAtPoint(point.x, point.y), point };
+      return { edgeId: handle.pickEdgeAtPoint(point.x, point.y), point };
     },
     async pickStraightControl(): Promise<string | null> {
+      // This is the one intentionally isolated surface: it is a minimal straight-
+      // edge control for the renderer library's straight-curve branch, which the
+      // governed product fixtures do not contain. It is not an oracle for any
+      // production relation; every production picking witness above uses product.
       const controlContainer = document.createElement("div");
       controlContainer.style.cssText = "width:960px;height:640px;position:fixed;left:-2000px;top:0";
       document.body.append(controlContainer);
@@ -800,9 +771,7 @@ async function boot(): Promise<void> {
       emptyContainer = undefined;
       api.hideSelectionFocusNoopControl();
       product?.destroy();
-      picking?.kill();
       product = undefined;
-      picking = undefined;
       await nextPaint();
       // Arm only after teardown's own frames have settled, so cancelled frames are
       // never counted and only genuine post-destroy animation is. The settling
@@ -839,9 +808,10 @@ function renderWitness(container: HTMLElement): RenderWitness {
   };
 }
 
-/** This samples ids, incidence, anchors, and pixel locations from the mounted picking target rather than the render model. */
-function pickingTargetWitness(auditor: Sigma, material: FilamentUniformMaterial): PickingTargetWitness {
-  const graph = auditor.getGraph();
+/** This samples ids, incidence, anchors, and pixel locations from the mounted product renderer's picking target. */
+function pickingTargetWitness(handle: RenderHandle): PickingTargetWitness {
+  const graph = handle.model.graph;
+  const material = handle.model.filamentMaterial;
   const nodeIds = [...graph.nodes()].sort();
   const edgeIds = [...graph.edges()].sort();
   const anchors: Record<string, { x: number; y: number; z: number }> = {};
@@ -854,18 +824,14 @@ function pickingTargetWitness(auditor: Sigma, material: FilamentUniformMaterial)
   const pickableEdgeIds = new Set<string>();
   const nodePickCoverageIds: string[] = [];
   const edgePickCoverageIds: string[] = [];
-  const target = auditor as unknown as {
-    getNodeAtPosition(position: { readonly x: number; readonly y: number }): string | null;
-    getEdgeAtPoint(x: number, y: number): string | null;
-  };
   for (const id of nodeIds) {
     const attributes = graph.getNodeAttributes(id);
     const anchor = targetAnchor(attributes, `picking node ${id}`);
-    const point = auditor.graphToViewport(anchor);
+    const point = handle.graphToViewport(anchor);
     anchors[id] = anchor;
-    nodeAnchorPickIds[id] = target.getNodeAtPosition(point);
-    const ownPoint = nodePickCandidates(auditor, attributes, point, `picking node ${id}`)
-      .find((candidate) => target.getNodeAtPosition(candidate) === id);
+    nodeAnchorPickIds[id] = handle.pickNodeAtPosition(point);
+    const ownPoint = nodePickCandidates(handle, attributes, point, `picking node ${id}`)
+      .find((candidate) => handle.pickNodeAtPosition(candidate) === id);
     // One anchor centre can fall inside a larger neighbouring node.  That reports
     // the neighbour as pickable even when the queried node is present, and makes
     // the result depend on morphology's material radius.  An interior witness is
@@ -896,16 +862,16 @@ function pickingTargetWitness(auditor: Sigma, material: FilamentUniformMaterial)
     const filament = filamentGeometry(sourceAnchor, targetAnchor, curvature);
     const pixels = Array.from({ length: witnessCount }, (_, index) => {
       const parameter = (index + 1) / (witnessCount + 1);
-      const point = auditor.graphToViewport(quadraticPoint(filament, parameter));
+      const point = handle.graphToViewport(quadraticPoint(filament, parameter));
       return { x: point.x, y: point.y };
     });
     edgePixels[id] = pixels;
-    const geometry = viewportFilament(filament, auditor);
+    const geometry = viewportFilament(filament, handle);
     const samples = pixels.map((point, index) => {
-      const cell = pickingCellForPoint(auditor, { ...point, z: 0 });
-      const shaderParameter = filamentShaderParameter(auditor, geometry, cell.centre);
-      const extents = filamentInteractionExtents(auditor, id, shaderParameter, material);
-      const returnedEdgeId = target.getEdgeAtPoint(point.x, point.y);
+      const cell = pickingCellForPoint(handle.readPickingSurface(), { ...point, z: 0 });
+      const shaderParameter = filamentShaderParameter(handle.readPickingSurface(), geometry, cell.centre);
+      const extents = filamentInteractionExtents(handle, id, shaderParameter, material);
+      const returnedEdgeId = handle.pickEdgeAtPoint(point.x, point.y);
       return {
         parameter: (index + 1) / (witnessCount + 1),
         shaderParameter,
@@ -947,7 +913,7 @@ function pickingTargetWitness(auditor: Sigma, material: FilamentUniformMaterial)
 
 /** This generates live-target interior probes and does not read render-model geometry. */
 function nodePickCandidates(
-  auditor: Sigma,
+  handle: RenderHandle,
   attributes: unknown,
   center: { readonly x: number; readonly y: number },
   name: string,
@@ -959,7 +925,7 @@ function nodePickCandidates(
   if (typeof size !== "number" || !Number.isFinite(size) || size <= 0) {
     throw new Error(`${name} size is unavailable`);
   }
-  const radius = auditor.scaleSize(size);
+  const radius = handle.scaleSize(size);
   if (!Number.isFinite(radius) || radius <= 0) {
     throw new Error(`${name} scaled radius is unavailable`);
   }
@@ -1022,12 +988,12 @@ function normalAt(source: Coordinates, control: Coordinates, target: Coordinates
   return { x: -tangentY / length, y: tangentX / length };
 }
 
-function unambiguousParametersFor(handle: RenderHandle, auditor: Sigma, edgeId: string): readonly number[] {
+function unambiguousParametersFor(handle: RenderHandle, edgeId: string): readonly number[] {
   const filament = handle.model.filaments.get(edgeId);
   if (filament === undefined) {
     throw new Error(`unknown edge ${edgeId}`);
   }
-  return EDGE_SAMPLE_PARAMETERS.filter((parameter) => coversAlone(handle, auditor, edgeId, filament, parameter));
+  return EDGE_SAMPLE_PARAMETERS.filter((parameter) => coversAlone(handle, edgeId, filament, parameter));
 }
 
 // The picking pass is rasterised at half the CSS width and height, so one picking
@@ -1046,24 +1012,23 @@ function unambiguousParametersFor(handle: RenderHandle, auditor: Sigma, edgeId: 
 // the conservative direction: it can only reject candidates, never admit one.
 function coversAlone(
   handle: RenderHandle,
-  auditor: Sigma,
   edgeId: string,
   filament: FilamentGeometry,
   parameter: number,
 ): boolean {
-  const centre = sampledCellCentre(handle, auditor, filament, parameter);
-  const geometry = viewportFilament(filament, auditor);
-  const curveParameter = filamentShaderParameter(auditor, geometry, centre);
-  if (denseDistanceToFilament(geometry, centre).distancePx > pickingRadiusPx(auditor, edgeId, curveParameter, handle.model.filamentMaterial)) {
+  const surface = handle.readPickingSurface();
+  const centre = sampledCellCentre(handle, filament, parameter);
+  const geometry = viewportFilament(filament, handle);
+  const curveParameter = filamentShaderParameter(surface, geometry, centre);
+  if (denseDistanceToFilament(geometry, centre).distancePx > pickingRadiusPx(handle, edgeId, curveParameter, handle.model.filamentMaterial)) {
     return false;
   }
-  return competitorsReaching(handle, auditor, edgeId, centre).length === 0;
+  return competitorsReaching(handle, edgeId, centre).length === 0;
 }
 
 /** This lists the other edges whose ribbons reach one shaded cell centre and does not read the picking framebuffer. */
 function competitorsReaching(
   handle: RenderHandle,
-  auditor: Sigma,
   edgeId: string,
   centre: Coordinates,
 ): readonly string[] {
@@ -1072,10 +1037,10 @@ function competitorsReaching(
     if (otherEdgeId === edgeId) {
       continue;
     }
-    const geometry = viewportFilament(otherFilament, auditor);
+    const geometry = viewportFilament(otherFilament, handle);
     const distance = denseDistanceToFilament(geometry, centre);
-    const curveParameter = filamentShaderParameter(auditor, geometry, centre);
-    if (distance.distancePx <= pickingRadiusPx(auditor, otherEdgeId, curveParameter, handle.model.filamentMaterial) + distance.deviationBoundPx) {
+    const curveParameter = filamentShaderParameter(handle.readPickingSurface(), geometry, centre);
+    if (distance.distancePx <= pickingRadiusPx(handle, otherEdgeId, curveParameter, handle.model.filamentMaterial) + distance.deviationBoundPx) {
       reaching.push(otherEdgeId);
     }
   }
@@ -1085,12 +1050,11 @@ function competitorsReaching(
 /** This locates the cell centre the picking pass shaded for one curve parameter and does not offset from the curve. */
 function sampledCellCentre(
   handle: RenderHandle,
-  auditor: Sigma,
   filament: FilamentGeometry,
   parameter: number,
 ): Coordinates {
-  const point = auditor.graphToViewport(quadraticPoint(filament, parameter));
-  return pickingCellForPoint(auditor, { ...point, z: 0 }).centre;
+  const point = handle.graphToViewport(quadraticPoint(filament, parameter));
+  return pickingCellForPoint(handle.readPickingSurface(), { ...point, z: 0 }).centre;
 }
 
 // An edge with no unambiguous cell is only accepted with an analytic certificate:
@@ -1099,21 +1063,22 @@ function sampledCellCentre(
 // and at least one other analytic ribbon must reach the picking cell centre, which
 // makes the cell ambiguous. If either fails anywhere, the edge is not certified
 // and the check fails naming it.
-function coincidentPartnersFor(handle: RenderHandle, auditor: Sigma, edgeId: string): readonly string[] | null {
+function coincidentPartnersFor(handle: RenderHandle, edgeId: string): readonly string[] | null {
   const filament = handle.model.filaments.get(edgeId);
   if (filament === undefined) {
     throw new Error(`unknown edge ${edgeId}`);
   }
-  const geometry = viewportFilament(filament, auditor);
+  const surface = handle.readPickingSurface();
+  const geometry = viewportFilament(filament, handle);
   const partners = new Set<string>();
   for (const parameter of EDGE_SAMPLE_PARAMETERS) {
-    const centre = sampledCellCentre(handle, auditor, filament, parameter);
-    const curveParameter = filamentShaderParameter(auditor, geometry, centre);
-    const radius = pickingRadiusPx(auditor, edgeId, curveParameter, handle.model.filamentMaterial);
+    const centre = sampledCellCentre(handle, filament, parameter);
+    const curveParameter = filamentShaderParameter(surface, geometry, centre);
+    const radius = pickingRadiusPx(handle, edgeId, curveParameter, handle.model.filamentMaterial);
     if (denseDistanceToFilament(geometry, centre).distancePx > radius) {
       return null;
     }
-    const reaching = competitorsReaching(handle, auditor, edgeId, centre);
+    const reaching = competitorsReaching(handle, edgeId, centre);
     if (reaching.length === 0) {
       return null;
     }
@@ -1124,14 +1089,11 @@ function coincidentPartnersFor(handle: RenderHandle, auditor: Sigma, edgeId: str
   return [...partners].sort();
 }
 
-function pickingCellForPoint(sigma: Sigma, point: Coordinates): PickingCell {
-  const { pixelRatio, downSizingRatio } = sigma.getRenderParams();
+function pickingCellForPoint(surface: RenderPickingSurface, point: Coordinates): PickingCell {
+  const { pixelRatio, downSizingRatio } = surface;
   const livePixelRatio = requiredPositiveNumber(pixelRatio, "picking Sigma pixel ratio");
   const liveDownSizingRatio = requiredPositiveNumber(downSizingRatio, "picking Sigma down-sizing ratio");
-  const pickingHeight = requiredPositiveNumber(
-    (sigma as unknown as PickingSigmaInternals).webGLContexts.edges.drawingBufferHeight,
-    "picking Sigma drawing-buffer height",
-  );
+  const pickingHeight = requiredPositiveNumber(surface.drawingBufferHeight, "picking Sigma drawing-buffer height");
   const cellSize = liveDownSizingRatio / livePixelRatio;
   // Sigma's getPixelColor computes bx = floor(x / downSizingRatio * pixelRatio)
   // and by = floor(drawingBufferHeight / downSizingRatio - y / downSizingRatio * pixelRatio).
@@ -1214,13 +1176,13 @@ type FilamentInteractionExtents = {
 
 /** This mirrors the one live filament shader to measure visual and picking extents at its closest-point parameter. */
 function filamentInteractionExtents(
-  sigma: Sigma,
+  handle: RenderHandle,
   edgeId: string,
   parameter: number,
   material: FilamentUniformMaterial,
 ): FilamentInteractionExtents {
-  const { sizeRatio, minEdgeThickness } = sigma.getRenderParams();
-  const attributes = sigma.getGraph().getEdgeAttributes(edgeId) as {
+  const { sizeRatio, minEdgeThickness } = handle.readPickingSurface();
+  const attributes = handle.model.graph.getEdgeAttributes(edgeId) as {
     readonly size?: unknown;
     readonly pickTolerancePx?: unknown;
     readonly widthStart?: unknown;
@@ -1276,26 +1238,25 @@ function filamentInteractionExtents(
 
 /** This returns the live shader's CSS-space picking radius without choosing a visual width. */
 function pickingRadiusPx(
-  sigma: Sigma,
+  handle: RenderHandle,
   edgeId: string,
   parameter: number,
   material: FilamentUniformMaterial,
 ): number {
-  return filamentInteractionExtents(sigma, edgeId, parameter, material).pickRadiusPx;
+  return filamentInteractionExtents(handle, edgeId, parameter, material).pickRadiusPx;
 }
 
 // The width mirror must use the same t as the fragment shader, not the caller's
 // sampled t: picking-cell quantisation and competing curves can move the closest
 // point. This is the scalar part of FILAMENT_DISTANCE_FUNCTION, in picking-buffer
 // coordinates, including its straight-curve branch and final clamp.
-function filamentShaderParameter(sigma: Sigma, geometry: FilamentGeometry, point: Coordinates): number {
-  const { pixelRatio, downSizingRatio } = sigma.getRenderParams();
+function filamentShaderParameter(surface: RenderPickingSurface, geometry: FilamentGeometry, point: Coordinates): number {
+  const { pixelRatio, downSizingRatio } = surface;
   const livePixelRatio = requiredPositiveNumber(pixelRatio, "picking Sigma pixel ratio");
   const liveDownSizingRatio = requiredPositiveNumber(downSizingRatio, "picking Sigma down-sizing ratio");
   const scale = livePixelRatio / liveDownSizingRatio;
-  const dimensions = sigma.getDimensions();
-  const shaderWidth = requiredPositiveNumber(dimensions.width * scale, "picking shader width");
-  const shaderHeight = requiredPositiveNumber(dimensions.height * scale, "picking shader height");
+  const shaderWidth = requiredPositiveNumber(surface.width * scale, "picking shader width");
+  const shaderHeight = requiredPositiveNumber(surface.height * scale, "picking shader height");
   const relativeB0X = (geometry.source.x - point.x) * scale;
   const relativeB0Y = (geometry.source.y - point.y) * scale;
   const relativeB1X = (geometry.control.x - point.x) * scale;
@@ -1359,11 +1320,11 @@ function requiredUnitIntervalNumber(value: number, name: string): number {
   return value;
 }
 
-function viewportFilament(filament: FilamentGeometry, sigma: Sigma): FilamentGeometry {
+function viewportFilament(filament: FilamentGeometry, handle: RenderHandle): FilamentGeometry {
   return {
-    source: { ...sigma.graphToViewport(filament.source), z: 0 },
-    control: { ...sigma.graphToViewport(filament.control), z: 0 },
-    target: { ...sigma.graphToViewport(filament.target), z: 0 },
+    source: { ...handle.graphToViewport(filament.source), z: 0 },
+    control: { ...handle.graphToViewport(filament.control), z: 0 },
+    target: { ...handle.graphToViewport(filament.target), z: 0 },
     curvature: filament.curvature,
   };
 }
@@ -1436,13 +1397,6 @@ function requiredElement(element: HTMLElement | undefined, name: string): HTMLEl
     throw new Error(`${name} has not mounted`);
   }
   return element;
-}
-
-function requiredSigma(sigma: Sigma | undefined): Sigma {
-  if (sigma === undefined) {
-    throw new Error("picking surface has not mounted");
-  }
-  return sigma;
 }
 
 /** This frames the complete Discovery universe with calibrated margins and does not fit a policy subset. */

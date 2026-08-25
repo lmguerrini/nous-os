@@ -221,6 +221,14 @@ const FIXTURE_DIGEST_KEYS = {
   Discovery: "discovery-all-time.json",
   Reliability: "reliability-all-time.json",
 } as const;
+const PD3_RELATION_ID = "cites:asr_3N8REEPQF5FW301DG544P5B6PD";
+const PD3_STATE = {
+  morphology: "stellar",
+  palette: "custom",
+  temperature: "cold",
+  theme: "dark",
+  lodBand: "meso",
+} as const;
 
 test("browser evidence and full app smoke", async ({ page, browserName }, testInfo) => {
   const entries: EvidenceEntry[] = [];
@@ -346,10 +354,15 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   await run("graph-present", async () => {
     const snapshot = await invoke<Snapshot>("read");
     assertBackingStores(snapshot, initialImage);
-    assertElementPixels(snapshot, initialImage);
+    const pd3Diagnostic = pd3RasterDiagnostic(snapshot, initialImage);
+    try {
+      assertElementPixels(snapshot, initialImage);
+    } catch (error: unknown) {
+      throw new Error(`${message(error)}${pd3Diagnostic === undefined ? "" : `; ${pd3Diagnostic}`}`);
+    }
     await assertEmptyGraphFails(snapshot, "graph-present");
     dprWitness = witnessFor(snapshot, initialImage);
-    return `final compositor screenshot contains sampled nodes and three specified samples on every edge; backing store has ${snapshot.rendering.backingStorePixels} pixels`;
+    return `final compositor screenshot contains sampled nodes and three specified samples on every edge; backing store has ${snapshot.rendering.backingStorePixels} pixels${pd3Diagnostic === undefined ? "" : `; ${pd3Diagnostic}`}`;
   });
   if (testInfo.project.name === "dpr-2") {
     const prior = await loadEvidenceRun();
@@ -392,6 +405,15 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   });
   await run("a3-cross-product-picking-pixels", async () => {
     await invoke<Snapshot>("switchPolicy", "Discovery");
+    const pd3Snapshot = await invoke<Snapshot>(
+      "setCrossProductState",
+      PD3_STATE.morphology,
+      PD3_STATE.palette,
+      PD3_STATE.temperature,
+      PD3_STATE.theme,
+      PD3_STATE.lodBand,
+    );
+    const pd3Image = await capture("#evidence-renderer");
     const product = enumerateCrossProduct();
     const sampleSize = Math.min(DEFAULT_CALIBRATION.budget.oracleCrossProductSampleSize, product.length);
     const sampled = deterministicCrossProductSample(product, sampleSize, DEFAULT_CALIBRATION.budget.oracleCrossProductSamplingSeed);
@@ -400,13 +422,18 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     expect(new Set(sampled.map(crossProductKey)).size).toBe(sampled.length);
     let reference: { readonly state: CrossProductState; readonly target: Snapshot["pickingTarget"] } | undefined;
     const anchorCentreIdChanges: string[] = [];
+    const pd3Diagnostics: string[] = [pd3RasterDiagnostic(pd3Snapshot, pd3Image) ?? "PD-3 raster diagnostic was not produced"];
     for (const state of sampled) {
       const snapshot = await invoke<Snapshot>("setCrossProductState", state.morphology, state.palette, state.temperature, state.theme, state.lodBand);
       const image = await capture("#evidence-renderer");
+      const pd3Diagnostic = pd3RasterDiagnostic(snapshot, image);
+      if (pd3Diagnostic !== undefined) {
+        pd3Diagnostics.push(pd3Diagnostic);
+      }
       try {
         assertPickingTargetPixels(snapshot, image);
       } catch (error: unknown) {
-        throw new Error(`${crossProductKey(state)} failed its picking-target compositor witnesses: ${message(error)}`);
+        throw new Error(`${crossProductKey(state)} failed its picking-target compositor witnesses: ${message(error)}${pd3Diagnostic === undefined ? "" : `; ${pd3Diagnostic}`}`);
       }
       if (reference === undefined) {
         reference = { state, target: snapshot.pickingTarget };
@@ -431,7 +458,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const anchorCentreDiagnostic = anchorCentreIdChanges.length === 0
       ? "anchor-centre returned ids were stable"
       : `anchor-centre returned-id changes (diagnostic only): ${anchorCentreIdChanges.join("; ")}`;
-    return `full morphology×palette×temperature×theme×LOD product=${product.length}; browser-budget sample=${sampled.length}; deterministic seed=${DEFAULT_CALIBRATION.budget.oracleCrossProductSamplingSeed}; every sampled state read rendered/pickable ids, incidence, and anchors from the picking target and checked ${DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount} composited pixel witness(es) per relation; ${anchorCentreDiagnostic}`;
+    return `full morphology×palette×temperature×theme×LOD product=${product.length}; browser-budget sample=${sampled.length}; deterministic seed=${DEFAULT_CALIBRATION.budget.oracleCrossProductSamplingSeed}; every sampled state read rendered/pickable ids, incidence, and anchors from the picking target and checked ${DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount} composited pixel witness(es) per relation; ${anchorCentreDiagnostic}${pd3Diagnostics.length === 0 ? "" : `; ${pd3Diagnostics.join("; ")}`}`;
   });
   await run("policy-transition", async () => {
     const discovery = await invoke<Snapshot>("switchPolicy", "Discovery");
@@ -1167,6 +1194,120 @@ function hasLitPixelNear(
     }
   }
   return false;
+}
+
+/** This records the PD-3 raster witness in an existing failure detail without changing its threshold or search area. */
+function pd3RasterDiagnostic(snapshot: Snapshot, image: DecodedPng): string | undefined {
+  if (
+    snapshot.morphology !== PD3_STATE.morphology
+    || snapshot.palette !== PD3_STATE.palette
+    || snapshot.temperature !== PD3_STATE.temperature
+    || snapshot.theme !== PD3_STATE.theme
+    || snapshot.lodBand !== PD3_STATE.lodBand
+  ) {
+    return undefined;
+  }
+  const points = snapshot.edgeSamples[PD3_RELATION_ID];
+  const fieldColor = parseFieldColor(snapshot.fieldColor);
+  const devicePixelRatio = snapshot.rendering.devicePixelRatio;
+  const radiusCssPixels = 4;
+  const relationInRenderedSet = snapshot.edges.includes(PD3_RELATION_ID);
+  const relationInTargetRenderedSet = snapshot.pickingTarget.edgeIds.includes(PD3_RELATION_ID);
+  const relationInPickableSet = snapshot.pickingTarget.pickableEdgeIds.includes(PD3_RELATION_ID);
+  const header = [
+    `PD-3 raster diagnostic relation=${PD3_RELATION_ID}`,
+    `state=${snapshot.morphology}/${snapshot.palette}/${snapshot.temperature}/${snapshot.theme}/${snapshot.lodBand}`,
+    `dpr=${devicePixelRatio}`,
+    `css=${snapshot.rendering.cssWidth}x${snapshot.rendering.cssHeight}`,
+    `image=${image.width}x${image.height}`,
+    `expected-image=${Math.round(snapshot.rendering.cssWidth * devicePixelRatio)}x${Math.round(snapshot.rendering.cssHeight * devicePixelRatio)}`,
+    `field=rgb(${fieldColor.red},${fieldColor.green},${fieldColor.blue})`,
+    `rendered=${relationInRenderedSet}`,
+    `target-rendered=${relationInTargetRenderedSet}`,
+    `pickable=${relationInPickableSet}`,
+  ].join("; ");
+  if (points === undefined) {
+    return `${header}; samples=missing`;
+  }
+  const rows = points.map((point, index) => formatPd3SampleDiagnostic(
+    index,
+    point,
+    image,
+    devicePixelRatio,
+    radiusCssPixels,
+    fieldColor,
+  ));
+  return `${header}; samples:\n${rows.join("\n")}`;
+}
+
+/** This measures one existing lit-pixel search exactly as the assertion does, then finds the nearest compositor-lit pixel. */
+function formatPd3SampleDiagnostic(
+  index: number,
+  point: { readonly x: number; readonly y: number },
+  image: DecodedPng,
+  devicePixelRatio: number,
+  radiusCssPixels: number,
+  fieldColor: RgbColor,
+): string {
+  const centerX = Math.round(point.x * devicePixelRatio);
+  const centerY = Math.round(point.y * devicePixelRatio);
+  const radius = Math.ceil(radiusCssPixels * devicePixelRatio);
+  let maximumDeviation = -1;
+  let maximumDeviationPosition: { readonly x: number; readonly y: number } | undefined;
+  for (let y = Math.max(0, centerY - radius); y <= Math.min(image.height - 1, centerY + radius); y += 1) {
+    for (let x = Math.max(0, centerX - radius); x <= Math.min(image.width - 1, centerX + radius); x += 1) {
+      const deviation = maximumChannelDeviation(image, x, y, fieldColor);
+      if (deviation > maximumDeviation) {
+        maximumDeviation = deviation;
+        maximumDeviationPosition = { x, y };
+      }
+    }
+  }
+  let nearestLitPixel: { readonly x: number; readonly y: number } | undefined;
+  let nearestLitDistance = Number.POSITIVE_INFINITY;
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      if (!isLitPixel(image, x, y, fieldColor)) {
+        continue;
+      }
+      const distance = Math.hypot(x - centerX, y - centerY);
+      if (distance < nearestLitDistance) {
+        nearestLitDistance = distance;
+        nearestLitPixel = { x, y };
+      }
+    }
+  }
+  const scaledX = point.x * devicePixelRatio;
+  const scaledY = point.y * devicePixelRatio;
+  const maximumPosition = maximumDeviationPosition === undefined
+    ? "none"
+    : `(${maximumDeviationPosition.x},${maximumDeviationPosition.y})`;
+  const nearest = nearestLitPixel === undefined
+    ? "none"
+    : `(${nearestLitPixel.x},${nearestLitPixel.y}) distance-device=${nearestLitDistance.toFixed(3)} distance-css=${(nearestLitDistance / devicePixelRatio).toFixed(3)}`;
+  return [
+    `  sample=${index + 1}`,
+    `css=(${point.x.toFixed(3)},${point.y.toFixed(3)})`,
+    `scaled-device=(${scaledX.toFixed(3)},${scaledY.toFixed(3)})`,
+    `probe-device=(${centerX},${centerY})`,
+    `search-radius-device=${radius}`,
+    `max-channel-deviation=${maximumDeviation}`,
+    `at=${maximumPosition}`,
+    `nearest-lit=${nearest}`,
+  ].join("; ");
+}
+
+/** This returns the existing RGB lit-pixel comparison metric without changing its calibrated threshold. */
+function maximumChannelDeviation(image: DecodedPng, x: number, y: number, fieldColor: RgbColor): number {
+  const index = ((y * image.width) + x) * 4;
+  const red = image.data[index] ?? 0;
+  const green = image.data[index + 1] ?? 0;
+  const blue = image.data[index + 2] ?? 0;
+  return Math.max(
+    Math.abs(red - fieldColor.red),
+    Math.abs(green - fieldColor.green),
+    Math.abs(blue - fieldColor.blue),
+  );
 }
 
 function countLitPixels(image: DecodedPng, fieldColor: RgbColor): number {
