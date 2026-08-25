@@ -158,6 +158,9 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
   const materialScale = permilleScale(calibration);
   const filamentUniformMaterial: FilamentUniformMaterial = {
     minimumWidthFactor: calibration.filament.minimumWidthFactorPermille / materialScale,
+    // Fragment coordinates are device pixels, while this calibrated visibility
+    // floor is a CSS-pixel requirement. The production shader applies its live
+    // pixel ratio before comparing the two coordinate spaces.
     minimumBodyWidth: calibration.filament.minimumDeviceWidthPermille / materialScale,
     sheathScale: filamentMaterial.sheathScalePermille / materialScale,
     sheathAlpha: filamentMaterial.sheathAlphaPermille / materialScale,

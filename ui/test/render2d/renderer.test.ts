@@ -497,6 +497,11 @@ test("filament program declares propagated light attributes in its definition an
   }
 });
 
+test("filament body visibility floor is converted from calibrated CSS pixels to live device pixels", () => {
+  const source = readFileSync(join(process.cwd(), "src", "render2d", "filament-program.ts"), "utf8");
+  assert.match(source, /v_minimumBodyWidth = u_minimumBodyWidth \* u_pixelRatio;/);
+});
+
 test("render decisions contain no non-structural numeric literals", () => {
   const files = ["geometry.ts", "model.ts", "filament-program.ts", "index.ts"];
   assert.equal(files.length, 4);

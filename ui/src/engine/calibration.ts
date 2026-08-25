@@ -70,7 +70,7 @@ export type CalibrationProfile = {
     readonly opacityPermille: number;
     readonly curvatureMagnitudePermille: number;
     readonly minimumWidthFactorPermille: number;
-    /** This is the absolute filament body floor in device pixels, scaled by one thousand. */
+    /** This is the absolute filament body floor in CSS pixels, scaled by one thousand. */
     readonly minimumDeviceWidthPermille: number;
   };
   readonly morphology: {

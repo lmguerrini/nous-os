@@ -31,7 +31,7 @@ const COLOR_BYTE_MAXIMUM = Number("255");
 
 export type FilamentUniformMaterial = {
   readonly minimumWidthFactor: number;
-  /** This is the absolute body-width floor in device pixels. */
+  /** This is the calibrated body-width floor in CSS pixels. */
   readonly minimumBodyWidth: number;
   readonly sheathScale: number;
   readonly sheathAlpha: number;
@@ -289,7 +289,7 @@ void main() {
   v_pickTolerance = a_pickTolerance * u_pixelRatio;
   v_feather = u_feather;
 #ifndef PICKING_MODE
-  v_minimumBodyWidth = u_minimumBodyWidth;
+  v_minimumBodyWidth = u_minimumBodyWidth * u_pixelRatio;
 #endif
   v_arcFraction = a_current;
   v_propagationArcPosition = a_propagationArcPosition;
