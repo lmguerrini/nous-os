@@ -8,7 +8,7 @@ import {
 } from "#engine/calibration.ts";
 
 const EXPECTED_PATHS = [
-  "layout.forceStrengthPermille", "layout.idealEdgeLengthPx", "layout.iterations", "layout.gravityPermille", "layout.seed", "layout.cellJitterPermille", "layout.framingMarginPermille",
+  "layout.forceStrengthPermille", "layout.idealEdgeLengthPx", "layout.iterations", "layout.gravityPermille", "layout.seed", "layout.cellJitterPermille", "layout.framingMarginPermille", "layout.minimumPairwiseAnchorSeparationPx",
   "salience.degreeExponentPermille", "salience.minNodeSizePx", "salience.maxNodeSizePx",
   "luminance.fieldLightnessPermille", "luminance.filamentLightnessPermille", "luminance.nodePeakLightnessPermille", "luminance.haloRadiusFactorPermille", "luminance.haloFalloffPermille", "luminance.haloSampleCount", "luminance.coreBeforeHaloMinimumPx", "luminance.prominenceLightnessGainPermille", "luminance.prominenceChromaFalloffPermille", "luminance.haloProbeRadiusFractionPermille", "luminance.minimumNodeContrastPermille", "luminance.minimumCompositedPixelChannelDelta", "luminance.minimumRenderedNonHueSeparationMicro", "luminance.minimumRenderedCvdSeparationMicro",
   "filament.baseWidthPx",
@@ -27,7 +27,7 @@ const EXPECTED_PATHS = [
 test("calibration register is an exact pinned set in both directions", () => {
   assert.deepEqual([...CALIBRATION_PARAMETER_PATHS].sort(), [...EXPECTED_PATHS].sort());
   assert.deepEqual([...EXPECTED_PATHS].sort(), [...CALIBRATION_PARAMETER_PATHS].sort());
-  assert.equal(CALIBRATION_PARAMETER_PATHS.length, 126);
+  assert.equal(CALIBRATION_PARAMETER_PATHS.length, 127);
 });
 
 test("filament calibration retains the fine shipping material", () => {

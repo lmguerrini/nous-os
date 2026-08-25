@@ -1,5 +1,6 @@
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_AGGREGATE_LAYOUT_CALIBRATION, DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { detectCommunities } from "#engine/community.ts";
 import type { Coordinates, EngineGraph } from "#engine/contract.ts";
 
 /** This is an id-indexed set of world anchors and does not establish screen placement. */
@@ -14,22 +15,60 @@ export type AggregateDisc = {
   readonly radius: number;
 };
 
+type CommunityRegion = {
+  readonly key: string;
+  readonly members: readonly string[];
+  readonly center: Coordinates;
+  readonly radius: number;
+};
+
+type ReservationSlot = {
+  readonly id: string;
+  readonly radius: number;
+};
+
+type CommunityReservation = {
+  readonly key: string;
+  readonly members: readonly string[];
+  readonly slots: readonly ReservationSlot[];
+  readonly localCenters: ReadonlyMap<string, Coordinates>;
+  readonly radius: number;
+};
+
+type CommunityLayout = {
+  readonly memberships: ReadonlyMap<string, string>;
+  readonly regions: ReadonlyMap<string, CommunityRegion>;
+  readonly centers: ReadonlyMap<string, Coordinates>;
+};
+
+type PlanarVector = {
+  readonly x: number;
+  readonly y: number;
+};
+
+type CachedAnchors = {
+  readonly topologyKey: string;
+  readonly anchors: LayoutAnchors;
+};
+
 const UINT32_RANGE = 0x1_0000_0000;
 const PERMILLE = 1000;
-const sharedAnchorSets = new WeakMap<EngineGraph, WeakMap<CalibrationProfile, LayoutAnchors>>();
+const sharedAnchorSets = new WeakMap<EngineGraph, WeakMap<CalibrationProfile, CachedAnchors>>();
 
-/** This derives stable world anchors from identity and reserved aggregate discs and does not inspect semantic content. */
+/** This derives stable world anchors from structural communities and reserved aggregate discs and does not inspect semantic content. */
 export function layoutAnchors(graph: EngineGraph, calibration: CalibrationProfile = DEFAULT_CALIBRATION): LayoutAnchors {
+  const topologyKey = anchorTopologyKey(graph);
   const shared = sharedAnchorSets.get(graph)?.get(calibration);
-  if (shared !== undefined) {
-    return new Map(shared);
+  if (shared?.topologyKey === topologyKey) {
+    return new Map(shared.anchors);
   }
   const anchors = new Map<string, Coordinates>();
+  const memberships = aggregateMemberships(graph);
   const discs = aggregateDiscs(graph, calibration);
   const memberDiscs = memberDiscsById(discs);
-  const reservedCenters = reservedCentersFor(graph, aggregateMemberships(graph), discs, calibration);
-  // Iterate by sorted id, not by array order. Every anchor value already depends
-  // only on the node id, so positions were never order-dependent -- but a Map
+  const communityLayout = communityLayoutFor(graph, memberships, new Map(discs.map((disc) => [disc.id, disc.radius])), calibration);
+  // Iterate by sorted id, not by array order. Community placement is derived
+  // from topology, but it remains independent of source-array order. A Map
   // iterates in insertion order, so a caller serialising these anchors would get
   // order-dependent bytes from an order-independent computation. VisualState is
   // required to round-trip byte-identically, so the ordering is pinned here
@@ -37,10 +76,10 @@ export function layoutAnchors(graph: EngineGraph, calibration: CalibrationProfil
   for (const node of [...graph.nodes].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
     const disc = memberDiscs.get(node.id);
     anchors.set(node.id, disc === undefined
-      ? outsideDiscAnchor(node.id, reservedCenters, discs, calibration)
+      ? outsideDiscAnchor(node.id, communityLayout.centers, discs, calibration)
       : memberAnchor(node.id, disc, calibration));
   }
-  return anchors;
+  return settleAnchors(graph, anchors, communityLayout, memberDiscs, discs, calibration);
 }
 
 /** This selects Reliability anchors from Discovery and does not recompute their positions. */
@@ -168,50 +207,429 @@ function nearestDiscClearance(center: Coordinates, discs: readonly AggregateDisc
 }
 
 function setSharedAnchors(graph: EngineGraph, calibration: CalibrationProfile, anchors: LayoutAnchors): void {
-  const byCalibration = sharedAnchorSets.get(graph) ?? new WeakMap<CalibrationProfile, LayoutAnchors>();
-  byCalibration.set(calibration, anchors);
+  const byCalibration = sharedAnchorSets.get(graph) ?? new WeakMap<CalibrationProfile, CachedAnchors>();
+  byCalibration.set(calibration, { topologyKey: anchorTopologyKey(graph), anchors });
   sharedAnchorSets.set(graph, byCalibration);
+}
+
+function anchorTopologyKey(graph: EngineGraph): string {
+  const nodeIds = graph.nodes.map(({ id }) => id).sort(compareText);
+  const endpoints = graph.edges
+    .map(({ source, target }) => source < target ? [source, target] as const : [target, source] as const)
+    .sort(([leftSource, leftTarget], [rightSource, rightTarget]) => {
+      const source = compareText(leftSource, rightSource);
+      return source === 0 ? compareText(leftTarget, rightTarget) : source;
+    });
+  return JSON.stringify([nodeIds, endpoints]);
 }
 
 function layoutExtent(calibration: CalibrationProfile): number {
   return (calibration.layout.idealEdgeLengthPx * calibration.layout.forceStrengthPermille) / PERMILLE;
 }
 
-/** This assigns finite grid cells to aggregate discs and non-members without iterative collision resolution. */
+/** This assigns aggregate discs and non-members to derived community regions and does not create a graph grouping. */
 function reservedCentersFor(
   graph: EngineGraph,
   memberships: ReadonlyMap<string, readonly string[]>,
   discsOrRadii: readonly AggregateDisc[] | ReadonlyMap<string, number>,
   calibration: CalibrationProfile,
 ): ReadonlyMap<string, Coordinates> {
-  const radii = Array.isArray(discsOrRadii)
+  const radii = isAggregateDiscList(discsOrRadii)
     ? new Map(discsOrRadii.map((disc) => [disc.id, disc.radius]))
     : discsOrRadii;
-  const members = new Set([...memberships.values()].flat());
-  const slots = [
-    ...[...memberships.keys()].map(aggregateSlot),
-    ...graph.nodes.filter((node) => !members.has(node.id)).map((node) => nodeSlot(node.id)),
-  ].sort();
-  const maximumRadius = Math.max(0, ...radii.values());
-  const cellSpan = (maximumRadius * 2) + calibration.aggregate.windowPaddingPx;
-  const targetAspectRatio = DEFAULT_AGGREGATE_LAYOUT_CALIBRATION.aspectRatioTargetPermille / PERMILLE;
-  const columns = Math.max(1, Math.ceil(Math.sqrt(slots.length * targetAspectRatio)));
-  const rows = Math.ceil(slots.length / columns);
-  const horizontalSpan = (columns - 1) * cellSpan;
-  const verticalSpan = rows <= 1
-    ? 0
-    : Math.max((rows - 1) * cellSpan, horizontalSpan / targetAspectRatio);
+  return communityLayoutFor(graph, memberships, radii, calibration).centers;
+}
+
+function communityLayoutFor(
+  graph: EngineGraph,
+  aggregateMembers: ReadonlyMap<string, readonly string[]>,
+  radii: ReadonlyMap<string, number>,
+  calibration: CalibrationProfile,
+): CommunityLayout {
+  const memberships = detectCommunities(graph);
+  const regionKeys = [...new Set(memberships.values())].sort(compareText);
+  const membersByRegion = new Map<string, string[]>(regionKeys.map((key) => [key, []]));
+  for (const [id, key] of [...memberships.entries()].sort(([left], [right]) => compareText(left, right))) {
+    requiredMembers(membersByRegion, key).push(id);
+  }
+  const aggregateMemberIds = new Set([...aggregateMembers.values()].flat());
+  const slotsByRegion = new Map<string, ReservationSlot[]>(regionKeys.map((key) => [key, []]));
+  for (const [id] of [...aggregateMembers.entries()].sort(([left], [right]) => compareText(left, right))) {
+    const regionKey = requiredRegionKey(memberships, id);
+    requiredSlots(slotsByRegion, regionKey).push({ id: aggregateSlot(id), radius: requiredRadius(radii, id) });
+  }
+  for (const node of [...graph.nodes].sort(compareIds)) {
+    if (!aggregateMemberIds.has(node.id)) {
+      const regionKey = requiredRegionKey(memberships, node.id);
+      requiredSlots(slotsByRegion, regionKey).push({ id: nodeSlot(node.id), radius: layoutExtent(calibration) });
+    }
+  }
+  const reservations = regionKeys.map((key) => communityReservationFor(
+    key,
+    requiredMembers(membersByRegion, key),
+    requiredSlots(slotsByRegion, key),
+    calibration,
+  ));
+  const regionCenters = regionCentersFor(reservations, calibration);
+  const regions = new Map<string, CommunityRegion>();
   const centers = new Map<string, Coordinates>();
-  for (const [index, slot] of slots.entries()) {
+  for (const reservation of reservations) {
+    const center = requiredCenter(regionCenters, reservation.key);
+    regions.set(reservation.key, {
+      key: reservation.key,
+      members: reservation.members,
+      center,
+      radius: reservation.radius,
+    });
+    for (const [slot, localCenter] of [...reservation.localCenters.entries()].sort(([left], [right]) => compareText(left, right))) {
+      centers.set(slot, {
+        x: center.x + localCenter.x,
+        y: center.y + localCenter.y,
+        z: center.z,
+      });
+    }
+  }
+  return { memberships, regions, centers };
+}
+
+function communityReservationFor(
+  key: string,
+  members: readonly string[],
+  slots: readonly ReservationSlot[],
+  calibration: CalibrationProfile,
+): CommunityReservation {
+  const orderedSlots = [...slots].sort((left, right) => compareText(left.id, right.id));
+  if (orderedSlots.length === 0) {
+    throw new TypeError("community region lacks placement slots");
+  }
+  const gap = calibration.aggregate.windowPaddingPx;
+  const maximumSlotRadius = Math.max(...orderedSlots.map((slot) => slot.radius + gap));
+  const cellSpan = (maximumSlotRadius * MIDPOINT_DIVISOR) + gap;
+  const localCenters = centersInGrid(orderedSlots.map((slot) => slot.id), cellSpan, calibration);
+  const reservationRadius = Math.max(
+    Math.sqrt(members.length) * layoutExtent(calibration),
+    ...orderedSlots.map((slot) => {
+      const localCenter = requiredCenter(localCenters, slot.id);
+      return Math.hypot(localCenter.x, localCenter.y) + slot.radius + gap;
+    }),
+  ) + gap;
+  return { key, members: [...members].sort(compareText), slots: orderedSlots, localCenters, radius: reservationRadius };
+}
+
+function regionCentersFor(
+  reservations: readonly CommunityReservation[],
+  calibration: CalibrationProfile,
+): ReadonlyMap<string, Coordinates> {
+  const ordered = [...reservations].sort((left, right) => compareText(left.key, right.key));
+  if (ordered.length === 0) {
+    return new Map();
+  }
+  const maximumRadius = Math.max(...ordered.map((reservation) => reservation.radius));
+  const gap = calibration.aggregate.windowPaddingPx;
+  const cellSpan = (maximumRadius * MIDPOINT_DIVISOR) + (gap * MIDPOINT_DIVISOR);
+  return centersInGrid(ordered.map((reservation) => reservation.key), cellSpan, calibration);
+}
+
+function centersInGrid(
+  ids: readonly string[],
+  cellSpan: number,
+  calibration: CalibrationProfile,
+): ReadonlyMap<string, Coordinates> {
+  const zero = 0;
+  const one = 1;
+  const targetAspectRatio = DEFAULT_AGGREGATE_LAYOUT_CALIBRATION.aspectRatioTargetPermille / PERMILLE;
+  const columns = Math.max(one, Math.ceil(Math.sqrt(ids.length * targetAspectRatio)));
+  const rows = Math.ceil(ids.length / columns);
+  const horizontalSpan = (columns - one) * cellSpan;
+  const verticalSpan = rows <= one
+    ? zero
+    : Math.max((rows - one) * cellSpan, horizontalSpan / targetAspectRatio);
+  const centers = new Map<string, Coordinates>();
+  for (const [index, id] of [...ids].sort(compareText).entries()) {
     const column = index % columns;
     const row = Math.floor(index / columns);
-    centers.set(slot, {
-      x: (column * cellSpan) - (horizontalSpan / 2),
-      y: rows <= 1 ? 0 : (row * (verticalSpan / (rows - 1))) - (verticalSpan / 2),
-      z: 0,
+    centers.set(id, {
+      x: (column * cellSpan) - (horizontalSpan / MIDPOINT_DIVISOR),
+      y: rows <= one ? zero : (row * (verticalSpan / (rows - one))) - (verticalSpan / MIDPOINT_DIVISOR),
+      z: zero,
     });
   }
   return centers;
+}
+
+function settleAnchors(
+  graph: EngineGraph,
+  initialAnchors: LayoutAnchors,
+  communityLayout: CommunityLayout,
+  memberDiscs: ReadonlyMap<string, AggregateDisc>,
+  discs: readonly AggregateDisc[],
+  calibration: CalibrationProfile,
+): LayoutAnchors {
+  const positions = new Map([...initialAnchors.entries()].sort(([left], [right]) => compareText(left, right)));
+  const edgesByRegion = intraCommunityEdges(graph, communityLayout.memberships, communityLayout.regions);
+  for (const _ of Array.from({ length: calibration.layout.iterations })) {
+    for (const key of [...communityLayout.regions.keys()].sort(compareText)) {
+      const region = requiredRegion(communityLayout.regions, key);
+      settleCommunity(
+        positions,
+        region,
+        requiredEdges(edgesByRegion, key),
+        memberDiscs,
+        discs,
+        calibration,
+      );
+    }
+  }
+  return new Map([...positions.entries()].sort(([left], [right]) => compareText(left, right)));
+}
+
+function intraCommunityEdges(
+  graph: EngineGraph,
+  memberships: ReadonlyMap<string, string>,
+  regions: ReadonlyMap<string, CommunityRegion>,
+): ReadonlyMap<string, readonly { readonly source: string; readonly target: string }[]> {
+  const edgesByRegion: Map<string, { readonly source: string; readonly target: string }[]> = new Map(
+    [...regions.keys()].sort(compareText).map((key) => [key, []]),
+  );
+  const edges = graph.edges
+    .map(({ source, target }) => ({ source, target }))
+    .sort(compareStructuralEdges);
+  for (const edge of edges) {
+    const sourceRegion = memberships.get(edge.source);
+    const targetRegion = memberships.get(edge.target);
+    if (sourceRegion !== undefined && sourceRegion === targetRegion) {
+      const regionEdges = edgesByRegion.get(sourceRegion);
+      if (regionEdges === undefined) {
+        throw new TypeError("community edges are unavailable");
+      }
+      regionEdges.push(edge);
+    }
+  }
+  return edgesByRegion;
+}
+
+function settleCommunity(
+  positions: Map<string, Coordinates>,
+  region: CommunityRegion,
+  edges: readonly { readonly source: string; readonly target: string }[],
+  memberDiscs: ReadonlyMap<string, AggregateDisc>,
+  discs: readonly AggregateDisc[],
+  calibration: CalibrationProfile,
+): void {
+  const zero = 0;
+  const perIterationStrength = (calibration.layout.forceStrengthPermille / PERMILLE) / calibration.layout.iterations;
+  const perIterationGravity = (calibration.layout.gravityPermille / PERMILLE) / calibration.layout.iterations;
+  const changes = new Map<string, PlanarVector>(region.members.map((id) => [id, { x: zero, y: zero }]));
+  for (const [leftIndex, leftId] of region.members.entries()) {
+    const left = requiredAnchor(positions, leftId);
+    for (const rightId of region.members.slice(leftIndex + 1)) {
+      const right = requiredAnchor(positions, rightId);
+      const direction = directionBetween(left, right, `${leftId}:${rightId}`, calibration);
+      const safeDistance = Math.max(direction.distance, calibration.aggregate.windowPaddingPx);
+      const repulsion = ((calibration.layout.idealEdgeLengthPx * calibration.layout.idealEdgeLengthPx) / safeDistance) * perIterationStrength;
+      addOpposingForce(changes, leftId, rightId, direction, repulsion);
+    }
+  }
+  for (const edge of edges) {
+    const source = requiredAnchor(positions, edge.source);
+    const target = requiredAnchor(positions, edge.target);
+    const direction = directionBetween(source, target, `${edge.source}:${edge.target}`, calibration);
+    const spring = (direction.distance - calibration.layout.idealEdgeLengthPx) * perIterationStrength;
+    addSymmetricForce(changes, edge.source, edge.target, direction, spring);
+  }
+  for (const id of region.members) {
+    const position = requiredAnchor(positions, id);
+    addForce(changes, id, {
+      x: (region.center.x - position.x) * perIterationGravity,
+      y: (region.center.y - position.y) * perIterationGravity,
+    });
+  }
+  for (const id of region.members) {
+    const position = requiredAnchor(positions, id);
+    const change = requiredChange(changes, id);
+    const candidate = { x: position.x + change.x, y: position.y + change.y, z: zero };
+    const disc = memberDiscs.get(id);
+    positions.set(id, disc === undefined
+      ? constrainNonMember(id, candidate, region, discs, calibration)
+      : constrainMember(id, candidate, disc, calibration));
+  }
+}
+
+function directionBetween(
+  left: Coordinates,
+  right: Coordinates,
+  token: string,
+  calibration: CalibrationProfile,
+): PlanarVector & { readonly distance: number } {
+  const zero = 0;
+  const delta = { x: right.x - left.x, y: right.y - left.y };
+  const distance = Math.hypot(delta.x, delta.y);
+  if (distance !== zero) {
+    return { x: delta.x / distance, y: delta.y / distance, distance };
+  }
+  const angle = unitHash(`${calibration.layout.seed}:${token}`) * Math.PI * MIDPOINT_DIVISOR;
+  return { x: Math.cos(angle), y: Math.sin(angle), distance };
+}
+
+function addSymmetricForce(
+  changes: Map<string, PlanarVector>,
+  leftId: string,
+  rightId: string,
+  direction: PlanarVector,
+  magnitude: number,
+): void {
+  addForce(changes, leftId, { x: (direction.x * magnitude) / MIDPOINT_DIVISOR, y: (direction.y * magnitude) / MIDPOINT_DIVISOR });
+  addForce(changes, rightId, { x: (-direction.x * magnitude) / MIDPOINT_DIVISOR, y: (-direction.y * magnitude) / MIDPOINT_DIVISOR });
+}
+
+function addOpposingForce(
+  changes: Map<string, PlanarVector>,
+  leftId: string,
+  rightId: string,
+  direction: PlanarVector,
+  magnitude: number,
+): void {
+  addForce(changes, leftId, { x: (-direction.x * magnitude) / MIDPOINT_DIVISOR, y: (-direction.y * magnitude) / MIDPOINT_DIVISOR });
+  addForce(changes, rightId, { x: (direction.x * magnitude) / MIDPOINT_DIVISOR, y: (direction.y * magnitude) / MIDPOINT_DIVISOR });
+}
+
+function addForce(changes: Map<string, PlanarVector>, id: string, force: PlanarVector): void {
+  const previous = requiredChange(changes, id);
+  changes.set(id, { x: previous.x + force.x, y: previous.y + force.y });
+}
+
+function constrainMember(
+  id: string,
+  position: Coordinates,
+  disc: AggregateDisc,
+  calibration: CalibrationProfile,
+): Coordinates {
+  const zero = 0;
+  const direction = directionBetween(disc.center, position, `${id}:${disc.id}`, calibration);
+  const limit = Math.max(zero, disc.radius - calibration.aggregate.windowPaddingPx);
+  if (direction.distance <= limit) {
+    return position;
+  }
+  return {
+    x: disc.center.x + (direction.x * limit),
+    y: disc.center.y + (direction.y * limit),
+    z: zero,
+  };
+}
+
+function constrainNonMember(
+  id: string,
+  position: Coordinates,
+  region: CommunityRegion,
+  discs: readonly AggregateDisc[],
+  calibration: CalibrationProfile,
+): Coordinates {
+  const zero = 0;
+  let constrained = constrainToRegion(id, position, region, calibration);
+  for (const disc of [...discs].sort((left, right) => compareText(left.id, right.id))) {
+    const direction = directionBetween(disc.center, constrained, `${id}:${disc.id}`, calibration);
+    const clearance = disc.radius + calibration.aggregate.windowPaddingPx;
+    if (direction.distance < clearance) {
+      constrained = {
+        x: disc.center.x + (direction.x * clearance),
+        y: disc.center.y + (direction.y * clearance),
+        z: zero,
+      };
+    }
+  }
+  return constrainToRegion(id, constrained, region, calibration);
+}
+
+function constrainToRegion(
+  id: string,
+  position: Coordinates,
+  region: CommunityRegion,
+  calibration: CalibrationProfile,
+): Coordinates {
+  const zero = 0;
+  const direction = directionBetween(region.center, position, `${id}:${region.key}`, calibration);
+  const limit = Math.max(zero, region.radius - calibration.aggregate.windowPaddingPx);
+  if (direction.distance <= limit) {
+    return position;
+  }
+  return {
+    x: region.center.x + (direction.x * limit),
+    y: region.center.y + (direction.y * limit),
+    z: zero,
+  };
+}
+
+function requiredMembers(membersByRegion: ReadonlyMap<string, string[]>, key: string): string[] {
+  const members = membersByRegion.get(key);
+  if (members === undefined) {
+    throw new TypeError("community members are unavailable");
+  }
+  return members;
+}
+
+function requiredSlots(slotsByRegion: ReadonlyMap<string, ReservationSlot[]>, key: string): ReservationSlot[] {
+  const slots = slotsByRegion.get(key);
+  if (slots === undefined) {
+    throw new TypeError("community slots are unavailable");
+  }
+  return slots;
+}
+
+function requiredRegionKey(memberships: ReadonlyMap<string, string>, id: string): string {
+  const key = memberships.get(id);
+  if (key === undefined) {
+    throw new TypeError("community membership is unavailable");
+  }
+  return key;
+}
+
+function requiredRegion(regions: ReadonlyMap<string, CommunityRegion>, key: string): CommunityRegion {
+  const region = regions.get(key);
+  if (region === undefined) {
+    throw new TypeError("community region is unavailable");
+  }
+  return region;
+}
+
+function requiredEdges(
+  edgesByRegion: ReadonlyMap<string, readonly { readonly source: string; readonly target: string }[]>,
+  key: string,
+): readonly { readonly source: string; readonly target: string }[] {
+  const edges = edgesByRegion.get(key);
+  if (edges === undefined) {
+    throw new TypeError("community edges are unavailable");
+  }
+  return edges;
+}
+
+function requiredAnchor(anchors: ReadonlyMap<string, Coordinates>, id: string): Coordinates {
+  const anchor = anchors.get(id);
+  if (anchor === undefined) {
+    throw new TypeError("layout anchor is unavailable");
+  }
+  return anchor;
+}
+
+function requiredChange(changes: ReadonlyMap<string, PlanarVector>, id: string): PlanarVector {
+  const change = changes.get(id);
+  if (change === undefined) {
+    throw new TypeError("layout force is unavailable");
+  }
+  return change;
+}
+
+function compareStructuralEdges(
+  left: { readonly source: string; readonly target: string },
+  right: { readonly source: string; readonly target: string },
+): number {
+  const source = compareText(left.source, right.source);
+  return source === 0 ? compareText(left.target, right.target) : source;
+}
+
+function isAggregateDiscList(
+  value: readonly AggregateDisc[] | ReadonlyMap<string, number>,
+): value is readonly AggregateDisc[] {
+  return Array.isArray(value);
 }
 
 function aggregateSlot(id: string): string {
@@ -248,6 +666,10 @@ function aggregateKind(graph: EngineGraph, id: string): "cluster" | "conflict" {
 
 function compareIds(left: { readonly id: string }, right: { readonly id: string }): number {
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+function compareText(left: string, right: string): number {
+  return compareIds({ id: left }, { id: right });
 }
 
 function unitHash(value: string): number {

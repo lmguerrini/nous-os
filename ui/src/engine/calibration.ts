@@ -43,6 +43,8 @@ export type CalibrationProfile = {
     readonly seed: number;
     readonly cellJitterPermille: number;
     readonly framingMarginPermille: number;
+    /** This is the floor below which two anchors are treated as coincident, in CSS pixels. */
+    readonly minimumPairwiseAnchorSeparationPx: number;
   };
   readonly salience: {
     readonly degreeExponentPermille: number;
@@ -148,6 +150,7 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "layout.seed",
   "layout.cellJitterPermille",
   "layout.framingMarginPermille",
+  "layout.minimumPairwiseAnchorSeparationPx",
   "salience.degreeExponentPermille",
   "salience.minNodeSizePx",
   "salience.maxNodeSizePx",
@@ -271,7 +274,7 @@ export const CALIBRATION_PARAMETER_PATHS = [
 
 /** This is the default renderer profile and does not choose a semantic interpretation. All fractional values are scaled integers because canonical JSON accepts only integers. */
 export const DEFAULT_CALIBRATION: CalibrationProfile = {
-  layout: { forceStrengthPermille: 850, idealEdgeLengthPx: 120, iterations: 180, gravityPermille: 90, seed: 17, cellJitterPermille: 340, framingMarginPermille: 150 },
+  layout: { forceStrengthPermille: 850, idealEdgeLengthPx: 120, iterations: 180, gravityPermille: 90, seed: 17, cellJitterPermille: 340, framingMarginPermille: 150, minimumPairwiseAnchorSeparationPx: 60 },
   salience: { degreeExponentPermille: 650, minNodeSizePx: 2, maxNodeSizePx: 14 },
   luminance: { fieldLightnessPermille: 60, filamentLightnessPermille: 700, nodePeakLightnessPermille: 960, haloRadiusFactorPermille: 1100, haloFalloffPermille: 250, haloSampleCount: 12, coreBeforeHaloMinimumPx: 4, prominenceLightnessGainPermille: 850, prominenceChromaFalloffPermille: 1000, haloProbeRadiusFractionPermille: 700, minimumNodeContrastPermille: 1200, minimumCompositedPixelChannelDelta: 6, minimumRenderedNonHueSeparationMicro: 10, minimumRenderedCvdSeparationMicro: 100 },
   filament: { baseWidthPx: 1,
