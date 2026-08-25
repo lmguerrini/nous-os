@@ -184,11 +184,11 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     gl.uniform2f(programInfo.uniformLocations.u_dimensions, params.width * params.pixelRatio, params.height * params.pixelRatio);
     gl.uniform1f(programInfo.uniformLocations.u_minEdgeThickness, params.minEdgeThickness);
     gl.uniform1f(programInfo.uniformLocations.u_minimumWidthFactor, uniformMaterial.minimumWidthFactor);
+    gl.uniform1f(programInfo.uniformLocations.u_minimumBodyWidth, uniformMaterial.minimumBodyWidth);
     gl.uniform1f(programInfo.uniformLocations.u_sheathScale, uniformMaterial.sheathScale);
     gl.uniform1f(programInfo.uniformLocations.u_wobbleAmplitude, uniformMaterial.wobbleAmplitude);
     gl.uniform1f(programInfo.uniformLocations.u_wobbleFrequency, uniformMaterial.wobbleFrequency);
     if (!programInfo.isPicking) {
-      gl.uniform1f(programInfo.uniformLocations.u_minimumBodyWidth, uniformMaterial.minimumBodyWidth);
       gl.uniform1f(programInfo.uniformLocations.u_sheathAlpha, uniformMaterial.sheathAlpha);
       gl.uniform1f(programInfo.uniformLocations.u_coreScale, uniformMaterial.coreScale);
       gl.uniform1f(programInfo.uniformLocations.u_hotMix, uniformMaterial.hotMix);
@@ -240,18 +240,14 @@ uniform vec2 u_dimensions;
 uniform float u_feather;
 uniform float u_minEdgeThickness;
 uniform float u_minimumWidthFactor;
-#ifndef PICKING_MODE
 uniform float u_minimumBodyWidth;
-#endif
 uniform float u_sheathScale;
 uniform float u_wobbleAmplitude;
 varying vec4 v_color;
 varying float v_thickness;
 varying float v_pickTolerance;
 varying float v_feather;
-#ifndef PICKING_MODE
 varying float v_minimumBodyWidth;
-#endif
 varying float v_arcFraction;
 varying float v_propagationArcPosition;
 varying float v_propagationContinuous;
@@ -288,9 +284,7 @@ void main() {
   v_thickness = curveThickness * u_pixelRatio;
   v_pickTolerance = a_pickTolerance * u_pixelRatio;
   v_feather = u_feather;
-#ifndef PICKING_MODE
   v_minimumBodyWidth = u_minimumBodyWidth * u_pixelRatio;
-#endif
   v_arcFraction = a_current;
   v_propagationArcPosition = a_propagationArcPosition;
   v_propagationContinuous = a_propagationContinuous;
@@ -305,14 +299,20 @@ void main() {
     max(a_materialWidths.x, a_materialWidths.y) + abs(u_wobbleAmplitude) + max(a_materialWidths.z, a_materialWidths.w)
   );
   float maximumBodyHalfWidth = v_thickness * 0.5 * maximumWidthFactor;
-  #ifndef PICKING_MODE
   maximumBodyHalfWidth = max(maximumBodyHalfWidth, v_minimumBodyWidth * 0.5);
-  #endif
   float maximumMaterialExtent = max(
     maximumBodyHalfWidth * u_sheathScale,
     maximumBodyHalfWidth + a_pickTolerance * u_pixelRatio
   ) + u_feather;
-  vec2 offsetPosition = viewportPosition + normal * (abs(curveOffset) / 2.0 + maximumMaterialExtent) * a_direction;
+  // filamentDistance clamps its closest point at both endpoints, producing round
+  // caps that extend one material radius along the chord.  The ribbon must cover
+  // that signed-distance field as well as its normal extent; otherwise a straight
+  // filament clips its own caps when its curvature offset is zero.
+  vec2 tangent = delta / lengthDelta;
+  float endpointExtent = maximumMaterialExtent * (1.0 - 2.0 * a_current);
+  vec2 offsetPosition = viewportPosition
+    + normal * (abs(curveOffset) / 2.0 + maximumMaterialExtent) * a_direction
+    + tangent * endpointExtent;
   gl_Position = vec4(viewportToClipspace(offsetPosition, u_dimensions), 0.0, 1.0);
   #ifdef PICKING_MODE
   v_color = a_id;
@@ -330,9 +330,7 @@ varying vec4 v_color;
 varying float v_thickness;
 varying float v_pickTolerance;
 varying float v_feather;
-#ifndef PICKING_MODE
 varying float v_minimumBodyWidth;
-#endif
 varying float v_arcFraction;
 varying float v_propagationArcPosition;
 varying float v_propagationContinuous;
@@ -362,6 +360,7 @@ void main(void) {
     + v_materialWidths.w * max(0.0, 1.0 - (1.0 - curveT) / 0.13);
   float widthFactor = max(u_minimumWidthFactor, taper + wobble + junction);
   float halfThickness = 0.5 * v_thickness * widthFactor;
+  halfThickness = max(halfThickness, v_minimumBodyWidth * 0.5);
   float distance = abs(distanceSample.x);
   #ifdef PICKING_MODE
   float pickHalfThickness = halfThickness + v_pickTolerance;
@@ -371,7 +370,6 @@ void main(void) {
     gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
   }
   #else
-  halfThickness = max(halfThickness, v_minimumBodyWidth * 0.5);
   float sheathHalfThickness = halfThickness * u_sheathScale;
   if (distance < sheathHalfThickness) {
     float sheathCoverage = 1.0 - smoothstep(sheathHalfThickness - v_feather, sheathHalfThickness, distance);

@@ -95,7 +95,8 @@ type RelationPickMeasurement = {
   readonly samples: readonly RelationPickSample[];
 };
 
-type PickingTargetWitness = {
+/** The no-screenshot portion of the live production picking-target observation. */
+type PickingTargetSetWitness = {
   readonly nodeIds: readonly string[];
   readonly edgeIds: readonly string[];
   /** These are ids actually returned by the live picking target. */
@@ -106,10 +107,14 @@ type PickingTargetWitness = {
   /** These are rendered ids for which the live target returned that exact id at a per-id interior witness point. */
   readonly nodePickCoverageIds: readonly string[];
   readonly edgePickCoverageIds: readonly string[];
-  /** Per-relation live-target samples, including drawn body/visible widths and picking radius. */
-  readonly edgePickMeasurements: Readonly<Record<string, RelationPickMeasurement>>;
   readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
   readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
+};
+
+/** The expensive live-target observation, used only when compositor pixels are asserted. */
+type PickingTargetWitness = PickingTargetSetWitness & {
+  /** Per-relation live-target samples, including drawn body/visible widths and picking radius. */
+  readonly edgePickMeasurements: Readonly<Record<string, RelationPickMeasurement>>;
   readonly nodePixels: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly edgePixels: Readonly<Record<string, readonly { readonly x: number; readonly y: number }[]>>;
 };
@@ -151,6 +156,20 @@ type Snapshot = {
   readonly pickingTarget: PickingTargetWitness;
 };
 
+/** The intentionally cheap A3 shipping observation: model ids plus live picking-target sets, never compositor pixels. */
+type ShippingPickingSetSnapshot = {
+  readonly policy: Policy;
+  readonly morphology: Morphology;
+  readonly palette: Palette;
+  readonly temperature: Temperature;
+  readonly theme: Theme;
+  readonly lodBand: LodBand;
+  readonly semanticDigest: string;
+  readonly renderedNodeIds: readonly string[];
+  readonly renderedEdgeIds: readonly string[];
+  readonly pickingTarget: PickingTargetSetWitness;
+};
+
 type EvidenceApi = {
   readonly ready: boolean;
   readonly errors: string[];
@@ -159,6 +178,10 @@ type EvidenceApi = {
   switchMorphology(morphology: Morphology): Promise<Snapshot>;
   switchOrganization(organization: Organization): Promise<Snapshot>;
   setCrossProductState(morphology: Morphology, palette: Palette, temperature: Temperature, theme: Theme, lodBand: LodBand): Promise<Snapshot>;
+  /** This mounts one complete shipping state and keeps morphology at the shipped master. */
+  setShippingCrossProductState(policy: Policy, palette: Palette, temperature: Temperature, theme: Theme, lodBand: LodBand): Promise<Snapshot>;
+  /** This mounts one shipping state and reads only model ids and live picking-target sets; it captures no compositor witnesses. */
+  setShippingCrossProductPickingSetState(policy: Policy, palette: Palette, temperature: Temperature, theme: Theme, lodBand: LodBand): Promise<ShippingPickingSetSnapshot>;
   setLodBand(band: LodBand): Promise<Snapshot>;
   setLodZoom(zoom: number): Promise<Snapshot>;
   setGlowSuppressed(suppressed: boolean): Promise<Snapshot>;
@@ -200,12 +223,22 @@ const FIXTURE_URLS: Readonly<Record<Policy, string>> = {
   Discovery: "fixtures/synthetic/projection/discovery-all-time.json",
 };
 
-type MutableRenderOptions = { -readonly [Key in keyof ModelRenderOptions]: ModelRenderOptions[Key] };
+type MutableRenderOptions = {
+  morphology: ModelRenderOptions["morphology"];
+  organization: ModelRenderOptions["organization"];
+  palette: Palette;
+  temperature: ModelRenderOptions["temperature"];
+  theme: ModelRenderOptions["theme"];
+  lodBand: ModelRenderOptions["lodBand"];
+  reducedMotion: ModelRenderOptions["reducedMotion"];
+  elapsedMilliseconds: ModelRenderOptions["elapsedMilliseconds"];
+  calibration?: NonNullable<ModelRenderOptions["calibration"]>;
+};
 
 const options: MutableRenderOptions = {
   morphology: "stellar",
   organization: "indra",
-  palette: "interstellar",
+  palette: "monochrome",
   temperature: "balanced",
   theme: "dark",
   lodBand: "micro",
@@ -412,6 +445,20 @@ async function boot(): Promise<void> {
 
   const read = (): Snapshot => snapshotFor(requiredHandle(product), container, selectedNode);
 
+  /** Avoids building viewport paths, propagation, and pixel-witness payloads for A3's full state-space set assertion. */
+  const shippingPickingSetSnapshotFor = (handle: RenderHandle): ShippingPickingSetSnapshot => ({
+    policy,
+    morphology: options.morphology,
+    palette: options.palette,
+    temperature: options.temperature,
+    theme: options.theme,
+    lodBand: options.lodBand,
+    semanticDigest: semanticDigest(requiredGraph(graphs, policy)),
+    renderedNodeIds: [...handle.model.graph.nodes()].sort(),
+    renderedEdgeIds: [...handle.model.graph.edges()].sort(),
+    pickingTarget: pickingTargetSetWitness(handle),
+  });
+
   const api: EvidenceApi = {
     ready: false,
     errors,
@@ -443,6 +490,32 @@ async function boot(): Promise<void> {
       options.lodBand = lodBand;
       await remount();
       return read();
+    },
+    async setShippingCrossProductState(nextPolicy, palette, temperature, theme, lodBand): Promise<Snapshot> {
+      policy = nextPolicy;
+      options.morphology = "stellar";
+      options.palette = palette;
+      options.temperature = temperature;
+      options.theme = theme;
+      options.lodBand = lodBand;
+      selectedNode = null;
+      selectedElement = null;
+      focusedElement = null;
+      await remount();
+      return read();
+    },
+    async setShippingCrossProductPickingSetState(nextPolicy, palette, temperature, theme, lodBand): Promise<ShippingPickingSetSnapshot> {
+      policy = nextPolicy;
+      options.morphology = "stellar";
+      options.palette = palette;
+      options.temperature = temperature;
+      options.theme = theme;
+      options.lodBand = lodBand;
+      selectedNode = null;
+      selectedElement = null;
+      focusedElement = null;
+      await remount();
+      return shippingPickingSetSnapshotFor(requiredHandle(product));
     },
     async setLodBand(next): Promise<Snapshot> {
       options.lodBand = next;
@@ -588,9 +661,9 @@ async function boot(): Promise<void> {
     },
     async pickStraightControl(): Promise<string | null> {
       // This is the one intentionally isolated surface: it is a minimal straight-
-      // edge control for the renderer library's straight-curve branch, which the
-      // governed product fixtures do not contain. It is not an oracle for any
-      // production relation; every production picking witness above uses product.
+      // edge control for the renderer library's straight-curve branch. The product
+      // witnesses above already exercise the shipping straight relations; this
+      // isolated control keeps the library branch independently falsifiable.
       const controlContainer = document.createElement("div");
       controlContainer.style.cssText = "width:960px;height:640px;position:fixed;left:-2000px;top:0";
       document.body.append(controlContainer);
@@ -647,6 +720,7 @@ async function boot(): Promise<void> {
       selectionFocusNoopPreviousContainerId = container.id;
       container.id = "evidence-selection-focus-noop-renderer";
       control.setSelectionFocusFactors(SELECTION_FOCUS_NOOP_CALIBRATION.selection);
+      control.setEdgeLabelRevealVisible(false);
       await nextPaint();
       await nextPaint();
       return snapshotFor(control, container, null);
@@ -675,6 +749,7 @@ async function boot(): Promise<void> {
     hideSelectionFocusNoopControl(): void {
       const control = selectionFocusNoopControl;
       if (control !== undefined) {
+        control.setEdgeLabelRevealVisible(true);
         control.setSelectionFocusFactors(undefined);
         if (selectionFocusNoopPreviousSelection === null) {
           control.clearSelection();
@@ -808,8 +883,20 @@ function renderWitness(container: HTMLElement): RenderWitness {
   };
 }
 
-/** This samples ids, incidence, anchors, and pixel locations from the mounted product renderer's picking target. */
+/** This reads the full, expensive live-target witness used by compositor-pixel assertions. */
 function pickingTargetWitness(handle: RenderHandle): PickingTargetWitness {
+  return pickingTargetWitnessFor(handle, true);
+}
+
+/** This reads only live-target id sets and topology for the 270-state A3 invariant. */
+function pickingTargetSetWitness(handle: RenderHandle): PickingTargetSetWitness {
+  return pickingTargetWitnessFor(handle, false);
+}
+
+function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: true): PickingTargetWitness;
+function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: false): PickingTargetSetWitness;
+/** The set-only branch deliberately retains no compositor coordinates or per-relation width measurements. */
+function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: boolean): PickingTargetSetWitness | PickingTargetWitness {
   const graph = handle.model.graph;
   const material = handle.model.filamentMaterial;
   const nodeIds = [...graph.nodes()].sort();
@@ -834,9 +921,12 @@ function pickingTargetWitness(handle: RenderHandle): PickingTargetWitness {
       .find((candidate) => handle.pickNodeAtPosition(candidate) === id);
     // One anchor centre can fall inside a larger neighbouring node.  That reports
     // the neighbour as pickable even when the queried node is present, and makes
-    // the result depend on morphology's material radius.  An interior witness is
-    // an actual live-target hit for the named node, not a coverage proxy.
-    nodePixels[id] = ownPoint ?? { x: point.x, y: point.y };
+    // the result depend on morphology's material radius. An interior probe is
+    // an actual live-target hit for the named node, not a coverage proxy. Its CSS
+    // coordinate is retained only for the sampled compositor-pixel assertion.
+    if (includePixelWitnesses) {
+      nodePixels[id] = ownPoint ?? { x: point.x, y: point.y };
+    }
     if (ownPoint !== undefined) {
       pickableNodeIds.add(id);
       nodePickCoverageIds.push(id);
@@ -860,55 +950,47 @@ function pickingTargetWitness(handle: RenderHandle): PickingTargetWitness {
     }
     incidence[id] = { source, target: targetId };
     const filament = filamentGeometry(sourceAnchor, targetAnchor, curvature);
-    // A relation can legitimately be occluded where another relation shares its
-    // picking cell.  Prefer the same analytically unambiguous parameters used by
-    // the identity checks.  A relation with none is sampled across the complete
-    // set instead; the browser assertion then requires the existing coincident-
-    // partner certificate before accepting any of those ambiguous returns.
-    const candidates = unambiguousParametersFor(handle, id);
-    const parameters = calibratedRelationWitnessParameters(
-      candidates.length === 0 ? EDGE_SAMPLE_PARAMETERS : candidates,
-      witnessCount,
-    );
-    const pixels = parameters.map((parameter) => {
+    // This is deliberately the cheap production-target path. It always samples
+    // the same calibrated interior parameters and reads the renderer's returned
+    // ids. The 270-state branch retains those ids as sets only; the sampled branch
+    // additionally retains compositor coordinates and width diagnostics.
+    const parameters = calibratedRelationWitnessParameters(EDGE_SAMPLE_PARAMETERS, witnessCount);
+    const probes = parameters.map((parameter) => {
       const point = handle.graphToViewport(quadraticPoint(filament, parameter));
-      return { x: point.x, y: point.y };
+      return { parameter, point: { x: point.x, y: point.y }, returnedEdgeId: handle.pickEdgeAtPoint(point.x, point.y) };
     });
-    edgePixels[id] = pixels;
-    const geometry = viewportFilament(filament, handle);
-    const samples = pixels.map((point, index) => {
-      const parameter = parameters[index];
-      if (parameter === undefined) {
-        throw new Error(`picking edge ${id} lost its calibrated witness parameter`);
-      }
-      const cell = pickingCellForPoint(handle.readPickingSurface(), { ...point, z: 0 });
-      const shaderParameter = filamentShaderParameter(handle.readPickingSurface(), geometry, cell.centre);
-      const extents = filamentInteractionExtents(handle, id, shaderParameter, material);
-      const returnedEdgeId = handle.pickEdgeAtPoint(point.x, point.y);
-      return {
-        parameter,
-        shaderParameter,
-        returnedEdgeId,
-        centrelineDistancePx: denseDistanceToFilament(geometry, cell.centre).distancePx,
-        bodyWidthPx: extents.bodyWidthPx,
-        visibleWidthPx: extents.visibleWidthPx,
-        pickRadiusPx: extents.pickRadiusPx,
-      };
-    });
-    edgePickMeasurements[id] = {
-      edgeId: id,
-      returnedEdgeIds: [...new Set(samples.map((sample) => sample.returnedEdgeId).filter((candidate): candidate is string => candidate !== null))].sort(),
-      samples,
-    };
-    const picked = samples.map((sample) => sample.returnedEdgeId).filter((candidate): candidate is string => candidate !== null);
+    const picked = probes.map((probe) => probe.returnedEdgeId).filter((candidate): candidate is string => candidate !== null);
     for (const pickedId of picked) {
       pickableEdgeIds.add(pickedId);
     }
     if (picked.length > 0) {
       edgePickCoverageIds.push(id);
     }
+    if (includePixelWitnesses) {
+      const geometry = viewportFilament(filament, handle);
+      const samples = probes.map(({ parameter, point, returnedEdgeId }) => {
+        const cell = pickingCellForPoint(handle.readPickingSurface(), { ...point, z: 0 });
+        const shaderParameter = filamentShaderParameter(handle.readPickingSurface(), geometry, cell.centre);
+        const extents = filamentInteractionExtents(handle, id, shaderParameter, material);
+        return {
+          parameter,
+          shaderParameter,
+          returnedEdgeId,
+          centrelineDistancePx: denseDistanceToFilament(geometry, cell.centre).distancePx,
+          bodyWidthPx: extents.bodyWidthPx,
+          visibleWidthPx: extents.visibleWidthPx,
+          pickRadiusPx: extents.pickRadiusPx,
+        };
+      });
+      edgePixels[id] = probes.map(({ point }) => point);
+      edgePickMeasurements[id] = {
+        edgeId: id,
+        returnedEdgeIds: [...new Set(picked)].sort(),
+        samples,
+      };
+    }
   }
-  return {
+  const sets: PickingTargetSetWitness = {
     nodeIds,
     edgeIds,
     pickableNodeIds: [...pickableNodeIds].sort(),
@@ -916,9 +998,15 @@ function pickingTargetWitness(handle: RenderHandle): PickingTargetWitness {
     nodeAnchorPickIds,
     nodePickCoverageIds: nodePickCoverageIds.sort(),
     edgePickCoverageIds: edgePickCoverageIds.sort(),
-    edgePickMeasurements,
     anchors,
     incidence,
+  };
+  if (!includePixelWitnesses) {
+    return sets;
+  }
+  return {
+    ...sets,
+    edgePickMeasurements,
     nodePixels,
     edgePixels,
   };
@@ -1247,14 +1335,14 @@ function filamentInteractionExtents(
     + (junctionEnd * Math.max(0, 1 - ((1 - curveParameter) / 0.13)));
   const widthFactor = Math.max(minimumWidthFactor, taper + wobble + junction);
   const shaderThicknessPx = Math.max(liveMinimumThickness, edgeWidthPx / liveSizeRatio);
-  const bodyWidthPx = shaderThicknessPx * widthFactor;
+  const bodyWidthPx = Math.max(shaderThicknessPx * widthFactor, material.minimumBodyWidth);
   const radiusPx = (bodyWidthPx / 2) + pickTolerancePx;
-  const minimumShaderRadiusPx = (shaderThicknessPx * minimumWidthFactor / 2) + pickTolerancePx;
+  const minimumShaderRadiusPx = (Math.max(shaderThicknessPx * minimumWidthFactor, material.minimumBodyWidth) / 2) + pickTolerancePx;
   const maximumWidthFactor = Math.max(
     minimumWidthFactor,
     Math.max(widthStart, widthEnd) + Math.abs(wobbleAmplitude) + Math.max(junctionStart, junctionEnd),
   );
-  const maximumCalibratedRadiusPx = (shaderThicknessPx * maximumWidthFactor / 2) + pickTolerancePx;
+  const maximumCalibratedRadiusPx = (Math.max(shaderThicknessPx * maximumWidthFactor, material.minimumBodyWidth) / 2) + pickTolerancePx;
   if (radiusPx < minimumShaderRadiusPx || radiusPx > maximumCalibratedRadiusPx) {
     throw new Error(
       `edge ${edgeId} picking radius ${radiusPx}px is outside calibrated bounds [${minimumShaderRadiusPx}px, ${maximumCalibratedRadiusPx}px]`,
@@ -1460,6 +1548,8 @@ function failedApi(): EvidenceApi {
     switchMorphology: async () => unavailable(),
     switchOrganization: async () => unavailable(),
     setCrossProductState: async () => unavailable(),
+    setShippingCrossProductState: async () => unavailable(),
+    setShippingCrossProductPickingSetState: async () => unavailable(),
     setLodBand: async () => unavailable(),
     setLodZoom: async () => unavailable(),
     setGlowSuppressed: async () => unavailable(),

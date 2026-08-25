@@ -30,7 +30,13 @@ import {
   pickableAt,
   sampleFilament,
 } from "#render2d/geometry.ts";
-import { buildRenderModel, nodeTokenForMaterial, resolveLabelIds } from "#render2d/model.ts";
+import {
+  SHIPPING_RENDER_DEFAULTS,
+  buildRenderModel,
+  edgeLabelCandidatesForState,
+  nodeTokenForMaterial,
+  resolveLabelIds,
+} from "#render2d/model.ts";
 import type { RenderOptions } from "#render2d/model.ts";
 
 /** This reads one renderer input and does not create display attributes from the fixture directly. */
@@ -137,6 +143,21 @@ test("the renderer carries source-graph shared anchors across its structural eng
   const expected = sharedAnchors(discovery, reliability);
   const model = buildRenderModel(reliability, options(false));
   assert.deepEqual(Object.fromEntries(model.anchors), Object.fromEntries(expected));
+});
+
+test("the declared shipping palette resolves to the monochrome master when callers omit it", () => {
+  const visualGraph = graph();
+  const { palette: _palette, ...withoutPalette } = options(false);
+  const defaultModel = buildRenderModel(visualGraph, withoutPalette);
+  const explicitModel = buildRenderModel(visualGraph, { ...withoutPalette, palette: SHIPPING_RENDER_DEFAULTS.palette });
+  assert.deepEqual(defaultModel.tokens, explicitModel.tokens);
+  assert.equal(defaultModel.fieldColor, explicitModel.fieldColor);
+  for (const token of Object.values(defaultModel.tokens)) {
+    assert.equal(token.chromaPermille, 0);
+  }
+  for (const edge of visualGraph.edges) {
+    assert.equal(defaultModel.graph.getEdgeAttributes(edge.id).curvature, 0);
+  }
 });
 
 test("display decisions reject semantic access", () => {
@@ -274,7 +295,8 @@ test("the calibrated non-hue separation control rejects an unattainable threshol
     ...DEFAULT_CALIBRATION,
     luminance: {
       ...DEFAULT_CALIBRATION.luminance,
-      minimumRenderedNonHueSeparationMicro: DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille,
+      minimumRenderedNonHueSeparationMicro: DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille
+        * DEFAULT_CALIBRATION.luminance.prominenceChromaFalloffPermille,
     },
   };
   assert.throws(
@@ -288,7 +310,8 @@ test("the calibrated CVD separation control rejects an unattainable threshold", 
     ...DEFAULT_CALIBRATION,
     luminance: {
       ...DEFAULT_CALIBRATION.luminance,
-      minimumRenderedCvdSeparationMicro: DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille,
+      minimumRenderedCvdSeparationMicro: DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille
+        * DEFAULT_CALIBRATION.luminance.prominenceChromaFalloffPermille,
     },
   };
   assert.throws(
@@ -342,7 +365,7 @@ test("resolved LOD material changes render attributes without changing graph ide
   assert.notEqual(microNode.labelText, "");
   assert.ok(macro.graph.getEdgeAttributes(firstEdge).size < meso.graph.getEdgeAttributes(firstEdge).size);
   assert.equal(meso.graph.getEdgeAttributes(firstEdge).curvature, 0);
-  assert.notEqual(micro.graph.getEdgeAttributes(firstEdge).curvature, 0);
+  assert.equal(micro.graph.getEdgeAttributes(firstEdge).curvature, 0);
   assert.notDeepEqual(macro.material, meso.material);
   assert.notDeepEqual(meso.material, micro.material);
 });
@@ -371,6 +394,34 @@ test("label selection caps colliding labels and retains the highest-priority can
   assert.deepEqual(selected, [expected]);
 });
 
+test("relation labels are LOD and focus gated while their text stays on the projected IR kind", () => {
+  const visualGraph = graph();
+  const firstNode = visualGraph.nodes[0];
+  const firstEdge = visualGraph.edges[0];
+  if (firstNode === undefined || firstEdge === undefined) {
+    throw new TypeError("fixture requires one node and one edge");
+  }
+  const macro = buildRenderModel(visualGraph, { ...options(false), lodBand: "macro" });
+  const meso = buildRenderModel(visualGraph, { ...options(false), lodBand: "meso" });
+  const micro = buildRenderModel(visualGraph, { ...options(false), lodBand: "micro" });
+  assert.deepEqual(edgeLabelCandidatesForState(macro, { selectedId: firstEdge.id, focusedId: null }, DEFAULT_CALIBRATION), []);
+  assert.deepEqual(edgeLabelCandidatesForState(meso, { selectedId: null, focusedId: null }, DEFAULT_CALIBRATION), []);
+  const selected = edgeLabelCandidatesForState(meso, { selectedId: firstEdge.id, focusedId: null }, DEFAULT_CALIBRATION);
+  assert.deepEqual(selected.map((candidate) => candidate.id), [firstEdge.id]);
+  assert.equal(selected[0]?.text, firstEdge.kind);
+  const focused = edgeLabelCandidatesForState(meso, { selectedId: null, focusedId: firstNode.id }, DEFAULT_CALIBRATION);
+  assert.deepEqual(focused.map((candidate) => candidate.id).sort(), visualGraph.edges
+    .filter((edge) => edge.source === firstNode.id || edge.target === firstNode.id)
+    .map((edge) => edge.id)
+    .sort());
+  for (const candidate of edgeLabelCandidatesForState(micro, { selectedId: null, focusedId: null }, DEFAULT_CALIBRATION)) {
+    const edge = visualGraph.edges.find((item) => item.id === candidate.id);
+    assert.ok(edge !== undefined);
+    assert.equal(candidate.text, edge.kind);
+  }
+  assert.equal(semanticDigest(visualGraph), semanticDigest(graph()));
+});
+
 test("renderer exposes distinct halo material and inserts the glow canvas below aggregate windows and edges", () => {
   const visualGraph = graph();
   const stellar = buildRenderModel(visualGraph, { ...options(false), morphology: "stellar" });
@@ -394,6 +445,11 @@ test("renderer exposes distinct halo material and inserts the glow canvas below 
   assert.ok(boundary.includes('requiredCanvas(sigma, "aggregate-windows").before(canvas)'));
   assert.ok(boundary.includes('requiredCanvas(sigma, "edges").before(canvas)'));
   assert.ok(boundary.indexOf('requiredCanvas(sigma, "aggregate-windows").before(canvas)') < boundary.indexOf('sigma.killLayer("node-glow")'));
+  assert.ok(boundary.includes('const box = canvas.getBoundingClientRect();'));
+  assert.ok(boundary.includes('const scaleX = canvas.width / box.width;'));
+  assert.ok(boundary.includes('const scaleY = canvas.height / box.height;'));
+  assert.ok(boundary.includes('context.setTransform(scaleX, 0, 0, scaleY, 0, 0)'));
+  assert.ok(boundary.includes('context.clearRect(0, 0, box.width, box.height)'));
 });
 
 test("halo alpha stops strictly diminish from the peak to transparent without renderer state", async () => {
@@ -427,9 +483,16 @@ test("halo alpha stops strictly diminish from the peak to transparent without re
 test("draw and pick bind the same quadratic geometry, including a straight filament", () => {
   const source: Coordinates = { x: 0, y: 0, z: 0 };
   const target: Coordinates = { x: 8, y: 0, z: 0 };
-  const curved = filamentGeometry(source, target, DEFAULT_CALIBRATION.filament.curvatureMagnitudePermille / DEFAULT_CALIBRATION.morphology.stellar.opacityPermille);
-  const expectedControl = { x: 4, y: 1.92, z: 0 };
-  assert.deepEqual(curveControlPoint(source, target, DEFAULT_CALIBRATION.filament.curvatureMagnitudePermille / DEFAULT_CALIBRATION.morphology.stellar.opacityPermille), expectedControl);
+  const curvedCalibration = {
+    ...DEFAULT_CALIBRATION,
+    filament: {
+      ...DEFAULT_CALIBRATION.filament,
+      curvatureMagnitudePermille: DEFAULT_CALIBRATION.morphology.stellar.curvatureMagnitudePermille,
+    },
+  };
+  const curvature = curvedCalibration.filament.curvatureMagnitudePermille / curvedCalibration.morphology.stellar.opacityPermille;
+  const curved = filamentGeometry(source, target, curvature);
+  assert.notEqual(curveControlPoint(source, target, curvature).y, source.y);
   assert.equal(liveFilamentGeometry, filamentGeometry);
   assert.equal(drawPassGeometry(curved).geometry, pickPassGeometry(curved).geometry);
   const straight = filamentGeometry(source, target, 0);
@@ -497,9 +560,18 @@ test("filament program declares propagated light attributes in its definition an
   }
 });
 
-test("filament body visibility floor is converted from calibrated CSS pixels to live device pixels", () => {
+test("filament body visibility floor is converted from calibrated CSS pixels to live device pixels in both passes", () => {
   const source = readFileSync(join(process.cwd(), "src", "render2d", "filament-program.ts"), "utf8");
   assert.match(source, /v_minimumBodyWidth = u_minimumBodyWidth \* u_pixelRatio;/);
+  assert.match(source, /gl\.uniform1f\(programInfo\.uniformLocations\.u_minimumBodyWidth, uniformMaterial\.minimumBodyWidth\);/);
+  assert.match(source, /float halfThickness = 0\.5 \* v_thickness \* widthFactor;\n  halfThickness = max\(halfThickness, v_minimumBodyWidth \* 0\.5\);\n  float distance = abs\(distanceSample\.x\);\n  #ifdef PICKING_MODE/);
+});
+
+test("filament ribbon bounds include the signed-distance endpoint caps", () => {
+  const source = readFileSync(join(process.cwd(), "src", "render2d", "filament-program.ts"), "utf8");
+  assert.match(source, /vec2 tangent = delta \/ lengthDelta;/);
+  assert.match(source, /float endpointExtent = maximumMaterialExtent \* \(1\.0 - 2\.0 \* a_current\);/);
+  assert.match(source, /\+ tangent \* endpointExtent;/);
 });
 
 test("render decisions contain no non-structural numeric literals", () => {

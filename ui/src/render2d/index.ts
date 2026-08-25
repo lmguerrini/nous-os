@@ -9,9 +9,11 @@ import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
 import { createFilamentProgram } from "#render2d/filament-program.ts";
 import {
   buildRenderModel,
+  edgeLabelCandidatesForState,
   edgeAttributesForVisualState,
   nodeAttributesForVisualState,
   renderOptionsForVisualState,
+  resolveRenderOptions,
   resolveLabelIds,
   selectedProvenanceForVisualState,
 } from "#render2d/model.ts";
@@ -70,6 +72,8 @@ export type RenderHandle = {
   getFocus(): string | null;
   /** This changes only selection/focus material factors and preserves the mounted graph and its anchors. */
   setSelectionFocusFactors(factors: Readonly<Pick<CalibrationProfile["selection"], "emphasisMultiplierPermille" | "focusDimFactorPermille">> | undefined): void;
+  /** This controls interaction-driven relation-label reveal without changing relation material or topology. */
+  setEdgeLabelRevealVisible(visible: boolean): void;
   /** This returns the selected element's existing graph derivation record and does not synthesise provenance. */
   readSelectedProvenance(): DerivedValue | null;
   /** This reports live glow geometry and does not inspect an offscreen canvas. */
@@ -116,7 +120,7 @@ export function mount(
   const suppliedState = initialVisualState === undefined
     ? undefined
     : createVisualState(visualGraph, initialVisualState);
-  const activeOptions = suppliedState === undefined ? options : renderOptionsForVisualState(options, suppliedState);
+  const activeOptions = resolveRenderOptions(suppliedState === undefined ? options : renderOptionsForVisualState(options, suppliedState));
   const model = buildRenderModel(visualGraph, activeOptions);
   const calibration = activeOptions.calibration ?? DEFAULT_CALIBRATION;
   const baseNodeAttributes = new Map<string, RenderNodeAttributes>(
@@ -130,6 +134,9 @@ export function mount(
     defaultEdgeType: "filament",
     edgeProgramClasses,
     renderLabels: model.material.node.includes("label"),
+    renderEdgeLabels: false,
+    labelSize: calibration.labels.nodeLabelSizePx,
+    edgeLabelSize: calibration.labels.edgeLabelSizePx,
     labelColor: { attribute: "labelColor", color: requiredTokenColor(model, "text") },
     edgeLabelColor: { attribute: "labelColor", color: requiredTokenColor(model, "textMuted") },
     zIndex: true,
@@ -165,6 +172,7 @@ export function mount(
     reducedMotion: activeOptions.reducedMotion,
   });
   let appearanceCalibration = calibration;
+  let edgeLabelRevealVisible = true;
   const applyVisualStateAppearance = (): void => {
     for (const [id, attributes] of baseNodeAttributes) {
       model.graph.replaceNodeAttributes(id, nodeAttributesForVisualState(attributes, id, currentState, appearanceCalibration));
@@ -185,11 +193,13 @@ export function mount(
       focusedId: focus,
     });
     applyVisualStateAppearance();
+    placeEdgeLabels(sigma, model, currentState, calibration, edgeLabelRevealVisible);
   };
   if (currentState.selectedId !== null || currentState.focusedId !== null) {
     applyVisualStateAppearance();
   }
   placeNodeLabels(sigma, model, calibration);
+  placeEdgeLabels(sigma, model, currentState, calibration, edgeLabelRevealVisible);
   // Mount the aggregate windows FIRST and the glow second, then render once more.
   // Each layer calls sigma.resize(true) when it is created, and a resize clears
   // every 2D layer -- so whichever layer is created last silently wipes the one
@@ -216,6 +226,7 @@ export function mount(
       restoreCameraState(sigma, state);
       currentState = createVisualState(visualGraph, { ...currentState, camera: state });
       placeNodeLabels(sigma, model, calibration);
+      placeEdgeLabels(sigma, model, currentState, calibration, edgeLabelRevealVisible);
     },
     readVisualState(): VisualState {
       currentState = refreshCameraInVisualState();
@@ -250,6 +261,11 @@ export function mount(
             },
           };
       applyVisualStateAppearance();
+      placeEdgeLabels(sigma, model, currentState, calibration, edgeLabelRevealVisible);
+    },
+    setEdgeLabelRevealVisible(visible: boolean): void {
+      edgeLabelRevealVisible = visible;
+      placeEdgeLabels(sigma, model, currentState, calibration, edgeLabelRevealVisible);
     },
     readSelectedProvenance(): DerivedValue | null {
       return selectedProvenanceForVisualState(visualGraph, currentState);
@@ -352,12 +368,27 @@ function mountNodeGlow(
     if (context === null) {
       return;
     }
-    context.clearRect(0, 0, canvas.width, canvas.height);
+    // Sigma reports viewport coordinates and scaled radii in CSS pixels, while
+    // this layer's backing store is in device pixels. Read the actual canvas
+    // backing-to-CSS ratio rather than a renderer parameter: the layer can be
+    // resized independently, so the canvas itself is the authoritative surface.
+    const box = canvas.getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) {
+      return;
+    }
+    const scaleX = canvas.width / box.width;
+    const scaleY = canvas.height / box.height;
+    context.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+    context.clearRect(0, 0, box.width, box.height);
     for (const id of model.graph.nodes()) {
       const attributes = model.graph.getNodeAttributes(id);
       const center = sigma.graphToViewport({ x: attributes.x, y: attributes.y });
       const coreRadius = sigma.scaleSize(attributes.size);
-      const haloRadius = sigma.scaleSize(attributes.haloRadiusPx);
+      const haloRadius = resolvedGlowHaloRadius(
+        coreRadius,
+        sigma.scaleSize(attributes.haloRadiusPx),
+        profile,
+      );
       if (haloRadius <= coreRadius) {
         continue;
       }
@@ -380,12 +411,17 @@ function mountNodeGlow(
     readWitnesses(): readonly RenderNodeGlowWitness[] {
       return model.graph.nodes().map((id) => {
         const attributes = model.graph.getNodeAttributes(id);
+        const coreRadiusPx = sigma.scaleSize(attributes.size);
         const viewportCenter = sigma.graphToViewport({ x: attributes.x, y: attributes.y });
         return {
           id,
           viewportCenter,
-          coreRadiusPx: sigma.scaleSize(attributes.size),
-          haloRadiusPx: sigma.scaleSize(attributes.haloRadiusPx),
+          coreRadiusPx,
+          haloRadiusPx: resolvedGlowHaloRadius(
+            coreRadiusPx,
+            sigma.scaleSize(attributes.haloRadiusPx),
+            profile,
+          ),
         };
       });
     },
@@ -397,6 +433,15 @@ function mountNodeGlow(
       sigma.killLayer("node-glow");
     },
   };
+}
+
+/** This keeps the calibrated clear radial gap around every resolved node core. */
+function resolvedGlowHaloRadius(
+  coreRadiusPx: number,
+  requestedHaloRadiusPx: number,
+  calibration: CalibrationProfile,
+): number {
+  return Math.max(requestedHaloRadiusPx, coreRadiusPx + calibration.luminance.coreBeforeHaloMinimumPx);
 }
 
 type GlowLayer = {
@@ -497,6 +542,70 @@ function placeNodeLabels(sigma: Sigma, model: RenderModel, calibration: Calibrat
     model.graph.setNodeAttribute(id, "label", selected.has(id) ? attributes.labelText : "");
   }
   sigma.refresh();
+}
+
+/** This renders a small collision-filtered subset of IR-derived relation labels and does not alter relation identity. */
+function placeEdgeLabels(
+  sigma: Sigma,
+  model: RenderModel,
+  state: Pick<VisualState, "selectedId" | "focusedId">,
+  calibration: CalibrationProfile,
+  revealVisible: boolean,
+): void {
+  const eligible = revealVisible ? edgeLabelCandidatesForState(model, state, calibration) : [];
+  const visible = new Set<string>();
+  if (eligible.length > 0) {
+    const labels = requiredCanvas(sigma, "edgeLabels");
+    const context = labels.getContext("2d");
+    if (context === null) {
+      throw new TypeError("Sigma edge label canvas is unavailable");
+    }
+    const settings = sigma.getSettings();
+    context.font = `${settings.edgeLabelWeight} ${calibration.labels.edgeLabelSizePx}px ${settings.edgeLabelFont}`;
+    const candidates = eligible.map((candidate) => {
+      const source = model.graph.source(candidate.id);
+      const target = model.graph.target(candidate.id);
+      const sourceAttributes = model.graph.getNodeAttributes(source);
+      const targetAttributes = model.graph.getNodeAttributes(target);
+      const sourcePoint = sigma.graphToViewport({ x: sourceAttributes.x, y: sourceAttributes.y });
+      const targetPoint = sigma.graphToViewport({ x: targetAttributes.x, y: targetAttributes.y });
+      const centerX = (sourcePoint.x + targetPoint.x) / 2;
+      const centerY = (sourcePoint.y + targetPoint.y) / 2;
+      const width = context.measureText(candidate.text).width;
+      return {
+        ...candidate,
+        minimumX: centerX - (width / 2),
+        minimumY: centerY - calibration.labels.edgeLabelSizePx,
+        maximumX: centerX + (width / 2),
+        maximumY: centerY + calibration.labels.edgeLabelSizePx,
+      };
+    });
+    for (const id of resolveLabelIds(candidates, calibration, calibration.labels.edgeDensityCap)) {
+      visible.add(id);
+    }
+  }
+  const byId = new Map(eligible.map((candidate) => [candidate.id, candidate]));
+  for (const id of model.graph.edges()) {
+    const candidate = byId.get(id);
+    const shown = candidate !== undefined && visible.has(id);
+    const attributes = model.graph.getEdgeAttributes(id);
+    model.graph.mergeEdgeAttributes(id, {
+      label: shown && candidate !== undefined ? candidate.text : "",
+      forceLabel: shown,
+      labelColor: candidate === undefined
+        ? attributes.labelColor
+        : withCalibratedAlpha(attributes.labelColor, candidate.opacityPermille, calibration),
+    });
+  }
+  sigma.setSetting("renderEdgeLabels", visible.size > 0);
+  sigma.refresh();
+}
+
+/** This composes a governed label opacity over a resolved neutral token and does not change its hue. */
+function withCalibratedAlpha(color: string, opacityPermille: number, calibration: CalibrationProfile): string {
+  const parsed = parseColor(color);
+  const alpha = (parsed.a * boundedPermille(opacityPermille, calibration)) / permilleScale(calibration);
+  return `rgba(${parsed.r}, ${parsed.g}, ${parsed.b}, ${alpha})`;
 }
 
 /** This draws engine aggregate discs in Sigma coordinates and does not infer window membership. */

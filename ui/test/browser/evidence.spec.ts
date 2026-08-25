@@ -4,7 +4,6 @@ import { readFile, writeFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { MACRO, MESO, MICRO, minimumResolvedMaterialDifference, resolvedMaterial, resolvedMaterialDifference } from "#engine/lod.ts";
-import { MYCELIUM, NEURAL, STELLAR } from "#engine/morphology.ts";
 import { PALETTES, TEMPERATURES, THEMES } from "#engine/tokens.ts";
 
 type Status = "PASS" | "FAIL" | "NOT_RUN" | "UNKNOWN";
@@ -77,7 +76,11 @@ type Snapshot = {
     readonly coreRadiusPx: number;
     readonly haloRadiusPx: number;
   }[];
-  readonly pickingTarget: {
+  readonly pickingTarget: PickingTargetWitness;
+};
+
+/** The no-screenshot portion of the live production picking-target observation. */
+type PickingTargetSetWitness = {
     readonly nodeIds: readonly string[];
     readonly edgeIds: readonly string[];
     readonly pickableNodeIds: readonly string[];
@@ -85,6 +88,12 @@ type Snapshot = {
     readonly nodeAnchorPickIds: Readonly<Record<string, string | null>>;
     readonly nodePickCoverageIds: readonly string[];
     readonly edgePickCoverageIds: readonly string[];
+    readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
+    readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
+};
+
+/** The expensive live-target observation, used only when compositor pixels are asserted. */
+type PickingTargetWitness = PickingTargetSetWitness & {
     readonly edgePickMeasurements: Readonly<Record<string, {
       readonly edgeId: string;
       readonly returnedEdgeIds: readonly string[];
@@ -98,11 +107,22 @@ type Snapshot = {
         readonly pickRadiusPx: number;
       }[];
     }>>;
-    readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
-    readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
     readonly nodePixels: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
     readonly edgePixels: Readonly<Record<string, readonly { readonly x: number; readonly y: number }[]>>;
-  };
+};
+
+/** The intentionally cheap A3 shipping observation: model ids plus live picking-target sets, never compositor pixels. */
+type ShippingPickingSetSnapshot = {
+  readonly policy: Snapshot["policy"];
+  readonly morphology: Snapshot["morphology"];
+  readonly palette: Snapshot["palette"];
+  readonly temperature: Snapshot["temperature"];
+  readonly theme: Snapshot["theme"];
+  readonly lodBand: Snapshot["lodBand"];
+  readonly semanticDigest: string;
+  readonly renderedNodeIds: readonly string[];
+  readonly renderedEdgeIds: readonly string[];
+  readonly pickingTarget: PickingTargetSetWitness;
 };
 
 type PageEvidence = {
@@ -112,6 +132,8 @@ type PageEvidence = {
   switchMorphology(morphology: "stellar" | "neural" | "mycelium"): Promise<Snapshot>;
   switchOrganization(organization: "flat" | "indra"): Promise<Snapshot>;
   setCrossProductState(morphology: Snapshot["morphology"], palette: Snapshot["palette"], temperature: Snapshot["temperature"], theme: Snapshot["theme"], lodBand: Snapshot["lodBand"]): Promise<Snapshot>;
+  setShippingCrossProductState(policy: Snapshot["policy"], palette: Snapshot["palette"], temperature: Snapshot["temperature"], theme: Snapshot["theme"], lodBand: Snapshot["lodBand"]): Promise<Snapshot>;
+  setShippingCrossProductPickingSetState(policy: Snapshot["policy"], palette: Snapshot["palette"], temperature: Snapshot["temperature"], theme: Snapshot["theme"], lodBand: Snapshot["lodBand"]): Promise<ShippingPickingSetSnapshot>;
   setLodBand(band: "macro" | "meso" | "micro"): Promise<Snapshot>;
   setLodZoom(zoom: number): Promise<Snapshot>;
   setGlowSuppressed(suppressed: boolean): Promise<Snapshot>;
@@ -163,6 +185,64 @@ type DprWitness = {
   readonly screenshotPixels: number;
 };
 
+type GlowProfileSample = {
+  readonly radiusCssPixels: number;
+  readonly radiusDevicePixels: number;
+  readonly visibleLuminance: number;
+  readonly suppressedLuminance: number;
+  readonly glowLuminanceDelta: number;
+};
+
+type GlowCompositorMeasurement = {
+  readonly id: string;
+  readonly centerCssPixels: { readonly x: number; readonly y: number };
+  readonly centerDevicePixels: { readonly x: number; readonly y: number };
+  readonly screenshot: { readonly width: number; readonly height: number };
+  readonly glowCanvas: {
+    readonly cssWidth: number;
+    readonly cssHeight: number;
+    readonly backingStoreWidth: number;
+    readonly backingStoreHeight: number;
+  };
+  readonly coreRadiusCssPixels: number;
+  readonly coreRadiusDevicePixels: number;
+  readonly haloRadiusCssPixels: number;
+  readonly haloRadiusDevicePixels: number;
+  readonly annulusRadiusCssPixels: number;
+  readonly annulusRadiusDevicePixels: number;
+  readonly annulusProbeRadiusDevicePixels: number;
+  readonly annulusBandDevicePixels: { readonly inner: number; readonly outer: number };
+  readonly suppressedCoreOuterRadiusDevicePixels: number;
+  readonly annulusDisposition: "inside-core" | "beyond-glow" | "overlapped" | "clear";
+  readonly cleanAnnulusPoints: number;
+  readonly peakGlowDelta: { readonly radiusCssPixels: number; readonly angleDegrees: number; readonly value: number };
+  readonly classification: "absent" | "displaced" | "present-below-threshold" | "present";
+  readonly profile: readonly GlowProfileSample[];
+};
+
+/** An observational result: unavailable diagnostics are evidence, never assertions. */
+type GlowCompositorDiagnostic =
+  | { readonly status: "measured"; readonly measurement: GlowCompositorMeasurement }
+  | { readonly status: "unavailable"; readonly nodeId: string; readonly reason: string };
+
+type GlowPixelWitness = {
+  /** This mounted node is the diagnostic subject as well as the asserted glow witness. */
+  readonly node: Snapshot["glowNodes"][number];
+  readonly id: string;
+  readonly points: number;
+};
+
+/** This retains the asserted node identity so an observational row cannot name a different subject. */
+class GlowPixelAssertionFailure extends Error {
+  readonly nodeId: string;
+
+  constructor(nodeId: string, cause: unknown) {
+    super(message(cause));
+    this.name = "GlowPixelAssertionFailure";
+    this.nodeId = nodeId;
+  }
+}
+
 type EvidenceRun = {
   readonly run?: { readonly commitSha: string; readonly timestamp: string };
   readonly checks?: readonly EvidenceEntry[];
@@ -190,14 +270,41 @@ type AcceptanceInvariant = {
   readonly id: "A1" | "A3" | "A7" | "A10" | "A18";
   readonly command: string;
   readonly checkIds: readonly string[];
+  /** These map each named assertion to the browser checks that discharge it. */
+  readonly assertionMappings: readonly AcceptanceAssertionMapping[];
 };
 
-type CrossProductState = Pick<Snapshot, "morphology" | "palette" | "temperature" | "theme" | "lodBand">;
+type AcceptanceAssertionMapping = {
+  readonly assertion: string;
+  readonly checkIds: readonly string[];
+};
+
+/** This is the complete shipped state vector; morphology is intentionally not a shipping axis. */
+type ShippingCrossProductState = Pick<Snapshot, "policy" | "palette" | "temperature" | "theme" | "lodBand">;
+
+type RelationIdentityCertificate =
+  | { readonly category: "unambiguous"; readonly points: number }
+  | { readonly category: "coincident"; readonly partnerIds: readonly string[] };
 
 const COMMAND = "npm --prefix ui run test:browser";
 const EVIDENCE_FILE = "dist/evidence/evidence.json";
 const NEUTRAL_DIGESTS_FILE = ["..", "fixtures", "synthetic", "projection", "expectations", "neutral-digests.json"].join("/");
 const REQUIRED_PROJECTS = ["dpr-1", "dpr-2"] as const;
+const SHIPPING_POLICIES = ["Discovery", "Reliability"] as const;
+const SHIPPING_MORPHOLOGY = "stellar" as const;
+const SHIPPING_CROSS_PRODUCT_SIZE = 270;
+const A3_SHIPPING_ASSERTIONS = [
+  "base renderer picking correctness",
+  "visible relations are interactable unless honestly certified occluded",
+  "policy states",
+  "palette states",
+  "temperature states",
+  "theme states",
+  "LOD states",
+  "all 270 shipping states: production-model and live-picking-target rendered/pickable id sets, endpoint incidence, and anchors",
+  "deterministic seeded sample of 270 shipping states: production picking target and per-id compositor pixel witnesses",
+  "no proxy renderer or silently skipped hard cases",
+] as const;
 const CAPABILITY_CHECKS = [
   "a1-derived-origin-refusal",
   "a3-cross-product-picking-pixels",
@@ -206,11 +313,36 @@ const CAPABILITY_CHECKS = [
   "a18-invariant-status-mapping",
 ] as const;
 const ACCEPTANCE_INVARIANTS: readonly AcceptanceInvariant[] = [
-  { id: "A1", command: COMMAND, checkIds: projectCheckIds("a1-derived-origin-refusal") },
-  { id: "A3", command: COMMAND, checkIds: projectCheckIds("a3-cross-product-picking-pixels") },
-  { id: "A7", command: COMMAND, checkIds: projectCheckIds("a7-single-relation-material") },
-  { id: "A10", command: COMMAND, checkIds: projectCheckIds("a10-engine-semantic-isolation") },
-  { id: "A18", command: COMMAND, checkIds: projectCheckIds("a18-invariant-status-mapping") },
+  {
+    id: "A1",
+    command: COMMAND,
+    checkIds: projectCheckIds("a1-derived-origin-refusal"),
+    assertionMappings: [{ assertion: "derived origins are present and non-null", checkIds: projectCheckIds("a1-derived-origin-refusal") }],
+  },
+  {
+    id: "A3",
+    command: COMMAND,
+    checkIds: projectCheckIds("a3-cross-product-picking-pixels"),
+    assertionMappings: A3_SHIPPING_ASSERTIONS.map((assertion) => ({ assertion, checkIds: projectCheckIds("a3-cross-product-picking-pixels") })),
+  },
+  {
+    id: "A7",
+    command: COMMAND,
+    checkIds: projectCheckIds("a7-single-relation-material"),
+    assertionMappings: [{ assertion: "each relation binds exactly one material", checkIds: projectCheckIds("a7-single-relation-material") }],
+  },
+  {
+    id: "A10",
+    command: COMMAND,
+    checkIds: projectCheckIds("a10-engine-semantic-isolation"),
+    assertionMappings: [{ assertion: "the engine cannot read semantic graph payloads", checkIds: projectCheckIds("a10-engine-semantic-isolation") }],
+  },
+  {
+    id: "A18",
+    command: COMMAND,
+    checkIds: projectCheckIds("a18-invariant-status-mapping"),
+    assertionMappings: [{ assertion: "every acceptance invariant has a passing mapped check", checkIds: projectCheckIds("a18-invariant-status-mapping") }],
+  },
 ];
 const EDGE_SAMPLE_PARAMETERS = Array.from({ length: 33 }, (_, index) => 0.02 + (index * 0.03));
 const FIXTURE_EXPECTATIONS = {
@@ -229,6 +361,14 @@ const PD3_STATE = {
   theme: "dark",
   lodBand: "meso",
 } as const;
+const A3_PIXEL_WITNESS_SAMPLE_SEED = 0xC0FFEE;
+const A3_PIXEL_WITNESS_SAMPLE_SIZE = 12;
+/** The old mycelium hard case is represented by this shipping-master (stellar) state. */
+const A3_FORCED_PIXEL_WITNESS_STATES: readonly ShippingCrossProductState[] = [
+  { policy: "Discovery", palette: PD3_STATE.palette, temperature: PD3_STATE.temperature, theme: PD3_STATE.theme, lodBand: PD3_STATE.lodBand },
+  { policy: "Discovery", palette: PD3_STATE.palette, temperature: PD3_STATE.temperature, theme: PD3_STATE.theme, lodBand: "macro" },
+  { policy: "Reliability", palette: PD3_STATE.palette, temperature: PD3_STATE.temperature, theme: PD3_STATE.theme, lodBand: "micro" },
+];
 
 test("browser evidence and full app smoke", async ({ page, browserName }, testInfo) => {
   const entries: EvidenceEntry[] = [];
@@ -404,76 +544,118 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     return `structural engine trace recorded ${result.reads} allowed reads and no semantic field; a forced semantic access failed, while a non-isomorphic semantic permutation changed its digest without changing engine output`;
   });
   await run("a3-cross-product-picking-pixels", async () => {
-    await invoke<Snapshot>("switchPolicy", "Discovery");
-    const pd3Snapshot = await invoke<Snapshot>(
-      "setCrossProductState",
-      PD3_STATE.morphology,
-      PD3_STATE.palette,
-      PD3_STATE.temperature,
-      PD3_STATE.theme,
-      PD3_STATE.lodBand,
-    );
-    const pd3Image = await capture("#evidence-renderer");
-    const product = enumerateCrossProduct();
-    const sampleSize = Math.min(DEFAULT_CALIBRATION.budget.oracleCrossProductSampleSize, product.length);
-    const sampled = deterministicCrossProductSample(product, sampleSize, DEFAULT_CALIBRATION.budget.oracleCrossProductSamplingSeed);
-    expect(product.length).toBe(PALETTES.length * TEMPERATURES.length * THEMES.length * morphologyOptions().length * lodBandOptions().length);
-    expect(sampled).toHaveLength(sampleSize);
-    expect(new Set(sampled.map(crossProductKey)).size).toBe(sampled.length);
-    let reference: { readonly state: CrossProductState; readonly target: Snapshot["pickingTarget"] } | undefined;
+    const product = enumerateShippingCrossProduct();
+    expect(product).toHaveLength(SHIPPING_CROSS_PRODUCT_SIZE);
+    expect(product.length).toBe(SHIPPING_POLICIES.length * PALETTES.length * TEMPERATURES.length * THEMES.length * lodBandOptions().length);
+    expect(new Set(product.map(shippingCrossProductKey)).size).toBe(SHIPPING_CROSS_PRODUCT_SIZE);
+    const pixelWitnessSample = seededShippingPixelWitnessSample(product);
+    const pixelWitnessKeys = new Set(pixelWitnessSample.map(shippingCrossProductKey));
+    expect(pixelWitnessSample, "the deterministic compositor sample has its recorded size").toHaveLength(A3_PIXEL_WITNESS_SAMPLE_SIZE);
+    expect(
+      A3_FORCED_PIXEL_WITNESS_STATES.every((state) => pixelWitnessKeys.has(shippingCrossProductKey(state))),
+      "the known hard shipping-master state and both LOD extremes are forced into the compositor sample",
+    ).toBe(true);
+    const hasFullShippingSetCoverage = testInfo.project.name === "dpr-1";
+    // DPR 2 pays four times the backing-store cost per remount. Its cheap set
+    // invariant therefore uses the exact recorded compositor sample instead of
+    // silently pretending to retain DPR 1's full-space coverage.
+    const cheapInvariantStatesToRun = hasFullShippingSetCoverage ? product : pixelWitnessSample;
+    const references = new Map<Snapshot["policy"], { readonly state: ShippingCrossProductState; readonly snapshot: ShippingPickingSetSnapshot }>();
+    // This cache is deliberately scoped to the sampled compositor assertion. The
+    // DPR 1's full-space set assertion is a set comparison, not rasterisation;
+    // DPR 2 deliberately uses the same deterministic state sample as pixels.
+    const occlusionCertificateCache = new Map<string, RelationIdentityCertificate>();
     const anchorCentreIdChanges: string[] = [];
-    const coincidentRelationDiagnostics: string[] = [];
-    const pd3Diagnostics: string[] = [pd3RasterDiagnostic(pd3Snapshot, pd3Image) ?? "PD-3 raster diagnostic was not produced"];
-    for (const state of sampled) {
-      const snapshot = await invoke<Snapshot>("setCrossProductState", state.morphology, state.palette, state.temperature, state.theme, state.lodBand);
+    const noUnambiguousRelationDiagnostics: string[] = [];
+    const pd3Diagnostics: string[] = [];
+    let directRelationWitnesses = 0;
+    let certifiedRelationWitnesses = 0;
+    let cheapInvariantStates = 0;
+    for (const state of cheapInvariantStatesToRun) {
+      const stateKey = shippingCrossProductKey(state);
+      const setSnapshot = await invoke<ShippingPickingSetSnapshot>(
+        "setShippingCrossProductPickingSetState",
+        state.policy,
+        state.palette,
+        state.temperature,
+        state.theme,
+        state.lodBand,
+      );
+      expect(setSnapshot.policy, `${stateKey} mounted its requested policy`).toBe(state.policy);
+      expect(setSnapshot.morphology, `${stateKey} keeps the single shipping morphology`).toBe(SHIPPING_MORPHOLOGY);
+      assertShippingPickingTargetSet(setSnapshot, stateKey);
+      const reference = references.get(state.policy);
+      if (reference === undefined) {
+        references.set(state.policy, { state, snapshot: setSnapshot });
+      } else {
+        const comparison = `${shippingCrossProductKey(reference.state)} -> ${shippingCrossProductKey(state)}`;
+        try {
+          assertPickingTargetSetInvariant(reference.snapshot.pickingTarget, setSnapshot.pickingTarget, comparison);
+        } catch (error: unknown) {
+          throw new Error(`A3 finding: shipping policy×palette×temperature×theme×LOD picking-target invariance does not hold and is reported rather than silenced. ${comparison}: ${message(error)}`);
+        }
+        expect(setSnapshot.semanticDigest, `${comparison} preserves semantic identity`).toBe(reference.snapshot.semanticDigest);
+        const centreDifference = rawAnchorCentreIdDifference(reference.snapshot.pickingTarget.nodeAnchorPickIds, setSnapshot.pickingTarget.nodeAnchorPickIds);
+        if (centreDifference !== "") {
+          anchorCentreIdChanges.push(`${shippingCrossProductKey(reference.state)} -> ${shippingCrossProductKey(state)}: ${centreDifference}`);
+        }
+      }
+      cheapInvariantStates += 1;
+      if (!pixelWitnessKeys.has(stateKey)) {
+        continue;
+      }
+      const snapshot = await invoke<Snapshot>("read");
       const image = await capture("#evidence-renderer");
       const pd3Diagnostic = pd3RasterDiagnostic(snapshot, image);
       if (pd3Diagnostic !== undefined) {
         pd3Diagnostics.push(pd3Diagnostic);
       }
-      let identityPartition: EdgeIdentityPartition;
-      try {
-        identityPartition = await assertUnambiguousEdgeIdentity(snapshot, invoke);
-      } catch (error: unknown) {
-        throw new Error(`${crossProductKey(state)} failed its unambiguous/coincident relation witnesses: ${message(error)}`);
-      }
-      if (identityPartition.categoryB.length > 0) {
-        coincidentRelationDiagnostics.push(
-          `${crossProductKey(state)} no-unambiguous=[${identityPartition.categoryB.map(({ edgeId, partnerId }) => `${edgeId}->${partnerId}`).join(",")}]`,
-        );
-      }
       try {
         assertPickingTargetPixels(snapshot, image);
       } catch (error: unknown) {
-        throw new Error(`${crossProductKey(state)} failed its picking-target compositor witnesses: ${message(error)}${pd3Diagnostic === undefined ? "" : `; ${pd3Diagnostic}`}`);
+        throw new Error(`${stateKey} failed its sampled production picking-target compositor witnesses: ${message(error)}${pd3Diagnostic === undefined ? "" : `; ${pd3Diagnostic}`}`);
       }
-      if (reference === undefined) {
-        reference = { state, target: snapshot.pickingTarget };
-      } else {
-        const comparison = `${crossProductKey(reference.state)} -> ${crossProductKey(state)}`;
-        try {
-          assertPickingTargetInvariant(reference.target, snapshot.pickingTarget, comparison);
-        } catch (error: unknown) {
-          throw new Error(`A3 finding: cross-product pickable-id invariance does not currently hold across the full morphology×palette×temperature×theme×LOD space; it is reported rather than silenced. ${comparison}: ${message(error)}`);
+      const noUnambiguousRelations = await namedNoUnambiguousRelations(snapshot, invoke);
+      noUnambiguousRelationDiagnostics.push(...noUnambiguousRelations.map(({ edgeId, partnerIds }) => `${stateKey} ${edgeId}->${partnerIds.join("+")}`));
+      const directFailures = relationIdsWithoutDirectPickingWitness(snapshot);
+      directRelationWitnesses += snapshot.edges.length - directFailures.length;
+      for (const edgeId of directFailures) {
+        const cacheKey = `${state.policy}/${state.lodBand}/${edgeId}`;
+        let certificate = occlusionCertificateCache.get(cacheKey);
+        if (certificate === undefined) {
+          try {
+            certificate = await certifyRelationIdentityOrOcclusion(snapshot, invoke, edgeId);
+          } catch (error: unknown) {
+            throw new Error(`${stateKey} relation ${edgeId} failed its direct production-target witness and cannot be honestly certified: ${message(error)}`);
+          }
+          occlusionCertificateCache.set(cacheKey, certificate);
         }
-        const centreDifference = rawAnchorCentreIdDifference(reference.target.nodeAnchorPickIds, snapshot.pickingTarget.nodeAnchorPickIds);
-        if (centreDifference !== "") {
-          anchorCentreIdChanges.push(`${crossProductKey(reference.state)} -> ${crossProductKey(state)}: ${centreDifference}`);
-        }
+        certifiedRelationWitnesses += 1;
       }
     }
-    const restore = sampled[0];
+    expect(references.size, "every shipping policy contributed a full picking-target reference state").toBe(SHIPPING_POLICIES.length);
+    expect(
+      cheapInvariantStates,
+      hasFullShippingSetCoverage
+        ? "DPR 1 cheap picking-target set invariant covers every shipping state"
+        : "DPR 2 cheap picking-target set invariant covers its disclosed deterministic sample",
+    ).toBe(cheapInvariantStatesToRun.length);
+    expect(pd3Diagnostics, "the known hard shipping-master state was included in the deterministic compositor sample").toHaveLength(1);
+    const restore = product[0];
     if (restore === undefined) {
-      throw new Error("cross-product sample is empty");
+      throw new Error("shipping cross-product is empty");
     }
-    await invoke<Snapshot>("setCrossProductState", restore.morphology, restore.palette, restore.temperature, restore.theme, restore.lodBand);
+    await invoke<Snapshot>("setShippingCrossProductState", restore.policy, restore.palette, restore.temperature, restore.theme, restore.lodBand);
     const anchorCentreDiagnostic = anchorCentreIdChanges.length === 0
       ? "anchor-centre returned ids were stable"
       : `anchor-centre returned-id changes (diagnostic only): ${anchorCentreIdChanges.join("; ")}`;
-    const coincidenceDiagnostic = coincidentRelationDiagnostics.length === 0
-      ? "every relation had an unambiguous witness parameter"
-      : `certified no-unambiguous relations: ${coincidentRelationDiagnostics.join("; ")}`;
-    return `full morphology×palette×temperature×theme×LOD product=${product.length}; browser-budget sample=${sampled.length}; deterministic seed=${DEFAULT_CALIBRATION.budget.oracleCrossProductSamplingSeed}; every sampled state read rendered/pickable ids, incidence, and anchors from the picking target and checked ${DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount} composited pixel witness(es) per relation at unambiguous parameters where available; relations without one accepted only their certified coincident partners; ${coincidenceDiagnostic}; ${anchorCentreDiagnostic}${pd3Diagnostics.length === 0 ? "" : `; ${pd3Diagnostics.join("; ")}`}`;
+    const coincidenceDiagnostic = noUnambiguousRelationDiagnostics.length === 0
+      ? "every sampled relation had an unambiguous parameter"
+      : `sampled relations with no unambiguous parameter (named with certified partners, none skipped): ${noUnambiguousRelationDiagnostics.join("; ")}`;
+    const coverageDisclosure = hasFullShippingSetCoverage
+      ? `DPR 1 full-space set coverage: the cheap invariant covered all ${cheapInvariantStates}/${SHIPPING_CROSS_PRODUCT_SIZE} shipping policy×palette×temperature×theme×LOD states (no morphology axis)`
+      : `DPR 2 sampled coverage: the cheap invariant covered a deterministic sample of twelve (${cheapInvariantStates}) of ${SHIPPING_CROSS_PRODUCT_SIZE} shipping policy×palette×temperature×theme×LOD states (no morphology axis), selected with recorded seed ${A3_PIXEL_WITNESS_SAMPLE_SEED} (0x${A3_PIXEL_WITNESS_SAMPLE_SEED.toString(16)}); DPR 2 is sampled, not full coverage`;
+    return `${coverageDisclosure}: production-model rendered ids and live-picking-target rendered/pickable id sets, endpoint incidence, and anchors; per-id composited pixel witnesses are the same deterministic sample of ${pixelWitnessSample.length}/${SHIPPING_CROSS_PRODUCT_SIZE} states, not the whole space, seed=${A3_PIXEL_WITNESS_SAMPLE_SEED} (0x${A3_PIXEL_WITNESS_SAMPLE_SEED.toString(16)}), forced states=${A3_FORCED_PIXEL_WITNESS_STATES.map(shippingCrossProductKey).join(", ")} (the same shipping-master hard state first; macro and micro extrema next); direct relation witnesses=${directRelationWitnesses}; failed direct witnesses certified=${certifiedRelationWitnesses}; certificate cache entries=${occlusionCertificateCache.size} (sample policy×LOD only); ${coincidenceDiagnostic}; ${anchorCentreDiagnostic}${pd3Diagnostics.length === 0 ? "" : `; ${pd3Diagnostics.join("; ")}`}`;
   });
   await run("policy-transition", async () => {
     const discovery = await invoke<Snapshot>("switchPolicy", "Discovery");
@@ -580,22 +762,31 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const visible = await capture("#evidence-renderer");
     const suppressedSnapshot = await invoke<Snapshot>("setGlowSuppressed", true);
     const suppressed = await capture("#evidence-renderer");
-    const witnesses = assertGlowPixels(snapshot, visible, suppressedSnapshot, suppressed);
-    await invoke<Snapshot>("setGlowSuppressed", false);
-    return `nodes measured: ${witnesses.map((witness) => witness.id).join(", ")}; clean annulus points: ${witnesses.map((witness) => `${witness.id}=${witness.points}`).join(", ")}`;
+    const mountedGlowSubjects = mountedGlowNodes(snapshot);
+    const diagnostics = measureGlowCompositor(mountedGlowSubjects, snapshot, visible, suppressedSnapshot, suppressed);
+    let witnesses: readonly GlowPixelWitness[];
+    try {
+      witnesses = assertGlowPixels(snapshot, visible, suppressedSnapshot, suppressed, mountedGlowSubjects);
+    } catch (error: unknown) {
+      const failureDiagnostics = glowDiagnosticsForFailure(error, diagnostics);
+      throw new Error(`${message(error)}; diagnostic table (observational only): ${failureDiagnostics.map(formatGlowCompositorDiagnostic).join(" | ")}`);
+    } finally {
+      await invoke<Snapshot>("setGlowSuppressed", false);
+    }
+    return `mounted glow subjects examined by the assertion: ${witnesses.map((witness) => witness.id).join(", ")}; clean annulus points: ${witnesses.map((witness) => `${witness.id}=${witness.points}`).join(", ")}; diagnostic table (observational only): ${diagnostics.map(formatGlowCompositorDiagnostic).join(" | ")}`;
   });
   await run("picking-parity", async () => {
     const snapshot = await invoke<Snapshot>("read");
-    const curved = snapshot.edges.find((id) => true);
-    expect(curved).toBeDefined();
-    const onRibbon = await invoke<{ readonly edgeId: string | null }>("pick", curved ?? "", 0.5);
-    expect(onRibbon.edgeId).toBe(curved);
-    const offRibbon = await invoke<{ readonly edgeId: string | null }>("pick", curved ?? "", 0.5, 48);
-    expect(offRibbon.edgeId).not.toBe(curved);
-    const chord = await invoke<{ readonly edgeId: string | null }>("pickChord", curved ?? "");
-    expect(chord.edgeId).not.toBe(curved);
+    const filament = snapshot.edges.find((id) => true);
+    expect(filament).toBeDefined();
+    const onRibbon = await invoke<{ readonly edgeId: string | null; readonly point: { readonly x: number; readonly y: number } }>("pick", filament ?? "", 0.5);
+    expect(onRibbon.edgeId).toBe(filament);
+    const offRibbon = await invoke<{ readonly edgeId: string | null }>("pick", filament ?? "", 0.5, 48);
+    expect(offRibbon.edgeId).not.toBe(filament);
+    const chord = await invoke<{ readonly edgeId: string | null }>("pickChord", filament ?? "");
+    expect(chord.edgeId).toBe(onRibbon.edgeId);
     expect(await invoke<string | null>("pickStraightControl")).toBe("straight-control");
-    return `actual edge-picking framebuffer accepted ${curved} on its ribbon, rejected its straight chord, and accepted the straight-edge control`;
+    return `actual edge-picking framebuffer accepted ${filament} on its ribbon, rejected its offset probe, and matched the product straight chord; isolated straight-edge control accepted`;
   });
   await run("reduced-motion", async () => {
     const moving = await invoke<Snapshot>("setReducedMotion", false);
@@ -717,7 +908,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
         expect(differingPixels, `${name} with no-op emphasis and dim factors must fall at or below the calibrated bound`).toBeLessThanOrEqual(pixelDeltaBound);
         expect(differingPixels > pixelDeltaBound, `${name} with no-op emphasis and dim factors must fail its compositor-delta check`).toBe(false);
       }
-      return `forced emphasisMultiplierPermille and focusDimFactorPermille to no-op values; node-selection=${nodeSelectionPixels}, edge-selection=${edgeSelectionPixels}, node-focus=${nodeFocusPixels}, edge-focus=${edgeFocusPixels}, all at or below calibrated bound ${pixelDeltaBound} and therefore unable to pass the compositor checks`;
+      return `forced emphasisMultiplierPermille and focusDimFactorPermille to no-op values and suppressed interaction-driven edge-label reveal for this control; node-selection=${nodeSelectionPixels}, edge-selection=${edgeSelectionPixels}, node-focus=${nodeFocusPixels}, edge-focus=${edgeFocusPixels}, all at or below calibrated bound ${pixelDeltaBound} and therefore unable to pass the compositor checks`;
     } finally {
       await invoke<void>("hideSelectionFocusNoopControl");
     }
@@ -824,6 +1015,21 @@ function assertAcceptanceInvariantMapping(
     }
     if (invariant.checkIds.length === 0) {
       throw new Error(`${invariant.id} has no runnable check`);
+    }
+    if (invariant.assertionMappings.length === 0) {
+      throw new Error(`${invariant.id} has no mapped assertion`);
+    }
+    if (new Set(invariant.assertionMappings.map((mapping) => mapping.assertion)).size !== invariant.assertionMappings.length) {
+      throw new Error(`${invariant.id} maps one assertion more than once`);
+    }
+    const mappedCheckIds = invariant.assertionMappings.flatMap((mapping) => mapping.checkIds).sort();
+    const expectedMappedCheckIds = invariant.assertionMappings.flatMap(() => invariant.checkIds).sort();
+    if (mappedCheckIds.length !== expectedMappedCheckIds.length || mappedCheckIds.some((checkId, index) => checkId !== expectedMappedCheckIds[index])) {
+      throw new Error(`${invariant.id} assertion mappings do not cover exactly its runnable checks`);
+    }
+    if (invariant.id === "A3") {
+      expect(invariant.assertionMappings.map((mapping) => mapping.assertion), "A3 maps every surviving D-039 §5 shipping assertion").toEqual(A3_SHIPPING_ASSERTIONS);
+      expect(invariant.checkIds, "A3's narrowed shipping scope is mapped at both required DPRs").toEqual(projectCheckIds("a3-cross-product-picking-pixels"));
     }
     for (const checkId of invariant.checkIds) {
       const [project, checkName] = checkId.split("/");
@@ -939,30 +1145,117 @@ function assertPickingTargetPixels(snapshot: Snapshot, image: DecodedPng): void 
   }
 }
 
-/** This compares the required topology witnesses from two live picking targets and does not inspect their render models. */
-function assertPickingTargetInvariant(reference: Snapshot["pickingTarget"], actual: Snapshot["pickingTarget"], state: string): void {
+/** This accepts the live target's cheap own-id result before asking the analytic occlusion oracle to do any work. */
+function relationIdsWithoutDirectPickingWitness(snapshot: Snapshot): readonly string[] {
+  const missing: string[] = [];
+  for (const edgeId of snapshot.edges) {
+    const measurement = snapshot.pickingTarget.edgePickMeasurements[edgeId];
+    expect(measurement, `picking target relation ${edgeId} has a direct live-target measurement`).toBeDefined();
+    if (measurement === undefined) {
+      throw new Error(`picking target relation ${edgeId} has no direct live-target measurement`);
+    }
+    expect(measurement.samples, `picking target relation ${edgeId} keeps all calibrated direct witnesses`).toHaveLength(DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount);
+    if (!measurement.samples.some((sample) => sample.returnedEdgeId === edgeId)) {
+      missing.push(edgeId);
+    }
+  }
+  return missing;
+}
+
+/** Every sampled relation without an unambiguous parameter is named, even when its direct target hit succeeds. */
+async function namedNoUnambiguousRelations(
+  snapshot: Snapshot,
+  invoke: PageInvoke,
+): Promise<readonly { readonly edgeId: string; readonly partnerIds: readonly string[] }[]> {
+  const named: { edgeId: string; partnerIds: readonly string[] }[] = [];
+  for (const edgeId of snapshot.edges) {
+    const parameters = await invoke<readonly number[]>("unambiguousParameters", edgeId);
+    if (parameters.length > 0) {
+      continue;
+    }
+    const partnerIds = await invoke<readonly string[] | null>("coincidentPartners", edgeId);
+    expect(partnerIds, `edge ${edgeId} has no unambiguous parameter and must name certified coincident partners`).not.toBeNull();
+    if (partnerIds === null) {
+      throw new Error(`edge ${edgeId} has no unambiguous parameter and no coincident-partner certificate`);
+    }
+    expect(partnerIds.length, `edge ${edgeId} has no unambiguous parameter and must name at least one coincident partner`).toBeGreaterThan(0);
+    expect(partnerIds.includes(edgeId), `edge ${edgeId} must not certify itself as coincident`).toBe(false);
+    for (const partnerId of partnerIds) {
+      expect(snapshot.edges.includes(partnerId), `coincident partner ${partnerId} for edge ${edgeId} must belong to the edge set`).toBe(true);
+    }
+    named.push({ edgeId, partnerIds });
+  }
+  return named;
+}
+
+/** This certifies one named hard case only after its direct production-target witness failed. */
+async function certifyRelationIdentityOrOcclusion(
+  snapshot: Snapshot,
+  invoke: PageInvoke,
+  edgeId: string,
+): Promise<RelationIdentityCertificate> {
+  const parameters = await invoke<readonly number[]>("unambiguousParameters", edgeId);
+  if (parameters.length > 0) {
+    for (const parameter of parameters) {
+      const witness = await invoke<{
+        readonly edgeId: string | null;
+        readonly pickedCoversPoint?: boolean;
+        readonly onScreen?: boolean;
+      }>("pick", edgeId, parameter);
+      expect(witness.onScreen, `unambiguous point ${parameter} on edge ${edgeId} must be on the picking viewport`).toBe(true);
+      expect(witness.edgeId, `unambiguous point ${parameter} on edge ${edgeId} must return an edge`).not.toBeNull();
+      expect(witness.edgeId, `unambiguous point ${parameter} must return its own edge ${edgeId}`).toBe(edgeId);
+    }
+    return { category: "unambiguous", points: parameters.length };
+  }
+  // This is not an escape hatch. A named relation with no unambiguous parameter
+  // is accepted only when every calibrated probe returns it or one of the named,
+  // analytically certified coincident partners.
+  const partnerIds = await invoke<readonly string[] | null>("coincidentPartners", edgeId);
+  expect(partnerIds, `edge ${edgeId} has no unambiguous viewport point and must name certified coincident partners`).not.toBeNull();
+  if (partnerIds === null) {
+    throw new Error(`edge ${edgeId} has no unambiguous viewport point and no coincident-partner certificate`);
+  }
+  expect(partnerIds.length, `edge ${edgeId} must name at least one coincident partner`).toBeGreaterThan(0);
+  expect(partnerIds.includes(edgeId), `edge ${edgeId} must not certify itself as coincident`).toBe(false);
+  for (const partnerId of partnerIds) {
+    expect(snapshot.edges.includes(partnerId), `coincident partner ${partnerId} for edge ${edgeId} must belong to the edge set`).toBe(true);
+  }
+  for (const parameter of EDGE_SAMPLE_PARAMETERS) {
+    const witness = await invoke<{ readonly edgeId: string | null }>("pick", edgeId, parameter);
+    expect(
+      witness.edgeId !== null && [edgeId, ...partnerIds].includes(witness.edgeId),
+      `coincident point ${parameter} on edge ${edgeId} must return the edge or a certified analytic partner`,
+    ).toBe(true);
+  }
+  return { category: "coincident", partnerIds };
+}
+
+/** This validates one full-space A3 observation without creating any compositor-pixel witness. */
+function assertShippingPickingTargetSet(snapshot: ShippingPickingSetSnapshot, state: string): void {
+  const target = snapshot.pickingTarget;
+  expect([...target.nodeIds].sort(), `${state} production picking-target rendered node ids equal production-model rendered node ids`).toEqual([...snapshot.renderedNodeIds].sort());
+  expect([...target.edgeIds].sort(), `${state} production picking-target rendered relation ids equal production-model rendered relation ids`).toEqual([...snapshot.renderedEdgeIds].sort());
+  expect(target.nodeIds.length, `${state} production model has rendered nodes`).toBeGreaterThan(0);
+  expect(target.edgeIds.length, `${state} production model has rendered relations`).toBeGreaterThan(0);
+  expect([...target.nodePickCoverageIds].sort(), `${state} every rendered node has an actual live picking-target hit`).toEqual([...target.nodeIds].sort());
+  expect([...target.edgePickCoverageIds].sort(), `${state} every rendered relation has an actual live picking-target hit`).toEqual([...target.edgeIds].sort());
+  expect(target.pickableNodeIds.every((id) => target.nodeIds.includes(id)), `${state} live picking target cannot return an unknown node id`).toBe(true);
+  expect(target.pickableEdgeIds.every((id) => target.edgeIds.includes(id)), `${state} live picking target cannot return an unknown relation id`).toBe(true);
+  expect(Object.keys(target.anchors).sort(), `${state} live picking-target anchors name every rendered node`).toEqual([...target.nodeIds].sort());
+  expect(Object.keys(target.incidence).sort(), `${state} live picking-target incidence names every rendered relation`).toEqual([...target.edgeIds].sort());
+}
+
+/** This compares the full-space A3 sets from two live picking targets and does not inspect their compositor pixels. */
+function assertPickingTargetSetInvariant(reference: PickingTargetSetWitness, actual: PickingTargetSetWitness, state: string): void {
   expect([...actual.nodeIds].sort(), `${state} preserves rendered node ids from the picking target (reference=${reference.nodeIds.length}, actual=${actual.nodeIds.length})`).toEqual([...reference.nodeIds].sort());
   expect([...actual.edgeIds].sort(), `${state} preserves rendered relation ids from the picking target (reference=${reference.edgeIds.length}, actual=${actual.edgeIds.length})`).toEqual([...reference.edgeIds].sort());
   expect([...actual.pickableNodeIds].sort(), `${state} preserves pickable node ids from the picking target (reference=${reference.pickableNodeIds.length}, actual=${actual.pickableNodeIds.length})`).toEqual([...reference.pickableNodeIds].sort());
-  try {
-    expect([...actual.pickableEdgeIds].sort(), `${state} preserves pickable relation ids from the picking target (reference=${reference.pickableEdgeIds.length}, actual=${actual.pickableEdgeIds.length})`).toEqual([...reference.pickableEdgeIds].sort());
-  } catch (error: unknown) {
-    throw new Error(`${message(error)}; ${formatRelationSetDifference(reference, actual)}`);
-  }
+  expect([...actual.pickableEdgeIds].sort(), `${state} preserves pickable relation ids from the picking target (reference=${reference.pickableEdgeIds.length}, actual=${actual.pickableEdgeIds.length})`).toEqual([...reference.pickableEdgeIds].sort());
   expect([...actual.nodePickCoverageIds].sort(), `${state} preserves per-node picking coverage (reference=${reference.nodePickCoverageIds.length}, actual=${actual.nodePickCoverageIds.length})`).toEqual([...reference.nodePickCoverageIds].sort());
   expect([...actual.edgePickCoverageIds].sort(), `${state} preserves per-relation picking coverage (reference=${reference.edgePickCoverageIds.length}, actual=${actual.edgePickCoverageIds.length})`).toEqual([...reference.edgePickCoverageIds].sort());
   expect(actual.incidence, `${state} preserves endpoint incidence from the picking target`).toEqual(reference.incidence);
   expect(actual.anchors, `${state} preserves anchors from the picking target`).toEqual(reference.anchors);
-}
-
-/** This emits the live samples for the changed id sets, so a failing invariant distinguishes absent own hits from a stale witness. */
-function formatRelationSetDifference(reference: Snapshot["pickingTarget"], actual: Snapshot["pickingTarget"]): string {
-  const missingFromActual = reference.pickableEdgeIds.filter((id) => !actual.pickableEdgeIds.includes(id));
-  const addedToActual = actual.pickableEdgeIds.filter((id) => !reference.pickableEdgeIds.includes(id));
-  const describe = (target: Snapshot["pickingTarget"], ids: readonly string[]): string => ids.length === 0
-    ? "[]"
-    : `[${ids.map((id) => `${id}: ${formatRelationPickMeasurement(target.edgePickMeasurements[id])}`).join("; ")}]`;
-  return `pickable relation ids missing-from-actual: actual-samples=${describe(actual, missingFromActual)}, reference-samples=${describe(reference, missingFromActual)}; added-to-actual: reference-samples=${describe(reference, addedToActual)}, actual-samples=${describe(actual, addedToActual)}`;
 }
 
 /** This states the returned ids plus actual CSS-space body, visible, and picking extents for a relation's calibrated witnesses. */
@@ -993,51 +1286,49 @@ function rawAnchorCentreIdDifference(
   return `added=[${added.join(",")}], missing=[${missing.join(",")}]`;
 }
 
-/** This enumerates the actual morphology × palette × temperature × theme × LOD product. */
-function enumerateCrossProduct(): readonly CrossProductState[] {
-  return morphologyOptions().flatMap((morphology) => PALETTES.flatMap((palette) => TEMPERATURES.flatMap((temperature) => THEMES.flatMap((theme) => (
-    lodBandOptions().map((lodBand) => ({ morphology, palette, temperature, theme, lodBand }))
+/** This enumerates every production policy × palette × temperature × theme × LOD state exactly once. */
+function enumerateShippingCrossProduct(): readonly ShippingCrossProductState[] {
+  return SHIPPING_POLICIES.flatMap((policy) => PALETTES.flatMap((palette) => TEMPERATURES.flatMap((temperature) => THEMES.flatMap((theme) => (
+    lodBandOptions().map((lodBand) => ({ policy, palette, temperature, theme, lodBand }))
   )))));
 }
 
-/** This chooses a recorded-seed subset of an enumerated product without silently changing its cardinality. */
-function deterministicCrossProductSample(
-  product: readonly CrossProductState[],
-  sampleSize: number,
-  seed: number,
-): readonly CrossProductState[] {
-  if (!Number.isSafeInteger(sampleSize) || sampleSize < 1 || sampleSize > product.length) {
-    throw new Error(`cross-product sample size ${sampleSize} is outside the enumerated product`);
+/** Selects a recorded-seed sample while forcing the repaired hard case and both LOD extremes. */
+function seededShippingPixelWitnessSample(product: readonly ShippingCrossProductState[]): readonly ShippingCrossProductState[] {
+  expect(A3_PIXEL_WITNESS_SAMPLE_SIZE, "the compositor sample leaves room for every forced state").toBeGreaterThanOrEqual(A3_FORCED_PIXEL_WITNESS_STATES.length);
+  const allKeys = new Set(product.map(shippingCrossProductKey));
+  const forcedKeys = A3_FORCED_PIXEL_WITNESS_STATES.map(shippingCrossProductKey);
+  expect(new Set(forcedKeys).size, "forced compositor sample states are distinct").toBe(forcedKeys.length);
+  for (const key of forcedKeys) {
+    expect(allKeys.has(key), `forced compositor sample state ${key} belongs to the shipping product`).toBe(true);
   }
-  if (!Number.isSafeInteger(seed)) {
-    throw new Error("cross-product sampling seed must be a safe integer");
-  }
-  const shuffled = [...product];
-  let state = seed >>> 0;
-  for (let index = shuffled.length - 1; index > 0; index -= 1) {
-    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
-    const swapIndex = state % (index + 1);
-    const current = shuffled[index];
-    const swap = shuffled[swapIndex];
-    if (current === undefined || swap === undefined) {
-      throw new Error("cross-product sampling lost a state");
+  const candidates = product.filter((state) => !forcedKeys.includes(shippingCrossProductKey(state)));
+  let generator = A3_PIXEL_WITNESS_SAMPLE_SEED >>> 0;
+  for (let index = candidates.length - 1; index > 0; index -= 1) {
+    // Numerical Recipes' LCG is explicit and stable across the two browser projects.
+    generator = (Math.imul(generator, 1_664_525) + 1_013_904_223) >>> 0;
+    const swapIndex = generator % (index + 1);
+    const current = candidates[index];
+    const replacement = candidates[swapIndex];
+    if (current === undefined || replacement === undefined) {
+      throw new Error("seeded compositor sample candidate is unavailable");
     }
-    shuffled[index] = swap;
-    shuffled[swapIndex] = current;
+    candidates[index] = replacement;
+    candidates[swapIndex] = current;
   }
-  return shuffled.slice(0, sampleSize);
-}
-
-function morphologyOptions(): readonly Snapshot["morphology"][] {
-  return [STELLAR.id, NEURAL.id, MYCELIUM.id];
+  const selectedKeys = new Set([
+    ...forcedKeys,
+    ...candidates.slice(0, A3_PIXEL_WITNESS_SAMPLE_SIZE - forcedKeys.length).map(shippingCrossProductKey),
+  ]);
+  return product.filter((state) => selectedKeys.has(shippingCrossProductKey(state)));
 }
 
 function lodBandOptions(): readonly Snapshot["lodBand"][] {
   return [MACRO, MESO, MICRO];
 }
 
-function crossProductKey(state: CrossProductState): string {
-  return `${state.morphology}/${state.palette}/${state.temperature}/${state.theme}/${state.lodBand}`;
+function shippingCrossProductKey(state: ShippingCrossProductState): string {
+  return `${state.policy}/${state.palette}/${state.temperature}/${state.theme}/${state.lodBand}`;
 }
 
 function assertTopologyUnchanged(reference: Snapshot, actual: Snapshot, operation: string): void {
@@ -1150,28 +1441,334 @@ function assertGlowPixels(
   visible: DecodedPng,
   suppressedSnapshot: Snapshot,
   suppressed: DecodedPng,
-): readonly { readonly id: string; readonly points: number }[] {
+  mountedGlowSubjects: readonly Snapshot["glowNodes"][number][],
+): readonly GlowPixelWitness[] {
   const visibleFieldColor = parseFieldColor(snapshot.fieldColor);
   const suppressedFieldColor = parseFieldColor(suppressedSnapshot.fieldColor);
-  const measured = snapshot.glowNodes.filter((node) => node.haloRadiusPx > node.coreRadiusPx);
-  expect(measured.length, "the live renderer must expose glow nodes with a halo outside the core").toBeGreaterThanOrEqual(3);
-  const witnesses = measured.map((node) => {
+  expect(mountedGlowSubjects.length, "the live renderer must expose glow nodes with a halo outside the core").toBeGreaterThanOrEqual(3);
+  const witnesses: GlowPixelWitness[] = [];
+  for (const node of mountedGlowSubjects) {
     const cleanLit = glowRingCandidates(node).filter((point) => (
       !hasLitPixelNear(suppressed, point, snapshot.rendering.devicePixelRatio, 2, suppressedFieldColor)
       && hasLitPixelNear(visible, point, snapshot.rendering.devicePixelRatio, 2, visibleFieldColor)
     ));
-    expect(cleanLit.length, `glow node ${node.id} has no clean lit annulus point`).toBeGreaterThan(0);
-    return { id: node.id, points: cleanLit.length };
-  });
+    try {
+      expect(cleanLit.length, `glow node ${node.id} has no clean lit annulus point`).toBeGreaterThan(0);
+    } catch (error: unknown) {
+      throw new GlowPixelAssertionFailure(node.id, error);
+    }
+    witnesses.push({ node, id: node.id, points: cleanLit.length });
+  }
   expect(witnesses.filter((witness) => witness.points > 0).length, "glow compositor must light clean annulus points on at least three distinct nodes").toBeGreaterThanOrEqual(3);
   expect(witnesses.reduce((total, witness) => total + witness.points, 0), "glow compositor must light at least four clean annulus points").toBeGreaterThanOrEqual(4);
   return witnesses;
 }
 
+/** This narrows observational output to the exact node that failed the unchanged assertion. */
+function glowDiagnosticsForFailure(
+  error: unknown,
+  diagnostics: readonly GlowCompositorDiagnostic[],
+): readonly GlowCompositorDiagnostic[] {
+  if (!(error instanceof GlowPixelAssertionFailure)) {
+    return diagnostics;
+  }
+  return diagnostics.filter((diagnostic) => (
+    diagnostic.status === "unavailable"
+      ? diagnostic.nodeId === error.nodeId
+      : diagnostic.measurement.id === error.nodeId
+  ));
+}
+
+/** These are exactly the mounted graph nodes the glow assertion examines. */
+function mountedGlowNodes(snapshot: Snapshot): readonly Snapshot["glowNodes"][number][] {
+  return snapshot.glowNodes.filter((node) => node.haloRadiusPx > node.coreRadiusPx);
+}
+
+/**
+ * This measures the final compositor only; it neither changes the annulus
+ * assertion nor reads a renderer layer. Every failure becomes evidence rather
+ * than an assertion, so this diagnostic cannot fail its glow check.
+ */
+function measureGlowCompositor(
+  mountedGlowSubjects: readonly Snapshot["glowNodes"][number][],
+  snapshot: Snapshot,
+  visible: DecodedPng,
+  suppressedSnapshot: Snapshot,
+  suppressed: DecodedPng,
+): readonly GlowCompositorDiagnostic[] {
+  return mountedGlowSubjects.map((node) => {
+    try {
+      const visibleFieldColor = parseFieldColor(snapshot.fieldColor);
+      const suppressedFieldColor = parseFieldColor(suppressedSnapshot.fieldColor);
+      return {
+        status: "measured",
+        measurement: measureGlowNodeCompositor(node, snapshot.rendering, visible, suppressed, visibleFieldColor, suppressedFieldColor),
+      };
+    } catch (error: unknown) {
+      return { status: "unavailable", nodeId: node.id, reason: nonFatalDiagnosticReason(error) };
+    }
+  });
+}
+
+/** This profiles a node's composited luminance from its centre to the glow's outer edge. */
+function measureGlowNodeCompositor(
+  node: Snapshot["glowNodes"][number],
+  rendering: Snapshot["rendering"],
+  visible: DecodedPng,
+  suppressed: DecodedPng,
+  visibleFieldColor: RgbColor,
+  suppressedFieldColor: RgbColor,
+): GlowCompositorMeasurement {
+  const devicePixelRatio = rendering.devicePixelRatio;
+  const glowCanvas = requiredGlowCanvasMeasurement(rendering);
+  const annulusRadiusCssPixels = glowProbeRadius(node);
+  const radii = Array.from({ length: 17 }, (_, index) => (node.haloRadiusPx * index) / 16);
+  const profile = radii.map((radiusCssPixels) => {
+    const points = ringCandidates(node.viewportCenter, radiusCssPixels);
+    const visibleLuminance = average(points.map((point) => compositorLuminanceAt(visible, point, devicePixelRatio)));
+    const suppressedLuminance = average(points.map((point) => compositorLuminanceAt(suppressed, point, devicePixelRatio)));
+    return {
+      radiusCssPixels,
+      radiusDevicePixels: radiusCssPixels * devicePixelRatio,
+      visibleLuminance,
+      suppressedLuminance,
+      glowLuminanceDelta: visibleLuminance - suppressedLuminance,
+    };
+  });
+  const cleanAnnulusPoints = glowRingCandidates(node).filter((point) => (
+    !hasLitPixelNear(suppressed, point, devicePixelRatio, 2, suppressedFieldColor)
+    && hasLitPixelNear(visible, point, devicePixelRatio, 2, visibleFieldColor)
+  )).length;
+  const peakGlowDelta = maximumGlowDelta(node.viewportCenter, node.coreRadiusPx, node.haloRadiusPx, visible, suppressed, devicePixelRatio);
+  const coreRadiusDevicePixels = node.coreRadiusPx * devicePixelRatio;
+  const haloRadiusDevicePixels = node.haloRadiusPx * devicePixelRatio;
+  const annulusRadiusDevicePixels = annulusRadiusCssPixels * devicePixelRatio;
+  const annulusProbeRadiusDevicePixels = Math.ceil(2 * devicePixelRatio);
+  const annulusBandDevicePixels = {
+    inner: annulusRadiusDevicePixels - annulusProbeRadiusDevicePixels,
+    outer: annulusRadiusDevicePixels + annulusProbeRadiusDevicePixels,
+  };
+  const suppressedCoreOuterRadiusDevicePixels = radialCoreExtent(
+    suppressed,
+    node.viewportCenter,
+    devicePixelRatio,
+    Math.ceil(haloRadiusDevicePixels),
+    suppressedFieldColor,
+  );
+  const annulusDisposition = cleanAnnulusPoints > 0
+    ? "clear"
+    : annulusRadiusDevicePixels <= suppressedCoreOuterRadiusDevicePixels
+      ? "inside-core"
+      : annulusRadiusDevicePixels > haloRadiusDevicePixels
+        ? "beyond-glow"
+        : "overlapped";
+  const annulusToleranceCssPixels = 2;
+  const threshold = DEFAULT_CALIBRATION.luminance.minimumCompositedPixelChannelDelta;
+  const peakPoint = polarPoint(node.viewportCenter, peakGlowDelta.radiusCssPixels, peakGlowDelta.angleDegrees);
+  const peakFieldDeviation = maximumChannelDeviationAtPoint(visible, peakPoint, devicePixelRatio, visibleFieldColor);
+  const classification = cleanAnnulusPoints > 0
+    ? "present"
+    : peakGlowDelta.value === 0
+      ? "absent"
+      : Math.abs(peakGlowDelta.radiusCssPixels - annulusRadiusCssPixels) > annulusToleranceCssPixels
+        ? "displaced"
+        : peakFieldDeviation < threshold
+          ? "present-below-threshold"
+          : "displaced";
+  return {
+    id: node.id,
+    centerCssPixels: node.viewportCenter,
+    centerDevicePixels: {
+      x: node.viewportCenter.x * devicePixelRatio,
+      y: node.viewportCenter.y * devicePixelRatio,
+    },
+    screenshot: { width: visible.width, height: visible.height },
+    glowCanvas,
+    coreRadiusCssPixels: node.coreRadiusPx,
+    coreRadiusDevicePixels,
+    haloRadiusCssPixels: node.haloRadiusPx,
+    haloRadiusDevicePixels,
+    annulusRadiusCssPixels,
+    annulusRadiusDevicePixels,
+    annulusProbeRadiusDevicePixels,
+    annulusBandDevicePixels,
+    suppressedCoreOuterRadiusDevicePixels,
+    annulusDisposition,
+    cleanAnnulusPoints,
+    peakGlowDelta,
+    classification,
+    profile,
+  };
+}
+
+/** This finds the glow layer's CSS and backing-store dimensions without sampling its private pixels. */
+function requiredGlowCanvasMeasurement(rendering: Snapshot["rendering"]): GlowCompositorMeasurement["glowCanvas"] {
+  const glowCanvas = rendering.layers.find((layer) => layer.name === "sigma-node-glow");
+  if (glowCanvas === undefined) {
+    throw new Error("mounted glow canvas is unavailable");
+  }
+  return {
+    cssWidth: rendering.cssWidth,
+    cssHeight: rendering.cssHeight,
+    backingStoreWidth: glowCanvas.width,
+    backingStoreHeight: glowCanvas.height,
+  };
+}
+
+/** This samples the uninterrupted, suppressed core from its centre and discounts directional filaments. */
+function radialCoreExtent(
+  image: DecodedPng,
+  center: { readonly x: number; readonly y: number },
+  devicePixelRatio: number,
+  maximumRadiusDevicePixels: number,
+  fieldColor: RgbColor,
+): number {
+  const extents = ringCandidates(center, 1).map((point) => {
+    const unitX = point.x - center.x;
+    const unitY = point.y - center.y;
+    let extent = 0;
+    for (let radius = 0; radius <= maximumRadiusDevicePixels; radius += 1) {
+      const x = Math.round((center.x * devicePixelRatio) + (unitX * radius));
+      const y = Math.round((center.y * devicePixelRatio) + (unitY * radius));
+      if (!isLitPixel(image, x, y, fieldColor)) {
+        break;
+      }
+      extent = radius;
+    }
+    return extent;
+  }).sort((left, right) => left - right);
+  return extents[Math.floor(extents.length / 4)] ?? 0;
+}
+
+/** This reports the DPR-sensitive compositor measurement in the evidence entry. */
+function formatGlowCompositorMeasurement(measurement: GlowCompositorMeasurement): string {
+  const profile = measurement.profile.map((sample) => (
+    `r-css=${sample.radiusCssPixels.toFixed(3)}/r-device=${sample.radiusDevicePixels.toFixed(3)}:visible=${sample.visibleLuminance.toFixed(5)},suppressed=${sample.suppressedLuminance.toFixed(5)},delta=${sample.glowLuminanceDelta.toFixed(5)}`
+  )).join(" | ");
+  return [
+    `glow-compositor measurement node=${measurement.id}`,
+    `centre-css=(${measurement.centerCssPixels.x.toFixed(3)},${measurement.centerCssPixels.y.toFixed(3)})`,
+    `centre-device=(${measurement.centerDevicePixels.x.toFixed(3)},${measurement.centerDevicePixels.y.toFixed(3)})`,
+    `screenshot=${measurement.screenshot.width}x${measurement.screenshot.height}`,
+    `glow-canvas-css=${measurement.glowCanvas.cssWidth}x${measurement.glowCanvas.cssHeight}`,
+    `glow-canvas-backing=${measurement.glowCanvas.backingStoreWidth}x${measurement.glowCanvas.backingStoreHeight}`,
+    `core-css=${measurement.coreRadiusCssPixels.toFixed(3)}`,
+    `core-device=${measurement.coreRadiusDevicePixels.toFixed(3)}`,
+    `halo-css=${measurement.haloRadiusCssPixels.toFixed(3)}`,
+    `halo-device=${measurement.haloRadiusDevicePixels.toFixed(3)}`,
+    `annulus-css=${measurement.annulusRadiusCssPixels.toFixed(3)}`,
+    `annulus-device=${measurement.annulusRadiusDevicePixels.toFixed(3)}`,
+    `annulus-probe-radius-device=${measurement.annulusProbeRadiusDevicePixels}`,
+    `annulus-band-device=${measurement.annulusBandDevicePixels.inner.toFixed(3)}..${measurement.annulusBandDevicePixels.outer.toFixed(3)}`,
+    `suppressed-core-outer-device=${measurement.suppressedCoreOuterRadiusDevicePixels.toFixed(3)}`,
+    `annulus-disposition=${measurement.annulusDisposition}`,
+    `clean-annulus=${measurement.cleanAnnulusPoints}`,
+    `peak-glow-delta=${measurement.peakGlowDelta.value.toFixed(5)}@r-css=${measurement.peakGlowDelta.radiusCssPixels.toFixed(3)},angle=${measurement.peakGlowDelta.angleDegrees.toFixed(1)}`,
+    `classification=${measurement.classification}`,
+    `radial-profile=[${profile}]`,
+  ].join("; ");
+}
+
+/** Formatting is also observational: no diagnostic reporting path may throw. */
+function formatGlowCompositorDiagnostic(diagnostic: GlowCompositorDiagnostic): string {
+  if (diagnostic.status === "unavailable") {
+    return `glow-compositor measurement unavailable for mounted node=${diagnostic.nodeId}; reason=${diagnostic.reason}`;
+  }
+  try {
+    return formatGlowCompositorMeasurement(diagnostic.measurement);
+  } catch (error: unknown) {
+    return `glow-compositor measurement recorded but could not be formatted for mounted node=${diagnostic.measurement.id}; reason=${nonFatalDiagnosticReason(error)}`;
+  }
+}
+
+function nonFatalDiagnosticReason(error: unknown): string {
+  try {
+    return message(error);
+  } catch {
+    return "unknown diagnostic failure";
+  }
+}
+
 function glowRingCandidates(node: Snapshot["glowNodes"][number]): readonly { readonly x: number; readonly y: number }[] {
+  return ringCandidates(node.viewportCenter, glowProbeRadius(node));
+}
+
+/** This is the existing calibrated annulus definition, factored so measurement cannot drift from the assertion. */
+function glowProbeRadius(node: Snapshot["glowNodes"][number]): number {
   const scale = DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
-  const radius = node.coreRadiusPx + ((node.haloRadiusPx - node.coreRadiusPx) * DEFAULT_CALIBRATION.luminance.haloProbeRadiusFractionPermille / scale);
-  return ringCandidates(node.viewportCenter, radius);
+  return node.coreRadiusPx + ((node.haloRadiusPx - node.coreRadiusPx) * DEFAULT_CALIBRATION.luminance.haloProbeRadiusFractionPermille / scale);
+}
+
+/** This samples an image's composited sRGB luminance at one CSS-space point. */
+function compositorLuminanceAt(image: DecodedPng, point: { readonly x: number; readonly y: number }, devicePixelRatio: number): number {
+  const x = Math.max(0, Math.min(image.width - 1, Math.round(point.x * devicePixelRatio)));
+  const y = Math.max(0, Math.min(image.height - 1, Math.round(point.y * devicePixelRatio)));
+  const index = ((y * image.width) + x) * 4;
+  const red = (image.data[index] ?? 0) / 255;
+  const green = (image.data[index + 1] ?? 0) / 255;
+  const blue = (image.data[index + 2] ?? 0) / 255;
+  return (0.2126 * srgbChannelToLinear(red)) + (0.7152 * srgbChannelToLinear(green)) + (0.0722 * srgbChannelToLinear(blue));
+}
+
+function srgbChannelToLinear(channel: number): number {
+  return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+}
+
+function average(values: readonly number[]): number {
+  if (values.length === 0) {
+    throw new Error("cannot average an empty measurement set");
+  }
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+/** This finds the largest final-compositor change across the node's core-to-halo band. */
+function maximumGlowDelta(
+  center: { readonly x: number; readonly y: number },
+  coreRadiusCssPixels: number,
+  haloRadiusCssPixels: number,
+  visible: DecodedPng,
+  suppressed: DecodedPng,
+  devicePixelRatio: number,
+): { readonly radiusCssPixels: number; readonly angleDegrees: number; readonly value: number } {
+  let maximum = { radiusCssPixels: coreRadiusCssPixels, angleDegrees: 0, value: 0 };
+  for (let radiusIndex = 0; radiusIndex <= 16; radiusIndex += 1) {
+    const radiusCssPixels = coreRadiusCssPixels + (((haloRadiusCssPixels - coreRadiusCssPixels) * radiusIndex) / 16);
+    for (let angleIndex = 0; angleIndex < 48; angleIndex += 1) {
+      const angleDegrees = (angleIndex * 360) / 48;
+      const point = polarPoint(center, radiusCssPixels, angleDegrees);
+      const value = Math.abs(
+        compositorLuminanceAt(visible, point, devicePixelRatio)
+        - compositorLuminanceAt(suppressed, point, devicePixelRatio),
+      );
+      if (value > maximum.value) {
+        maximum = { radiusCssPixels, angleDegrees, value };
+      }
+    }
+  }
+  return maximum;
+}
+
+function polarPoint(
+  center: { readonly x: number; readonly y: number },
+  radiusCssPixels: number,
+  angleDegrees: number,
+): { readonly x: number; readonly y: number } {
+  const angleRadians = (angleDegrees * Math.PI) / 180;
+  return {
+    x: center.x + (Math.cos(angleRadians) * radiusCssPixels),
+    y: center.y + (Math.sin(angleRadians) * radiusCssPixels),
+  };
+}
+
+function maximumChannelDeviationAtPoint(
+  image: DecodedPng,
+  point: { readonly x: number; readonly y: number },
+  devicePixelRatio: number,
+  fieldColor: RgbColor,
+): number {
+  const x = Math.max(0, Math.min(image.width - 1, Math.round(point.x * devicePixelRatio)));
+  const y = Math.max(0, Math.min(image.height - 1, Math.round(point.y * devicePixelRatio)));
+  return maximumChannelDeviation(image, x, y, fieldColor);
 }
 
 function ringCandidates(center: { readonly x: number; readonly y: number }, radius: number): readonly { readonly x: number; readonly y: number }[] {

@@ -50,6 +50,12 @@ export type CalibrationProfile = {
     readonly maxNodeSizePx: number;
   };
   readonly luminance: {
+    /** This is the near-black shipping field lightness, resolved after dark theme selection. */
+    readonly fieldLightnessPermille: number;
+    /** This is the shipping filament lightness, resolved after dark theme selection. */
+    readonly filamentLightnessPermille: number;
+    /** This is the shipping peak-node lightness, resolved after dark theme selection. */
+    readonly nodePeakLightnessPermille: number;
     readonly haloRadiusFactorPermille: number;
     readonly haloFalloffPermille: number;
     readonly haloSampleCount: number;
@@ -91,6 +97,15 @@ export type CalibrationProfile = {
   };
   readonly labels: {
     readonly densityCap: number;
+    readonly nodeLabelSizePx: number;
+    readonly nodeLabelOpacityPermille: number;
+    readonly edgeDensityCap: number;
+    readonly edgeLabelSizePx: number;
+    readonly edgeLabelOpacityPermille: number;
+    readonly edgeLabelFocusOpacityPermille: number;
+    readonly edgeLabelSelectedOpacityPermille: number;
+    readonly edgeFocusPriorityBoost: number;
+    readonly edgeSelectionPriorityBoost: number;
     readonly priorityWeights: {
       readonly node: number;
       readonly edge: number;
@@ -136,6 +151,9 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "salience.degreeExponentPermille",
   "salience.minNodeSizePx",
   "salience.maxNodeSizePx",
+  "luminance.fieldLightnessPermille",
+  "luminance.filamentLightnessPermille",
+  "luminance.nodePeakLightnessPermille",
   "luminance.haloRadiusFactorPermille",
   "luminance.haloFalloffPermille",
   "luminance.haloSampleCount",
@@ -220,6 +238,15 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "lod.microHopDistanceLightnessStepPermille",
   "lod.minimumAdjacentPixelDeltaPermille",
   "labels.densityCap",
+  "labels.nodeLabelSizePx",
+  "labels.nodeLabelOpacityPermille",
+  "labels.edgeDensityCap",
+  "labels.edgeLabelSizePx",
+  "labels.edgeLabelOpacityPermille",
+  "labels.edgeLabelFocusOpacityPermille",
+  "labels.edgeLabelSelectedOpacityPermille",
+  "labels.edgeFocusPriorityBoost",
+  "labels.edgeSelectionPriorityBoost",
   "labels.priorityWeights.node",
   "labels.priorityWeights.edge",
   "labels.priorityWeights.assertion",
@@ -245,18 +272,18 @@ export const CALIBRATION_PARAMETER_PATHS = [
 /** This is the default renderer profile and does not choose a semantic interpretation. All fractional values are scaled integers because canonical JSON accepts only integers. */
 export const DEFAULT_CALIBRATION: CalibrationProfile = {
   layout: { forceStrengthPermille: 850, idealEdgeLengthPx: 120, iterations: 180, gravityPermille: 90, seed: 17, cellJitterPermille: 340, framingMarginPermille: 150 },
-  salience: { degreeExponentPermille: 650, minNodeSizePx: 4, maxNodeSizePx: 28 },
-  luminance: { haloRadiusFactorPermille: 1800, haloFalloffPermille: 180, haloSampleCount: 12, coreBeforeHaloMinimumPx: 2, prominenceLightnessGainPermille: 900, prominenceChromaFalloffPermille: 1000, haloProbeRadiusFractionPermille: 700, minimumNodeContrastPermille: 1200, minimumCompositedPixelChannelDelta: 6, minimumRenderedNonHueSeparationMicro: 10, minimumRenderedCvdSeparationMicro: 100 },
-  filament: { baseWidthPx: 2,
-    pickTolerancePx: 2, opacityPermille: 620, curvatureMagnitudePermille: 240, minimumWidthFactorPermille: 120, minimumDeviceWidthPermille: 1000 },
+  salience: { degreeExponentPermille: 650, minNodeSizePx: 2, maxNodeSizePx: 14 },
+  luminance: { fieldLightnessPermille: 60, filamentLightnessPermille: 700, nodePeakLightnessPermille: 960, haloRadiusFactorPermille: 1100, haloFalloffPermille: 250, haloSampleCount: 12, coreBeforeHaloMinimumPx: 4, prominenceLightnessGainPermille: 850, prominenceChromaFalloffPermille: 1000, haloProbeRadiusFractionPermille: 700, minimumNodeContrastPermille: 1200, minimumCompositedPixelChannelDelta: 6, minimumRenderedNonHueSeparationMicro: 10, minimumRenderedCvdSeparationMicro: 100 },
+  filament: { baseWidthPx: 1,
+    pickTolerancePx: 2, opacityPermille: 430, curvatureMagnitudePermille: 0, minimumWidthFactorPermille: 120, minimumDeviceWidthPermille: 1500 },
   morphology: {
     stellar: { nodeSizeMultiplierPermille: 1100, filamentWidthMultiplierPermille: 900, filamentWidthStartPermille: 650, filamentWidthEndPermille: 650, filamentWobbleAmplitudePermille: 15, junctionThickeningPermille: 0, sheathScalePermille: 2700, sheathAlphaPermille: 60, coreScalePermille: 400, hotMixPermille: 0, hotAlphaPermille: 0, hotCoreMaximumHop: 0, filamentPhaseSeed: 17, wobbleFrequencyMilliradians: 6283, opacityPermille: 1000, curvatureMagnitudePermille: 700, haloRadiusMultiplierPermille: 2000, haloIntensityPermille: 440, terminalSizeMultiplierPermille: 1000 },
     neural: { nodeSizeMultiplierPermille: 900, filamentWidthMultiplierPermille: 1050, filamentWidthStartPermille: 1800, filamentWidthEndPermille: 500, filamentWobbleAmplitudePermille: 80, junctionThickeningPermille: 800, sheathScalePermille: 2700, sheathAlphaPermille: 130, coreScalePermille: 400, hotMixPermille: 850, hotAlphaPermille: 950, hotCoreMaximumHop: 2, filamentPhaseSeed: 31, wobbleFrequencyMilliradians: 9425, opacityPermille: 900, curvatureMagnitudePermille: 1150, haloRadiusMultiplierPermille: 1000, haloIntensityPermille: 900, terminalSizeMultiplierPermille: 1000 },
     mycelium: { nodeSizeMultiplierPermille: 1000, filamentWidthMultiplierPermille: 950, filamentWidthStartPermille: 1250, filamentWidthEndPermille: 1250, filamentWobbleAmplitudePermille: 240, junctionThickeningPermille: 750, sheathScalePermille: 2700, sheathAlphaPermille: 200, coreScalePermille: 400, hotMixPermille: 0, hotAlphaPermille: 0, hotCoreMaximumHop: 0, filamentPhaseSeed: 47, wobbleFrequencyMilliradians: 18850, opacityPermille: 820, curvatureMagnitudePermille: 1350, haloRadiusMultiplierPermille: 620, haloIntensityPermille: 170, terminalSizeMultiplierPermille: 500 },
   },
-  lod: { bandThresholds: [0, 250, 500, 750], hysteresisMarginPermille: 50, crossfadeDurationMs: 220, macroNodeSizeMultiplierPermille: 1250, macroFilamentWidthMultiplierPermille: 500, macroAggregateOutlineWidthMultiplierPermille: 500, macroAggregateOutlineAlphaPermille: 500, microHopDistanceLightnessStepPermille: 80, minimumAdjacentPixelDeltaPermille: 1 },
-  labels: { densityCap: 36, priorityWeights: { node: 1000, edge: 500, assertion: 900, bridge: 1100 }, collisionPaddingPx: 5 },
-  aggregate: { disclosureThreshold: 12, windowPaddingPx: 14, windowStrokeAlphaPermille: 700 },
+  lod: { bandThresholds: [0, 250, 500, 750], hysteresisMarginPermille: 50, crossfadeDurationMs: 220, macroNodeSizeMultiplierPermille: 1250, macroFilamentWidthMultiplierPermille: 500, macroAggregateOutlineWidthMultiplierPermille: 350, macroAggregateOutlineAlphaPermille: 200, microHopDistanceLightnessStepPermille: 60, minimumAdjacentPixelDeltaPermille: 1 },
+  labels: { densityCap: 12, nodeLabelSizePx: 10, nodeLabelOpacityPermille: 520, edgeDensityCap: 3, edgeLabelSizePx: 9, edgeLabelOpacityPermille: 420, edgeLabelFocusOpacityPermille: 700, edgeLabelSelectedOpacityPermille: 920, edgeFocusPriorityBoost: 600, edgeSelectionPriorityBoost: 1000, priorityWeights: { node: 1000, edge: 500, assertion: 900, bridge: 1100 }, collisionPaddingPx: 5 },
+  aggregate: { disclosureThreshold: 12, windowPaddingPx: 14, windowStrokeAlphaPermille: 260 },
   motion: { propagationSpeedPxPerSecond: 240, afterglowDecayPermille: 850, minimumReducedMotionPixelDeltaPermille: 1, reducedMotionSwitch: false },
   selection: { emphasisMultiplierPermille: 1450, focusDimFactorPermille: 320, minimumDifferingPixelCount: 16 },
   budget: { maxNodesBeforeLodForcesAggregation: 2400, targetFrameMs: 16, oracleCrossProductSampleSize: 27, oracleCrossProductSamplingSeed: 1103, oracleCrossProductPixelWitnessCount: 3 },

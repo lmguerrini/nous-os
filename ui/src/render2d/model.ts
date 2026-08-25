@@ -51,6 +51,8 @@ export type RenderEdgeAttributes = {
   readonly propagationContinuous: number;
   readonly afterglowDecayPermille: number;
   readonly label: string;
+  readonly labelText: string;
+  readonly forceLabel: boolean;
   readonly labelColor: string;
   readonly zIndex: number;
 };
@@ -59,7 +61,7 @@ export type RenderEdgeAttributes = {
 export type RenderOptions = {
   readonly morphology: Morphology;
   readonly organization: Organization;
-  readonly palette: Palette;
+  readonly palette?: Palette;
   readonly temperature: Temperature;
   readonly theme: Theme;
   readonly lodBand: LodBand;
@@ -67,6 +69,20 @@ export type RenderOptions = {
   readonly elapsedMilliseconds: number;
   readonly calibration?: CalibrationProfile;
 };
+
+/** This is the declared shipping selection and does not constrain explicit palette comparisons. */
+export const SHIPPING_RENDER_DEFAULTS = {
+  palette: "monochrome",
+} as const;
+
+type ResolvedRenderOptions = Omit<RenderOptions, "palette"> & {
+  readonly palette: Palette;
+};
+
+/** This fills the declared shipping palette and does not replace an explicit caller selection. */
+export function resolveRenderOptions(options: RenderOptions): ResolvedRenderOptions {
+  return { ...options, palette: options.palette ?? SHIPPING_RENDER_DEFAULTS.palette };
+}
 
 /** This is one filament propagation result and does not schedule a frame. */
 export type FilamentPropagation = {
@@ -106,15 +122,24 @@ export type LabelPlacementCandidate = {
   readonly maximumY: number;
 };
 
+/** This is one IR-derived relation label candidate and does not add an edge or infer text. */
+export type EdgeLabelCandidate = {
+  readonly id: string;
+  readonly text: string;
+  readonly priority: number;
+  readonly opacityPermille: number;
+};
+
 /** This selects non-colliding labels by calibrated priority and does not alter node material. */
 export function resolveLabelIds(
   candidates: readonly LabelPlacementCandidate[],
   calibration: CalibrationProfile,
+  densityCap = calibration.labels.densityCap,
 ): readonly string[] {
   const selected: LabelPlacementCandidate[] = [];
   const sorted = [...candidates].sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id));
   for (const candidate of sorted) {
-    if (selected.length >= calibration.labels.densityCap) {
+    if (selected.length >= densityCap) {
       break;
     }
     if (selected.every((placed) => !labelBoxesCollide(candidate, placed, calibration.labels.collisionPaddingPx))) {
@@ -130,7 +155,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
     assertVisualState(graph, visualState);
   }
   const { graph: engineGraph, trace: engineAccessTrace } = createEngineGraphView(graph);
-  const activeOptions = visualState === undefined ? options : renderOptionsForVisualState(options, visualState);
+  const activeOptions = resolveRenderOptions(visualState === undefined ? options : renderOptionsForVisualState(options, visualState));
   const calibration = activeOptions.calibration ?? DEFAULT_CALIBRATION;
   // Anchor sharing is established at the visual-graph boundary before a renderer
   // receives its structural engine view.  `sharedAnchors(Discovery, Reliability)`
@@ -141,7 +166,12 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
   const anchors = layoutAnchors(graph, calibration);
   const morphology = morphologyProfile(activeOptions.morphology);
   const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration);
-  const tokens = resolveTokens(activeOptions.palette, activeOptions.temperature, activeOptions.theme);
+  const tokens = shippingTokens(
+    resolveTokens(activeOptions.palette, activeOptions.temperature, activeOptions.theme),
+    activeOptions.palette,
+    activeOptions.theme,
+    calibration,
+  );
   const tokenColors = new Map(Object.entries(tokens).map(([name, token]) => [name, tokenColor(token, permilleScale(calibration), calibration)]));
   const fieldColor = requiredTokenColor(tokenColors, "background");
   const organization = activeOptions.organization === "indra"
@@ -191,7 +221,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
       label: "",
       labelText: materialIncludes(view.material.node, "label") ? node.visual.role : "",
       labelPriority: labelPriority(nodeMaterial.prominencePermille),
-      labelColor: requiredTokenColor(tokenColors, "text"),
+      labelColor: tokenColor(requiredToken(tokens, "text"), calibration.labels.nodeLabelOpacityPermille, calibration),
       zIndex: node.visual.label_priority,
     };
     sigmaGraph.addNode(node.id, nodeAttributesForVisualState(attributes, node.id, visualState, calibration));
@@ -233,7 +263,9 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
       propagationArcPosition: arcPosition,
       propagationContinuous: state.continuous ? 1 : 0,
       afterglowDecayPermille: calibration.motion.afterglowDecayPermille,
-      label: edge.visual.role,
+      label: "",
+      labelText: edge.kind,
+      forceLabel: false,
       labelColor: requiredTokenColor(tokenColors, "textMuted"),
       zIndex: edge.visual.label_priority,
     };
@@ -255,6 +287,48 @@ export function renderOptionsForVisualState(options: RenderOptions, state: Visua
     lodBand: state.lodBand,
     reducedMotion: state.reducedMotion,
   };
+}
+
+/** This selects IR-derived relation labels by LOD and current focus without changing graph structure. */
+export function edgeLabelCandidatesForState(
+  model: RenderModel,
+  state: Pick<VisualState, "selectedId" | "focusedId">,
+  calibration: CalibrationProfile,
+): readonly EdgeLabelCandidate[] {
+  if (model.lodBand === "macro") {
+    return [];
+  }
+  const relevant = new Set<string>();
+  const selectedRelation = state.selectedId !== null && model.graph.hasEdge(state.selectedId) ? state.selectedId : null;
+  const focusedRelation = state.focusedId !== null && model.graph.hasEdge(state.focusedId) ? state.focusedId : null;
+  if (selectedRelation !== null) {
+    relevant.add(selectedRelation);
+  }
+  if (focusedRelation !== null) {
+    relevant.add(focusedRelation);
+  }
+  if (state.focusedId !== null && model.graph.hasNode(state.focusedId)) {
+    for (const edgeId of model.graph.edges(state.focusedId)) {
+      relevant.add(edgeId);
+    }
+  }
+  const candidateIds = model.lodBand === "meso"
+    ? relevant
+    : relevant.size > 0 ? relevant : new Set(model.graph.edges());
+  return [...candidateIds].map((id) => {
+    const attributes = model.graph.getEdgeAttributes(id);
+    const selected = id === selectedRelation;
+    const focused = id === focusedRelation || (state.focusedId !== null && model.graph.hasNode(state.focusedId) && model.graph.edges(state.focusedId).includes(id));
+    return {
+      id,
+      text: attributes.labelText,
+      priority: attributes.zIndex + calibration.labels.priorityWeights.edge
+        + (selected ? calibration.labels.edgeSelectionPriorityBoost : focused ? calibration.labels.edgeFocusPriorityBoost : 0),
+      opacityPermille: selected
+        ? calibration.labels.edgeLabelSelectedOpacityPermille
+        : focused ? calibration.labels.edgeLabelFocusOpacityPermille : calibration.labels.edgeLabelOpacityPermille,
+    };
+  });
 }
 
 /** This returns the selected element's existing derivation record and does not synthesise provenance. */
@@ -481,6 +555,35 @@ function requiredToken(tokens: TokenMap, name: string): OklchToken {
     throw new TypeError("renderer prominence token is unavailable");
   }
   return token;
+}
+
+/** This calibrates the monochrome dark shipping master and leaves explicit palette or light-theme comparisons intact. */
+function shippingTokens(
+  tokens: TokenMap,
+  palette: Palette,
+  theme: Theme,
+  calibration: CalibrationProfile,
+): TokenMap {
+  if (palette !== SHIPPING_RENDER_DEFAULTS.palette) {
+    return tokens;
+  }
+  const neutral = Object.fromEntries(
+    Object.entries(tokens).map(([name, token]) => [name, calibratedMonochromeToken(token, token.lightnessPermille)]),
+  );
+  if (theme === "light") {
+    return neutral;
+  }
+  return {
+    ...neutral,
+    background: calibratedMonochromeToken(requiredToken(neutral, "background"), calibration.luminance.fieldLightnessPermille),
+    edge: calibratedMonochromeToken(requiredToken(neutral, "edge"), calibration.luminance.filamentLightnessPermille),
+    peak: calibratedMonochromeToken(requiredToken(neutral, "peak"), calibration.luminance.nodePeakLightnessPermille),
+  };
+}
+
+/** This applies a governed neutral lightness and does not introduce hue into the shipping master. */
+function calibratedMonochromeToken(token: OklchToken, lightnessPermille: number): OklchToken {
+  return { ...token, lightnessPermille, chromaPermille: 0 };
 }
 
 /** This resolves material morphology and does not derive topology from a name. */

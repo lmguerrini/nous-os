@@ -706,7 +706,7 @@ function reviewSettings(overrides: Partial<CaptureSettings>): CaptureSettings {
     morphology: "stellar",
     organization: "indra",
     lodBand: "micro",
-    palette: "interstellar",
+    palette: "monochrome",
     temperature: "balanced",
     theme: "dark",
     reducedMotion: true,
