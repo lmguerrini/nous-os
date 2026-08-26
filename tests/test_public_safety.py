@@ -111,9 +111,25 @@ def readable_tracked_files() -> list[Path]:
     """Every tracked file, scanned regardless of extension.
 
     No suffix allowlist: an extension a future contributor did not think to
-    add is not a way to make a leak invisible to this scan.
+    add is not a way to make a leak invisible to this scan. The equality guard
+    below proves this filter did not silently exclude a tracked path that is no
+    longer a regular readable file.
     """
     return [path for path in tracked_files() if path.is_file()]
+
+
+def test_every_tracked_path_is_scanned() -> None:
+    """A tracked non-file must fail closed rather than vanish from the scan."""
+    tracked = set(tracked_files())
+    scanned = set(readable_tracked_files())
+    not_scanned = sorted(
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in tracked - scanned
+    )
+    assert scanned == tracked, (
+        "tracked paths were not scanned:\n"
+        + "\n".join(not_scanned)
+    )
 
 
 def test_the_repository_actually_tracks_files() -> None:

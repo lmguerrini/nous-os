@@ -47,6 +47,50 @@ type FocusWitness = {
   };
 };
 
+type ViewportPoint = {
+  readonly x: number;
+  readonly y: number;
+};
+
+type FilamentTraceWitness = {
+  readonly edgeId: string;
+  readonly curve: {
+    readonly source: ViewportPoint;
+    readonly control: ViewportPoint;
+    readonly target: ViewportPoint;
+  };
+  readonly widthCssPixels: number;
+};
+
+type FilamentCrossSectionMeasurement = {
+  readonly edgeCount: number;
+  readonly cssPixelWidths: readonly number[];
+  readonly minimumCssPixels: number;
+  readonly medianCssPixels: number;
+  readonly maximumCssPixels: number;
+};
+
+type FilamentContinuityMeasurement = {
+  readonly tracedFilamentId: string;
+  readonly darkRowCount: number;
+  readonly tracedRowCount: number;
+  readonly devicePixelRatio: number;
+  readonly nonBackgroundChannelMargin: number;
+};
+
+type D040CompositionMeasurement = {
+  readonly communityCount: number;
+  readonly communitySizes: readonly number[];
+  readonly intraCommunityRelationCount: number;
+  readonly bridgeRelationCount: number;
+  readonly medianIntraCommunityRelationLengthWorldUnits: number | null;
+  readonly medianBridgeRelationLengthWorldUnits: number | null;
+  readonly bridgeToIntraMedianLengthRatio: number | null;
+  readonly withinCommunityDirectedDensity: number;
+  readonly minimumPairwiseAnchorSeparationWorldUnits: number | null;
+  readonly unavailableMeasurements: readonly string[];
+};
+
 type PageCaptureWitness = {
   readonly cssWidth: number;
   readonly cssHeight: number;
@@ -55,6 +99,9 @@ type PageCaptureWitness = {
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly aggregateWindowCount: number;
   readonly focus: FocusWitness | null;
+  readonly filamentTrace: FilamentTraceWitness;
+  readonly filamentCrossSection: FilamentCrossSectionMeasurement;
+  readonly d040Composition: D040CompositionMeasurement;
 };
 
 type ReviewApi = {
@@ -91,6 +138,9 @@ type ImageMeasurements = {
   readonly distinctColourCount: number;
   readonly darkestNonBackgroundPixel: PixelMeasurement;
   readonly brightestNonBackgroundPixel: PixelMeasurement;
+  readonly filamentContinuity: FilamentContinuityMeasurement;
+  readonly filamentCrossSection: FilamentCrossSectionMeasurement;
+  readonly d040Composition: D040CompositionMeasurement;
 };
 
 type CaptureRelationships = {
@@ -161,6 +211,41 @@ type ContactSheet = {
   }[];
 };
 
+type DeterminismRunWitness = {
+  readonly sequence: 1 | 2;
+  readonly runtimeVersions: RuntimeVersions;
+  readonly semanticAndLayout: {
+    readonly sha256: string;
+    readonly byteLength: number;
+  };
+  readonly visualFiles: readonly {
+    readonly fileName: string;
+    readonly sha256: string;
+  }[];
+};
+
+type DeterminismWitness = {
+  readonly cachePurgedBetweenRuns: true;
+  readonly runtime: {
+    readonly assertion: "bit-identical";
+    readonly first: RuntimeVersions;
+    readonly second: RuntimeVersions;
+  };
+  readonly semanticAndLayout: {
+    readonly assertion: "bit-identical";
+    readonly comparedFileCount: number;
+    readonly firstSha256: string;
+    readonly secondSha256: string;
+  };
+  readonly visual: {
+    readonly assertion: "bit-identical";
+    readonly comparedFileCount: number;
+    readonly firstManifestSha256: string;
+    readonly secondManifestSha256: string;
+  };
+  readonly runs: readonly [DeterminismRunWitness, DeterminismRunWitness];
+};
+
 type ReviewMetadata = {
   readonly schemaVersion: 1;
   readonly captureConfiguration: {
@@ -193,6 +278,7 @@ type ReviewMetadata = {
     } | null;
   };
   readonly contactSheet: ContactSheet | null;
+  readonly determinism: Record<ReviewProject, DeterminismWitness | null>;
 };
 
 type DecodedPng = {
@@ -231,6 +317,7 @@ const FIXTURE_PATHS: Readonly<Record<Policy, readonly string[]>> = {
 const BROWSER_PAGE_MODULE = `
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { detectCommunities } from "#engine/community.ts";
 import { layoutAnchors, sharedAnchors } from "#engine/layout.ts";
 import { mount } from "#render2d/index.ts";
 
@@ -357,10 +444,132 @@ function focusCamera(handle, focus) {
 
 function positionsFor(handle) {
   const positions = {};
-  for (const [id, anchor] of handle.model.anchors) {
+  for (const [id, anchor] of [...handle.model.anchors.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     positions[id] = handle.graphToViewport(anchor);
   }
   return positions;
+}
+
+function median(values) {
+  if (values.length === 0) {
+    return null;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  const right = sorted[middle];
+  if (right === undefined) {
+    throw new Error("review median is unavailable");
+  }
+  if (sorted.length % 2 === 1) {
+    return right;
+  }
+  const left = sorted[middle - 1];
+  if (left === undefined) {
+    throw new Error("review median left value is unavailable");
+  }
+  return (left + right) / 2;
+}
+
+function filamentWitness(handle) {
+  const filaments = handle.model.graph.edges().sort().map((edgeId) => {
+    const geometry = handle.model.filaments.get(edgeId);
+    if (geometry === undefined) {
+      throw new Error("review filament " + edgeId + " lacks geometry");
+    }
+    const curve = {
+      source: handle.graphToViewport(geometry.source),
+      control: handle.graphToViewport(geometry.control),
+      target: handle.graphToViewport(geometry.target),
+    };
+    const widthCssPixels = handle.scaleSize(handle.model.graph.getEdgeAttribute(edgeId, "size"));
+    return {
+      edgeId,
+      curve,
+      widthCssPixels,
+      verticalSpan: Math.abs(Math.max(curve.source.y, curve.control.y, curve.target.y) - Math.min(curve.source.y, curve.control.y, curve.target.y)),
+    };
+  }).sort((left, right) => right.verticalSpan - left.verticalSpan || left.edgeId.localeCompare(right.edgeId));
+  const trace = filaments[0];
+  if (trace === undefined) {
+    throw new Error("review filament measurements require a rendered relation");
+  }
+  const widths = filaments.map((filament) => filament.widthCssPixels).sort((left, right) => left - right);
+  const minimumCssPixels = widths[0];
+  const maximumCssPixels = widths.at(-1);
+  const medianCssPixels = median(widths);
+  if (minimumCssPixels === undefined || maximumCssPixels === undefined || medianCssPixels === null) {
+    throw new Error("review filament width measurements are unavailable");
+  }
+  return {
+    trace: {
+      edgeId: trace.edgeId,
+      curve: trace.curve,
+      widthCssPixels: trace.widthCssPixels,
+    },
+    crossSection: {
+      edgeCount: widths.length,
+      cssPixelWidths: widths,
+      minimumCssPixels,
+      medianCssPixels,
+      maximumCssPixels,
+    },
+  };
+}
+
+function d040Composition(visualGraph, handle) {
+  const memberships = detectCommunities({ nodes: visualGraph.nodes, edges: visualGraph.edges });
+  const communityKeys = [...new Set(memberships.values())].sort();
+  const communitySizes = communityKeys.map((key) => [...memberships.values()].filter((value) => value === key).length).sort((left, right) => left - right);
+  const relationLengths = { intra: [], bridge: [] };
+  for (const edge of [...visualGraph.edges].sort((left, right) => left.id.localeCompare(right.id))) {
+    const sourceCommunity = memberships.get(edge.source);
+    const targetCommunity = memberships.get(edge.target);
+    const source = handle.model.anchors.get(edge.source);
+    const target = handle.model.anchors.get(edge.target);
+    if (sourceCommunity === undefined || targetCommunity === undefined || source === undefined || target === undefined) {
+      throw new Error("D-040 composition relation " + edge.id + " lacks membership or anchor");
+    }
+    const length = Math.hypot(source.x - target.x, source.y - target.y, source.z - target.z);
+    relationLengths[sourceCommunity === targetCommunity ? "intra" : "bridge"].push(length);
+  }
+  const intraMedian = median(relationLengths.intra);
+  const bridgeMedian = median(relationLengths.bridge);
+  const anchors = [...handle.model.anchors.entries()].sort(([left], [right]) => left.localeCompare(right));
+  let minimumPairwiseAnchorSeparation = null;
+  for (const [index, [, anchor]] of anchors.entries()) {
+    for (const [, other] of anchors.slice(index + 1)) {
+      const separation = Math.hypot(anchor.x - other.x, anchor.y - other.y, anchor.z - other.z);
+      minimumPairwiseAnchorSeparation = minimumPairwiseAnchorSeparation === null
+        ? separation
+        : Math.min(minimumPairwiseAnchorSeparation, separation);
+    }
+  }
+  const unavailableMeasurements = [];
+  if (intraMedian === null) {
+    unavailableMeasurements.push("medianIntraCommunityRelationLengthWorldUnits: no intra-community relations");
+  }
+  if (bridgeMedian === null) {
+    unavailableMeasurements.push("medianBridgeRelationLengthWorldUnits: no bridge relations");
+  }
+  if (intraMedian === null || bridgeMedian === null || intraMedian === 0) {
+    unavailableMeasurements.push("bridgeToIntraMedianLengthRatio: a non-zero intra-community median and a bridge median are required");
+  }
+  if (minimumPairwiseAnchorSeparation === null) {
+    unavailableMeasurements.push("minimumPairwiseAnchorSeparationWorldUnits: fewer than two anchors");
+  }
+  const possibleIntraRelations = communitySizes.reduce((total, size) => total + (size * (size - 1)), 0);
+  return {
+    communityCount: communitySizes.length,
+    communitySizes,
+    intraCommunityRelationCount: relationLengths.intra.length,
+    bridgeRelationCount: relationLengths.bridge.length,
+    medianIntraCommunityRelationLengthWorldUnits: intraMedian,
+    medianBridgeRelationLengthWorldUnits: bridgeMedian,
+    bridgeToIntraMedianLengthRatio: intraMedian === null || bridgeMedian === null || intraMedian === 0 ? null : bridgeMedian / intraMedian,
+    withinCommunityDirectedDensity: possibleIntraRelations === 0 ? 0 : relationLengths.intra.length / possibleIntraRelations,
+    minimumPairwiseAnchorSeparationWorldUnits: minimumPairwiseAnchorSeparation,
+    unavailableMeasurements,
+  };
 }
 
 window.__review = {
@@ -390,7 +599,8 @@ window.__review = {
       throw new Error("review capture was not initialized");
     }
     product?.destroy();
-    product = mount(container, requiredGraph(settings.policy), {
+    const visualGraph = requiredGraph(settings.policy);
+    product = mount(container, visualGraph, {
       morphology: settings.morphology,
       organization: settings.organization,
       palette: settings.palette,
@@ -412,6 +622,7 @@ window.__review = {
     await nextPaint();
     await nextPaint();
     const box = container.getBoundingClientRect();
+    const filament = filamentWitness(live);
     return {
       cssWidth: box.width,
       cssHeight: box.height,
@@ -420,6 +631,9 @@ window.__review = {
       positions: positionsFor(live),
       aggregateWindowCount: live.model.windows.length,
       focus: focusWitness,
+      filamentTrace: filament.trace,
+      filamentCrossSection: filament.crossSection,
+      d040Composition: d040Composition(visualGraph, live),
     };
   },
   destroy() {
@@ -433,14 +647,16 @@ test("deterministic review capture generator", async ({ page, browser }, testInf
   const project = requiredReviewProject(testInfo.project.name);
   const devicePixelRatio = project === "review-dpr-1" ? 1 : 2;
   expect(await page.evaluate(() => window.devicePixelRatio)).toBe(devicePixelRatio);
-  await page.setContent("<!doctype html><html><body></body></html>");
-  await page.evaluate(() => {
-    const epoch = 1_735_689_600_000;
-    Date.now = (): number => epoch;
-    performance.now = (): number => 0;
-    const nativeRequestAnimationFrame = window.requestAnimationFrame.bind(window);
-    window.requestAnimationFrame = (callback): number => nativeRequestAnimationFrame(() => callback(0));
-  });
+
+  if (project === "review-dpr-1") {
+    await rm(REVIEW_DIRECTORY, { recursive: true, force: true });
+    await mkdir(CAPTURE_DIRECTORY, { recursive: true });
+    await mkdir(CONTACT_SHEET_DIRECTORY, { recursive: true });
+    await mkdir(join(REVIEW_DIRECTORY, "evidence"), { recursive: true });
+  }
+  const metadata = project === "review-dpr-1"
+    ? emptyMetadata()
+    : await loadMetadata();
 
   const fixtures = await loadFixtures();
   for (const fixture of fixtures.values()) {
@@ -452,20 +668,6 @@ test("deterministic review capture generator", async ({ page, browser }, testInf
     parameterCount: CALIBRATION_PARAMETER_PATHS.length,
     serializedDefaultCalibrationSha256: sha256Text(JSON.stringify(DEFAULT_CALIBRATION)),
   };
-  const provenance = {
-    productCommitSha: await currentCommitSha(),
-    runtimeVersions: await runtimeVersions(browser, page),
-  };
-
-  if (project === "review-dpr-1") {
-    await rm(REVIEW_DIRECTORY, { recursive: true, force: true });
-    await mkdir(CAPTURE_DIRECTORY, { recursive: true });
-    await mkdir(CONTACT_SHEET_DIRECTORY, { recursive: true });
-    await mkdir(join(REVIEW_DIRECTORY, "evidence"), { recursive: true });
-  }
-  const metadata = project === "review-dpr-1"
-    ? emptyMetadata()
-    : await loadMetadata();
 
   const bundled = await build({
     bundle: true,
@@ -481,7 +683,71 @@ test("deterministic review capture generator", async ({ page, browser }, testInf
     },
   });
   const output = requiredItem(bundled.outputFiles, 0, "review page module output");
-  await page.addScriptTag({ content: output.text });
+  const firstProvenance = {
+    productCommitSha: await currentCommitSha(),
+    runtimeVersions: await installReviewPage(page, output.text, fixtures, browser),
+  };
+  const firstRecordStart = metadata.records.length;
+  try {
+    if (project === "review-dpr-1") {
+      await captureDprOneSet(page, metadata, fixtures, calibration, firstProvenance, devicePixelRatio);
+      await composeOverview(metadata.records);
+    } else {
+      await captureDprTwoSet(page, metadata, fixtures, calibration, firstProvenance, devicePixelRatio);
+    }
+  } finally {
+    await destroyReviewPage(page);
+  }
+  const firstRecords = metadata.records.slice(firstRecordStart);
+  const firstVisualBytes = await capturedVisualBytes(firstRecords);
+
+  await page.goto("about:blank");
+  await purgeBrowserCache(page);
+
+  const secondProvenance = {
+    productCommitSha: await currentCommitSha(),
+    runtimeVersions: await installReviewPage(page, output.text, fixtures, browser),
+  };
+  const repeatedMetadata = emptyMetadata();
+  try {
+    if (project === "review-dpr-1") {
+      await captureDprOneSet(page, repeatedMetadata, fixtures, calibration, secondProvenance, devicePixelRatio);
+    } else {
+      await captureDprTwoSet(page, repeatedMetadata, fixtures, calibration, secondProvenance, devicePixelRatio);
+    }
+  } finally {
+    await destroyReviewPage(page);
+  }
+  const secondVisualBytes = await capturedVisualBytes(repeatedMetadata.records);
+  metadata.determinism[project] = assertCaptureDeterminism(
+    firstRecords,
+    repeatedMetadata.records,
+    firstVisualBytes,
+    secondVisualBytes,
+    firstProvenance.runtimeVersions,
+    secondProvenance.runtimeVersions,
+  );
+
+  metadata.records.sort((left, right) => left.fileName.localeCompare(right.fileName));
+  await writeFile(METADATA_FILE, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+  await writeManifest(metadata.records.length);
+});
+
+async function installReviewPage(
+  page: Page,
+  pageModule: string,
+  fixtures: ReadonlyMap<Policy, Fixture>,
+  browser: Browser,
+): Promise<RuntimeVersions> {
+  await page.setContent("<!doctype html><html><body></body></html>");
+  await page.evaluate(() => {
+    const epoch = 1_735_689_600_000;
+    Date.now = (): number => epoch;
+    performance.now = (): number => 0;
+    const nativeRequestAnimationFrame = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (callback): number => nativeRequestAnimationFrame(() => callback(0));
+  });
+  await page.addScriptTag({ content: pageModule });
   await page.evaluate(async (payloads) => {
     const api = window.__review;
     if (api === undefined) {
@@ -489,24 +755,180 @@ test("deterministic review capture generator", async ({ page, browser }, testInf
     }
     await api.initialize(payloads);
   }, Object.fromEntries([...fixtures.entries()].map(([policy, fixture]) => [policy, fixture.payload])) as Record<Policy, unknown>);
+  return runtimeVersions(browser, page);
+}
 
+async function destroyReviewPage(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    window.__review?.destroy();
+  });
+}
+
+async function purgeBrowserCache(page: Page): Promise<void> {
+  const session = await page.context().newCDPSession(page);
   try {
-    if (project === "review-dpr-1") {
-      await captureDprOneSet(page, metadata, fixtures, calibration, provenance, devicePixelRatio);
-      await composeOverview(metadata.records);
-    } else {
-      await captureDprTwoSet(page, metadata, fixtures, calibration, provenance, devicePixelRatio);
-    }
+    await session.send("Network.clearBrowserCache");
   } finally {
-    await page.evaluate(() => {
-      window.__review?.destroy();
-    });
+    await session.detach();
   }
+}
 
-  metadata.records.sort((left, right) => left.fileName.localeCompare(right.fileName));
-  await writeFile(METADATA_FILE, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
-  await writeManifest(metadata.records.length);
-});
+async function capturedVisualBytes(records: readonly CaptureRecord[]): Promise<ReadonlyMap<string, Buffer>> {
+  const bytes = new Map<string, Buffer>();
+  for (const record of [...records].sort((left, right) => left.fileName.localeCompare(right.fileName))) {
+    bytes.set(record.fileName, await readFile(join(REVIEW_DIRECTORY, record.fileName)));
+  }
+  return bytes;
+}
+
+function assertCaptureDeterminism(
+  firstRecords: readonly CaptureRecord[],
+  secondRecords: readonly CaptureRecord[],
+  firstVisualBytes: ReadonlyMap<string, Buffer>,
+  secondVisualBytes: ReadonlyMap<string, Buffer>,
+  firstRuntimeVersions: RuntimeVersions,
+  secondRuntimeVersions: RuntimeVersions,
+): DeterminismWitness {
+  if (firstRecords.length === 0 || secondRecords.length === 0) {
+    throw new Error("review determinism requires two non-empty capture runs");
+  }
+  const firstSemanticAndLayout = semanticAndLayoutBytes(firstRecords);
+  const secondSemanticAndLayout = semanticAndLayoutBytes(secondRecords);
+  expect(
+    secondRuntimeVersions,
+    "review capture runtime must be pinned identically across both cache-purged runs",
+  ).toEqual(firstRuntimeVersions);
+  expect(
+    secondSemanticAndLayout.equals(firstSemanticAndLayout),
+    "semantic and layout capture bytes must be bit-identical across both cache-purged runs",
+  ).toBe(true);
+
+  const firstNames = [...firstVisualBytes.keys()].sort();
+  const secondNames = [...secondVisualBytes.keys()].sort();
+  expect(
+    secondNames,
+    "visual comparison must contain the same capture names in both cache-purged runs",
+  ).toEqual(firstNames);
+  for (const fileName of firstNames) {
+    const firstBytes = requiredItem(firstVisualBytes, fileName, "first visual capture bytes");
+    const secondBytes = requiredItem(secondVisualBytes, fileName, "second visual capture bytes");
+    expect(
+      secondBytes.equals(firstBytes),
+      `visual capture ${fileName} must be bit-identical across both cache-purged runs`,
+    ).toBe(true);
+  }
+  assertDeterminismFailureControls(firstSemanticAndLayout, firstVisualBytes, firstRuntimeVersions);
+
+  const firstRun = determinismRunWitness(1, firstRecords, firstVisualBytes, firstRuntimeVersions, firstSemanticAndLayout);
+  const secondRun = determinismRunWitness(2, secondRecords, secondVisualBytes, secondRuntimeVersions, secondSemanticAndLayout);
+  return {
+    cachePurgedBetweenRuns: true,
+    runtime: {
+      assertion: "bit-identical",
+      first: firstRuntimeVersions,
+      second: secondRuntimeVersions,
+    },
+    semanticAndLayout: {
+      assertion: "bit-identical",
+      comparedFileCount: firstNames.length,
+      firstSha256: sha256Bytes(firstSemanticAndLayout),
+      secondSha256: sha256Bytes(secondSemanticAndLayout),
+    },
+    visual: {
+      assertion: "bit-identical",
+      comparedFileCount: firstNames.length,
+      firstManifestSha256: visualManifestSha256(firstVisualBytes),
+      secondManifestSha256: visualManifestSha256(secondVisualBytes),
+    },
+    runs: [firstRun, secondRun],
+  };
+}
+
+function semanticAndLayoutBytes(records: readonly CaptureRecord[]): Buffer {
+  const values = [...records]
+    .sort((left, right) => left.fileName.localeCompare(right.fileName))
+    .map((record) => ({
+      fileName: record.fileName,
+      pixelDimensions: record.pixelDimensions,
+      viewport: record.viewport,
+      devicePixelRatio: record.devicePixelRatio,
+      fixture: record.fixture,
+      policy: record.policy,
+      morphology: record.morphology,
+      organization: record.organization,
+      lodBand: record.lodBand,
+      theme: record.theme,
+      palette: record.palette,
+      temperature: record.temperature,
+      reducedMotion: record.reducedMotion,
+      elapsedMilliseconds: record.elapsedMilliseconds,
+      cameraState: record.cameraState,
+      viewportPositions: Object.fromEntries(Object.entries(record.viewportPositions).sort(([left], [right]) => left.localeCompare(right))),
+      aggregateWindowCount: record.aggregateWindowCount,
+      focus: record.focus,
+      calibration: record.calibration,
+      productCommitSha: record.productCommitSha,
+      d040Composition: record.measurements.d040Composition,
+    }));
+  return Buffer.from(JSON.stringify(values), "utf8");
+}
+
+function determinismRunWitness(
+  sequence: 1 | 2,
+  records: readonly CaptureRecord[],
+  visualBytes: ReadonlyMap<string, Buffer>,
+  runtimeVersions: RuntimeVersions,
+  semanticAndLayout: Buffer,
+): DeterminismRunWitness {
+  return {
+    sequence,
+    runtimeVersions,
+    semanticAndLayout: {
+      sha256: sha256Bytes(semanticAndLayout),
+      byteLength: semanticAndLayout.length,
+    },
+    visualFiles: [...records]
+      .sort((left, right) => left.fileName.localeCompare(right.fileName))
+      .map((record) => ({
+        fileName: record.fileName,
+        sha256: sha256Bytes(requiredItem(visualBytes, record.fileName, "visual capture bytes")),
+      })),
+  };
+}
+
+function visualManifestSha256(visualBytes: ReadonlyMap<string, Buffer>): string {
+  const entries = [...visualBytes.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([fileName, bytes]) => ({ fileName, sha256: sha256Bytes(bytes) }));
+  return sha256Text(JSON.stringify(entries));
+}
+
+function assertDeterminismFailureControls(
+  semanticAndLayout: Buffer,
+  visualBytes: ReadonlyMap<string, Buffer>,
+  runtimeVersions: RuntimeVersions,
+): void {
+  const changedSemanticAndLayout = Buffer.concat([semanticAndLayout, Buffer.from([0])]);
+  expect(() => expect(
+    changedSemanticAndLayout.equals(semanticAndLayout),
+    "isolated semantic and layout control changes one byte",
+  ).toBe(true)).toThrow();
+
+  const visualFileName = requiredItem([...visualBytes.keys()].sort(), 0, "visual control capture name");
+  const visual = requiredItem(visualBytes, visualFileName, "visual control capture bytes");
+  const changedVisual = Buffer.from(visual);
+  changedVisual[0] = (changedVisual[0] ?? 0) ^ 1;
+  expect(() => expect(
+    changedVisual.equals(visual),
+    "isolated visual control changes one byte",
+  ).toBe(true)).toThrow();
+
+  const changedRuntime = { ...runtimeVersions, browser: `${runtimeVersions.browser} isolated-control` };
+  expect(() => expect(
+    changedRuntime,
+    "isolated runtime control changes only the browser version",
+  ).toEqual(runtimeVersions)).toThrow();
+}
 
 async function captureDprOneSet(
   page: Page,
@@ -695,7 +1117,7 @@ async function captureRecord(
     calibration,
     productCommitSha: provenance.productCommitSha,
     runtimeVersions: provenance.runtimeVersions,
-    measurements: measureImage(image),
+    measurements: measureImage(image, witness),
     relationships: {},
   };
 }
@@ -841,12 +1263,21 @@ function emptyMetadata(): ReviewMetadata {
         fileName: `captures/grid-${morphology}-${lodBand}-dpr-1.png`,
       }))),
     },
+    determinism: {
+      "review-dpr-1": null,
+      "review-dpr-2": null,
+    },
   };
 }
 
 async function loadMetadata(): Promise<ReviewMetadata> {
   const parsed = JSON.parse(await readFile(METADATA_FILE, "utf8")) as ReviewMetadata;
-  if (parsed.schemaVersion !== 1 || parsed.records.length === 0 || parsed.contactSheet === null) {
+  if (
+    parsed.schemaVersion !== 1
+    || parsed.records.length === 0
+    || parsed.contactSheet === null
+    || parsed.determinism["review-dpr-1"] === null
+  ) {
     throw new Error("review DPR 2 requires the DPR 1 capture package");
   }
   return parsed;
@@ -884,7 +1315,7 @@ async function runtimeVersions(browser: Browser, page: Page): Promise<RuntimeVer
   };
 }
 
-function measureImage(image: DecodedPng): ImageMeasurements {
+function measureImage(image: DecodedPng, witness: PageCaptureWitness): ImageMeasurements {
   let litPixels = 0;
   let darkest: PixelMeasurement | undefined;
   let brightest: PixelMeasurement | undefined;
@@ -920,7 +1351,114 @@ function measureImage(image: DecodedPng): ImageMeasurements {
     distinctColourCount: distinct.size,
     darkestNonBackgroundPixel: darkest,
     brightestNonBackgroundPixel: brightest,
+    filamentContinuity: measureFilamentContinuity(image, witness.filamentTrace),
+    filamentCrossSection: witness.filamentCrossSection,
+    d040Composition: witness.d040Composition,
   };
+}
+
+function measureFilamentContinuity(image: DecodedPng, trace: FilamentTraceWitness): FilamentContinuityMeasurement {
+  const verticalRange = quadraticVerticalRange(trace.curve);
+  const firstRow = Math.max(0, Math.ceil(verticalRange.minimum - 0.5));
+  const lastRow = Math.min(CAPTURE_HEIGHT - 1, Math.floor(verticalRange.maximum - 0.5));
+  if (lastRow < firstRow) {
+    throw new Error(`filament ${trace.edgeId} does not cross a screenshot row`);
+  }
+  const field = fieldPixel(image);
+  const devicePixelRatio = image.width / CAPTURE_WIDTH;
+  let darkRowCount = 0;
+  for (let row = firstRow; row <= lastRow; row += 1) {
+    const crossings = quadraticCrossingsAtY(trace.curve, row + 0.5);
+    if (crossings.length === 0 || !crossings.some((x) => filamentCrossSectionIsLit(image, x, row, trace.widthCssPixels, devicePixelRatio, field))) {
+      darkRowCount += 1;
+    }
+  }
+  return {
+    tracedFilamentId: trace.edgeId,
+    darkRowCount,
+    tracedRowCount: lastRow - firstRow + 1,
+    devicePixelRatio,
+    nonBackgroundChannelMargin: LIT_PIXEL_CHANNEL_MARGIN,
+  };
+}
+
+function quadraticVerticalRange(curve: FilamentTraceWitness["curve"]): { readonly minimum: number; readonly maximum: number } {
+  const values = [curve.source.y, curve.control.y, curve.target.y];
+  const denominator = curve.source.y - (2 * curve.control.y) + curve.target.y;
+  if (denominator !== 0) {
+    const parameter = (curve.source.y - curve.control.y) / denominator;
+    if (parameter > 0 && parameter < 1) {
+      values.push(quadraticPoint(curve, parameter).y);
+    }
+  }
+  return { minimum: Math.min(...values), maximum: Math.max(...values) };
+}
+
+function quadraticCrossingsAtY(curve: FilamentTraceWitness["curve"], y: number): readonly number[] {
+  const quadratic = curve.source.y - (2 * curve.control.y) + curve.target.y;
+  const linear = 2 * (curve.control.y - curve.source.y);
+  const constant = curve.source.y - y;
+  if (quadratic === 0) {
+    if (linear === 0) {
+      return [];
+    }
+    return xForFilamentParameters(curve, [-constant / linear]);
+  }
+  const discriminant = (linear * linear) - (4 * quadratic * constant);
+  if (discriminant < 0) {
+    return [];
+  }
+  const root = Math.sqrt(discriminant);
+  return xForFilamentParameters(curve, [
+    (-linear - root) / (2 * quadratic),
+    (-linear + root) / (2 * quadratic),
+  ]);
+}
+
+function xForFilamentParameters(curve: FilamentTraceWitness["curve"], parameters: readonly number[]): readonly number[] {
+  const values: number[] = [];
+  for (const parameter of parameters) {
+    if (parameter < 0 || parameter > 1) {
+      continue;
+    }
+    const x = quadraticPoint(curve, parameter).x;
+    if (!values.some((value) => value === x)) {
+      values.push(x);
+    }
+  }
+  return values;
+}
+
+function quadraticPoint(curve: FilamentTraceWitness["curve"], parameter: number): ViewportPoint {
+  const inverse = 1 - parameter;
+  return {
+    x: (inverse * inverse * curve.source.x) + (2 * inverse * parameter * curve.control.x) + (parameter * parameter * curve.target.x),
+    y: (inverse * inverse * curve.source.y) + (2 * inverse * parameter * curve.control.y) + (parameter * parameter * curve.target.y),
+  };
+}
+
+function filamentCrossSectionIsLit(
+  image: DecodedPng,
+  xCssPixels: number,
+  rowCssPixels: number,
+  widthCssPixels: number,
+  devicePixelRatio: number,
+  field: readonly [number, number, number],
+): boolean {
+  const centerX = Math.round(xCssPixels * devicePixelRatio);
+  const firstX = Math.max(0, centerX - Math.ceil((widthCssPixels * devicePixelRatio) / 2));
+  const lastX = Math.min(image.width - 1, centerX + Math.ceil((widthCssPixels * devicePixelRatio) / 2));
+  const firstY = Math.max(0, Math.floor(rowCssPixels * devicePixelRatio));
+  const lastY = Math.min(image.height - 1, Math.ceil((rowCssPixels + 1) * devicePixelRatio) - 1);
+  for (let y = firstY; y <= lastY; y += 1) {
+    for (let x = firstX; x <= lastX; x += 1) {
+      const offset = ((y * image.width) + x) * 4;
+      if (isLitPixel(image.data[offset] ?? 0, image.data[offset + 1] ?? 0, image.data[offset + 2] ?? 0, field)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function fieldPixel(image: DecodedPng): readonly [number, number, number] {
