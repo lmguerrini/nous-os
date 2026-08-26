@@ -45,6 +45,24 @@ export type CalibrationProfile = {
     readonly framingMarginPermille: number;
     /** This is the floor below which two anchors are treated as coincident, in CSS pixels. */
     readonly minimumPairwiseAnchorSeparationPx: number;
+    /** This is the empty CSS-pixel gap kept beyond the largest node diameter and does not size a node. */
+    readonly minimumPairwiseAnchorSeparationGapPx: number;
+    /** This caps pairwise screen-separation correction passes and does not change force-settling iterations. */
+    readonly minimumPairwiseAnchorSeparationIterations: number;
+    /** This is the reference capture width used to derive world-space separation and does not set a page width. */
+    readonly referenceFrameWidthPx: number;
+    /** This is the reference capture height used to derive world-space separation and does not set a page height. */
+    readonly referenceFrameHeightPx: number;
+    /** This is the lower bridge-to-intra median ratio, scaled by one thousand, and does not select graph communities. */
+    readonly minimumBridgeToIntraMedianRatioPermille: number;
+    /** This is the upper bridge-to-intra median ratio, scaled by one thousand, and does not shorten a relation itself. */
+    readonly maximumBridgeToIntraMedianRatioPermille: number;
+    /** This is the smallest occupied fraction of complete anchor bounds, scaled by one thousand, and does not remove intentional inter-community void. */
+    readonly minimumCommunityRegionFrameUtilisationPermille: number;
+    /** This scales the radial distribution of community regions and does not alter their members or local geometry. */
+    readonly communityRegionDistributionRadiusPermille: number;
+    /** This scales the vertical radial distribution of community regions and does not choose the layout aspect target. */
+    readonly communityRegionDistributionVerticalRadiusPermille: number;
   };
   readonly salience: {
     readonly degreeExponentPermille: number;
@@ -151,6 +169,15 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "layout.cellJitterPermille",
   "layout.framingMarginPermille",
   "layout.minimumPairwiseAnchorSeparationPx",
+  "layout.minimumPairwiseAnchorSeparationGapPx",
+  "layout.minimumPairwiseAnchorSeparationIterations",
+  "layout.referenceFrameWidthPx",
+  "layout.referenceFrameHeightPx",
+  "layout.minimumBridgeToIntraMedianRatioPermille",
+  "layout.maximumBridgeToIntraMedianRatioPermille",
+  "layout.minimumCommunityRegionFrameUtilisationPermille",
+  "layout.communityRegionDistributionRadiusPermille",
+  "layout.communityRegionDistributionVerticalRadiusPermille",
   "salience.degreeExponentPermille",
   "salience.minNodeSizePx",
   "salience.maxNodeSizePx",
@@ -274,7 +301,7 @@ export const CALIBRATION_PARAMETER_PATHS = [
 
 /** This is the default renderer profile and does not choose a semantic interpretation. All fractional values are scaled integers because canonical JSON accepts only integers. */
 export const DEFAULT_CALIBRATION: CalibrationProfile = {
-  layout: { forceStrengthPermille: 850, idealEdgeLengthPx: 120, iterations: 180, gravityPermille: 90, seed: 17, cellJitterPermille: 340, framingMarginPermille: 150, minimumPairwiseAnchorSeparationPx: 60 },
+  layout: { forceStrengthPermille: 850, idealEdgeLengthPx: 120, iterations: 180, gravityPermille: 90, seed: 17, cellJitterPermille: 340, framingMarginPermille: 150, minimumPairwiseAnchorSeparationPx: 16, minimumPairwiseAnchorSeparationGapPx: 2, minimumPairwiseAnchorSeparationIterations: 180, referenceFrameWidthPx: 1200, referenceFrameHeightPx: 800, minimumBridgeToIntraMedianRatioPermille: 2000, maximumBridgeToIntraMedianRatioPermille: 5000, minimumCommunityRegionFrameUtilisationPermille: 100, communityRegionDistributionRadiusPermille: 600, communityRegionDistributionVerticalRadiusPermille: 1100 },
   salience: { degreeExponentPermille: 650, minNodeSizePx: 2, maxNodeSizePx: 14 },
   luminance: { fieldLightnessPermille: 60, filamentLightnessPermille: 700, nodePeakLightnessPermille: 960, haloRadiusFactorPermille: 1100, haloFalloffPermille: 250, haloSampleCount: 12, coreBeforeHaloMinimumPx: 4, prominenceLightnessGainPermille: 850, prominenceChromaFalloffPermille: 1000, haloProbeRadiusFractionPermille: 700, minimumNodeContrastPermille: 1200, minimumCompositedPixelChannelDelta: 6, minimumRenderedNonHueSeparationMicro: 10, minimumRenderedCvdSeparationMicro: 100 },
   filament: { baseWidthPx: 1,
@@ -284,7 +311,7 @@ export const DEFAULT_CALIBRATION: CalibrationProfile = {
     neural: { nodeSizeMultiplierPermille: 900, filamentWidthMultiplierPermille: 1050, filamentWidthStartPermille: 1800, filamentWidthEndPermille: 500, filamentWobbleAmplitudePermille: 80, junctionThickeningPermille: 800, sheathScalePermille: 2700, sheathAlphaPermille: 130, coreScalePermille: 400, hotMixPermille: 850, hotAlphaPermille: 950, hotCoreMaximumHop: 2, filamentPhaseSeed: 31, wobbleFrequencyMilliradians: 9425, opacityPermille: 900, curvatureMagnitudePermille: 1150, haloRadiusMultiplierPermille: 1000, haloIntensityPermille: 900, terminalSizeMultiplierPermille: 1000 },
     mycelium: { nodeSizeMultiplierPermille: 1000, filamentWidthMultiplierPermille: 950, filamentWidthStartPermille: 1250, filamentWidthEndPermille: 1250, filamentWobbleAmplitudePermille: 240, junctionThickeningPermille: 750, sheathScalePermille: 2700, sheathAlphaPermille: 200, coreScalePermille: 400, hotMixPermille: 0, hotAlphaPermille: 0, hotCoreMaximumHop: 0, filamentPhaseSeed: 47, wobbleFrequencyMilliradians: 18850, opacityPermille: 820, curvatureMagnitudePermille: 1350, haloRadiusMultiplierPermille: 620, haloIntensityPermille: 170, terminalSizeMultiplierPermille: 500 },
   },
-  lod: { bandThresholds: [0, 250, 500, 750], hysteresisMarginPermille: 50, crossfadeDurationMs: 220, macroNodeSizeMultiplierPermille: 1250, macroFilamentWidthMultiplierPermille: 500, macroAggregateOutlineWidthMultiplierPermille: 350, macroAggregateOutlineAlphaPermille: 200, microHopDistanceLightnessStepPermille: 60, minimumAdjacentPixelDeltaPermille: 1 },
+  lod: { bandThresholds: [0, 250, 500, 750], hysteresisMarginPermille: 50, crossfadeDurationMs: 220, macroNodeSizeMultiplierPermille: 1250, macroFilamentWidthMultiplierPermille: 500, macroAggregateOutlineWidthMultiplierPermille: 1000, macroAggregateOutlineAlphaPermille: 200, microHopDistanceLightnessStepPermille: 60, minimumAdjacentPixelDeltaPermille: 1 },
   labels: { densityCap: 12, nodeLabelSizePx: 10, nodeLabelOpacityPermille: 520, edgeDensityCap: 3, edgeLabelSizePx: 9, edgeLabelOpacityPermille: 420, edgeLabelFocusOpacityPermille: 700, edgeLabelSelectedOpacityPermille: 920, edgeFocusPriorityBoost: 600, edgeSelectionPriorityBoost: 1000, priorityWeights: { node: 1000, edge: 500, assertion: 900, bridge: 1100 }, collisionPaddingPx: 5 },
   aggregate: { disclosureThreshold: 12, windowPaddingPx: 14, windowStrokeAlphaPermille: 260 },
   motion: { propagationSpeedPxPerSecond: 240, afterglowDecayPermille: 850, minimumReducedMotionPixelDeltaPermille: 1, reducedMotionSwitch: false },

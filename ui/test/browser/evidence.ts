@@ -63,6 +63,17 @@ type PickWitness = {
   readonly onScreen?: boolean;
 };
 
+/** This records one forced distant picker answer and does not leave the mounted picker altered. */
+type DistantRelationPickControl = {
+  readonly before: PickWitness;
+  readonly forced: PickWitness;
+  readonly restored: PickWitness;
+};
+
+type MutableRenderHandle = {
+  -readonly [Key in keyof RenderHandle]: RenderHandle[Key];
+};
+
 type DenseFilamentDistance = {
   readonly distancePx: number;
   readonly deviationBoundPx: number;
@@ -95,6 +106,11 @@ type RelationPickMeasurement = {
   readonly samples: readonly RelationPickSample[];
 };
 
+type DirectRelationProbe = {
+  readonly point: { readonly x: number; readonly y: number };
+  readonly returnedEdgeId: string | null;
+};
+
 /** This explains whether a relation's live target returns established its own coverage. */
 type RelationPickCoverage = {
   readonly edgeId: string;
@@ -104,6 +120,8 @@ type RelationPickCoverage = {
   readonly coveringEdgeId: string | null;
   /** The analytic coincident-partner certificate consulted when no direct self return existed. */
   readonly certifiedCoincidentPartnerIds: readonly string[];
+  /** The per-probe analytic certificate for another relation that the live target actually returned. */
+  readonly certifiedOccludingPartnerIds: readonly string[];
 };
 
 /** The no-screenshot portion of the live production picking-target observation. */
@@ -150,7 +168,10 @@ type Snapshot = {
   readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
   readonly semanticDigest: string;
+  readonly camera: RenderCameraState;
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
+  /** These are control points from the live Sigma draw data, in CSS viewport pixels. */
+  readonly edgeControlPoints: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly propagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: boolean; readonly endpointExpressed: boolean }>>;
   readonly renderedPropagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: number; readonly afterglowDecayPermille: number }>>;
   readonly windows: readonly {
@@ -206,6 +227,7 @@ type EvidenceApi = {
   clearFocus(): Promise<Snapshot>;
   read(): Snapshot;
   pick(edgeId: string, parameter: number, offsetPixels?: number): PickWitness;
+  proveDistantRelationPickControl(edgeId: string, parameter: number, offsetPixels: number): DistantRelationPickControl;
   unambiguousParameters(edgeId: string): readonly number[];
   coincidentPartners(edgeId: string): readonly string[] | null;
   wrongRelationPickCoverageControl(): RelationPickCoverage;
@@ -219,7 +241,7 @@ type EvidenceApi = {
   assertDerivedOriginRefusalControl(): number;
   assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean };
   readLiveRelationMaterialBindings(): readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[];
-  proveStackedMaterialControlRejects(): { readonly relationId: string; readonly message: string };
+  proveStackedMaterialControlRejects(): { readonly relationId: string; readonly materialTypes: readonly string[]; readonly message: string };
   shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }>;
 };
 
@@ -401,6 +423,10 @@ async function boot(): Promise<void> {
         return { x: point.x, y: point.y };
       });
     }
+    const edgeControlPoints: Record<string, { x: number; y: number }> = {};
+    for (const witness of handle.readRelationGeometryWitnesses()) {
+      edgeControlPoints[witness.relationId] = witness.controlPoint;
+    }
     const propagation: Record<string, { arcPosition: number; continuous: boolean; endpointExpressed: boolean }> = {};
     const renderedPropagation: Record<string, { arcPosition: number; continuous: number; afterglowDecayPermille: number }> = {};
     for (const [id, state] of handle.model.propagation) {
@@ -434,7 +460,9 @@ async function boot(): Promise<void> {
       anchors,
       incidence,
       semanticDigest: semanticDigest(requiredGraph(graphs, policy)),
+      camera: handle.readCameraState(),
       positions,
+      edgeControlPoints,
       propagation,
       renderedPropagation,
       windows: handle.model.windows.map((window) => {
@@ -604,57 +632,25 @@ async function boot(): Promise<void> {
     },
     read,
     pick(edgeId, parameter, offsetPixels = 0): PickWitness {
+      return relationPickWitness(requiredHandle(product), edgeId, parameter, offsetPixels);
+    },
+    proveDistantRelationPickControl(edgeId, parameter, offsetPixels): DistantRelationPickControl {
       const handle = requiredHandle(product);
-      const filament = handle.model.filaments.get(edgeId);
-      if (filament === undefined) {
-        throw new Error(`unknown edge ${edgeId}`);
+      const before = relationPickWitness(handle, edgeId, parameter, offsetPixels);
+      const mutableHandle = handle as MutableRenderHandle;
+      const originalPick = mutableHandle.pickEdgeAtPoint;
+      mutableHandle.pickEdgeAtPoint = (): string => edgeId;
+      let forced: PickWitness;
+      try {
+        forced = relationPickWitness(handle, edgeId, parameter, offsetPixels);
+      } finally {
+        mutableHandle.pickEdgeAtPoint = originalPick;
       }
-      const world = quadraticPoint(filament, parameter);
-      const viewport = handle.graphToViewport(world);
-      const normal = normalAt(filament.source, filament.control, filament.target, parameter);
-      const point = { x: viewport.x + (normal.x * offsetPixels), y: viewport.y + (normal.y * offsetPixels) };
-      // A point outside the drawn area cannot be picked by anything; report it so a
-      // check can tell "nothing is there" from "the sample fell off the canvas".
-      const size = handle.readPickingSurface();
-      const onScreen = point.x >= 0 && point.y >= 0 && point.x <= size.width && point.y <= size.height;
-      const picked = handle.pickEdgeAtPoint(point.x, point.y);
-      // Whether the edge that was returned actually covers the sampled point.
-      // Two relations that share an endpoint can be near-coincident ribbons -- one
-      // measured pair sits 1.0367 apart against a half-width of 1.0 -- so demanding
-      // that a point return the specific edge whose midpoint it is fails a correct
-      // renderer. What must never happen is picking an edge that does NOT cover the
-      // point. See OG-CAP-11-2.
-      const pickedFilament = picked === null ? undefined : handle.model.filaments.get(picked);
-      // Measured in VIEWPORT space, because the ribbon half-width is a pixel
-      // quantity while filament control points are world coordinates -- comparing
-      // the two directly is a unit error, and at this world scale one world unit is
-      // well under a pixel.
-      //
-      // Measured against the picking CELL rather than the queried point. Sigma
-      // renders the picking pass at half the CSS width and height, so one picking
-      // pixel answers for a 2x2 block of CSS pixels: the identity returned is the
-      // one rasterised for the cell, not for the exact point asked about. Requiring
-      // the returned edge to cover the unquantised point therefore fails a correct
-      // renderer whenever the edge reaches the cell without reaching that point --
-      // measured, on the near-coincident pair OG-CAP-11-2 recorded. The property
-      // that IS true of the instrument is kept and is still falsifiable: picking
-      // must never return an edge that does not reach the cell it answered for.
-      const pickedGeometry = picked === null || pickedFilament === undefined
-        ? undefined
-        : viewportFilament(pickedFilament, handle);
-      const pickedCellCentre = pickingCellForPoint(handle.readPickingSurface(), { ...point, z: 0 }).centre;
-      const covers = picked === null || pickedGeometry === undefined
-        ? false
-        : denseDistanceToFilament(
-            pickedGeometry,
-            pickedCellCentre,
-          ).distancePx <= pickingRadiusPx(
-            handle,
-            picked,
-            filamentShaderParameter(handle.readPickingSurface(), pickedGeometry, pickedCellCentre),
-            handle.model.filamentMaterial,
-          );
-      return { edgeId: picked, point, pickedCoversPoint: covers, onScreen };
+      return {
+        before,
+        forced,
+        restored: relationPickWitness(handle, edgeId, parameter, offsetPixels),
+      };
     },
     unambiguousParameters(edgeId): readonly number[] {
       return unambiguousParametersFor(requiredHandle(product), edgeId);
@@ -862,7 +858,7 @@ async function boot(): Promise<void> {
     readLiveRelationMaterialBindings(): readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[] {
       return requiredHandle(product).readRelationMaterialBindings();
     },
-    proveStackedMaterialControlRejects(): { readonly relationId: string; readonly message: string } {
+    proveStackedMaterialControlRejects(): { readonly relationId: string; readonly materialTypes: readonly string[]; readonly message: string } {
       return requiredHandle(product).proveStackedMaterialControlRejects();
     },
     async shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }> {
@@ -991,14 +987,18 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
     for (const pickedId of picked) {
       pickableEdgeIds.add(pickedId);
     }
-    // A non-null id alone is not coverage for this relation.  A relation can be
-    // covered by its own return, or only by a partner proved coincident by the
-    // existing all-parameter analytic certificate.  Do not spend certificate
-    // work when no probe returned an id: no certificate can make null a hit.
+    // A non-null id alone is not coverage for this relation. A relation can be
+    // covered by its own return, by an all-parameter coincident partner, or by
+    // a relation that the live target returned at every affected direct probe
+    // and whose analytic ribbon reaches those same cells. The last case is an
+    // occlusion record, not a claim that two relations coincide.
     const certifiedCoincidentPartnerIds = picked.includes(id) || picked.length === 0
       ? []
       : coincidentPartnersFor(handle, id) ?? [];
-    const coverage = relationPickCoverage(id, returnedEdgeIds, certifiedCoincidentPartnerIds);
+    const certifiedOccludingPartnerIds = picked.includes(id) || picked.length === 0
+      ? []
+      : occludingPartnersForDirectProbes(handle, id, probes);
+    const coverage = relationPickCoverage(id, returnedEdgeIds, certifiedCoincidentPartnerIds, certifiedOccludingPartnerIds);
     edgePickCoverage[id] = coverage;
     if (coverage.coveringEdgeId !== null) {
       edgePickCoverageIds.push(id);
@@ -1050,22 +1050,66 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
   };
 }
 
-/** Classifies a relation's raw returned ids without allowing another relation to satisfy its coverage. */
+/** This classifies raw returned ids and accepts another relation only with an explicit analytic certificate. */
 function relationPickCoverage(
   edgeId: string,
   returnedEdgeIds: readonly (string | null)[],
   certifiedCoincidentPartnerIds: readonly string[],
+  certifiedOccludingPartnerIds: readonly string[] = [],
 ): RelationPickCoverage {
   const coveringEdgeId = returnedEdgeIds.find((returnedEdgeId) => (
     returnedEdgeId === edgeId
-    || (returnedEdgeId !== null && certifiedCoincidentPartnerIds.includes(returnedEdgeId))
+    || (returnedEdgeId !== null && (
+      certifiedCoincidentPartnerIds.includes(returnedEdgeId)
+      || certifiedOccludingPartnerIds.includes(returnedEdgeId)
+    ))
   )) ?? null;
   return {
     edgeId,
     returnedEdgeIds,
     coveringEdgeId,
     certifiedCoincidentPartnerIds,
+    certifiedOccludingPartnerIds,
   };
+}
+
+/** This certifies direct probe occlusion and does not classify distinct paths as coincident. */
+function occludingPartnersForDirectProbes(
+  handle: RenderHandle,
+  edgeId: string,
+  probes: readonly DirectRelationProbe[],
+): readonly string[] {
+  let partnerId: string | null = null;
+  for (const probe of probes) {
+    const returnedEdgeId = probe.returnedEdgeId;
+    if (
+      returnedEdgeId === null
+      || returnedEdgeId === edgeId
+      || (partnerId !== null && partnerId !== returnedEdgeId)
+      || !relationReachesPickingCell(handle, returnedEdgeId, probe.point)
+    ) {
+      return [];
+    }
+    partnerId = returnedEdgeId;
+  }
+  return partnerId === null ? [] : [partnerId];
+}
+
+/** This checks one actual target answer against its analytic ribbon and does not read a stand-in target. */
+function relationReachesPickingCell(
+  handle: RenderHandle,
+  edgeId: string,
+  point: { readonly x: number; readonly y: number },
+): boolean {
+  const filament = handle.model.filaments.get(edgeId);
+  if (filament === undefined) {
+    return false;
+  }
+  const geometry = viewportFilament(filament, handle);
+  const cell = pickingCellForPoint(handle.readPickingSurface(), { ...point, z: 0 });
+  const distance = denseDistanceToFilament(geometry, cell.centre);
+  const parameter = filamentShaderParameter(handle.readPickingSurface(), geometry, cell.centre);
+  return distance.distancePx <= pickingRadiusPx(handle, edgeId, parameter, handle.model.filamentMaterial) + distance.deviationBoundPx;
 }
 
 /** This generates live-target interior probes and does not read render-model geometry. */
@@ -1143,6 +1187,65 @@ function normalAt(source: Coordinates, control: Coordinates, target: Coordinates
     return { x: 0, y: 0 };
   }
   return { x: -tangentY / length, y: tangentX / length };
+}
+
+/** This samples the mounted picking target in viewport coordinates and does not assume graph axes share viewport handedness. */
+function relationPickWitness(
+  handle: RenderHandle,
+  edgeId: string,
+  parameter: number,
+  offsetPixels: number,
+): PickWitness {
+  const filament = handle.model.filaments.get(edgeId);
+  if (filament === undefined) {
+    throw new Error(`unknown edge ${edgeId}`);
+  }
+  const geometry = viewportFilament(filament, handle);
+  const viewport = quadraticPoint(geometry, parameter);
+  const normal = normalAt(geometry.source, geometry.control, geometry.target, parameter);
+  const point = { x: viewport.x + (normal.x * offsetPixels), y: viewport.y + (normal.y * offsetPixels) };
+  // A point outside the drawn area cannot be picked by anything; report it so a
+  // check can tell "nothing is there" from "the sample fell off the canvas".
+  const size = handle.readPickingSurface();
+  const onScreen = point.x >= 0 && point.y >= 0 && point.x <= size.width && point.y <= size.height;
+  const picked = handle.pickEdgeAtPoint(point.x, point.y);
+  // Whether the edge that was returned actually covers the sampled point.
+  // Two relations that share an endpoint can be near-coincident ribbons -- one
+  // measured pair sits 1.0367 apart against a half-width of 1.0 -- so demanding
+  // that a point return the specific edge whose midpoint it is fails a correct
+  // renderer. What must never happen is picking an edge that does NOT cover the
+  // point. See OG-CAP-11-2.
+  const pickedFilament = picked === null ? undefined : handle.model.filaments.get(picked);
+  // Measured in VIEWPORT space, because the ribbon half-width is a pixel
+  // quantity while filament control points are world coordinates -- comparing
+  // the two directly is a unit error, and at this world scale one world unit is
+  // well under a pixel.
+  //
+  // Measured against the picking CELL rather than the queried point. Sigma
+  // renders the picking pass at half the CSS width and height, so one picking
+  // pixel answers for a 2x2 block of CSS pixels: the identity returned is the
+  // one rasterised for the cell, not for the exact point asked about. Requiring
+  // the returned edge to cover the unquantised point therefore fails a correct
+  // renderer whenever the edge reaches the cell without reaching that point --
+  // measured, on the near-coincident pair OG-CAP-11-2 recorded. The property
+  // that IS true of the instrument is kept and is still falsifiable: picking
+  // must never return an edge that does not reach the cell it answered for.
+  const pickedGeometry = picked === null || pickedFilament === undefined
+    ? undefined
+    : viewportFilament(pickedFilament, handle);
+  const pickedCellCentre = pickingCellForPoint(handle.readPickingSurface(), { ...point, z: 0 }).centre;
+  const covers = picked === null || pickedGeometry === undefined
+    ? false
+    : denseDistanceToFilament(
+        pickedGeometry,
+        pickedCellCentre,
+      ).distancePx <= pickingRadiusPx(
+        handle,
+        picked,
+        filamentShaderParameter(handle.readPickingSurface(), pickedGeometry, pickedCellCentre),
+        handle.model.filamentMaterial,
+      );
+  return { edgeId: picked, point, pickedCoversPoint: covers, onScreen };
 }
 
 function unambiguousParametersFor(handle: RenderHandle, edgeId: string): readonly number[] {
@@ -1617,6 +1720,7 @@ function failedApi(): EvidenceApi {
     clearFocus: async () => unavailable(),
     read: unavailable,
     pick: unavailable,
+    proveDistantRelationPickControl: unavailable,
     unambiguousParameters: unavailable,
     coincidentPartners: unavailable,
     wrongRelationPickCoverageControl: unavailable,

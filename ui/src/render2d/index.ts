@@ -1,12 +1,15 @@
 import Sigma from "sigma";
-import type { CameraState } from "sigma/types";
+import { createEdgeCompoundProgram } from "sigma/rendering";
+import type { CameraState, EdgeDisplayData, NodeDisplayData } from "sigma/types";
 import { parseColor } from "sigma/utils";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import type { Coordinates, DerivedValue, VisualGraph } from "#engine/contract.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
-import { createFilamentProgram } from "#render2d/filament-program.ts";
+import { createFilamentProgram, FilamentProgram } from "#render2d/filament-program.ts";
+import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
+import { liveFilamentGeometry } from "#render2d/geometry.ts";
 import {
   buildRenderModel,
   edgeLabelCandidatesForState,
@@ -37,6 +40,19 @@ export type RenderNodeGlowWitness = {
 export type RelationMaterialBinding = {
   readonly relationId: string;
   readonly materialTypes: readonly string[];
+};
+
+/** This reports one relation's live draw control point and does not inspect the render model. */
+export type RenderRelationGeometryWitness = {
+  readonly relationId: string;
+  readonly controlPoint: { readonly x: number; readonly y: number };
+};
+
+/** This records one real stacked-material rejection and does not leave the live renderer stacked. */
+export type StackedMaterialControlWitness = {
+  readonly relationId: string;
+  readonly materialTypes: readonly string[];
+  readonly message: string;
 };
 
 /** This reports the mounted renderer's live picking surface without exposing its Sigma instance. */
@@ -82,8 +98,10 @@ export type RenderHandle = {
   setGlowVisible(visible: boolean): void;
   /** This reports the material programs bound to each live relation and does not expose semantic payload. */
   readRelationMaterialBindings(): readonly RelationMaterialBinding[];
-  /** This forces a duplicate material on one live relation binding and confirms the single-material assertion rejects it. */
-  proveStackedMaterialControlRejects(): { readonly relationId: string; readonly message: string };
+  /** This reports control points from the live relation draw data and does not read model geometry. */
+  readRelationGeometryWitnesses(): readonly RenderRelationGeometryWitness[];
+  /** This stacks two live programs for one relation, renders them, and restores the single-program pipeline. */
+  proveStackedMaterialControlRejects(): StackedMaterialControlWitness;
   /** This returns the node the mounted renderer itself picks at one viewport position. */
   pickNodeAtPosition(position: { readonly x: number; readonly y: number }): string | null;
   /** This returns the edge the mounted renderer itself picks at one viewport position. */
@@ -129,7 +147,10 @@ export function mount(
   const baseEdgeAttributes = new Map<string, RenderEdgeAttributes>(
     model.graph.edges().map((id) => [id, model.graph.getEdgeAttributes(id)]),
   );
-  const edgeProgramClasses = { filament: createFilamentProgram(model.filamentMaterial) };
+  const materialBindings = createLiveRelationMaterialBindings();
+  const edgeProgramClasses = {
+    filament: createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings),
+  };
   const sigma = new Sigma(model.graph, container, {
     defaultEdgeType: "filament",
     edgeProgramClasses,
@@ -151,6 +172,7 @@ export function mount(
       };
     };
   };
+  materialBindings.observe(sigma);
   if (framingBox !== undefined) {
     sigma.setCustomBBox(copyFramingBox(framingBox));
     sigma.refresh();
@@ -158,7 +180,7 @@ export function mount(
   if (suppliedState !== undefined) {
     restoreCameraState(sigma, cameraStateFromVisualState(suppliedState.camera));
   }
-  assertSingleMaterialPerRelation(liveRelationMaterialBindings(sigma, Object.keys(edgeProgramClasses)));
+  assertSingleMaterialPerRelation(liveRelationMaterialBindings(sigma, materialBindings));
   let currentState = suppliedState ?? createVisualState(visualGraph, {
     selectedId: null,
     focusedId: null,
@@ -277,23 +299,44 @@ export function mount(
       glow.setVisible(visible);
     },
     readRelationMaterialBindings(): readonly RelationMaterialBinding[] {
-      return liveRelationMaterialBindings(sigma, Object.keys(edgeProgramClasses));
+      return liveRelationMaterialBindings(sigma, materialBindings);
     },
-    proveStackedMaterialControlRejects(): { readonly relationId: string; readonly message: string } {
-      const bindings = liveRelationMaterialBindings(sigma, Object.keys(edgeProgramClasses));
+    readRelationGeometryWitnesses(): readonly RenderRelationGeometryWitness[] {
+      return liveRelationGeometryWitnesses(sigma);
+    },
+    proveStackedMaterialControlRejects(): StackedMaterialControlWitness {
+      const bindings = liveRelationMaterialBindings(sigma, materialBindings);
       const relation = bindings[0];
-      if (relation === undefined || relation.materialTypes[0] === undefined) {
+      if (relation === undefined) {
         throw new TypeError("stacked-material control requires one live relation binding");
       }
-      const stacked = bindings.map((binding) => binding.relationId === relation.relationId
-        ? { ...binding, materialTypes: [...binding.materialTypes, relation.materialTypes[0] as string] }
-        : binding);
+      const originalProgramClasses = sigma.getSetting("edgeProgramClasses");
+      const stackedProgram = createEdgeCompoundProgram([
+        createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings),
+        createObservedFilamentProgram(model.filamentMaterial, "filament-control", materialBindings),
+      ]);
+      sigma.setSetting("edgeProgramClasses", { ...originalProgramClasses, filament: stackedProgram });
+      sigma.refresh();
+      const stacked = liveRelationMaterialBindings(sigma, materialBindings);
+      const stackedRelation = stacked.find((binding) => binding.relationId === relation.relationId);
+      if (stackedRelation === undefined) {
+        sigma.setSetting("edgeProgramClasses", originalProgramClasses);
+        sigma.refresh();
+        throw new TypeError(`stacked-material control lost live relation ${relation.relationId}`);
+      }
+      let message: string | undefined;
       try {
         assertSingleMaterialPerRelation(stacked);
       } catch (error: unknown) {
-        return { relationId: relation.relationId, message: error instanceof Error ? error.message : String(error) };
+        message = error instanceof Error ? error.message : String(error);
+      } finally {
+        sigma.setSetting("edgeProgramClasses", originalProgramClasses);
+        sigma.refresh();
       }
-      throw new TypeError("stacked-material control did not fail the live material assertion");
+      if (message === undefined) {
+        throw new TypeError("stacked-material control did not fail the live material assertion");
+      }
+      return { relationId: relation.relationId, materialTypes: stackedRelation.materialTypes, message };
     },
     pickNodeAtPosition(position): string | null {
       return picking.getNodeAtPosition(position);
@@ -325,15 +368,108 @@ export function mount(
   };
 }
 
-/** This reads the material type bound in the mounted Sigma pipeline and does not inspect source graph semantics. */
-function liveRelationMaterialBindings(sigma: Sigma, registeredMaterialTypes: readonly string[]): readonly RelationMaterialBinding[] {
-  const graph = sigma.getGraph();
-  return graph.edges().map((relationId) => {
-    const materialType = graph.getEdgeAttribute(relationId, "type");
-    if (typeof materialType !== "string" || !registeredMaterialTypes.includes(materialType)) {
-      throw new TypeError(`live relation ${relationId} has no registered material program`);
+/** This records material programs after their live processing pass and does not infer them from graph attributes. */
+type LiveRelationMaterialBindings = {
+  observe(sigma: Sigma): void;
+  record(fingerprint: number, materialType: string): void;
+  materialTypesFor(sigma: Sigma, relationId: string): readonly string[];
+};
+
+/** This creates a live material-program recorder and does not construct bindings from relation types. */
+function createLiveRelationMaterialBindings(): LiveRelationMaterialBindings {
+  let materialTypesByFingerprint = new Map<number, string[]>();
+  return {
+    observe(sigma: Sigma): void {
+      sigma.on("beforeProcess", () => {
+        materialTypesByFingerprint = new Map<number, string[]>();
+      });
+    },
+    record(fingerprint: number, materialType: string): void {
+      const materialTypes = materialTypesByFingerprint.get(fingerprint) ?? [];
+      materialTypes.push(materialType);
+      materialTypesByFingerprint.set(fingerprint, materialTypes);
+    },
+    materialTypesFor(sigma: Sigma, relationId: string): readonly string[] {
+      const fingerprint = relationFingerprints(sigma).get(relationId);
+      if (fingerprint === undefined) {
+        throw new TypeError(`live relation ${relationId} has no Sigma fingerprint`);
+      }
+      return [...(materialTypesByFingerprint.get(fingerprint) ?? [])];
+    },
+  };
+}
+
+/** This instruments a filament program's actual live processing and does not create another relation. */
+function createObservedFilamentProgram(
+  material: FilamentUniformMaterial,
+  materialType: string,
+  bindings: LiveRelationMaterialBindings,
+): typeof FilamentProgram {
+  const BaseProgram = createFilamentProgram(material);
+  return class extends BaseProgram {
+    override process(
+      edgeIndex: number,
+      offset: number,
+      sourceData: NodeDisplayData,
+      targetData: NodeDisplayData,
+      data: EdgeDisplayData,
+    ): void {
+      super.process(edgeIndex, offset, sourceData, targetData, data);
+      if (!data.hidden && !sourceData.hidden && !targetData.hidden) {
+        bindings.record(edgeIndex, materialType);
+      }
     }
-    return { relationId, materialTypes: [materialType] };
+  };
+}
+
+/** This reads material programs that actually processed every live relation and does not inspect source graph semantics. */
+function liveRelationMaterialBindings(sigma: Sigma, bindings: LiveRelationMaterialBindings): readonly RelationMaterialBinding[] {
+  const graph = sigma.getGraph();
+  return [...graph.edges()].sort().map((relationId) => {
+    const materialTypes = bindings.materialTypesFor(sigma, relationId);
+    if (materialTypes.length === 0) {
+      throw new TypeError(`live relation ${relationId} has no processed material program`);
+    }
+    return { relationId, materialTypes };
+  });
+}
+
+/** This reconstructs Sigma's internal processing-order fingerprints from public display state and does not infer a material binding. */
+function relationFingerprints(sigma: Sigma): ReadonlyMap<string, number> {
+  const graph = sigma.getGraph();
+  const relationIds = [...graph.edges()];
+  if (sigma.getSetting("zIndex")) {
+    relationIds.sort((left, right) => {
+      const leftData = sigma.getEdgeDisplayData(left);
+      const rightData = sigma.getEdgeDisplayData(right);
+      if (leftData === undefined || rightData === undefined) {
+        throw new TypeError("live relation fingerprint requires display data");
+      }
+      return leftData.zIndex - rightData.zIndex;
+    });
+  }
+  const firstRelationFingerprint = graph.nodes().length + 1;
+  return new Map(relationIds.map((relationId, offset) => [relationId, firstRelationFingerprint + offset]));
+}
+
+/** This reads geometry passed to the live filament program and does not recreate it from the render model. */
+function liveRelationGeometryWitnesses(sigma: Sigma): readonly RenderRelationGeometryWitness[] {
+  const graph = sigma.getGraph();
+  return [...graph.edges()].sort().map((relationId) => {
+    const sourceData = sigma.getNodeDisplayData(graph.source(relationId));
+    const targetData = sigma.getNodeDisplayData(graph.target(relationId));
+    const edgeData = sigma.getEdgeDisplayData(relationId);
+    if (sourceData === undefined || targetData === undefined || edgeData === undefined) {
+      throw new TypeError(`live relation ${relationId} has incomplete draw data`);
+    }
+    const filamentData = edgeData as EdgeDisplayData & { readonly curvature?: number };
+    const geometry = liveFilamentGeometry(
+      { x: sourceData.x, y: sourceData.y, z: 0 },
+      { x: targetData.x, y: targetData.y, z: 0 },
+      filamentData.curvature ?? 0,
+    );
+    const controlPoint = sigma.framedGraphToViewport(geometry.control);
+    return { relationId, controlPoint: { x: controlPoint.x, y: controlPoint.y } };
   });
 }
 

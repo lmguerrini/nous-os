@@ -46,6 +46,12 @@ type PlanarVector = {
   readonly y: number;
 };
 
+type AnchorPair = {
+  readonly leftId: string;
+  readonly rightId: string;
+  readonly distance: number;
+};
+
 type CachedAnchors = {
   readonly topologyKey: string;
   readonly anchors: LayoutAnchors;
@@ -79,7 +85,8 @@ export function layoutAnchors(graph: EngineGraph, calibration: CalibrationProfil
       ? outsideDiscAnchor(node.id, communityLayout.centers, discs, calibration)
       : memberAnchor(node.id, disc, calibration));
   }
-  return settleAnchors(graph, anchors, communityLayout, memberDiscs, discs, calibration);
+  const settled = settleAnchors(graph, anchors, communityLayout, memberDiscs, discs, calibration);
+  return enforceMinimumScreenPairwiseSeparation(settled, communityLayout, memberDiscs, discs, calibration);
 }
 
 /** This selects Reliability anchors from Discovery and does not recompute their positions. */
@@ -325,9 +332,35 @@ function regionCentersFor(
     return new Map();
   }
   const maximumRadius = Math.max(...ordered.map((reservation) => reservation.radius));
-  const gap = calibration.aggregate.windowPaddingPx;
-  const cellSpan = (maximumRadius * MIDPOINT_DIVISOR) + (gap * MIDPOINT_DIVISOR);
-  return centersInGrid(ordered.map((reservation) => reservation.key), cellSpan, calibration);
+  return centersOnEllipse(
+    ordered.map((reservation) => reservation.key),
+    (maximumRadius * calibration.layout.communityRegionDistributionRadiusPermille) / PERMILLE,
+    calibration.layout.communityRegionDistributionVerticalRadiusPermille / PERMILLE,
+  );
+}
+
+function centersOnEllipse(
+  ids: readonly string[],
+  radius: number,
+  verticalRadiusMultiplier: number,
+): ReadonlyMap<string, Coordinates> {
+  const zero = 0;
+  const one = 1;
+  const targetAspectRatio = DEFAULT_AGGREGATE_LAYOUT_CALIBRATION.aspectRatioTargetPermille / PERMILLE;
+  const ordered = [...ids].sort((left, right) => {
+    const hashDifference = unitHash(`region:${left}`) - unitHash(`region:${right}`);
+    return hashDifference === 0 ? compareText(left, right) : hashDifference;
+  });
+  const centers = new Map<string, Coordinates>();
+  for (const [index, id] of ordered.entries()) {
+    const angle = (Math.PI * -MIDPOINT_DIVISOR) + ((Math.PI * MIDPOINT_DIVISOR * index) / Math.max(one, ordered.length));
+    centers.set(id, {
+      x: Math.cos(angle) * radius * targetAspectRatio,
+      y: Math.sin(angle) * radius * verticalRadiusMultiplier,
+      z: zero,
+    });
+  }
+  return centers;
 }
 
 function centersInGrid(
@@ -381,6 +414,116 @@ function settleAnchors(
     }
   }
   return new Map([...positions.entries()].sort(([left], [right]) => compareText(left, right)));
+}
+
+function enforceMinimumScreenPairwiseSeparation(
+  initialAnchors: LayoutAnchors,
+  communityLayout: CommunityLayout,
+  memberDiscs: ReadonlyMap<string, AggregateDisc>,
+  discs: readonly AggregateDisc[],
+  calibration: CalibrationProfile,
+): LayoutAnchors {
+  const positions = new Map([...initialAnchors.entries()].sort(([left], [right]) => compareText(left, right)));
+  const floor = Math.max(
+    calibration.layout.minimumPairwiseAnchorSeparationPx,
+    calibration.salience.maxNodeSizePx + calibration.layout.minimumPairwiseAnchorSeparationGapPx,
+  );
+  for (const _ of Array.from({ length: calibration.layout.minimumPairwiseAnchorSeparationIterations })) {
+    const pair = closestAnchorPair(positions);
+    if (pair === undefined) {
+      return positions;
+    }
+    const screenScale = referenceFitScale(positions, calibration);
+    if (meetsScreenSeparationFloor(pair.distance * screenScale, floor)) {
+      return new Map([...positions.entries()].sort(([left], [right]) => compareText(left, right)));
+    }
+    if (screenScale === 0) {
+      break;
+    }
+    const left = requiredAnchor(positions, pair.leftId);
+    const right = requiredAnchor(positions, pair.rightId);
+    const direction = directionBetween(left, right, `${pair.leftId}:${pair.rightId}`, calibration);
+    const requiredWorldDistance = floor / screenScale;
+    const displacement = Math.max(0, requiredWorldDistance - pair.distance) / MIDPOINT_DIVISOR;
+    positions.set(pair.leftId, constrainAnchor(
+      pair.leftId,
+      { x: left.x - (direction.x * displacement), y: left.y - (direction.y * displacement), z: 0 },
+      communityLayout,
+      memberDiscs,
+      discs,
+      calibration,
+    ));
+    positions.set(pair.rightId, constrainAnchor(
+      pair.rightId,
+      { x: right.x + (direction.x * displacement), y: right.y + (direction.y * displacement), z: 0 },
+      communityLayout,
+      memberDiscs,
+      discs,
+      calibration,
+    ));
+  }
+  const pair = closestAnchorPair(positions);
+  const screenSeparation = pair === undefined ? Number.POSITIVE_INFINITY : pair.distance * referenceFitScale(positions, calibration);
+  if (meetsScreenSeparationFloor(screenSeparation, floor)) {
+    return new Map([...positions.entries()].sort(([left], [right]) => compareText(left, right)));
+  }
+  throw new TypeError(`layout cannot meet the CSS-pixel pairwise separation floor: ${screenSeparation}/${floor}`);
+}
+
+function meetsScreenSeparationFloor(separation: number, floor: number): boolean {
+  // Floating-point projection can finish infinitesimally below the requested CSS
+  // value; this tolerance is numerical, not a second visual calibration floor.
+  return separation >= floor || (floor - separation) <= Math.sqrt(Number.EPSILON);
+}
+
+function closestAnchorPair(anchors: ReadonlyMap<string, Coordinates>): AnchorPair | undefined {
+  const entries = [...anchors.entries()].sort(([left], [right]) => compareText(left, right));
+  let closest: AnchorPair | undefined;
+  for (const [leftIndex, [leftId, left]] of entries.entries()) {
+    for (const [rightId, right] of entries.slice(leftIndex + 1)) {
+      const distance = Math.hypot(left.x - right.x, left.y - right.y);
+      if (closest === undefined || distance < closest.distance) {
+        closest = { leftId, rightId, distance };
+      }
+    }
+  }
+  return closest;
+}
+
+function referenceFitScale(anchors: ReadonlyMap<string, Coordinates>, calibration: CalibrationProfile): number {
+  const values = [...anchors.values()];
+  if (values.length === 0) {
+    return 0;
+  }
+  const width = Math.max(...values.map((anchor) => anchor.x)) - Math.min(...values.map((anchor) => anchor.x));
+  const height = Math.max(...values.map((anchor) => anchor.y)) - Math.min(...values.map((anchor) => anchor.y));
+  if (width === 0 && height === 0) {
+    return 0;
+  }
+  const horizontalScale = width === 0 ? Number.POSITIVE_INFINITY : calibration.layout.referenceFrameWidthPx / width;
+  const verticalScale = height === 0 ? Number.POSITIVE_INFINITY : calibration.layout.referenceFrameHeightPx / height;
+  return Math.min(horizontalScale, verticalScale);
+}
+
+function constrainAnchor(
+  id: string,
+  position: Coordinates,
+  communityLayout: CommunityLayout,
+  memberDiscs: ReadonlyMap<string, AggregateDisc>,
+  discs: readonly AggregateDisc[],
+  calibration: CalibrationProfile,
+): Coordinates {
+  const disc = memberDiscs.get(id);
+  if (disc !== undefined) {
+    return constrainMember(id, position, disc, calibration);
+  }
+  return constrainNonMember(
+    id,
+    position,
+    requiredRegion(communityLayout.regions, requiredRegionKey(communityLayout.memberships, id)),
+    discs,
+    calibration,
+  );
 }
 
 function intraCommunityEdges(

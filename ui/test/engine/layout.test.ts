@@ -5,6 +5,7 @@ import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_AGGREGATE_LAYOUT_CALIBRATION, DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { detectCommunities } from "#engine/community.ts";
 import type { Coordinates, EngineGraph, VisualGraph } from "#engine/contract.ts";
 import { aggregateDiscs, aggregateMemberships, layoutAnchors, sharedAnchors } from "#engine/layout.ts";
 
@@ -177,7 +178,7 @@ test("anchor cache misses when edge topology changes on the same graph object", 
   assert.deepEqual(recordOf(layoutAnchors(cachedGraph)), recordOf(layoutAnchors(emptyTopology)));
 });
 
-test("community layout makes measured bridges at least twice as long as intra-community edges", () => {
+test("community layout bounds measured bridge-to-intra medians on both sides", () => {
   const discovery = graph("discovery-all-time.json");
   const anchors = layoutAnchors(discovery);
   const lengths = discovery.edges.reduce((result, edge) => {
@@ -197,7 +198,10 @@ test("community layout makes measured bridges at least twice as long as intra-co
   assertFinitePositive(intraMedian, "intra-community median");
   assertFinitePositive(bridgeMedian, "bridge median");
   assert.ok(Number.isFinite(ratio), `expected finite bridge/intra ratio, received ${ratio}`);
-  assert.ok(ratio >= 2, `expected median bridge/intra ratio >= 2, received ${ratio} (${bridgeMedian}/${intraMedian})`);
+  const minimum = DEFAULT_CALIBRATION.layout.minimumBridgeToIntraMedianRatioPermille / 1000;
+  const maximum = DEFAULT_CALIBRATION.layout.maximumBridgeToIntraMedianRatioPermille / 1000;
+  assert.ok(ratio >= minimum, `expected median bridge/intra ratio >= ${minimum}, received ${ratio} (${bridgeMedian}/${intraMedian})`);
+  assert.ok(ratio <= maximum, `expected median bridge/intra ratio <= ${maximum}, received ${ratio} (${bridgeMedian}/${intraMedian})`);
 });
 
 test("community layout has varied nearest-neighbour density within pinned communities", () => {
@@ -238,13 +242,23 @@ test("fixed-count settling consumes the configured iteration count", () => {
   assert.notDeepEqual(recordOf(layoutAnchors(discovery, oneIteration)), recordOf(layoutAnchors(discovery, twoIterations)));
 });
 
-test("every fixture maintains the governed minimum pairwise anchor separation", () => {
+test("every fixture maintains the governed minimum pairwise anchor separation in CSS pixels", () => {
   const floor = governedMinimumPairwiseAnchorSeparationPx(DEFAULT_CALIBRATION);
   assert.equal(FIXTURE_NAMES.length, 5);
   for (const name of FIXTURE_NAMES) {
     const anchors = layoutAnchors(graph(name));
-    const minimum = minimumPairwiseAnchorSeparation(anchors);
-    assert.ok(hasMinimumPairwiseAnchorSeparation(anchors, floor), `${name} expected pairwise anchor separation >= ${floor}, received ${minimum}`);
+    const minimum = minimumPairwiseAnchorSeparationInCssPixels(anchors, DEFAULT_CALIBRATION);
+    assert.ok(hasMinimumPairwiseAnchorSeparation(anchors, floor, DEFAULT_CALIBRATION), `${name} expected CSS-pixel pairwise anchor separation >= ${floor}, received ${minimum}`);
+  }
+});
+
+test("every fixture occupies the governed minimum fraction of its frame with community regions", () => {
+  const minimum = DEFAULT_CALIBRATION.layout.minimumCommunityRegionFrameUtilisationPermille / 1000;
+  assert.equal(FIXTURE_NAMES.length, 5);
+  for (const name of FIXTURE_NAMES) {
+    const visualGraph = graph(name);
+    const utilisation = communityRegionFrameUtilisation(layoutAnchors(visualGraph), detectCommunities(visualGraph));
+    assert.ok(utilisation >= minimum, `${name} expected community-region frame utilisation >= ${minimum}, received ${utilisation}`);
   }
 });
 
@@ -262,7 +276,7 @@ test("the coincident-anchor counterexample fails the property-level layout predi
     ["spread:top", "top"],
   ]);
   const predicates = {
-    minimumPairwiseSeparation: hasMinimumPairwiseAnchorSeparation(anchors, governedMinimumPairwiseAnchorSeparationPx(DEFAULT_CALIBRATION)),
+    minimumPairwiseSeparation: hasMinimumPairwiseAnchorSeparation(anchors, governedMinimumPairwiseAnchorSeparationPx(DEFAULT_CALIBRATION), DEFAULT_CALIBRATION),
     finitePositiveMedians: hasFinitePositiveMedians(median([0, 0]), median([1, 1])),
     withinCommunityDensity: hasVariedWithinCommunityDensity(anchors, memberships),
   };
@@ -310,18 +324,19 @@ function hasFinitePositiveMedians(intraMedian: number, bridgeMedian: number): bo
   return Number.isFinite(intraMedian) && intraMedian > 0 && Number.isFinite(bridgeMedian) && bridgeMedian > 0;
 }
 
-function governedMinimumPairwiseAnchorSeparationPx(calibration: Pick<CalibrationProfile, "layout">): number {
-  // Its own register entry, not half the ideal edge length. The two answer
-  // different questions -- one is where a relation wants to rest, the other is
-  // the distance below which two anchors are the same pixel to a reader and to
-  // picking -- and a real corpus will retune them independently. The repair pass
-  // derived it from idealEdgeLengthPx only because its file ceiling excluded the
-  // calibration register, and said so rather than inventing a literal.
-  return calibration.layout.minimumPairwiseAnchorSeparationPx;
+function governedMinimumPairwiseAnchorSeparationPx(calibration: Pick<CalibrationProfile, "layout" | "salience">): number {
+  return Math.max(
+    calibration.layout.minimumPairwiseAnchorSeparationPx,
+    calibration.salience.maxNodeSizePx + calibration.layout.minimumPairwiseAnchorSeparationGapPx,
+  );
 }
 
-function hasMinimumPairwiseAnchorSeparation(anchors: ReadonlyMap<string, Coordinates>, floor: number): boolean {
-  return minimumPairwiseAnchorSeparation(anchors) >= floor;
+function hasMinimumPairwiseAnchorSeparation(
+  anchors: ReadonlyMap<string, Coordinates>,
+  floor: number,
+  calibration: Pick<CalibrationProfile, "layout">,
+): boolean {
+  return minimumPairwiseAnchorSeparationInCssPixels(anchors, calibration) >= floor;
 }
 
 function minimumPairwiseAnchorSeparation(anchors: ReadonlyMap<string, Coordinates>): number {
@@ -333,6 +348,85 @@ function minimumPairwiseAnchorSeparation(anchors: ReadonlyMap<string, Coordinate
     }
   }
   return minimum;
+}
+
+function minimumPairwiseAnchorSeparationInCssPixels(
+  anchors: ReadonlyMap<string, Coordinates>,
+  calibration: Pick<CalibrationProfile, "layout">,
+): number {
+  return minimumPairwiseAnchorSeparation(anchors) * referenceFitScale(anchors, calibration);
+}
+
+function referenceFitScale(
+  anchors: ReadonlyMap<string, Coordinates>,
+  calibration: Pick<CalibrationProfile, "layout">,
+): number {
+  const values = [...anchors.values()];
+  const width = Math.max(...values.map((anchor) => anchor.x)) - Math.min(...values.map((anchor) => anchor.x));
+  const height = Math.max(...values.map((anchor) => anchor.y)) - Math.min(...values.map((anchor) => anchor.y));
+  const horizontalScale = width === 0 ? Number.POSITIVE_INFINITY : calibration.layout.referenceFrameWidthPx / width;
+  const verticalScale = height === 0 ? Number.POSITIVE_INFINITY : calibration.layout.referenceFrameHeightPx / height;
+  return Math.min(horizontalScale, verticalScale);
+}
+
+function communityRegionFrameUtilisation(
+  anchors: ReadonlyMap<string, Coordinates>,
+  memberships: ReadonlyMap<string, string>,
+): number {
+  const values = [...anchors.values()];
+  const width = Math.max(...values.map((anchor) => anchor.x)) - Math.min(...values.map((anchor) => anchor.x));
+  const height = Math.max(...values.map((anchor) => anchor.y)) - Math.min(...values.map((anchor) => anchor.y));
+  if (width === 0 || height === 0) {
+    return 0;
+  }
+  const regions = [...new Set(memberships.values())].sort(compareText).map((community) => communityRegionBounds(anchors, memberships, community));
+  return rectangleUnionArea(regions) / (width * height);
+}
+
+function communityRegionBounds(
+  anchors: ReadonlyMap<string, Coordinates>,
+  memberships: ReadonlyMap<string, string>,
+  community: string,
+): { readonly minimumX: number; readonly maximumX: number; readonly minimumY: number; readonly maximumY: number } {
+  const values = [...anchors.entries()]
+    .filter(([id]) => requiredCommunity(memberships, id) === community)
+    .map(([, anchor]) => anchor);
+  return {
+    minimumX: Math.min(...values.map((anchor) => anchor.x)),
+    maximumX: Math.max(...values.map((anchor) => anchor.x)),
+    minimumY: Math.min(...values.map((anchor) => anchor.y)),
+    maximumY: Math.max(...values.map((anchor) => anchor.y)),
+  };
+}
+
+function rectangleUnionArea(
+  rectangles: readonly { readonly minimumX: number; readonly maximumX: number; readonly minimumY: number; readonly maximumY: number }[],
+): number {
+  const xCoordinates = [...new Set(rectangles.flatMap((rectangle) => [rectangle.minimumX, rectangle.maximumX]))].sort((left, right) => left - right);
+  let area = 0;
+  for (const [index, left] of xCoordinates.entries()) {
+    const right = xCoordinates[index + 1];
+    if (right === undefined || right === left) {
+      continue;
+    }
+    const intervals = rectangles
+      .filter((rectangle) => rectangle.minimumX < right && rectangle.maximumX > left)
+      .map((rectangle) => [rectangle.minimumY, rectangle.maximumY] as const)
+      .sort(([leftStart], [rightStart]) => leftStart - rightStart);
+    let coveredHeight = 0;
+    let intervalEnd = Number.NEGATIVE_INFINITY;
+    for (const [start, end] of intervals) {
+      if (start > intervalEnd) {
+        coveredHeight += end - start;
+        intervalEnd = end;
+      } else if (end > intervalEnd) {
+        coveredHeight += end - intervalEnd;
+        intervalEnd = end;
+      }
+    }
+    area += (right - left) * coveredHeight;
+  }
+  return area;
 }
 
 function hasVariedWithinCommunityDensity(

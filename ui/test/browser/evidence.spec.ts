@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
+import { build } from "esbuild";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { MACRO, MESO, MICRO, minimumResolvedMaterialDifference, resolvedMaterial, resolvedMaterialDifference } from "#engine/lod.ts";
 import { PALETTES, TEMPERATURES, THEMES } from "#engine/tokens.ts";
@@ -50,7 +51,18 @@ type Snapshot = {
   readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
   readonly semanticDigest: string;
+  readonly camera: {
+    readonly x: number;
+    readonly y: number;
+    readonly angle: number;
+    readonly ratio: number;
+    readonly bounds: {
+      readonly x: readonly [number, number];
+      readonly y: readonly [number, number];
+    };
+  };
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
+  readonly edgeControlPoints: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly edgeSamples: Readonly<Record<string, readonly { readonly x: number; readonly y: number }[]>>;
   readonly propagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: boolean; readonly endpointExpressed: boolean }>>;
   readonly renderedPropagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: number; readonly afterglowDecayPermille: number }>>;
@@ -77,6 +89,19 @@ type Snapshot = {
     readonly haloRadiusPx: number;
   }[];
   readonly pickingTarget: PickingTargetWitness;
+};
+
+type PickWitness = {
+  readonly edgeId: string | null;
+  readonly point: { readonly x: number; readonly y: number };
+  readonly pickedCoversPoint?: boolean;
+  readonly onScreen?: boolean;
+};
+
+type DistantRelationPickControl = {
+  readonly before: PickWitness;
+  readonly forced: PickWitness;
+  readonly restored: PickWitness;
 };
 
 type RelationPickCoverage = {
@@ -152,12 +177,8 @@ type PageEvidence = {
   focusElement(id: string): Promise<Snapshot>;
   clearFocus(): Promise<Snapshot>;
   read(): Snapshot;
-  pick(edgeId: string, parameter: number, offsetPixels?: number): {
-    readonly edgeId: string | null;
-    readonly point: { readonly x: number; readonly y: number };
-    readonly pickedCoversPoint?: boolean;
-    readonly onScreen?: boolean;
-  };
+  pick(edgeId: string, parameter: number, offsetPixels?: number): PickWitness;
+  proveDistantRelationPickControl(edgeId: string, parameter: number, offsetPixels: number): DistantRelationPickControl;
   unambiguousParameters(edgeId: string): readonly number[];
   coincidentPartners(edgeId: string): readonly string[] | null;
   wrongRelationPickCoverageControl(): RelationPickCoverage;
@@ -171,7 +192,7 @@ type PageEvidence = {
   assertDerivedOriginRefusalControl(): number;
   assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean };
   readLiveRelationMaterialBindings(): readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[];
-  proveStackedMaterialControlRejects(): { readonly relationId: string; readonly message: string };
+  proveStackedMaterialControlRejects(): { readonly relationId: string; readonly materialTypes: readonly string[]; readonly message: string };
   shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }>;
 };
 
@@ -372,6 +393,8 @@ const PD3_STATE = {
 } as const;
 const A3_PIXEL_WITNESS_SAMPLE_SEED = 0xC0FFEE;
 const A3_PIXEL_WITNESS_SAMPLE_SIZE = 12;
+const PICKING_PARITY_OFF_RIBBON_OFFSET_PX = 48;
+const PICKING_PARITY_OFF_RIBBON_SWEEP_PX = [8, 16, 24, 32, 48, 64, 96] as const;
 /** The old mycelium hard case is represented by this shipping-master (stellar) state. */
 const A3_FORCED_PIXEL_WITNESS_STATES: readonly ShippingCrossProductState[] = [
   { policy: "Discovery", palette: PD3_STATE.palette, temperature: PD3_STATE.temperature, theme: PD3_STATE.theme, lodBand: PD3_STATE.lodBand },
@@ -403,6 +426,30 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     }
     await route.abort("blockedbyclient");
   });
+  // Build the page module here, from this tree, before anything loads it.
+  //
+  // Nothing in the browser path used to rebuild it. The page fetched whatever
+  // `dist/evidence.js` happened to be on disk, so a bundle produced at an earlier
+  // commit was served silently and every check below ran against code that was no
+  // longer in the tree -- passing on behaviour that had been replaced hours
+  // earlier. Nothing failed, which is the whole problem: a stale bundle does not
+  // announce itself, it just answers the old questions correctly. The two capture
+  // specs already built their own page modules; this one did not, and only it
+  // produced the evidence record.
+  //
+  // A build failure now fails the run instead of falling back to the last good
+  // artefact, and the bundle's digest is recorded beside the checks so a reader can
+  // tell which bytes answered them.
+  const pageModulePath = ["dist", "evidence.js"].join("/");
+  await build({
+    bundle: true,
+    format: "esm",
+    target: "es2022",
+    entryPoints: [["test", "browser", "evidence.ts"].join("/")],
+    outfile: pageModulePath,
+  });
+  const pageModuleSha256 = createHash("sha256").update(await readFile(pageModulePath)).digest("hex");
+
   await page.goto("/");
   // Relative on purpose. page.goto("/") sets the base to the served root, so this
   // resolves identically -- and a rooted literal here is indistinguishable from a
@@ -542,9 +589,11 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     for (const binding of bindings) {
       expect(binding.materialTypes).toHaveLength(1);
     }
-    const control = await invoke<{ readonly relationId: string; readonly message: string }>("proveStackedMaterialControlRejects");
+    const control = await invoke<{ readonly relationId: string; readonly materialTypes: readonly string[]; readonly message: string }>("proveStackedMaterialControlRejects");
+    expect(control.materialTypes).toHaveLength(2);
+    expect(new Set(control.materialTypes).size).toBe(2);
     expect(control.message).toMatch(/must bind exactly one material program/);
-    return `live Sigma pipeline reported ${bindings.length} relations, one material each; forcing a duplicate on ${control.relationId} failed: ${control.message}`;
+    return `live Sigma pipeline reported ${bindings.length} relations, one material each; a real two-program stack on ${control.relationId} reported [${control.materialTypes.join(", ")}] and failed: ${control.message}`;
   });
   await run("a10-engine-semantic-isolation", async () => {
     const result = await invoke<{ readonly reads: number; readonly changedSemanticDigest: boolean }>("assertEngineSemanticIsolationControl");
@@ -702,7 +751,18 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   await run("policy-transition", async () => {
     const discovery = await invoke<Snapshot>("switchPolicy", "Discovery");
     const reliability = await invoke<Snapshot>("switchPolicy", "Reliability");
-    const shared = reliability.nodes.filter((id) => discovery.nodes.includes(id));
+    expect(reliability.camera, "policy transition keeps the camera frozen").toEqual(discovery.camera);
+    const discoveryNodes = [...discovery.nodes].sort();
+    const reliabilityNodes = [...reliability.nodes].sort();
+    const discoveryEdges = [...discovery.edges].sort();
+    const reliabilityEdges = [...reliability.edges].sort();
+    expect(reliabilityNodes, "Reliability rendered nodes differ from Discovery").not.toEqual(discoveryNodes);
+    expect(reliabilityNodes.every((id) => discoveryNodes.includes(id)), "Reliability rendered nodes are all in Discovery").toBe(true);
+    expect(reliabilityNodes.length, "Reliability rendered node set is a proper subset of Discovery").toBeLessThan(discoveryNodes.length);
+    expect(reliabilityEdges, "Reliability rendered relations differ from Discovery").not.toEqual(discoveryEdges);
+    expect(reliabilityEdges.every((id) => discoveryEdges.includes(id)), "Reliability rendered relations are all in Discovery").toBe(true);
+    expect(reliabilityEdges.length, "Reliability rendered relation set is a proper subset of Discovery").toBeLessThan(discoveryEdges.length);
+    const shared = reliabilityNodes.filter((id) => discoveryNodes.includes(id));
     expect(shared.length).toBeGreaterThan(0);
     for (const id of shared) {
       const before = discovery.positions[id];
@@ -711,7 +771,16 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       expect(after).toBeDefined();
       expect(Math.hypot((before?.x ?? 0) - (after?.x ?? 0), (before?.y ?? 0) - (after?.y ?? 0))).toBeLessThanOrEqual(0.5);
     }
-    return `shared-node viewport positions changed by at most 0.5 CSS pixels: ${shared.length}`;
+    const sharedRelations = reliabilityEdges.filter((id) => discoveryEdges.includes(id));
+    expect(sharedRelations.length).toBeGreaterThan(0);
+    for (const id of sharedRelations) {
+      const before = discovery.edgeControlPoints[id];
+      const after = reliability.edgeControlPoints[id];
+      expect(before).toBeDefined();
+      expect(after).toBeDefined();
+      expect(Math.hypot((before?.x ?? 0) - (after?.x ?? 0), (before?.y ?? 0) - (after?.y ?? 0))).toBeLessThanOrEqual(0.5);
+    }
+    return `camera remained frozen; Reliability rendered ${reliabilityNodes.length}/${discoveryNodes.length} nodes and ${reliabilityEdges.length}/${discoveryEdges.length} relations as proper Discovery subsets; shared-node viewport positions changed by at most 0.5 CSS pixels: ${shared.length}; shared relation control points changed by at most 0.5 CSS pixels: ${sharedRelations.length}`;
   });
   await run("morphology", async () => {
     const expected = await invoke<Snapshot>("switchMorphology", "stellar");
@@ -823,12 +892,31 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     expect(filament).toBeDefined();
     const onRibbon = await invoke<{ readonly edgeId: string | null; readonly point: { readonly x: number; readonly y: number } }>("pick", filament ?? "", 0.5);
     expect(onRibbon.edgeId).toBe(filament);
-    const offRibbon = await invoke<{ readonly edgeId: string | null }>("pick", filament ?? "", 0.5, 48);
+    const offRibbonSweep = await Promise.all(PICKING_PARITY_OFF_RIBBON_SWEEP_PX.map(async (offsetPixels) => ({
+      offsetPixels,
+      pick: await invoke<PickWitness>("pick", filament ?? "", 0.5, offsetPixels),
+    })));
+    for (const { offsetPixels, pick } of offRibbonSweep) {
+      expect(pick.onScreen, `picking-parity ${offsetPixels}-CSS-px viewport-normal probe stays on screen`).toBe(true);
+      expect(pick.edgeId, `picking-parity ${offsetPixels}-CSS-px viewport-normal probe must not return its sampled relation`).not.toBe(filament);
+    }
+    const offRibbon = await invoke<PickWitness>("pick", filament ?? "", 0.5, PICKING_PARITY_OFF_RIBBON_OFFSET_PX);
+    expect(offRibbon.onScreen).toBe(true);
     expect(offRibbon.edgeId).not.toBe(filament);
+    const forcedDistantReturn = await invoke<DistantRelationPickControl>(
+      "proveDistantRelationPickControl",
+      filament ?? "",
+      0.5,
+      PICKING_PARITY_OFF_RIBBON_OFFSET_PX,
+    );
+    expect(forcedDistantReturn.before).toEqual(offRibbon);
+    expect(forcedDistantReturn.forced.edgeId).toBe(filament);
+    expect(() => expect(forcedDistantReturn.forced.edgeId).not.toBe(filament)).toThrow();
+    expect(forcedDistantReturn.restored).toEqual(offRibbon);
     const chord = await invoke<{ readonly edgeId: string | null }>("pickChord", filament ?? "");
     expect(chord.edgeId).toBe(onRibbon.edgeId);
     expect(await invoke<string | null>("pickStraightControl")).toBe("straight-control");
-    return `actual edge-picking framebuffer accepted ${filament} on its ribbon, rejected its offset probe, and matched the product straight chord; isolated straight-edge control accepted`;
+    return `actual edge-picking framebuffer accepted ${filament} on its ribbon, rejected viewport-normal offset sweep [${offRibbonSweep.map(({ offsetPixels, pick }) => `${offsetPixels}:${pick.edgeId ?? "null"}`).join(", ")}], rejected the forced distant self-return and restored the live picker, and matched the product straight chord; isolated straight-edge control accepted`;
   });
   await run("reduced-motion", async () => {
     const moving = await invoke<Snapshot>("setReducedMotion", false);
@@ -1029,6 +1117,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     },
     projects,
     dprWitnesses,
+    pageModule: { path: pageModulePath, sha256: pageModuleSha256 },
     acceptanceInvariants: ACCEPTANCE_INVARIANTS,
     checks,
   }, null, 2)}\n`);
