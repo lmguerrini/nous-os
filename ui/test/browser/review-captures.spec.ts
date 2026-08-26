@@ -246,8 +246,16 @@ type DeterminismWitness = {
   readonly runs: readonly [DeterminismRunWitness, DeterminismRunWitness];
 };
 
+type ReviewSuiteResult = {
+  readonly command: string;
+  readonly commitSha: string;
+  readonly status: "PASS" | "NOT_RUN";
+  readonly completedProjects: readonly ReviewProject[];
+};
+
 type ReviewMetadata = {
   readonly schemaVersion: 1;
+  readonly suiteResult: ReviewSuiteResult;
   readonly captureConfiguration: {
     readonly viewport: {
       readonly width: number;
@@ -309,6 +317,7 @@ const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const MORPHOLOGIES = ["stellar", "neural", "mycelium"] as const satisfies readonly Morphology[];
 const LOD_BANDS = ["macro", "meso", "micro"] as const satisfies readonly LodBand[];
 const REVIEW_PROJECTS = ["review-dpr-1", "review-dpr-2"] as const satisfies readonly ReviewProject[];
+const REVIEW_COMMAND = "npm --prefix ui run test:review";
 const FIXTURE_PATHS: Readonly<Record<Policy, readonly string[]>> = {
   Discovery: ["..", "fixtures", "synthetic", "projection", "discovery-all-time.json"],
   Reliability: ["..", "fixtures", "synthetic", "projection", "reliability-all-time.json"],
@@ -645,6 +654,7 @@ window.__review = {
 
 test("deterministic review capture generator", async ({ page, browser }, testInfo) => {
   const project = requiredReviewProject(testInfo.project.name);
+  const productCommitSha = await currentCommitSha();
   const devicePixelRatio = project === "review-dpr-1" ? 1 : 2;
   expect(await page.evaluate(() => window.devicePixelRatio)).toBe(devicePixelRatio);
 
@@ -655,8 +665,8 @@ test("deterministic review capture generator", async ({ page, browser }, testInf
     await mkdir(join(REVIEW_DIRECTORY, "evidence"), { recursive: true });
   }
   const metadata = project === "review-dpr-1"
-    ? emptyMetadata()
-    : await loadMetadata();
+    ? emptyMetadata(productCommitSha)
+    : await loadMetadata(productCommitSha);
 
   const fixtures = await loadFixtures();
   for (const fixture of fixtures.values()) {
@@ -684,7 +694,7 @@ test("deterministic review capture generator", async ({ page, browser }, testInf
   });
   const output = requiredItem(bundled.outputFiles, 0, "review page module output");
   const firstProvenance = {
-    productCommitSha: await currentCommitSha(),
+    productCommitSha,
     runtimeVersions: await installReviewPage(page, output.text, fixtures, browser),
   };
   const firstRecordStart = metadata.records.length;
@@ -705,10 +715,10 @@ test("deterministic review capture generator", async ({ page, browser }, testInf
   await purgeBrowserCache(page);
 
   const secondProvenance = {
-    productCommitSha: await currentCommitSha(),
+    productCommitSha,
     runtimeVersions: await installReviewPage(page, output.text, fixtures, browser),
   };
-  const repeatedMetadata = emptyMetadata();
+  const repeatedMetadata = emptyMetadata(productCommitSha);
   try {
     if (project === "review-dpr-1") {
       await captureDprOneSet(page, repeatedMetadata, fixtures, calibration, secondProvenance, devicePixelRatio);
@@ -729,7 +739,17 @@ test("deterministic review capture generator", async ({ page, browser }, testInf
   );
 
   metadata.records.sort((left, right) => left.fileName.localeCompare(right.fileName));
-  await writeFile(METADATA_FILE, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+  const completedProjects = REVIEW_PROJECTS.filter((candidate) => metadata.determinism[candidate] !== null);
+  const result = {
+    ...metadata,
+    suiteResult: {
+      command: REVIEW_COMMAND,
+      commitSha: productCommitSha,
+      status: completedProjects.length === REVIEW_PROJECTS.length ? "PASS" as const : "NOT_RUN" as const,
+      completedProjects,
+    },
+  };
+  await writeFile(METADATA_FILE, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   await writeManifest(metadata.records.length);
 });
 
@@ -1238,9 +1258,15 @@ async function loadFixtures(): Promise<ReadonlyMap<Policy, Fixture>> {
   return fixtures;
 }
 
-function emptyMetadata(): ReviewMetadata {
+function emptyMetadata(productCommitSha: string): ReviewMetadata {
   return {
     schemaVersion: 1,
+    suiteResult: {
+      command: REVIEW_COMMAND,
+      commitSha: productCommitSha,
+      status: "NOT_RUN",
+      completedProjects: [],
+    },
     captureConfiguration: {
       viewport: { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT },
       litPixelChannelMargin: LIT_PIXEL_CHANNEL_MARGIN,
@@ -1270,13 +1296,19 @@ function emptyMetadata(): ReviewMetadata {
   };
 }
 
-async function loadMetadata(): Promise<ReviewMetadata> {
+async function loadMetadata(productCommitSha: string): Promise<ReviewMetadata> {
   const parsed = JSON.parse(await readFile(METADATA_FILE, "utf8")) as ReviewMetadata;
   if (
     parsed.schemaVersion !== 1
+    || parsed.suiteResult.command !== REVIEW_COMMAND
+    || parsed.suiteResult.commitSha !== productCommitSha
+    || parsed.suiteResult.status !== "NOT_RUN"
+    || parsed.suiteResult.completedProjects.length !== 1
+    || parsed.suiteResult.completedProjects[0] !== "review-dpr-1"
     || parsed.records.length === 0
     || parsed.contactSheet === null
     || parsed.determinism["review-dpr-1"] === null
+    || parsed.records.some((record) => record.productCommitSha !== productCommitSha)
   ) {
     throw new Error("review DPR 2 requires the DPR 1 capture package");
   }

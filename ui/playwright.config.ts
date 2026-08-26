@@ -4,6 +4,7 @@ const A4_ENABLED = process.env.A4_STIMULI === "1";
 const A4_SPEC = "a4-stimuli.spec.ts";
 const REVIEW_ENABLED = process.env.REVIEW_CAPTURES === "1";
 const REVIEW_SPEC = "review-captures.spec.ts";
+const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED;
 
 const PREPARE_EVIDENCE = [
   "node --input-type=module --eval '",
@@ -79,7 +80,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `${PREPARE_EVIDENCE} && python3 -m http.server 4173 --directory ..`,
+    command: `${BROWSER_EVIDENCE_OWNER ? `${PREPARE_EVIDENCE} && ` : ""}python3 -m http.server 4173 --directory ..`,
     url: "http://127.0.0.1:4173/",
     reuseExistingServer: false,
     timeout: 30_000,

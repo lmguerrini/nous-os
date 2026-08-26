@@ -345,6 +345,7 @@ type EvidenceRun = {
   readonly checks?: readonly EvidenceEntry[];
   readonly projects?: Readonly<Record<string, { readonly completedAt: string }>>;
   readonly dprWitnesses?: Readonly<Record<string, DprWitness>>;
+  readonly suiteResults?: readonly ExternalSuiteResult[];
 };
 
 type NeutralDigestExpectations = {
@@ -368,7 +369,8 @@ type AcceptanceInvariant = {
   readonly criterion: string;
   readonly command: string;
   readonly checkIds: readonly string[];
-  readonly unobservedCommands: readonly string[];
+  readonly externalSuites: readonly ExternalSuite[];
+  readonly unboundCommands: readonly string[];
   readonly supersededReason?: string;
   readonly recordedSupersession?: string;
   /** These map each named assertion to the browser checks that discharge it. */
@@ -386,7 +388,8 @@ type AcceptanceCriterionContract = {
   readonly command: string;
   readonly browserCheck?: string;
   readonly browserAssertions?: readonly string[];
-  readonly unobservedCommands: readonly string[];
+  readonly externalSuites: readonly ExternalSuite[];
+  readonly unboundCommands: readonly string[];
   readonly supersededReason?: string;
   readonly recordedSupersession?: string;
 };
@@ -408,6 +411,19 @@ type AcceptanceSummary = {
   readonly rule: string;
 };
 
+type ExternalSuite = "pytest" | "test:unit" | "test:review";
+
+type ExternalSuiteStatus = "PASS" | "FAIL" | "NOT_RUN";
+
+type ExternalSuiteResult = {
+  readonly suite: ExternalSuite;
+  readonly command: string;
+  readonly status: ExternalSuiteStatus;
+  readonly artifactPath: string;
+  readonly artifactSha256?: string;
+  readonly detail: string;
+};
+
 /** This is the complete shipped state vector; morphology is intentionally not a shipping axis. */
 type ShippingCrossProductState = Pick<Snapshot, "policy" | "palette" | "temperature" | "theme" | "lodBand">;
 
@@ -417,6 +433,15 @@ type RelationIdentityCertificate =
 
 const COMMAND = "npm --prefix ui run test:browser";
 const EVIDENCE_FILE = "dist/evidence/evidence.json";
+const PYTEST_RESULT_FILE = ["dist", "evidence", "pytest-results.xml"].join("/");
+const UNIT_RESULT_FILE = ["dist", "evidence", "unit-result.json"].join("/");
+const UNIT_REPORTER_FILE = ["dist", "evidence", "unit-results.tap"].join("/");
+const REVIEW_RESULT_FILE = ["dist", "review", "evidence", "capture-metadata.json"].join("/");
+const EXTERNAL_SUITES = [
+  { suite: "pytest", command: "python3 -m pytest tests/ -q", artifactPath: PYTEST_RESULT_FILE },
+  { suite: "test:review", command: "npm --prefix ui run test:review", artifactPath: REVIEW_RESULT_FILE },
+  { suite: "test:unit", command: "npm --prefix ui run test:unit", artifactPath: UNIT_RESULT_FILE },
+] as const satisfies readonly { readonly suite: ExternalSuite; readonly command: string; readonly artifactPath: string }[];
 const NEUTRAL_DIGESTS_FILE = ["..", "fixtures", "synthetic", "projection", "expectations", "neutral-digests.json"].join("/");
 const REQUIRED_PROJECTS = ["dpr-1", "dpr-2"] as const;
 const SHIPPING_POLICIES = ["Discovery", "Reliability"] as const;
@@ -440,13 +465,15 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     command: "test:browser → a1-derived-origin-refusal; test:unit → contract.test.ts",
     browserCheck: "a1-derived-origin-refusal",
     browserAssertions: ["derived origins are present and non-null"],
-    unobservedCommands: ["test:unit → contract.test.ts"],
+    externalSuites: ["test:unit"],
+    unboundCommands: [],
   },
   {
     id: "A2",
     criterion: "semanticDigest invariant across palette × temperature × theme × LOD, with a witnessed mutation control",
     command: "test:unit → contract.test.ts, adapter/projection.test.ts",
-    unobservedCommands: ["test:unit → contract.test.ts, adapter/projection.test.ts"],
+    externalSuites: ["test:unit"],
+    unboundCommands: [],
   },
   {
     id: "A3",
@@ -454,14 +481,16 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     command: "test:browser → a3-cross-product-picking-pixels",
     browserCheck: "a3-cross-product-picking-pixels",
     browserAssertions: A3_SHIPPING_ASSERTIONS,
-    unobservedCommands: [],
+    externalSuites: [],
+    unboundCommands: [],
     recordedSupersession: "A3 morphology axis is SUPERSEDED by D-039 §5; this record covers the surviving shipping row only.",
   },
   {
     id: "A4",
     criterion: "blind monochrome morphology recognition panel",
     command: "—",
-    unobservedCommands: [],
+    externalSuites: [],
+    unboundCommands: [],
     supersededReason: "SUPERSEDED by D-039 §1 — Plan B ships one master. Preserved as CAP-13 research evidence; may never be reported as A4 passed.",
   },
   {
@@ -469,14 +498,16 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     criterion: "rendered aggregates equal the real aggregate set bidirectionally; membership exact; rejections geometrically outside every window",
     command: "test:browser → organization; test:unit → engine/organization.test.ts",
     browserCheck: "organization",
-    unobservedCommands: ["test:unit → engine/organization.test.ts"],
+    externalSuites: ["test:unit"],
+    unboundCommands: [],
   },
   {
     id: "A6",
     criterion: "Reliability↔Discovery preserves shared anchors, screen positions and edge control points, camera frozen",
     command: "test:browser → policy-transition",
     browserCheck: "policy-transition",
-    unobservedCommands: [],
+    externalSuites: [],
+    unboundCommands: [],
   },
   {
     id: "A7",
@@ -484,19 +515,22 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     command: "test:browser → a7-single-relation-material",
     browserCheck: "a7-single-relation-material",
     browserAssertions: ["each relation binds exactly one material"],
-    unobservedCommands: [],
+    externalSuites: [],
+    unboundCommands: [],
   },
   {
     id: "A8",
     criterion: "propagation is resampling-invariant on a pinned analytic curve at interior timestamps",
     command: "test:unit → engine/propagation.test.ts",
-    unobservedCommands: ["test:unit → engine/propagation.test.ts"],
+    externalSuites: ["test:unit"],
+    unboundCommands: [],
   },
   {
     id: "A9",
     criterion: "the Reliability predicate re-derived record-for-record; the degenerate 0-node graph fails; each clause has a named witness",
     command: "test:unit → adapter/projection.test.ts",
-    unobservedCommands: ["test:unit → adapter/projection.test.ts"],
+    externalSuites: ["test:unit"],
+    unboundCommands: [],
   },
   {
     id: "A10",
@@ -504,50 +538,58 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     command: "test:browser → a10-engine-semantic-isolation",
     browserCheck: "a10-engine-semantic-isolation",
     browserAssertions: ["the engine cannot read semantic graph payloads"],
-    unobservedCommands: [],
+    externalSuites: [],
+    unboundCommands: [],
   },
   {
     id: "A11",
     criterion: "mapping honesty via an independent Python oracle plus a pinned per-leaf operator registry with expected outcome",
     command: "pytest; test:unit → adapter/mapping-honesty.test.ts",
-    unobservedCommands: ["pytest", "test:unit → adapter/mapping-honesty.test.ts"],
+    externalSuites: ["pytest", "test:unit"],
+    unboundCommands: [],
   },
   {
     id: "A12",
     criterion: "RENDERED/INSPECTED partition exact over the type-qualified vocabulary; pairwise non-hue separation at a numeric threshold over the nine governed RENDERED states; failed_gate property-tested as unbounded text",
     command: "test:unit → render2d/renderer.test.ts, engine/partition.test.ts",
-    unobservedCommands: ["test:unit → render2d/renderer.test.ts, engine/partition.test.ts"],
+    externalSuites: ["test:unit"],
+    unboundCommands: [],
   },
   {
     id: "A13",
     criterion: "no machine identity in any committed byte; the target universe pinned by git ls-files and asserted equal to the scanned set",
     command: "pytest → tests/test_public_safety.py",
-    unobservedCommands: ["pytest → tests/test_public_safety.py"],
+    externalSuites: ["pytest"],
+    unboundCommands: [],
   },
   {
     id: "A14",
     criterion: "fixtures equal their recomputation and a separately owned pinned manifest",
     command: "pytest → tests/test_fixtures.py; test:unit → canonical.test.ts",
-    unobservedCommands: ["pytest → tests/test_fixtures.py", "test:unit → canonical.test.ts"],
+    externalSuites: ["pytest", "test:unit"],
+    unboundCommands: [],
   },
   {
     id: "A15",
     criterion: "LOD preserves morphology, dataset and anchors; hysteresis pinned; a minimum inter-band delta required",
     command: "test:browser → lod; test:unit → engine/lod.test.ts",
     browserCheck: "lod",
-    unobservedCommands: ["test:unit → engine/lod.test.ts"],
+    externalSuites: ["test:unit"],
+    unboundCommands: [],
   },
   {
     id: "A16",
     criterion: "determinism, semantic/layout and visual layers asserted separately, runtime pinned, across two purged-cache runs",
     command: "test:review → the capture manifest compared across two runs",
-    unobservedCommands: ["test:review → the capture manifest compared across two runs"],
+    externalSuites: ["test:review"],
+    unboundCommands: [],
   },
   {
     id: "A17",
     criterion: "VisualState round-trips and refuses impossible states, with a refusal test per construction route for every validating rule",
     command: "test:unit → engine/visual-state.test.ts",
-    unobservedCommands: ["test:unit → engine/visual-state.test.ts"],
+    externalSuites: ["test:unit"],
+    unboundCommands: [],
   },
   {
     id: "A18",
@@ -555,27 +597,31 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     command: "test:browser → a18-invariant-status-mapping",
     browserCheck: "a18-invariant-status-mapping",
     browserAssertions: ["every acceptance invariant has a status bound to a real recorded result"],
-    unobservedCommands: [],
+    externalSuites: [],
+    unboundCommands: [],
   },
   {
     id: "A19",
     criterion: "reduced motion removes continuous propagation while preserving state comprehension",
     command: "test:browser → reduced-motion",
     browserCheck: "reduced-motion",
-    unobservedCommands: [],
+    externalSuites: [],
+    unboundCommands: [],
   },
   {
     id: "A20",
     criterion: "Quality Gauntlet against the preregistered and amended Plan-B rubric, semantic truthfulness a hard gate",
     command: "the Gauntlet record",
-    unobservedCommands: ["the Gauntlet record"],
+    externalSuites: [],
+    unboundCommands: ["the Gauntlet record"],
   },
   {
     id: "A21",
     criterion: "Full App Smoke over the principal implemented path, per-check statuses, NOT_RUN never aggregated into PASS",
     command: "test:browser → full-app-smoke",
     browserCheck: "full-app-smoke",
-    unobservedCommands: [],
+    externalSuites: [],
+    unboundCommands: [],
   },
 ] as const satisfies readonly AcceptanceCriterionContract[];
 const ACCEPTANCE_INVARIANTS: readonly AcceptanceInvariant[] = ACCEPTANCE_CRITERION_CONTRACT.map((criterion) => acceptanceInvariantFor(criterion));
@@ -616,6 +662,7 @@ const A3_FORCED_PIXEL_WITNESS_STATES: readonly ShippingCrossProductState[] = [
   { policy: "Reliability", palette: PD3_STATE.palette, temperature: PD3_STATE.temperature, theme: PD3_STATE.theme, lodBand: "micro" },
 ];
 
+if (process.env.EVIDENCE_BINDING_CONTROL !== "1") {
 test("browser evidence and full app smoke", async ({ page, browserName }, testInfo) => {
   const entries: EvidenceEntry[] = [];
   const consoleErrors: string[] = [];
@@ -1320,7 +1367,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     return `replaced the mounted product's setSelection with a no-op for ${nodeId}; the full-app renderer-selection assertion threw, and restoring the method left getSelection() null`;
   });
   await run("a18-invariant-status-mapping", async () => {
-    const currentEvidence = acceptanceInvariantEvidence(ACCEPTANCE_INVARIANTS, entries, [testInfo.project.name]);
+    const currentEvidence = acceptanceInvariantEvidence(ACCEPTANCE_INVARIANTS, entries, [testInfo.project.name], []);
     expect(currentEvidence).toHaveLength(21);
     expect(acceptanceEvidenceById(currentEvidence, "A4").status, "A4 remains distinct from a discharged criterion").toBe("SUPERSEDED");
     expect(acceptanceEvidenceById(currentEvidence, "A18").status, "A18 cannot report PASS before its own browser result is recorded").toBe("NOT_RUN");
@@ -1399,6 +1446,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   if (prior.run === undefined) {
     throw new Error("evidence run was not initialized before browser execution");
   }
+  const suiteResults = await loadExternalSuiteResults(prior.run.commitSha);
   const checks = [...(prior.checks ?? []), ...entries];
   const projects = {
     ...(prior.projects ?? {}),
@@ -1413,7 +1461,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   const notRun = checks.filter((entry) => entry.status === "NOT_RUN").length;
   const unknown = checks.filter((entry) => entry.status === "UNKNOWN").length;
   const projectsComplete = REQUIRED_PROJECTS.every((project) => projects[project] !== undefined);
-  const acceptanceInvariants = acceptanceInvariantEvidence(ACCEPTANCE_INVARIANTS, checks, Object.keys(projects));
+  const acceptanceInvariants = acceptanceInvariantEvidence(ACCEPTANCE_INVARIANTS, checks, Object.keys(projects), suiteResults);
   const acceptance = acceptanceSummary(acceptanceInvariants);
   await writeFile(EVIDENCE_FILE, `${JSON.stringify({
     run: prior.run,
@@ -1434,6 +1482,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       path: pageModulePath,
       binding: pageModuleBinding,
     },
+    suiteResults,
     acceptanceInvariants,
     checks,
   }, null, 2)}\n`);
@@ -1441,6 +1490,30 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   const incomplete = checks.filter((entry) => entry.status !== "PASS");
   expect(incomplete, "a material browser evidence failure or unavailable required check must fail the run").toEqual([]);
 });
+}
+
+/** This reports artifact binding controls without opening a page module or registering a Playwright test. */
+export async function externalSuiteBindingControl(expectedCommitSha: string): Promise<{
+  readonly suiteResults: readonly ExternalSuiteResult[];
+  readonly a2: { readonly status: AcceptanceStatus; readonly detail: string };
+  readonly a20: { readonly status: AcceptanceStatus; readonly detail: string };
+}> {
+  const suiteResults = await loadExternalSuiteResults(expectedCommitSha);
+  const suites = new Map(suiteResults.map((result) => [result.suite, result]));
+  const a2 = ACCEPTANCE_INVARIANTS.find((invariant) => invariant.id === "A2");
+  if (a2 === undefined) {
+    throw new Error("acceptance register is missing A2");
+  }
+  const a20 = ACCEPTANCE_INVARIANTS.find((invariant) => invariant.id === "A20");
+  if (a20 === undefined) {
+    throw new Error("acceptance register is missing A20");
+  }
+  return {
+    suiteResults,
+    a2: acceptanceInvariantStatus(a2, new Map<string, EvidenceEntry>(), new Set<string>(), suites),
+    a20: acceptanceInvariantStatus(a20, new Map<string, EvidenceEntry>(), new Set<string>(), suites),
+  };
+}
 
 /** This derives the browser register from the complete contract and does not add a criterion outside it. */
 function acceptanceInvariantFor(criterion: AcceptanceCriterion): AcceptanceInvariant {
@@ -1455,7 +1528,8 @@ function acceptanceInvariantFor(criterion: AcceptanceCriterion): AcceptanceInvar
     criterion: criterion.criterion,
     command: criterion.command,
     checkIds,
-    unobservedCommands: criterion.unobservedCommands,
+    externalSuites: criterion.externalSuites,
+    unboundCommands: criterion.unboundCommands,
     ...(supersededReason === undefined ? {} : { supersededReason }),
     ...(recordedSupersession === undefined ? {} : { recordedSupersession }),
     assertionMappings: assertions.map((assertion) => ({ assertion, checkIds })),
@@ -1531,9 +1605,10 @@ export function acceptanceStatusControlOutputs(): {
     throw new Error("acceptance register is missing A18");
   }
   const missingCommand = acceptanceInvariantStatus(
-    { ...a18, checkIds: ["dpr-1/not-recorded-command"], unobservedCommands: [] },
+    { ...a18, checkIds: ["dpr-1/not-recorded-command"], externalSuites: [], unboundCommands: [] },
     new Map<string, EvidenceEntry>(),
     new Set(["dpr-1"]),
+    new Map<ExternalSuite, ExternalSuiteResult>(),
   );
   return {
     missingBrowserCheck: failureMessage(() => assertAcceptanceInvariantMapping(withoutCheck)),
@@ -1545,7 +1620,7 @@ export function acceptanceStatusControlOutputs(): {
   };
 }
 
-/** This validates every browser binding structurally and does not infer a result for an unobserved command. */
+/** This validates every browser and suite binding structurally and does not infer an absent result. */
 function assertAcceptanceInvariantMapping(invariants: readonly AcceptanceInvariant[]): void {
   assertAcceptanceInvariantCompleteness(ACCEPTANCE_CRITERION_CONTRACT, invariants);
   for (const invariant of [...invariants].sort((left, right) => left.id.localeCompare(right.id))) {
@@ -1553,13 +1628,18 @@ function assertAcceptanceInvariantMapping(invariants: readonly AcceptanceInvaria
       throw new Error(`${invariant.id} has no named discharging command`);
     }
     if (invariant.supersededReason !== undefined) {
-      if (invariant.command !== "—" || invariant.checkIds.length !== 0 || invariant.unobservedCommands.length !== 0) {
+      if (invariant.command !== "—" || invariant.checkIds.length !== 0 || invariant.externalSuites.length !== 0 || invariant.unboundCommands.length !== 0) {
         throw new Error(`${invariant.id} supersession has a runnable evidence binding`);
       }
       continue;
     }
-    if (invariant.checkIds.length === 0 && invariant.unobservedCommands.length === 0) {
-      throw new Error(`${invariant.id} has no browser check or unobserved command`);
+    if (invariant.checkIds.length === 0 && invariant.externalSuites.length === 0 && invariant.unboundCommands.length === 0) {
+      throw new Error(`${invariant.id} has no browser check, external suite, or declared unbound command`);
+    }
+    for (const suite of [...invariant.externalSuites].sort()) {
+      if (!EXTERNAL_SUITES.some((candidate) => candidate.suite === suite)) {
+        throw new Error(`${invariant.id} names an unknown external suite ${suite}`);
+      }
     }
     if (invariant.checkIds.length === 0) {
       if (invariant.assertionMappings.length !== 0) {
@@ -1591,18 +1671,20 @@ function assertAcceptanceInvariantMapping(invariants: readonly AcceptanceInvaria
   }
 }
 
-/** This binds criterion status only to recorded browser checks and does not promote unobserved evidence to PASS. */
+/** This binds criterion status only to recorded browser checks and suite artifacts and does not promote unread evidence to PASS. */
 function acceptanceInvariantEvidence(
   invariants: readonly AcceptanceInvariant[],
   checks: readonly EvidenceEntry[],
   completedProjects: readonly string[],
+  suiteResults: readonly ExternalSuiteResult[],
 ): readonly AcceptanceInvariantEvidence[] {
   assertAcceptanceInvariantMapping(invariants);
   const entries = new Map([...checks].sort((left, right) => left.id.localeCompare(right.id)).map((check) => [check.id, check]));
   const completed = new Set([...completedProjects].sort());
+  const suites = new Map([...suiteResults].sort((left, right) => left.suite.localeCompare(right.suite)).map((result) => [result.suite, result]));
   return [...invariants]
     .sort((left, right) => left.id.localeCompare(right.id))
-    .map((invariant) => ({ ...invariant, ...acceptanceInvariantStatus(invariant, entries, completed) }));
+    .map((invariant) => ({ ...invariant, ...acceptanceInvariantStatus(invariant, entries, completed, suites) }));
 }
 
 /** This returns an exact emitted criterion by id and does not accept an incomplete evidence register. */
@@ -1622,6 +1704,7 @@ function acceptanceInvariantStatus(
   invariant: AcceptanceInvariant,
   entries: ReadonlyMap<string, EvidenceEntry>,
   completedProjects: ReadonlySet<string>,
+  suiteResults: ReadonlyMap<ExternalSuite, ExternalSuiteResult>,
 ): { readonly status: AcceptanceStatus; readonly detail: string } {
   if (invariant.supersededReason !== undefined) {
     return { status: "SUPERSEDED", detail: invariant.supersededReason };
@@ -1630,10 +1713,20 @@ function acceptanceInvariantStatus(
     .sort()
     .map((checkId) => ({ checkId, entry: entries.get(checkId), completed: completedProjects.has(checkId.split("/")[0] ?? "") }));
   const failed = checkStatuses.filter(({ entry }) => entry?.status === "FAIL");
+  const externalStatuses = [...invariant.externalSuites]
+    .sort()
+    .map((suite) => ({ suite, result: suiteResults.get(suite) }));
   if (failed.length > 0) {
     return {
       status: "FAIL",
       detail: `${invariant.command} recorded FAIL for ${failed.map(({ checkId }) => checkId).join(", ")}`,
+    };
+  }
+  const failedSuites = externalStatuses.filter(({ result }) => result?.status === "FAIL");
+  if (failedSuites.length > 0) {
+    return {
+      status: "FAIL",
+      detail: `${invariant.command} recorded FAIL for ${failedSuites.map(({ suite, result }) => externalSuiteDetail(suite, result)).join("; ")}`,
     };
   }
   const unavailable = checkStatuses.filter(({ entry, completed }) => !completed || entry === undefined || entry.command !== COMMAND || entry.status !== "PASS");
@@ -1643,15 +1736,22 @@ function acceptanceInvariantStatus(
       detail: `${invariant.command} has no recorded PASS for ${unavailable.map(({ checkId }) => checkId).join(", ")}`,
     };
   }
-  if (invariant.unobservedCommands.length > 0) {
+  const unavailableSuites = externalStatuses.filter(({ result }) => result?.status !== "PASS");
+  if (unavailableSuites.length > 0) {
     return {
       status: "NOT_RUN",
-      detail: `${invariant.command} has no browser-readable recorded result for ${[...invariant.unobservedCommands].sort().join("; ")}`,
+      detail: `${invariant.command} has no current PASS artifact for ${unavailableSuites.map(({ suite, result }) => externalSuiteDetail(suite, result)).join("; ")}`,
+    };
+  }
+  if (invariant.unboundCommands.length > 0) {
+    return {
+      status: "NOT_RUN",
+      detail: `${invariant.command} has no result artifact for ${[...invariant.unboundCommands].sort().join("; ")}`,
     };
   }
   return {
     status: "PASS",
-    detail: `${invariant.command} recorded PASS for ${checkStatuses.map(({ checkId }) => checkId).join(", ")}`,
+    detail: `${invariant.command} recorded PASS for ${[...checkStatuses.map(({ checkId }) => checkId), ...externalStatuses.map(({ suite, result }) => externalSuiteDetail(suite, result))].join(", ")}`,
   };
 }
 
@@ -1670,6 +1770,220 @@ function acceptanceSummary(entries: readonly Pick<AcceptanceInvariantEvidence, "
     superseded,
     rule: "Acceptance passes only when every criterion is PASS; NOT_RUN and SUPERSEDED are distinct non-passing statuses.",
   };
+}
+
+/** This reads every declared suite artifact for the current evidence commit and does not retain a prior browser read. */
+async function loadExternalSuiteResults(expectedCommitSha: string): Promise<readonly ExternalSuiteResult[]> {
+  const definitions = [...EXTERNAL_SUITES].sort((left, right) => left.suite.localeCompare(right.suite));
+  const results = await Promise.all(definitions.map((definition) => loadExternalSuiteResult(definition, expectedCommitSha)));
+  return results.sort((left, right) => left.suite.localeCompare(right.suite));
+}
+
+/** This reads one declared suite result and does not turn an unreadable artifact into a failure claim. */
+async function loadExternalSuiteResult(
+  definition: (typeof EXTERNAL_SUITES)[number],
+  expectedCommitSha: string,
+): Promise<ExternalSuiteResult> {
+  try {
+    if (definition.suite === "pytest") {
+      return await loadPytestSuiteResult(definition, expectedCommitSha);
+    }
+    if (definition.suite === "test:unit") {
+      return await loadUnitSuiteResult(definition, expectedCommitSha);
+    }
+    return await loadReviewSuiteResult(definition, expectedCommitSha);
+  } catch (error: unknown) {
+    return externalSuiteResult(definition, "NOT_RUN", `artifact could not be read: ${message(error)}`);
+  }
+}
+
+/** This validates pytest's built-in JUnit result and does not treat an XML file without this tree's identity as current. */
+async function loadPytestSuiteResult(
+  definition: (typeof EXTERNAL_SUITES)[number],
+  expectedCommitSha: string,
+): Promise<ExternalSuiteResult> {
+  const artifact = await readFile(definition.artifactPath);
+  const artifactSha256 = createHash("sha256").update(artifact).digest("hex");
+  const text = artifact.toString("utf8");
+  const suiteTag = text.match(/<testsuite\b[^>]*>/)?.[0];
+  const tests = suiteTag === undefined ? undefined : xmlNaturalAttribute(suiteTag, "tests");
+  const failures = suiteTag === undefined ? undefined : xmlNaturalAttribute(suiteTag, "failures");
+  const errors = suiteTag === undefined ? undefined : xmlNaturalAttribute(suiteTag, "errors");
+  const skipped = suiteTag === undefined ? undefined : xmlNaturalAttribute(suiteTag, "skipped");
+  const command = xmlProperty(text, "command");
+  const commitSha = xmlProperty(text, "commitSha");
+  if ((text.match(/<testsuite\b/g) ?? []).length !== 1 || command !== definition.command || commitSha !== expectedCommitSha) {
+    return externalSuiteResult(definition, "NOT_RUN", "JUnit command or commit identity does not match this browser evidence run", artifactSha256);
+  }
+  if (tests === undefined || failures === undefined || errors === undefined || skipped === undefined || tests === 0) {
+    return externalSuiteResult(definition, "NOT_RUN", "JUnit result has no complete non-empty summary", artifactSha256);
+  }
+  if (failures !== 0 || errors !== 0 || skipped !== 0) {
+    return externalSuiteResult(definition, "FAIL", `JUnit recorded tests=${tests}, failures=${failures}, errors=${errors}, skipped=${skipped}`, artifactSha256);
+  }
+  return externalSuiteResult(definition, "PASS", `JUnit recorded ${tests} tests with zero failures, errors, and skips`, artifactSha256);
+}
+
+/** This validates Node's built-in TAP report and does not trust its metadata without the report bytes it names. */
+async function loadUnitSuiteResult(
+  definition: (typeof EXTERNAL_SUITES)[number],
+  expectedCommitSha: string,
+): Promise<ExternalSuiteResult> {
+  const metadata = await readFile(definition.artifactPath);
+  const artifactSha256 = createHash("sha256").update(metadata).digest("hex");
+  const parsed = JSON.parse(metadata.toString("utf8")) as unknown;
+  const result = record(parsed);
+  const reporter = result === undefined ? undefined : record(result.reporter);
+  if (
+    result === undefined
+    || result.schemaVersion !== 1
+    || result.command !== definition.command
+    || result.commitSha !== expectedCommitSha
+    || typeof result.exitCode !== "number"
+    || !Number.isInteger(result.exitCode)
+    || reporter === undefined
+    || reporter.name !== "tap"
+    || reporter.path !== UNIT_REPORTER_FILE
+    || typeof reporter.sha256 !== "string"
+  ) {
+    return externalSuiteResult(definition, "NOT_RUN", "unit metadata does not name this command, commit, and TAP report", artifactSha256);
+  }
+  const reporterBytes = await readFile(UNIT_REPORTER_FILE);
+  const reporterSha256 = createHash("sha256").update(reporterBytes).digest("hex");
+  if (reporter.sha256 !== reporterSha256) {
+    return externalSuiteResult(definition, "NOT_RUN", "unit metadata hash does not match the TAP report bytes", artifactSha256);
+  }
+  const text = reporterBytes.toString("utf8");
+  const tests = tapSummary(text, "tests");
+  const passed = tapSummary(text, "pass");
+  const failed = tapSummary(text, "fail");
+  const cancelled = tapSummary(text, "cancelled");
+  const skipped = tapSummary(text, "skipped");
+  const todo = tapSummary(text, "todo");
+  const plan = text.match(/^1\.\.(\d+)$/m)?.[1];
+  if (
+    tests === undefined
+    || passed === undefined
+    || failed === undefined
+    || cancelled === undefined
+    || skipped === undefined
+    || todo === undefined
+    || plan === undefined
+    || Number(plan) !== tests
+    || tests === 0
+  ) {
+    return externalSuiteResult(definition, "NOT_RUN", "TAP report has no complete non-empty summary", artifactSha256);
+  }
+  if (result.exitCode !== 0 || failed !== 0 || cancelled !== 0 || skipped !== 0 || todo !== 0 || passed !== tests) {
+    return externalSuiteResult(definition, "FAIL", `TAP recorded tests=${tests}, pass=${passed}, fail=${failed}, cancelled=${cancelled}, skipped=${skipped}, todo=${todo}, exitCode=${result.exitCode}`, artifactSha256);
+  }
+  return externalSuiteResult(definition, "PASS", `TAP recorded ${tests} tests with zero non-passing outcomes`, artifactSha256);
+}
+
+/** This validates the review capture result and does not promote a one-DPR package to a completed suite. */
+async function loadReviewSuiteResult(
+  definition: (typeof EXTERNAL_SUITES)[number],
+  expectedCommitSha: string,
+): Promise<ExternalSuiteResult> {
+  const artifact = await readFile(definition.artifactPath);
+  const artifactSha256 = createHash("sha256").update(artifact).digest("hex");
+  const parsed = record(JSON.parse(artifact.toString("utf8")) as unknown);
+  const suiteResult = parsed === undefined ? undefined : record(parsed.suiteResult);
+  const determinism = parsed === undefined ? undefined : record(parsed.determinism);
+  const records = parsed === undefined || !Array.isArray(parsed.records) ? undefined : parsed.records;
+  const completedProjects = suiteResult === undefined || !Array.isArray(suiteResult.completedProjects)
+    ? undefined
+    : suiteResult.completedProjects;
+  const expectedProjects = ["review-dpr-1", "review-dpr-2"];
+  const completed = completedProjects === undefined || !completedProjects.every((project) => typeof project === "string")
+    ? []
+    : [...completedProjects].sort();
+  if (
+    parsed === undefined
+    || parsed.schemaVersion !== 1
+    || suiteResult === undefined
+    || suiteResult.command !== definition.command
+    || suiteResult.commitSha !== expectedCommitSha
+  ) {
+    return externalSuiteResult(definition, "NOT_RUN", "review metadata does not name this command and commit", artifactSha256);
+  }
+  if (suiteResult.status !== "PASS") {
+    return externalSuiteResult(definition, "NOT_RUN", "review metadata does not record a completed capture suite", artifactSha256);
+  }
+  if (
+    completed.length !== expectedProjects.length
+    || completed.some((project, index) => project !== expectedProjects[index])
+    || determinism === undefined
+    || determinism["review-dpr-1"] === null
+    || determinism["review-dpr-1"] === undefined
+    || determinism["review-dpr-2"] === null
+    || determinism["review-dpr-2"] === undefined
+    || records === undefined
+    || records.length === 0
+    || !records.every((capture) => record(capture)?.productCommitSha === expectedCommitSha)
+  ) {
+    return externalSuiteResult(definition, "NOT_RUN", "review metadata is missing a current completed DPR witness", artifactSha256);
+  }
+  return externalSuiteResult(definition, "PASS", "capture metadata records both DPR projects and current-commit capture witnesses", artifactSha256);
+}
+
+/** This constructs one external status from bytes actually read and does not attach a digest when no byte was available. */
+function externalSuiteResult(
+  definition: (typeof EXTERNAL_SUITES)[number],
+  status: ExternalSuiteStatus,
+  detail: string,
+  artifactSha256?: string,
+): ExternalSuiteResult {
+  return {
+    suite: definition.suite,
+    command: definition.command,
+    status,
+    artifactPath: definition.artifactPath,
+    ...(artifactSha256 === undefined ? {} : { artifactSha256 }),
+    detail,
+  };
+}
+
+/** This describes an artifact status and does not hide an absent result behind a criterion-level PASS. */
+function externalSuiteDetail(suite: ExternalSuite, result: ExternalSuiteResult | undefined): string {
+  if (result === undefined) {
+    return `${suite}: no artifact result was read`;
+  }
+  return `${suite} ${result.status} ${result.artifactPath} SHA-256 ${result.artifactSha256 ?? "unavailable"}: ${result.detail}`;
+}
+
+/** This reads one XML property and does not decode values whose shape the binding does not expect. */
+function xmlProperty(text: string, name: string): string | undefined {
+  const tags = [...(text.match(/<property\b[^>]*\/>/g) ?? [])].sort();
+  const values = tags
+    .filter((tag) => xmlAttribute(tag, "name") === name)
+    .map((tag) => xmlAttribute(tag, "value"));
+  return values.length === 1 ? values[0] : undefined;
+}
+
+/** This reads one XML attribute and does not interpret a missing attribute as an empty string. */
+function xmlAttribute(tag: string, name: string): string | undefined {
+  return tag.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1];
+}
+
+/** This reads one non-negative XML count and does not coerce malformed text to zero. */
+function xmlNaturalAttribute(tag: string, name: string): number | undefined {
+  const value = xmlAttribute(tag, name);
+  return value === undefined || !/^\d+$/.test(value) ? undefined : Number(value);
+}
+
+/** This reads one TAP summary count and does not accept a missing or malformed summary line. */
+function tapSummary(text: string, name: string): number | undefined {
+  const values = [...text.matchAll(new RegExp(`^# ${name} (\\d+)$`, "gm"))]
+    .map((match) => match[1]);
+  return values.length === 1 && values[0] !== undefined ? Number(values[0]) : undefined;
+}
+
+/** This narrows JSON data to an object and does not accept arrays or null as records. */
+function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : undefined;
 }
 
 /** This captures one expected control failure and does not convert a passing control into evidence. */
