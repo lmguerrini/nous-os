@@ -253,9 +253,16 @@ type ReviewSuiteResult = {
   readonly completedProjects: readonly ReviewProject[];
 };
 
+type ReviewCheckResult = {
+  readonly id: `${ReviewProject}/determinism`;
+  readonly status: "PASS" | "NOT_RUN";
+  readonly detail: string;
+};
+
 type ReviewMetadata = {
   readonly schemaVersion: 1;
   readonly suiteResult: ReviewSuiteResult;
+  readonly checks: readonly ReviewCheckResult[];
   readonly captureConfiguration: {
     readonly viewport: {
       readonly width: number;
@@ -748,6 +755,13 @@ test("deterministic review capture generator", async ({ page, browser }, testInf
       status: completedProjects.length === REVIEW_PROJECTS.length ? "PASS" as const : "NOT_RUN" as const,
       completedProjects,
     },
+    checks: REVIEW_PROJECTS.map((candidate) => ({
+      id: `${candidate}/determinism` as const,
+      status: metadata.determinism[candidate] === null ? "NOT_RUN" as const : "PASS" as const,
+      detail: metadata.determinism[candidate] === null
+        ? `${candidate} has no completed two-run determinism witness`
+        : `${candidate} recorded its completed two-run determinism witness`,
+    })),
   };
   await writeFile(METADATA_FILE, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   await writeManifest(metadata.records.length);
@@ -1267,6 +1281,7 @@ function emptyMetadata(productCommitSha: string): ReviewMetadata {
       status: "NOT_RUN",
       completedProjects: [],
     },
+    checks: [],
     captureConfiguration: {
       viewport: { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT },
       litPixelChannelMargin: LIT_PIXEL_CHANNEL_MARGIN,

@@ -346,6 +346,7 @@ type EvidenceRun = {
   readonly projects?: Readonly<Record<string, { readonly completedAt: string }>>;
   readonly dprWitnesses?: Readonly<Record<string, DprWitness>>;
   readonly suiteResults?: readonly ExternalSuiteResult[];
+  readonly artifactResults?: readonly ArtifactResult[];
 };
 
 type NeutralDigestExpectations = {
@@ -370,6 +371,8 @@ type AcceptanceInvariant = {
   readonly command: string;
   readonly checkIds: readonly string[];
   readonly externalSuites: readonly ExternalSuite[];
+  readonly externalResults: readonly ExternalResultRequirement[];
+  readonly artifactResults: readonly ArtifactResultId[];
   readonly unboundCommands: readonly string[];
   readonly supersededReason?: string;
   readonly recordedSupersession?: string;
@@ -389,6 +392,8 @@ type AcceptanceCriterionContract = {
   readonly browserCheck?: string;
   readonly browserAssertions?: readonly string[];
   readonly externalSuites: readonly ExternalSuite[];
+  readonly externalResults?: readonly ExternalResultRequirement[];
+  readonly artifactResults?: readonly ArtifactResultId[];
   readonly unboundCommands: readonly string[];
   readonly supersededReason?: string;
   readonly recordedSupersession?: string;
@@ -415,12 +420,35 @@ type ExternalSuite = "pytest" | "test:unit" | "test:review";
 
 type ExternalSuiteStatus = "PASS" | "FAIL" | "NOT_RUN";
 
+type ExternalResultRequirement = {
+  readonly suite: ExternalSuite;
+  readonly resultIds: readonly string[];
+  readonly exactUniverse?: readonly string[];
+};
+
+type RecordedArtifactResult = {
+  readonly id: string;
+  readonly status: ExternalSuiteStatus;
+  readonly detail: string;
+};
+
+type ArtifactResultId = "rendered-state-separation";
+
+type ArtifactResult = {
+  readonly id: ArtifactResultId;
+  readonly status: ExternalSuiteStatus;
+  readonly artifactPath: string;
+  readonly artifactSha256?: string;
+  readonly detail: string;
+};
+
 type ExternalSuiteResult = {
   readonly suite: ExternalSuite;
   readonly command: string;
   readonly status: ExternalSuiteStatus;
   readonly artifactPath: string;
   readonly artifactSha256?: string;
+  readonly results: readonly RecordedArtifactResult[];
   readonly detail: string;
 };
 
@@ -436,12 +464,165 @@ const EVIDENCE_FILE = "dist/evidence/evidence.json";
 const PYTEST_RESULT_FILE = ["dist", "evidence", "pytest-results.xml"].join("/");
 const UNIT_RESULT_FILE = ["dist", "evidence", "unit-result.json"].join("/");
 const UNIT_REPORTER_FILE = ["dist", "evidence", "unit-results.tap"].join("/");
+const UNIT_SELECTION = ["test/**/*.test.ts"] as const;
+const UNIT_EXECUTED_COMMAND = [
+  "node",
+  "--test",
+  "--test-reporter=spec",
+  "--test-reporter-destination=stdout",
+  "--test-reporter=tap",
+  `--test-reporter-destination=${UNIT_REPORTER_FILE}`,
+  ...UNIT_SELECTION,
+].join(" ");
 const REVIEW_RESULT_FILE = ["dist", "review", "evidence", "capture-metadata.json"].join("/");
+const RENDERED_STATE_SEPARATION_FILE = ["dist", "evidence", "rendered-state-separation.json"].join("/");
 const EXTERNAL_SUITES = [
   { suite: "pytest", command: "python3 -m pytest tests/ -q", artifactPath: PYTEST_RESULT_FILE },
   { suite: "test:review", command: "npm --prefix ui run test:review", artifactPath: REVIEW_RESULT_FILE },
   { suite: "test:unit", command: "npm --prefix ui run test:unit", artifactPath: UNIT_RESULT_FILE },
 ] as const satisfies readonly { readonly suite: ExternalSuite; readonly command: string; readonly artifactPath: string }[];
+const TWO_BACKSLASHES = "\\".repeat(2);
+const FOUR_BACKSLASHES = TWO_BACKSLASHES.repeat(2);
+const EIGHT_BACKSLASHES = FOUR_BACKSLASHES.repeat(2);
+const PYTEST_PUBLIC_SAFETY_RESULTS = [
+  "test_every_tracked_path_is_scanned",
+  "test_the_repository_actually_tracks_files",
+  "test_no_absolute_machine_path_in_tracked_bytes[/[U]sers/[A-Za-z0-9._-]+]",
+  "test_no_absolute_machine_path_in_tracked_bytes[/[h]ome/[A-Za-z0-9._-]+]",
+  `test_no_absolute_machine_path_in_tracked_bytes[[C]:${EIGHT_BACKSLASHES}?[U]sers${EIGHT_BACKSLASHES}?]`,
+  "test_no_absolute_machine_path_in_tracked_bytes[/[V]olumes/[A-Za-z0-9._-]",
+  "test_no_absolute_machine_path_in_tracked_bytes[/[p]rivate/(?:tmp|var)/[]",
+  "test_no_absolute_machine_path_in_tracked_bytes[~/(?:[D]esktop|[D]ocumen]",
+  "test_no_absolute_machine_path_in_tracked_bytes[/[o]pt/[A-Za-z0-9._-]+]",
+  "test_no_absolute_machine_path_in_tracked_bytes[/[s]rv/[A-Za-z0-9._-]+]",
+  "test_no_absolute_machine_path_in_tracked_bytes[/[A]pplications/[A-Za-z0]",
+  "test_no_absolute_machine_path_in_tracked_bytes[/[n]et/[A-Za-z0-9._-]+]",
+  `test_no_absolute_machine_path_in_tracked_bytes[%[U]SERPROFILE%${FOUR_BACKSLASHES}[A-Za-z]`,
+  `test_no_absolute_machine_path_in_tracked_bytes[${EIGHT_BACKSLASHES}[A-Za-z0-9._-]+${FOUR_BACKSLASHES}[A-]`,
+  "test_this_machines_home_directory_is_absent_from_tracked_bytes",
+  "test_no_directory_above_the_repository_is_named_in_tracked_bytes",
+  "test_no_personal_identifier_in_tracked_bytes[email]",
+  `test_no_credential_material_in_tracked_bytes[${TWO_BACKSLASHES}bs[k]-[A-Za-z0-9_-]]`,
+  `test_no_credential_material_in_tracked_bytes[${TWO_BACKSLASHES}bgh[p]_[A-Za-z0-9]{]`,
+  `test_no_credential_material_in_tracked_bytes[${TWO_BACKSLASHES}b[A]KIA[0-9A-Z]{12,]`,
+  "test_no_credential_material_in_tracked_bytes[-----BEGIN [A-Z ]*PR]",
+  `test_no_credential_material_in_tracked_bytes[${TWO_BACKSLASHES}b(?:api[_-]?key|sec]`,
+  `test_no_credential_material_in_tracked_bytes[${TWO_BACKSLASHES}bx[o]xb-[A-Za-z0-9-]`,
+  `test_no_credential_material_in_tracked_bytes[${TWO_BACKSLASHES}b[A]IzaSy[A-Za-z0-9]`,
+  "test_no_forbidden_shape_in_tracked_file_names[/[U]sers/[A-Za-z0-9._-]+]",
+  "test_no_forbidden_shape_in_tracked_file_names[/[h]ome/[A-Za-z0-9._-]+]",
+  `test_no_forbidden_shape_in_tracked_file_names[[C]:${EIGHT_BACKSLASHES}?[U]sers${EIGHT_BACKSLASHES}?]`,
+  "test_no_forbidden_shape_in_tracked_file_names[/[V]olumes/[A-Za-z0-9._-]",
+  "test_no_forbidden_shape_in_tracked_file_names[/[p]rivate/(?:tmp|var)/[]",
+  "test_no_forbidden_shape_in_tracked_file_names[~/(?:[D]esktop|[D]ocumen]",
+  "test_no_forbidden_shape_in_tracked_file_names[/[o]pt/[A-Za-z0-9._-]+]",
+  "test_no_forbidden_shape_in_tracked_file_names[/[s]rv/[A-Za-z0-9._-]+]",
+  "test_no_forbidden_shape_in_tracked_file_names[/[A]pplications/[A-Za-z0]",
+  "test_no_forbidden_shape_in_tracked_file_names[/[n]et/[A-Za-z0-9._-]+]",
+  `test_no_forbidden_shape_in_tracked_file_names[%[U]SERPROFILE%${FOUR_BACKSLASHES}[A-Za-z]`,
+  `test_no_forbidden_shape_in_tracked_file_names[${EIGHT_BACKSLASHES}[A-Za-z0-9._-]+${FOUR_BACKSLASHES}[A-]`,
+  "test_no_forbidden_shape_in_tracked_file_names[[A-Za-z0-9._%+-]+@[A-Za-]",
+  `test_no_forbidden_shape_in_tracked_file_names[${TWO_BACKSLASHES}bs[k]-[A-Za-z0-9_-]{16,]`,
+  `test_no_forbidden_shape_in_tracked_file_names[${TWO_BACKSLASHES}bgh[p]_[A-Za-z0-9]{16,}]`,
+  `test_no_forbidden_shape_in_tracked_file_names[${TWO_BACKSLASHES}b[A]KIA[0-9A-Z]{12,}]`,
+  "test_no_forbidden_shape_in_tracked_file_names[-----BEGIN [A-Z ]*PRI[V]]",
+  `test_no_forbidden_shape_in_tracked_file_names[${TWO_BACKSLASHES}b(?:api[_-]?key|secret|]`,
+  `test_no_forbidden_shape_in_tracked_file_names[${TWO_BACKSLASHES}bx[o]xb-[A-Za-z0-9-]{10]`,
+  `test_no_forbidden_shape_in_tracked_file_names[${TWO_BACKSLASHES}b[A]IzaSy[A-Za-z0-9_-]{]`,
+  "test_the_scanner_detects_what_it_claims_to",
+  "test_the_readme_layout_names_every_tracked_module",
+  "test_the_readme_layout_names_nothing_that_does_not_exist",
+  "test_the_readme_does_not_call_a_shipped_area_unbuilt",
+] as const;
+const PYTEST_FIXTURE_RESULTS = [
+  "test_the_fixture_corpus_exists_and_is_not_empty",
+  "test_every_fixture_is_tracked",
+  "test_the_manifest_is_tracked",
+  "test_the_manifest_describes_exactly_the_corpus",
+  "test_the_manifest_is_sorted_so_it_is_reproducible",
+  "test_the_fixture_corpus_is_plain_text",
+] as const;
+const PYTEST_VISUAL_PROJECTION_ORACLE_RESULTS = [
+  "test_fixtures_restore_to_the_exhaustive_normalised_shape",
+  "test_neutral_digest_expectations_are_pinned_to_this_oracle",
+  "test_field_completeness_is_derived_from_the_source_dataclasses",
+  "test_pinned_discrimination_registry_covers_and_runs_every_semantic_leaf",
+  "test_rejection_failed_gate_property_preserves_unbounded_free_text_discrimination",
+  "test_rejection_failed_gate_property_control_rejects_an_unchanged_value",
+  "test_oracle_source_does_not_call_the_producer_encoder",
+] as const;
+const UNIT_A1_RESULTS = [
+  "the field register refuses extra fields",
+  "the field register refuses missing fields",
+  "the recursive exact boundary accepts the governed graph first and refuses every nested extension on every construction route",
+  "derived origins are non-null named sources and every nested register refuses unknown keys",
+] as const;
+const UNIT_A2_RESULTS = [
+  "semantic digest ignores node derived state",
+  "semantic digest ignores edge visual state",
+  "semantic digests are stable across repeated adapter construction",
+] as const;
+const UNIT_A5_RESULTS = [
+  "Indra windows are exactly the fixture's real aggregates and memberships",
+  "Indra reserves disjoint discs before placing members and non-members",
+  "a rejection inside an aggregate window fails the geometric predicate",
+  "a window made from rejects targets fails exact cluster membership",
+  "the predicate accepts the shape the organization result actually exposes",
+] as const;
+const UNIT_A8_RESULTS = [
+  "arc-length positions agree for uniform and clustered curve sampling",
+  "an index-parameterized control fails clustered-sampling invariance",
+  "an equal-arc index implementation passes behaviorally",
+] as const;
+const UNIT_A9_RESULTS = [
+  "Reliability is re-derived by canonical equality for both temporal questions",
+  "a labelled empty Reliability graph cannot pass equality by containment",
+  "each predicate negative control differs in only its named clause",
+  "experimental projections render alone but are refused as a re-derivation half",
+] as const;
+const UNIT_A11_RESULTS = [
+  "Property L reconstructs every fixture and Property S rejects semantic dependence",
+  "Property S rejects a rotated quote smuggled into derived provenance outside the pinned register",
+  "hostile adapter battery proves each named mapping-honesty instrument can fail",
+] as const;
+const UNIT_A12_RESULTS = [
+  "the type-qualified kind vocabulary exactly matches production's governed partition",
+  "the rendered prominence hierarchy remains pairwise separable without hue",
+  "the rendered prominence hierarchy remains pairwise separable under named colour-vision deficiencies",
+  "the calibrated non-hue separation control rejects an unattainable threshold",
+  "the calibrated CVD separation control rejects an unattainable threshold",
+  "the pinned partition covers 54 typed members and 50 raw strings",
+  "moving one state between partitions fails the exact-set assertion",
+  "an injected extra vocabulary member reaches the production validator",
+] as const;
+const UNIT_A14_RESULTS = ["projection fixtures reproduce Python's recorded SHA-256 values"] as const;
+const UNIT_A15_RESULTS = [
+  "every LOD band preserves ids and world anchors",
+  "a decorative point fails the fixed-id LOD contract",
+  "hysteresis holds on both approaches to every boundary",
+  "adjacent bands resolve materially different renderer state",
+] as const;
+const UNIT_A17_RESULTS = [
+  "VisualState has a pinned view-only register and round-trips exactly",
+  "VisualState permits a selected-and-focused element because inspection and isolation are distinct view actions",
+  "the production shipping morphology is Stellar while Neural and Mycelium remain accepted experimental capability",
+  "VisualState validation reads graph ids only, not semantic payloads",
+  "VisualState refuses every validator-owned rule through direct construction and deserialisation",
+  "VisualState refusal completeness rejects a validator rule added without a refusal case",
+  "VisualState deserialisation refuses malformed JSON before it can become state",
+] as const;
+
+/** This names pytest result identities from one module and does not accept a module-level suite summary. */
+function pytestResultIds(moduleName: string, names: readonly string[]): readonly string[] {
+  return names.map((name) => `${moduleName}::${name}`);
+}
+
+const PYTEST_PUBLIC_SAFETY_CASE_IDS = pytestResultIds("tests.test_public_safety", PYTEST_PUBLIC_SAFETY_RESULTS);
+const PYTEST_FIXTURE_CASE_IDS = pytestResultIds("tests.test_fixtures", PYTEST_FIXTURE_RESULTS);
+const PYTEST_VISUAL_PROJECTION_ORACLE_CASE_IDS = pytestResultIds(
+  "tests.test_visual_projection_oracle",
+  PYTEST_VISUAL_PROJECTION_ORACLE_RESULTS,
+);
 const NEUTRAL_DIGESTS_FILE = ["..", "fixtures", "synthetic", "projection", "expectations", "neutral-digests.json"].join("/");
 const REQUIRED_PROJECTS = ["dpr-1", "dpr-2"] as const;
 const SHIPPING_POLICIES = ["Discovery", "Reliability"] as const;
@@ -466,6 +647,7 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     browserCheck: "a1-derived-origin-refusal",
     browserAssertions: ["derived origins are present and non-null"],
     externalSuites: ["test:unit"],
+    externalResults: [{ suite: "test:unit", resultIds: UNIT_A1_RESULTS }],
     unboundCommands: [],
   },
   {
@@ -473,6 +655,7 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     criterion: "semanticDigest invariant across palette × temperature × theme × LOD, with a witnessed mutation control",
     command: "test:unit → contract.test.ts, adapter/projection.test.ts",
     externalSuites: ["test:unit"],
+    externalResults: [{ suite: "test:unit", resultIds: UNIT_A2_RESULTS }],
     unboundCommands: [],
   },
   {
@@ -499,6 +682,7 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     command: "test:browser → organization; test:unit → engine/organization.test.ts",
     browserCheck: "organization",
     externalSuites: ["test:unit"],
+    externalResults: [{ suite: "test:unit", resultIds: UNIT_A5_RESULTS }],
     unboundCommands: [],
   },
   {
@@ -523,6 +707,7 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     criterion: "propagation is resampling-invariant on a pinned analytic curve at interior timestamps",
     command: "test:unit → engine/propagation.test.ts",
     externalSuites: ["test:unit"],
+    externalResults: [{ suite: "test:unit", resultIds: UNIT_A8_RESULTS }],
     unboundCommands: [],
   },
   {
@@ -530,6 +715,7 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     criterion: "the Reliability predicate re-derived record-for-record; the degenerate 0-node graph fails; each clause has a named witness",
     command: "test:unit → adapter/projection.test.ts",
     externalSuites: ["test:unit"],
+    externalResults: [{ suite: "test:unit", resultIds: UNIT_A9_RESULTS }],
     unboundCommands: [],
   },
   {
@@ -546,6 +732,10 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     criterion: "mapping honesty via an independent Python oracle plus a pinned per-leaf operator registry with expected outcome",
     command: "pytest; test:unit → adapter/mapping-honesty.test.ts",
     externalSuites: ["pytest", "test:unit"],
+    externalResults: [
+      { suite: "pytest", resultIds: PYTEST_VISUAL_PROJECTION_ORACLE_CASE_IDS, exactUniverse: PYTEST_VISUAL_PROJECTION_ORACLE_CASE_IDS },
+      { suite: "test:unit", resultIds: UNIT_A11_RESULTS },
+    ],
     unboundCommands: [],
   },
   {
@@ -553,6 +743,8 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     criterion: "RENDERED/INSPECTED partition exact over the type-qualified vocabulary; pairwise non-hue separation at a numeric threshold over the nine governed RENDERED states; failed_gate property-tested as unbounded text",
     command: "test:unit → render2d/renderer.test.ts, engine/partition.test.ts",
     externalSuites: ["test:unit"],
+    externalResults: [{ suite: "test:unit", resultIds: UNIT_A12_RESULTS }],
+    artifactResults: ["rendered-state-separation"],
     unboundCommands: [],
   },
   {
@@ -560,6 +752,7 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     criterion: "no machine identity in any committed byte; the target universe pinned by git ls-files and asserted equal to the scanned set",
     command: "pytest → tests/test_public_safety.py",
     externalSuites: ["pytest"],
+    externalResults: [{ suite: "pytest", resultIds: PYTEST_PUBLIC_SAFETY_CASE_IDS, exactUniverse: PYTEST_PUBLIC_SAFETY_CASE_IDS }],
     unboundCommands: [],
   },
   {
@@ -567,6 +760,10 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     criterion: "fixtures equal their recomputation and a separately owned pinned manifest",
     command: "pytest → tests/test_fixtures.py; test:unit → canonical.test.ts",
     externalSuites: ["pytest", "test:unit"],
+    externalResults: [
+      { suite: "pytest", resultIds: PYTEST_FIXTURE_CASE_IDS, exactUniverse: PYTEST_FIXTURE_CASE_IDS },
+      { suite: "test:unit", resultIds: UNIT_A14_RESULTS },
+    ],
     unboundCommands: [],
   },
   {
@@ -575,6 +772,7 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     command: "test:browser → lod; test:unit → engine/lod.test.ts",
     browserCheck: "lod",
     externalSuites: ["test:unit"],
+    externalResults: [{ suite: "test:unit", resultIds: UNIT_A15_RESULTS }],
     unboundCommands: [],
   },
   {
@@ -582,6 +780,7 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     criterion: "determinism, semantic/layout and visual layers asserted separately, runtime pinned, across two purged-cache runs",
     command: "test:review → the capture manifest compared across two runs",
     externalSuites: ["test:review"],
+    externalResults: [{ suite: "test:review", resultIds: ["review-dpr-1/determinism", "review-dpr-2/determinism"] }],
     unboundCommands: [],
   },
   {
@@ -589,6 +788,7 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
     criterion: "VisualState round-trips and refuses impossible states, with a refusal test per construction route for every validating rule",
     command: "test:unit → engine/visual-state.test.ts",
     externalSuites: ["test:unit"],
+    externalResults: [{ suite: "test:unit", resultIds: UNIT_A17_RESULTS }],
     unboundCommands: [],
   },
   {
@@ -898,7 +1098,23 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     expect(result.rejectedUnrelatedMaterialChange).toBe(true);
     return `structural engine trace recorded ${result.reads} allowed reads, including the closed governed RENDERED carrier and no other semantic field; a forced semantic access failed, while a non-isomorphic semantic permutation changed its digest without changing engine output and a governed state change changed material on target ${result.renderedTargetId}; a control that changed an unrelated node material was refused`;
   });
-  await measureLegalRenderedStateCompositorSeparation(invoke, capture, testInfo.project.name);
+  if (testInfo.project.name === "dpr-2") {
+    const initializedEvidence = await loadEvidenceRun();
+    const candidate = initializedEvidence.run;
+    if (candidate === undefined) {
+      throw new Error("evidence run was not initialized before separation measurement");
+    }
+    await run("rendered-state-separation", async () => {
+      await measureLegalRenderedStateCompositorSeparation(invoke, capture, {
+        candidateSha: candidate.commitSha,
+        command: COMMAND,
+        project: "dpr-2",
+        sourceModulePath: pageModulePath,
+        sourceModuleDigest: pageModuleSha256,
+      });
+      return `final compositor separation artifact bound candidate ${candidate.commitSha}, dpr-2, and page-module digest ${pageModuleSha256}`;
+    });
+  }
   await run("a3-cross-product-picking-pixels", async () => {
     const product = enumerateShippingCrossProduct();
     expect(product).toHaveLength(SHIPPING_CROSS_PRODUCT_SIZE);
@@ -1367,7 +1583,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     return `replaced the mounted product's setSelection with a no-op for ${nodeId}; the full-app renderer-selection assertion threw, and restoring the method left getSelection() null`;
   });
   await run("a18-invariant-status-mapping", async () => {
-    const currentEvidence = acceptanceInvariantEvidence(ACCEPTANCE_INVARIANTS, entries, [testInfo.project.name], []);
+    const currentEvidence = acceptanceInvariantEvidence(ACCEPTANCE_INVARIANTS, entries, [testInfo.project.name], [], []);
     expect(currentEvidence).toHaveLength(21);
     expect(acceptanceEvidenceById(currentEvidence, "A4").status, "A4 remains distinct from a discharged criterion").toBe("SUPERSEDED");
     expect(acceptanceEvidenceById(currentEvidence, "A18").status, "A18 cannot report PASS before its own browser result is recorded").toBe("NOT_RUN");
@@ -1447,6 +1663,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     throw new Error("evidence run was not initialized before browser execution");
   }
   const suiteResults = await loadExternalSuiteResults(prior.run.commitSha);
+  const artifactResults = await loadArtifactResults(prior.run.commitSha);
   const checks = [...(prior.checks ?? []), ...entries];
   const projects = {
     ...(prior.projects ?? {}),
@@ -1461,7 +1678,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   const notRun = checks.filter((entry) => entry.status === "NOT_RUN").length;
   const unknown = checks.filter((entry) => entry.status === "UNKNOWN").length;
   const projectsComplete = REQUIRED_PROJECTS.every((project) => projects[project] !== undefined);
-  const acceptanceInvariants = acceptanceInvariantEvidence(ACCEPTANCE_INVARIANTS, checks, Object.keys(projects), suiteResults);
+  const acceptanceInvariants = acceptanceInvariantEvidence(ACCEPTANCE_INVARIANTS, checks, Object.keys(projects), suiteResults, artifactResults);
   const acceptance = acceptanceSummary(acceptanceInvariants);
   await writeFile(EVIDENCE_FILE, `${JSON.stringify({
     run: prior.run,
@@ -1483,6 +1700,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       binding: pageModuleBinding,
     },
     suiteResults,
+    artifactResults,
     acceptanceInvariants,
     checks,
   }, null, 2)}\n`);
@@ -1510,8 +1728,48 @@ export async function externalSuiteBindingControl(expectedCommitSha: string): Pr
   }
   return {
     suiteResults,
-    a2: acceptanceInvariantStatus(a2, new Map<string, EvidenceEntry>(), new Set<string>(), suites),
-    a20: acceptanceInvariantStatus(a20, new Map<string, EvidenceEntry>(), new Set<string>(), suites),
+    a2: acceptanceInvariantStatus(a2, new Map<string, EvidenceEntry>(), new Set<string>(), suites, new Map<ArtifactResultId, ArtifactResult>()),
+    a20: acceptanceInvariantStatus(a20, new Map<string, EvidenceEntry>(), new Set<string>(), suites, new Map<ArtifactResultId, ArtifactResult>()),
+  };
+}
+
+/** This exposes strict artifact-binding outcomes and does not open a browser page module. */
+export async function strictArtifactBindingControl(expectedCommitSha: string): Promise<{
+  readonly pytest: { readonly status: ExternalSuiteStatus; readonly detail: string; readonly resultCount: number } | undefined;
+  readonly separation: ArtifactResult | undefined;
+  readonly a11: { readonly status: AcceptanceStatus; readonly detail: string };
+  readonly a12: { readonly status: AcceptanceStatus; readonly detail: string };
+  readonly a13: { readonly status: AcceptanceStatus; readonly detail: string };
+  readonly a14: { readonly status: AcceptanceStatus; readonly detail: string };
+}> {
+  const suiteResults = await loadExternalSuiteResults(expectedCommitSha);
+  const artifactResults = await loadArtifactResults(expectedCommitSha);
+  const suites = new Map(suiteResults.map((result) => [result.suite, result]));
+  const artifacts = new Map(artifactResults.map((result) => [result.id, result]));
+  const required = (id: AcceptanceCriterionId): AcceptanceInvariant => {
+    const invariant = ACCEPTANCE_INVARIANTS.find((candidate) => candidate.id === id);
+    if (invariant === undefined) {
+      throw new Error(`acceptance register is missing ${id}`);
+    }
+    return invariant;
+  };
+  const resolve = (id: AcceptanceCriterionId): { readonly status: AcceptanceStatus; readonly detail: string } => acceptanceInvariantStatus(
+    required(id),
+    new Map<string, EvidenceEntry>(),
+    new Set<string>(),
+    suites,
+    artifacts,
+  );
+  return {
+    pytest: (() => {
+      const pytest = suites.get("pytest");
+      return pytest === undefined ? undefined : { status: pytest.status, detail: pytest.detail, resultCount: pytest.results.length };
+    })(),
+    separation: artifacts.get("rendered-state-separation"),
+    a11: resolve("A11"),
+    a12: resolve("A12"),
+    a13: resolve("A13"),
+    a14: resolve("A14"),
   };
 }
 
@@ -1521,6 +1779,8 @@ function acceptanceInvariantFor(criterion: AcceptanceCriterion): AcceptanceInvar
   const browserAssertions = "browserAssertions" in criterion ? criterion.browserAssertions : undefined;
   const supersededReason = "supersededReason" in criterion ? criterion.supersededReason : undefined;
   const recordedSupersession = "recordedSupersession" in criterion ? criterion.recordedSupersession : undefined;
+  const externalResults = "externalResults" in criterion ? criterion.externalResults ?? [] : [];
+  const artifactResults = "artifactResults" in criterion ? criterion.artifactResults ?? [] : [];
   const checkIds = browserCheck === undefined ? [] : projectCheckIds(browserCheck);
   const assertions = browserAssertions ?? (browserCheck === undefined ? [] : [criterion.criterion]);
   return {
@@ -1529,6 +1789,8 @@ function acceptanceInvariantFor(criterion: AcceptanceCriterion): AcceptanceInvar
     command: criterion.command,
     checkIds,
     externalSuites: criterion.externalSuites,
+    externalResults,
+    artifactResults,
     unboundCommands: criterion.unboundCommands,
     ...(supersededReason === undefined ? {} : { supersededReason }),
     ...(recordedSupersession === undefined ? {} : { recordedSupersession }),
@@ -1609,6 +1871,7 @@ export function acceptanceStatusControlOutputs(): {
     new Map<string, EvidenceEntry>(),
     new Set(["dpr-1"]),
     new Map<ExternalSuite, ExternalSuiteResult>(),
+    new Map<ArtifactResultId, ArtifactResult>(),
   );
   return {
     missingBrowserCheck: failureMessage(() => assertAcceptanceInvariantMapping(withoutCheck)),
@@ -1633,12 +1896,31 @@ function assertAcceptanceInvariantMapping(invariants: readonly AcceptanceInvaria
       }
       continue;
     }
-    if (invariant.checkIds.length === 0 && invariant.externalSuites.length === 0 && invariant.unboundCommands.length === 0) {
-      throw new Error(`${invariant.id} has no browser check, external suite, or declared unbound command`);
+    if (invariant.checkIds.length === 0 && invariant.externalSuites.length === 0 && invariant.artifactResults.length === 0 && invariant.unboundCommands.length === 0) {
+      throw new Error(`${invariant.id} has no browser check, external result, artifact result, or declared unbound command`);
     }
     for (const suite of [...invariant.externalSuites].sort()) {
       if (!EXTERNAL_SUITES.some((candidate) => candidate.suite === suite)) {
         throw new Error(`${invariant.id} names an unknown external suite ${suite}`);
+      }
+    }
+    const requiredExternalSuites = new Set(invariant.externalResults.map((requirement) => requirement.suite));
+    if (
+      requiredExternalSuites.size !== invariant.externalSuites.length
+      || [...requiredExternalSuites].some((suite) => !invariant.externalSuites.includes(suite))
+    ) {
+      throw new Error(`${invariant.id} does not map every external suite to named results`);
+    }
+    for (const requirement of invariant.externalResults) {
+      if (requirement.resultIds.length === 0 || new Set(requirement.resultIds).size !== requirement.resultIds.length) {
+        throw new Error(`${invariant.id} has an empty or duplicate external result binding`);
+      }
+      if (requirement.exactUniverse !== undefined) {
+        const required = [...requirement.resultIds].sort();
+        const universe = [...requirement.exactUniverse].sort();
+        if (required.length !== universe.length || required.some((id, index) => id !== universe[index])) {
+          throw new Error(`${invariant.id} exact result universe does not equal its named result bindings`);
+        }
       }
     }
     if (invariant.checkIds.length === 0) {
@@ -1677,14 +1959,16 @@ function acceptanceInvariantEvidence(
   checks: readonly EvidenceEntry[],
   completedProjects: readonly string[],
   suiteResults: readonly ExternalSuiteResult[],
+  artifactResults: readonly ArtifactResult[],
 ): readonly AcceptanceInvariantEvidence[] {
   assertAcceptanceInvariantMapping(invariants);
   const entries = new Map([...checks].sort((left, right) => left.id.localeCompare(right.id)).map((check) => [check.id, check]));
   const completed = new Set([...completedProjects].sort());
   const suites = new Map([...suiteResults].sort((left, right) => left.suite.localeCompare(right.suite)).map((result) => [result.suite, result]));
+  const artifacts = new Map([...artifactResults].sort((left, right) => left.id.localeCompare(right.id)).map((result) => [result.id, result]));
   return [...invariants]
     .sort((left, right) => left.id.localeCompare(right.id))
-    .map((invariant) => ({ ...invariant, ...acceptanceInvariantStatus(invariant, entries, completed, suites) }));
+    .map((invariant) => ({ ...invariant, ...acceptanceInvariantStatus(invariant, entries, completed, suites, artifacts) }));
 }
 
 /** This returns an exact emitted criterion by id and does not accept an incomplete evidence register. */
@@ -1705,6 +1989,7 @@ function acceptanceInvariantStatus(
   entries: ReadonlyMap<string, EvidenceEntry>,
   completedProjects: ReadonlySet<string>,
   suiteResults: ReadonlyMap<ExternalSuite, ExternalSuiteResult>,
+  artifactResults: ReadonlyMap<ArtifactResultId, ArtifactResult>,
 ): { readonly status: AcceptanceStatus; readonly detail: string } {
   if (invariant.supersededReason !== undefined) {
     return { status: "SUPERSEDED", detail: invariant.supersededReason };
@@ -1716,6 +2001,26 @@ function acceptanceInvariantStatus(
   const externalStatuses = [...invariant.externalSuites]
     .sort()
     .map((suite) => ({ suite, result: suiteResults.get(suite) }));
+  const requiredResults = invariant.externalResults
+    .flatMap((requirement) => requirement.resultIds.map((id) => ({
+      suite: requirement.suite,
+      id,
+      result: suiteResults.get(requirement.suite)?.results.find((candidate) => candidate.id === id),
+    })))
+    .sort((left, right) => `${left.suite}/${left.id}`.localeCompare(`${right.suite}/${right.id}`));
+  const exactUniverses = invariant.externalResults
+    .filter((requirement): requirement is ExternalResultRequirement & { readonly exactUniverse: readonly string[] } => requirement.exactUniverse !== undefined)
+    .map((requirement) => ({
+      suite: requirement.suite,
+      expected: [...requirement.exactUniverse].sort(),
+      actual: [...(suiteResults.get(requirement.suite)?.results ?? [])]
+        .map((result) => result.id)
+        .filter((id) => id.startsWith(`${requirement.resultIds[0]?.split("::")[0] ?? ""}::`))
+        .sort(),
+    }));
+  const artifactStatuses = [...invariant.artifactResults]
+    .sort()
+    .map((id) => ({ id, result: artifactResults.get(id) }));
   if (failed.length > 0) {
     return {
       status: "FAIL",
@@ -1727,6 +2032,20 @@ function acceptanceInvariantStatus(
     return {
       status: "FAIL",
       detail: `${invariant.command} recorded FAIL for ${failedSuites.map(({ suite, result }) => externalSuiteDetail(suite, result)).join("; ")}`,
+    };
+  }
+  const failedResults = requiredResults.filter(({ result }) => result?.status === "FAIL");
+  if (failedResults.length > 0) {
+    return {
+      status: "FAIL",
+      detail: `${invariant.command} recorded FAIL for ${failedResults.map(({ suite, id }) => `${suite}/${id}`).join(", ")}`,
+    };
+  }
+  const failedArtifacts = artifactStatuses.filter(({ result }) => result?.status === "FAIL");
+  if (failedArtifacts.length > 0) {
+    return {
+      status: "FAIL",
+      detail: `${invariant.command} recorded FAIL for ${failedArtifacts.map(({ id, result }) => artifactResultDetail(id, result)).join("; ")}`,
     };
   }
   const unavailable = checkStatuses.filter(({ entry, completed }) => !completed || entry === undefined || entry.command !== COMMAND || entry.status !== "PASS");
@@ -1743,6 +2062,27 @@ function acceptanceInvariantStatus(
       detail: `${invariant.command} has no current PASS artifact for ${unavailableSuites.map(({ suite, result }) => externalSuiteDetail(suite, result)).join("; ")}`,
     };
   }
+  const unavailableResults = requiredResults.filter(({ result }) => result?.status !== "PASS");
+  if (unavailableResults.length > 0) {
+    return {
+      status: "NOT_RUN",
+      detail: `${invariant.command} has no recorded PASS for ${unavailableResults.map(({ suite, id }) => `${suite}/${id}`).join(", ")}`,
+    };
+  }
+  const wrongUniverses = exactUniverses.filter(({ expected, actual }) => expected.length !== actual.length || expected.some((id, index) => id !== actual[index]));
+  if (wrongUniverses.length > 0) {
+    return {
+      status: "NOT_RUN",
+      detail: `${invariant.command} exact result universe is incomplete or changed: ${wrongUniverses.map(({ suite, expected, actual }) => `${suite} expected=${expected.length} actual=${actual.length}`).join("; ")}`,
+    };
+  }
+  const unavailableArtifacts = artifactStatuses.filter(({ result }) => result?.status !== "PASS");
+  if (unavailableArtifacts.length > 0) {
+    return {
+      status: "NOT_RUN",
+      detail: `${invariant.command} has no current PASS artifact for ${unavailableArtifacts.map(({ id, result }) => artifactResultDetail(id, result)).join("; ")}`,
+    };
+  }
   if (invariant.unboundCommands.length > 0) {
     return {
       status: "NOT_RUN",
@@ -1751,7 +2091,7 @@ function acceptanceInvariantStatus(
   }
   return {
     status: "PASS",
-    detail: `${invariant.command} recorded PASS for ${[...checkStatuses.map(({ checkId }) => checkId), ...externalStatuses.map(({ suite, result }) => externalSuiteDetail(suite, result))].join(", ")}`,
+    detail: `${invariant.command} recorded PASS for ${[...checkStatuses.map(({ checkId }) => checkId), ...requiredResults.map(({ suite, id }) => `${suite}/${id}`), ...artifactStatuses.map(({ id, result }) => artifactResultDetail(id, result))].join(", ")}`,
   };
 }
 
@@ -1777,6 +2117,56 @@ async function loadExternalSuiteResults(expectedCommitSha: string): Promise<read
   const definitions = [...EXTERNAL_SUITES].sort((left, right) => left.suite.localeCompare(right.suite));
   const results = await Promise.all(definitions.map((definition) => loadExternalSuiteResult(definition, expectedCommitSha)));
   return results.sort((left, right) => left.suite.localeCompare(right.suite));
+}
+
+/** This reads every separately named artifact result and does not infer a pass from an adjacent browser check. */
+async function loadArtifactResults(expectedCommitSha: string): Promise<readonly ArtifactResult[]> {
+  return [await loadRenderedStateSeparationArtifactResult(expectedCommitSha)];
+}
+
+/** This validates the final-compositor separation artifact and does not accept a foreign candidate or page module. */
+async function loadRenderedStateSeparationArtifactResult(expectedCommitSha: string): Promise<ArtifactResult> {
+  try {
+    const artifact = await readFile(RENDERED_STATE_SEPARATION_FILE);
+    const artifactSha256 = createHash("sha256").update(artifact).digest("hex");
+    const parsed = record(JSON.parse(artifact.toString("utf8")) as unknown);
+    const result = parsed === undefined ? undefined : record(parsed.result);
+    const sourceModulePath = parsed?.sourceModulePath;
+    const sourceModuleDigest = parsed?.sourceModuleDigest;
+    if (
+      parsed === undefined
+      || parsed.schemaVersion !== 1
+      || parsed.candidateSha !== expectedCommitSha
+      || parsed.command !== COMMAND
+      || parsed.project !== "dpr-2"
+      || sourceModulePath !== ["dist", "evidence.js"].join("/")
+      || typeof sourceModuleDigest !== "string"
+      || result?.id !== "rendered-state-separation"
+      || (result.status !== "PASS" && result.status !== "FAIL")
+      || typeof result.detail !== "string"
+    ) {
+      return artifactResult("NOT_RUN", "separation artifact identity does not match the current candidate, command, project, or named result", artifactSha256);
+    }
+    const currentSourceModule = await readFile(sourceModulePath);
+    const currentSourceModuleDigest = createHash("sha256").update(currentSourceModule).digest("hex");
+    if (sourceModuleDigest !== currentSourceModuleDigest) {
+      return artifactResult("NOT_RUN", "separation artifact source-module digest does not match the current page module", artifactSha256);
+    }
+    return artifactResult(result.status, result.detail, artifactSha256);
+  } catch (error: unknown) {
+    return artifactResult("NOT_RUN", `artifact could not be read: ${message(error)}`);
+  }
+}
+
+/** This constructs one bound artifact status and does not attach a digest when no artifact byte was read. */
+function artifactResult(status: ExternalSuiteStatus, detail: string, artifactSha256?: string): ArtifactResult {
+  return {
+    id: "rendered-state-separation",
+    status,
+    artifactPath: RENDERED_STATE_SEPARATION_FILE,
+    ...(artifactSha256 === undefined ? {} : { artifactSha256 }),
+    detail,
+  };
 }
 
 /** This reads one declared suite result and does not turn an unreadable artifact into a failure claim. */
@@ -1811,17 +2201,26 @@ async function loadPytestSuiteResult(
   const errors = suiteTag === undefined ? undefined : xmlNaturalAttribute(suiteTag, "errors");
   const skipped = suiteTag === undefined ? undefined : xmlNaturalAttribute(suiteTag, "skipped");
   const command = xmlProperty(text, "command");
+  const selection = xmlProperty(text, "selection");
+  const artifactKind = xmlProperty(text, "artifactKind");
   const commitSha = xmlProperty(text, "commitSha");
-  if ((text.match(/<testsuite\b/g) ?? []).length !== 1 || command !== definition.command || commitSha !== expectedCommitSha) {
-    return externalSuiteResult(definition, "NOT_RUN", "JUnit command or commit identity does not match this browser evidence run", artifactSha256);
+  const results = junitResults(text);
+  if (
+    (text.match(/<testsuite\b/g) ?? []).length !== 1
+    || command !== definition.command
+    || selection !== JSON.stringify(["tests/", "-q"])
+    || artifactKind !== "canonical-full-suite"
+    || commitSha !== expectedCommitSha
+  ) {
+    return externalSuiteResult(definition, "NOT_RUN", "JUnit invocation, selection, artifact identity, or commit does not match this browser evidence run", artifactSha256, results);
   }
-  if (tests === undefined || failures === undefined || errors === undefined || skipped === undefined || tests === 0) {
-    return externalSuiteResult(definition, "NOT_RUN", "JUnit result has no complete non-empty summary", artifactSha256);
+  if (tests === undefined || failures === undefined || errors === undefined || skipped === undefined || tests === 0 || results.length !== tests || !hasUniqueResultIds(results)) {
+    return externalSuiteResult(definition, "NOT_RUN", "JUnit result has no complete non-empty, uniquely identified testcase summary", artifactSha256, results);
   }
   if (failures !== 0 || errors !== 0 || skipped !== 0) {
-    return externalSuiteResult(definition, "FAIL", `JUnit recorded tests=${tests}, failures=${failures}, errors=${errors}, skipped=${skipped}`, artifactSha256);
+    return externalSuiteResult(definition, "FAIL", `JUnit recorded tests=${tests}, failures=${failures}, errors=${errors}, skipped=${skipped}`, artifactSha256, results);
   }
-  return externalSuiteResult(definition, "PASS", `JUnit recorded ${tests} tests with zero failures, errors, and skips`, artifactSha256);
+  return externalSuiteResult(definition, "PASS", `JUnit recorded ${tests} named testcases with zero failures, errors, and skips`, artifactSha256, results);
 }
 
 /** This validates Node's built-in TAP report and does not trust its metadata without the report bytes it names. */
@@ -1836,8 +2235,10 @@ async function loadUnitSuiteResult(
   const reporter = result === undefined ? undefined : record(result.reporter);
   if (
     result === undefined
-    || result.schemaVersion !== 1
+    || result.schemaVersion !== 2
     || result.command !== definition.command
+    || result.executedCommand !== UNIT_EXECUTED_COMMAND
+    || !sameStrings(result.selection, UNIT_SELECTION)
     || result.commitSha !== expectedCommitSha
     || typeof result.exitCode !== "number"
     || !Number.isInteger(result.exitCode)
@@ -1846,7 +2247,7 @@ async function loadUnitSuiteResult(
     || reporter.path !== UNIT_REPORTER_FILE
     || typeof reporter.sha256 !== "string"
   ) {
-    return externalSuiteResult(definition, "NOT_RUN", "unit metadata does not name this command, commit, and TAP report", artifactSha256);
+    return externalSuiteResult(definition, "NOT_RUN", "unit metadata does not name this command, selection, commit, and TAP report", artifactSha256);
   }
   const reporterBytes = await readFile(UNIT_REPORTER_FILE);
   const reporterSha256 = createHash("sha256").update(reporterBytes).digest("hex");
@@ -1861,6 +2262,7 @@ async function loadUnitSuiteResult(
   const skipped = tapSummary(text, "skipped");
   const todo = tapSummary(text, "todo");
   const plan = text.match(/^1\.\.(\d+)$/m)?.[1];
+  const results = tapResults(text);
   if (
     tests === undefined
     || passed === undefined
@@ -1871,13 +2273,15 @@ async function loadUnitSuiteResult(
     || plan === undefined
     || Number(plan) !== tests
     || tests === 0
+    || results.length !== tests
+    || !hasUniqueResultIds(results)
   ) {
-    return externalSuiteResult(definition, "NOT_RUN", "TAP report has no complete non-empty summary", artifactSha256);
+    return externalSuiteResult(definition, "NOT_RUN", "TAP report has no complete non-empty, uniquely identified testcase summary", artifactSha256, results);
   }
   if (result.exitCode !== 0 || failed !== 0 || cancelled !== 0 || skipped !== 0 || todo !== 0 || passed !== tests) {
-    return externalSuiteResult(definition, "FAIL", `TAP recorded tests=${tests}, pass=${passed}, fail=${failed}, cancelled=${cancelled}, skipped=${skipped}, todo=${todo}, exitCode=${result.exitCode}`, artifactSha256);
+    return externalSuiteResult(definition, "FAIL", `TAP recorded tests=${tests}, pass=${passed}, fail=${failed}, cancelled=${cancelled}, skipped=${skipped}, todo=${todo}, exitCode=${result.exitCode}`, artifactSha256, results);
   }
-  return externalSuiteResult(definition, "PASS", `TAP recorded ${tests} tests with zero non-passing outcomes`, artifactSha256);
+  return externalSuiteResult(definition, "PASS", `TAP recorded ${tests} named testcases with zero non-passing outcomes`, artifactSha256, results);
 }
 
 /** This validates the review capture result and does not promote a one-DPR package to a completed suite. */
@@ -1891,6 +2295,7 @@ async function loadReviewSuiteResult(
   const suiteResult = parsed === undefined ? undefined : record(parsed.suiteResult);
   const determinism = parsed === undefined ? undefined : record(parsed.determinism);
   const records = parsed === undefined || !Array.isArray(parsed.records) ? undefined : parsed.records;
+  const results = parsed === undefined ? [] : jsonRecordedResults(parsed.checks);
   const completedProjects = suiteResult === undefined || !Array.isArray(suiteResult.completedProjects)
     ? undefined
     : suiteResult.completedProjects;
@@ -1905,10 +2310,10 @@ async function loadReviewSuiteResult(
     || suiteResult.command !== definition.command
     || suiteResult.commitSha !== expectedCommitSha
   ) {
-    return externalSuiteResult(definition, "NOT_RUN", "review metadata does not name this command and commit", artifactSha256);
+    return externalSuiteResult(definition, "NOT_RUN", "review metadata does not name this command and commit", artifactSha256, results);
   }
   if (suiteResult.status !== "PASS") {
-    return externalSuiteResult(definition, "NOT_RUN", "review metadata does not record a completed capture suite", artifactSha256);
+    return externalSuiteResult(definition, "NOT_RUN", "review metadata does not record a completed capture suite", artifactSha256, results);
   }
   if (
     completed.length !== expectedProjects.length
@@ -1921,10 +2326,13 @@ async function loadReviewSuiteResult(
     || records === undefined
     || records.length === 0
     || !records.every((capture) => record(capture)?.productCommitSha === expectedCommitSha)
+    || results.length !== expectedProjects.length
+    || !hasUniqueResultIds(results)
+    || results.some((result) => result.status !== "PASS")
   ) {
-    return externalSuiteResult(definition, "NOT_RUN", "review metadata is missing a current completed DPR witness", artifactSha256);
+    return externalSuiteResult(definition, "NOT_RUN", "review metadata is missing a current completed DPR witness or named check result", artifactSha256, results);
   }
-  return externalSuiteResult(definition, "PASS", "capture metadata records both DPR projects and current-commit capture witnesses", artifactSha256);
+  return externalSuiteResult(definition, "PASS", "capture metadata records both DPR projects and current-commit named determinism witnesses", artifactSha256, results);
 }
 
 /** This constructs one external status from bytes actually read and does not attach a digest when no byte was available. */
@@ -1933,6 +2341,7 @@ function externalSuiteResult(
   status: ExternalSuiteStatus,
   detail: string,
   artifactSha256?: string,
+  results: readonly RecordedArtifactResult[] = [],
 ): ExternalSuiteResult {
   return {
     suite: definition.suite,
@@ -1940,6 +2349,7 @@ function externalSuiteResult(
     status,
     artifactPath: definition.artifactPath,
     ...(artifactSha256 === undefined ? {} : { artifactSha256 }),
+    results: [...results].sort((left, right) => left.id.localeCompare(right.id)),
     detail,
   };
 }
@@ -1952,13 +2362,31 @@ function externalSuiteDetail(suite: ExternalSuite, result: ExternalSuiteResult |
   return `${suite} ${result.status} ${result.artifactPath} SHA-256 ${result.artifactSha256 ?? "unavailable"}: ${result.detail}`;
 }
 
+/** This describes one separately bound artifact result and does not make a missing artifact anonymous. */
+function artifactResultDetail(id: ArtifactResultId, result: ArtifactResult | undefined): string {
+  if (result === undefined) {
+    return `${id}: no artifact result was read`;
+  }
+  return `${id} ${result.status} ${result.artifactPath} SHA-256 ${result.artifactSha256 ?? "unavailable"}: ${result.detail}`;
+}
+
 /** This reads one XML property and does not decode values whose shape the binding does not expect. */
 function xmlProperty(text: string, name: string): string | undefined {
   const tags = [...(text.match(/<property\b[^>]*\/>/g) ?? [])].sort();
   const values = tags
     .filter((tag) => xmlAttribute(tag, "name") === name)
     .map((tag) => xmlAttribute(tag, "value"));
-  return values.length === 1 ? values[0] : undefined;
+  return values.length === 1 && values[0] !== undefined ? xmlDecode(values[0]) : undefined;
+}
+
+/** This decodes the XML entities used by JUnit attributes and does not treat encoded identity text as a different result. */
+function xmlDecode(value: string): string {
+  return value
+    .replaceAll("&quot;", "\"")
+    .replaceAll("&apos;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
 }
 
 /** This reads one XML attribute and does not interpret a missing attribute as an empty string. */
@@ -1977,6 +2405,85 @@ function tapSummary(text: string, name: string): number | undefined {
   const values = [...text.matchAll(new RegExp(`^# ${name} (\\d+)$`, "gm"))]
     .map((match) => match[1]);
   return values.length === 1 && values[0] !== undefined ? Number(values[0]) : undefined;
+}
+
+/** This reads every JUnit testcase outcome and does not reduce named results to a suite total. */
+function junitResults(text: string): readonly RecordedArtifactResult[] {
+  return [...text.matchAll(/<testcase\b([^>]*)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
+    .map((match) => {
+      const attributes = match[1] ?? "";
+      const classname = xmlAttribute(attributes, "classname");
+      const name = xmlAttribute(attributes, "name");
+      const body = match[2] ?? "";
+      if (classname === undefined || name === undefined) {
+        return undefined;
+      }
+      const status: ExternalSuiteStatus = /<(?:failure|error)\b/.test(body)
+        ? "FAIL"
+        : /<skipped\b/.test(body)
+          ? "NOT_RUN"
+          : "PASS";
+      return { id: `${xmlDecode(classname)}::${xmlDecode(name)}`, status, detail: "JUnit testcase result" };
+    })
+    .filter((result): result is RecordedArtifactResult => result !== undefined)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+/** This reads Node TAP testcase outcomes and does not accept a plan count in place of their names. */
+function tapResults(text: string): readonly RecordedArtifactResult[] {
+  return [...text.matchAll(/^(ok|not ok) \d+ - (.*?)(?: # (?:SKIP|TODO).*)?$/gm)]
+    .map((match) => {
+      const outcome = match[1];
+      const id = match[2];
+      const directive = match[0]?.includes(" # ") ?? false;
+      if ((outcome !== "ok" && outcome !== "not ok") || id === undefined || id === "") {
+        return undefined;
+      }
+      return {
+        id,
+        status: outcome === "not ok" ? "FAIL" : directive ? "NOT_RUN" : "PASS",
+        detail: "TAP testcase result",
+      };
+    })
+    .filter((result): result is RecordedArtifactResult => result !== undefined)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+/** This validates JSON-emitted check results and does not manufacture a status from metadata alone. */
+function jsonRecordedResults(value: unknown): readonly RecordedArtifactResult[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((candidate) => {
+      const result = record(candidate);
+      const id = result?.id;
+      const status = result?.status;
+      const detail = result?.detail;
+      if (
+        typeof id !== "string"
+        || (status !== "PASS" && status !== "FAIL" && status !== "NOT_RUN")
+        || typeof detail !== "string"
+      ) {
+        return undefined;
+      }
+      return { id, status, detail };
+    })
+    .filter((result): result is RecordedArtifactResult => result !== undefined)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+/** This checks identity uniqueness and does not let one repeated result occupy several bindings. */
+function hasUniqueResultIds(results: readonly RecordedArtifactResult[]): boolean {
+  return new Set(results.map((result) => result.id)).size === results.length;
+}
+
+/** This compares JSON string arrays and does not coerce an omitted selection to the expected one. */
+function sameStrings(value: unknown, expected: readonly string[]): boolean {
+  return Array.isArray(value)
+    && value.every((item) => typeof item === "string")
+    && value.length === expected.length
+    && value.every((item, index) => item === expected[index]);
 }
 
 /** This narrows JSON data to an object and does not accept arrays or null as records. */
@@ -2004,24 +2511,25 @@ function projectCheckIds(check: string): readonly string[] {
 async function measureLegalRenderedStateCompositorSeparation(
   invoke: PageInvoke,
   capture: PageCapture,
-  project: string,
+  identity: SeparationArtifactIdentity,
 ): Promise<void> {
   const observations: { readonly state: LegalRenderedStateDomain; readonly targetId: string; readonly color: CompositedRgb }[] = [];
   try {
-    for (const state of LEGAL_RENDERED_STATE_DOMAINS) {
-      const control = await invoke<RenderedStatePixelControl>("setRenderedStatePixelControl", state);
-      const image = await capture("#evidence-renderer");
-      expect(control.state, "state control returns its requested legal state").toBe(state);
-      expect(control.devicePixelRatio, "state control and screenshot agree on DPR").toBeGreaterThan(0);
-      observations.push({
-        state,
-        targetId: control.targetId,
-        color: compositorRgbAt(image, control.pixel, control.devicePixelRatio),
-      });
+    try {
+      for (const state of LEGAL_RENDERED_STATE_DOMAINS) {
+        const control = await invoke<RenderedStatePixelControl>("setRenderedStatePixelControl", state);
+        const image = await capture("#evidence-renderer");
+        expect(control.state, "state control returns its requested legal state").toBe(state);
+        expect(control.devicePixelRatio, "state control and screenshot agree on DPR").toBeGreaterThan(0);
+        observations.push({
+          state,
+          targetId: control.targetId,
+          color: compositorRgbAt(image, control.pixel, control.devicePixelRatio),
+        });
+      }
+    } finally {
+      await invoke<void>("clearRenderedStatePixelControl");
     }
-  } finally {
-    await invoke<void>("clearRenderedStatePixelControl");
-  }
   expect(observations.map((observation) => observation.state), "actual compositor observations cover every legal IR state domain").toEqual(LEGAL_RENDERED_STATE_DOMAINS);
   const matrix = renderedStateCompositorMatrix(observations);
   const opacityScale = DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
@@ -2038,9 +2546,19 @@ async function measureLegalRenderedStateCompositorSeparation(
     refusalControlFailed = true;
   }
   expect(refusalControlFailed, "the compositor separation refusal control fails at an unattainable threshold").toBe(true);
-  await writeFile("dist/evidence/rendered-state-separation.json", `${JSON.stringify({
-    producedBy: "ui/test/browser/evidence.spec.ts, final compositor capture",
-    project,
+    await writeFile(RENDERED_STATE_SEPARATION_FILE, `${JSON.stringify({
+    schemaVersion: 1,
+    candidateSha: identity.candidateSha,
+    command: identity.command,
+    project: identity.project,
+    sourceModulePath: identity.sourceModulePath,
+    sourceModuleDigest: identity.sourceModuleDigest,
+    result: {
+      id: "rendered-state-separation",
+      status: "PASS",
+      detail: "final-compositor separation matrices satisfied every governed threshold and the refusal control failed",
+    },
+    producedBy: "final compositor capture",
     measuredDomain: "final compositor screenshot pixels at one live-picking interior witness for each isolated, legal node state from the adapter-validated discovery-at-question fixture; no Graphology attribute or mathematical alpha-composite substitute",
     states: LEGAL_RENDERED_STATE_DOMAINS,
     targetIds: observations.map((observation) => ({ state: observation.state, targetId: observation.targetId })),
@@ -2056,11 +2574,36 @@ async function measureLegalRenderedStateCompositorSeparation(
     ],
     refusalControlFailed,
   }, null, 2)}\n`);
+  } catch (error: unknown) {
+    await writeFile(RENDERED_STATE_SEPARATION_FILE, `${JSON.stringify({
+      schemaVersion: 1,
+      candidateSha: identity.candidateSha,
+      command: identity.command,
+      project: identity.project,
+      sourceModulePath: identity.sourceModulePath,
+      sourceModuleDigest: identity.sourceModuleDigest,
+      result: {
+        id: "rendered-state-separation",
+        status: "FAIL",
+        detail: message(error),
+      },
+      observations: observations.map((observation) => ({ state: observation.state, targetId: observation.targetId })),
+    }, null, 2)}\n`);
+    throw error;
+  }
 }
 
 type CompositedRgb = readonly [number, number, number];
 type RenderedStateCvdDeficiency = "deuteranopia" | "protanopia" | "tritanopia";
 type PageCapture = (selector: string) => Promise<DecodedPng>;
+
+type SeparationArtifactIdentity = {
+  readonly candidateSha: string;
+  readonly command: string;
+  readonly project: "dpr-2";
+  readonly sourceModulePath: string;
+  readonly sourceModuleDigest: string;
+};
 
 const RENDERED_STATE_CVD_DEFICIENCIES = ["deuteranopia", "protanopia", "tritanopia"] as const satisfies readonly RenderedStateCvdDeficiency[];
 
