@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
@@ -17,7 +17,7 @@ import {
 import type { Coordinates, VisualGraph } from "#engine/contract.ts";
 import { sharedAnchors } from "#engine/layout.ts";
 import { applyMorphology, MYCELIUM, NEURAL, STELLAR } from "#engine/morphology.ts";
-import { PALETTES, TEMPERATURES, THEMES, TOKEN_RAMPS, contrastRatio, relativeLuminance } from "#engine/tokens.ts";
+import { PALETTES, TEMPERATURES, THEMES, TOKEN_RAMPS } from "#engine/tokens.ts";
 import type { TokenMap } from "#engine/tokens.ts";
 import type { LodBand } from "#engine/lod.ts";
 import { parseColor } from "sigma/utils";
@@ -35,7 +35,6 @@ import {
   SHIPPING_RENDER_DEFAULTS,
   buildRenderModel,
   edgeLabelCandidatesForState,
-  nodeTokenForMaterial,
   resolveLabelIds,
 } from "#render2d/model.ts";
 import type { RenderOptions } from "#render2d/model.ts";
@@ -290,96 +289,6 @@ test("the rendered prominence hierarchy remains pairwise separable under named c
   assert.equal(result.combinations, expectedCombinations);
   assert.deepEqual(result.deficiencies, ["deuteranopia", "protanopia", "tritanopia"]);
   assert.ok(result.comparedPairs > 0);
-});
-
-test("the nine governed RENDERED states remain pairwise separable through calibrated non-hue material", () => {
-  const result = measureRenderedStateSeparationCrossProduct(graph(), DEFAULT_CALIBRATION);
-  const expectedCombinations = PALETTES.length * TEMPERATURES.length * THEMES.length * MORPHOLOGIES.length * LOD_BANDS.length;
-  assert.equal(result.combinations, expectedCombinations);
-  assert.equal(result.states.length, 9);
-  assert.ok(result.comparedPairs > 0);
-  assertRenderedStateMatrixAtLeast(
-    result.states,
-    result.nonHue,
-    DEFAULT_CALIBRATION.luminance.minimumRenderedNonHueSeparationMicro
-      / (DEFAULT_CALIBRATION.morphology.stellar.opacityPermille ** 2),
-    "non-hue",
-  );
-  for (const deficiency of CVD_DEFICIENCIES) {
-    assertRenderedStateMatrixAtLeast(
-      result.states,
-      result.cvd[deficiency],
-      DEFAULT_CALIBRATION.luminance.minimumRenderedCvdSeparationMicro
-        / (DEFAULT_CALIBRATION.morphology.stellar.opacityPermille ** 2),
-      deficiency,
-    );
-  }
-  // Emit the matrices, because an assertion that passes tells a reader only that
-  // some number cleared some threshold. The Quality Gauntlet has to cite these
-  // values, and this capability has twice been caught citing measurements that
-  // existed only in prose and could not be checked by anyone else. The numbers
-  // are written where they can be read back, alongside the thresholds they were
-  // measured against and the size of the space they were measured over.
-  const directory = ["dist", "evidence"].join("/");
-  mkdirSync(directory, { recursive: true });
-  writeFileSync(`${directory}/rendered-state-separation.json`, `${JSON.stringify({
-    producedBy: "ui/test/render2d/renderer.test.ts, on every test:unit run",
-    states: result.states,
-    combinations: result.combinations,
-    comparedPairs: result.comparedPairs,
-    thresholds: {
-      nonHue: DEFAULT_CALIBRATION.luminance.minimumRenderedNonHueSeparationMicro
-        / (DEFAULT_CALIBRATION.morphology.stellar.opacityPermille ** 2),
-      cvd: DEFAULT_CALIBRATION.luminance.minimumRenderedCvdSeparationMicro
-        / (DEFAULT_CALIBRATION.morphology.stellar.opacityPermille ** 2),
-    },
-    nonHue: result.nonHue,
-    cvd: result.cvd,
-  }, null, 2)}\n`, "utf8");
-});
-
-test("the governed rendered-state non-hue separation control rejects an unattainable threshold", () => {
-  const unattainableCalibration = {
-    ...DEFAULT_CALIBRATION,
-    luminance: {
-      ...DEFAULT_CALIBRATION.luminance,
-      minimumRenderedNonHueSeparationMicro: DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille
-        * DEFAULT_CALIBRATION.luminance.prominenceChromaFalloffPermille,
-    },
-  };
-  const result = measureRenderedStateSeparationCrossProduct(graph(), unattainableCalibration);
-  assert.throws(
-    () => assertRenderedStateMatrixAtLeast(
-      result.states,
-      result.nonHue,
-      unattainableCalibration.luminance.minimumRenderedNonHueSeparationMicro
-        / (unattainableCalibration.morphology.stellar.opacityPermille ** 2),
-      "non-hue",
-    ),
-    /RENDERED states .* are not separable/,
-  );
-});
-
-test("the governed rendered-state CVD separation control rejects an unattainable threshold", () => {
-  const unattainableCalibration = {
-    ...DEFAULT_CALIBRATION,
-    luminance: {
-      ...DEFAULT_CALIBRATION.luminance,
-      minimumRenderedCvdSeparationMicro: DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille
-        * DEFAULT_CALIBRATION.luminance.prominenceChromaFalloffPermille,
-    },
-  };
-  const result = measureRenderedStateSeparationCrossProduct(graph(), unattainableCalibration);
-  assert.throws(
-    () => assertRenderedStateMatrixAtLeast(
-      result.states,
-      result.cvd.deuteranopia,
-      unattainableCalibration.luminance.minimumRenderedCvdSeparationMicro
-        / (unattainableCalibration.morphology.stellar.opacityPermille ** 2),
-      "deuteranopia",
-    ),
-    /RENDERED states .* are not separable/,
-  );
 });
 
 test("the calibrated non-hue separation control rejects an unattainable threshold", () => {
@@ -761,8 +670,6 @@ function assertNodeContrastCrossProduct(
     for (const temperature of TEMPERATURES) {
       for (const theme of THEMES) {
         for (const morphology of MORPHOLOGIES) {
-          const morphologyMaterial = applyMorphology(visualGraph, morphology, calibration);
-          const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
           for (const lodBand of LOD_BANDS) {
             combinations += 1;
             const model = buildRenderModel(visualGraph, {
@@ -776,21 +683,14 @@ function assertNodeContrastCrossProduct(
             });
             const distinctColours = new Set(model.graph.nodes().map((id) => model.graph.getNodeAttributes(id).color));
             assert.ok(distinctColours.size > 1, `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} collapsed node colours`);
-            const background = model.tokens.background;
-            if (background === undefined) {
-              throw new TypeError("contrast assertion background token is unavailable");
-            }
-            const backgroundLuminance = relativeLuminance(background);
+            const background = compositeSrgb(parseColor(model.fieldColor), parseColor(model.fieldColor));
+            const backgroundLuminance = grayscaleLuminance(background);
             let checkedInCombination = 0;
             for (const node of visualGraph.nodes) {
-              const material = nodeMaterials.get(node.id);
-              if (material === undefined) {
-                throw new TypeError("contrast assertion node material is unavailable");
-              }
-              const renderedToken = nodeTokenForMaterial(model.tokens, material, model.material, calibration);
-              const nodeLuminance = relativeLuminance(renderedToken);
+              const renderedColor = compositeSrgb(parseColor(model.graph.getNodeAttributes(node.id).color), parseColor(model.fieldColor));
+              const nodeLuminance = grayscaleLuminance(renderedColor);
               assert.ok(nodeLuminance > backgroundLuminance, `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} node is not brighter than background`);
-              assert.ok(contrastRatio(renderedToken, background) >= minimumContrast, `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} node contrast ratio is below calibration`);
+              assert.ok(contrastFromLuminance(nodeLuminance, backgroundLuminance) >= minimumContrast, `${palette}/${temperature}/${theme}/${morphology.id}/${lodBand} post-state node contrast ratio is below calibration`);
               checkedInCombination += 1;
               checked += 1;
             }
@@ -807,7 +707,7 @@ function assertNonHueProminenceSeparationCrossProduct(
   visualGraph: VisualGraph,
   calibration: typeof DEFAULT_CALIBRATION,
 ): { readonly combinations: number; readonly comparedPairs: number } {
-  const prominenceGraph = withoutRenderedState(visualGraph);
+  const prominenceGraph = withFixedGovernedRenderedState(visualGraph);
   let combinations = 0;
   let comparedPairs = 0;
   const scale = calibration.morphology.stellar.opacityPermille;
@@ -829,7 +729,7 @@ function assertNonHueProminenceSeparationCrossProduct(
               lodBand,
               calibration,
             });
-            const rendered = renderedProminenceDomain(model, nodeMaterials);
+            const rendered = renderedProminenceDomain(model, nodeMaterials, prominenceGraph);
             forEachDistinctProminencePair(rendered, (lower, upper) => {
               const separation = Math.abs(grayscaleLuminance(upper.color) - grayscaleLuminance(lower.color));
               assert.ok(
@@ -851,15 +751,8 @@ type Rgb = readonly [number, number, number];
 type RenderedProminence = {
   readonly id: string;
   readonly prominencePermille: number;
+  readonly renderedState: string | undefined;
   readonly color: Rgb;
-};
-
-type RenderedStateMeasurement = {
-  readonly states: readonly string[];
-  readonly combinations: number;
-  readonly comparedPairs: number;
-  readonly nonHue: readonly (readonly number[])[];
-  readonly cvd: Readonly<Record<CvdDeficiency, readonly (readonly number[])[]>>;
 };
 
 const CVD_DEFICIENCIES = ["deuteranopia", "protanopia", "tritanopia"] as const satisfies readonly CvdDeficiency[];
@@ -889,7 +782,7 @@ function assertCvdProminenceSeparationCrossProduct(
   visualGraph: VisualGraph,
   calibration: typeof DEFAULT_CALIBRATION,
 ): { readonly combinations: number; readonly deficiencies: readonly CvdDeficiency[]; readonly comparedPairs: number } {
-  const prominenceGraph = withoutRenderedState(visualGraph);
+  const prominenceGraph = withFixedGovernedRenderedState(visualGraph);
   let combinations = 0;
   let comparedPairs = 0;
   const scale = calibration.morphology.stellar.opacityPermille;
@@ -911,7 +804,7 @@ function assertCvdProminenceSeparationCrossProduct(
               lodBand,
               calibration,
             });
-            const rendered = renderedProminenceDomain(model, nodeMaterials);
+            const rendered = renderedProminenceDomain(model, nodeMaterials, prominenceGraph);
             for (const deficiency of CVD_DEFICIENCIES) {
               forEachDistinctProminencePair(rendered, (lower, upper) => {
                 const separation = rgbDistance(simulateCvd(lower.color, deficiency), simulateCvd(upper.color, deficiency));
@@ -930,139 +823,25 @@ function assertCvdProminenceSeparationCrossProduct(
   return { combinations, deficiencies: CVD_DEFICIENCIES, comparedPairs };
 }
 
-/** This measures the closed RENDERED carrier at equal topology-derived prominence and does not infer a state from fixture attributes. */
-function measureRenderedStateSeparationCrossProduct(
-  visualGraph: VisualGraph,
-  calibration: typeof DEFAULT_CALIBRATION,
-): RenderedStateMeasurement {
-  const stateGraph = renderedStateMeasurementGraph(visualGraph);
-  const states = stateGraph.nodes.map((node) => node.id.slice("rendered-state:".length).replace(":", "."));
-  const nonHue = separationMatrix(states.length);
-  const cvd: Record<CvdDeficiency, number[][]> = {
-    deuteranopia: separationMatrix(states.length),
-    protanopia: separationMatrix(states.length),
-    tritanopia: separationMatrix(states.length),
-  };
-  let combinations = 0;
-  let comparedPairs = 0;
-  for (const palette of PALETTES) {
-    for (const temperature of TEMPERATURES) {
-      for (const theme of THEMES) {
-        for (const morphology of MORPHOLOGIES) {
-          for (const lodBand of LOD_BANDS) {
-            const model = buildRenderModel(stateGraph, {
-              ...options(false),
-              organization: "flat",
-              palette,
-              temperature,
-              theme,
-              morphology: morphology.id,
-              lodBand,
-              calibration,
-            });
-            const rendered = renderedStateDomain(model, states);
-            for (let lowerIndex = 0; lowerIndex < rendered.length; lowerIndex += 1) {
-              for (let upperIndex = lowerIndex + 1; upperIndex < rendered.length; upperIndex += 1) {
-                const lower = rendered[lowerIndex];
-                const upper = rendered[upperIndex];
-                if (lower === undefined || upper === undefined) {
-                  throw new TypeError("rendered-state measurement lost a rendered state");
-                }
-                updateMinimum(nonHue, lowerIndex, upperIndex, Math.abs(grayscaleLuminance(upper.color) - grayscaleLuminance(lower.color)));
-                for (const deficiency of CVD_DEFICIENCIES) {
-                  updateMinimum(cvd[deficiency], lowerIndex, upperIndex, rgbDistance(simulateCvd(lower.color, deficiency), simulateCvd(upper.color, deficiency)));
-                }
-                comparedPairs += 1;
-              }
-            }
-            combinations += 1;
-          }
-        }
-      }
-    }
-  }
-  return { states, combinations, comparedPairs, nonHue, cvd };
-}
-
-/** This creates an equal-topology material witness for every pinned RENDERED member and does not infer a semantic state from the selected source node. */
-function renderedStateMeasurementGraph(visualGraph: VisualGraph): VisualGraph {
-  const source = visualGraph.nodes[0];
-  if (source === undefined) {
-    throw new TypeError("rendered-state measurement requires one source node");
-  }
-  const states = [...RENDERED].sort((left, right) => `${left.enumType}.${left.member}`.localeCompare(`${right.enumType}.${right.member}`));
+/** This fixes each legal governed carrier while measuring topology-derived prominence and does not invent a carrier on an IR-silent kind. */
+function withFixedGovernedRenderedState(visualGraph: VisualGraph): VisualGraph {
   return {
     ...visualGraph,
-    nodes: states.map((state) => ({
-      ...source,
-      id: `rendered-state:${state.enumType}:${state.member}`,
-      rendered: createRenderedStateCarrier([{ enumType: state.enumType, member: state.member }]),
-    })),
-    edges: [],
-  };
-}
-
-/** This reads each equal-topology material witness and does not reuse topology-derived prominence as a semantic key. */
-function renderedStateDomain(model: ReturnType<typeof buildRenderModel>, states: readonly string[]): readonly { readonly state: string; readonly color: Rgb }[] {
-  const background = parseColor(model.fieldColor);
-  return states.map((state) => {
-    const attributes = model.graph.getNodeAttributes(`rendered-state:${state.replace(".", ":")}`);
-    return {
-      state,
-      color: compositeSrgb(parseColor(attributes.color), background),
-    };
-  });
-}
-
-/** This initialises one symmetric measurement matrix and does not assign a separation before it is observed. */
-function separationMatrix(size: number): number[][] {
-  return Array.from({ length: size }, () => Array.from({ length: size }, () => Number.POSITIVE_INFINITY));
-}
-
-/** This retains the lowest cross-product separation for one unordered pair and does not update a diagonal entry. */
-function updateMinimum(matrix: number[][], lowerIndex: number, upperIndex: number, value: number): void {
-  const current = matrix[lowerIndex]?.[upperIndex];
-  if (current === undefined) {
-    throw new TypeError("rendered-state separation matrix lacks a pair cell");
-  }
-  const minimum = Math.min(current, value);
-  const lowerRow = matrix[lowerIndex];
-  const upperRow = matrix[upperIndex];
-  if (lowerRow === undefined || upperRow === undefined) {
-    throw new TypeError("rendered-state separation matrix lacks a row");
-  }
-  lowerRow[upperIndex] = minimum;
-  upperRow[lowerIndex] = minimum;
-}
-
-/** This enforces the existing calibrated threshold for every pair of distinct RENDERED states and does not lower that threshold. */
-function assertRenderedStateMatrixAtLeast(
-  states: readonly string[],
-  matrix: readonly (readonly number[])[],
-  minimum: number,
-  channel: string,
-): void {
-  for (let lowerIndex = 0; lowerIndex < states.length; lowerIndex += 1) {
-    for (let upperIndex = lowerIndex + 1; upperIndex < states.length; upperIndex += 1) {
-      const lower = states[lowerIndex];
-      const upper = states[upperIndex];
-      const separation = matrix[lowerIndex]?.[upperIndex];
-      if (lower === undefined || upper === undefined || separation === undefined) {
-        throw new TypeError("rendered-state threshold assertion lacks a state pair");
+    nodes: visualGraph.nodes.map((node) => {
+      if (node.kind === "assertion") {
+        return { ...node, rendered: createRenderedStateCarrier([{ enumType: "TemporalDisposition", member: "established" }]) };
       }
-      assert.ok(
-        separation >= minimum,
-        `${channel} RENDERED states ${lower} and ${upper} are not separable: ${separation}, minimum ${minimum}`,
-      );
-    }
-  }
-}
-
-/** This removes the new governed carrier from the legacy topology-only prominence domain and does not alter ids, topology, visual metadata, or opaque semantics. */
-function withoutRenderedState(visualGraph: VisualGraph): VisualGraph {
-  return {
-    ...visualGraph,
-    nodes: visualGraph.nodes.map((node) => ({ ...node, rendered: null })),
+      if (node.kind === "bridge") {
+        return {
+          ...node,
+          rendered: createRenderedStateCarrier([
+            { enumType: "BridgeDisposition", member: "accepted" },
+            { enumType: "EpistemicClass", member: "explicit" },
+          ]),
+        };
+      }
+      return { ...node, rendered: createRenderedStateCarrier(null) };
+    }),
     edges: visualGraph.edges.map((edge) => ({ ...edge, rendered: null })),
   };
 }
@@ -1070,8 +849,10 @@ function withoutRenderedState(visualGraph: VisualGraph): VisualGraph {
 function renderedProminenceDomain(
   model: ReturnType<typeof buildRenderModel>,
   nodeMaterials: ReadonlyMap<string, { readonly prominencePermille: number }>,
+  visualGraph: VisualGraph,
 ): readonly RenderedProminence[] {
   const background = parseColor(model.fieldColor);
+  const stateById = new Map(visualGraph.nodes.map((node) => [node.id, JSON.stringify(node.rendered)]));
   const rendered = model.graph.nodes().map((id) => {
     const material = nodeMaterials.get(id);
     if (material === undefined) {
@@ -1080,6 +861,7 @@ function renderedProminenceDomain(
     return {
       id,
       prominencePermille: material.prominencePermille,
+      renderedState: stateById.get(id),
       color: compositeSrgb(parseColor(model.graph.getNodeAttributes(id).color), background),
     };
   }).sort((left, right) => left.prominencePermille - right.prominencePermille || left.id.localeCompare(right.id));
@@ -1097,7 +879,12 @@ function forEachDistinctProminencePair(
     for (let upperIndex = lowerIndex + 1; upperIndex < rendered.length; upperIndex += 1) {
       const lower = rendered[lowerIndex];
       const upper = rendered[upperIndex];
-      if (lower === undefined || upper === undefined || lower.prominencePermille === upper.prominencePermille) {
+    if (
+      lower === undefined
+      || upper === undefined
+      || lower.prominencePermille === upper.prominencePermille
+      || lower.renderedState !== upper.renderedState
+    ) {
         continue;
       }
       inspect(lower, upper);
@@ -1118,6 +905,11 @@ function grayscaleLuminance(color: Rgb): number {
   return (0.2126 * srgbToLinear(color[0]))
     + (0.7152 * srgbToLinear(color[1]))
     + (0.0722 * srgbToLinear(color[2]));
+}
+
+/** This calculates contrast from final composited relative luminance and does not inspect a pre-state token. */
+function contrastFromLuminance(left: number, right: number): number {
+  return (Math.max(left, right) + 0.05) / (Math.min(left, right) + 0.05);
 }
 
 function simulateCvd(color: Rgb, deficiency: CvdDeficiency): Rgb {

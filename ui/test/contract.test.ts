@@ -10,6 +10,22 @@ import {
   semanticDigest,
 } from "#engine/contract.ts";
 import type { VisualGraph } from "#engine/contract.ts";
+import { buildRenderModel } from "#render2d/model.ts";
+import type { RenderOptions } from "#render2d/model.ts";
+
+/** This supplies a stable renderer selection and does not choose an animation frame. */
+function renderOptions(): RenderOptions {
+  return {
+    morphology: "stellar",
+    organization: "flat",
+    palette: "monochrome",
+    temperature: "balanced",
+    theme: "dark",
+    lodBand: "micro",
+    reducedMotion: true,
+    elapsedMilliseconds: 0,
+  };
+}
 
 function makeGraph(): VisualGraph {
   return {
@@ -235,11 +251,122 @@ test("the closed RENDERED carrier refuses free text, identifiers, attributes, an
       { enumType: "BridgeDisposition", member: "accepted" },
       { enumType: "EpistemicClass", member: "explicit" },
     ],
+    [
+      { enumType: "TemporalDisposition", member: "established" },
+      { enumType: "TemporalDisposition", member: "excluded" },
+    ],
   ];
-  assert.equal(rejected.length, 5);
+  assert.equal(rejected.length, 6);
   for (const value of rejected) {
     assert.throws(() => createRenderedStateCarrier(value), /rendered state carrier|pinned RENDERED member|fields do not match/);
   }
+});
+
+test("the governed RENDERED validator refuses forged carrier routes and copies narrowed carrier values into the engine", () => {
+  const graph = makeGraph();
+  const source = graph.nodes[1];
+  const assertion = graph.nodes[0];
+  const edge = graph.edges[0];
+  assert.ok(source !== undefined && assertion !== undefined && edge !== undefined);
+  const forgedCarrier = [{
+    enumType: "UNBOUNDED_TYPE",
+    member: "FREE TEXT / identifier",
+    identifier: "assertion:forged",
+    attributes: { temporal: "established" },
+    rawAssertion: { text: "free text crosses boundary" },
+  }];
+  const invalid: readonly { readonly name: string; readonly graph: VisualGraph; readonly rule: RegExp }[] = [
+    {
+      name: "unbounded free text and passthrough attributes on an IR-silent source",
+      graph: { ...graph, nodes: graph.nodes.map((node) => node.id === source.id ? { ...node, rendered: forgedCarrier as unknown as VisualGraph["nodes"][number]["rendered"] } : node) },
+      rule: /pinned RENDERED member|fields do not match/,
+    },
+    {
+      name: "missing source carrier",
+      graph: { ...graph, nodes: graph.nodes.map((node) => node.id === source.id ? ({ ...node, rendered: undefined } as unknown as typeof node) : node) },
+      rule: /must carry null|one or two pinned/,
+    },
+    {
+      name: "three-member source carrier",
+      graph: { ...graph, nodes: graph.nodes.map((node) => node.id === source.id ? { ...node, rendered: [
+        { enumType: "TemporalDisposition", member: "established" },
+        { enumType: "BridgeDisposition", member: "accepted" },
+        { enumType: "EpistemicClass", member: "explicit" },
+      ] as unknown as VisualGraph["nodes"][number]["rendered"] } : node) },
+      rule: /one or two pinned/,
+    },
+    {
+      name: "temporal state invented on an IR-silent source",
+      graph: { ...graph, nodes: graph.nodes.map((node) => node.id === source.id ? { ...node, rendered: createRenderedStateCarrier([{ enumType: "TemporalDisposition", member: "established" }]) } : node) },
+      rule: /source must carry null/,
+    },
+    {
+      name: "duplicate temporal axis on assertion",
+      graph: { ...graph, nodes: graph.nodes.map((node) => node.id === assertion.id ? { ...node, rendered: [
+        { enumType: "TemporalDisposition", member: "established" },
+        { enumType: "TemporalDisposition", member: "excluded" },
+      ] as unknown as VisualGraph["nodes"][number]["rendered"] } : node) },
+      rule: /cannot repeat a governed enum axis/,
+    },
+    {
+      name: "governed state invented on an edge",
+      graph: { ...graph, edges: [{ ...edge, rendered: createRenderedStateCarrier([{ enumType: "TemporalDisposition", member: "established" }]) }] },
+      rule: /cites must carry null/,
+    },
+    {
+      name: "reversed bridge tuple",
+      graph: { ...graph, nodes: graph.nodes.map((node) => node.id === source.id ? {
+        ...node,
+        kind: "bridge",
+        rendered: createRenderedStateCarrier([
+          { enumType: "EpistemicClass", member: "explicit" },
+          { enumType: "BridgeDisposition", member: "accepted" },
+        ]),
+      } : node) },
+      rule: /BridgeDisposition followed by EpistemicClass/,
+    },
+  ];
+  assert.equal(invalid.length, 7);
+  for (const candidate of invalid) {
+    assert.throws(() => assertVisualGraphFieldRegister(candidate.graph), candidate.rule, candidate.name);
+    assert.throws(() => createEngineGraphView(candidate.graph), candidate.rule, `${candidate.name} direct engine route`);
+    assert.throws(() => buildRenderModel(candidate.graph, renderOptions()), candidate.rule, `${candidate.name} direct render-model route`);
+  }
+
+  const mustRefuse = (action: () => void): void => {
+    let failure: unknown;
+    try {
+      action();
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure instanceof Error, "governed-carrier refusal control accepted a forged graph");
+    assert.match(failure.message, /pinned RENDERED member|fields do not match/);
+  };
+  mustRefuse(() => buildRenderModel(invalid[0]?.graph as VisualGraph, renderOptions()));
+  assert.throws(
+    () => mustRefuse(() => undefined),
+    /governed-carrier refusal control accepted a forged graph/,
+  );
+
+  const view = createEngineGraphView(graph);
+  const engineAssertion = view.graph.nodes[0];
+  const callerCarrier = assertion.rendered;
+  const engineCarrier = engineAssertion?.rendered;
+  assert.ok(engineAssertion !== undefined && callerCarrier !== null && engineCarrier !== undefined && engineCarrier !== null);
+  assert.notEqual(engineCarrier, callerCarrier);
+  const callerState = callerCarrier[0];
+  const engineState = engineCarrier[0];
+  assert.ok(callerState !== undefined && engineState !== undefined);
+  assert.notEqual(engineState, callerState);
+  void engineCarrier.length;
+  void engineState.enumType;
+  void engineState.member;
+  assert.deepEqual(
+    view.trace.reads.filter((read) => read.startsWith("node.rendered")),
+    ["node.rendered", "node.rendered.0", "node.rendered.length", "node.rendered.0.enumType", "node.rendered.0.member"],
+  );
+  assert.doesNotThrow(() => assertEngineAccessTrace(view.trace));
 });
 
 test("the structural refusal control rejects a field outside the allow-list and fails open when that refusal is removed", () => {
@@ -261,6 +388,25 @@ test("the structural refusal control rejects a field outside the allow-list and 
   assert.throws(
     () => mustRefuse(() => undefined),
     /structural refusal control accepted an outside field/,
+  );
+});
+
+test("the structural trace refuses an unregistered governed carrier member and fails open when that refusal is removed", () => {
+  const trace = { reads: ["node.rendered.0.identifier"] };
+  const mustRefuse = (action: () => void): void => {
+    let failure: unknown;
+    try {
+      action();
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure instanceof Error, "governed-carrier trace refusal control accepted an unregistered member");
+    assert.match(failure.message, /outside the structural allow-list: node\.rendered\.0\.identifier/);
+  };
+  mustRefuse(() => assertEngineAccessTrace(trace));
+  assert.throws(
+    () => mustRefuse(() => undefined),
+    /governed-carrier trace refusal control accepted an unregistered member/,
   );
 });
 

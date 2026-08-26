@@ -156,12 +156,13 @@ export const VISUAL_GRAPH_FIELD_REGISTER = {
 
 /** This creates a traced structural engine view and does not expose semantic or derived values beyond the closed governed RENDERED carrier. */
 export function createEngineGraphView(graph: VisualGraph): { readonly graph: EngineGraph; readonly trace: EngineAccessTrace } {
+  assertEngineGraphCarrierBoundary(graph);
   const reads: string[] = [];
   const trace: EngineAccessTrace = { reads };
   const node = (value: VisualNode): EngineNode => tracedElement({
     id: value.id,
     kind: value.kind,
-    rendered: value.rendered,
+    rendered: tracedRenderedStateCarrier(narrowedRenderedStateCarrier(value.kind, value.rendered, `node ${value.id}.rendered`), "node", reads),
     visual: tracedVisual(value.visual, "node", reads),
   }, "node", reads);
   const edge = (value: VisualEdge): EngineEdge => tracedElement({
@@ -169,7 +170,7 @@ export function createEngineGraphView(graph: VisualGraph): { readonly graph: Eng
     kind: value.kind,
     source: value.source,
     target: value.target,
-    rendered: value.rendered,
+    rendered: tracedRenderedStateCarrier(narrowedRenderedStateCarrier(value.kind, value.rendered, `edge ${value.id}.rendered`), "edge", reads),
     visual: tracedVisual(value.visual, "edge", reads),
   }, "edge", reads);
   return {
@@ -184,10 +185,19 @@ export function createEngineGraphView(graph: VisualGraph): { readonly graph: Eng
 /** This verifies every recorded engine read is in the structural allow-list and therefore cannot reach semantic data outside the closed governed RENDERED carrier. */
 export function assertEngineAccessTrace(trace: EngineAccessTrace): void {
   for (const read of trace.reads) {
-    const [element, field, nested, extra] = read.split(".");
+    const [element, field, nested, extra, remainder] = read.split(".");
     const allowedElement = element === "node" || element === "edge" ? element : undefined;
     if (allowedElement === undefined || field === undefined || !(ENGINE_ELEMENT_FIELD_ALLOW_LIST[allowedElement] as readonly string[]).includes(field)) {
       throw new TypeError(`engine read is outside the structural allow-list: ${read}`);
+    }
+    if (field === "rendered") {
+      const validCarrierRead = nested === undefined
+        || (nested === "length" && extra === undefined)
+        || (isRenderedCarrierIndex(nested) && (extra === undefined || extra === "enumType" || extra === "member") && remainder === undefined);
+      if (!validCarrierRead) {
+        throw new TypeError(`engine read is outside the structural allow-list: ${read}`);
+      }
+      continue;
     }
     if (field !== "visual" && nested !== undefined) {
       throw new TypeError(`engine read is outside the structural allow-list: ${read}`);
@@ -263,16 +273,35 @@ function assertNodeFields(value: unknown, path: string): void {
   assertExactFields(value, path, VISUAL_GRAPH_FIELD_REGISTER.node);
   const node = value as Record<string, unknown>;
   assertSemantic(node.semantic, `${path}.semantic`);
-  assertRenderedStateCarrier(node.rendered, `${path}.rendered`);
+  assertRenderedStateCarrier(node.kind, node.rendered, `${path}.rendered`);
   assertDerivedFields(node.derived, `${path}.derived`);
   assertVisualFields(node.visual, `${path}.visual`);
+}
+
+/** This validates the fields that can cross into an engine and does not read opaque semantic or derived values. */
+function assertEngineGraphCarrierBoundary(graph: VisualGraph): void {
+  assertExactFields(graph, "graph", VISUAL_GRAPH_FIELD_REGISTER.graph);
+  const graphValue = graph as Record<string, unknown>;
+  assertExactFields(graphValue.question, "question", VISUAL_GRAPH_FIELD_REGISTER.question);
+  assertArray(graphValue.nodes, "nodes");
+  assertArray(graphValue.edges, "edges");
+  for (const [index, value] of graphValue.nodes.entries()) {
+    assertExactFields(value, `nodes[${index}]`, VISUAL_GRAPH_FIELD_REGISTER.node);
+    const node = value as Record<string, unknown>;
+    assertRenderedStateCarrier(node.kind, node.rendered, `nodes[${index}].rendered`);
+  }
+  for (const [index, value] of graphValue.edges.entries()) {
+    assertExactFields(value, `edges[${index}]`, VISUAL_GRAPH_FIELD_REGISTER.edge);
+    const edge = value as Record<string, unknown>;
+    assertRenderedStateCarrier(edge.kind, edge.rendered, `edges[${index}].rendered`);
+  }
 }
 
 function assertEdgeFields(value: unknown, path: string): void {
   assertExactFields(value, path, VISUAL_GRAPH_FIELD_REGISTER.edge);
   const edge = value as Record<string, unknown>;
   assertSemantic(edge.semantic, `${path}.semantic`);
-  assertRenderedStateCarrier(edge.rendered, `${path}.rendered`);
+  assertRenderedStateCarrier(edge.kind, edge.rendered, `${path}.rendered`);
   assertDerivedFields(edge.derived, `${path}.derived`);
   assertVisualFields(edge.visual, `${path}.visual`);
 }
@@ -305,16 +334,48 @@ export function createRenderedStateCarrier(value: unknown): RenderedStateCarrier
   if (second === undefined) {
     throw new TypeError("rendered state carrier has no second member");
   }
+  if (first.enumType === second.enumType) {
+    throw new TypeError("rendered state carrier cannot repeat a governed enum axis");
+  }
   return Object.freeze([first, second]) as readonly [RenderedState, RenderedState];
 }
 
-function assertRenderedStateCarrier(value: unknown, path: string): asserts value is RenderedStateCarrier {
+function assertRenderedStateCarrier(kind: unknown, value: unknown, path: string): asserts value is RenderedStateCarrier {
   try {
-    createRenderedStateCarrier(value);
+    narrowedRenderedStateCarrier(kind, value, path);
   } catch (error) {
     const detail = error instanceof Error ? error.message : "invalid rendered state carrier";
     throw new TypeError(`${path} ${detail}`);
   }
+}
+
+/** This validates one governed carrier against its IR element kind and does not permit a state on an IR-silent kind. */
+function narrowedRenderedStateCarrier(kind: unknown, value: unknown, path: string): RenderedStateCarrier {
+  const carrier = createRenderedStateCarrier(value);
+  if (kind === "assertion") {
+    const state = carrier === null ? undefined : carrier[0];
+    if (carrier === null || carrier.length !== 1 || state?.enumType !== "TemporalDisposition") {
+      throw new TypeError(`${path} assertion must carry exactly one TemporalDisposition`);
+    }
+    return carrier;
+  }
+  if (kind === "bridge") {
+    const first = carrier === null ? undefined : carrier[0];
+    const second = carrier === null ? undefined : carrier[1];
+    if (
+      carrier === null
+      || carrier.length !== 2
+      || first?.enumType !== "BridgeDisposition"
+      || second?.enumType !== "EpistemicClass"
+    ) {
+      throw new TypeError(`${path} bridge must carry BridgeDisposition followed by EpistemicClass`);
+    }
+    return carrier;
+  }
+  if (carrier !== null) {
+    throw new TypeError(`${path} ${typeof kind === "string" ? kind : "IR-silent"} must carry null because no governed RENDERED state applies`);
+  }
+  return null;
 }
 
 function renderedStateMember(value: unknown, path: string): RenderedState {
@@ -339,6 +400,52 @@ function tracedElement<Value extends object>(value: Value, element: "node" | "ed
       return Reflect.get(target, property, receiver);
     },
   });
+}
+
+/** This traces reads of the copied governed carrier and does not expose its caller-owned source value. */
+function tracedRenderedStateCarrier(
+  value: RenderedStateCarrier,
+  element: "node" | "edge",
+  reads: string[],
+): RenderedStateCarrier {
+  if (value === null) {
+    return null;
+  }
+  const copied: RenderedState[] = value.map((state) => ({ enumType: state.enumType, member: state.member } as RenderedState));
+  return new Proxy(copied, {
+    get(target, property, receiver): unknown {
+      if (typeof property === "string") {
+        if (property === "length") {
+          reads.push(`${element}.rendered.length`);
+        } else if (isRenderedCarrierIndex(property)) {
+          reads.push(`${element}.rendered.${property}`);
+          const state = target[Number(property)];
+          if (state !== undefined) {
+            return tracedRenderedState(state, `${element}.rendered.${property}`, reads);
+          }
+        } else {
+          reads.push(`${element}.rendered.${property}`);
+        }
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  }) as unknown as RenderedStateCarrier;
+}
+
+/** This traces reads of one pinned member and does not permit a member to carry attributes or identifiers. */
+function tracedRenderedState(value: RenderedState, path: string, reads: string[]): RenderedState {
+  return new Proxy(value, {
+    get(target, property, receiver): unknown {
+      if (typeof property === "string") {
+        reads.push(`${path}.${property}`);
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+}
+
+function isRenderedCarrierIndex(value: string | undefined): boolean {
+  return value === "0" || value === "1";
 }
 
 function tracedVisual(value: VisualMetadata, element: "node" | "edge", reads: string[]): EngineNode["visual"] {

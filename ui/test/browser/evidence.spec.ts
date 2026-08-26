@@ -204,6 +204,21 @@ type ShippingPickingSetSnapshot = {
   readonly pickingTarget: PickingTargetSetWitness;
 };
 
+type LegalRenderedStateDomain =
+  | "TemporalDisposition.established"
+  | "TemporalDisposition.excluded"
+  | "TemporalDisposition.undetermined"
+  | "BridgeDisposition.accepted+EpistemicClass.explicit"
+  | "BridgeDisposition.rejected+EpistemicClass.derived"
+  | "BridgeDisposition.undetermined+EpistemicClass.speculative";
+
+type RenderedStatePixelControl = {
+  readonly state: LegalRenderedStateDomain;
+  readonly targetId: string;
+  readonly pixel: { readonly x: number; readonly y: number };
+  readonly devicePixelRatio: number;
+};
+
 type PageEvidence = {
   readonly ready: boolean;
   readonly errors: readonly string[];
@@ -238,7 +253,9 @@ type PageEvidence = {
   setSelectionFocusNoopControl(selection: string | null, focus: string | null): Promise<Snapshot>;
   hideSelectionFocusNoopControl(): void;
   assertDerivedOriginRefusalControl(): number;
-  assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean; readonly changedRenderedMaterial: boolean };
+  assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean; readonly changedRenderedMaterial: boolean; readonly renderedTargetId: string; readonly rejectedUnrelatedMaterialChange: boolean };
+  setRenderedStatePixelControl(state: LegalRenderedStateDomain): Promise<RenderedStatePixelControl>;
+  clearRenderedStatePixelControl(): Promise<void>;
   readLiveRelationMaterialBindings(): readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[];
   proveStackedMaterialControlRejects(): { readonly relationId: string; readonly materialTypes: readonly string[]; readonly message: string };
   shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }>;
@@ -440,6 +457,14 @@ const PD3_STATE = {
 } as const;
 const A3_PIXEL_WITNESS_SAMPLE_SEED = 0xC0FFEE;
 const A3_PIXEL_WITNESS_SAMPLE_SIZE = 12;
+const LEGAL_RENDERED_STATE_DOMAINS: readonly LegalRenderedStateDomain[] = [
+  "TemporalDisposition.established",
+  "TemporalDisposition.excluded",
+  "TemporalDisposition.undetermined",
+  "BridgeDisposition.accepted+EpistemicClass.explicit",
+  "BridgeDisposition.rejected+EpistemicClass.derived",
+  "BridgeDisposition.undetermined+EpistemicClass.speculative",
+];
 const PICKING_PARITY_OFF_RIBBON_OFFSET_PX = 48;
 const PICKING_PARITY_OFF_RIBBON_SWEEP_PX = [8, 16, 24, 32, 48, 64, 96] as const;
 const PICKING_PARITY_HARDEST_RELATION_ID = "side:asr_0NXJWD0YYT3PTBZKKYSGCE38H6:right";
@@ -677,12 +702,15 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     return `live Sigma pipeline reported ${bindings.length} relations, one material each; a real two-program stack on ${control.relationId} reported [${control.materialTypes.join(", ")}] and failed: ${control.message}; the mounted pipeline then returned to the original single-program bindings`;
   });
   await run("a10-engine-semantic-isolation", async () => {
-    const result = await invoke<{ readonly reads: number; readonly changedSemanticDigest: boolean; readonly changedRenderedMaterial: boolean }>("assertEngineSemanticIsolationControl");
+    const result = await invoke<{ readonly reads: number; readonly changedSemanticDigest: boolean; readonly changedRenderedMaterial: boolean; readonly renderedTargetId: string; readonly rejectedUnrelatedMaterialChange: boolean }>("assertEngineSemanticIsolationControl");
     expect(result.reads).toBeGreaterThan(0);
     expect(result.changedSemanticDigest).toBe(true);
     expect(result.changedRenderedMaterial).toBe(true);
-    return `structural engine trace recorded ${result.reads} allowed reads, including the closed governed RENDERED carrier and no other semantic field; a forced semantic access failed, while a non-isomorphic semantic permutation changed its digest without changing engine output and a governed state change changed material`;
+    expect(result.renderedTargetId).toMatch(/^assertion:/);
+    expect(result.rejectedUnrelatedMaterialChange).toBe(true);
+    return `structural engine trace recorded ${result.reads} allowed reads, including the closed governed RENDERED carrier and no other semantic field; a forced semantic access failed, while a non-isomorphic semantic permutation changed its digest without changing engine output and a governed state change changed material on target ${result.renderedTargetId}; a control that changed an unrelated node material was refused`;
   });
+  await measureLegalRenderedStateCompositorSeparation(invoke, capture, testInfo.project.name);
   await run("a3-cross-product-picking-pixels", async () => {
     const product = enumerateShippingCrossProduct();
     expect(product).toHaveLength(SHIPPING_CROSS_PRODUCT_SIZE);
@@ -1325,6 +1353,152 @@ function assertAcceptanceInvariantMapping(
 
 function projectCheckIds(check: typeof CAPABILITY_CHECKS[number]): readonly string[] {
   return REQUIRED_PROJECTS.map((project) => `${project}/${check}`);
+}
+
+/** This measures legal adapter-produced governed states at final-compositor pixels and does not fabricate a state on an unrelated kind. */
+async function measureLegalRenderedStateCompositorSeparation(
+  invoke: PageInvoke,
+  capture: PageCapture,
+  project: string,
+): Promise<void> {
+  const observations: { readonly state: LegalRenderedStateDomain; readonly targetId: string; readonly color: CompositedRgb }[] = [];
+  try {
+    for (const state of LEGAL_RENDERED_STATE_DOMAINS) {
+      const control = await invoke<RenderedStatePixelControl>("setRenderedStatePixelControl", state);
+      const image = await capture("#evidence-renderer");
+      expect(control.state, "state control returns its requested legal state").toBe(state);
+      expect(control.devicePixelRatio, "state control and screenshot agree on DPR").toBeGreaterThan(0);
+      observations.push({
+        state,
+        targetId: control.targetId,
+        color: compositorRgbAt(image, control.pixel, control.devicePixelRatio),
+      });
+    }
+  } finally {
+    await invoke<void>("clearRenderedStatePixelControl");
+  }
+  expect(observations.map((observation) => observation.state), "actual compositor observations cover every legal IR state domain").toEqual(LEGAL_RENDERED_STATE_DOMAINS);
+  const matrix = renderedStateCompositorMatrix(observations);
+  const opacityScale = DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
+  const nonHueMinimum = DEFAULT_CALIBRATION.luminance.minimumRenderedNonHueSeparationMicro / (opacityScale * opacityScale);
+  const cvdMinimum = DEFAULT_CALIBRATION.luminance.minimumRenderedCvdSeparationMicro / (opacityScale * opacityScale);
+  assertRenderedStateCompositorMatrixAtLeast(LEGAL_RENDERED_STATE_DOMAINS, matrix.nonHue, nonHueMinimum, "non-hue");
+  for (const deficiency of RENDERED_STATE_CVD_DEFICIENCIES) {
+    assertRenderedStateCompositorMatrixAtLeast(LEGAL_RENDERED_STATE_DOMAINS, matrix.cvd[deficiency], cvdMinimum, deficiency);
+  }
+  let refusalControlFailed = false;
+  try {
+    assertRenderedStateCompositorMatrixAtLeast(LEGAL_RENDERED_STATE_DOMAINS, matrix.nonHue, Number.POSITIVE_INFINITY, "unattainable control");
+  } catch {
+    refusalControlFailed = true;
+  }
+  expect(refusalControlFailed, "the compositor separation refusal control fails at an unattainable threshold").toBe(true);
+  await writeFile("dist/evidence/rendered-state-separation.json", `${JSON.stringify({
+    producedBy: "ui/test/browser/evidence.spec.ts, final compositor capture",
+    project,
+    measuredDomain: "final compositor screenshot pixels at one live-picking interior witness for each isolated, legal node state from the adapter-validated discovery-at-question fixture; no Graphology attribute or mathematical alpha-composite substitute",
+    states: LEGAL_RENDERED_STATE_DOMAINS,
+    targetIds: observations.map((observation) => ({ state: observation.state, targetId: observation.targetId })),
+    thresholds: { nonHue: nonHueMinimum, cvd: cvdMinimum },
+    nonHue: matrix.nonHue,
+    cvd: matrix.cvd,
+    unmeasuredIllegalDomains: [
+      "TemporalDisposition on bridge nodes",
+      "BridgeDisposition or EpistemicClass on assertion nodes",
+      "any governed carrier on an edge or IR-silent node kind",
+      "an unpaired BridgeDisposition or EpistemicClass member",
+      "bridge tuples other than the three adapter-produced governed combinations",
+    ],
+    refusalControlFailed,
+  }, null, 2)}\n`);
+}
+
+type CompositedRgb = readonly [number, number, number];
+type RenderedStateCvdDeficiency = "deuteranopia" | "protanopia" | "tritanopia";
+type PageCapture = (selector: string) => Promise<DecodedPng>;
+
+const RENDERED_STATE_CVD_DEFICIENCIES = ["deuteranopia", "protanopia", "tritanopia"] as const satisfies readonly RenderedStateCvdDeficiency[];
+
+const RENDERED_STATE_CVD_MATRICES: Readonly<Record<RenderedStateCvdDeficiency, readonly [CompositedRgb, CompositedRgb, CompositedRgb]>> = {
+  deuteranopia: [
+    [0.367322, 0.860646, -0.227968],
+    [0.280085, 0.672501, 0.047413],
+    [-0.011820, 0.042940, 0.968881],
+  ],
+  protanopia: [
+    [0.152286, 1.052583, -0.204868],
+    [0.114503, 0.786281, 0.099216],
+    [-0.003882, -0.048116, 1.051998],
+  ],
+  tritanopia: [
+    [1.255528, -0.076749, -0.178779],
+    [-0.078411, 0.930809, 0.147602],
+    [0.004733, 0.691367, 0.303900],
+  ],
+};
+
+/** This creates final-compositor separation matrices and does not include a pair that the governed IR cannot produce. */
+function renderedStateCompositorMatrix(
+  observations: readonly { readonly state: LegalRenderedStateDomain; readonly targetId: string; readonly color: CompositedRgb }[],
+): { readonly nonHue: readonly (readonly number[])[]; readonly cvd: Readonly<Record<RenderedStateCvdDeficiency, readonly (readonly number[])[]>> } {
+  const nonHue = renderedStateMatrix(observations.length);
+  const cvd: Record<RenderedStateCvdDeficiency, number[][]> = {
+    deuteranopia: renderedStateMatrix(observations.length),
+    protanopia: renderedStateMatrix(observations.length),
+    tritanopia: renderedStateMatrix(observations.length),
+  };
+  for (let lowerIndex = 0; lowerIndex < observations.length; lowerIndex += 1) {
+    for (let upperIndex = lowerIndex + 1; upperIndex < observations.length; upperIndex += 1) {
+      const lower = observations[lowerIndex];
+      const upper = observations[upperIndex];
+      if (lower === undefined || upper === undefined) {
+        throw new Error("rendered-state compositor matrix lost a legal observation");
+      }
+      setRenderedStateMatrixPair(nonHue, lowerIndex, upperIndex, Math.abs(compositedGrayscaleLuminance(lower.color) - compositedGrayscaleLuminance(upper.color)));
+      for (const deficiency of RENDERED_STATE_CVD_DEFICIENCIES) {
+        setRenderedStateMatrixPair(cvd[deficiency], lowerIndex, upperIndex, compositedRgbDistance(simulateRenderedStateCvd(lower.color, deficiency), simulateRenderedStateCvd(upper.color, deficiency)));
+      }
+    }
+  }
+  return { nonHue, cvd };
+}
+
+/** This initialises a symmetric state matrix and does not assign a separation before a captured pair is observed. */
+function renderedStateMatrix(size: number): number[][] {
+  return Array.from({ length: size }, () => Array.from({ length: size }, () => Number.POSITIVE_INFINITY));
+}
+
+/** This writes one observed unordered pair and does not assign a diagonal value. */
+function setRenderedStateMatrixPair(matrix: number[][], lowerIndex: number, upperIndex: number, value: number): void {
+  const lower = matrix[lowerIndex];
+  const upper = matrix[upperIndex];
+  if (lower === undefined || upper === undefined) {
+    throw new Error("rendered-state compositor matrix has no pair row");
+  }
+  lower[upperIndex] = value;
+  upper[lowerIndex] = value;
+}
+
+/** This enforces the unchanged calibrated floor for every actually observed legal pair and does not lower it. */
+function assertRenderedStateCompositorMatrixAtLeast(
+  states: readonly LegalRenderedStateDomain[],
+  matrix: readonly (readonly number[])[],
+  minimum: number,
+  channel: string,
+): void {
+  for (let lowerIndex = 0; lowerIndex < states.length; lowerIndex += 1) {
+    for (let upperIndex = lowerIndex + 1; upperIndex < states.length; upperIndex += 1) {
+      const lower = states[lowerIndex];
+      const upper = states[upperIndex];
+      const separation = matrix[lowerIndex]?.[upperIndex];
+      if (lower === undefined || upper === undefined || separation === undefined) {
+        throw new Error("rendered-state compositor threshold has no observed pair");
+      }
+      if (separation < minimum) {
+        throw new Error(`${channel} legal rendered states ${lower} and ${upper} are not separable at final compositor pixels: ${separation}, minimum ${minimum}`);
+      }
+    }
+  }
 }
 
 function assertBackingStores(snapshot: Snapshot, image: DecodedPng): void {
@@ -2032,17 +2206,54 @@ function glowProbeRadius(node: Snapshot["glowNodes"][number]): number {
 
 /** This samples an image's composited sRGB luminance at one CSS-space point. */
 function compositorLuminanceAt(image: DecodedPng, point: { readonly x: number; readonly y: number }, devicePixelRatio: number): number {
+  return compositedGrayscaleLuminance(compositorRgbAt(image, point, devicePixelRatio));
+}
+
+/** This samples final-compositor sRGB channels at one CSS-space point and does not read a Graphology colour attribute. */
+function compositorRgbAt(image: DecodedPng, point: { readonly x: number; readonly y: number }, devicePixelRatio: number): CompositedRgb {
   const x = Math.max(0, Math.min(image.width - 1, Math.round(point.x * devicePixelRatio)));
   const y = Math.max(0, Math.min(image.height - 1, Math.round(point.y * devicePixelRatio)));
   const index = ((y * image.width) + x) * 4;
-  const red = (image.data[index] ?? 0) / 255;
-  const green = (image.data[index + 1] ?? 0) / 255;
-  const blue = (image.data[index + 2] ?? 0) / 255;
-  return (0.2126 * srgbChannelToLinear(red)) + (0.7152 * srgbChannelToLinear(green)) + (0.0722 * srgbChannelToLinear(blue));
+  return [
+    (image.data[index] ?? 0) / 255,
+    (image.data[index + 1] ?? 0) / 255,
+    (image.data[index + 2] ?? 0) / 255,
+  ];
 }
 
 function srgbChannelToLinear(channel: number): number {
   return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+}
+
+/** This calculates luminance from an observed sRGB compositor sample and does not use a semantic token. */
+function compositedGrayscaleLuminance(color: CompositedRgb): number {
+  return (0.2126 * srgbChannelToLinear(color[0]))
+    + (0.7152 * srgbChannelToLinear(color[1]))
+    + (0.0722 * srgbChannelToLinear(color[2]));
+}
+
+/** This simulates a named deficiency from captured compositor channels and does not replace the capture with a model attribute. */
+function simulateRenderedStateCvd(color: CompositedRgb, deficiency: RenderedStateCvdDeficiency): CompositedRgb {
+  const linear: CompositedRgb = [srgbChannelToLinear(color[0]), srgbChannelToLinear(color[1]), srgbChannelToLinear(color[2])];
+  const matrix = RENDERED_STATE_CVD_MATRICES[deficiency];
+  return [
+    linearToSrgb(clampCompositedChannel((matrix[0][0] * linear[0]) + (matrix[0][1] * linear[1]) + (matrix[0][2] * linear[2]))),
+    linearToSrgb(clampCompositedChannel((matrix[1][0] * linear[0]) + (matrix[1][1] * linear[1]) + (matrix[1][2] * linear[2]))),
+    linearToSrgb(clampCompositedChannel((matrix[2][0] * linear[0]) + (matrix[2][1] * linear[1]) + (matrix[2][2] * linear[2]))),
+  ];
+}
+
+/** This measures Euclidean channel separation and does not convert it into a semantic distance. */
+function compositedRgbDistance(left: CompositedRgb, right: CompositedRgb): number {
+  return Math.hypot(left[0] - right[0], left[1] - right[1], left[2] - right[2]);
+}
+
+function linearToSrgb(channel: number): number {
+  return channel <= 0.0031308 ? channel * 12.92 : (1.055 * (channel ** (1 / 2.4))) - 0.055;
+}
+
+function clampCompositedChannel(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
 function average(values: readonly number[]): number {

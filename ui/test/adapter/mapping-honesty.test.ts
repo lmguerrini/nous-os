@@ -41,7 +41,7 @@ type NeutralDigestExpectations = {
 };
 
 type Adapter = (payload: FixturePayload) => VisualGraph;
-type PropertyId = "L" | "S" | "both";
+type PropertyId = "L" | "S" | "both" | "both-fail" | "boundary";
 
 const FIXTURES = [
   "discovery-all-time.json",
@@ -53,6 +53,7 @@ const FIXTURES = [
 const NULL_ATTRIBUTE_EDGE_KINDS = new Set(["about", "conflict_member", "in_cluster", "rejects"]);
 const ATTRIBUTE_MUTATION_SUFFIX = "__permuted";
 const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const PROVENANCE_VALUE_FIELD_REGISTER = ["end_byte", "snapshot_digest", "source_id", "span", "start_byte"] as const;
 
 /** This reads one checked-in payload and does not create expected adapter output. */
 function fixture(name: typeof FIXTURES[number]): FixturePayload {
@@ -191,7 +192,80 @@ function assertPropertyNoSemanticLeak(payload: FixturePayload, adapter: Adapter)
       `Property S ${transformation.id} control must change the semantic digest`,
     );
     assertRendererSurfaceBounded(originalGraph, transformedGraph, transformation.payload, transformation.id);
+    assertTransformationDerivedProvenance(
+      originalGraph,
+      payload,
+      transformedGraph,
+      transformation.payload,
+      transformation.id,
+    );
   }
+}
+
+/** This verifies derived values remain exact pinned provenance under an IR transformation and do not retain a rotated semantic value outside that register. */
+function assertTransformationDerivedProvenance(
+  originalGraph: VisualGraph,
+  originalPayload: FixturePayload,
+  transformedGraph: VisualGraph,
+  transformedPayload: FixturePayload,
+  transformation: string,
+): void {
+  const originalNodes = new Map(originalGraph.nodes.map((node) => [node.id, node]));
+  const originalEdges = new Map(originalGraph.edges.map((edge) => [edge.id, edge]));
+  for (const node of transformedGraph.nodes) {
+    const original = originalNodes.get(node.id);
+    if (original === undefined) {
+      throw new TypeError(`Property S ${transformation} node ${node.id} has no original provenance counterpart`);
+    }
+    assertPinnedDerivedProvenance(
+      original.derived,
+      expectedNodeDerivation(originalPayload, original.id),
+      `Property S ${transformation} node ${node.id} original derived provenance`,
+    );
+    assertPinnedDerivedProvenance(
+      node.derived,
+      expectedNodeDerivation(transformedPayload, node.id),
+      `Property S ${transformation} node ${node.id} derived provenance`,
+    );
+  }
+  for (const edge of transformedGraph.edges) {
+    const original = originalEdges.get(edge.id);
+    if (original === undefined) {
+      throw new TypeError(`Property S ${transformation} edge ${edge.id} has no original provenance counterpart`);
+    }
+    assertPinnedDerivedProvenance(
+      original.derived,
+      expectedEdgeDerivation(originalPayload, original.id),
+      `Property S ${transformation} edge ${edge.id} original derived provenance`,
+    );
+    assertPinnedDerivedProvenance(
+      edge.derived,
+      expectedEdgeDerivation(transformedPayload, edge.id),
+      `Property S ${transformation} edge ${edge.id} derived provenance`,
+    );
+  }
+}
+
+/** This checks the fixed provenance value register and does not let a semantic quote, identifier, or digest become an extra derived field. */
+function assertPinnedDerivedProvenance(actual: unknown, expected: unknown, label: string): void {
+  if (!isRecord(actual) || !isRecord(expected)) {
+    throw new TypeError(`${label} must retain the pinned provenance record`);
+  }
+  assert.deepEqual(Object.keys(actual).sort(), ["origin", "value"], `${label} fields must remain pinned`);
+  assert.deepEqual(Object.keys(expected).sort(), ["origin", "value"], `${label} expected fields must remain pinned`);
+  assert.equal(actual.origin, expected.origin, `${label} origin must remain pinned`);
+  if (expected.value === null) {
+    assert.equal(actual.value, null, `${label} must not add a value on an IR-silent provenance route`);
+    return;
+  }
+  assert.ok(isRecord(actual.value), `${label} must contain only pinned provenance fields`);
+  assert.ok(isRecord(expected.value), `${label} expected provenance value must be a record`);
+  assert.deepEqual(
+    Object.keys(actual.value).sort(),
+    [...PROVENANCE_VALUE_FIELD_REGISTER].sort(),
+    `${label} must contain only pinned provenance fields`,
+  );
+  assertSameBytes(actual.value, expected.value, `${label} must not retain a rotated value outside the pinned provenance fields`);
 }
 
 /** This checks the renderer-visible carrier against the fixture oracle and does not treat retained provenance records as renderer material. */
@@ -730,6 +804,25 @@ function smuggleTextLength(payload: FixturePayload): VisualGraph {
   });
 }
 
+/** This copies a rotated assertion text into derived data only after its fixture-origin value changes and does not alter opaque semantic tokens. */
+function smuggleRotatedAssertionText(payload: FixturePayload): VisualGraph {
+  const graph = toVisualGraph(payload);
+  const targetId = "assertion:asr_3N8REEPQF5FW301DG544P5B6PD";
+  return mapGraph(graph, (node) => {
+    if (node.id !== targetId) {
+      return node;
+    }
+    const semantic = semanticRecord(readSemantic(node.semantic));
+    if (semantic.text === "Synthetic projection claim conflict-gamma.") {
+      return node;
+    }
+    return {
+      ...node,
+      derived: { ...node.derived, value: { provenance: node.derived.value, rotatedText: semantic.text } },
+    };
+  });
+}
+
 /** This hashes the sorted assertion semantic multiset into every renderer item and does not alter semantic tokens. */
 function smuggleKindAggregate(payload: FixturePayload): VisualGraph {
   const graph = toVisualGraph(payload);
@@ -764,7 +857,9 @@ function digestOnlyKindDrift(payload: FixturePayload): VisualGraph {
   if (target === undefined) {
     throw new TypeError("digest-only-kind-drift found no assertion node");
   }
-  return mapGraph(graph, (node) => node.id === target.id ? { ...node, kind: "digest-only-kind-drift" } : node);
+  return mapGraph(graph, (node) => node.id === target.id
+    ? { ...node, kind: "digest-only-kind-drift", rendered: createRenderedStateCarrier(null) }
+    : node);
 }
 
 function digestAssertionSemanticMultiset(graph: VisualGraph): string {
@@ -856,6 +951,15 @@ test("Property L reconstructs every fixture and Property S rejects semantic depe
   }
 });
 
+test("Property S rejects a rotated quote smuggled into derived provenance outside the pinned register", () => {
+  const payload = fixture("discovery-at-question.json");
+  assertPropertyFails(
+    () => assertPropertyNoSemanticLeak(payload, smuggleRotatedAssertionText),
+    "Property S within-kind rotation node assertion:asr_3N8REEPQF5FW301DG544P5B6PD derived provenance must contain only pinned provenance fields",
+    "rotated-derived-text smuggling control",
+  );
+});
+
 test("hostile adapter battery proves each named mapping-honesty instrument can fail", () => {
   const battery: readonly {
     readonly id: string;
@@ -883,13 +987,13 @@ test("hostile adapter battery proves each named mapping-honesty instrument can f
     },
     {
       id: "smuggle-verbatim",
-      property: "L",
+      property: "both-fail",
       adapter: smuggleVerbatim,
       expectedMessage: (payload) => `Property L node ${firstNodeIdByKind(payload, "assertion")} derived provenance must be exact`,
     },
     {
       id: "smuggle-encoded",
-      property: "L",
+      property: "both-fail",
       adapter: smuggleEncoded,
       expectedMessage: (payload) => `Property L node ${firstNodeIdByKind(payload, "assertion")} derived provenance must be exact`,
     },
@@ -901,25 +1005,25 @@ test("hostile adapter battery proves each named mapping-honesty instrument can f
     },
     {
       id: "smuggle-rejection-only",
-      property: "L",
+      property: "both-fail",
       adapter: smuggleRejectionOnly,
       expectedMessage: (payload) => `Property L node ${firstNodeIdByKind(payload, "rejection")} derived provenance must be exact`,
     },
     {
       id: "smuggle-rejection-DATE-only",
-      property: "L",
+      property: "both-fail",
       adapter: smuggleRejectionDateOnly,
       expectedMessage: (payload) => `Property L node ${firstNodeIdByKind(payload, "rejection")} derived provenance must be exact`,
     },
     {
       id: "smuggle-TEXT-LENGTH",
-      property: "L",
+      property: "both-fail",
       adapter: smuggleTextLength,
       expectedMessage: (payload) => `Property L node ${firstNodeIdByKind(payload, "assertion")} derived provenance must be exact`,
     },
     {
       id: "smuggle-kind-AGGREGATE",
-      property: "L",
+      property: "both-fail",
       adapter: smuggleKindAggregate,
       expectedMessage: (payload) => `Property L node ${firstNodeIdByKind(payload, "assertion")} derived provenance must be exact`,
     },
@@ -931,7 +1035,7 @@ test("hostile adapter battery proves each named mapping-honesty instrument can f
     },
     {
       id: "digest-only-kind-drift",
-      property: "L",
+      property: "boundary",
       adapter: digestOnlyKindDrift,
       expectedMessage: () => "Property L reconstructed digest must match the Python expectation",
     },
@@ -963,7 +1067,7 @@ test("hostile adapter battery proves each named mapping-honesty instrument can f
           );
         }
         assert.doesNotThrow(() => assertPropertyNoSemanticLeak(payload, entry.adapter), `${label} unexpectedly failed Property S`);
-      } else {
+      } else if (entry.property === "S") {
         assert.doesNotThrow(() => assertPropertyLossless(payload, entry.adapter(payload), neutralDigest(name)), `${label} unexpectedly failed Property L`);
         if (entry.id === "smuggle-rejection-only" && !payload.nodes.some((node) => node.kind === "rejection")) {
           assert.doesNotThrow(() => assertPropertyNoSemanticLeak(payload, entry.adapter), `${label} must be inert without rejection nodes`);
@@ -972,6 +1076,26 @@ test("hostile adapter battery proves each named mapping-honesty instrument can f
         } else {
           assertPropertyFails(() => assertPropertyNoSemanticLeak(payload, entry.adapter), entry.expectedMessage(payload), label);
         }
+      } else if (entry.property === "both-fail") {
+        const isInertRejectionSmuggle = (entry.id === "smuggle-rejection-only" || entry.id === "smuggle-rejection-DATE-only")
+          && !payload.nodes.some((node) => node.kind === "rejection");
+        if (isInertRejectionSmuggle) {
+          assert.doesNotThrow(() => assertPropertyLossless(payload, entry.adapter(payload), neutralDigest(name)), `${label} must be inert without rejection nodes`);
+          assert.doesNotThrow(() => assertPropertyNoSemanticLeak(payload, entry.adapter), `${label} must be inert without rejection nodes`);
+        } else {
+          assertPropertyFails(
+            () => assertPropertyLossless(payload, entry.adapter(payload), neutralDigest(name)),
+            entry.expectedMessage(payload),
+            label,
+          );
+          assertPropertyFails(() => assertPropertyNoSemanticLeak(payload, entry.adapter), "Property S", label);
+        }
+      } else {
+        assertPropertyFails(
+          () => assertPropertyLossless(payload, entry.adapter(payload), neutralDigest(name)),
+          entry.expectedMessage(payload),
+          label,
+        );
       }
     }
   }

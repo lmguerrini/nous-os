@@ -248,6 +248,22 @@ type ShippingPickingSetSnapshot = {
   readonly pickingTarget: PickingTargetSetWitness;
 };
 
+type LegalRenderedStateDomain =
+  | "TemporalDisposition.established"
+  | "TemporalDisposition.excluded"
+  | "TemporalDisposition.undetermined"
+  | "BridgeDisposition.accepted+EpistemicClass.explicit"
+  | "BridgeDisposition.rejected+EpistemicClass.derived"
+  | "BridgeDisposition.undetermined+EpistemicClass.speculative";
+
+/** This records one legal adapter-produced state at a final-compositor pixel and does not manufacture an illegal kind/state pairing. */
+type RenderedStatePixelControl = {
+  readonly state: LegalRenderedStateDomain;
+  readonly targetId: string;
+  readonly pixel: { readonly x: number; readonly y: number };
+  readonly devicePixelRatio: number;
+};
+
 type EvidenceApi = {
   readonly ready: boolean;
   readonly errors: string[];
@@ -285,7 +301,9 @@ type EvidenceApi = {
   setSelectionFocusNoopControl(selection: string | null, focus: string | null): Promise<Snapshot>;
   hideSelectionFocusNoopControl(): void;
   assertDerivedOriginRefusalControl(): number;
-  assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean; readonly changedRenderedMaterial: boolean };
+  assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean; readonly changedRenderedMaterial: boolean; readonly renderedTargetId: string; readonly rejectedUnrelatedMaterialChange: boolean };
+  setRenderedStatePixelControl(state: LegalRenderedStateDomain): Promise<RenderedStatePixelControl>;
+  clearRenderedStatePixelControl(): Promise<void>;
   readLiveRelationMaterialBindings(): readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[];
   proveStackedMaterialControlRejects(): { readonly relationId: string; readonly materialTypes: readonly string[]; readonly message: string };
   shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }>;
@@ -304,6 +322,7 @@ const FIXTURE_URLS: Readonly<Record<Policy, string>> = {
   Reliability: "fixtures/synthetic/projection/reliability-all-time.json",
   Discovery: "fixtures/synthetic/projection/discovery-all-time.json",
 };
+const RENDERED_STATE_FIXTURE_URL = "fixtures/synthetic/projection/discovery-at-question.json";
 
 type MutableRenderOptions = {
   morphology: ModelRenderOptions["morphology"];
@@ -405,6 +424,12 @@ async function boot(): Promise<void> {
     graphs.set(policy, graph);
     fixtureFacts[policy] = facts;
   }
+  const renderedStateResponse = await fetch(RENDERED_STATE_FIXTURE_URL, { cache: "no-store" });
+  if (!renderedStateResponse.ok) {
+    throw new Error(`rendered-state fixture failed with ${renderedStateResponse.status}`);
+  }
+  const renderedStateGraph = toVisualGraph(JSON.parse(await renderedStateResponse.text()) as unknown);
+  assertVisualGraphFieldRegister(renderedStateGraph);
   checks.push("governed fixtures passed the real projection adapter, field register, semantic digest, and passthrough boundary");
   const discoveryGraph = requiredGraph(graphs, "Discovery");
   const reliabilityGraph = requiredGraph(graphs, "Reliability");
@@ -421,12 +446,15 @@ async function boot(): Promise<void> {
   let selectionFocusNoopPreviousSelection: string | null | undefined;
   let selectionFocusNoopPreviousFocus: string | null | undefined;
   let selectionFocusNoopPreviousContainerId: string | undefined;
+  let renderedStatePixelGraph: VisualGraph | undefined;
+
+  const activeGraph = (): VisualGraph => renderedStatePixelGraph ?? requiredGraph(graphs, policy);
 
   const remount = async (cameraState?: RenderCameraState): Promise<void> => {
     product?.destroy();
     product = undefined;
     await waitForNonZeroBox(container);
-    const graph = requiredGraph(graphs, policy);
+    const graph = activeGraph();
     product = mount(container, graph, options, discoveryFramingBox);
     if (selectionIntent !== null) {
       product.setSelection(selectionIntent);
@@ -477,7 +505,7 @@ async function boot(): Promise<void> {
         afterglowDecayPermille: attributes.afterglowDecayPermille,
       };
     }
-    const activeGraph = requiredGraph(graphs, policy);
+    const mountedGraph = activeGraph();
     const activeFixtureFacts = fixtureFacts[policy];
     if (activeFixtureFacts === undefined) {
       throw new Error(`missing fixture facts for ${policy}`);
@@ -485,7 +513,7 @@ async function boot(): Promise<void> {
     const selectedElement = handle.getSelection();
     const selectedGraphElement = selectedElement === null
       ? undefined
-      : [...activeGraph.nodes, ...activeGraph.edges].find((element) => element.id === selectedElement);
+      : [...mountedGraph.nodes, ...mountedGraph.edges].find((element) => element.id === selectedElement);
     const selectedProvenance = handle.readSelectedProvenance();
     return {
       policy,
@@ -508,7 +536,7 @@ async function boot(): Promise<void> {
       edges: surface.edgeIds,
       anchors,
       incidence,
-      semanticDigest: semanticDigest(activeGraph),
+      semanticDigest: semanticDigest(mountedGraph),
       camera: handle.readCameraState(),
       positions,
       edgeControlPoints,
@@ -582,6 +610,7 @@ async function boot(): Promise<void> {
       return read();
     },
     async setShippingCrossProductState(nextPolicy, palette, temperature, theme, lodBand): Promise<Snapshot> {
+      renderedStatePixelGraph = undefined;
       policy = nextPolicy;
       options.morphology = SHIPPING_MORPHOLOGY;
       options.palette = palette;
@@ -594,6 +623,7 @@ async function boot(): Promise<void> {
       return read();
     },
     async setShippingCrossProductPickingSetState(nextPolicy, palette, temperature, theme, lodBand): Promise<ShippingPickingSetSnapshot> {
+      renderedStatePixelGraph = undefined;
       policy = nextPolicy;
       options.morphology = SHIPPING_MORPHOLOGY;
       options.palette = palette;
@@ -919,7 +949,7 @@ async function boot(): Promise<void> {
       }
       return invalid.length;
     },
-    assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean; readonly changedRenderedMaterial: boolean } {
+    assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean; readonly changedRenderedMaterial: boolean; readonly renderedTargetId: string; readonly rejectedUnrelatedMaterialChange: boolean } {
       const original = requiredGraph(graphs, policy);
       const elements = [...original.nodes, ...original.edges];
       const payloads = elements.map((element) => readSemantic(element.semantic));
@@ -969,9 +999,17 @@ async function boot(): Promise<void> {
           : node),
       };
       const renderedModel = buildRenderModel(renderedVariation, options);
-      if (semanticIndependentSignature(originalModel) === semanticIndependentSignature(renderedModel)) {
-        throw new Error("governed RENDERED state did not reach engine material");
+      assertTargetNodeMaterialChanged(originalModel, renderedModel, renderedTarget.id);
+      const unrelatedControl = buildRenderModel(original, options);
+      const unrelatedTargetId = unrelatedControl.graph.nodes().find((id) => id !== renderedTarget.id);
+      if (unrelatedTargetId === undefined) {
+        throw new Error("engine semantic-isolation control requires an unrelated node material");
       }
+      unrelatedControl.graph.setNodeAttribute(unrelatedTargetId, "color", "#010203");
+      expectThrow(
+        () => assertTargetNodeMaterialChanged(originalModel, unrelatedControl, renderedTarget.id),
+        "target material positive-control refusal",
+      );
       for (const trace of [originalModel.engineAccessTrace, permutedModel.engineAccessTrace, renderedModel.engineAccessTrace]) {
         assertEngineAccessTrace(trace);
         if (trace.reads.some((read) => read.includes("semantic"))) {
@@ -981,7 +1019,42 @@ async function boot(): Promise<void> {
           throw new Error("engine access trace did not read the governed RENDERED carrier");
         }
       }
-      return { reads: originalModel.engineAccessTrace.reads.length, changedSemanticDigest: true, changedRenderedMaterial: true };
+      return {
+        reads: originalModel.engineAccessTrace.reads.length,
+        changedSemanticDigest: true,
+        changedRenderedMaterial: true,
+        renderedTargetId: renderedTarget.id,
+        rejectedUnrelatedMaterialChange: true,
+      };
+    },
+    async setRenderedStatePixelControl(state): Promise<RenderedStatePixelControl> {
+      const sourceGraph = renderedStateGraph;
+      const target = sourceGraph.nodes.find((node) => renderedStateDomain(node.rendered) === state);
+      if (target === undefined) {
+        throw new Error(`rendered-state pixel control has no legal adapter-produced ${state} node`);
+      }
+      renderedStatePixelGraph = {
+        schema_version: sourceGraph.schema_version,
+        policy_id: sourceGraph.policy_id,
+        question: { ...sourceGraph.question },
+        nodes: [target],
+        edges: [],
+      };
+      assertVisualGraphFieldRegister(renderedStatePixelGraph);
+      policy = "Discovery";
+      selectionIntent = null;
+      focusIntent = null;
+      await remount();
+      const snapshot = read();
+      const pixel = snapshot.pickingTarget.nodePixels[target.id];
+      if (pixel === undefined) {
+        throw new Error(`rendered-state pixel control has no live target pixel for ${target.id}`);
+      }
+      return { state, targetId: target.id, pixel, devicePixelRatio: snapshot.rendering.devicePixelRatio };
+    },
+    async clearRenderedStatePixelControl(): Promise<void> {
+      renderedStatePixelGraph = undefined;
+      await remount();
     },
     readLiveRelationMaterialBindings(): readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[] {
       return requiredHandle(product).readRelationMaterialBindings();
@@ -1345,6 +1418,41 @@ function semanticIndependentSignature(model: ReturnType<typeof buildRenderModel>
     filaments: Object.fromEntries(model.filaments),
     propagation: Object.fromEntries(model.propagation),
   });
+}
+
+/** This names one actual legal carrier configuration and does not split a governed bridge tuple into illegal independent states. */
+function renderedStateDomain(rendered: VisualGraph["nodes"][number]["rendered"]): LegalRenderedStateDomain | undefined {
+  if (rendered === null) {
+    return undefined;
+  }
+  const value = rendered.map((state) => `${state.enumType}.${state.member}`).join("+");
+  if (
+    value === "TemporalDisposition.established"
+    || value === "TemporalDisposition.excluded"
+    || value === "TemporalDisposition.undetermined"
+    || value === "BridgeDisposition.accepted+EpistemicClass.explicit"
+    || value === "BridgeDisposition.rejected+EpistemicClass.derived"
+    || value === "BridgeDisposition.undetermined+EpistemicClass.speculative"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+/** This requires the named node's material to change and does not accept a material change elsewhere in the model. */
+function assertTargetNodeMaterialChanged(
+  before: ReturnType<typeof buildRenderModel>,
+  after: ReturnType<typeof buildRenderModel>,
+  targetId: string,
+): void {
+  if (!before.graph.hasNode(targetId) || !after.graph.hasNode(targetId)) {
+    throw new Error(`target material control has no node ${targetId}`);
+  }
+  const beforeAttributes = before.graph.getNodeAttributes(targetId);
+  const afterAttributes = after.graph.getNodeAttributes(targetId);
+  if (beforeAttributes.color === afterAttributes.color) {
+    throw new Error(`target node material did not change for ${targetId}`);
+  }
 }
 
 /** This confirms a control actually throws instead of merely assuming a negative result. */
@@ -1933,6 +2041,8 @@ function failedApi(): EvidenceApi {
     hideSelectionFocusNoopControl: unavailable,
     assertDerivedOriginRefusalControl: unavailable,
     assertEngineSemanticIsolationControl: unavailable,
+    setRenderedStatePixelControl: async () => unavailable(),
+    clearRenderedStatePixelControl: async () => unavailable(),
     readLiveRelationMaterialBindings: unavailable,
     proveStackedMaterialControlRejects: unavailable,
     shutdown: async () => unavailable(),

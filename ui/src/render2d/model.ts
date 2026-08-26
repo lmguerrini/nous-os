@@ -427,9 +427,15 @@ function renderedStateToken(
   if (rendered === null) {
     return token;
   }
-  const delta = Math.round(
-    rendered.reduce((total, state) => total + renderedStateLightnessDelta(state, calibration), 0) / rendered.length,
-  );
+  let total = 0;
+  for (let index = 0; index < rendered.length; index += 1) {
+    const state = rendered[index];
+    if (state === undefined) {
+      throw new TypeError("renderer governed state carrier is incomplete");
+    }
+    total += renderedStateLightnessDelta(state, calibration);
+  }
+  const delta = Math.round(total / rendered.length);
   return {
     ...token,
     lightnessPermille: Math.max(0, Math.min(permilleScale(calibration), token.lightnessPermille + delta)),
