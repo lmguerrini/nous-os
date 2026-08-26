@@ -10,6 +10,30 @@ import type { LodBand } from "#engine/lod.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { Organization } from "#engine/organization.ts";
 import type { Palette, Temperature, Theme } from "#engine/tokens.ts";
+import {
+  CONTINUITY_PERPENDICULAR_SEARCH_DEVICE_PIXELS,
+  FILAMENT_CONTINUITY_CHECK_NAME,
+  LIT_PIXEL_CHANNEL_MARGIN,
+  bilinearSample,
+  cssPixels,
+  cssToDevicePixels,
+  devicePixels,
+  evaluateFilamentContinuityAcceptance,
+  fieldPixel,
+  isLitPixel,
+  measureFilamentContinuity,
+  requiredItem,
+} from "#browser/filament-continuity.ts";
+import type {
+  CssPixels,
+  DecodedPng,
+  DevicePixels,
+  FilamentContinuityAcceptance,
+  FilamentContinuityMeasurement,
+  FilamentContinuityObservation,
+  FilamentTraceWitness,
+  ViewportPoint,
+} from "#browser/filament-continuity.ts";
 
 type Policy = "Discovery" | "Reliability";
 type CaptureFocus = "base" | "hub-one" | "hub-two";
@@ -47,21 +71,6 @@ type FocusWitness = {
   };
 };
 
-type ViewportPoint = {
-  readonly x: number;
-  readonly y: number;
-};
-
-type FilamentTraceWitness = {
-  readonly edgeId: string;
-  readonly curve: {
-    readonly source: ViewportPoint;
-    readonly control: ViewportPoint;
-    readonly target: ViewportPoint;
-  };
-  readonly widthCssPixels: number;
-};
-
 type FilamentCrossSectionMeasurement = {
   readonly edgeCount: number;
   readonly cssPixelWidths: readonly number[];
@@ -70,39 +79,6 @@ type FilamentCrossSectionMeasurement = {
   readonly maximumCssPixels: number;
 };
 
-type FilamentContinuityMeasurement =
-  | {
-      readonly available: true;
-      readonly tracedFilamentId: string;
-      readonly devicePixelRatio: number;
-      readonly nonBackgroundChannelMargin: number;
-      readonly perpendicularSearchDevicePixels: number;
-      readonly sampledStationCount: number;
-      readonly backgroundOnlyStationCount: number;
-      readonly longestBackgroundOnlyRunStations: number;
-    }
-  | {
-      readonly available: false;
-      readonly tracedFilamentId: string;
-      readonly reason: string;
-    };
-
-// Every value in this measurement path is tagged with the pixel space it was
-// produced in, so a CSS-pixel coordinate cannot be handed to a function that
-// expects a device-pixel one (and vice versa) without an explicit conversion.
-type CssPixels = number & { readonly __pixelSpace: "css" };
-type DevicePixels = number & { readonly __pixelSpace: "device" };
-
-type DevicePoint = {
-  readonly x: DevicePixels;
-  readonly y: DevicePixels;
-};
-
-type DeviceCurve = {
-  readonly source: DevicePoint;
-  readonly control: DevicePoint;
-  readonly target: DevicePoint;
-};
 
 type D040CompositionMeasurement = {
   readonly communityCount: number;
@@ -280,8 +256,8 @@ type ReviewSuiteResult = {
 };
 
 type ReviewCheckResult = {
-  readonly id: `${ReviewProject}/determinism`;
-  readonly status: "PASS" | "NOT_RUN";
+  readonly id: `${ReviewProject}/${"determinism" | typeof FILAMENT_CONTINUITY_CHECK_NAME}`;
+  readonly status: "PASS" | "FAIL" | "NOT_RUN";
   readonly detail: string;
 };
 
@@ -322,14 +298,6 @@ type ReviewMetadata = {
   readonly determinism: Record<ReviewProject, DeterminismWitness | null>;
 };
 
-type DecodedPng = {
-  readonly bytes: number;
-  readonly hash: string;
-  readonly width: number;
-  readonly height: number;
-  readonly data: Buffer;
-};
-
 declare global {
   interface Window {
     __review?: ReviewApi;
@@ -345,16 +313,20 @@ const CONTACT_SHEET_DIRECTORY = join(REVIEW_DIRECTORY, "contact-sheet");
 const CONTACT_SHEET_FILE = join(CONTACT_SHEET_DIRECTORY, "overview.png");
 const METADATA_FILE = join(REVIEW_DIRECTORY, "evidence", "capture-metadata.json");
 const MANIFEST_FILE = join(REVIEW_DIRECTORY, "MANIFEST.json");
-const LIT_PIXEL_CHANNEL_MARGIN = 12;
-const CONTINUITY_PERPENDICULAR_SEARCH_DEVICE_PIXELS = 5;
-const CONTINUITY_PERPENDICULAR_STEP_DEVICE_PIXELS = 0.5;
-const CONTINUITY_INTERIOR_MARGIN_FRACTION = 0.05;
-const CONTINUITY_ARC_LENGTH_SUBDIVISION_COUNT = 512;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const MORPHOLOGIES = ["stellar", "neural", "mycelium"] as const satisfies readonly Morphology[];
 const LOD_BANDS = ["macro", "meso", "micro"] as const satisfies readonly LodBand[];
 const REVIEW_PROJECTS = ["review-dpr-1", "review-dpr-2"] as const satisfies readonly ReviewProject[];
 const REVIEW_COMMAND = "npm --prefix ui run test:review";
+// The number of captures each project must actually enforce continuity over, declared
+// here rather than counted from whatever the run happened to produce: DPR 1 emits 17
+// captures and all 17 are enforced; DPR 2 emits 11, of which the two named close-ups
+// are exempt by geometry, leaving 9. A run that silently stopped capturing states
+// would clear a check that only looked at the captures it was handed.
+const CONTINUITY_ENFORCED_CAPTURE_FLOOR: Readonly<Record<ReviewProject, number>> = {
+  "review-dpr-1": 17,
+  "review-dpr-2": 9,
+};
 const FIXTURE_PATHS: Readonly<Record<Policy, readonly string[]>> = {
   Discovery: ["..", "fixtures", "synthetic", "projection", "discovery-all-time.json"],
   Reliability: ["..", "fixtures", "synthetic", "projection", "reliability-all-time.json"],
@@ -777,6 +749,22 @@ test("deterministic review capture generator", async ({ page, browser }, testInf
 
   metadata.records.sort((left, right) => left.fileName.localeCompare(right.fileName));
   const completedProjects = REVIEW_PROJECTS.filter((candidate) => metadata.determinism[candidate] !== null);
+  // The continuity acceptance is evaluated here, from the artifact this run just
+  // produced, and its verdict is written into the suite's own check register before
+  // anything is asserted -- so a failure leaves the evidence on disk to be read
+  // rather than only a thrown expectation.
+  const continuityAcceptance: readonly {
+    readonly project: ReviewProject;
+    readonly acceptance: FilamentContinuityAcceptance | null;
+  }[] = REVIEW_PROJECTS.map((candidate) => ({
+    project: candidate,
+    acceptance: metadata.determinism[candidate] === null
+      ? null
+      : evaluateFilamentContinuityAcceptance(
+        continuityObservationsFor(candidate, metadata.records),
+        { enforcedCaptureFloor: requiredItem(CONTINUITY_ENFORCED_CAPTURE_FLOOR, candidate, "continuity enforcement floor") },
+      ),
+  }));
   const result = {
     ...metadata,
     suiteResult: {
@@ -785,16 +773,33 @@ test("deterministic review capture generator", async ({ page, browser }, testInf
       status: completedProjects.length === REVIEW_PROJECTS.length ? "PASS" as const : "NOT_RUN" as const,
       completedProjects,
     },
-    checks: REVIEW_PROJECTS.map((candidate) => ({
-      id: `${candidate}/determinism` as const,
-      status: metadata.determinism[candidate] === null ? "NOT_RUN" as const : "PASS" as const,
-      detail: metadata.determinism[candidate] === null
-        ? `${candidate} has no completed two-run determinism witness`
-        : `${candidate} recorded its completed two-run determinism witness`,
-    })),
+    checks: [
+      ...REVIEW_PROJECTS.map((candidate) => ({
+        id: `${candidate}/determinism` as const,
+        status: metadata.determinism[candidate] === null ? "NOT_RUN" as const : "PASS" as const,
+        detail: metadata.determinism[candidate] === null
+          ? `${candidate} has no completed two-run determinism witness`
+          : `${candidate} recorded its completed two-run determinism witness`,
+      })),
+      ...continuityAcceptance.map(({ project: candidate, acceptance }) => ({
+        id: `${candidate}/${FILAMENT_CONTINUITY_CHECK_NAME}` as const,
+        status: acceptance === null ? "NOT_RUN" as const : acceptance.satisfied ? "PASS" as const : "FAIL" as const,
+        detail: acceptance === null
+          ? `${candidate} captured nothing to measure for filament continuity`
+          : acceptance.detail,
+      })),
+    ],
   };
   await writeFile(METADATA_FILE, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   await writeManifest(metadata.records.length);
+
+  for (const { project: candidate, acceptance } of continuityAcceptance) {
+    if (acceptance === null) {
+      continue;
+    }
+    expect(acceptance.violations, `${candidate} draws every traced relation as one continuous filament`).toEqual([]);
+    expect(acceptance.satisfied, `${candidate} filament continuity acceptance`).toBe(true);
+  }
 });
 
 async function installReviewPage(
@@ -1341,6 +1346,17 @@ function emptyMetadata(productCommitSha: string): ReviewMetadata {
   };
 }
 
+/** This gathers one project's continuity measurements and does not reach across device pixel ratios. */
+function continuityObservationsFor(
+  project: ReviewProject,
+  records: readonly CaptureRecord[],
+): readonly FilamentContinuityObservation[] {
+  const devicePixelRatio = project === "review-dpr-1" ? 1 : 2;
+  return records
+    .filter((record) => record.devicePixelRatio === devicePixelRatio)
+    .map((record) => ({ captureFileName: record.fileName, measurement: record.measurements.filamentContinuity }));
+}
+
 async function loadMetadata(productCommitSha: string): Promise<ReviewMetadata> {
   const parsed = JSON.parse(await readFile(METADATA_FILE, "utf8")) as ReviewMetadata;
   if (
@@ -1428,228 +1444,10 @@ function measureImage(image: DecodedPng, witness: PageCaptureWitness): ImageMeas
     distinctColourCount: distinct.size,
     darkestNonBackgroundPixel: darkest,
     brightestNonBackgroundPixel: brightest,
-    filamentContinuity: measureFilamentContinuity(image, witness.filamentTrace),
+    filamentContinuity: measureFilamentContinuity(image, witness.filamentTrace, CAPTURE_WIDTH),
     filamentCrossSection: witness.filamentCrossSection,
     d040Composition: witness.d040Composition,
   };
-}
-
-// Walks the traced filament's own centreline in device-pixel space, at
-// roughly one sampled station per device pixel of arc length, and at each
-// station searches bilinearly across a fixed perpendicular band for any
-// non-background colour. A station only counts as background-only when every
-// sample across the whole perpendicular band is background. Every planned
-// sample point is checked against the decoded image's bounds before any
-// pixel is read; if one falls outside the image the whole measurement is
-// reported unavailable, with the reason, rather than a number computed from
-// a partial or clamped scan.
-function measureFilamentContinuity(image: DecodedPng, trace: FilamentTraceWitness): FilamentContinuityMeasurement {
-  const devicePixelRatio = image.width / CAPTURE_WIDTH;
-  const curve = toDeviceCurve(trace.curve, devicePixelRatio);
-  const arcLengthTable = buildArcLengthTable(curve);
-  const totalLength = arcLengthTable.cumulativeLengths.at(-1);
-  if (totalLength === undefined || totalLength <= 0) {
-    return { available: false, tracedFilamentId: trace.edgeId, reason: "filament centreline has no measurable arc length" };
-  }
-  const interiorMargin = totalLength * CONTINUITY_INTERIOR_MARGIN_FRACTION;
-  const interiorLength = totalLength - (2 * interiorMargin);
-  if (interiorLength <= 0) {
-    return { available: false, tracedFilamentId: trace.edgeId, reason: "filament centreline is too short for an interior sample" };
-  }
-  const stationCount = Math.max(2, Math.round(interiorLength));
-  const stations: DevicePoint[] = [];
-  const stationNormals: DevicePoint[] = [];
-  for (let index = 0; index <= stationCount; index += 1) {
-    const arcLength = devicePixels(interiorMargin + ((interiorLength * index) / stationCount));
-    const parameter = parameterAtArcLength(arcLengthTable, arcLength);
-    stations.push(deviceQuadraticPoint(curve, parameter));
-    stationNormals.push(unitNormal(trace.edgeId, deviceQuadraticTangent(curve, parameter)));
-  }
-  const perpendicularOffsets: DevicePixels[] = [];
-  for (
-    let offset = -CONTINUITY_PERPENDICULAR_SEARCH_DEVICE_PIXELS;
-    offset <= CONTINUITY_PERPENDICULAR_SEARCH_DEVICE_PIXELS + (CONTINUITY_PERPENDICULAR_STEP_DEVICE_PIXELS / 2);
-    offset += CONTINUITY_PERPENDICULAR_STEP_DEVICE_PIXELS
-  ) {
-    perpendicularOffsets.push(devicePixels(offset));
-  }
-  for (const [stationIndex, station] of stations.entries()) {
-    const normal = requiredItem(stationNormals, stationIndex, "filament continuity normal");
-    for (const offset of perpendicularOffsets) {
-      const sampleX = devicePixels(station.x + (normal.x * offset));
-      const sampleY = devicePixels(station.y + (normal.y * offset));
-      if (!isOnCanvas(image, sampleX, sampleY)) {
-        return {
-          available: false,
-          tracedFilamentId: trace.edgeId,
-          reason: `station ${stationIndex} of ${stations.length} samples off-canvas at device pixel (${sampleX.toFixed(2)}, ${sampleY.toFixed(2)}) against a ${image.width}x${image.height} image`,
-        };
-      }
-    }
-  }
-  const field = fieldPixel(image);
-  let backgroundOnlyStationCount = 0;
-  let currentRun = 0;
-  let longestRun = 0;
-  for (const [stationIndex, station] of stations.entries()) {
-    const normal = requiredItem(stationNormals, stationIndex, "filament continuity normal");
-    const backgroundOnly = perpendicularOffsets.every((offset) => {
-      const sampleX = devicePixels(station.x + (normal.x * offset));
-      const sampleY = devicePixels(station.y + (normal.y * offset));
-      const [red, green, blue] = bilinearSample(image, sampleX, sampleY);
-      return !isLitPixel(red, green, blue, field);
-    });
-    if (backgroundOnly) {
-      backgroundOnlyStationCount += 1;
-      currentRun += 1;
-      longestRun = Math.max(longestRun, currentRun);
-    } else {
-      currentRun = 0;
-    }
-  }
-  return {
-    available: true,
-    tracedFilamentId: trace.edgeId,
-    devicePixelRatio,
-    nonBackgroundChannelMargin: LIT_PIXEL_CHANNEL_MARGIN,
-    perpendicularSearchDevicePixels: CONTINUITY_PERPENDICULAR_SEARCH_DEVICE_PIXELS,
-    sampledStationCount: stations.length,
-    backgroundOnlyStationCount,
-    longestBackgroundOnlyRunStations: longestRun,
-  };
-}
-
-function cssPixels(value: number): CssPixels {
-  return value as CssPixels;
-}
-
-function devicePixels(value: number): DevicePixels {
-  return value as DevicePixels;
-}
-
-function cssToDevicePixels(value: CssPixels, devicePixelRatio: number): DevicePixels {
-  return devicePixels(value * devicePixelRatio);
-}
-
-function toDeviceCurve(curve: FilamentTraceWitness["curve"], devicePixelRatio: number): DeviceCurve {
-  const toDevicePoint = (point: ViewportPoint): DevicePoint => ({
-    x: cssToDevicePixels(cssPixels(point.x), devicePixelRatio),
-    y: cssToDevicePixels(cssPixels(point.y), devicePixelRatio),
-  });
-  return {
-    source: toDevicePoint(curve.source),
-    control: toDevicePoint(curve.control),
-    target: toDevicePoint(curve.target),
-  };
-}
-
-function deviceQuadraticPoint(curve: DeviceCurve, parameter: number): DevicePoint {
-  const inverse = 1 - parameter;
-  const blend = (source: DevicePixels, control: DevicePixels, target: DevicePixels): DevicePixels =>
-    devicePixels((inverse * inverse * source) + (2 * inverse * parameter * control) + (parameter * parameter * target));
-  return {
-    x: blend(curve.source.x, curve.control.x, curve.target.x),
-    y: blend(curve.source.y, curve.control.y, curve.target.y),
-  };
-}
-
-function deviceQuadraticTangent(curve: DeviceCurve, parameter: number): DevicePoint {
-  const inverse = 1 - parameter;
-  const blend = (source: DevicePixels, control: DevicePixels, target: DevicePixels): DevicePixels =>
-    devicePixels((2 * inverse * (control - source)) + (2 * parameter * (target - control)));
-  return {
-    x: blend(curve.source.x, curve.control.x, curve.target.x),
-    y: blend(curve.source.y, curve.control.y, curve.target.y),
-  };
-}
-
-function unitNormal(edgeId: string, tangent: DevicePoint): DevicePoint {
-  const length = Math.hypot(tangent.x, tangent.y);
-  if (length === 0) {
-    throw new Error(`filament ${edgeId} has a degenerate centreline tangent`);
-  }
-  return { x: devicePixels(-tangent.y / length), y: devicePixels(tangent.x / length) };
-}
-
-type ArcLengthTable = {
-  readonly parameters: readonly number[];
-  readonly cumulativeLengths: readonly DevicePixels[];
-};
-
-function buildArcLengthTable(curve: DeviceCurve): ArcLengthTable {
-  const parameters: number[] = [0];
-  const cumulativeLengths: DevicePixels[] = [devicePixels(0)];
-  let previous = deviceQuadraticPoint(curve, 0);
-  let total = 0;
-  for (let step = 1; step <= CONTINUITY_ARC_LENGTH_SUBDIVISION_COUNT; step += 1) {
-    const parameter = step / CONTINUITY_ARC_LENGTH_SUBDIVISION_COUNT;
-    const point = deviceQuadraticPoint(curve, parameter);
-    total += Math.hypot(point.x - previous.x, point.y - previous.y);
-    parameters.push(parameter);
-    cumulativeLengths.push(devicePixels(total));
-    previous = point;
-  }
-  return { parameters, cumulativeLengths };
-}
-
-function parameterAtArcLength(table: ArcLengthTable, targetLength: DevicePixels): number {
-  const { parameters, cumulativeLengths } = table;
-  let upperIndex = 1;
-  while (upperIndex < cumulativeLengths.length - 1 && requiredItem(cumulativeLengths, upperIndex, "arc length") < targetLength) {
-    upperIndex += 1;
-  }
-  const lowerLength = requiredItem(cumulativeLengths, upperIndex - 1, "arc length");
-  const upperLength = requiredItem(cumulativeLengths, upperIndex, "arc length");
-  const lowerParameter = requiredItem(parameters, upperIndex - 1, "arc length parameter");
-  const upperParameter = requiredItem(parameters, upperIndex, "arc length parameter");
-  const span = upperLength - lowerLength;
-  const fraction = span === 0 ? 0 : (targetLength - lowerLength) / span;
-  return lowerParameter + ((upperParameter - lowerParameter) * fraction);
-}
-
-function isOnCanvas(image: DecodedPng, x: DevicePixels, y: DevicePixels): boolean {
-  return x >= 0 && x <= image.width - 1 && y >= 0 && y <= image.height - 1;
-}
-
-function bilinearSample(image: DecodedPng, x: DevicePixels, y: DevicePixels): readonly [number, number, number] {
-  const lowerX = Math.floor(x);
-  const lowerY = Math.floor(y);
-  const upperX = Math.min(image.width - 1, lowerX + 1);
-  const upperY = Math.min(image.height - 1, lowerY + 1);
-  const fractionX = x - lowerX;
-  const fractionY = y - lowerY;
-  const channel = (index: number): number => {
-    const topLeft = pixelChannel(image, lowerX, lowerY, index);
-    const topRight = pixelChannel(image, upperX, lowerY, index);
-    const bottomLeft = pixelChannel(image, lowerX, upperY, index);
-    const bottomRight = pixelChannel(image, upperX, upperY, index);
-    const top = topLeft + ((topRight - topLeft) * fractionX);
-    const bottom = bottomLeft + ((bottomRight - bottomLeft) * fractionX);
-    return top + ((bottom - top) * fractionY);
-  };
-  return [channel(0), channel(1), channel(2)];
-}
-
-function pixelChannel(image: DecodedPng, x: number, y: number, index: number): number {
-  const offset = ((y * image.width) + x) * 4;
-  return image.data[offset + index] ?? 0;
-}
-
-function fieldPixel(image: DecodedPng): readonly [number, number, number] {
-  return [image.data[0] ?? 0, image.data[1] ?? 0, image.data[2] ?? 0];
-}
-
-function isLitPixel(
-  red: number,
-  green: number,
-  blue: number,
-  field: readonly [number, number, number],
-): boolean {
-  return Math.max(
-    Math.abs(red - field[0]),
-    Math.abs(green - field[1]),
-    Math.abs(blue - field[2]),
-  ) > LIT_PIXEL_CHANNEL_MARGIN;
 }
 
 function pixelMeasurement(red: number, green: number, blue: number): PixelMeasurement {
@@ -1896,25 +1694,6 @@ function requiredFixture(fixtures: ReadonlyMap<Policy, Fixture>, policy: Policy)
     throw new Error(`review fixture ${policy} is unavailable`);
   }
   return fixture;
-}
-
-function requiredItem<Value>(values: ReadonlyMap<string, Value>, key: string, label: string): Value;
-function requiredItem<Value>(values: Readonly<Record<string, Value>>, key: string, label: string): Value;
-function requiredItem<Value>(values: readonly Value[], index: number, label: string): Value;
-function requiredItem<Value>(
-  values: ReadonlyMap<string, Value> | Readonly<Record<string, Value>> | readonly Value[],
-  key: string | number,
-  label: string,
-): Value {
-  const value = values instanceof Map
-    ? values.get(String(key))
-    : Array.isArray(values)
-      ? values[key as number]
-      : (values as Readonly<Record<string, Value>>)[String(key)];
-  if (value === undefined) {
-    throw new Error(`missing ${label}`);
-  }
-  return value;
 }
 
 function sha256Text(value: string): string {

@@ -488,7 +488,7 @@ type RecordedArtifactResult = {
   readonly detail: string;
 };
 
-type ArtifactResultId = "rendered-state-separation";
+type ArtifactResultId = "rendered-state-separation" | "quality-gauntlet";
 
 type ArtifactResult = {
   readonly id: ArtifactResultId;
@@ -528,6 +528,33 @@ const UNIT_EXECUTED_COMMAND = [
 ].join(" ");
 const REVIEW_RESULT_FILE = ["dist", "review", "evidence", "capture-metadata.json"].join("/");
 const RENDERED_STATE_SEPARATION_FILE = ["dist", "evidence", "rendered-state-separation.json"].join("/");
+const QUALITY_GAUNTLET_FILE = ["dist", "evidence", "quality-gauntlet.json"].join("/");
+// The Plan-B rubric was preregistered and frozen before any Plan-B capture was seen.
+// Its digest is pinned here so a Gauntlet record cannot be scored against a rubric that
+// moved: the categories, their weights and the scoring rule are all fixed by this hash.
+const PREREGISTERED_GAUNTLET_RUBRIC_SHA256 = "51161312957b1ed606f2bcb06879e7b5993d95035e81ad553880e3c662cb342e";
+const GAUNTLET_SCORED_CATEGORY_WEIGHTS: readonly { readonly id: number; readonly weight: number }[] = [
+  { id: 2, weight: 15 },
+  { id: 3, weight: 15 },
+  { id: 4, weight: 15 },
+  { id: 5, weight: 10 },
+  { id: 6, weight: 15 },
+  { id: 7, weight: 10 },
+  { id: 8, weight: 10 },
+  { id: 9, weight: 10 },
+];
+const GAUNTLET_HARD_GATE_IDS: readonly number[] = [1, 10];
+const GAUNTLET_PASS_THRESHOLD = 85;
+const GAUNTLET_MINIMUM_CATEGORY_FRACTION = 0.6;
+// The review suite's named results, pinned as a set rather than a count. A check that
+// is deleted, renamed, or never emitted must fail this suite rather than shrink it:
+// CE-18 was exactly a measurement that no result id depended on.
+const EXPECTED_REVIEW_CHECK_IDS: readonly string[] = [
+  "review-dpr-1/determinism",
+  "review-dpr-1/filament-continuity",
+  "review-dpr-2/determinism",
+  "review-dpr-2/filament-continuity",
+];
 const EXTERNAL_SUITES = [
   { suite: "pytest", command: "python3 -m pytest tests/ -q", artifactPath: PYTEST_RESULT_FILE },
   { suite: "test:review", command: "npm --prefix ui run test:review", artifactPath: REVIEW_RESULT_FILE },
@@ -863,9 +890,14 @@ const ACCEPTANCE_CRITERION_CONTRACT = [
   {
     id: "A20",
     criterion: "Quality Gauntlet against the preregistered and amended Plan-B rubric, semantic truthfulness a hard gate",
-    command: "the Gauntlet record",
-    externalSuites: [],
-    unboundCommands: ["the Gauntlet record"],
+    command: "test:review → filament-continuity; the Gauntlet record recomputed from its own frozen categories",
+    externalSuites: ["test:review"],
+    externalResults: [{
+      suite: "test:review",
+      resultIds: ["review-dpr-1/filament-continuity", "review-dpr-2/filament-continuity"],
+    }],
+    artifactResults: ["quality-gauntlet"],
+    unboundCommands: [],
   },
   {
     id: "A21",
@@ -2242,7 +2274,85 @@ async function loadExternalSuiteResults(expectedCommitSha: string): Promise<read
 
 /** This reads every separately named artifact result and does not infer a pass from an adjacent browser check. */
 async function loadArtifactResults(expectedCommitSha: string): Promise<readonly ArtifactResult[]> {
-  return [await loadRenderedStateSeparationArtifactResult(expectedCommitSha)];
+  return [
+    await loadRenderedStateSeparationArtifactResult(expectedCommitSha),
+    await loadQualityGauntletArtifactResult(expectedCommitSha),
+  ];
+}
+
+// The Gauntlet record, read as an artifact rather than believed as prose. Nothing here
+// scores the candidate: the record states each frozen category's score, and this
+// recomputes the total, re-applies the frozen threshold, the per-category floor and both
+// hard gates, and refuses the artifact when the verdict it claims does not follow from
+// the numbers it carries. A Gauntlet cannot be recorded PASS by writing "PASS" in it.
+async function loadQualityGauntletArtifactResult(expectedCommitSha: string): Promise<ArtifactResult> {
+  const bind = (status: ExternalSuiteStatus, detail: string, digest?: string): ArtifactResult =>
+    namedArtifactResult("quality-gauntlet", QUALITY_GAUNTLET_FILE, status, detail, digest);
+  try {
+    const artifact = await readFile(QUALITY_GAUNTLET_FILE);
+    const artifactSha256 = createHash("sha256").update(artifact).digest("hex");
+    const parsed = record(JSON.parse(artifact.toString("utf8")) as unknown);
+    const result = parsed === undefined ? undefined : record(parsed.result);
+    const scored = parsed === undefined || !Array.isArray(parsed.scoredCategories) ? undefined : parsed.scoredCategories.map(record);
+    const gates = parsed === undefined || !Array.isArray(parsed.hardGates) ? undefined : parsed.hardGates.map(record);
+    if (
+      parsed === undefined
+      || parsed.schemaVersion !== 1
+      || parsed.candidateSha !== expectedCommitSha
+      || parsed.rubricSha256 !== PREREGISTERED_GAUNTLET_RUBRIC_SHA256
+      || scored === undefined
+      || gates === undefined
+      || result?.id !== "quality-gauntlet"
+      || (result.status !== "PASS" && result.status !== "FAIL")
+      || typeof result.detail !== "string"
+    ) {
+      return bind("NOT_RUN", "gauntlet artifact does not name this candidate, the preregistered rubric, or a scored result", artifactSha256);
+    }
+    if (
+      scored.length !== GAUNTLET_SCORED_CATEGORY_WEIGHTS.length
+      || GAUNTLET_SCORED_CATEGORY_WEIGHTS.some((category, index) => {
+        const entry = scored[index];
+        return entry?.id !== category.id || entry.weight !== category.weight;
+      })
+    ) {
+      return bind("NOT_RUN", "gauntlet artifact does not carry the frozen categories at their frozen weights", artifactSha256);
+    }
+    if (
+      gates.length !== GAUNTLET_HARD_GATE_IDS.length
+      || GAUNTLET_HARD_GATE_IDS.some((id, index) => gates[index]?.id !== id || typeof gates[index]?.holds !== "boolean")
+    ) {
+      return bind("NOT_RUN", "gauntlet artifact does not carry both frozen hard gates", artifactSha256);
+    }
+    const scores = GAUNTLET_SCORED_CATEGORY_WEIGHTS.map((category, index) => {
+      const value = scored[index]?.score;
+      return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= category.weight ? value : undefined;
+    });
+    if (scores.some((score) => score === undefined)) {
+      return bind("NOT_RUN", "gauntlet artifact carries a category score that is not a whole number within its weight", artifactSha256);
+    }
+    const total = scores.reduce<number>((sum, score) => sum + (score ?? 0), 0);
+    const belowFloor = GAUNTLET_SCORED_CATEGORY_WEIGHTS
+      .filter((category, index) => (scores[index] ?? 0) < category.weight * GAUNTLET_MINIMUM_CATEGORY_FRACTION)
+      .map((category) => category.id);
+    const failedGates = gates.filter((gate) => gate?.holds !== true).map((gate) => gate?.id);
+    const computed = total >= GAUNTLET_PASS_THRESHOLD && belowFloor.length === 0 && failedGates.length === 0 ? "PASS" : "FAIL";
+    if (result.status !== computed) {
+      return bind(
+        "NOT_RUN",
+        `gauntlet artifact records ${result.status} but its own categories total ${total} with `
+        + `${belowFloor.length} category below floor and ${failedGates.length} hard gate failing, which computes ${computed}`,
+        artifactSha256,
+      );
+    }
+    return bind(
+      computed,
+      `gauntlet scored ${total}/100 against the frozen threshold of ${GAUNTLET_PASS_THRESHOLD}, `
+      + `no category below ${GAUNTLET_MINIMUM_CATEGORY_FRACTION * 100}% of its weight, hard gates ${GAUNTLET_HARD_GATE_IDS.join(" and ")} holding: ${result.detail}`,
+      artifactSha256,
+    );
+  } catch (error: unknown) {
+    return bind("NOT_RUN", `artifact could not be read: ${message(error)}`);
+  }
 }
 
 /** This validates the final-compositor separation artifact and does not accept a foreign candidate or page module. */
@@ -2281,10 +2391,21 @@ async function loadRenderedStateSeparationArtifactResult(expectedCommitSha: stri
 
 /** This constructs one bound artifact status and does not attach a digest when no artifact byte was read. */
 function artifactResult(status: ExternalSuiteStatus, detail: string, artifactSha256?: string): ArtifactResult {
+  return namedArtifactResult("rendered-state-separation", RENDERED_STATE_SEPARATION_FILE, status, detail, artifactSha256);
+}
+
+/** This constructs one bound artifact status and does not attach a digest when no artifact byte was read. */
+function namedArtifactResult(
+  id: ArtifactResultId,
+  artifactPath: string,
+  status: ExternalSuiteStatus,
+  detail: string,
+  artifactSha256?: string,
+): ArtifactResult {
   return {
-    id: "rendered-state-separation",
+    id,
     status,
-    artifactPath: RENDERED_STATE_SEPARATION_FILE,
+    artifactPath,
     ...(artifactSha256 === undefined ? {} : { artifactSha256 }),
     detail,
   };
@@ -2421,6 +2542,7 @@ async function loadReviewSuiteResult(
     ? undefined
     : suiteResult.completedProjects;
   const expectedProjects = ["review-dpr-1", "review-dpr-2"];
+  const recordedCheckIds = [...results].map((result) => result.id).sort();
   const completed = completedProjects === undefined || !completedProjects.every((project) => typeof project === "string")
     ? []
     : [...completedProjects].sort();
@@ -2447,13 +2569,23 @@ async function loadReviewSuiteResult(
     || records === undefined
     || records.length === 0
     || !records.every((capture) => record(capture)?.productCommitSha === expectedCommitSha)
-    || results.length !== expectedProjects.length
+    || recordedCheckIds.length !== EXPECTED_REVIEW_CHECK_IDS.length
+    || recordedCheckIds.some((id, index) => id !== EXPECTED_REVIEW_CHECK_IDS[index])
     || !hasUniqueResultIds(results)
     || results.some((result) => result.status !== "PASS")
   ) {
-    return externalSuiteResult(definition, "NOT_RUN", "review metadata is missing a current completed DPR witness or named check result", artifactSha256, results);
+    const notPassing = results.filter((result) => result.status !== "PASS").map((result) => `${result.id} ${result.status}`);
+    return externalSuiteResult(
+      definition,
+      "NOT_RUN",
+      notPassing.length === 0
+        ? "review metadata is missing a current completed DPR witness or one of its named check results"
+        : `review metadata records a named check that is not passing: ${notPassing.join(", ")}`,
+      artifactSha256,
+      results,
+    );
   }
-  return externalSuiteResult(definition, "PASS", "capture metadata records both DPR projects and current-commit named determinism witnesses", artifactSha256, results);
+  return externalSuiteResult(definition, "PASS", `capture metadata records both DPR projects and current-commit results for ${EXPECTED_REVIEW_CHECK_IDS.join(", ")}`, artifactSha256, results);
 }
 
 /** This constructs one external status from bytes actually read and does not attach a digest when no byte was available. */
