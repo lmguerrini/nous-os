@@ -43,15 +43,15 @@ export type CalibrationProfile = {
     readonly seed: number;
     readonly cellJitterPermille: number;
     readonly framingMarginPermille: number;
-    /** This is the floor below which two anchors are treated as coincident, in CSS pixels. */
+    /** This is the pairwise CSS-pixel floor at the governed reference frame and does not guarantee the same separation at every viewport size. */
     readonly minimumPairwiseAnchorSeparationPx: number;
     /** This is the empty CSS-pixel gap kept beyond the largest node diameter and does not size a node. */
     readonly minimumPairwiseAnchorSeparationGapPx: number;
     /** This caps pairwise screen-separation correction passes and does not change force-settling iterations. */
     readonly minimumPairwiseAnchorSeparationIterations: number;
-    /** This is the reference capture width used to derive world-space separation and does not set a page width. */
+    /** This is the governed reference capture width for pairwise CSS-pixel separation and does not guarantee another viewport width. */
     readonly referenceFrameWidthPx: number;
-    /** This is the reference capture height used to derive world-space separation and does not set a page height. */
+    /** This is the governed reference capture height for pairwise CSS-pixel separation and does not guarantee another viewport height. */
     readonly referenceFrameHeightPx: number;
     /** This is the lower bridge-to-intra median ratio, scaled by one thousand, and does not select graph communities. */
     readonly minimumBridgeToIntraMedianRatioPermille: number;

@@ -109,21 +109,47 @@ type RelationPickMeasurement = {
 };
 
 type DirectRelationProbe = {
+  readonly parameter: number;
   readonly point: { readonly x: number; readonly y: number };
   readonly returnedEdgeId: string | null;
 };
 
-/** This explains whether a relation's live target returns established its own coverage. */
+/** This records the geometry that certified one relation as the live target's occluder and does not call it coincident. */
+type RelationOcclusionCertificate = {
+  readonly occludingEdgeId: string;
+  readonly probes: readonly {
+    readonly parameter: number;
+    readonly pickingCell: PickingCell;
+    readonly geometry: {
+      readonly source: { readonly x: number; readonly y: number };
+      readonly control: { readonly x: number; readonly y: number };
+      readonly target: { readonly x: number; readonly y: number };
+    };
+    readonly centrelineDistancePx: number;
+    readonly deviationBoundPx: number;
+    readonly pickRadiusPx: number;
+  }[];
+};
+
+/** This explains whether a relation is interactable or is disclosed as occluded by the live target. */
 type RelationPickCoverage = {
   readonly edgeId: string;
   /** Every calibrated probe return, including nulls, so a failed check names the wrong answer. */
   readonly returnedEdgeIds: readonly (string | null)[];
-  /** The self id or certified partner that covered this relation; null means no valid identity returned. */
+  /** The self id or certified coincident partner that made this relation interactable; null means it was not covered. */
   readonly coveringEdgeId: string | null;
   /** The analytic coincident-partner certificate consulted when no direct self return existed. */
   readonly certifiedCoincidentPartnerIds: readonly string[];
-  /** The per-probe analytic certificate for another relation that the live target actually returned. */
-  readonly certifiedOccludingPartnerIds: readonly string[];
+  /** A named, geometric certificate for an occluded non-interactable relation; null means no occlusion was certified. */
+  readonly occlusion: RelationOcclusionCertificate | null;
+};
+
+/** This records a live-picker wrong-id control and does not fabricate a classifier input. */
+type WrongRelationPickCoverageControl = {
+  readonly edgeId: string;
+  readonly forcedReturnedEdgeId: string;
+  readonly outcome: RelationPickCoverage;
+  readonly pickingTarget: PickingTargetSetWitness;
 };
 
 /** The no-screenshot portion of the live production picking-target observation. */
@@ -137,8 +163,10 @@ type PickingTargetSetWitness = {
   readonly nodeAnchorPickIds: Readonly<Record<string, string | null>>;
   /** These are rendered ids for which the live target returned that exact id at a per-id interior witness point. */
   readonly nodePickCoverageIds: readonly string[];
-  /** Each relation is covered only by itself or a named certified coincident partner. */
+  /** These are the interactable relations, covered only by themselves or named certified coincident partners. */
   readonly edgePickCoverageIds: readonly string[];
+  /** These are the non-interactable relations whose named live-target occluder and geometry are recorded. */
+  readonly edgeOcclusionIds: readonly string[];
   readonly edgePickCoverage: Readonly<Record<string, RelationPickCoverage>>;
   readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
   readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
@@ -174,7 +202,7 @@ type Snapshot = {
   readonly semanticDigest: string;
   readonly camera: RenderCameraState;
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
-  /** These are control points from the live Sigma draw data, in CSS viewport pixels. */
+  /** These are control points read from the live program attribute buffer, in CSS viewport pixels. */
   readonly edgeControlPoints: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly propagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: boolean; readonly endpointExpressed: boolean }>>;
   readonly renderedPropagation: Readonly<Record<string, { readonly arcPosition: number; readonly continuous: number; readonly afterglowDecayPermille: number }>>;
@@ -245,7 +273,7 @@ type EvidenceApi = {
   proveDistantRelationPickControl(edgeId: string, parameter: number, offsetPixels: number): DistantRelationPickControl;
   unambiguousParameters(edgeId: string): readonly number[];
   coincidentPartners(edgeId: string): readonly string[] | null;
-  wrongRelationPickCoverageControl(): RelationPickCoverage;
+  wrongRelationPickCoverageControl(): WrongRelationPickCoverageControl;
   pickChord(edgeId: string): PickWitness;
   pickStraightControl(): Promise<string | null>;
   showEmptyGraphControl(): Promise<void>;
@@ -415,6 +443,7 @@ async function boot(): Promise<void> {
     handle: RenderHandle,
     renderContainer: HTMLElement,
   ): Snapshot => {
+    const surface = handle.readSurfaceWitness();
     const positions: Record<string, { x: number; y: number }> = {};
     const anchors: Record<string, { x: number; y: number }> = {};
     for (const [id, anchor] of handle.model.anchors) {
@@ -422,13 +451,7 @@ async function boot(): Promise<void> {
       positions[id] = { x: point.x, y: point.y };
       anchors[id] = { x: anchor.x, y: anchor.y };
     }
-    const incidence: Record<string, { source: string; target: string }> = {};
-    for (const id of handle.model.graph.edges()) {
-      incidence[id] = {
-        source: handle.model.graph.source(id),
-        target: handle.model.graph.target(id),
-      };
-    }
+    const incidence = surface.incidence;
     const edgeSamples: Record<string, readonly { x: number; y: number }[]> = {};
     for (const [id, filament] of handle.model.filaments) {
       edgeSamples[id] = [0.25, 0.5, 0.75].map((parameter) => {
@@ -477,8 +500,8 @@ async function boot(): Promise<void> {
         ? selectedProvenance === null
         : selectedGraphElement !== undefined && selectedProvenance === selectedGraphElement.derived,
       focusedElement: handle.getFocus(),
-      nodes: handle.model.graph.nodes(),
-      edges: handle.model.graph.edges(),
+      nodes: surface.nodeIds,
+      edges: surface.edgeIds,
       anchors,
       incidence,
       semanticDigest: semanticDigest(activeGraph),
@@ -717,17 +740,40 @@ async function boot(): Promise<void> {
     coincidentPartners(edgeId): readonly string[] | null {
       return coincidentPartnersFor(requiredHandle(product), edgeId);
     },
-    wrongRelationPickCoverageControl(): RelationPickCoverage {
+    wrongRelationPickCoverageControl(): WrongRelationPickCoverageControl {
       const handle = requiredHandle(product);
-      const edgeIds = [...handle.model.graph.edges()].sort();
-      for (const edgeId of edgeIds) {
+      for (const edgeId of [...handle.model.graph.edges()].sort()) {
+        const probePoints = directRelationProbePointsFor(handle, edgeId);
         const certifiedCoincidentPartnerIds = coincidentPartnersFor(handle, edgeId) ?? [];
-        const returnedEdgeId = edgeIds.find((candidate) => candidate !== edgeId && !certifiedCoincidentPartnerIds.includes(candidate));
-        if (returnedEdgeId !== undefined) {
-          return relationPickCoverage(edgeId, [returnedEdgeId], certifiedCoincidentPartnerIds);
+        for (const candidate of [...handle.model.graph.edges()].sort()) {
+          if (candidate === edgeId || certifiedCoincidentPartnerIds.includes(candidate)) {
+            continue;
+          }
+          const forcedProbes = probePoints.map((probe) => ({ ...probe, returnedEdgeId: candidate }));
+          const certificate = occlusionCertificateForDirectProbes(handle, edgeId, forcedProbes);
+          if (certificate === null) {
+            continue;
+          }
+          const mutableHandle = handle as MutableRenderHandle;
+          const originalPick = mutableHandle.pickEdgeAtPoint;
+          mutableHandle.pickEdgeAtPoint = (x, y): string | null => (
+            probePoints.some((probe) => probe.point.x === x && probe.point.y === y)
+              ? candidate
+              : originalPick(x, y)
+          );
+          try {
+            const pickingTarget = pickingTargetSetWitness(handle);
+            const outcome = pickingTarget.edgePickCoverage[edgeId];
+            if (outcome === undefined) {
+              throw new Error(`wrong relation-pick coverage control lost ${edgeId}`);
+            }
+            return { edgeId, forcedReturnedEdgeId: candidate, outcome, pickingTarget };
+          } finally {
+            mutableHandle.pickEdgeAtPoint = originalPick;
+          }
         }
       }
-      throw new Error("wrong relation-pick coverage control requires a non-coincident relation id");
+      throw new Error("wrong relation-pick coverage control requires a geometrically certified distinct occluder");
     },
     pickChord(edgeId): PickWitness {
       const handle = requiredHandle(product);
@@ -993,6 +1039,7 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
   const pickableEdgeIds = new Set<string>();
   const nodePickCoverageIds: string[] = [];
   const edgePickCoverageIds: string[] = [];
+  const edgeOcclusionIds: string[] = [];
   for (const id of nodeIds) {
     const attributes = graph.getNodeAttributes(id);
     const anchor = targetAnchor(attributes, `picking node ${id}`);
@@ -1036,31 +1083,31 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
     // the same calibrated interior parameters and reads the renderer's returned
     // ids. The 270-state branch retains those ids as sets only; the sampled branch
     // additionally retains compositor coordinates and width diagnostics.
-    const parameters = calibratedRelationWitnessParameters(EDGE_SAMPLE_PARAMETERS, witnessCount);
-    const probes = parameters.map((parameter) => {
-      const point = handle.graphToViewport(quadraticPoint(filament, parameter));
-      return { parameter, point: { x: point.x, y: point.y }, returnedEdgeId: handle.pickEdgeAtPoint(point.x, point.y) };
-    });
+    const probes = directRelationProbesFor(handle, id, filament, witnessCount);
     const returnedEdgeIds = probes.map((probe) => probe.returnedEdgeId);
     const picked = returnedEdgeIds.filter((candidate): candidate is string => candidate !== null);
     for (const pickedId of picked) {
       pickableEdgeIds.add(pickedId);
     }
-    // A non-null id alone is not coverage for this relation. A relation can be
-    // covered by its own return, by an all-parameter coincident partner, or by
-    // a relation that the live target returned at every affected direct probe
-    // and whose analytic ribbon reaches those same cells. The last case is an
-    // occlusion record, not a claim that two relations coincide.
+    // A non-null id alone is not coverage for this relation. Only the relation
+    // itself or an all-parameter coincident partner makes it interactable.
+    // A geometrically certified distinct return is retained separately as an
+    // explicit non-interactable occlusion disclosure.
     const certifiedCoincidentPartnerIds = picked.includes(id) || picked.length === 0
       ? []
       : coincidentPartnersFor(handle, id) ?? [];
-    const certifiedOccludingPartnerIds = picked.includes(id) || picked.length === 0
-      ? []
-      : occludingPartnersForDirectProbes(handle, id, probes);
-    const coverage = relationPickCoverage(id, returnedEdgeIds, certifiedCoincidentPartnerIds, certifiedOccludingPartnerIds);
+    const coverage = relationPickCoverage(
+      id,
+      returnedEdgeIds,
+      certifiedCoincidentPartnerIds,
+      picked.includes(id) ? null : occlusionCertificateForDirectProbes(handle, id, probes),
+    );
     edgePickCoverage[id] = coverage;
     if (coverage.coveringEdgeId !== null) {
       edgePickCoverageIds.push(id);
+    }
+    if (coverage.coveringEdgeId === null && coverage.occlusion !== null) {
+      edgeOcclusionIds.push(id);
     }
     if (includePixelWitnesses) {
       const geometry = viewportFilament(filament, handle);
@@ -1094,6 +1141,7 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
     nodeAnchorPickIds,
     nodePickCoverageIds: nodePickCoverageIds.sort(),
     edgePickCoverageIds: edgePickCoverageIds.sort(),
+    edgeOcclusionIds: edgeOcclusionIds.sort(),
     edgePickCoverage,
     anchors,
     incidence,
@@ -1109,66 +1157,115 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
   };
 }
 
-/** This classifies raw returned ids and accepts another relation only with an explicit analytic certificate. */
+/** This classifies raw returned ids and does not treat a distinct occluder as coverage. */
 function relationPickCoverage(
   edgeId: string,
   returnedEdgeIds: readonly (string | null)[],
   certifiedCoincidentPartnerIds: readonly string[],
-  certifiedOccludingPartnerIds: readonly string[] = [],
+  occlusion: RelationOcclusionCertificate | null,
 ): RelationPickCoverage {
   const coveringEdgeId = returnedEdgeIds.find((returnedEdgeId) => (
     returnedEdgeId === edgeId
-    || (returnedEdgeId !== null && (
-      certifiedCoincidentPartnerIds.includes(returnedEdgeId)
-      || certifiedOccludingPartnerIds.includes(returnedEdgeId)
-    ))
+    || (returnedEdgeId !== null && certifiedCoincidentPartnerIds.includes(returnedEdgeId))
   )) ?? null;
   return {
     edgeId,
     returnedEdgeIds,
     coveringEdgeId,
     certifiedCoincidentPartnerIds,
-    certifiedOccludingPartnerIds,
+    occlusion: coveringEdgeId === null ? occlusion : null,
   };
 }
 
-/** This certifies direct probe occlusion and does not classify distinct paths as coincident. */
-function occludingPartnersForDirectProbes(
+/** This makes the calibrated viewport probes for one relation and does not classify their returned ids. */
+function directRelationProbePointsFor(
+  handle: RenderHandle,
+  edgeId: string,
+): readonly Omit<DirectRelationProbe, "returnedEdgeId">[] {
+  const filament = handle.model.filaments.get(edgeId);
+  if (filament === undefined) {
+    throw new Error(`picking edge ${edgeId} has no filament geometry`);
+  }
+  const witnessCount = DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount;
+  const parameters = calibratedRelationWitnessParameters(EDGE_SAMPLE_PARAMETERS, witnessCount);
+  return parameters.map((parameter) => {
+    const point = handle.graphToViewport(quadraticPoint(filament, parameter));
+    return { parameter, point: { x: point.x, y: point.y } };
+  });
+}
+
+/** This reads direct live-picker probes for one relation and does not create a geometric certificate. */
+function directRelationProbesFor(
+  handle: RenderHandle,
+  edgeId: string,
+  filament: FilamentGeometry,
+  witnessCount: number,
+): readonly DirectRelationProbe[] {
+  const parameters = calibratedRelationWitnessParameters(EDGE_SAMPLE_PARAMETERS, witnessCount);
+  return parameters.map((parameter) => {
+    const point = handle.graphToViewport(quadraticPoint(filament, parameter));
+    return { parameter, point: { x: point.x, y: point.y }, returnedEdgeId: handle.pickEdgeAtPoint(point.x, point.y) };
+  });
+}
+
+/** This certifies direct probe occlusion with the named relation's viewport geometry and does not classify it as coverage. */
+function occlusionCertificateForDirectProbes(
   handle: RenderHandle,
   edgeId: string,
   probes: readonly DirectRelationProbe[],
-): readonly string[] {
+): RelationOcclusionCertificate | null {
   let partnerId: string | null = null;
+  const certificateProbes: RelationOcclusionCertificate["probes"][number][] = [];
   for (const probe of probes) {
     const returnedEdgeId = probe.returnedEdgeId;
     if (
       returnedEdgeId === null
       || returnedEdgeId === edgeId
       || (partnerId !== null && partnerId !== returnedEdgeId)
-      || !relationReachesPickingCell(handle, returnedEdgeId, probe.point)
     ) {
-      return [];
+      return null;
+    }
+    const geometry = relationGeometryAtPickingCell(handle, returnedEdgeId, probe.point);
+    if (geometry === null) {
+      return null;
     }
     partnerId = returnedEdgeId;
+    certificateProbes.push({ parameter: probe.parameter, ...geometry });
   }
-  return partnerId === null ? [] : [partnerId];
+  return partnerId === null
+    ? null
+    : { occludingEdgeId: partnerId, probes: certificateProbes };
 }
 
-/** This checks one actual target answer against its analytic ribbon and does not read a stand-in target. */
-function relationReachesPickingCell(
+/** This records one relation's viewport ribbon geometry at a live picking cell and does not substitute another target. */
+function relationGeometryAtPickingCell(
   handle: RenderHandle,
   edgeId: string,
   point: { readonly x: number; readonly y: number },
-): boolean {
+): Omit<RelationOcclusionCertificate["probes"][number], "parameter"> | null {
   const filament = handle.model.filaments.get(edgeId);
   if (filament === undefined) {
-    return false;
+    return null;
   }
   const geometry = viewportFilament(filament, handle);
   const cell = pickingCellForPoint(handle.readPickingSurface(), { ...point, z: 0 });
   const distance = denseDistanceToFilament(geometry, cell.centre);
   const parameter = filamentShaderParameter(handle.readPickingSurface(), geometry, cell.centre);
-  return distance.distancePx <= pickingRadiusPx(handle, edgeId, parameter, handle.model.filamentMaterial) + distance.deviationBoundPx;
+  const pickRadius = pickingRadiusPx(handle, edgeId, parameter, handle.model.filamentMaterial);
+  if (distance.distancePx > pickRadius + distance.deviationBoundPx) {
+    return null;
+  }
+  return {
+    pickingCell: cell,
+    geometry: {
+      source: { x: geometry.source.x, y: geometry.source.y },
+      control: { x: geometry.control.x, y: geometry.control.y },
+      target: { x: geometry.target.x, y: geometry.target.y },
+    },
+    centrelineDistancePx: distance.distancePx,
+    deviationBoundPx: distance.deviationBoundPx,
+    pickRadiusPx: pickRadius,
+  };
 }
 
 /** This generates live-target interior probes and does not read render-model geometry. */

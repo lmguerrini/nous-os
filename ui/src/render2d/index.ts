@@ -9,7 +9,6 @@ import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
 import { createFilamentProgram, FilamentProgram } from "#render2d/filament-program.ts";
 import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
-import { liveFilamentGeometry } from "#render2d/geometry.ts";
 import {
   buildRenderModel,
   edgeLabelCandidatesForState,
@@ -46,6 +45,13 @@ export type RelationMaterialBinding = {
 export type RenderRelationGeometryWitness = {
   readonly relationId: string;
   readonly controlPoint: { readonly x: number; readonly y: number };
+};
+
+/** This records ids and incidence read from the mounted Sigma graph and does not inspect the render model. */
+export type RenderSurfaceWitness = {
+  readonly nodeIds: readonly string[];
+  readonly edgeIds: readonly string[];
+  readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
 };
 
 /** This records one real stacked-material rejection and does not leave the live renderer stacked. */
@@ -98,8 +104,10 @@ export type RenderHandle = {
   setGlowVisible(visible: boolean): void;
   /** This reports the material programs bound to each live relation and does not expose semantic payload. */
   readRelationMaterialBindings(): readonly RelationMaterialBinding[];
-  /** This reports control points from the live relation draw data and does not read model geometry. */
+  /** This reports control points from the live program attribute buffer and does not recalculate curve geometry. */
   readRelationGeometryWitnesses(): readonly RenderRelationGeometryWitness[];
+  /** This reports node and relation ids from mounted Sigma state and does not read the render model. */
+  readSurfaceWitness(): RenderSurfaceWitness;
   /** This stacks two live programs for one relation, renders them, and restores the single-program pipeline. */
   proveStackedMaterialControlRejects(): StackedMaterialControlWitness;
   /** This returns the node the mounted renderer itself picks at one viewport position. */
@@ -148,8 +156,9 @@ export function mount(
     model.graph.edges().map((id) => [id, model.graph.getEdgeAttributes(id)]),
   );
   const materialBindings = createLiveRelationMaterialBindings();
+  const geometryBindings = createLiveRelationGeometryBindings();
   const edgeProgramClasses = {
-    filament: createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings),
+    filament: createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings, geometryBindings),
   };
   const sigma = new Sigma(model.graph, container, {
     defaultEdgeType: "filament",
@@ -173,6 +182,7 @@ export function mount(
     };
   };
   materialBindings.observe(sigma);
+  geometryBindings.observe(sigma);
   if (framingBox !== undefined) {
     sigma.setCustomBBox(copyFramingBox(framingBox));
     sigma.refresh();
@@ -302,7 +312,10 @@ export function mount(
       return liveRelationMaterialBindings(sigma, materialBindings);
     },
     readRelationGeometryWitnesses(): readonly RenderRelationGeometryWitness[] {
-      return liveRelationGeometryWitnesses(sigma);
+      return liveRelationGeometryWitnesses(sigma, geometryBindings);
+    },
+    readSurfaceWitness(): RenderSurfaceWitness {
+      return liveSurfaceWitness(sigma);
     },
     proveStackedMaterialControlRejects(): StackedMaterialControlWitness {
       const bindings = liveRelationMaterialBindings(sigma, materialBindings);
@@ -312,31 +325,34 @@ export function mount(
       }
       const originalProgramClasses = sigma.getSetting("edgeProgramClasses");
       const stackedProgram = createEdgeCompoundProgram([
-        createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings),
-        createObservedFilamentProgram(model.filamentMaterial, "filament-control", materialBindings),
+        createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings, geometryBindings),
+        createObservedFilamentProgram(model.filamentMaterial, "filament-control", materialBindings, geometryBindings),
       ]);
-      sigma.setSetting("edgeProgramClasses", { ...originalProgramClasses, filament: stackedProgram });
-      sigma.refresh();
-      const stacked = liveRelationMaterialBindings(sigma, materialBindings);
-      const stackedRelation = stacked.find((binding) => binding.relationId === relation.relationId);
-      if (stackedRelation === undefined) {
-        sigma.setSetting("edgeProgramClasses", originalProgramClasses);
-        sigma.refresh();
-        throw new TypeError(`stacked-material control lost live relation ${relation.relationId}`);
-      }
-      let message: string | undefined;
       try {
-        assertSingleMaterialPerRelation(stacked);
-      } catch (error: unknown) {
-        message = error instanceof Error ? error.message : String(error);
-      } finally {
-        sigma.setSetting("edgeProgramClasses", originalProgramClasses);
+        sigma.setSetting("edgeProgramClasses", { ...originalProgramClasses, filament: stackedProgram });
         sigma.refresh();
+        const stacked = liveRelationMaterialBindings(sigma, materialBindings);
+        const stackedRelation = stacked.find((binding) => binding.relationId === relation.relationId);
+        if (stackedRelation === undefined) {
+          throw new TypeError(`stacked-material control lost live relation ${relation.relationId}`);
+        }
+        let message: string | undefined;
+        try {
+          assertSingleMaterialPerRelation(stacked);
+        } catch (error: unknown) {
+          message = error instanceof Error ? error.message : String(error);
+        }
+        if (message === undefined) {
+          throw new TypeError("stacked-material control did not fail the live material assertion");
+        }
+        return { relationId: relation.relationId, materialTypes: stackedRelation.materialTypes, message };
+      } finally {
+        try {
+          sigma.setSetting("edgeProgramClasses", originalProgramClasses);
+        } finally {
+          sigma.refresh();
+        }
       }
-      if (message === undefined) {
-        throw new TypeError("stacked-material control did not fail the live material assertion");
-      }
-      return { relationId: relation.relationId, materialTypes: stackedRelation.materialTypes, message };
     },
     pickNodeAtPosition(position): string | null {
       return picking.getNodeAtPosition(position);
@@ -375,6 +391,13 @@ type LiveRelationMaterialBindings = {
   materialTypesFor(sigma: Sigma, relationId: string): readonly string[];
 };
 
+/** This records control points written into the live program attribute buffer and does not derive them from display attributes. */
+type LiveRelationGeometryBindings = {
+  observe(sigma: Sigma): void;
+  record(fingerprint: number, controlPoint: { readonly x: number; readonly y: number }): void;
+  controlPointFor(sigma: Sigma, relationId: string): { readonly x: number; readonly y: number } | undefined;
+};
+
 /** This creates a live material-program recorder and does not construct bindings from relation types. */
 function createLiveRelationMaterialBindings(): LiveRelationMaterialBindings {
   let materialTypesByFingerprint = new Map<number, string[]>();
@@ -399,11 +422,34 @@ function createLiveRelationMaterialBindings(): LiveRelationMaterialBindings {
   };
 }
 
+/** This creates a recorder for the actual control attributes written by the live filament program. */
+function createLiveRelationGeometryBindings(): LiveRelationGeometryBindings {
+  let controlPointsByFingerprint = new Map<number, { readonly x: number; readonly y: number }>();
+  return {
+    observe(sigma: Sigma): void {
+      sigma.on("beforeProcess", () => {
+        controlPointsByFingerprint = new Map<number, { readonly x: number; readonly y: number }>();
+      });
+    },
+    record(fingerprint, controlPoint): void {
+      controlPointsByFingerprint.set(fingerprint, controlPoint);
+    },
+    controlPointFor(sigma: Sigma, relationId: string): { readonly x: number; readonly y: number } | undefined {
+      const fingerprint = relationFingerprints(sigma).get(relationId);
+      if (fingerprint === undefined) {
+        throw new TypeError(`live relation ${relationId} has no Sigma fingerprint`);
+      }
+      return controlPointsByFingerprint.get(fingerprint);
+    },
+  };
+}
+
 /** This instruments a filament program's actual live processing and does not create another relation. */
 function createObservedFilamentProgram(
   material: FilamentUniformMaterial,
   materialType: string,
   bindings: LiveRelationMaterialBindings,
+  geometryBindings: LiveRelationGeometryBindings,
 ): typeof FilamentProgram {
   const BaseProgram = createFilamentProgram(material);
   return class extends BaseProgram {
@@ -417,6 +463,13 @@ function createObservedFilamentProgram(
       super.process(edgeIndex, offset, sourceData, targetData, data);
       if (!data.hidden && !sourceData.hidden && !targetData.hidden) {
         bindings.record(edgeIndex, materialType);
+        const controlStart = (offset * this.STRIDE) + ["source-x", "source-y", "target-x", "target-y"].length;
+        const x = this.array[controlStart];
+        const y = this.array[controlStart + 1];
+        if (x === undefined || y === undefined) {
+          throw new TypeError("live filament program did not write its control-point attributes");
+        }
+        geometryBindings.record(edgeIndex, { x, y });
       }
     }
   };
@@ -452,25 +505,34 @@ function relationFingerprints(sigma: Sigma): ReadonlyMap<string, number> {
   return new Map(relationIds.map((relationId, offset) => [relationId, firstRelationFingerprint + offset]));
 }
 
-/** This reads geometry passed to the live filament program and does not recreate it from the render model. */
-function liveRelationGeometryWitnesses(sigma: Sigma): readonly RenderRelationGeometryWitness[] {
+/** This reads control attributes from the live filament program and does not recreate them with a geometry helper. */
+function liveRelationGeometryWitnesses(
+  sigma: Sigma,
+  bindings: LiveRelationGeometryBindings,
+): readonly RenderRelationGeometryWitness[] {
   const graph = sigma.getGraph();
   return [...graph.edges()].sort().map((relationId) => {
-    const sourceData = sigma.getNodeDisplayData(graph.source(relationId));
-    const targetData = sigma.getNodeDisplayData(graph.target(relationId));
-    const edgeData = sigma.getEdgeDisplayData(relationId);
-    if (sourceData === undefined || targetData === undefined || edgeData === undefined) {
-      throw new TypeError(`live relation ${relationId} has incomplete draw data`);
+    const controlPoint = bindings.controlPointFor(sigma, relationId);
+    if (controlPoint === undefined) {
+      throw new TypeError(`live relation ${relationId} has no processed control-point attributes`);
     }
-    const filamentData = edgeData as EdgeDisplayData & { readonly curvature?: number };
-    const geometry = liveFilamentGeometry(
-      { x: sourceData.x, y: sourceData.y, z: 0 },
-      { x: targetData.x, y: targetData.y, z: 0 },
-      filamentData.curvature ?? 0,
-    );
-    const controlPoint = sigma.framedGraphToViewport(geometry.control);
-    return { relationId, controlPoint: { x: controlPoint.x, y: controlPoint.y } };
+    const viewportControlPoint = sigma.framedGraphToViewport(controlPoint);
+    return { relationId, controlPoint: { x: viewportControlPoint.x, y: viewportControlPoint.y } };
   });
+}
+
+/** This reads ids and incidence from the mounted Sigma graph and does not use the render model. */
+function liveSurfaceWitness(sigma: Sigma): RenderSurfaceWitness {
+  const graph = sigma.getGraph();
+  const edgeIds = [...graph.edges()].sort();
+  return {
+    nodeIds: [...graph.nodes()].sort(),
+    edgeIds,
+    incidence: Object.fromEntries(edgeIds.map((edgeId) => [edgeId, {
+      source: graph.source(edgeId),
+      target: graph.target(edgeId),
+    }])),
+  };
 }
 
 /** This refuses material stacking for each live relation binding. */

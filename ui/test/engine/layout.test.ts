@@ -242,14 +242,36 @@ test("fixed-count settling consumes the configured iteration count", () => {
   assert.notDeepEqual(recordOf(layoutAnchors(discovery, oneIteration)), recordOf(layoutAnchors(discovery, twoIterations)));
 });
 
-test("every fixture maintains the governed minimum pairwise anchor separation in CSS pixels", () => {
+test("every fixture maintains the governed minimum pairwise anchor separation at the 1200x800 reference frame, not every viewport", () => {
   const floor = governedMinimumPairwiseAnchorSeparationPx(DEFAULT_CALIBRATION);
   assert.equal(FIXTURE_NAMES.length, 5);
   for (const name of FIXTURE_NAMES) {
     const anchors = layoutAnchors(graph(name));
     const minimum = minimumPairwiseAnchorSeparationInCssPixels(anchors, DEFAULT_CALIBRATION);
-    assert.ok(hasMinimumPairwiseAnchorSeparation(anchors, floor, DEFAULT_CALIBRATION), `${name} expected CSS-pixel pairwise anchor separation >= ${floor}, received ${minimum}`);
+    assert.ok(hasMinimumPairwiseAnchorSeparation(anchors, floor, DEFAULT_CALIBRATION), `${name} expected reference-frame CSS-pixel pairwise anchor separation >= ${floor}, received ${minimum}; this does not guarantee the same CSS-pixel separation at every viewport size`);
   }
+});
+
+test("the reference-frame separation predicate does not claim the retired 60-world-unit floor or viewport independence", () => {
+  const anchors = new Map<string, Coordinates>([
+    ["extent:minimum", { x: 0, y: 0, z: 0 }],
+    ["closest", { x: 10, y: 0, z: 0 }],
+    ["extent:maximum", { x: 100, y: 100, z: 0 }],
+  ]);
+  const worldSeparation = minimumPairwiseAnchorSeparation(anchors);
+  const referenceFrameCssSeparation = minimumPairwiseAnchorSeparationInCssPixels(anchors, DEFAULT_CALIBRATION);
+  const referenceFrameAccepted = hasMinimumPairwiseAnchorSeparation(
+    anchors,
+    governedMinimumPairwiseAnchorSeparationPx(DEFAULT_CALIBRATION),
+    DEFAULT_CALIBRATION,
+  );
+  const retiredWorldFloorAccepted = worldSeparation >= 60;
+
+  console.log(`reference-frame separation limitation control: ${JSON.stringify({ worldSeparation, referenceFrameCssSeparation, retiredWorldFloorAccepted, referenceFrameAccepted })}`);
+  assert.deepEqual(
+    { worldSeparation, referenceFrameCssSeparation, retiredWorldFloorAccepted, referenceFrameAccepted },
+    { worldSeparation: 10, referenceFrameCssSeparation: 80, retiredWorldFloorAccepted: false, referenceFrameAccepted: true },
+  );
 });
 
 test("every fixture occupies the governed minimum fraction of its frame with community regions", () => {
@@ -258,8 +280,24 @@ test("every fixture occupies the governed minimum fraction of its frame with com
   for (const name of FIXTURE_NAMES) {
     const visualGraph = graph(name);
     const utilisation = communityRegionFrameUtilisation(layoutAnchors(visualGraph), detectCommunities(visualGraph));
-    assert.ok(utilisation >= minimum, `${name} expected community-region frame utilisation >= ${minimum}, received ${utilisation}`);
+    assert.ok(hasMinimumCommunityRegionFrameUtilisation(utilisation, minimum), `${name} expected community-region frame utilisation >= ${minimum}, received ${utilisation}`);
   }
+});
+
+test("the corner-spanning community counterexample fails occupied-cell frame utilisation", () => {
+  const anchors = new Map<string, Coordinates>([
+    ["corner:bottom-left", { x: 0, y: 0, z: 0 }],
+    ["corner:bottom-right", { x: 100, y: 0, z: 0 }],
+    ["corner:top-left", { x: 0, y: 100, z: 0 }],
+    ["corner:top-right", { x: 100, y: 100, z: 0 }],
+  ]);
+  const memberships = new Map<string, string>([...anchors.keys()].map((id) => [id, "corner-spanning"]));
+  const minimum = DEFAULT_CALIBRATION.layout.minimumCommunityRegionFrameUtilisationPermille / 1000;
+  const utilisation = communityRegionFrameUtilisation(anchors, memberships);
+  const accepted = hasMinimumCommunityRegionFrameUtilisation(utilisation, minimum);
+
+  console.log(`corner-spanning community utilisation control: ${JSON.stringify({ utilisation, minimum, accepted })}`);
+  assert.deepEqual({ utilisation, minimum, accepted }, { utilisation: 4 / 49, minimum: 0.1, accepted: false });
 });
 
 test("the coincident-anchor counterexample fails the property-level layout predicates", () => {
@@ -379,54 +417,20 @@ function communityRegionFrameUtilisation(
   if (width === 0 || height === 0) {
     return 0;
   }
-  const regions = [...new Set(memberships.values())].sort(compareText).map((community) => communityRegionBounds(anchors, memberships, community));
-  return rectangleUnionArea(regions) / (width * height);
-}
-
-function communityRegionBounds(
-  anchors: ReadonlyMap<string, Coordinates>,
-  memberships: ReadonlyMap<string, string>,
-  community: string,
-): { readonly minimumX: number; readonly maximumX: number; readonly minimumY: number; readonly maximumY: number } {
-  const values = [...anchors.entries()]
-    .filter(([id]) => requiredCommunity(memberships, id) === community)
-    .map(([, anchor]) => anchor);
-  return {
-    minimumX: Math.min(...values.map((anchor) => anchor.x)),
-    maximumX: Math.max(...values.map((anchor) => anchor.x)),
-    minimumY: Math.min(...values.map((anchor) => anchor.y)),
-    maximumY: Math.max(...values.map((anchor) => anchor.y)),
-  };
-}
-
-function rectangleUnionArea(
-  rectangles: readonly { readonly minimumX: number; readonly maximumX: number; readonly minimumY: number; readonly maximumY: number }[],
-): number {
-  const xCoordinates = [...new Set(rectangles.flatMap((rectangle) => [rectangle.minimumX, rectangle.maximumX]))].sort((left, right) => left - right);
-  let area = 0;
-  for (const [index, left] of xCoordinates.entries()) {
-    const right = xCoordinates[index + 1];
-    if (right === undefined || right === left) {
-      continue;
-    }
-    const intervals = rectangles
-      .filter((rectangle) => rectangle.minimumX < right && rectangle.maximumX > left)
-      .map((rectangle) => [rectangle.minimumY, rectangle.maximumY] as const)
-      .sort(([leftStart], [rightStart]) => leftStart - rightStart);
-    let coveredHeight = 0;
-    let intervalEnd = Number.NEGATIVE_INFINITY;
-    for (const [start, end] of intervals) {
-      if (start > intervalEnd) {
-        coveredHeight += end - start;
-        intervalEnd = end;
-      } else if (end > intervalEnd) {
-        coveredHeight += end - intervalEnd;
-        intervalEnd = end;
-      }
-    }
-    area += (right - left) * coveredHeight;
+  const minimumX = Math.min(...values.map((anchor) => anchor.x));
+  const minimumY = Math.min(...values.map((anchor) => anchor.y));
+  const occupiedCells = new Set<string>();
+  for (const [id, anchor] of [...anchors.entries()].sort(([left], [right]) => compareText(left, right))) {
+    requiredCommunity(memberships, id);
+    const column = Math.min(6, Math.floor(((anchor.x - minimumX) / width) * 7));
+    const row = Math.min(6, Math.floor(((anchor.y - minimumY) / height) * 7));
+    occupiedCells.add(`${column}:${row}`);
   }
-  return area;
+  return occupiedCells.size / 49;
+}
+
+function hasMinimumCommunityRegionFrameUtilisation(utilisation: number, minimum: number): boolean {
+  return utilisation >= minimum;
 }
 
 function hasVariedWithinCommunityDensity(

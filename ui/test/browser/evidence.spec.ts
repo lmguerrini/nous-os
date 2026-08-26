@@ -19,6 +19,12 @@ type EvidenceEntry = {
   readonly detail: string;
 };
 
+/** This records whether the module digest was bound to the response body received by the page and does not claim a local file hash is served. */
+type PageModuleBinding =
+  | { readonly status: "verified"; readonly localSha256: string; readonly servedSha256: string }
+  | { readonly status: "mismatch"; readonly localSha256: string; readonly servedSha256: string }
+  | { readonly status: "unavailable"; readonly localSha256: string; readonly reason: string };
+
 type RenderLayerWitness = {
   readonly name: string;
   readonly width: number;
@@ -119,6 +125,34 @@ type RelationPickCoverage = {
   readonly returnedEdgeIds: readonly (string | null)[];
   readonly coveringEdgeId: string | null;
   readonly certifiedCoincidentPartnerIds: readonly string[];
+  readonly occlusion: {
+    readonly occludingEdgeId: string;
+    readonly probes: readonly {
+      readonly parameter: number;
+      readonly pickingCell: {
+        readonly minimumX: number;
+        readonly maximumX: number;
+        readonly minimumY: number;
+        readonly maximumY: number;
+        readonly centre: { readonly x: number; readonly y: number; readonly z: number };
+      };
+      readonly geometry: {
+        readonly source: { readonly x: number; readonly y: number };
+        readonly control: { readonly x: number; readonly y: number };
+        readonly target: { readonly x: number; readonly y: number };
+      };
+      readonly centrelineDistancePx: number;
+      readonly deviationBoundPx: number;
+      readonly pickRadiusPx: number;
+    }[];
+  } | null;
+};
+
+type WrongRelationPickCoverageControl = {
+  readonly edgeId: string;
+  readonly forcedReturnedEdgeId: string;
+  readonly outcome: RelationPickCoverage;
+  readonly pickingTarget: PickingTargetSetWitness;
 };
 
 /** The no-screenshot portion of the live production picking-target observation. */
@@ -130,6 +164,7 @@ type PickingTargetSetWitness = {
     readonly nodeAnchorPickIds: Readonly<Record<string, string | null>>;
     readonly nodePickCoverageIds: readonly string[];
     readonly edgePickCoverageIds: readonly string[];
+    readonly edgeOcclusionIds: readonly string[];
     readonly edgePickCoverage: Readonly<Record<string, RelationPickCoverage>>;
     readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
     readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
@@ -193,7 +228,7 @@ type PageEvidence = {
   proveDistantRelationPickControl(edgeId: string, parameter: number, offsetPixels: number): DistantRelationPickControl;
   unambiguousParameters(edgeId: string): readonly number[];
   coincidentPartners(edgeId: string): readonly string[] | null;
-  wrongRelationPickCoverageControl(): RelationPickCoverage;
+  wrongRelationPickCoverageControl(): WrongRelationPickCoverageControl;
   pickChord(edgeId: string): { readonly edgeId: string | null; readonly point: { readonly x: number; readonly y: number } };
   pickStraightControl(): Promise<string | null>;
   showEmptyGraphControl(): Promise<void>;
@@ -406,6 +441,7 @@ const A3_PIXEL_WITNESS_SAMPLE_SEED = 0xC0FFEE;
 const A3_PIXEL_WITNESS_SAMPLE_SIZE = 12;
 const PICKING_PARITY_OFF_RIBBON_OFFSET_PX = 48;
 const PICKING_PARITY_OFF_RIBBON_SWEEP_PX = [8, 16, 24, 32, 48, 64, 96] as const;
+const PICKING_PARITY_HARDEST_RELATION_ID = "side:asr_0NXJWD0YYT3PTBZKKYSGCE38H6:right";
 /** The old mycelium hard case is represented by this shipping-master (stellar) state. */
 const A3_FORCED_PIXEL_WITNESS_STATES: readonly ShippingCrossProductState[] = [
   { policy: "Discovery", palette: PD3_STATE.palette, temperature: PD3_STATE.temperature, theme: PD3_STATE.theme, lodBand: PD3_STATE.lodBand },
@@ -462,10 +498,20 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   const pageModuleSha256 = createHash("sha256").update(await readFile(pageModulePath)).digest("hex");
 
   await page.goto("/");
+  const servedPageModule = page.waitForResponse((response) => new URL(response.url()).pathname === "/" + "ui/dist/evidence.js");
   // Relative on purpose. page.goto("/") sets the base to the served root, so this
   // resolves identically -- and a rooted literal here is indistinguishable from a
   // machine path to the outgoing scanner, which refuses the commit.
   await page.setContent("<script type=\"module\" src=\"ui/dist/evidence.js\"></script>");
+  let pageModuleBinding: PageModuleBinding;
+  try {
+    const servedSha256 = createHash("sha256").update(await (await servedPageModule).body()).digest("hex");
+    pageModuleBinding = servedSha256 === pageModuleSha256
+      ? { status: "verified", localSha256: pageModuleSha256, servedSha256 }
+      : { status: "mismatch", localSha256: pageModuleSha256, servedSha256 };
+  } catch (error: unknown) {
+    pageModuleBinding = { status: "unavailable", localSha256: pageModuleSha256, reason: message(error) };
+  }
 
   const runtimeVersions = await page.evaluate((name) => ({
     browser: navigator.userAgent,
@@ -473,7 +519,10 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     devicePixelRatio: window.devicePixelRatio,
     playwright: "1.62.1",
   }), browserName);
-  const artefacts: Record<string, string> = {};
+  const artefacts: Record<string, string> = {
+    "page-module-local": pageModuleBinding.localSha256,
+    ...(pageModuleBinding.status === "unavailable" ? {} : { "page-module-served": pageModuleBinding.servedSha256 }),
+  };
   const run = async (id: string, body: () => Promise<string>, unavailable?: string): Promise<void> => {
     if (unavailable !== undefined) {
       entries.push({ id: `${testInfo.project.name}/${id}`, status: "NOT_RUN", command: COMMAND, runtimeVersions, artefactHashes: { ...artefacts }, detail: unavailable });
@@ -526,6 +575,14 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     expect(() => assertElementPixels(snapshot, emptyGraphCapture), `${check} must reject an empty renderer screenshot`).toThrow();
   };
 
+  await run("page-module-binding", async () => {
+    expect(pageModuleBinding.status, "page module digest is bound to the response body the page received").toBe("verified");
+    if (pageModuleBinding.status !== "verified") {
+      throw new Error(`page module response binding is ${pageModuleBinding.status}`);
+    }
+    expect(pageModuleBinding.servedSha256, "page module response bytes match the locally built module bytes").toBe(pageModuleBinding.localSha256);
+    return `page received module SHA-256 ${pageModuleBinding.servedSha256}, equal to the locally built module SHA-256`;
+  });
   await expect.poll(async () => (await api()).ready).toBe(true);
   const screenshot = `dist/evidence/evidence-${testInfo.project.name}.png`;
   const initialImage = await capture("#evidence-renderer", screenshot);
@@ -534,7 +591,17 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   await run("boot", async () => {
     const evidence = await api();
     expect(evidence.errors).toEqual([]);
-    return "renderer constructed after a non-zero container layout box";
+    const snapshot = await invoke<Snapshot>("read");
+    const referenceFrameSeparation = minimumPairwiseReferenceFrameSeparation(snapshot.anchors);
+    const referenceFrameFloor = Math.max(
+      DEFAULT_CALIBRATION.layout.minimumPairwiseAnchorSeparationPx,
+      DEFAULT_CALIBRATION.salience.maxNodeSizePx + DEFAULT_CALIBRATION.layout.minimumPairwiseAnchorSeparationGapPx,
+    );
+    const frameUtilisation = occupiedAnchorCellFrameUtilisation(snapshot.anchors);
+    const frameUtilisationFloor = DEFAULT_CALIBRATION.layout.minimumCommunityRegionFrameUtilisationPermille / 1000;
+    expect(referenceFrameSeparation, "mounted anchors satisfy the governed reference-frame separation floor").toBeGreaterThanOrEqual(referenceFrameFloor);
+    expect(frameUtilisation, "mounted anchors satisfy the occupied-cell frame-utilisation floor without extremum-rectangle inflation").toBeGreaterThanOrEqual(frameUtilisationFloor);
+    return `renderer constructed after a non-zero container layout box; minimum pairwise anchor separation=${referenceFrameSeparation} CSS pixels at the governed ${DEFAULT_CALIBRATION.layout.referenceFrameWidthPx}x${DEFAULT_CALIBRATION.layout.referenceFrameHeightPx} reference frame, floor=${referenceFrameFloor}; this is not a viewport-independent CSS-pixel guarantee and does not assert the retired 60-world-unit floor; occupied anchor-cell frame utilisation=${frameUtilisation}, floor=${frameUtilisationFloor}, measured without community extremum rectangles`;
   });
   await run("fixture-load", async () => {
     const neutralDigests = await loadNeutralDigests();
@@ -604,7 +671,9 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     expect(control.materialTypes).toHaveLength(2);
     expect(new Set(control.materialTypes).size).toBe(2);
     expect(control.message).toMatch(/must bind exactly one material program/);
-    return `live Sigma pipeline reported ${bindings.length} relations, one material each; a real two-program stack on ${control.relationId} reported [${control.materialTypes.join(", ")}] and failed: ${control.message}`;
+    const restoredBindings = await invoke<readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[]>("readLiveRelationMaterialBindings");
+    expect(restoredBindings, "the live Sigma pipeline is restored to its single-program bindings after the rejecting stack control").toEqual(bindings);
+    return `live Sigma pipeline reported ${bindings.length} relations, one material each; a real two-program stack on ${control.relationId} reported [${control.materialTypes.join(", ")}] and failed: ${control.message}; the mounted pipeline then returned to the original single-program bindings`;
   });
   await run("a10-engine-semantic-isolation", async () => {
     const result = await invoke<{ readonly reads: number; readonly changedSemanticDigest: boolean }>("assertEngineSemanticIsolationControl");
@@ -639,8 +708,11 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const pd3Diagnostics: string[] = [];
     let directRelationWitnesses = 0;
     let certifiedRelationWitnesses = 0;
+    let interactableRelationObservations = 0;
+    let occludedRelationObservations = 0;
     let cheapInvariantStates = 0;
     let wrongRelationPickCoverageControlDetail: string | undefined;
+    const occludedRelationEvidence: string[] = [];
     for (const state of cheapInvariantStatesToRun) {
       const stateKey = shippingCrossProductKey(state);
       const setSnapshot = await invoke<ShippingPickingSetSnapshot>(
@@ -653,36 +725,40 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       );
       expect(setSnapshot.policy, `${stateKey} mounted its requested policy`).toBe(state.policy);
       expect(setSnapshot.morphology, `${stateKey} keeps the single shipping morphology`).toBe(SHIPPING_MORPHOLOGY);
+      interactableRelationObservations += setSnapshot.pickingTarget.edgePickCoverageIds.length;
+      occludedRelationObservations += setSnapshot.pickingTarget.edgeOcclusionIds.length;
+      if (setSnapshot.pickingTarget.edgeOcclusionIds.length > 0) {
+        occludedRelationEvidence.push(`${stateKey}: ${formatOccludedRelations(setSnapshot.pickingTarget)}`);
+      }
       if (wrongRelationPickCoverageControlDetail === undefined) {
-        const control = await invoke<RelationPickCoverage>("wrongRelationPickCoverageControl");
-        expect(control.returnedEdgeIds, "wrong relation-id control feeds exactly one returned relation id").toHaveLength(1);
-        const returnedEdgeId = control.returnedEdgeIds[0];
-        expect(returnedEdgeId, "wrong relation-id control feeds a non-null relation id").not.toBeNull();
-        if (returnedEdgeId === undefined || returnedEdgeId === null) {
-          throw new Error("wrong relation-id control did not produce a returned relation id");
+        const control = await invoke<WrongRelationPickCoverageControl>("wrongRelationPickCoverageControl");
+        expect(control.outcome.edgeId, "wrong relation-id control keeps the source relation named by the mounted picker").toBe(control.edgeId);
+        expect(control.outcome.returnedEdgeIds, "wrong relation-id control forces every calibrated live-picker probe to the distinct relation").toEqual(
+          Array.from({ length: DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount }, () => control.forcedReturnedEdgeId),
+        );
+        expect(control.forcedReturnedEdgeId, "wrong relation-id control does not return the source relation").not.toBe(control.edgeId);
+        expect(control.outcome.certifiedCoincidentPartnerIds.includes(control.forcedReturnedEdgeId), "wrong relation-id control does not use a certified coincident partner").toBe(false);
+        expect(control.outcome.coveringEdgeId, "a live-picker occluder is not marked as coverage").toBeNull();
+        expect(control.outcome.occlusion, "wrong relation-id control records the forced occluder separately").not.toBeNull();
+        if (control.outcome.occlusion === null) {
+          throw new Error("wrong relation-id control did not retain its occlusion certificate");
         }
-        expect(returnedEdgeId, "wrong relation-id control does not return the source relation").not.toBe(control.edgeId);
-        expect(control.certifiedCoincidentPartnerIds.includes(returnedEdgeId), "wrong relation-id control does not use a certified coincident partner").toBe(false);
-        expect(control.coveringEdgeId, "wrong relation-id control is not marked covered").toBeNull();
+        expect(control.outcome.occlusion.occludingEdgeId, "wrong relation-id control names the forced occluding relation").toBe(control.forcedReturnedEdgeId);
+        expect(control.outcome.occlusion.probes, "wrong relation-id control records geometry for every forced live-picker probe").toHaveLength(DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount);
+        expect(control.pickingTarget.edgePickCoverageIds.includes(control.edgeId), "wrong live-picker answer is absent from the interactable coverage set").toBe(false);
+        expect(control.pickingTarget.edgeOcclusionIds.includes(control.edgeId), "wrong live-picker answer is emitted as a disclosed occlusion").toBe(true);
         let rejection: string | undefined;
         try {
-          assertShippingPickingTargetSet({
-            ...setSnapshot,
-            pickingTarget: {
-              ...setSnapshot.pickingTarget,
-              edgePickCoverageIds: setSnapshot.pickingTarget.edgePickCoverageIds.filter((edgeId) => edgeId !== control.edgeId),
-              edgePickCoverage: { ...setSnapshot.pickingTarget.edgePickCoverage, [control.edgeId]: control },
-            },
-          }, `${stateKey} wrong relation-id control`);
+          assertEveryRelationIsInteractable(control.pickingTarget, `${stateKey} forced wrong live-picker answer`);
         } catch (error: unknown) {
           rejection = message(error);
         }
-        expect(rejection, "A3 relation coverage assertion rejects a deliberately wrong returned id").toBeDefined();
+        expect(rejection, "A3 interactable-coverage assertion rejects a forced wrong live-picker answer despite its occlusion certificate").toBeDefined();
         if (rejection === undefined) {
-          throw new Error("A3 relation coverage assertion accepted a deliberately wrong returned id");
+          throw new Error("A3 interactable-coverage assertion accepted a forced wrong live-picker answer");
         }
-        expect(rejection, "wrong relation-id rejection names the id that came back instead").toContain(`returned=[${returnedEdgeId}]`);
-        wrongRelationPickCoverageControlDetail = `${control.edgeId} returned ${returnedEdgeId} without a certificate and was rejected: ${rejection}`;
+        expect(rejection, "wrong relation-id rejection names the source relation that is not interactable").toContain(control.edgeId);
+        wrongRelationPickCoverageControlDetail = `${control.edgeId} forced live-picker return ${control.forcedReturnedEdgeId}; coverage rejected it despite a recorded occlusion certificate: ${rejection}`;
       }
       assertShippingPickingTargetSet(setSnapshot, stateKey);
       const reference = references.get(state.policy);
@@ -757,7 +833,10 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const coverageDisclosure = hasFullShippingSetCoverage
       ? `DPR 1 full-space set coverage: the cheap invariant covered all ${cheapInvariantStates}/${SHIPPING_CROSS_PRODUCT_SIZE} shipping policy×palette×temperature×theme×LOD states (no morphology axis)`
       : `DPR 2 sampled coverage: the cheap invariant covered a deterministic sample of twelve (${cheapInvariantStates}) of ${SHIPPING_CROSS_PRODUCT_SIZE} shipping policy×palette×temperature×theme×LOD states (no morphology axis), selected with recorded seed ${A3_PIXEL_WITNESS_SAMPLE_SEED} (0x${A3_PIXEL_WITNESS_SAMPLE_SEED.toString(16)}); DPR 2 is sampled, not full coverage`;
-    return `${coverageDisclosure}: production-model rendered ids and live-picking-target rendered/pickable id sets, endpoint incidence, and anchors; per-id composited pixel witnesses are the same deterministic sample of ${pixelWitnessSample.length}/${SHIPPING_CROSS_PRODUCT_SIZE} states, not the whole space, seed=${A3_PIXEL_WITNESS_SAMPLE_SEED} (0x${A3_PIXEL_WITNESS_SAMPLE_SEED.toString(16)}), forced states=${A3_FORCED_PIXEL_WITNESS_STATES.map(shippingCrossProductKey).join(", ")} (the same shipping-master hard state first; macro and micro extrema next); direct relation witnesses=${directRelationWitnesses}; failed direct witnesses certified=${certifiedRelationWitnesses}; certificate cache entries=${occlusionCertificateCache.size} (sample policy×LOD only); wrong returned-id control=${wrongRelationPickCoverageControlDetail}; ${coincidenceDiagnostic}; ${anchorCentreDiagnostic}${pd3Diagnostics.length === 0 ? "" : `; ${pd3Diagnostics.join("; ")}`}`;
+    const occlusionDisclosure = occludedRelationEvidence.length === 0
+      ? "occluded non-interactable relation set: empty"
+      : `occluded non-interactable relation set with named occluders and recorded geometry: ${occludedRelationEvidence.join("; ")}`;
+    return `${coverageDisclosure}: production-model rendered ids and live-picking-target rendered/pickable id sets, endpoint incidence, and anchors; each rendered relation is either interactable through its own id or a certified coincident partner, or is disclosed as non-interactable with a named geometric occlusion certificate; interactable relation observations=${interactableRelationObservations}; occluded non-interactable relation observations=${occludedRelationObservations}; ${occlusionDisclosure}; per-id composited pixel witnesses are the same deterministic sample of ${pixelWitnessSample.length}/${SHIPPING_CROSS_PRODUCT_SIZE} states, not the whole space, seed=${A3_PIXEL_WITNESS_SAMPLE_SEED} (0x${A3_PIXEL_WITNESS_SAMPLE_SEED.toString(16)}), forced states=${A3_FORCED_PIXEL_WITNESS_STATES.map(shippingCrossProductKey).join(", ")} (the same shipping-master hard state first; macro and micro extrema next); direct relation witnesses=${directRelationWitnesses}; failed direct witnesses certified=${certifiedRelationWitnesses}; certificate cache entries=${occlusionCertificateCache.size} (sample policy×LOD only); wrong returned-id control=${wrongRelationPickCoverageControlDetail}; ${coincidenceDiagnostic}; ${anchorCentreDiagnostic}${pd3Diagnostics.length === 0 ? "" : `; ${pd3Diagnostics.join("; ")}`}`;
   });
   await run("policy-transition", async () => {
     const discovery = await invoke<Snapshot>("switchPolicy", "Discovery");
@@ -767,6 +846,8 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const reliabilityNodes = [...reliability.nodes].sort();
     const discoveryEdges = [...discovery.edges].sort();
     const reliabilityEdges = [...reliability.edges].sort();
+    expect(Object.keys(discovery.edgeControlPoints).sort(), "Discovery exposes one control point read from the live program buffer for every mounted relation").toEqual(discoveryEdges);
+    expect(Object.keys(reliability.edgeControlPoints).sort(), "Reliability exposes one control point read from the live program buffer for every mounted relation").toEqual(reliabilityEdges);
     expect(reliabilityNodes, "Reliability rendered nodes differ from Discovery").not.toEqual(discoveryNodes);
     expect(reliabilityNodes.every((id) => discoveryNodes.includes(id)), "Reliability rendered nodes are all in Discovery").toBe(true);
     expect(reliabilityNodes.length, "Reliability rendered node set is a proper subset of Discovery").toBeLessThan(discoveryNodes.length);
@@ -898,25 +979,29 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     return `mounted glow subjects examined by the assertion: ${witnesses.map((witness) => witness.id).join(", ")}; clean annulus points: ${witnesses.map((witness) => `${witness.id}=${witness.points}`).join(", ")}; diagnostic table (observational only): ${diagnostics.map(formatGlowCompositorDiagnostic).join(" | ")}`;
   });
   await run("picking-parity", async () => {
-    const snapshot = await invoke<Snapshot>("read");
-    const filament = snapshot.edges.find((id) => true);
-    expect(filament).toBeDefined();
-    const onRibbon = await invoke<{ readonly edgeId: string | null; readonly point: { readonly x: number; readonly y: number } }>("pick", filament ?? "", 0.5);
+    const snapshot = await invoke<Snapshot>("setShippingCrossProductState", "Discovery", PD3_STATE.palette, PD3_STATE.temperature, PD3_STATE.theme, PD3_STATE.lodBand);
+    expect(snapshot.edges, "picking-parity pins its known closest parallel relation by id").toContain(PICKING_PARITY_HARDEST_RELATION_ID);
+    const filament = PICKING_PARITY_HARDEST_RELATION_ID;
+    const reorderedTarget = [...snapshot.edges].reverse()[0];
+    expect(reorderedTarget, "picking-parity reordering control has a relation to move into first position").toBeDefined();
+    expect(reorderedTarget, "picking-parity reordering control changes the old first-relation target").not.toBe(filament);
+    expect(() => expect(reorderedTarget, "the old first-relation selection must fail after an isolated relation reordering").toBe(filament)).toThrow();
+    const onRibbon = await invoke<{ readonly edgeId: string | null; readonly point: { readonly x: number; readonly y: number } }>("pick", filament, 0.5);
     expect(onRibbon.edgeId).toBe(filament);
     const offRibbonSweep = await Promise.all(PICKING_PARITY_OFF_RIBBON_SWEEP_PX.map(async (offsetPixels) => ({
       offsetPixels,
-      pick: await invoke<PickWitness>("pick", filament ?? "", 0.5, offsetPixels),
+      pick: await invoke<PickWitness>("pick", filament, 0.5, offsetPixels),
     })));
     for (const { offsetPixels, pick } of offRibbonSweep) {
       expect(pick.onScreen, `picking-parity ${offsetPixels}-CSS-px viewport-normal probe stays on screen`).toBe(true);
       expect(pick.edgeId, `picking-parity ${offsetPixels}-CSS-px viewport-normal probe must not return its sampled relation`).not.toBe(filament);
     }
-    const offRibbon = await invoke<PickWitness>("pick", filament ?? "", 0.5, PICKING_PARITY_OFF_RIBBON_OFFSET_PX);
+    const offRibbon = await invoke<PickWitness>("pick", filament, 0.5, PICKING_PARITY_OFF_RIBBON_OFFSET_PX);
     expect(offRibbon.onScreen).toBe(true);
     expect(offRibbon.edgeId).not.toBe(filament);
     const forcedDistantReturn = await invoke<DistantRelationPickControl>(
       "proveDistantRelationPickControl",
-      filament ?? "",
+      filament,
       0.5,
       PICKING_PARITY_OFF_RIBBON_OFFSET_PX,
     );
@@ -924,10 +1009,10 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     expect(forcedDistantReturn.forced.edgeId).toBe(filament);
     expect(() => expect(forcedDistantReturn.forced.edgeId).not.toBe(filament)).toThrow();
     expect(forcedDistantReturn.restored).toEqual(offRibbon);
-    const chord = await invoke<{ readonly edgeId: string | null }>("pickChord", filament ?? "");
+    const chord = await invoke<{ readonly edgeId: string | null }>("pickChord", filament);
     expect(chord.edgeId).toBe(onRibbon.edgeId);
     expect(await invoke<string | null>("pickStraightControl")).toBe("straight-control");
-    return `actual edge-picking framebuffer accepted ${filament} on its ribbon, rejected viewport-normal offset sweep [${offRibbonSweep.map(({ offsetPixels, pick }) => `${offsetPixels}:${pick.edgeId ?? "null"}`).join(", ")}], rejected the forced distant self-return and restored the live picker, and matched the product straight chord; isolated straight-edge control accepted`;
+    return `actual edge-picking framebuffer pinned the hardest available relation ${filament}: its left-side counterpart is the known closely parallel relation that made A3 require an occlusion disclosure; isolated relation reordering moved the old first-relation target to ${reorderedTarget ?? "none"} and the old selection assertion threw; it accepted the pinned relation on its ribbon, rejected viewport-normal offset sweep [${offRibbonSweep.map(({ offsetPixels, pick }) => `${offsetPixels}:${pick.edgeId ?? "null"}`).join(", ")}], rejected the forced distant self-return and restored the live picker, and matched the product straight chord; isolated straight-edge control accepted`;
   });
   await run("reduced-motion", async () => {
     const moving = await invoke<Snapshot>("setReducedMotion", false);
@@ -1165,7 +1250,10 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     },
     projects,
     dprWitnesses,
-    pageModule: { path: pageModulePath, sha256: pageModuleSha256 },
+    pageModule: {
+      path: pageModulePath,
+      binding: pageModuleBinding,
+    },
     acceptanceInvariants: ACCEPTANCE_INVARIANTS,
     checks,
   }, null, 2)}\n`);
@@ -1292,10 +1380,7 @@ function assertPickingTargetPixels(snapshot: Snapshot, image: DecodedPng): void 
   expect(target.edgeIds.length, "picking target has rendered relations").toBeGreaterThan(0);
   expect([...target.nodePickCoverageIds].sort(), "every rendered node has an actual picking-target hit").toEqual([...target.nodeIds].sort());
   expect(Object.keys(target.edgePickCoverage).sort(), "relation-picking coverage detail names every rendered relation").toEqual([...target.edgeIds].sort());
-  expect(
-    [...target.edgePickCoverageIds].sort(),
-    `every rendered relation has an own-id or certified-coincident live picking-target hit; ${formatRelationPickCoverage(target.edgePickCoverage)}`,
-  ).toEqual([...target.edgeIds].sort());
+  assertRelationPickOutcomes(target, "sampled production picking target");
   expect(target.pickableNodeIds.every((id) => target.nodeIds.includes(id)), "the picking target cannot return an unknown node id").toBe(true);
   expect(target.pickableEdgeIds.every((id) => target.edgeIds.includes(id)), "the picking target cannot return an unknown relation id").toBe(true);
   expect(Object.keys(target.anchors).sort(), "picking target anchors name every rendered node").toEqual([...target.nodeIds].sort());
@@ -1423,10 +1508,7 @@ function assertShippingPickingTargetSet(snapshot: ShippingPickingSetSnapshot, st
   expect(target.edgeIds.length, `${state} production model has rendered relations`).toBeGreaterThan(0);
   expect([...target.nodePickCoverageIds].sort(), `${state} every rendered node has an actual live picking-target hit`).toEqual([...target.nodeIds].sort());
   expect(Object.keys(target.edgePickCoverage).sort(), `${state} relation-picking coverage detail names every rendered relation`).toEqual([...target.edgeIds].sort());
-  expect(
-    [...target.edgePickCoverageIds].sort(),
-    `${state} every rendered relation has an own-id or certified-coincident live picking-target hit; ${formatRelationPickCoverage(target.edgePickCoverage)}`,
-  ).toEqual([...target.edgeIds].sort());
+  assertRelationPickOutcomes(target, state);
   expect(target.pickableNodeIds.every((id) => target.nodeIds.includes(id)), `${state} live picking target cannot return an unknown node id`).toBe(true);
   expect(target.pickableEdgeIds.every((id) => target.edgeIds.includes(id)), `${state} live picking target cannot return an unknown relation id`).toBe(true);
   expect(Object.keys(target.anchors).sort(), `${state} live picking-target anchors name every rendered node`).toEqual([...target.nodeIds].sort());
@@ -1441,6 +1523,7 @@ function assertPickingTargetSetInvariant(reference: PickingTargetSetWitness, act
   expect([...actual.pickableEdgeIds].sort(), `${state} preserves pickable relation ids from the picking target (reference=${reference.pickableEdgeIds.length}, actual=${actual.pickableEdgeIds.length})`).toEqual([...reference.pickableEdgeIds].sort());
   expect([...actual.nodePickCoverageIds].sort(), `${state} preserves per-node picking coverage (reference=${reference.nodePickCoverageIds.length}, actual=${actual.nodePickCoverageIds.length})`).toEqual([...reference.nodePickCoverageIds].sort());
   expect([...actual.edgePickCoverageIds].sort(), `${state} preserves per-relation picking coverage (reference=${reference.edgePickCoverageIds.length}, actual=${actual.edgePickCoverageIds.length})`).toEqual([...reference.edgePickCoverageIds].sort());
+  expect([...actual.edgeOcclusionIds].sort(), `${state} preserves disclosed non-interactable relations (reference=${reference.edgeOcclusionIds.length}, actual=${actual.edgeOcclusionIds.length})`).toEqual([...reference.edgeOcclusionIds].sort());
   expect(actual.incidence, `${state} preserves endpoint incidence from the picking target`).toEqual(reference.incidence);
   expect(actual.anchors, `${state} preserves anchors from the picking target`).toEqual(reference.anchors);
 }
@@ -1458,10 +1541,55 @@ function formatRelationPickMeasurement(
   return `returned=[${measurement.returnedEdgeIds.join(",")}]; samples=${samples}`;
 }
 
-/** This makes identity failures falsifiable by naming raw returns and the certificate that may justify one. */
+/** This rejects a non-interactable relation from the interactable set and does not treat a disclosed occlusion as coverage. */
+function assertEveryRelationIsInteractable(target: PickingTargetSetWitness, state: string): void {
+  expect(
+    [...target.edgePickCoverageIds].sort(),
+    `${state} every rendered relation is interactable through its own id or a certified coincident partner; ${formatRelationPickCoverage(target.edgePickCoverage)}`,
+  ).toEqual([...target.edgeIds].sort());
+}
+
+/** This asserts every relation is either interactable or disclosed non-interactable with its named occluder geometry. */
+function assertRelationPickOutcomes(target: PickingTargetSetWitness, state: string): void {
+  const coveredIds = Object.values(target.edgePickCoverage)
+    .filter((coverage) => coverage.coveringEdgeId !== null)
+    .map((coverage) => coverage.edgeId)
+    .sort();
+  const occludedIds = Object.values(target.edgePickCoverage)
+    .filter((coverage) => coverage.coveringEdgeId === null && coverage.occlusion !== null)
+    .map((coverage) => coverage.edgeId)
+    .sort();
+  expect([...target.edgePickCoverageIds].sort(), `${state} interactable relation ids agree with their own-id or certified-coincident outcomes`).toEqual(coveredIds);
+  expect([...target.edgeOcclusionIds].sort(), `${state} non-interactable relation ids agree with their certified occlusion outcomes`).toEqual(occludedIds);
+  expect(target.edgePickCoverageIds.some((edgeId) => target.edgeOcclusionIds.includes(edgeId)), `${state} no relation is both interactable and disclosed as occluded`).toBe(false);
+  expect(
+    [...coveredIds, ...occludedIds].sort(),
+    `${state} every rendered relation is either interactable through its own id or a certified coincident partner, or disclosed non-interactable with its named occluding relation and recorded geometry; ${formatRelationPickCoverage(target.edgePickCoverage)}`,
+  ).toEqual([...target.edgeIds].sort());
+  for (const edgeId of target.edgeOcclusionIds) {
+    const outcome = target.edgePickCoverage[edgeId];
+    if (outcome === undefined || outcome.occlusion === null) {
+      throw new Error(`${state} occluded relation ${edgeId} lacks its occlusion certificate`);
+    }
+    expect(target.edgeIds.includes(outcome.occlusion.occludingEdgeId), `${state} occluded relation ${edgeId} names an existing occluding relation`).toBe(true);
+    expect(outcome.occlusion.occludingEdgeId, `${state} occluded relation ${edgeId} does not name itself as its occluder`).not.toBe(edgeId);
+    expect(outcome.occlusion.probes, `${state} occluded relation ${edgeId} records calibrated occluder geometry at every direct probe`).toHaveLength(DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount);
+  }
+}
+
+/** This emits only non-interactable relations with their named occluder geometry and does not call them covered. */
+function formatOccludedRelations(target: PickingTargetSetWitness): string {
+  const occluded = Object.fromEntries(
+    Object.entries(target.edgePickCoverage)
+      .filter(([, outcome]) => outcome.coveringEdgeId === null && outcome.occlusion !== null),
+  ) as Readonly<Record<string, RelationPickCoverage>>;
+  return formatRelationPickCoverage(occluded);
+}
+
+/** This makes picking identity and non-interactable disclosures falsifiable by naming raw returns and recorded geometry. */
 function formatRelationPickCoverage(coverage: Readonly<Record<string, RelationPickCoverage>>): string {
   return Object.entries(coverage).sort(([left], [right]) => left.localeCompare(right)).map(([edgeId, witness]) => (
-    `${edgeId}: covered-by=${witness.coveringEdgeId ?? "none"}; returned=[${witness.returnedEdgeIds.map((returnedEdgeId) => returnedEdgeId ?? "null").join(",")}]; certified-coincident-partners=[${witness.certifiedCoincidentPartnerIds.join(",")}]`
+    `${edgeId}: covered-by=${witness.coveringEdgeId ?? "none"}; returned=[${witness.returnedEdgeIds.map((returnedEdgeId) => returnedEdgeId ?? "null").join(",")}]; certified-coincident-partners=[${witness.certifiedCoincidentPartnerIds.join(",")}]${witness.occlusion === null ? "" : `; occluded-by=${witness.occlusion.occludingEdgeId}; geometry=[${witness.occlusion.probes.map((probe) => `t=${probe.parameter.toFixed(3)},cell=${probe.pickingCell.minimumX.toFixed(3)},${probe.pickingCell.minimumY.toFixed(3)}-${probe.pickingCell.maximumX.toFixed(3)},${probe.pickingCell.maximumY.toFixed(3)},path=${probe.geometry.source.x.toFixed(3)},${probe.geometry.source.y.toFixed(3)}>${probe.geometry.control.x.toFixed(3)},${probe.geometry.control.y.toFixed(3)}>${probe.geometry.target.x.toFixed(3)},${probe.geometry.target.y.toFixed(3)},distance=${probe.centrelineDistancePx.toFixed(3)}px,deviation=${probe.deviationBoundPx.toFixed(3)}px,pick-radius=${probe.pickRadiusPx.toFixed(3)}px`).join(" | ")}]`}`
   )).join(" | ");
 }
 
@@ -2204,6 +2332,52 @@ function witnessFor(snapshot: Snapshot, image: DecodedPng): DprWitness {
     backingStorePixels: snapshot.rendering.backingStorePixels,
     screenshotPixels: image.width * image.height,
   };
+}
+
+/** This measures pairwise anchor separation at the governed reference frame and does not claim a viewport-independent CSS-pixel distance. */
+function minimumPairwiseReferenceFrameSeparation(
+  anchors: Readonly<Record<string, { readonly x: number; readonly y: number }>>,
+): number {
+  const values = Object.values(anchors);
+  if (values.length < 2) {
+    return Number.POSITIVE_INFINITY;
+  }
+  let minimum = Number.POSITIVE_INFINITY;
+  for (const [index, anchor] of values.entries()) {
+    for (const other of values.slice(index + 1)) {
+      minimum = Math.min(minimum, Math.hypot(anchor.x - other.x, anchor.y - other.y));
+    }
+  }
+  const width = Math.max(...values.map((anchor) => anchor.x)) - Math.min(...values.map((anchor) => anchor.x));
+  const height = Math.max(...values.map((anchor) => anchor.y)) - Math.min(...values.map((anchor) => anchor.y));
+  const horizontalScale = width === 0 ? Number.POSITIVE_INFINITY : DEFAULT_CALIBRATION.layout.referenceFrameWidthPx / width;
+  const verticalScale = height === 0 ? Number.POSITIVE_INFINITY : DEFAULT_CALIBRATION.layout.referenceFrameHeightPx / height;
+  return minimum * Math.min(horizontalScale, verticalScale);
+}
+
+/** This measures occupied anchor cells across complete bounds and does not treat a community's extrema as filled area. */
+function occupiedAnchorCellFrameUtilisation(
+  anchors: Readonly<Record<string, { readonly x: number; readonly y: number }>>,
+): number {
+  const values = Object.values(anchors);
+  if (values.length === 0) {
+    return 0;
+  }
+  const minimumX = Math.min(...values.map((anchor) => anchor.x));
+  const maximumX = Math.max(...values.map((anchor) => anchor.x));
+  const minimumY = Math.min(...values.map((anchor) => anchor.y));
+  const maximumY = Math.max(...values.map((anchor) => anchor.y));
+  const width = maximumX - minimumX;
+  const height = maximumY - minimumY;
+  if (width === 0 || height === 0) {
+    return 0;
+  }
+  const occupied = new Set(values.map((anchor) => {
+    const column = Math.min(6, Math.floor(((anchor.x - minimumX) / width) * 7));
+    const row = Math.min(6, Math.floor(((anchor.y - minimumY) / height) * 7));
+    return `${column}:${row}`;
+  }));
+  return occupied.size / 49;
 }
 
 function decodePng(source: Uint8Array): DecodedPng {
