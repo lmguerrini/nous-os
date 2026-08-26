@@ -52,6 +52,21 @@ export const VISUAL_STATE_FIELD_REGISTER = {
   bounds: ["x", "y"],
 } as const;
 
+/** This is the complete VisualState validator rule register and does not create a second, test-maintained rule list. */
+export const VISUAL_STATE_VALIDATION_RULES = {
+  fieldRegister: "field-register",
+  knownElementId: "known-element-id",
+  closedVocabulary: "closed-vocabulary",
+  reducedMotionBoolean: "reduced-motion-boolean",
+  finiteCameraNumber: "finite-camera-number",
+  positiveCameraRatio: "positive-camera-ratio",
+  boundsAxisPair: "bounds-axis-pair",
+  increasingBoundsAxis: "increasing-bounds-axis",
+} as const;
+
+/** This names one VisualState validator rule and does not name a construction route. */
+export type VisualStateValidationRule = typeof VISUAL_STATE_VALIDATION_RULES[keyof typeof VISUAL_STATE_VALIDATION_RULES];
+
 const MORPHOLOGIES = [STELLAR.id, NEURAL.id, MYCELIUM.id] as const;
 const ORGANIZATIONS = [FLAT, INDRA] as const;
 const LOD_BANDS = [MACRO, MESO, MICRO] as const;
@@ -122,7 +137,7 @@ export function assertVisualState(graph: VisualGraph, value: unknown): asserts v
   assertChoice(state.theme, THEMES, "theme");
   assertChoice(state.lodBand, LOD_BANDS, "lodBand");
   if (typeof state.reducedMotion !== "boolean") {
-    throw new TypeError("VisualState.reducedMotion must be boolean");
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.reducedMotionBoolean, "VisualState.reducedMotion must be boolean");
   }
   assertCamera(state.camera);
 }
@@ -132,11 +147,11 @@ function assertKnownElementId(value: unknown, graph: VisualGraph, name: string):
     return;
   }
   if (typeof value !== "string") {
-    throw new TypeError(`VisualState.${name} must be a graph element id or null`);
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.knownElementId, `VisualState.${name} must be a graph element id or null`);
   }
   const knownIds = new Set([...graph.nodes.map((node) => node.id), ...graph.edges.map((edge) => edge.id)]);
   if (!knownIds.has(value)) {
-    throw new TypeError(`VisualState.${name} does not name a graph element`);
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.knownElementId, `VisualState.${name} does not name a graph element`);
   }
 }
 
@@ -147,7 +162,7 @@ function assertCamera(value: unknown): void {
   assertFiniteNumber(camera.angle, "VisualState.camera.angle");
   assertFiniteNumber(camera.ratio, "VisualState.camera.ratio");
   if ((camera.ratio as number) <= 0) {
-    throw new TypeError("VisualState.camera.ratio must be positive");
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.positiveCameraRatio, "VisualState.camera.ratio must be positive");
   }
   const bounds = camera.bounds as Record<string, unknown>;
   assertBoundsAxis(bounds.x, "VisualState.camera.bounds.x");
@@ -156,52 +171,56 @@ function assertCamera(value: unknown): void {
 
 function assertBoundsAxis(value: unknown, path: string): void {
   if (!Array.isArray(value) || value.length !== 2) {
-    throw new TypeError(`${path} must be a pair`);
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.boundsAxisPair, `${path} must be a pair`);
   }
   const allowedKeys = new Set(["0", "1", "length"]);
   if (Reflect.ownKeys(value).some((key) => typeof key !== "string" || !allowedKeys.has(key))) {
-    throw new TypeError(`${path} fields do not match the pinned register`);
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.fieldRegister, `${path} fields do not match the pinned register`);
   }
   const lower = value[0];
   const upper = value[1];
   assertFiniteNumber(lower, `${path}[0]`);
   assertFiniteNumber(upper, `${path}[1]`);
   if ((lower as number) >= (upper as number)) {
-    throw new TypeError(`${path} must be increasing`);
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.increasingBoundsAxis, `${path} must be increasing`);
   }
 }
 
 function assertFiniteNumber(value: unknown, path: string): void {
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new TypeError(`${path} must be finite`);
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.finiteCameraNumber, `${path} must be finite`);
   }
 }
 
 function assertChoice<T extends string>(value: unknown, choices: readonly T[], name: string): asserts value is T {
   if (typeof value !== "string" || !choices.includes(value as T)) {
-    throw new TypeError(`VisualState.${name} is outside its closed vocabulary`);
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.closedVocabulary, `VisualState.${name} is outside its closed vocabulary`);
   }
 }
 
 function assertExactFields(value: unknown, path: string, fields: readonly string[]): void {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${path} must be an object`);
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.fieldRegister, `${path} must be an object`);
   }
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) {
-    throw new TypeError(`${path} must be a plain object`);
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.fieldRegister, `${path} must be a plain object`);
   }
   const ownKeys = Reflect.ownKeys(value);
   const actual: string[] = [];
   for (const field of ownKeys) {
     if (typeof field !== "string") {
-      throw new TypeError(`${path} fields do not match the pinned register`);
+      throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.fieldRegister, `${path} fields do not match the pinned register`);
     }
     actual.push(field);
   }
   actual.sort();
   const expected = [...fields].sort();
   if (actual.length !== expected.length || actual.some((field, index) => field !== expected[index])) {
-    throw new TypeError(`${path} fields do not match the pinned register`);
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.fieldRegister, `${path} fields do not match the pinned register`);
   }
+}
+
+function visualStateValidationError(rule: VisualStateValidationRule, message: string): TypeError {
+  return new TypeError(`${message} [${rule}]`);
 }

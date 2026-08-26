@@ -13,6 +13,7 @@ import {
   createSemantic,
   readSemantic,
   semanticDigest,
+  SHIPPING_MORPHOLOGY,
 } from "#engine/contract.ts";
 import type { Coordinates, VisualGraph } from "#engine/contract.ts";
 import { resolveLodBand } from "#engine/lod.ts";
@@ -22,6 +23,7 @@ import { layoutAnchors, sharedAnchors } from "#engine/layout.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { Organization } from "#engine/organization.ts";
 import { mount } from "#render2d/index.ts";
+import { deserializeVisualState, serializeVisualState } from "#engine/visual-state.ts";
 import { FilamentProgram } from "#render2d/filament-program.ts";
 import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
 import { filamentGeometry, quadraticPoint } from "#render2d/geometry.ts";
@@ -162,6 +164,8 @@ type Snapshot = {
   readonly fieldColor: string;
   readonly selectedNode: string | null;
   readonly selectedElement: string | null;
+  /** This proves the renderer returned the selected graph record itself and does not serialise that record into a lookalike. */
+  readonly selectedProvenanceIsExact: boolean;
   readonly focusedElement: string | null;
   readonly nodes: readonly string[];
   readonly edges: readonly string[];
@@ -188,6 +192,15 @@ type Snapshot = {
   readonly edgeSamples: Readonly<Record<string, readonly { readonly x: number; readonly y: number }[]>>;
   /** This is read from the live edge-picking target and never from the render model. */
   readonly pickingTarget: PickingTargetWitness;
+};
+
+/** This compares a restored mounted frame with its source frame and does not use a model-only picking proxy. */
+type VisualStateRoundTripWitness = {
+  readonly original: Snapshot;
+  readonly restored: Snapshot;
+  readonly pickedNodeId: string;
+  readonly originalPickedNodeId: string | null;
+  readonly restoredPickedNodeId: string | null;
 };
 
 /** The intentionally cheap A3 shipping observation: model ids plus live picking-target sets, never compositor pixels. */
@@ -221,10 +234,12 @@ type EvidenceApi = {
   setGlowSuppressed(suppressed: boolean): Promise<Snapshot>;
   setReducedMotion(reducedMotion: boolean): Promise<Snapshot>;
   selectNode(id: string): Promise<Snapshot>;
+  setSelectionNoopControl(id: string): Promise<Snapshot>;
   selectElement(id: string): Promise<Snapshot>;
   clearSelection(): Promise<Snapshot>;
   focusElement(id: string): Promise<Snapshot>;
   clearFocus(): Promise<Snapshot>;
+  restoreVisualStateRoundTrip(): Promise<VisualStateRoundTripWitness>;
   read(): Snapshot;
   pick(edgeId: string, parameter: number, offsetPixels?: number): PickWitness;
   proveDistantRelationPickControl(edgeId: string, parameter: number, offsetPixels: number): DistantRelationPickControl;
@@ -366,9 +381,8 @@ async function boot(): Promise<void> {
   const discoveryFramingBox = framingBoxFor(discoveryGraph);
 
   let policy: Policy = "Discovery";
-  let selectedNode: string | null = null;
-  let selectedElement: string | null = null;
-  let focusedElement: string | null = null;
+  let selectionIntent: string | null = null;
+  let focusIntent: string | null = null;
   let product: RenderHandle | undefined;
   let emptyControl: RenderHandle | undefined;
   let emptyContainer: HTMLElement | undefined;
@@ -383,11 +397,11 @@ async function boot(): Promise<void> {
     await waitForNonZeroBox(container);
     const graph = requiredGraph(graphs, policy);
     product = mount(container, graph, options, discoveryFramingBox);
-    if (selectedElement !== null) {
-      product.setSelection(selectedElement);
+    if (selectionIntent !== null) {
+      product.setSelection(selectionIntent);
     }
-    if (focusedElement !== null) {
-      product.setFocus(focusedElement);
+    if (focusIntent !== null) {
+      product.setFocus(focusIntent);
     }
     shell.style.background = product.model.fieldColor;
     if (cameraState !== undefined) {
@@ -400,7 +414,6 @@ async function boot(): Promise<void> {
   const snapshotFor = (
     handle: RenderHandle,
     renderContainer: HTMLElement,
-    reportedSelectedNode: string | null,
   ): Snapshot => {
     const positions: Record<string, { x: number; y: number }> = {};
     const anchors: Record<string, { x: number; y: number }> = {};
@@ -438,10 +451,16 @@ async function boot(): Promise<void> {
         afterglowDecayPermille: attributes.afterglowDecayPermille,
       };
     }
+    const activeGraph = requiredGraph(graphs, policy);
     const activeFixtureFacts = fixtureFacts[policy];
     if (activeFixtureFacts === undefined) {
       throw new Error(`missing fixture facts for ${policy}`);
     }
+    const selectedElement = handle.getSelection();
+    const selectedGraphElement = selectedElement === null
+      ? undefined
+      : [...activeGraph.nodes, ...activeGraph.edges].find((element) => element.id === selectedElement);
+    const selectedProvenance = handle.readSelectedProvenance();
     return {
       policy,
       morphology: options.morphology,
@@ -452,14 +471,17 @@ async function boot(): Promise<void> {
       lodBand: options.lodBand,
       reducedMotion: options.reducedMotion,
       fieldColor: handle.model.fieldColor,
-      selectedNode: reportedSelectedNode,
-      selectedElement: handle.getSelection(),
+      selectedNode: selectedElement,
+      selectedElement,
+      selectedProvenanceIsExact: selectedElement === null
+        ? selectedProvenance === null
+        : selectedGraphElement !== undefined && selectedProvenance === selectedGraphElement.derived,
       focusedElement: handle.getFocus(),
       nodes: handle.model.graph.nodes(),
       edges: handle.model.graph.edges(),
       anchors,
       incidence,
-      semanticDigest: semanticDigest(requiredGraph(graphs, policy)),
+      semanticDigest: semanticDigest(activeGraph),
       camera: handle.readCameraState(),
       positions,
       edgeControlPoints,
@@ -485,7 +507,7 @@ async function boot(): Promise<void> {
     };
   };
 
-  const read = (): Snapshot => snapshotFor(requiredHandle(product), container, selectedNode);
+  const read = (): Snapshot => snapshotFor(requiredHandle(product), container);
 
   /** Avoids building viewport paths, propagation, and pixel-witness payloads for A3's full state-space set assertion. */
   const shippingPickingSetSnapshotFor = (handle: RenderHandle): ShippingPickingSetSnapshot => ({
@@ -508,9 +530,8 @@ async function boot(): Promise<void> {
     async switchPolicy(next): Promise<Snapshot> {
       const cameraState = requiredHandle(product).readCameraState();
       policy = next;
-      selectedNode = null;
-      selectedElement = null;
-      focusedElement = null;
+      selectionIntent = null;
+      focusIntent = null;
       await remount(cameraState);
       return read();
     },
@@ -535,27 +556,25 @@ async function boot(): Promise<void> {
     },
     async setShippingCrossProductState(nextPolicy, palette, temperature, theme, lodBand): Promise<Snapshot> {
       policy = nextPolicy;
-      options.morphology = "stellar";
+      options.morphology = SHIPPING_MORPHOLOGY;
       options.palette = palette;
       options.temperature = temperature;
       options.theme = theme;
       options.lodBand = lodBand;
-      selectedNode = null;
-      selectedElement = null;
-      focusedElement = null;
+      selectionIntent = null;
+      focusIntent = null;
       await remount();
       return read();
     },
     async setShippingCrossProductPickingSetState(nextPolicy, palette, temperature, theme, lodBand): Promise<ShippingPickingSetSnapshot> {
       policy = nextPolicy;
-      options.morphology = "stellar";
+      options.morphology = SHIPPING_MORPHOLOGY;
       options.palette = palette;
       options.temperature = temperature;
       options.theme = theme;
       options.lodBand = lodBand;
-      selectedNode = null;
-      selectedElement = null;
-      focusedElement = null;
+      selectionIntent = null;
+      focusIntent = null;
       await remount();
       return shippingPickingSetSnapshotFor(requiredHandle(product));
     },
@@ -584,29 +603,41 @@ async function boot(): Promise<void> {
       if (!requiredHandle(product).model.graph.hasNode(id)) {
         throw new Error(`unknown node ${id}`);
       }
-      selectedNode = id;
-      selectedElement = id;
+      selectionIntent = id;
       requiredHandle(product).setSelection(id);
       checks.push(`selected ${id}`);
       await nextPaint();
       await nextPaint();
       return read();
     },
+    async setSelectionNoopControl(id): Promise<Snapshot> {
+      const handle = requiredHandle(product);
+      if (!handle.model.graph.hasNode(id)) {
+        throw new Error(`unknown node ${id}`);
+      }
+      const mutableHandle = handle as MutableRenderHandle;
+      const originalSetSelection = mutableHandle.setSelection;
+      mutableHandle.setSelection = (): void => {};
+      try {
+        return await api.selectNode(id);
+      } finally {
+        mutableHandle.setSelection = originalSetSelection;
+        selectionIntent = handle.getSelection();
+      }
+    },
     async selectElement(id): Promise<Snapshot> {
       const handle = requiredHandle(product);
       if (!handle.model.graph.hasNode(id) && !handle.model.graph.hasEdge(id)) {
         throw new Error(`unknown graph element ${id}`);
       }
-      selectedNode = handle.model.graph.hasNode(id) ? id : null;
-      selectedElement = id;
+      selectionIntent = id;
       handle.setSelection(id);
       await nextPaint();
       await nextPaint();
       return read();
     },
     async clearSelection(): Promise<Snapshot> {
-      selectedNode = null;
-      selectedElement = null;
+      selectionIntent = null;
       requiredHandle(product).clearSelection();
       await nextPaint();
       await nextPaint();
@@ -617,18 +648,46 @@ async function boot(): Promise<void> {
       if (!handle.model.graph.hasNode(id) && !handle.model.graph.hasEdge(id)) {
         throw new Error(`unknown graph element ${id}`);
       }
-      focusedElement = id;
+      focusIntent = id;
       handle.setFocus(id);
       await nextPaint();
       await nextPaint();
       return read();
     },
     async clearFocus(): Promise<Snapshot> {
-      focusedElement = null;
+      focusIntent = null;
       requiredHandle(product).clearFocus();
       await nextPaint();
       await nextPaint();
       return read();
+    },
+    async restoreVisualStateRoundTrip(): Promise<VisualStateRoundTripWitness> {
+      const originalHandle = requiredHandle(product);
+      const original = snapshotFor(originalHandle, container);
+      const pickedNodeId = requiredPickableNodeId(original.pickingTarget.pickableNodeIds[0]);
+      const originalPoint = requiredNodePickPoint(original, pickedNodeId, "original VisualState frame");
+      const originalPickedNodeId = originalHandle.pickNodeAtPosition(originalPoint);
+      const graph = requiredGraph(graphs, policy);
+      const restoredState = deserializeVisualState(graph, serializeVisualState(originalHandle.readVisualState()));
+      originalHandle.destroy();
+      product = undefined;
+      await waitForNonZeroBox(container);
+      product = mount(container, graph, options, discoveryFramingBox, restoredState);
+      selectionIntent = restoredState.selectedId;
+      focusIntent = restoredState.focusedId;
+      shell.style.background = product.model.fieldColor;
+      await nextPaint();
+      await nextPaint();
+      const restoredHandle = requiredHandle(product);
+      const restored = snapshotFor(restoredHandle, container);
+      const restoredPoint = requiredNodePickPoint(restored, pickedNodeId, "restored VisualState frame");
+      return {
+        original,
+        restored,
+        pickedNodeId,
+        originalPickedNodeId,
+        restoredPickedNodeId: restoredHandle.pickNodeAtPosition(restoredPoint),
+      };
     },
     read,
     pick(edgeId, parameter, offsetPixels = 0): PickWitness {
@@ -745,7 +804,7 @@ async function boot(): Promise<void> {
       control.setEdgeLabelRevealVisible(false);
       await nextPaint();
       await nextPaint();
-      return snapshotFor(control, container, null);
+      return snapshotFor(control, container);
     },
     async setSelectionFocusNoopControl(selection, focus): Promise<Snapshot> {
       const control = requiredHandle(selectionFocusNoopControl);
@@ -766,7 +825,7 @@ async function boot(): Promise<void> {
       }
       await nextPaint();
       await nextPaint();
-      return snapshotFor(control, container, null);
+      return snapshotFor(control, container);
     },
     hideSelectionFocusNoopControl(): void {
       const control = selectionFocusNoopControl;
@@ -1670,6 +1729,25 @@ function requiredHandle(handle: RenderHandle | undefined): RenderHandle {
   return handle;
 }
 
+function requiredPickableNodeId(id: string | undefined): string {
+  if (id === undefined) {
+    throw new Error("VisualState round-trip requires a live pickable node");
+  }
+  return id;
+}
+
+function requiredNodePickPoint(
+  snapshot: Snapshot,
+  id: string,
+  frame: string,
+): { readonly x: number; readonly y: number } {
+  const point = snapshot.pickingTarget.nodePixels[id];
+  if (point === undefined) {
+    throw new Error(`${frame} has no live picking-target point for ${id}`);
+  }
+  return point;
+}
+
 function requiredElement(element: HTMLElement | undefined, name: string): HTMLElement {
   if (element === undefined) {
     throw new Error(`${name} has not mounted`);
@@ -1714,10 +1792,12 @@ function failedApi(): EvidenceApi {
     setGlowSuppressed: async () => unavailable(),
     setReducedMotion: async () => unavailable(),
     selectNode: async () => unavailable(),
+    setSelectionNoopControl: async () => unavailable(),
     selectElement: async () => unavailable(),
     clearSelection: async () => unavailable(),
     focusElement: async () => unavailable(),
     clearFocus: async () => unavailable(),
+    restoreVisualStateRoundTrip: async () => unavailable(),
     read: unavailable,
     pick: unavailable,
     proveDistantRelationPickControl: unavailable,

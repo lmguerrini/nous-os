@@ -3,14 +3,16 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
+import { SHIPPING_MORPHOLOGY } from "#engine/contract.ts";
 import type { VisualGraph } from "#engine/contract.ts";
 import {
   VISUAL_STATE_FIELD_REGISTER,
+  VISUAL_STATE_VALIDATION_RULES,
   createVisualState,
   deserializeVisualState,
   serializeVisualState,
 } from "#engine/visual-state.ts";
-import type { VisualState } from "#engine/visual-state.ts";
+import type { VisualState, VisualStateValidationRule } from "#engine/visual-state.ts";
 
 /** This reads one fixture graph and does not manufacture view-state ids. */
 function graph(): VisualGraph {
@@ -44,6 +46,38 @@ function state(input: VisualGraph): VisualState {
   };
 }
 
+type RefusalCase = {
+  readonly name: string;
+  readonly value: unknown;
+  readonly rule: VisualStateValidationRule;
+  readonly message: RegExp;
+};
+
+type ConstructionRoute = {
+  readonly name: string;
+  readonly refuse: (input: VisualGraph, value: unknown) => void;
+};
+
+/** This confirms that a refusal names exactly its validator-owned rule and does not accept a short-circuited earlier rule. */
+function assertRuleRefusal(refusal: () => void, refusalCase: RefusalCase, route: ConstructionRoute): void {
+  assert.throws(refusal, (error: unknown) => {
+    assert.ok(error instanceof TypeError, `${refusalCase.name} via ${route.name} must throw TypeError`);
+    assert.match(error.message, refusalCase.message);
+    const ruleIds = [...error.message.matchAll(/\[([a-z-]+)\]/g)].map((match) => match[1] ?? "");
+    assert.deepEqual(ruleIds, [refusalCase.rule], `${refusalCase.name} via ${route.name} must name only its claimed rule`);
+    return true;
+  });
+}
+
+/** This refuses an incomplete test register and does not infer coverage from the number of tests. */
+function assertRefusalCaseCompleteness(
+  cases: readonly RefusalCase[],
+  rules: readonly string[] = Object.values(VISUAL_STATE_VALIDATION_RULES),
+): void {
+  const covered = [...new Set(cases.map((refusalCase) => refusalCase.rule))].sort();
+  assert.deepEqual(covered, [...rules].sort(), "every validator-owned rule must have an isolated refusal case");
+}
+
 test("VisualState has a pinned view-only register and round-trips exactly", () => {
   const visualGraph = graph();
   const original = createVisualState(visualGraph, state(visualGraph));
@@ -66,6 +100,14 @@ test("VisualState permits a selected-and-focused element because inspection and 
   assert.deepEqual(createVisualState(visualGraph, sameElement), sameElement);
 });
 
+test("the production shipping morphology is Stellar while Neural and Mycelium remain accepted experimental capability", () => {
+  const visualGraph = graph();
+  assert.equal(SHIPPING_MORPHOLOGY, "stellar");
+  for (const morphology of ["stellar", "neural", "mycelium"] as const) {
+    assert.equal(createVisualState(visualGraph, { ...state(visualGraph), morphology }).morphology, morphology);
+  }
+});
+
 test("VisualState validation reads graph ids only, not semantic payloads", () => {
   const input = graph();
   const protectedGraph: VisualGraph = {
@@ -84,36 +126,49 @@ test("VisualState validation reads graph ids only, not semantic payloads", () =>
   assert.doesNotThrow(() => createVisualState(protectedGraph, state(protectedGraph)));
 });
 
-test("VisualState refuses every invalid state through both construction routes", () => {
+test("VisualState refuses every validator-owned rule through direct construction and deserialisation", () => {
   const visualGraph = graph();
   const valid = state(visualGraph);
-  const invalidCases: readonly { readonly value: unknown; readonly rule: RegExp }[] = [
-    { value: { ...valid, extra: true }, rule: /VisualState fields do not match the pinned register/ },
-    { value: { ...valid, camera: { ...valid.camera, extra: true } }, rule: /VisualState\.camera fields do not match the pinned register/ },
-    { value: { ...valid, camera: { ...valid.camera, bounds: { ...valid.camera.bounds, extra: true } } }, rule: /VisualState\.camera\.bounds fields do not match the pinned register/ },
-    { value: { ...valid, camera: { ...valid.camera, bounds: { ...valid.camera.bounds, x: [-1, 0, 1] } } }, rule: /VisualState\.camera\.bounds\.x must be a pair/ },
-    { value: { ...valid, selectedId: "missing-selection" }, rule: /VisualState\.selectedId does not name a graph element/ },
-    { value: { ...valid, focusedId: "missing-focus" }, rule: /VisualState\.focusedId does not name a graph element/ },
-    { value: { ...valid, morphology: "outside" }, rule: /VisualState\.morphology is outside its closed vocabulary/ },
-    { value: { ...valid, organization: "outside" }, rule: /VisualState\.organization is outside its closed vocabulary/ },
-    { value: { ...valid, palette: "outside" }, rule: /VisualState\.palette is outside its closed vocabulary/ },
-    { value: { ...valid, temperature: "outside" }, rule: /VisualState\.temperature is outside its closed vocabulary/ },
-    { value: { ...valid, theme: "outside" }, rule: /VisualState\.theme is outside its closed vocabulary/ },
-    { value: { ...valid, lodBand: "outside" }, rule: /VisualState\.lodBand is outside its closed vocabulary/ },
-    { value: { ...valid, reducedMotion: "false" }, rule: /VisualState\.reducedMotion must be boolean/ },
-    { value: { ...valid, camera: { ...valid.camera, x: Number.NaN } }, rule: /VisualState\.camera\.x must be finite/ },
-    { value: { ...valid, camera: { ...valid.camera, ratio: 0 } }, rule: /VisualState\.camera\.ratio must be positive/ },
-    { value: { ...valid, camera: { ...valid.camera, bounds: { ...valid.camera.bounds, y: [1, -1] } } }, rule: /VisualState\.camera\.bounds\.y must be increasing/ },
+  const invalidCases: readonly RefusalCase[] = [
+    { name: "VisualState field extension", value: { ...valid, extra: true }, rule: VISUAL_STATE_VALIDATION_RULES.fieldRegister, message: /VisualState fields do not match the pinned register/ },
+    { name: "VisualState camera field extension", value: { ...valid, camera: { ...valid.camera, extra: true } }, rule: VISUAL_STATE_VALIDATION_RULES.fieldRegister, message: /VisualState\.camera fields do not match the pinned register/ },
+    { name: "VisualState bounds field extension", value: { ...valid, camera: { ...valid.camera, bounds: { ...valid.camera.bounds, extra: true } } }, rule: VISUAL_STATE_VALIDATION_RULES.fieldRegister, message: /VisualState\.camera\.bounds fields do not match the pinned register/ },
+    { name: "VisualState bounds pair", value: { ...valid, camera: { ...valid.camera, bounds: { ...valid.camera.bounds, x: [-1, 0, 1] } } }, rule: VISUAL_STATE_VALIDATION_RULES.boundsAxisPair, message: /VisualState\.camera\.bounds\.x must be a pair/ },
+    { name: "VisualState unknown selected id", value: { ...valid, selectedId: "missing-selection" }, rule: VISUAL_STATE_VALIDATION_RULES.knownElementId, message: /VisualState\.selectedId does not name a graph element/ },
+    { name: "VisualState unknown focused id", value: { ...valid, focusedId: "missing-focus" }, rule: VISUAL_STATE_VALIDATION_RULES.knownElementId, message: /VisualState\.focusedId does not name a graph element/ },
+    { name: "VisualState morphology vocabulary", value: { ...valid, morphology: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.closedVocabulary, message: /VisualState\.morphology is outside its closed vocabulary/ },
+    { name: "VisualState organization vocabulary", value: { ...valid, organization: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.closedVocabulary, message: /VisualState\.organization is outside its closed vocabulary/ },
+    { name: "VisualState palette vocabulary", value: { ...valid, palette: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.closedVocabulary, message: /VisualState\.palette is outside its closed vocabulary/ },
+    { name: "VisualState temperature vocabulary", value: { ...valid, temperature: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.closedVocabulary, message: /VisualState\.temperature is outside its closed vocabulary/ },
+    { name: "VisualState theme vocabulary", value: { ...valid, theme: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.closedVocabulary, message: /VisualState\.theme is outside its closed vocabulary/ },
+    { name: "VisualState LOD vocabulary", value: { ...valid, lodBand: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.closedVocabulary, message: /VisualState\.lodBand is outside its closed vocabulary/ },
+    { name: "VisualState reduced-motion boolean", value: { ...valid, reducedMotion: "false" }, rule: VISUAL_STATE_VALIDATION_RULES.reducedMotionBoolean, message: /VisualState\.reducedMotion must be boolean/ },
+    { name: "VisualState finite camera x", value: { ...valid, camera: { ...valid.camera, x: Number.NaN } }, rule: VISUAL_STATE_VALIDATION_RULES.finiteCameraNumber, message: /VisualState\.camera\.x must be finite/ },
+    { name: "VisualState positive camera ratio", value: { ...valid, camera: { ...valid.camera, ratio: 0 } }, rule: VISUAL_STATE_VALIDATION_RULES.positiveCameraRatio, message: /VisualState\.camera\.ratio must be positive/ },
+    { name: "VisualState increasing Y bounds", value: { ...valid, camera: { ...valid.camera, bounds: { ...valid.camera.bounds, y: [1, -1] } } }, rule: VISUAL_STATE_VALIDATION_RULES.increasingBoundsAxis, message: /VisualState\.camera\.bounds\.y must be increasing/ },
   ];
+  const directConstruction: ConstructionRoute = { name: "direct construction", refuse: (input, value) => { createVisualState(input, value); } };
+  const deserialisation: ConstructionRoute = { name: "deserialisation", refuse: (input, value) => { deserializeVisualState(input, JSON.stringify(value)); } };
+  const routes: readonly ConstructionRoute[] = [directConstruction, deserialisation];
   assert.ok(invalidCases.length > 0);
-  for (const invalid of invalidCases) {
-    assert.throws(() => createVisualState(visualGraph, invalid.value), invalid.rule);
-    assert.throws(() => deserializeVisualState(visualGraph, JSON.stringify(invalid.value)), invalid.rule);
+  assertRefusalCaseCompleteness(invalidCases);
+  for (const refusalCase of invalidCases) {
+    for (const route of routes) {
+      assertRuleRefusal(() => route.refuse(visualGraph, refusalCase.value), refusalCase, route);
+    }
   }
   const extendedAxis = Object.assign([-1, 1], { extra: true });
-  assert.throws(
+  assertRuleRefusal(
     () => createVisualState(visualGraph, { ...valid, camera: { ...valid.camera, bounds: { ...valid.camera.bounds, x: extendedAxis } } }),
-    /VisualState\.camera\.bounds\.x fields do not match the pinned register/,
+    { name: "VisualState direct-only bounds array extension", value: extendedAxis, rule: VISUAL_STATE_VALIDATION_RULES.fieldRegister, message: /VisualState\.camera\.bounds\.x fields do not match the pinned register/ },
+    directConstruction,
+  );
+});
+
+test("VisualState refusal completeness rejects a validator rule added without a refusal case", () => {
+  assert.throws(
+    () => assertRefusalCaseCompleteness([], [...Object.values(VISUAL_STATE_VALIDATION_RULES), "future-validator-rule"]),
+    /every validator-owned rule must have an isolated refusal case/,
   );
 });
 

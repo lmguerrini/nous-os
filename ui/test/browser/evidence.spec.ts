@@ -4,6 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
 import { build } from "esbuild";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { SHIPPING_MORPHOLOGY } from "#engine/contract.ts";
 import { MACRO, MESO, MICRO, minimumResolvedMaterialDifference, resolvedMaterial, resolvedMaterialDifference } from "#engine/lod.ts";
 import { PALETTES, TEMPERATURES, THEMES } from "#engine/tokens.ts";
 
@@ -45,6 +46,7 @@ type Snapshot = {
   readonly fieldColor: string;
   readonly selectedNode: string | null;
   readonly selectedElement: string | null;
+  readonly selectedProvenanceIsExact: boolean;
   readonly focusedElement: string | null;
   readonly nodes: readonly string[];
   readonly edges: readonly string[];
@@ -89,6 +91,14 @@ type Snapshot = {
     readonly haloRadiusPx: number;
   }[];
   readonly pickingTarget: PickingTargetWitness;
+};
+
+type VisualStateRoundTripWitness = {
+  readonly original: Snapshot;
+  readonly restored: Snapshot;
+  readonly pickedNodeId: string;
+  readonly originalPickedNodeId: string | null;
+  readonly restoredPickedNodeId: string | null;
 };
 
 type PickWitness = {
@@ -172,10 +182,12 @@ type PageEvidence = {
   setGlowSuppressed(suppressed: boolean): Promise<Snapshot>;
   setReducedMotion(reducedMotion: boolean): Promise<Snapshot>;
   selectNode(id: string): Promise<Snapshot>;
+  setSelectionNoopControl(id: string): Promise<Snapshot>;
   selectElement(id: string): Promise<Snapshot>;
   clearSelection(): Promise<Snapshot>;
   focusElement(id: string): Promise<Snapshot>;
   clearFocus(): Promise<Snapshot>;
+  restoreVisualStateRoundTrip(): Promise<VisualStateRoundTripWitness>;
   read(): Snapshot;
   pick(edgeId: string, parameter: number, offsetPixels?: number): PickWitness;
   proveDistantRelationPickControl(edgeId: string, parameter: number, offsetPixels: number): DistantRelationPickControl;
@@ -321,7 +333,6 @@ const EVIDENCE_FILE = "dist/evidence/evidence.json";
 const NEUTRAL_DIGESTS_FILE = ["..", "fixtures", "synthetic", "projection", "expectations", "neutral-digests.json"].join("/");
 const REQUIRED_PROJECTS = ["dpr-1", "dpr-2"] as const;
 const SHIPPING_POLICIES = ["Discovery", "Reliability"] as const;
-const SHIPPING_MORPHOLOGY = "stellar" as const;
 const SHIPPING_CROSS_PRODUCT_SIZE = 270;
 const A3_SHIPPING_ASSERTIONS = [
   "base renderer picking correctness",
@@ -1043,6 +1054,15 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       await invoke<void>("hideSelectionFocusNoopControl");
     }
   });
+  await run("selection-setter-noop-control", async () => {
+    const baseline = await invoke<Snapshot>("clearSelection");
+    const nodeId = requiredGraphElementId(baseline.nodes[0], "selection setter no-op control node");
+    const noOp = await invoke<Snapshot>("setSelectionNoopControl", nodeId);
+    expect(noOp.selectedNode, "the snapshot's reported node remains renderer-read during the no-op control").toBe(noOp.selectedElement);
+    expect(() => assertRendererSelection(noOp, nodeId, "setSelection no-op control")).toThrow();
+    expect((await invoke<Snapshot>("read")).selectedElement, "restoring the no-op control leaves the renderer selection unchanged").toBeNull();
+    return `replaced the mounted product's setSelection with a no-op for ${nodeId}; the full-app renderer-selection assertion threw, and restoring the method left getSelection() null`;
+  });
   await run("a18-invariant-status-mapping", async () => {
     assertAcceptanceInvariantMapping(
       ACCEPTANCE_INVARIANTS.filter((invariant) => invariant.id !== "A18"),
@@ -1063,26 +1083,54 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   });
   await run("full-app-smoke", async () => {
     const launch = await invoke<Snapshot>("switchPolicy", "Discovery");
+    expect(launch.policy, "launch policy transition is renderer state").toBe("Discovery");
     const discoveryFacts = launch.fixtureFacts.Discovery;
     expect(discoveryFacts).toBeDefined();
     expect(discoveryFacts?.semanticDigest).toMatch(/^[0-9a-f]{64}$/);
     const launchImage = await capture("#evidence-renderer");
     assertBackingStores(launch, launchImage);
     assertElementPixels(launch, launchImage);
-    await invoke<Snapshot>("switchPolicy", "Reliability");
-    await invoke<Snapshot>("switchPolicy", "Discovery");
-    await invoke<Snapshot>("switchMorphology", "neural");
-    await invoke<Snapshot>("switchOrganization", "indra");
+    const reliability = await invoke<Snapshot>("switchPolicy", "Reliability");
+    expect(reliability.policy, "Reliability policy transition is reflected in the returned snapshot").toBe("Reliability");
+    const discovery = await invoke<Snapshot>("switchPolicy", "Discovery");
+    expect(discovery.policy, "Discovery policy transition is reflected in the returned snapshot").toBe("Discovery");
+    const neural = await invoke<Snapshot>("switchMorphology", "neural");
+    expect(neural.morphology, "morphology transition is reflected in the returned snapshot").toBe("neural");
+    const indra = await invoke<Snapshot>("switchOrganization", "indra");
+    expect(indra.organization, "organization transition is reflected in the returned snapshot").toBe("indra");
     const selected = await invoke<Snapshot>("selectNode", launch.nodes[0] ?? "");
-    expect(selected.selectedNode).toBe(launch.nodes[0]);
-    await invoke<Snapshot>("setLodBand", "macro");
-    await invoke<Snapshot>("setReducedMotion", true);
+    assertRendererSelection(selected, launch.nodes[0] ?? "", "full-app selection");
+    expect(selected.selectedProvenanceIsExact, "the selected renderer element returns its exact CAP-10-derived record").toBe(true);
+    const selectedImage = await capture("#evidence-renderer");
+    const focused = await invoke<Snapshot>("focusElement", launch.nodes[0] ?? "");
+    expect(focused.focusedElement, "focus is read from the mounted renderer").toBe(launch.nodes[0]);
+    const focusedImage = await capture("#evidence-renderer");
+    expect(
+      countDifferingPixels(selectedImage, focusedImage),
+      "full-app focus reaches composited pixels",
+    ).toBeGreaterThan(minimumSelectionPixelDeltaBound());
+    const focusCleared = await invoke<Snapshot>("clearFocus");
+    expect(focusCleared.focusedElement, "clearing full-app focus is read from the mounted renderer").toBeNull();
+    const macro = await invoke<Snapshot>("setLodBand", "macro");
+    expect(macro.lodBand, "LOD transition is reflected in the returned snapshot").toBe("macro");
+    const reduced = await invoke<Snapshot>("setReducedMotion", true);
+    expect(reduced.reducedMotion, "reduced-motion transition is reflected in the returned snapshot").toBe(true);
+    const originalFrame = await capture("#evidence-renderer");
+    const roundTrip = await invoke<VisualStateRoundTripWitness>("restoreVisualStateRoundTrip");
+    const restoredFrame = await capture("#evidence-renderer");
+    expect(roundTrip.restored.nodes, "restored VisualState renders the same node ids").toEqual(roundTrip.original.nodes);
+    expect(roundTrip.restored.edges, "restored VisualState renders the same relation ids").toEqual(roundTrip.original.edges);
+    expect(roundTrip.restored.anchors, "restored VisualState renders the same anchors").toEqual(roundTrip.original.anchors);
+    expect(roundTrip.restored.pickingTarget.pickableNodeIds, "restored VisualState exposes the same live pickable node ids").toEqual(roundTrip.original.pickingTarget.pickableNodeIds);
+    expect(roundTrip.originalPickedNodeId, "source VisualState frame drives the live picking target").toBe(roundTrip.pickedNodeId);
+    expect(roundTrip.restoredPickedNodeId, "restored VisualState frame drives the live picking target").toBe(roundTrip.pickedNodeId);
+    expect(countDifferingPixels(originalFrame, restoredFrame), "restored VisualState reproduces the composited frame").toBe(0);
     expect((await api()).errors).toEqual([]);
     expect(consoleErrors).toEqual([]);
     const shutdown = await invoke<{ readonly canvases: number; readonly framesAfterShutdown: number }>("shutdown");
     expect(shutdown.canvases).toBe(0);
     expect(shutdown.framesAfterShutdown).toBe(0);
-    return "policy, morphology, organization, LOD, and reduced-motion operations completed without recorded errors; shutdown removed all canvases and fired no frames";
+    return "renderer-read selection agreed with the reported selected node and returned its exact CAP-10-derived record; policy, morphology, organization, LOD, and reduced-motion transitions each returned their requested state; focus reached compositor pixels; the serialised VisualState restored an identical frame and live picking-target node; shutdown removed all canvases and fired no frames";
   });
 
   const prior = await loadEvidenceRun();
@@ -1484,6 +1532,12 @@ function assertTopologyUnchanged(reference: Snapshot, actual: Snapshot, operatio
   expect(actual.incidence, `${operation} must preserve edge incidence`).toEqual(reference.incidence);
   expect(actual.anchors, `${operation} must preserve layout anchors`).toEqual(reference.anchors);
   expect(actual.semanticDigest, `${operation} must preserve the semantic digest`).toBe(reference.semanticDigest);
+}
+
+/** This asserts renderer-read selection and does not accept a page-module intent echo. */
+function assertRendererSelection(snapshot: Snapshot, id: string, operation: string): void {
+  expect(snapshot.selectedElement, `${operation} is reported by handle.getSelection()`).toBe(id);
+  expect(snapshot.selectedNode, `${operation} reported selected node agrees with handle.getSelection()`).toBe(snapshot.selectedElement);
 }
 
 function requiredGraphElementId(id: string | undefined, kind: string): string {

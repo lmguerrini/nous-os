@@ -3,6 +3,9 @@ import { digestPayload } from "#engine/canonical.ts";
 const semanticBrand: unique symbol = Symbol("semantic");
 const semanticContents = new WeakMap<object, unknown>();
 
+/** This declares Stellar as the shipping morphology; Neural and Mycelium remain experimental capability for comparison and are not the shipping surface. */
+export const SHIPPING_MORPHOLOGY = "stellar" as const;
+
 /** This hides semantic contents behind an unexported symbol so engine code cannot destructure them. */
 export type Semantic = {
   readonly [semanticBrand]: true;
