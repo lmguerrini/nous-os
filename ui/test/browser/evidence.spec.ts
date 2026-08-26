@@ -10,6 +10,8 @@ import { PALETTES, TEMPERATURES, THEMES } from "#engine/tokens.ts";
 
 type Status = "PASS" | "FAIL" | "NOT_RUN" | "UNKNOWN";
 
+type AcceptanceStatus = "PASS" | "FAIL" | "NOT_RUN" | "SUPERSEDED";
+
 type EvidenceEntry = {
   readonly id: string;
   readonly status: Status;
@@ -362,9 +364,13 @@ type EdgeIdentityPartition = {
 };
 
 type AcceptanceInvariant = {
-  readonly id: "A1" | "A3" | "A7" | "A10" | "A18";
+  readonly id: AcceptanceCriterionId;
+  readonly criterion: string;
   readonly command: string;
   readonly checkIds: readonly string[];
+  readonly unobservedCommands: readonly string[];
+  readonly supersededReason?: string;
+  readonly recordedSupersession?: string;
   /** These map each named assertion to the browser checks that discharge it. */
   readonly assertionMappings: readonly AcceptanceAssertionMapping[];
 };
@@ -372,6 +378,34 @@ type AcceptanceInvariant = {
 type AcceptanceAssertionMapping = {
   readonly assertion: string;
   readonly checkIds: readonly string[];
+};
+
+type AcceptanceCriterionContract = {
+  readonly id: string;
+  readonly criterion: string;
+  readonly command: string;
+  readonly browserCheck?: string;
+  readonly browserAssertions?: readonly string[];
+  readonly unobservedCommands: readonly string[];
+  readonly supersededReason?: string;
+  readonly recordedSupersession?: string;
+};
+
+type AcceptanceCriterion = (typeof ACCEPTANCE_CRITERION_CONTRACT)[number];
+type AcceptanceCriterionId = AcceptanceCriterion["id"];
+
+type AcceptanceInvariantEvidence = AcceptanceInvariant & {
+  readonly status: AcceptanceStatus;
+  readonly detail: string;
+};
+
+type AcceptanceSummary = {
+  readonly passing: boolean;
+  readonly passed: number;
+  readonly failed: number;
+  readonly notRun: number;
+  readonly superseded: number;
+  readonly rule: string;
 };
 
 /** This is the complete shipped state vector; morphology is intentionally not a shipping axis. */
@@ -399,45 +433,152 @@ const A3_SHIPPING_ASSERTIONS = [
   "deterministic seeded sample of 270 shipping states: production picking target and per-id compositor pixel witnesses",
   "no proxy renderer or silently skipped hard cases",
 ] as const;
-const CAPABILITY_CHECKS = [
-  "a1-derived-origin-refusal",
-  "a3-cross-product-picking-pixels",
-  "a7-single-relation-material",
-  "a10-engine-semantic-isolation",
-  "a18-invariant-status-mapping",
-] as const;
-const ACCEPTANCE_INVARIANTS: readonly AcceptanceInvariant[] = [
+const ACCEPTANCE_CRITERION_CONTRACT = [
   {
     id: "A1",
-    command: COMMAND,
-    checkIds: projectCheckIds("a1-derived-origin-refusal"),
-    assertionMappings: [{ assertion: "derived origins are present and non-null", checkIds: projectCheckIds("a1-derived-origin-refusal") }],
+    criterion: "field register · derived origin non-null · unknown keys refused at every nesting level and per construction route",
+    command: "test:browser → a1-derived-origin-refusal; test:unit → contract.test.ts",
+    browserCheck: "a1-derived-origin-refusal",
+    browserAssertions: ["derived origins are present and non-null"],
+    unobservedCommands: ["test:unit → contract.test.ts"],
+  },
+  {
+    id: "A2",
+    criterion: "semanticDigest invariant across palette × temperature × theme × LOD, with a witnessed mutation control",
+    command: "test:unit → contract.test.ts, adapter/projection.test.ts",
+    unobservedCommands: ["test:unit → contract.test.ts, adapter/projection.test.ts"],
   },
   {
     id: "A3",
-    command: COMMAND,
-    checkIds: projectCheckIds("a3-cross-product-picking-pixels"),
-    assertionMappings: A3_SHIPPING_ASSERTIONS.map((assertion) => ({ assertion, checkIds: projectCheckIds("a3-cross-product-picking-pixels") })),
+    criterion: "rendered and pickable id sets, endpoint incidence and anchors invariant across the shipping cross-product, from the picking target and a per-id pixel witness",
+    command: "test:browser → a3-cross-product-picking-pixels",
+    browserCheck: "a3-cross-product-picking-pixels",
+    browserAssertions: A3_SHIPPING_ASSERTIONS,
+    unobservedCommands: [],
+    recordedSupersession: "A3 morphology axis is SUPERSEDED by D-039 §5; this record covers the surviving shipping row only.",
+  },
+  {
+    id: "A4",
+    criterion: "blind monochrome morphology recognition panel",
+    command: "—",
+    unobservedCommands: [],
+    supersededReason: "SUPERSEDED by D-039 §1 — Plan B ships one master. Preserved as CAP-13 research evidence; may never be reported as A4 passed.",
+  },
+  {
+    id: "A5",
+    criterion: "rendered aggregates equal the real aggregate set bidirectionally; membership exact; rejections geometrically outside every window",
+    command: "test:browser → organization; test:unit → engine/organization.test.ts",
+    browserCheck: "organization",
+    unobservedCommands: ["test:unit → engine/organization.test.ts"],
+  },
+  {
+    id: "A6",
+    criterion: "Reliability↔Discovery preserves shared anchors, screen positions and edge control points, camera frozen",
+    command: "test:browser → policy-transition",
+    browserCheck: "policy-transition",
+    unobservedCommands: [],
   },
   {
     id: "A7",
-    command: COMMAND,
-    checkIds: projectCheckIds("a7-single-relation-material"),
-    assertionMappings: [{ assertion: "each relation binds exactly one material", checkIds: projectCheckIds("a7-single-relation-material") }],
+    criterion: "one relation is one material, asserted on the live bound pipeline, with the stacking control failing",
+    command: "test:browser → a7-single-relation-material",
+    browserCheck: "a7-single-relation-material",
+    browserAssertions: ["each relation binds exactly one material"],
+    unobservedCommands: [],
+  },
+  {
+    id: "A8",
+    criterion: "propagation is resampling-invariant on a pinned analytic curve at interior timestamps",
+    command: "test:unit → engine/propagation.test.ts",
+    unobservedCommands: ["test:unit → engine/propagation.test.ts"],
+  },
+  {
+    id: "A9",
+    criterion: "the Reliability predicate re-derived record-for-record; the degenerate 0-node graph fails; each clause has a named witness",
+    command: "test:unit → adapter/projection.test.ts",
+    unobservedCommands: ["test:unit → adapter/projection.test.ts"],
   },
   {
     id: "A10",
-    command: COMMAND,
-    checkIds: projectCheckIds("a10-engine-semantic-isolation"),
-    assertionMappings: [{ assertion: "the engine cannot read semantic graph payloads", checkIds: projectCheckIds("a10-engine-semantic-isolation") }],
+    criterion: "the engine reads only the closed nine-member RENDERED vocabulary and refuses everything else — structural allow-list and access trace and non-isomorphic assignment",
+    command: "test:browser → a10-engine-semantic-isolation",
+    browserCheck: "a10-engine-semantic-isolation",
+    browserAssertions: ["the engine cannot read semantic graph payloads"],
+    unobservedCommands: [],
+  },
+  {
+    id: "A11",
+    criterion: "mapping honesty via an independent Python oracle plus a pinned per-leaf operator registry with expected outcome",
+    command: "pytest; test:unit → adapter/mapping-honesty.test.ts",
+    unobservedCommands: ["pytest", "test:unit → adapter/mapping-honesty.test.ts"],
+  },
+  {
+    id: "A12",
+    criterion: "RENDERED/INSPECTED partition exact over the type-qualified vocabulary; pairwise non-hue separation at a numeric threshold over the nine governed RENDERED states; failed_gate property-tested as unbounded text",
+    command: "test:unit → render2d/renderer.test.ts, engine/partition.test.ts",
+    unobservedCommands: ["test:unit → render2d/renderer.test.ts, engine/partition.test.ts"],
+  },
+  {
+    id: "A13",
+    criterion: "no machine identity in any committed byte; the target universe pinned by git ls-files and asserted equal to the scanned set",
+    command: "pytest → tests/test_public_safety.py",
+    unobservedCommands: ["pytest → tests/test_public_safety.py"],
+  },
+  {
+    id: "A14",
+    criterion: "fixtures equal their recomputation and a separately owned pinned manifest",
+    command: "pytest → tests/test_fixtures.py; test:unit → canonical.test.ts",
+    unobservedCommands: ["pytest → tests/test_fixtures.py", "test:unit → canonical.test.ts"],
+  },
+  {
+    id: "A15",
+    criterion: "LOD preserves morphology, dataset and anchors; hysteresis pinned; a minimum inter-band delta required",
+    command: "test:browser → lod; test:unit → engine/lod.test.ts",
+    browserCheck: "lod",
+    unobservedCommands: ["test:unit → engine/lod.test.ts"],
+  },
+  {
+    id: "A16",
+    criterion: "determinism, semantic/layout and visual layers asserted separately, runtime pinned, across two purged-cache runs",
+    command: "test:review → the capture manifest compared across two runs",
+    unobservedCommands: ["test:review → the capture manifest compared across two runs"],
+  },
+  {
+    id: "A17",
+    criterion: "VisualState round-trips and refuses impossible states, with a refusal test per construction route for every validating rule",
+    command: "test:unit → engine/visual-state.test.ts",
+    unobservedCommands: ["test:unit → engine/visual-state.test.ts"],
   },
   {
     id: "A18",
-    command: COMMAND,
-    checkIds: projectCheckIds("a18-invariant-status-mapping"),
-    assertionMappings: [{ assertion: "every acceptance invariant has a passing mapped check", checkIds: projectCheckIds("a18-invariant-status-mapping") }],
+    criterion: "every invariant has a named runnable command and an evidence.json status; NOT_RUN is never PASS",
+    command: "test:browser → a18-invariant-status-mapping",
+    browserCheck: "a18-invariant-status-mapping",
+    browserAssertions: ["every acceptance invariant has a status bound to a real recorded result"],
+    unobservedCommands: [],
   },
-];
+  {
+    id: "A19",
+    criterion: "reduced motion removes continuous propagation while preserving state comprehension",
+    command: "test:browser → reduced-motion",
+    browserCheck: "reduced-motion",
+    unobservedCommands: [],
+  },
+  {
+    id: "A20",
+    criterion: "Quality Gauntlet against the preregistered and amended Plan-B rubric, semantic truthfulness a hard gate",
+    command: "the Gauntlet record",
+    unobservedCommands: ["the Gauntlet record"],
+  },
+  {
+    id: "A21",
+    criterion: "Full App Smoke over the principal implemented path, per-check statuses, NOT_RUN never aggregated into PASS",
+    command: "test:browser → full-app-smoke",
+    browserCheck: "full-app-smoke",
+    unobservedCommands: [],
+  },
+] as const satisfies readonly AcceptanceCriterionContract[];
+const ACCEPTANCE_INVARIANTS: readonly AcceptanceInvariant[] = ACCEPTANCE_CRITERION_CONTRACT.map((criterion) => acceptanceInvariantFor(criterion));
 const EDGE_SAMPLE_PARAMETERS = Array.from({ length: 33 }, (_, index) => 0.02 + (index * 0.03));
 const FIXTURE_EXPECTATIONS = {
   Discovery: { nodes: 22, edges: 27, sha256: "afdb1a7e50c6aaf12ad53b16dbbb5b72ff1f0d6b3bd471a6a790eca09077cec6" },
@@ -1179,16 +1320,21 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     return `replaced the mounted product's setSelection with a no-op for ${nodeId}; the full-app renderer-selection assertion threw, and restoring the method left getSelection() null`;
   });
   await run("a18-invariant-status-mapping", async () => {
-    assertAcceptanceInvariantMapping(
-      ACCEPTANCE_INVARIANTS.filter((invariant) => invariant.id !== "A18"),
-      entries,
-      [testInfo.project.name],
-    );
-    const withoutCheck = ACCEPTANCE_INVARIANTS.map((invariant) => invariant.id === "A1"
-      ? { ...invariant, checkIds: [] }
-      : invariant);
-    expect(() => assertAcceptanceInvariantMapping(withoutCheck, entries, [testInfo.project.name])).toThrow(/A1 has no runnable check/);
-    return `mapped A1, A3, A7, A10, and A18 to named ${COMMAND} check ids; the no-check control for A1 was rejected, and any mapped NOT_RUN status remains non-passing`;
+    const currentEvidence = acceptanceInvariantEvidence(ACCEPTANCE_INVARIANTS, entries, [testInfo.project.name]);
+    expect(currentEvidence).toHaveLength(21);
+    expect(acceptanceEvidenceById(currentEvidence, "A4").status, "A4 remains distinct from a discharged criterion").toBe("SUPERSEDED");
+    expect(acceptanceEvidenceById(currentEvidence, "A18").status, "A18 cannot report PASS before its own browser result is recorded").toBe("NOT_RUN");
+    const completenessControls = acceptanceCompletenessControlOutputs();
+    expect(completenessControls.missingContractCriterion).toBe("acceptance register is missing contract criteria: A1");
+    expect(completenessControls.unknownRegisterCriterion).toBe("acceptance register names criteria absent from the contract: A22");
+    const statusControls = acceptanceStatusControlOutputs();
+    expect(statusControls.missingBrowserCheck).toBe("A1 maps a browser assertion without a browser check");
+    expect(statusControls.notRunPassing, "NOT_RUN must never aggregate into PASS").toBe(false);
+    expect(statusControls.notRunPassed, "NOT_RUN must not increment the PASS count").toBe(1);
+    expect(statusControls.supersededPassing, "SUPERSEDED must never aggregate into PASS").toBe(false);
+    expect(statusControls.supersededCount, "SUPERSEDED is counted separately from PASS").toBe(1);
+    expect(statusControls.missingCommandStatus, "a command with no recorded browser result is NOT_RUN, not PASS").toBe("NOT_RUN");
+    return `21 contract-derived criteria were registered; missing-contract control: ${completenessControls.missingContractCriterion}; unknown-register control: ${completenessControls.unknownRegisterCriterion}; A4 is SUPERSEDED, A18 was NOT_RUN before this check recorded its own result, the A1 no-browser-check control was rejected, a command with no recorded result returned NOT_RUN, and both NOT_RUN and SUPERSEDED aggregation controls returned passing=false`;
   });
   await run("console", async () => {
     const evidence = await api();
@@ -1267,91 +1413,276 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
   const notRun = checks.filter((entry) => entry.status === "NOT_RUN").length;
   const unknown = checks.filter((entry) => entry.status === "UNKNOWN").length;
   const projectsComplete = REQUIRED_PROJECTS.every((project) => projects[project] !== undefined);
+  const acceptanceInvariants = acceptanceInvariantEvidence(ACCEPTANCE_INVARIANTS, checks, Object.keys(projects));
+  const acceptance = acceptanceSummary(acceptanceInvariants);
   await writeFile(EVIDENCE_FILE, `${JSON.stringify({
     run: prior.run,
     summary: {
-      passing: projectsComplete && checks.every((entry) => entry.status === "PASS"),
+      passing: projectsComplete && checks.every((entry) => entry.status === "PASS") && acceptance.passing,
       projectsComplete,
       requiredChecks: checks.length,
       passed,
       failed,
       notRun,
       unknown,
-      rule: "The evidence run passes only when both DPR projects complete and every recorded check is PASS; PASS, FAIL, NOT_RUN, and UNKNOWN are counted separately.",
+      rule: "The evidence run passes only when both DPR projects complete, every recorded check is PASS, and every acceptance criterion is PASS; PASS, FAIL, NOT_RUN, UNKNOWN, and SUPERSEDED are counted separately.",
     },
+    acceptance,
     projects,
     dprWitnesses,
     pageModule: {
       path: pageModulePath,
       binding: pageModuleBinding,
     },
-    acceptanceInvariants: ACCEPTANCE_INVARIANTS,
+    acceptanceInvariants,
     checks,
   }, null, 2)}\n`);
-  assertAcceptanceInvariantMapping(ACCEPTANCE_INVARIANTS, checks, Object.keys(projects));
+  assertAcceptanceInvariantMapping(ACCEPTANCE_INVARIANTS);
   const incomplete = checks.filter((entry) => entry.status !== "PASS");
   expect(incomplete, "a material browser evidence failure or unavailable required check must fail the run").toEqual([]);
 });
 
-/** This maps every acceptance invariant to runnable evidence checks and treats every non-PASS status as non-discharge. */
-function assertAcceptanceInvariantMapping(
-  invariants: readonly AcceptanceInvariant[],
-  checks: readonly EvidenceEntry[],
-  completedProjects: readonly string[],
-): void {
-  const expected = ["A1", "A10", "A18", "A3", "A7"];
-  const observed = invariants.map((invariant) => invariant.id).sort();
-  const isFullMapping = observed.length === expected.length && observed.every((id, index) => id === expected[index]);
-  if (isFullMapping) {
-    expect(observed).toEqual(expected);
-    expect(expected).toEqual(observed);
+/** This derives the browser register from the complete contract and does not add a criterion outside it. */
+function acceptanceInvariantFor(criterion: AcceptanceCriterion): AcceptanceInvariant {
+  const browserCheck = "browserCheck" in criterion ? criterion.browserCheck : undefined;
+  const browserAssertions = "browserAssertions" in criterion ? criterion.browserAssertions : undefined;
+  const supersededReason = "supersededReason" in criterion ? criterion.supersededReason : undefined;
+  const recordedSupersession = "recordedSupersession" in criterion ? criterion.recordedSupersession : undefined;
+  const checkIds = browserCheck === undefined ? [] : projectCheckIds(browserCheck);
+  const assertions = browserAssertions ?? (browserCheck === undefined ? [] : [criterion.criterion]);
+  return {
+    id: criterion.id,
+    criterion: criterion.criterion,
+    command: criterion.command,
+    checkIds,
+    unobservedCommands: criterion.unobservedCommands,
+    ...(supersededReason === undefined ? {} : { supersededReason }),
+    ...(recordedSupersession === undefined ? {} : { recordedSupersession }),
+    assertionMappings: assertions.map((assertion) => ({ assertion, checkIds })),
+  };
+}
+
+/** This checks the contract's complete numerical domain and does not permit omitted, duplicate, or invented criteria. */
+function assertAcceptanceCriterionContract(contract: readonly AcceptanceCriterionContract[]): void {
+  const expected = Array.from({ length: 21 }, (_, index) => `A${index + 1}`).sort();
+  const observed = contract.map((criterion) => criterion.id).sort();
+  if (new Set(observed).size !== observed.length) {
+    throw new Error("acceptance criterion contract repeats an id");
   }
-  const entries = new Map(checks.map((check) => [check.id, check]));
-  for (const invariant of invariants) {
+  if (observed.length !== expected.length || observed.some((id, index) => id !== expected[index])) {
+    throw new Error(`acceptance criterion contract must contain exactly ${expected.join(", ")}`);
+  }
+}
+
+/** This compares contract and register identifiers in both directions and does not accept a one-way subset. */
+function assertAcceptanceInvariantCompleteness(
+  contract: readonly AcceptanceCriterionContract[],
+  invariants: readonly { readonly id: string }[],
+): void {
+  assertAcceptanceCriterionContract(contract);
+  const contractIds = contract.map((criterion) => criterion.id).sort();
+  const invariantIds = invariants.map((invariant) => invariant.id).sort();
+  const missing = contractIds.filter((id) => !invariantIds.includes(id));
+  const unknown = invariantIds.filter((id) => !contractIds.includes(id));
+  if (missing.length > 0) {
+    throw new Error(`acceptance register is missing contract criteria: ${missing.join(", ")}`);
+  }
+  if (unknown.length > 0) {
+    throw new Error(`acceptance register names criteria absent from the contract: ${unknown.join(", ")}`);
+  }
+  if (new Set(invariantIds).size !== invariantIds.length) {
+    throw new Error("acceptance register repeats a criterion id");
+  }
+}
+
+/** This exercises both register-completeness refusal directions and does not turn either refusal into a passing criterion. */
+export function acceptanceCompletenessControlOutputs(): {
+  readonly missingContractCriterion: string;
+  readonly unknownRegisterCriterion: string;
+} {
+  return {
+    missingContractCriterion: failureMessage(() => assertAcceptanceInvariantCompleteness(
+      ACCEPTANCE_CRITERION_CONTRACT,
+      ACCEPTANCE_INVARIANTS.filter((invariant) => invariant.id !== "A1"),
+    )),
+    unknownRegisterCriterion: failureMessage(() => assertAcceptanceInvariantCompleteness(
+      ACCEPTANCE_CRITERION_CONTRACT,
+      [...ACCEPTANCE_INVARIANTS, { id: "A22" }],
+    )),
+  };
+}
+
+/** This exercises non-passing status controls and does not report a missing browser result as PASS. */
+export function acceptanceStatusControlOutputs(): {
+  readonly missingBrowserCheck: string;
+  readonly notRunPassing: boolean;
+  readonly notRunPassed: number;
+  readonly supersededPassing: boolean;
+  readonly supersededCount: number;
+  readonly missingCommandStatus: AcceptanceStatus;
+} {
+  const withoutCheck = ACCEPTANCE_INVARIANTS.map((invariant) => invariant.id === "A1"
+    ? { ...invariant, checkIds: [] }
+    : invariant);
+  const notRunSummary = acceptanceSummary([{ status: "PASS" }, { status: "NOT_RUN" }]);
+  const supersededSummary = acceptanceSummary([{ status: "PASS" }, { status: "SUPERSEDED" }]);
+  const a18 = ACCEPTANCE_INVARIANTS.find((invariant) => invariant.id === "A18");
+  if (a18 === undefined) {
+    throw new Error("acceptance register is missing A18");
+  }
+  const missingCommand = acceptanceInvariantStatus(
+    { ...a18, checkIds: ["dpr-1/not-recorded-command"], unobservedCommands: [] },
+    new Map<string, EvidenceEntry>(),
+    new Set(["dpr-1"]),
+  );
+  return {
+    missingBrowserCheck: failureMessage(() => assertAcceptanceInvariantMapping(withoutCheck)),
+    notRunPassing: notRunSummary.passing,
+    notRunPassed: notRunSummary.passed,
+    supersededPassing: supersededSummary.passing,
+    supersededCount: supersededSummary.superseded,
+    missingCommandStatus: missingCommand.status,
+  };
+}
+
+/** This validates every browser binding structurally and does not infer a result for an unobserved command. */
+function assertAcceptanceInvariantMapping(invariants: readonly AcceptanceInvariant[]): void {
+  assertAcceptanceInvariantCompleteness(ACCEPTANCE_CRITERION_CONTRACT, invariants);
+  for (const invariant of [...invariants].sort((left, right) => left.id.localeCompare(right.id))) {
     if (invariant.command.trim() === "") {
-      throw new Error(`${invariant.id} has no named runnable command`);
+      throw new Error(`${invariant.id} has no named discharging command`);
+    }
+    if (invariant.supersededReason !== undefined) {
+      if (invariant.command !== "—" || invariant.checkIds.length !== 0 || invariant.unobservedCommands.length !== 0) {
+        throw new Error(`${invariant.id} supersession has a runnable evidence binding`);
+      }
+      continue;
+    }
+    if (invariant.checkIds.length === 0 && invariant.unobservedCommands.length === 0) {
+      throw new Error(`${invariant.id} has no browser check or unobserved command`);
     }
     if (invariant.checkIds.length === 0) {
-      throw new Error(`${invariant.id} has no runnable check`);
+      if (invariant.assertionMappings.length !== 0) {
+        throw new Error(`${invariant.id} maps a browser assertion without a browser check`);
+      }
+      continue;
     }
     if (invariant.assertionMappings.length === 0) {
-      throw new Error(`${invariant.id} has no mapped assertion`);
+      throw new Error(`${invariant.id} has no mapped browser assertion`);
     }
     if (new Set(invariant.assertionMappings.map((mapping) => mapping.assertion)).size !== invariant.assertionMappings.length) {
-      throw new Error(`${invariant.id} maps one assertion more than once`);
+      throw new Error(`${invariant.id} maps one browser assertion more than once`);
     }
     const mappedCheckIds = invariant.assertionMappings.flatMap((mapping) => mapping.checkIds).sort();
     const expectedMappedCheckIds = invariant.assertionMappings.flatMap(() => invariant.checkIds).sort();
     if (mappedCheckIds.length !== expectedMappedCheckIds.length || mappedCheckIds.some((checkId, index) => checkId !== expectedMappedCheckIds[index])) {
-      throw new Error(`${invariant.id} assertion mappings do not cover exactly its runnable checks`);
+      throw new Error(`${invariant.id} assertion mappings do not cover exactly its browser checks`);
     }
     if (invariant.id === "A3") {
       expect(invariant.assertionMappings.map((mapping) => mapping.assertion), "A3 maps every surviving D-039 §5 shipping assertion").toEqual(A3_SHIPPING_ASSERTIONS);
       expect(invariant.checkIds, "A3's narrowed shipping scope is mapped at both required DPRs").toEqual(projectCheckIds("a3-cross-product-picking-pixels"));
     }
-    for (const checkId of invariant.checkIds) {
+    for (const checkId of [...invariant.checkIds].sort()) {
       const [project, checkName] = checkId.split("/");
-      if (project === undefined || checkName === undefined || !REQUIRED_PROJECTS.includes(project as typeof REQUIRED_PROJECTS[number]) || !CAPABILITY_CHECKS.includes(checkName as typeof CAPABILITY_CHECKS[number])) {
-        throw new Error(`${invariant.id} names an unknown runnable check ${checkId}`);
-      }
-      if (!completedProjects.includes(project)) {
-        continue;
-      }
-      const entry = entries.get(checkId);
-      if (entry === undefined) {
-        throw new Error(`${invariant.id} has no evidence status for runnable check ${checkId}`);
-      }
-      if (entry.command !== invariant.command) {
-        throw new Error(`${invariant.id} command does not match evidence check ${checkId}`);
-      }
-      if (entry.status !== "PASS") {
-        throw new Error(`${invariant.id} is not discharged because ${checkId} is ${entry.status}`);
+      if (project === undefined || checkName === undefined || !REQUIRED_PROJECTS.includes(project as typeof REQUIRED_PROJECTS[number])) {
+        throw new Error(`${invariant.id} names an unknown browser check ${checkId}`);
       }
     }
   }
 }
 
-function projectCheckIds(check: typeof CAPABILITY_CHECKS[number]): readonly string[] {
+/** This binds criterion status only to recorded browser checks and does not promote unobserved evidence to PASS. */
+function acceptanceInvariantEvidence(
+  invariants: readonly AcceptanceInvariant[],
+  checks: readonly EvidenceEntry[],
+  completedProjects: readonly string[],
+): readonly AcceptanceInvariantEvidence[] {
+  assertAcceptanceInvariantMapping(invariants);
+  const entries = new Map([...checks].sort((left, right) => left.id.localeCompare(right.id)).map((check) => [check.id, check]));
+  const completed = new Set([...completedProjects].sort());
+  return [...invariants]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((invariant) => ({ ...invariant, ...acceptanceInvariantStatus(invariant, entries, completed) }));
+}
+
+/** This returns an exact emitted criterion by id and does not accept an incomplete evidence register. */
+function acceptanceEvidenceById(
+  evidence: readonly AcceptanceInvariantEvidence[],
+  id: AcceptanceCriterionId,
+): AcceptanceInvariantEvidence {
+  const entry = evidence.find((invariant) => invariant.id === id);
+  if (entry === undefined) {
+    throw new Error(`acceptance evidence is missing ${id}`);
+  }
+  return entry;
+}
+
+/** This resolves one criterion from actual browser entries and does not claim an external suite passed. */
+function acceptanceInvariantStatus(
+  invariant: AcceptanceInvariant,
+  entries: ReadonlyMap<string, EvidenceEntry>,
+  completedProjects: ReadonlySet<string>,
+): { readonly status: AcceptanceStatus; readonly detail: string } {
+  if (invariant.supersededReason !== undefined) {
+    return { status: "SUPERSEDED", detail: invariant.supersededReason };
+  }
+  const checkStatuses = [...invariant.checkIds]
+    .sort()
+    .map((checkId) => ({ checkId, entry: entries.get(checkId), completed: completedProjects.has(checkId.split("/")[0] ?? "") }));
+  const failed = checkStatuses.filter(({ entry }) => entry?.status === "FAIL");
+  if (failed.length > 0) {
+    return {
+      status: "FAIL",
+      detail: `${invariant.command} recorded FAIL for ${failed.map(({ checkId }) => checkId).join(", ")}`,
+    };
+  }
+  const unavailable = checkStatuses.filter(({ entry, completed }) => !completed || entry === undefined || entry.command !== COMMAND || entry.status !== "PASS");
+  if (unavailable.length > 0) {
+    return {
+      status: "NOT_RUN",
+      detail: `${invariant.command} has no recorded PASS for ${unavailable.map(({ checkId }) => checkId).join(", ")}`,
+    };
+  }
+  if (invariant.unobservedCommands.length > 0) {
+    return {
+      status: "NOT_RUN",
+      detail: `${invariant.command} has no browser-readable recorded result for ${[...invariant.unobservedCommands].sort().join("; ")}`,
+    };
+  }
+  return {
+    status: "PASS",
+    detail: `${invariant.command} recorded PASS for ${checkStatuses.map(({ checkId }) => checkId).join(", ")}`,
+  };
+}
+
+/** This aggregates only explicit PASS values and does not treat NOT_RUN or SUPERSEDED as a pass. */
+function acceptanceSummary(entries: readonly Pick<AcceptanceInvariantEvidence, "status">[]): AcceptanceSummary {
+  const sorted = [...entries].sort((left, right) => left.status.localeCompare(right.status));
+  const passed = sorted.filter((entry) => entry.status === "PASS").length;
+  const failed = sorted.filter((entry) => entry.status === "FAIL").length;
+  const notRun = sorted.filter((entry) => entry.status === "NOT_RUN").length;
+  const superseded = sorted.filter((entry) => entry.status === "SUPERSEDED").length;
+  return {
+    passing: sorted.length > 0 && sorted.every((entry) => entry.status === "PASS"),
+    passed,
+    failed,
+    notRun,
+    superseded,
+    rule: "Acceptance passes only when every criterion is PASS; NOT_RUN and SUPERSEDED are distinct non-passing statuses.",
+  };
+}
+
+/** This captures one expected control failure and does not convert a passing control into evidence. */
+function failureMessage(body: () => void): string {
+  try {
+    body();
+  } catch (error: unknown) {
+    return message(error);
+  }
+  throw new Error("expected control failure did not occur");
+}
+
+function projectCheckIds(check: string): readonly string[] {
   return REQUIRED_PROJECTS.map((project) => `${project}/${check}`);
 }
 
