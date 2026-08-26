@@ -19,6 +19,10 @@ These are constraints the code is tested against, not aspirations.
   one that passed, and an absent measurement is never reported as zero.
 - **Nothing becomes canonical because a machine produced it.** Generated
   material lands in a candidate layer and is promoted only by a person.
+- **The names are part of the product.** What each concept is called, and which
+  concepts have earned a name from the vocabulary of knowledge rather than of
+  software, is written down in `docs/VOCABULARY.md` and checked against the code by
+  the test suite.
 - **No complexity without evidence.** A new mechanism needs a named failure
   mode, a reproducible test, and an observed win before it earns a place.
 
@@ -36,7 +40,10 @@ These are constraints the code is tested against, not aspirations.
 | Measuring instrument and cross-language baseline | present |
 | Context compilation, with a measured default | present |
 | Authority boundary for governed operations | present |
-| Interfaces | not yet built |
+| Renderer-independent projections of the graph | present |
+| Visual engine and a 2D renderer over those projections | present |
+| Vocabulary: the two registers of names, and the map between them | present |
+| Command-line and other interfaces | not yet built |
 
 The command surface is currently `--version`. Operations will arrive with the
 work that defines and tests them.
@@ -150,7 +157,16 @@ src/
     ├── discovery.py      bridge candidates, gates, and append-only rounds
     ├── projection.py     renderer-independent knowledge graph projections
     └── operations.py     registration of the project's governed operations
+ui/
+└── src/
+    ├── adapter/          projections read into the visual model, meaning kept sealed
+    ├── engine/           renderer-independent visual model, layout, and the axes
+    │                     of presentation: morphology, organization, detail, colour
+    └── render2d/         the 2D renderer that ships today, and only it knows WebGL
 tests/                    the suite described above
+docs/
+└── VOCABULARY.md         the technical and epistemic registers, and the map between
+                          them; checked against the code by the suite
 fixtures/
 └── synthetic/
     ├── MANIFEST.jsonl    path and content digest per document
@@ -159,6 +175,12 @@ fixtures/
     ├── corpus/           public, invented test documents
     └── bilingual/        the same subjects in two languages
 ```
+
+The visual layer is deliberately split so that meaning and drawing cannot leak into
+each other: `engine/` holds nothing specific to a rendering technology, and the
+renderer is handed a much smaller view of the graph than the one it is given —
+with what it reads recorded, so that reading too much is detectable rather than
+merely discouraged.
 
 ## License
 
