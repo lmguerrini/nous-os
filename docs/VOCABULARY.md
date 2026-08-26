@@ -7,10 +7,17 @@ true. It describes the concepts that **exist in the code today**, under the name
 actually uses, and records which of them have earned a second, epistemic name — and which have
 not.
 
-It is checked, not asserted. `tests/test_vocabulary.py` reads this file, resolves every
-`path:line` reference against the tracked tree, and fails when a name here no longer matches a
-name there. A vocabulary document nothing verifies is a document that goes quietly stale, so this
-one is wired to the build.
+Much of it is checked rather than asserted, and the parts that are not are marked.
+`tests/test_vocabulary.py` reads this file and fails the build when it drifts from the code: every
+`path:line` reference must resolve, every reference in the register must land on a *definition* of
+the term rather than merely a line mentioning it, every member list must match the enumeration it
+claims to describe, every closed vocabulary in the code must appear here, and the excluded
+vocabulary below must be absent from the canonical layer.
+
+**What is not checked is named, not hidden.** The prose in the fourth column, the reasoning in every
+candidate record, and each judgement about whether a word is accurate are all unverifiable by a
+test, and every such row says so in its own basis column. The checker also lists, in its own source,
+the vocabulary shapes it cannot yet detect — an honest limitations list rather than a silent gap.
 
 ## The rule this document applies
 
@@ -22,8 +29,15 @@ An epistemic term is adopted only when **all three** hold:
 
 **If adopting a name would require restructuring, the name is rejected — never the structure.**
 
-The rule was written down before any term was considered, which is the only condition under which
-such a rule means anything.
+Each candidate below records which of the three it failed, as **C1**, **C2** or **C3**. The
+criteria are asked in order and the first failure decides; a candidate is not carried past its
+failure to look for a rescue.
+
+The rule was fixed before any term was considered. **A reader of this repository cannot verify
+that**, and it is said here as a claim rather than as evidence: the ordering is recorded outside this
+tree, and this document arrived in one commit. What a reader *can* check is the consequence — that no
+term below was adopted whose adoption moved a single line of source, and that the diff proving it is
+in this repository's history.
 
 ## The result, stated first
 
@@ -58,10 +72,17 @@ that disagrees with the row's own contents fails the build.
 ## Technical register
 
 The closed vocabularies. NousOS records typed classes and never a numeric confidence, so these
-enumerations *are* the places the product's meaning lives — which is why the check over this
-table is total: every enumeration in `src/nous_os/` and every closed string vocabulary in
-`ui/src/engine/` must appear here, and the check derives that set from the source rather than
-from a list anyone maintains.
+enumerations *are* the places the product's meaning lives — which is why the check over this table
+is total over a **stated** surface: every enumeration in `src/nous_os/`, and every **named,
+exported** closed string vocabulary in `ui/src/engine/`, must appear here. The check derives both
+sets by walking the source, never from a list anyone maintains, so a concept added to the code and
+left out of this table turns the build red.
+
+**The surface is stated because it is not everything.** A closed set of strings written inline as a
+field's type — rather than given a name and exported — is not a named vocabulary and is not covered;
+the same is true of a few exotic declaration shapes, which the checker enumerates in its own source
+so that the gap is findable. Those are limits of the check, and they are recorded here rather than
+left for a reader to discover by being wrong.
 
 <!-- vocabulary:technical -->
 
@@ -141,6 +162,7 @@ from a list anyone maintains.
 | `EngineGraph` | `ui/src/engine/contract.ts:143` | — | The much smaller view the drawing layer is actually handed. |
 | `EngineAccessTrace` | `ui/src/engine/contract.ts:149` | — | A record of what the drawing layer read, so that reading too much is detectable. |
 | `Coordinates` | `ui/src/engine/contract.ts:32` | — | A position. Which space it is in is not carried by the type. |
+| `VisualStateValidationRule` | `ui/src/engine/visual-state.ts:68` | `field-register` · `known-element-id` · `closed-vocabulary` · `reduced-motion-boolean` · `finite-camera-number` · `positive-camera-ratio` · `bounds-axis-pair` · `increasing-bounds-axis` | The eight named ways a saved view can be malformed. A refusal carries which rule it broke, so a rejection is diagnosable rather than merely negative. |
 | `LayoutAnchors` | `ui/src/engine/layout.ts:7` | — | Where elements sit, in world units, computed against a fixed reference frame. |
 
 <!-- /vocabulary:technical -->
@@ -160,7 +182,7 @@ here rather than left to be noticed.
 
 | Epistemic term | Verdict | Cardinality | Technical terms | Basis |
 |---|---|---|---|---|
-| `canon` | ADOPT | level-spanning | `LifecycleState` · `Assertion` · `Ledger` · `Snapshot` | SEMANTIC |
+| `canon` | ADOPT | level-spanning | `LifecycleState` · `Assertion` | SEMANTIC |
 | `EpistemicClass` | ADOPT | 1:1 | `EpistemicClass` | SEMANTIC |
 | `Noema` | REJECT | NO-MAPPING | — | SEMANTIC |
 | `Synesis` | REJECT | NO-MAPPING | — | SEMANTIC |
@@ -201,10 +223,10 @@ judgement sits on top of those facts and is offered as a judgement.
 
 ### Candidate — `canon`
 
-- **Proposed boundary:** the authority line itself — `LifecycleState` at `src/nous_os/canonical.py:42`, whose `CANONICAL` member is the standing a record has; the `Assertion` at `src/nous_os/canonical.py:130` that holds it; and the files that *are* the canon rather than describing it, `Ledger` at `src/nous_os/ledger.py:161` and `Snapshot` at `src/nous_os/snapshots.py:43`.
+- **Proposed boundary:** the authority line itself — `LifecycleState` at `src/nous_os/canonical.py:42`, the type whose whole job is to draw that line, and the `Assertion` at `src/nous_os/canonical.py:130`, the thing that has a position relative to it. **Two terms, not four.** An earlier draft also mapped `Ledger` and `Snapshot`, on the ground that those files *are* the canon. That was an overreach and it contradicted this document's own left-technical row, which calls the same two "the substrate rather than the meaning" — and rightly, because the same snapshot bytes back canonical, candidate and rejected claims indifferently. A storage term neutral about standing does not express a standing. Both stay technical.
 - **Evidence the boundary exists:** the line is enforced in four places that do not know about each other. Promotion is a separate act with its own record; the candidate store states it has no authority over canon; the rebuildable index can be deleted without loss; and a record's lifecycle state is deliberately excluded from its content digest, so moving between candidate and canon changes standing without changing what was said.
 - **Intended meaning:** a canon is the body of material a community treats as authoritative, as distinct from material that merely exists. The word carries exactly the right implication — that inclusion is a decision someone made, not a property the material has on its own.
-- **Why the mapping is accurate or inaccurate:** accurate, and unusually so. The one thing a reader must understand about this system is that being stored and being authoritative are different, and that only a person crosses the gap. "Canon" says that in one word to anyone who has met the word anywhere else. The alternative reading — canon as a fixed, closed, finished list — is the only inaccuracy, and it is corrected by the neighbouring vocabulary rather than by choosing a different word.
+- **Why the mapping is accurate or inaccurate:** accurate, and unusually so. The one thing a reader must understand about this system is that being stored and being authoritative are different, and that only a person crosses the gap. "Canon" says that in one word to anyone who has met the word anywhere else. The alternative reading — canon as a fixed, closed, finished list — is the only inaccuracy, and it is corrected by the neighbouring vocabulary rather than by choosing a different word. **The obvious objection, answered here rather than left for a reader to raise:** this document rejects `Mneme` partly because the stores it would cover do not share one standing, and `LifecycleState` names all three standings while an `Assertion` may hold any of them — so is `canon` doing the same thing? No, and the difference is the whole answer. `Mneme` claimed a *family*: these stores are the same kind of thing. They are not. `canon` claims a *locus*: these two are where the distinction is drawn and where it applies. **A type that names both sides of a distinction is evidence the distinction is drawn there**, not evidence the term is confused.
 - **Structural change required:** none. The word is already the module name, the enum member, the exception family and the first line of the README. Adoption is a literal no-op, which is what criterion 3 asks for and almost never gets.
 - **Verdict:** ADOPT
 - **Failed at:** —
@@ -213,7 +235,7 @@ judgement sits on top of those facts and is offered as a judgement.
 ### Candidate — `EpistemicClass`
 
 - **Proposed boundary:** `EpistemicClass` at `src/nous_os/discovery.py:79`, with `EXPLICIT`, `DERIVED` and `SPECULATIVE`, carried into projections at `src/nous_os/projection.py:455` and into the drawing layer as one of the three governed rendered vocabularies at `ui/src/engine/contract.ts:76`.
-- **Evidence the boundary exists:** it survives three layers unchanged. It is a member of the rubric a proposed link is judged against; it is one of the four predicates an omission policy admits on; and it is one of only three enumerations the drawing layer is permitted to read at all, out of the eleven the system pins.
+- **Evidence the boundary exists:** the **type** survives three layers unchanged. It is a member of the rubric a proposed link is judged against; it is one of the four predicates an omission policy admits on; and it is one of only three enumerations the drawing layer is permitted to read at all. The system pins fourteen, in two sets the code keeps **disjoint** and refuses to let overlap: three that may be rendered, of which this is one, and eleven that may be inspected on demand but never drawn. **What does not survive the third layer is the distinction**: under the palette that ships, two of the three members composite to the same pixel values, so a viewer cannot tell `derived` from `speculative` by looking. That is a defect in the renderer, recorded as one, and it is stated here because citing "survives three layers" as evidence for the *boundary* while the *distinction* dissolves at the last one would be exactly the overclaim this document exists to avoid. The boundary is real in the two layers that carry meaning; the third is where it is currently lost.
 - **Intended meaning:** an epistemic class says *how a statement is known*, not how strongly it is believed. Explicit means the source said it. Derived means it follows. Speculative means it was proposed and is not established.
 - **Why the mapping is accurate or inaccurate:** accurate, and it is the clearest case in the codebase of a name that arrived with its structure. The distinction is genuinely epistemic — three ways of standing to evidence — and it is expressed as three named members rather than a number, which is the same commitment the system makes everywhere else. The one risk is that a reader takes the three members for an ordering. They are not ordered, nothing compares them, and the neighbouring enumerations carry the same warning in their own docstrings.
 - **Structural change required:** none. The term is the type's name.
@@ -229,18 +251,18 @@ judgement sits on top of those facts and is offered as a judgement.
 - **Why the mapping is accurate or inaccurate:** inaccurate on the term's own central commitment. There is no act of knowing anywhere in this system. It records *when* it learned something and deliberately not how or by whom; origin is a closed label precisely because the act cannot be recovered. Content here is a function of bytes alone. Calling it a noema would tell a reader the system stores meanings-as-they-appeared-to-someone, when it stores claims-with-cited-bytes — the exact misreading that citations exist to prevent.
 - **Structural change required:** yes. There is no type to carry the name — the content is returned as a plain mapping — so adoption would create immediate pressure to introduce one and route three call sites through it. That is restructuring to fit a name.
 - **Verdict:** REJECT
-- **Failed at:** Q3
+- **Failed at:** C2
 - **Consequence for product terminology:** none. The product keeps saying assertion, content, and content digest.
 
 ### Candidate — `Synesis`
 
 - **Proposed boundary:** proposed not for a symbol but for a stance the code takes repeatedly — *judge and report; do not command*. Tested against conflict reporting at `src/nous_os/temporal.py:108`, promotion at `src/nous_os/adjudication.py:147`, link acceptance at `src/nous_os/discovery.py:216`, and omission policy at `src/nous_os/projection.py:448`.
-- **Evidence the boundary exists:** the stance is real and recurs in at least five places, each stating it independently in its own words. What does not exist is a boundary object. No type, no protocol, no shared base, no module gathers them. The recurrence is discoverable only by reading five separate docstrings.
+- **Evidence the boundary exists:** the stance is real and recurs in the four places named above, each stating it independently in its own words. What does not exist is a boundary object. No type, no protocol, no shared base, no module gathers them. The recurrence is discoverable only by reading four separate docstrings.
 - **Intended meaning:** in Aristotle, synesis is the virtue of judging well what another says about practical matters, expressly contrasted with the prescriptive virtue that commands. Separately, and unhelpfully, "synesis" is an established grammatical term for agreement by sense rather than by form — which is the meaning a reader finds first.
 - **Why the mapping is accurate or inaccurate:** inaccurate for two independent reasons. First, the five sites are not the same act: conflict reporting *withholds* judgement and refuses to rank, while promotion *records someone else's* judgement and writes no content of its own. One term over both would say they are the same thing. Second, and worse, naming the adjudication layer for a judging faculty would claim the *system* possesses one — when that module exists precisely to establish that it does not, and that the judgement is always a person's.
-- **Structural change required:** yes. Making the term resolve to anything requires the five sites to become a family that has no independent engineering reason to exist.
+- **Structural change required:** yes. Making the term resolve to anything requires the four sites to become a family that has no independent engineering reason to exist.
 - **Verdict:** REJECT
-- **Failed at:** Q1
+- **Failed at:** C1
 - **Consequence for product terminology:** none. The commitment stays stated where it is enforced, which is also where a reader who needs it will be standing.
 
 ### Candidate — `Mneme`
@@ -249,9 +271,9 @@ judgement sits on top of those facts and is offered as a judgement.
 - **Evidence the boundary exists:** the shape is real and is the best-evidenced of the candidates. All six are append-only, all six are read back in file order, and each is explicit in its own docstring about what authority it does and does not have.
 - **Intended meaning:** Greek *mneme*, memory as retention — a state, the persisting trace of something past, classically distinguished from the active search that recovers it. The variant spelling sometimes floated is not a Greek noun at all but a back-formation from an adjectival stem.
 - **Why the mapping is accurate or inaccurate:** inaccurate, on the one distinction the system cannot afford to blur. The six stores are **not the same kind of thing**: two of them *are* canon — canon is files, and those files are the canon — while two others explicitly are not and have no route to it. A single word across all six says they share a standing they do not share, and what has authority versus what does not is the load-bearing distinction in the whole design. Two further objections stand on their own: the code already uses "memory" as a narrower technical name, so elevating a memory-word gives it two scopes at once; and "memory" currently connotes machine memory that shapes future behaviour, which is exactly the connotation one of these classes was built to refuse.
-- **Structural change required:** yes. For the term to name a family, the family must be one — a shared protocol or base that does not exist, and whose creation would have to decide whether canon-bearing and non-canon-bearing stores may sit together. That is weakening an invariant to accommodate a word.
+- **Structural change required:** no, and an earlier draft said yes on a bad argument. It reasoned that "for the term to name a family, the family must be one" — a shared protocol or base that does not exist. **That test is not the one this document uses.** `canon` is granted a level-spanning mapping over terms that share no protocol either; inventing `level-spanning` was precisely a way of saying a register may name across levels without a type to hang the name on. Refusing `Mneme` a shape granted to `canon` would be an inconsistency, so the structural objection is withdrawn. **The verdict does not change**, because it never depended on that argument: the accuracy objection above is sufficient on its own, and it is where the rejection actually rests.
 - **Verdict:** REJECT
-- **Failed at:** Q3
+- **Failed at:** C2
 - **Consequence for product terminology:** none. Ledger, snapshot store, candidate store, registry and rejection memory each already say what their object is, and none invites a reader to think a store has authority it lacks.
 
 ### Candidate — `Anamnesis`
@@ -262,18 +284,18 @@ judgement sits on top of those facts and is offered as a judgement.
 - **Why the mapping is accurate or inaccurate:** inaccurate on the first sense and redundant on the second. NousOS retrieves documents the user actually ingested, whose bytes are stored under their own hash; nothing is innate, and the Platonic claim is flatly false of the system. On the Aristotelian sense the mapping is fair — but "retrieval" and "search" are already exact, already universally understood, and already the words the code and the README use. Adopting a term that needs a footnote disambiguating three senses in order to say "search" is a strict loss. It is also worth recording *why* this candidate arose: only as the natural pair to `Mneme`. A term whose support is symmetry with a rejected term has no support.
 - **Structural change required:** no. It would sit as a label over a split that already exists, and criterion 3 would pass. Criterion 2 fails, and one failure is enough.
 - **Verdict:** REJECT
-- **Failed at:** Q3
+- **Failed at:** C2
 - **Consequence for product terminology:** none. Retrieval, compilation and reasoning remain the three stage names.
 
 ### Candidate — `Epoche`
 
-- **Proposed boundary:** proposed for the third answer — `UNKNOWN` and `UNDETERMINED` across `src/nous_os/canonical.py:56`, `src/nous_os/discovery.py:58`, `src/nous_os/temporal.py:81` and `src/nous_os/projection.py:73`.
-- **Evidence the boundary exists:** it is one of the system's stated principles and it is enforced everywhere, in two spellings across seven enumerations: a check that did not run is never recorded as one that passed, and an absent measurement is never reported as zero.
+- **Proposed boundary:** **two were tested.** First the third answer — `UNKNOWN` and `UNDETERMINED` across `src/nous_os/canonical.py:56`, `src/nous_os/discovery.py:58`, `src/nous_os/temporal.py:81` and `src/nous_os/projection.py:73`. Then, after an independent reviewer pointed out that the first was the wrong place to look, `Verdict.DEFER` at `src/nous_os/adjudication.py:42` — a person deliberately declining to decide — which is much the better fit and which an earlier draft never considered.
+- **Evidence the boundary exists:** it is one of the system's stated principles and it is enforced everywhere, in two spellings across six enumerations — `UNKNOWN` in `KeyOrigin`, `SupportClass` and `GateOutcome`, `UNDETERMINED` in `TemporalDisposition`, `BridgeDisposition` and `Overlap` — and the principle is stated plainly: a check that did not run is never recorded as one that passed, and an absent measurement is never reported as zero.
 - **Intended meaning:** in the sceptics and later in Husserl, epoche is the deliberate *suspension of judgement* — an act the enquirer performs, setting a question aside.
-- **Why the mapping is accurate or inaccurate:** inaccurate, and in a way that inverts the meaning. Epoche is something a knower *does*; NousOS's third answer is something the *evidence* fails to do. `UNDETERMINED` does not mean the system chose not to decide — it means the available validity bounds establish nothing. Naming it for an act of withholding would attribute a decision to a system that made none. And the accurate phrasing is already published, in plain English, in the README: unknown is a third answer.
+- **Why the mapping is accurate or inaccurate:** **against the third answer, inaccurate in a way that inverts the meaning.** Epoche is something a knower *does*; the third answer is something the *evidence* fails to do. `UNDETERMINED` does not mean the system chose not to decide — it means the available validity bounds establish nothing. Naming it for an act of withholding would attribute a decision to a system that made none. And the accurate phrasing is already published, in plain English, in the README: unknown is a third answer. **Against `DEFER`, the objection is different and narrower.** Here there genuinely is a knower, the act genuinely is a suspension, and it is deliberate — the enum's own docstring insists deferral is an outcome and never latent permission, which is exactly epoche's character. The boundary is real, stable, and adopting a label for it would move nothing. It fails on accuracy all the same, because **the word carries two live senses that point in different directions**: the sceptical sense, suspension of assent, fits well; the phenomenological sense, bracketing existence-claims about the world, does not fit at all, and a reader is at least as likely to arrive with the second. A term with two established meanings of which only one fits is ambiguous *for this boundary*, and criterion 2 asks for accuracy, not for the existence of a reading under which it works. The same test rejected `Krisis` and `Anamnesis`; adopting here would contradict both. **This is a recorded disagreement, not a settled question.** One independent reviewer held that `DEFER` satisfies all three criteria and should have been adopted, or explicitly refused; the other, asked to argue for adopting something, concluded no term should be adopted and called this rejection the best-reasoned in the document. The first was right that the boundary was never tested, and that omission is repaired above. The verdict is the second's, for the ambiguity reason stated here, and a later reader who weighs the sceptical sense more heavily has everything needed to reopen it.
 - **Structural change required:** no, but the question does not arise once criterion 2 fails.
 - **Verdict:** REJECT
-- **Failed at:** Q3
+- **Failed at:** C2
 - **Consequence for product terminology:** none. One observation is carried forward as ordinary technical work rather than as a naming decision: the third answer is spelled two ways, `UNKNOWN` and `UNDETERMINED`, with no stated rule distinguishing them. That is a technical naming defect, recorded below.
 
 ### Candidate — `Krisis`
@@ -284,7 +306,7 @@ judgement sits on top of those facts and is offered as a judgement.
 - **Why the mapping is accurate or inaccurate:** accurate in etymology and redundant in practice. The transition is already named, three times, by words that carry no ambiguity: promotion, the promotion record, and the promotability test. The modern English "crisis" has drifted far enough from the Greek that the term would mislead more readers than it would inform, and a name whose accuracy depends on the reader knowing the etymology is not accurate for the audience. This candidate came closest to a deferral and is rejected on a stated reason rather than a shrug.
 - **Structural change required:** no.
 - **Verdict:** REJECT
-- **Failed at:** Q3
+- **Failed at:** C2
 - **Consequence for product terminology:** none.
 
 ### Candidate — `Doxa`
@@ -295,7 +317,7 @@ judgement sits on top of those facts and is offered as a judgement.
 - **Why the mapping is accurate or inaccurate:** there is nothing to be accurate about, and that is the finding. NousOS implements no justification axis at all. This is the same commitment it makes by refusing numeric confidence: the system records *what kind* of support exists and declines to say how much. Recording no-mapping here is a positive statement about the design, not a gap in this document.
 - **Structural change required:** yes, and disqualifyingly — adopting the term would mean building the axis it names.
 - **Verdict:** NO-MAPPING
-- **Failed at:** Q1
+- **Failed at:** C1
 - **Consequence for product terminology:** none, except that this row is the one to point at when someone asks why there is no confidence score.
 
 <!-- /vocabulary:candidates -->
@@ -304,9 +326,10 @@ judgement sits on top of those facts and is offered as a judgement.
 
 ## Primitives deliberately left technical
 
-Every term below is a real boundary with no epistemic name, and that is the intended end state.
-The most common reason is the best one: **the existing English is already exact**, and a
-specialised term would trade clarity for atmosphere.
+Every term below is a real boundary with **no epistemic name of its own**, and that is the intended
+end state. The most common reason is the best one: **the existing English is already exact**, and a
+specialised term would trade clarity for atmosphere. Nothing appears both here and in the epistemic
+mapping above; a term is in one register or the other, and the build refuses a term in both.
 
 <!-- vocabulary:left-technical -->
 
@@ -323,10 +346,11 @@ specialised term would trade clarity for atmosphere.
 | `RoundStatus` · `RunStatus` · `Outcome` | Facts about whether something executed. Not knowledge claims. |
 | `Overlap` · `TemporalDisposition` | Answers about intervals. "Time" is not an epistemic register. |
 | `QuarantineReason` | Four named attack shapes. A security vocabulary, correctly kept separate. |
+| `VisualStateValidationRule` | Names eight ways a saved view can be malformed. A validation vocabulary, about well-formedness rather than about knowledge. |
 | `NodeKind` · `EdgeKind` · `Side` | The graph vocabulary. Node and edge are exact, universal, and carry no meaning they should not. |
 | `BridgeDisposition` | What a whole rubric vector amounts to. Naming it epistemically would invite reading it as a confidence. |
 | `PolicyId` · `ProjectionPolicy` | An omission policy. See the note below on what its two members are called. |
-| `Assertion` · `Citation` · `Locator` | Already the standard words, in law, scholarship and software alike. |
+| `Citation` · `Locator` | Already the standard words, in law, scholarship and software alike. `Assertion` sat here in an earlier draft while also being mapped by `canon`; a term cannot be both, and being mapped is the stronger statement. |
 | `Snapshot` · `SnapshotStore` · `Ledger` · `LedgerEntry` | Storage facts. Deliberately mundane, because they are the substrate rather than the meaning. |
 | `Proposal` · `CandidateStore` | "Candidate" and "proposal" already say the thing has no standing. |
 | `HumanDecision` · `PromotionRecord` | The plainest available words for the most important act in the system. |
@@ -343,7 +367,7 @@ specialised term would trade clarity for atmosphere.
 | `KnowledgeState` | The one place a knowledge word is already the technical word; nothing is added by a second. |
 | `TemporalQuestion` · `ProjectionNode` · `ProjectionEdge` · `ProjectionIR` · `SCHEMA_VERSION` | The renderer-independent graph. Kept deliberately neutral so that no drawing technology can colonise the domain vocabulary. |
 | `VisualRole` · `RenderedState` · `Semantic` · `VisualGraph` · `EngineGraph` · `EngineAccessTrace` · `Coordinates` · `LayoutAnchors` | The visual boundary. These describe what may be *seen*, never what is *known*, and blurring that is the specific risk this whole document exists to avoid. |
-| `Morphology` · `Organization` · `LodBand` · `Palette` · `Temperature` · `Theme` | Presentation axes. They admit nothing, order nothing, and mean nothing; giving any of them an epistemic name would be the plainest possible category error. |
+| `Morphology` · `Organization` · `LodBand` · `Palette` · `Temperature` · `Theme` | Presentation axes. They admit no element and assign no meaning; giving any of them an epistemic name would be the plainest possible category error. They do order things *visually* — a morphology scales a node by how connected it is — but that ordering is structural, computed from the graph's own shape, and it is never an ordering of standing or of belief. |
 
 <!-- /vocabulary:left-technical -->
 
@@ -358,8 +382,13 @@ A projection is produced under a policy that decides **what is left out**. There
 - **Discovery** — admits everything: all seven node kinds, all temporal answers including
   undetermined, all rubric dispositions, and all three epistemic classes.
 
-Both names are kept, and they are the user-facing names as well as the internal ones. Two things
-are worth saying plainly, because the names slightly overstate what the code does.
+**These are internal identifiers today.** The code says so where it declares them, and no
+user-facing surface exists in this repository — there is an adapter, an engine and a renderer, and
+no view that shows either word to a person. What follows is therefore a **recommendation for the
+label to use if and when such a surface exists**, not a report of a decision already made in code.
+
+The recommendation is to keep both words. Two things are worth saying plainly, because the names
+slightly overstate what the code does.
 
 **The difference between them is omission, not interpretation.** The policy type says so itself:
 it cannot change what anything means or what time answers. Discovery does not find anything that
@@ -370,19 +399,33 @@ re-derivable from the other.
 as speculative; an undetermined interval is *typed* as undetermined. Nothing is discarded as
 untrustworthy. The narrower view is narrower, not truer.
 
-A different pair of labels was available and was rejected for a specific reason: introducing a
+**Alternatives were considered and lose on the same ground.** A more literal pair — naming the
+narrow view for what it admits and the wide one for admitting everything — describes the mechanism
+more exactly, and an independent reviewer argued for exactly that. It is rejected because a
 user-facing word that differs from the identifier in the code creates two vocabularies for one
-concept, which is the failure this document was written to reduce. Keeping the identifier as the
-label costs nothing, and the risk of overstatement is closed by saying what the words mean here.
+concept, and this document records thirteen places where that has already happened by accident;
+adding a seventeenth deliberately, to gain precision that two sentences of prose supply for free, is
+the wrong trade. **The reviewer's objection stands recorded rather than resolved:** the names do
+overstate, keeping them is a judgement, and the argument for changing them is written down here so
+that a future reader can weigh it instead of having to rediscover it.
 
 ---
 
 ## Names that are not truthful today
 
-These are real defects found while assembling the register. **None is repaired here**, because
-every repair is a code change and this exercise changes no structure — that is the rule, and a
-naming pass that quietly renamed things would be the exact failure the rule prevents. They are
-recorded so that the next change to touch each area does not have to rediscover them.
+These are real defects found while assembling the register. **None is repaired here**, and the
+honest reason is narrower than the one first written down. It is not that every repair would be
+structural — several would not be. Making two version strings check each other adds a test and
+renames nothing; centralising one duplicated message is ordinary housekeeping. Others genuinely are
+structural: separating the coordinate spaces, or splitting a name that covers two objects, changes
+types that other code depends on.
+
+**The reason that covers all thirteen is that a repair is a code change, and a code change belongs
+in a revision reviewed as a code change.** This one is reviewed as a document. Folding renames into
+it would mean shipping source edits under a review that examined prose, which is how unrelated
+changes ride along unnoticed — and doing it while invoking a rule against restructuring would be
+worse than doing it plainly. They are recorded so the next change to touch each area does not have
+to rediscover them.
 
 <!-- vocabulary:untruthful -->
 
@@ -393,13 +436,14 @@ recorded so that the next change to touch each area does not have to rediscover 
 | 3 | `RunStatus` and `RoundStatus` are the same two-member vocabulary with the same wire values under two names. | `src/nous_os/measure.py:55` and `src/nous_os/discovery.py:96` |
 | 4 | "Bridge" covers two unrelated objects: a judged candidate link with citations and a rubric, and a bare measurement fixture with neither. | `src/nous_os/discovery.py:216` and `src/nous_os/ablation.py:40` |
 | 5 | "Endpoint" has three meanings: a cited end of a proposed link, a document/anchor pair in a measurement, and a graph edge's source or target. | `src/nous_os/discovery.py:197`, `src/nous_os/ablation.py:40`, `src/nous_os/projection.py:397` |
-| 6 | The third answer is spelled two ways with no rule distinguishing them — `UNKNOWN` in three enumerations, `UNDETERMINED` in three others — and both appear inside one module. | `src/nous_os/canonical.py:56` and `src/nous_os/temporal.py:81` |
+| 6 | The third answer is spelled two ways with no rule distinguishing them — `UNKNOWN` in three enumerations, `UNDETERMINED` in three others. No module carries both, so nothing forces a reader to notice the split. | `src/nous_os/canonical.py:56` and `src/nous_os/temporal.py:81` |
 | 7 | "Derived" covers four things: the rebuildable index, a key origin, an epistemic class, and an alias derivation. | `src/nous_os/derived.py:117`, `src/nous_os/attribution.py:33`, `src/nous_os/discovery.py:79` |
 | 8 | `holder` names two different roles: the party that holds authority, and the party that put material forward and has none. | `src/nous_os/capability.py:163` and `src/nous_os/candidates.py:49` |
 | 9 | The same version string is declared twice under two names, on two sides of the language boundary, and nothing checks that they agree. | `src/nous_os/projection.py:28` and `ui/src/engine/version.ts:12` |
-| 10 | `MorphologyMaterial` is exported twice with disjoint structure, and both live in one function body. | `ui/src/engine/calibration.ts:3` and `ui/src/engine/morphology.ts:76` |
+| 10 | `MorphologyMaterial` is exported twice with disjoint structure — one a tuning record, one a binding of ids and materials — and one function takes the first and returns the second, so both names meet in a single body. | `ui/src/engine/calibration.ts:3` and `ui/src/engine/morphology.ts:76` |
 | 11 | `Coordinates` is documented as implying no screen coordinate system and is then used for three distinct spaces, with nothing in the type distinguishing them. | `ui/src/engine/contract.ts:32` |
 | 12 | Two Python enumerations, `NodeKind` and `EdgeKind`, become one TypeScript union and are then re-split internally — so the same partition is expressed three times. | `src/nous_os/projection.py:43` and `ui/src/engine/contract.ts:51` |
+| 13 | `PolicyId.EXPERIMENTAL` names a policy that does not exist. No policy is constructed for it and nothing produces one; the only code that mentions it exists to refuse it. A member of a closed vocabulary that names nothing is the plainest form of the defect this whole document is about. | `src/nous_os/projection.py:89` |
 
 <!-- /vocabulary:untruthful -->
 
@@ -422,11 +466,29 @@ project; metaphors do not travel inward.
 One name needs care, because the exclusion above and the code below can look like a
 contradiction. `Morphology` at `ui/src/engine/morphology.ts:8` has a member spelled `mycelium`.
 It is a **material treatment** — how a line tapers, how light falls off, whether an edge reads as
-fused or separate. It admits no element, orders nothing, and assigns no meaning, and that is
-enforced rather than promised: a digest over identifiers, kinds, endpoints and semantic
-attributes must be byte-identical across every morphology, so a morphology that could change
-meaning would move the digest and fail. A semantics-free material bearing a similar name is not
-the excluded thing. The excluded thing is the interpretive layer, and none exists here.
+fused or separate. It admits no element and assigns no meaning.
+
+**What is actually enforced, stated precisely, because an earlier draft of this paragraph claimed
+more than the code delivers.** A binding check pins the material's node identifiers, edge
+identifiers and edge incidence against the graph it was built from, and refuses a morphology that
+adds, drops or rewires anything. That check is real and it is load-bearing: it is what makes a
+morphology a treatment of a fixed structure rather than a second opinion about what the structure
+is.
+
+**What is NOT enforced, and the earlier draft said it was.** A digest is taken over identifiers,
+kinds, endpoints and semantic attributes, and it is identical across every morphology — but it is
+computed over the graph *going in*, and a morphology produces a separate material record that no
+digest is taken over. The invariance therefore holds for any morphology whatsoever and
+distinguishes nothing. It is a true statement that proves less than it appears to.
+
+So the honest form of the argument is narrower than the one first written here. A morphology
+cannot change what an element *is*, and that is checked. Whether a morphology preserves how well a
+governed state can be *told apart on screen* is a separate property, it is not checked, and it does
+not hold uniformly across the three morphologies — which is recorded as a defect against the
+renderer rather than smoothed over here.
+
+The conclusion survives the correction: the excluded thing is an interpretive layer that assigns
+meaning to elements, and none exists here. But it rests on the binding check, not on the digest.
 
 The same reasoning was applied to `Organization` at `ui/src/engine/organization.ts:7`, whose
 `indra` member is a layout arrangement — one level of grouping, world-space, with no recursion
@@ -447,6 +509,6 @@ judged, and the omissions are stated.
 
 It does not claim the mappings are facts. They are judgements, marked as such in every row.
 
-It does not claim the names it declines to change are good. Twelve of them are recorded above as
+It does not claim the names it declines to change are good. Thirteen of them are recorded above as
 not truthful, and they stay that way until someone changes the code — which is the correct order,
 because a name that requires restructuring is a name this project does not adopt.
