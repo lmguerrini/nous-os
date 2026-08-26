@@ -13,6 +13,7 @@ import {
   assertVisualGraphFieldRegister,
   readSemantic,
   semanticDigest,
+  type RenderedStateCarrier,
 } from "#engine/contract.ts";
 
 type FixtureNode = {
@@ -67,6 +68,18 @@ const EDGE_FIELDS: Readonly<Record<string, readonly string[] | null>> = {
   cites: ["source_id", "snapshot_digest", "start_byte", "end_byte", "span"],
   bridge_side: ["side", "project", "quote", "provenance"],
 };
+
+const RENDERED_STATE_WITNESSES = {
+  "TemporalDisposition.established": { fixture: "discovery-all-time.json", id: "assertion:asr_3N8REEPQF5FW301DG544P5B6PD" },
+  "TemporalDisposition.excluded": { fixture: "discovery-at-question.json", id: "assertion:asr_3N8REEPQF5FW301DG544P5B6PD" },
+  "TemporalDisposition.undetermined": { fixture: "discovery-at-question.json", id: "assertion:asr_5TWK1P6Y46QA77Z57NEGKRKWWY" },
+  "BridgeDisposition.accepted": { fixture: "discovery-all-time.json", id: "bridge:asr_0NXJWD0YYT3PTBZKKYSGCE38H6" },
+  "BridgeDisposition.rejected": { fixture: "discovery-all-time.json", id: "bridge:asr_JM31PFESFYAKASHC0PCJ5R73QY" },
+  "BridgeDisposition.undetermined": { fixture: "discovery-all-time.json", id: "bridge:asr_J936VNJ2V7Z8933ATMX7MJ4KE1" },
+  "EpistemicClass.explicit": { fixture: "discovery-all-time.json", id: "bridge:asr_0NXJWD0YYT3PTBZKKYSGCE38H6" },
+  "EpistemicClass.derived": { fixture: "discovery-all-time.json", id: "bridge:asr_JM31PFESFYAKASHC0PCJ5R73QY" },
+  "EpistemicClass.speculative": { fixture: "discovery-all-time.json", id: "bridge:asr_J936VNJ2V7Z8933ATMX7MJ4KE1" },
+} as const satisfies Readonly<Record<string, { readonly fixture: typeof FIXTURES[number]; readonly id: string }>>;
 
 /** This reads one checked-in payload and does not create expected adapter output. */
 function fixture(name: typeof FIXTURES[number]): FixturePayload {
@@ -156,6 +169,79 @@ function assertNoFloats(value: unknown): void {
   }
 }
 
+/** This states the D-042 fixture oracle and does not call adapter mapping code. */
+function expectedRenderedState(node: FixtureNode): RenderedStateCarrier {
+  if (node.kind === "assertion") {
+    const temporal = node.attributes.temporal;
+    if (typeof temporal !== "string") {
+      throw new TypeError(`fixture assertion ${node.id} lacks temporal state`);
+    }
+    return [{ enumType: "TemporalDisposition", member: temporal }] as RenderedStateCarrier;
+  }
+  if (node.kind === "bridge") {
+    const disposition = node.attributes.disposition;
+    const epistemicClass = node.attributes.epistemic_class;
+    if (typeof disposition !== "string" || typeof epistemicClass !== "string") {
+      throw new TypeError(`fixture bridge ${node.id} lacks governed rendered state`);
+    }
+    return [
+      { enumType: "BridgeDisposition", member: disposition },
+      { enumType: "EpistemicClass", member: epistemicClass },
+    ] as RenderedStateCarrier;
+  }
+  return null;
+}
+
+/** This names the only fixture kinds that can carry each governed RENDERED enum and does not infer a state for any other kind. */
+function assertRenderedStateOracle(raw: FixturePayload, graph: ReturnType<typeof toVisualGraph>): void {
+  const graphNodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  for (const node of raw.nodes) {
+    const mapped = graphNodes.get(node.id);
+    if (mapped === undefined) {
+      throw new TypeError(`rendered-state oracle has no visual node for ${node.id}`);
+    }
+    assert.deepEqual(mapped.rendered, expectedRenderedState(node), `rendered-state oracle mismatch for ${node.id}`);
+    if (node.kind !== "assertion" && node.kind !== "bridge") {
+      assert.equal(mapped.rendered, null, `IR-silent node ${node.id} must carry null, never filler undetermined`);
+    }
+  }
+  for (const edge of graph.edges) {
+    assert.equal(edge.rendered, null, `IR-silent edge ${edge.id} must carry null, never filler undetermined`);
+  }
+}
+
+/** This verifies a selected derivation value is an IR provenance record and does not manufacture provenance for silent kinds. */
+function assertDerivedProvenanceOracle(raw: FixturePayload, graph: ReturnType<typeof toVisualGraph>): void {
+  const rawNodes = new Map(raw.nodes.map((node) => [node.id, node]));
+  const rawEdges = new Map(raw.edges.map((edge) => [edge.id, edge]));
+  for (const node of graph.nodes) {
+    const source = rawNodes.get(node.id);
+    if (source === undefined) {
+      throw new TypeError(`provenance oracle has no fixture node for ${node.id}`);
+    }
+    const provenance = source.kind === "assertion" ? source.attributes.provenance : null;
+    assert.deepEqual(node.derived.value, provenance, `node ${node.id} must retain its exact governed provenance value`);
+    assert.equal(node.derived.origin, source.kind === "assertion" ? "projection-ir.assertion.provenance" : "projection-adapter");
+    if (provenance !== null) {
+      assert.notStrictEqual(node.derived.value, provenance, `node ${node.id} provenance must not retain fixture ownership`);
+    }
+  }
+  for (const edge of graph.edges) {
+    const source = rawEdges.get(edge.id);
+    if (source === undefined) {
+      throw new TypeError(`provenance oracle has no fixture edge for ${edge.id}`);
+    }
+    const provenance = source.kind === "cites"
+      ? source.attributes
+      : source.kind === "bridge_side" ? source.attributes?.provenance ?? null : null;
+    assert.deepEqual(edge.derived.value, provenance, `edge ${edge.id} must retain its exact governed provenance value`);
+    assert.equal(edge.derived.origin, source.kind === "cites" || source.kind === "bridge_side" ? `projection-ir.${source.kind}.provenance` : "projection-adapter");
+    if (provenance !== null) {
+      assert.notStrictEqual(edge.derived.value, provenance, `edge ${edge.id} provenance must not retain fixture ownership`);
+    }
+  }
+}
+
 test("every fixture maps into the exhaustive neutral semantic projection", () => {
   assert.equal(FIXTURES.length, 5);
   for (const name of FIXTURES) {
@@ -220,10 +306,8 @@ test("visual graphs meet the boundary register without retaining payload or dige
     const neutral = neutralProjection(raw);
     assertVisualGraphFieldRegister(graph);
     assertNoPassthrough(graph, raw, semanticDigest(graph));
-    for (const element of [...graph.nodes, ...graph.edges]) {
-      assert.equal(element.derived.origin, "projection-adapter");
-      assert.ok(element.derived.origin.length > 0);
-    }
+    assertRenderedStateOracle(raw, graph);
+    assertDerivedProvenanceOracle(raw, graph);
     assert.equal(graph.nodes.length, raw.nodes.length);
     assert.equal(graph.edges.length, raw.edges.length);
     assert.deepEqual(
@@ -292,6 +376,21 @@ test("visual graphs meet the boundary register without retaining payload or dige
       digestPayload(reconstructed),
       neutralDigest(name),
       `Property L reconstructed visual graph digest must match the Python expectation for ${name}`,
+    );
+  }
+});
+
+test("the five governed fixtures exercise each pinned RENDERED state through the independent kind mapping oracle", () => {
+  assert.equal(Object.keys(RENDERED_STATE_WITNESSES).length, 9);
+  for (const [state, witness] of Object.entries(RENDERED_STATE_WITNESSES)) {
+    const raw = fixture(witness.fixture);
+    const visualNode = toVisualGraph(raw).nodes.find((node) => node.id === witness.id);
+    if (visualNode === undefined) {
+      throw new TypeError(`rendered-state witness ${state} has no visual node`);
+    }
+    assert.ok(
+      visualNode.rendered?.some((member) => `${member.enumType}.${member.member}` === state) ?? false,
+      `fixture ${witness.fixture} must supply ${state} through ${witness.id}`,
     );
   }
 });

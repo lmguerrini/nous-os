@@ -1,4 +1,5 @@
 import { digestPayload } from "#engine/canonical.ts";
+import { RENDERED } from "#engine/partition.ts";
 
 const semanticBrand: unique symbol = Symbol("semantic");
 const semanticContents = new WeakMap<object, unknown>();
@@ -40,7 +41,7 @@ export type LodMetadata = {
   readonly maximum: number;
 };
 
-/** This is a computed value and its named origin, not a semantic assertion. */
+/** This is an adapter-derived value and its named origin, and does not expose provenance to the engine. */
 export type DerivedValue = {
   readonly value: unknown;
   readonly origin: string;
@@ -55,11 +56,21 @@ export type VisualMetadata = {
   readonly label_priority: number;
 };
 
+/** This is one member of the pinned RENDERED vocabulary and does not accept a raw string without its governed enum type. */
+export type RenderedState =
+  | { readonly enumType: "TemporalDisposition"; readonly member: "established" | "excluded" | "undetermined" }
+  | { readonly enumType: "BridgeDisposition"; readonly member: "accepted" | "rejected" | "undetermined" }
+  | { readonly enumType: "EpistemicClass"; readonly member: "explicit" | "derived" | "speculative" };
+
+/** This is the bounded engine carrier for one or two pinned RENDERED members, or null when no governed RENDERED state applies. */
+export type RenderedStateCarrier = readonly [RenderedState] | readonly [RenderedState, RenderedState] | null;
+
 /** This is a visual graph node and does not expose its semantic content to the engine. */
 export type VisualNode = {
   readonly id: string;
   readonly kind: string;
   readonly semantic: Semantic;
+  readonly rendered: RenderedStateCarrier;
   readonly derived: DerivedValue;
   readonly visual: VisualMetadata;
 };
@@ -71,6 +82,7 @@ export type VisualEdge = {
   readonly source: string;
   readonly target: string;
   readonly semantic: Semantic;
+  readonly rendered: RenderedStateCarrier;
   readonly derived: DerivedValue;
   readonly visual: VisualMetadata;
 };
@@ -87,29 +99,31 @@ export type VisualGraph = {
   readonly edges: readonly VisualEdge[];
 };
 
-/** This is the only structural element surface supplied to rendering engines and excludes semantic and derived payloads. */
+/** This is the only structural node surface supplied to rendering engines and excludes semantic and derived payloads except the closed governed RENDERED carrier. */
 export type EngineNode = {
   readonly id: string;
   readonly kind: string;
+  readonly rendered?: RenderedStateCarrier;
   readonly visual: {
     readonly role: string;
     readonly label_priority: number;
   };
 };
 
-/** This is the only structural relation surface supplied to rendering engines and excludes semantic and derived payloads. */
+/** This is the only structural relation surface supplied to rendering engines and excludes semantic and derived payloads except the closed governed RENDERED carrier. */
 export type EngineEdge = {
   readonly id: string;
   readonly kind: string;
   readonly source: string;
   readonly target: string;
+  readonly rendered?: RenderedStateCarrier;
   readonly visual: {
     readonly role: string;
     readonly label_priority: number;
   };
 };
 
-/** This is the structural graph view consumed by rendering engines and contains no semantic payload. */
+/** This is the structural graph view consumed by rendering engines and contains no semantic payload except the closed governed RENDERED carrier. */
 export type EngineGraph = {
   readonly nodes: readonly EngineNode[];
   readonly edges: readonly EngineEdge[];
@@ -122,8 +136,8 @@ export type EngineAccessTrace = {
 
 /** This is the closed structural allow-list for every engine-visible graph element. */
 export const ENGINE_ELEMENT_FIELD_ALLOW_LIST = {
-  node: ["id", "kind", "visual"],
-  edge: ["id", "kind", "source", "target", "visual"],
+  node: ["id", "kind", "rendered", "visual"],
+  edge: ["id", "kind", "source", "target", "rendered", "visual"],
   visual: ["role", "label_priority"],
 } as const;
 
@@ -131,8 +145,8 @@ export const ENGINE_ELEMENT_FIELD_ALLOW_LIST = {
 export const VISUAL_GRAPH_FIELD_REGISTER = {
   graph: ["schema_version", "policy_id", "question", "nodes", "edges"],
   question: ["valid_at", "recorded_as_of"],
-  node: ["id", "kind", "semantic", "derived", "visual"],
-  edge: ["id", "kind", "source", "target", "semantic", "derived", "visual"],
+  node: ["id", "kind", "semantic", "rendered", "derived", "visual"],
+  edge: ["id", "kind", "source", "target", "semantic", "rendered", "derived", "visual"],
   derived: ["value", "origin"],
   visual: ["role", "anchor", "path", "lod", "label_priority"],
   coordinates: ["x", "y", "z"],
@@ -140,13 +154,14 @@ export const VISUAL_GRAPH_FIELD_REGISTER = {
   semantic: [],
 } as const;
 
-/** This creates a traced structural engine view and does not expose semantic or derived values. */
+/** This creates a traced structural engine view and does not expose semantic or derived values beyond the closed governed RENDERED carrier. */
 export function createEngineGraphView(graph: VisualGraph): { readonly graph: EngineGraph; readonly trace: EngineAccessTrace } {
   const reads: string[] = [];
   const trace: EngineAccessTrace = { reads };
   const node = (value: VisualNode): EngineNode => tracedElement({
     id: value.id,
     kind: value.kind,
+    rendered: value.rendered,
     visual: tracedVisual(value.visual, "node", reads),
   }, "node", reads);
   const edge = (value: VisualEdge): EngineEdge => tracedElement({
@@ -154,6 +169,7 @@ export function createEngineGraphView(graph: VisualGraph): { readonly graph: Eng
     kind: value.kind,
     source: value.source,
     target: value.target,
+    rendered: value.rendered,
     visual: tracedVisual(value.visual, "edge", reads),
   }, "edge", reads);
   return {
@@ -165,7 +181,7 @@ export function createEngineGraphView(graph: VisualGraph): { readonly graph: Eng
   };
 }
 
-/** This verifies every recorded engine read is in the structural allow-list and therefore cannot be semantic. */
+/** This verifies every recorded engine read is in the structural allow-list and therefore cannot reach semantic data outside the closed governed RENDERED carrier. */
 export function assertEngineAccessTrace(trace: EngineAccessTrace): void {
   for (const read of trace.reads) {
     const [element, field, nested, extra] = read.split(".");
@@ -247,6 +263,7 @@ function assertNodeFields(value: unknown, path: string): void {
   assertExactFields(value, path, VISUAL_GRAPH_FIELD_REGISTER.node);
   const node = value as Record<string, unknown>;
   assertSemantic(node.semantic, `${path}.semantic`);
+  assertRenderedStateCarrier(node.rendered, `${path}.rendered`);
   assertDerivedFields(node.derived, `${path}.derived`);
   assertVisualFields(node.visual, `${path}.visual`);
 }
@@ -255,6 +272,7 @@ function assertEdgeFields(value: unknown, path: string): void {
   assertExactFields(value, path, VISUAL_GRAPH_FIELD_REGISTER.edge);
   const edge = value as Record<string, unknown>;
   assertSemantic(edge.semantic, `${path}.semantic`);
+  assertRenderedStateCarrier(edge.rendered, `${path}.rendered`);
   assertDerivedFields(edge.derived, `${path}.derived`);
   assertVisualFields(edge.visual, `${path}.visual`);
 }
@@ -265,6 +283,51 @@ function assertDerivedFields(value: unknown, path: string): void {
   if (typeof derived.origin !== "string" || derived.origin.trim() === "") {
     throw new TypeError(`${path}.origin must be a non-empty string`);
   }
+}
+
+/** This constructs a bounded pinned RENDERED carrier and does not admit free text, identifiers, attributes, or unbounded values. */
+export function createRenderedStateCarrier(value: unknown): RenderedStateCarrier {
+  if (value === null) {
+    return null;
+  }
+  if (!Array.isArray(value) || (value.length !== 1 && value.length !== 2)) {
+    throw new TypeError("rendered state carrier must contain one or two pinned RENDERED members, or null");
+  }
+  const members = value.map((member, index) => renderedStateMember(member, `rendered state carrier[${index}]`));
+  const first = members[0];
+  if (first === undefined) {
+    throw new TypeError("rendered state carrier has no first member");
+  }
+  if (members.length === 1) {
+    return Object.freeze([first]) as readonly [RenderedState];
+  }
+  const second = members[1];
+  if (second === undefined) {
+    throw new TypeError("rendered state carrier has no second member");
+  }
+  return Object.freeze([first, second]) as readonly [RenderedState, RenderedState];
+}
+
+function assertRenderedStateCarrier(value: unknown, path: string): asserts value is RenderedStateCarrier {
+  try {
+    createRenderedStateCarrier(value);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "invalid rendered state carrier";
+    throw new TypeError(`${path} ${detail}`);
+  }
+}
+
+function renderedStateMember(value: unknown, path: string): RenderedState {
+  assertExactFields(value, path, ["enumType", "member"]);
+  const member = value as Record<string, unknown>;
+  if (typeof member.enumType !== "string" || typeof member.member !== "string") {
+    throw new TypeError(`${path} must name a pinned RENDERED member`);
+  }
+  const isPinned = RENDERED.some((candidate) => candidate.enumType === member.enumType && candidate.member === member.member);
+  if (!isPinned) {
+    throw new TypeError(`${path} must name a pinned RENDERED member`);
+  }
+  return Object.freeze({ enumType: member.enumType, member: member.member }) as RenderedState;
 }
 
 function tracedElement<Value extends object>(value: Value, element: "node" | "edge", reads: string[]): Value {

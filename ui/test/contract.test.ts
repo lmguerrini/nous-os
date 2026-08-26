@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assertNoPassthrough,
+  assertEngineAccessTrace,
   assertVisualGraphFieldRegister,
+  createEngineGraphView,
+  createRenderedStateCarrier,
   createSemantic,
   semanticDigest,
 } from "#engine/contract.ts";
@@ -21,6 +24,7 @@ function makeGraph(): VisualGraph {
         id: "node:a",
         kind: "assertion",
         semantic: createSemantic({ text: "first" }),
+        rendered: createRenderedStateCarrier([{ enumType: "TemporalDisposition", member: "established" }]),
         derived: { value: "supported", origin: "support-classifier" },
         visual: {
           role: "claim",
@@ -34,6 +38,7 @@ function makeGraph(): VisualGraph {
         id: "node:b",
         kind: "source",
         semantic: createSemantic({ source_id: "source:b" }),
+        rendered: createRenderedStateCarrier(null),
         derived: { value: 1, origin: "source-ranker" },
         visual: {
           role: "evidence",
@@ -51,6 +56,7 @@ function makeGraph(): VisualGraph {
         source: "node:a",
         target: "node:b",
         semantic: createSemantic({ span: "evidence" }),
+        rendered: createRenderedStateCarrier(null),
         derived: { value: true, origin: "citation-resolver" },
         visual: {
           role: "citation",
@@ -203,6 +209,61 @@ test("the field register refuses missing fields", () => {
   assert.doesNotThrow(() => assertVisualGraphFieldRegister(graph));
 });
 
+test("the closed RENDERED carrier refuses free text, identifiers, attributes, and unbounded values at construction", () => {
+  const accepted = [
+    { enumType: "TemporalDisposition", member: "established" },
+    { enumType: "TemporalDisposition", member: "excluded" },
+    { enumType: "TemporalDisposition", member: "undetermined" },
+    { enumType: "BridgeDisposition", member: "accepted" },
+    { enumType: "BridgeDisposition", member: "rejected" },
+    { enumType: "BridgeDisposition", member: "undetermined" },
+    { enumType: "EpistemicClass", member: "explicit" },
+    { enumType: "EpistemicClass", member: "derived" },
+    { enumType: "EpistemicClass", member: "speculative" },
+  ];
+  assert.equal(accepted.length, 9);
+  for (const state of accepted) {
+    assert.doesNotThrow(() => createRenderedStateCarrier([state]));
+  }
+  const rejected: readonly unknown[] = [
+    "established",
+    [{ enumType: "TemporalDisposition", member: "invented" }],
+    [{ enumType: "TemporalDisposition", member: "established", identifier: "assertion:one" }],
+    [{ enumType: "TemporalDisposition", member: "established", attributes: { temporal: "established" } }],
+    [
+      { enumType: "TemporalDisposition", member: "established" },
+      { enumType: "BridgeDisposition", member: "accepted" },
+      { enumType: "EpistemicClass", member: "explicit" },
+    ],
+  ];
+  assert.equal(rejected.length, 5);
+  for (const value of rejected) {
+    assert.throws(() => createRenderedStateCarrier(value), /rendered state carrier|pinned RENDERED member|fields do not match/);
+  }
+});
+
+test("the structural refusal control rejects a field outside the allow-list and fails open when that refusal is removed", () => {
+  const view = createEngineGraphView(makeGraph());
+  const node = view.graph.nodes[0] as (typeof view.graph.nodes)[number] & { readonly semantic?: unknown } | undefined;
+  assert.ok(node !== undefined);
+  void node.semantic;
+  const mustRefuse = (action: () => void): void => {
+    let failure: unknown;
+    try {
+      action();
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure instanceof Error, "structural refusal control accepted an outside field");
+    assert.match(failure.message, /outside the structural allow-list: node\.semantic/);
+  };
+  mustRefuse(() => assertEngineAccessTrace(view.trace));
+  assert.throws(
+    () => mustRefuse(() => undefined),
+    /structural refusal control accepted an outside field/,
+  );
+});
+
 test("derived origins are non-null named sources and every nested register refuses unknown keys", () => {
   const graph = makeGraph();
   const node = graph.nodes[0];
@@ -215,6 +276,7 @@ test("derived origins are non-null named sources and every nested register refus
     { name: "question", value: { ...graph, question: { ...graph.question, unknown: true } }, rule: /question fields do not match the pinned register/ },
     { name: "node", value: { ...graph, nodes: [{ ...node, unknown: true }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\] fields do not match the pinned register/ },
     { name: "edge", value: { ...graph, edges: [{ ...edge, unknown: true }, ...graph.edges.slice(1)] }, rule: /edges\[0\] fields do not match the pinned register/ },
+    { name: "node rendered", value: { ...graph, nodes: [{ ...node, rendered: [{ enumType: "TemporalDisposition", member: "invented" }] }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.rendered.*pinned RENDERED member/ },
     { name: "node derived", value: { ...graph, nodes: [{ ...node, derived: { ...node.derived, unknown: true } }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.derived fields do not match the pinned register/ },
     { name: "inherited derived key", value: { ...graph, nodes: [{ ...node, derived: Object.assign(Object.create({ unknown: true }), node.derived) }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.derived must be a plain object/ },
     { name: "edge derived", value: { ...graph, edges: [{ ...edge, derived: { ...edge.derived, unknown: true } }, ...graph.edges.slice(1)] }, rule: /edges\[0\]\.derived fields do not match the pinned register/ },
@@ -228,7 +290,7 @@ test("derived origins are non-null named sources and every nested register refus
     { name: "edge absent origin", value: { ...graph, edges: [{ ...edge, derived: { value: edge.derived.value } }] }, rule: /edges\[0\]\.derived fields do not match the pinned register/ },
     { name: "blank origin", value: { ...graph, nodes: [{ ...node, derived: { ...node.derived, origin: "" } }, ...graph.nodes.slice(1)] }, rule: /nodes\[0\]\.derived\.origin must be a non-empty string/ },
   ];
-  assert.equal(cases.length, 16);
+  assert.equal(cases.length, 17);
   for (const invalid of cases) {
     assert.throws(() => assertVisualGraphFieldRegister(invalid.value), invalid.rule, invalid.name);
   }

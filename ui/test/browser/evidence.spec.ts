@@ -53,6 +53,7 @@ type Snapshot = {
   readonly selectedNode: string | null;
   readonly selectedElement: string | null;
   readonly selectedProvenanceIsExact: boolean;
+  readonly selectedProvenanceHasValue: boolean;
   readonly focusedElement: string | null;
   readonly nodes: readonly string[];
   readonly edges: readonly string[];
@@ -237,7 +238,7 @@ type PageEvidence = {
   setSelectionFocusNoopControl(selection: string | null, focus: string | null): Promise<Snapshot>;
   hideSelectionFocusNoopControl(): void;
   assertDerivedOriginRefusalControl(): number;
-  assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean };
+  assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean; readonly changedRenderedMaterial: boolean };
   readLiveRelationMaterialBindings(): readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[];
   proveStackedMaterialControlRejects(): { readonly relationId: string; readonly materialTypes: readonly string[]; readonly message: string };
   shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }>;
@@ -676,10 +677,11 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     return `live Sigma pipeline reported ${bindings.length} relations, one material each; a real two-program stack on ${control.relationId} reported [${control.materialTypes.join(", ")}] and failed: ${control.message}; the mounted pipeline then returned to the original single-program bindings`;
   });
   await run("a10-engine-semantic-isolation", async () => {
-    const result = await invoke<{ readonly reads: number; readonly changedSemanticDigest: boolean }>("assertEngineSemanticIsolationControl");
+    const result = await invoke<{ readonly reads: number; readonly changedSemanticDigest: boolean; readonly changedRenderedMaterial: boolean }>("assertEngineSemanticIsolationControl");
     expect(result.reads).toBeGreaterThan(0);
     expect(result.changedSemanticDigest).toBe(true);
-    return `structural engine trace recorded ${result.reads} allowed reads and no semantic field; a forced semantic access failed, while a non-isomorphic semantic permutation changed its digest without changing engine output`;
+    expect(result.changedRenderedMaterial).toBe(true);
+    return `structural engine trace recorded ${result.reads} allowed reads, including the closed governed RENDERED carrier and no other semantic field; a forced semantic access failed, while a non-isomorphic semantic permutation changed its digest without changing engine output and a governed state change changed material`;
   });
   await run("a3-cross-product-picking-pixels", async () => {
     const product = enumerateShippingCrossProduct();
@@ -1186,6 +1188,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const selected = await invoke<Snapshot>("selectNode", launch.nodes[0] ?? "");
     assertRendererSelection(selected, launch.nodes[0] ?? "", "full-app selection");
     expect(selected.selectedProvenanceIsExact, "the selected renderer element returns its exact CAP-10-derived record").toBe(true);
+    expect(selected.selectedProvenanceHasValue, "the selected assertion carries a real CAP-10 provenance value rather than the former all-null derivation").toBe(true);
     const selectedImage = await capture("#evidence-renderer");
     const focused = await invoke<Snapshot>("focusElement", launch.nodes[0] ?? "");
     expect(focused.focusedElement, "focus is read from the mounted renderer").toBe(launch.nodes[0]);

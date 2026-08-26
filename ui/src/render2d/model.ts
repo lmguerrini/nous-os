@@ -2,7 +2,7 @@ import { MultiDirectedGraph } from "graphology";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { assertEngineAccessTrace, createEngineGraphView } from "#engine/contract.ts";
-import type { Coordinates, DerivedValue, EngineAccessTrace, VisualGraph } from "#engine/contract.ts";
+import type { Coordinates, DerivedValue, EngineAccessTrace, RenderedState, RenderedStateCarrier, VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
 import { lodView } from "#engine/lod.ts";
 import type { LodBand, ResolvedMaterial } from "#engine/lod.ts";
@@ -215,7 +215,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
       x: anchor.x,
       y: anchor.y,
       size,
-      color: nodeColorForMaterial(tokens, nodeMaterial, view.material, calibration),
+      color: nodeColorForMaterial(tokens, nodeMaterial, view.material, node.rendered ?? null, calibration),
       haloRadiusPx: materialIncludes(view.material.node, "halo") ? nodeMaterial.haloRadiusPx : size,
       haloIntensityPermille: materialIncludes(view.material.node, "halo") ? nodeMaterial.haloIntensityPermille : 0,
       label: "",
@@ -412,9 +412,57 @@ function nodeColorForMaterial(
   tokens: TokenMap,
   material: NodeMaterial,
   resolved: ResolvedMaterial,
+  rendered: RenderedStateCarrier,
   calibration: CalibrationProfile,
 ): string {
-  return tokenColor(nodeTokenForMaterial(tokens, material, resolved, calibration), material.opacityPermille, calibration);
+  return tokenColor(renderedStateToken(nodeTokenForMaterial(tokens, material, resolved, calibration), rendered, calibration), material.opacityPermille, calibration);
+}
+
+/** This applies the bounded governed RENDERED material delta and does not alter hue, opacity, topology-derived prominence, or node mass. */
+function renderedStateToken(
+  token: OklchToken,
+  rendered: RenderedStateCarrier,
+  calibration: CalibrationProfile,
+): OklchToken {
+  if (rendered === null) {
+    return token;
+  }
+  const delta = Math.round(
+    rendered.reduce((total, state) => total + renderedStateLightnessDelta(state, calibration), 0) / rendered.length,
+  );
+  return {
+    ...token,
+    lightnessPermille: Math.max(0, Math.min(permilleScale(calibration), token.lightnessPermille + delta)),
+  };
+}
+
+/** This reads one calibrated RENDERED material delta and does not supply a renderer-local semantic literal. */
+function renderedStateLightnessDelta(state: RenderedState, calibration: CalibrationProfile): number {
+  if (state.enumType === "TemporalDisposition") {
+    if (state.member === "established") {
+      return calibration.renderedState.temporalEstablishedLightnessDeltaPermille;
+    }
+    if (state.member === "excluded") {
+      return calibration.renderedState.temporalExcludedLightnessDeltaPermille;
+    }
+    return calibration.renderedState.temporalUndeterminedLightnessDeltaPermille;
+  }
+  if (state.enumType === "BridgeDisposition") {
+    if (state.member === "accepted") {
+      return calibration.renderedState.bridgeAcceptedLightnessDeltaPermille;
+    }
+    if (state.member === "rejected") {
+      return calibration.renderedState.bridgeRejectedLightnessDeltaPermille;
+    }
+    return calibration.renderedState.bridgeUndeterminedLightnessDeltaPermille;
+  }
+  if (state.member === "explicit") {
+    return calibration.renderedState.epistemicExplicitLightnessDeltaPermille;
+  }
+  if (state.member === "derived") {
+    return calibration.renderedState.epistemicDerivedLightnessDeltaPermille;
+  }
+  return calibration.renderedState.epistemicSpeculativeLightnessDeltaPermille;
 }
 
 /** This resolves the node token in OKLCH and does not convert it to renderer bytes. */

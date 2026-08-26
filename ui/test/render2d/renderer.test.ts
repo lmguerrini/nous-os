@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
@@ -9,6 +9,7 @@ import {
   ENGINE_ELEMENT_FIELD_ALLOW_LIST,
   assertEngineAccessTrace,
   createEngineGraphView,
+  createRenderedStateCarrier,
   createSemantic,
   readSemantic,
   semanticDigest,
@@ -167,15 +168,15 @@ test("display decisions reject semantic access", () => {
   assert.equal(model.graph.order, model.anchors.size);
 });
 
-test("engine elements expose only the structural allow-list, trace no semantic reads, and ignore non-isomorphic semantic assignments", () => {
+test("engine elements expose only the closed governed allow-list, trace no ungoverned semantic reads, and ignore non-isomorphic semantic assignments", () => {
   assert.deepEqual(ENGINE_ELEMENT_FIELD_ALLOW_LIST, {
-    node: ["id", "kind", "visual"],
-    edge: ["id", "kind", "source", "target", "visual"],
+    node: ["id", "kind", "rendered", "visual"],
+    edge: ["id", "kind", "source", "target", "rendered", "visual"],
     visual: ["role", "label_priority"],
   });
   assert.deepEqual({
-    node: ["id", "kind", "visual"],
-    edge: ["id", "kind", "source", "target", "visual"],
+    node: ["id", "kind", "rendered", "visual"],
+    edge: ["id", "kind", "source", "target", "rendered", "visual"],
     visual: ["role", "label_priority"],
   }, ENGINE_ELEMENT_FIELD_ALLOW_LIST);
 
@@ -187,6 +188,7 @@ test("engine elements expose only the structural allow-list, trace no semantic r
   assertEngineAccessTrace(originalModel.engineAccessTrace);
   assertEngineAccessTrace(permutedModel.engineAccessTrace);
   assert.ok(originalModel.engineAccessTrace.reads.length > 0);
+  assert.equal(originalModel.engineAccessTrace.reads.includes("node.rendered"), true);
   assert.equal(originalModel.engineAccessTrace.reads.some((read) => read.includes("semantic")), false);
   assert.equal(permutedModel.engineAccessTrace.reads.some((read) => read.includes("semantic")), false);
   assert.deepEqual(engineOutput(originalModel), engineOutput(permutedModel));
@@ -288,6 +290,96 @@ test("the rendered prominence hierarchy remains pairwise separable under named c
   assert.equal(result.combinations, expectedCombinations);
   assert.deepEqual(result.deficiencies, ["deuteranopia", "protanopia", "tritanopia"]);
   assert.ok(result.comparedPairs > 0);
+});
+
+test("the nine governed RENDERED states remain pairwise separable through calibrated non-hue material", () => {
+  const result = measureRenderedStateSeparationCrossProduct(graph(), DEFAULT_CALIBRATION);
+  const expectedCombinations = PALETTES.length * TEMPERATURES.length * THEMES.length * MORPHOLOGIES.length * LOD_BANDS.length;
+  assert.equal(result.combinations, expectedCombinations);
+  assert.equal(result.states.length, 9);
+  assert.ok(result.comparedPairs > 0);
+  assertRenderedStateMatrixAtLeast(
+    result.states,
+    result.nonHue,
+    DEFAULT_CALIBRATION.luminance.minimumRenderedNonHueSeparationMicro
+      / (DEFAULT_CALIBRATION.morphology.stellar.opacityPermille ** 2),
+    "non-hue",
+  );
+  for (const deficiency of CVD_DEFICIENCIES) {
+    assertRenderedStateMatrixAtLeast(
+      result.states,
+      result.cvd[deficiency],
+      DEFAULT_CALIBRATION.luminance.minimumRenderedCvdSeparationMicro
+        / (DEFAULT_CALIBRATION.morphology.stellar.opacityPermille ** 2),
+      deficiency,
+    );
+  }
+  // Emit the matrices, because an assertion that passes tells a reader only that
+  // some number cleared some threshold. The Quality Gauntlet has to cite these
+  // values, and this capability has twice been caught citing measurements that
+  // existed only in prose and could not be checked by anyone else. The numbers
+  // are written where they can be read back, alongside the thresholds they were
+  // measured against and the size of the space they were measured over.
+  const directory = ["dist", "evidence"].join("/");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(`${directory}/rendered-state-separation.json`, `${JSON.stringify({
+    producedBy: "ui/test/render2d/renderer.test.ts, on every test:unit run",
+    states: result.states,
+    combinations: result.combinations,
+    comparedPairs: result.comparedPairs,
+    thresholds: {
+      nonHue: DEFAULT_CALIBRATION.luminance.minimumRenderedNonHueSeparationMicro
+        / (DEFAULT_CALIBRATION.morphology.stellar.opacityPermille ** 2),
+      cvd: DEFAULT_CALIBRATION.luminance.minimumRenderedCvdSeparationMicro
+        / (DEFAULT_CALIBRATION.morphology.stellar.opacityPermille ** 2),
+    },
+    nonHue: result.nonHue,
+    cvd: result.cvd,
+  }, null, 2)}\n`, "utf8");
+});
+
+test("the governed rendered-state non-hue separation control rejects an unattainable threshold", () => {
+  const unattainableCalibration = {
+    ...DEFAULT_CALIBRATION,
+    luminance: {
+      ...DEFAULT_CALIBRATION.luminance,
+      minimumRenderedNonHueSeparationMicro: DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille
+        * DEFAULT_CALIBRATION.luminance.prominenceChromaFalloffPermille,
+    },
+  };
+  const result = measureRenderedStateSeparationCrossProduct(graph(), unattainableCalibration);
+  assert.throws(
+    () => assertRenderedStateMatrixAtLeast(
+      result.states,
+      result.nonHue,
+      unattainableCalibration.luminance.minimumRenderedNonHueSeparationMicro
+        / (unattainableCalibration.morphology.stellar.opacityPermille ** 2),
+      "non-hue",
+    ),
+    /RENDERED states .* are not separable/,
+  );
+});
+
+test("the governed rendered-state CVD separation control rejects an unattainable threshold", () => {
+  const unattainableCalibration = {
+    ...DEFAULT_CALIBRATION,
+    luminance: {
+      ...DEFAULT_CALIBRATION.luminance,
+      minimumRenderedCvdSeparationMicro: DEFAULT_CALIBRATION.luminance.minimumNodeContrastPermille
+        * DEFAULT_CALIBRATION.luminance.prominenceChromaFalloffPermille,
+    },
+  };
+  const result = measureRenderedStateSeparationCrossProduct(graph(), unattainableCalibration);
+  assert.throws(
+    () => assertRenderedStateMatrixAtLeast(
+      result.states,
+      result.cvd.deuteranopia,
+      unattainableCalibration.luminance.minimumRenderedCvdSeparationMicro
+        / (unattainableCalibration.morphology.stellar.opacityPermille ** 2),
+      "deuteranopia",
+    ),
+    /RENDERED states .* are not separable/,
+  );
 });
 
 test("the calibrated non-hue separation control rejects an unattainable threshold", () => {
@@ -715,6 +807,7 @@ function assertNonHueProminenceSeparationCrossProduct(
   visualGraph: VisualGraph,
   calibration: typeof DEFAULT_CALIBRATION,
 ): { readonly combinations: number; readonly comparedPairs: number } {
+  const prominenceGraph = withoutRenderedState(visualGraph);
   let combinations = 0;
   let comparedPairs = 0;
   const scale = calibration.morphology.stellar.opacityPermille;
@@ -723,11 +816,11 @@ function assertNonHueProminenceSeparationCrossProduct(
     for (const temperature of TEMPERATURES) {
       for (const theme of THEMES) {
         for (const morphology of MORPHOLOGIES) {
-          const morphologyMaterial = applyMorphology(visualGraph, morphology, calibration);
+          const morphologyMaterial = applyMorphology(prominenceGraph, morphology, calibration);
           const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
           for (const lodBand of LOD_BANDS) {
             combinations += 1;
-            const model = buildRenderModel(visualGraph, {
+            const model = buildRenderModel(prominenceGraph, {
               ...options(false),
               palette,
               temperature,
@@ -761,6 +854,14 @@ type RenderedProminence = {
   readonly color: Rgb;
 };
 
+type RenderedStateMeasurement = {
+  readonly states: readonly string[];
+  readonly combinations: number;
+  readonly comparedPairs: number;
+  readonly nonHue: readonly (readonly number[])[];
+  readonly cvd: Readonly<Record<CvdDeficiency, readonly (readonly number[])[]>>;
+};
+
 const CVD_DEFICIENCIES = ["deuteranopia", "protanopia", "tritanopia"] as const satisfies readonly CvdDeficiency[];
 
 // Machado, Oliveira, and Fernandes, "A Physiologically-based Model for Simulation
@@ -788,6 +889,7 @@ function assertCvdProminenceSeparationCrossProduct(
   visualGraph: VisualGraph,
   calibration: typeof DEFAULT_CALIBRATION,
 ): { readonly combinations: number; readonly deficiencies: readonly CvdDeficiency[]; readonly comparedPairs: number } {
+  const prominenceGraph = withoutRenderedState(visualGraph);
   let combinations = 0;
   let comparedPairs = 0;
   const scale = calibration.morphology.stellar.opacityPermille;
@@ -796,11 +898,11 @@ function assertCvdProminenceSeparationCrossProduct(
     for (const temperature of TEMPERATURES) {
       for (const theme of THEMES) {
         for (const morphology of MORPHOLOGIES) {
-          const morphologyMaterial = applyMorphology(visualGraph, morphology, calibration);
+          const morphologyMaterial = applyMorphology(prominenceGraph, morphology, calibration);
           const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
           for (const lodBand of LOD_BANDS) {
             combinations += 1;
-            const model = buildRenderModel(visualGraph, {
+            const model = buildRenderModel(prominenceGraph, {
               ...options(false),
               palette,
               temperature,
@@ -826,6 +928,143 @@ function assertCvdProminenceSeparationCrossProduct(
     }
   }
   return { combinations, deficiencies: CVD_DEFICIENCIES, comparedPairs };
+}
+
+/** This measures the closed RENDERED carrier at equal topology-derived prominence and does not infer a state from fixture attributes. */
+function measureRenderedStateSeparationCrossProduct(
+  visualGraph: VisualGraph,
+  calibration: typeof DEFAULT_CALIBRATION,
+): RenderedStateMeasurement {
+  const stateGraph = renderedStateMeasurementGraph(visualGraph);
+  const states = stateGraph.nodes.map((node) => node.id.slice("rendered-state:".length).replace(":", "."));
+  const nonHue = separationMatrix(states.length);
+  const cvd: Record<CvdDeficiency, number[][]> = {
+    deuteranopia: separationMatrix(states.length),
+    protanopia: separationMatrix(states.length),
+    tritanopia: separationMatrix(states.length),
+  };
+  let combinations = 0;
+  let comparedPairs = 0;
+  for (const palette of PALETTES) {
+    for (const temperature of TEMPERATURES) {
+      for (const theme of THEMES) {
+        for (const morphology of MORPHOLOGIES) {
+          for (const lodBand of LOD_BANDS) {
+            const model = buildRenderModel(stateGraph, {
+              ...options(false),
+              organization: "flat",
+              palette,
+              temperature,
+              theme,
+              morphology: morphology.id,
+              lodBand,
+              calibration,
+            });
+            const rendered = renderedStateDomain(model, states);
+            for (let lowerIndex = 0; lowerIndex < rendered.length; lowerIndex += 1) {
+              for (let upperIndex = lowerIndex + 1; upperIndex < rendered.length; upperIndex += 1) {
+                const lower = rendered[lowerIndex];
+                const upper = rendered[upperIndex];
+                if (lower === undefined || upper === undefined) {
+                  throw new TypeError("rendered-state measurement lost a rendered state");
+                }
+                updateMinimum(nonHue, lowerIndex, upperIndex, Math.abs(grayscaleLuminance(upper.color) - grayscaleLuminance(lower.color)));
+                for (const deficiency of CVD_DEFICIENCIES) {
+                  updateMinimum(cvd[deficiency], lowerIndex, upperIndex, rgbDistance(simulateCvd(lower.color, deficiency), simulateCvd(upper.color, deficiency)));
+                }
+                comparedPairs += 1;
+              }
+            }
+            combinations += 1;
+          }
+        }
+      }
+    }
+  }
+  return { states, combinations, comparedPairs, nonHue, cvd };
+}
+
+/** This creates an equal-topology material witness for every pinned RENDERED member and does not infer a semantic state from the selected source node. */
+function renderedStateMeasurementGraph(visualGraph: VisualGraph): VisualGraph {
+  const source = visualGraph.nodes[0];
+  if (source === undefined) {
+    throw new TypeError("rendered-state measurement requires one source node");
+  }
+  const states = [...RENDERED].sort((left, right) => `${left.enumType}.${left.member}`.localeCompare(`${right.enumType}.${right.member}`));
+  return {
+    ...visualGraph,
+    nodes: states.map((state) => ({
+      ...source,
+      id: `rendered-state:${state.enumType}:${state.member}`,
+      rendered: createRenderedStateCarrier([{ enumType: state.enumType, member: state.member }]),
+    })),
+    edges: [],
+  };
+}
+
+/** This reads each equal-topology material witness and does not reuse topology-derived prominence as a semantic key. */
+function renderedStateDomain(model: ReturnType<typeof buildRenderModel>, states: readonly string[]): readonly { readonly state: string; readonly color: Rgb }[] {
+  const background = parseColor(model.fieldColor);
+  return states.map((state) => {
+    const attributes = model.graph.getNodeAttributes(`rendered-state:${state.replace(".", ":")}`);
+    return {
+      state,
+      color: compositeSrgb(parseColor(attributes.color), background),
+    };
+  });
+}
+
+/** This initialises one symmetric measurement matrix and does not assign a separation before it is observed. */
+function separationMatrix(size: number): number[][] {
+  return Array.from({ length: size }, () => Array.from({ length: size }, () => Number.POSITIVE_INFINITY));
+}
+
+/** This retains the lowest cross-product separation for one unordered pair and does not update a diagonal entry. */
+function updateMinimum(matrix: number[][], lowerIndex: number, upperIndex: number, value: number): void {
+  const current = matrix[lowerIndex]?.[upperIndex];
+  if (current === undefined) {
+    throw new TypeError("rendered-state separation matrix lacks a pair cell");
+  }
+  const minimum = Math.min(current, value);
+  const lowerRow = matrix[lowerIndex];
+  const upperRow = matrix[upperIndex];
+  if (lowerRow === undefined || upperRow === undefined) {
+    throw new TypeError("rendered-state separation matrix lacks a row");
+  }
+  lowerRow[upperIndex] = minimum;
+  upperRow[lowerIndex] = minimum;
+}
+
+/** This enforces the existing calibrated threshold for every pair of distinct RENDERED states and does not lower that threshold. */
+function assertRenderedStateMatrixAtLeast(
+  states: readonly string[],
+  matrix: readonly (readonly number[])[],
+  minimum: number,
+  channel: string,
+): void {
+  for (let lowerIndex = 0; lowerIndex < states.length; lowerIndex += 1) {
+    for (let upperIndex = lowerIndex + 1; upperIndex < states.length; upperIndex += 1) {
+      const lower = states[lowerIndex];
+      const upper = states[upperIndex];
+      const separation = matrix[lowerIndex]?.[upperIndex];
+      if (lower === undefined || upper === undefined || separation === undefined) {
+        throw new TypeError("rendered-state threshold assertion lacks a state pair");
+      }
+      assert.ok(
+        separation >= minimum,
+        `${channel} RENDERED states ${lower} and ${upper} are not separable: ${separation}, minimum ${minimum}`,
+      );
+    }
+  }
+}
+
+/** This removes the new governed carrier from the legacy topology-only prominence domain and does not alter ids, topology, visual metadata, or opaque semantics. */
+function withoutRenderedState(visualGraph: VisualGraph): VisualGraph {
+  return {
+    ...visualGraph,
+    nodes: visualGraph.nodes.map((node) => ({ ...node, rendered: null })),
+    edges: visualGraph.edges.map((edge) => ({ ...edge, rendered: null })),
+  };
 }
 
 function renderedProminenceDomain(

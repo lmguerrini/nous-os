@@ -90,6 +90,26 @@ export type CalibrationProfile = {
     /** This is the colour-vision-deficiency minimum separation among distinct rendered prominence levels, scaled by one million. */
     readonly minimumRenderedCvdSeparationMicro: number;
   };
+  readonly renderedState: {
+    /** This is the temporal established material lightness delta and does not change node mass or hue. */
+    readonly temporalEstablishedLightnessDeltaPermille: number;
+    /** This is the temporal excluded material lightness delta and does not change node mass or hue. */
+    readonly temporalExcludedLightnessDeltaPermille: number;
+    /** This is the temporal undetermined material lightness delta and does not change node mass or hue. */
+    readonly temporalUndeterminedLightnessDeltaPermille: number;
+    /** This is the bridge accepted material lightness delta and does not change node mass or hue. */
+    readonly bridgeAcceptedLightnessDeltaPermille: number;
+    /** This is the bridge rejected material lightness delta and does not change node mass or hue. */
+    readonly bridgeRejectedLightnessDeltaPermille: number;
+    /** This is the bridge undetermined material lightness delta and does not change node mass or hue. */
+    readonly bridgeUndeterminedLightnessDeltaPermille: number;
+    /** This is the epistemic explicit material lightness delta and does not change node mass or hue. */
+    readonly epistemicExplicitLightnessDeltaPermille: number;
+    /** This is the epistemic derived material lightness delta and does not change node mass or hue. */
+    readonly epistemicDerivedLightnessDeltaPermille: number;
+    /** This is the epistemic speculative material lightness delta and does not change node mass or hue. */
+    readonly epistemicSpeculativeLightnessDeltaPermille: number;
+  };
   readonly filament: {
     readonly baseWidthPx: number;
     readonly pickTolerancePx: number;
@@ -195,6 +215,15 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "luminance.minimumCompositedPixelChannelDelta",
   "luminance.minimumRenderedNonHueSeparationMicro",
   "luminance.minimumRenderedCvdSeparationMicro",
+  "renderedState.temporalEstablishedLightnessDeltaPermille",
+  "renderedState.temporalExcludedLightnessDeltaPermille",
+  "renderedState.temporalUndeterminedLightnessDeltaPermille",
+  "renderedState.bridgeAcceptedLightnessDeltaPermille",
+  "renderedState.bridgeRejectedLightnessDeltaPermille",
+  "renderedState.bridgeUndeterminedLightnessDeltaPermille",
+  "renderedState.epistemicExplicitLightnessDeltaPermille",
+  "renderedState.epistemicDerivedLightnessDeltaPermille",
+  "renderedState.epistemicSpeculativeLightnessDeltaPermille",
   "filament.baseWidthPx",
   "filament.pickTolerancePx",
   "filament.opacityPermille",
@@ -304,6 +333,17 @@ export const DEFAULT_CALIBRATION: CalibrationProfile = {
   layout: { forceStrengthPermille: 850, idealEdgeLengthPx: 120, iterations: 180, gravityPermille: 90, seed: 17, cellJitterPermille: 340, framingMarginPermille: 150, minimumPairwiseAnchorSeparationPx: 16, minimumPairwiseAnchorSeparationGapPx: 2, minimumPairwiseAnchorSeparationIterations: 180, referenceFrameWidthPx: 1200, referenceFrameHeightPx: 800, minimumBridgeToIntraMedianRatioPermille: 2000, maximumBridgeToIntraMedianRatioPermille: 5000, minimumCommunityRegionFrameUtilisationPermille: 100, communityRegionDistributionRadiusPermille: 600, communityRegionDistributionVerticalRadiusPermille: 1100 },
   salience: { degreeExponentPermille: 650, minNodeSizePx: 2, maxNodeSizePx: 14 },
   luminance: { fieldLightnessPermille: 60, filamentLightnessPermille: 700, nodePeakLightnessPermille: 960, haloRadiusFactorPermille: 1100, haloFalloffPermille: 250, haloSampleCount: 12, coreBeforeHaloMinimumPx: 4, prominenceLightnessGainPermille: 850, prominenceChromaFalloffPermille: 1000, haloProbeRadiusFractionPermille: 700, minimumNodeContrastPermille: 1200, minimumCompositedPixelChannelDelta: 6, minimumRenderedNonHueSeparationMicro: 10, minimumRenderedCvdSeparationMicro: 100 },
+  renderedState: {
+    temporalEstablishedLightnessDeltaPermille: -36,
+    temporalExcludedLightnessDeltaPermille: -32,
+    temporalUndeterminedLightnessDeltaPermille: -28,
+    bridgeAcceptedLightnessDeltaPermille: -24,
+    bridgeRejectedLightnessDeltaPermille: -20,
+    bridgeUndeterminedLightnessDeltaPermille: -16,
+    epistemicExplicitLightnessDeltaPermille: -12,
+    epistemicDerivedLightnessDeltaPermille: -8,
+    epistemicSpeculativeLightnessDeltaPermille: -4,
+  },
   filament: { baseWidthPx: 1,
     pickTolerancePx: 2, opacityPermille: 430, curvatureMagnitudePermille: 0, minimumWidthFactorPermille: 120, minimumDeviceWidthPermille: 1500 },
   morphology: {

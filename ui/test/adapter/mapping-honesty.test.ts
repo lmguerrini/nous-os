@@ -6,6 +6,7 @@ import { canonicalBytes, digestPayload } from "#engine/canonical.ts";
 import { neutralProjection, toVisualGraph } from "#adapter/projection.ts";
 import {
   createSemantic,
+  createRenderedStateCarrier,
   readSemantic,
   semanticDigest,
   type VisualEdge,
@@ -102,6 +103,7 @@ function assertPropertyLossless(payload: FixturePayload, graph: VisualGraph, exp
       throw new TypeError(`Property L node ${node.id} has no neutral counterpart`);
     }
     assert.deepEqual(readSemantic(node.semantic), expected.semantic, `Property L node ${node.id} semantic content must be exact`);
+    assertSameBytes(node.derived, expectedNodeDerivation(payload, node.id), `Property L node ${node.id} derived provenance must be exact`);
   }
   for (const [index, edge] of graph.edges.entries()) {
     const expected = neutral.edges[index];
@@ -109,6 +111,7 @@ function assertPropertyLossless(payload: FixturePayload, graph: VisualGraph, exp
       throw new TypeError(`Property L edge ${edge.id} has no neutral counterpart`);
     }
     assert.deepEqual(readSemantic(edge.semantic), expected.semantic, `Property L edge ${edge.id} semantic content must be exact`);
+    assertSameBytes(edge.derived, expectedEdgeDerivation(payload, edge.id), `Property L edge ${edge.id} derived provenance must be exact`);
   }
 
   const reconstructed = {
@@ -131,13 +134,45 @@ function assertPropertyLossless(payload: FixturePayload, graph: VisualGraph, exp
   assert.equal(digestPayload(reconstructed), expectedDigest, "Property L reconstructed digest must match the Python expectation");
 }
 
-/** This verifies renderer-surface independence under two measured transformations and does not claim coverage of other semantic channels. */
+/** This reconstructs one node's retained provenance record from the fixture and does not call adapter code. */
+function expectedNodeDerivation(payload: FixturePayload, id: string): unknown {
+  const node = payload.nodes.find((candidate) => candidate.id === id);
+  if (node === undefined) {
+    throw new TypeError(`Property L node ${id} has no fixture counterpart for provenance`);
+  }
+  if (node.kind !== "assertion") {
+    return { value: null, origin: "projection-adapter" };
+  }
+  const provenance = semanticRecord(node.attributes).provenance;
+  if (provenance === undefined) {
+    throw new TypeError(`Property L assertion ${id} has no fixture provenance`);
+  }
+  return { value: provenance, origin: "projection-ir.assertion.provenance" };
+}
+
+/** This reconstructs one relation's retained provenance record from the fixture and does not call adapter code. */
+function expectedEdgeDerivation(payload: FixturePayload, id: string): unknown {
+  const edge = payload.edges.find((candidate) => candidate.id === id);
+  if (edge === undefined) {
+    throw new TypeError(`Property L edge ${id} has no fixture counterpart for provenance`);
+  }
+  if (edge.kind !== "cites" && edge.kind !== "bridge_side") {
+    return { value: null, origin: "projection-adapter" };
+  }
+  const provenance = edge.kind === "cites" ? edge.attributes : semanticRecord(edge.attributes).provenance;
+  if (provenance === undefined) {
+    throw new TypeError(`Property L ${edge.kind} ${id} has no fixture provenance`);
+  }
+  return { value: provenance, origin: `projection-ir.${edge.kind}.provenance` };
+}
+
+/** This verifies that renderer-visible variation is restricted to the pinned RENDERED vocabulary and does not permit another semantic channel to reach the renderer. */
 function assertPropertyNoSemanticLeak(payload: FixturePayload, adapter: Adapter): void {
-  // Within-kind rotation measures per-item channels; global leaf mutation measures corpus-level channels that change with the semantic multiset.
+  // Within-kind rotation moves governed members as well as every other per-item channel. Global mutation holds governed members fixed while moving every other semantic leaf.
   const originalGraph = adapter(payload);
   const transformations = [
     { id: "within-kind rotation", payload: permuteAttributes(payload) },
-    { id: "global leaf mutation", payload: mutateAllAttributes(payload) },
+    { id: "global non-rendered leaf mutation", payload: mutateAllNonRenderedAttributes(payload) },
   ] as const;
   for (const transformation of transformations) {
     assert.doesNotThrow(
@@ -147,7 +182,7 @@ function assertPropertyNoSemanticLeak(payload: FixturePayload, adapter: Adapter)
     if (transformation.id === "within-kind rotation") {
       assertWithinKindLeavesMoved(payload, transformation.payload);
     } else {
-      assertAllLeavesMoved(payload, transformation.payload, transformation.id);
+      assertAllNonRenderedLeavesMoved(payload, transformation.payload, transformation.id);
     }
     const transformedGraph = adapter(transformation.payload);
     assert.notEqual(
@@ -155,12 +190,17 @@ function assertPropertyNoSemanticLeak(payload: FixturePayload, adapter: Adapter)
       semanticDigest(transformedGraph),
       `Property S ${transformation.id} control must change the semantic digest`,
     );
-    assertRendererSurfaceStable(originalGraph, transformedGraph, transformation.id);
+    assertRendererSurfaceBounded(originalGraph, transformedGraph, transformation.payload, transformation.id);
   }
 }
 
-/** This checks renderer surfaces for one transformation and does not compare semantic tokens. */
-function assertRendererSurfaceStable(originalGraph: VisualGraph, transformedGraph: VisualGraph, transformation: string): void {
+/** This checks the renderer-visible carrier against the fixture oracle and does not treat retained provenance records as renderer material. */
+function assertRendererSurfaceBounded(
+  originalGraph: VisualGraph,
+  transformedGraph: VisualGraph,
+  transformedPayload: FixturePayload,
+  transformation: string,
+): void {
   assert.deepEqual(
     originalGraph.nodes.map((node) => node.id),
     transformedGraph.nodes.map((node) => node.id),
@@ -172,13 +212,22 @@ function assertRendererSurfaceStable(originalGraph: VisualGraph, transformedGrap
     `Property S ${transformation} edge ids must remain stable`,
   );
   const transformedNodes = new Map(transformedGraph.nodes.map((node) => [node.id, node]));
+  const transformedPayloadNodes = new Map(transformedPayload.nodes.map((node) => [node.id, node]));
   for (const node of originalGraph.nodes) {
     const counterpart = transformedNodes.get(node.id);
     if (counterpart === undefined) {
       throw new TypeError(`Property S ${transformation} node ${node.id} disappeared`);
     }
-    assertSameBytes(node.derived, counterpart.derived, `Property S ${transformation} node ${node.id} derived surface must be semantic-independent`);
     assertSameBytes(node.visual, counterpart.visual, `Property S ${transformation} node ${node.id} visual surface must be semantic-independent`);
+    const fixtureNode = transformedPayloadNodes.get(node.id);
+    if (fixtureNode === undefined) {
+      throw new TypeError(`Property S ${transformation} node ${node.id} has no transformed fixture counterpart`);
+    }
+    assertSameBytes(
+      counterpart.rendered,
+      expectedRenderedCarrier(fixtureNode),
+      `Property S ${transformation} node ${node.id} rendered surface must match the governed fixture state`,
+    );
   }
   const transformedEdges = new Map(transformedGraph.edges.map((edge) => [edge.id, edge]));
   for (const edge of originalGraph.edges) {
@@ -186,9 +235,31 @@ function assertRendererSurfaceStable(originalGraph: VisualGraph, transformedGrap
     if (counterpart === undefined) {
       throw new TypeError(`Property S ${transformation} edge ${edge.id} disappeared`);
     }
-    assertSameBytes(edge.derived, counterpart.derived, `Property S ${transformation} edge ${edge.id} derived surface must be semantic-independent`);
     assertSameBytes(edge.visual, counterpart.visual, `Property S ${transformation} edge ${edge.id} visual surface must be semantic-independent`);
+    assertSameBytes(counterpart.rendered, null, `Property S ${transformation} edge ${edge.id} rendered surface must remain null`);
   }
+}
+
+/** This projects the allowed D-042 carrier from a fixture item and does not use adapter code. */
+function expectedRenderedCarrier(node: FixtureNode): unknown {
+  if (node.kind === "assertion") {
+    const temporal = semanticRecord(node.attributes).temporal;
+    if (typeof temporal !== "string") {
+      throw new TypeError(`Property S assertion ${node.id} has no governed temporal member`);
+    }
+    return [{ enumType: "TemporalDisposition", member: temporal }];
+  }
+  if (node.kind === "bridge") {
+    const semantic = semanticRecord(node.attributes);
+    if (typeof semantic.disposition !== "string" || typeof semantic.epistemic_class !== "string") {
+      throw new TypeError(`Property S bridge ${node.id} has no governed rendered members`);
+    }
+    return [
+      { enumType: "BridgeDisposition", member: semantic.disposition },
+      { enumType: "EpistemicClass", member: semantic.epistemic_class },
+    ];
+  }
+  return null;
 }
 
 /** This rotates attributes within each kind and does not change ids, kinds, or edge endpoints. */
@@ -296,21 +367,34 @@ function cloneJson(value: unknown): unknown {
   return value;
 }
 
-/** This mutates every item semantic payload and does not alter graph identity or question fields. */
-function mutateAllAttributes(payload: FixturePayload): FixturePayload {
+/** This mutates every semantic leaf outside the pinned RENDERED sources and does not alter graph identity, question fields, or governed state members. */
+function mutateAllNonRenderedAttributes(payload: FixturePayload): FixturePayload {
   return {
     schema_version: payload.schema_version,
     policy_id: payload.policy_id,
     question: { ...payload.question },
-    nodes: payload.nodes.map((node) => ({ ...node, attributes: mutateAttributes(node.attributes) })),
+    nodes: payload.nodes.map((node) => ({ ...node, attributes: mutateNonRenderedNodeAttributes(node) })),
     edges: payload.edges.map((edge) => ({ ...edge, attributes: mutateAttributes(edge.attributes) })),
   };
 }
 
-/** This verifies every non-null leaf moved under global mutation and does not permit sibling-only movement. */
-function assertAllLeavesMoved(payload: FixturePayload, transformed: FixturePayload, transformation: string): void {
-  assertAllCollectionLeavesMoved(payload.nodes, transformed.nodes, `Property S ${transformation} node`);
-  assertAllCollectionLeavesMoved(payload.edges, transformed.edges, `Property S ${transformation} edge`);
+/** This mutates a node attribute record while retaining the only three field names allowed into the RENDERED carrier. */
+function mutateNonRenderedNodeAttributes(node: FixtureNode): unknown {
+  const mutated = semanticRecord(mutateAttributes(node.attributes));
+  const original = semanticRecord(node.attributes);
+  if (node.kind === "assertion") {
+    mutated.temporal = original.temporal;
+  } else if (node.kind === "bridge") {
+    mutated.disposition = original.disposition;
+    mutated.epistemic_class = original.epistemic_class;
+  }
+  return mutated;
+}
+
+/** This verifies every non-rendered leaf moved under global mutation and does not permit sibling-only movement. */
+function assertAllNonRenderedLeavesMoved(payload: FixturePayload, transformed: FixturePayload, transformation: string): void {
+  assertAllCollectionNonRenderedLeavesMoved(payload.nodes, transformed.nodes, `Property S ${transformation} node`);
+  assertAllCollectionNonRenderedLeavesMoved(payload.edges, transformed.edges, `Property S ${transformation} edge`);
 }
 
 /** This verifies singleton mutation and exact rotation sources leaf by leaf and does not use object-level non-vacuity. */
@@ -319,7 +403,7 @@ function assertWithinKindLeavesMoved(payload: FixturePayload, transformed: Fixtu
   assertRotatedCollectionLeaves(payload.edges, transformed.edges, "edge");
 }
 
-function assertAllCollectionLeavesMoved<T extends { readonly id: string; readonly attributes: unknown }>(
+function assertAllCollectionNonRenderedLeavesMoved<T extends { readonly id: string; readonly kind: string; readonly attributes: unknown }>(
   originalItems: readonly T[],
   transformedItems: readonly T[],
   label: string,
@@ -328,8 +412,47 @@ function assertAllCollectionLeavesMoved<T extends { readonly id: string; readonl
   for (const original of originalItems) {
     const transformed = transformedById.get(original.id);
     assert.ok(transformed !== undefined, `${label} ${original.id} has no transformed counterpart`);
-    assertEveryMovableLeafMoved(original.attributes, transformed.attributes, label, original.id);
+    assertEveryNonRenderedLeafMoved(original.attributes, transformed.attributes, label, original.id, original.kind);
   }
+}
+
+function assertEveryNonRenderedLeafMoved(
+  original: unknown,
+  transformed: unknown,
+  itemType: string,
+  itemId: string,
+  kind: string,
+  path = "",
+): void {
+  if (isGovernedRenderedSource(kind, path)) {
+    assertSameBytes(original, transformed, `Property S ${itemType} ${itemId} governed rendered source ${path} must remain fixed under non-rendered mutation`);
+    return;
+  }
+  if (original === null) {
+    return;
+  }
+  if (Array.isArray(original)) {
+    assert.ok(Array.isArray(transformed), `Property S ${itemType} ${itemId} semantic leaf container ${path} must remain an array`);
+    assert.equal(transformed.length, original.length, `Property S ${itemType} ${itemId} semantic leaf array ${path} must retain its length`);
+    for (const [index, value] of original.entries()) {
+      assertEveryNonRenderedLeafMoved(value, transformed[index], itemType, itemId, kind, `${path}[${index}]`);
+    }
+    return;
+  }
+  if (isRecord(original)) {
+    assert.ok(isRecord(transformed), `Property S ${itemType} ${itemId} semantic leaf container ${path} must remain an object`);
+    for (const [key, value] of Object.entries(original)) {
+      assert.ok(Object.prototype.hasOwnProperty.call(transformed, key), `Property S ${itemType} ${itemId} semantic leaf ${path}.${key} disappeared`);
+      assertEveryNonRenderedLeafMoved(value, transformed[key], itemType, itemId, kind, path ? `${path}.${key}` : key);
+    }
+    return;
+  }
+  assert.ok(!sameBytes(original, transformed), `Property S ${itemType} ${itemId} semantic leaf ${path || "<root>"} must move`);
+}
+
+function isGovernedRenderedSource(kind: string, path: string): boolean {
+  return (kind === "assertion" && path === "temporal")
+    || (kind === "bridge" && (path === "disposition" || path === "epistemic_class"));
 }
 
 function assertRotatedCollectionLeaves<T extends { readonly id: string; readonly kind: string; readonly attributes: unknown }>(
@@ -617,6 +740,23 @@ function smuggleKindAggregate(payload: FixturePayload): VisualGraph {
   );
 }
 
+/** This substitutes a different valid governed member into the closed renderer carrier and does not alter opaque semantic tokens. */
+function smuggleUngovernedRendered(payload: FixturePayload): VisualGraph {
+  const graph = toVisualGraph(payload);
+  const target = graph.nodes.find((node) => node.kind === "assertion");
+  if (target === undefined) {
+    throw new TypeError("smuggle-ungoverned-rendered found no assertion node");
+  }
+  const state = target.rendered?.[0];
+  if (state === undefined || state.enumType !== "TemporalDisposition") {
+    throw new TypeError("smuggle-ungoverned-rendered found no assertion temporal member");
+  }
+  const substitute = state.member === "established" ? "excluded" : "established";
+  return mapGraph(graph, (node) => node.id === target.id
+    ? { ...node, rendered: createRenderedStateCarrier([{ enumType: "TemporalDisposition", member: substitute }]) }
+    : node);
+}
+
 /** This drifts one unasserted renderer kind and does not alter any semantic value before the Python digest assertion. */
 function digestOnlyKindDrift(payload: FixturePayload): VisualGraph {
   const graph = toVisualGraph(payload);
@@ -663,7 +803,7 @@ function assertPropertyFails(action: () => void, expectedMessage: string, label:
     failure = error;
   }
   assert.ok(failure instanceof Error, `${label} did not fail at the expected assertion`);
-  assert.ok(failure.message.startsWith(expectedMessage), `${label} failed at an unexpected assertion`);
+  assert.ok(failure.message.startsWith(expectedMessage), `${label} failed at an unexpected assertion: ${failure.message}`);
 }
 
 /** This compares visual items by their stable ids and does not rely on array position for renderer surfaces. */
@@ -743,15 +883,15 @@ test("hostile adapter battery proves each named mapping-honesty instrument can f
     },
     {
       id: "smuggle-verbatim",
-      property: "S",
+      property: "L",
       adapter: smuggleVerbatim,
-      expectedMessage: (payload) => `Property S within-kind rotation node ${firstNodeIdByKind(payload, "assertion")} derived surface must be semantic-independent`,
+      expectedMessage: (payload) => `Property L node ${firstNodeIdByKind(payload, "assertion")} derived provenance must be exact`,
     },
     {
       id: "smuggle-encoded",
-      property: "S",
+      property: "L",
       adapter: smuggleEncoded,
-      expectedMessage: (payload) => `Property S within-kind rotation node ${firstNodeIdByKind(payload, "assertion")} derived surface must be semantic-independent`,
+      expectedMessage: (payload) => `Property L node ${firstNodeIdByKind(payload, "assertion")} derived provenance must be exact`,
     },
     {
       id: "smuggle-into-visual",
@@ -761,27 +901,33 @@ test("hostile adapter battery proves each named mapping-honesty instrument can f
     },
     {
       id: "smuggle-rejection-only",
-      property: "S",
+      property: "L",
       adapter: smuggleRejectionOnly,
-      expectedMessage: (payload) => `Property S within-kind rotation node ${firstNodeIdByKind(payload, "rejection")} derived surface must be semantic-independent`,
+      expectedMessage: (payload) => `Property L node ${firstNodeIdByKind(payload, "rejection")} derived provenance must be exact`,
     },
     {
       id: "smuggle-rejection-DATE-only",
-      property: "S",
+      property: "L",
       adapter: smuggleRejectionDateOnly,
-      expectedMessage: (payload) => `Property S within-kind rotation node ${firstNodeIdByKind(payload, "rejection")} derived surface must be semantic-independent`,
+      expectedMessage: (payload) => `Property L node ${firstNodeIdByKind(payload, "rejection")} derived provenance must be exact`,
     },
     {
       id: "smuggle-TEXT-LENGTH",
-      property: "S",
+      property: "L",
       adapter: smuggleTextLength,
-      expectedMessage: (payload) => `Property S within-kind rotation node ${firstRotatedTextLengthChangeNodeId(payload)} derived surface must be semantic-independent`,
+      expectedMessage: (payload) => `Property L node ${firstNodeIdByKind(payload, "assertion")} derived provenance must be exact`,
     },
     {
       id: "smuggle-kind-AGGREGATE",
-      property: "S",
+      property: "L",
       adapter: smuggleKindAggregate,
-      expectedMessage: (payload) => `Property S global leaf mutation node ${firstNodeIdByKind(payload, "assertion")} derived surface must be semantic-independent`,
+      expectedMessage: (payload) => `Property L node ${firstNodeIdByKind(payload, "assertion")} derived provenance must be exact`,
+    },
+    {
+      id: "smuggle-ungoverned-rendered",
+      property: "S",
+      adapter: smuggleUngovernedRendered,
+      expectedMessage: (payload) => `Property S within-kind rotation node ${firstNodeIdByKind(payload, "assertion")} rendered surface must match the governed fixture state`,
     },
     {
       id: "digest-only-kind-drift",
@@ -806,11 +952,16 @@ test("hostile adapter battery proves each named mapping-honesty instrument can f
         assert.doesNotThrow(() => assertPropertyLossless(payload, entry.adapter(payload), neutralDigest(name)), `${label} failed Property L`);
         assert.doesNotThrow(() => assertPropertyNoSemanticLeak(payload, entry.adapter), `${label} failed Property S`);
       } else if (entry.property === "L") {
-        assertPropertyFails(
-          () => assertPropertyLossless(payload, entry.adapter(payload), neutralDigest(name)),
-          entry.expectedMessage(payload),
-          label,
-        );
+        if ((entry.id === "smuggle-rejection-only" || entry.id === "smuggle-rejection-DATE-only")
+          && !payload.nodes.some((node) => node.kind === "rejection")) {
+          assert.doesNotThrow(() => assertPropertyLossless(payload, entry.adapter(payload), neutralDigest(name)), `${label} must be inert without rejection nodes`);
+        } else {
+          assertPropertyFails(
+            () => assertPropertyLossless(payload, entry.adapter(payload), neutralDigest(name)),
+            entry.expectedMessage(payload),
+            label,
+          );
+        }
         assert.doesNotThrow(() => assertPropertyNoSemanticLeak(payload, entry.adapter), `${label} unexpectedly failed Property S`);
       } else {
         assert.doesNotThrow(() => assertPropertyLossless(payload, entry.adapter(payload), neutralDigest(name)), `${label} unexpectedly failed Property L`);

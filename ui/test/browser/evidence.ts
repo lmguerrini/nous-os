@@ -10,6 +10,7 @@ import {
   assertVisualGraphFieldRegister,
   assertEngineAccessTrace,
   createEngineGraphView,
+  createRenderedStateCarrier,
   createSemantic,
   readSemantic,
   semanticDigest,
@@ -194,6 +195,8 @@ type Snapshot = {
   readonly selectedElement: string | null;
   /** This proves the renderer returned the selected graph record itself and does not serialise that record into a lookalike. */
   readonly selectedProvenanceIsExact: boolean;
+  /** This proves a selected assertion retains a real CAP-10 provenance value and does not accept the former all-null derivation. */
+  readonly selectedProvenanceHasValue: boolean;
   readonly focusedElement: string | null;
   readonly nodes: readonly string[];
   readonly edges: readonly string[];
@@ -282,7 +285,7 @@ type EvidenceApi = {
   setSelectionFocusNoopControl(selection: string | null, focus: string | null): Promise<Snapshot>;
   hideSelectionFocusNoopControl(): void;
   assertDerivedOriginRefusalControl(): number;
-  assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean };
+  assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean; readonly changedRenderedMaterial: boolean };
   readLiveRelationMaterialBindings(): readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[];
   proveStackedMaterialControlRejects(): { readonly relationId: string; readonly materialTypes: readonly string[]; readonly message: string };
   shutdown(): Promise<{ readonly canvases: number; readonly framesAfterShutdown: number }>;
@@ -499,6 +502,7 @@ async function boot(): Promise<void> {
       selectedProvenanceIsExact: selectedElement === null
         ? selectedProvenance === null
         : selectedGraphElement !== undefined && selectedProvenance === selectedGraphElement.derived,
+      selectedProvenanceHasValue: selectedElement !== null && selectedProvenance !== null && selectedProvenance.value !== null,
       focusedElement: handle.getFocus(),
       nodes: surface.nodeIds,
       edges: surface.edgeIds,
@@ -915,7 +919,7 @@ async function boot(): Promise<void> {
       }
       return invalid.length;
     },
-    assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean } {
+    assertEngineSemanticIsolationControl(): { readonly reads: number; readonly changedSemanticDigest: boolean; readonly changedRenderedMaterial: boolean } {
       const original = requiredGraph(graphs, policy);
       const elements = [...original.nodes, ...original.edges];
       const payloads = elements.map((element) => readSemantic(element.semantic));
@@ -952,13 +956,32 @@ async function boot(): Promise<void> {
       if (before !== after) {
         throw new Error("engine output changed after semantic permutation");
       }
-      for (const trace of [originalModel.engineAccessTrace, permutedModel.engineAccessTrace]) {
+      const renderedTarget = original.nodes.find((node) => node.kind === "assertion");
+      const renderedState = renderedTarget?.rendered?.[0];
+      if (renderedTarget === undefined || renderedState === undefined || renderedState.enumType !== "TemporalDisposition") {
+        throw new Error("engine semantic-isolation control requires one governed temporal state");
+      }
+      const substitute = renderedState.member === "established" ? "excluded" : "established";
+      const renderedVariation: VisualGraph = {
+        ...original,
+        nodes: original.nodes.map((node) => node.id === renderedTarget.id
+          ? { ...node, rendered: createRenderedStateCarrier([{ enumType: "TemporalDisposition", member: substitute }]) }
+          : node),
+      };
+      const renderedModel = buildRenderModel(renderedVariation, options);
+      if (semanticIndependentSignature(originalModel) === semanticIndependentSignature(renderedModel)) {
+        throw new Error("governed RENDERED state did not reach engine material");
+      }
+      for (const trace of [originalModel.engineAccessTrace, permutedModel.engineAccessTrace, renderedModel.engineAccessTrace]) {
         assertEngineAccessTrace(trace);
         if (trace.reads.some((read) => read.includes("semantic"))) {
           throw new Error("engine access trace read semantic data");
         }
+        if (!trace.reads.includes("node.rendered")) {
+          throw new Error("engine access trace did not read the governed RENDERED carrier");
+        }
       }
-      return { reads: originalModel.engineAccessTrace.reads.length, changedSemanticDigest: true };
+      return { reads: originalModel.engineAccessTrace.reads.length, changedSemanticDigest: true, changedRenderedMaterial: true };
     },
     readLiveRelationMaterialBindings(): readonly { readonly relationId: string; readonly materialTypes: readonly string[] }[] {
       return requiredHandle(product).readRelationMaterialBindings();

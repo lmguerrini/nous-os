@@ -1,5 +1,5 @@
 import { canonicalBytes } from "#engine/canonical.ts";
-import { assertVisualGraphFieldRegister, createSemantic } from "#engine/contract.ts";
+import { assertVisualGraphFieldRegister, createRenderedStateCarrier, createSemantic } from "#engine/contract.ts";
 import type { Semantic, VisualEdge, VisualGraph, VisualNode } from "#engine/contract.ts";
 
 type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
@@ -294,7 +294,8 @@ function visualNode(node: NeutralNode, index: number): VisualNode {
     id: node.id,
     kind: node.kind,
     semantic: createSemantic(cloneJson(node.semantic)),
-    derived: { value: null, origin: "projection-adapter" },
+    rendered: renderedStateForNode(node),
+    derived: derivedNodeProvenance(node),
     visual: visualMetadata(node.kind, index),
   };
 }
@@ -306,9 +307,57 @@ function visualEdge(edge: NeutralEdge, index: number): VisualEdge {
     source: edge.source,
     target: edge.target,
     semantic: createSemantic(cloneJson(edge.semantic)),
-    derived: { value: null, origin: "projection-adapter" },
+    rendered: createRenderedStateCarrier(null),
+    derived: derivedEdgeProvenance(edge),
     visual: visualMetadata(edge.kind, index),
   };
+}
+
+/** This maps the only governed RENDERED sources and does not default an IR-silent element to undetermined. */
+function renderedStateForNode(node: NeutralNode): VisualNode["rendered"] {
+  if (node.kind === "assertion") {
+    const attributes = attributeObject(node.semantic, "assertion");
+    return createRenderedStateCarrier([
+      { enumType: "TemporalDisposition", member: attributes.temporal },
+    ]);
+  }
+  if (node.kind === "bridge") {
+    const attributes = attributeObject(node.semantic, "bridge");
+    return createRenderedStateCarrier([
+      { enumType: "BridgeDisposition", member: attributes.disposition },
+      { enumType: "EpistemicClass", member: attributes.epistemic_class },
+    ]);
+  }
+  return createRenderedStateCarrier(null);
+}
+
+/** This retains one assertion provenance record and does not manufacture provenance for an IR-silent node kind. */
+function derivedNodeProvenance(node: NeutralNode): VisualNode["derived"] {
+  if (node.kind !== "assertion") {
+    return { value: null, origin: "projection-adapter" };
+  }
+  const attributes = attributeObject(node.semantic, "assertion");
+  const provenance = attributes.provenance;
+  if (provenance === undefined) {
+    throw new TypeError("assertion provenance is unavailable after projection validation");
+  }
+  return { value: cloneJson(provenance), origin: "projection-ir.assertion.provenance" };
+}
+
+/** This retains one relation provenance record and does not manufacture provenance for an IR-silent relation kind. */
+function derivedEdgeProvenance(edge: NeutralEdge): VisualEdge["derived"] {
+  if (edge.kind === "cites") {
+    return { value: cloneJson(edge.semantic), origin: "projection-ir.cites.provenance" };
+  }
+  if (edge.kind !== "bridge_side") {
+    return { value: null, origin: "projection-adapter" };
+  }
+  const attributes = attributeObject(edge.semantic, "bridge_side");
+  const provenance = attributes.provenance;
+  if (provenance === undefined) {
+    throw new TypeError(`${edge.kind} provenance is unavailable after projection validation`);
+  }
+  return { value: cloneJson(provenance), origin: `projection-ir.${edge.kind}.provenance` };
 }
 
 function visualMetadata(role: string, index: number): VisualNode["visual"] {
