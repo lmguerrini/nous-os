@@ -1,5 +1,5 @@
 import { digestPayload } from "#engine/canonical.ts";
-import { RENDERED } from "#engine/partition.ts";
+import { INSPECTED, RENDERED } from "#engine/partition.ts";
 
 const semanticBrand: unique symbol = Symbol("semantic");
 const semanticContents = new WeakMap<object, unknown>();
@@ -47,9 +47,25 @@ export type DerivedValue = {
   readonly origin: string;
 };
 
+/** This names a governed node or edge kind and does not admit semantic free text. */
+export type VisualRole =
+  | "source"
+  | "subject"
+  | "cluster"
+  | "assertion"
+  | "conflict"
+  | "bridge"
+  | "rejection"
+  | "about"
+  | "cites"
+  | "conflict_member"
+  | "bridge_side"
+  | "in_cluster"
+  | "rejects";
+
 /** This is renderer-neutral presentation metadata and does not contain screen-space geometry. */
 export type VisualMetadata = {
-  readonly role: string;
+  readonly role: VisualRole;
   readonly anchor: Coordinates;
   readonly path: readonly Coordinates[];
   readonly lod: LodMetadata;
@@ -154,9 +170,31 @@ export const VISUAL_GRAPH_FIELD_REGISTER = {
   semantic: [],
 } as const;
 
+const GOVERNED_KIND_MEMBERS = [...INSPECTED]
+  .sort((left, right) => left.enumType.localeCompare(right.enumType) || left.member.localeCompare(right.member));
+
+/** This names the frozen node-kind and edge-kind roles and does not add a renderer-local label vocabulary. */
+export const VISUAL_ROLE_VOCABULARY: readonly VisualRole[] = Object.freeze(
+  GOVERNED_KIND_MEMBERS
+    .filter((state) => state.enumType === "NodeKind" || state.enumType === "EdgeKind")
+    .map((state) => state.member)
+) as readonly VisualRole[];
+
+const NODE_KIND_VOCABULARY: readonly VisualRole[] = Object.freeze(
+  GOVERNED_KIND_MEMBERS
+    .filter((state) => state.enumType === "NodeKind")
+    .map((state) => state.member)
+) as readonly VisualRole[];
+
+const EDGE_KIND_VOCABULARY: readonly VisualRole[] = Object.freeze(
+  GOVERNED_KIND_MEMBERS
+    .filter((state) => state.enumType === "EdgeKind")
+    .map((state) => state.member)
+) as readonly VisualRole[];
+
 /** This creates a traced structural engine view and does not expose semantic or derived values beyond the closed governed RENDERED carrier. */
 export function createEngineGraphView(graph: VisualGraph): { readonly graph: EngineGraph; readonly trace: EngineAccessTrace } {
-  assertEngineGraphCarrierBoundary(graph);
+  assertVisualGraphFieldRegister(graph);
   const reads: string[] = [];
   const trace: EngineAccessTrace = { reads };
   const node = (value: VisualNode): EngineNode => tracedElement({
@@ -213,6 +251,9 @@ export function assertVisualGraphFieldRegister(graph: unknown): asserts graph is
   assertExactFields(graph, "graph", VISUAL_GRAPH_FIELD_REGISTER.graph);
   const graphValue = graph as Record<string, unknown>;
   assertExactFields(graphValue.question, "question", VISUAL_GRAPH_FIELD_REGISTER.question);
+  assertString(graphValue.schema_version, "schema_version");
+  assertString(graphValue.policy_id, "policy_id");
+  assertInstant(graphValue.question as Record<string, unknown>, "question");
   assertArray(graphValue.nodes, "nodes");
   assertArray(graphValue.edges, "edges");
 
@@ -272,38 +313,23 @@ export function assertNoPassthrough(
 function assertNodeFields(value: unknown, path: string): void {
   assertExactFields(value, path, VISUAL_GRAPH_FIELD_REGISTER.node);
   const node = value as Record<string, unknown>;
-  assertSemantic(node.semantic, `${path}.semantic`);
+  assertString(node.id, `${path}.id`);
+  assertGovernedKind(node.kind, NODE_KIND_VOCABULARY, `${path}.kind`, "NodeKind");
   assertRenderedStateCarrier(node.kind, node.rendered, `${path}.rendered`);
   assertDerivedFields(node.derived, `${path}.derived`);
-  assertVisualFields(node.visual, `${path}.visual`);
-}
-
-/** This validates the fields that can cross into an engine and does not read opaque semantic or derived values. */
-function assertEngineGraphCarrierBoundary(graph: VisualGraph): void {
-  assertExactFields(graph, "graph", VISUAL_GRAPH_FIELD_REGISTER.graph);
-  const graphValue = graph as Record<string, unknown>;
-  assertExactFields(graphValue.question, "question", VISUAL_GRAPH_FIELD_REGISTER.question);
-  assertArray(graphValue.nodes, "nodes");
-  assertArray(graphValue.edges, "edges");
-  for (const [index, value] of graphValue.nodes.entries()) {
-    assertExactFields(value, `nodes[${index}]`, VISUAL_GRAPH_FIELD_REGISTER.node);
-    const node = value as Record<string, unknown>;
-    assertRenderedStateCarrier(node.kind, node.rendered, `nodes[${index}].rendered`);
-  }
-  for (const [index, value] of graphValue.edges.entries()) {
-    assertExactFields(value, `edges[${index}]`, VISUAL_GRAPH_FIELD_REGISTER.edge);
-    const edge = value as Record<string, unknown>;
-    assertRenderedStateCarrier(edge.kind, edge.rendered, `edges[${index}].rendered`);
-  }
+  assertVisualFields(node.visual, `${path}.visual`, node.kind);
 }
 
 function assertEdgeFields(value: unknown, path: string): void {
   assertExactFields(value, path, VISUAL_GRAPH_FIELD_REGISTER.edge);
   const edge = value as Record<string, unknown>;
-  assertSemantic(edge.semantic, `${path}.semantic`);
+  assertString(edge.id, `${path}.id`);
+  assertGovernedKind(edge.kind, EDGE_KIND_VOCABULARY, `${path}.kind`, "EdgeKind");
+  assertString(edge.source, `${path}.source`);
+  assertString(edge.target, `${path}.target`);
   assertRenderedStateCarrier(edge.kind, edge.rendered, `${path}.rendered`);
   assertDerivedFields(edge.derived, `${path}.derived`);
-  assertVisualFields(edge.visual, `${path}.visual`);
+  assertVisualFields(edge.visual, `${path}.visual`, edge.kind);
 }
 
 function assertDerivedFields(value: unknown, path: string): void {
@@ -322,6 +348,7 @@ export function createRenderedStateCarrier(value: unknown): RenderedStateCarrier
   if (!Array.isArray(value) || (value.length !== 1 && value.length !== 2)) {
     throw new TypeError("rendered state carrier must contain one or two pinned RENDERED members, or null");
   }
+  assertArray(value, "rendered state carrier");
   const members = value.map((member, index) => renderedStateMember(member, `rendered state carrier[${index}]`));
   const first = members[0];
   if (first === undefined) {
@@ -462,26 +489,96 @@ function tracedVisual(value: VisualMetadata, element: "node" | "edge", reads: st
   });
 }
 
-function assertVisualFields(value: unknown, path: string): void {
+function assertVisualFields(value: unknown, path: string, kind: string): void {
   assertExactFields(value, path, VISUAL_GRAPH_FIELD_REGISTER.visual);
   const visual = value as Record<string, unknown>;
+  assertVisualRole(visual.role, `${path}.role`);
+  if (visual.role !== kind) {
+    throw new TypeError(`${path}.role must equal its governed element kind`);
+  }
   assertExactFields(visual.anchor, `${path}.anchor`, VISUAL_GRAPH_FIELD_REGISTER.coordinates);
+  assertCoordinates(visual.anchor, `${path}.anchor`);
   assertArray(visual.path, `${path}.path`);
   for (const [index, point] of visual.path.entries()) {
     assertExactFields(point, `${path}.path[${index}]`, VISUAL_GRAPH_FIELD_REGISTER.coordinates);
+    assertCoordinates(point, `${path}.path[${index}]`);
   }
   assertExactFields(visual.lod, `${path}.lod`, VISUAL_GRAPH_FIELD_REGISTER.lod);
-}
-
-function assertSemantic(value: unknown, path: string): asserts value is Semantic {
-  if (typeof value !== "object" || value === null || !semanticContents.has(value)) {
-    throw new TypeError(`${path} must be created by createSemantic`);
-  }
+  assertLod(visual.lod, `${path}.lod`);
+  assertFiniteNumber(visual.label_priority, `${path}.label_priority`);
 }
 
 function assertArray(value: unknown, path: string): asserts value is readonly unknown[] {
   if (!Array.isArray(value)) {
     throw new TypeError(`${path} must be an array`);
+  }
+  if (Object.getPrototypeOf(value) !== Array.prototype) {
+    throw new TypeError(`${path} must be a standard array`);
+  }
+  const actual: string[] = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") {
+      throw new TypeError(`${path} array fields do not match the pinned register`);
+    }
+    actual.push(key);
+  }
+  actual.sort();
+  const expected = ["length", ...Array.from({ length: value.length }, (_, index) => `${index}`)].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new TypeError(`${path} array fields do not match the pinned register`);
+  }
+}
+
+function assertInstant(value: Record<string, unknown>, path: string): void {
+  assertStringOrNull(value.valid_at, `${path}.valid_at`);
+  assertStringOrNull(value.recorded_as_of, `${path}.recorded_as_of`);
+}
+
+function assertString(value: unknown, path: string): asserts value is string {
+  if (typeof value !== "string") {
+    throw new TypeError(`${path} must be a string`);
+  }
+}
+
+function assertStringOrNull(value: unknown, path: string): void {
+  if (value !== null && typeof value !== "string") {
+    throw new TypeError(`${path} must be a string or null`);
+  }
+}
+
+function assertVisualRole(value: unknown, path: string): asserts value is VisualRole {
+  if (typeof value !== "string" || !VISUAL_ROLE_VOCABULARY.includes(value as VisualRole)) {
+    throw new TypeError(`${path} must name a governed NodeKind or EdgeKind`);
+  }
+}
+
+function assertGovernedKind(
+  value: unknown,
+  vocabulary: readonly VisualRole[],
+  path: string,
+  category: "NodeKind" | "EdgeKind",
+): asserts value is VisualRole {
+  if (typeof value !== "string" || !vocabulary.includes(value as VisualRole)) {
+    throw new TypeError(`${path} must name a governed ${category}`);
+  }
+}
+
+function assertCoordinates(value: unknown, path: string): void {
+  const coordinates = value as Record<string, unknown>;
+  assertFiniteNumber(coordinates.x, `${path}.x`);
+  assertFiniteNumber(coordinates.y, `${path}.y`);
+  assertFiniteNumber(coordinates.z, `${path}.z`);
+}
+
+function assertLod(value: unknown, path: string): void {
+  const lod = value as Record<string, unknown>;
+  assertFiniteNumber(lod.minimum, `${path}.minimum`);
+  assertFiniteNumber(lod.maximum, `${path}.maximum`);
+}
+
+function assertFiniteNumber(value: unknown, path: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new TypeError(`${path} must be a finite number`);
   }
 }
 

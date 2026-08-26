@@ -43,7 +43,7 @@ function makeGraph(): VisualGraph {
         rendered: createRenderedStateCarrier([{ enumType: "TemporalDisposition", member: "established" }]),
         derived: { value: "supported", origin: "support-classifier" },
         visual: {
-          role: "claim",
+          role: "assertion",
           anchor: { x: 1, y: 2, z: 0 },
           path: [{ x: 1, y: 2, z: 0 }],
           lod: { minimum: 0, maximum: 4 },
@@ -57,7 +57,7 @@ function makeGraph(): VisualGraph {
         rendered: createRenderedStateCarrier(null),
         derived: { value: 1, origin: "source-ranker" },
         visual: {
-          role: "evidence",
+          role: "source",
           anchor: { x: 3, y: 4, z: 0 },
           path: [{ x: 3, y: 4, z: 0 }],
           lod: { minimum: 1, maximum: 5 },
@@ -75,7 +75,7 @@ function makeGraph(): VisualGraph {
         rendered: createRenderedStateCarrier(null),
         derived: { value: true, origin: "citation-resolver" },
         visual: {
-          role: "citation",
+          role: "cites",
           anchor: { x: 2, y: 3, z: 0 },
           path: [
             { x: 1, y: 2, z: 0 },
@@ -225,6 +225,148 @@ test("the field register refuses missing fields", () => {
   assert.doesNotThrow(() => assertVisualGraphFieldRegister(graph));
 });
 
+test("the recursive exact boundary accepts the governed graph first and refuses every nested extension on every construction route", () => {
+  const graph = makeGraph();
+  const assertion = graph.nodes[0];
+  const citation = graph.edges[0];
+  assert.ok(assertion !== undefined && citation !== undefined);
+
+  const routes: readonly { readonly name: string; readonly construct: (candidate: VisualGraph) => unknown }[] = [
+    { name: "field-register route", construct: (candidate) => assertVisualGraphFieldRegister(candidate) },
+    { name: "direct-engine route", construct: (candidate) => createEngineGraphView(candidate) },
+    { name: "render-model route", construct: (candidate) => buildRenderModel(candidate, renderOptions()) },
+  ];
+
+  for (const route of routes) {
+    assert.doesNotThrow(() => route.construct(graph), `unmodified governed graph ${route.name}`);
+  }
+  const positiveModel = buildRenderModel(graph, renderOptions());
+  assert.equal(positiveModel.graph.getNodeAttributes(assertion.id).labelText, assertion.visual.role, "the accepted governed node role reaches its label text");
+
+  const carrierWithOwnProperty = [{ enumType: "TemporalDisposition", member: "established" }];
+  Object.defineProperty(carrierWithOwnProperty, "unregistered", { value: true, enumerable: true });
+  const nodesWithOwnProperty = [...graph.nodes];
+  Object.defineProperty(nodesWithOwnProperty, "unregistered", { value: true, enumerable: true });
+  const edgesWithOwnProperty = [...graph.edges];
+  Object.defineProperty(edgesWithOwnProperty, "unregistered", { value: true, enumerable: true });
+  const pathWithOwnProperty = [...assertion.visual.path];
+  Object.defineProperty(pathWithOwnProperty, "unregistered", { value: true, enumerable: true });
+  const pathPoint = assertion.visual.path[0];
+  assert.ok(pathPoint !== undefined);
+
+  const forced = (value: unknown): VisualGraph => value as VisualGraph;
+  const attacks: readonly { readonly name: string; readonly graph: VisualGraph; readonly rule: RegExp }[] = [
+    {
+      name: "extra graph field",
+      graph: forced({ ...graph, unregistered: true }),
+      rule: /graph fields do not match the pinned register/,
+    },
+    {
+      name: "extra derived field",
+      graph: forced({ ...graph, nodes: [{ ...assertion, derived: { ...assertion.derived, unregistered: true } }, ...graph.nodes.slice(1)] }),
+      rule: /nodes\[0\]\.derived fields do not match the pinned register/,
+    },
+    {
+      name: "extra visual field",
+      graph: forced({ ...graph, nodes: [{ ...assertion, visual: { ...assertion.visual, unregistered: true } }, ...graph.nodes.slice(1)] }),
+      rule: /nodes\[0\]\.visual fields do not match the pinned register/,
+    },
+    {
+      name: "extra anchor field",
+      graph: forced({ ...graph, nodes: [{ ...assertion, visual: { ...assertion.visual, anchor: { ...assertion.visual.anchor, unregistered: true } } }, ...graph.nodes.slice(1)] }),
+      rule: /nodes\[0\]\.visual\.anchor fields do not match the pinned register/,
+    },
+    {
+      name: "extra own property on rendered carrier array",
+      graph: forced({ ...graph, nodes: [{ ...assertion, rendered: carrierWithOwnProperty as unknown as typeof assertion.rendered }, ...graph.nodes.slice(1)] }),
+      rule: /nodes\[0\]\.rendered.*array fields do not match the pinned register/,
+    },
+    {
+      name: "semantic free text forged into visual role",
+      graph: forced({ ...graph, nodes: [{ ...assertion, visual: { ...assertion.visual, role: "FORGED SEMANTIC LABEL TEXT" as unknown as typeof assertion.visual.role } }, ...graph.nodes.slice(1)] }),
+      rule: /nodes\[0\]\.visual\.role must name a governed NodeKind or EdgeKind/,
+    },
+    {
+      name: "forged node kind reaching engine material",
+      graph: forced({ ...graph, nodes: [{ ...assertion, kind: "FORGED NODE KIND" }, ...graph.nodes.slice(1)] }),
+      rule: /nodes\[0\]\.kind must name a governed NodeKind/,
+    },
+    {
+      name: "forged edge kind reaching label text",
+      graph: forced({ ...graph, edges: [{ ...citation, kind: "FORGED EDGE LABEL TEXT" }, ...graph.edges.slice(1)] }),
+      rule: /edges\[0\]\.kind must name a governed EdgeKind/,
+    },
+    {
+      name: "extra field inside rendered member object",
+      graph: forced({ ...graph, nodes: [{ ...assertion, rendered: [{ enumType: "TemporalDisposition", member: "established", unregistered: true }] as unknown as typeof assertion.rendered }, ...graph.nodes.slice(1)] }),
+      rule: /nodes\[0\]\.rendered.*fields do not match the pinned register/,
+    },
+    {
+      name: "extra graph question field",
+      graph: forced({ ...graph, question: { ...graph.question, unregistered: true } }),
+      rule: /question fields do not match the pinned register/,
+    },
+    {
+      name: "extra node field",
+      graph: forced({ ...graph, nodes: [{ ...assertion, unregistered: true }, ...graph.nodes.slice(1)] }),
+      rule: /nodes\[0\] fields do not match the pinned register/,
+    },
+    {
+      name: "extra edge field",
+      graph: forced({ ...graph, edges: [{ ...citation, unregistered: true }, ...graph.edges.slice(1)] }),
+      rule: /edges\[0\] fields do not match the pinned register/,
+    },
+    {
+      name: "extra own property on nodes array",
+      graph: forced({ ...graph, nodes: nodesWithOwnProperty }),
+      rule: /nodes array fields do not match the pinned register/,
+    },
+    {
+      name: "extra own property on edges array",
+      graph: forced({ ...graph, edges: edgesWithOwnProperty }),
+      rule: /edges array fields do not match the pinned register/,
+    },
+    {
+      name: "extra own property on visual path array",
+      graph: forced({ ...graph, nodes: [{ ...assertion, visual: { ...assertion.visual, path: pathWithOwnProperty } }, ...graph.nodes.slice(1)] }),
+      rule: /nodes\[0\]\.visual\.path array fields do not match the pinned register/,
+    },
+    {
+      name: "extra path coordinate field",
+      graph: forced({ ...graph, nodes: [{ ...assertion, visual: { ...assertion.visual, path: [{ ...pathPoint, unregistered: true }] } }, ...graph.nodes.slice(1)] }),
+      rule: /nodes\[0\]\.visual\.path\[0\] fields do not match the pinned register/,
+    },
+    {
+      name: "extra lod field",
+      graph: forced({ ...graph, nodes: [{ ...assertion, visual: { ...assertion.visual, lod: { ...assertion.visual.lod, unregistered: true } } }, ...graph.nodes.slice(1)] }),
+      rule: /nodes\[0\]\.visual\.lod fields do not match the pinned register/,
+    },
+  ];
+
+  const assertRefused = (name: string, candidate: VisualGraph, route: { readonly name: string; readonly construct: (candidate: VisualGraph) => unknown }, rule: RegExp): void => {
+    let failure: unknown;
+    try {
+      route.construct(candidate);
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure instanceof Error, `${name} ${route.name} accepted a forged graph`);
+    assert.match(failure.message, rule, `${name} ${route.name} refused for the wrong reason`);
+  };
+
+  assert.equal(attacks.length, 17);
+  for (const attack of attacks) {
+    for (const route of routes) {
+      assertRefused(attack.name, attack.graph, route, attack.rule);
+      assert.throws(
+        () => assertRefused(attack.name, attack.graph, { name: "removed-refusal control", construct: () => undefined }, attack.rule),
+        /accepted a forged graph/,
+        `${attack.name} control must fail when its refusal is removed`,
+      );
+    }
+  }
+});
+
 test("the closed RENDERED carrier refuses free text, identifiers, attributes, and unbounded values at construction", () => {
   const accepted = [
     { enumType: "TemporalDisposition", member: "established" },
@@ -318,6 +460,7 @@ test("the governed RENDERED validator refuses forged carrier routes and copies n
       graph: { ...graph, nodes: graph.nodes.map((node) => node.id === source.id ? {
         ...node,
         kind: "bridge",
+        visual: { ...node.visual, role: "bridge" },
         rendered: createRenderedStateCarrier([
           { enumType: "EpistemicClass", member: "explicit" },
           { enumType: "BridgeDisposition", member: "accepted" },

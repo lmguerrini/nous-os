@@ -1,7 +1,7 @@
 import { MultiDirectedGraph } from "graphology";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
-import { assertEngineAccessTrace, createEngineGraphView } from "#engine/contract.ts";
+import { assertEngineAccessTrace, assertVisualGraphFieldRegister, createEngineGraphView } from "#engine/contract.ts";
 import type { Coordinates, DerivedValue, EngineAccessTrace, RenderedState, RenderedStateCarrier, VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
 import { lodView } from "#engine/lod.ts";
@@ -151,6 +151,7 @@ export function resolveLabelIds(
 
 /** This creates a Sigma graph from the engine state and does not inspect semantic values. */
 export function buildRenderModel(graph: VisualGraph, options: RenderOptions, visualState?: VisualState): RenderModel {
+  assertVisualGraphFieldRegister(graph);
   if (visualState !== undefined) {
     assertVisualState(graph, visualState);
   }

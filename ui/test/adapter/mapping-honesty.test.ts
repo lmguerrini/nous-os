@@ -758,8 +758,8 @@ function smuggleIntoVisual(payload: FixturePayload): VisualGraph {
   const graph = toVisualGraph(payload);
   return mapGraph(
     graph,
-    (node) => ({ ...node, visual: { ...node.visual, role: JSON.stringify(readSemantic(node.semantic)) } }),
-    (edge) => ({ ...edge, visual: { ...edge.visual, role: JSON.stringify(readSemantic(edge.semantic)) } }),
+    (node) => ({ ...node, visual: { ...node.visual, role: JSON.stringify(readSemantic(node.semantic)) as unknown as VisualNode["visual"]["role"] } }),
+    (edge) => ({ ...edge, visual: { ...edge.visual, role: JSON.stringify(readSemantic(edge.semantic)) as unknown as VisualEdge["visual"]["role"] } }),
   );
 }
 
@@ -1001,7 +1001,7 @@ test("hostile adapter battery proves each named mapping-honesty instrument can f
       id: "smuggle-into-visual",
       property: "S",
       adapter: smuggleIntoVisual,
-      expectedMessage: (payload) => `Property S within-kind rotation node ${firstNodeIdByKind(payload, "assertion")} visual surface must be semantic-independent`,
+      expectedMessage: () => "nodes[0].visual.role must name a governed NodeKind or EdgeKind",
     },
     {
       id: "smuggle-rejection-only",

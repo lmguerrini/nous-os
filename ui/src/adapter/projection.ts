@@ -362,7 +362,7 @@ function derivedEdgeProvenance(edge: NeutralEdge): VisualEdge["derived"] {
 
 function visualMetadata(role: string, index: number): VisualNode["visual"] {
   return {
-    role,
+    role: role as VisualNode["visual"]["role"],
     anchor: { x: index, y: 0, z: 0 },
     path: [{ x: index, y: 0, z: 0 }],
     lod: { minimum: 0, maximum: 1 },
