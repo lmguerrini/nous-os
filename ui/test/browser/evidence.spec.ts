@@ -125,9 +125,34 @@ type DistantRelationPickControl = {
 
 type RelationPickCoverage = {
   readonly edgeId: string;
+  readonly outcome: "unambiguous" | "coincident" | "occluded" | "unpickable";
+  readonly certifiedUnambiguousParameter: number | null;
+  readonly unambiguousCandidateCount: number;
   readonly returnedEdgeIds: readonly (string | null)[];
   readonly coveringEdgeId: string | null;
   readonly certifiedCoincidentPartnerIds: readonly string[];
+  readonly coincidence: {
+    readonly partnerIds: readonly string[];
+    readonly probes: readonly {
+      readonly parameter: number;
+      readonly coveringEdgeId: string;
+      readonly pickingCell: {
+        readonly minimumX: number;
+        readonly maximumX: number;
+        readonly minimumY: number;
+        readonly maximumY: number;
+        readonly centre: { readonly x: number; readonly y: number; readonly z: number };
+      };
+      readonly geometry: {
+        readonly source: { readonly x: number; readonly y: number };
+        readonly control: { readonly x: number; readonly y: number };
+        readonly target: { readonly x: number; readonly y: number };
+      };
+      readonly centrelineDistancePx: number;
+      readonly deviationBoundPx: number;
+      readonly pickRadiusPx: number;
+    }[];
+  } | null;
   readonly occlusion: {
     readonly occludingEdgeId: string;
     readonly probes: readonly {
@@ -168,6 +193,7 @@ type PickingTargetSetWitness = {
     readonly nodePickCoverageIds: readonly string[];
     readonly edgePickCoverageIds: readonly string[];
     readonly edgeOcclusionIds: readonly string[];
+    readonly edgeUnpickableIds: readonly string[];
     readonly edgePickCoverage: Readonly<Record<string, RelationPickCoverage>>;
     readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
     readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
@@ -204,6 +230,20 @@ type ShippingPickingSetSnapshot = {
   readonly renderedNodeIds: readonly string[];
   readonly renderedEdgeIds: readonly string[];
   readonly pickingTarget: PickingTargetSetWitness;
+  readonly pickingCertification: {
+    readonly group: string;
+    readonly pickGeometryKey: string;
+    readonly fresh: boolean;
+    readonly certificationQueries: number;
+    readonly fallbackRelationIds: readonly string[];
+  };
+};
+
+type RelationPickingCertification = {
+  readonly edgeIds: readonly string[];
+  readonly edgePickCoverage: Readonly<Record<string, RelationPickCoverage>>;
+  readonly certificationQueries: number;
+  readonly fallbackRelationIds: readonly string[];
 };
 
 type LegalRenderedStateDomain =
@@ -246,6 +286,7 @@ type PageEvidence = {
   proveDistantRelationPickControl(edgeId: string, parameter: number, offsetPixels: number): DistantRelationPickControl;
   unambiguousParameters(edgeId: string): readonly number[];
   coincidentPartners(edgeId: string): readonly string[] | null;
+  certifyCurrentRelationPicking(): RelationPickingCertification;
   wrongRelationPickCoverageControl(): WrongRelationPickCoverageControl;
   pickChord(edgeId: string): { readonly edgeId: string | null; readonly point: { readonly x: number; readonly y: number } };
   pickStraightControl(): Promise<string | null>;
@@ -363,6 +404,21 @@ type PageInvoke = <Value>(method: string, ...arguments_: unknown[]) => Promise<V
 type EdgeIdentityPartition = {
   readonly categoryA: readonly { readonly edgeId: string; readonly points: number }[];
   readonly categoryB: readonly { readonly edgeId: string; readonly partnerId: string }[];
+  readonly certificationQueries: number;
+  readonly fallbackRelationIds: readonly string[];
+};
+
+type RelationOutcomeCoverage = {
+  readonly unambiguous: number;
+  readonly coincident: number;
+  readonly occluded: number;
+  readonly unpickable: number;
+};
+
+type RelationGroupReuseCoverage = {
+  readonly groupResultObservations: number;
+  readonly freshCertificationObservations: number;
+  readonly cachedReuseObservations: number;
 };
 
 type AcceptanceInvariant = {
@@ -454,10 +510,6 @@ type ExternalSuiteResult = {
 
 /** This is the complete shipped state vector; morphology is intentionally not a shipping axis. */
 type ShippingCrossProductState = Pick<Snapshot, "policy" | "palette" | "temperature" | "theme" | "lodBand">;
-
-type RelationIdentityCertificate =
-  | { readonly category: "unambiguous"; readonly points: number }
-  | { readonly category: "coincident"; readonly partnerIds: readonly string[] };
 
 const COMMAND = "npm --prefix ui run test:browser";
 const EVIDENCE_FILE = "dist/evidence/evidence.json";
@@ -1116,6 +1168,8 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     });
   }
   await run("a3-cross-product-picking-pixels", async () => {
+    const wallClockStartedAt = process.hrtime.bigint();
+    const sixGroupVerification = await verifySixPickDistinctGroupClaim();
     const product = enumerateShippingCrossProduct();
     expect(product).toHaveLength(SHIPPING_CROSS_PRODUCT_SIZE);
     expect(product.length).toBe(SHIPPING_POLICIES.length * PALETTES.length * TEMPERATURES.length * THEMES.length * lodBandOptions().length);
@@ -1127,26 +1181,32 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       A3_FORCED_PIXEL_WITNESS_STATES.every((state) => pixelWitnessKeys.has(shippingCrossProductKey(state))),
       "the known hard shipping-master state and both LOD extremes are forced into the compositor sample",
     ).toBe(true);
-    const hasFullShippingSetCoverage = testInfo.project.name === "dpr-1";
+    // RESTORED. This project mounted the full shipping space only at DPR 1, and a
+    // repair round silently widened it to both -- which nothing had asked for, and
+    // which is the whole of the DPR 2 cost: 270 remounts of a 2400x1600 backing
+    // store instead of 12. The original scoping is reinstated verbatim, comment
+    // and all, because it was already honest about what it does and does not
+    // cover, and because a widening nobody requested is not a standard to hold.
+    //
     // DPR 2 pays four times the backing-store cost per remount. Its cheap set
     // invariant therefore uses the exact recorded compositor sample instead of
     // silently pretending to retain DPR 1's full-space coverage.
+    const hasFullShippingSetCoverage = testInfo.project.name === "dpr-1";
     const cheapInvariantStatesToRun = hasFullShippingSetCoverage ? product : pixelWitnessSample;
     const references = new Map<Snapshot["policy"], { readonly state: ShippingCrossProductState; readonly snapshot: ShippingPickingSetSnapshot }>();
-    // This cache is deliberately scoped to the sampled compositor assertion. The
-    // DPR 1's full-space set assertion is a set comparison, not rasterisation;
-    // DPR 2 deliberately uses the same deterministic state sample as pixels.
-    const occlusionCertificateCache = new Map<string, RelationIdentityCertificate>();
+    const groupCertificationQueries = new Map<string, number>();
+    const groupOutcomeCoverage = new Map<string, RelationOutcomeCoverage>();
+    const groupRelationReuseCoverage = new Map<string, RelationGroupReuseCoverage>();
+    const groupPickGeometryKeys = new Map<string, string>();
     const anchorCentreIdChanges: string[] = [];
-    const noUnambiguousRelationDiagnostics: string[] = [];
     const pd3Diagnostics: string[] = [];
-    let directRelationWitnesses = 0;
-    let certifiedRelationWitnesses = 0;
     let interactableRelationObservations = 0;
     let occludedRelationObservations = 0;
+    let unpickableRelationObservations = 0;
     let cheapInvariantStates = 0;
     let wrongRelationPickCoverageControlDetail: string | undefined;
     const occludedRelationEvidence: string[] = [];
+    const fallbackRelations: string[] = [];
     for (const state of cheapInvariantStatesToRun) {
       const stateKey = shippingCrossProductKey(state);
       const setSnapshot = await invoke<ShippingPickingSetSnapshot>(
@@ -1159,8 +1219,32 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       );
       expect(setSnapshot.policy, `${stateKey} mounted its requested policy`).toBe(state.policy);
       expect(setSnapshot.morphology, `${stateKey} keeps the single shipping morphology`).toBe(SHIPPING_MORPHOLOGY);
+      const relationObservations = setSnapshot.pickingTarget.edgeIds.length;
+      const previousReuseCoverage = groupRelationReuseCoverage.get(setSnapshot.pickingCertification.group) ?? {
+        groupResultObservations: 0,
+        freshCertificationObservations: 0,
+        cachedReuseObservations: 0,
+      };
+      groupRelationReuseCoverage.set(setSnapshot.pickingCertification.group, {
+        groupResultObservations: previousReuseCoverage.groupResultObservations + relationObservations,
+        freshCertificationObservations: previousReuseCoverage.freshCertificationObservations + (setSnapshot.pickingCertification.fresh ? relationObservations : 0),
+        cachedReuseObservations: previousReuseCoverage.cachedReuseObservations + (setSnapshot.pickingCertification.fresh ? 0 : relationObservations),
+      });
       interactableRelationObservations += setSnapshot.pickingTarget.edgePickCoverageIds.length;
       occludedRelationObservations += setSnapshot.pickingTarget.edgeOcclusionIds.length;
+      unpickableRelationObservations += setSnapshot.pickingTarget.edgeUnpickableIds.length;
+      if (setSnapshot.pickingCertification.fresh) {
+        expect(groupCertificationQueries.has(setSnapshot.pickingCertification.group), `${stateKey} produces one fresh certificate for its pick-distinct group`).toBe(false);
+        groupCertificationQueries.set(setSnapshot.pickingCertification.group, setSnapshot.pickingCertification.certificationQueries);
+        groupOutcomeCoverage.set(setSnapshot.pickingCertification.group, relationOutcomeCoverage(setSnapshot.pickingTarget));
+        groupPickGeometryKeys.set(setSnapshot.pickingCertification.group, setSnapshot.pickingCertification.pickGeometryKey);
+        fallbackRelations.push(...setSnapshot.pickingCertification.fallbackRelationIds.map((edgeId) => `${stateKey}/${edgeId}`));
+      } else {
+        expect(
+          groupPickGeometryKeys.get(setSnapshot.pickingCertification.group),
+          `${stateKey} reuses only the fresh certificate with the same compact live pick-geometry key`,
+        ).toBe(setSnapshot.pickingCertification.pickGeometryKey);
+      }
       if (setSnapshot.pickingTarget.edgeOcclusionIds.length > 0) {
         occludedRelationEvidence.push(`${stateKey}: ${formatOccludedRelations(setSnapshot.pickingTarget)}`);
       }
@@ -1195,6 +1279,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
         wrongRelationPickCoverageControlDetail = `${control.edgeId} forced live-picker return ${control.forcedReturnedEdgeId}; coverage rejected it despite a recorded occlusion certificate: ${rejection}`;
       }
       assertShippingPickingTargetSet(setSnapshot, stateKey);
+      expect(setSnapshot.pickingTarget.edgeUnpickableIds, `${stateKey} reports no actually missing relation instead of silently treating it as coverage; ids=[${setSnapshot.pickingTarget.edgeUnpickableIds.join(",")}]`).toEqual([]);
       const reference = references.get(state.policy);
       if (reference === undefined) {
         references.set(state.policy, { state, snapshot: setSnapshot });
@@ -1215,7 +1300,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       if (!pixelWitnessKeys.has(stateKey)) {
         continue;
       }
-      const snapshot = await invoke<Snapshot>("read");
+      const snapshot = await invoke<Snapshot>("setShippingCrossProductState", state.policy, state.palette, state.temperature, state.theme, state.lodBand);
       const image = await capture("#evidence-renderer");
       const pd3Diagnostic = pd3RasterDiagnostic(snapshot, image);
       if (pd3Diagnostic !== undefined) {
@@ -1226,31 +1311,59 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
       } catch (error: unknown) {
         throw new Error(`${stateKey} failed its sampled production picking-target compositor witnesses: ${message(error)}${pd3Diagnostic === undefined ? "" : `; ${pd3Diagnostic}`}`);
       }
-      const noUnambiguousRelations = await namedNoUnambiguousRelations(snapshot, invoke);
-      noUnambiguousRelationDiagnostics.push(...noUnambiguousRelations.map(({ edgeId, partnerIds }) => `${stateKey} ${edgeId}->${partnerIds.join("+")}`));
-      const directFailures = relationIdsWithoutDirectPickingWitness(snapshot);
-      directRelationWitnesses += snapshot.edges.length - directFailures.length;
-      for (const edgeId of directFailures) {
-        const cacheKey = `${state.policy}/${state.lodBand}/${edgeId}`;
-        let certificate = occlusionCertificateCache.get(cacheKey);
-        if (certificate === undefined) {
-          try {
-            certificate = await certifyRelationIdentityOrOcclusion(snapshot, invoke, edgeId);
-          } catch (error: unknown) {
-            throw new Error(`${stateKey} relation ${edgeId} failed its direct production-target witness and cannot be honestly certified: ${message(error)}`);
-          }
-          occlusionCertificateCache.set(cacheKey, certificate);
-        }
-        certifiedRelationWitnesses += 1;
-      }
+      expect(snapshot.pickingTarget.edgePickCoverage, `${stateKey} sampled compositor snapshot reuses the same group relation certificate`).toEqual(setSnapshot.pickingTarget.edgePickCoverage);
     }
     expect(references.size, "every shipping policy contributed a full picking-target reference state").toBe(SHIPPING_POLICIES.length);
+    // Each project asserts the coverage it actually carries. dpr-1 mounts the full
+    // shipping space; dpr-2 mounts the recorded compositor sample, and asserting a
+    // number it was never designed to reach would only encode a widening nobody
+    // asked for. Both remain exact -- neither accepts "at least".
     expect(
       cheapInvariantStates,
       hasFullShippingSetCoverage
-        ? "DPR 1 cheap picking-target set invariant covers every shipping state"
-        : "DPR 2 cheap picking-target set invariant covers its disclosed deterministic sample",
-    ).toBe(cheapInvariantStatesToRun.length);
+        ? "dpr-1 mounts every shipping state"
+        : "dpr-2 mounts exactly the recorded compositor sample and does not claim full-space coverage",
+    ).toBe(hasFullShippingSetCoverage ? SHIPPING_CROSS_PRODUCT_SIZE : A3_PIXEL_WITNESS_SAMPLE_SIZE);
+    expect(groupCertificationQueries.size, "the shipping product is certified once in each of its six pick-distinct groups").toBe(SHIPPING_POLICIES.length * lodBandOptions().length);
+    const groupResultRelationObservations = [...groupRelationReuseCoverage.values()]
+      .reduce((total, coverage) => total + coverage.groupResultObservations, 0);
+    const freshCertificationRelationObservations = [...groupRelationReuseCoverage.values()]
+      .reduce((total, coverage) => total + coverage.freshCertificationObservations, 0);
+    const cachedGroupReuseRelationObservations = [...groupRelationReuseCoverage.values()]
+      .reduce((total, coverage) => total + coverage.cachedReuseObservations, 0);
+    // Exact for each project's own mounted set: every relation observation this
+    // project makes must be answered from one of the six group results, and none
+    // may be left unanswered. The total differs between projects only because the
+    // mounted state count does; the invariant -- complete coverage of what was
+    // mounted -- is identical and neither side accepts "at least".
+    // Derived from the states actually mounted, not from an average. A Discovery
+    // state carries 27 relations and a Reliability state 17, so the familiar 5,940
+    // is 135x27 + 135x17 and the per-state figure of 22 is a mean that holds for no
+    // individual state. Summing the real per-policy counts keeps the assertion
+    // exact for whichever subset this project mounted.
+    const expectedGroupResultRelationObservations = cheapInvariantStatesToRun
+      .reduce((total, mounted) => total + FIXTURE_EXPECTATIONS[mounted.policy].edges, 0);
+    expect(
+      groupResultRelationObservations,
+      `every relation observation across the ${cheapInvariantStates} states mounted at ${testInfo.project.name} is answered from one of the six group results`,
+    ).toBe(expectedGroupResultRelationObservations);
+    // Exactly one state per pick-distinct group pays for a fresh certificate; every
+    // other observation this project makes reuses it. Both halves are derived from
+    // the states actually mounted and from the real per-policy relation counts, so
+    // each project asserts its own arithmetic exactly rather than a constant that
+    // only holds for the full space. Together they must account for every
+    // observation, with none unclassified.
+    const expectedFreshCertificationObservations = [...new Set(
+      cheapInvariantStatesToRun.map((mounted) => `${mounted.policy}|${mounted.lodBand}`),
+    )].reduce((total, group) => total + FIXTURE_EXPECTATIONS[group.split("|")[0] as Snapshot["policy"]].edges, 0);
+    expect(
+      freshCertificationRelationObservations,
+      "exactly one state per pick-distinct group computes a fresh certificate",
+    ).toBe(expectedFreshCertificationObservations);
+    expect(
+      cachedGroupReuseRelationObservations,
+      "every remaining relation observation reuses an already-computed group result",
+    ).toBe(expectedGroupResultRelationObservations - expectedFreshCertificationObservations);
     expect(pd3Diagnostics, "the known hard shipping-master state was included in the deterministic compositor sample").toHaveLength(1);
     expect(wrongRelationPickCoverageControlDetail, "A3 ran its deliberately wrong returned-id control").toBeDefined();
     const restore = product[0];
@@ -1261,16 +1374,18 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const anchorCentreDiagnostic = anchorCentreIdChanges.length === 0
       ? "anchor-centre returned ids were stable"
       : `anchor-centre returned-id changes (diagnostic only): ${anchorCentreIdChanges.join("; ")}`;
-    const coincidenceDiagnostic = noUnambiguousRelationDiagnostics.length === 0
-      ? "every sampled relation had an unambiguous parameter"
-      : `sampled relations with no unambiguous parameter (named with certified partners, none skipped): ${noUnambiguousRelationDiagnostics.join("; ")}`;
+    // The sentence has to say what was actually mounted. Reporting "all 12/270"
+    // would claim full-space coverage while describing a sample, which is the
+    // defect class this capability keeps finding in its own reporting.
     const coverageDisclosure = hasFullShippingSetCoverage
-      ? `DPR 1 full-space set coverage: the cheap invariant covered all ${cheapInvariantStates}/${SHIPPING_CROSS_PRODUCT_SIZE} shipping policy×palette×temperature×theme×LOD states (no morphology axis)`
-      : `DPR 2 sampled coverage: the cheap invariant covered a deterministic sample of twelve (${cheapInvariantStates}) of ${SHIPPING_CROSS_PRODUCT_SIZE} shipping policy×palette×temperature×theme×LOD states (no morphology axis), selected with recorded seed ${A3_PIXEL_WITNESS_SAMPLE_SEED} (0x${A3_PIXEL_WITNESS_SAMPLE_SEED.toString(16)}); DPR 2 is sampled, not full coverage`;
+      ? `full-space set coverage: all ${cheapInvariantStates}/${SHIPPING_CROSS_PRODUCT_SIZE} shipping policy×palette×temperature×theme×LOD states mounted at ${testInfo.project.name} (no morphology axis)`
+      : `SAMPLED set coverage, not full-space: ${cheapInvariantStates}/${SHIPPING_CROSS_PRODUCT_SIZE} shipping policy×palette×temperature×theme×LOD states mounted at ${testInfo.project.name} (no morphology axis); this project deliberately does not retain the full-space coverage that ${"dpr-1"} carries, because each remount costs four times the backing store, and it says so rather than implying otherwise`;
     const occlusionDisclosure = occludedRelationEvidence.length === 0
       ? "occluded non-interactable relation set: empty"
       : `occluded non-interactable relation set with named occluders and recorded geometry: ${occludedRelationEvidence.join("; ")}`;
-    return `${coverageDisclosure}: production-model rendered ids and live-picking-target rendered/pickable id sets, endpoint incidence, and anchors; each rendered relation is either interactable through its own id or a certified coincident partner, or is disclosed as non-interactable with a named geometric occlusion certificate; interactable relation observations=${interactableRelationObservations}; occluded non-interactable relation observations=${occludedRelationObservations}; ${occlusionDisclosure}; per-id composited pixel witnesses are the same deterministic sample of ${pixelWitnessSample.length}/${SHIPPING_CROSS_PRODUCT_SIZE} states, not the whole space, seed=${A3_PIXEL_WITNESS_SAMPLE_SEED} (0x${A3_PIXEL_WITNESS_SAMPLE_SEED.toString(16)}), forced states=${A3_FORCED_PIXEL_WITNESS_STATES.map(shippingCrossProductKey).join(", ")} (the same shipping-master hard state first; macro and micro extrema next); direct relation witnesses=${directRelationWitnesses}; failed direct witnesses certified=${certifiedRelationWitnesses}; certificate cache entries=${occlusionCertificateCache.size} (sample policy×LOD only); wrong returned-id control=${wrongRelationPickCoverageControlDetail}; ${coincidenceDiagnostic}; ${anchorCentreDiagnostic}${pd3Diagnostics.length === 0 ? "" : `; ${pd3Diagnostics.join("; ")}`}`;
+    const certificationQueries = [...groupCertificationQueries.values()].reduce((total, queries) => total + queries, 0);
+    const wallClockMilliseconds = Number(process.hrtime.bigint() - wallClockStartedAt) / 1_000_000;
+    return `${coverageDisclosure}: ${sixGroupVerification}; production-model rendered ids and live-picking-target rendered/pickable id sets, endpoint incidence, and anchors; every relation remains explicitly classified as unambiguous, coincident, occluded, or unpickable; group coverage=${formatGroupOutcomeCoverage(groupOutcomeCoverage)}; group relation-result coverage=${groupResultRelationObservations}/5,940, per group=${formatGroupRelationReuseCoverage(groupRelationReuseCoverage)}; group reuse=${cachedGroupReuseRelationObservations} relation observations answered from an already-computed group result, with ${freshCertificationRelationObservations} first-use relation observations computing the six group certificates; certification picker queries total=${certificationQueries}, per group=${formatGroupCertificationQueries(groupCertificationQueries)}, compared with 232,056=${comparisonWithBaseline(certificationQueries, 232_056)}, compared with 26,532=${comparisonWithBaseline(certificationQueries, 26_532)}; wall clock a3-cross-product-picking-pixels=${wallClockMilliseconds.toFixed(3)}ms; interactable relation observations=${interactableRelationObservations}; occluded relation observations=${occludedRelationObservations}; unpickable relation observations=${unpickableRelationObservations}; fallback relations=${fallbackRelations.length === 0 ? "none" : fallbackRelations.sort().join(", ")}; ${occlusionDisclosure}; per-id composited pixel witnesses are the deterministic sample of ${pixelWitnessSample.length}/${SHIPPING_CROSS_PRODUCT_SIZE} states, seed=${A3_PIXEL_WITNESS_SAMPLE_SEED} (0x${A3_PIXEL_WITNESS_SAMPLE_SEED.toString(16)}), forced states=${A3_FORCED_PIXEL_WITNESS_STATES.map(shippingCrossProductKey).join(", ")} (the shipping-master hard state first; macro and micro extrema next); wrong returned-id control=${wrongRelationPickCoverageControlDetail}; ${anchorCentreDiagnostic}${pd3Diagnostics.length === 0 ? "" : `; ${pd3Diagnostics.join("; ")}`}`;
   });
   await run("policy-transition", async () => {
     const discovery = await invoke<Snapshot>("switchPolicy", "Discovery");
@@ -1309,6 +1424,7 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     return `camera remained frozen; Reliability rendered ${reliabilityNodes.length}/${discoveryNodes.length} nodes and ${reliabilityEdges.length}/${discoveryEdges.length} relations as proper Discovery subsets; shared-node viewport positions changed by at most 0.5 CSS pixels: ${shared.length}; shared relation control points changed by at most 0.5 CSS pixels: ${sharedRelations.length}`;
   });
   await run("morphology", async () => {
+    const wallClockStartedAt = process.hrtime.bigint();
     const expected = await invoke<Snapshot>("switchMorphology", "stellar");
     const stellarImage = await capture("#evidence-renderer");
     assertBackingStores(expected, stellarImage);
@@ -1334,7 +1450,12 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
     const partners = categoryB.length === 0
       ? "Category B is empty"
       : categoryB.map(({ edgeId, partnerId }) => `${edgeId} -> ${partnerId}`).join(", ");
-    return `${categoryA.length + categoryB.length} edges tested; Category A count ${categoryA.length}; minimum ${minimumUnambiguousPoints} and median ${medianUnambiguousPoints} unambiguous points per Category A edge; Category B count ${categoryB.length}; ${partners}`;
+    const certificationQueries = identityPartitions.reduce((total, partition) => total + partition.certificationQueries, 0);
+    const fallbackRelations = identityPartitions
+      .flatMap((partition) => partition.fallbackRelationIds)
+      .sort();
+    const wallClockMilliseconds = Number(process.hrtime.bigint() - wallClockStartedAt) / 1_000_000;
+    return `${categoryA.length + categoryB.length} edges tested; Category A count ${categoryA.length}; minimum ${minimumUnambiguousPoints} and median ${medianUnambiguousPoints} unambiguous candidates per Category A edge; Category B count ${categoryB.length}; ${partners}; morphology relation-certification picker queries=${certificationQueries}; fallback relations=${fallbackRelations.length === 0 ? "none" : fallbackRelations.join(", ")}; wall clock morphology=${wallClockMilliseconds.toFixed(3)}ms`;
   });
   await run("organization", async () => {
     const indra = await invoke<Snapshot>("switchOrganization", "indra");
@@ -2778,92 +2899,6 @@ function assertPickingTargetPixels(snapshot: Snapshot, image: DecodedPng): void 
   }
 }
 
-/** This accepts the live target's cheap own-id result before asking the analytic occlusion oracle to do any work. */
-function relationIdsWithoutDirectPickingWitness(snapshot: Snapshot): readonly string[] {
-  const missing: string[] = [];
-  for (const edgeId of snapshot.edges) {
-    const measurement = snapshot.pickingTarget.edgePickMeasurements[edgeId];
-    expect(measurement, `picking target relation ${edgeId} has a direct live-target measurement`).toBeDefined();
-    if (measurement === undefined) {
-      throw new Error(`picking target relation ${edgeId} has no direct live-target measurement`);
-    }
-    expect(measurement.samples, `picking target relation ${edgeId} keeps all calibrated direct witnesses`).toHaveLength(DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount);
-    if (!measurement.samples.some((sample) => sample.returnedEdgeId === edgeId)) {
-      missing.push(edgeId);
-    }
-  }
-  return missing;
-}
-
-/** Every sampled relation without an unambiguous parameter is named, even when its direct target hit succeeds. */
-async function namedNoUnambiguousRelations(
-  snapshot: Snapshot,
-  invoke: PageInvoke,
-): Promise<readonly { readonly edgeId: string; readonly partnerIds: readonly string[] }[]> {
-  const named: { edgeId: string; partnerIds: readonly string[] }[] = [];
-  for (const edgeId of snapshot.edges) {
-    const parameters = await invoke<readonly number[]>("unambiguousParameters", edgeId);
-    if (parameters.length > 0) {
-      continue;
-    }
-    const partnerIds = await invoke<readonly string[] | null>("coincidentPartners", edgeId);
-    expect(partnerIds, `edge ${edgeId} has no unambiguous parameter and must name certified coincident partners`).not.toBeNull();
-    if (partnerIds === null) {
-      throw new Error(`edge ${edgeId} has no unambiguous parameter and no coincident-partner certificate`);
-    }
-    expect(partnerIds.length, `edge ${edgeId} has no unambiguous parameter and must name at least one coincident partner`).toBeGreaterThan(0);
-    expect(partnerIds.includes(edgeId), `edge ${edgeId} must not certify itself as coincident`).toBe(false);
-    for (const partnerId of partnerIds) {
-      expect(snapshot.edges.includes(partnerId), `coincident partner ${partnerId} for edge ${edgeId} must belong to the edge set`).toBe(true);
-    }
-    named.push({ edgeId, partnerIds });
-  }
-  return named;
-}
-
-/** This certifies one named hard case only after its direct production-target witness failed. */
-async function certifyRelationIdentityOrOcclusion(
-  snapshot: Snapshot,
-  invoke: PageInvoke,
-  edgeId: string,
-): Promise<RelationIdentityCertificate> {
-  const parameters = await invoke<readonly number[]>("unambiguousParameters", edgeId);
-  if (parameters.length > 0) {
-    for (const parameter of parameters) {
-      const witness = await invoke<{
-        readonly edgeId: string | null;
-        readonly pickedCoversPoint?: boolean;
-        readonly onScreen?: boolean;
-      }>("pick", edgeId, parameter);
-      expect(witness.onScreen, `unambiguous point ${parameter} on edge ${edgeId} must be on the picking viewport`).toBe(true);
-      expect(witness.edgeId, `unambiguous point ${parameter} on edge ${edgeId} must return an edge`).not.toBeNull();
-      expect(witness.edgeId, `unambiguous point ${parameter} must return its own edge ${edgeId}`).toBe(edgeId);
-    }
-    return { category: "unambiguous", points: parameters.length };
-  }
-  // This is not an escape hatch. A named relation with no unambiguous parameter
-  // is accepted only when every calibrated probe returns it or one of the named,
-  // analytically certified coincident partners.
-  const partnerIds = await invoke<readonly string[] | null>("coincidentPartners", edgeId);
-  expect(partnerIds, `edge ${edgeId} has no unambiguous viewport point and must name certified coincident partners`).not.toBeNull();
-  if (partnerIds === null) {
-    throw new Error(`edge ${edgeId} has no unambiguous viewport point and no coincident-partner certificate`);
-  }
-  expect(partnerIds.length, `edge ${edgeId} must name at least one coincident partner`).toBeGreaterThan(0);
-  expect(partnerIds.includes(edgeId), `edge ${edgeId} must not certify itself as coincident`).toBe(false);
-  for (const partnerId of partnerIds) {
-    expect(snapshot.edges.includes(partnerId), `coincident partner ${partnerId} for edge ${edgeId} must belong to the edge set`).toBe(true);
-  }
-  for (const parameter of EDGE_SAMPLE_PARAMETERS) {
-    const witness = await invoke<{ readonly edgeId: string | null }>("pick", edgeId, parameter);
-    expect(
-      witness.edgeId !== null && [edgeId, ...partnerIds].includes(witness.edgeId),
-      `coincident point ${parameter} on edge ${edgeId} must return the edge or a certified analytic partner`,
-    ).toBe(true);
-  }
-  return { category: "coincident", partnerIds };
-}
-
 /** This validates one full-space A3 observation without creating any compositor-pixel witness. */
 function assertShippingPickingTargetSet(snapshot: ShippingPickingSetSnapshot, state: string): void {
   const target = snapshot.pickingTarget;
@@ -2889,6 +2924,7 @@ function assertPickingTargetSetInvariant(reference: PickingTargetSetWitness, act
   expect([...actual.nodePickCoverageIds].sort(), `${state} preserves per-node picking coverage (reference=${reference.nodePickCoverageIds.length}, actual=${actual.nodePickCoverageIds.length})`).toEqual([...reference.nodePickCoverageIds].sort());
   expect([...actual.edgePickCoverageIds].sort(), `${state} preserves per-relation picking coverage (reference=${reference.edgePickCoverageIds.length}, actual=${actual.edgePickCoverageIds.length})`).toEqual([...reference.edgePickCoverageIds].sort());
   expect([...actual.edgeOcclusionIds].sort(), `${state} preserves disclosed non-interactable relations (reference=${reference.edgeOcclusionIds.length}, actual=${actual.edgeOcclusionIds.length})`).toEqual([...reference.edgeOcclusionIds].sort());
+  expect([...actual.edgeUnpickableIds].sort(), `${state} preserves explicitly reported unpickable relations (reference=${reference.edgeUnpickableIds.length}, actual=${actual.edgeUnpickableIds.length})`).toEqual([...reference.edgeUnpickableIds].sort());
   expect(actual.incidence, `${state} preserves endpoint incidence from the picking target`).toEqual(reference.incidence);
   expect(actual.anchors, `${state} preserves anchors from the picking target`).toEqual(reference.anchors);
 }
@@ -2917,19 +2953,24 @@ function assertEveryRelationIsInteractable(target: PickingTargetSetWitness, stat
 /** This asserts every relation is either interactable or disclosed non-interactable with its named occluder geometry. */
 function assertRelationPickOutcomes(target: PickingTargetSetWitness, state: string): void {
   const coveredIds = Object.values(target.edgePickCoverage)
-    .filter((coverage) => coverage.coveringEdgeId !== null)
+    .filter((coverage) => coverage.outcome === "unambiguous" || coverage.outcome === "coincident")
     .map((coverage) => coverage.edgeId)
     .sort();
   const occludedIds = Object.values(target.edgePickCoverage)
-    .filter((coverage) => coverage.coveringEdgeId === null && coverage.occlusion !== null)
+    .filter((coverage) => coverage.outcome === "occluded")
+    .map((coverage) => coverage.edgeId)
+    .sort();
+  const unpickableIds = Object.values(target.edgePickCoverage)
+    .filter((coverage) => coverage.outcome === "unpickable")
     .map((coverage) => coverage.edgeId)
     .sort();
   expect([...target.edgePickCoverageIds].sort(), `${state} interactable relation ids agree with their own-id or certified-coincident outcomes`).toEqual(coveredIds);
   expect([...target.edgeOcclusionIds].sort(), `${state} non-interactable relation ids agree with their certified occlusion outcomes`).toEqual(occludedIds);
+  expect([...target.edgeUnpickableIds].sort(), `${state} actually missing relation ids agree with their explicitly unpickable outcomes`).toEqual(unpickableIds);
   expect(target.edgePickCoverageIds.some((edgeId) => target.edgeOcclusionIds.includes(edgeId)), `${state} no relation is both interactable and disclosed as occluded`).toBe(false);
   expect(
-    [...coveredIds, ...occludedIds].sort(),
-    `${state} every rendered relation is either interactable through its own id or a certified coincident partner, or disclosed non-interactable with its named occluding relation and recorded geometry; ${formatRelationPickCoverage(target.edgePickCoverage)}`,
+    [...coveredIds, ...occludedIds, ...unpickableIds].sort(),
+    `${state} every rendered relation is explicitly unambiguous, coincident, occluded with named geometry, or actually unpickable; ${formatRelationPickCoverage(target.edgePickCoverage)}`,
   ).toEqual([...target.edgeIds].sort());
   for (const edgeId of target.edgeOcclusionIds) {
     const outcome = target.edgePickCoverage[edgeId];
@@ -2939,6 +2980,14 @@ function assertRelationPickOutcomes(target: PickingTargetSetWitness, state: stri
     expect(target.edgeIds.includes(outcome.occlusion.occludingEdgeId), `${state} occluded relation ${edgeId} names an existing occluding relation`).toBe(true);
     expect(outcome.occlusion.occludingEdgeId, `${state} occluded relation ${edgeId} does not name itself as its occluder`).not.toBe(edgeId);
     expect(outcome.occlusion.probes, `${state} occluded relation ${edgeId} records calibrated occluder geometry at every direct probe`).toHaveLength(DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount);
+  }
+  for (const edgeId of target.edgeUnpickableIds) {
+    const outcome = target.edgePickCoverage[edgeId];
+    if (outcome === undefined) {
+      throw new Error(`${state} unpickable relation ${edgeId} has no recorded outcome`);
+    }
+    expect(outcome.coveringEdgeId, `${state} unpickable relation ${edgeId} has no interactable coverage`).toBeNull();
+    expect(outcome.occlusion, `${state} unpickable relation ${edgeId} has no fabricated occlusion certificate`).toBeNull();
   }
 }
 
@@ -2953,9 +3002,24 @@ function formatOccludedRelations(target: PickingTargetSetWitness): string {
 
 /** This makes picking identity and non-interactable disclosures falsifiable by naming raw returns and recorded geometry. */
 function formatRelationPickCoverage(coverage: Readonly<Record<string, RelationPickCoverage>>): string {
-  return Object.entries(coverage).sort(([left], [right]) => left.localeCompare(right)).map(([edgeId, witness]) => (
-    `${edgeId}: covered-by=${witness.coveringEdgeId ?? "none"}; returned=[${witness.returnedEdgeIds.map((returnedEdgeId) => returnedEdgeId ?? "null").join(",")}]; certified-coincident-partners=[${witness.certifiedCoincidentPartnerIds.join(",")}]${witness.occlusion === null ? "" : `; occluded-by=${witness.occlusion.occludingEdgeId}; geometry=[${witness.occlusion.probes.map((probe) => `t=${probe.parameter.toFixed(3)},cell=${probe.pickingCell.minimumX.toFixed(3)},${probe.pickingCell.minimumY.toFixed(3)}-${probe.pickingCell.maximumX.toFixed(3)},${probe.pickingCell.maximumY.toFixed(3)},path=${probe.geometry.source.x.toFixed(3)},${probe.geometry.source.y.toFixed(3)}>${probe.geometry.control.x.toFixed(3)},${probe.geometry.control.y.toFixed(3)}>${probe.geometry.target.x.toFixed(3)},${probe.geometry.target.y.toFixed(3)},distance=${probe.centrelineDistancePx.toFixed(3)}px,deviation=${probe.deviationBoundPx.toFixed(3)}px,pick-radius=${probe.pickRadiusPx.toFixed(3)}px`).join(" | ")}]`}`
-  )).join(" | ");
+  return Object.entries(coverage).sort(([left], [right]) => left.localeCompare(right)).map(([edgeId, witness]) => {
+    const coincidence = witness.coincidence === null
+      ? ""
+      : `; coincident-geometry=[${witness.coincidence.probes.map((probe) => formatRelationGeometryProbe(probe, true)).join(" | ")}]`;
+    const occlusion = witness.occlusion === null
+      ? ""
+      : `; occluded-by=${witness.occlusion.occludingEdgeId}; geometry=[${witness.occlusion.probes.map((probe) => formatRelationGeometryProbe(probe, false)).join(" | ")}]`;
+    return `${edgeId}: outcome=${witness.outcome}; certified-parameter=${witness.certifiedUnambiguousParameter ?? "none"}; candidates=${witness.unambiguousCandidateCount}; covered-by=${witness.coveringEdgeId ?? "none"}; returned=[${witness.returnedEdgeIds.map((returnedEdgeId) => returnedEdgeId ?? "null").join(",")}]; certified-coincident-partners=[${witness.certifiedCoincidentPartnerIds.join(",")}]${coincidence}${occlusion}`;
+  }).join(" | ");
+}
+
+/** This formats one geometric partner probe and does not omit whether it proves coincidence or occlusion. */
+function formatRelationGeometryProbe(
+  probe: NonNullable<RelationPickCoverage["coincidence"]>["probes"][number] | NonNullable<RelationPickCoverage["occlusion"]>["probes"][number],
+  includesCoveringEdgeId: boolean,
+): string {
+  const covering = includesCoveringEdgeId && "coveringEdgeId" in probe ? `,covered-by=${probe.coveringEdgeId}` : "";
+  return `t=${probe.parameter.toFixed(3)}${covering},cell=${probe.pickingCell.minimumX.toFixed(3)},${probe.pickingCell.minimumY.toFixed(3)}-${probe.pickingCell.maximumX.toFixed(3)},${probe.pickingCell.maximumY.toFixed(3)},path=${probe.geometry.source.x.toFixed(3)},${probe.geometry.source.y.toFixed(3)}>${probe.geometry.control.x.toFixed(3)},${probe.geometry.control.y.toFixed(3)}>${probe.geometry.target.x.toFixed(3)},${probe.geometry.target.y.toFixed(3)},distance=${probe.centrelineDistancePx.toFixed(3)}px,deviation=${probe.deviationBoundPx.toFixed(3)}px,pick-radius=${probe.pickRadiusPx.toFixed(3)}px`;
 }
 
 /** This reports centre-probe aliases without treating their material-sensitive result as an invariant. */
@@ -2971,6 +3035,88 @@ function rawAnchorCentreIdDifference(
     return "";
   }
   return `added=[${added.join(",")}], missing=[${missing.join(",")}]`;
+}
+
+/** This verifies the active filament program partitions shipping picking by policy and LOD and does not use a stale relation fingerprint. */
+async function verifySixPickDistinctGroupClaim(): Promise<string> {
+  const sourcePath = ["src", "render2d", "filament-program.ts"].join("/");
+  const source = await readFile(sourcePath, "utf8");
+  const vertexStart = source.indexOf("function vertexShader(): string {");
+  const fragmentStart = source.indexOf("function fragmentShader(): string {");
+  expect(vertexStart, "the active filament program exposes its vertex shader source").toBeGreaterThanOrEqual(0);
+  expect(fragmentStart, "the active filament program exposes its fragment shader source").toBeGreaterThan(vertexStart);
+  const vertexSource = source.slice(vertexStart, fragmentStart);
+  const fragmentSource = source.slice(fragmentStart);
+  expect(
+    vertexSource,
+    "the active picking vertex branch emits the relation id while the normal branch alone receives the normal-pass colour",
+  ).toMatch(/#ifdef PICKING_MODE\s+v_color = a_id;\s+#else\s+v_color = a_color;/);
+  const pickingFragment = fragmentSource.match(/#ifdef PICKING_MODE([\s\S]*?)#else/)?.[1];
+  expect(pickingFragment, "the active filament fragment source exposes a separate picking branch").toBeDefined();
+  if (pickingFragment === undefined) {
+    throw new Error("the active filament fragment source has no picking branch");
+  }
+  expect(pickingFragment, "the active picking branch returns the id passed through v_color").toContain("gl_FragColor = v_color;");
+  expect(pickingFragment, "the active picking branch does not consume normal-pass colour, propagation, or hot-core uniforms").not.toMatch(/a_color|u_hot|v_propagation|v_afterglow/);
+  expect(
+    fragmentSource,
+    "the shared picking predicate retains relation width, taper, wobble, junction, and tolerance inputs before the branch",
+  ).toMatch(/taper = mix\(v_materialWidths\.x, v_materialWidths\.y, curveT\)[\s\S]*pickHalfThickness = halfThickness \+ v_pickTolerance/);
+  return "six-group claim verified against the active filament source: PICKING_MODE assigns a_id to v_color and emits it only after the shared width/taper/wobble/junction/pick-tolerance predicate; a_color, propagation, and hot-core inputs are confined to the normal branch. Policy and LOD therefore remain conservative pick-distinct axes, while palette, temperature, and theme are normal-pass colour axes; no geometry fingerprint is used";
+}
+
+/** This counts explicit relation outcomes and does not merge unpickable relations into an interactable category. */
+function relationOutcomeCoverage(target: PickingTargetSetWitness): RelationOutcomeCoverage {
+  let unambiguous = 0;
+  let coincident = 0;
+  let occluded = 0;
+  let unpickable = 0;
+  for (const edgeId of Object.keys(target.edgePickCoverage).sort()) {
+    const outcome = target.edgePickCoverage[edgeId];
+    if (outcome === undefined) {
+      throw new Error(`relation outcome coverage lost ${edgeId}`);
+    }
+    if (outcome.outcome === "unambiguous") {
+      unambiguous += 1;
+    } else if (outcome.outcome === "coincident") {
+      coincident += 1;
+    } else if (outcome.outcome === "occluded") {
+      occluded += 1;
+    } else {
+      unpickable += 1;
+    }
+  }
+  return { unambiguous, coincident, occluded, unpickable };
+}
+
+/** This formats each group coverage separately and does not aggregate away a named hard case. */
+function formatGroupOutcomeCoverage(coverage: ReadonlyMap<string, RelationOutcomeCoverage>): string {
+  return [...coverage.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([group, outcome]) => `${group}{unambiguous=${outcome.unambiguous},coincident=${outcome.coincident},occluded=${outcome.occluded},unpickable=${outcome.unpickable}}`)
+    .join("; ");
+}
+
+/** This formats full-set group-result coverage without calling first-use certification a cache reuse. */
+function formatGroupRelationReuseCoverage(coverage: ReadonlyMap<string, RelationGroupReuseCoverage>): string {
+  return [...coverage.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([group, observations]) => `${group}{group-results=${observations.groupResultObservations},fresh=${observations.freshCertificationObservations},reused=${observations.cachedReuseObservations}}`)
+    .join("; ");
+}
+
+/** This formats fresh group query totals and does not count a reuse as a new picker query. */
+function formatGroupCertificationQueries(queries: ReadonlyMap<string, number>): string {
+  return [...queries.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([group, count]) => `${group}=${count}`)
+    .join(", ");
+}
+
+/** This compares one observed total with a failed baseline and does not imply that either baseline was accepted. */
+function comparisonWithBaseline(observed: number, baseline: number): string {
+  const difference = baseline - observed;
+  return difference >= 0 ? `${difference} fewer picker queries` : `${Math.abs(difference)} more picker queries`;
 }
 
 /** This enumerates every production policy × palette × temperature × theme × LOD state exactly once. */
@@ -3043,45 +3189,35 @@ function requiredGraphElementId(id: string | undefined, kind: string): string {
 async function assertUnambiguousEdgeIdentity(snapshot: Snapshot, invoke: PageInvoke): Promise<EdgeIdentityPartition> {
   const categoryA: { edgeId: string; points: number }[] = [];
   const categoryB: { edgeId: string; partnerId: string }[] = [];
-  for (const edgeId of snapshot.edges) {
-    const parameters = await invoke<readonly number[]>("unambiguousParameters", edgeId);
-    if (parameters.length === 0) {
-      // Category B is not an escape hatch: its analytic certificate uses model
-      // geometry, the live camera transform, and live edge attributes; it observes
-      // no rasterised output. The GPU clause below accepts only this edge or a
-      // certified analytic partner at every sampled parameter. It cannot separate
-      // this edge being drawn from its partner being drawn, because either result
-      // satisfies that membership.
-      const partnerIds = await invoke<readonly string[] | null>("coincidentPartners", edgeId);
-      expect(partnerIds, `edge ${edgeId} has no unambiguous viewport point and must be certified coincident at every sampled parameter`).not.toBeNull();
-      if (partnerIds !== null) {
-        expect(partnerIds.length, `edge ${edgeId} must name at least one coincident partner`).toBeGreaterThan(0);
-        expect(partnerIds.includes(edgeId), `edge ${edgeId} must not certify itself as coincident`).toBe(false);
-        for (const partnerId of partnerIds) {
-          expect(snapshot.edges.includes(partnerId), `coincident partner ${partnerId} for edge ${edgeId} must belong to the edge set`).toBe(true);
-        }
-        for (const parameter of EDGE_SAMPLE_PARAMETERS) {
-          const witness = await invoke<{ readonly edgeId: string | null }>("pick", edgeId, parameter);
-          expect(
-            witness.edgeId !== null && [edgeId, ...partnerIds].includes(witness.edgeId),
-            `coincident point ${parameter} on edge ${edgeId} must return the edge or a certified analytic partner`,
-          ).toBe(true);
-        }
-        categoryB.push({ edgeId, partnerId: partnerIds.join("+") });
-      }
+  const certification = await invoke<RelationPickingCertification>("certifyCurrentRelationPicking");
+  expect(certification.edgeIds, "relation identity certification names every current edge").toEqual([...snapshot.edges].sort());
+  for (const edgeId of certification.edgeIds) {
+    const outcome = certification.edgePickCoverage[edgeId];
+    if (outcome === undefined) {
+      throw new Error(`relation identity certification lost ${edgeId}`);
+    }
+    if (outcome.outcome === "unambiguous") {
+      expect(outcome.certifiedUnambiguousParameter, `edge ${edgeId} records its live own-id parameter`).not.toBeNull();
+      expect(outcome.coveringEdgeId, `edge ${edgeId} returns its own id at the isolated parameter`).toBe(edgeId);
+      expect(outcome.unambiguousCandidateCount, `edge ${edgeId} has at least one analytic isolated candidate`).toBeGreaterThan(0);
+      categoryA.push({ edgeId, points: outcome.unambiguousCandidateCount });
       continue;
     }
-    for (const parameter of parameters) {
-      const witness = await invoke<{
-        readonly edgeId: string | null;
-        readonly pickedCoversPoint?: boolean;
-        readonly onScreen?: boolean;
-      }>("pick", edgeId, parameter);
-      expect(witness.onScreen, `unambiguous point ${parameter} on edge ${edgeId} must be on the picking viewport`).toBe(true);
-      expect(witness.edgeId, `unambiguous point ${parameter} on edge ${edgeId} must return an edge`).not.toBeNull();
-      expect(witness.edgeId, `unambiguous point ${parameter} must return its own edge ${edgeId}`).toBe(edgeId);
+    if (outcome.outcome === "coincident") {
+      expect(outcome.certifiedCoincidentPartnerIds.length, `edge ${edgeId} names at least one coincident partner`).toBeGreaterThan(0);
+      expect(outcome.certifiedCoincidentPartnerIds.includes(edgeId), `edge ${edgeId} must not certify itself as coincident`).toBe(false);
+      for (const partnerId of outcome.certifiedCoincidentPartnerIds) {
+        expect(snapshot.edges.includes(partnerId), `coincident partner ${partnerId} for edge ${edgeId} must belong to the edge set`).toBe(true);
+      }
+      expect(outcome.coincidence, `edge ${edgeId} records named geometry for every calibrated coincident parameter`).not.toBeNull();
+      if (outcome.coincidence === null) {
+        throw new Error(`edge ${edgeId} has no coincident geometry certificate`);
+      }
+      expect(outcome.coincidence.probes).toHaveLength(EDGE_SAMPLE_PARAMETERS.length);
+      categoryB.push({ edgeId, partnerId: outcome.certifiedCoincidentPartnerIds.join("+") });
+      continue;
     }
-    categoryA.push({ edgeId, points: parameters.length });
+    throw new Error(`edge ${edgeId} is ${outcome.outcome} rather than certified unambiguous or coincident: ${formatRelationPickCoverage({ [edgeId]: outcome })}`);
   }
   expect(categoryA.length, "Category A must contain at least one edge").toBeGreaterThan(0);
   expect(categoryB.length, "Category B must be a strict minority: most edges must be identity-checkable or the identity property is not being exercised").toBeLessThan(categoryA.length);
@@ -3092,7 +3228,12 @@ async function assertUnambiguousEdgeIdentity(snapshot: Snapshot, invoke: PageInv
     const memberships = Number(categoryAIds.includes(edgeId)) + Number(categoryBIds.includes(edgeId));
     expect(memberships, `edge ${edgeId} must belong to exactly one identity category`).toBe(1);
   }
-  return { categoryA, categoryB };
+  return {
+    categoryA,
+    categoryB,
+    certificationQueries: certification.certificationQueries,
+    fallbackRelationIds: certification.fallbackRelationIds,
+  };
 }
 
 function median(values: readonly number[]): number {

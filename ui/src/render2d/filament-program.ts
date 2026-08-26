@@ -257,6 +257,8 @@ varying vec2 v_materialVariation;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
+varying float v_isStraight;
+varying vec2 v_straightCoordinates;
 vec2 clipspaceToViewport(vec2 position, vec2 dimensions) {
   return vec2((position.x + 1.0) * dimensions.x / 2.0, (position.y + 1.0) * dimensions.y / 2.0);
 }
@@ -309,9 +311,21 @@ void main() {
   // that signed-distance field as well as its normal extent; otherwise a straight
   // filament clips its own caps when its curvature offset is zero.
   vec2 tangent = delta / lengthDelta;
+  float normalExtent = abs(curveOffset) / 2.0 + maximumMaterialExtent;
   float endpointExtent = maximumMaterialExtent * (1.0 - 2.0 * a_current);
+  v_isStraight = a_curvature == 0.0 ? 1.0 : 0.0;
+  // A mathematically straight filament must not reclassify itself from global
+  // fragment coordinates: their subtraction loses enough precision on long
+  // chords to select the ill-conditioned quadratic solver. These coordinates
+  // interpolate the actual rectangle in its own stable local frame. The
+  // tangent component is the parameter from source (0) to target (1), the
+  // same convention filamentClosestPoint returns as closest.z.
+  v_straightCoordinates = vec2(
+    ((1.0 - a_current) * lengthDelta + endpointExtent) / lengthDelta,
+    a_direction * normalExtent
+  );
   vec2 offsetPosition = viewportPosition
-    + normal * (abs(curveOffset) / 2.0 + maximumMaterialExtent) * a_direction
+    + normal * normalExtent * a_direction
     + tangent * endpointExtent;
   gl_Position = vec4(viewportToClipspace(offsetPosition, u_dimensions), 0.0, 1.0);
   #ifdef PICKING_MODE
@@ -340,6 +354,8 @@ varying vec2 v_materialVariation;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
+varying float v_isStraight;
+varying vec2 v_straightCoordinates;
 uniform vec2 u_dimensions;
 uniform float u_minimumWidthFactor;
 uniform float u_sheathScale;
@@ -352,7 +368,12 @@ uniform float u_wobbleFrequency;
 uniform vec3 u_hotColor;
 ${FILAMENT_DISTANCE_FUNCTION}
 void main(void) {
-  vec2 distanceSample = filamentDistance(gl_FragCoord.xy, v_cpA, v_cpB, v_cpC);
+  vec2 distanceSample;
+  if (v_isStraight > 0.5) {
+    distanceSample = vec2(v_straightCoordinates.y, clamp(v_straightCoordinates.x, 0.0, 1.0));
+  } else {
+    distanceSample = filamentDistance(gl_FragCoord.xy, v_cpA, v_cpB, v_cpC);
+  }
   float curveT = distanceSample.y;
   float taper = mix(v_materialWidths.x, v_materialWidths.y, curveT);
   float wobble = u_wobbleAmplitude * sin(u_wobbleFrequency * curveT + v_materialVariation.x);

@@ -27,7 +27,7 @@ import { mount } from "#render2d/index.ts";
 import { deserializeVisualState, serializeVisualState } from "#engine/visual-state.ts";
 import { FilamentProgram } from "#render2d/filament-program.ts";
 import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
-import { filamentGeometry, quadraticPoint } from "#render2d/geometry.ts";
+import { quadraticPoint } from "#render2d/geometry.ts";
 import type { FilamentGeometry } from "#render2d/geometry.ts";
 import type { RenderCameraState, RenderFramingBox, RenderHandle, RenderNodeGlowWitness, RenderPickingSurface } from "#render2d/index.ts";
 import { buildRenderModel } from "#render2d/model.ts";
@@ -132,17 +132,57 @@ type RelationOcclusionCertificate = {
   }[];
 };
 
+/** This records the named relation geometry that makes every sampled ambiguous cell shared and does not call an occlusion coverage. */
+type RelationCoincidenceCertificate = {
+  readonly partnerIds: readonly string[];
+  readonly probes: readonly (RelationOcclusionCertificate["probes"][number] & {
+    readonly coveringEdgeId: string;
+  })[];
+};
+
 /** This explains whether a relation is interactable or is disclosed as occluded by the live target. */
 type RelationPickCoverage = {
   readonly edgeId: string;
+  /** This distinguishes an own-id certificate, a named coincident partner, a geometric occluder, and a relation with neither. */
+  readonly outcome: "unambiguous" | "coincident" | "occluded" | "unpickable";
+  /** This is the isolated parameter whose live picking return was the relation's own id; null when no such certificate exists. */
+  readonly certifiedUnambiguousParameter: number | null;
+  /** This records how many analytic isolated candidates were considered and does not imply that every candidate was queried. */
+  readonly unambiguousCandidateCount: number;
   /** Every calibrated probe return, including nulls, so a failed check names the wrong answer. */
   readonly returnedEdgeIds: readonly (string | null)[];
   /** The self id or certified coincident partner that made this relation interactable; null means it was not covered. */
   readonly coveringEdgeId: string | null;
   /** The analytic coincident-partner certificate consulted when no direct self return existed. */
   readonly certifiedCoincidentPartnerIds: readonly string[];
+  /** The named geometry that establishes a coincident partner at every calibrated relation parameter; null when none was needed or established. */
+  readonly coincidence: RelationCoincidenceCertificate | null;
   /** A named, geometric certificate for an occluded non-interactable relation; null means no occlusion was certified. */
   readonly occlusion: RelationOcclusionCertificate | null;
+};
+
+/** This records one relation-only picker certification and does not use a normal-pass colour as a cache key. */
+type RelationPickingCertification = {
+  readonly edgeIds: readonly string[];
+  readonly edgePickCoverage: Readonly<Record<string, RelationPickCoverage>>;
+  readonly certificationQueries: number;
+  readonly fallbackRelationIds: readonly string[];
+};
+
+/** This records one fixed shipping policy-and-LOD certificate and does not retain a serialised competitor fingerprint. */
+type ShippingPickingGroupCertification = RelationPickingCertification & {
+  readonly group: string;
+  /** This compact versioned key covers the live picker geometry without serialising every relation. */
+  readonly pickGeometryKey: string;
+};
+
+/** This reports whether one shipping observation used a fresh certificate or a group result. */
+type ShippingPickingCertificationWitness = {
+  readonly group: string;
+  readonly pickGeometryKey: string;
+  readonly fresh: boolean;
+  readonly certificationQueries: number;
+  readonly fallbackRelationIds: readonly string[];
 };
 
 /** This records a live-picker wrong-id control and does not fabricate a classifier input. */
@@ -168,6 +208,8 @@ type PickingTargetSetWitness = {
   readonly edgePickCoverageIds: readonly string[];
   /** These are the non-interactable relations whose named live-target occluder and geometry are recorded. */
   readonly edgeOcclusionIds: readonly string[];
+  /** These relations have neither an own-id/coincident certificate nor a named geometric occluder and are never silently omitted. */
+  readonly edgeUnpickableIds: readonly string[];
   readonly edgePickCoverage: Readonly<Record<string, RelationPickCoverage>>;
   readonly anchors: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
   readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
@@ -246,6 +288,7 @@ type ShippingPickingSetSnapshot = {
   readonly renderedNodeIds: readonly string[];
   readonly renderedEdgeIds: readonly string[];
   readonly pickingTarget: PickingTargetSetWitness;
+  readonly pickingCertification: ShippingPickingCertificationWitness;
 };
 
 type LegalRenderedStateDomain =
@@ -292,6 +335,7 @@ type EvidenceApi = {
   proveDistantRelationPickControl(edgeId: string, parameter: number, offsetPixels: number): DistantRelationPickControl;
   unambiguousParameters(edgeId: string): readonly number[];
   coincidentPartners(edgeId: string): readonly string[] | null;
+  certifyCurrentRelationPicking(): RelationPickingCertification;
   wrongRelationPickCoverageControl(): WrongRelationPickCoverageControl;
   pickChord(edgeId: string): PickWitness;
   pickStraightControl(): Promise<string | null>;
@@ -447,6 +491,7 @@ async function boot(): Promise<void> {
   let selectionFocusNoopPreviousFocus: string | null | undefined;
   let selectionFocusNoopPreviousContainerId: string | undefined;
   let renderedStatePixelGraph: VisualGraph | undefined;
+  const shippingPickingCertificationCache = new Map<string, ShippingPickingGroupCertification>();
 
   const activeGraph = (): VisualGraph => renderedStatePixelGraph ?? requiredGraph(graphs, policy);
 
@@ -473,6 +518,7 @@ async function boot(): Promise<void> {
   const snapshotFor = (
     handle: RenderHandle,
     renderContainer: HTMLElement,
+    relationPickingCertification?: RelationPickingCertification,
   ): Snapshot => {
     const surface = handle.readSurfaceWitness();
     const positions: Record<string, { x: number; y: number }> = {};
@@ -558,25 +604,91 @@ async function boot(): Promise<void> {
       rendering: renderWitness(renderContainer),
       glowNodes: handle.readGlowWitnesses(),
       edgeSamples,
-      pickingTarget: pickingTargetWitness(handle),
+      pickingTarget: pickingTargetWitness(handle, relationPickingCertification),
     };
   };
 
   const read = (): Snapshot => snapshotFor(requiredHandle(product), container);
 
-  /** Avoids building viewport paths, propagation, and pixel-witness payloads for A3's full state-space set assertion. */
-  const shippingPickingSetSnapshotFor = (handle: RenderHandle): ShippingPickingSetSnapshot => ({
-    policy,
-    morphology: options.morphology,
-    palette: options.palette,
-    temperature: options.temperature,
-    theme: options.theme,
-    lodBand: options.lodBand,
-    semanticDigest: semanticDigest(requiredGraph(graphs, policy)),
-    renderedNodeIds: [...handle.model.graph.nodes()].sort(),
-    renderedEdgeIds: [...handle.model.graph.edges()].sort(),
-    pickingTarget: pickingTargetSetWitness(handle),
-  });
+  /** This creates a compact versioned key for every live picker input that can vary inside a forced policy-and-LOD group. */
+  const shippingPickGeometryKey = (handle: RenderHandle): string => {
+    const surface = handle.readPickingSurface();
+    const camera = handle.readCameraState();
+    return [
+      "shipping-pick-geometry/v1",
+      policy,
+      options.lodBand,
+      surface.pixelRatio,
+      surface.downSizingRatio,
+      surface.drawingBufferHeight,
+      surface.width,
+      surface.height,
+      surface.sizeRatio,
+      surface.minEdgeThickness,
+      camera.x,
+      camera.y,
+      camera.angle,
+      camera.ratio,
+    ].join("/");
+  };
+
+  /** This certifies a forced shipping policy-and-LOD group once and does not derive a quadratic relation fingerprint per observation. */
+  const shippingPickingCertificationFor = (handle: RenderHandle): {
+    readonly certification: ShippingPickingGroupCertification;
+    readonly fresh: boolean;
+  } => {
+    if (
+      options.morphology !== SHIPPING_MORPHOLOGY
+      || options.organization !== "indra"
+      || options.reducedMotion
+      || selectionIntent !== null
+      || focusIntent !== null
+      || renderedStatePixelGraph !== undefined
+    ) {
+      throw new Error("shipping picking certification requires the forced shipping rendering state");
+    }
+    const group = `${policy}/${options.lodBand}`;
+    const pickGeometryKey = shippingPickGeometryKey(handle);
+    const cached = shippingPickingCertificationCache.get(pickGeometryKey);
+    if (cached !== undefined) {
+      if (cached.group !== group || cached.pickGeometryKey !== pickGeometryKey) {
+        throw new Error("shipping picking certification cache key does not match the live pick geometry");
+      }
+      return { certification: cached, fresh: false };
+    }
+    const certification: ShippingPickingGroupCertification = {
+      group,
+      pickGeometryKey,
+      ...certifyRelationPicking(handle),
+    };
+    shippingPickingCertificationCache.set(pickGeometryKey, certification);
+    return { certification, fresh: true };
+  };
+
+  /** Avoids rebuilding relation certificates for A3 states whose palette, temperature, and theme cannot enter the active picking branch. */
+  const shippingPickingSetSnapshotFor = (handle: RenderHandle): ShippingPickingSetSnapshot => {
+    const { certification, fresh } = shippingPickingCertificationFor(handle);
+    const pickingTarget = pickingTargetSetWitness(handle, certification);
+    return {
+      policy,
+      morphology: options.morphology,
+      palette: options.palette,
+      temperature: options.temperature,
+      theme: options.theme,
+      lodBand: options.lodBand,
+      semanticDigest: semanticDigest(requiredGraph(graphs, policy)),
+      renderedNodeIds: pickingTarget.nodeIds,
+      renderedEdgeIds: pickingTarget.edgeIds,
+      pickingTarget,
+      pickingCertification: {
+        group: certification.group,
+        pickGeometryKey: certification.pickGeometryKey,
+        fresh,
+        certificationQueries: fresh ? certification.certificationQueries : 0,
+        fallbackRelationIds: certification.fallbackRelationIds,
+      },
+    };
+  };
 
   const api: EvidenceApi = {
     ready: false,
@@ -613,23 +725,29 @@ async function boot(): Promise<void> {
       renderedStatePixelGraph = undefined;
       policy = nextPolicy;
       options.morphology = SHIPPING_MORPHOLOGY;
+      options.organization = "indra";
       options.palette = palette;
       options.temperature = temperature;
       options.theme = theme;
       options.lodBand = lodBand;
+      options.reducedMotion = false;
+      options.elapsedMilliseconds = DEFAULT_CALIBRATION.lod.crossfadeDurationMs;
       selectionIntent = null;
       focusIntent = null;
       await remount();
-      return read();
+      return snapshotFor(requiredHandle(product), container, shippingPickingCertificationFor(requiredHandle(product)).certification);
     },
     async setShippingCrossProductPickingSetState(nextPolicy, palette, temperature, theme, lodBand): Promise<ShippingPickingSetSnapshot> {
       renderedStatePixelGraph = undefined;
       policy = nextPolicy;
       options.morphology = SHIPPING_MORPHOLOGY;
+      options.organization = "indra";
       options.palette = palette;
       options.temperature = temperature;
       options.theme = theme;
       options.lodBand = lodBand;
+      options.reducedMotion = false;
+      options.elapsedMilliseconds = DEFAULT_CALIBRATION.lod.crossfadeDurationMs;
       selectionIntent = null;
       focusIntent = null;
       await remount();
@@ -773,6 +891,9 @@ async function boot(): Promise<void> {
     },
     coincidentPartners(edgeId): readonly string[] | null {
       return coincidentPartnersFor(requiredHandle(product), edgeId);
+    },
+    certifyCurrentRelationPicking(): RelationPickingCertification {
+      return certifyRelationPicking(requiredHandle(product));
     },
     wrongRelationPickCoverageControl(): WrongRelationPickCoverageControl {
       const handle = requiredHandle(product);
@@ -1106,24 +1227,27 @@ function renderWitness(container: HTMLElement): RenderWitness {
   };
 }
 
-/** This reads the full, expensive live-target witness used by compositor-pixel assertions. */
-function pickingTargetWitness(handle: RenderHandle): PickingTargetWitness {
-  return pickingTargetWitnessFor(handle, true);
+/** This reads the full live-target witness and does not repeat a supplied relation certificate. */
+function pickingTargetWitness(handle: RenderHandle, relationPickingCertification?: RelationPickingCertification): PickingTargetWitness {
+  return pickingTargetWitnessFor(handle, true, relationPickingCertification);
 }
 
-/** This reads only live-target id sets and topology for the 270-state A3 invariant. */
-function pickingTargetSetWitness(handle: RenderHandle): PickingTargetSetWitness {
-  return pickingTargetWitnessFor(handle, false);
+/** This reads live node sets and topology for the 270-state A3 invariant and does not repeat a supplied relation certificate. */
+function pickingTargetSetWitness(handle: RenderHandle, relationPickingCertification?: RelationPickingCertification): PickingTargetSetWitness {
+  return pickingTargetWitnessFor(handle, false, relationPickingCertification);
 }
 
-function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: true): PickingTargetWitness;
-function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: false): PickingTargetSetWitness;
+function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: true, relationPickingCertification?: RelationPickingCertification): PickingTargetWitness;
+function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: false, relationPickingCertification?: RelationPickingCertification): PickingTargetSetWitness;
 /** The set-only branch deliberately retains no compositor coordinates or per-relation width measurements. */
-function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: boolean): PickingTargetSetWitness | PickingTargetWitness {
+function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: boolean, relationPickingCertification?: RelationPickingCertification): PickingTargetSetWitness | PickingTargetWitness {
   const graph = handle.model.graph;
   const material = handle.model.filamentMaterial;
-  const nodeIds = [...graph.nodes()].sort();
-  const edgeIds = [...graph.edges()].sort();
+  const liveSurface = handle.readSurfaceWitness();
+  const nodeIds = [...liveSurface.nodeIds].sort();
+  const edgeIds = [...liveSurface.edgeIds].sort();
+  const modelNodeIds = [...graph.nodes()].sort();
+  const modelEdgeIds = [...graph.edges()].sort();
   const anchors: Record<string, { x: number; y: number; z: number }> = {};
   const incidence: Record<string, { source: string; target: string }> = {};
   const nodePixels: Record<string, { x: number; y: number }> = {};
@@ -1136,6 +1260,22 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
   const nodePickCoverageIds: string[] = [];
   const edgePickCoverageIds: string[] = [];
   const edgeOcclusionIds: string[] = [];
+  const edgeUnpickableIds: string[] = [];
+  if (
+    modelNodeIds.length !== nodeIds.length
+    || modelNodeIds.some((nodeId, index) => nodeId !== nodeIds[index])
+    || modelEdgeIds.length !== edgeIds.length
+    || modelEdgeIds.some((edgeId, index) => edgeId !== edgeIds[index])
+  ) {
+    throw new Error("mounted rendered ids do not match the current render model");
+  }
+  if (
+    relationPickingCertification !== undefined
+    && (relationPickingCertification.edgeIds.length !== edgeIds.length
+      || relationPickingCertification.edgeIds.some((edgeId, index) => edgeId !== edgeIds[index]))
+  ) {
+    throw new Error("relation picking certification does not match the current rendered relation ids");
+  }
   for (const id of nodeIds) {
     const attributes = graph.getNodeAttributes(id);
     const anchor = targetAnchor(attributes, `picking node ${id}`);
@@ -1162,42 +1302,64 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
     throw new Error("cross-product pixel witness calibration must be positive");
   }
   for (const id of edgeIds) {
-    const source = graph.source(id);
-    const targetId = graph.target(id);
+    const liveIncidence = liveSurface.incidence[id];
+    if (liveIncidence === undefined) {
+      throw new Error(`mounted rendered relation ${id} lacks incidence`);
+    }
+    const { source, target: targetId } = liveIncidence;
     const sourceAnchor = anchors[source];
     const targetAnchor = anchors[targetId];
     if (sourceAnchor === undefined || targetAnchor === undefined) {
       throw new Error(`picking edge ${id} lacks a target anchor`);
     }
-    const curvature = graph.getEdgeAttribute(id, "curvature");
-    if (typeof curvature !== "number" || !Number.isFinite(curvature)) {
-      throw new Error(`picking edge ${id} has no finite curvature`);
-    }
     incidence[id] = { source, target: targetId };
-    const filament = filamentGeometry(sourceAnchor, targetAnchor, curvature);
-    // This is deliberately the cheap production-target path. It always samples
-    // the same calibrated interior parameters and reads the renderer's returned
-    // ids. The 270-state branch retains those ids as sets only; the sampled branch
-    // additionally retains compositor coordinates and width diagnostics.
-    const probes = directRelationProbesFor(handle, id, filament, witnessCount);
-    const returnedEdgeIds = probes.map((probe) => probe.returnedEdgeId);
+    const cachedCoverage = relationPickingCertification?.edgePickCoverage[id];
+    if (relationPickingCertification !== undefined && cachedCoverage === undefined) {
+      throw new Error(`relation picking certification does not name ${id}`);
+    }
+    let probes: readonly DirectRelationProbe[] = [];
+    let coverage: RelationPickCoverage;
+    if (cachedCoverage === undefined) {
+      const filament = handle.model.filaments.get(id);
+      if (filament === undefined) {
+        throw new Error(`picking edge ${id} has no filament geometry`);
+      }
+      probes = directRelationProbesFor(handle, id, filament, witnessCount);
+      const returnedEdgeIds = probes.map((probe) => probe.returnedEdgeId);
+      const picked = returnedEdgeIds.filter((candidate): candidate is string => candidate !== null);
+      const certifiedCoincidentPartnerIds = picked.includes(id) || picked.length === 0
+        ? []
+        : coincidentPartnersFor(handle, id) ?? [];
+      coverage = relationPickCoverage(
+        id,
+        returnedEdgeIds,
+        certifiedCoincidentPartnerIds,
+        picked.includes(id) ? null : occlusionCertificateForDirectProbes(handle, id, probes),
+      );
+    } else {
+      // The full 270-state set path consumes this recorded group result directly:
+      // no per-relation probe points, geometry certificates, or picker reads are
+      // rebuilt. The mounted rendered-id equality check above rejects stale ids.
+      coverage = cachedCoverage;
+      if (includePixelWitnesses) {
+        probes = directRelationProbePointsFor(handle, id).map((probe, index) => ({
+          ...probe,
+          returnedEdgeId: cachedCoverage.returnedEdgeIds[index] ?? null,
+        }));
+      }
+    }
+    const returnedEdgeIds = coverage.returnedEdgeIds;
     const picked = returnedEdgeIds.filter((candidate): candidate is string => candidate !== null);
     for (const pickedId of picked) {
+      if (!edgeIds.includes(pickedId)) {
+        throw new Error(`relation picking coverage for ${id} returns non-rendered relation ${pickedId}`);
+      }
       pickableEdgeIds.add(pickedId);
     }
     // A non-null id alone is not coverage for this relation. Only the relation
     // itself or an all-parameter coincident partner makes it interactable.
     // A geometrically certified distinct return is retained separately as an
     // explicit non-interactable occlusion disclosure.
-    const certifiedCoincidentPartnerIds = picked.includes(id) || picked.length === 0
-      ? []
-      : coincidentPartnersFor(handle, id) ?? [];
-    const coverage = relationPickCoverage(
-      id,
-      returnedEdgeIds,
-      certifiedCoincidentPartnerIds,
-      picked.includes(id) ? null : occlusionCertificateForDirectProbes(handle, id, probes),
-    );
     edgePickCoverage[id] = coverage;
     if (coverage.coveringEdgeId !== null) {
       edgePickCoverageIds.push(id);
@@ -1205,7 +1367,14 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
     if (coverage.coveringEdgeId === null && coverage.occlusion !== null) {
       edgeOcclusionIds.push(id);
     }
+    if (coverage.outcome === "unpickable") {
+      edgeUnpickableIds.push(id);
+    }
     if (includePixelWitnesses) {
+      const filament = handle.model.filaments.get(id);
+      if (filament === undefined) {
+        throw new Error(`picking edge ${id} has no filament geometry`);
+      }
       const geometry = viewportFilament(filament, handle);
       const samples = probes.map(({ parameter, point, returnedEdgeId }) => {
         const cell = pickingCellForPoint(handle.readPickingSurface(), { ...point, z: 0 });
@@ -1238,6 +1407,7 @@ function pickingTargetWitnessFor(handle: RenderHandle, includePixelWitnesses: bo
     nodePickCoverageIds: nodePickCoverageIds.sort(),
     edgePickCoverageIds: edgePickCoverageIds.sort(),
     edgeOcclusionIds: edgeOcclusionIds.sort(),
+    edgeUnpickableIds: edgeUnpickableIds.sort(),
     edgePickCoverage,
     anchors,
     incidence,
@@ -1264,12 +1434,124 @@ function relationPickCoverage(
     returnedEdgeId === edgeId
     || (returnedEdgeId !== null && certifiedCoincidentPartnerIds.includes(returnedEdgeId))
   )) ?? null;
+  const outcome = coveringEdgeId === edgeId
+    ? "unambiguous"
+    : coveringEdgeId !== null
+      ? "coincident"
+      : occlusion !== null
+        ? "occluded"
+        : "unpickable";
   return {
     edgeId,
+    outcome,
+    certifiedUnambiguousParameter: null,
+    unambiguousCandidateCount: 0,
     returnedEdgeIds,
     coveringEdgeId,
     certifiedCoincidentPartnerIds,
+    coincidence: null,
     occlusion: coveringEdgeId === null ? occlusion : null,
+  };
+}
+
+/** This certifies every current relation from the live picking surface once and does not infer identity from a normal-pass colour. */
+function certifyRelationPicking(handle: RenderHandle): RelationPickingCertification {
+  const edgeIds = [...handle.model.graph.edges()].sort();
+  const edgePickCoverage: Record<string, RelationPickCoverage> = {};
+  const fallbackRelationIds: string[] = [];
+  const witnessCount = DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount;
+  if (witnessCount < 1) {
+    throw new Error("cross-product pixel witness calibration must be positive");
+  }
+  let certificationQueries = 0;
+  for (const edgeId of edgeIds) {
+    const filament = handle.model.filaments.get(edgeId);
+    if (filament === undefined) {
+      throw new Error(`picking edge ${edgeId} has no filament geometry`);
+    }
+    const directProbes = directRelationProbesFor(handle, edgeId, filament, witnessCount);
+    certificationQueries += directProbes.length;
+    const returnedEdgeIds = directProbes.map((probe) => probe.returnedEdgeId);
+    const unambiguousParameters = unambiguousParametersFor(handle, edgeId);
+    let certifiedParameter: number | null = null;
+    let unambiguousAttempts = 0;
+    for (const parameter of unambiguousParameters) {
+      const witness = relationPickWitness(handle, edgeId, parameter, 0);
+      certificationQueries += 1;
+      unambiguousAttempts += 1;
+      if (witness.onScreen && witness.edgeId === edgeId) {
+        certifiedParameter = parameter;
+        break;
+      }
+    }
+    if (certifiedParameter !== null) {
+      if (unambiguousAttempts > 1) {
+        fallbackRelationIds.push(edgeId);
+      }
+      edgePickCoverage[edgeId] = {
+        edgeId,
+        outcome: "unambiguous",
+        certifiedUnambiguousParameter: certifiedParameter,
+        unambiguousCandidateCount: unambiguousParameters.length,
+        returnedEdgeIds,
+        coveringEdgeId: edgeId,
+        certifiedCoincidentPartnerIds: [],
+        coincidence: null,
+        occlusion: null,
+      };
+      continue;
+    }
+
+    const coincidence = unambiguousParameters.length === 0
+      ? coincidenceCertificateFor(handle, edgeId)
+      : null;
+    if (coincidence !== null) {
+      const acceptedIds = new Set([edgeId, ...coincidence.partnerIds]);
+      const coincidenceReturns = EDGE_SAMPLE_PARAMETERS.map((parameter) => {
+        const witness = relationPickWitness(handle, edgeId, parameter, 0);
+        certificationQueries += 1;
+        return witness.edgeId;
+      });
+      if (coincidenceReturns.every((returnedEdgeId) => returnedEdgeId !== null && acceptedIds.has(returnedEdgeId))) {
+        const coveringEdgeId = coincidenceReturns.find((returnedEdgeId): returnedEdgeId is string => returnedEdgeId !== null) ?? null;
+        if (coveringEdgeId === null) {
+          throw new Error(`coincident relation ${edgeId} has no live returned id`);
+        }
+        fallbackRelationIds.push(edgeId);
+        edgePickCoverage[edgeId] = {
+          edgeId,
+          outcome: "coincident",
+          certifiedUnambiguousParameter: null,
+          unambiguousCandidateCount: 0,
+          returnedEdgeIds,
+          coveringEdgeId,
+          certifiedCoincidentPartnerIds: coincidence.partnerIds,
+          coincidence,
+          occlusion: null,
+        };
+        continue;
+      }
+    }
+
+    const occlusion = occlusionCertificateForDirectProbes(handle, edgeId, directProbes);
+    fallbackRelationIds.push(edgeId);
+    edgePickCoverage[edgeId] = {
+      edgeId,
+      outcome: occlusion === null ? "unpickable" : "occluded",
+      certifiedUnambiguousParameter: null,
+      unambiguousCandidateCount: unambiguousParameters.length,
+      returnedEdgeIds,
+      coveringEdgeId: null,
+      certifiedCoincidentPartnerIds: [],
+      coincidence: null,
+      occlusion,
+    };
+  }
+  return {
+    edgeIds,
+    edgePickCoverage,
+    certificationQueries,
+    fallbackRelationIds: fallbackRelationIds.sort(),
   };
 }
 
@@ -1622,13 +1904,8 @@ function sampledCellCentre(
   return pickingCellForPoint(handle.readPickingSurface(), { ...point, z: 0 }).centre;
 }
 
-// An edge with no unambiguous cell is only accepted with an analytic certificate:
-// model geometry, the live camera transform, and live edge attributes, but no
-// rasterised output. At EVERY sampled parameter, the edge's own analytic ribbon
-// and at least one other analytic ribbon must reach the picking cell centre, which
-// makes the cell ambiguous. If either fails anywhere, the edge is not certified
-// and the check fails naming it.
-function coincidentPartnersFor(handle: RenderHandle, edgeId: string): readonly string[] | null {
+/** This records every named relation geometry that reaches an analytically ambiguous picking cell and does not manufacture a raster result. */
+function coincidenceCertificateFor(handle: RenderHandle, edgeId: string): RelationCoincidenceCertificate | null {
   const filament = handle.model.filaments.get(edgeId);
   if (filament === undefined) {
     throw new Error(`unknown edge ${edgeId}`);
@@ -1636,6 +1913,7 @@ function coincidentPartnersFor(handle: RenderHandle, edgeId: string): readonly s
   const surface = handle.readPickingSurface();
   const geometry = viewportFilament(filament, handle);
   const partners = new Set<string>();
+  const probes: RelationCoincidenceCertificate["probes"][number][] = [];
   for (const parameter of EDGE_SAMPLE_PARAMETERS) {
     const centre = sampledCellCentre(handle, filament, parameter);
     const curveParameter = filamentShaderParameter(surface, geometry, centre);
@@ -1643,15 +1921,34 @@ function coincidentPartnersFor(handle: RenderHandle, edgeId: string): readonly s
     if (denseDistanceToFilament(geometry, centre).distancePx > radius) {
       return null;
     }
-    const reaching = competitorsReaching(handle, edgeId, centre);
+    const reaching = [...competitorsReaching(handle, edgeId, centre)].sort();
     if (reaching.length === 0) {
+      return null;
+    }
+    const coveringEdgeId = reaching[0];
+    if (coveringEdgeId === undefined) {
+      throw new Error(`coincident relation ${edgeId} has no sorted partner`);
+    }
+    const coveringGeometry = relationGeometryAtPickingCell(handle, coveringEdgeId, centre);
+    if (coveringGeometry === null) {
       return null;
     }
     for (const partner of reaching) {
       partners.add(partner);
     }
+    probes.push({ parameter, coveringEdgeId, ...coveringGeometry });
   }
-  return [...partners].sort();
+  return { partnerIds: [...partners].sort(), probes };
+}
+
+// An edge with no unambiguous cell is only accepted with an analytic certificate:
+// model geometry, the live camera transform, and live edge attributes, but no
+// rasterised output. At EVERY sampled parameter, the edge's own analytic ribbon
+// and at least one other analytic ribbon must reach the picking cell centre, which
+// makes the cell ambiguous. If either fails anywhere, the edge is not certified
+// and the check fails naming it.
+function coincidentPartnersFor(handle: RenderHandle, edgeId: string): readonly string[] | null {
+  return coincidenceCertificateFor(handle, edgeId)?.partnerIds ?? null;
 }
 
 function pickingCellForPoint(surface: RenderPickingSurface, point: Coordinates): PickingCell {
@@ -2031,6 +2328,7 @@ function failedApi(): EvidenceApi {
     proveDistantRelationPickControl: unavailable,
     unambiguousParameters: unavailable,
     coincidentPartners: unavailable,
+    certifyCurrentRelationPicking: unavailable,
     wrongRelationPickCoverageControl: unavailable,
     pickChord: unavailable,
     pickStraightControl: async () => unavailable(),

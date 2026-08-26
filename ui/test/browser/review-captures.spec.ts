@@ -70,12 +70,38 @@ type FilamentCrossSectionMeasurement = {
   readonly maximumCssPixels: number;
 };
 
-type FilamentContinuityMeasurement = {
-  readonly tracedFilamentId: string;
-  readonly darkRowCount: number;
-  readonly tracedRowCount: number;
-  readonly devicePixelRatio: number;
-  readonly nonBackgroundChannelMargin: number;
+type FilamentContinuityMeasurement =
+  | {
+      readonly available: true;
+      readonly tracedFilamentId: string;
+      readonly devicePixelRatio: number;
+      readonly nonBackgroundChannelMargin: number;
+      readonly perpendicularSearchDevicePixels: number;
+      readonly sampledStationCount: number;
+      readonly backgroundOnlyStationCount: number;
+      readonly longestBackgroundOnlyRunStations: number;
+    }
+  | {
+      readonly available: false;
+      readonly tracedFilamentId: string;
+      readonly reason: string;
+    };
+
+// Every value in this measurement path is tagged with the pixel space it was
+// produced in, so a CSS-pixel coordinate cannot be handed to a function that
+// expects a device-pixel one (and vice versa) without an explicit conversion.
+type CssPixels = number & { readonly __pixelSpace: "css" };
+type DevicePixels = number & { readonly __pixelSpace: "device" };
+
+type DevicePoint = {
+  readonly x: DevicePixels;
+  readonly y: DevicePixels;
+};
+
+type DeviceCurve = {
+  readonly source: DevicePoint;
+  readonly control: DevicePoint;
+  readonly target: DevicePoint;
 };
 
 type D040CompositionMeasurement = {
@@ -320,6 +346,10 @@ const CONTACT_SHEET_FILE = join(CONTACT_SHEET_DIRECTORY, "overview.png");
 const METADATA_FILE = join(REVIEW_DIRECTORY, "evidence", "capture-metadata.json");
 const MANIFEST_FILE = join(REVIEW_DIRECTORY, "MANIFEST.json");
 const LIT_PIXEL_CHANNEL_MARGIN = 12;
+const CONTINUITY_PERPENDICULAR_SEARCH_DEVICE_PIXELS = 5;
+const CONTINUITY_PERPENDICULAR_STEP_DEVICE_PIXELS = 0.5;
+const CONTINUITY_INTERIOR_MARGIN_FRACTION = 0.05;
+const CONTINUITY_ARC_LENGTH_SUBDIVISION_COUNT = 512;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const MORPHOLOGIES = ["stellar", "neural", "mycelium"] as const satisfies readonly Morphology[];
 const LOD_BANDS = ["macro", "meso", "micro"] as const satisfies readonly LodBand[];
@@ -1404,108 +1434,205 @@ function measureImage(image: DecodedPng, witness: PageCaptureWitness): ImageMeas
   };
 }
 
+// Walks the traced filament's own centreline in device-pixel space, at
+// roughly one sampled station per device pixel of arc length, and at each
+// station searches bilinearly across a fixed perpendicular band for any
+// non-background colour. A station only counts as background-only when every
+// sample across the whole perpendicular band is background. Every planned
+// sample point is checked against the decoded image's bounds before any
+// pixel is read; if one falls outside the image the whole measurement is
+// reported unavailable, with the reason, rather than a number computed from
+// a partial or clamped scan.
 function measureFilamentContinuity(image: DecodedPng, trace: FilamentTraceWitness): FilamentContinuityMeasurement {
-  const verticalRange = quadraticVerticalRange(trace.curve);
-  const firstRow = Math.max(0, Math.ceil(verticalRange.minimum - 0.5));
-  const lastRow = Math.min(CAPTURE_HEIGHT - 1, Math.floor(verticalRange.maximum - 0.5));
-  if (lastRow < firstRow) {
-    throw new Error(`filament ${trace.edgeId} does not cross a screenshot row`);
-  }
-  const field = fieldPixel(image);
   const devicePixelRatio = image.width / CAPTURE_WIDTH;
-  let darkRowCount = 0;
-  for (let row = firstRow; row <= lastRow; row += 1) {
-    const crossings = quadraticCrossingsAtY(trace.curve, row + 0.5);
-    if (crossings.length === 0 || !crossings.some((x) => filamentCrossSectionIsLit(image, x, row, trace.widthCssPixels, devicePixelRatio, field))) {
-      darkRowCount += 1;
-    }
+  const curve = toDeviceCurve(trace.curve, devicePixelRatio);
+  const arcLengthTable = buildArcLengthTable(curve);
+  const totalLength = arcLengthTable.cumulativeLengths.at(-1);
+  if (totalLength === undefined || totalLength <= 0) {
+    return { available: false, tracedFilamentId: trace.edgeId, reason: "filament centreline has no measurable arc length" };
   }
-  return {
-    tracedFilamentId: trace.edgeId,
-    darkRowCount,
-    tracedRowCount: lastRow - firstRow + 1,
-    devicePixelRatio,
-    nonBackgroundChannelMargin: LIT_PIXEL_CHANNEL_MARGIN,
-  };
-}
-
-function quadraticVerticalRange(curve: FilamentTraceWitness["curve"]): { readonly minimum: number; readonly maximum: number } {
-  const values = [curve.source.y, curve.control.y, curve.target.y];
-  const denominator = curve.source.y - (2 * curve.control.y) + curve.target.y;
-  if (denominator !== 0) {
-    const parameter = (curve.source.y - curve.control.y) / denominator;
-    if (parameter > 0 && parameter < 1) {
-      values.push(quadraticPoint(curve, parameter).y);
-    }
+  const interiorMargin = totalLength * CONTINUITY_INTERIOR_MARGIN_FRACTION;
+  const interiorLength = totalLength - (2 * interiorMargin);
+  if (interiorLength <= 0) {
+    return { available: false, tracedFilamentId: trace.edgeId, reason: "filament centreline is too short for an interior sample" };
   }
-  return { minimum: Math.min(...values), maximum: Math.max(...values) };
-}
-
-function quadraticCrossingsAtY(curve: FilamentTraceWitness["curve"], y: number): readonly number[] {
-  const quadratic = curve.source.y - (2 * curve.control.y) + curve.target.y;
-  const linear = 2 * (curve.control.y - curve.source.y);
-  const constant = curve.source.y - y;
-  if (quadratic === 0) {
-    if (linear === 0) {
-      return [];
-    }
-    return xForFilamentParameters(curve, [-constant / linear]);
+  const stationCount = Math.max(2, Math.round(interiorLength));
+  const stations: DevicePoint[] = [];
+  const stationNormals: DevicePoint[] = [];
+  for (let index = 0; index <= stationCount; index += 1) {
+    const arcLength = devicePixels(interiorMargin + ((interiorLength * index) / stationCount));
+    const parameter = parameterAtArcLength(arcLengthTable, arcLength);
+    stations.push(deviceQuadraticPoint(curve, parameter));
+    stationNormals.push(unitNormal(trace.edgeId, deviceQuadraticTangent(curve, parameter)));
   }
-  const discriminant = (linear * linear) - (4 * quadratic * constant);
-  if (discriminant < 0) {
-    return [];
+  const perpendicularOffsets: DevicePixels[] = [];
+  for (
+    let offset = -CONTINUITY_PERPENDICULAR_SEARCH_DEVICE_PIXELS;
+    offset <= CONTINUITY_PERPENDICULAR_SEARCH_DEVICE_PIXELS + (CONTINUITY_PERPENDICULAR_STEP_DEVICE_PIXELS / 2);
+    offset += CONTINUITY_PERPENDICULAR_STEP_DEVICE_PIXELS
+  ) {
+    perpendicularOffsets.push(devicePixels(offset));
   }
-  const root = Math.sqrt(discriminant);
-  return xForFilamentParameters(curve, [
-    (-linear - root) / (2 * quadratic),
-    (-linear + root) / (2 * quadratic),
-  ]);
-}
-
-function xForFilamentParameters(curve: FilamentTraceWitness["curve"], parameters: readonly number[]): readonly number[] {
-  const values: number[] = [];
-  for (const parameter of parameters) {
-    if (parameter < 0 || parameter > 1) {
-      continue;
-    }
-    const x = quadraticPoint(curve, parameter).x;
-    if (!values.some((value) => value === x)) {
-      values.push(x);
-    }
-  }
-  return values;
-}
-
-function quadraticPoint(curve: FilamentTraceWitness["curve"], parameter: number): ViewportPoint {
-  const inverse = 1 - parameter;
-  return {
-    x: (inverse * inverse * curve.source.x) + (2 * inverse * parameter * curve.control.x) + (parameter * parameter * curve.target.x),
-    y: (inverse * inverse * curve.source.y) + (2 * inverse * parameter * curve.control.y) + (parameter * parameter * curve.target.y),
-  };
-}
-
-function filamentCrossSectionIsLit(
-  image: DecodedPng,
-  xCssPixels: number,
-  rowCssPixels: number,
-  widthCssPixels: number,
-  devicePixelRatio: number,
-  field: readonly [number, number, number],
-): boolean {
-  const centerX = Math.round(xCssPixels * devicePixelRatio);
-  const firstX = Math.max(0, centerX - Math.ceil((widthCssPixels * devicePixelRatio) / 2));
-  const lastX = Math.min(image.width - 1, centerX + Math.ceil((widthCssPixels * devicePixelRatio) / 2));
-  const firstY = Math.max(0, Math.floor(rowCssPixels * devicePixelRatio));
-  const lastY = Math.min(image.height - 1, Math.ceil((rowCssPixels + 1) * devicePixelRatio) - 1);
-  for (let y = firstY; y <= lastY; y += 1) {
-    for (let x = firstX; x <= lastX; x += 1) {
-      const offset = ((y * image.width) + x) * 4;
-      if (isLitPixel(image.data[offset] ?? 0, image.data[offset + 1] ?? 0, image.data[offset + 2] ?? 0, field)) {
-        return true;
+  for (const [stationIndex, station] of stations.entries()) {
+    const normal = requiredItem(stationNormals, stationIndex, "filament continuity normal");
+    for (const offset of perpendicularOffsets) {
+      const sampleX = devicePixels(station.x + (normal.x * offset));
+      const sampleY = devicePixels(station.y + (normal.y * offset));
+      if (!isOnCanvas(image, sampleX, sampleY)) {
+        return {
+          available: false,
+          tracedFilamentId: trace.edgeId,
+          reason: `station ${stationIndex} of ${stations.length} samples off-canvas at device pixel (${sampleX.toFixed(2)}, ${sampleY.toFixed(2)}) against a ${image.width}x${image.height} image`,
+        };
       }
     }
   }
-  return false;
+  const field = fieldPixel(image);
+  let backgroundOnlyStationCount = 0;
+  let currentRun = 0;
+  let longestRun = 0;
+  for (const [stationIndex, station] of stations.entries()) {
+    const normal = requiredItem(stationNormals, stationIndex, "filament continuity normal");
+    const backgroundOnly = perpendicularOffsets.every((offset) => {
+      const sampleX = devicePixels(station.x + (normal.x * offset));
+      const sampleY = devicePixels(station.y + (normal.y * offset));
+      const [red, green, blue] = bilinearSample(image, sampleX, sampleY);
+      return !isLitPixel(red, green, blue, field);
+    });
+    if (backgroundOnly) {
+      backgroundOnlyStationCount += 1;
+      currentRun += 1;
+      longestRun = Math.max(longestRun, currentRun);
+    } else {
+      currentRun = 0;
+    }
+  }
+  return {
+    available: true,
+    tracedFilamentId: trace.edgeId,
+    devicePixelRatio,
+    nonBackgroundChannelMargin: LIT_PIXEL_CHANNEL_MARGIN,
+    perpendicularSearchDevicePixels: CONTINUITY_PERPENDICULAR_SEARCH_DEVICE_PIXELS,
+    sampledStationCount: stations.length,
+    backgroundOnlyStationCount,
+    longestBackgroundOnlyRunStations: longestRun,
+  };
+}
+
+function cssPixels(value: number): CssPixels {
+  return value as CssPixels;
+}
+
+function devicePixels(value: number): DevicePixels {
+  return value as DevicePixels;
+}
+
+function cssToDevicePixels(value: CssPixels, devicePixelRatio: number): DevicePixels {
+  return devicePixels(value * devicePixelRatio);
+}
+
+function toDeviceCurve(curve: FilamentTraceWitness["curve"], devicePixelRatio: number): DeviceCurve {
+  const toDevicePoint = (point: ViewportPoint): DevicePoint => ({
+    x: cssToDevicePixels(cssPixels(point.x), devicePixelRatio),
+    y: cssToDevicePixels(cssPixels(point.y), devicePixelRatio),
+  });
+  return {
+    source: toDevicePoint(curve.source),
+    control: toDevicePoint(curve.control),
+    target: toDevicePoint(curve.target),
+  };
+}
+
+function deviceQuadraticPoint(curve: DeviceCurve, parameter: number): DevicePoint {
+  const inverse = 1 - parameter;
+  const blend = (source: DevicePixels, control: DevicePixels, target: DevicePixels): DevicePixels =>
+    devicePixels((inverse * inverse * source) + (2 * inverse * parameter * control) + (parameter * parameter * target));
+  return {
+    x: blend(curve.source.x, curve.control.x, curve.target.x),
+    y: blend(curve.source.y, curve.control.y, curve.target.y),
+  };
+}
+
+function deviceQuadraticTangent(curve: DeviceCurve, parameter: number): DevicePoint {
+  const inverse = 1 - parameter;
+  const blend = (source: DevicePixels, control: DevicePixels, target: DevicePixels): DevicePixels =>
+    devicePixels((2 * inverse * (control - source)) + (2 * parameter * (target - control)));
+  return {
+    x: blend(curve.source.x, curve.control.x, curve.target.x),
+    y: blend(curve.source.y, curve.control.y, curve.target.y),
+  };
+}
+
+function unitNormal(edgeId: string, tangent: DevicePoint): DevicePoint {
+  const length = Math.hypot(tangent.x, tangent.y);
+  if (length === 0) {
+    throw new Error(`filament ${edgeId} has a degenerate centreline tangent`);
+  }
+  return { x: devicePixels(-tangent.y / length), y: devicePixels(tangent.x / length) };
+}
+
+type ArcLengthTable = {
+  readonly parameters: readonly number[];
+  readonly cumulativeLengths: readonly DevicePixels[];
+};
+
+function buildArcLengthTable(curve: DeviceCurve): ArcLengthTable {
+  const parameters: number[] = [0];
+  const cumulativeLengths: DevicePixels[] = [devicePixels(0)];
+  let previous = deviceQuadraticPoint(curve, 0);
+  let total = 0;
+  for (let step = 1; step <= CONTINUITY_ARC_LENGTH_SUBDIVISION_COUNT; step += 1) {
+    const parameter = step / CONTINUITY_ARC_LENGTH_SUBDIVISION_COUNT;
+    const point = deviceQuadraticPoint(curve, parameter);
+    total += Math.hypot(point.x - previous.x, point.y - previous.y);
+    parameters.push(parameter);
+    cumulativeLengths.push(devicePixels(total));
+    previous = point;
+  }
+  return { parameters, cumulativeLengths };
+}
+
+function parameterAtArcLength(table: ArcLengthTable, targetLength: DevicePixels): number {
+  const { parameters, cumulativeLengths } = table;
+  let upperIndex = 1;
+  while (upperIndex < cumulativeLengths.length - 1 && requiredItem(cumulativeLengths, upperIndex, "arc length") < targetLength) {
+    upperIndex += 1;
+  }
+  const lowerLength = requiredItem(cumulativeLengths, upperIndex - 1, "arc length");
+  const upperLength = requiredItem(cumulativeLengths, upperIndex, "arc length");
+  const lowerParameter = requiredItem(parameters, upperIndex - 1, "arc length parameter");
+  const upperParameter = requiredItem(parameters, upperIndex, "arc length parameter");
+  const span = upperLength - lowerLength;
+  const fraction = span === 0 ? 0 : (targetLength - lowerLength) / span;
+  return lowerParameter + ((upperParameter - lowerParameter) * fraction);
+}
+
+function isOnCanvas(image: DecodedPng, x: DevicePixels, y: DevicePixels): boolean {
+  return x >= 0 && x <= image.width - 1 && y >= 0 && y <= image.height - 1;
+}
+
+function bilinearSample(image: DecodedPng, x: DevicePixels, y: DevicePixels): readonly [number, number, number] {
+  const lowerX = Math.floor(x);
+  const lowerY = Math.floor(y);
+  const upperX = Math.min(image.width - 1, lowerX + 1);
+  const upperY = Math.min(image.height - 1, lowerY + 1);
+  const fractionX = x - lowerX;
+  const fractionY = y - lowerY;
+  const channel = (index: number): number => {
+    const topLeft = pixelChannel(image, lowerX, lowerY, index);
+    const topRight = pixelChannel(image, upperX, lowerY, index);
+    const bottomLeft = pixelChannel(image, lowerX, upperY, index);
+    const bottomRight = pixelChannel(image, upperX, upperY, index);
+    const top = topLeft + ((topRight - topLeft) * fractionX);
+    const bottom = bottomLeft + ((bottomRight - bottomLeft) * fractionX);
+    return top + ((bottom - top) * fractionY);
+  };
+  return [channel(0), channel(1), channel(2)];
+}
+
+function pixelChannel(image: DecodedPng, x: number, y: number, index: number): number {
+  const offset = ((y * image.width) + x) * 4;
+  return image.data[offset + index] ?? 0;
 }
 
 function fieldPixel(image: DecodedPng): readonly [number, number, number] {
