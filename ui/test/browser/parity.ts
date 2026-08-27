@@ -1,10 +1,12 @@
+import { armFrameCounter, firedSinceArming, settleUncounted } from "#browser/frame-counter.ts";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
+import type { CameraKind } from "#engine/camera-kind.ts";
 import { assertVisualGraphFieldRegister, createRenderedStateCarrier } from "#engine/contract.ts";
 import type { Coordinates, RenderedStateCarrier, VisualGraph } from "#engine/contract.ts";
-import type { GraphRendererHandle, MultiCameraRendererHandle, NodeFootprintWitness, SurfaceWitness } from "#engine/renderer-handle.ts";
-import { createVisualState } from "#engine/visual-state.ts";
+import type { GraphRendererHandle, MultiCameraRendererHandle, NodeFootprintWitness, RetainedResourceWitness, SurfaceWitness, WorldAnchorWitness } from "#engine/renderer-handle.ts";
+import { createVisualState, deserializeVisualState, serializeVisualState } from "#engine/visual-state.ts";
 import type { VisualState } from "#engine/visual-state.ts";
 import { mount as mountSigma } from "#render2d/index.ts";
 import type { RenderFramingBox } from "#render2d/index.ts";
@@ -18,6 +20,12 @@ export const PARITY_RENDERERS = ["sigma-2d", "r3f-2d", "r3f-3d"] as const;
 
 /** This names one renderer observed by the parity suite and does not accept an unregistered renderer. */
 export type ParityRenderer = typeof PARITY_RENDERERS[number];
+
+/** This names the R3F renderers covered by the full-app smoke and does not include the fixed-camera renderer. */
+export type FullAppRenderer = Exclude<ParityRenderer, "sigma-2d">;
+
+/** This names the synthetic policy fixtures used by the full-app smoke and does not name renderer state. */
+export type FullAppPolicy = "Discovery" | "Reliability";
 
 /** This pins the only resolved-scene channel permitted to vary by camera and does not allow an empty allowance. */
 export const PROJECTION_DEPENDENT_SCENE_CHANNELS = ["camera.kind", "camera.navigation"] as const;
@@ -74,6 +82,57 @@ export type DeterminismSemanticWitness = {
   readonly camera: VisualState["camera"];
 };
 
+/** This records a live R3F full-app mount and does not retain the graph used to create it. */
+export type FullAppMountWitness = {
+  readonly renderer: FullAppRenderer;
+  readonly surface: SurfaceWitness;
+  readonly footprints: readonly NodeFootprintWitness[];
+  readonly visualState: VisualState;
+  readonly retainedResources: RetainedResourceWitness;
+};
+
+/** This records one R3F camera switch through live renderer witnesses and does not infer anchors from input data. */
+export type FullAppCameraSwitchWitness = {
+  readonly renderer: FullAppRenderer;
+  readonly before: {
+    readonly visualState: VisualState;
+    readonly anchors: readonly WorldAnchorWitness[];
+    readonly layoutPassCount: number;
+  };
+  readonly after: {
+    readonly visualState: VisualState;
+    readonly anchors: readonly WorldAnchorWitness[];
+    readonly layoutPassCount: number;
+  };
+};
+
+/** This records a live provenance-backed interaction target and does not derive provenance from fixture input. */
+export type FullAppInteractionWitness = {
+  readonly renderer: FullAppRenderer;
+  readonly selectedId: string;
+  readonly outsideFocusId: string;
+  readonly selectedFootprint: NodeFootprintWitness;
+  readonly outsideFocusFootprint: NodeFootprintWitness;
+};
+
+/** This records a serialised-view restoration through live render and picking witnesses and does not retain a destroyed handle. */
+export type FullAppVisualStateRoundTripWitness = {
+  readonly renderer: FullAppRenderer;
+  readonly serializedVisualState: string;
+  readonly original: FullAppMountWitness;
+  readonly restored: FullAppMountWitness;
+  readonly pickedNodeId: string;
+  readonly originalPickedNodeId: string | null;
+  readonly restoredPickedNodeId: string | null;
+};
+
+/** This records full-app cleanup after frame settling and does not count unrelated page elements. */
+export type FullAppShutdownWitness = {
+  readonly canvases: number;
+  readonly domLabelOverlays: number;
+  readonly framesAfterShutdown: number;
+};
+
 /** This exposes browser-side parity operations and does not expose renderer-private state. */
 export type ParityBrowserApi = {
   readonly ready: boolean;
@@ -97,6 +156,12 @@ export type ParityBrowserApi = {
   mountZeroToleranceControl(renderer: ParityRenderer): Promise<ZeroToleranceWitness>;
   readCameraLayoutCapability(): Promise<CameraLayoutCapabilityWitness>;
   readDeterminismSemanticWitness(renderer: ParityRenderer): Promise<DeterminismSemanticWitness>;
+  mountFullAppState(renderer: FullAppRenderer, policy: FullAppPolicy, lodBand: VisualState["lodBand"], reducedMotion: boolean): Promise<FullAppMountWitness>;
+  readFullAppState(renderer: FullAppRenderer): Promise<FullAppMountWitness>;
+  switchFullAppCamera(renderer: FullAppRenderer, target: CameraKind): Promise<FullAppCameraSwitchWitness>;
+  prepareFullAppInteraction(renderer: FullAppRenderer): Promise<FullAppInteractionWitness>;
+  restoreFullAppVisualState(renderer: FullAppRenderer): Promise<FullAppVisualStateRoundTripWitness>;
+  shutdownFullApp(): Promise<FullAppShutdownWitness>;
   destroy(): Promise<void>;
 };
 
@@ -121,6 +186,10 @@ type MountedRenderer = {
 };
 
 const FIXTURE_URL = "fixtures/synthetic/projection/discovery-at-question.json";
+const FULL_APP_FIXTURE_URLS: Readonly<Record<FullAppPolicy, string>> = {
+  Discovery: ["fixtures", "synthetic", "projection", "discovery-all-time.json"].join("/"),
+  Reliability: ["fixtures", "synthetic", "projection", "reliability-all-time.json"].join("/"),
+};
 const PAGE_ROOT_ID = "parity-root";
 const pageRendererId = (renderer: ParityRenderer): string => `parity-renderer-${renderer}`;
 const rendererMounts: Readonly<Record<ParityRenderer, RendererMount>> = {
@@ -247,6 +316,7 @@ export async function installParityPage(): Promise<void> {
     }
     const graph = toVisualGraph(JSON.parse(await response.text()) as unknown);
     assertVisualGraphFieldRegister(graph);
+    const fullAppGraphs = await loadFullAppGraphs();
     const root = document.createElement("main");
     root.id = PAGE_ROOT_ID;
     root.style.cssText = "width:1200px;height:800px;position:relative";
@@ -259,14 +329,19 @@ export async function installParityPage(): Promise<void> {
     document.body.replaceChildren(root);
     const mounted = new Map<ParityRenderer, MountedRenderer>();
     const containerFor = (renderer: ParityRenderer): HTMLElement => requiredElement(pageRendererId(renderer));
-    const mount = async (renderer: ParityRenderer, candidateGraph = graph, options = BASE_OPTIONS): Promise<MountedParityWitness> => {
+    const mount = async (
+      renderer: ParityRenderer,
+      candidateGraph = graph,
+      options = BASE_OPTIONS,
+      initialVisualState?: VisualState,
+    ): Promise<MountedParityWitness> => {
       for (const candidate of PARITY_RENDERERS) {
         containerFor(candidate).style.visibility = candidate === renderer ? "visible" : "hidden";
       }
       mounted.get(renderer)?.handle.destroy();
       const container = containerFor(renderer);
       container.replaceChildren();
-      const raw = rendererMounts[renderer](container, candidateGraph, options);
+      const raw = rendererMounts[renderer](container, candidateGraph, options, undefined, initialVisualState);
       const handle = requiredGraphRendererHandle(raw, renderer);
       if (renderer === "r3f-3d") {
         requiredMultiCameraHandle(handle, renderer).setCameraKind(PERSPECTIVE);
@@ -397,10 +472,10 @@ export async function installParityPage(): Promise<void> {
         return { renderer, configuredPickTolerancePx: zeroToleranceCalibration.filament.pickTolerancePx };
       },
       async readCameraLayoutCapability(): Promise<CameraLayoutCapabilityWitness> {
-        const snapshot = await mount("r3f-2d");
+        await mount("r3f-2d");
         return {
           renderer: "r3f-2d",
-          missingMethods: missingMethods(snapshot as unknown as GraphRendererHandle, WORLD_LAYOUT_METHODS),
+          missingMethods: missingMethods(current("r3f-2d").handle, WORLD_LAYOUT_METHODS),
         };
       },
       async readDeterminismSemanticWitness(renderer: ParityRenderer): Promise<DeterminismSemanticWitness> {
@@ -410,6 +485,94 @@ export async function installParityPage(): Promise<void> {
           surface: snapshot.surface,
           footprints: snapshot.footprints,
           camera: snapshot.visualState.camera,
+        };
+      },
+      async mountFullAppState(renderer: FullAppRenderer, policy: FullAppPolicy, lodBand: VisualState["lodBand"], reducedMotion: boolean): Promise<FullAppMountWitness> {
+        await mount(renderer, fullAppGraphs[policy], { ...BASE_OPTIONS, lodBand, reducedMotion });
+        return fullAppMountWitness(renderer, current(renderer).handle);
+      },
+      async readFullAppState(renderer: FullAppRenderer): Promise<FullAppMountWitness> {
+        const active = current(renderer);
+        return fullAppMountWitness(renderer, active.handle);
+      },
+      async switchFullAppCamera(renderer: FullAppRenderer, target: CameraKind): Promise<FullAppCameraSwitchWitness> {
+        const handle = current(renderer).handle;
+        const switchable = requiredMultiCameraHandle(handle, renderer);
+        const before = fullAppCameraWitness(handle);
+        switchable.setCameraKind(target);
+        await nextPaint();
+        await nextPaint();
+        return { renderer, before, after: fullAppCameraWitness(handle) };
+      },
+      async prepareFullAppInteraction(renderer: FullAppRenderer): Promise<FullAppInteractionWitness> {
+        const handle = current(renderer).handle;
+        const footprints = handle.readNodeFootprintWitnesses();
+        let selected: NodeFootprintWitness | undefined;
+        for (const candidate of footprints) {
+          handle.setSelection(candidate.id);
+          const provenance = handle.readSelectedProvenance();
+          if (provenance !== null && provenance.value !== null && provenance.value !== undefined && provenance.origin.trim() !== "") {
+            selected = candidate;
+            break;
+          }
+        }
+        handle.clearSelection();
+        await nextPaint();
+        if (selected === undefined) {
+          throw new Error(`${renderer} has no live selection target with a non-empty derived origin`);
+        }
+        const outside = footprints.find((candidate) => candidate.id !== selected.id);
+        if (outside === undefined) {
+          throw new Error(`${renderer} requires a second live node footprint for focus`);
+        }
+        return {
+          renderer,
+          selectedId: selected.id,
+          outsideFocusId: outside.id,
+          selectedFootprint: selected,
+          outsideFocusFootprint: outside,
+        };
+      },
+      async restoreFullAppVisualState(renderer: FullAppRenderer): Promise<FullAppVisualStateRoundTripWitness> {
+        const active = current(renderer);
+        const original = fullAppMountWitness(renderer, active.handle);
+        const picked = requiredLivePick(active.handle, original.footprints, `${renderer} source VisualState frame`);
+        const serializedVisualState = serializeVisualState(active.handle.readVisualState());
+        const restoredState = deserializeVisualState(active.graph, serializedVisualState);
+        const graphForRestore = active.graph;
+        const optionsForRestore = active.options;
+        active.handle.destroy();
+        mounted.delete(renderer);
+        await mount(renderer, graphForRestore, optionsForRestore, restoredState);
+        const restoredHandle = current(renderer).handle;
+        const restored = fullAppMountWitness(renderer, restoredHandle);
+        const restoredFootprint = restored.footprints.find((candidate) => candidate.id === picked.id);
+        if (restoredFootprint === undefined) {
+          throw new Error(`${renderer} restored VisualState frame lost live pick target ${picked.id}`);
+        }
+        return {
+          renderer,
+          serializedVisualState,
+          original,
+          restored,
+          pickedNodeId: picked.id,
+          originalPickedNodeId: picked.pickedId,
+          restoredPickedNodeId: restoredHandle.pickNodeAtPosition(restoredFootprint.viewportCenter),
+        };
+      },
+      async shutdownFullApp(): Promise<FullAppShutdownWitness> {
+        for (const value of mounted.values()) {
+          value.handle.destroy();
+        }
+        mounted.clear();
+        armFrameCounter();
+        await settleUncounted();
+        await settleUncounted();
+        await settleUncounted();
+        return {
+          canvases: document.querySelectorAll("canvas").length,
+          domLabelOverlays: document.querySelectorAll('[data-render3f-labels="true"]').length,
+          framesAfterShutdown: firedSinceArming(),
         };
       },
       async destroy(): Promise<void> {
@@ -429,6 +592,42 @@ export async function installParityPage(): Promise<void> {
 
 if (typeof window !== "undefined") {
   void installParityPage();
+}
+
+function fullAppMountWitness(renderer: FullAppRenderer, handle: GraphRendererHandle): FullAppMountWitness {
+  return {
+    renderer,
+    surface: handle.readSurfaceWitness(),
+    footprints: handle.readNodeFootprintWitnesses(),
+    visualState: handle.readVisualState(),
+    retainedResources: handle.readRetainedResources(),
+  };
+}
+
+function fullAppCameraWitness(handle: GraphRendererHandle): FullAppCameraSwitchWitness["before"] {
+  const missing = missingMethods(handle, WORLD_LAYOUT_METHODS);
+  if (missing.length > 0) {
+    throw new Error(`full-app camera switch requires GraphRendererHandle ${missing.join(", ")}`);
+  }
+  return {
+    visualState: handle.readVisualState(),
+    anchors: handle.readWorldAnchorWitnesses(),
+    layoutPassCount: handle.readLayoutPassCount(),
+  };
+}
+
+function requiredLivePick(
+  handle: GraphRendererHandle,
+  footprints: readonly NodeFootprintWitness[],
+  label: string,
+): { readonly id: string; readonly pickedId: string | null } {
+  for (const footprint of footprints) {
+    const pickedId = handle.pickNodeAtPosition(footprint.viewportCenter);
+    if (pickedId === footprint.id) {
+      return { id: footprint.id, pickedId };
+    }
+  }
+  throw new Error(`${label} has no live pickable node footprint`);
 }
 
 /** This narrows a handle to one that can switch camera and does not assume a renderer can. */
@@ -541,6 +740,28 @@ function nextPaint(): Promise<void> {
   return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
+async function loadFullAppGraphs(): Promise<Readonly<Record<FullAppPolicy, VisualGraph>>> {
+  const [discovery, reliability] = await Promise.all([
+    loadFullAppGraph("Discovery"),
+    loadFullAppGraph("Reliability"),
+  ]);
+  return { Discovery: discovery, Reliability: reliability };
+}
+
+async function loadFullAppGraph(policy: FullAppPolicy): Promise<VisualGraph> {
+  const response = await fetch(FULL_APP_FIXTURE_URLS[policy], { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`full-app ${policy} fixture failed with ${response.status}`);
+  }
+  const graph = toVisualGraph(JSON.parse(await response.text()) as unknown);
+  assertVisualGraphFieldRegister(graph);
+  const expectedPolicyId = policy.toLowerCase();
+  if (graph.policy_id !== expectedPolicyId) {
+    throw new Error(`full-app ${policy} adapter returned policy_id ${graph.policy_id} instead of ${expectedPolicyId}`);
+  }
+  return graph;
+}
+
 function failedApi(errors: readonly string[]): ParityBrowserApi {
   const unavailable = (): never => {
     throw new Error(errors.join("; ") || "parity page module is unavailable");
@@ -564,6 +785,12 @@ function failedApi(errors: readonly string[]): ParityBrowserApi {
     mountZeroToleranceControl: async () => unavailable(),
     readCameraLayoutCapability: async () => unavailable(),
     readDeterminismSemanticWitness: async () => unavailable(),
+    mountFullAppState: async () => unavailable(),
+    readFullAppState: async () => unavailable(),
+    switchFullAppCamera: async () => unavailable(),
+    prepareFullAppInteraction: async () => unavailable(),
+    restoreFullAppVisualState: async () => unavailable(),
+    shutdownFullApp: async () => unavailable(),
     destroy: async () => unavailable(),
   };
 }

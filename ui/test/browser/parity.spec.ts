@@ -5,6 +5,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
 import { build } from "esbuild";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
+import type { CameraKind } from "#engine/camera-kind.ts";
 import { fieldPixel, isLitPixel } from "#browser/filament-continuity.ts";
 import type { DecodedPng } from "#browser/filament-continuity.ts";
 import {
@@ -19,6 +21,11 @@ import {
 import type {
   CameraLayoutCapabilityWitness,
   DeterminismSemanticWitness,
+  FullAppCameraSwitchWitness,
+  FullAppInteractionWitness,
+  FullAppMountWitness,
+  FullAppShutdownWitness,
+  FullAppVisualStateRoundTripWitness,
   InteractionWitness,
   MountedParityWitness,
   NodePickWitness,
@@ -29,7 +36,7 @@ import type {
 } from "#browser/parity.ts";
 
 type Status = "PASS" | "FAIL" | "NOT_RUN" | "UNKNOWN";
-type CheckName = "P1 surface parity" | "P2 semantic-channel parity" | "P3 governed-state separation" | "P4 interaction and provenance" | "P5 drawing and picking" | "P6 camera switch" | "P7 determinism" | "P8 non-colour encoding";
+type CheckName = "P1 surface parity" | "P2 semantic-channel parity" | "P3 governed-state separation" | "P4 interaction and provenance" | "P5 drawing and picking" | "P6 camera switch" | "P7 determinism" | "P8 non-colour encoding" | "full-app-smoke";
 type CheckKey = `${CheckName}/${ParityRenderer}`;
 type Rgb = readonly [number, number, number];
 type Deficiency = "deuteranopia" | "protanopia" | "tritanopia";
@@ -108,6 +115,8 @@ const CHECK_RENDERERS: readonly { readonly checkName: CheckName; readonly render
   { checkName: "P6 camera switch", renderer: "r3f-2d" },
   ...PARITY_RENDERERS.map((renderer) => ({ checkName: "P7 determinism" as const, renderer })),
   ...PARITY_RENDERERS.map((renderer) => ({ checkName: "P8 non-colour encoding" as const, renderer })),
+  { checkName: "full-app-smoke", renderer: "r3f-2d" },
+  { checkName: "full-app-smoke", renderer: "r3f-3d" },
 ];
 const CVD_MATRICES: Readonly<Record<Deficiency, readonly [Rgb, Rgb, Rgb]>> = {
   deuteranopia: [
@@ -129,6 +138,15 @@ const CVD_MATRICES: Readonly<Record<Deficiency, readonly [Rgb, Rgb, Rgb]>> = {
 
 test("renderer parity oracle", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "parity", "run this through the dedicated parity project");
+  const consoleErrors: string[] = [];
+  page.on("console", (entry) => {
+    if (entry.type() === "error") {
+      consoleErrors.push(entry.text());
+    }
+  });
+  page.on("pageerror", (error) => {
+    consoleErrors.push(error.message);
+  });
   const commitSha = await currentCommitSha();
   const records = new Map<CheckKey, ParityRecord>();
   for (const { checkName, renderer } of CHECK_RENDERERS) {
@@ -524,6 +542,116 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
     });
   }
 
+  for (const renderer of ["r3f-2d", "r3f-3d"] as const) {
+    await record("full-app-smoke", renderer, async () => {
+      const launch = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Discovery", "micro", true);
+      assertFullAppMount(launch, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "micro", true, "launch");
+      const reliability = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Reliability", "micro", true);
+      assertFullAppMount(reliability, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "micro", true, "Reliability policy switch");
+      const discovery = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Discovery", "micro", true);
+      assertFullAppMount(discovery, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "micro", true, "Discovery policy switch");
+      assertFullAppPolicySwitch(launch, reliability, discovery);
+
+      const alternateCamera = discovery.visualState.cameraKind === ORTHOGRAPHIC ? PERSPECTIVE : ORTHOGRAPHIC;
+      const forwardCamera = await invoke<FullAppCameraSwitchWitness>("switchFullAppCamera", renderer, alternateCamera);
+      assertFullAppCameraSwitch(forwardCamera, alternateCamera, "forward camera switch");
+      const reverseCamera = await invoke<FullAppCameraSwitchWitness>("switchFullAppCamera", renderer, forwardCamera.before.visualState.cameraKind);
+      assertFullAppCameraSwitch(reverseCamera, forwardCamera.before.visualState.cameraKind, "return camera switch");
+
+      const interaction = await invoke<FullAppInteractionWitness>("prepareFullAppInteraction", renderer);
+      const beforeSelection = await captureRenderer(page, renderer);
+      await invoke<void>("select", renderer, interaction.selectedId);
+      const selected = await invoke<FullAppMountWitness>("readFullAppState", renderer);
+      assertFullAppSelection(selected, interaction.selectedId, "selection");
+      const selectedImage = await captureRenderer(page, renderer);
+      const selectionDifference = greatestPixelDifference(beforeSelection, selectedImage, interaction.selectedId, interaction.selectedFootprint);
+      assertPixelDifference(selectionDifference, "full-app selection");
+      const provenance = await invoke<InteractionWitness["provenance"]>("selectedProvenance", renderer);
+      assertFullAppProvenance(provenance);
+      await invoke<void>("focus", renderer, interaction.selectedId);
+      const focused = await invoke<FullAppMountWitness>("readFullAppState", renderer);
+      assertFullAppFocus(focused, interaction.selectedId, "focus");
+      const focusedImage = await captureRenderer(page, renderer);
+      const focusDifference = greatestPixelDifference(selectedImage, focusedImage, interaction.outsideFocusId, interaction.outsideFocusFootprint);
+      assertPixelDifference(focusDifference, "full-app focus");
+      await invoke<void>("clearFocus", renderer);
+      const focusCleared = await invoke<FullAppMountWitness>("readFullAppState", renderer);
+      assertFullAppFocus(focusCleared, null, "clear focus");
+      await invoke<void>("clearSelection", renderer);
+      const selectionCleared = await invoke<FullAppMountWitness>("readFullAppState", renderer);
+      assertFullAppSelection(selectionCleared, null, "clear selection");
+
+      const macro = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Discovery", "macro", true);
+      assertFullAppMount(macro, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "macro", true, "macro semantic zoom");
+      const meso = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Discovery", "meso", true);
+      assertFullAppMount(meso, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "meso", true, "meso semantic zoom");
+      const micro = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Discovery", "micro", true);
+      assertFullAppMount(micro, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "micro", true, "micro semantic zoom");
+      const moving = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Discovery", "micro", false);
+      assertFullAppMount(moving, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "micro", false, "reduced-motion disabled");
+      const reduced = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Discovery", "micro", true);
+      assertFullAppMount(reduced, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "micro", true, "reduced-motion enabled");
+
+      const originalFrame = await captureRenderer(page, renderer);
+      const roundTrip = await invoke<FullAppVisualStateRoundTripWitness>("restoreFullAppVisualState", renderer);
+      const restoredFrame = await captureRenderer(page, renderer);
+      assertFullAppRoundTrip(roundTrip);
+      assertZeroPixelDifference(countDifferingPixels(originalFrame, restoredFrame), "full-app restored VisualState frame");
+
+      const errorsBeforeShutdown = (await api()).errors;
+      assertNoFullAppErrors(errorsBeforeShutdown, consoleErrors);
+      const shutdown = await invoke<FullAppShutdownWitness>("shutdownFullApp");
+      assertFullAppShutdown(shutdown);
+      const errorsAfterShutdown = (await api()).errors;
+      assertNoFullAppErrors(errorsAfterShutdown, consoleErrors);
+
+      const controls = {
+        launch: failingControlOutput(() => assertFullAppMount({ ...launch, surface: { ...launch.surface, nodeIds: [] }, footprints: [] }, launch.visualState.cameraKind, "micro", true, "launch control")),
+        policy: failingControlOutput(() => assertFullAppPolicySwitch(launch, launch, discovery)),
+        cameraForward: failingControlOutput(() => assertFullAppCameraSwitch({
+          ...forwardCamera,
+          after: { ...forwardCamera.after, layoutPassCount: forwardCamera.after.layoutPassCount + 1 },
+        }, alternateCamera, "camera layout control")),
+        cameraReverse: failingControlOutput(() => assertFullAppCameraSwitch({
+          ...reverseCamera,
+          after: { ...reverseCamera.after, anchors: [] },
+        }, reverseCamera.before.visualState.cameraKind, "camera anchor control")),
+        selection: failingControlOutput(() => assertFullAppSelection({ ...selected, visualState: { ...selected.visualState, selectedId: null } }, interaction.selectedId, "selection control")),
+        selectionPixels: failingControlOutput(() => assertPixelDifference({ ...selectionDifference, differenceMicro: 0 }, "selection pixel control")),
+        provenance: failingControlOutput(() => assertFullAppProvenance({ value: null, origin: "" })),
+        focus: failingControlOutput(() => assertFullAppFocus({ ...focused, visualState: { ...focused.visualState, focusedId: null } }, interaction.selectedId, "focus control")),
+        focusPixels: failingControlOutput(() => assertPixelDifference({ ...focusDifference, differenceMicro: 0 }, "focus pixel control")),
+        macro: failingControlOutput(() => assertFullAppMount({ ...macro, visualState: { ...macro.visualState, lodBand: "meso" } }, macro.visualState.cameraKind, "macro", true, "macro control")),
+        meso: failingControlOutput(() => assertFullAppMount({ ...meso, visualState: { ...meso.visualState, lodBand: "micro" } }, meso.visualState.cameraKind, "meso", true, "meso control")),
+        micro: failingControlOutput(() => assertFullAppMount({ ...micro, visualState: { ...micro.visualState, lodBand: "macro" } }, micro.visualState.cameraKind, "micro", true, "micro control")),
+        reducedMotion: failingControlOutput(() => assertFullAppMount({ ...reduced, visualState: { ...reduced.visualState, reducedMotion: false } }, reduced.visualState.cameraKind, "micro", true, "reduced-motion control")),
+        roundTrip: failingControlOutput(() => assertFullAppRoundTrip({ ...roundTrip, restoredPickedNodeId: null })),
+        restoredFrame: failingControlOutput(() => assertZeroPixelDifference(1, "restored frame control")),
+        runtimeErrors: failingControlOutput(() => assertNoFullAppErrors(["runtime control"], [])),
+        shutdown: failingControlOutput(() => assertFullAppShutdown({ ...shutdown, canvases: 1 })),
+      };
+      return {
+        measured: {
+          launch,
+          policySwitch: { reliability, discovery },
+          cameraSwitch: { forward: forwardCamera, reverse: reverseCamera },
+          selection: { state: selected.visualState.selectedId, selectionDifference },
+          focus: { state: focused.visualState.focusedId, focusDifference },
+          provenance,
+          semanticZoom: { macro: macro.visualState.lodBand, meso: meso.visualState.lodBand, micro: micro.visualState.lodBand },
+          reducedMotion: { moving: moving.visualState.reducedMotion, reduced: reduced.visualState.reducedMotion },
+          visualStateRoundTrip: roundTrip,
+          runtimeErrors: { beforeShutdown: errorsBeforeShutdown, afterShutdown: errorsAfterShutdown, console: consoleErrors },
+          shutdown,
+          controls,
+        },
+        threshold: "both R3F camera boots report their live camera kind and graph; policy surfaces change and restore; each camera direction preserves live anchors and layout count; selection and focus change composited pixels; provenance has a value and non-empty origin; macro, meso, micro, and reduced motion are renderer-reported; serialised VisualState restores an identical frame and live pick target; errors, canvases, label overlays, and post-shutdown frames are zero",
+        turnsRed: "a mounted state differs from the renderer-reported transition, a policy surface does not switch and restore, either camera direction moves anchors or runs layout, interaction lacks compositor change or provenance, a zoom or motion value is not reported, a restored frame or live pick differs, an error occurs, or shutdown leaves a canvas, label overlay, or fired frame",
+        control: { status: "FAILED_AS_EXPECTED", output: formatControlOutputs(controls) },
+      };
+    });
+  }
+
   } catch (error: unknown) {
     const reason = `parity execution stopped before this check could run: ${message(error)}`;
     for (const [key, pending] of records) {
@@ -579,6 +707,121 @@ function assertSurfaceSelfConsistency(surface: MountedParityWitness["surface"]):
       throw new Error(`P1 sigma-2d has no complete live incidence for ${id}`);
     }
   }
+}
+
+function assertFullAppMount(
+  witness: FullAppMountWitness,
+  expectedCameraKind: CameraKind,
+  expectedLodBand: FullAppMountWitness["visualState"]["lodBand"],
+  expectedReducedMotion: boolean,
+  label: string,
+): void {
+  assertFullAppGraphPresent(witness, label);
+  if (witness.visualState.cameraKind !== expectedCameraKind) {
+    throw new Error(`${label} renderer reported camera ${witness.visualState.cameraKind} instead of ${expectedCameraKind}`);
+  }
+  if (witness.visualState.lodBand !== expectedLodBand) {
+    throw new Error(`${label} renderer reported LOD ${witness.visualState.lodBand} instead of ${expectedLodBand}`);
+  }
+  if (witness.visualState.reducedMotion !== expectedReducedMotion) {
+    throw new Error(`${label} renderer reported reducedMotion=${witness.visualState.reducedMotion} instead of ${expectedReducedMotion}`);
+  }
+}
+
+function assertFullAppGraphPresent(witness: FullAppMountWitness, label: string): void {
+  if (witness.surface.nodeIds.length === 0 || witness.surface.edgeIds.length === 0 || witness.footprints.length === 0) {
+    throw new Error(`${label} mounted renderer did not report a non-empty graph surface and node footprints`);
+  }
+  const renderedNodeIds = new Set(witness.surface.nodeIds);
+  if (witness.footprints.some((footprint) => !renderedNodeIds.has(footprint.id))) {
+    throw new Error(`${label} renderer reported a node footprint outside its live surface`);
+  }
+  if (witness.retainedResources.geometries <= 0 || witness.retainedResources.materials <= 0 || witness.retainedResources.textures <= 0) {
+    throw new Error(`${label} renderer reported an empty live graphics resource set`);
+  }
+}
+
+function assertFullAppPolicySwitch(
+  discovery: FullAppMountWitness,
+  reliability: FullAppMountWitness,
+  restoredDiscovery: FullAppMountWitness,
+): void {
+  if (sameSurface(discovery.surface, reliability.surface)) {
+    throw new Error("Reliability policy switch did not change the live mounted surface");
+  }
+  assertSurfaceParity(discovery.surface, restoredDiscovery.surface, restoredDiscovery.renderer);
+}
+
+function assertFullAppCameraSwitch(witness: FullAppCameraSwitchWitness, target: CameraKind, label: string): void {
+  if (witness.before.visualState.cameraKind === target) {
+    throw new Error(`${label} began on requested camera ${target}`);
+  }
+  if (witness.after.visualState.cameraKind !== target) {
+    throw new Error(`${label} renderer reported camera ${witness.after.visualState.cameraKind} instead of ${target}`);
+  }
+  if (witness.before.layoutPassCount !== witness.after.layoutPassCount) {
+    throw new Error(`${label} changed layout pass count from ${witness.before.layoutPassCount} to ${witness.after.layoutPassCount}`);
+  }
+  if (JSON.stringify(witness.before.anchors) !== JSON.stringify(witness.after.anchors)) {
+    throw new Error(`${label} moved a live mounted world anchor`);
+  }
+}
+
+function assertFullAppSelection(witness: FullAppMountWitness, expected: string | null, label: string): void {
+  if (witness.visualState.selectedId !== expected) {
+    throw new Error(`${label} renderer reported selected id ${witness.visualState.selectedId ?? "null"} instead of ${expected ?? "null"}`);
+  }
+}
+
+function assertFullAppFocus(witness: FullAppMountWitness, expected: string | null, label: string): void {
+  if (witness.visualState.focusedId !== expected) {
+    throw new Error(`${label} renderer reported focused id ${witness.visualState.focusedId ?? "null"} instead of ${expected ?? "null"}`);
+  }
+}
+
+function assertFullAppProvenance(value: InteractionWitness["provenance"]): void {
+  if (value === null || value.value === null || value.value === undefined || value.origin.trim() === "") {
+    throw new Error("full-app selected provenance has no derived value and non-empty origin");
+  }
+}
+
+function assertFullAppRoundTrip(witness: FullAppVisualStateRoundTripWitness): void {
+  if (witness.serializedVisualState.trim() === "") {
+    throw new Error("full-app VisualState serialisation is empty");
+  }
+  assertSurfaceParity(witness.original.surface, witness.restored.surface, witness.renderer);
+  if (JSON.stringify(witness.original.visualState) !== JSON.stringify(witness.restored.visualState)) {
+    throw new Error("full-app restored VisualState differs from the source mounted state");
+  }
+  if (witness.originalPickedNodeId !== witness.pickedNodeId || witness.restoredPickedNodeId !== witness.pickedNodeId) {
+    throw new Error(`full-app VisualState live picking did not restore ${witness.pickedNodeId}`);
+  }
+}
+
+function assertZeroPixelDifference(difference: number, label: string): void {
+  if (difference !== 0) {
+    throw new Error(`${label} has ${difference} differing composited pixels`);
+  }
+}
+
+function assertNoFullAppErrors(pageErrors: readonly string[], consoleErrors: readonly string[]): void {
+  if (pageErrors.length > 0 || consoleErrors.length > 0) {
+    throw new Error(`full-app recorded page errors [${pageErrors.join(", ")}] and console errors [${consoleErrors.join(", ")}]`);
+  }
+}
+
+function assertFullAppShutdown(witness: FullAppShutdownWitness): void {
+  if (witness.canvases !== 0 || witness.domLabelOverlays !== 0 || witness.framesAfterShutdown !== 0) {
+    throw new Error(`full-app shutdown left canvases=${witness.canvases}, labelOverlays=${witness.domLabelOverlays}, frames=${witness.framesAfterShutdown}`);
+  }
+}
+
+function sameSurface(left: FullAppMountWitness["surface"], right: FullAppMountWitness["surface"]): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function formatControlOutputs(controls: Readonly<Record<string, string>>): string {
+  return Object.entries(controls).map(([step, output]) => `${step}: ${output}`).join(" | ");
 }
 
 async function captureRenderer(page: Page, renderer: ParityRenderer): Promise<DecodedPng> {
@@ -685,6 +928,24 @@ function greatestPixelDifference(before: DecodedPng, after: DecodedPng, id: stri
     }
   }
   return greatest;
+}
+
+function countDifferingPixels(before: DecodedPng, after: DecodedPng): number {
+  if (before.width !== after.width || before.height !== after.height) {
+    throw new Error("full-app compositor captures have incompatible dimensions");
+  }
+  let count = 0;
+  for (let index = 0; index < before.data.length; index += 4) {
+    if (
+      before.data[index] !== after.data[index]
+      || before.data[index + 1] !== after.data[index + 1]
+      || before.data[index + 2] !== after.data[index + 2]
+      || before.data[index + 3] !== after.data[index + 3]
+    ) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 function assertPixelDifference(difference: PixelDifference, label: string): void {
