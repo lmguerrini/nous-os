@@ -1,4 +1,5 @@
 import type { CameraKind } from "#engine/camera-kind.ts";
+import type { RetainedResourceWitness } from "#engine/renderer-handle.ts";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { mount } from "#render3f/mount.tsx";
 
@@ -7,6 +8,7 @@ export type Render3fCompositingPageApi = {
   readonly error: string | null;
   cameraKind(): CameraKind;
   setCameraKind(kind: CameraKind): void;
+  readRetainedResources(): RetainedResourceWitness;
   destroy(): void;
 };
 
@@ -39,6 +41,7 @@ try {
     error: null,
     cameraKind: () => handle.cameraKind,
     setCameraKind: (kind) => handle.setCameraKind(kind),
+    readRetainedResources: () => handle.readRetainedResources(),
     destroy: () => handle.destroy(),
   };
 } catch (error: unknown) {
@@ -51,6 +54,7 @@ try {
     error: message,
     cameraKind: unavailable,
     setCameraKind: unavailable,
+    readRetainedResources: unavailable,
     destroy: unavailable,
   };
 }

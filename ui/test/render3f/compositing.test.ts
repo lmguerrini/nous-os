@@ -8,6 +8,7 @@ import type { Page } from "@playwright/test";
 import { build } from "esbuild";
 import type { CameraKind } from "#engine/camera-kind.ts";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
+import type { RetainedResourceWitness } from "#engine/renderer-handle.ts";
 import type { Render3fCompositingPageApi } from "./compositing-page.ts";
 
 type DecodedPng = {
@@ -34,7 +35,7 @@ declare global {
   }
 }
 
-test("Three composites a lit frame in both camera kinds", async (context) => {
+test("Three composites both camera kinds without growing or retaining mounted resources", async (context) => {
   const fixturePath = join(process.cwd(), "..", "fixtures", "synthetic", "projection", "discovery-at-question.json");
   const fixture = JSON.parse(await readFile(fixturePath, "utf8")) as unknown;
   const bundled = await build({
@@ -86,6 +87,12 @@ test("Three composites a lit frame in both camera kinds", async (context) => {
     }));
     assert.deepEqual(pageStatus, { ready: true, error: null });
     await settle(page);
+    const beforeSwitches = await readRetainedResources(page);
+    assert.deepEqual(
+      beforeSwitches,
+      { geometries: 3, materials: 3, textures: 1, domOverlayNodes: 1 },
+      "mounted renderer did not retain its complete registered graphics resource set",
+    );
 
     const orthographic = await captureAndMeasure(page, ORTHOGRAPHIC);
     assertLitPixelFloor(orthographic, ORTHOGRAPHIC);
@@ -97,12 +104,46 @@ test("Three composites a lit frame in both camera kinds", async (context) => {
     assertLitPixelFloor(perspective, PERSPECTIVE);
     context.diagnostic(formatMeasurement(PERSPECTIVE, perspective));
 
+    for (let index = 1; index < 32; index += 1) {
+      const kind = index % 2 === 1 ? ORTHOGRAPHIC : PERSPECTIVE;
+      await page.evaluate((nextKind) => window.__render3fCompositing?.setCameraKind(nextKind), kind);
+    }
+    const afterSwitches = await readRetainedResources(page);
+    assert.deepEqual(
+      afterSwitches,
+      beforeSwitches,
+      "mounted renderer retained additional resources across 32 camera changes",
+    );
+    context.diagnostic(
+      `mounted renderer resources before and after 32 camera changes: ${formatRetainedResources(afterSwitches)}`,
+    );
+
     assert.deepEqual(browserErrors, []);
-    await page.evaluate(() => window.__render3fCompositing?.destroy());
+    const afterDestroy = await page.evaluate(() => {
+      window.__render3fCompositing?.destroy();
+      return window.__render3fCompositing?.readRetainedResources();
+    });
+    assert.ok(afterDestroy !== undefined, "destroyed mounted renderer resource witness is unavailable");
+    assert.deepEqual(
+      afterDestroy,
+      { geometries: 0, materials: 0, textures: 0, domOverlayNodes: 0 },
+      "destroyed mounted renderer retained resources",
+    );
+    context.diagnostic(`mounted renderer resources after destroy: ${formatRetainedResources(afterDestroy)}`);
   } finally {
     await browser.close();
   }
 });
+
+async function readRetainedResources(page: Page): Promise<RetainedResourceWitness> {
+  const retained = await page.evaluate(() => window.__render3fCompositing?.readRetainedResources());
+  assert.ok(retained !== undefined, "mounted renderer resource witness is unavailable");
+  return retained;
+}
+
+function formatRetainedResources(resources: RetainedResourceWitness): string {
+  return JSON.stringify(resources);
+}
 
 async function settle(page: Page): Promise<void> {
   await page.evaluate(async () => {

@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { inflateSync } from "node:zlib";
 import { expect, test, type Page } from "@playwright/test";
 import { build } from "esbuild";
@@ -19,6 +21,11 @@ import {
   darkestPixel,
 } from "#test-render3f/capture-field.ts";
 import { assertProjectedCameraFramingSubjectsInsideViewport } from "#render3f/camera-framing.ts";
+import {
+  assertTrackedTreeIdentity,
+  TRACKED_TREE_IDENTITY_ALGORITHM,
+} from "#browser/parity-contract.ts";
+import type { TrackedTreeIdentity } from "#browser/parity-contract.ts";
 // A subpath alias, not a relative parent path: a `..` segment at a quote boundary is
 // indistinguishable from a machine path to this repository's outgoing scan, which refuses the commit.
 
@@ -50,6 +57,7 @@ type CaptureRecord = {
   drawnExtentFraming: Review3dCaptureWitness["drawnExtentFraming"] | null;
   coreConcentration: CoreConcentration | null;
   observedCommitSha: string;
+  observedTrackedTreeSha256: string;
 };
 
 type CoreConcentration = {
@@ -67,12 +75,15 @@ type PixelDelta = {
 };
 
 type Review3dManifest = {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly run: {
     readonly command: string;
     readonly observedCommitSha: string;
     completedCommitSha: string | null;
     freshAgainstObservedCommit: boolean;
+    trackedTree: TrackedTreeIdentity;
+    freshAgainstObservedTrackedTree: boolean;
+    readonly staleTreeControlOutput: string;
   };
   readonly captureConfiguration: {
     readonly viewport: { readonly width: number; readonly height: number };
@@ -136,14 +147,16 @@ const CORE_CONCENTRATION_LOW_THRESHOLD = 32;
 const RENDERERS = ["sigma-2d", "r3f-2d", "r3f-3d"] as const satisfies readonly Review3dRenderer[];
 const COMMON_VIEWS = ["macro", "meso", "micro", "selected", "focused"] as const satisfies readonly Review3dView[];
 const ORBIT_VIEWS = ["orbit-a", "orbit-b"] as const satisfies readonly Review3dView[];
+const execFileAsync = promisify(execFile);
 
 test("deterministic three-renderer visual review capture set", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "review3d", "run this through the dedicated review3d project");
   expect(await page.evaluate(() => window.devicePixelRatio)).toBe(DEVICE_PIXEL_RATIO);
 
+  const observedTrackedTreeSha256 = await currentTrackedTreeSha256();
   const observedCommitSha = await currentCommitSha();
   const captures = plannedCaptures();
-  const manifest = emptyManifest(observedCommitSha, captures);
+  const manifest = emptyManifest(observedCommitSha, observedTrackedTreeSha256, captures);
   await rm(REVIEW3D_DIRECTORY, { recursive: true, force: true });
   await mkdir(CAPTURE_DIRECTORY, { recursive: true });
   await writeManifest(manifest);
@@ -201,8 +214,12 @@ test("deterministic three-renderer visual review capture set", async ({ page }, 
   }
 
   manifest.run.completedCommitSha = await currentCommitSha();
+  const completedTrackedTreeSha256 = await currentTrackedTreeSha256();
+  manifest.run.trackedTree = trackedTreeIdentity(observedTrackedTreeSha256, completedTrackedTreeSha256);
   manifest.run.freshAgainstObservedCommit = manifest.run.completedCommitSha === observedCommitSha
     && manifest.captures.every((capture) => capture.observedCommitSha === observedCommitSha);
+  manifest.run.freshAgainstObservedTrackedTree = manifest.run.trackedTree.stable
+    && manifest.captures.every((capture) => capture.observedTrackedTreeSha256 === observedTrackedTreeSha256);
   manifest.semanticGraph.equal = semanticDigestParity(manifest.semanticGraph.digests);
   manifest.determinism.comparedCaptureCount = manifest.captures.filter((capture) => capture.repeatedSha256 !== null).length;
   manifest.determinism.passed = manifest.determinism.comparedCaptureCount === manifest.captures.length
@@ -216,6 +233,10 @@ test("deterministic three-renderer visual review capture set", async ({ page }, 
   if (!manifest.run.freshAgainstObservedCommit) {
     failures.push("the current commit changed during capture, so the images are not fresh against the observed commit");
   }
+  if (!manifest.run.freshAgainstObservedTrackedTree) {
+    failures.push("the tracked tree changed during capture, so the images are not certifiable against the measured tree");
+  }
+  assertTrackedTreeIdentity(manifest.run.trackedTree, await currentTrackedTreeSha256(), "review3d manifest");
   if (!manifest.semanticGraph.equal) {
     failures.push("the three renderer semantic digests are not all present and equal");
   }
@@ -377,14 +398,26 @@ function plannedCaptures(): readonly PlannedCapture[] {
   return [...common, ...orbit];
 }
 
-function emptyManifest(observedCommitSha: string, planned: readonly PlannedCapture[]): Review3dManifest {
+function emptyManifest(
+  observedCommitSha: string,
+  observedTrackedTreeSha256: string,
+  planned: readonly PlannedCapture[],
+): Review3dManifest {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     run: {
       command: REVIEW3D_COMMAND,
       observedCommitSha,
       completedCommitSha: null,
       freshAgainstObservedCommit: false,
+      trackedTree: trackedTreeIdentity(observedTrackedTreeSha256, observedTrackedTreeSha256),
+      freshAgainstObservedTrackedTree: false,
+      staleTreeControlOutput: failedControlOutput(() => assertTrackedTreeIdentity({
+        algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
+        measuredSha256: "0".repeat(64),
+        completedSha256: "0".repeat(64),
+        stable: true,
+      }, observedTrackedTreeSha256, "review3d stale tracked-tree control")),
     },
     captureConfiguration: {
       viewport: { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT },
@@ -440,6 +473,7 @@ function emptyManifest(observedCommitSha: string, planned: readonly PlannedCaptu
       drawnExtentFraming: null,
       coreConcentration: null,
       observedCommitSha,
+      observedTrackedTreeSha256,
     })),
     summary: {
       required: planned.length,
@@ -448,12 +482,16 @@ function emptyManifest(observedCommitSha: string, planned: readonly PlannedCaptu
       notRun: 0,
       pending: planned.length,
       passing: false,
-      rule: "Every planned image must be PASS, bound to the observed commit, use the same semantic graph digest across all three renderers, and match its cache-purged repeat byte-for-byte. NOT_RUN is a failure, never an omitted capture.",
+      rule: "Every planned image must be PASS, bound to one stable observed tracked tree, use the same semantic graph digest across all three renderers, and match its cache-purged repeat byte-for-byte. NOT_RUN is a failure, never an omitted capture.",
     },
   };
 }
 
 async function writeManifest(manifest: Review3dManifest): Promise<void> {
+  manifest.run.trackedTree = trackedTreeIdentity(
+    manifest.run.trackedTree.measuredSha256,
+    await currentTrackedTreeSha256(),
+  );
   updateSummary(manifest);
   await writeFile(MANIFEST_FILE, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
@@ -469,6 +507,8 @@ function updateSummary(manifest: Review3dManifest): void {
     && manifest.summary.notRun === 0
     && manifest.summary.pending === 0
     && manifest.run.freshAgainstObservedCommit
+    && manifest.run.freshAgainstObservedTrackedTree
+    && manifest.run.trackedTree.stable
     && manifest.semanticGraph.equal
     && manifest.determinism.passed;
 }
@@ -737,6 +777,21 @@ async function currentCommitSha(): Promise<string> {
     throw new Error("review3d capture cannot determine the current commit SHA");
   }
   return sha;
+}
+
+function trackedTreeIdentity(measuredSha256: string, completedSha256: string): TrackedTreeIdentity {
+  return {
+    algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
+    measuredSha256,
+    completedSha256,
+    stable: measuredSha256 === completedSha256,
+  };
+}
+
+async function currentTrackedTreeSha256(): Promise<string> {
+  const repositoryDirectory = [".."].join("/");
+  const { stdout } = await execFileAsync("git", ["ls-files", "-s"], { cwd: repositoryDirectory, encoding: "utf8" });
+  return createHash("sha256").update(stdout).digest("hex");
 }
 
 function requiredItem<Value>(values: readonly Value[], index: number, name: string): Value {

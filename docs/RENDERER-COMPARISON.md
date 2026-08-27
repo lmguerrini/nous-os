@@ -9,9 +9,20 @@ Three renderers draw the same graph:
 - **Three 2D** — an orthographic camera on a Three.js / React Three Fiber engine.
 - **Three 3D** — a perspective camera on the same engine, the same scene, the same state.
 
-All three consume one shared, renderer-neutral scene model. Neither Three camera computes a visual
-value of its own, and a check over their own source refuses literal colours, literal material
-assignments, and imports of the four modules that would let them resolve visual policy themselves.
+**The two Three cameras** consume one shared, renderer-neutral scene model, and neither computes a
+visual value of its own; a check over their own source refuses literal colours, literal material
+assignments, and imports of the modules that would let them resolve visual policy themselves.
+
+**Sigma does not.** It builds its own render model and resolves its own tokens, morphology, layout and
+material — as it always has — and imports exactly one thing from the shared layer: the governed-state
+composition, so that the repair to that composition reaches it from one place rather than being copied
+into two. Rewiring it further is outside this capability's scope: its output is a closed, audited
+artifact of the previous capability whose pixels may not move.
+
+**This is stated here and not only among the limitations, because it changes what every parity claim
+below means.** Parity between the two Three cameras is agreement between two presentations of one
+shared resolution. Parity with Sigma is agreement between **two independent resolutions** of the same
+semantic state. The second is the weaker guarantee and by far the more interesting result.
 
 ## What is shared, and what is not
 
@@ -71,19 +82,25 @@ the two must never be pooled.
 | at 100 elements | Sigma 2D | Three 2D | Three 3D |
 |---|---|---|---|
 | frame time, median | 8.3 ms | 8.3 ms | 8.3 ms |
-| initial render latency | 868.6 ms | 461.7 ms | 422.4 ms |
-| layout cost, median | 23.3 ms | 23.7 ms | 23.5 ms |
-| scene model build, median | 32.1 ms | 33.2 ms | 32.8 ms |
-| picking latency, median | 0.1 ms | 0.2 ms | 0.1 ms |
-| camera switch | one camera | 8.3 ms | 8.1 ms |
-| camera transition | not applicable | not applicable | 8.3 ms |
+| initial render latency | ~870 ms | ~455 ms | ~436 ms |
+| layout cost, median | ~23 ms | ~24 ms | ~24 ms |
+| scene model build, median | ~32 ms | ~32 ms | ~32 ms |
+| picking latency, median | ~0.1 ms | ~0.1 ms | ~0.1 ms |
+| camera switch | one camera | ~8 ms | ~8 ms |
+| camera transition | not applicable | not applicable | ~7 ms |
+
+**Every figure above is a median over a small sample and varies between runs**, so it is quoted to the
+precision the measurement supports rather than to a tenth of a millisecond. All come from
+`ui/dist/evidence/performance.json`. An earlier draft quoted a superseded run to one decimal place,
+which asserted a precision that does not exist and would have read as a change where there was none.
 
 **Frame time does not differentiate the three.** All three sit at the frame interval, which means all
 three are frame-limited rather than compute-limited at this size. No claim should be built on that
 row.
 
-**The Three engine mounts about twice as fast.** Measured once per renderer, so an observation rather
-than a distribution.
+**The Three engine mounts about twice as fast** — roughly 440 to 460 milliseconds against roughly 870.
+Measured once per renderer per run, so an observation rather than a distribution; the ratio has held
+across every run observed, the absolute figures have not.
 
 ### The scale wall, and whose it is
 
@@ -126,13 +143,23 @@ lifecycle, and that is why its handle cannot answer two of the questions the sha
 it has one camera and cannot enumerate resources it does not own. Those are honest absences, recorded
 as capabilities it does not declare rather than as fabricated answers.
 
-**The Three engine** is roughly 3,300 lines including its tests, and it owns everything the library
+**The Three engine** is roughly 3,600 lines of source with a further 1,200 of its own tests — about
+4,800 together, and both figures grow as its controls are strengthened, so they are quoted to the
+hundred and reproduced with `cat ui/src/render3f/* ui/test/render3f/* | wc -l` rather than pinned.
+It owns everything the library
 used to: shader compilation, buffer construction, picking, disposal, label placement. That is the
 price of the visual freedom above, and it is where every defect in this capability was found — a
 blank frame, a displaced shader directive, unsupported qualifiers, a coordinate-space error.
 
 ## Stated limitations
 
+- **The perspective view is an oblique view of a PLANAR graph.** Every `z` in a resolved scene is zero
+  — the layout writes no depth — so the 3D camera shows the same flat arrangement from an angle rather
+  than a spatially distributed structure. This is consistent with the governed decision that depth
+  carries no epistemic meaning, and nothing in the contract requires a volumetric layout. It is stated
+  here because the next capability's controlled comparison would otherwise be described as 2D versus
+  3D when it is in fact orthographic-plane versus oblique-plane, and that distinction changes what
+  such a comparison can conclude.
 - Every performance figure is software-rasterised; the GPU relationship is unknown, not estimated.
 - Above 100 elements no renderer comparison exists, because the shared layout consumes the budget.
 - The governed fixture is 22 nodes and 27 relations. Larger figures come from synthetic stress

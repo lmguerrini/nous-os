@@ -144,7 +144,18 @@ export type ParityBrowserApi = {
   mountAll(): Promise<readonly MountedParityWitness[]>;
   mountBase(renderer: ParityRenderer): Promise<MountedParityWitness>;
   readSceneCameraParity(): Promise<{
-    readonly differences: readonly string[];
+    readonly combinations: number;
+    readonly axes: {
+      readonly morphology: readonly VisualState["morphology"][];
+      readonly palette: readonly VisualState["palette"][];
+      readonly temperature: readonly VisualState["temperature"][];
+      readonly theme: readonly VisualState["theme"][];
+      readonly lodBand: readonly VisualState["lodBand"][];
+    };
+    readonly comparisons: readonly {
+      readonly state: Pick<VisualState, "morphology" | "palette" | "temperature" | "theme" | "lodBand">;
+      readonly differences: readonly string[];
+    }[];
     readonly negativeControlOutput: string;
   }>;
   renderLegalState(renderer: ParityRenderer, stateIndex: number): Promise<RenderedStatePixelWitness>;
@@ -212,6 +223,16 @@ const BASE_OPTIONS: RenderOptions = {
   reducedMotion: true,
   elapsedMilliseconds: 0,
 };
+const P2_MORPHOLOGIES = ["stellar", "neural", "mycelium"] as const satisfies readonly VisualState["morphology"][];
+const P2_PALETTES = ["monochrome", "interstellar", "perceptual", "solar", "custom"] as const satisfies readonly VisualState["palette"][];
+const P2_TEMPERATURES = ["cold", "balanced", "warm"] as const satisfies readonly VisualState["temperature"][];
+const P2_THEMES = ["system", "dark", "light"] as const satisfies readonly VisualState["theme"][];
+const P2_LOD_BANDS = ["macro", "meso", "micro"] as const satisfies readonly VisualState["lodBand"][];
+const P2_SCENE_PARITY_COMBINATION_COUNT = P2_MORPHOLOGIES.length
+  * P2_PALETTES.length
+  * P2_TEMPERATURES.length
+  * P2_THEMES.length
+  * P2_LOD_BANDS.length;
 /** This names the ability only a multi-camera renderer has and does not require it of every renderer. */
 const MULTI_CAMERA_HANDLE_METHODS = ["setCameraKind"] as const;
 const REQUIRED_HANDLE_METHODS = [
@@ -372,22 +393,65 @@ export async function installParityPage(): Promise<void> {
       async mountBase(renderer: ParityRenderer): Promise<MountedParityWitness> {
         return mount(renderer);
       },
-      async readSceneCameraParity(): Promise<{ readonly differences: readonly string[]; readonly negativeControlOutput: string }> {
+      async readSceneCameraParity(): Promise<{
+        readonly combinations: number;
+        readonly axes: {
+          readonly morphology: readonly VisualState["morphology"][];
+          readonly palette: readonly VisualState["palette"][];
+          readonly temperature: readonly VisualState["temperature"][];
+          readonly theme: readonly VisualState["theme"][];
+          readonly lodBand: readonly VisualState["lodBand"][];
+        };
+        readonly comparisons: readonly {
+          readonly state: Pick<VisualState, "morphology" | "palette" | "temperature" | "theme" | "lodBand">;
+          readonly differences: readonly string[];
+        }[];
+        readonly negativeControlOutput: string;
+      }> {
         if (!mounted.has("sigma-2d")) {
           await mount("sigma-2d");
         }
         const sigma = current("sigma-2d");
         const initial = sigma.handle.readVisualState();
-        const orthographic = createVisualState(graph, { ...initial, cameraKind: ORTHOGRAPHIC });
-        const perspective = createVisualState(graph, { ...initial, cameraKind: PERSPECTIVE });
-        const orthographicScene = buildScene(graph, orthographic);
-        const perspectiveScene = buildScene(graph, perspective);
-        const differences = sceneDifferencePaths(orthographicScene, perspectiveScene);
-        assertSceneCameraParity(differences);
-        const negativeControl = perturbSceneChannel(perspectiveScene);
+        const comparisons: {
+          state: Pick<VisualState, "morphology" | "palette" | "temperature" | "theme" | "lodBand">;
+          differences: readonly string[];
+        }[] = [];
+        let controlScenes: { readonly orthographic: Scene; readonly perspective: Scene } | undefined;
+        for (const morphology of P2_MORPHOLOGIES) {
+          for (const palette of P2_PALETTES) {
+            for (const temperature of P2_TEMPERATURES) {
+              for (const theme of P2_THEMES) {
+                for (const lodBand of P2_LOD_BANDS) {
+                  const state = { morphology, palette, temperature, theme, lodBand };
+                  const orthographic = createVisualState(graph, { ...initial, ...state, cameraKind: ORTHOGRAPHIC });
+                  const perspective = createVisualState(graph, { ...initial, ...state, cameraKind: PERSPECTIVE });
+                  const orthographicScene = buildScene(graph, orthographic);
+                  const perspectiveScene = buildScene(graph, perspective);
+                  const differences = sceneDifferencePaths(orthographicScene, perspectiveScene);
+                  assertSceneCameraParity(differences);
+                  comparisons.push({ state, differences });
+                  controlScenes ??= { orthographic: orthographicScene, perspective: perspectiveScene };
+                }
+              }
+            }
+          }
+        }
+        if (comparisons.length !== P2_SCENE_PARITY_COMBINATION_COUNT || controlScenes === undefined) {
+          throw new Error(`P2 scene parity swept ${comparisons.length} combinations instead of ${P2_SCENE_PARITY_COMBINATION_COUNT}`);
+        }
+        const negativeControl = perturbSceneChannel(controlScenes.perspective);
         return {
-          differences,
-          negativeControlOutput: failingControlOutput(() => assertSceneCameraParity(sceneDifferencePaths(orthographicScene, negativeControl))),
+          combinations: comparisons.length,
+          axes: {
+            morphology: P2_MORPHOLOGIES,
+            palette: P2_PALETTES,
+            temperature: P2_TEMPERATURES,
+            theme: P2_THEMES,
+            lodBand: P2_LOD_BANDS,
+          },
+          comparisons,
+          negativeControlOutput: failingControlOutput(() => assertSceneCameraParity(sceneDifferencePaths(controlScenes.orthographic, negativeControl))),
         };
       },
       async renderLegalState(renderer: ParityRenderer, stateIndex: number): Promise<RenderedStatePixelWitness> {

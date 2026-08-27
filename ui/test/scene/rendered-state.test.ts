@@ -6,7 +6,7 @@ import type { EngineGraph, RenderedStateCarrier, VisualGraph } from "#engine/con
 import { assertVisualGraphFieldRegister, createRenderedStateCarrier } from "#engine/contract.ts";
 import { MICRO, resolvedMaterial } from "#engine/lod.ts";
 import { applyMorphology, STELLAR } from "#engine/morphology.ts";
-import { RENDERED } from "#engine/partition.ts";
+import { INSPECTED, RENDERED } from "#engine/partition.ts";
 import { relativeLuminance, resolveTokens } from "#engine/tokens.ts";
 import type { OklchToken } from "#engine/tokens.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
@@ -16,6 +16,7 @@ import {
 } from "#scene/build.ts";
 import {
   applyRenderedStateChannel,
+  assertExactRenderedCarrierDomain,
   assertInjectiveRenderedStateCalibration,
   legalRenderedCombinations,
   renderedStateChannel,
@@ -115,6 +116,30 @@ test("legal rendered combinations derive their axes from the vocabulary provider
   const outsideVocabularyControlOutput = captureFailure(() => createRenderedStateCarrier([added]));
   assert.match(outsideVocabularyControlOutput, /must name a pinned RENDERED member/);
   process.stdout.write(`rendered-domain contract vocabulary control observed: ${outsideVocabularyControlOutput}\n`);
+});
+
+test("legal rendered combinations exactly equal every carrier admitted by the contract authority", () => {
+  const graph = sceneFixtureGraph();
+  const nodeKinds = governedKinds("NodeKind");
+  const edgeKinds = governedKinds("EdgeKind");
+  assert.deepEqual([...new Set(graph.nodes.map((node) => node.kind))].sort(), [...nodeKinds].sort());
+  assert.deepEqual([...new Set(graph.edges.map((edge) => edge.kind))].sort(), [...edgeKinds].sort());
+
+  const generated = legalRenderedCombinations();
+  const authorityAdmitted = authorityAdmittedRenderedCombinations(graph, nodeKinds, edgeKinds);
+  assert.doesNotThrow(() => assertExactRenderedCarrierDomain(generated, authorityAdmitted));
+  process.stdout.write(
+    `rendered-domain exact authority observed: generated=${generated.length}, authority=${authorityAdmitted.length}, nodeKinds=${nodeKinds.length}, edgeKinds=${edgeKinds.length}\n`,
+  );
+
+  const removed = generated.slice(0, -1);
+  assert.equal(removed.length, generated.length - 1);
+  const shrinkControlOutput = captureFailure(
+    () => assertExactRenderedCarrierDomain(removed, authorityAdmitted),
+  );
+  assert.match(shrinkControlOutput, /does not exactly match contract authority: missing=/);
+  assert.match(shrinkControlOutput, /BridgeDisposition:undetermined\+EpistemicClass:speculative/);
+  process.stdout.write(`rendered-domain shrink control observed: ${shrinkControlOutput}\n`);
 });
 
 test("rendered calibration injectivity is explicit and memoized off the hot path", () => {
@@ -354,6 +379,68 @@ function expectedNonNullCarrierCount(): number {
   const bridgeCount = RENDERED.filter((state) => state.enumType === "BridgeDisposition").length;
   const epistemicCount = RENDERED.filter((state) => state.enumType === "EpistemicClass").length;
   return temporalCount + (bridgeCount * epistemicCount);
+}
+
+function governedKinds(enumType: "NodeKind" | "EdgeKind"): readonly string[] {
+  return INSPECTED.filter((state) => state.enumType === enumType).map((state) => state.member);
+}
+
+function authorityAdmittedRenderedCombinations(
+  graph: VisualGraph,
+  nodeKinds: readonly string[],
+  edgeKinds: readonly string[],
+): readonly RenderedStateCarrier[] {
+  const admitted = new Map<string, RenderedStateCarrier>();
+  const candidates = candidateRenderedCombinations();
+  for (const [element, kinds] of [["node", nodeKinds], ["edge", edgeKinds]] as const) {
+    for (const kind of kinds) {
+      assert.ok(
+        (element === "node" ? graph.nodes : graph.edges).some((item) => item.kind === kind),
+        `authority enumeration is missing governed ${element} kind ${kind}`,
+      );
+      for (const carrier of candidates) {
+        try {
+          assertVisualGraphFieldRegister(contractGraphWithKindCarrier(graph, element, kind, carrier));
+          admitted.set(renderedCarrierKey(carrier), carrier);
+        } catch {
+          // Rejection is the authority decision being enumerated.
+        }
+      }
+    }
+  }
+  return [...admitted.values()];
+}
+
+function candidateRenderedCombinations(): readonly RenderedStateCarrier[] {
+  const singletons = RENDERED.map((state) => createRenderedStateCarrier([state]));
+  const pairs = RENDERED.flatMap((first) => RENDERED
+    .filter((second) => second.enumType !== first.enumType)
+    .map((second) => createRenderedStateCarrier([first, second])));
+  return [null, ...singletons, ...pairs];
+}
+
+function contractGraphWithKindCarrier(
+  graph: VisualGraph,
+  element: "node" | "edge",
+  kind: string,
+  carrier: RenderedStateCarrier,
+): unknown {
+  if (element === "node") {
+    return {
+      ...graph,
+      nodes: graph.nodes.map((node) => node.kind === kind ? { ...node, rendered: carrier } : node),
+    };
+  }
+  return {
+    ...graph,
+    edges: graph.edges.map((edge) => edge.kind === kind ? { ...edge, rendered: carrier } : edge),
+  };
+}
+
+function renderedCarrierKey(carrier: RenderedStateCarrier): string {
+  return carrier === null
+    ? "null"
+    : carrier.map((state) => `${state.enumType}:${state.member}`).join("+");
 }
 
 function assertContractCarrierRules(domain: readonly RenderedStateCarrier[], graph: VisualGraph): void {

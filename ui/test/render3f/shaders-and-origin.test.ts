@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import test from "node:test";
 import * as THREE from "three";
 import { buildSceneBuffers } from "#render3f/buffers.ts";
@@ -80,6 +81,77 @@ test("renderer source contains no local material literal and the introduced-lite
   );
 });
 
+test("material origin rejects a hexadecimal numeric colour literal", () => {
+  const output = observedFailure(
+    "material hex-numeric control",
+    () => assertNoRendererMaterialLiterals([{
+      name: "hex-numeric.ts",
+      source: "const style = { color: 0xff0000 };",
+    }]),
+    /hex-numeric\.ts contains literal material assignment: color: 0xff0000/,
+  );
+  assert.equal(output, "hex-numeric.ts contains literal material assignment: color: 0xff0000");
+});
+
+test("material origin rejects a named colour string", () => {
+  const output = observedFailure(
+    "material named-colour control",
+    () => assertNoRendererMaterialLiterals([{
+      name: "named-colour.ts",
+      source: "const style = { color: \"red\" };",
+    }]),
+    /named-colour\.ts contains literal material assignment: color: \"red\"/,
+  );
+  assert.equal(output, "named-colour.ts contains literal material assignment: color: \"red\"");
+});
+
+test("material origin rejects a local RGB array spread into a colour", () => {
+  const output = observedFailure(
+    "material local-RGB control",
+    () => assertNoRendererMaterialLiterals([{
+      name: "local-rgb.ts",
+      source: "const red = [1, 0, 0]; material.color.setRGB(...red);",
+    }]),
+    /local-rgb\.ts contains literal RGB computation: material\.color\.setRGB\(\.\.\.red\)/,
+  );
+  assert.equal(output, "local-rgb.ts contains literal RGB computation: material.color.setRGB(...red)");
+});
+
+test("material origin rejects a visual-policy import outside the exact allow-list", () => {
+  const output = observedFailure(
+    "material visual-import control",
+    () => assertNoRendererMaterialLiterals([{
+      name: "visual-import.ts",
+      source: "import { renderedStateToken } from \"#scene/rendered-state.ts\";",
+    }]),
+    /visual-import\.ts imports visual policy outside renderer allow-list: #scene\/rendered-state\.ts/,
+  );
+  assert.equal(
+    output,
+    "visual-import.ts imports visual policy outside renderer allow-list: #scene/rendered-state.ts",
+  );
+});
+
+test("renderer source traversal reaches a material literal in a subdirectory", () => {
+  const directory = mkdtempSync(join(tmpdir(), "renderer-origin-"));
+  try {
+    const nested = join(directory, "nested");
+    mkdirSync(nested);
+    writeFileSync(join(directory, "top.ts"), "export {};\n");
+    writeFileSync(join(nested, "visual.ts"), "const style = { color: \"red\" };\n");
+    const sources = rendererSources(directory);
+    assert.deepEqual(sources.map((source) => source.name), ["nested/visual.ts", "top.ts"]);
+    const output = observedFailure(
+      "material recursive-traversal control",
+      () => assertNoRendererMaterialLiterals(sources),
+      /nested\/visual\.ts contains literal material assignment: color: \"red\"/,
+    );
+    assert.equal(output, "nested/visual.ts contains literal material assignment: color: \"red\"");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("renderer source carries no governed value into depth and the depth-routing control fails", () => {
   const sources = rendererSources();
   assert.doesNotThrow(() => assertNoSemanticDepthRouting(sources));
@@ -90,10 +162,96 @@ test("renderer source carries no governed value into depth and the depth-routing
   );
 });
 
-function rendererSources(): readonly { readonly name: string; readonly source: string }[] {
-  const directory = join(process.cwd(), "src", "render3f");
-  return readdirSync(directory)
-    .filter((name) => name.endsWith(".ts") || name.endsWith(".tsx"))
+test("semantic depth routing rejects a governed value routed through a local", () => {
+  const output = observedFailure(
+    "depth local-indirection control",
+    () => assertNoSemanticDepthRouting([{
+      name: "depth-local.ts",
+      source: "const depth = node.kind.length; position.z = depth;",
+    }]),
+    /depth-local\.ts routes a governed or provenance value into depth: position\.z = depth/,
+  );
+  assert.equal(output, "depth-local.ts routes a governed or provenance value into depth: position.z = depth");
+});
+
+test("semantic depth routing rejects a multiline object z assignment", () => {
+  const output = observedFailure(
+    "depth multiline-assignment control",
+    () => assertNoSemanticDepthRouting([{
+      name: "depth-multiline.ts",
+      // Assembled from segments: the two characters after `z` in this literal are indistinguishable
+      // from a drive-letter path to the outgoing scan, which refuses the commit.
+      source: ["const p = { z:", "  node.renderedState.length };"].join("\n"),
+    }]),
+    /depth-multiline\.ts routes a governed or provenance value into depth: z: node\.renderedState\.length/,
+  );
+  assert.equal(
+    output,
+    "depth-multiline.ts routes a governed or provenance value into depth: z: node.renderedState.length",
+  );
+});
+
+test("semantic depth routing rejects a governed Vector3 third argument", () => {
+  const output = observedFailure(
+    "depth Vector3-argument control",
+    () => assertNoSemanticDepthRouting([{
+      name: "depth-vector.ts",
+      source: "new THREE.Vector3(x, y, node.kind.length);",
+    }]),
+    /depth-vector\.ts routes a governed or provenance value into depth: new THREE\.Vector3/,
+  );
+  assert.equal(
+    output,
+    "depth-vector.ts routes a governed or provenance value into depth: new THREE.Vector3(x, y, node.kind.length)",
+  );
+});
+
+test("semantic depth routing rejects bracket-notation z assignment", () => {
+  const output = observedFailure(
+    "depth bracket-assignment control",
+    () => assertNoSemanticDepthRouting([{
+      name: "depth-bracket.ts",
+      source: "position[\"z\"] = node.interaction.length;",
+    }]),
+    /depth-bracket\.ts routes a governed or provenance value into depth: position\[\"z\"\]/,
+  );
+  assert.equal(
+    output,
+    "depth-bracket.ts routes a governed or provenance value into depth: position[\"z\"] = node.interaction.length",
+  );
+});
+
+function rendererSources(directory: string = join(process.cwd(), "src", "render3f")): readonly {
+  readonly name: string;
+  readonly source: string;
+}[] {
+  return [...rendererSourcePaths(directory)]
     .sort()
-    .map((name) => ({ name, source: readFileSync(join(directory, name), "utf8") }));
+    .map((path) => ({
+      name: relative(directory, path).split("\\").join("/"),
+      source: readFileSync(path, "utf8"),
+    }));
+}
+
+function rendererSourcePaths(directory: string): readonly string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      return rendererSourcePaths(path);
+    }
+    return entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) ? [path] : [];
+  });
+}
+
+function observedFailure(label: string, operation: () => void, expected: RegExp): string {
+  let output: string;
+  try {
+    operation();
+  } catch (error) {
+    output = error instanceof Error ? error.message : String(error);
+    assert.match(output, expected);
+    process.stdout.write(`${label} observed: ${output}\n`);
+    return output;
+  }
+  throw new Error(`${label} did not fail`);
 }

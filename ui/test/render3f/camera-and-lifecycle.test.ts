@@ -179,18 +179,11 @@ test("world-anchor witnesses read the mounted buffer copy rather than the handed
   assert.equal(sceneNode.position.x, sceneX);
 });
 
-test("resource counts remain constant across camera switches and reach zero after disposal", () => {
-  const scenes = resolvedCameraScenes();
-  const live = new LiveSceneState(scenes, ORTHOGRAPHIC, cameraKindCount());
+test("resource registry disposes registered resources exactly once", () => {
   const registry = new ResourceRegistry();
   const geometry = registry.registerGeometry(new THREE.BufferGeometry());
   const material = registry.registerMaterial(new THREE.ShaderMaterial());
   const texture = registry.registerTexture(new THREE.Texture());
-  const before = registry.readRetainedResources(1);
-  for (let index = 0; index < 32; index += 1) {
-    live.setCameraKind(index % cameraKindCount() === 0 ? ORTHOGRAPHIC : PERSPECTIVE);
-    assert.deepEqual(registry.readRetainedResources(1), before);
-  }
   let geometryDisposals = 0;
   let materialDisposals = 0;
   let textureDisposals = 0;

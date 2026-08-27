@@ -36,11 +36,12 @@ are admitted, the second downward as citations get more specific — and a numbe
 beside a list that changes is the staleness this document exists to catch. An earlier draft of this
 very paragraph stated one of them and it went stale within the hour. **The counts that must not drift are
 enforced instead of printed.** The number of defects named below is asserted against the table it
-counts. So is everything the document publishes about how two governed states combine into one
-rendered value — the offsets it quotes, every row of that table, the pair it names as identical, and
-the spelled count of collisions — each compared against what the code actually produces, so that
-editing a constant in the renderer's calibration turns this document red rather than leaving a
-true-looking sentence behind.
+counts. So is everything the document publishes about the current composition of governed states
+into rendered values — every carrier and value in the derived table, its cardinality, and its
+contiguous band — each compared against what the renderer actually produces, so that changing its
+composition or a calibration constant turns this document red rather than leaving a true-looking
+sentence behind. The old arithmetic is retained below as labelled history, not checked as current
+behaviour.
 
 ## The rule this document applies
 
@@ -267,7 +268,7 @@ judgement sits on top of those facts and is offered as a judgement.
 ### Candidate — `EpistemicClass`
 
 - **Proposed boundary:** `EpistemicClass` at `src/nous_os/discovery.py:79`, with `EXPLICIT`, `DERIVED` and `SPECULATIVE`, carried into projections at `src/nous_os/projection.py:455` and into the drawing layer at `ui/src/engine/contract.ts:79` as one of the three governed rendered vocabularies.
-- **Evidence the boundary exists:** the **type** survives three layers unchanged. It is a member of the rubric a proposed link is judged against; it is one of the four predicates an omission policy admits on; and it is one of only three enumerations in the partition the code calls **persistent** — the states a drawing may encode continuously, of which this is one. The system pins fourteen in two sets it keeps **disjoint** and refuses to let overlap: those three, and eleven reserved for inspection. **Two clarifications, because an earlier draft of this bullet overstated both halves.** The drawing layer is not restricted to three enumerations in total — the field allow-list also lets it read an element's `kind`, which is a governed `NodeKind` or `EdgeKind` member. And the eleven are not "never drawn": `NodeKind` and `EdgeKind` reach the screen as label text. The real distinction the two sets draw is between states a rendering may encode **persistently, in a visual channel** and states surfaced **on inspection**, which is what the code's own names for them say. **What does not survive the third layer is the distinction, and the reason is arithmetic.** A bridge element carries two governed states at once — a disposition and an epistemic class — and the renderer averages their two lightness offsets into one. With the shipping offsets, the **nine** legal combinations land on only **five** distinct values: `accepted`+`derived` and `rejected`+`explicit` produce the identical result, and two further groups collide in the same way — the table in *Known defects in the layers below* names all three. Two elements in different semantic states are then byte-identical on screen, at every zoom, palette and theme. This is recorded in *Known defects in the layers below* rather than asserted loosely, and it is stated here because citing "survives three layers" as evidence for the *boundary* while the distinction collapses at the last one would be exactly the overclaim this document exists to avoid. The boundary is real in the two layers that carry meaning; the third is where it is currently lost.
+- **Evidence the boundary exists:** the **type** survives three layers unchanged. It is a member of the rubric a proposed link is judged against; it is one of the four predicates an omission policy admits on; and it is one of only three enumerations in the partition the code calls **persistent** — the states a drawing may encode continuously, of which this is one. The system pins fourteen in two sets it keeps **disjoint** and refuses to let overlap: those three, and eleven reserved for inspection. **Two clarifications, because an earlier draft of this bullet overstated both halves.** The drawing layer is not restricted to three enumerations in total — the field allow-list also lets it read an element's `kind`, which is a governed `NodeKind` or `EdgeKind` member. And the eleven are not "never drawn": `NodeKind` and `EdgeKind` reach the screen as label text. The real distinction the two sets draw is between states a rendering may encode **persistently, in a visual channel** and states surfaced **on inspection**, which is what the code's own names for them say. **The distinction also survives the third layer.** A bridge element carries a disposition and an epistemic class at once; `renderedStateChannel` at `ui/src/scene/rendered-state.ts:49` composes them positionally and injectively. Across the three assertion carriers and all nine bridge carriers, the **twelve** legal governed combinations resolve to **twelve** distinct lightness values in one contiguous band: the bridge values begin immediately after the assertion band. The criterion derives that whole domain from the pinned vocabulary and exercises the renderer's channel, rather than sampling a diagonal. The previous mean and its five-value collapse remain recorded in *Known defects in the layers below* as repaired history, because that was the state when this argument was first qualified; they are no longer evidence that the boundary is lost in the drawing layer.
 - **Intended meaning:** an epistemic class says *how a statement is known*, not how strongly it is believed. Explicit means the source said it. Derived means it follows. Speculative means it was proposed and is not established.
 - **Why the mapping is accurate or inaccurate:** accurate, and it is the clearest case in the codebase of a name that arrived with its structure. The distinction is genuinely epistemic — three ways of standing to evidence — and it is expressed as three named members rather than a number, which is the same commitment the system makes everywhere else. The one risk is that a reader takes the three members for an ordering. They are not ordered, nothing compares them, and the neighbouring enumerations carry the same warning in their own docstrings.
 - **Structural change required:** none. The term is the type's name.
@@ -489,16 +490,40 @@ to rediscover them.
 
 ## Known defects in the layers below
 
-Two defects were found in the rendering layer while assembling this document. **Neither is repaired
-here**, for the reason given in the previous section: a repair is a code change and belongs in a
-revision reviewed as one. They are published because two arguments above depend on them, and a
-document that points at a record which does not exist is doing the thing this one exists to stop.
+Two defects were found around the rendering layer while assembling this document. Both have since
+been repaired, but remain published because a repaired defect is still evidence: it explains the
+qualification made above and records the failure mode a future change must not reintroduce.
 
-**A bridge's two governed states are averaged into one visual value, and nine combinations become
-five.** A bridge element carries a disposition and an epistemic class at once. The renderer takes
-the arithmetic mean of their two lightness offsets. With the shipping offsets — `-24 / -20 / -16`
-for the dispositions and `-12 / -8 / -4` for the epistemic classes — the nine legal combinations
-land on five distinct values:
+**Repaired — two governed bridge states now compose positionally and injectively.** A bridge element
+carries a disposition and an epistemic class at once. `renderedStateChannel` at
+`ui/src/scene/rendered-state.ts:49` calls `composeRenderedStateChannel` at
+`ui/src/scene/rendered-state.ts:121`; the resulting channel is positional, not an arithmetic mean.
+The criterion exercises every non-null carrier derived by `legalRenderedCombinations` at
+`ui/src/scene/rendered-state.ts:14`, from the pinned vocabulary. The **twelve** legal governed
+combinations resolve to **twelve** distinct values, contiguous with the assertion band:
+
+<!-- rendered-state:current-channel -->
+    -36   established
+    -32   excluded
+    -28   undetermined
+    -24   accepted+explicit
+    -20   accepted+derived
+    -16   accepted+speculative
+    -12   rejected+explicit
+     -8   rejected+derived
+     -4   rejected+speculative
+      0   undetermined+explicit
+      4   undetermined+derived
+      8   undetermined+speculative
+<!-- /rendered-state:current-channel -->
+
+The first three values are the assertion band; the first bridge value follows it at the same step.
+There is no pair of distinct governed carriers with the same channel value.
+
+**Historical derivation — before that repair, nine bridge combinations became five.** This was a
+real defect. The former renderer took the arithmetic mean of the two lightness offsets. With the
+then-shipping offsets — `-24 / -20 / -16` for dispositions and `-12 / -8 / -4` for epistemic
+classes — the nine bridge combinations landed on five distinct values:
 
     -18   accepted+explicit
     -16   accepted+derived      rejected+explicit
@@ -506,22 +531,18 @@ land on five distinct values:
     -12   rejected+speculative  undetermined+derived
     -10   undetermined+speculative
 
-Two elements in genuinely different semantic states are then **byte-identical on screen**, at every
-zoom level, palette and theme. This is not a rounding artefact and it is not palette-dependent; it
-is what taking a mean of two independent axes does.
+That derivation remains correct **about the old arithmetic**, and explains why different semantic
+states were then byte-identical on screen. It is not a description of the current renderer.
 
-**The check that should catch it samples three combinations that cannot collide with each other.** A rendering
-criterion asserts pairwise separation over the legal state domains and enumerates six: the three
-temporal states, plus three bridge combinations. Those three are `accepted+explicit`,
-`rejected+derived` and `undetermined+speculative` — precisely the diagonal, whose values are `-18`,
-`-14` and `-10`, the three most widely separated of the five. **Every colliding pair is outside the
-sample.** The criterion is not wrong about what it measures; it measures a subspace in which the
-property holds, and reports it as coverage of every legal domain.
+**Repaired — the criterion no longer samples a diagonal.** It now enumerates the whole derived
+domain from the pinned vocabulary — the three assertion carriers and the nine bridge carriers — and
+exercises the renderer's actual channel for every one. It does not reproduce an arithmetic in the
+test. Changing the composition therefore changes what the criterion requires this document to say.
 
-**Why they are published here rather than only fixed later.** The first is cited above as the reason
-one adopted term's evidence is qualified. The second is the more general lesson and it is the same
-one that produced this document's own checks: a measurement that samples where a property holds is
-worse than no measurement, because it is believed.
+**Why they remain published after repair.** The first was cited above when it was still a reason to
+qualify an adopted term's evidence. The second remains the general lesson: a measurement that
+samples where a property holds is worse than no measurement, because it is believed. The repaired
+criterion now records the full domain instead.
 
 ---
 
@@ -563,9 +584,10 @@ distinguishes nothing. It is a true statement that proves less than it appears t
 
 So the honest form of the argument is narrower than the one first written here. A morphology
 cannot change an element's identity or its connections. Whether a morphology preserves how well a
-governed state can be *told apart on screen* is a separate property, it is **not** checked, and it
-does not hold — see *Known defects in the layers below*, in this document, where the failure is
-described with its cause rather than gestured at.
+governed state can be *told apart on screen* is a separate property. The earlier statement that the
+governed channel was unchecked and failed recorded the now-repaired mean; the current criterion
+checks the whole derived carrier domain and its values are distinct. That fact does not follow from
+the morphology's structural invariance, so it remains a separate checked property.
 
 The conclusion survives the correction: the excluded thing is an interpretive layer that assigns
 meaning to elements, and none exists here. **It rests on the shape of the code that applies a

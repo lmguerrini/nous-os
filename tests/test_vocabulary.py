@@ -26,7 +26,7 @@ running it against a small, deliberately broken fixture under
 from __future__ import annotations
 
 import ast
-import math
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -1174,8 +1174,8 @@ def test_adoption_changed_no_structure() -> None:
 def defect_count_offences(text: str) -> list[str]:
     """The prose count of published defects agrees with the table it counts.
 
-    This count is enforced rather than printed, as are the ones the collision
-    check binds. The counts that stay unpinned move on purpose — a limitations list should grow — and pinning
+    This count is enforced rather than printed, as are the ones the rendered-state
+    channel check binds. The counts that stay unpinned move on purpose — a limitations list should grow — and pinning
     those would punish the honesty they exist to record. This one must not
     move independently of its own table: a row added without the sentence
     changing leaves the document contradicting itself, which is precisely the
@@ -1196,187 +1196,164 @@ def defect_count_offences(text: str) -> list[str]:
     return offences
 
 
-_DELTA_ASSIGNMENT = re.compile(r"(\w*(?:Accepted|Rejected|Undetermined|Explicit|Derived|Speculative))LightnessDeltaPermille:\s*(-?\d+)")
+_RENDERED_STATE_PROBE = """
+import { DEFAULT_CALIBRATION } from "./src/engine/calibration.ts";
+import { legalRenderedCombinations, renderedStateChannel } from "./src/scene/rendered-state.ts";
 
-#: The two governed vocabularies a bridge element carries at once. Named here
-#: because the collision the document publishes is a property of THIS pairing,
-#: and a future carrier of a different shape must not silently reuse this check.
-_BRIDGE_CARRIER_PREFIXES = ("bridge", "epistemic")
+const channels = legalRenderedCombinations()
+  .filter((carrier) => carrier !== null)
+  .map((carrier) => ({
+    carrier: carrier.map(({ enumType, member }) => `${enumType}.${member}`),
+    value: renderedStateChannel(carrier, DEFAULT_CALIBRATION)?.lightnessDeltaPermille,
+  }));
+
+process.stdout.write(JSON.stringify(channels));
+""".strip()
+
+_CURRENT_RENDERED_STATE_OPEN = "<!-- rendered-state:current-channel -->"
+_CURRENT_RENDERED_STATE_CLOSE = "<!-- /rendered-state:current-channel -->"
+_PUBLISHED_RENDERED_STATE_ROW = re.compile(r"^ +(-?\d+)   ([a-z+]+)$", re.MULTILINE)
 
 
-def _rendered_state_deltas(repo_root: Path) -> dict[str, int]:
-    """The rendered-state lightness offsets, read out of the shipping calibration."""
-    calibration = (repo_root / "ui" / "src" / "engine" / "calibration.ts").read_text(encoding="utf-8")
-    return {match.group(1): int(match.group(2)) for match in _DELTA_ASSIGNMENT.finditer(calibration)}
+def _rendered_state_channel_rows(repo_root: Path) -> list[tuple[int, str]]:
+    """Exercise the renderer's derived legal domain and its exported composition.
 
-
-def _rendered_state_collision_groups(repo_root: Path) -> dict[int, list[str]]:
-    """The distinct rendered values the nine bridge combinations land on.
-
-    Derived from the shipping calibration and the renderer's own averaging,
-    never from the document. The document publishes this table and a count of
-    the groups that collide; both are then checked against what the code
-    actually produces, which is the only form in which a published arithmetic
-    claim stays true after someone edits a number.
+    This deliberately does not duplicate positional arithmetic in Python. The
+    probe bundles `ui/src/scene/rendered-state.ts`, calls
+    `legalRenderedCombinations`, and resolves each non-null carrier through
+    `renderedStateChannel`. Changing either the renderer's domain or its
+    composition therefore changes the rows the document is required to state.
     """
-    calibration = (repo_root / "ui" / "src" / "engine" / "calibration.ts").read_text(encoding="utf-8")
-    deltas: dict[str, int] = {}
-    for match in _DELTA_ASSIGNMENT.finditer(calibration):
-        deltas[match.group(1)] = int(match.group(2))
-    first, second = _BRIDGE_CARRIER_PREFIXES
-    dispositions = {name: value for name, value in deltas.items() if name.startswith(first)}
-    classes = {name: value for name, value in deltas.items() if name.startswith(second)}
-    groups: dict[int, list[str]] = {}
-    for disposition, left in sorted(dispositions.items()):
-        for epistemic, right in sorted(classes.items()):
-            # The renderer averages the two members' deltas; see renderedStateToken.
-            # Math.round, not Python's round: they disagree on half-integers, and the
-            # docstring claims this reproduces the renderer's averaging. With today's
-            # even-sum offsets they never diverge; one odd offset and they would.
-            mean = math.floor((left + right) / 2 + 0.5)
-            groups.setdefault(mean, []).append(f"{disposition}+{epistemic}")
-    return groups
+    ui_root = repo_root / "ui"
+    esbuild = ui_root / "node_modules" / ".bin" / "esbuild"
+    if not esbuild.is_file():
+        raise AssertionError("the rendered-state document guard requires ui/node_modules/.bin/esbuild")
+
+    bundled = subprocess.run(
+        [
+            str(esbuild),
+            "--bundle",
+            "--platform=node",
+            "--format=esm",
+            "--target=node24",
+            "--sourcefile=vocabulary-rendered-state-probe.ts",
+        ],
+        cwd=ui_root,
+        input=_RENDERED_STATE_PROBE,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if bundled.returncode != 0:
+        raise AssertionError(f"could not bundle the rendered-state probe: {bundled.stderr.strip()}")
+
+    executed = subprocess.run(
+        ["node", "--input-type=module"],
+        cwd=ui_root,
+        input=bundled.stdout,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if executed.returncode != 0:
+        raise AssertionError(f"could not execute the rendered-state probe: {executed.stderr.strip()}")
+    try:
+        output = json.loads(executed.stdout)
+    except json.JSONDecodeError as error:
+        raise AssertionError(f"the rendered-state probe did not emit JSON: {executed.stdout!r}") from error
+    if not isinstance(output, list):
+        raise AssertionError("the rendered-state probe did not emit a carrier list")
+
+    rows: list[tuple[int, str]] = []
+    for item in output:
+        if not isinstance(item, dict):
+            raise AssertionError(f"the rendered-state probe emitted a non-object row: {item!r}")
+        carrier, value = item.get("carrier"), item.get("value")
+        if not isinstance(carrier, list) or not carrier or not all(isinstance(member, str) for member in carrier):
+            raise AssertionError(f"the rendered-state probe emitted an invalid carrier: {carrier!r}")
+        if not isinstance(value, int):
+            raise AssertionError(f"the rendered-state probe emitted a non-integer channel: {value!r}")
+        members = []
+        for member in carrier:
+            _, separator, short_name = member.partition(".")
+            if not separator or not short_name:
+                raise AssertionError(f"the rendered-state probe emitted an unqualified member: {member!r}")
+            members.append(short_name)
+        rows.append((value, "+".join(members)))
+    return rows
 
 
-_PUBLISHED_COLLISION_ROW = re.compile(r"^ {4}(-\d+)   ([a-z+ ]+)$", re.MULTILINE)
-_PUBLISHED_OFFSETS = re.compile(r"`(-\d+) / (-\d+) / (-\d+)`")
+def _published_rendered_state_rows(text: str) -> list[tuple[int, str]]:
+    start = text.find(_CURRENT_RENDERED_STATE_OPEN)
+    end = text.find(_CURRENT_RENDERED_STATE_CLOSE)
+    if start == -1 or end == -1 or end < start:
+        return []
+    block = text[start + len(_CURRENT_RENDERED_STATE_OPEN) : end]
+    return [(int(value), carrier) for value, carrier in _PUBLISHED_RENDERED_STATE_ROW.findall(block)]
 
 
-def _short_name(qualified: str) -> str:
-    """`bridgeAccepted` -> `accepted`. The document names members, not fields."""
-    for prefix in _BRIDGE_CARRIER_PREFIXES:
-        if qualified.startswith(prefix):
-            return qualified[len(prefix):].lower()
-    return qualified.lower()
-
-
-def rendered_state_collision_offences(text: str, repo_root: Path) -> list[str]:
-    """The document's published collision claim matches the shipping calibration.
-
-    Everything the document publishes about this is compared against what the
-    code produces: the two offset triples it quotes, every row of its table
-    including which combinations share each value, the pair it names in prose
-    as producing the identical result, and the spelled count of colliding
-    groups. An earlier version of this function checked three scalars —
-    nine, five, and the group count — while its own docstring claimed it
-    checked the table. A review demonstrated that shifting every offset by the
-    same amount, or swapping two of them, left every published number false and
-    this check green. Comparing the counts is not comparing the claim.
-    """
-    groups = _rendered_state_collision_groups(repo_root)
-    if not groups:
-        return ["no rendered-state deltas were found in the calibration, so nothing was checked"]
-
+def rendered_state_channel_offences(text: str, repo_root: Path) -> list[str]:
+    """The document's current channel table matches the actual renderer output."""
+    actual = _rendered_state_channel_rows(repo_root)
+    published = _published_rendered_state_rows(text)
     offences: list[str] = []
-    derived = {
-        value: sorted(_short_name(part) for member in members for part in member.split("+"))
-        for value, members in groups.items()
-    }
-    derived_rows = {
-        value: sorted("+".join(_short_name(part) for part in member.split("+")) for member in members)
-        for value, members in groups.items()
-    }
 
-    # The two offset triples the prose quotes.
-    quoted = _PUBLISHED_OFFSETS.findall(text)
-    first, second = _BRIDGE_CARRIER_PREFIXES
-    actual = [
-        sorted({name: value for name, value in _rendered_state_deltas(repo_root).items() if name.startswith(prefix)}.values(), reverse=True)
-        for prefix in (first, second)
-    ]
-    if len(quoted) < 2:
-        offences.append("the document no longer quotes both offset triples, so neither was checked")
-    else:
-        for index, triple in enumerate(quoted[:2]):
-            published = sorted((int(part) for part in triple), reverse=True)
-            if published != actual[index]:
-                offences.append(
-                    f"the document quotes offsets {published} where the calibration has {actual[index]}"
-                )
+    if not published:
+        offences.append("the current rendered-state table is absent, so renderer output was not compared")
+    elif published != actual:
+        offences.append(f"the document's current rendered-state table is {published}; the renderer produces {actual}")
 
-    # Every row of the published table, value and membership.
-    published_rows: dict[int, list[str]] = {}
-    for value, members in _PUBLISHED_COLLISION_ROW.findall(text):
-        published_rows[int(value)] = sorted(members.split())
-    if not published_rows:
-        offences.append("the published collision table is absent, so the derived table was not compared")
-    else:
-        if set(published_rows) != set(derived_rows):
-            offences.append(
-                f"the published table lists values {sorted(published_rows)}; "
-                f"the calibration produces {sorted(derived_rows)}"
-            )
-        for value in sorted(set(published_rows) & set(derived_rows)):
-            if published_rows[value] != derived_rows[value]:
-                offences.append(
-                    f"at {value} the document lists {published_rows[value]}; "
-                    f"the calibration produces {derived_rows[value]}"
-                )
+    values = [value for value, _ in actual]
+    if len(actual) != 12 or len(set(values)) != 12:
+        offences.append(f"the renderer produces {len(actual)} governed carriers over {len(set(values))} values, not twelve injective values")
+    elif any(current - previous != 4 for previous, current in zip(values, values[1:])):
+        offences.append(f"the renderer's values are not one contiguous four-permille band: {values}")
 
-    # The pair the prose names as identical must actually be one.
-    named = re.search(r"`(\w+)`\+`(\w+)` and `(\w+)`\+`(\w+)` produce the identical result", text)
-    if named is None:
-        offences.append("the prose no longer names a colliding pair, so none was verified")
-    else:
-        left = "+".join(named.group(1, 2))
-        right = "+".join(named.group(3, 4))
-        together = [value for value, members in derived_rows.items() if left in members and right in members]
-        if not together:
-            offences.append(f"the document names {left} and {right} as identical; the calibration disagrees")
-
-    combinations = sum(len(members) for members in groups.values())
-    if combinations != 9 or len(groups) != 5:
-        offences.append(
-            f"the calibration now yields {combinations} combinations over {len(groups)} values; "
-            f"the document still says nine over five"
-        )
-    elif "the **nine** legal combinations land on only **five** distinct values" not in text:
-        offences.append("the document no longer states the nine-onto-five claim this check verifies")
-
-    colliding = [value for value, members in groups.items() if len(members) > 1]
-    further = len(colliding) - 1
-    spelled = {0: "no further groups", 1: "one further group", 2: "two further groups", 3: "three further groups"}
-    expected = spelled.get(further)
-    if expected is None:
-        offences.append(f"{further} further colliding groups has no spelled form to check")
-    else:
-        # Anchored, and the wrong spellings are refused rather than merely not required:
-        # an unanchored membership test passed while a contradicting sentence sat elsewhere.
-        if expected not in text:
-            offences.append(
-                f"the calibration yields {len(colliding)} colliding groups, so the document should say "
-                f"'{expected}' beside the one it names explicitly"
-            )
-        for count, phrase in spelled.items():
-            if count != further and phrase in text:
-                offences.append(f"the document also says '{phrase}', which the calibration contradicts")
+    current_claim = (
+        "The **twelve** legal governed\n"
+        "combinations resolve to **twelve** distinct values, contiguous with the assertion band"
+    )
+    if current_claim not in text:
+        offences.append("the document no longer states the twelve-value contiguous-band claim")
+    if (
+        "whole derived\n"
+        "domain from the pinned vocabulary"
+    ) not in text:
+        offences.append("the document no longer states that the criterion derives its whole domain from the pinned vocabulary")
+    if (
+        "It does not reproduce an arithmetic in the\n"
+        "test."
+    ) not in text:
+        offences.append("the document no longer states that the criterion exercises the renderer instead of copying arithmetic")
     return offences
 
 
-def test_the_collision_check_detects_a_falsified_table_row() -> None:
-    # The same function the real check calls, against the real calibration and a
-    # document whose table row lists the wrong combinations. Comparing counts
-    # would pass this; comparing the claim does not.
+def test_the_rendered_state_check_detects_a_falsified_table_row() -> None:
+    # The same source-bound function the real check calls, against a document
+    # whose current table lies about a carrier. The renderer remains the only
+    # source of the expected row.
     text = _document_text().replace(
-        "    -16   accepted+derived      rejected+explicit",
-        "    -16   accepted+speculative  undetermined+derived",
+        "    -20   accepted+derived",
+        "    -20   accepted+explicit",
         1,
     )
-    assert rendered_state_collision_offences(text, REPO_ROOT), "the control should have offended"
+    offences = rendered_state_channel_offences(text, REPO_ROOT)
+    assert offences, "the control should have offended"
+    print(f"rendered-state rebound control observed: {offences[0]}")
 
 
-def test_the_collision_check_detects_falsified_offsets() -> None:
-    text = _document_text().replace("`-24 / -20 / -16`", "`-24 / -20 / -17`", 1)
-    assert rendered_state_collision_offences(text, REPO_ROOT), "the control should have offended"
+def test_the_rendered_state_check_detects_a_falsified_channel_value() -> None:
+    text = _document_text().replace("    -20   accepted+derived", "    -21   accepted+derived", 1)
+    assert rendered_state_channel_offences(text, REPO_ROOT), "the control should have offended"
 
 
-def test_the_collision_check_detects_a_contradicting_spelled_count() -> None:
-    # An unanchored membership test passed while a contradicting sentence sat
-    # elsewhere. The wrong spellings are now refused, not merely not required.
+def test_the_rendered_state_check_detects_a_contradicting_spelled_count() -> None:
     text = _document_text().replace(
-        "two further groups", "two further groups, and three further groups elsewhere", 1
+        "The **twelve** legal governed\ncombinations resolve to **twelve** distinct values, contiguous with the assertion band",
+        "The **twelve** legal governed\ncombinations resolve to **eleven** distinct values, contiguous with the assertion band",
+        1,
     )
-    assert rendered_state_collision_offences(text, REPO_ROOT), "the control should have offended"
+    assert rendered_state_channel_offences(text, REPO_ROOT), "the control should have offended"
 
 
 def test_the_rooted_path_check_detects_a_home_relative_path() -> None:
@@ -1393,19 +1370,17 @@ def test_the_rooted_path_check_detects_a_drive_letter_path() -> None:
     assert rooted_path_offences(sample), "the control should have produced an offence"
 
 
-def test_the_published_collision_arithmetic_matches_the_calibration() -> None:
+def test_the_published_rendered_state_composition_matches_the_renderer() -> None:
     text = _document_text()
-    offences = rendered_state_collision_offences(text, REPO_ROOT)
+    offences = rendered_state_channel_offences(text, REPO_ROOT)
     assert not offences, "\n".join(offences)
 
 
-def test_the_collision_check_detects_a_count_that_has_drifted() -> None:
-    # The same function, against the real calibration and a document whose
-    # spelled count has been moved by one. This is the exact defect a review
-    # found here: the noun beside the numeral was rewritten and the numeral
-    # was not.
-    text = _document_text().replace("two further groups", "three further groups", 1)
-    offences = rendered_state_collision_offences(text, REPO_ROOT)
+def test_the_rendered_state_check_detects_a_count_that_has_drifted() -> None:
+    # The same source-bound function, against the real document with one
+    # cardinality moved. The table and the prose must agree with the renderer.
+    text = _document_text().replace("**twelve** distinct values", "**eleven** distinct values", 1)
+    offences = rendered_state_channel_offences(text, REPO_ROOT)
     assert offences, "the control should have produced an offence"
 
 

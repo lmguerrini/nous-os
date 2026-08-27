@@ -154,3 +154,51 @@ export function assertSceneCameraParity(differences: readonly string[]): void {
     throw new Error("P2 camera-kind control did not produce the pinned camera.kind difference");
   }
 }
+
+/** This names the tracked-tree calculation shared by every generated evidence artifact. */
+export const TRACKED_TREE_IDENTITY_ALGORITHM = "git ls-files -s | shasum -a 256";
+
+/** This binds measured output to the tracked source tree before and after the measurement. */
+export type TrackedTreeIdentity = {
+  readonly algorithm: typeof TRACKED_TREE_IDENTITY_ALGORITHM;
+  readonly measuredSha256: string;
+  readonly completedSha256: string;
+  readonly stable: boolean;
+};
+
+/** This rejects an unparseable, unstable, or stale tree identity before an artifact can be certified. */
+export function assertTrackedTreeIdentity(
+  identity: TrackedTreeIdentity,
+  currentTreeSha256: string,
+  label: string,
+): void {
+  if (identity.algorithm !== TRACKED_TREE_IDENTITY_ALGORITHM) {
+    throw new Error(`${label} uses unexpected tracked-tree identity algorithm ${identity.algorithm}`);
+  }
+  if (!isSha256(identity.measuredSha256) || !isSha256(identity.completedSha256) || !isSha256(currentTreeSha256)) {
+    throw new Error(`${label} has an invalid tracked-tree SHA-256 identity`);
+  }
+  if (!identity.stable || identity.measuredSha256 !== identity.completedSha256) {
+    throw new Error(`${label} changed tracked tree while its output was being measured`);
+  }
+  if (identity.measuredSha256 !== currentTreeSha256) {
+    throw new Error(`${label} tracked-tree identity is stale: recorded ${identity.measuredSha256}, current ${currentTreeSha256}`);
+  }
+}
+
+/** This consumes a run verdict and its tree identity; neither a false verdict nor stale source is certifiable. */
+export function assertEvidenceArtifactCurrent(
+  passing: boolean,
+  identity: TrackedTreeIdentity,
+  currentTreeSha256: string,
+  label: string,
+): void {
+  if (!passing) {
+    throw new Error(`${label} run-level verdict is not passing`);
+  }
+  assertTrackedTreeIdentity(identity, currentTreeSha256, label);
+}
+
+function isSha256(value: string): boolean {
+  return /^[0-9a-f]{64}$/i.test(value);
+}

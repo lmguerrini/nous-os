@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { inflateSync } from "node:zlib";
 import { build } from "esbuild";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
@@ -19,8 +21,10 @@ import {
   assertGovernedPixelSampleLit,
   assertRendererCaptureIsolated,
   assertSceneCameraParity,
+  assertTrackedTreeIdentity,
+  TRACKED_TREE_IDENTITY_ALGORITHM,
 } from "#browser/parity-contract.ts";
-import type { GovernedPixelSample, RendererCaptureLayout } from "#browser/parity-contract.ts";
+import type { GovernedPixelSample, RendererCaptureLayout, TrackedTreeIdentity } from "#browser/parity-contract.ts";
 import { legalRenderedCombinations } from "#scene/index.ts";
 import type { RenderedStateCarrier } from "#engine/contract.ts";
 import type { SurfaceWitness } from "#engine/renderer-handle.ts";
@@ -46,10 +50,32 @@ import type {
 const PARITY_RENDERERS = ["sigma-2d", "r3f-2d", "r3f-3d"] as const satisfies readonly ParityRenderer[];
 
 type Status = "PASS" | "FAIL" | "NOT_RUN" | "UNKNOWN";
-type CheckName = "P1 surface parity" | "P2 semantic-channel parity" | "P3 governed-state separation" | "P4 interaction and provenance" | "P5 drawing and picking" | "P6 camera switch" | "P7 determinism" | "P8 non-colour encoding" | "full-app-smoke";
+type CheckName = "P1 surface parity" | "P2 semantic-channel parity" | "P3 governed-state separation" | "P4 interaction and provenance" | "P5 drawing and picking" | "P5 cross-renderer picking" | "P6 camera switch" | "P7 determinism" | "P8 non-colour encoding" | "full-app-smoke";
 type CheckKey = `${CheckName}/${ParityRenderer}`;
 type Rgb = readonly [number, number, number];
 type Deficiency = "deuteranopia" | "protanopia" | "tritanopia";
+
+type SceneCameraParityObservation = {
+  readonly combinations: number;
+  readonly axes: {
+    readonly morphology: readonly string[];
+    readonly palette: readonly string[];
+    readonly temperature: readonly string[];
+    readonly theme: readonly string[];
+    readonly lodBand: readonly string[];
+  };
+  readonly comparisons: readonly {
+    readonly state: {
+      readonly morphology: string;
+      readonly palette: string;
+      readonly temperature: string;
+      readonly theme: string;
+      readonly lodBand: string;
+    };
+    readonly differences: readonly string[];
+  }[];
+  readonly negativeControlOutput: string;
+};
 
 type PairwiseMatrix = {
   readonly labels: readonly string[];
@@ -106,15 +132,18 @@ type ParityRecord = {
   readonly threshold: unknown;
   readonly turnsRed: string;
   readonly commitSha: string;
+  readonly trackedTreeSha256: string;
   readonly control: ControlResult;
 };
 
 type ParityEvidence = {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly run: {
     readonly command: string;
     readonly commitSha: string;
     readonly observedAt: string;
+    readonly trackedTree: TrackedTreeIdentity;
+    readonly staleTreeControlOutput: string;
     readonly pageModule: {
       readonly path: string;
       readonly sha256: string;
@@ -154,6 +183,7 @@ const CHECK_RENDERERS: readonly { readonly checkName: CheckName; readonly render
   ...PARITY_RENDERERS.map((renderer) => ({ checkName: "P3 governed-state separation" as const, renderer })),
   ...PARITY_RENDERERS.map((renderer) => ({ checkName: "P4 interaction and provenance" as const, renderer })),
   ...PARITY_RENDERERS.map((renderer) => ({ checkName: "P5 drawing and picking" as const, renderer })),
+  { checkName: "P5 cross-renderer picking", renderer: "r3f-2d" },
   { checkName: "P6 camera switch", renderer: "r3f-2d" },
   ...PARITY_RENDERERS.map((renderer) => ({ checkName: "P7 determinism" as const, renderer })),
   ...PARITY_RENDERERS.map((renderer) => ({ checkName: "P8 non-colour encoding" as const, renderer })),
@@ -177,6 +207,8 @@ const CVD_MATRICES: Readonly<Record<Deficiency, readonly [Rgb, Rgb, Rgb]>> = {
     [0.004733, 0.691367, 0.303900],
   ],
 };
+
+const execFileAsync = promisify(execFile);
 
 
 function assertSurfaceParity(reference: SurfaceWitness, observed: SurfaceWitness, renderer: ParityRenderer): void {
@@ -239,10 +271,18 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
   page.on("pageerror", (error) => {
     consoleErrors.push(error.message);
   });
+  const measuredTreeSha256 = await currentTrackedTreeSha256();
   const commitSha = await currentCommitSha();
+  const staleTreeControlOutput = failingControlOutput(() => assertTrackedTreeIdentity({
+    algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
+    measuredSha256: "0".repeat(64),
+    completedSha256: "0".repeat(64),
+    stable: true,
+  }, measuredTreeSha256, "parity stale tracked-tree control"));
   const records = new Map<CheckKey, ParityRecord>();
+  const completedRecordKeys = new Set<CheckKey>();
   for (const { checkName, renderer } of CHECK_RENDERERS) {
-    records.set(checkKey(checkName, renderer), pendingRecord(checkName, renderer, commitSha));
+    records.set(checkKey(checkName, renderer), pendingRecord(checkName, renderer, commitSha, measuredTreeSha256));
   }
   let pageModuleSha = "unavailable";
   let servedPageModuleSha: string | null = null;
@@ -253,15 +293,24 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
     const failed = checks.filter((record) => record.status === "FAIL").length;
     const notRun = checks.filter((record) => record.status === "NOT_RUN").length;
     const unknown = checks.filter((record) => record.status === "UNKNOWN").length;
-    const bound = /^[0-9a-f]{40,64}$/i.test(commitSha)
+    const completedTreeSha256 = await currentTrackedTreeSha256();
+    const trackedTree: TrackedTreeIdentity = {
+      algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
+      measuredSha256: measuredTreeSha256,
+      completedSha256: completedTreeSha256,
+      stable: measuredTreeSha256 === completedTreeSha256,
+    };
+    const bound = trackedTree.stable
       && checks.length === CHECK_RENDERERS.length
-      && checks.every((record) => record.commitSha === commitSha);
+      && checks.every((record) => record.trackedTreeSha256 === measuredTreeSha256);
     const evidence: ParityEvidence = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       run: {
         command: COMMAND,
         commitSha,
         observedAt: new Date().toISOString(),
+        trackedTree,
+        staleTreeControlOutput,
         pageModule: { path: PAGE_MODULE_FILE, sha256: pageModuleSha, servedSha256: servedPageModuleSha },
       },
       summary: {
@@ -272,7 +321,7 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
         failed,
         notRun,
         unknown,
-        rule: "The parity run passes only when every required check is commit-bound and PASS; NOT_RUN and UNKNOWN are counted separately and never aggregate into PASS.",
+        rule: "The parity run passes only when every required check is bound to one stable tracked tree and PASS; NOT_RUN and UNKNOWN are counted separately and never aggregate into PASS.",
       },
       checks,
     };
@@ -283,9 +332,10 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
     renderer: ParityRenderer,
     body: () => Promise<{ readonly measured: unknown; readonly threshold: unknown; readonly turnsRed: string; readonly control: ControlResult }>,
   ): Promise<void> => {
+    const key = assertRecordKeyAvailable(completedRecordKeys, checkName, renderer);
     try {
       const result = await body();
-      records.set(checkKey(checkName, renderer), {
+      records.set(key, {
         checkName,
         renderer,
         status: "PASS",
@@ -293,10 +343,12 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
         threshold: result.threshold,
         turnsRed: result.turnsRed,
         commitSha,
+        trackedTreeSha256: measuredTreeSha256,
         control: result.control,
       });
+      completedRecordKeys.add(key);
     } catch (error: unknown) {
-      records.set(checkKey(checkName, renderer), {
+      records.set(key, {
         checkName,
         renderer,
         status: "FAIL",
@@ -306,8 +358,10 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
         threshold: "required measurement completed",
         turnsRed: "the renderer operation or assertion throws",
         commitSha,
+        trackedTreeSha256: measuredTreeSha256,
         control: { status: "NOT_RUN", output: "check stopped before its control could execute" },
       });
+      completedRecordKeys.add(key);
     }
     await writeEvidence();
   };
@@ -320,7 +374,8 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
     control: ControlResult,
     measured: unknown,
   ): Promise<void> => {
-    records.set(checkKey(checkName, renderer), {
+    const key = assertRecordKeyAvailable(completedRecordKeys, checkName, renderer);
+    records.set(key, {
       checkName,
       renderer,
       status: "NOT_RUN",
@@ -328,8 +383,10 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
       threshold,
       turnsRed,
       commitSha,
+      trackedTreeSha256: measuredTreeSha256,
       control,
     });
+    completedRecordKeys.add(key);
     await writeEvidence();
   };
 
@@ -399,15 +456,32 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
     });
   }
 
-  const p2 = await invoke<{ readonly differences: readonly string[]; readonly negativeControlOutput: string }>("readSceneCameraParity");
+  const duplicateRecordControl = await failingAsyncControlOutput(() => record(
+    "P1 surface parity",
+    "sigma-2d",
+    async () => ({
+      measured: null,
+      threshold: "duplicate write control body must not execute",
+      turnsRed: "duplicate write control body executed",
+      control: { status: "NOT_RUN", output: "duplicate write control body must not execute" },
+    }),
+  ));
+  const p2 = await invoke<SceneCameraParityObservation>("readSceneCameraParity");
   for (const renderer of ["r3f-2d", "r3f-3d"] as const) {
     await record("P2 semantic-channel parity", renderer, async () => {
-      assertSceneCameraParity(p2.differences);
+      for (const comparison of p2.comparisons) {
+        assertSceneCameraParity(comparison.differences);
+      }
       return {
-        measured: { differingChannels: p2.differences, legalProjectionChannels: PROJECTION_DEPENDENT_SCENE_CHANNELS },
-        threshold: "only the non-empty pinned projection-dependent channel list may differ",
-        turnsRed: "any resolved scene channel outside the pinned list differs, or camera.kind itself is absent",
-        control: { status: "FAILED_AS_EXPECTED", output: p2.negativeControlOutput },
+        measured: {
+          combinations: p2.combinations,
+          axes: p2.axes,
+          comparisons: p2.comparisons,
+          legalProjectionChannels: PROJECTION_DEPENDENT_SCENE_CHANNELS,
+        },
+        threshold: "across every morphology × palette × temperature × theme × LOD combination, only the non-empty pinned projection-dependent channel list may differ",
+        turnsRed: "any resolved scene channel outside the pinned list differs, camera.kind itself is absent, or a declared visual-state combination is not compared",
+        control: { status: "FAILED_AS_EXPECTED", output: `scene channel control: ${p2.negativeControlOutput} | duplicate record control: ${duplicateRecordControl}` },
       };
     });
   }
@@ -591,7 +665,7 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
   }
   const sigmaSamples = p5Samples.get("sigma-2d");
   if (sigmaSamples !== undefined) {
-    await record("P5 drawing and picking", "r3f-2d", async () => {
+    await record("P5 cross-renderer picking", "r3f-2d", async () => {
       await invoke<MountedParityWitness>("mountBase", "r3f-2d");
       const crossPicked = await Promise.all(sigmaSamples.map(async (sample) => ({ id: sample.id, pickedId: await invoke<string | null>("pickNodeAt", "r3f-2d", sample.point) })));
       for (const sample of crossPicked) {
@@ -624,19 +698,31 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
   } else {
     await record("P6 camera switch", "r3f-2d", async () => {
       await invoke<MountedParityWitness>("mountBase", "r3f-2d");
+      const beforeForwardCamera = await captureRenderer(page, "r3f-2d");
       const forward = await invoke<FullAppCameraSwitchWitness>("switchFullAppCamera", "r3f-2d", PERSPECTIVE);
+      const forwardCameraFrame = await captureRenderer(page, "r3f-2d");
+      const forwardCameraDifference = countDifferingPixels(beforeForwardCamera, forwardCameraFrame);
       assertFullAppCameraSwitch(forward, PERSPECTIVE, "P6 forward camera switch");
+      assertCompositedPixelDifference(forwardCameraDifference, "P6 forward camera switch");
+      const beforeReverseCamera = forwardCameraFrame;
       const reverse = await invoke<FullAppCameraSwitchWitness>("switchFullAppCamera", "r3f-2d", ORTHOGRAPHIC);
+      const reverseCameraFrame = await captureRenderer(page, "r3f-2d");
+      const reverseCameraDifference = countDifferingPixels(beforeReverseCamera, reverseCameraFrame);
       assertFullAppCameraSwitch(reverse, ORTHOGRAPHIC, "P6 reverse camera switch");
+      assertCompositedPixelDifference(reverseCameraDifference, "P6 reverse camera switch");
       const layoutControl = failingControlOutput(() => assertFullAppCameraSwitch({
         ...forward,
         after: { ...forward.after, layoutPassCount: forward.after.layoutPassCount + 1 },
       }, PERSPECTIVE, "P6 layout control"));
+      const reportedOnlyControl = failingControlOutput(() => {
+        assertFullAppCameraSwitch(forward, PERSPECTIVE, "P6 reported-only camera control");
+        assertCompositedPixelDifference(0, "P6 reported-only camera control");
+      });
       return {
-        measured: { forward, reverse },
-        threshold: "both camera directions preserve every live world anchor and the layout-pass count, and report the requested camera kind",
-        turnsRed: "either camera direction moves an anchor, changes the layout-pass count, or reports a different camera kind",
-        control: { status: "FAILED_AS_EXPECTED", output: `${p6Control} | ${layoutControl}` },
+        measured: { forward, reverse, forwardCameraDifference, reverseCameraDifference },
+        threshold: "both camera directions preserve every live world anchor and the layout-pass count, report the requested camera kind, and change final-compositor pixels",
+        turnsRed: "either camera direction moves an anchor, changes the layout-pass count, reports a different camera kind, or reports a camera transition without compositor output",
+        control: { status: "FAILED_AS_EXPECTED", output: `${p6Control} | ${layoutControl} | ${reportedOnlyControl}` },
       };
     });
   }
@@ -748,10 +834,18 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
       assertFullAppPolicySwitch(launch, reliability, discovery);
 
       const alternateCamera = discovery.visualState.cameraKind === ORTHOGRAPHIC ? PERSPECTIVE : ORTHOGRAPHIC;
+      const beforeForwardCamera = await captureRenderer(page, renderer);
       const forwardCamera = await invoke<FullAppCameraSwitchWitness>("switchFullAppCamera", renderer, alternateCamera);
+      const forwardCameraFrame = await captureRenderer(page, renderer);
+      const forwardCameraDifference = countDifferingPixels(beforeForwardCamera, forwardCameraFrame);
       assertFullAppCameraSwitch(forwardCamera, alternateCamera, "forward camera switch");
+      assertCompositedPixelDifference(forwardCameraDifference, "forward camera switch");
+      const beforeReverseCamera = forwardCameraFrame;
       const reverseCamera = await invoke<FullAppCameraSwitchWitness>("switchFullAppCamera", renderer, forwardCamera.before.visualState.cameraKind);
+      const reverseCameraFrame = await captureRenderer(page, renderer);
+      const reverseCameraDifference = countDifferingPixels(beforeReverseCamera, reverseCameraFrame);
       assertFullAppCameraSwitch(reverseCamera, forwardCamera.before.visualState.cameraKind, "return camera switch");
+      assertCompositedPixelDifference(reverseCameraDifference, "return camera switch");
 
       const interaction = await invoke<FullAppInteractionWitness>("prepareFullAppInteraction", renderer);
       const beforeSelection = await captureRenderer(page, renderer);
@@ -776,16 +870,36 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
       const selectionCleared = await invoke<FullAppMountWitness>("readFullAppState", renderer);
       assertFullAppSelection(selectionCleared, null, "clear selection");
 
+      const beforeMacro = await captureRenderer(page, renderer);
       const macro = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Discovery", "macro", true);
+      const macroFrame = await captureRenderer(page, renderer);
+      const macroDifference = countDifferingPixels(beforeMacro, macroFrame);
       assertFullAppMount(macro, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "macro", true, "macro semantic zoom");
+      assertCompositedPixelDifference(macroDifference, "macro semantic zoom");
+      const beforeMeso = macroFrame;
       const meso = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Discovery", "meso", true);
+      const mesoFrame = await captureRenderer(page, renderer);
+      const mesoDifference = countDifferingPixels(beforeMeso, mesoFrame);
       assertFullAppMount(meso, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "meso", true, "meso semantic zoom");
+      assertCompositedPixelDifference(mesoDifference, "meso semantic zoom");
+      const beforeMicro = mesoFrame;
       const micro = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Discovery", "micro", true);
+      const microFrame = await captureRenderer(page, renderer);
+      const microDifference = countDifferingPixels(beforeMicro, microFrame);
       assertFullAppMount(micro, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "micro", true, "micro semantic zoom");
+      assertCompositedPixelDifference(microDifference, "micro semantic zoom");
+      const beforeMoving = microFrame;
       const moving = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Discovery", "micro", false);
+      const movingFrame = await captureRenderer(page, renderer);
+      const movingDifference = countDifferingPixels(beforeMoving, movingFrame);
       assertFullAppMount(moving, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "micro", false, "reduced-motion disabled");
+      assertCompositedPixelDifference(movingDifference, "reduced-motion disabled");
+      const beforeReduced = movingFrame;
       const reduced = await invoke<FullAppMountWitness>("mountFullAppState", renderer, "Discovery", "micro", true);
+      const reducedFrame = await captureRenderer(page, renderer);
+      const reducedDifference = countDifferingPixels(beforeReduced, reducedFrame);
       assertFullAppMount(reduced, renderer === "r3f-2d" ? ORTHOGRAPHIC : PERSPECTIVE, "micro", true, "reduced-motion enabled");
+      assertCompositedPixelDifference(reducedDifference, "reduced-motion enabled");
 
       const originalFrame = await captureRenderer(page, renderer);
       const roundTrip = await invoke<FullAppVisualStateRoundTripWitness>("restoreFullAppVisualState", renderer);
@@ -811,15 +925,39 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
           ...reverseCamera,
           after: { ...reverseCamera.after, anchors: [] },
         }, reverseCamera.before.visualState.cameraKind, "camera anchor control")),
+        cameraForwardPixels: failingControlOutput(() => {
+          assertFullAppCameraSwitch(forwardCamera, alternateCamera, "camera forward reported-only control");
+          assertCompositedPixelDifference(0, "camera forward reported-only control");
+        }),
+        cameraReversePixels: failingControlOutput(() => {
+          assertFullAppCameraSwitch(reverseCamera, reverseCamera.before.visualState.cameraKind, "camera reverse reported-only control");
+          assertCompositedPixelDifference(0, "camera reverse reported-only control");
+        }),
         selection: failingControlOutput(() => assertFullAppSelection({ ...selected, visualState: { ...selected.visualState, selectedId: null } }, interaction.selectedId, "selection control")),
         selectionPixels: failingControlOutput(() => assertPixelDifference({ ...selectionDifference, differenceMicro: 0 }, "selection pixel control")),
         provenance: failingControlOutput(() => assertFullAppProvenance({ value: null, origin: "" })),
         focus: failingControlOutput(() => assertFullAppFocus({ ...focused, visualState: { ...focused.visualState, focusedId: null } }, interaction.selectedId, "focus control")),
         focusPixels: failingControlOutput(() => assertPixelDifference({ ...focusDifference, differenceMicro: 0 }, "focus pixel control")),
         macro: failingControlOutput(() => assertFullAppMount({ ...macro, visualState: { ...macro.visualState, lodBand: "meso" } }, macro.visualState.cameraKind, "macro", true, "macro control")),
+        macroPixels: failingControlOutput(() => {
+          assertFullAppMount(macro, macro.visualState.cameraKind, "macro", true, "macro reported-only control");
+          assertCompositedPixelDifference(0, "macro reported-only control");
+        }),
         meso: failingControlOutput(() => assertFullAppMount({ ...meso, visualState: { ...meso.visualState, lodBand: "micro" } }, meso.visualState.cameraKind, "meso", true, "meso control")),
+        mesoPixels: failingControlOutput(() => {
+          assertFullAppMount(meso, meso.visualState.cameraKind, "meso", true, "meso reported-only control");
+          assertCompositedPixelDifference(0, "meso reported-only control");
+        }),
         micro: failingControlOutput(() => assertFullAppMount({ ...micro, visualState: { ...micro.visualState, lodBand: "macro" } }, micro.visualState.cameraKind, "micro", true, "micro control")),
+        microPixels: failingControlOutput(() => {
+          assertFullAppMount(micro, micro.visualState.cameraKind, "micro", true, "micro reported-only control");
+          assertCompositedPixelDifference(0, "micro reported-only control");
+        }),
         reducedMotion: failingControlOutput(() => assertFullAppMount({ ...reduced, visualState: { ...reduced.visualState, reducedMotion: false } }, reduced.visualState.cameraKind, "micro", true, "reduced-motion control")),
+        reducedMotionPixels: failingControlOutput(() => {
+          assertFullAppMount(reduced, reduced.visualState.cameraKind, "micro", true, "reduced-motion reported-only control");
+          assertCompositedPixelDifference(0, "reduced-motion reported-only control");
+        }),
         roundTrip: failingControlOutput(() => assertFullAppRoundTrip({ ...roundTrip, restoredPickedNodeId: null })),
         restoredFrame: failingControlOutput(() => assertZeroPixelDifference(1, "restored frame control")),
         runtimeErrors: failingControlOutput(() => assertNoFullAppErrors(["runtime control"], [])),
@@ -829,19 +967,26 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
         measured: {
           launch,
           policySwitch: { reliability, discovery },
-          cameraSwitch: { forward: forwardCamera, reverse: reverseCamera },
+          cameraSwitch: { forward: forwardCamera, reverse: reverseCamera, forwardCameraDifference, reverseCameraDifference },
           selection: { state: selected.visualState.selectedId, selectionDifference },
           focus: { state: focused.visualState.focusedId, focusDifference },
           provenance,
-          semanticZoom: { macro: macro.visualState.lodBand, meso: meso.visualState.lodBand, micro: micro.visualState.lodBand },
-          reducedMotion: { moving: moving.visualState.reducedMotion, reduced: reduced.visualState.reducedMotion },
+          semanticZoom: {
+            macro: { reported: macro.visualState.lodBand, differingPixels: macroDifference },
+            meso: { reported: meso.visualState.lodBand, differingPixels: mesoDifference },
+            micro: { reported: micro.visualState.lodBand, differingPixels: microDifference },
+          },
+          reducedMotion: {
+            moving: { reported: moving.visualState.reducedMotion, differingPixels: movingDifference },
+            reduced: { reported: reduced.visualState.reducedMotion, differingPixels: reducedDifference },
+          },
           visualStateRoundTrip: roundTrip,
           runtimeErrors: { beforeShutdown: errorsBeforeShutdown, afterShutdown: errorsAfterShutdown, console: consoleErrors },
           shutdown,
           controls,
         },
-        threshold: "both R3F camera boots report their live camera kind and graph; policy surfaces change and restore; each camera direction preserves live anchors and layout count; selection and focus change composited pixels; provenance has a value and non-empty origin; macro, meso, micro, and reduced motion are renderer-reported; serialised VisualState restores an identical frame and live pick target; errors, canvases, label overlays, and post-shutdown frames are zero",
-        turnsRed: "a mounted state differs from the renderer-reported transition, a policy surface does not switch and restore, either camera direction moves anchors or runs layout, interaction lacks compositor change or provenance, a zoom or motion value is not reported, a restored frame or live pick differs, an error occurs, or shutdown leaves a canvas, label overlay, or fired frame",
+        threshold: "both R3F camera boots report their live camera kind and graph; policy surfaces change and restore; each camera direction preserves live anchors and layout count and changes composited pixels; selection and focus change composited pixels; provenance has a value and non-empty origin; macro, meso, micro, and both reduced-motion transitions report the requested value and change composited pixels; serialised VisualState restores an identical frame and live pick target; errors, canvases, label overlays, and post-shutdown frames are zero",
+        turnsRed: "a mounted state differs from the renderer-reported transition, a policy surface does not switch and restore, either camera direction moves anchors or runs layout or has no compositor consequence, interaction lacks compositor change or provenance, a zoom or motion value is not reported or has no compositor consequence, a restored frame or live pick differs, an error occurs, or shutdown leaves a canvas, label overlay, or fired frame",
         control: { status: "FAILED_AS_EXPECTED", output: formatControlOutputs(controls) },
       };
     });
@@ -868,11 +1013,19 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
     }
     await writeEvidence();
   }
+  const completedTreeSha256 = await currentTrackedTreeSha256();
+  const finalTrackedTree: TrackedTreeIdentity = {
+    algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
+    measuredSha256: measuredTreeSha256,
+    completedSha256: completedTreeSha256,
+    stable: measuredTreeSha256 === completedTreeSha256,
+  };
+  assertTrackedTreeIdentity(finalTrackedTree, finalTrackedTree.completedSha256, "parity evidence");
   const incomplete = [...records.values()].filter((item) => item.status !== "PASS");
-  expect(incomplete, "renderer parity requires every commit-bound check to pass; NOT_RUN is never a pass").toEqual([]);
+  expect(incomplete, "renderer parity requires every tracked-tree-bound check to pass; NOT_RUN is never a pass").toEqual([]);
 });
 
-function pendingRecord(checkName: CheckName, renderer: ParityRenderer, commitSha: string): ParityRecord {
+function pendingRecord(checkName: CheckName, renderer: ParityRenderer, commitSha: string, trackedTreeSha256: string): ParityRecord {
   return {
     checkName,
     renderer,
@@ -881,12 +1034,34 @@ function pendingRecord(checkName: CheckName, renderer: ParityRenderer, commitSha
     threshold: "pending execution",
     turnsRed: "check did not run",
     commitSha,
+    trackedTreeSha256,
     control: { status: "NOT_RUN", output: "control not started" },
   };
 }
 
 function checkKey(checkName: CheckName, renderer: ParityRenderer): CheckKey {
   return `${checkName}/${renderer}`;
+}
+
+function assertRecordKeyAvailable(
+  completedRecordKeys: ReadonlySet<CheckKey>,
+  checkName: CheckName,
+  renderer: ParityRenderer,
+): CheckKey {
+  const key = checkKey(checkName, renderer);
+  if (completedRecordKeys.has(key)) {
+    throw new Error(`duplicate parity record for check ${JSON.stringify(checkName)}, renderer ${JSON.stringify(renderer)}`);
+  }
+  return key;
+}
+
+async function failingAsyncControlOutput(operation: () => Promise<void>): Promise<string> {
+  try {
+    await operation();
+  } catch (error: unknown) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error("control unexpectedly passed");
 }
 
 function assertSurfaceSelfConsistency(surface: MountedParityWitness["surface"]): void {
@@ -1000,6 +1175,12 @@ function assertFullAppRoundTrip(witness: FullAppVisualStateRoundTripWitness): vo
 function assertZeroPixelDifference(difference: number, label: string): void {
   if (difference !== 0) {
     throw new Error(`${label} has ${difference} differing composited pixels`);
+  }
+}
+
+function assertCompositedPixelDifference(difference: number, label: string): void {
+  if (difference <= 0) {
+    throw new Error(`${label} has no final-compositor pixel change`);
   }
 }
 
@@ -1347,6 +1528,12 @@ async function currentCommitSha(): Promise<string> {
   } catch {
     return "unavailable";
   }
+}
+
+async function currentTrackedTreeSha256(): Promise<string> {
+  const repositoryDirectory = [".."].join("/");
+  const { stdout } = await execFileAsync("git", ["ls-files", "-s"], { cwd: repositoryDirectory, encoding: "utf8" });
+  return createHash("sha256").update(stdout).digest("hex");
 }
 
 async function purgeBrowserCache(page: Page): Promise<void> {

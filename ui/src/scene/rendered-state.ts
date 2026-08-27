@@ -25,6 +25,22 @@ export function legalRenderedCombinations(
   return Object.freeze([null, ...assertions, ...bridges]);
 }
 
+/** This binds the generated carrier domain exactly to a separately enumerated contract-authority domain. */
+export function assertExactRenderedCarrierDomain(
+  generated: readonly RenderedStateCarrier[],
+  authorityAdmitted: readonly RenderedStateCarrier[],
+): void {
+  const generatedSet = renderedCarrierSet(generated, "generated rendered domain");
+  const authoritySet = renderedCarrierSet(authorityAdmitted, "contract authority domain");
+  const missing = [...authoritySet].filter((carrier) => !generatedSet.has(carrier)).sort();
+  const unexpected = [...generatedSet].filter((carrier) => !authoritySet.has(carrier)).sort();
+  if (missing.length > 0 || unexpected.length > 0) {
+    throw new TypeError(
+      `generated rendered domain does not exactly match contract authority: missing=${missing.join(",") || "none"}; unexpected=${unexpected.join(",") || "none"}`,
+    );
+  }
+}
+
 const LEGAL_RENDERED_DOMAIN = legalRenderedCombinations();
 const BRIDGE_DISPOSITION_STATES = statesForAxis(readVocabulary(() => RENDERED), BRIDGE_DISPOSITION);
 const injectiveCalibrationProfiles = new WeakSet<CalibrationProfile>();
@@ -193,4 +209,18 @@ function statesForAxis(vocabulary: readonly StateKey[], enumType: string): reado
   return vocabulary
     .filter((state) => state.enumType === enumType)
     .map((state) => Object.freeze({ enumType: state.enumType, member: state.member }) as RenderedState);
+}
+
+function renderedCarrierSet(domain: readonly RenderedStateCarrier[], label: string): ReadonlySet<string> {
+  const result = new Set<string>();
+  for (const carrier of domain) {
+    const key = carrier === null
+      ? "null"
+      : carrier.map((state) => `${state.enumType}:${state.member}`).join("+");
+    if (result.has(key)) {
+      throw new TypeError(`${label} contains duplicate carrier ${key}`);
+    }
+    result.add(key);
+  }
+  return result;
 }
