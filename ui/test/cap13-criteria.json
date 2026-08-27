@@ -8,7 +8,8 @@
       "claim": "one scene model, two cameras; neither renderer computes a material",
       "source": {
         "kind": "unitTest",
-        "name": "renderer source declares no local material or semantic depth route"
+        "name": "renderer source contains no local material literal and the introduced-literal control fails",
+        "file": "test/render3f/shaders-and-origin.test.ts"
       }
     },
     {
@@ -56,7 +57,8 @@
       "claim": "z carries no epistemic meaning",
       "source": {
         "kind": "unitTest",
-        "name": "scene depth ignores governed, kind and provenance stimuli"
+        "name": "renderer source carries no governed value into depth and the depth-routing control fails",
+        "file": "test/render3f/shaders-and-origin.test.ts"
       }
     },
     {
@@ -73,7 +75,8 @@
       "claim": "VisualState round-trips including cameraKind and refuses impossible states",
       "source": {
         "kind": "unitTest",
-        "name": "VisualState refuses every validator-owned rule through every validating assertion route"
+        "name": "VisualState refuses every validator-owned rule through every validating assertion route",
+        "file": "test/engine/visual-state.test.ts"
       }
     },
     {
@@ -121,7 +124,8 @@
       "claim": "resource cleanup on unmount and repeated camera switching",
       "source": {
         "kind": "unitTest",
-        "name": "mounted renderer retains no resources after teardown and none accumulate across camera switching"
+        "name": "repeated renderer resource ownership cycles retain nothing after each teardown",
+        "file": "test/render3f/camera-and-lifecycle.test.ts"
       }
     },
     {
@@ -149,7 +153,8 @@
       "claim": "evidence completeness; a green summary cannot hide an undischarged criterion",
       "source": {
         "kind": "unitTest",
-        "name": "every CAP-13 criterion resolves to a machine-readable status"
+        "name": "every CAP-13 criterion resolves to a machine-readable status",
+        "file": "test/closure-register.test.ts"
       }
     },
     {
