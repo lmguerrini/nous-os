@@ -95,7 +95,19 @@ FORBIDDEN_RENDERER_FRAGMENTS = (
 #: left implicit. Each entry names one shape a scanner or denylist below does
 #: not detect. Non-empty and every entry non-blank is asserted by a test, so
 #: emptying this list to look complete is itself a failure.
+_UNTRUTHFUL_ROW = re.compile(r"^\| \d+ \| ")
+
+#: Spelled numbers the defect-count check understands. Prose, not digits, because
+#: the document is written for a reader rather than for a parser.
+_NUMBER_WORDS = {
+    "Twelve": 12, "Thirteen": 13, "Fourteen": 14, "Fifteen": 15,
+    "Sixteen": 16, "Seventeen": 17, "Eighteen": 18,
+}
+
 UNDETECTED_VOCABULARY_SHAPES = (
+    "a second closed vocabulary declared under a name another module already uses: both "
+    "scanners key by bare name, so a later declaration silently replaces an earlier one and "
+    "neither is then reported as undocumented",
     "a Python enum built with the functional Enum(\"Name\", [...]) call form rather than a class statement",
     "an Enum class nested inside another class body rather than declared at module level",
     "a module-level class declared inside an `if:` or `try:` block rather than directly in the module body",
@@ -1115,6 +1127,48 @@ def test_the_document_carries_no_rooted_path() -> None:
 def test_adoption_changed_no_structure() -> None:
     offences = structural_change_offences(REPO_ROOT)
     assert not offences, "\n".join(offences)
+
+
+def defect_count_offences(text: str) -> list[str]:
+    """The prose count of published defects agrees with the table it counts.
+
+    This is the one count in the document that is enforced rather than printed.
+    The others move on purpose — a limitations list should grow — and pinning
+    those would punish the honesty they exist to record. This one must not
+    move independently of its own table: a row added without the sentence
+    changing leaves the document contradicting itself, which is precisely the
+    class the table is about.
+    """
+    rows = 0
+    for line in extract_section(text, "untruthful").splitlines():
+        if _UNTRUTHFUL_ROW.match(line):
+            rows += 1
+    offences = []
+    if rows == 0:
+        offences.append("the untruthful table has no rows, so nothing counts it")
+    for spelled, value in _NUMBER_WORDS.items():
+        if f"{spelled} of them are recorded above as" in text and value != rows:
+            offences.append(f"prose says {spelled} defects, the table has {rows}")
+    if not any(f"{word} of them are recorded above as" in text for word in _NUMBER_WORDS):
+        offences.append("no prose count of the defect table was found to check against it")
+    return offences
+
+
+def test_the_defect_count_agrees_with_the_defect_table() -> None:
+    text = _document_text()
+    offences = defect_count_offences(text)
+    assert not offences, "\n".join(offences)
+
+
+def test_the_defect_count_detects_prose_that_has_drifted_from_its_table() -> None:
+    # The same function the real check calls, against the real document with one
+    # numeral moved. A row added without the sentence changing produces the same
+    # offence, which is the case this exists for.
+    text = _document_text().replace(
+        "Fifteen of them are recorded above as", "Fourteen of them are recorded above as", 1
+    )
+    offences = defect_count_offences(text)
+    assert offences, "the control should have produced an offence"
 
 
 def test_undetected_vocabulary_shapes_is_a_populated_honest_list() -> None:
