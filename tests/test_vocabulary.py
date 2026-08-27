@@ -136,7 +136,7 @@ UNDETECTED_VOCABULARY_SHAPES = (
 #: structural-change check diffs against this fixed point rather than a moving
 #: branch tip, so that a later commit cannot silently widen what "no structural
 #: change" is measured against.
-CAPABILITY_BASE_SHA = "789982bae4d74d04ac8b07200af00cec00c5983a"
+CAPABILITY_BASE_SHA = "7bfad82aad88d9dcf5576f06a62ff772227c60e3"
 
 #: Every closed-vocabulary base the standard ``enum`` module exports. A class
 #: deriving from any of these, under an alias or dotted (``enum.StrEnum``), is
