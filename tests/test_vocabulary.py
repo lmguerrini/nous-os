@@ -138,6 +138,15 @@ UNDETECTED_VOCABULARY_SHAPES = (
 #: change" is measured against.
 CAPABILITY_BASE_SHA = "7bfad82aad88d9dcf5576f06a62ff772227c60e3"
 
+#: The commit this capability's work ENDED at. Pinned for the same reason the
+#: base is: the claim being checked is that *this* capability's adoption moved
+#: no source, and a claim about one capability must be measured over that
+#: capability's own range. Diffing against a moving ``HEAD`` made the check
+#: report every later capability's legitimate work as a violation of a claim
+#: that was never made about it — a check turning red while nothing is wrong,
+#: which costs exactly as much trust as one that cannot turn red at all.
+CAPABILITY_HEAD_SHA = "d2b5ad65e714fcf032216119f3f9d4737b9a0afe"
+
 #: Every closed-vocabulary base the standard ``enum`` module exports. A class
 #: deriving from any of these, under an alias or dotted (``enum.StrEnum``), is
 #: a closed vocabulary the technical table must document — not only ``Enum``.
@@ -976,7 +985,7 @@ def canonical_layer_excluded_vocabulary_offences(repo_root: Path) -> list[str]:
 
 
 def structural_change_offences(
-    repo_root: Path, base_sha: str = CAPABILITY_BASE_SHA, head: str = "HEAD"
+    repo_root: Path, base_sha: str = CAPABILITY_BASE_SHA, head: str = CAPABILITY_HEAD_SHA
 ) -> list[str]:
     """Every path under ``src/``, ``ui/src/``, ``ui/test/`` or ``fixtures/`` that
     differs between ``base_sha`` and ``head`` — the check behind the document's
@@ -985,8 +994,17 @@ def structural_change_offences(
 
     A check that cannot run and quietly returns no offences is worse than no
     check: it would report a green build for a comparison nobody made. If
-    ``base_sha`` is not an ancestor of ``head``, or git itself is unavailable,
-    that is an offence, not a silent pass.
+    ``base_sha`` is not an ancestor of ``head``, or ``head`` is no longer an
+    ancestor of the live ``HEAD``, or git itself is unavailable, that is an
+    offence, not a silent pass.
+
+    Both ends are pinned. A pinned pair could otherwise keep answering from a
+    branch the repository has abandoned: a history rewrite that orphaned the
+    range would leave both objects readable until garbage collection, and the
+    diff between them would stay green while describing a tree nobody is on.
+    Requiring the pinned head to remain an ancestor of the live ``HEAD`` is what
+    makes the green result a statement about this repository rather than about
+    two loose objects in it.
     """
     try:
         ancestry = subprocess.run(
@@ -1001,6 +1019,20 @@ def structural_change_offences(
         return [
             f"{base_sha} is not an ancestor of {head} in {repo_root}; the structural-change diff "
             "cannot be trusted, so it is refused rather than reported empty"
+        ]
+    try:
+        liveness = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", head, "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f"git is unavailable to check structural change: {exc}"]
+    if liveness.returncode != 0:
+        return [
+            f"the pinned range head {head} is not an ancestor of HEAD in {repo_root}; the range no "
+            "longer describes this repository's history, so it is refused rather than reported empty"
         ]
     try:
         diff = subprocess.run(
@@ -1631,6 +1663,30 @@ def test_structural_change_offences_detects_a_non_ancestor_base(tmp_path: Path) 
     _run_git(["commit", "-q", "-m", "unrelated root"], repo)
     offences = structural_change_offences(repo, base_sha=base_sha, head="HEAD")
     assert offences, "a base that is not an ancestor of HEAD must be an offence, never a silent pass"
+
+
+def test_structural_change_offences_refuses_a_pinned_head_off_the_live_history(tmp_path: Path) -> None:
+    # The pinned pair must not keep answering from an abandoned branch. Both
+    # objects stay readable after a rewrite, and their diff would stay green
+    # while describing a tree nobody is on.
+    repo = tmp_path / "orphaned_head_repo"
+    _init_scratch_repo(repo)
+    source = repo / "src"
+    source.mkdir()
+    (source / "example.py").write_text("value = 1\n", encoding="utf-8")
+    _run_git(["add", "."], repo)
+    _run_git(["commit", "-q", "-m", "base"], repo)
+    base_sha = _run_git(["rev-parse", "HEAD"], repo).strip()
+    live_branch = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], repo).strip()
+    _run_git(["checkout", "-q", "-b", "abandoned"], repo)
+    (source / "example.py").write_text("value = 2\n", encoding="utf-8")
+    _run_git(["add", "."], repo)
+    _run_git(["commit", "-q", "-m", "abandoned tip"], repo)
+    abandoned_head = _run_git(["rev-parse", "HEAD"], repo).strip()
+    _run_git(["checkout", "-q", live_branch], repo)
+    offences = structural_change_offences(repo, base_sha=base_sha, head=abandoned_head)
+    assert offences, "a pinned head off the live history must be an offence, never a silent pass"
+    assert any("not an ancestor of HEAD" in offence for offence in offences)
 
 
 def test_module_level_enum_names_detects_every_closed_vocabulary_base() -> None:
