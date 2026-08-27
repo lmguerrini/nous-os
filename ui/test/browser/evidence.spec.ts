@@ -686,7 +686,7 @@ const UNIT_A17_RESULTS = [
   "VisualState permits a selected-and-focused element because inspection and isolation are distinct view actions",
   "the production shipping morphology is Stellar while Neural and Mycelium remain accepted experimental capability",
   "VisualState validation reads graph ids only, not semantic payloads",
-  "VisualState refuses every validator-owned rule through direct construction and deserialisation",
+  "VisualState refuses every validator-owned rule through every validating assertion route",
   "VisualState refusal completeness rejects a validator rule added without a refusal case",
   "VisualState deserialisation refuses malformed JSON before it can become state",
 ] as const;

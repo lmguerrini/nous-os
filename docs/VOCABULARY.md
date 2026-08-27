@@ -185,7 +185,8 @@ left for a reader to discover by being wrong.
 | `EngineGraph` | `ui/src/engine/contract.ts:143` | — | The much smaller view the drawing layer is actually handed. |
 | `EngineAccessTrace` | `ui/src/engine/contract.ts:149` | — | A record of what the drawing layer read, so that reading too much is detectable. |
 | `Coordinates` | `ui/src/engine/contract.ts:32` | — | A position. Which space it is in is not carried by the type. |
-| `VisualStateValidationRule` | `ui/src/engine/visual-state.ts:68` | `field-register` · `known-element-id` · `closed-vocabulary` · `reduced-motion-boolean` · `finite-camera-number` · `positive-camera-ratio` · `bounds-axis-pair` · `increasing-bounds-axis` | The eight named ways a saved view can be malformed. A refusal carries which rule it broke, so a rejection is diagnosable rather than merely negative. |
+| `VisualStateValidationRule` | `ui/src/engine/visual-state.ts:72` | `field-register` · `known-element-id` · `closed-vocabulary` · `reduced-motion-boolean` · `finite-camera-number` · `positive-camera-ratio` · `bounds-axis-pair` · `increasing-bounds-axis` | The eight named ways a saved view can be malformed. A refusal carries which rule it broke, so a rejection is diagnosable rather than merely negative. |
+| `CameraKind` | `ui/src/engine/camera-kind.ts:2` | `orthographic` · `perspective` | Which projection the viewer is looking through. A camera, not a graph and not a policy: the same resolved scene reaches either one, and in the perspective camera depth is layout only and carries no epistemic meaning. |
 | `LayoutAnchors` | `ui/src/engine/layout.ts:7` | — | Where elements sit, in world units, computed against a fixed reference frame. |
 
 <!-- /vocabulary:technical -->
@@ -377,6 +378,7 @@ mapping above; a term is in one register or the other, and the build refuses a t
 | `RoundStatus` · `RunStatus` · `Outcome` | Facts about whether something executed. Not knowledge claims. |
 | `Overlap` · `TemporalDisposition` | Answers about intervals. "Time" is not an epistemic register. |
 | `QuarantineReason` | Four named attack shapes. A security vocabulary, correctly kept separate. |
+| `CameraKind` | Names a projection, not a knowledge relation. Any epistemic term would imply the two cameras show different knowledge; they show the same knowledge, differently projected. |
 | `VisualStateValidationRule` | Names eight ways a saved view can be malformed. A validation vocabulary, about well-formedness rather than about knowledge. |
 | `NodeKind` · `EdgeKind` · `Side` | The graph vocabulary. Node and edge are exact, universal, and carry no meaning they should not. |
 | `BridgeDisposition` | What a whole rubric vector amounts to. Naming it epistemically would invite reading it as a confidence. |

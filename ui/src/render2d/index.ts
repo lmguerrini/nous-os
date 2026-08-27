@@ -4,6 +4,7 @@ import type { CameraState, EdgeDisplayData, NodeDisplayData } from "sigma/types"
 import { parseColor } from "sigma/utils";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { ORTHOGRAPHIC } from "#engine/camera-kind.ts";
 import type { Coordinates, DerivedValue, VisualGraph } from "#engine/contract.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
@@ -195,6 +196,7 @@ export function mount(
     selectedId: null,
     focusedId: null,
     camera: readCameraState(sigma),
+    cameraKind: ORTHOGRAPHIC,
     morphology: activeOptions.morphology,
     organization: activeOptions.organization,
     palette: activeOptions.palette,

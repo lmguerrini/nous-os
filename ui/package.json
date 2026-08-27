@@ -5,10 +5,12 @@
   "type": "module",
   "description": "Renderer-neutral visual engine and 2D renderer over the projection IR.",
   "imports": {
-    "#engine/*": "./src/engine/*",
     "#adapter/*": "./src/adapter/*",
+    "#browser/*": "./test/browser/*",
+    "#engine/*": "./src/engine/*",
     "#render2d/*": "./src/render2d/*",
-    "#browser/*": "./test/browser/*"
+    "#render3f/*": "./src/render3f/*",
+    "#scene/*": "./src/scene/*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -19,13 +21,20 @@
     "test:review": "REVIEW_CAPTURES=1 playwright test --project=review-dpr-1 --project=review-dpr-2"
   },
   "dependencies": {
+    "@react-three/fiber": "9.7.0",
     "@sigma/edge-curve": "3.1.0",
     "graphology": "0.26.0",
-    "sigma": "3.0.3"
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "sigma": "3.0.3",
+    "three": "0.185.1"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
     "@types/node": "^26.2.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@types/three": "0.185.4",
     "esbuild": "0.28.2",
     "typescript": "7.0.2"
   }

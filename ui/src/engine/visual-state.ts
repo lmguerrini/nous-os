@@ -1,4 +1,6 @@
 import type { VisualGraph } from "#engine/contract.ts";
+import { CAMERA_KINDS } from "#engine/camera-kind.ts";
+import type { CameraKind } from "#engine/camera-kind.ts";
 import { MACRO, MESO, MICRO } from "#engine/lod.ts";
 import type { LodBand } from "#engine/lod.ts";
 import { MYCELIUM, NEURAL, STELLAR } from "#engine/morphology.ts";
@@ -25,6 +27,7 @@ export type VisualState = {
   readonly selectedId: string | null;
   readonly focusedId: string | null;
   readonly camera: VisualStateCamera;
+  readonly cameraKind: CameraKind;
   readonly morphology: Morphology;
   readonly organization: Organization;
   readonly palette: Palette;
@@ -40,6 +43,7 @@ export const VISUAL_STATE_FIELD_REGISTER = {
     "selectedId",
     "focusedId",
     "camera",
+    "cameraKind",
     "morphology",
     "organization",
     "palette",
@@ -88,6 +92,7 @@ export function createVisualState(graph: VisualGraph, value: unknown): VisualSta
         y: [state.camera.bounds.y[0], state.camera.bounds.y[1]],
       },
     },
+    cameraKind: state.cameraKind,
     morphology: state.morphology,
     organization: state.organization,
     palette: state.palette,
@@ -130,6 +135,7 @@ export function assertVisualState(graph: VisualGraph, value: unknown): asserts v
   const state = value as Record<string, unknown>;
   assertKnownElementId(state.selectedId, graph, "selectedId");
   assertKnownElementId(state.focusedId, graph, "focusedId");
+  assertChoice(state.cameraKind, CAMERA_KINDS, "cameraKind");
   assertChoice(state.morphology, MORPHOLOGIES, "morphology");
   assertChoice(state.organization, ORGANIZATIONS, "organization");
   assertChoice(state.palette, PALETTES, "palette");

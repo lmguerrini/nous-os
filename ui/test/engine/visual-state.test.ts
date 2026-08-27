@@ -3,11 +3,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
+import { CAMERA_KINDS, ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import { SHIPPING_MORPHOLOGY } from "#engine/contract.ts";
 import type { VisualGraph } from "#engine/contract.ts";
 import {
   VISUAL_STATE_FIELD_REGISTER,
   VISUAL_STATE_VALIDATION_RULES,
+  assertVisualState,
+  assertVisualStateFieldRegister,
   createVisualState,
   deserializeVisualState,
   serializeVisualState,
@@ -36,6 +39,7 @@ function state(input: VisualGraph): VisualState {
       ratio: 1,
       bounds: { x: [-1, 1], y: [-1, 1] },
     },
+    cameraKind: ORTHOGRAPHIC,
     morphology: "neural",
     organization: "indra",
     palette: "interstellar",
@@ -82,7 +86,7 @@ test("VisualState has a pinned view-only register and round-trips exactly", () =
   const visualGraph = graph();
   const original = createVisualState(visualGraph, state(visualGraph));
   assert.deepEqual(VISUAL_STATE_FIELD_REGISTER, {
-    state: ["selectedId", "focusedId", "camera", "morphology", "organization", "palette", "temperature", "theme", "lodBand", "reducedMotion"],
+    state: ["selectedId", "focusedId", "camera", "cameraKind", "morphology", "organization", "palette", "temperature", "theme", "lodBand", "reducedMotion"],
     camera: ["x", "y", "angle", "ratio", "bounds"],
     bounds: ["x", "y"],
   });
@@ -90,6 +94,17 @@ test("VisualState has a pinned view-only register and round-trips exactly", () =
   assert.deepEqual(Object.keys(original).sort(), [...VISUAL_STATE_FIELD_REGISTER.state].sort());
   assert.equal("graph" in original, false);
   assert.equal("semantic" in original, false);
+});
+
+test("VisualState cameraKind round-trips both closed-vocabulary members", () => {
+  const visualGraph = graph();
+  for (const cameraKind of CAMERA_KINDS) {
+    const original = createVisualState(visualGraph, { ...state(visualGraph), cameraKind });
+    const restored = deserializeVisualState(visualGraph, serializeVisualState(original));
+    assert.equal(restored.cameraKind, cameraKind);
+    assert.deepEqual(restored, original);
+  }
+  assert.notEqual(ORTHOGRAPHIC, PERSPECTIVE);
 });
 
 test("VisualState permits a selected-and-focused element because inspection and isolation are distinct view actions", () => {
@@ -126,16 +141,19 @@ test("VisualState validation reads graph ids only, not semantic payloads", () =>
   assert.doesNotThrow(() => createVisualState(protectedGraph, state(protectedGraph)));
 });
 
-test("VisualState refuses every validator-owned rule through direct construction and deserialisation", () => {
+test("VisualState refuses every validator-owned rule through every validating assertion route", () => {
   const visualGraph = graph();
   const valid = state(visualGraph);
+  const { cameraKind: _cameraKind, ...withoutCameraKind } = valid;
   const invalidCases: readonly RefusalCase[] = [
+    { name: "VisualState omitted cameraKind", value: withoutCameraKind, rule: VISUAL_STATE_VALIDATION_RULES.fieldRegister, message: /VisualState fields do not match the pinned register/ },
     { name: "VisualState field extension", value: { ...valid, extra: true }, rule: VISUAL_STATE_VALIDATION_RULES.fieldRegister, message: /VisualState fields do not match the pinned register/ },
     { name: "VisualState camera field extension", value: { ...valid, camera: { ...valid.camera, extra: true } }, rule: VISUAL_STATE_VALIDATION_RULES.fieldRegister, message: /VisualState\.camera fields do not match the pinned register/ },
     { name: "VisualState bounds field extension", value: { ...valid, camera: { ...valid.camera, bounds: { ...valid.camera.bounds, extra: true } } }, rule: VISUAL_STATE_VALIDATION_RULES.fieldRegister, message: /VisualState\.camera\.bounds fields do not match the pinned register/ },
     { name: "VisualState bounds pair", value: { ...valid, camera: { ...valid.camera, bounds: { ...valid.camera.bounds, x: [-1, 0, 1] } } }, rule: VISUAL_STATE_VALIDATION_RULES.boundsAxisPair, message: /VisualState\.camera\.bounds\.x must be a pair/ },
     { name: "VisualState unknown selected id", value: { ...valid, selectedId: "missing-selection" }, rule: VISUAL_STATE_VALIDATION_RULES.knownElementId, message: /VisualState\.selectedId does not name a graph element/ },
     { name: "VisualState unknown focused id", value: { ...valid, focusedId: "missing-focus" }, rule: VISUAL_STATE_VALIDATION_RULES.knownElementId, message: /VisualState\.focusedId does not name a graph element/ },
+    { name: "VisualState cameraKind vocabulary", value: { ...valid, cameraKind: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.closedVocabulary, message: /VisualState\.cameraKind is outside its closed vocabulary/ },
     { name: "VisualState morphology vocabulary", value: { ...valid, morphology: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.closedVocabulary, message: /VisualState\.morphology is outside its closed vocabulary/ },
     { name: "VisualState organization vocabulary", value: { ...valid, organization: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.closedVocabulary, message: /VisualState\.organization is outside its closed vocabulary/ },
     { name: "VisualState palette vocabulary", value: { ...valid, palette: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.closedVocabulary, message: /VisualState\.palette is outside its closed vocabulary/ },
@@ -149,7 +167,8 @@ test("VisualState refuses every validator-owned rule through direct construction
   ];
   const directConstruction: ConstructionRoute = { name: "direct construction", refuse: (input, value) => { createVisualState(input, value); } };
   const deserialisation: ConstructionRoute = { name: "deserialisation", refuse: (input, value) => { deserializeVisualState(input, JSON.stringify(value)); } };
-  const routes: readonly ConstructionRoute[] = [directConstruction, deserialisation];
+  const directAssertion: ConstructionRoute = { name: "direct assertion", refuse: (input, value) => { assertVisualState(input, value); } };
+  const routes: readonly ConstructionRoute[] = [directConstruction, deserialisation, directAssertion];
   assert.ok(invalidCases.length > 0);
   assertRefusalCaseCompleteness(invalidCases);
   for (const refusalCase of invalidCases) {
@@ -162,6 +181,25 @@ test("VisualState refuses every validator-owned rule through direct construction
     () => createVisualState(visualGraph, { ...valid, camera: { ...valid.camera, bounds: { ...valid.camera.bounds, x: extendedAxis } } }),
     { name: "VisualState direct-only bounds array extension", value: extendedAxis, rule: VISUAL_STATE_VALIDATION_RULES.fieldRegister, message: /VisualState\.camera\.bounds\.x fields do not match the pinned register/ },
     directConstruction,
+  );
+});
+
+test("VisualState field register refuses omitted and extra fields through direct assertion", () => {
+  const visualGraph = graph();
+  const valid = state(visualGraph);
+  const { cameraKind: _cameraKind, ...withoutCameraKind } = valid;
+  const withUnknownField = { ...valid, extra: true };
+  const fieldRegisterAssertion: ConstructionRoute = { name: "field-register assertion", refuse: (_input, value) => { assertVisualStateFieldRegister(value); } };
+  assert.doesNotThrow(() => assertVisualStateFieldRegister(valid));
+  assertRuleRefusal(
+    () => assertVisualStateFieldRegister(withoutCameraKind),
+    { name: "VisualState omitted cameraKind", value: withoutCameraKind, rule: VISUAL_STATE_VALIDATION_RULES.fieldRegister, message: /VisualState fields do not match the pinned register/ },
+    fieldRegisterAssertion,
+  );
+  assertRuleRefusal(
+    () => assertVisualStateFieldRegister(withUnknownField),
+    { name: "VisualState unknown field", value: withUnknownField, rule: VISUAL_STATE_VALIDATION_RULES.fieldRegister, message: /VisualState fields do not match the pinned register/ },
+    fieldRegisterAssertion,
   );
 });
 

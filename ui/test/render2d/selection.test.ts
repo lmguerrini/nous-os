@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
+import { ORTHOGRAPHIC } from "#engine/camera-kind.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { semanticDigest } from "#engine/contract.ts";
 import type { VisualGraph } from "#engine/contract.ts";
@@ -36,6 +37,7 @@ function state(input: VisualGraph, selectedId: string | null, focusedId: string 
     selectedId,
     focusedId,
     camera: { x: 0, y: 0, angle: 0, ratio: 1, bounds: { x: [-1, 1], y: [-1, 1] } },
+    cameraKind: ORTHOGRAPHIC,
     morphology: "neural",
     organization: "indra",
     palette: "interstellar",
