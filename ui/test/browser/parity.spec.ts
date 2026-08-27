@@ -17,9 +17,10 @@ import { assertLitPixelFloor } from "#browser/lit-floor.ts";
 import {
   PROJECTION_DEPENDENT_SCENE_CHANNELS,
   assertGovernedPixelSampleLit,
+  assertRendererCaptureIsolated,
   assertSceneCameraParity,
 } from "#browser/parity-contract.ts";
-import type { GovernedPixelSample } from "#browser/parity-contract.ts";
+import type { GovernedPixelSample, RendererCaptureLayout } from "#browser/parity-contract.ts";
 import { legalRenderedCombinations } from "#scene/index.ts";
 import type { RenderedStateCarrier } from "#engine/contract.ts";
 import type { SurfaceWitness } from "#engine/renderer-handle.ts";
@@ -76,6 +77,20 @@ type PixelDifference = {
   readonly id: string;
   readonly point: { readonly x: number; readonly y: number };
   readonly differenceMicro: number;
+};
+
+type CapturePixelDelta = {
+  readonly dimensionsEqual: boolean;
+  readonly firstDimensions: { readonly width: number; readonly height: number };
+  readonly secondDimensions: { readonly width: number; readonly height: number };
+  readonly differingPixels: number | null;
+  readonly maximumChannelDelta: number | null;
+  readonly bounds: {
+    readonly minimumX: number;
+    readonly minimumY: number;
+    readonly maximumX: number;
+    readonly maximumY: number;
+  } | null;
 };
 
 type ControlResult = {
@@ -643,20 +658,36 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
     await record("P7 determinism", renderer, async () => {
       await purgeBrowserCache(page);
       const firstSemantic = await invoke<DeterminismSemanticWitness>("readDeterminismSemanticWitness", renderer);
+      const firstLayout = await invoke<RendererCaptureLayout>("readCaptureLayout", renderer);
       const firstImage = await captureRenderer(page, renderer);
       await invoke<void>("destroy");
       await purgeBrowserCache(page);
       const secondSemantic = await invoke<DeterminismSemanticWitness>("readDeterminismSemanticWitness", renderer);
+      const secondLayout = await invoke<RendererCaptureLayout>("readCaptureLayout", renderer);
       const secondImage = await captureRenderer(page, renderer);
       const firstSemanticBytes = JSON.stringify(firstSemantic);
       const secondSemanticBytes = JSON.stringify(secondSemantic);
-      assertBitIdentical("P7 semantic/layout", firstSemanticBytes, secondSemanticBytes);
-      assertBitIdentical("P7 visual", firstImage.hash, secondImage.hash);
-      return {
-        measured: {
-          semanticLayout: hashes(firstSemanticBytes, secondSemanticBytes),
-          visual: { firstSha256: firstImage.hash, secondSha256: secondImage.hash, bitIdentical: firstImage.hash === secondImage.hash },
+      const visualDifference = capturePixelDelta(firstImage, secondImage);
+      const measured = {
+        semanticLayout: hashes(firstSemanticBytes, secondSemanticBytes),
+        visual: {
+          firstSha256: firstImage.hash,
+          secondSha256: secondImage.hash,
+          bitIdentical: firstImage.hash === secondImage.hash,
+          pixelDifference: visualDifference,
         },
+        captureOwnership: { first: firstLayout, second: secondLayout },
+      };
+      try {
+        assertRendererCaptureIsolated(firstLayout);
+        assertRendererCaptureIsolated(secondLayout);
+        assertBitIdentical("P7 semantic/layout", firstSemanticBytes, secondSemanticBytes);
+        assertBitIdentical("P7 visual", firstImage.hash, secondImage.hash);
+      } catch (error: unknown) {
+        throw new MeasuredCheckFailure(message(error), measured);
+      }
+      return {
+        measured,
         threshold: "byte-for-byte equality after purging renderer state between runs",
         turnsRed: "the separately compared live semantic/layout witness bytes or composited screenshot bytes differ",
         control: { status: "FAILED_AS_EXPECTED", output: p7Control },
@@ -994,12 +1025,56 @@ function formatControlOutputs(controls: Readonly<Record<string, string>>): strin
 
 async function captureRenderer(page: Page, renderer: ParityRenderer): Promise<DecodedPng> {
   const selector = `#parity-renderer-${renderer}`;
-  const box = await page.locator(selector).boundingBox();
-  expect(box, `${renderer} renderer container has a layout box`).not.toBeNull();
-  if (box === null) {
-    throw new Error(`${renderer} renderer container has no layout box`);
+  const container = page.locator(selector);
+  await expect(container, `${renderer} renderer container is visible for its owned capture`).toBeVisible();
+  return decodePng(await container.screenshot());
+}
+
+function capturePixelDelta(first: DecodedPng, second: DecodedPng): CapturePixelDelta {
+  const firstDimensions = { width: first.width, height: first.height };
+  const secondDimensions = { width: second.width, height: second.height };
+  if (first.width !== second.width || first.height !== second.height) {
+    return {
+      dimensionsEqual: false,
+      firstDimensions,
+      secondDimensions,
+      differingPixels: null,
+      maximumChannelDelta: null,
+      bounds: null,
+    };
   }
-  return decodePng(await page.screenshot({ clip: { x: box.x, y: box.y, width: box.width, height: box.height } }));
+  let differingPixels = 0;
+  let maximumChannelDelta = 0;
+  let minimumX = first.width;
+  let minimumY = first.height;
+  let maximumX = -1;
+  let maximumY = -1;
+  for (let y = 0; y < first.height; y += 1) {
+    for (let x = 0; x < first.width; x += 1) {
+      const offset = ((y * first.width) + x) * 4;
+      let differs = false;
+      for (let channel = 0; channel < 4; channel += 1) {
+        const delta = Math.abs((first.data[offset + channel] ?? 0) - (second.data[offset + channel] ?? 0));
+        maximumChannelDelta = Math.max(maximumChannelDelta, delta);
+        differs ||= delta > 0;
+      }
+      if (differs) {
+        differingPixels += 1;
+        minimumX = Math.min(minimumX, x);
+        minimumY = Math.min(minimumY, y);
+        maximumX = Math.max(maximumX, x);
+        maximumY = Math.max(maximumY, y);
+      }
+    }
+  }
+  return {
+    dimensionsEqual: true,
+    firstDimensions,
+    secondDimensions,
+    differingPixels,
+    maximumChannelDelta,
+    bounds: differingPixels === 0 ? null : { minimumX, minimumY, maximumX, maximumY },
+  };
 }
 
 function governedPixelSampleAt(

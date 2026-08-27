@@ -20,6 +20,87 @@ export type GovernedPixelSample = {
   readonly sampledRgb: readonly [number, number, number] | null;
 };
 
+/** This is one viewport rectangle used to prove final-compositor ownership. */
+export type CaptureBounds = {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly right: number;
+  readonly bottom: number;
+};
+
+/** This records one renderer container even when that inactive container has no mounted output. */
+export type CaptureContainerBounds = {
+  readonly renderer: "sigma-2d" | "r3f-2d" | "r3f-3d";
+  readonly bounds: CaptureBounds;
+  readonly display: string;
+  readonly visibility: string;
+  readonly childElementCount: number;
+};
+
+/** This records one directly visible label span inside an owned Three label layer. */
+export type CaptureLabelBounds = {
+  readonly elementId: string;
+  readonly bounds: CaptureBounds;
+};
+
+/** This records one canvas or Three label layer and the renderer container that owns it. */
+export type CaptureElementBounds = {
+  readonly kind: "canvas" | "render3f-label-layer";
+  readonly ownerRenderer: "sigma-2d" | "r3f-2d" | "r3f-3d" | null;
+  readonly identity: string;
+  readonly bounds: CaptureBounds;
+  readonly display: string;
+  readonly visibility: string;
+  readonly overlapsCapture: boolean;
+  readonly visibleLabels: readonly CaptureLabelBounds[];
+};
+
+/** This records every renderer container and every canvas or label layer present for one capture. */
+export type RendererCaptureLayout = {
+  readonly renderer: "sigma-2d" | "r3f-2d" | "r3f-3d";
+  readonly captureBounds: CaptureBounds;
+  readonly containers: readonly CaptureContainerBounds[];
+  readonly elements: readonly CaptureElementBounds[];
+};
+
+/** This rejects a missing active surface or any canvas/label layer owned by another renderer. */
+export function assertRendererCaptureIsolated(layout: RendererCaptureLayout): void {
+  const active = layout.containers.filter((container) => container.renderer === layout.renderer);
+  if (active.length !== 1) {
+    throw new Error(`P7 ${layout.renderer} has ${active.length} active-container records instead of 1`);
+  }
+  const activeContainer = active[0];
+  if (activeContainer === undefined
+      || activeContainer.display === "none"
+      || activeContainer.visibility !== "visible"
+      || activeContainer.bounds.width <= 0
+      || activeContainer.bounds.height <= 0) {
+    throw new Error(`P7 ${layout.renderer} active container is not a visible positive-area capture target`);
+  }
+  const unowned = layout.elements.filter((element) => element.ownerRenderer === null);
+  if (unowned.length > 0) {
+    throw new Error(`P7 ${layout.renderer} has ${unowned.length} canvas or label layers outside a renderer container`);
+  }
+  const foreign = layout.elements.filter((element) => element.ownerRenderer !== layout.renderer);
+  if (foreign.length > 0) {
+    throw new Error(
+      `P7 ${layout.renderer} capture retains foreign output: `
+      + foreign.map((element) => `${element.ownerRenderer ?? "unowned"}/${element.identity}`).join(", "),
+    );
+  }
+  const canvases = layout.elements.filter((element) => element.kind === "canvas");
+  if (canvases.length === 0 || canvases.some((element) => !element.overlapsCapture)) {
+    throw new Error(`P7 ${layout.renderer} has no complete owned canvas capture`);
+  }
+  const expectedLabelLayers = layout.renderer === "sigma-2d" ? 0 : 1;
+  const labelLayers = layout.elements.filter((element) => element.kind === "render3f-label-layer");
+  if (labelLayers.length !== expectedLabelLayers || labelLayers.some((element) => !element.overlapsCapture)) {
+    throw new Error(`P7 ${layout.renderer} has ${labelLayers.length} owned label layers instead of ${expectedLabelLayers}`);
+  }
+}
+
 /** This rejects an off-capture or field-landing governed witness before any separation value can be computed. */
 export function assertGovernedPixelSampleLit(sample: GovernedPixelSample, label: string): void {
   if (sample.sampledRgb === null) {

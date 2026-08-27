@@ -29,6 +29,7 @@ export type FullAppRenderer = Exclude<ParityRenderer, "sigma-2d">;
 export type FullAppPolicy = "Discovery" | "Reliability";
 
 import { PROJECTION_DEPENDENT_SCENE_CHANNELS, assertSceneCameraParity } from "#browser/parity-contract.ts";
+import type { CaptureBounds, RendererCaptureLayout } from "#browser/parity-contract.ts";
 export { PROJECTION_DEPENDENT_SCENE_CHANNELS, assertSceneCameraParity };
 
 /** This records the live surface and node witnesses of one mounted renderer and does not retain its input graph. */
@@ -159,6 +160,7 @@ export type ParityBrowserApi = {
   mountZeroToleranceControl(renderer: ParityRenderer): Promise<ZeroToleranceWitness>;
   readCameraLayoutCapability(): Promise<CameraLayoutCapabilityWitness>;
   readDeterminismSemanticWitness(renderer: ParityRenderer): Promise<DeterminismSemanticWitness>;
+  readCaptureLayout(renderer: ParityRenderer): Promise<RendererCaptureLayout>;
   mountFullAppState(renderer: FullAppRenderer, policy: FullAppPolicy, lodBand: VisualState["lodBand"], reducedMotion: boolean): Promise<FullAppMountWitness>;
   readFullAppState(renderer: FullAppRenderer): Promise<FullAppMountWitness>;
   switchFullAppCamera(renderer: FullAppRenderer, target: CameraKind): Promise<FullAppCameraSwitchWitness>;
@@ -307,28 +309,39 @@ export async function installParityPage(): Promise<void> {
     const fullAppGraphs = await loadFullAppGraphs();
     const root = document.createElement("main");
     root.id = PAGE_ROOT_ID;
-    root.style.cssText = "width:1200px;height:800px;position:relative";
+    root.style.cssText = "width:1200px;height:800px;position:relative;overflow:hidden;isolation:isolate";
     for (const renderer of PARITY_RENDERERS) {
       const container = document.createElement("div");
       container.id = pageRendererId(renderer);
-      container.style.cssText = "width:1200px;height:800px;position:absolute;inset:0";
+      container.style.cssText = "width:1200px;height:800px;position:absolute;inset:0;overflow:hidden;isolation:isolate;display:none";
       root.append(container);
     }
     document.body.replaceChildren(root);
+    document.body.style.margin = "0";
     const mounted = new Map<ParityRenderer, MountedRenderer>();
     const containerFor = (renderer: ParityRenderer): HTMLElement => requiredElement(pageRendererId(renderer));
+    const destroyMounted = (): void => {
+      for (const value of mounted.values()) {
+        value.handle.destroy();
+      }
+      mounted.clear();
+      for (const candidate of PARITY_RENDERERS) {
+        const container = containerFor(candidate);
+        container.replaceChildren();
+        container.style.display = "none";
+      }
+    };
     const mount = async (
       renderer: ParityRenderer,
       candidateGraph = graph,
       options = BASE_OPTIONS,
       initialVisualState?: VisualState,
     ): Promise<MountedParityWitness> => {
+      destroyMounted();
       for (const candidate of PARITY_RENDERERS) {
-        containerFor(candidate).style.visibility = candidate === renderer ? "visible" : "hidden";
+        containerFor(candidate).style.display = candidate === renderer ? "block" : "none";
       }
-      mounted.get(renderer)?.handle.destroy();
       const container = containerFor(renderer);
-      container.replaceChildren();
       const raw = rendererMounts[renderer](container, candidateGraph, options, undefined, initialVisualState);
       const handle = requiredGraphRendererHandle(raw, renderer);
       if (renderer === "r3f-3d") {
@@ -350,7 +363,11 @@ export async function installParityPage(): Promise<void> {
       ready: false,
       errors,
       async mountAll(): Promise<readonly MountedParityWitness[]> {
-        return Promise.all(PARITY_RENDERERS.map(async (renderer) => mount(renderer)));
+        const witnesses: MountedParityWitness[] = [];
+        for (const renderer of PARITY_RENDERERS) {
+          witnesses.push(await mount(renderer));
+        }
+        return witnesses;
       },
       async mountBase(renderer: ParityRenderer): Promise<MountedParityWitness> {
         return mount(renderer);
@@ -486,6 +503,9 @@ export async function installParityPage(): Promise<void> {
           camera: snapshot.visualState.camera,
         };
       },
+      async readCaptureLayout(renderer: ParityRenderer): Promise<RendererCaptureLayout> {
+        return rendererCaptureLayout(renderer);
+      },
       async mountFullAppState(renderer: FullAppRenderer, policy: FullAppPolicy, lodBand: VisualState["lodBand"], reducedMotion: boolean): Promise<FullAppMountWitness> {
         await mount(renderer, fullAppGraphs[policy], { ...BASE_OPTIONS, lodBand, reducedMotion });
         return fullAppMountWitness(renderer, current(renderer).handle);
@@ -560,10 +580,7 @@ export async function installParityPage(): Promise<void> {
         };
       },
       async shutdownFullApp(): Promise<FullAppShutdownWitness> {
-        for (const value of mounted.values()) {
-          value.handle.destroy();
-        }
-        mounted.clear();
+        destroyMounted();
         armFrameCounter();
         await settleUncounted();
         await settleUncounted();
@@ -575,10 +592,7 @@ export async function installParityPage(): Promise<void> {
         };
       },
       async destroy(): Promise<void> {
-        for (const value of mounted.values()) {
-          value.handle.destroy();
-        }
-        mounted.clear();
+        destroyMounted();
         await nextPaint();
       },
     };
@@ -739,6 +753,89 @@ function requiredElement(id: string): HTMLElement {
   return element;
 }
 
+function rendererCaptureLayout(renderer: ParityRenderer): RendererCaptureLayout {
+  const captureBounds = elementBounds(requiredElement(pageRendererId(renderer)));
+  const containers = PARITY_RENDERERS.map((candidate) => {
+    const element = requiredElement(pageRendererId(candidate));
+    const style = getComputedStyle(element);
+    return {
+      renderer: candidate,
+      bounds: elementBounds(element),
+      display: style.display,
+      visibility: style.visibility,
+      childElementCount: element.childElementCount,
+    };
+  });
+  const elements = [...document.querySelectorAll("canvas, [data-render3f-labels='true']")].map((element) => {
+    if (!(element instanceof HTMLElement)) {
+      throw new TypeError("P7 capture element is not an HTMLElement");
+    }
+    const bounds = elementBounds(element);
+    const style = getComputedStyle(element);
+    const ownerRenderer = PARITY_RENDERERS.find((candidate) => element.closest(`#${pageRendererId(candidate)}`) !== null) ?? null;
+    const visibleLabels = element.matches("[data-render3f-labels='true']")
+      ? [...element.querySelectorAll("[data-render3f-label-drawn='true']")].flatMap((label) => {
+          if (!(label instanceof HTMLElement)) {
+            return [];
+          }
+          const labelStyle = getComputedStyle(label);
+          const labelBounds = elementBounds(label);
+          return labelStyle.display !== "none"
+              && labelStyle.visibility === "visible"
+              && labelBounds.width > 0
+              && labelBounds.height > 0
+            ? [{ elementId: label.dataset.elementId ?? "unidentified", bounds: labelBounds }]
+            : [];
+        })
+      : [];
+    return {
+      kind: element instanceof HTMLCanvasElement ? "canvas" as const : "render3f-label-layer" as const,
+      ownerRenderer,
+      identity: captureElementIdentity(element),
+      bounds,
+      display: style.display,
+      visibility: style.visibility,
+      overlapsCapture: boundsOverlap(bounds, captureBounds),
+      visibleLabels,
+    };
+  });
+  return { renderer, captureBounds, containers, elements };
+}
+
+function elementBounds(element: HTMLElement): CaptureBounds {
+  const bounds = element.getBoundingClientRect();
+  return {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    right: bounds.right,
+    bottom: bounds.bottom,
+  };
+}
+
+function boundsOverlap(left: CaptureBounds, right: CaptureBounds): boolean {
+  return left.width > 0
+    && left.height > 0
+    && right.width > 0
+    && right.height > 0
+    && left.x < right.right
+    && left.right > right.x
+    && left.y < right.bottom
+    && left.bottom > right.y;
+}
+
+function captureElementIdentity(element: HTMLElement): string {
+  const id = element.id === "" ? "" : `#${element.id}`;
+  const classes = [...element.classList].sort().map((name) => `.${name}`).join("");
+  const data = [...element.attributes]
+    .filter((attribute) => attribute.name.startsWith("data-"))
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((attribute) => `[${attribute.name}=${JSON.stringify(attribute.value)}]`)
+    .join("");
+  return `${element.tagName.toLowerCase()}${id}${classes}${data}`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -792,6 +889,7 @@ function failedApi(errors: readonly string[]): ParityBrowserApi {
     mountZeroToleranceControl: async () => unavailable(),
     readCameraLayoutCapability: async () => unavailable(),
     readDeterminismSemanticWitness: async () => unavailable(),
+    readCaptureLayout: async () => unavailable(),
     mountFullAppState: async () => unavailable(),
     readFullAppState: async () => unavailable(),
     switchFullAppCamera: async () => unavailable(),
