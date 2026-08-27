@@ -121,6 +121,8 @@ export type SceneEdge = {
   readonly path: readonly Coordinates[];
   /** This is the direct quadratic control point for path and does not require renderer-local fitting. */
   readonly controlPoint: Coordinates;
+  /** This is the resolved filament BODY width before taper, junction and wobble factors, and is not an endpoint width. */
+  readonly bodyWidthPx: number;
   readonly widthStartPx: number;
   readonly widthEndPx: number;
   readonly pickTolerancePx: number;
@@ -226,7 +228,7 @@ export const SCENE_FIELD_REGISTER = {
     "haloIntensityPermille", "haloAlphaStops", "labelCandidacy", "renderedStateChannel", "interaction", "lodBand", "stackingPriority",
   ],
   edge: [
-    "id", "source", "target", "path", "controlPoint", "widthStartPx", "widthEndPx", "pickTolerancePx", "minimumDeviceWidthPx", "token", "opacityPermille",
+    "id", "source", "target", "path", "controlPoint", "bodyWidthPx", "widthStartPx", "widthEndPx", "pickTolerancePx", "minimumDeviceWidthPx", "token", "opacityPermille",
     "renderedStateChannel", "labelCandidacy", "interaction", "lodBand", "filament", "propagation", "stackingPriority",
   ],
   aggregate: ["id", "kind", "members", "center", "radius", "windowPaddingPx", "token", "strokeWidthPx", "strokeOpacityPermille", "bounds"],

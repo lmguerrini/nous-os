@@ -18,7 +18,9 @@
     "build:evidence": "esbuild test/browser/evidence.ts --bundle --format=esm --target=es2022 --outfile=dist/evidence.js",
     "test:browser": "playwright test",
     "test:a4": "A4_STIMULI=1 playwright test --project=a4",
-    "test:review": "REVIEW_CAPTURES=1 playwright test --project=review-dpr-1 --project=review-dpr-2"
+    "test:review": "REVIEW_CAPTURES=1 playwright test --project=review-dpr-1 --project=review-dpr-2",
+    "test:parity": "PARITY_SUITE=1 playwright test --project=parity",
+    "test:performance": "PERFORMANCE_SUITE=1 playwright test --project=performance"
   },
   "dependencies": {
     "@react-three/fiber": "9.7.0",

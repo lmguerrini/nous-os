@@ -799,3 +799,37 @@ function captureFailure(operation: () => void): string {
   }
   throw new Error("negative control did not fail");
 }
+
+test("the resolved filament body width is the one base both endpoint widths are scaled from", () => {
+  const graph = sceneFixtureGraph();
+  const state = sceneVisualState(graph);
+  const scene = buildScene(graph, state, DEFAULT_CALIBRATION, sceneTokens(state));
+  assert.ok(scene.edges.length > 1, "the fixture must supply more than one relation for a shared-ratio claim");
+
+  // The base width is a morphology constant scaled by per-relation prominence, and each endpoint
+  // width is that base scaled by a permille the scene deliberately does not re-export. So the
+  // falsifiable claim is not a magnitude but a RATIO: every relation must show the same
+  // start-to-body and end-to-body ratio, because the same two permille factors produced all of them.
+  // A body width recovered by guessing from the endpoints, or read off a neighbouring value, breaks
+  // that immediately — which is what the control below demonstrates.
+  const ratios = scene.edges.map((edge) => {
+    assert.ok(Number.isFinite(edge.bodyWidthPx) && edge.bodyWidthPx > 0, `${edge.id} has no positive body width`);
+    return { id: edge.id, start: edge.widthStartPx / edge.bodyWidthPx, end: edge.widthEndPx / edge.bodyWidthPx };
+  });
+  const first = ratios[0];
+  if (first === undefined) {
+    throw new TypeError("the ratio claim requires at least one relation");
+  }
+  for (const ratio of ratios) {
+    assert.equal(ratio.start, first.start, `${ratio.id} start-to-body ratio differs from ${first.id}`);
+    assert.equal(ratio.end, first.end, `${ratio.id} end-to-body ratio differs from ${first.id}`);
+  }
+
+  const perturbed = scene.edges.map((edge, index) => ({
+    id: edge.id,
+    start: edge.widthStartPx / (index === 0 ? edge.bodyWidthPx * 2 : edge.bodyWidthPx),
+  }));
+  const control = perturbed.every((ratio) => ratio.start === perturbed[0]?.start);
+  assert.equal(control, false, "the shared-ratio claim must fail when one relation's body width is wrong");
+  process.stdout.write("filament body-width ratio negative control observed: a single perturbed base broke the shared ratio\n");
+});

@@ -296,6 +296,7 @@ function sceneEdge(
     target: edge.target,
     path,
     controlPoint,
+    bodyWidthPx: width,
     widthStartPx: (width * material.widthStartPermille) / scale,
     widthEndPx: (width * material.widthEndPermille) / scale,
     pickTolerancePx: calibration.filament.pickTolerancePx,

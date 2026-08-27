@@ -4,7 +4,14 @@ const A4_ENABLED = process.env.A4_STIMULI === "1";
 const A4_SPEC = "a4-stimuli.spec.ts";
 const REVIEW_ENABLED = process.env.REVIEW_CAPTURES === "1";
 const REVIEW_SPEC = "review-captures.spec.ts";
-const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED;
+const PARITY_ENABLED = process.env.PARITY_SUITE === "1";
+const PARITY_SPEC = "parity.spec.ts";
+const PERFORMANCE_ENABLED = process.env.PERFORMANCE_SUITE === "1";
+const PERFORMANCE_SPEC = "performance.spec.ts";
+// The evidence record is owned by the plain DPR projects alone. Every added suite has to be listed
+// here as well as ignored below: an owner test that also ran one of them would re-initialise the
+// record mid-run, which is the wipe already recorded as CE-14 and worked around by ordering.
+const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED && !PARITY_ENABLED && !PERFORMANCE_ENABLED;
 
 const PREPARE_EVIDENCE = [
   "node --input-type=module --eval '",
@@ -60,8 +67,8 @@ export default defineConfig({
     },
   },
   projects: [
-    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC], use: { deviceScaleFactor: 1 } },
-    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC], use: { deviceScaleFactor: 2 } },
+    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC], use: { deviceScaleFactor: 1 } },
+    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC], use: { deviceScaleFactor: 2 } },
     {
       name: "a4",
       testMatch: A4_ENABLED ? A4_SPEC : "a4-disabled.spec.ts",
@@ -77,6 +84,20 @@ export default defineConfig({
       dependencies: ["review-dpr-1"],
       testMatch: REVIEW_ENABLED ? REVIEW_SPEC : "review-disabled.spec.ts",
       use: { deviceScaleFactor: 2, viewport: { width: 1_200, height: 800 } },
+    },
+    {
+      // CAP-13. Drives Sigma 2D, R3F orthographic 2D and R3F perspective 3D through one interface
+      // and compares what each MOUNTED renderer answers. Off unless asked for, like every other
+      // added suite, so the default run keeps meaning what it has always meant.
+      name: "parity",
+      testMatch: PARITY_ENABLED ? PARITY_SPEC : "parity-disabled.spec.ts",
+      use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
+    },
+    {
+      // CAP-13. Software-rasterised, and every figure it emits says so in its own record.
+      name: "performance",
+      testMatch: PERFORMANCE_ENABLED ? PERFORMANCE_SPEC : "performance-disabled.spec.ts",
+      use: { deviceScaleFactor: 1, viewport: { width: 960, height: 640 } },
     },
   ],
   webServer: {
