@@ -32,6 +32,7 @@ import type {
   SceneEdgeLabelCandidacy,
   SceneInteractionState,
   SceneNode,
+  SceneTokenMap,
 } from "#scene/contract.ts";
 import {
   SCENE_LABEL_FONT_FAMILY,
@@ -41,9 +42,6 @@ import {
   assertSceneFieldRegister,
 } from "#scene/contract.ts";
 import { applyRenderedStateChannel, renderedStateChannel, renderedStateToken } from "#scene/rendered-state.ts";
-
-/** This is the fixed renderer-neutral tessellation of one quadratic scene path; no calibration field currently governs path resolution. */
-const QUADRATIC_PATH_SEGMENT_COUNT = 4;
 
 /** This is the mathematical divisor for a midpoint or symmetric half-width and does not borrow a filament tuning value. */
 const BISECTION_DIVISOR = 2;
@@ -62,7 +60,7 @@ type LabelPlacementCandidate = {
 
 type ResolvedSceneInputs = {
   readonly cameraKind: CameraKind;
-  readonly tokens: TokenMap;
+  readonly tokens: SceneTokenMap;
 };
 
 /** This builds a complete pure scene from governed engine inputs and does not allocate a renderer or inspect semantic content. */
@@ -118,6 +116,11 @@ export function buildScene(
   assertEngineAccessTrace(trace);
   const scene: Scene = {
     field: { token: copyToken(requiredToken(activeTokens, "background")) },
+    tokens: inputs.tokens,
+    tokenEncoding: {
+      gamutCompressionRange: calibration.labels.collisionPaddingPx / calibration.layout.idealEdgeLengthPx,
+      gamutCompressionExponent: calibration.layout.idealEdgeLengthPx / calibration.labels.densityCap,
+    },
     nodes,
     edges,
     aggregates: [...organization.windows]
@@ -223,6 +226,9 @@ function sceneNode(
   const channel = renderedStateChannel(node.rendered ?? null, calibration);
   const baseToken = nodeTokenForMaterial(tokens, material, resolved, calibration);
   const haloRadiusPx = (materialIncludes(resolved.node, "halo") ? material.haloRadiusPx : baseRadiusPx) * selectedMultiplier;
+  const haloIntensityPermille = materialIncludes(resolved.node, "halo")
+    ? material.haloIntensityPermille
+    : 0;
   return {
     id: node.id,
     kind: node.kind,
@@ -231,9 +237,9 @@ function sceneNode(
     token: copyToken(applyRenderedStateChannel(baseToken, channel, calibration)),
     opacityPermille: interactionOpacity(material.opacityPermille, node.id, visualState, calibration),
     haloRadiusPx,
-    haloIntensityPermille: materialIncludes(resolved.node, "halo")
-      ? material.haloIntensityPermille
-      : 0,
+    haloCoreGapPx: calibration.luminance.coreBeforeHaloMinimumPx,
+    haloIntensityPermille,
+    haloAlphaStops: resolveSceneHaloAlphaStops(haloIntensityPermille, calibration),
     labelCandidacy: materialIncludes(resolved.node, "label") ? {
       text: node.visual.role,
       token: copyToken(requiredToken(tokens, "text")),
@@ -248,6 +254,7 @@ function sceneNode(
     renderedStateChannel: channel,
     interaction: interactionState(node.id, visualState),
     lodBand: visualState.lodBand,
+    stackingPriority: node.visual.label_priority,
   };
 }
 
@@ -269,7 +276,8 @@ function sceneEdge(
     : 1;
   const width = edgeWidthForMaterial(material, resolved, calibration) * emphasis;
   const curvature = edgeCurvatureForMaterial(material, resolved);
-  const path = sampleQuadraticPath(source, target, curvature);
+  const controlPoint = quadraticControlPoint(source, target, curvature);
+  const path = sampleQuadraticPath(source, target, controlPoint, curvature, calibration.lod.bandThresholds.length);
   const travelledDistance = propagationDistance(PROPAGATION_SAMPLE_ELAPSED_MILLISECONDS, calibration);
   const propagation = reducedMotionPosition(
     { controlPoints: path },
@@ -287,6 +295,7 @@ function sceneEdge(
     source: edge.source,
     target: edge.target,
     path,
+    controlPoint,
     widthStartPx: (width * material.widthStartPermille) / scale,
     widthEndPx: (width * material.widthEndPermille) / scale,
     pickTolerancePx: calibration.filament.pickTolerancePx,
@@ -302,6 +311,7 @@ function sceneEdge(
     interaction: interactionState(edge.id, visualState),
     lodBand: visualState.lodBand,
     filament: {
+      minimumWidthFactorPermille: calibration.filament.minimumWidthFactorPermille,
       junctionStartPermille: material.junctionStartPermille,
       junctionEndPermille: material.junctionEndPermille,
       sheathScalePermille: filamentMaterial.sheathScalePermille,
@@ -323,6 +333,7 @@ function sceneEdge(
       continuous: propagation.continuous,
       endpointExpressed: propagation.endpointExpressed,
     },
+    stackingPriority: edge.visual.label_priority,
   };
 }
 
@@ -331,13 +342,18 @@ function resolveSceneInputs(
   tokensOrCamera: TokenMap | CameraKind | undefined,
   cameraOrTokens: CameraKind | TokenMap | undefined,
 ): ResolvedSceneInputs {
+  const resolvedTokens = resolveTokens(
+    visualState.palette,
+    visualState.temperature,
+    visualState.theme,
+  ) as SceneTokenMap;
   if (tokensOrCamera === undefined) {
     if (cameraOrTokens !== undefined) {
       throw new TypeError("scene fifth argument requires an explicit fourth argument");
     }
     return {
       cameraKind: visualState.cameraKind,
-      tokens: resolveTokens(visualState.palette, visualState.temperature, visualState.theme),
+      tokens: resolvedTokens,
     };
   }
   if (typeof tokensOrCamera === "string") {
@@ -346,13 +362,38 @@ function resolveSceneInputs(
     }
     return {
       cameraKind: tokensOrCamera,
-      tokens: cameraOrTokens ?? resolveTokens(visualState.palette, visualState.temperature, visualState.theme),
+      tokens: cameraOrTokens === undefined
+        ? resolvedTokens
+        : requireCompleteResolvedTokens(cameraOrTokens, resolvedTokens),
     };
   }
   if (cameraOrTokens !== undefined && typeof cameraOrTokens !== "string") {
     throw new TypeError("scene tokens were supplied twice");
   }
-  return { cameraKind: cameraOrTokens ?? visualState.cameraKind, tokens: tokensOrCamera };
+  return {
+    cameraKind: cameraOrTokens ?? visualState.cameraKind,
+    tokens: requireCompleteResolvedTokens(tokensOrCamera, resolvedTokens),
+  };
+}
+
+function requireCompleteResolvedTokens(tokens: TokenMap, expected: TokenMap): SceneTokenMap {
+  const names = Object.keys(tokens).sort(compareText);
+  const expectedNames = Object.keys(expected).sort(compareText);
+  if (names.length !== expectedNames.length
+    || names.some((name, index) => name !== expectedNames[index])) {
+    throw new TypeError("scene tokens must be the complete resolved token map");
+  }
+  for (const name of expectedNames) {
+    const actual = tokens[name];
+    const resolved = expected[name];
+    if (actual === undefined || resolved === undefined
+      || actual.lightnessPermille !== resolved.lightnessPermille
+      || actual.chromaPermille !== resolved.chromaPermille
+      || actual.hueDegrees !== resolved.hueDegrees) {
+      throw new TypeError(`scene resolved token changed: ${name}`);
+    }
+  }
+  return tokens as SceneTokenMap;
 }
 
 function sceneCameraRequest(
@@ -540,23 +581,31 @@ function prominenceTravel(prominencePermille: number, gainPermille: number): num
   );
 }
 
-function sampleQuadraticPath(
+function quadraticControlPoint(
   source: Coordinates,
   target: Coordinates,
   curvature: number,
-): readonly Coordinates[] {
-  if (curvature === 0) {
-    return [copyCoordinates(source), copyCoordinates(target)];
-  }
-  const steps = QUADRATIC_PATH_SEGMENT_COUNT;
-  if (steps < BISECTION_DIVISOR) {
-    throw new TypeError("scene quadratic path requires at least two segments");
-  }
-  const control = {
+): Coordinates {
+  return {
     x: (source.x + target.x) / 2 - ((target.y - source.y) * curvature),
     y: (source.y + target.y) / 2 + ((target.x - source.x) * curvature),
     z: source.z + ((target.z - source.z) / 2),
   };
+}
+
+function sampleQuadraticPath(
+  source: Coordinates,
+  target: Coordinates,
+  control: Coordinates,
+  curvature: number,
+  steps: number,
+): readonly Coordinates[] {
+  if (curvature === 0) {
+    return [copyCoordinates(source), copyCoordinates(target)];
+  }
+  if (steps < BISECTION_DIVISOR) {
+    throw new TypeError("scene quadratic path requires at least two segments");
+  }
   const samples: Coordinates[] = [];
   for (let index = 0; index <= steps; index += 1) {
     const parameter = index / steps;
@@ -568,6 +617,23 @@ function sampleQuadraticPath(
     });
   }
   return samples;
+}
+
+function resolveSceneHaloAlphaStops(
+  haloIntensityPermille: number,
+  calibration: CalibrationProfile,
+): readonly { readonly offset: number; readonly alphaMultiplier: number }[] {
+  const finalIndex = Math.max(1, calibration.luminance.haloSampleCount - 1);
+  const exponent = BISECTION_DIVISOR
+    + (calibration.luminance.haloFalloffPermille / SCENE_PERMILLE_SCALE);
+  const peakAlphaMultiplier = haloIntensityPermille / SCENE_PERMILLE_SCALE;
+  return Array.from({ length: finalIndex + 1 }, (_value, index) => {
+    const offset = index / finalIndex;
+    return {
+      offset,
+      alphaMultiplier: peakAlphaMultiplier * ((1 - offset) ** exponent),
+    };
+  });
 }
 
 function propagationDistance(elapsedMilliseconds: number, calibration: CalibrationProfile): number {

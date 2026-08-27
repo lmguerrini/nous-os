@@ -57,8 +57,6 @@ export type GraphRendererHandle = {
   restoreCameraState(state: RendererCameraState): void;
   /** This reports the serialisable view state and does not expose graph semantics. */
   readVisualState(): VisualState;
-  /** This switches the camera and does not rebuild the graph, re-run layout, or move a world anchor. */
-  setCameraKind(kind: CameraKind): void;
   /** This selects one existing graph element and changes material only. */
   setSelection(id: string): void;
   /** This clears selection and restores the unselected material. */
@@ -102,4 +100,21 @@ export type GraphRendererHandle = {
   readRetainedResources(): RetainedResourceWitness;
   /** This releases every resource this handle created and does not leave a DOM overlay behind. */
   destroy(): void;
+};
+
+/**
+ * This is a renderer that can switch camera in place, and it is deliberately NOT the common interface.
+ *
+ * Sigma has exactly one camera. Putting `setCameraKind` on the interface every renderer must satisfy
+ * would force the 2D renderer either to refuse a call its own type promised, or to report a camera
+ * switch that never happened — a fabricated witness in the very surface the parity oracle reads. So
+ * the ability is declared where it actually exists, and a check about switching cameras applies to
+ * the renderers that can, which is a statement about the renderers rather than a gap in the check.
+ *
+ * `cameraKind` stays on the common interface because every renderer can answer it truthfully: the
+ * Sigma renderer is always orthographic and says so.
+ */
+export type MultiCameraRendererHandle = GraphRendererHandle & {
+  /** This switches the camera and does not rebuild the graph, re-run layout, or move a world anchor. */
+  setCameraKind(kind: CameraKind): void;
 };

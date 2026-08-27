@@ -24,6 +24,9 @@ const HUE_CONTROL_MUTATION_DEGREES = 1;
 /** This is the arithmetic identity for node kinds without a kind-specific label boost and is not a tuneable material value. */
 const NO_KIND_PRIORITY_BOOST = 0;
 
+/** This is the endpoint count of an unsampled straight quadratic and is not a tuneable path value. */
+const QUADRATIC_ENDPOINT_COUNT = 2;
+
 test("buildScene is byte-deterministic across independent calls and shuffled graph input", () => {
   const graph = sceneFixtureGraph();
   const selected = graph.nodes[0];
@@ -126,13 +129,71 @@ test("scene resolves renderer inputs for filament picking, labels, aggregates, a
 
   const selectedState = { ...sceneVisualState(graph, relation.id), palette: "interstellar" as const };
   const focusedState = { ...sceneVisualState(graph, null, relation.id), palette: "interstellar" as const };
+  const selectedScene = buildScene(graph, selectedState, DEFAULT_CALIBRATION, sceneTokens(selectedState));
+  const focusedScene = buildScene(graph, focusedState, DEFAULT_CALIBRATION, sceneTokens(focusedState));
   assertEdgeLabelStateResolution(
     relation,
     scene,
-    buildScene(graph, selectedState, DEFAULT_CALIBRATION, sceneTokens(selectedState)),
-    buildScene(graph, focusedState, DEFAULT_CALIBRATION, sceneTokens(focusedState)),
+    selectedScene,
+    focusedScene,
     DEFAULT_CALIBRATION,
   );
+  assertCompleteResolvedTokens(scene, tokens);
+  assertQuadraticControlAgreement(scene);
+  assertStackingPriorities(graph, scene, selectedScene, relation.id);
+  const monochromeState = sceneVisualState(graph);
+  const monochromeTokens = sceneTokens(monochromeState);
+  assertCompleteResolvedTokens(
+    buildScene(graph, monochromeState, DEFAULT_CALIBRATION, monochromeTokens),
+    monochromeTokens,
+  );
+
+  const curvedCalibration = structuredClone(DEFAULT_CALIBRATION);
+  (curvedCalibration.filament as { curvatureMagnitudePermille: number }).curvatureMagnitudePermille =
+    DEFAULT_CALIBRATION.morphology.stellar.curvatureMagnitudePermille;
+  const curvedScene = buildScene(graph, state, curvedCalibration, tokens);
+  assertResolvedRendererInputs(curvedScene, curvedCalibration, tokens);
+  assertQuadraticControlAgreement(curvedScene);
+
+  const filteredTokens = Object.fromEntries(
+    Object.entries(tokens).filter(([name]) => name !== "surface"),
+  );
+  const tokenControlOutput = captureFailure(() => buildScene(
+    graph,
+    state,
+    DEFAULT_CALIBRATION,
+    filteredTokens,
+  ));
+  assert.match(tokenControlOutput, /complete resolved token map/);
+  process.stdout.write(`scene-token-map negative control observed: ${tokenControlOutput}\n`);
+
+  const curved = curvedScene.edges.find((edge) => edge.path.length > QUADRATIC_ENDPOINT_COUNT);
+  if (curved === undefined) {
+    throw new TypeError("scene fixture requires a curved relation");
+  }
+  const geometryControl: Scene = {
+    ...curvedScene,
+    edges: curvedScene.edges.map((edge) => edge.id === curved.id
+      ? { ...edge, controlPoint: { ...edge.controlPoint, x: edge.controlPoint.x + SCENE_PERMILLE_QUANTUM } }
+      : edge),
+  };
+  const geometryControlOutput = captureFailure(() => assertQuadraticControlAgreement(geometryControl));
+  assert.match(geometryControlOutput, /quadratic sample disagrees with direct control/);
+  process.stdout.write(`scene-quadratic-control negative control observed: ${geometryControlOutput}\n`);
+
+  const stackingEdge = scene.edges.find((edge) => edge.labelCandidacy !== null);
+  if (stackingEdge?.labelCandidacy === null || stackingEdge?.labelCandidacy === undefined) {
+    throw new TypeError("scene fixture requires an edge stacking control");
+  }
+  const stackingControl: Scene = {
+    ...scene,
+    edges: scene.edges.map((edge) => edge.id === stackingEdge.id
+      ? { ...edge, stackingPriority: stackingEdge.labelCandidacy?.priority ?? edge.stackingPriority }
+      : edge),
+  };
+  const stackingControlOutput = captureFailure(() => assertStackingPriorities(graph, stackingControl, selectedScene, relation.id));
+  assert.match(stackingControlOutput, /edge stacking priority changed/);
+  process.stdout.write(`scene-stacking-priority negative control observed: ${stackingControlOutput}\n`);
 
   const macroState = { ...state, lodBand: "macro" as const };
   const macroTokens = sceneTokens(macroState);
@@ -351,6 +412,94 @@ function assertPropagationResolution(ordinary: Scene, reduced: Scene): void {
   }
 }
 
+function assertCompleteResolvedTokens(scene: Scene, expected: ReturnType<typeof sceneTokens>): void {
+  const expectedNames = Object.keys(expected).sort();
+  const actualNames = Object.keys(scene.tokens).sort();
+  if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) {
+    const firstDifference = expectedNames.find((name) => scene.tokens[name] === undefined)
+      ?? actualNames.find((name) => expected[name] === undefined)
+      ?? "unknown";
+    throw new Error(`resolved token map was filtered or changed at ${firstDifference}`);
+  }
+  for (const name of expectedNames) {
+    if (JSON.stringify(scene.tokens[name]) !== JSON.stringify(expected[name])) {
+      throw new Error(`resolved token map was filtered or changed at ${name}`);
+    }
+  }
+  for (const name of ["background", "edge", "peak", "text", "textMuted", "accent2", "accent3"]) {
+    if (scene.tokens[name] === undefined) {
+      throw new Error(`resolved named token is unavailable: ${name}`);
+    }
+  }
+  if (scene.tokens !== expected) {
+    throw new Error("resolved token map identity changed at the scene boundary");
+  }
+}
+
+function assertQuadraticControlAgreement(scene: Scene): void {
+  for (const edge of scene.edges) {
+    const source = edge.path[0];
+    const target = edge.path.at(-1);
+    if (source === undefined || target === undefined || edge.path.length < QUADRATIC_ENDPOINT_COUNT) {
+      throw new Error(`quadratic path lacks endpoints for ${edge.id}`);
+    }
+    const sampleCount = edge.path.length - SCENE_PERMILLE_QUANTUM;
+    if (edge.path.length === QUADRATIC_ENDPOINT_COUNT) {
+      const expectedControl = {
+        x: (source.x + target.x) / QUADRATIC_ENDPOINT_COUNT,
+        y: (source.y + target.y) / QUADRATIC_ENDPOINT_COUNT,
+        z: (source.z + target.z) / QUADRATIC_ENDPOINT_COUNT,
+      };
+      if (JSON.stringify(edge.controlPoint) !== JSON.stringify(expectedControl)) {
+        throw new Error(`quadratic sample disagrees with direct control for ${edge.id} at straight midpoint`);
+      }
+      continue;
+    }
+    for (const [index, actual] of edge.path.entries()) {
+      const parameter = index / sampleCount;
+      const inverse = 1 - parameter;
+      const expected = {
+        x: (inverse * inverse * source.x) + (2 * inverse * parameter * edge.controlPoint.x) + (parameter * parameter * target.x),
+        y: (inverse * inverse * source.y) + (2 * inverse * parameter * edge.controlPoint.y) + (parameter * parameter * target.y),
+        z: (inverse * inverse * source.z) + (2 * inverse * parameter * edge.controlPoint.z) + (parameter * parameter * target.z),
+      };
+      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+        throw new Error(`quadratic sample disagrees with direct control for ${edge.id} at sample ${index}`);
+      }
+    }
+  }
+}
+
+function assertStackingPriorities(
+  graph: VisualGraph,
+  ordinary: Scene,
+  selected: Scene,
+  selectedEdgeId: string,
+): void {
+  for (const node of ordinary.nodes) {
+    const source = graph.nodes.find((candidate) => candidate.id === node.id);
+    if (source === undefined || node.stackingPriority !== source.visual.label_priority) {
+      throw new Error(`node stacking priority changed for ${node.id}`);
+    }
+  }
+  for (const edge of ordinary.edges) {
+    const source = graph.edges.find((candidate) => candidate.id === edge.id);
+    if (source === undefined || edge.stackingPriority !== source.visual.label_priority) {
+      throw new Error(`edge stacking priority changed for ${edge.id}`);
+    }
+  }
+  const ordinarySelectedEdge = ordinary.edges.find((edge) => edge.id === selectedEdgeId);
+  const selectedEdge = selected.edges.find((edge) => edge.id === selectedEdgeId);
+  if (ordinarySelectedEdge === undefined || selectedEdge === undefined
+    || ordinarySelectedEdge.stackingPriority !== selectedEdge.stackingPriority) {
+    throw new Error(`edge stacking priority changed with interaction for ${selectedEdgeId}`);
+  }
+  if (ordinarySelectedEdge.labelCandidacy === null || selectedEdge.labelCandidacy === null
+    || ordinarySelectedEdge.labelCandidacy.priority === selectedEdge.labelCandidacy.priority) {
+    throw new Error(`edge label priority did not remain distinct from stacking for ${selectedEdgeId}`);
+  }
+}
+
 type FilamentTaperRelation = {
   readonly id: string;
   readonly governedState: RenderedStateCarrier;
@@ -377,6 +526,12 @@ function assertResolvedRendererInputs(
   aggregateOutline = false,
 ): void {
   const expectedTaper = resolveSceneFilamentLuminance(calibration);
+  if (
+    scene.tokenEncoding.gamutCompressionRange !== calibration.labels.collisionPaddingPx / calibration.layout.idealEdgeLengthPx
+    || scene.tokenEncoding.gamutCompressionExponent !== calibration.layout.idealEdgeLengthPx / calibration.labels.densityCap
+  ) {
+    throw new Error("token encoding profile changed");
+  }
   if (expectedTaper.luminanceStartPermille <= expectedTaper.luminanceMidPermille
     || expectedTaper.luminanceEndPermille <= expectedTaper.luminanceMidPermille) {
     throw new Error("filament endpoints are not brighter than the mid-span");
@@ -387,6 +542,13 @@ function assertResolvedRendererInputs(
     }
     if (edge.minimumDeviceWidthPx !== calibration.filament.minimumDeviceWidthPermille / SCENE_PERMILLE_SCALE) {
       throw new Error(`filament device-width floor changed for ${edge.id}`);
+    }
+    if (edge.filament.minimumWidthFactorPermille !== calibration.filament.minimumWidthFactorPermille) {
+      throw new Error(`filament minimum-width factor changed for ${edge.id}`);
+    }
+    if (edge.path.length > QUADRATIC_ENDPOINT_COUNT
+      && edge.path.length !== calibration.lod.bandThresholds.length + SCENE_PERMILLE_QUANTUM) {
+      throw new Error(`filament sample count changed for ${edge.id}`);
     }
     if (JSON.stringify({
       luminanceStartPermille: edge.filament.luminanceStartPermille,
@@ -407,6 +569,14 @@ function assertResolvedRendererInputs(
     }
   }
   for (const node of scene.nodes) {
+    if (
+      node.haloCoreGapPx !== calibration.luminance.coreBeforeHaloMinimumPx
+      || node.haloAlphaStops.length !== calibration.luminance.haloSampleCount
+      || node.haloAlphaStops[0]?.alphaMultiplier !== node.haloIntensityPermille / SCENE_PERMILLE_SCALE
+      || node.haloAlphaStops.at(-1)?.alphaMultiplier !== 0
+    ) {
+      throw new Error(`node halo profile changed for ${node.id}`);
+    }
     const candidate = node.labelCandidacy;
     if (candidate === null) {
       continue;
@@ -485,6 +655,9 @@ function assertLayoutDepthOnly(scene: Scene, calibration: CalibrationProfile): v
     }
   }
   for (const edge of scene.edges) {
+    if (edge.controlPoint.z !== 0) {
+      throw new Error(`non-layout control depth on edge ${edge.id}: ${edge.controlPoint.z}`);
+    }
     for (const point of edge.path) {
       if (point.z !== 0) {
         throw new Error(`non-layout depth on edge ${edge.id}: ${point.z}`);
@@ -510,6 +683,7 @@ function assertDepthAndNavigationChannelsMatch(baseline: Scene, candidate: Scene
     nodes: scene.nodes.map((node) => ({ id: node.id, z: node.position.z })),
     edges: scene.edges.map((edge) => ({
       id: edge.id,
+      control: edge.controlPoint.z,
       path: edge.path.map((point) => point.z),
       propagation: edge.propagation.position.z,
     })),

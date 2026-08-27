@@ -26,6 +26,7 @@ test("the pinned scene register accepts generated scenes and refuses unknown key
     "edgeLabelCandidacy",
     "field",
     "filament",
+    "haloAlphaStop",
     "node",
     "nodeLabelCandidacy",
     "orthographicNavigation",
@@ -35,21 +36,27 @@ test("the pinned scene register accepts generated scenes and refuses unknown key
     "renderedStateChannel",
     "scene",
     "token",
+    "tokenEncoding",
   ]);
 
   const controls: readonly { readonly path: string; readonly mutate: (scene: Scene) => void }[] = [
     { path: "scene", mutate: (value) => addUnknown(value) },
     { path: "field", mutate: (value) => addUnknown(value.field) },
     { path: "field.token", mutate: (value) => addUnknown(value.field.token) },
+    { path: "tokens.background", mutate: (value) => addUnknown(required(value.tokens.background, "background token")) },
+    { path: "tokenEncoding", mutate: (value) => addUnknown(value.tokenEncoding) },
     { path: "nodes array", mutate: (value) => addUnknown(value.nodes) },
     { path: "node", mutate: (value) => addUnknown(required(value.nodes[0], "node")) },
     { path: "node.position", mutate: (value) => addUnknown(required(value.nodes[0], "node").position) },
     { path: "node.token", mutate: (value) => addUnknown(required(value.nodes[0], "node").token) },
+    { path: "node.haloAlphaStops array", mutate: (value) => addUnknown(required(value.nodes[0], "node").haloAlphaStops) },
+    { path: "node.haloAlphaStop", mutate: (value) => addUnknown(required(required(value.nodes[0], "node").haloAlphaStops[0], "halo alpha stop")) },
     { path: "node.labelCandidacy", mutate: (value) => addUnknown(requiredNodeLabelCandidacy(value)) },
     { path: "node.labelCandidacy.token", mutate: (value) => addUnknown(requiredNodeLabelCandidacy(value).token) },
     { path: "node.renderedStateChannel", mutate: (value) => addUnknown(requiredNonNullChannel(value)) },
     { path: "edge", mutate: (value) => addUnknown(required(value.edges[0], "edge")) },
     { path: "edge.path coordinate", mutate: (value) => addUnknown(required(required(value.edges[0], "edge").path[0], "path point")) },
+    { path: "edge.controlPoint", mutate: (value) => addUnknown(required(value.edges[0], "edge").controlPoint) },
     { path: "edge.token", mutate: (value) => addUnknown(required(value.edges[0], "edge").token) },
     { path: "edge.labelCandidacy", mutate: (value) => addUnknown(requiredLabelCandidacy(value)) },
     { path: "edge.labelCandidacy.token", mutate: (value) => addUnknown(requiredLabelCandidacy(value).token) },
@@ -74,6 +81,11 @@ test("the pinned scene register accepts generated scenes and refuses unknown key
     assert.match(output, /fields do not match the pinned register/);
     return `${control.path}: ${output}`;
   });
+  const tokenMapMutant = structuredClone(scene);
+  delete (tokenMapMutant.tokens as Record<string, unknown>).surface;
+  const tokenMapOutput = captureFailure(() => assertSceneFieldRegister(tokenMapMutant));
+  assert.match(tokenMapOutput, /complete resolved token map/);
+  process.stdout.write(`scene-token-register negative control observed: ${tokenMapOutput}\n`);
   const perspective = buildScene(graph, state, DEFAULT_CALIBRATION, sceneTokens(state), PERSPECTIVE);
   const perspectiveMutant = structuredClone(perspective);
   addUnknown(perspectiveMutant.camera.navigation);

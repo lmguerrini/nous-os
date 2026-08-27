@@ -2,7 +2,8 @@ import { CAMERA_KINDS } from "#engine/camera-kind.ts";
 import type { Coordinates, DerivedValue } from "#engine/contract.ts";
 import type { LodBand } from "#engine/lod.ts";
 import { MACRO, MESO, MICRO } from "#engine/lod.ts";
-import type { OklchToken } from "#engine/tokens.ts";
+import { TOKEN_RAMPS, resolveTokens } from "#engine/tokens.ts";
+import type { OklchToken, TokenMap } from "#engine/tokens.ts";
 
 /** This is the fixed base of every permille-encoded scene quantity; it is a representation unit, not a tuneable calibration value. */
 export const SCENE_PERMILLE_SCALE = 1_000;
@@ -32,6 +33,12 @@ export type RenderedStateChannel = {
 /** This names resolved interaction emphasis and does not identify an input event. */
 export type SceneInteractionState = "none" | "selected" | "focused" | "dimmed";
 
+/** This is one resolved radial halo sample and does not ask a renderer to derive falloff or sample density. */
+export type SceneHaloAlphaStop = {
+  readonly offset: number;
+  readonly alphaMultiplier: number;
+};
+
 /** This is one resolved node-label candidate and does not ask a renderer to choose text material or halo clearance. */
 export type SceneNodeLabelCandidacy = {
   readonly text: string;
@@ -54,11 +61,15 @@ export type SceneNode = {
   readonly token: OklchToken;
   readonly opacityPermille: number;
   readonly haloRadiusPx: number;
+  readonly haloCoreGapPx: number;
   readonly haloIntensityPermille: number;
+  readonly haloAlphaStops: readonly SceneHaloAlphaStop[];
   readonly labelCandidacy: SceneNodeLabelCandidacy;
   readonly renderedStateChannel: RenderedStateChannel;
   readonly interaction: SceneInteractionState;
   readonly lodBand: LodBand;
+  /** This orders node draw stacking and does not select labels or include kind or interaction boosts. */
+  readonly stackingPriority: number;
 };
 
 /** This is one resolved edge-label candidate and does not perform renderer text measurement. */
@@ -84,6 +95,7 @@ export type ScenePropagation = {
 
 /** This is one resolved filament material and does not name a shader or draw pass. */
 export type SceneFilamentMaterial = {
+  readonly minimumWidthFactorPermille: number;
   readonly junctionStartPermille: number;
   readonly junctionEndPermille: number;
   readonly sheathScalePermille: number;
@@ -107,6 +119,8 @@ export type SceneEdge = {
   readonly source: string;
   readonly target: string;
   readonly path: readonly Coordinates[];
+  /** This is the direct quadratic control point for path and does not require renderer-local fitting. */
+  readonly controlPoint: Coordinates;
   readonly widthStartPx: number;
   readonly widthEndPx: number;
   readonly pickTolerancePx: number;
@@ -119,7 +133,23 @@ export type SceneEdge = {
   readonly lodBand: LodBand;
   readonly filament: SceneFilamentMaterial;
   readonly propagation: ScenePropagation;
+  /** This orders edge draw stacking and does not select labels or include kind or interaction boosts. */
+  readonly stackingPriority: number;
 };
+
+/** This is the resolved token-to-display encoding profile and does not borrow layout or label calibration at the renderer boundary. */
+export type SceneTokenEncoding = {
+  readonly gamutCompressionRange: number;
+  readonly gamutCompressionExponent: number;
+};
+
+/** This is the complete resolver token-name domain and does not narrow the scene to current consumer reads. */
+export type SceneTokenName = typeof SCENE_BASE_TOKEN_NAMES[number]
+  | typeof TOKEN_RAMPS.neutral[number]
+  | typeof TOKEN_RAMPS.accent[number];
+
+/** This retains the open TokenMap contract while making every resolver-owned named token statically reachable. */
+export type SceneTokenMap = TokenMap & Readonly<Record<SceneTokenName, OklchToken>>;
 
 /** This is one resolved aggregate window and does not infer recursive containment. */
 export type SceneAggregate = {
@@ -175,6 +205,9 @@ export type SceneCameraRequest = SceneCameraFrame & ({
 /** This is the complete resolved scene and does not allocate renderer resources. */
 export type Scene = {
   readonly field: SceneField;
+  /** This is the whole resolved TokenMap exactly as resolveTokens returned it, kept unfiltered so every named renderer fallback or material token is available without consumer-side token resolution. */
+  readonly tokens: SceneTokenMap;
+  readonly tokenEncoding: SceneTokenEncoding;
   readonly nodes: readonly SceneNode[];
   readonly edges: readonly SceneEdge[];
   readonly aggregates: readonly SceneAggregate[];
@@ -185,24 +218,26 @@ export type Scene = {
 
 /** This is the complete literal scene field register and does not permit extension fields. */
 export const SCENE_FIELD_REGISTER = {
-  scene: ["field", "nodes", "edges", "aggregates", "selectedLabelIds", "selectedProvenance", "camera"],
+  scene: ["field", "tokens", "tokenEncoding", "nodes", "edges", "aggregates", "selectedLabelIds", "selectedProvenance", "camera"],
   field: ["token"],
+  tokenEncoding: ["gamutCompressionRange", "gamutCompressionExponent"],
   node: [
-    "id", "kind", "position", "radiusPx", "token", "opacityPermille", "haloRadiusPx",
-    "haloIntensityPermille", "labelCandidacy", "renderedStateChannel", "interaction", "lodBand",
+    "id", "kind", "position", "radiusPx", "token", "opacityPermille", "haloRadiusPx", "haloCoreGapPx",
+    "haloIntensityPermille", "haloAlphaStops", "labelCandidacy", "renderedStateChannel", "interaction", "lodBand", "stackingPriority",
   ],
   edge: [
-    "id", "source", "target", "path", "widthStartPx", "widthEndPx", "pickTolerancePx", "minimumDeviceWidthPx", "token", "opacityPermille",
-    "renderedStateChannel", "labelCandidacy", "interaction", "lodBand", "filament", "propagation",
+    "id", "source", "target", "path", "controlPoint", "widthStartPx", "widthEndPx", "pickTolerancePx", "minimumDeviceWidthPx", "token", "opacityPermille",
+    "renderedStateChannel", "labelCandidacy", "interaction", "lodBand", "filament", "propagation", "stackingPriority",
   ],
   aggregate: ["id", "kind", "members", "center", "radius", "windowPaddingPx", "token", "strokeWidthPx", "strokeOpacityPermille", "bounds"],
   coordinates: ["x", "y", "z"],
   token: ["lightnessPermille", "chromaPermille", "hueDegrees"],
   renderedStateChannel: ["lightnessDeltaPermille"],
+  haloAlphaStop: ["offset", "alphaMultiplier"],
   nodeLabelCandidacy: ["text", "token", "priority", "opacityPermille", "sizePx", "fontFamily", "fontWeight", "collisionPaddingPx", "placementOffsetPx"],
   edgeLabelCandidacy: ["text", "token", "priority", "opacityPermille", "sizePx", "fontFamily", "fontWeight", "collisionPaddingPx"],
   filament: [
-    "junctionStartPermille", "junctionEndPermille", "sheathScalePermille", "sheathAlphaPermille",
+    "minimumWidthFactorPermille", "junctionStartPermille", "junctionEndPermille", "sheathScalePermille", "sheathAlphaPermille",
     "coreScalePermille", "hotMixPermille", "hotAlphaPermille", "hotCorePermille",
     "wobbleAmplitudePermille", "wobbleFrequencyMilliradians", "phasePermille", "afterglowDecayPermille",
     "luminanceStartPermille", "luminanceMidPermille", "luminanceEndPermille",
@@ -219,12 +254,20 @@ export const SCENE_FIELD_REGISTER = {
 const INTERACTION_STATES: readonly SceneInteractionState[] = ["none", "selected", "focused", "dimmed"];
 const LOD_BANDS: readonly LodBand[] = [MACRO, MESO, MICRO];
 
+/** This is the complete non-ramp token-name register returned by the resolver and does not select renderer-specific names. */
+const SCENE_BASE_TOKEN_NAMES = ["background", "surface", "textMuted", "text", "edge", "peak"] as const;
+
+/** This derives the complete token-name set from the resolver itself and does not maintain a consumer-selected subset. */
+const COMPLETE_RESOLVED_TOKEN_NAMES = Object.keys(resolveTokens("monochrome", "balanced", "dark")).sort();
+
 /** This refuses unknown scene keys at every registered nesting level and does not validate graph semantics. */
 export function assertSceneFieldRegister(value: unknown): asserts value is Scene {
   assertExactFields(value, "scene", SCENE_FIELD_REGISTER.scene);
   const scene = value as Record<string, unknown>;
   assertExactFields(scene.field, "scene.field", SCENE_FIELD_REGISTER.field);
   assertToken((scene.field as Record<string, unknown>).token, "scene.field.token");
+  assertTokenMap(scene.tokens, "scene.tokens");
+  assertTokenEncoding(scene.tokenEncoding, "scene.tokenEncoding");
   assertArray(scene.nodes, "scene.nodes");
   assertArray(scene.edges, "scene.edges");
   assertArray(scene.aggregates, "scene.aggregates");
@@ -253,11 +296,17 @@ function assertNode(value: unknown, path: string): void {
   assertToken(node.token, `${path}.token`);
   assertSafeInteger(node.opacityPermille, `${path}.opacityPermille`);
   assertFiniteNumber(node.haloRadiusPx, `${path}.haloRadiusPx`);
+  assertSafeInteger(node.haloCoreGapPx, `${path}.haloCoreGapPx`);
   assertSafeInteger(node.haloIntensityPermille, `${path}.haloIntensityPermille`);
+  assertArray(node.haloAlphaStops, `${path}.haloAlphaStops`);
+  for (const [index, stop] of node.haloAlphaStops.entries()) {
+    assertHaloAlphaStop(stop, `${path}.haloAlphaStops[${index}]`);
+  }
   assertNodeLabelCandidacy(node.labelCandidacy, `${path}.labelCandidacy`);
   assertRenderedStateChannel(node.renderedStateChannel, `${path}.renderedStateChannel`);
   assertChoice(node.interaction, INTERACTION_STATES, `${path}.interaction`);
   assertChoice(node.lodBand, LOD_BANDS, `${path}.lodBand`);
+  assertFiniteNumber(node.stackingPriority, `${path}.stackingPriority`);
 }
 
 function assertEdge(value: unknown, path: string): void {
@@ -270,6 +319,7 @@ function assertEdge(value: unknown, path: string): void {
   for (const [index, point] of edge.path.entries()) {
     assertCoordinates(point, `${path}.path[${index}]`);
   }
+  assertCoordinates(edge.controlPoint, `${path}.controlPoint`);
   assertFiniteNumber(edge.widthStartPx, `${path}.widthStartPx`);
   assertFiniteNumber(edge.widthEndPx, `${path}.widthEndPx`);
   assertSafeInteger(edge.pickTolerancePx, `${path}.pickTolerancePx`);
@@ -282,6 +332,7 @@ function assertEdge(value: unknown, path: string): void {
   assertChoice(edge.lodBand, LOD_BANDS, `${path}.lodBand`);
   assertFilament(edge.filament, `${path}.filament`);
   assertPropagation(edge.propagation, `${path}.propagation`);
+  assertFiniteNumber(edge.stackingPriority, `${path}.stackingPriority`);
 }
 
 function assertAggregate(value: unknown, path: string): void {
@@ -305,6 +356,41 @@ function assertToken(value: unknown, path: string): void {
   assertSafeInteger(token.lightnessPermille, `${path}.lightnessPermille`);
   assertSafeInteger(token.chromaPermille, `${path}.chromaPermille`);
   assertSafeInteger(token.hueDegrees, `${path}.hueDegrees`);
+}
+
+function assertTokenMap(value: unknown, path: string): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError(`${path} must be a token map`);
+  }
+  const tokens = value as Record<PropertyKey, unknown>;
+  const names = Reflect.ownKeys(tokens);
+  if (names.length !== COMPLETE_RESOLVED_TOKEN_NAMES.length
+    || names.some((name) => typeof name !== "string" || !COMPLETE_RESOLVED_TOKEN_NAMES.includes(name))) {
+    throw new TypeError(`${path} must be the complete resolved token map`);
+  }
+  for (const name of names) {
+    if (typeof name !== "string") {
+      throw new TypeError(`${path} fields do not match the token map contract`);
+    }
+    assertToken(tokens[name], `${path}.${name}`);
+  }
+}
+
+function assertTokenEncoding(value: unknown, path: string): void {
+  assertExactFields(value, path, SCENE_FIELD_REGISTER.tokenEncoding);
+  const encoding = value as Record<string, unknown>;
+  assertFiniteNumber(encoding.gamutCompressionRange, `${path}.gamutCompressionRange`);
+  assertFiniteNumber(encoding.gamutCompressionExponent, `${path}.gamutCompressionExponent`);
+  if ((encoding.gamutCompressionRange as number) <= 0 || (encoding.gamutCompressionExponent as number) <= 0) {
+    throw new TypeError(`${path} factors must be positive`);
+  }
+}
+
+function assertHaloAlphaStop(value: unknown, path: string): void {
+  assertExactFields(value, path, SCENE_FIELD_REGISTER.haloAlphaStop);
+  const stop = value as Record<string, unknown>;
+  assertFiniteNumber(stop.offset, `${path}.offset`);
+  assertFiniteNumber(stop.alphaMultiplier, `${path}.alphaMultiplier`);
 }
 
 function assertRenderedStateChannel(value: unknown, path: string): void {
