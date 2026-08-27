@@ -31,6 +31,12 @@ export type SurfaceWitness = {
   readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
 };
 
+/** This reports one element's world anchor as the MOUNTED renderer holds it, and does not read the graph that fed it. */
+export type WorldAnchorWitness = {
+  readonly id: string;
+  readonly position: Coordinates;
+};
+
 /** This counts the graphics resources one renderer currently retains and does not attribute them to an element. */
 export type RetainedResourceWitness = {
   readonly geometries: number;
@@ -71,6 +77,23 @@ export type GraphRendererHandle = {
   readSurfaceWitness(): SurfaceWitness;
   /** This reports live drawn node footprints and does not inspect an offscreen canvas. */
   readNodeFootprintWitnesses(): readonly NodeFootprintWitness[];
+  /**
+   * This reports world anchors from MOUNTED renderer state and does not read the scene model.
+   *
+   * A parity check comparing the model against itself proves nothing, so the anchors a renderer is
+   * actually holding have to be reachable separately from the anchors it was handed. Without this,
+   * the criterion that a camera switch moves no world anchor has no witness at all and can only be
+   * recorded NOT_RUN.
+   */
+  readWorldAnchorWitnesses(): readonly WorldAnchorWitness[];
+  /**
+   * This counts the layout passes this handle has run since mount, and does not run one.
+   *
+   * Switching camera must change the camera and nothing else. A count that does not move across the
+   * switch is the evidence for that; comparing anchors alone would pass a renderer that re-ran
+   * layout and happened to settle on the same positions.
+   */
+  readLayoutPassCount(): number;
   /** This returns the node the mounted renderer itself picks at one viewport position. */
   pickNodeAtPosition(position: { readonly x: number; readonly y: number }): string | null;
   /** This returns the relation the mounted renderer itself picks at one viewport position. */

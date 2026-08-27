@@ -1,0 +1,820 @@
+import type { CalibrationProfile } from "#engine/calibration.ts";
+import { DEFAULT_CALIBRATION, assertCalibrationProfile } from "#engine/calibration.ts";
+import type { CameraKind } from "#engine/camera-kind.ts";
+import type {
+  Coordinates,
+  EngineEdge,
+  EngineGraph,
+  EngineNode,
+  RenderedStateCarrier,
+  VisualGraph,
+} from "#engine/contract.ts";
+import {
+  assertEngineAccessTrace,
+  createEngineGraphView,
+} from "#engine/contract.ts";
+import { layoutAnchors } from "#engine/layout.ts";
+import type { ResolvedMaterial } from "#engine/lod.ts";
+import { MACRO, MESO, lodView } from "#engine/lod.ts";
+import type { EdgeMaterial, MorphologyProfile, NodeMaterial } from "#engine/morphology.ts";
+import { MYCELIUM, NEURAL, STELLAR, applyMorphology } from "#engine/morphology.ts";
+import { assertIndraOrganization, flatOrganization, indraOrganization } from "#engine/organization.ts";
+import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
+import { contrastRatio, relativeLuminance, resolveTokens } from "#engine/tokens.ts";
+import type { OklchToken, TokenMap } from "#engine/tokens.ts";
+import { assertVisualState } from "#engine/visual-state.ts";
+import type { VisualState } from "#engine/visual-state.ts";
+import type {
+  RenderedStateChannel,
+  Scene,
+  SceneCameraRequest,
+  SceneEdge,
+  SceneEdgeLabelCandidacy,
+  SceneInteractionState,
+  SceneNode,
+} from "#scene/contract.ts";
+import {
+  SCENE_LABEL_FONT_FAMILY,
+  SCENE_LABEL_FONT_WEIGHT,
+  SCENE_PERMILLE_QUANTUM,
+  SCENE_PERMILLE_SCALE,
+  assertSceneFieldRegister,
+} from "#scene/contract.ts";
+import { applyRenderedStateChannel, renderedStateChannel, renderedStateToken } from "#scene/rendered-state.ts";
+
+/** This is the fixed renderer-neutral tessellation of one quadratic scene path; no calibration field currently governs path resolution. */
+const QUADRATIC_PATH_SEGMENT_COUNT = 4;
+
+/** This is the mathematical divisor for a midpoint or symmetric half-width and does not borrow a filament tuning value. */
+const BISECTION_DIVISOR = 2;
+
+/** This is the fixed instant sampled by the pure scene model; elapsed scene time is not a calibration property and no runtime clock enters this module. */
+const PROPAGATION_SAMPLE_ELAPSED_MILLISECONDS = 220;
+
+type LabelPlacementCandidate = {
+  readonly id: string;
+  readonly priority: number;
+  readonly minimumX: number;
+  readonly minimumY: number;
+  readonly maximumX: number;
+  readonly maximumY: number;
+};
+
+type ResolvedSceneInputs = {
+  readonly cameraKind: CameraKind;
+  readonly tokens: TokenMap;
+};
+
+/** This builds a complete pure scene from governed engine inputs and does not allocate a renderer or inspect semantic content. */
+export function buildScene(
+  graph: VisualGraph,
+  visualState: VisualState,
+  calibration: CalibrationProfile = DEFAULT_CALIBRATION,
+  tokensOrCamera?: TokenMap | CameraKind,
+  cameraOrTokens?: CameraKind | TokenMap,
+): Scene {
+  assertCalibrationProfile(calibration);
+  assertVisualState(graph, visualState);
+  const inputs = resolveSceneInputs(visualState, tokensOrCamera, cameraOrTokens);
+  const { graph: tracedGraph, trace } = createEngineGraphView(graph);
+  const engineGraph = orderEngineGraph(tracedGraph);
+  const anchors = layoutAnchors(engineGraph, calibration);
+  const morphology = morphologyProfile(visualState.morphology);
+  const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration);
+  const activeTokens = shippingTokens(inputs.tokens, visualState.palette, visualState.theme, calibration);
+  const organization = visualState.organization === "indra"
+    ? indraOrganization(engineGraph, calibration, anchors)
+    : flatOrganization(engineGraph, anchors);
+  if (visualState.organization === "indra") {
+    assertIndraOrganization(engineGraph, organization);
+  }
+  const view = lodView(engineGraph, anchors, visualState.lodBand);
+  const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
+  const edgeMaterials = new Map(morphologyMaterial.edges.map((edge) => [edge.id, edge]));
+  const nodes = engineGraph.nodes.map((node) => sceneNode(
+    node,
+    requiredCoordinate(view.anchors, node.id),
+    requiredNodeMaterial(nodeMaterials, node.id),
+    view.material,
+    morphology,
+    visualState,
+    calibration,
+    activeTokens,
+  ));
+  const edgeCandidacies = edgeLabelCandidacies(engineGraph, visualState, calibration, activeTokens);
+  const edges = engineGraph.edges.map((edge) => sceneEdge(
+    edge,
+    requiredCoordinate(view.anchors, edge.source),
+    requiredCoordinate(view.anchors, edge.target),
+    requiredEdgeMaterial(edgeMaterials, edge.id),
+    view.material,
+    morphology,
+    edgeCandidacies.get(edge.id) ?? null,
+    visualState,
+    calibration,
+    activeTokens,
+  ));
+  const selectedLabelIds = selectedSceneLabelIds(nodes, edges, visualState, calibration);
+  assertEngineAccessTrace(trace);
+  const scene: Scene = {
+    field: { token: copyToken(requiredToken(activeTokens, "background")) },
+    nodes,
+    edges,
+    aggregates: [...organization.windows]
+      .sort(compareIds)
+      .map((window) => ({
+        id: window.id,
+        kind: window.kind,
+        members: [...window.members],
+        center: copyCoordinates(window.center),
+        radius: window.radius,
+        windowPaddingPx: calibration.aggregate.windowPaddingPx,
+        token: copyToken(requiredToken(activeTokens, "accent3")),
+        strokeWidthPx: materialIncludes(view.material.aggregate, "outline")
+          ? (calibration.filament.baseWidthPx * calibration.lod.macroAggregateOutlineWidthMultiplierPermille) / SCENE_PERMILLE_SCALE
+          : calibration.filament.baseWidthPx,
+        strokeOpacityPermille: materialIncludes(view.material.aggregate, "outline")
+          ? calibration.lod.macroAggregateOutlineAlphaPermille
+          : calibration.aggregate.windowStrokeAlphaPermille,
+        bounds: { ...window.bounds },
+      })),
+    selectedLabelIds,
+    selectedProvenance: selectedProvenance(graph, visualState),
+    camera: sceneCameraRequest(inputs.cameraKind, visualState, calibration),
+  };
+  assertSceneFieldRegister(scene);
+  return scene;
+}
+
+/** This resolves the complete node material token and does not convert it to renderer bytes. */
+export function resolveSceneNodeMaterialToken(
+  tokens: TokenMap,
+  material: NodeMaterial,
+  resolved: ResolvedMaterial,
+  carrier: RenderedStateCarrier,
+  calibration: CalibrationProfile,
+): OklchToken {
+  return renderedStateToken(nodeTokenForMaterial(tokens, material, resolved, calibration), carrier, calibration);
+}
+
+/** This resolves the complete edge material token and does not convert it to renderer bytes. */
+export function resolveSceneEdgeMaterialToken(
+  tokens: TokenMap,
+  _material: EdgeMaterial,
+  carrier: RenderedStateCarrier,
+  calibration: CalibrationProfile,
+): OklchToken {
+  const base = minimumNodeContrastToken(
+    requiredToken(tokens, "edge"),
+    requiredToken(tokens, "background"),
+    calibration,
+  );
+  return renderedStateToken(base, carrier, calibration);
+}
+
+/** This resolves one uniform along-length filament texture and cannot receive governed relation state, kind, or provenance. */
+export function resolveSceneFilamentLuminance(calibration: CalibrationProfile): {
+  readonly luminanceStartPermille: number;
+  readonly luminanceMidPermille: number;
+  readonly luminanceEndPermille: number;
+} {
+  return {
+    luminanceStartPermille: calibration.filament.endpointLuminanceGainPermille,
+    luminanceMidPermille: calibration.filament.midSpanLuminanceFactorPermille,
+    luminanceEndPermille: calibration.filament.endpointLuminanceGainPermille,
+  };
+}
+
+/** This selects calibrated non-colliding labels and does not measure text with renderer or DOM APIs. */
+export function resolveSceneLabelIds(
+  candidates: readonly LabelPlacementCandidate[],
+  calibration: CalibrationProfile,
+  densityCap = calibration.labels.densityCap,
+): readonly string[] {
+  const selected: LabelPlacementCandidate[] = [];
+  const sorted = [...candidates].sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id));
+  for (const candidate of sorted) {
+    if (selected.length >= densityCap) {
+      break;
+    }
+    if (selected.every((placed) => !labelBoxesCollide(candidate, placed, calibration.labels.collisionPaddingPx))) {
+      selected.push(candidate);
+    }
+  }
+  return selected.map((candidate) => candidate.id);
+}
+
+function sceneNode(
+  node: EngineNode,
+  anchor: Coordinates,
+  material: NodeMaterial,
+  resolved: ResolvedMaterial,
+  morphology: MorphologyProfile,
+  visualState: VisualState,
+  calibration: CalibrationProfile,
+  tokens: TokenMap,
+): SceneNode {
+  const scale = SCENE_PERMILLE_SCALE;
+  const selectedMultiplier = visualState.selectedId === node.id
+    ? calibration.selection.emphasisMultiplierPermille / scale
+    : 1;
+  const baseRadiusPx = nodeSizeForMaterial(material, resolved, morphology, calibration);
+  const radiusPx = baseRadiusPx * selectedMultiplier;
+  const channel = renderedStateChannel(node.rendered ?? null, calibration);
+  const baseToken = nodeTokenForMaterial(tokens, material, resolved, calibration);
+  const haloRadiusPx = (materialIncludes(resolved.node, "halo") ? material.haloRadiusPx : baseRadiusPx) * selectedMultiplier;
+  return {
+    id: node.id,
+    kind: node.kind,
+    position: copyCoordinates(anchor),
+    radiusPx,
+    token: copyToken(applyRenderedStateChannel(baseToken, channel, calibration)),
+    opacityPermille: interactionOpacity(material.opacityPermille, node.id, visualState, calibration),
+    haloRadiusPx,
+    haloIntensityPermille: materialIncludes(resolved.node, "halo")
+      ? material.haloIntensityPermille
+      : 0,
+    labelCandidacy: materialIncludes(resolved.node, "label") ? {
+      text: node.visual.role,
+      token: copyToken(requiredToken(tokens, "text")),
+      priority: nodeLabelPriority(node, material, calibration),
+      opacityPermille: calibration.labels.nodeLabelOpacityPermille,
+      sizePx: calibration.labels.nodeLabelSizePx,
+      fontFamily: SCENE_LABEL_FONT_FAMILY,
+      fontWeight: SCENE_LABEL_FONT_WEIGHT,
+      collisionPaddingPx: calibration.labels.collisionPaddingPx,
+      placementOffsetPx: haloRadiusPx,
+    } : null,
+    renderedStateChannel: channel,
+    interaction: interactionState(node.id, visualState),
+    lodBand: visualState.lodBand,
+  };
+}
+
+function sceneEdge(
+  edge: EngineEdge,
+  source: Coordinates,
+  target: Coordinates,
+  material: EdgeMaterial,
+  resolved: ResolvedMaterial,
+  morphology: MorphologyProfile,
+  labelCandidacy: SceneEdgeLabelCandidacy,
+  visualState: VisualState,
+  calibration: CalibrationProfile,
+  tokens: TokenMap,
+): SceneEdge {
+  const scale = SCENE_PERMILLE_SCALE;
+  const emphasis = visualState.selectedId === edge.id
+    ? calibration.selection.emphasisMultiplierPermille / scale
+    : 1;
+  const width = edgeWidthForMaterial(material, resolved, calibration) * emphasis;
+  const curvature = edgeCurvatureForMaterial(material, resolved);
+  const path = sampleQuadraticPath(source, target, curvature);
+  const travelledDistance = propagationDistance(PROPAGATION_SAMPLE_ELAPSED_MILLISECONDS, calibration);
+  const propagation = reducedMotionPosition(
+    { controlPoints: path },
+    travelledDistance,
+    visualState.reducedMotion || calibration.motion.reducedMotionSwitch,
+  );
+  const length = arcLength({ controlPoints: path });
+  const normalisedArcPosition = propagation.continuous
+    ? normalisedPropagationPosition(travelledDistance, length)
+    : 1;
+  const channel = renderedStateChannel(edge.rendered ?? null, calibration);
+  const filamentMaterial = calibration.morphology[morphology.id];
+  return {
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    path,
+    widthStartPx: (width * material.widthStartPermille) / scale,
+    widthEndPx: (width * material.widthEndPermille) / scale,
+    pickTolerancePx: calibration.filament.pickTolerancePx,
+    minimumDeviceWidthPx: calibration.filament.minimumDeviceWidthPermille / scale,
+    token: copyToken(applyRenderedStateChannel(
+      minimumNodeContrastToken(requiredToken(tokens, "edge"), requiredToken(tokens, "background"), calibration),
+      channel,
+      calibration,
+    )),
+    opacityPermille: interactionOpacity(material.opacityPermille, edge.id, visualState, calibration),
+    renderedStateChannel: channel,
+    labelCandidacy,
+    interaction: interactionState(edge.id, visualState),
+    lodBand: visualState.lodBand,
+    filament: {
+      junctionStartPermille: material.junctionStartPermille,
+      junctionEndPermille: material.junctionEndPermille,
+      sheathScalePermille: filamentMaterial.sheathScalePermille,
+      sheathAlphaPermille: filamentMaterial.sheathAlphaPermille,
+      coreScalePermille: filamentMaterial.coreScalePermille,
+      hotMixPermille: filamentMaterial.hotMixPermille,
+      hotAlphaPermille: filamentMaterial.hotAlphaPermille,
+      hotCorePermille: material.hotCorePermille,
+      wobbleAmplitudePermille: filamentMaterial.filamentWobbleAmplitudePermille,
+      wobbleFrequencyMilliradians: filamentMaterial.wobbleFrequencyMilliradians,
+      phasePermille: material.phasePermille,
+      afterglowDecayPermille: calibration.motion.afterglowDecayPermille,
+      ...resolveSceneFilamentLuminance(calibration),
+    },
+    propagation: {
+      position: copyCoordinates(propagation.position),
+      pathLength: length,
+      arcPositionPermille: Math.round(normalisedArcPosition * scale),
+      continuous: propagation.continuous,
+      endpointExpressed: propagation.endpointExpressed,
+    },
+  };
+}
+
+function resolveSceneInputs(
+  visualState: VisualState,
+  tokensOrCamera: TokenMap | CameraKind | undefined,
+  cameraOrTokens: CameraKind | TokenMap | undefined,
+): ResolvedSceneInputs {
+  if (tokensOrCamera === undefined) {
+    if (cameraOrTokens !== undefined) {
+      throw new TypeError("scene fifth argument requires an explicit fourth argument");
+    }
+    return {
+      cameraKind: visualState.cameraKind,
+      tokens: resolveTokens(visualState.palette, visualState.temperature, visualState.theme),
+    };
+  }
+  if (typeof tokensOrCamera === "string") {
+    if (typeof cameraOrTokens === "string") {
+      throw new TypeError("scene camera kind was supplied twice");
+    }
+    return {
+      cameraKind: tokensOrCamera,
+      tokens: cameraOrTokens ?? resolveTokens(visualState.palette, visualState.temperature, visualState.theme),
+    };
+  }
+  if (cameraOrTokens !== undefined && typeof cameraOrTokens !== "string") {
+    throw new TypeError("scene tokens were supplied twice");
+  }
+  return { cameraKind: cameraOrTokens ?? visualState.cameraKind, tokens: tokensOrCamera };
+}
+
+function sceneCameraRequest(
+  kind: CameraKind,
+  visualState: VisualState,
+  calibration: CalibrationProfile,
+): SceneCameraRequest {
+  const frame = {
+    x: visualState.camera.x,
+    y: visualState.camera.y,
+    angle: visualState.camera.angle,
+    ratio: visualState.camera.ratio,
+    bounds: {
+      x: [visualState.camera.bounds.x[0], visualState.camera.bounds.x[1]] as const,
+      y: [visualState.camera.bounds.y[0], visualState.camera.bounds.y[1]] as const,
+    },
+  };
+  if (kind === "orthographic") {
+    return {
+      ...frame,
+      kind,
+      navigation: { ...calibration.camera.orthographic },
+    };
+  }
+  return {
+    ...frame,
+    kind,
+    navigation: { ...calibration.camera.perspective },
+  };
+}
+
+function orderEngineGraph(graph: EngineGraph): EngineGraph {
+  return {
+    nodes: [...graph.nodes].sort(compareIds),
+    edges: [...graph.edges].sort(compareIds),
+  };
+}
+
+function morphologyProfile(morphology: VisualState["morphology"]): MorphologyProfile {
+  if (morphology === STELLAR.id) {
+    return STELLAR;
+  }
+  if (morphology === NEURAL.id) {
+    return NEURAL;
+  }
+  return MYCELIUM;
+}
+
+function nodeSizeForMaterial(
+  node: NodeMaterial,
+  material: ResolvedMaterial,
+  morphology: MorphologyProfile,
+  calibration: CalibrationProfile,
+): number {
+  if (materialIncludes(material.node, "core")) {
+    return node.coreSizePx;
+  }
+  const scale = SCENE_PERMILLE_SCALE;
+  const range = calibration.salience.maxNodeSizePx - calibration.salience.minNodeSizePx;
+  const mass = calibration.salience.minNodeSizePx + ((node.prominencePermille * range) / scale);
+  const morphologyMultiplier = calibration.morphology[morphology.id].nodeSizeMultiplierPermille;
+  return (mass * morphologyMultiplier * calibration.lod.macroNodeSizeMultiplierPermille) / (scale * scale);
+}
+
+function nodeTokenForMaterial(
+  tokens: TokenMap,
+  material: NodeMaterial,
+  resolved: ResolvedMaterial,
+  calibration: CalibrationProfile,
+): OklchToken {
+  const prominence = prominenceToken(tokens, material.prominencePermille, calibration);
+  return materialIncludes(resolved.node, "hop-distance")
+    ? hopDistanceToken(prominence, material, requiredToken(tokens, "background"), calibration)
+    : prominence;
+}
+
+function nodeLabelPriority(
+  node: EngineNode,
+  material: NodeMaterial,
+  calibration: CalibrationProfile,
+): number {
+  const base = material.prominencePermille + calibration.labels.priorityWeights.node;
+  if (node.kind === "assertion") {
+    return base + calibration.labels.priorityWeights.assertion;
+  }
+  if (node.kind === "bridge") {
+    return base + calibration.labels.priorityWeights.bridge;
+  }
+  return base;
+}
+
+function edgeWidthForMaterial(edge: EdgeMaterial, material: ResolvedMaterial, calibration: CalibrationProfile): number {
+  const resolvedKindWidth = kindWidth(edge);
+  if (materialIncludes(material.edge, "skeleton")) {
+    return (resolvedKindWidth * calibration.lod.macroFilamentWidthMultiplierPermille) / SCENE_PERMILLE_SCALE;
+  }
+  return materialIncludes(material.edge, "taper") ? edge.widthPx : resolvedKindWidth;
+}
+
+function edgeCurvatureForMaterial(edge: EdgeMaterial, material: ResolvedMaterial): number {
+  return materialIncludes(material.edge, "curvature")
+    ? edge.curvaturePermille / SCENE_PERMILLE_SCALE
+    : 0;
+}
+
+function kindWidth(edge: EdgeMaterial): number {
+  if (edge.taperPermille === 0) {
+    throw new TypeError("scene taper material must be non-zero");
+  }
+  return (edge.widthPx * SCENE_PERMILLE_SCALE) / edge.taperPermille;
+}
+
+function prominenceToken(tokens: TokenMap, prominencePermille: number, calibration: CalibrationProfile): OklchToken {
+  const background = requiredToken(tokens, "background");
+  const lowProminence = minimumNodeContrastToken(requiredToken(tokens, "accent2"), background, calibration);
+  const highProminence = requiredToken(tokens, "peak");
+  const lightnessTravel = prominenceTravel(
+    prominencePermille,
+    calibration.luminance.prominenceLightnessGainPermille,
+  );
+  const chromaTravel = prominenceTravel(
+    prominencePermille,
+    calibration.luminance.prominenceChromaFalloffPermille,
+  );
+  const scale = SCENE_PERMILLE_SCALE;
+  return {
+    lightnessPermille: Math.round(lowProminence.lightnessPermille + ((highProminence.lightnessPermille - lowProminence.lightnessPermille) * lightnessTravel / scale)),
+    chromaPermille: Math.round(lowProminence.chromaPermille + ((highProminence.chromaPermille - lowProminence.chromaPermille) * chromaTravel / scale)),
+    hueDegrees: lowProminence.hueDegrees,
+  };
+}
+
+function minimumNodeContrastToken(
+  token: OklchToken,
+  background: OklchToken,
+  calibration: CalibrationProfile,
+): OklchToken {
+  const scale = SCENE_PERMILLE_SCALE;
+  const minimumContrast = calibration.luminance.minimumNodeContrastPermille / scale;
+  const backgroundLuminance = relativeLuminance(background);
+  let candidate = token;
+  while (
+    (relativeLuminance(candidate) <= backgroundLuminance || contrastRatio(candidate, background) < minimumContrast)
+    && candidate.lightnessPermille < scale
+  ) {
+    candidate = {
+      ...candidate,
+      lightnessPermille: candidate.lightnessPermille + SCENE_PERMILLE_QUANTUM,
+    };
+  }
+  if (relativeLuminance(candidate) <= backgroundLuminance || contrastRatio(candidate, background) < minimumContrast) {
+    throw new TypeError("scene node contrast calibration is unreachable");
+  }
+  return candidate;
+}
+
+function hopDistanceToken(
+  token: OklchToken,
+  material: NodeMaterial,
+  background: OklchToken,
+  calibration: CalibrationProfile,
+): OklchToken {
+  const hopDistance = requiredHopDistance(material.facts.hopDistanceFromHub.value);
+  const darkened = {
+    ...token,
+    lightnessPermille: Math.max(
+      0,
+      token.lightnessPermille - (hopDistance * calibration.lod.microHopDistanceLightnessStepPermille),
+    ),
+  };
+  return minimumNodeContrastToken(darkened, background, calibration);
+}
+
+function requiredHopDistance(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw new TypeError("scene hop-distance material is unavailable");
+  }
+  return Number(value);
+}
+
+function prominenceTravel(prominencePermille: number, gainPermille: number): number {
+  return Math.max(
+    0,
+    Math.min(SCENE_PERMILLE_SCALE, (prominencePermille * gainPermille) / SCENE_PERMILLE_SCALE),
+  );
+}
+
+function sampleQuadraticPath(
+  source: Coordinates,
+  target: Coordinates,
+  curvature: number,
+): readonly Coordinates[] {
+  if (curvature === 0) {
+    return [copyCoordinates(source), copyCoordinates(target)];
+  }
+  const steps = QUADRATIC_PATH_SEGMENT_COUNT;
+  if (steps < BISECTION_DIVISOR) {
+    throw new TypeError("scene quadratic path requires at least two segments");
+  }
+  const control = {
+    x: (source.x + target.x) / 2 - ((target.y - source.y) * curvature),
+    y: (source.y + target.y) / 2 + ((target.x - source.x) * curvature),
+    z: source.z + ((target.z - source.z) / 2),
+  };
+  const samples: Coordinates[] = [];
+  for (let index = 0; index <= steps; index += 1) {
+    const parameter = index / steps;
+    const inverse = 1 - parameter;
+    samples.push({
+      x: (inverse * inverse * source.x) + (2 * inverse * parameter * control.x) + (parameter * parameter * target.x),
+      y: (inverse * inverse * source.y) + (2 * inverse * parameter * control.y) + (parameter * parameter * target.y),
+      z: (inverse * inverse * source.z) + (2 * inverse * parameter * control.z) + (parameter * parameter * target.z),
+    });
+  }
+  return samples;
+}
+
+function propagationDistance(elapsedMilliseconds: number, calibration: CalibrationProfile): number {
+  return (calibration.motion.propagationSpeedPxPerSecond * elapsedMilliseconds) / SCENE_PERMILLE_SCALE;
+}
+
+function normalisedPropagationPosition(travelledDistance: number, length: number): number {
+  return length === 0 ? 1 : Math.max(0, Math.min(travelledDistance / length, 1));
+}
+
+function edgeLabelCandidacies(
+  graph: EngineGraph,
+  state: VisualState,
+  calibration: CalibrationProfile,
+  tokens: TokenMap,
+): ReadonlyMap<string, SceneEdgeLabelCandidacy> {
+  if (state.lodBand === MACRO) {
+    return new Map();
+  }
+  const edgeIds = new Set(graph.edges.map((edge) => edge.id));
+  const nodeIds = new Set(graph.nodes.map((node) => node.id));
+  const selectedRelation = state.selectedId !== null && edgeIds.has(state.selectedId) ? state.selectedId : null;
+  const focusedRelation = state.focusedId !== null && edgeIds.has(state.focusedId) ? state.focusedId : null;
+  const focusedNode = state.focusedId !== null && nodeIds.has(state.focusedId) ? state.focusedId : null;
+  const relevant = new Set<string>();
+  if (selectedRelation !== null) {
+    relevant.add(selectedRelation);
+  }
+  if (focusedRelation !== null) {
+    relevant.add(focusedRelation);
+  }
+  if (focusedNode !== null) {
+    for (const edge of graph.edges) {
+      if (edge.source === focusedNode || edge.target === focusedNode) {
+        relevant.add(edge.id);
+      }
+    }
+  }
+  const candidates = state.lodBand === MESO || relevant.size > 0
+    ? graph.edges.filter((edge) => relevant.has(edge.id))
+    : graph.edges;
+  return new Map(candidates.map((edge) => {
+    const selected = edge.id === selectedRelation;
+    const focused = edge.id === focusedRelation || (focusedNode !== null && (edge.source === focusedNode || edge.target === focusedNode));
+    return [edge.id, {
+      text: edge.kind,
+      token: copyToken(requiredToken(tokens, "textMuted")),
+      priority: edge.visual.label_priority + calibration.labels.priorityWeights.edge
+        + (selected
+          ? calibration.labels.edgeSelectionPriorityBoost
+          : focused ? calibration.labels.edgeFocusPriorityBoost : 0),
+      opacityPermille: selected
+        ? calibration.labels.edgeLabelSelectedOpacityPermille
+        : focused ? calibration.labels.edgeLabelFocusOpacityPermille : calibration.labels.edgeLabelOpacityPermille,
+      sizePx: calibration.labels.edgeLabelSizePx,
+      fontFamily: SCENE_LABEL_FONT_FAMILY,
+      fontWeight: SCENE_LABEL_FONT_WEIGHT,
+      collisionPaddingPx: calibration.labels.collisionPaddingPx,
+    }];
+  }));
+}
+
+function selectedSceneLabelIds(
+  nodes: readonly SceneNode[],
+  edges: readonly SceneEdge[],
+  visualState: VisualState,
+  calibration: CalibrationProfile,
+): readonly string[] {
+  const nodeCandidates = nodes.flatMap((node): readonly LabelPlacementCandidate[] => {
+    if (node.labelCandidacy === null) {
+      return [];
+    }
+    const center = worldToReferenceFrame(node.position, visualState, calibration);
+    const width = node.labelCandidacy.text.length * node.labelCandidacy.sizePx;
+    return [{
+      id: node.id,
+      priority: node.labelCandidacy.priority,
+      minimumX: center.x + node.labelCandidacy.placementOffsetPx,
+      minimumY: center.y - node.labelCandidacy.sizePx,
+      maximumX: center.x + node.labelCandidacy.placementOffsetPx + width,
+      maximumY: center.y + node.labelCandidacy.sizePx,
+    }];
+  });
+  const edgeCandidates = edges.flatMap((edge): readonly LabelPlacementCandidate[] => {
+    if (edge.labelCandidacy === null) {
+      return [];
+    }
+    const midpoint = edge.path[Math.floor(edge.path.length / BISECTION_DIVISOR)];
+    if (midpoint === undefined) {
+      throw new TypeError("scene edge label path has no midpoint");
+    }
+    const center = worldToReferenceFrame(midpoint, visualState, calibration);
+    const width = edge.labelCandidacy.text.length * edge.labelCandidacy.sizePx;
+    return [{
+      id: edge.id,
+      priority: edge.labelCandidacy.priority,
+      minimumX: center.x - (width / BISECTION_DIVISOR),
+      minimumY: center.y - edge.labelCandidacy.sizePx,
+      maximumX: center.x + (width / BISECTION_DIVISOR),
+      maximumY: center.y + edge.labelCandidacy.sizePx,
+    }];
+  });
+  return [
+    ...resolveSceneLabelIds(nodeCandidates, calibration),
+    ...resolveSceneLabelIds(edgeCandidates, calibration, calibration.labels.edgeDensityCap),
+  ].sort(compareText);
+}
+
+function worldToReferenceFrame(
+  point: Coordinates,
+  visualState: VisualState,
+  calibration: CalibrationProfile,
+): { readonly x: number; readonly y: number } {
+  const xBounds = visualState.camera.bounds.x;
+  const yBounds = visualState.camera.bounds.y;
+  return {
+    x: ((point.x - xBounds[0]) / (xBounds[1] - xBounds[0])) * calibration.layout.referenceFrameWidthPx,
+    y: ((point.y - yBounds[0]) / (yBounds[1] - yBounds[0])) * calibration.layout.referenceFrameHeightPx,
+  };
+}
+
+function interactionState(id: string, state: VisualState): SceneInteractionState {
+  if (state.selectedId === id) {
+    return "selected";
+  }
+  if (state.focusedId === id) {
+    return "focused";
+  }
+  return state.focusedId === null ? "none" : "dimmed";
+}
+
+function interactionOpacity(
+  opacityPermille: number,
+  id: string,
+  state: VisualState,
+  calibration: CalibrationProfile,
+): number {
+  return state.focusedId === null || state.focusedId === id
+    ? Math.round(opacityPermille)
+    : Math.round((opacityPermille * calibration.selection.focusDimFactorPermille) / SCENE_PERMILLE_SCALE);
+}
+
+function selectedProvenance(graph: VisualGraph, state: VisualState): Scene["selectedProvenance"] {
+  if (state.selectedId === null) {
+    return null;
+  }
+  const element = [...graph.nodes, ...graph.edges].find((candidate) => candidate.id === state.selectedId);
+  if (element === undefined) {
+    throw new TypeError("selected graph element provenance is unavailable");
+  }
+  return element.derived;
+}
+
+function shippingTokens(
+  tokens: TokenMap,
+  palette: VisualState["palette"],
+  theme: VisualState["theme"],
+  calibration: CalibrationProfile,
+): TokenMap {
+  if (palette !== "monochrome") {
+    return tokens;
+  }
+  const neutral = Object.fromEntries(
+    Object.entries(tokens).map(([name, token]) => [name, calibratedMonochromeToken(token, token.lightnessPermille)]),
+  );
+  if (theme === "light") {
+    return neutral;
+  }
+  return {
+    ...neutral,
+    background: calibratedMonochromeToken(requiredToken(neutral, "background"), calibration.luminance.fieldLightnessPermille),
+    edge: calibratedMonochromeToken(requiredToken(neutral, "edge"), calibration.luminance.filamentLightnessPermille),
+    peak: calibratedMonochromeToken(requiredToken(neutral, "peak"), calibration.luminance.nodePeakLightnessPermille),
+  };
+}
+
+function calibratedMonochromeToken(token: OklchToken, lightnessPermille: number): OklchToken {
+  return {
+    ...token,
+    lightnessPermille,
+    chromaPermille: 0,
+  };
+}
+
+function labelBoxesCollide(
+  candidate: LabelPlacementCandidate,
+  placed: LabelPlacementCandidate,
+  padding: number,
+): boolean {
+  return candidate.minimumX <= placed.maximumX + padding
+    && candidate.maximumX + padding >= placed.minimumX
+    && candidate.minimumY <= placed.maximumY + padding
+    && candidate.maximumY + padding >= placed.minimumY;
+}
+
+function materialIncludes(items: readonly string[], item: string): boolean {
+  return items.includes(item);
+}
+
+function requiredToken(tokens: TokenMap, name: string): OklchToken {
+  const token = tokens[name];
+  if (token === undefined) {
+    throw new TypeError(`scene token is unavailable: ${name}`);
+  }
+  return token;
+}
+
+function requiredNodeMaterial(materials: ReadonlyMap<string, NodeMaterial>, id: string): NodeMaterial {
+  const material = materials.get(id);
+  if (material === undefined) {
+    throw new TypeError("scene node material is unavailable");
+  }
+  return material;
+}
+
+function requiredEdgeMaterial(materials: ReadonlyMap<string, EdgeMaterial>, id: string): EdgeMaterial {
+  const material = materials.get(id);
+  if (material === undefined) {
+    throw new TypeError("scene edge material is unavailable");
+  }
+  return material;
+}
+
+function requiredCoordinate(anchors: ReadonlyMap<string, Coordinates>, id: string): Coordinates {
+  const anchor = anchors.get(id);
+  if (anchor === undefined) {
+    throw new TypeError("scene anchor is unavailable");
+  }
+  return anchor;
+}
+
+function copyCoordinates(value: Coordinates): Coordinates {
+  return { x: value.x, y: value.y, z: value.z };
+}
+
+function copyToken(value: OklchToken): OklchToken {
+  return {
+    lightnessPermille: value.lightnessPermille,
+    chromaPermille: value.chromaPermille,
+    hueDegrees: value.hueDegrees,
+  };
+}
+
+function compareIds(left: { readonly id: string }, right: { readonly id: string }): number {
+  return compareText(left.id, right.id);
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}

@@ -118,6 +118,10 @@ export type CalibrationProfile = {
     readonly minimumWidthFactorPermille: number;
     /** This is the absolute filament body floor in CSS pixels, scaled by one thousand. */
     readonly minimumDeviceWidthPermille: number;
+    /** This is the uniform endpoint luminance gain for every relation and does not encode relation meaning. */
+    readonly endpointLuminanceGainPermille: number;
+    /** This is the uniform mid-span luminance factor for every relation and does not encode relation meaning. */
+    readonly midSpanLuminanceFactorPermille: number;
   };
   readonly morphology: {
     readonly stellar: MorphologyMaterial;
@@ -158,6 +162,21 @@ export type CalibrationProfile = {
     readonly disclosureThreshold: number;
     readonly windowPaddingPx: number;
     readonly windowStrokeAlphaPermille: number;
+  };
+  readonly camera: {
+    readonly orthographic: {
+      readonly panSensitivityPermille: number;
+      readonly zoomSensitivityPermille: number;
+      readonly minimumZoomPermille: number;
+      readonly maximumZoomPermille: number;
+    };
+    readonly perspective: {
+      readonly orbitSensitivityPermille: number;
+      readonly dollySensitivityPermille: number;
+      readonly panSensitivityPermille: number;
+      readonly minimumDollyPermille: number;
+      readonly maximumDollyPermille: number;
+    };
   };
   readonly motion: {
     readonly propagationSpeedPxPerSecond: number;
@@ -230,6 +249,8 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "filament.curvatureMagnitudePermille",
   "filament.minimumWidthFactorPermille",
   "filament.minimumDeviceWidthPermille",
+  "filament.endpointLuminanceGainPermille",
+  "filament.midSpanLuminanceFactorPermille",
   "morphology.stellar.nodeSizeMultiplierPermille",
   "morphology.stellar.filamentWidthMultiplierPermille",
   "morphology.stellar.filamentWidthStartPermille",
@@ -314,6 +335,15 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "aggregate.disclosureThreshold",
   "aggregate.windowPaddingPx",
   "aggregate.windowStrokeAlphaPermille",
+  "camera.orthographic.panSensitivityPermille",
+  "camera.orthographic.zoomSensitivityPermille",
+  "camera.orthographic.minimumZoomPermille",
+  "camera.orthographic.maximumZoomPermille",
+  "camera.perspective.orbitSensitivityPermille",
+  "camera.perspective.dollySensitivityPermille",
+  "camera.perspective.panSensitivityPermille",
+  "camera.perspective.minimumDollyPermille",
+  "camera.perspective.maximumDollyPermille",
   "motion.propagationSpeedPxPerSecond",
   "motion.afterglowDecayPermille",
   "motion.minimumReducedMotionPixelDeltaPermille",
@@ -345,7 +375,7 @@ export const DEFAULT_CALIBRATION: CalibrationProfile = {
     epistemicSpeculativeLightnessDeltaPermille: -4,
   },
   filament: { baseWidthPx: 1,
-    pickTolerancePx: 2, opacityPermille: 430, curvatureMagnitudePermille: 0, minimumWidthFactorPermille: 120, minimumDeviceWidthPermille: 1500 },
+    pickTolerancePx: 2, opacityPermille: 430, curvatureMagnitudePermille: 0, minimumWidthFactorPermille: 120, minimumDeviceWidthPermille: 1500, endpointLuminanceGainPermille: 1200, midSpanLuminanceFactorPermille: 650 },
   morphology: {
     stellar: { nodeSizeMultiplierPermille: 1100, filamentWidthMultiplierPermille: 900, filamentWidthStartPermille: 650, filamentWidthEndPermille: 650, filamentWobbleAmplitudePermille: 15, junctionThickeningPermille: 0, sheathScalePermille: 2700, sheathAlphaPermille: 60, coreScalePermille: 400, hotMixPermille: 0, hotAlphaPermille: 0, hotCoreMaximumHop: 0, filamentPhaseSeed: 17, wobbleFrequencyMilliradians: 6283, opacityPermille: 1000, curvatureMagnitudePermille: 700, haloRadiusMultiplierPermille: 2000, haloIntensityPermille: 440, terminalSizeMultiplierPermille: 1000 },
     neural: { nodeSizeMultiplierPermille: 900, filamentWidthMultiplierPermille: 1050, filamentWidthStartPermille: 1800, filamentWidthEndPermille: 500, filamentWobbleAmplitudePermille: 80, junctionThickeningPermille: 800, sheathScalePermille: 2700, sheathAlphaPermille: 130, coreScalePermille: 400, hotMixPermille: 850, hotAlphaPermille: 950, hotCoreMaximumHop: 2, filamentPhaseSeed: 31, wobbleFrequencyMilliradians: 9425, opacityPermille: 900, curvatureMagnitudePermille: 1150, haloRadiusMultiplierPermille: 1000, haloIntensityPermille: 900, terminalSizeMultiplierPermille: 1000 },
@@ -354,6 +384,10 @@ export const DEFAULT_CALIBRATION: CalibrationProfile = {
   lod: { bandThresholds: [0, 250, 500, 750], hysteresisMarginPermille: 50, crossfadeDurationMs: 220, macroNodeSizeMultiplierPermille: 1250, macroFilamentWidthMultiplierPermille: 500, macroAggregateOutlineWidthMultiplierPermille: 1000, macroAggregateOutlineAlphaPermille: 200, microHopDistanceLightnessStepPermille: 60, minimumAdjacentPixelDeltaPermille: 1 },
   labels: { densityCap: 12, nodeLabelSizePx: 10, nodeLabelOpacityPermille: 520, edgeDensityCap: 3, edgeLabelSizePx: 9, edgeLabelOpacityPermille: 420, edgeLabelFocusOpacityPermille: 700, edgeLabelSelectedOpacityPermille: 920, edgeFocusPriorityBoost: 600, edgeSelectionPriorityBoost: 1000, priorityWeights: { node: 1000, edge: 500, assertion: 900, bridge: 1100 }, collisionPaddingPx: 5 },
   aggregate: { disclosureThreshold: 12, windowPaddingPx: 14, windowStrokeAlphaPermille: 260 },
+  camera: {
+    orthographic: { panSensitivityPermille: 1000, zoomSensitivityPermille: 1700, minimumZoomPermille: 250, maximumZoomPermille: 4000 },
+    perspective: { orbitSensitivityPermille: 1000, dollySensitivityPermille: 1000, panSensitivityPermille: 1000, minimumDollyPermille: 500, maximumDollyPermille: 10000 },
+  },
   motion: { propagationSpeedPxPerSecond: 240, afterglowDecayPermille: 850, minimumReducedMotionPixelDeltaPermille: 1, reducedMotionSwitch: false },
   selection: { emphasisMultiplierPermille: 1450, focusDimFactorPermille: 320, minimumDifferingPixelCount: 16 },
   budget: { maxNodesBeforeLodForcesAggregation: 2400, targetFrameMs: 16, oracleCrossProductSampleSize: 27, oracleCrossProductSamplingSeed: 1103, oracleCrossProductPixelWitnessCount: 3 },
