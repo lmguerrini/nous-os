@@ -12,7 +12,8 @@
     "#render3f/*": "./src/render3f/*",
     "#scene/*": "./src/scene/*",
     "#test-render3f/*": "./test/render3f/*",
-    "#test-scene/*": "./test/scene/*"
+    "#test-scene/*": "./test/scene/*",
+    "#test/*": "./test/*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -23,7 +24,8 @@
     "test:review": "REVIEW_CAPTURES=1 playwright test --project=review-dpr-1 --project=review-dpr-2",
     "test:parity": "rm -f dist/evidence/parity.json && PARITY_SUITE=1 playwright test --project=parity",
     "test:performance": "rm -f dist/evidence/performance.json && PERFORMANCE_SUITE=1 playwright test --project=performance",
-    "test:review3d": "rm -rf dist/review3d && REVIEW3D_CAPTURES=1 playwright test --project=review3d"
+    "test:review3d": "rm -rf dist/review3d && REVIEW3D_CAPTURES=1 playwright test --project=review3d-dpr-1 --project=review3d-dpr-2",
+    "evidence:layout-scale": "rm -f dist/evidence/layout-scale.json && node --experimental-strip-types test/layout-scale.ts"
   },
   "dependencies": {
     "@react-three/fiber": "9.7.0",

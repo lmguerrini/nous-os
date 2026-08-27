@@ -96,11 +96,19 @@ export default defineConfig({
       use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
     },
     {
-      // CAP-13. The visual review set: the same semantic state drawn by all three renderers, so the
+      // CAP-13 DPR 1. The visual review set: the same semantic state drawn by all three renderers, so the
       // images can be compared against the governed references rather than described.
-      name: "review3d",
+      name: "review3d-dpr-1",
       testMatch: REVIEW3D_ENABLED ? REVIEW3D_SPEC : "review3d-disabled.spec.ts",
       use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
+    },
+    {
+      // CAP-13 DPR 2. This is separate from the previous review capability's DPR project and keeps
+      // the cache-purged byte comparison at the actual device pixel ratio it records.
+      name: "review3d-dpr-2",
+      dependencies: ["review3d-dpr-1"],
+      testMatch: REVIEW3D_ENABLED ? REVIEW3D_SPEC : "review3d-disabled.spec.ts",
+      use: { deviceScaleFactor: 2, viewport: { width: 1_200, height: 800 } },
     },
     {
       // CAP-13. Software-rasterised, and every figure it emits says so in its own record.

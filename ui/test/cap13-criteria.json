@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "capability": "CAP-13",
+  "rule": "Every criterion resolves to a machine-readable status. A criterion whose status cannot be resolved from an artifact must declare a human record instead, and that declaration is itself required \u2014 silence is not a status.",
+  "criteria": [
+    {
+      "id": "B1",
+      "claim": "one scene model, two cameras; neither renderer computes a material",
+      "source": {
+        "kind": "unitTest",
+        "name": "renderer source declares no local material or semantic depth route"
+      }
+    },
+    {
+      "id": "B2",
+      "claim": "semantic-channel parity across the two cameras",
+      "source": {
+        "kind": "artifactCheck",
+        "artifact": "parity",
+        "checkName": "P2 semantic-channel parity"
+      }
+    },
+    {
+      "id": "B3",
+      "claim": "renderer parity with Sigma: ids, incidence, picking",
+      "source": {
+        "kind": "artifactCheck",
+        "artifact": "parity",
+        "checkName": "P1 surface parity"
+      }
+    },
+    {
+      "id": "B4",
+      "claim": "semanticDigest invariant across every visual axis including camera",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "review3d",
+        "path": [
+          "semanticGraph",
+          "equal"
+        ],
+        "note": "all three renderer semantic digests asserted equal over the same graph"
+      }
+    },
+    {
+      "id": "B5",
+      "claim": "every legal governed combination separated at the pixel, domain derived",
+      "source": {
+        "kind": "artifactCheck",
+        "artifact": "parity",
+        "checkName": "P3 governed-state separation"
+      }
+    },
+    {
+      "id": "B6",
+      "claim": "z carries no epistemic meaning",
+      "source": {
+        "kind": "unitTest",
+        "name": "scene depth ignores governed, kind and provenance stimuli"
+      }
+    },
+    {
+      "id": "B7",
+      "claim": "selection, focus and provenance reach the rendered object",
+      "source": {
+        "kind": "artifactCheck",
+        "artifact": "parity",
+        "checkName": "P4 interaction and provenance"
+      }
+    },
+    {
+      "id": "B8",
+      "claim": "VisualState round-trips including cameraKind and refuses impossible states",
+      "source": {
+        "kind": "unitTest",
+        "name": "VisualState refuses every validator-owned rule through every validating assertion route"
+      }
+    },
+    {
+      "id": "B9",
+      "claim": "semantic zoom preserved in both projections",
+      "source": {
+        "kind": "artifactCheck",
+        "artifact": "parity",
+        "checkName": "full-app-smoke"
+      }
+    },
+    {
+      "id": "B10",
+      "claim": "deterministic capture identity across two purged runs at both DPRs",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "review3d",
+        "path": [
+          "determinism",
+          "passed"
+        ],
+        "note": "every capture byte-identical across two purged runs"
+      }
+    },
+    {
+      "id": "B11",
+      "claim": "no colour-only encoding in either projection",
+      "source": {
+        "kind": "artifactCheck",
+        "artifact": "parity",
+        "checkName": "P8 non-colour encoding"
+      }
+    },
+    {
+      "id": "B12",
+      "claim": "performance measured and honestly labelled",
+      "source": {
+        "kind": "artifactBound",
+        "artifact": "performance",
+        "note": "reports passing:false by design. NOT_RUN appears at TWO distinct scales for two distinct reasons and the row previously named only one: at 10^3 and 10^4 every renderer is NOT_RUN because the shared layout consumes the per-combination budget, and at 10^2 the single-camera renderer is NOT_RUN for cameraTransitionCost and cameraSwitchCost because it has one camera and cannot switch. Both are governed truth; neither is a gap. Every unbound measurement carries its own reason, which is what the artifact-exemption check verifies."
+      }
+    },
+    {
+      "id": "B13",
+      "claim": "resource cleanup on unmount and repeated camera switching",
+      "source": {
+        "kind": "unitTest",
+        "name": "mounted renderer retains no resources after teardown and none accumulate across camera switching"
+      }
+    },
+    {
+      "id": "B14",
+      "claim": "Full App Smoke through both cameras",
+      "source": {
+        "kind": "artifactCheck",
+        "artifact": "parity",
+        "checkName": "full-app-smoke"
+      }
+    },
+    {
+      "id": "B15",
+      "claim": "the comparison artifact records what was demonstrated",
+      "source": {
+        "kind": "unitTest",
+        "record": "docs/RENDERER-COMPARISON.md",
+        "why": "The row previously claimed the document's figures were 'bound by the artifact-derivability check'. No such check existed \u2014 nothing in the tree read the document at all, which a closure auditor found and which is why three drafts went stale unnoticed. The consumer now exists: it refuses any transcribed timing figure, checks the scale-wall claim against performance.json, checks the attribution of that wall to shared layout against layout-scale.json, and re-runs the document's own published command to confirm the engine size it states. Each obligation has a demonstrated negative control.",
+        "file": "test/comparison-document.test.ts",
+        "name": "the comparison document transcribes no timing figure"
+      }
+    },
+    {
+      "id": "B16",
+      "claim": "evidence completeness; a green summary cannot hide an undischarged criterion",
+      "source": {
+        "kind": "unitTest",
+        "name": "every CAP-13 criterion resolves to a machine-readable status"
+      }
+    },
+    {
+      "id": "B17",
+      "claim": "coordinator aesthetic judgement against the governed references",
+      "source": {
+        "kind": "humanRecord",
+        "location": "governance",
+        "record": "GR-1",
+        "why": "judgement against generated images is the one criterion this capability proved a machine cannot stand in for: a metric improved fourteenfold while the picture regressed to the identity the engine exists to replace",
+        "outsideRepository": "deliberately, under this project's public/private boundary; this repository must not name that path in a tracked byte, so the DECLARATION is what is verified here and the record itself is verified by the governance gate"
+      }
+    }
+  ]
+}

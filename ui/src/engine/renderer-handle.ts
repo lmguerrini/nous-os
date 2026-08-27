@@ -43,6 +43,18 @@ export type RetainedResourceWitness = {
   readonly materials: number;
   readonly textures: number;
   readonly domOverlayNodes: number;
+  /**
+   * This measures renderer-owned JavaScript retention when the complete renderer supplies the
+   * witness. A graphics-only registry omits it because that registry cannot observe scene owners;
+   * callers asserting JS retention must treat omission as UNKNOWN, never as zero.
+   */
+  readonly jsRetention?: {
+    readonly status: "MEASURED";
+    readonly retainedSceneReferences: number;
+  } | {
+    readonly status: "UNKNOWN";
+    readonly reason: string;
+  };
 };
 
 /** This is one mounted renderer, asked only questions every renderer can answer, and does not retain an independent graph copy. */

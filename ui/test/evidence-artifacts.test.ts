@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import {
   assertEvidenceArtifactCurrent,
   TRACKED_TREE_IDENTITY_ALGORITHM,
+  TRACKED_TREE_STATUS_COMMAND,
 } from "#browser/parity-contract.ts";
 import type { TrackedTreeIdentity } from "#browser/parity-contract.ts";
+import {
+  PERFORMANCE_COMBINATIONS,
+  PERFORMANCE_MEASUREMENTS,
+} from "#browser/performance-contract.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -26,7 +32,9 @@ type ParsedArtifact = {
  * run-level verdict to be false while anything is unbound. Demanding it pass would force exactly two
  * outcomes, both forbidden — hiding the NOT_RUN states, or lowering the criterion. So it is held to
  * the binding requirement and to the rule that every unbound measurement carries its reason, which
- * is what makes `passing: false` an honest statement rather than an unexamined one.
+ * is what makes `passing: false` an honest statement rather than an unexamined one. Its exception
+ * also requires the complete renderer-by-scale matrix, the exact measurement set, known statuses,
+ * and numeric PASS measurements at the completing scale.
  */
 const ARTIFACTS = [
   { label: "parity evidence", path: ["dist", "evidence", "parity.json"].join("/"), mustPass: true },
@@ -35,10 +43,37 @@ const ARTIFACTS = [
 ] as const;
 
 test("evidence artifacts are currently certifiable against the tracked tree", async () => {
-  const currentTrackedTreeSha256 = await trackedTreeSha256();
+  const hostileOutput = failedControlOutput(() => assertPerformanceExemption({
+    records: [{ measurements: { frameTime: { status: "NOT_RUN", reason: "hostile artifact measured nothing" } } }],
+  }, "performance hostile control"));
+  assert.match(hostileOutput, /expected 9/);
+  console.info(`performance hostile control: ${hostileOutput}`);
+
+  const noSmallScalePassOutput = failedControlOutput(() => assertPerformanceExemption(
+    performanceControlArtifact("NOT_RUN"),
+    "performance no-small-scale-PASS control",
+  ));
+  assert.match(noSmallScalePassOutput, /completing scale requires PASS/);
+  console.info(`performance no-small-scale-PASS control: ${noSmallScalePassOutput}`);
+
+  const outsideVocabulary = performanceControlArtifact("PASS", "OUTSIDE_VOCABULARY");
+  const outsideVocabularyOutput = failedControlOutput(() => assertPerformanceExemption(
+    outsideVocabulary,
+    "performance status-vocabulary control",
+  ));
+  assert.match(outsideVocabularyOutput, /outside PASS, NOT_RUN, UNKNOWN/);
+  console.info(`performance status-vocabulary control: ${outsideVocabularyOutput}`);
+
+  const currentTrackedTree = await trackedTreeState();
   const rejections: string[] = [];
   for (const artifact of ARTIFACTS) {
     try {
+      if (!artifact.mustPass) {
+        assertPerformanceExemption(
+          JSON.parse(await readFile(artifact.path, "utf8")) as unknown,
+          artifact.label,
+        );
+      }
       const parsed = await readArtifact(artifact.path, artifact.label);
       // A not-required-to-pass artifact is still held to its binding, and additionally to the rule
       // that nothing is unbound WITHOUT a recorded reason — otherwise "does not have to pass" would
@@ -46,15 +81,10 @@ test("evidence artifacts are currently certifiable against the tracked tree", as
       assertEvidenceArtifactCurrent(
         artifact.mustPass ? parsed.summary.passing : true,
         parsed.run.trackedTree,
-        currentTrackedTreeSha256,
+        currentTrackedTree.sha256,
         artifact.label,
+        currentTrackedTree.statusPorcelain,
       );
-      if (!artifact.mustPass) {
-        assertEveryUnboundMeasurementHasAReason(
-          JSON.parse(await readFile(artifact.path, "utf8")) as unknown,
-          artifact.label,
-        );
-      }
     } catch (error: unknown) {
       rejections.push(error instanceof Error ? error.message : String(error));
     }
@@ -62,50 +92,209 @@ test("evidence artifacts are currently certifiable against the tracked tree", as
   assert.deepEqual(rejections, []);
 });
 
-/** This refuses an unbound measurement that carries no reason and does not require the run to pass. */
-function assertEveryUnboundMeasurementHasAReason(raw: unknown, label: string): void {
-  const records = (isRecord(raw) && Array.isArray(raw["records"]) ? raw["records"] : []) as readonly Record<string, unknown>[];
+const PERFORMANCE_STATUSES = new Set(["PASS", "NOT_RUN", "UNKNOWN"] as const);
+const COMPLETING_SCALE = "10^2";
+const REQUIRED_NUMERIC_PASSES = [
+  "frameTime",
+  "initialRenderLatency",
+  "layoutCost",
+  "sceneModelBuildCost",
+  "pickingLatency",
+] as const;
+
+/** This permits governed shortfalls only inside the complete, measured performance matrix. */
+function assertPerformanceExemption(raw: unknown, label: string): void {
+  const records = isRecord(raw) && Array.isArray(raw["records"]) ? raw["records"] : [];
+  if (records.length !== PERFORMANCE_COMBINATIONS.length) {
+    throw new Error(
+      `${label} has ${records.length} renderer-by-scale records; expected ${PERFORMANCE_COMBINATIONS.length}`,
+    );
+  }
+  const expected = new Map(PERFORMANCE_COMBINATIONS.map((combination) => [
+    `${combination.renderer}:${combination.scale}`,
+    combination,
+  ]));
+  const seen = new Set<string>();
   let unbound = 0;
-  for (const record of records) {
-    const measurements = (record["measurements"] ?? {}) as Record<string, { readonly status?: string; readonly reason?: string }>;
-    for (const [name, measurement] of Object.entries(measurements)) {
-      if (measurement.status === undefined) {
-        throw new Error(`${label} measurement ${name} records no status`);
+  for (const [recordIndex, candidate] of records.entries()) {
+    if (!isRecord(candidate)) {
+      throw new Error(`${label} record ${recordIndex} is not an object`);
+    }
+    const key = `${String(candidate["renderer"])}:${String(candidate["scale"])}`;
+    const combination = expected.get(key);
+    if (combination === undefined) {
+      throw new Error(`${label} has unexpected renderer-by-scale record ${key}`);
+    }
+    if (seen.has(key)) {
+      throw new Error(`${label} repeats renderer-by-scale record ${key}`);
+    }
+    seen.add(key);
+    if (candidate["fixture"] !== combination.fixture) {
+      throw new Error(`${label} ${key} names unexpected fixture ${String(candidate["fixture"])}`);
+    }
+    const measurements = candidate["measurements"];
+    if (!isRecord(measurements)) {
+      throw new Error(`${label} ${key} has no measurement object`);
+    }
+    const actualNames = Object.keys(measurements);
+    const missingNames = PERFORMANCE_MEASUREMENTS.filter((name) => !(name in measurements));
+    const extraNames = actualNames.filter((name) => !(PERFORMANCE_MEASUREMENTS as readonly string[]).includes(name));
+    if (missingNames.length > 0 || extraNames.length > 0) {
+      throw new Error(
+        `${label} ${key} measurement names differ; missing [${missingNames.join(", ")}], extra [${extraNames.join(", ")}]`,
+      );
+    }
+    for (const name of PERFORMANCE_MEASUREMENTS) {
+      const measurement = measurements[name];
+      if (!isRecord(measurement)) {
+        throw new Error(`${label} ${key} measurement ${name} is not an object`);
       }
-      if (measurement.status === "PASS") {
-        continue;
-      }
-      unbound += 1;
-      if (typeof measurement.reason !== "string" || measurement.reason.trim() === "") {
-        throw new Error(`${label} measurement ${name} is ${measurement.status} with no recorded reason`);
+      unbound += assertKnownMeasurementStatuses(measurement, `${label} ${key} measurement ${name}`);
+    }
+    if (combination.scale === COMPLETING_SCALE) {
+      for (const name of REQUIRED_NUMERIC_PASSES) {
+        const measurement = measurements[name];
+        if (!isRecord(measurement) || measurement["status"] !== "PASS") {
+          throw new Error(
+            `${label} ${key} measurement ${name} is ${String(isRecord(measurement) ? measurement["status"] : undefined)}; `
+            + "completing scale requires PASS",
+          );
+        }
+        if (!("value" in measurement) || !isNumericDistribution(measurement["value"])) {
+          throw new Error(`${label} ${key} measurement ${name} PASS contains no finite non-empty distribution`);
+        }
       }
     }
+  }
+  const missingRecords = [...expected.keys()].filter((key) => !seen.has(key));
+  if (missingRecords.length > 0) {
+    throw new Error(`${label} is missing renderer-by-scale records: ${missingRecords.join(", ")}`);
   }
   if (unbound === 0) {
     throw new Error(`${label} is declared not-required-to-pass but reports nothing unbound, so the exemption is unexamined`);
   }
 }
 
+function assertKnownMeasurementStatuses(value: unknown, path: string): number {
+  if (Array.isArray(value)) {
+    return value.reduce((count, entry, index) => count + assertKnownMeasurementStatuses(entry, `${path}[${index}]`), 0);
+  }
+  if (!isRecord(value)) {
+    return 0;
+  }
+  let unbound = 0;
+  if ("status" in value) {
+    const status = value["status"];
+    if (typeof status !== "string" || !PERFORMANCE_STATUSES.has(status as "PASS" | "NOT_RUN" | "UNKNOWN")) {
+      throw new Error(`${path} status ${String(status)} is outside PASS, NOT_RUN, UNKNOWN`);
+    }
+    if (status !== "PASS") {
+      unbound += 1;
+      if (typeof value["reason"] !== "string" || value["reason"].trim() === "") {
+        throw new Error(`${path} is ${status} with no recorded reason`);
+      }
+    } else {
+      // A nested PASS previously needed only the KEY `value` to exist. Every band inside
+      // progressiveDisclosure, and every reading inside memory, could therefore have carried
+      // `"value": null` and the artifact would still have been accepted as a complete measured
+      // matrix. Only the five top-level distributions at the completing scale were ever checked for
+      // content, and the tampering that matters does not have to happen at the top level.
+      if (!("value" in value)) {
+        throw new Error(`${path} PASS records no value`);
+      }
+      const measured = value["value"];
+      if (measured === null || measured === undefined) {
+        throw new Error(`${path} PASS records a null value, which is not a measurement`);
+      }
+      if (isRecord(measured) && "samplesMs" in measured && !isNumericDistribution(measured)) {
+        throw new Error(`${path} PASS records a distribution with no finite non-empty samples`);
+      }
+    }
+  }
+  return Object.entries(value).reduce(
+    (count, [name, entry]) => count + (name === "status" ? 0 : assertKnownMeasurementStatuses(entry, `${path}.${name}`)),
+    unbound,
+  );
+}
+
+function isNumericDistribution(value: unknown): boolean {
+  return isRecord(value)
+    && Array.isArray(value["samplesMs"])
+    && value["samplesMs"].length > 0
+    && value["samplesMs"].every((sample) => typeof sample === "number" && Number.isFinite(sample))
+    && typeof value["medianMs"] === "number"
+    && Number.isFinite(value["medianMs"])
+    && typeof value["p95Ms"] === "number"
+    && Number.isFinite(value["p95Ms"]);
+}
+
 test("evidence artifact consumer rejects a stale recorded tree", async () => {
-  const currentTrackedTreeSha256 = await trackedTreeSha256();
+  const currentTrackedTree = await trackedTreeState();
   const output = failedControlOutput(() => assertEvidenceArtifactCurrent(true, {
       algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
       measuredSha256: "0".repeat(64),
       completedSha256: "0".repeat(64),
+      measuredStatusPorcelain: "",
+      completedStatusPorcelain: "",
       stable: true,
-    }, currentTrackedTreeSha256, "stale identity control"));
+    }, currentTrackedTree.sha256, "stale identity control", currentTrackedTree.statusPorcelain));
   assert.match(output, /tracked-tree identity is stale/);
   console.info(`stale identity control: ${output}`);
+
+  const controlPath = join([".."].join("/"), "ui", "test", "evidence-artifacts.test.ts");
+  const original = await readFile(controlPath);
+  const indexedBefore = await indexedTreeSha256();
+  const worktreeBefore = await trackedTreeState();
+  let identityOutput = "";
+  let statusOutput = "";
+  let indexedAfter = "";
+  let worktreeAfter: Awaited<ReturnType<typeof trackedTreeState>> | undefined;
+  await writeFile(controlPath, Buffer.concat([original, Buffer.from("\n/* unstaged identity control */\n")]));
+  try {
+    indexedAfter = await indexedTreeSha256();
+    worktreeAfter = await trackedTreeState();
+    assert.equal(indexedAfter, indexedBefore);
+    assert.notEqual(worktreeAfter.sha256, worktreeBefore.sha256);
+    identityOutput = failedControlOutput(() => assertEvidenceArtifactCurrent(true, {
+      algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
+      measuredSha256: worktreeBefore.sha256,
+      completedSha256: worktreeBefore.sha256,
+      measuredStatusPorcelain: "",
+      completedStatusPorcelain: "",
+      stable: true,
+    }, worktreeAfter?.sha256 ?? "", "unstaged byte-identity control", worktreeAfter?.statusPorcelain));
+    assert.match(identityOutput, /tracked-tree identity is stale/);
+    statusOutput = failedControlOutput(() => assertEvidenceArtifactCurrent(true, {
+      algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
+      measuredSha256: worktreeAfter?.sha256 ?? "",
+      completedSha256: worktreeAfter?.sha256 ?? "",
+      measuredStatusPorcelain: "",
+      completedStatusPorcelain: "",
+      stable: true,
+    }, worktreeAfter?.sha256 ?? "", "unstaged status control", worktreeAfter?.statusPorcelain));
+    assert.match(statusOutput, /current worktree is dirty/);
+  } finally {
+    await writeFile(controlPath, original);
+  }
+  const restored = await trackedTreeState();
+  assert.equal(restored.sha256, worktreeBefore.sha256);
+  console.info(
+    `unstaged tracked-file control: index ${indexedBefore} -> ${indexedAfter} (unchanged); `
+    + `worktree bytes ${worktreeBefore.sha256} -> ${worktreeAfter?.sha256 ?? "not computed"} (changed); `
+    + `byte refusal: ${identityOutput}; ${TRACKED_TREE_STATUS_COMMAND} refusal: ${statusOutput}`,
+  );
 });
 
 test("evidence artifact consumer rejects a false run verdict", async () => {
-  const currentTrackedTreeSha256 = await trackedTreeSha256();
+  const currentTrackedTree = await trackedTreeState();
   const output = failedControlOutput(() => assertEvidenceArtifactCurrent(false, {
       algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
-      measuredSha256: currentTrackedTreeSha256,
-      completedSha256: currentTrackedTreeSha256,
+      measuredSha256: currentTrackedTree.sha256,
+      completedSha256: currentTrackedTree.sha256,
+      measuredStatusPorcelain: "",
+      completedStatusPorcelain: "",
       stable: true,
-    }, currentTrackedTreeSha256, "false verdict control"));
+    }, currentTrackedTree.sha256, "false verdict control", currentTrackedTree.statusPorcelain));
   assert.match(output, /run-level verdict is not passing/);
   console.info(`false verdict control: ${output}`);
 });
@@ -123,6 +312,8 @@ async function readArtifact(path: string, label: string): Promise<ParsedArtifact
     tree.algorithm !== TRACKED_TREE_IDENTITY_ALGORITHM
     || typeof tree.measuredSha256 !== "string"
     || typeof tree.completedSha256 !== "string"
+    || typeof tree.measuredStatusPorcelain !== "string"
+    || typeof tree.completedStatusPorcelain !== "string"
     || typeof tree.stable !== "boolean"
   ) {
     throw new Error(`${label} has an invalid tracked-tree identity`);
@@ -134,6 +325,8 @@ async function readArtifact(path: string, label: string): Promise<ParsedArtifact
         algorithm: tree.algorithm,
         measuredSha256: tree.measuredSha256,
         completedSha256: tree.completedSha256,
+        measuredStatusPorcelain: tree.measuredStatusPorcelain,
+        completedStatusPorcelain: tree.completedStatusPorcelain,
         stable: tree.stable,
       },
     },
@@ -144,10 +337,56 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-async function trackedTreeSha256(): Promise<string> {
+async function trackedTreeState(): Promise<{ readonly sha256: string; readonly statusPorcelain: string }> {
+  const repositoryDirectory = [".."].join("/");
+  const [{ stdout: trackedPaths }, { stdout: statusPorcelain }] = await Promise.all([
+    execFileAsync("git", ["ls-files", "-z"], { cwd: repositoryDirectory, encoding: "utf8" }),
+    execFileAsync("git", ["status", "--porcelain"], { cwd: repositoryDirectory, encoding: "utf8" }),
+  ]);
+  const hash = createHash("sha256");
+  for (const path of trackedPaths.split("\0")) {
+    if (path === "") {
+      continue;
+    }
+    const pathBytes = Buffer.from(path, "utf8");
+    const contents = await readFile(join(repositoryDirectory, path));
+    hash.update(uint64be(pathBytes.length));
+    hash.update(pathBytes);
+    hash.update(uint64be(contents.length));
+    hash.update(contents);
+  }
+  return { sha256: hash.digest("hex"), statusPorcelain };
+}
+
+async function indexedTreeSha256(): Promise<string> {
   const repositoryDirectory = [".."].join("/");
   const { stdout } = await execFileAsync("git", ["ls-files", "-s"], { cwd: repositoryDirectory, encoding: "utf8" });
   return createHash("sha256").update(stdout).digest("hex");
+}
+
+function uint64be(value: number): Buffer {
+  const encoded = Buffer.alloc(8);
+  encoded.writeBigUInt64BE(BigInt(value));
+  return encoded;
+}
+
+function performanceControlArtifact(
+  completingStatus: "PASS" | "NOT_RUN",
+  firstStatusOverride?: string,
+): unknown {
+  return {
+    records: PERFORMANCE_COMBINATIONS.map((combination, combinationIndex) => ({
+      ...combination,
+      measurements: Object.fromEntries(PERFORMANCE_MEASUREMENTS.map((name, measurementIndex) => {
+        const status = combinationIndex === 0 && measurementIndex === 0 && firstStatusOverride !== undefined
+          ? firstStatusOverride
+          : combination.scale === COMPLETING_SCALE ? completingStatus : "NOT_RUN";
+        return [name, status === "PASS"
+          ? { status, value: { samplesMs: [1], medianMs: 1, p95Ms: 1 } }
+          : { status, reason: "governed control shortfall" }];
+      })),
+    })),
+  };
 }
 
 function failedControlOutput(operation: () => void): string {
@@ -158,3 +397,45 @@ function failedControlOutput(operation: () => void): string {
   }
   throw new Error("evidence artifact control unexpectedly passed");
 }
+
+test("the performance exemption refuses a nested PASS whose value is not a measurement", () => {
+  // The five top-level distributions at the completing scale were checked for content. Nothing else
+  // was — so every band inside progressiveDisclosure, and every reading inside memory, could have
+  // carried an empty or null value and the artifact would still have read as a complete measured
+  // matrix. Tampering does not have to happen where the checking is.
+  const withNestedValue = (value: unknown): unknown => ({
+    records: PERFORMANCE_COMBINATIONS.map((combination) => ({
+      ...combination,
+      measurements: Object.fromEntries(PERFORMANCE_MEASUREMENTS.map((name) => [
+        name,
+        combination.scale === COMPLETING_SCALE
+          ? {
+            status: "PASS",
+            value: { samplesMs: [1], medianMs: 1, p95Ms: 1 },
+            bands: [{ mountToFirstPaint: { status: "PASS", value } }],
+          }
+          : { status: "NOT_RUN", reason: "governed control shortfall" },
+      ])),
+    })),
+  });
+
+  const nullValue = failedControlOutput(
+    () => assertPerformanceExemption(withNestedValue(null), "nested null-value control"),
+  );
+  assert.match(nullValue, /PASS records a null value/);
+
+  const emptyDistribution = failedControlOutput(
+    () => assertPerformanceExemption(
+      withNestedValue({ samplesMs: [], medianMs: 0, p95Ms: 0 }),
+      "nested empty-distribution control",
+    ),
+  );
+  assert.match(emptyDistribution, /distribution with no finite non-empty samples/);
+
+  // And the untampered nested shape must still be accepted, or the rule is refusing everything.
+  assert.doesNotThrow(() => assertPerformanceExemption(
+    withNestedValue({ samplesMs: [12], medianMs: 12, p95Ms: 12 }),
+    "nested intact control",
+  ));
+  console.info(`nested measurement tampering controls: ${nullValue} | ${emptyDistribution}`);
+});

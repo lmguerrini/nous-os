@@ -23,6 +23,7 @@ import {
   assertSceneCameraParity,
   assertTrackedTreeIdentity,
   TRACKED_TREE_IDENTITY_ALGORITHM,
+  TRACKED_TREE_STATUS_COMMAND,
 } from "#browser/parity-contract.ts";
 import type { GovernedPixelSample, RendererCaptureLayout, TrackedTreeIdentity } from "#browser/parity-contract.ts";
 import { legalRenderedCombinations } from "#scene/index.ts";
@@ -38,9 +39,9 @@ import type {
   FullAppVisualStateRoundTripWitness,
   InteractionWitness,
   MountedParityWitness,
-  NodePickWitness,
   ParityBrowserApi,
   ParityRenderer,
+  PickingTargetSetWitness,
   RenderedStatePixelWitness,
   ZeroToleranceWitness,
 } from "#browser/parity.ts";
@@ -55,6 +56,11 @@ type CheckKey = `${CheckName}/${ParityRenderer}`;
 type Rgb = readonly [number, number, number];
 type Deficiency = "deuteranopia" | "protanopia" | "tritanopia";
 
+type TrackedTreeState = {
+  readonly sha256: string;
+  readonly statusPorcelain: string;
+};
+
 type SceneCameraParityObservation = {
   readonly combinations: number;
   readonly axes: {
@@ -63,8 +69,11 @@ type SceneCameraParityObservation = {
     readonly temperature: readonly string[];
     readonly theme: readonly string[];
     readonly lodBand: readonly string[];
+    readonly policy: readonly string[];
+    readonly cameraKind: readonly string[];
   };
   readonly comparisons: readonly {
+    readonly policy: string;
     readonly state: {
       readonly morphology: string;
       readonly palette: string;
@@ -271,14 +280,17 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
   page.on("pageerror", (error) => {
     consoleErrors.push(error.message);
   });
-  const measuredTreeSha256 = await currentTrackedTreeSha256();
+  const measuredTree = await currentTrackedTreeState();
+  const measuredTreeSha256 = measuredTree.sha256;
   const commitSha = await currentCommitSha();
   const staleTreeControlOutput = failingControlOutput(() => assertTrackedTreeIdentity({
     algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
     measuredSha256: "0".repeat(64),
     completedSha256: "0".repeat(64),
+    measuredStatusPorcelain: "",
+    completedStatusPorcelain: "",
     stable: true,
-  }, measuredTreeSha256, "parity stale tracked-tree control"));
+  }, measuredTreeSha256, "parity stale tracked-tree control", measuredTree.statusPorcelain));
   const records = new Map<CheckKey, ParityRecord>();
   const completedRecordKeys = new Set<CheckKey>();
   for (const { checkName, renderer } of CHECK_RENDERERS) {
@@ -293,14 +305,19 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
     const failed = checks.filter((record) => record.status === "FAIL").length;
     const notRun = checks.filter((record) => record.status === "NOT_RUN").length;
     const unknown = checks.filter((record) => record.status === "UNKNOWN").length;
-    const completedTreeSha256 = await currentTrackedTreeSha256();
+    const completedTree = await currentTrackedTreeState();
     const trackedTree: TrackedTreeIdentity = {
       algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
       measuredSha256: measuredTreeSha256,
-      completedSha256: completedTreeSha256,
-      stable: measuredTreeSha256 === completedTreeSha256,
+      completedSha256: completedTree.sha256,
+      measuredStatusPorcelain: measuredTree.statusPorcelain,
+      completedStatusPorcelain: completedTree.statusPorcelain,
+      stable: measuredTreeSha256 === completedTree.sha256
+        && measuredTree.statusPorcelain === completedTree.statusPorcelain,
     };
     const bound = trackedTree.stable
+      && trackedTree.measuredStatusPorcelain === ""
+      && trackedTree.completedStatusPorcelain === ""
       && checks.length === CHECK_RENDERERS.length
       && checks.every((record) => record.trackedTreeSha256 === measuredTreeSha256);
     const evidence: ParityEvidence = {
@@ -479,8 +496,8 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
           comparisons: p2.comparisons,
           legalProjectionChannels: PROJECTION_DEPENDENT_SCENE_CHANNELS,
         },
-        threshold: "across every morphology × palette × temperature × theme × LOD combination, only the non-empty pinned projection-dependent channel list may differ",
-        turnsRed: "any resolved scene channel outside the pinned list differs, camera.kind itself is absent, or a declared visual-state combination is not compared",
+        threshold: "across every morphology × palette × temperature × theme × LOD × governed-policy combination, only the non-empty pinned projection-dependent channel list may differ across camera kinds",
+        turnsRed: "any resolved scene channel outside the pinned list differs, camera.kind itself is absent, or a declared visual-state and governed-policy combination is not compared",
         control: { status: "FAILED_AS_EXPECTED", output: `scene channel control: ${p2.negativeControlOutput} | duplicate record control: ${duplicateRecordControl}` },
       };
     });
@@ -631,57 +648,38 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
     });
   }
 
-  const p5Samples = new Map<ParityRenderer, readonly NodePickWitness[]>();
+  const p5Targets = new Map<ParityRenderer, PickingTargetSetWitness>();
   for (const renderer of PARITY_RENDERERS) {
     await record("P5 drawing and picking", renderer, async () => {
       await invoke<MountedParityWitness>("mountBase", renderer);
       const image = await captureRenderer(page, renderer);
       const litPixels = assertLitPixelFloor(image, `P5 ${renderer} final compositor capture`);
-      const samples = await invoke<readonly NodePickWitness[]>("nodePickSamples", renderer, 3);
-      if (samples.length === 0) {
-        throw new Error(`P5 ${renderer} has no node samples`);
-      }
-      for (const sample of samples) {
-        if (sample.pickedId !== sample.id) {
-          throw new Error(`P5 ${renderer} picked ${sample.pickedId ?? "null"} at projected ${sample.id}`);
-        }
-        const x = Math.round(sample.point.x * (image.width / 1200));
-        const y = Math.round(sample.point.y * (image.height / 800));
-        const pixel = rgbAtDevice(image, x, y);
-        if (!isLitPixel(Math.round(pixel[0] * 255), Math.round(pixel[1] * 255), Math.round(pixel[2] * 255), fieldPixel(image))) {
-          throw new Error(`P5 ${renderer} projected ${sample.id} is not lit at its pick point`);
-        }
-      }
-      p5Samples.set(renderer, samples);
+      const targets = await invoke<PickingTargetSetWitness>("completePickingTargetSet", renderer);
+      assertCompletePickingTargetCoverage(renderer, targets, image);
+      p5Targets.set(renderer, targets);
       const zeroTolerance = await invoke<ZeroToleranceWitness>("mountZeroToleranceControl", renderer);
       const p5Control = failingControlOutput(() => assertPositivePickTolerance(zeroTolerance.configuredPickTolerancePx));
       return {
-        measured: { samples, zeroTolerance, litPixels },
-        threshold: "final compositor frame clears the shared lit-pixel floor; renderer pick returns the renderer-projected drawn node id; configured pick tolerance is greater than zero",
-        turnsRed: "the final compositor frame is blank, a renderer-projected node is not lit, does not pick itself, or the zero-tolerance control is accepted",
+        measured: { targets, zeroTolerance, litPixels },
+        threshold: "final compositor frame clears the shared lit-pixel floor; every mounted node and relation is represented, each pickable target picks itself at its projected point, and every unpickable target records its reason; configured pick tolerance is greater than zero",
+        turnsRed: "the final compositor frame is blank, a mounted target is omitted or lacks an unpickable reason, a pickable target does not pick itself, or the zero-tolerance control is accepted",
         control: { status: "FAILED_AS_EXPECTED", output: p5Control },
       };
     });
   }
-  const sigmaSamples = p5Samples.get("sigma-2d");
-  if (sigmaSamples !== undefined) {
-    await record("P5 cross-renderer picking", "r3f-2d", async () => {
-      await invoke<MountedParityWitness>("mountBase", "r3f-2d");
-      const crossPicked = await Promise.all(sigmaSamples.map(async (sample) => ({ id: sample.id, pickedId: await invoke<string | null>("pickNodeAt", "r3f-2d", sample.point) })));
-      for (const sample of crossPicked) {
-        if (sample.pickedId !== sample.id) {
-          throw new Error(`P5 r3f-2d picked ${sample.pickedId ?? "null"} where sigma-2d picked ${sample.id}`);
-        }
-      }
-      const own = p5Samples.get("r3f-2d") ?? [];
-      return {
-        measured: { own, crossRendererAtSigmaPositions: crossPicked },
-        threshold: "Sigma-2D and r3f-2d return the same id at Sigma's viewport position",
-        turnsRed: "r3f-2d returns a different id or null at a Sigma-2D projected pick point",
-        control: { status: "FAILED_AS_EXPECTED", output: failingControlOutput(() => assertPositivePickTolerance(0)) },
-      };
-    });
-  }
+  await record("P5 cross-renderer picking", "r3f-2d", async () => {
+    const sigma = requiredPickingTargetSet(p5Targets, "sigma-2d");
+    const r3f2d = requiredPickingTargetSet(p5Targets, "r3f-2d");
+    const r3f3d = requiredPickingTargetSet(p5Targets, "r3f-3d");
+    assertCrossRendererPickingTargetSet(sigma, r3f2d);
+    assertCrossRendererPickingTargetSet(sigma, r3f3d);
+    return {
+      measured: { "sigma-2d": sigma, "r3f-2d": r3f2d, "r3f-3d": r3f3d },
+      threshold: "the complete rendered node-id set, relation-id set and source/target incidence, plus the complete node and relation picking target sets, are equal across Sigma 2D, R3F 2D and R3F 3D",
+      turnsRed: "a rendered id or relation incidence differs, a node or relation picking target set differs, or an unpickable element has no recorded reason",
+      control: { status: "FAILED_AS_EXPECTED", output: failingControlOutput(() => assertPositivePickTolerance(0)) },
+    };
+  });
 
   const p6Capability = await invoke<CameraLayoutCapabilityWitness>("readCameraLayoutCapability");
   const p6Control = failingControlOutput(() => assertWorldAnchorsEqual([{ id: "control", x: 0, y: 0, z: 0 }], [{ id: "control", x: 1, y: 0, z: 0 }]));
@@ -1013,14 +1011,18 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
     }
     await writeEvidence();
   }
-  const completedTreeSha256 = await currentTrackedTreeSha256();
+  const completedTree = await currentTrackedTreeState();
   const finalTrackedTree: TrackedTreeIdentity = {
     algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
     measuredSha256: measuredTreeSha256,
-    completedSha256: completedTreeSha256,
-    stable: measuredTreeSha256 === completedTreeSha256,
+    completedSha256: completedTree.sha256,
+    measuredStatusPorcelain: measuredTree.statusPorcelain,
+    completedStatusPorcelain: completedTree.statusPorcelain,
+    stable: measuredTreeSha256 === completedTree.sha256
+      && measuredTree.statusPorcelain === completedTree.statusPorcelain,
   };
-  assertTrackedTreeIdentity(finalTrackedTree, finalTrackedTree.completedSha256, "parity evidence");
+  const currentTree = await currentTrackedTreeState();
+  assertTrackedTreeIdentity(finalTrackedTree, currentTree.sha256, "parity evidence", currentTree.statusPorcelain);
   const incomplete = [...records.values()].filter((item) => item.status !== "PASS");
   expect(incomplete, "renderer parity requires every tracked-tree-bound check to pass; NOT_RUN is never a pass").toEqual([]);
 });
@@ -1441,6 +1443,84 @@ function assertPositivePickTolerance(value: number): void {
   }
 }
 
+function assertCompletePickingTargetCoverage(
+  renderer: ParityRenderer,
+  targets: PickingTargetSetWitness,
+  image: DecodedPng,
+): void {
+  assertSameIdSet("P5 complete mounted node ids", targets.surface.nodeIds, targets.nodes.map((target) => target.id), renderer);
+  assertSameIdSet("P5 complete mounted relation ids", targets.surface.edgeIds, targets.relations.map((target) => target.id), renderer);
+  for (const target of [...targets.nodes, ...targets.relations]) {
+    if (target.pickable) {
+      if (target.point === null || target.pickedId !== target.id || target.unavailableReason !== null) {
+        throw new Error(`P5 ${renderer} has an inconsistent pickable witness for ${target.id}`);
+      }
+      continue;
+    }
+    if (!isRecordedUnpickableReason(target.unavailableReason)) {
+      throw new Error(`P5 ${renderer} cannot pick ${target.id} without a recorded physical reason: ${target.unavailableReason ?? "missing"}`);
+    }
+  }
+  for (const target of targets.nodes) {
+    if (!target.pickable || target.point === null) {
+      continue;
+    }
+    const x = Math.round(target.point.x * (image.width / 1200));
+    const y = Math.round(target.point.y * (image.height / 800));
+    if (x < 0 || x >= image.width || y < 0 || y >= image.height) {
+      throw new Error(`P5 ${renderer} pickable node ${target.id} has an out-of-frame projected point`);
+    }
+    const pixel = rgbAtDevice(image, x, y);
+    if (!isLitPixel(Math.round(pixel[0] * 255), Math.round(pixel[1] * 255), Math.round(pixel[2] * 255), fieldPixel(image))) {
+      throw new Error(`P5 ${renderer} projected ${target.id} is not lit at its pick point`);
+    }
+  }
+}
+
+function isRecordedUnpickableReason(reason: string | null): boolean {
+  return reason === "off-screen"
+    || reason === "below-one-device-pixel"
+    || reason?.startsWith("occluded-by:") === true;
+}
+
+function requiredPickingTargetSet(
+  targets: ReadonlyMap<ParityRenderer, PickingTargetSetWitness>,
+  renderer: ParityRenderer,
+): PickingTargetSetWitness {
+  const value = targets.get(renderer);
+  if (value === undefined) {
+    throw new Error(`P5 lacks complete picking coverage for ${renderer}`);
+  }
+  return value;
+}
+
+function assertCrossRendererPickingTargetSet(
+  reference: PickingTargetSetWitness,
+  observed: PickingTargetSetWitness,
+): void {
+  assertSameIdSet("P5 rendered node id set", reference.surface.nodeIds, observed.surface.nodeIds, observed.renderer);
+  assertSameIdSet("P5 rendered relation id set", reference.surface.edgeIds, observed.surface.edgeIds, observed.renderer);
+  for (const id of sortedIds(reference.surface.edgeIds)) {
+    const expected = reference.surface.incidence[id];
+    const actual = observed.surface.incidence[id];
+    if (expected === undefined || actual === undefined || expected.source !== actual.source || expected.target !== actual.target) {
+      throw new Error(`P5 ${observed.renderer} relation ${id} has incidence ${formatIncidence(actual)} instead of ${formatIncidence(expected)}`);
+    }
+  }
+  assertSameIdSet(
+    "P5 node picking target set",
+    reference.nodes.filter((target) => target.pickable).map((target) => target.id),
+    observed.nodes.filter((target) => target.pickable).map((target) => target.id),
+    observed.renderer,
+  );
+  assertSameIdSet(
+    "P5 relation picking target set",
+    reference.relations.filter((target) => target.pickable).map((target) => target.id),
+    observed.relations.filter((target) => target.pickable).map((target) => target.id),
+    observed.renderer,
+  );
+}
+
 function assertWorldAnchorsEqual(
   before: readonly { readonly id: string; readonly x: number; readonly y: number; readonly z: number }[],
   after: readonly { readonly id: string; readonly x: number; readonly y: number; readonly z: number }[],
@@ -1530,10 +1610,31 @@ async function currentCommitSha(): Promise<string> {
   }
 }
 
-async function currentTrackedTreeSha256(): Promise<string> {
+async function currentTrackedTreeState(): Promise<TrackedTreeState> {
   const repositoryDirectory = [".."].join("/");
-  const { stdout } = await execFileAsync("git", ["ls-files", "-s"], { cwd: repositoryDirectory, encoding: "utf8" });
-  return createHash("sha256").update(stdout).digest("hex");
+  const [{ stdout: trackedPaths }, { stdout: statusPorcelain }] = await Promise.all([
+    execFileAsync("git", ["ls-files", "-z"], { cwd: repositoryDirectory, encoding: "utf8" }),
+    execFileAsync("git", trackedTreeStatusArguments(), { cwd: repositoryDirectory, encoding: "utf8" }),
+  ]);
+  const hash = createHash("sha256");
+  for (const path of trackedPaths.split("\0")) {
+    if (path === "") {
+      continue;
+    }
+    const pathBytes = Buffer.from(path, "utf8");
+    const contents = await readFile(`${repositoryDirectory}/${path}`);
+    hash.update(uint64be(pathBytes.length));
+    hash.update(pathBytes);
+    hash.update(uint64be(contents.length));
+    hash.update(contents);
+  }
+  return { sha256: hash.digest("hex"), statusPorcelain };
+}
+
+function uint64be(value: number): Buffer {
+  const encoded = Buffer.alloc(8);
+  encoded.writeBigUInt64BE(BigInt(value));
+  return encoded;
 }
 
 async function purgeBrowserCache(page: Page): Promise<void> {
@@ -1643,4 +1744,19 @@ function unfilter(value: number, filter: number | undefined, left: number, above
     return (value + (pa <= pb && pa <= pc ? left : pb <= pc ? above : upperLeft)) & 0xff;
   }
   throw new Error(`parity PNG has unsupported filter ${filter}`);
+}
+
+/**
+ * `TRACKED_TREE_STATUS_COMMAND` names the whole command, program included. Splitting it straight
+ * into an argument list re-passes `git` as git's own first argument, which fails with
+ * `git: 'git' is not a git command` — so the status reading threw, and with it the tree identity
+ * this artifact is bound by. It went unnoticed because no evidence had been regenerated since the
+ * identity was rewritten. The program name is dropped here, once, and asserted.
+ */
+function trackedTreeStatusArguments(): readonly string[] {
+  const [program, ...args] = TRACKED_TREE_STATUS_COMMAND.split(" ");
+  if (program !== "git" || args.length === 0) {
+    throw new Error(`tracked-tree status command is not a git invocation: ${TRACKED_TREE_STATUS_COMMAND}`);
+  }
+  return args;
 }

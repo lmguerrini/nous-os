@@ -24,6 +24,7 @@ import { assertProjectedCameraFramingSubjectsInsideViewport } from "#render3f/ca
 import {
   assertTrackedTreeIdentity,
   TRACKED_TREE_IDENTITY_ALGORITHM,
+  TRACKED_TREE_STATUS_COMMAND,
 } from "#browser/parity-contract.ts";
 import type { TrackedTreeIdentity } from "#browser/parity-contract.ts";
 // A subpath alias, not a relative parent path: a `..` segment at a quote boundary is
@@ -31,16 +32,23 @@ import type { TrackedTreeIdentity } from "#browser/parity-contract.ts";
 
 type CaptureStatus = "PENDING" | "PASS" | "FAIL" | "NOT_RUN";
 
+type TrackedTreeState = {
+  readonly sha256: string;
+  readonly statusPorcelain: string;
+};
+
 type PlannedCapture = {
   readonly renderer: Review3dRenderer;
   readonly view: Review3dView;
   readonly fileName: string;
+  readonly devicePixelRatio: number;
 };
 
 type CaptureRecord = {
   readonly renderer: Review3dRenderer;
   readonly view: Review3dView;
   readonly fileName: string;
+  readonly devicePixelRatio: number;
   status: CaptureStatus;
   reason: string | null;
   sha256: string | null;
@@ -135,11 +143,8 @@ type Review3dManifest = {
 
 const CAPTURE_WIDTH = 1_200;
 const CAPTURE_HEIGHT = 800;
-const DEVICE_PIXEL_RATIO = 1;
-const REVIEW3D_DIRECTORY = join("dist", "review3d");
-const CAPTURE_DIRECTORY = join(REVIEW3D_DIRECTORY, "captures");
-const MANIFEST_FILE = join(REVIEW3D_DIRECTORY, "manifest.json");
-const REVIEW3D_COMMAND = "REVIEW3D_CAPTURES=1 npm --prefix ui exec playwright test --project=review3d";
+const REVIEW3D_ROOT_DIRECTORY = join("dist", "review3d");
+const REVIEW3D_COMMAND = "REVIEW3D_CAPTURES=1 npm --prefix ui exec playwright test --project=review3d-dpr-1 --project=review3d-dpr-2";
 const FIXTURE = ["fixtures", "synthetic", "projection", "discovery-at-question.json"].join("/");
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const CORE_CONCENTRATION_HIGH_THRESHOLD = 192;
@@ -149,17 +154,48 @@ const COMMON_VIEWS = ["macro", "meso", "micro", "selected", "focused"] as const 
 const ORBIT_VIEWS = ["orbit-a", "orbit-b"] as const satisfies readonly Review3dView[];
 const execFileAsync = promisify(execFile);
 
-test("deterministic three-renderer visual review capture set", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "review3d", "run this through the dedicated review3d project");
-  expect(await page.evaluate(() => window.devicePixelRatio)).toBe(DEVICE_PIXEL_RATIO);
+type Review3dOutput = {
+  readonly directory: string;
+  readonly captureDirectory: string;
+  readonly manifestFile: string;
+};
 
-  const observedTrackedTreeSha256 = await currentTrackedTreeSha256();
+function review3dDevicePixelRatio(projectName: string): number | null {
+  if (projectName === "review3d-dpr-1") {
+    return 1;
+  }
+  if (projectName === "review3d-dpr-2") {
+    return 2;
+  }
+  return null;
+}
+
+function review3dOutput(devicePixelRatio: number): Review3dOutput {
+  const directory = join(REVIEW3D_ROOT_DIRECTORY, `dpr-${devicePixelRatio}`);
+  return {
+    directory,
+    captureDirectory: join(directory, "captures"),
+    manifestFile: join(directory, "manifest.json"),
+  };
+}
+
+test("deterministic three-renderer visual review capture set", async ({ page }, testInfo) => {
+  const devicePixelRatio = review3dDevicePixelRatio(testInfo.project.name);
+  test.skip(devicePixelRatio === null, "run this through a dedicated review3d DPR project");
+  if (devicePixelRatio === null) {
+    return;
+  }
+  expect(await page.evaluate(() => window.devicePixelRatio)).toBe(devicePixelRatio);
+
+  const output = review3dOutput(devicePixelRatio);
+  const observedTrackedTree = await currentTrackedTreeState();
+  const observedTrackedTreeSha256 = observedTrackedTree.sha256;
   const observedCommitSha = await currentCommitSha();
-  const captures = plannedCaptures();
-  const manifest = emptyManifest(observedCommitSha, observedTrackedTreeSha256, captures);
-  await rm(REVIEW3D_DIRECTORY, { recursive: true, force: true });
-  await mkdir(CAPTURE_DIRECTORY, { recursive: true });
-  await writeManifest(manifest);
+  const captures = plannedCaptures(devicePixelRatio);
+  const manifest = emptyManifest(observedCommitSha, observedTrackedTree, devicePixelRatio, captures);
+  await rm(output.directory, { recursive: true, force: true });
+  await mkdir(output.captureDirectory, { recursive: true });
+  await writeManifest(manifest, output);
 
   const bundled = await build({
     bundle: true,
@@ -177,13 +213,13 @@ test("deterministic three-renderer visual review capture set", async ({ page }, 
     firstPassReady = true;
   } catch (error: unknown) {
     markPendingNotRun(manifest, `initial page module could not produce captures: ${errorMessage(error)}`);
-    await writeManifest(manifest);
+    await writeManifest(manifest, output);
   }
   if (firstPassReady) {
     try {
       for (const capture of captures) {
-        await captureFirstPass(page, manifest, capture);
-        await writeManifest(manifest);
+        await captureFirstPass(page, manifest, capture, output);
+        await writeManifest(manifest, output);
       }
     } finally {
       await destroyReview3dPage(page);
@@ -199,13 +235,13 @@ test("deterministic three-renderer visual review capture set", async ({ page }, 
       repeatPassReady = true;
     } catch (error: unknown) {
       markSuccessfulCapturesNotRun(manifest, `cache-purged page module could not produce captures: ${errorMessage(error)}`);
-      await writeManifest(manifest);
+      await writeManifest(manifest, output);
     }
     if (repeatPassReady) {
       try {
         for (const capture of captures) {
-          await captureRepeatPass(page, manifest, capture);
-          await writeManifest(manifest);
+          await captureRepeatPass(page, manifest, capture, output);
+          await writeManifest(manifest, output);
         }
       } finally {
         await destroyReview3dPage(page);
@@ -214,18 +250,22 @@ test("deterministic three-renderer visual review capture set", async ({ page }, 
   }
 
   manifest.run.completedCommitSha = await currentCommitSha();
-  const completedTrackedTreeSha256 = await currentTrackedTreeSha256();
-  manifest.run.trackedTree = trackedTreeIdentity(observedTrackedTreeSha256, completedTrackedTreeSha256);
+  const completedTrackedTree = await currentTrackedTreeState();
+  manifest.run.trackedTree = trackedTreeIdentity(
+    observedTrackedTreeSha256,
+    observedTrackedTree.statusPorcelain,
+    completedTrackedTree,
+  );
   manifest.run.freshAgainstObservedCommit = manifest.run.completedCommitSha === observedCommitSha
     && manifest.captures.every((capture) => capture.observedCommitSha === observedCommitSha);
-  manifest.run.freshAgainstObservedTrackedTree = manifest.run.trackedTree.stable
+  manifest.run.freshAgainstObservedTrackedTree = hasCleanStableTrackedTree(manifest.run.trackedTree)
     && manifest.captures.every((capture) => capture.observedTrackedTreeSha256 === observedTrackedTreeSha256);
   manifest.semanticGraph.equal = semanticDigestParity(manifest.semanticGraph.digests);
   manifest.determinism.comparedCaptureCount = manifest.captures.filter((capture) => capture.repeatedSha256 !== null).length;
   manifest.determinism.passed = manifest.determinism.comparedCaptureCount === manifest.captures.length
     && manifest.captures.every((capture) => capture.sha256 !== null && capture.sha256 === capture.repeatedSha256);
   updateSummary(manifest);
-  await writeManifest(manifest);
+  await writeManifest(manifest, output);
 
   const failures = manifest.captures
     .filter((capture) => capture.status !== "PASS")
@@ -236,7 +276,13 @@ test("deterministic three-renderer visual review capture set", async ({ page }, 
   if (!manifest.run.freshAgainstObservedTrackedTree) {
     failures.push("the tracked tree changed during capture, so the images are not certifiable against the measured tree");
   }
-  assertTrackedTreeIdentity(manifest.run.trackedTree, await currentTrackedTreeSha256(), "review3d manifest");
+  const currentTrackedTree = await currentTrackedTreeState();
+  assertTrackedTreeIdentity(
+    manifest.run.trackedTree,
+    currentTrackedTree.sha256,
+    "review3d manifest",
+    currentTrackedTree.statusPorcelain,
+  );
   if (!manifest.semanticGraph.equal) {
     failures.push("the three renderer semantic digests are not all present and equal");
   }
@@ -248,16 +294,24 @@ test("deterministic three-renderer visual review capture set", async ({ page }, 
   }
 });
 
-async function captureFirstPass(page: Page, manifest: Review3dManifest, planned: PlannedCapture): Promise<void> {
+async function captureFirstPass(
+  page: Page,
+  manifest: Review3dManifest,
+  planned: PlannedCapture,
+  output: Review3dOutput,
+): Promise<void> {
   const record = requiredCaptureRecord(manifest, planned);
   try {
     const witness = await invokeCapture(page, planned);
     setMicroFraming(manifest, witness.microFraming);
-    const output = join(REVIEW3D_DIRECTORY, planned.fileName);
-    await page.locator("#review3d-root").screenshot({ path: output });
-    const bytes = await readFile(output);
+    const captureFile = join(output.directory, planned.fileName);
+    await page.locator("#review3d-root").screenshot({ path: captureFile });
+    const bytes = await readFile(captureFile);
     const dimensions = pngDimensions(bytes, planned.fileName);
-    expect(dimensions).toEqual({ width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT });
+    expect(dimensions).toEqual({
+      width: CAPTURE_WIDTH * planned.devicePixelRatio,
+      height: CAPTURE_HEIGHT * planned.devicePixelRatio,
+    });
     const image = decodePng(bytes);
     const pixels = measureLitPixels(image);
     record.sha256 = sha256(bytes);
@@ -290,7 +344,12 @@ async function captureFirstPass(page: Page, manifest: Review3dManifest, planned:
   }
 }
 
-async function captureRepeatPass(page: Page, manifest: Review3dManifest, planned: PlannedCapture): Promise<void> {
+async function captureRepeatPass(
+  page: Page,
+  manifest: Review3dManifest,
+  planned: PlannedCapture,
+  output: Review3dOutput,
+): Promise<void> {
   const record = requiredCaptureRecord(manifest, planned);
   if (record.sha256 === null) {
     return;
@@ -308,7 +367,7 @@ async function captureRepeatPass(page: Page, manifest: Review3dManifest, planned
       return;
     }
     setMicroFraming(manifest, witness.microFraming);
-    const firstBytes = await readFile(join(REVIEW3D_DIRECTORY, planned.fileName));
+    const firstBytes = await readFile(join(output.directory, planned.fileName));
     record.pixelDelta = measurePixelDelta(decodePng(firstBytes), image);
     if (!bytes.equals(firstBytes)) {
       record.status = "FAIL";
@@ -384,25 +443,29 @@ async function invokeCapture(page: Page, request: Review3dCaptureRequest): Promi
   }, request);
 }
 
-function plannedCaptures(): readonly PlannedCapture[] {
+function plannedCaptures(devicePixelRatio: number): readonly PlannedCapture[] {
   const common = RENDERERS.flatMap((renderer) => COMMON_VIEWS.map((view) => ({
     renderer,
     view,
     fileName: ["captures", `${renderer}-${view}.png`].join("/"),
+    devicePixelRatio,
   })));
   const orbit = ORBIT_VIEWS.map((view) => ({
     renderer: "r3f-3d" as const,
     view,
     fileName: ["captures", `r3f-3d-${view}.png`].join("/"),
+    devicePixelRatio,
   }));
   return [...common, ...orbit];
 }
 
 function emptyManifest(
   observedCommitSha: string,
-  observedTrackedTreeSha256: string,
+  observedTrackedTree: TrackedTreeState,
+  devicePixelRatio: number,
   planned: readonly PlannedCapture[],
 ): Review3dManifest {
+  const observedTrackedTreeSha256 = observedTrackedTree.sha256;
   return {
     schemaVersion: 2,
     run: {
@@ -410,18 +473,24 @@ function emptyManifest(
       observedCommitSha,
       completedCommitSha: null,
       freshAgainstObservedCommit: false,
-      trackedTree: trackedTreeIdentity(observedTrackedTreeSha256, observedTrackedTreeSha256),
+      trackedTree: trackedTreeIdentity(
+        observedTrackedTreeSha256,
+        observedTrackedTree.statusPorcelain,
+        observedTrackedTree,
+      ),
       freshAgainstObservedTrackedTree: false,
       staleTreeControlOutput: failedControlOutput(() => assertTrackedTreeIdentity({
         algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
         measuredSha256: "0".repeat(64),
         completedSha256: "0".repeat(64),
+        measuredStatusPorcelain: "",
+        completedStatusPorcelain: "",
         stable: true,
-      }, observedTrackedTreeSha256, "review3d stale tracked-tree control")),
+      }, observedTrackedTreeSha256, "review3d stale tracked-tree control", observedTrackedTree.statusPorcelain)),
     },
     captureConfiguration: {
       viewport: { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT },
-      devicePixelRatio: DEVICE_PIXEL_RATIO,
+      devicePixelRatio,
       palette: "monochrome",
       theme: "dark",
       morphology: "stellar",
@@ -487,13 +556,15 @@ function emptyManifest(
   };
 }
 
-async function writeManifest(manifest: Review3dManifest): Promise<void> {
+async function writeManifest(manifest: Review3dManifest, output: Review3dOutput): Promise<void> {
+  const completedTrackedTree = await currentTrackedTreeState();
   manifest.run.trackedTree = trackedTreeIdentity(
     manifest.run.trackedTree.measuredSha256,
-    await currentTrackedTreeSha256(),
+    manifest.run.trackedTree.measuredStatusPorcelain ?? "",
+    completedTrackedTree,
   );
   updateSummary(manifest);
-  await writeFile(MANIFEST_FILE, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await writeFile(output.manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
 function updateSummary(manifest: Review3dManifest): void {
@@ -508,15 +579,17 @@ function updateSummary(manifest: Review3dManifest): void {
     && manifest.summary.pending === 0
     && manifest.run.freshAgainstObservedCommit
     && manifest.run.freshAgainstObservedTrackedTree
-    && manifest.run.trackedTree.stable
+    && hasCleanStableTrackedTree(manifest.run.trackedTree)
     && manifest.semanticGraph.equal
     && manifest.determinism.passed;
 }
 
 function requiredCaptureRecord(manifest: Review3dManifest, planned: PlannedCapture): CaptureRecord {
-  const record = manifest.captures.find((capture) => capture.renderer === planned.renderer && capture.view === planned.view);
+  const record = manifest.captures.find((capture) => capture.renderer === planned.renderer
+    && capture.view === planned.view
+    && capture.devicePixelRatio === planned.devicePixelRatio);
   if (record === undefined) {
-    throw new Error(`review3d manifest lacks ${planned.renderer}/${planned.view}`);
+    throw new Error(`review3d manifest lacks ${planned.renderer}/${planned.view} at DPR ${planned.devicePixelRatio}`);
   }
   return record;
 }
@@ -779,19 +852,53 @@ async function currentCommitSha(): Promise<string> {
   return sha;
 }
 
-function trackedTreeIdentity(measuredSha256: string, completedSha256: string): TrackedTreeIdentity {
+function trackedTreeIdentity(
+  measuredSha256: string,
+  measuredStatusPorcelain: string,
+  completed: TrackedTreeState,
+): TrackedTreeIdentity {
   return {
     algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
     measuredSha256,
-    completedSha256,
-    stable: measuredSha256 === completedSha256,
+    completedSha256: completed.sha256,
+    measuredStatusPorcelain,
+    completedStatusPorcelain: completed.statusPorcelain,
+    stable: measuredSha256 === completed.sha256
+      && measuredStatusPorcelain === completed.statusPorcelain,
   };
 }
 
-async function currentTrackedTreeSha256(): Promise<string> {
+function hasCleanStableTrackedTree(identity: TrackedTreeIdentity): boolean {
+  return identity.stable
+    && identity.measuredStatusPorcelain === ""
+    && identity.completedStatusPorcelain === "";
+}
+
+async function currentTrackedTreeState(): Promise<TrackedTreeState> {
   const repositoryDirectory = [".."].join("/");
-  const { stdout } = await execFileAsync("git", ["ls-files", "-s"], { cwd: repositoryDirectory, encoding: "utf8" });
-  return createHash("sha256").update(stdout).digest("hex");
+  const [{ stdout: trackedPaths }, { stdout: statusPorcelain }] = await Promise.all([
+    execFileAsync("git", ["ls-files", "-z"], { cwd: repositoryDirectory, encoding: "utf8" }),
+    execFileAsync("git", trackedTreeStatusArguments(), { cwd: repositoryDirectory, encoding: "utf8" }),
+  ]);
+  const hash = createHash("sha256");
+  for (const path of trackedPaths.split("\0")) {
+    if (path === "") {
+      continue;
+    }
+    const pathBytes = Buffer.from(path, "utf8");
+    const contents = await readFile(join(repositoryDirectory, path));
+    hash.update(uint64be(pathBytes.length));
+    hash.update(pathBytes);
+    hash.update(uint64be(contents.length));
+    hash.update(contents);
+  }
+  return { sha256: hash.digest("hex"), statusPorcelain };
+}
+
+function uint64be(value: number): Buffer {
+  const encoded = Buffer.alloc(8);
+  encoded.writeBigUInt64BE(BigInt(value));
+  return encoded;
 }
 
 function requiredItem<Value>(values: readonly Value[], index: number, name: string): Value {
@@ -808,4 +915,19 @@ function sha256(bytes: Buffer): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * `TRACKED_TREE_STATUS_COMMAND` names the whole command, program included. Splitting it straight
+ * into an argument list re-passes `git` as git's own first argument, which fails with
+ * `git: 'git' is not a git command` — so the status reading threw, and with it the tree identity
+ * this artifact is bound by. It went unnoticed because no evidence had been regenerated since the
+ * identity was rewritten. The program name is dropped here, once, and asserted.
+ */
+function trackedTreeStatusArguments(): readonly string[] {
+  const [program, ...args] = TRACKED_TREE_STATUS_COMMAND.split(" ");
+  if (program !== "git" || args.length === 0) {
+    throw new Error(`tracked-tree status command is not a git invocation: ${TRACKED_TREE_STATUS_COMMAND}`);
+  }
+  return args;
 }

@@ -120,6 +120,7 @@ export function mount(
   const initialScenes = scenesForState(visualGraph, currentState, options.calibration);
   layoutPassCount += cameraKindCount();
   const live = new LiveSceneState(initialScenes, currentState.cameraKind, layoutPassCount);
+  const retainedSceneReferences = new Set<Scene>([initialScenes.orthographic, initialScenes.perspective]);
   const worldFramingSubjects = sceneCameraFramingSubjects(live.scene);
   const rig = new CameraRig(
     currentState.cameraKind,
@@ -284,6 +285,9 @@ export function mount(
     });
     const scenes = scenesForState(visualGraph, currentState, options.calibration);
     live.replaceScenes(scenes, cameraKindCount());
+    retainedSceneReferences.clear();
+    retainedSceneReferences.add(scenes.orthographic);
+    retainedSceneReferences.add(scenes.perspective);
     updateNodeRenderResources(nodeResources, live.buffers.nodes);
     updateFilamentRenderResources(filamentResources, live.buffers.filaments);
     rig.setWorldFramingSubjects(sceneCameraFramingSubjects(live.scene));
@@ -369,7 +373,13 @@ export function mount(
       return picker.pickEdgeAtPoint(x, y);
     },
     readRetainedResources(): RetainedResourceWitness {
-      return registry.readRetainedResources(labels.readNodeCount());
+      return {
+        ...registry.readRetainedResources(labels.readNodeCount()),
+        jsRetention: {
+          status: "MEASURED",
+          retainedSceneReferences: retainedSceneReferences.size,
+        },
+      };
     },
     destroy(): void {
       if (destroyed) {

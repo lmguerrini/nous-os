@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import {
   assertTrackedTreeIdentity,
   TRACKED_TREE_IDENTITY_ALGORITHM,
+  TRACKED_TREE_STATUS_COMMAND,
 } from "#browser/parity-contract.ts";
 import type { TrackedTreeIdentity } from "#browser/parity-contract.ts";
 import {
@@ -31,6 +32,11 @@ type TreeBoundPerformanceRecord = PerformanceRecord & {
   readonly observedTrackedTreeSha256: string;
 };
 
+type TrackedTreeState = {
+  readonly sha256: string;
+  readonly statusPorcelain: string;
+};
+
 type TreeBoundPerformanceResult = Omit<PerformanceResult, "records"> & {
   readonly run: {
     readonly trackedTree: TrackedTreeIdentity;
@@ -48,11 +54,11 @@ declare global {
 }
 
 let bundledPerformancePage: Promise<string> | undefined;
-let observedTrackedTreeSha256: string | undefined;
+let observedTrackedTree: TrackedTreeState | undefined;
 
 /** The opt-in run removes its prior artifact before its first independent combination starts. */
 test.beforeAll(async () => {
-  observedTrackedTreeSha256 = await currentTrackedTreeSha256();
+  observedTrackedTree = await currentTrackedTreeState();
   if (PERFORMANCE_ENABLED) {
     await rm(OUTPUT_FILE, { force: true });
   }
@@ -64,7 +70,8 @@ for (const combination of PERFORMANCE_COMBINATIONS) {
     test.setTimeout(COMBINATION_BUDGET_MS + RECORDING_GRACE_MS);
 
     const observedCommitSha = await readObservedCommitSha();
-    const trackedTreeSha256 = requiredTrackedTreeSha256();
+    const measuredTree = requiredTrackedTreeState();
+    const trackedTreeSha256 = measuredTree.sha256;
     let baseRecord: PerformanceRecord;
     try {
       baseRecord = await runCombinationWithinBudget(page, combination, observedCommitSha);
@@ -78,9 +85,9 @@ for (const combination of PERFORMANCE_COMBINATIONS) {
     }
     const record: TreeBoundPerformanceRecord = { ...baseRecord, observedTrackedTreeSha256: trackedTreeSha256 };
 
-    const result = await writeCompletedRecord(record, observedCommitSha, trackedTreeSha256);
+    const result = await writeCompletedRecord(record, observedCommitSha, measuredTree);
     assertRecord(record, combination, observedCommitSha, trackedTreeSha256);
-    await assertRunVerdict(result, trackedTreeSha256);
+    await assertRunVerdict(result, measuredTree);
   });
 }
 
@@ -159,7 +166,7 @@ async function runCombinationWithinBudget(
 async function writeCompletedRecord(
   record: TreeBoundPerformanceRecord,
   observedCommitSha: string,
-  measuredTreeSha256: string,
+  measuredTree: TrackedTreeState,
 ): Promise<TreeBoundPerformanceResult> {
   await mkdir(["dist", "evidence"].join("/"), { recursive: true });
   const previous = await readCurrentResult();
@@ -168,16 +175,21 @@ async function writeCompletedRecord(
     .concat(record)
     .sort((left, right) => combinationIndex(left) - combinationIndex(right));
   const base = performanceResult(records, observedCommitSha);
-  const completedTreeSha256 = await currentTrackedTreeSha256();
+  const completedTree = await currentTrackedTreeState();
   const trackedTree: TrackedTreeIdentity = {
     algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
-    measuredSha256: measuredTreeSha256,
-    completedSha256: completedTreeSha256,
-    stable: measuredTreeSha256 === completedTreeSha256,
+    measuredSha256: measuredTree.sha256,
+    completedSha256: completedTree.sha256,
+    measuredStatusPorcelain: measuredTree.statusPorcelain,
+    completedStatusPorcelain: completedTree.statusPorcelain,
+    stable: measuredTree.sha256 === completedTree.sha256
+      && measuredTree.statusPorcelain === completedTree.statusPorcelain,
   };
   const bound = trackedTree.stable
+    && trackedTree.measuredStatusPorcelain === ""
+    && trackedTree.completedStatusPorcelain === ""
     && base.records.length === PERFORMANCE_COMBINATIONS.length
-    && base.records.every((candidate) => (candidate as TreeBoundPerformanceRecord).observedTrackedTreeSha256 === measuredTreeSha256)
+    && base.records.every((candidate) => (candidate as TreeBoundPerformanceRecord).observedTrackedTreeSha256 === measuredTree.sha256)
     && new Set(base.records.map(combinationKey)).size === PERFORMANCE_COMBINATIONS.length;
   const result: TreeBoundPerformanceResult = {
     ...base,
@@ -194,8 +206,10 @@ async function writeCompletedRecord(
         algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
         measuredSha256: "0".repeat(64),
         completedSha256: "0".repeat(64),
+        measuredStatusPorcelain: "",
+        completedStatusPorcelain: "",
         stable: true,
-      }, measuredTreeSha256, "performance stale tracked-tree control")),
+      }, measuredTree.sha256, "performance stale tracked-tree control", measuredTree.statusPorcelain)),
     },
   };
   await writeFile(OUTPUT_FILE, `${JSON.stringify(result, null, 2)}\n`, "utf8");
@@ -236,19 +250,23 @@ function assertRecord(
   }
 }
 
-async function assertRunVerdict(result: TreeBoundPerformanceResult, observedTreeSha256: string): Promise<void> {
+async function assertRunVerdict(result: TreeBoundPerformanceResult, observedTree: TrackedTreeState): Promise<void> {
   const expectedBound = result.records.length === PERFORMANCE_COMBINATIONS.length
     && result.records.every((record) => record.observedCommitSha === result.observedCommitSha)
-    && result.records.every((record) => record.observedTrackedTreeSha256 === observedTreeSha256)
+    && result.records.every((record) => record.observedTrackedTreeSha256 === observedTree.sha256)
     && new Set(result.records.map(combinationKey)).size === PERFORMANCE_COMBINATIONS.length;
-  const treeBound = expectedBound && result.run.trackedTree.stable;
+  const treeBound = expectedBound
+    && result.run.trackedTree.stable
+    && result.run.trackedTree.measuredStatusPorcelain === ""
+    && result.run.trackedTree.completedStatusPorcelain === "";
   const expectedPassing = treeBound
     && result.summary.notRun === 0
     && result.summary.unknown === 0
     && result.summary.passed === result.summary.required;
   expect(result.summary.bound).toBe(treeBound);
   expect(result.summary.passing).toBe(expectedPassing);
-  assertTrackedTreeIdentity(result.run.trackedTree, await currentTrackedTreeSha256(), "performance evidence");
+  const currentTree = await currentTrackedTreeState();
+  assertTrackedTreeIdentity(result.run.trackedTree, currentTree.sha256, "performance evidence", currentTree.statusPorcelain);
 }
 
 async function readObservedCommitSha(): Promise<string> {
@@ -271,17 +289,38 @@ async function readObservedCommitSha(): Promise<string> {
   return sha;
 }
 
-function requiredTrackedTreeSha256(): string {
-  if (observedTrackedTreeSha256 === undefined) {
+function requiredTrackedTreeState(): TrackedTreeState {
+  if (observedTrackedTree === undefined) {
     throw new Error("performance run has no observed tracked-tree identity");
   }
-  return observedTrackedTreeSha256;
+  return observedTrackedTree;
 }
 
-async function currentTrackedTreeSha256(): Promise<string> {
+async function currentTrackedTreeState(): Promise<TrackedTreeState> {
   const repositoryDirectory = [".."].join("/");
-  const { stdout } = await execFileAsync("git", ["ls-files", "-s"], { cwd: repositoryDirectory, encoding: "utf8" });
-  return createHash("sha256").update(stdout).digest("hex");
+  const [{ stdout: trackedPaths }, { stdout: statusPorcelain }] = await Promise.all([
+    execFileAsync("git", ["ls-files", "-z"], { cwd: repositoryDirectory, encoding: "utf8" }),
+    execFileAsync("git", trackedTreeStatusArguments(), { cwd: repositoryDirectory, encoding: "utf8" }),
+  ]);
+  const hash = createHash("sha256");
+  for (const path of trackedPaths.split("\0")) {
+    if (path === "") {
+      continue;
+    }
+    const pathBytes = Buffer.from(path, "utf8");
+    const contents = await readFile(`${repositoryDirectory}/${path}`);
+    hash.update(uint64be(pathBytes.length));
+    hash.update(pathBytes);
+    hash.update(uint64be(contents.length));
+    hash.update(contents);
+  }
+  return { sha256: hash.digest("hex"), statusPorcelain };
+}
+
+function uint64be(value: number): Buffer {
+  const encoded = Buffer.alloc(8);
+  encoded.writeBigUInt64BE(BigInt(value));
+  return encoded;
 }
 
 function failedControlOutput(operation: () => void): string {
@@ -295,4 +334,19 @@ function failedControlOutput(operation: () => void): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * `TRACKED_TREE_STATUS_COMMAND` names the whole command, program included. Splitting it straight
+ * into an argument list re-passes `git` as git's own first argument, which fails with
+ * `git: 'git' is not a git command` — so the status reading threw, and with it the tree identity
+ * this artifact is bound by. It went unnoticed because no evidence had been regenerated since the
+ * identity was rewritten. The program name is dropped here, once, and asserted.
+ */
+function trackedTreeStatusArguments(): readonly string[] {
+  const [program, ...args] = TRACKED_TREE_STATUS_COMMAND.split(" ");
+  if (program !== "git" || args.length === 0) {
+    throw new Error(`tracked-tree status command is not a git invocation: ${TRACKED_TREE_STATUS_COMMAND}`);
+  }
+  return args;
 }

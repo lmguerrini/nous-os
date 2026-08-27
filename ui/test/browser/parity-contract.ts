@@ -155,22 +155,31 @@ export function assertSceneCameraParity(differences: readonly string[]): void {
   }
 }
 
-/** This names the tracked-tree calculation shared by every generated evidence artifact. */
-export const TRACKED_TREE_IDENTITY_ALGORITHM = "git ls-files -s | shasum -a 256";
+/** This names the path-framed worktree-byte calculation shared by every generated evidence artifact. */
+export const TRACKED_TREE_IDENTITY_ALGORITHM =
+  "sha256-v1(git ls-files -z order; uint64be(path length), path UTF-8, uint64be(content length), worktree bytes)";
+
+/** This names the companion check that refuses tracked changes and executable untracked inputs. */
+export const TRACKED_TREE_STATUS_COMMAND = "git status --porcelain";
 
 /** This binds measured output to the tracked source tree before and after the measurement. */
 export type TrackedTreeIdentity = {
   readonly algorithm: typeof TRACKED_TREE_IDENTITY_ALGORITHM;
   readonly measuredSha256: string;
   readonly completedSha256: string;
+  /** Required at runtime; optional only until the out-of-scope producers adopt this contract. */
+  readonly measuredStatusPorcelain?: string;
+  /** Required at runtime; optional only until the out-of-scope producers adopt this contract. */
+  readonly completedStatusPorcelain?: string;
   readonly stable: boolean;
 };
 
-/** This rejects an unparseable, unstable, or stale tree identity before an artifact can be certified. */
+/** This rejects an unparseable, unstable, dirty, or stale worktree identity before certification. */
 export function assertTrackedTreeIdentity(
   identity: TrackedTreeIdentity,
   currentTreeSha256: string,
   label: string,
+  currentStatusPorcelain?: string,
 ): void {
   if (identity.algorithm !== TRACKED_TREE_IDENTITY_ALGORITHM) {
     throw new Error(`${label} uses unexpected tracked-tree identity algorithm ${identity.algorithm}`);
@@ -181,8 +190,21 @@ export function assertTrackedTreeIdentity(
   if (!identity.stable || identity.measuredSha256 !== identity.completedSha256) {
     throw new Error(`${label} changed tracked tree while its output was being measured`);
   }
+  if (typeof identity.measuredStatusPorcelain !== "string"
+      || typeof identity.completedStatusPorcelain !== "string") {
+    throw new Error(`${label} does not record ${TRACKED_TREE_STATUS_COMMAND} at measurement and completion`);
+  }
+  if (identity.measuredStatusPorcelain !== "" || identity.completedStatusPorcelain !== "") {
+    throw new Error(`${label} measured a dirty worktree under ${TRACKED_TREE_STATUS_COMMAND}`);
+  }
   if (identity.measuredSha256 !== currentTreeSha256) {
     throw new Error(`${label} tracked-tree identity is stale: recorded ${identity.measuredSha256}, current ${currentTreeSha256}`);
+  }
+  if (typeof currentStatusPorcelain !== "string") {
+    throw new Error(`${label} current ${TRACKED_TREE_STATUS_COMMAND} output was not supplied`);
+  }
+  if (currentStatusPorcelain !== "") {
+    throw new Error(`${label} current worktree is dirty under ${TRACKED_TREE_STATUS_COMMAND}`);
   }
 }
 
@@ -192,11 +214,12 @@ export function assertEvidenceArtifactCurrent(
   identity: TrackedTreeIdentity,
   currentTreeSha256: string,
   label: string,
+  currentStatusPorcelain?: string,
 ): void {
   if (!passing) {
     throw new Error(`${label} run-level verdict is not passing`);
   }
-  assertTrackedTreeIdentity(identity, currentTreeSha256, label);
+  assertTrackedTreeIdentity(identity, currentTreeSha256, label, currentStatusPorcelain);
 }
 
 function isSha256(value: string): boolean {

@@ -9,6 +9,7 @@ import { build } from "esbuild";
 import type { CameraKind } from "#engine/camera-kind.ts";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import type { RetainedResourceWitness } from "#engine/renderer-handle.ts";
+import { assertRetainedResourcesDoNotGrow } from "#test-render3f/retention.ts";
 import type { Render3fCompositingPageApi } from "./compositing-page.ts";
 
 type DecodedPng = {
@@ -89,7 +90,7 @@ test("Three composites both camera kinds without growing or retaining mounted re
     await settle(page);
     const beforeSwitches = await readRetainedResources(page);
     assert.deepEqual(
-      beforeSwitches,
+      graphicsResourceCounts(beforeSwitches),
       { geometries: 3, materials: 3, textures: 1, domOverlayNodes: 1 },
       "mounted renderer did not retain its complete registered graphics resource set",
     );
@@ -109,9 +110,10 @@ test("Three composites both camera kinds without growing or retaining mounted re
       await page.evaluate((nextKind) => window.__render3fCompositing?.setCameraKind(nextKind), kind);
     }
     const afterSwitches = await readRetainedResources(page);
+    assert.doesNotThrow(() => assertRetainedResourcesDoNotGrow(beforeSwitches, afterSwitches));
     assert.deepEqual(
-      afterSwitches,
-      beforeSwitches,
+      graphicsResourceCounts(afterSwitches),
+      graphicsResourceCounts(beforeSwitches),
       "mounted renderer retained additional resources across 32 camera changes",
     );
     context.diagnostic(
@@ -125,7 +127,7 @@ test("Three composites both camera kinds without growing or retaining mounted re
     });
     assert.ok(afterDestroy !== undefined, "destroyed mounted renderer resource witness is unavailable");
     assert.deepEqual(
-      afterDestroy,
+      graphicsResourceCounts(afterDestroy),
       { geometries: 0, materials: 0, textures: 0, domOverlayNodes: 0 },
       "destroyed mounted renderer retained resources",
     );
@@ -143,6 +145,20 @@ async function readRetainedResources(page: Page): Promise<RetainedResourceWitnes
 
 function formatRetainedResources(resources: RetainedResourceWitness): string {
   return JSON.stringify(resources);
+}
+
+function graphicsResourceCounts(resources: RetainedResourceWitness): {
+  readonly geometries: number;
+  readonly materials: number;
+  readonly textures: number;
+  readonly domOverlayNodes: number;
+} {
+  return {
+    geometries: resources.geometries,
+    materials: resources.materials,
+    textures: resources.textures,
+    domOverlayNodes: resources.domOverlayNodes,
+  };
 }
 
 async function settle(page: Page): Promise<void> {

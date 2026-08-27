@@ -1,4 +1,5 @@
 import { createScanner, LanguageVariant, SyntaxKind } from "typescript/unstable/ast";
+import { SCENE_FIELD_REGISTER } from "#scene/contract.ts";
 
 /** This is one renderer source record used by origin controls and does not execute source text. */
 export type RendererSource = {
@@ -18,14 +19,18 @@ type LocalBindings = ReadonlyMap<string, readonly (readonly SourceToken[])[]>;
 type LiteralOrigin = "array" | "number" | "string";
 
 const MATERIAL_PROPERTY_NAMES = new Set(["color", "opacity", "radius", "width", "intensity"]);
-const GOVERNED_DEPTH_NAMES = new Set([
-  "interaction",
-  "kind",
-  "provenance",
-  "renderedstate",
-  "selectedprovenance",
-  "token",
+const MATERIAL_SETTER_NAMES = new Set([
+  "copy",
+  "fromArray",
+  "set",
+  "setColor",
+  "setHex",
+  "setHSL",
+  "setRGB",
+  "setScalar",
+  "setStyle",
 ]);
+const GOVERNED_DEPTH_NAMES = governedDepthNames();
 const HEX_COLOUR_PATTERN = /#[\da-f]{3,8}\b/iu;
 
 const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new Map([
@@ -53,7 +58,7 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#render3f/buffers.ts",
     "#render3f/label-collision.ts",
   ])],
-  ["material-origin.ts", new Set(["typescript/unstable/ast"])],
+  ["material-origin.ts", new Set(["typescript/unstable/ast", "#scene/contract.ts"])],
   ["mount.tsx", new Set([
     "react",
     "@react-three/fiber",
@@ -97,6 +102,152 @@ const ALLOWED_RENDERER_IMPORTS = new Set(
   [...RENDERER_IMPORT_ALLOW_LIST.values()].flatMap((imports) => [...imports]),
 );
 
+const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>> = new Map([
+  ["aggregate-material.ts", new Map([
+    ["three", new Set(["*"])],
+    ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE"])],
+    ["#render3f/buffers.ts", new Set(["AggregateBuffers"])],
+  ])],
+  ["buffers.ts", new Map([
+    ["#engine/contract.ts", new Set(["Coordinates"])],
+    ["#engine/tokens.ts", new Set(["OklchToken"])],
+    ["#scene/contract.ts", new Set([
+      "SCENE_PERMILLE_SCALE",
+      "Scene",
+      "SceneAggregate",
+      "SceneEdge",
+      "SceneNode",
+      "SceneTokenEncoding",
+    ])],
+  ])],
+  ["camera-framing.ts", new Map([
+    ["#engine/contract.ts", new Set(["Coordinates"])],
+    ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE", "Scene", "SceneEdge"])],
+  ])],
+  ["camera.tsx", new Map([
+    ["three", new Set(["*"])],
+    ["sigma", new Set(["Camera"])],
+    ["sigma/settings", new Set(["DEFAULT_SETTINGS"])],
+    ["sigma/utils", new Set(["createNormalizationFunction", "matrixFromCamera", "multiplyVec2"])],
+    ["#engine/camera-kind.ts", new Set(["CameraKind", "ORTHOGRAPHIC"])],
+    ["#engine/contract.ts", new Set(["Coordinates"])],
+    ["#engine/visual-state.ts", new Set(["VisualStateCamera"])],
+    ["#scene/contract.ts", new Set([
+      "SCENE_PERMILLE_QUANTUM",
+      "SCENE_PERMILLE_SCALE",
+      "SceneCameraRequest",
+    ])],
+    ["#render3f/camera-framing.ts", new Set([
+      "CameraFramingSubject",
+      "ProjectedCameraFramingSubject",
+      "canonicalCameraFramingSubjects",
+      "quantizeCameraFramingUpperBound",
+      "quantizeCameraFramingValue",
+      "requiredPerspectiveFramingTangent",
+    ])],
+  ])],
+  ["filament-material.ts", new Map([
+    ["three", new Set(["*"])],
+    ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE"])],
+    ["#render3f/buffers.ts", new Set(["FilamentBuffers"])],
+  ])],
+  ["label-collision.ts", new Map()],
+  ["labels.tsx", new Map([
+    ["react", new Set(["CSSProperties", "ReactElement", "useLayoutEffect", "useRef"])],
+    ["react-dom/client", new Set(["Root", "createRoot"])],
+    ["#engine/contract.ts", new Set(["Coordinates"])],
+    ["#scene/contract.ts", new Set([
+      "SCENE_PERMILLE_SCALE",
+      "Scene",
+      "SceneEdgeLabelCandidacy",
+      "SceneNode",
+      "SceneNodeLabelCandidacy",
+      "SceneTokenEncoding",
+    ])],
+    ["#render3f/buffers.ts", new Set(["tokenToSrgb"])],
+    ["#render3f/label-collision.ts", new Set([
+      "ScreenLabelBounds",
+      "compareScreenLabelPriority",
+      "resolveVisibleScreenLabelIds",
+    ])],
+  ])],
+  ["material-origin.ts", new Map([
+    ["typescript/unstable/ast", new Set(["LanguageVariant", "SyntaxKind", "createScanner"])],
+    ["#scene/contract.ts", new Set(["SCENE_FIELD_REGISTER"])],
+  ])],
+  ["mount.tsx", new Map([
+    ["react", new Set(["ReactElement"])],
+    ["@react-three/fiber", new Set(["createRoot"])],
+    ["three", new Set(["*"])],
+    ["#engine/calibration.ts", new Set(["CalibrationProfile"])],
+    ["#engine/camera-kind.ts", new Set(["CameraKind", "ORTHOGRAPHIC", "PERSPECTIVE"])],
+    ["#engine/contract.ts", new Set(["Coordinates", "DerivedValue", "VisualGraph"])],
+    ["#engine/renderer-handle.ts", new Set([
+      "MultiCameraRendererHandle",
+      "NodeFootprintWitness",
+      "ResourceCountingRendererHandle",
+      "RetainedResourceWitness",
+      "SurfaceWitness",
+      "WorldAnchorWitness",
+    ])],
+    ["#engine/lod.ts", new Set(["LodBand"])],
+    ["#engine/morphology.ts", new Set(["Morphology"])],
+    ["#engine/organization.ts", new Set(["Organization"])],
+    ["#engine/tokens.ts", new Set(["Palette", "Temperature", "Theme"])],
+    ["#engine/visual-state.ts", new Set(["VisualState", "VisualStateCamera", "createVisualState"])],
+    ["#render2d/model.ts", new Set(["SHIPPING_RENDER_DEFAULTS"])],
+    ["#render3f/camera.tsx", new Set([
+      "CameraRig",
+      "Render3fFramingBox",
+      "attachCameraInteractions",
+      "cameraStateForBounds",
+      "resolvedNodeBounds",
+    ])],
+    ["#render3f/camera-framing.ts", new Set(["ProjectedCameraFramingSubject", "sceneCameraFramingSubjects"])],
+    ["#render3f/buffers.ts", new Set(["tokenToSrgb"])],
+    ["#render3f/aggregate-material.ts", new Set([
+      "createAggregateRenderResources",
+      "updateAggregateProjectionUniforms",
+    ])],
+    ["#render3f/filament-material.ts", new Set([
+      "createFilamentRenderResources",
+      "updateFilamentProjectionUniforms",
+      "updateFilamentRenderResources",
+    ])],
+    ["#render3f/labels.tsx", new Set(["LabelOverlayController"])],
+    ["#render3f/node-material.ts", new Set([
+      "createNodeRenderResources",
+      "updateNodeProjectionUniforms",
+      "updateNodeRenderResources",
+    ])],
+    ["#render3f/picking.ts", new Set(["ScenePicker"])],
+    ["#render3f/resources.ts", new Set(["ResourceRegistry"])],
+    ["#render3f/state.ts", new Set(["CameraScenes", "LiveSceneState"])],
+    ["#scene/index.ts", new Set(["buildScene"])],
+    ["#scene/contract.ts", new Set(["SCENE_PERMILLE_QUANTUM", "Scene", "SceneNode"])],
+  ])],
+  ["node-material.ts", new Map([
+    ["three", new Set(["*"])],
+    ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE"])],
+    ["#render3f/buffers.ts", new Set(["NodeBuffers"])],
+  ])],
+  ["picking.ts", new Map([
+    ["#engine/contract.ts", new Set(["Coordinates"])],
+    ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE", "Scene", "SceneEdge", "SceneNode"])],
+  ])],
+  ["resources.ts", new Map([
+    ["three", new Set(["*"])],
+    ["#engine/renderer-handle.ts", new Set(["RetainedResourceWitness"])],
+  ])],
+  ["shader-contract.ts", new Map()],
+  ["state.ts", new Map([
+    ["#engine/camera-kind.ts", new Set(["CameraKind"])],
+    ["#engine/renderer-handle.ts", new Set(["SurfaceWitness", "WorldAnchorWitness"])],
+    ["#scene/contract.ts", new Set(["Scene"])],
+    ["#render3f/buffers.ts", new Set(["SceneBuffers", "buildSceneBuffers"])],
+  ])],
+]);
+
 /** This rejects renderer-local material literals and does not reject shader topology or representation constants. */
 export function assertNoRendererMaterialLiterals(sources: readonly RendererSource[]): void {
   for (const source of sources) {
@@ -128,7 +279,7 @@ export function assertNoRendererMaterialLiterals(sources: readonly RendererSourc
       }
       if (!isTokenValue(token, "Color")
         && !isTokenValue(token, "setClearColor")
-        && !isTokenValue(token, "setRGB")) {
+        && !isMaterialSetterCall(tokens, index)) {
         continue;
       }
       const open = tokens[index + 1];
@@ -150,6 +301,11 @@ export function assertNoRendererMaterialLiterals(sources: readonly RendererSourc
         literalOrigin(withoutLeadingSpread(argument), bindings, new Set()) !== undefined
       ))) {
         throw materialFailure(source, "literal RGB computation", tokens, callStart, close + 1);
+      }
+      if (isMaterialSetterCall(tokens, index) && argumentsList.some((argument) => (
+        literalOrigin(withoutLeadingSpread(argument), bindings, new Set()) !== undefined
+      ))) {
+        throw materialFailure(source, "literal material setter call", tokens, callStart, close + 1);
       }
     }
   }
@@ -186,6 +342,37 @@ export function assertNoSemanticDepthRouting(sources: readonly RendererSource[])
           if (carriesGovernedDepth(tokens.slice(operatorIndex + 1, end), bindings, new Set())) {
             throw depthFailure(source, tokens, chainStart(tokens, index), end);
           }
+        }
+      }
+      // An element write through a stride-derived subscript. The interleaved attribute buffers in
+      // this renderer write depth as `array[offset + 2] = value`; a control that inspected only `.z`
+      // and `["z"]` had therefore never looked at the code path that actually writes a depth
+      // coordinate, and was green because it was reading somewhere else.
+      if (token.kind === SyntaxKind.OpenBracketToken && index > 0) {
+        const subscriptClose = matchingClose(tokens, index);
+        if (subscriptClose < tokens.length
+          && isThirdComponentIndex(tokens.slice(index + 1, subscriptClose))
+          && tokens[subscriptClose + 1]?.kind === SyntaxKind.EqualsToken) {
+          const end = expressionEnd(tokens, subscriptClose + 2, new Set([
+            SyntaxKind.CommaToken,
+            SyntaxKind.SemicolonToken,
+            SyntaxKind.CloseBraceToken,
+          ]));
+          if (carriesGovernedDepth(tokens.slice(subscriptClose + 2, end), bindings, new Set())) {
+            throw depthFailure(source, tokens, chainStart(tokens, index - 1), end);
+          }
+        }
+      }
+      // Vector component setters reach the same coordinate as `.z =` by another name.
+      if (tokens[index + 1]?.kind === SyntaxKind.OpenParenToken
+        && (isTokenValue(token, "setZ") || isTokenValue(token, "setComponent"))) {
+        const setterClose = matchingClose(tokens, index + 1);
+        const setterArguments = splitTopLevel(tokens.slice(index + 2, setterClose), SyntaxKind.CommaToken);
+        const depthArgument = isTokenValue(token, "setZ")
+          ? setterArguments[0]
+          : isThirdComponentIndex(setterArguments[0] ?? []) ? setterArguments[1] : undefined;
+        if (depthArgument !== undefined && carriesGovernedDepth(depthArgument, bindings, new Set())) {
+          throw depthFailure(source, tokens, chainStart(tokens, index), setterClose + 1);
         }
       }
       if (!isTokenValue(token, "Vector3") || tokens[index + 1]?.kind !== SyntaxKind.OpenParenToken) {
@@ -277,6 +464,7 @@ function assertRendererImports(source: RendererSource, tokens: readonly SourceTo
       throw new TypeError(`${source.name} imports visual policy outside renderer allow-list: ${imported}`);
     }
   }
+  assertRendererImportSymbols(source, tokens);
   const expected = RENDERER_IMPORT_ALLOW_LIST.get(source.name);
   if (expected === undefined) {
     if (actual.size > 0) {
@@ -290,6 +478,35 @@ function assertRendererImports(source: RendererSource, tokens: readonly SourceTo
     throw new TypeError(
       `${source.name} renderer import allow-list drift: missing=${missing.join(",") || "none"}; added=${added.join(",") || "none"}`,
     );
+  }
+}
+
+function assertRendererImportSymbols(source: RendererSource, tokens: readonly SourceToken[]): void {
+  const expected = RENDERER_IMPORT_SYMBOL_ALLOW_LIST.get(source.name);
+  if (expected === undefined) {
+    return;
+  }
+  const actual = importedSymbols(tokens);
+  for (const [moduleName, symbols] of actual) {
+    const allowed = expected.get(moduleName);
+    if (allowed === undefined) {
+      continue;
+    }
+    const added = [...symbols].filter((symbol) => !allowed.has(symbol));
+    if (added.length > 0) {
+      throw new TypeError(
+        `${source.name} imports forbidden renderer symbols from ${moduleName}: ${added.join(",")}`,
+      );
+    }
+  }
+  for (const [moduleName, allowed] of expected) {
+    const symbols = actual.get(moduleName) ?? new Set<string>();
+    const missing = [...allowed].filter((symbol) => !symbols.has(symbol));
+    if (missing.length > 0) {
+      throw new TypeError(
+        `${source.name} renderer import symbol allow-list drift for ${moduleName}: missing=${missing.join(",")}`,
+      );
+    }
   }
 }
 
@@ -318,6 +535,83 @@ function importedModules(tokens: readonly SourceToken[]): ReadonlySet<string> {
   return imported;
 }
 
+function importedSymbols(tokens: readonly SourceToken[]): ReadonlyMap<string, ReadonlySet<string>> {
+  const imports = new Map<string, Set<string>>();
+  const add = (moduleName: string, symbol: string): void => {
+    const symbols = imports.get(moduleName) ?? new Set<string>();
+    symbols.add(symbol);
+    imports.set(moduleName, symbols);
+  };
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (isTokenValue(tokens[index], "require")
+      && tokens[index + 1]?.kind === SyntaxKind.OpenParenToken
+      && tokens[index + 2]?.kind === SyntaxKind.StringLiteral) {
+      add(tokens[index + 2]?.value ?? "", "<require>");
+      continue;
+    }
+    if (tokens[index]?.kind !== SyntaxKind.ImportKeyword) {
+      continue;
+    }
+    let cursor = index + 1;
+    if (tokens[cursor]?.kind === SyntaxKind.StringLiteral) {
+      add(tokens[cursor]?.value ?? "", "<side-effect>");
+      continue;
+    }
+    if (tokens[cursor]?.kind === SyntaxKind.OpenParenToken) {
+      if (tokens[cursor + 1]?.kind === SyntaxKind.StringLiteral) {
+        add(tokens[cursor + 1]?.value ?? "", "<dynamic>");
+      }
+      continue;
+    }
+    const from = findImportFrom(tokens, cursor);
+    const moduleName = from === undefined ? undefined : tokens[from + 1]?.value;
+    if (moduleName === undefined) {
+      continue;
+    }
+    if (tokens[cursor]?.kind === SyntaxKind.TypeKeyword) {
+      cursor += 1;
+    }
+    if (tokens[cursor]?.kind === SyntaxKind.Identifier) {
+      add(moduleName, "default");
+      cursor += 1;
+      if (tokens[cursor]?.kind === SyntaxKind.CommaToken) {
+        cursor += 1;
+      }
+    }
+    if (tokens[cursor]?.kind === SyntaxKind.AsteriskToken) {
+      add(moduleName, "*");
+      continue;
+    }
+    if (tokens[cursor]?.kind !== SyntaxKind.OpenBraceToken) {
+      continue;
+    }
+    const close = matchingClose(tokens, cursor);
+    for (const rawSpecifier of splitTopLevel(tokens.slice(cursor + 1, close), SyntaxKind.CommaToken)) {
+      const specifier = rawSpecifier[0]?.kind === SyntaxKind.TypeKeyword
+        ? rawSpecifier.slice(1)
+        : rawSpecifier;
+      const imported = specifier[0];
+      if (imported?.kind === SyntaxKind.Identifier) {
+        add(moduleName, imported.value);
+      }
+    }
+  }
+  return imports;
+}
+
+function findImportFrom(tokens: readonly SourceToken[], start: number): number | undefined {
+  for (let index = start; index < tokens.length; index += 1) {
+    const kind = tokens[index]?.kind;
+    if (kind === SyntaxKind.FromKeyword && tokens[index + 1]?.kind === SyntaxKind.StringLiteral) {
+      return index;
+    }
+    if (kind === SyntaxKind.SemicolonToken) {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 function localBindings(tokens: readonly SourceToken[]): LocalBindings {
   const bindings = new Map<string, (readonly SourceToken[])[]>();
   const add = (name: string, expression: readonly SourceToken[]): void => {
@@ -329,13 +623,28 @@ function localBindings(tokens: readonly SourceToken[]): LocalBindings {
     const token = tokens[index];
     if ((token?.kind === SyntaxKind.ConstKeyword
       || token?.kind === SyntaxKind.LetKeyword
-      || token?.kind === SyntaxKind.VarKeyword)
-      && tokens[index + 1]?.kind === SyntaxKind.Identifier) {
+      || token?.kind === SyntaxKind.VarKeyword)) {
       const name = tokens[index + 1];
       const equals = findBeforeBoundary(tokens, index + 2, SyntaxKind.EqualsToken);
-      if (name !== undefined && equals !== undefined) {
+      if (name?.kind === SyntaxKind.Identifier && equals !== undefined) {
         const end = expressionEnd(tokens, equals + 1, new Set([SyntaxKind.CommaToken, SyntaxKind.SemicolonToken]));
         add(name.value, tokens.slice(equals + 1, end));
+      }
+      if (name?.kind === SyntaxKind.OpenBraceToken) {
+        const close = matchingClose(tokens, index + 1);
+        const destructuringEquals = tokens[close + 1]?.kind === SyntaxKind.EqualsToken ? close + 1 : undefined;
+        if (destructuringEquals !== undefined) {
+          const end = expressionEnd(
+            tokens,
+            destructuringEquals + 1,
+            new Set([SyntaxKind.CommaToken, SyntaxKind.SemicolonToken]),
+          );
+          addObjectBindingAliases(
+            tokens.slice(index + 2, close),
+            tokens.slice(destructuringEquals + 1, end),
+            add,
+          );
+        }
       }
     }
     if (token?.kind === SyntaxKind.Identifier
@@ -346,6 +655,50 @@ function localBindings(tokens: readonly SourceToken[]): LocalBindings {
     }
   }
   return bindings;
+}
+
+function addObjectBindingAliases(
+  pattern: readonly SourceToken[],
+  source: readonly SourceToken[],
+  add: (name: string, expression: readonly SourceToken[]) => void,
+): void {
+  for (const rawProperty of splitTopLevel(pattern, SyntaxKind.CommaToken)) {
+    const property = rawProperty[0]?.kind === SyntaxKind.DotDotDotToken
+      ? rawProperty.slice(1)
+      : rawProperty;
+    const propertyName = property[0];
+    if (propertyName?.kind !== SyntaxKind.Identifier && propertyName?.kind !== SyntaxKind.StringLiteral) {
+      continue;
+    }
+    const colon = topLevelTokenIndex(property, SyntaxKind.ColonToken);
+    if (colon === undefined) {
+      add(propertyName.value, [...source, propertyName]);
+      continue;
+    }
+    const target = property[colon + 1];
+    if (target?.kind === SyntaxKind.Identifier) {
+      add(target.value, [...source, propertyName]);
+    } else if (target?.kind === SyntaxKind.OpenBraceToken) {
+      const close = matchingClose(property, colon + 1);
+      addObjectBindingAliases(property.slice(colon + 2, close), [...source, propertyName], add);
+    }
+  }
+}
+
+function topLevelTokenIndex(tokens: readonly SourceToken[], sought: SyntaxKind): number | undefined {
+  let depth = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const kind = tokens[index]?.kind;
+    if (kind === sought && depth === 0) {
+      return index;
+    }
+    if (kind !== undefined && isOpening(kind)) {
+      depth += 1;
+    } else if (kind !== undefined && isClosing(kind)) {
+      depth -= 1;
+    }
+  }
+  return undefined;
 }
 
 function literalOrigin(
@@ -418,6 +771,60 @@ function carriesGovernedDepth(
     }
   }
   return false;
+}
+
+/**
+ * A subscript that addresses the third component of an interleaved vector — `[2]`, `[offset + 2]`,
+ * `[i * 3 + 2]`, `[2 + base]`. That slot is the depth coordinate of a packed position attribute, and
+ * writing a governed value into it routes semantics into depth exactly as `.z =` would.
+ */
+function isThirdComponentIndex(rawTokens: readonly SourceToken[]): boolean {
+  const tokens = withoutOuterParentheses(rawTokens);
+  if (tokens.length === 0) {
+    return false;
+  }
+  const isTwo = (candidate: readonly SourceToken[]): boolean => {
+    const only = withoutOuterParentheses(candidate);
+    const single = only.length === 1 ? only[0] : undefined;
+    return single?.kind === SyntaxKind.NumericLiteral && (single.value === "2" || single.text === "2");
+  };
+  const addends = splitTopLevel(tokens, SyntaxKind.PlusToken);
+  return addends.length === 1 ? isTwo(tokens) : addends.some(isTwo);
+}
+
+function governedDepthNames(): ReadonlySet<string> {
+  const governed = new Set<string>(["provenance", "renderedstate"]);
+  for (const fields of Object.values(SCENE_FIELD_REGISTER)) {
+    for (const field of fields) {
+      if (field === "kind"
+        || field === "token"
+        || field === "interaction"
+        || field.endsWith("Channel")
+        || field.endsWith("Provenance")) {
+        governed.add(field.toLowerCase());
+      }
+    }
+  }
+  // Sub-field names are deliberately NOT added. They are generic — `provenance` decomposes to
+  // `value` and `origin` — and matching them as bare identifiers made the control fire on any local
+  // called `value`, which is what `buffers.ts` calls its scene node while writing layout depth. A
+  // control that cannot tell `provenance.value` from a variable named `value` is not measuring the
+  // rule; it is measuring the codebase's naming. The carriers `provenance` and `renderedStateChannel`
+  // are matched instead, every path to a sub-field goes through one of them, and a destructured
+  // sub-field is reached through the local-binding recursion below.
+  return governed;
+}
+
+function isMaterialSetterCall(tokens: readonly SourceToken[], nameIndex: number): boolean {
+  const token = tokens[nameIndex];
+  if (token === undefined || !MATERIAL_SETTER_NAMES.has(token.value)) {
+    return false;
+  }
+  if (token.value !== "set") {
+    return true;
+  }
+  const start = chainStart(tokens, nameIndex);
+  return tokens.slice(start, nameIndex).some((receiverToken) => materialPropertyName(receiverToken) !== undefined);
 }
 
 function materialPropertyName(token: SourceToken): string | undefined {

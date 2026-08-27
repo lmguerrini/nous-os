@@ -105,7 +105,43 @@ test("material origin rejects a named colour string", () => {
   assert.equal(output, "named-colour.ts contains literal material assignment: color: \"red\"");
 });
 
-test("material origin rejects a local RGB array spread into a colour", () => {
+test("material origin rejects literal setter calls and a local RGB array spread into a colour", () => {
+  const setterOutput = observedFailure(
+    "material setter-call control",
+    () => assertNoRendererMaterialLiterals([{
+      name: "setter-call.ts",
+      source: "material.color.set(0xff0000);",
+    }]),
+    /setter-call\.ts contains literal material setter call: material\.color\.set\(0xff0000\)/,
+  );
+  assert.equal(
+    setterOutput,
+    "setter-call.ts contains literal material setter call: material.color.set(0xff0000)",
+  );
+  const styleOutput = observedFailure(
+    "material string-setter control",
+    () => assertNoRendererMaterialLiterals([{
+      name: "string-setter.ts",
+      source: "material.color.setStyle(\"red\");",
+    }]),
+    /string-setter\.ts contains literal material setter call: material\.color\.setStyle\(\"red\"\)/,
+  );
+  assert.equal(
+    styleOutput,
+    "string-setter.ts contains literal material setter call: material.color.setStyle(\"red\")",
+  );
+  const hexSetterOutput = observedFailure(
+    "material hexadecimal-setter control",
+    () => assertNoRendererMaterialLiterals([{
+      name: "hex-setter.ts",
+      source: "material.color.setHex(0xff0000);",
+    }]),
+    /hex-setter\.ts contains literal material setter call: material\.color\.setHex\(0xff0000\)/,
+  );
+  assert.equal(
+    hexSetterOutput,
+    "hex-setter.ts contains literal material setter call: material.color.setHex(0xff0000)",
+  );
   const output = observedFailure(
     "material local-RGB control",
     () => assertNoRendererMaterialLiterals([{
@@ -129,6 +165,32 @@ test("material origin rejects a visual-policy import outside the exact allow-lis
   assert.equal(
     output,
     "visual-import.ts imports visual policy outside renderer allow-list: #scene/rendered-state.ts",
+  );
+  const widenedOutput = observedFailure(
+    "material widened-import control",
+    () => assertNoRendererMaterialLiterals([{
+      name: "buffers.ts",
+      source: "import { resolveTokens } from \"#engine/tokens.ts\";",
+    }]),
+    /buffers\.ts imports forbidden renderer symbols from #engine\/tokens\.ts: resolveTokens/,
+  );
+  assert.equal(
+    widenedOutput,
+    "buffers.ts imports forbidden renderer symbols from #engine/tokens.ts: resolveTokens",
+  );
+  const buffersSource = requiredRendererSource(rendererSources(), "buffers.ts");
+  const missingSymbolSource = buffersSource.source.replace(
+    "import type { OklchToken } from \"#engine/tokens.ts\";",
+    "import type {} from \"#engine/tokens.ts\";",
+  );
+  const missingOutput = observedFailure(
+    "material missing-import-symbol control",
+    () => assertNoRendererMaterialLiterals([{ name: "buffers.ts", source: missingSymbolSource }]),
+    /buffers\.ts renderer import symbol allow-list drift for #engine\/tokens\.ts: missing=OklchToken/,
+  );
+  assert.equal(
+    missingOutput,
+    "buffers.ts renderer import symbol allow-list drift for #engine/tokens.ts: missing=OklchToken",
   );
 });
 
@@ -160,9 +222,22 @@ test("renderer source carries no governed value into depth and the depth-routing
     () => assertNoSemanticDepthRouting([{ name: "introduced-depth.ts", source: introduced }]),
     /introduced-depth\.ts routes a governed or provenance value into depth/,
   );
+  const channelOutput = observedFailure(
+    "depth rendered-state-channel control",
+    () => assertNoSemanticDepthRouting([{
+      name: "rendered-state-depth.ts",
+      source: "position.z = node.renderedStateChannel?.lightnessDeltaPermille ?? 0;",
+    }]),
+    /rendered-state-depth\.ts routes a governed or provenance value into depth/,
+  );
+  assert.equal(
+    channelOutput,
+    "rendered-state-depth.ts routes a governed or provenance value into depth: "
+      + "position.z = node.renderedStateChannel?.lightnessDeltaPermille ?? 0",
+  );
 });
 
-test("semantic depth routing rejects a governed value routed through a local", () => {
+test("semantic depth routing rejects governed values routed through locals and destructuring aliases", () => {
   const output = observedFailure(
     "depth local-indirection control",
     () => assertNoSemanticDepthRouting([{
@@ -172,6 +247,18 @@ test("semantic depth routing rejects a governed value routed through a local", (
     /depth-local\.ts routes a governed or provenance value into depth: position\.z = depth/,
   );
   assert.equal(output, "depth-local.ts routes a governed or provenance value into depth: position.z = depth");
+  const aliasOutput = observedFailure(
+    "depth destructuring-alias control",
+    () => assertNoSemanticDepthRouting([{
+      name: "depth-alias.ts",
+      source: "const { kind: semanticDepth } = node; position.z = semanticDepth.length;",
+    }]),
+    /depth-alias\.ts routes a governed or provenance value into depth: position\.z = semanticDepth\.length/,
+  );
+  assert.equal(
+    aliasOutput,
+    "depth-alias.ts routes a governed or provenance value into depth: position.z = semanticDepth.length",
+  );
 });
 
 test("semantic depth routing rejects a multiline object z assignment", () => {
@@ -243,6 +330,15 @@ function rendererSourcePaths(directory: string): readonly string[] {
   });
 }
 
+function requiredRendererSource(
+  sources: readonly { readonly name: string; readonly source: string }[],
+  name: string,
+): { readonly name: string; readonly source: string } {
+  const source = sources.find((candidate) => candidate.name === name);
+  assert.ok(source !== undefined, `${name} renderer source is unavailable`);
+  return source;
+}
+
 function observedFailure(label: string, operation: () => void, expected: RegExp): string {
   let output: string;
   try {
@@ -255,3 +351,94 @@ function observedFailure(label: string, operation: () => void, expected: RegExp)
   }
   throw new Error(`${label} did not fail`);
 }
+
+// The twelve evasion forms. Each was run against the controls before they were hardened; the five
+// marked below passed straight through. The first of those is the serious one: the interleaved
+// attribute buffers write depth as `array[offset + 2] = value`, so the control that was supposed to
+// keep semantics out of depth had never inspected the statement form this renderer actually uses.
+// Each probe is asserted individually so a regression names the form it stopped catching.
+const DEPTH_EVASIONS: readonly (readonly [string, string])[] = [
+  ["direct z assignment",
+    "export function f(n: { renderedStateChannel: number }, o: { z: number }) { o.z = n.renderedStateChannel; }"],
+  ["stride-derived subscript, offset form",              // escaped before hardening
+    "export function f(n: { renderedStateChannel: number }, t: Float32Array, o: number) { t[o + 2] = n.renderedStateChannel; }"],
+  ["stride-derived subscript, index-times-stride form",  // escaped before hardening
+    "export function f(n: { provenance: { origin: number } }, t: Float32Array, i: number) { t[i * 3 + 2] = n.provenance.origin; }"],
+  ["stride-derived subscript, reversed operand order",   // escaped before hardening
+    "export function f(n: { renderedStateChannel: number }, t: Float32Array, b: number) { t[2 + b] = n.renderedStateChannel; }"],
+  ["setZ component setter",                              // escaped before hardening
+    "export function f(n: { renderedStateChannel: number }, v: { setZ: (x: number) => void }) { v.setZ(n.renderedStateChannel); }"],
+  ["setComponent third-axis setter",                     // escaped before hardening
+    "export function f(n: { renderedStateChannel: number }, v: { setComponent: (i: number, x: number) => void }) { v.setComponent(2, n.renderedStateChannel); }"],
+  ["Vector3 third argument",
+    "export function f(n: { renderedStateChannel: number }) { return new Vector3(0, 0, n.renderedStateChannel); }"],
+];
+
+const MATERIAL_EVASIONS: readonly (readonly [string, string])[] = [
+  ["setHex literal",
+    "export function f(m: { color: { setHex: (n: number) => void } }) { m.color.setHex(0x445566); }"],
+  ["setStyle literal",
+    "export function f(m: { color: { setStyle: (s: string) => void } }) { m.color.setStyle(\"#445566\"); }"],
+  ["setHSL literal",
+    "export function f(m: { color: { setHSL: (a: number, b: number, c: number) => void } }) { m.color.setHSL(0.5, 0.4, 0.3); }"],
+  ["fromArray literal",                                  // escaped before hardening
+    "export function f(m: { color: { fromArray: (a: readonly number[]) => void } }) { m.color.fromArray([0.2, 0.3, 0.4]); }"],
+  ["direct opacity literal",
+    "export function f(m: { opacity: number }) { m.opacity = 0.42; }"],
+  ["literal reached through a local binding",
+    "const shade = 0.37;\nexport function f(m: { opacity: number }) { m.opacity = shade; }"],
+];
+
+test("every known depth-routing evasion form is refused", () => {
+  for (const [label, source] of DEPTH_EVASIONS) {
+    assert.throws(
+      () => assertNoSemanticDepthRouting([{ name: "evasion.ts", source }]),
+      /routes a governed or provenance value into depth/,
+      `depth control accepted an evasion it must refuse: ${label}`,
+    );
+  }
+});
+
+test("every known material-literal evasion form is refused", () => {
+  for (const [label, source] of MATERIAL_EVASIONS) {
+    assert.throws(
+      () => assertNoRendererMaterialLiterals([{ name: "evasion.ts", source }]),
+      /evasion\.ts contains literal (material|colour)/,
+      `material control accepted an evasion it must refuse: ${label}`,
+    );
+  }
+});
+
+// The mirror obligation. A control that refuses everything is as useless as one that refuses
+// nothing: hardening must not have been bought by making the legitimate write illegal. The renderer
+// writes layout depth through exactly the subscript form hardened above, and that must stay legal.
+test("a governed sub-field reached by destructuring is still refused", () => {
+  // The narrowing above must not have opened a hole: sub-field names are no longer matched as bare
+  // identifiers, so the only thing standing behind a destructured `origin` is the binding recursion.
+  assert.throws(
+    () => assertNoSemanticDepthRouting([{
+      name: "destructured.ts",
+      source: "export function f(n: { provenance: { origin: number } }, t: Float32Array, i: number) {\n"
+        + "  const { origin } = n.provenance;\n"
+        + "  t[i * 3 + 2] = origin;\n"
+        + "}",
+    }]),
+    /routes a governed or provenance value into depth/,
+  );
+  // And a local genuinely named `value` writing its own layout depth stays legal, which is the
+  // false positive that narrowing the name set removed.
+  assert.doesNotThrow(() => assertNoSemanticDepthRouting([{
+    name: "ordinary-local.ts",
+    source: "export function f(value: { z: number }, target: Float32Array, offset: number) { target[offset + 2] = value.z; }",
+  }]));
+});
+
+test("the hardened controls still accept the renderer and its legitimate depth writes", () => {
+  const sources = rendererSources();
+  assert.doesNotThrow(() => assertNoSemanticDepthRouting(sources));
+  assert.doesNotThrow(() => assertNoRendererMaterialLiterals(sources));
+  assert.doesNotThrow(() => assertNoSemanticDepthRouting([{
+    name: "legitimate-layout-write.ts",
+    source: "export function f(n: { z: number }, t: Float32Array, i: number) { t[i * 3 + 2] = n.z; }",
+  }]));
+});

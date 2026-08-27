@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { assertLitPixelFloor } from "#browser/lit-floor.ts";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import type { Coordinates } from "#engine/contract.ts";
+import type { RetainedResourceWitness } from "#engine/renderer-handle.ts";
 import {
   canonicalCameraFramingPoints,
   assertProjectedCameraFramingSubjectsInsideViewport,
@@ -18,6 +19,7 @@ import {
 } from "#render3f/label-collision.ts";
 import type { ScreenLabelBounds } from "#render3f/label-collision.ts";
 import { ResourceRegistry } from "#render3f/resources.ts";
+import { assertRetainedResourcesDoNotGrow } from "#test-render3f/retention.ts";
 import {
   LiveSceneState,
   assertCameraSwitchInvariant,
@@ -223,6 +225,54 @@ test("repeated renderer resource ownership cycles retain nothing after each tear
       domOverlayNodes: 0,
     });
   }
+
+  const retained: object[] = [];
+  const subject = {
+    setCameraKind(): void {
+      retained.push({});
+    },
+    readRetainedResources(): RetainedResourceWitness {
+      return {
+        geometries: 3,
+        materials: 3,
+        textures: 1,
+        domOverlayNodes: 1,
+        jsRetention: {
+          status: "MEASURED",
+          retainedSceneReferences: retained.length,
+        },
+      };
+    },
+  };
+  const beforeSwitches = subject.readRetainedResources();
+  for (let index = 0; index < 32; index += 1) {
+    subject.setCameraKind();
+  }
+  const growthOutput = failureOutput(() => assertRetainedResourcesDoNotGrow(
+    beforeSwitches,
+    subject.readRetainedResources(),
+  ));
+  assert.equal(
+    growthOutput,
+    "renderer JS retention grew from 0 to 32 retained scene references",
+  );
+  process.stdout.write(`JS retained-reference growth control observed: ${growthOutput}\n`);
+
+  const unknownOutput = failureOutput(() => assertRetainedResourcesDoNotGrow(
+    beforeSwitches,
+    {
+      geometries: 3,
+      materials: 3,
+      textures: 1,
+      domOverlayNodes: 1,
+      jsRetention: { status: "UNKNOWN", reason: "renderer-owned reference inventory unavailable" },
+    },
+  ));
+  assert.equal(
+    unknownOutput,
+    "renderer JS retention is UNKNOWN after switching: renderer-owned reference inventory unavailable",
+  );
+  process.stdout.write(`JS retention unknown control observed: ${unknownOutput}\n`);
 });
 
 function cameraKindCount(): number {

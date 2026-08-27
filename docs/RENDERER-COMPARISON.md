@@ -34,9 +34,9 @@ semantic state. The second is the weaker guarantee and by far the more interesti
            |-- Three             translates; orthographic and perspective, one scene each
 
 **Shared and measured to be shared.** Layout cost and scene-model build cost were measured
-independently per renderer and came out equal within noise — 23.3, 23.7 and 23.5 milliseconds for
-layout; 32.1, 33.2 and 32.8 for the scene model. The architecture claims those stages are common;
-the numbers say so without being asked to.
+independently per renderer and came out **equal within noise for both stages**. The architecture
+claims those stages are common; the numbers say so without being asked to, and they are read from
+`ui/dist/evidence/performance.json` rather than transcribed here.
 
 **Legitimately different, and pinned as such.** Only the camera kind and the camera's navigation
 values may differ between the two projections. That allowance is enumerated leaf by leaf rather than
@@ -50,7 +50,7 @@ depth-derived channel, and a control over the renderer's source enforces it.
 
 ## Semantic parity — measured
 
-Twenty-three checks, all passing, thresholds untouched.
+Every required check passes with thresholds untouched. The count is recorded in `parity.json` rather than transcribed here, because it rose when a duplicate record was found to be masking one renderer's evidence.
 
 | check | renderers | result |
 |---|---|---|
@@ -79,38 +79,40 @@ this criterion exists to catch**, however carefully written.
 a software rasteriser so that captures stay deterministic; a GPU would produce different numbers and
 the two must never be pooled.
 
-| at 100 elements | Sigma 2D | Three 2D | Three 3D |
-|---|---|---|---|
-| frame time, median | 8.3 ms | 8.3 ms | 8.3 ms |
-| initial render latency | ~870 ms | ~455 ms | ~436 ms |
-| layout cost, median | ~23 ms | ~24 ms | ~24 ms |
-| scene model build, median | ~32 ms | ~32 ms | ~32 ms |
-| picking latency, median | ~0.1 ms | ~0.1 ms | ~0.1 ms |
-| camera switch | one camera | ~8 ms | ~8 ms |
-| camera transition | not applicable | not applicable | ~7 ms |
+**The measured figures are not reproduced here.** Three drafts of this document quoted per-renderer
+medians and all three went stale within hours — a small-sample median moves between runs, and a
+document that transcribes one is wrong by the next. The numbers live in
+`ui/dist/evidence/performance.json`, bound to the tree that produced them, and what follows is only
+what the measurements actually support:
 
-**Every figure above is a median over a small sample and varies between runs**, so it is quoted to the
-precision the measurement supports rather than to a tenth of a millisecond. All come from
-`ui/dist/evidence/performance.json`. An earlier draft quoted a superseded run to one decimal place,
-which asserted a precision that does not exist and would have read as a change where there was none.
-
-**Frame time does not differentiate the three.** All three sit at the frame interval, which means all
-three are frame-limited rather than compute-limited at this size. No claim should be built on that
-row.
-
-**The Three engine mounts about twice as fast** — roughly 440 to 460 milliseconds against roughly 870.
-Measured once per renderer per run, so an observation rather than a distribution; the ratio has held
-across every run observed, the absolute figures have not.
+- **Frame time does not differentiate the three renderers.** All three sit at the frame interval,
+  which means all three are frame-limited rather than compute-limited at this size. **No claim should
+  be built on that row**, and none is.
+- **The Three engine mounts about twice as fast as Sigma.** Measured once per renderer per run: the
+  ratio has held across every run observed, the absolute milliseconds have not, and only the ratio is
+  claimed here. The figures themselves are in `performance.json`.
+- **Layout cost and scene-model build cost are equal across the three within noise.** That is the
+  architecture confirming itself — those stages are shared, and the numbers say so without being
+  asked to.
+- **Picking is sub-millisecond in all three**, and camera switching costs about one frame.
+- **Memory is recorded for all three**; the Sigma renderer's own retained-resource count is `UNKNOWN`
+  because its graphics resources are owned inside the library and are not enumerable from outside it.
 
 ### The scale wall, and whose it is
 
 **At 1,000 and 10,000 elements, every renderer recorded `NOT_RUN`** against a two-minute
 per-combination budget — Sigma included, and Sigma is the mature one.
 
-The cause was then measured **outside the browser entirely**, with no canvas and no renderer:
+The cause was then measured **outside the browser entirely**, with no canvas, no renderer and no
+DOM, so that the answer could not be attributed to one of the three. That measurement is its own
+committed producer and its own artifact — `npm --prefix ui run evidence:layout-scale`, written to
+`ui/dist/evidence/layout-scale.json` and bound to the tree that produced it. At the small fixture the
+shared layout is trivial. At the larger one it **alone exceeds the per-combination budget the browser
+suite gives an entire renderer**, before any renderer has been asked to draw anything.
 
-    40 nodes, 60 edges     shared layout   56 ms
-    358 nodes, 642 edges   shared layout   exceeded 100 s
+The figures are in the artifact rather than here, and that is not fastidiousness: three drafts of
+this document quoted layout and mount timings, and all three were wrong within hours. A check now
+refuses any timing figure written into this file.
 
 **The wall is the renderer-independent force-directed layout.** So the honest answer to *which
 renderer scales better* is that this evidence cannot say: a shared component consumes the budget
@@ -143,11 +145,14 @@ lifecycle, and that is why its handle cannot answer two of the questions the sha
 it has one camera and cannot enumerate resources it does not own. Those are honest absences, recorded
 as capabilities it does not declare rather than as fabricated answers.
 
-**The Three engine** is roughly 3,600 lines of source with a further 1,200 of its own tests — about
-4,800 together, and both figures grow as its controls are strengthened, so they are quoted to the
-hundred and reproduced with `cat ui/src/render3f/* ui/test/render3f/* | wc -l` rather than pinned.
-It owns everything the library
-used to: shader compilation, buffer construction, picking, disposal, label placement. That is the
+**The Three engine** is a little under six thousand lines of source and its own tests together. The
+figure grows every time its controls are strengthened — it has moved twice while this document was
+being written — so it is deliberately given as an order of magnitude and reproduced rather than
+pinned:
+
+    cat ui/src/render3f/* ui/test/render3f/* | wc -l
+
+It owns everything the library used to: shader compilation, buffer construction, picking, disposal, label placement. That is the
 price of the visual freedom above, and it is where every defect in this capability was found — a
 blank frame, a displaced shader directive, unsupported qualifiers, a coordinate-space error.
 

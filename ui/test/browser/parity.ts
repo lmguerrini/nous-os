@@ -49,11 +49,22 @@ export type RenderedStatePixelWitness = {
   readonly devicePixelRatio: number;
 };
 
-/** This records a node picked at its renderer-projected anchor and does not reuse another renderer's projection. */
-export type NodePickWitness = {
+/** This records one complete mounted picking target and never drops an element whose projected point cannot be picked. */
+export type PickingTargetWitness = {
   readonly id: string;
-  readonly point: { readonly x: number; readonly y: number };
+  readonly point: { readonly x: number; readonly y: number } | null;
   readonly pickedId: string | null;
+  readonly pickable: boolean;
+  /** This is non-null exactly when the target cannot be picked at its own projected point. */
+  readonly unavailableReason: string | null;
+};
+
+/** This records every node and relation the mounted renderer exposes to its picking API. */
+export type PickingTargetSetWitness = {
+  readonly renderer: ParityRenderer;
+  readonly surface: SurfaceWitness;
+  readonly nodes: readonly PickingTargetWitness[];
+  readonly relations: readonly PickingTargetWitness[];
 };
 
 /** This records the pixels and real provenance used for an interaction observation and does not infer provenance. */
@@ -151,8 +162,11 @@ export type ParityBrowserApi = {
       readonly temperature: readonly VisualState["temperature"][];
       readonly theme: readonly VisualState["theme"][];
       readonly lodBand: readonly VisualState["lodBand"][];
+      readonly policy: readonly FullAppPolicy[];
+      readonly cameraKind: readonly CameraKind[];
     };
     readonly comparisons: readonly {
+      readonly policy: FullAppPolicy;
       readonly state: Pick<VisualState, "morphology" | "palette" | "temperature" | "theme" | "lodBand">;
       readonly differences: readonly string[];
     }[];
@@ -166,8 +180,7 @@ export type ParityBrowserApi = {
   clearSelection(renderer: ParityRenderer): Promise<void>;
   focus(renderer: ParityRenderer, id: string): Promise<void>;
   clearFocus(renderer: ParityRenderer): Promise<void>;
-  nodePickSamples(renderer: ParityRenderer, count: number): Promise<readonly NodePickWitness[]>;
-  pickNodeAt(renderer: ParityRenderer, point: { readonly x: number; readonly y: number }): Promise<string | null>;
+  completePickingTargetSet(renderer: ParityRenderer): Promise<PickingTargetSetWitness>;
   mountZeroToleranceControl(renderer: ParityRenderer): Promise<ZeroToleranceWitness>;
   readCameraLayoutCapability(): Promise<CameraLayoutCapabilityWitness>;
   readDeterminismSemanticWitness(renderer: ParityRenderer): Promise<DeterminismSemanticWitness>;
@@ -207,6 +220,8 @@ const FULL_APP_FIXTURE_URLS: Readonly<Record<FullAppPolicy, string>> = {
   Reliability: ["fixtures", "synthetic", "projection", "reliability-all-time.json"].join("/"),
 };
 const PAGE_ROOT_ID = "parity-root";
+const PARITY_VIEWPORT_WIDTH_CSS_PX = 1_200;
+const PARITY_VIEWPORT_HEIGHT_CSS_PX = 800;
 const pageRendererId = (renderer: ParityRenderer): string => `parity-renderer-${renderer}`;
 const rendererMounts: Readonly<Record<ParityRenderer, RendererMount>> = {
   "sigma-2d": mountSigma as unknown as RendererMount,
@@ -228,11 +243,14 @@ const P2_PALETTES = ["monochrome", "interstellar", "perceptual", "solar", "custo
 const P2_TEMPERATURES = ["cold", "balanced", "warm"] as const satisfies readonly VisualState["temperature"][];
 const P2_THEMES = ["system", "dark", "light"] as const satisfies readonly VisualState["theme"][];
 const P2_LOD_BANDS = ["macro", "meso", "micro"] as const satisfies readonly VisualState["lodBand"][];
+const P2_POLICIES = ["Discovery", "Reliability"] as const satisfies readonly FullAppPolicy[];
+const P2_CAMERA_KINDS = [ORTHOGRAPHIC, PERSPECTIVE] as const satisfies readonly CameraKind[];
 const P2_SCENE_PARITY_COMBINATION_COUNT = P2_MORPHOLOGIES.length
   * P2_PALETTES.length
   * P2_TEMPERATURES.length
   * P2_THEMES.length
-  * P2_LOD_BANDS.length;
+  * P2_LOD_BANDS.length
+  * P2_POLICIES.length;
 /** This names the ability only a multi-camera renderer has and does not require it of every renderer. */
 const MULTI_CAMERA_HANDLE_METHODS = ["setCameraKind"] as const;
 const REQUIRED_HANDLE_METHODS = [
@@ -401,8 +419,11 @@ export async function installParityPage(): Promise<void> {
           readonly temperature: readonly VisualState["temperature"][];
           readonly theme: readonly VisualState["theme"][];
           readonly lodBand: readonly VisualState["lodBand"][];
+          readonly policy: readonly FullAppPolicy[];
+          readonly cameraKind: readonly CameraKind[];
         };
         readonly comparisons: readonly {
+          readonly policy: FullAppPolicy;
           readonly state: Pick<VisualState, "morphology" | "palette" | "temperature" | "theme" | "lodBand">;
           readonly differences: readonly string[];
         }[];
@@ -414,24 +435,34 @@ export async function installParityPage(): Promise<void> {
         const sigma = current("sigma-2d");
         const initial = sigma.handle.readVisualState();
         const comparisons: {
+          policy: FullAppPolicy;
           state: Pick<VisualState, "morphology" | "palette" | "temperature" | "theme" | "lodBand">;
           differences: readonly string[];
         }[] = [];
         let controlScenes: { readonly orthographic: Scene; readonly perspective: Scene } | undefined;
-        for (const morphology of P2_MORPHOLOGIES) {
-          for (const palette of P2_PALETTES) {
-            for (const temperature of P2_TEMPERATURES) {
-              for (const theme of P2_THEMES) {
-                for (const lodBand of P2_LOD_BANDS) {
-                  const state = { morphology, palette, temperature, theme, lodBand };
-                  const orthographic = createVisualState(graph, { ...initial, ...state, cameraKind: ORTHOGRAPHIC });
-                  const perspective = createVisualState(graph, { ...initial, ...state, cameraKind: PERSPECTIVE });
-                  const orthographicScene = buildScene(graph, orthographic);
-                  const perspectiveScene = buildScene(graph, perspective);
-                  const differences = sceneDifferencePaths(orthographicScene, perspectiveScene);
-                  assertSceneCameraParity(differences);
-                  comparisons.push({ state, differences });
-                  controlScenes ??= { orthographic: orthographicScene, perspective: perspectiveScene };
+        for (const policy of P2_POLICIES) {
+          const policyGraph = fullAppGraphs[policy];
+          for (const morphology of P2_MORPHOLOGIES) {
+            for (const palette of P2_PALETTES) {
+              for (const temperature of P2_TEMPERATURES) {
+                for (const theme of P2_THEMES) {
+                  for (const lodBand of P2_LOD_BANDS) {
+                    const state = { morphology, palette, temperature, theme, lodBand };
+                    const scenesByCamera = new Map<CameraKind, Scene>();
+                    for (const cameraKind of P2_CAMERA_KINDS) {
+                      const visualState = createVisualState(policyGraph, { ...initial, ...state, cameraKind });
+                      scenesByCamera.set(cameraKind, buildScene(policyGraph, visualState));
+                    }
+                    const orthographicScene = scenesByCamera.get(ORTHOGRAPHIC);
+                    const perspectiveScene = scenesByCamera.get(PERSPECTIVE);
+                    if (orthographicScene === undefined || perspectiveScene === undefined) {
+                      throw new Error("P2 scene parity lacks one declared camera kind");
+                    }
+                    const differences = sceneDifferencePaths(orthographicScene, perspectiveScene);
+                    assertSceneCameraParity(differences);
+                    comparisons.push({ policy, state, differences });
+                    controlScenes ??= { orthographic: orthographicScene, perspective: perspectiveScene };
+                  }
                 }
               }
             }
@@ -449,6 +480,8 @@ export async function installParityPage(): Promise<void> {
             temperature: P2_TEMPERATURES,
             theme: P2_THEMES,
             lodBand: P2_LOD_BANDS,
+            policy: P2_POLICIES,
+            cameraKind: P2_CAMERA_KINDS,
           },
           comparisons,
           negativeControlOutput: failingControlOutput(() => assertSceneCameraParity(sceneDifferencePaths(controlScenes.orthographic, negativeControl))),
@@ -524,20 +557,48 @@ export async function installParityPage(): Promise<void> {
         current(renderer).handle.clearFocus();
         await nextPaint();
       },
-      async nodePickSamples(renderer: ParityRenderer, count: number): Promise<readonly NodePickWitness[]> {
+      async completePickingTargetSet(renderer: ParityRenderer): Promise<PickingTargetSetWitness> {
         const active = current(renderer);
+        const surface = active.handle.readSurfaceWitness();
         const footprints = new Map(active.handle.readNodeFootprintWitnesses().map((footprint) => [footprint.id, footprint]));
-        return active.graph.nodes.slice(0, count).map((node) => {
-          const footprint = footprints.get(node.id);
+        const nodes = sortedIds(surface.nodeIds).map((id): PickingTargetWitness => {
+          const footprint = footprints.get(id);
           if (footprint === undefined) {
-            throw new Error(`P5 ${renderer} has no mounted footprint for fixed target ${node.id}`);
+            return {
+              id,
+              point: null,
+              pickedId: null,
+              pickable: false,
+              unavailableReason: "mounted surface has no live node footprint",
+            };
           }
           const point = footprint.viewportCenter;
-          return { id: node.id, point, pickedId: active.handle.pickNodeAtPosition(point) };
+          const pickedId = active.handle.pickNodeAtPosition(point);
+          return pickingTargetAtPoint(id, point, pickedId, (footprint.coreRadiusPx * 2) * window.devicePixelRatio);
         });
-      },
-      async pickNodeAt(renderer: ParityRenderer, point: { readonly x: number; readonly y: number }): Promise<string | null> {
-        return current(renderer).handle.pickNodeAtPosition(point);
+        const resolvedRelations = new Map(buildScene(
+          active.graph,
+          active.handle.readVisualState(),
+          active.options.calibration,
+        ).edges.map((relation) => [relation.id, relation]));
+        const relations = sortedIds(surface.edgeIds).map((id): PickingTargetWitness => {
+          const relation = resolvedRelations.get(id);
+          if (relation === undefined) {
+            return {
+              id,
+              point: null,
+              pickedId: null,
+              pickable: false,
+              unavailableReason: "mounted surface has no resolved relation geometry",
+            };
+          }
+          const point = active.handle.graphToViewport(quadraticMidpoint(relation.path, relation.controlPoint));
+          const projectedExtent = relationProjectedExtent(relation.path, relation.controlPoint, active.handle.graphToViewport)
+            * window.devicePixelRatio;
+          const pickedId = active.handle.pickEdgeAtPoint(point.x, point.y);
+          return pickingTargetAtPoint(id, point, pickedId, projectedExtent);
+        });
+        return { renderer, surface, nodes, relations };
       },
       async mountZeroToleranceControl(renderer: ParityRenderer): Promise<ZeroToleranceWitness> {
         const zeroToleranceCalibration = {
@@ -805,6 +866,73 @@ function sortedIds(ids: readonly string[]): readonly string[] {
   return [...new Set(ids)].sort((left, right) => left.localeCompare(right));
 }
 
+function pickingTargetAtPoint(
+  id: string,
+  point: { readonly x: number; readonly y: number },
+  pickedId: string | null,
+  projectedExtentDevicePx: number,
+): PickingTargetWitness {
+  if (pickedId === id) {
+    return { id, point, pickedId, pickable: true, unavailableReason: null };
+  }
+  if (!isViewportPoint(point)) {
+    return { id, point, pickedId, pickable: false, unavailableReason: "off-screen" };
+  }
+  if (projectedExtentDevicePx < 1) {
+    return { id, point, pickedId, pickable: false, unavailableReason: "below-one-device-pixel" };
+  }
+  if (pickedId !== null) {
+    return { id, point, pickedId, pickable: false, unavailableReason: `occluded-by:${pickedId}` };
+  }
+  return {
+    id,
+    point,
+    pickedId,
+    pickable: false,
+    unavailableReason: "picker-returned-null-at-visible-projected-point",
+  };
+}
+
+function isViewportPoint(point: { readonly x: number; readonly y: number }): boolean {
+  return point.x >= 0
+    && point.x < PARITY_VIEWPORT_WIDTH_CSS_PX
+    && point.y >= 0
+    && point.y < PARITY_VIEWPORT_HEIGHT_CSS_PX;
+}
+
+function quadraticMidpoint(
+  path: readonly Coordinates[],
+  controlPoint: Coordinates,
+): Coordinates {
+  const source = path[0];
+  const target = path[path.length - 1];
+  if (source === undefined || target === undefined) {
+    throw new Error("P5 resolved relation has no endpoint path");
+  }
+  return {
+    x: (source.x + (2 * controlPoint.x) + target.x) / 4,
+    y: (source.y + (2 * controlPoint.y) + target.y) / 4,
+    z: (source.z + (2 * controlPoint.z) + target.z) / 4,
+  };
+}
+
+function relationProjectedExtent(
+  path: readonly Coordinates[],
+  controlPoint: Coordinates,
+  project: (point: Coordinates) => { readonly x: number; readonly y: number },
+): number {
+  const source = path[0];
+  const target = path[path.length - 1];
+  if (source === undefined || target === undefined) {
+    return 0;
+  }
+  const points = [project(source), project(controlPoint), project(target)];
+  return Math.max(...points.flatMap((left, leftIndex) => points.slice(leftIndex + 1).map((right) => Math.hypot(
+    left.x - right.x,
+    left.y - right.y,
+  ))));
+}
+
 function formatIncidence(value: { readonly source: string; readonly target: string } | undefined): string {
   return value === undefined ? "missing" : `${value.source}->${value.target}`;
 }
@@ -948,8 +1076,7 @@ function failedApi(errors: readonly string[]): ParityBrowserApi {
     clearSelection: async () => unavailable(),
     focus: async () => unavailable(),
     clearFocus: async () => unavailable(),
-    nodePickSamples: async () => unavailable(),
-    pickNodeAt: async () => unavailable(),
+    completePickingTargetSet: async () => unavailable(),
     mountZeroToleranceControl: async () => unavailable(),
     readCameraLayoutCapability: async () => unavailable(),
     readDeterminismSemanticWitness: async () => unavailable(),
