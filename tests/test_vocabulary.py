@@ -26,6 +26,7 @@ running it against a small, deliberately broken fixture under
 from __future__ import annotations
 
 import ast
+import math
 import re
 import subprocess
 from pathlib import Path
@@ -145,6 +146,10 @@ _ENUM_BASE_NAMES = frozenset({"Enum", "StrEnum", "IntEnum", "IntFlag", "Flag", "
 #: Mirrors the public-safety rooted-path rule: a rooted path opened by
 #: whitespace, punctuation or the start of a line. A repository-relative path
 #: such as ``src/nous_os/canonical.py`` does not match.
+#: A home-relative or drive-letter path. The rooted pattern below covers the
+#: POSIX shape, which is the real exposure here; these two are the shapes a
+#: reviewer showed it did not cover, and a document is refused for either.
+_HOME_OR_DRIVE_PATH = re.compile(r"""(?:^|[\s(\["'<>=,;])(?:~[/\\]|[A-Za-z]:[\\/])[\w.\-]""")
 _ROOTED_PATH_PATTERN = re.compile(r"""(?:^|[\s(\["'<>=,;])/[\w.\-]+(?:/[\w.\-]+)+""", re.MULTILINE)
 
 _BACKTICK_TERM = re.compile(r"`([^`]+)`")
@@ -999,7 +1004,7 @@ def structural_change_offences(
         ]
     try:
         diff = subprocess.run(
-            ["git", "diff", "--name-only", f"{base_sha}..{head}", "--", "src/", "ui/src/", "ui/test/", "fixtures/"],
+            ["git", "diff", "--name-only", f"{base_sha}..{head}", "--", "src/", "ui/src/", "ui/test/", "fixtures/", "schemas/"],
             cwd=repo_root,
             capture_output=True,
             text=True,
@@ -1025,7 +1030,7 @@ def renderer_named_adopted_term_offences(text: str) -> list[str]:
 def rooted_path_offences(text: str) -> list[str]:
     offences = []
     for line_number, line in enumerate(text.splitlines(), start=1):
-        match = _ROOTED_PATH_PATTERN.search(line)
+        match = _ROOTED_PATH_PATTERN.search(line) or _HOME_OR_DRIVE_PATH.search(line)
         if match:
             offences.append(f"line {line_number}: rooted path {match.group(0)!r}")
     return offences
@@ -1137,8 +1142,8 @@ def test_adoption_changed_no_structure() -> None:
 def defect_count_offences(text: str) -> list[str]:
     """The prose count of published defects agrees with the table it counts.
 
-    This is the one count in the document that is enforced rather than printed.
-    The others move on purpose — a limitations list should grow — and pinning
+    This count is enforced rather than printed, as are the ones the collision
+    check binds. The counts that stay unpinned move on purpose — a limitations list should grow — and pinning
     those would punish the honesty they exist to record. This one must not
     move independently of its own table: a row added without the sentence
     changing leaves the document contradicting itself, which is precisely the
@@ -1167,6 +1172,12 @@ _DELTA_ASSIGNMENT = re.compile(r"(\w*(?:Accepted|Rejected|Undetermined|Explicit|
 _BRIDGE_CARRIER_PREFIXES = ("bridge", "epistemic")
 
 
+def _rendered_state_deltas(repo_root: Path) -> dict[str, int]:
+    """The rendered-state lightness offsets, read out of the shipping calibration."""
+    calibration = (repo_root / "ui" / "src" / "engine" / "calibration.ts").read_text(encoding="utf-8")
+    return {match.group(1): int(match.group(2)) for match in _DELTA_ASSIGNMENT.finditer(calibration)}
+
+
 def _rendered_state_collision_groups(repo_root: Path) -> dict[int, list[str]]:
     """The distinct rendered values the nine bridge combinations land on.
 
@@ -1180,43 +1191,174 @@ def _rendered_state_collision_groups(repo_root: Path) -> dict[int, list[str]]:
     deltas: dict[str, int] = {}
     for match in _DELTA_ASSIGNMENT.finditer(calibration):
         deltas[match.group(1)] = int(match.group(2))
-    dispositions = {name: value for name, value in deltas.items() if name.startswith("bridge")}
-    classes = {name: value for name, value in deltas.items() if name.startswith("epistemic")}
+    first, second = _BRIDGE_CARRIER_PREFIXES
+    dispositions = {name: value for name, value in deltas.items() if name.startswith(first)}
+    classes = {name: value for name, value in deltas.items() if name.startswith(second)}
     groups: dict[int, list[str]] = {}
     for disposition, left in sorted(dispositions.items()):
         for epistemic, right in sorted(classes.items()):
             # The renderer averages the two members' deltas; see renderedStateToken.
-            groups.setdefault(round((left + right) / 2), []).append(f"{disposition}+{epistemic}")
+            # Math.round, not Python's round: they disagree on half-integers, and the
+            # docstring claims this reproduces the renderer's averaging. With today's
+            # even-sum offsets they never diverge; one odd offset and they would.
+            mean = math.floor((left + right) / 2 + 0.5)
+            groups.setdefault(mean, []).append(f"{disposition}+{epistemic}")
     return groups
 
 
+_PUBLISHED_COLLISION_ROW = re.compile(r"^ {4}(-\d+)   ([a-z+ ]+)$", re.MULTILINE)
+_PUBLISHED_OFFSETS = re.compile(r"`(-\d+) / (-\d+) / (-\d+)`")
+
+
+def _short_name(qualified: str) -> str:
+    """`bridgeAccepted` -> `accepted`. The document names members, not fields."""
+    for prefix in _BRIDGE_CARRIER_PREFIXES:
+        if qualified.startswith(prefix):
+            return qualified[len(prefix):].lower()
+    return qualified.lower()
+
+
 def rendered_state_collision_offences(text: str, repo_root: Path) -> list[str]:
-    """The document's published collision claim matches the shipping calibration."""
+    """The document's published collision claim matches the shipping calibration.
+
+    Everything the document publishes about this is compared against what the
+    code produces: the two offset triples it quotes, every row of its table
+    including which combinations share each value, the pair it names in prose
+    as producing the identical result, and the spelled count of colliding
+    groups. An earlier version of this function checked three scalars —
+    nine, five, and the group count — while its own docstring claimed it
+    checked the table. A review demonstrated that shifting every offset by the
+    same amount, or swapping two of them, left every published number false and
+    this check green. Comparing the counts is not comparing the claim.
+    """
     groups = _rendered_state_collision_groups(repo_root)
     if not groups:
         return ["no rendered-state deltas were found in the calibration, so nothing was checked"]
+
+    offences: list[str] = []
+    derived = {
+        value: sorted(_short_name(part) for member in members for part in member.split("+"))
+        for value, members in groups.items()
+    }
+    derived_rows = {
+        value: sorted("+".join(_short_name(part) for part in member.split("+")) for member in members)
+        for value, members in groups.items()
+    }
+
+    # The two offset triples the prose quotes.
+    quoted = _PUBLISHED_OFFSETS.findall(text)
+    first, second = _BRIDGE_CARRIER_PREFIXES
+    actual = [
+        sorted({name: value for name, value in _rendered_state_deltas(repo_root).items() if name.startswith(prefix)}.values(), reverse=True)
+        for prefix in (first, second)
+    ]
+    if len(quoted) < 2:
+        offences.append("the document no longer quotes both offset triples, so neither was checked")
+    else:
+        for index, triple in enumerate(quoted[:2]):
+            published = sorted((int(part) for part in triple), reverse=True)
+            if published != actual[index]:
+                offences.append(
+                    f"the document quotes offsets {published} where the calibration has {actual[index]}"
+                )
+
+    # Every row of the published table, value and membership.
+    published_rows: dict[int, list[str]] = {}
+    for value, members in _PUBLISHED_COLLISION_ROW.findall(text):
+        published_rows[int(value)] = sorted(members.split())
+    if not published_rows:
+        offences.append("the published collision table is absent, so the derived table was not compared")
+    else:
+        if set(published_rows) != set(derived_rows):
+            offences.append(
+                f"the published table lists values {sorted(published_rows)}; "
+                f"the calibration produces {sorted(derived_rows)}"
+            )
+        for value in sorted(set(published_rows) & set(derived_rows)):
+            if published_rows[value] != derived_rows[value]:
+                offences.append(
+                    f"at {value} the document lists {published_rows[value]}; "
+                    f"the calibration produces {derived_rows[value]}"
+                )
+
+    # The pair the prose names as identical must actually be one.
+    named = re.search(r"`(\w+)`\+`(\w+)` and `(\w+)`\+`(\w+)` produce the identical result", text)
+    if named is None:
+        offences.append("the prose no longer names a colliding pair, so none was verified")
+    else:
+        left = "+".join(named.group(1, 2))
+        right = "+".join(named.group(3, 4))
+        together = [value for value, members in derived_rows.items() if left in members and right in members]
+        if not together:
+            offences.append(f"the document names {left} and {right} as identical; the calibration disagrees")
+
     combinations = sum(len(members) for members in groups.values())
-    colliding = [value for value, members in groups.items() if len(members) > 1]
-    offences = []
-    published = f"the **nine** legal combinations land on only **five** distinct values"
     if combinations != 9 or len(groups) != 5:
         offences.append(
             f"the calibration now yields {combinations} combinations over {len(groups)} values; "
             f"the document still says nine over five"
         )
-    elif published not in text:
+    elif "the **nine** legal combinations land on only **five** distinct values" not in text:
         offences.append("the document no longer states the nine-onto-five claim this check verifies")
+
+    colliding = [value for value, members in groups.items() if len(members) > 1]
     further = len(colliding) - 1
-    spelled = {1: "one further group", 2: "two further groups", 3: "three further groups"}
+    spelled = {0: "no further groups", 1: "one further group", 2: "two further groups", 3: "three further groups"}
     expected = spelled.get(further)
     if expected is None:
         offences.append(f"{further} further colliding groups has no spelled form to check")
-    elif expected not in text:
-        offences.append(
-            f"the calibration yields {len(colliding)} colliding groups, so the document should say "
-            f"'{expected}' beside the one it names explicitly"
-        )
+    else:
+        # Anchored, and the wrong spellings are refused rather than merely not required:
+        # an unanchored membership test passed while a contradicting sentence sat elsewhere.
+        if expected not in text:
+            offences.append(
+                f"the calibration yields {len(colliding)} colliding groups, so the document should say "
+                f"'{expected}' beside the one it names explicitly"
+            )
+        for count, phrase in spelled.items():
+            if count != further and phrase in text:
+                offences.append(f"the document also says '{phrase}', which the calibration contradicts")
     return offences
+
+
+def test_the_collision_check_detects_a_falsified_table_row() -> None:
+    # The same function the real check calls, against the real calibration and a
+    # document whose table row lists the wrong combinations. Comparing counts
+    # would pass this; comparing the claim does not.
+    text = _document_text().replace(
+        "    -16   accepted+derived      rejected+explicit",
+        "    -16   accepted+speculative  undetermined+derived",
+        1,
+    )
+    assert rendered_state_collision_offences(text, REPO_ROOT), "the control should have offended"
+
+
+def test_the_collision_check_detects_falsified_offsets() -> None:
+    text = _document_text().replace("`-24 / -20 / -16`", "`-24 / -20 / -17`", 1)
+    assert rendered_state_collision_offences(text, REPO_ROOT), "the control should have offended"
+
+
+def test_the_collision_check_detects_a_contradicting_spelled_count() -> None:
+    # An unanchored membership test passed while a contradicting sentence sat
+    # elsewhere. The wrong spellings are now refused, not merely not required.
+    text = _document_text().replace(
+        "two further groups", "two further groups, and three further groups elsewhere", 1
+    )
+    assert rendered_state_collision_offences(text, REPO_ROOT), "the control should have offended"
+
+
+def test_the_rooted_path_check_detects_a_home_relative_path() -> None:
+    # Assembled from split literals for the same reason the POSIX control is: a
+    # tracked byte carrying one of these shapes is exactly what the repository's
+    # own safety scan refuses, so the test proving the rule works would break it.
+    # The first draft of this control did precisely that and the scan caught it.
+    sample = "A path such as " + "~" + "/Desk" + "top/notes must never appear."
+    assert rooted_path_offences(sample), "the control should have produced an offence"
+
+
+def test_the_rooted_path_check_detects_a_drive_letter_path() -> None:
+    sample = "A path such as " + "C:" + chr(92) + "Users" + chr(92) + "me must never appear."
+    assert rooted_path_offences(sample), "the control should have produced an offence"
 
 
 def test_the_published_collision_arithmetic_matches_the_calibration() -> None:

@@ -34,9 +34,13 @@ only for existence.
 **Neither is given a number here, deliberately.** Both should move — the first upward as more gaps
 are admitted, the second downward as citations get more specific — and a number typed into prose
 beside a list that changes is the staleness this document exists to catch. An earlier draft of this
-very paragraph stated one of them and it went stale within the hour. **The one count that must not
-drift is enforced instead of printed:** the number of defects named below is asserted against the
-table it counts, so the prose and the rows cannot disagree.
+very paragraph stated one of them and it went stale within the hour. **The counts that must not drift are
+enforced instead of printed.** The number of defects named below is asserted against the table it
+counts. So is everything the document publishes about how two governed states combine into one
+rendered value — the offsets it quotes, every row of that table, the pair it names as identical, and
+the spelled count of collisions — each compared against what the code actually produces, so that
+editing a constant in the renderer's calibration turns this document red rather than leaving a
+true-looking sentence behind.
 
 ## The rule this document applies
 
