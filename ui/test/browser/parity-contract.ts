@@ -9,6 +9,35 @@
  * dragging a browser runtime across the boundary.
  */
 
+import { isLitPixel } from "#browser/filament-continuity.ts";
+
+/** This records the exact governed witness pixel and field used before a separation comparison. */
+export type GovernedPixelSample = {
+  readonly pointCss: { readonly x: number; readonly y: number };
+  readonly pointDevice: { readonly x: number; readonly y: number };
+  readonly capture: { readonly width: number; readonly height: number };
+  readonly fieldRgb: readonly [number, number, number];
+  readonly sampledRgb: readonly [number, number, number] | null;
+};
+
+/** This rejects an off-capture or field-landing governed witness before any separation value can be computed. */
+export function assertGovernedPixelSampleLit(sample: GovernedPixelSample, label: string): void {
+  if (sample.sampledRgb === null) {
+    throw new Error(
+      `${label} at CSS (${sample.pointCss.x}, ${sample.pointCss.y}) maps to device `
+      + `(${sample.pointDevice.x}, ${sample.pointDevice.y}) outside ${sample.capture.width}x${sample.capture.height}; `
+      + "NOT_RUN before any separation comparison",
+    );
+  }
+  if (!isLitPixel(sample.sampledRgb[0], sample.sampledRgb[1], sample.sampledRgb[2], sample.fieldRgb)) {
+    throw new Error(
+      `${label} sampled rgb(${sample.sampledRgb.join(", ")}) at CSS (${sample.pointCss.x}, ${sample.pointCss.y}), `
+      + `device (${sample.pointDevice.x}, ${sample.pointDevice.y}), against field rgb(${sample.fieldRgb.join(", ")}); `
+      + "NOT_RUN before any separation comparison",
+    );
+  }
+}
+
 /**
  * This pins every resolved-scene channel permitted to vary by camera, and does not allow an empty allowance.
  *

@@ -68,6 +68,13 @@ test("Three composites a lit frame in both camera kinds", async (context) => {
       }
     });
     await page.setContent("<!doctype html><html><body></body></html>");
+    await page.evaluate(() => {
+      window.ResizeObserver = class {
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+      };
+    });
     await page.evaluate((value) => {
       window.__render3fCompositingFixture = value;
     }, fixture);

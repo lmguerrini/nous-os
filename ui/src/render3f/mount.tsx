@@ -219,7 +219,17 @@ export function mount(
     renderFrame();
   };
   const detachInteractions = attachCameraInteractions(canvas, rig, syncCameraState);
+  const renderWhileFiberConfigures = (): void => {
+    if (destroyed || fiberStore !== undefined) {
+      return;
+    }
+    threeScene.add(world);
+    rig.resize(dimensions.width, dimensions.height, devicePixelRatio);
+    renderFrame();
+    requestAnimationFrame(renderWhileFiberConfigures);
+  };
 
+  renderWhileFiberConfigures();
   void fiberRoot.configure({
     gl: renderer,
     scene: threeScene,
@@ -236,6 +246,9 @@ export function mount(
     }
     fiberStore = fiberRoot.render(<WorldLayer world={world} />);
     fiberStore.setState({ camera: rig.camera });
+    threeScene.add(world);
+    rig.resize(dimensions.width, dimensions.height, devicePixelRatio);
+    renderFrame();
   });
 
   const resizeObserver = new ResizeObserver(() => {

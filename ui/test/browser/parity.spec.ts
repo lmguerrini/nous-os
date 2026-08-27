@@ -14,7 +14,12 @@ import { assertLitPixelFloor } from "#browser/lit-floor.ts";
 // BOTH files and only one copy was repaired; the surviving copy rejected legal camera differences
 // for two full runs. Importing the PAGE module to share them instead crashed the suite at Node
 // level and left the previous run's evidence to be misread as this run's result.
-import { PROJECTION_DEPENDENT_SCENE_CHANNELS, assertSceneCameraParity } from "#browser/parity-contract.ts";
+import {
+  PROJECTION_DEPENDENT_SCENE_CHANNELS,
+  assertGovernedPixelSampleLit,
+  assertSceneCameraParity,
+} from "#browser/parity-contract.ts";
+import type { GovernedPixelSample } from "#browser/parity-contract.ts";
 import { legalRenderedCombinations } from "#scene/index.ts";
 import type { RenderedStateCarrier } from "#engine/contract.ts";
 import type { SurfaceWitness } from "#engine/renderer-handle.ts";
@@ -53,6 +58,15 @@ type PairwiseMatrix = {
 type RenderedStateObservation = {
   readonly stateKey: string;
   readonly targetId: string;
+  readonly sample: GovernedPixelSample;
+  readonly frameLitPixels: number | null;
+  readonly frameLitFloorFailure: string | null;
+  readonly rgb: Rgb | null;
+  readonly monochromeRgb: Rgb | null;
+  readonly cvdRgb: Readonly<Record<Deficiency, Rgb>> | null;
+};
+
+type LitRenderedStateObservation = Omit<RenderedStateObservation, "rgb" | "monochromeRgb" | "cvdRgb"> & {
   readonly rgb: Rgb;
   readonly monochromeRgb: Rgb;
   readonly cvdRgb: Readonly<Record<Deficiency, Rgb>>;
@@ -104,6 +118,15 @@ type ParityEvidence = {
   };
   readonly checks: readonly ParityRecord[];
 };
+
+class MeasuredCheckFailure extends Error {
+  readonly measured: unknown;
+
+  constructor(failure: string, measured: unknown) {
+    super(failure);
+    this.measured = measured;
+  }
+}
 
 const COMMAND = "npm --prefix ui exec playwright test --project=parity";
 const ARTIFACT_FILE = ["dist", "evidence", "parity.json"].join("/");
@@ -262,7 +285,9 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
         checkName,
         renderer,
         status: "FAIL",
-        measured: message(error),
+        measured: error instanceof MeasuredCheckFailure
+          ? { failure: error.message, evidence: error.measured }
+          : message(error),
         threshold: "required measurement completed",
         turnsRed: "the renderer operation or assertion throws",
         commitSha,
@@ -372,41 +397,117 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
     });
   }
 
-  const p3Observations = new Map<ParityRenderer, readonly RenderedStateObservation[]>();
+  const p3Observations = new Map<ParityRenderer, readonly LitRenderedStateObservation[]>();
   const domain = derivedNonNullRenderedStateDomain();
+  const nonHueThreshold = DEFAULT_CALIBRATION.luminance.minimumRenderedNonHueSeparationMicro;
+  const cvdThreshold = DEFAULT_CALIBRATION.luminance.minimumRenderedCvdSeparationMicro;
   for (const renderer of PARITY_RENDERERS) {
-    await record("P3 governed-state separation", renderer, async () => {
-      const observations: RenderedStateObservation[] = [];
+    let observations: RenderedStateObservation[];
+    try {
+      observations = [];
       for (let index = 0; index < domain.length; index += 1) {
         const witness = await invoke<RenderedStatePixelWitness>("renderLegalState", renderer, index);
         const image = await captureRenderer(page, renderer);
-        const rgb = rgbAt(image, witness.point);
-        const monochromeRgb = rgbAt(transformImage(image, monochrome), witness.point);
-        const cvdRgb = Object.fromEntries((Object.keys(CVD_MATRICES) as Deficiency[]).map((deficiency) => [
-          deficiency,
-          rgbAt(transformImage(image, (value) => simulateCvd(value, deficiency)), witness.point),
-        ])) as Readonly<Record<Deficiency, Rgb>>;
-        observations.push({ stateKey: witness.stateKey, targetId: witness.targetId, rgb, monochromeRgb, cvdRgb });
+        let frameLitPixels: number | null = null;
+        let frameLitFloorFailure: string | null = null;
+        try {
+          frameLitPixels = assertLitPixelFloor(image, `P3 ${renderer} ${witness.stateKey} final compositor capture`).litPixels;
+        } catch (error: unknown) {
+          frameLitFloorFailure = message(error);
+        }
+        const sample = governedPixelSampleAt(image, witness.point, witness.devicePixelRatio);
+        const rgb = sample.sampledRgb === null ? null : normalisedRgb(sample.sampledRgb);
+        const monochromeRgb = sample.sampledRgb === null
+          ? null
+          : rgbAtDevice(transformImage(image, monochrome), sample.pointDevice.x, sample.pointDevice.y);
+        const cvdRgb = sample.sampledRgb === null
+          ? null
+          : Object.fromEntries((Object.keys(CVD_MATRICES) as Deficiency[]).map((deficiency) => [
+              deficiency,
+              rgbAtDevice(
+                transformImage(image, (value) => simulateCvd(value, deficiency)),
+                sample.pointDevice.x,
+                sample.pointDevice.y,
+              ),
+            ])) as Readonly<Record<Deficiency, Rgb>>;
+        observations.push({
+          stateKey: witness.stateKey,
+          targetId: witness.targetId,
+          sample,
+          frameLitPixels,
+          frameLitFloorFailure,
+          rgb,
+          monochromeRgb,
+          cvdRgb,
+        });
       }
       assertSameStrings(observations.map((observation) => observation.stateKey), domain.map(renderedStateKey), "P3 observed derived domain");
-      const nonHue = pairwiseMatrix(observations, (observation) => observation.rgb, grayscaleDistanceMicro);
+    } catch (error: unknown) {
+      const captureFailure = error;
+      await record("P3 governed-state separation", renderer, async () => {
+        throw captureFailure;
+      });
+      continue;
+    }
+
+    const litObservations: LitRenderedStateObservation[] = [];
+    const notRunReasons: string[] = [];
+    for (const observation of observations) {
+      try {
+        litObservations.push(requireLitRenderedStateObservation(observation, renderer));
+      } catch (error: unknown) {
+        notRunReasons.push(message(error));
+      }
+    }
+    const controlSample = requiredItem(observations, 0, "P3 field-landing control source").sample;
+    const fieldLandingControl = failingControlOutput(() => assertGovernedPixelSampleLit({
+      ...controlSample,
+      sampledRgb: controlSample.fieldRgb,
+    }, `P3 ${renderer} deliberate field-landing control`));
+    if (notRunReasons.length > 0) {
+      const reason = `P3 ${renderer} has unmeasured governed witnesses: ${notRunReasons.join("; ")}`;
+      await notRun(
+        "P3 governed-state separation",
+        renderer,
+        reason,
+        {
+          everyWitness: "sampled pixel is lit under the established predicate and its frame clears the shared lit-pixel floor",
+          nonHueMinimumMicro: nonHueThreshold,
+          cvdMinimumMicro: cvdThreshold,
+        },
+        "a governed witness is off-capture or lands on the field, or a measured pair is below either unchanged governed threshold",
+        { status: "FAILED_AS_EXPECTED", output: fieldLandingControl },
+        { reason, domain: observations.map(p3ObservationEvidence) },
+      );
+      continue;
+    }
+
+    await record("P3 governed-state separation", renderer, async () => {
+      const nonHue = pairwiseMatrix(litObservations, (observation) => observation.rgb, grayscaleDistanceMicro);
       const cvd = Object.fromEntries((Object.keys(CVD_MATRICES) as Deficiency[]).map((deficiency) => [
         deficiency,
-        pairwiseMatrix(observations, (observation) => observation.cvdRgb[deficiency], rgbDistanceMicro),
+        pairwiseMatrix(litObservations, (observation) => observation.cvdRgb[deficiency], rgbDistanceMicro),
       ])) as Readonly<Record<Deficiency, PairwiseMatrix>>;
-      const nonHueThreshold = DEFAULT_CALIBRATION.luminance.minimumRenderedNonHueSeparationMicro;
-      const cvdThreshold = DEFAULT_CALIBRATION.luminance.minimumRenderedCvdSeparationMicro;
-      assertMatrixAtLeast(nonHue, nonHueThreshold, "P3 non-hue");
-      for (const deficiency of Object.keys(cvd) as Deficiency[]) {
-        assertMatrixAtLeast(cvd[deficiency], cvdThreshold, `P3 ${deficiency}`);
+      const measured = { domain: litObservations.map(p3ObservationEvidence), nonHue, cvd };
+      try {
+        assertMatrixAtLeast(nonHue, nonHueThreshold, "P3 non-hue");
+        for (const deficiency of Object.keys(cvd) as Deficiency[]) {
+          assertMatrixAtLeast(cvd[deficiency], cvdThreshold, `P3 ${deficiency}`);
+        }
+      } catch (error: unknown) {
+        throw new MeasuredCheckFailure(message(error), measured);
       }
-      const p3Control = failingControlOutput(() => assertMatrixAtLeast(nonHue, maximumMatrixValue(nonHue) + 1, "P3 unattainable-threshold control"));
-      p3Observations.set(renderer, observations);
+      const thresholdControl = failingControlOutput(() => assertMatrixAtLeast(nonHue, maximumMatrixValue(nonHue) + 1, "P3 unattainable-threshold control"));
+      p3Observations.set(renderer, litObservations);
       return {
-        measured: { domain: observations.map((observation) => ({ state: observation.stateKey, targetId: observation.targetId, rgb: observation.rgb })), nonHue, cvd },
-        threshold: { nonHueMinimumMicro: nonHueThreshold, cvdMinimumMicro: cvdThreshold },
-        turnsRed: "any pair in the complete derived legal domain is below either unchanged governed threshold",
-        control: { status: "FAILED_AS_EXPECTED", output: p3Control },
+        measured,
+        threshold: {
+          everyWitness: "sampled pixel is lit under the established predicate and its frame clears the shared lit-pixel floor",
+          nonHueMinimumMicro: nonHueThreshold,
+          cvdMinimumMicro: cvdThreshold,
+        },
+        turnsRed: "a governed witness is off-capture or lands on the field, or a measured pair is below either unchanged governed threshold",
+        control: { status: "FAILED_AS_EXPECTED", output: `${fieldLandingControl} | ${thresholdControl}` },
       };
     });
   }
@@ -506,15 +607,23 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
       { reason: `missing ${p6Capability.missingMethods.join(", ")}` },
     );
   } else {
-    await notRun(
-      "P6 camera switch",
-      "r3f-2d",
-      "P6 requires a public GraphRendererHandle world-anchor and layout-pass contract before it can make a live observation",
-      "all live world anchors unchanged; layout pass count unchanged; camera kind round-trips",
-      "any live world anchor moves, layout pass count changes, or camera kind fails to round-trip",
-      { status: "FAILED_AS_EXPECTED", output: p6Control },
-      { reason: "the required world-anchor/layout methods are not declared on GraphRendererHandle" },
-    );
+    await record("P6 camera switch", "r3f-2d", async () => {
+      await invoke<MountedParityWitness>("mountBase", "r3f-2d");
+      const forward = await invoke<FullAppCameraSwitchWitness>("switchFullAppCamera", "r3f-2d", PERSPECTIVE);
+      assertFullAppCameraSwitch(forward, PERSPECTIVE, "P6 forward camera switch");
+      const reverse = await invoke<FullAppCameraSwitchWitness>("switchFullAppCamera", "r3f-2d", ORTHOGRAPHIC);
+      assertFullAppCameraSwitch(reverse, ORTHOGRAPHIC, "P6 reverse camera switch");
+      const layoutControl = failingControlOutput(() => assertFullAppCameraSwitch({
+        ...forward,
+        after: { ...forward.after, layoutPassCount: forward.after.layoutPassCount + 1 },
+      }, PERSPECTIVE, "P6 layout control"));
+      return {
+        measured: { forward, reverse },
+        threshold: "both camera directions preserve every live world anchor and the layout-pass count, and report the requested camera kind",
+        turnsRed: "either camera direction moves an anchor, changes the layout-pass count, or reports a different camera kind",
+        control: { status: "FAILED_AS_EXPECTED", output: `${p6Control} | ${layoutControl}` },
+      };
+    });
   }
 
   for (const renderer of PARITY_RENDERERS) {
@@ -893,11 +1002,62 @@ async function captureRenderer(page: Page, renderer: ParityRenderer): Promise<De
   return decodePng(await page.screenshot({ clip: { x: box.x, y: box.y, width: box.width, height: box.height } }));
 }
 
-function rgbAt(image: DecodedPng, point: { readonly x: number; readonly y: number }): Rgb {
-  const x = Math.max(0, Math.min(image.width - 1, Math.round(point.x * (image.width / 1200))));
-  const y = Math.max(0, Math.min(image.height - 1, Math.round(point.y * (image.height / 800))));
-  const index = ((y * image.width) + x) * 4;
-  return [(image.data[index] ?? 0) / 255, (image.data[index + 1] ?? 0) / 255, (image.data[index + 2] ?? 0) / 255];
+function governedPixelSampleAt(
+  image: DecodedPng,
+  pointCss: { readonly x: number; readonly y: number },
+  devicePixelRatio: number,
+): GovernedPixelSample {
+  const pointDevice = {
+    x: Math.round(pointCss.x * devicePixelRatio),
+    y: Math.round(pointCss.y * devicePixelRatio),
+  };
+  const inCapture = pointDevice.x >= 0
+    && pointDevice.x < image.width
+    && pointDevice.y >= 0
+    && pointDevice.y < image.height;
+  const offset = ((pointDevice.y * image.width) + pointDevice.x) * 4;
+  return {
+    pointCss,
+    pointDevice,
+    capture: { width: image.width, height: image.height },
+    fieldRgb: fieldPixel(image),
+    sampledRgb: inCapture
+      ? [image.data[offset] ?? 0, image.data[offset + 1] ?? 0, image.data[offset + 2] ?? 0]
+      : null,
+  };
+}
+
+function requireLitRenderedStateObservation(
+  observation: RenderedStateObservation,
+  renderer: ParityRenderer,
+): LitRenderedStateObservation {
+  assertGovernedPixelSampleLit(observation.sample, `P3 ${renderer} ${observation.stateKey}`);
+  if (observation.frameLitFloorFailure !== null) {
+    throw new Error(`${observation.stateKey}: ${observation.frameLitFloorFailure}`);
+  }
+  if (observation.rgb === null || observation.monochromeRgb === null || observation.cvdRgb === null) {
+    throw new Error(`P3 ${renderer} ${observation.stateKey} has no in-capture RGB after its lit-pixel assertion`);
+  }
+  return observation as LitRenderedStateObservation;
+}
+
+function p3ObservationEvidence(observation: RenderedStateObservation): unknown {
+  return {
+    state: observation.stateKey,
+    targetId: observation.targetId,
+    pointCss: observation.sample.pointCss,
+    pointDevice: observation.sample.pointDevice,
+    capture: observation.sample.capture,
+    fieldRgb: observation.sample.fieldRgb,
+    sampledRgb: observation.sample.sampledRgb,
+    rgb: observation.rgb,
+    frameLitPixels: observation.frameLitPixels,
+    frameLitFloorFailure: observation.frameLitFloorFailure,
+  };
+}
+
+function normalisedRgb(rgb: readonly [number, number, number]): Rgb {
+  return [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
 }
 
 function transformImage(image: DecodedPng, transform: (rgb: Rgb) => Rgb): DecodedPng {

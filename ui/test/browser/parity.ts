@@ -45,6 +45,7 @@ export type RenderedStatePixelWitness = {
   readonly stateKey: string;
   readonly targetId: string;
   readonly point: { readonly x: number; readonly y: number };
+  readonly devicePixelRatio: number;
 };
 
 /** This records a node picked at its renderer-projected anchor and does not reuse another renderer's projection. */
@@ -381,7 +382,13 @@ export async function installParityPage(): Promise<void> {
         if (footprint === undefined) {
           throw new Error(`P3 ${renderer} has no mounted node footprint for ${targetId}`);
         }
-        return { renderer, stateKey: renderedStateKey(carrier), targetId, point: footprint.viewportCenter };
+        return {
+          renderer,
+          stateKey: renderedStateKey(carrier),
+          targetId,
+          point: footprint.viewportCenter,
+          devicePixelRatio: window.devicePixelRatio,
+        };
       },
       async prepareInteraction(renderer: ParityRenderer): Promise<InteractionWitness> {
         const snapshot = await mount(renderer);
@@ -438,8 +445,13 @@ export async function installParityPage(): Promise<void> {
       },
       async nodePickSamples(renderer: ParityRenderer, count: number): Promise<readonly NodePickWitness[]> {
         const active = current(renderer);
+        const footprints = new Map(active.handle.readNodeFootprintWitnesses().map((footprint) => [footprint.id, footprint]));
         return active.graph.nodes.slice(0, count).map((node) => {
-          const point = active.handle.graphToViewport(node.visual.anchor);
+          const footprint = footprints.get(node.id);
+          if (footprint === undefined) {
+            throw new Error(`P5 ${renderer} has no mounted footprint for fixed target ${node.id}`);
+          }
+          const point = footprint.viewportCenter;
           return { id: node.id, point, pickedId: active.handle.pickNodeAtPosition(point) };
         });
       },
