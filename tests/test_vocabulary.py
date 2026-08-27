@@ -98,12 +98,32 @@ FORBIDDEN_RENDERER_FRAGMENTS = (
 UNDETECTED_VOCABULARY_SHAPES = (
     "a Python enum built with the functional Enum(\"Name\", [...]) call form rather than a class statement",
     "an Enum class nested inside another class body rather than declared at module level",
+    "a module-level class declared inside an `if:` or `try:` block rather than directly in the module body",
     "a TypeScript string-literal union assembled by generic type-level computation (mapped types, "
     "template literal types, conditional types) rather than written out as literals",
     "a closed vocabulary re-exported under a second name without redeclaring its members",
+    "a TypeScript closed vocabulary declared as `export enum X { ... }` or `export const enum X { ... }` "
+    "rather than a string-literal union",
+    "a TypeScript closed vocabulary declared as `export const X: readonly T[] = [...]` rather than a "
+    "string-literal union or a typeof-keyof shape",
+    "a TypeScript closed vocabulary declared as `export const X = [...] as const` with no accompanying "
+    "type alias",
     "the renderer-name denylist is a finite fragment list; a renderer technology named outside it "
     "passes unflagged",
+    "the excluded-vocabulary denylist is a finite five-literal list; the document's prose excludes a "
+    "broader class of interpretive metaphor that a literal outside the five is not checked against",
 )
+
+#: The commit this capability's documentation and checker work began from. The
+#: structural-change check diffs against this fixed point rather than a moving
+#: branch tip, so that a later commit cannot silently widen what "no structural
+#: change" is measured against.
+CAPABILITY_BASE_SHA = "789982bae4d74d04ac8b07200af00cec00c5983a"
+
+#: Every closed-vocabulary base the standard ``enum`` module exports. A class
+#: deriving from any of these, under an alias or dotted (``enum.StrEnum``), is
+#: a closed vocabulary the technical table must document — not only ``Enum``.
+_ENUM_BASE_NAMES = frozenset({"Enum", "StrEnum", "IntEnum", "IntFlag", "Flag", "ReprEnum"})
 
 #: Mirrors the public-safety rooted-path rule: a rooted path opened by
 #: whitespace, punctuation or the start of a line. A repository-relative path
@@ -111,11 +131,17 @@ UNDETECTED_VOCABULARY_SHAPES = (
 _ROOTED_PATH_PATTERN = re.compile(r"""(?:^|[\s(\["'<>=,;])/[\w.\-]+(?:/[\w.\-]+)+""", re.MULTILINE)
 
 _BACKTICK_TERM = re.compile(r"`([^`]+)`")
-_EXPORT_TYPE = re.compile(r"^export type (\w+) =", re.MULTILINE)
+#: Tolerates arbitrary whitespace around ``=``, including none, so
+#: ``export type Tight="a"|"b";`` is recognised alongside the spaced form.
+_EXPORT_TYPE = re.compile(r"^export type (\w+)\s*=\s*", re.MULTILINE)
 #: One string literal, either quoting style.
 _STRING_LITERAL = r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\''
 _STRING_LITERAL_RE = re.compile(_STRING_LITERAL)
 _STRING_UNION_BODY = re.compile(rf"\|?\s*(?:{_STRING_LITERAL})\s*(?:\|\s*(?:{_STRING_LITERAL})\s*)*")
+#: Stripped from a union body before it is parsed, so a comment sitting
+#: between two literals does not defeat the parse.
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_LINE_COMMENT = re.compile(r"//[^\n]*")
 #: ``export const OBJ = {...} as const;`` — the object half of the
 #: ``typeof OBJ[keyof typeof OBJ]`` closed-vocabulary shape.
 _EXPORT_CONST_OBJECT_AS_CONST = re.compile(r"^export const (\w+) = \{.*?\}\s*as const;", re.MULTILINE | re.DOTALL)
@@ -134,14 +160,17 @@ _QUALIFIED_MEMBER = re.compile(r"^(\w+)\.(\w+)$")
 
 #: The shapes a technical-table term's ``Defined at`` line must take to count
 #: as the term's own definition, not merely a line that mentions it. ``{t}``
-#: is substituted with the escaped term.
+#: is substituted with the escaped term. Anchored at the start of the
+#: declaration rather than merely as a word boundary anywhere on the line —
+#: an unanchored ``\bexport const {t}\b`` matched several unrelated lines in
+#: the same file (``Organization`` matched three, ``LodBand`` four). Leading
+#: whitespace is tolerated only for the ``Final`` form, which may sit as an
+#: attribute inside an indented class body; the export/class forms are
+#: top-level declarations and require column zero.
 _DEFINITION_PATTERN_TEMPLATES = (
-    r"\bclass {t}[(:]",
-    r"\bexport type {t} =",
-    r"\bexport const {t}\b",
-    r"\bexport interface {t}\b",
-    r"\b{t}: Final\b",
-    r"\b{t} = ",
+    r"^(export )?(type|const|interface|class) {t}\b",
+    r"^class {t}[(:]",
+    r"^\s*{t}: Final\b",
 )
 
 
@@ -323,29 +352,35 @@ def _tracked_files(repo_root: Path) -> frozenset[str]:
 
 
 def _enum_import_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
-    """Names this module binds to ``enum.Enum``: direct-import aliases (``from enum
-    import Enum as E``) and whole-module aliases (``import enum as e``), resolved
-    from the module's own imports rather than assumed to be the literal word "Enum".
+    """Names this module binds to one of the closed-vocabulary bases the standard
+    ``enum`` module exports (``Enum``, ``StrEnum``, ``IntEnum``, ``IntFlag``,
+    ``Flag``, ``ReprEnum``): direct-import aliases (``from enum import StrEnum as
+    SE``) and whole-module aliases (``import enum as e``), resolved from the
+    module's own imports rather than assumed to be the literal word "Enum".
     """
-    enum_aliases: set[str] = set()
+    base_aliases: set[str] = set()
     module_aliases: set[str] = set()
     for node in tree.body:
         if isinstance(node, ast.ImportFrom) and node.module == "enum":
             for alias in node.names:
-                if alias.name == "Enum":
-                    enum_aliases.add(alias.asname or alias.name)
+                if alias.name in _ENUM_BASE_NAMES:
+                    base_aliases.add(alias.asname or alias.name)
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "enum":
                     module_aliases.add(alias.asname or alias.name)
-    return enum_aliases, module_aliases
+    return base_aliases, module_aliases
 
 
 def _base_names_enum(base: ast.expr, enum_aliases: set[str], module_aliases: set[str]) -> bool:
     if isinstance(base, ast.Name):
         return base.id in enum_aliases
     if isinstance(base, ast.Attribute):
-        return isinstance(base.value, ast.Name) and base.value.id in module_aliases and base.attr == "Enum"
+        return (
+            isinstance(base.value, ast.Name)
+            and base.value.id in module_aliases
+            and base.attr in _ENUM_BASE_NAMES
+        )
     return False
 
 
@@ -390,9 +425,10 @@ def _module_level_enum_names(repo_root: Path) -> set[str]:
 def _string_union_literal_values(body: str) -> list[str] | None:
     """The ordered literal values of a string-literal union body, or ``None`` if
     ``body`` is not one. Accepts either quoting style and one enclosing layer
-    of parentheses.
+    of parentheses. Block and line comments are stripped first, so a comment
+    sitting between two literals does not defeat the parse.
     """
-    stripped = body.strip()
+    stripped = _LINE_COMMENT.sub("", _BLOCK_COMMENT.sub("", body)).strip()
     if stripped.startswith("(") and stripped.endswith(")"):
         candidate = stripped[1:-1].strip()
     else:
@@ -507,35 +543,192 @@ def technical_term_resolution_offences(text: str, repo_root: Path) -> list[str]:
     return offences
 
 
+#: Identifiers this run's calls to ``all_reference_offences`` could not check
+#: for meaning because their scope carried no backticked identifier at all —
+#: the weaker, existence-only case, made visible rather than left silent.
+#: Cleared and repopulated on every call.
+REFERENCES_CHECKED_BY_EXISTENCE_ONLY: list[str] = []
+
+#: Backticked spans that look like an identifier — a bare word or a dotted
+#: qualified name such as ``EnumType.member`` — rather than a path (paths
+#: always contain ``/`` and never match ``\w``) or a phrase of prose.
+_IDENTIFIER_BACKTICK = re.compile(r"`([\w.]+)`")
+
+
+def _reference_scope_text(text: str, match_start: int) -> str:
+    """The table row, bullet, or paragraph containing the reference that starts
+    at ``match_start`` — the text a reference's cited line must agree with.
+
+    A table row and a bullet are each exactly one physical line in this
+    document, so the line containing the match is the row or the bullet.
+    Ordinary prose is grouped with its neighbouring non-blank lines up to the
+    nearest blank line, table row, bullet, heading or section marker, so a
+    paragraph that does span more than one physical line is still handled.
+    """
+    lines = text.splitlines(keepends=True)
+    offset = 0
+    line_index = None
+    for index, line in enumerate(lines):
+        if offset <= match_start < offset + len(line):
+            line_index = index
+            break
+        offset += len(line)
+    if line_index is None:
+        return ""
+    stripped = lines[line_index].strip()
+    if stripped.startswith("|") or stripped.startswith("- "):
+        return lines[line_index]
+    boundary = ("|", "- ", "<!--", "#")
+    start = line_index
+    while start > 0:
+        candidate = lines[start - 1].strip()
+        if not candidate or candidate.startswith(boundary):
+            break
+        start -= 1
+    end = line_index
+    while end + 1 < len(lines):
+        candidate = lines[end + 1].strip()
+        if not candidate or candidate.startswith(boundary):
+            break
+        end += 1
+    return "".join(lines[start : end + 1])
+
+
+def _scope_identifiers(scope: str) -> set[str]:
+    """The backticked identifiers a reference sits beside.
+
+    A qualified name contributes its final segment as well as itself.
+    ``Verdict.DEFER`` names the member declared as ``DEFER = "defer"``, and
+    the line that declares it carries only the bare member — so requiring the
+    qualified spelling to appear verbatim would reject the one line in the
+    tree that is unambiguously right. Both spellings are accepted, which
+    narrows what a reference may point at rather than widening it: an
+    unrelated line still contains neither.
+    """
+    identifiers: set[str] = set()
+    for match in _IDENTIFIER_BACKTICK.finditer(scope):
+        identifier = match.group(1)
+        identifiers.add(identifier)
+        head, separator, member = identifier.rpartition(".")
+        if separator and head and member:
+            identifiers.add(member)
+    return identifiers
+
+
 def all_reference_offences(text: str, repo_root: Path) -> list[str]:
     """Every backticked ``path:line`` reference anywhere in the document — not
     only the technical table's ``Defined at`` column — resolves to a tracked,
     existing, in-range, non-blank line. This does not require the referenced
     line to define the cited term: references outside the technical table
     point at usages and error classes as often as at definitions.
+
+    Existence is not the whole claim a reference makes, though: a reference
+    sits in a table row, a bullet or a paragraph that names what it is
+    evidence for, and the cited line is required to actually contain one of
+    the backticked identifiers named alongside it in that same scope. A
+    reference can drift to an unrelated but otherwise valid line and an
+    existence-only check would never notice; this would. When a reference's
+    scope carries no backticked identifier at all, there is nothing to check
+    it against, and the weaker existence-only check is the whole of it — that
+    fallback is recorded in ``REFERENCES_CHECKED_BY_EXISTENCE_ONLY`` rather
+    than silently accepted as equivalent to the stronger check.
     """
+    REFERENCES_CHECKED_BY_EXISTENCE_ONLY.clear()
     tracked = _tracked_files(repo_root)
     offences = []
-    seen: set[tuple[str, str]] = set()
+    resolved: dict[tuple[str, str], str | None] = {}
     for match in _ANY_PATH_LINE_REFERENCE.finditer(text):
         path_part, line_part = match.group(1), match.group(2)
-        if (path_part, line_part) in seen:
+        key = (path_part, line_part)
+        if key not in resolved:
+            resolved[key] = _resolve_reference_source_line(path_part, line_part, tracked, repo_root, offences)
+        src_line = resolved[key]
+        if src_line is None:
             continue
-        seen.add((path_part, line_part))
-        if path_part not in tracked:
-            offences.append(f"{path_part}:{line_part} is not a git-tracked file")
+        identifiers = _scope_identifiers(_reference_scope_text(text, match.start()))
+        if not identifiers:
+            REFERENCES_CHECKED_BY_EXISTENCE_ONLY.append(f"{path_part}:{line_part}")
             continue
-        full_path = repo_root / path_part
-        if not full_path.is_file():
-            offences.append(f"{path_part}:{line_part} does not exist on disk")
-            continue
-        lines = full_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        line_number = int(line_part)
-        if not (1 <= line_number <= len(lines)):
-            offences.append(f"{path_part}:{line_part} has {len(lines)} lines, cannot resolve line {line_number}")
-            continue
-        if not lines[line_number - 1].strip():
-            offences.append(f"{path_part}:{line_part} is blank")
+        if not any(identifier in src_line for identifier in identifiers):
+            offences.append(
+                f"{path_part}:{line_part} cites a line containing none of {sorted(identifiers)}: {src_line!r}"
+            )
+    return offences
+
+
+def _resolve_reference_source_line(
+    path_part: str, line_part: str, tracked: frozenset[str], repo_root: Path, offences: list[str]
+) -> str | None:
+    """The tracked, existing, in-range, non-blank source line a reference cites,
+    or ``None`` after recording exactly the offence that disqualified it.
+    """
+    if path_part not in tracked:
+        offences.append(f"{path_part}:{line_part} is not a git-tracked file")
+        return None
+    full_path = repo_root / path_part
+    if not full_path.is_file():
+        offences.append(f"{path_part}:{line_part} does not exist on disk")
+        return None
+    lines = full_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    line_number = int(line_part)
+    if not (1 <= line_number <= len(lines)):
+        offences.append(f"{path_part}:{line_part} has {len(lines)} lines, cannot resolve line {line_number}")
+        return None
+    src_line = lines[line_number - 1]
+    if not src_line.strip():
+        offences.append(f"{path_part}:{line_part} is blank")
+        return None
+    return src_line
+
+
+#: The trees a mapped technical term is searched for a reference in, as
+#: ``(directory, glob)`` pairs relative to the repository root.
+_MAPPED_TERM_SOURCE_TREES = (
+    ("src/nous_os", "*.py"),
+    ("ui/src", "*.ts"),
+    ("tests", "*.py"),
+)
+
+
+def mapped_term_reference_offences(text: str, repo_root: Path) -> list[str]:
+    """Every technical term an epistemic row maps to is referenced, by exact
+    identifier, from more than one file — the check behind the epistemic
+    register's own claim that an adopted term's boundary "is referenced from
+    more than one place." A term whose only occurrence is the line the
+    technical table cites as its own definition is not referenced from
+    anywhere else at all, so that line is excluded from the count.
+    """
+    defined_at = {row["term"]: row["defined_at"] for row in technical_table(text)}
+    mapped_terms: set[str] = set()
+    for row in epistemic_table(text):
+        mapped_terms.update(row["technical_terms"])
+    offences = []
+    for term in sorted(mapped_terms):
+        pattern = re.compile(rf"\b{re.escape(term)}\b")
+        excluded_path, excluded_line = None, None
+        defined_cell = defined_at.get(term)
+        if defined_cell:
+            path_part, sep, line_part = defined_cell.rpartition(":")
+            if sep and line_part.isdigit():
+                excluded_path, excluded_line = path_part, int(line_part)
+        files_referenced: set[str] = set()
+        for directory, glob in _MAPPED_TERM_SOURCE_TREES:
+            for source_path in sorted((repo_root / directory).rglob(glob)):
+                if "__pycache__" in source_path.parts:
+                    continue
+                relative = str(source_path.relative_to(repo_root))
+                source_lines = source_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                for line_number, source_line in enumerate(source_lines, start=1):
+                    if relative == excluded_path and line_number == excluded_line:
+                        continue
+                    if pattern.search(source_line):
+                        files_referenced.add(relative)
+                        break
+        if len(files_referenced) < 2:
+            offences.append(
+                f"{term}: referenced from {len(files_referenced)} file(s) {sorted(files_referenced)}, "
+                "fewer than the two required"
+            )
     return offences
 
 
@@ -682,6 +875,28 @@ def candidate_epistemic_mismatch_offences(text: str) -> list[str]:
     return offences
 
 
+def verdict_disagreement_offences(text: str) -> list[str]:
+    """A candidate block's own ``Verdict`` bullet agrees with the epistemic
+    register's verdict for the same term. Comparing term-name sets alone, as
+    ``candidate_epistemic_mismatch_offences`` does, lets a candidate record
+    flip to ``ADOPT`` while the table still says ``REJECT`` and stay green.
+    """
+    epistemic_verdicts = {row["term"]: row["verdict"] for row in epistemic_table(text)}
+    offences = []
+    for block in candidate_blocks(text):
+        term = block["term"]
+        table_verdict = epistemic_verdicts.get(term)
+        if table_verdict is None:
+            continue
+        candidate_verdict = block["values"].get("Verdict", "").strip()
+        if candidate_verdict != table_verdict:
+            offences.append(
+                f"{term}: candidate verdict {candidate_verdict!r} disagrees with the epistemic "
+                f"register's verdict {table_verdict!r}"
+            )
+    return offences
+
+
 def unmapped_technical_term_offences(text: str) -> list[str]:
     technical_terms = {row["term"] for row in technical_table(text)}
     mapped: set[str] = set()
@@ -738,6 +953,46 @@ def canonical_layer_excluded_vocabulary_offences(repo_root: Path) -> list[str]:
     return offences
 
 
+def structural_change_offences(
+    repo_root: Path, base_sha: str = CAPABILITY_BASE_SHA, head: str = "HEAD"
+) -> list[str]:
+    """Every path under ``src/``, ``ui/src/``, ``ui/test/`` or ``fixtures/`` that
+    differs between ``base_sha`` and ``head`` — the check behind the document's
+    own claim that "adoption changed nothing." An empty diff is the only
+    passing result.
+
+    A check that cannot run and quietly returns no offences is worse than no
+    check: it would report a green build for a comparison nobody made. If
+    ``base_sha`` is not an ancestor of ``head``, or git itself is unavailable,
+    that is an offence, not a silent pass.
+    """
+    try:
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", base_sha, head],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f"git is unavailable to check structural change: {exc}"]
+    if ancestry.returncode != 0:
+        return [
+            f"{base_sha} is not an ancestor of {head} in {repo_root}; the structural-change diff "
+            "cannot be trusted, so it is refused rather than reported empty"
+        ]
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--name-only", f"{base_sha}..{head}", "--", "src/", "ui/src/", "ui/test/", "fixtures/"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError, subprocess.CalledProcessError) as exc:
+        return [f"git is unavailable to check structural change: {exc}"]
+    return [f"structural change since {base_sha}: {path}" for path in diff.stdout.splitlines() if path]
+
+
 def renderer_named_adopted_term_offences(text: str) -> list[str]:
     offences = []
     for row in epistemic_table(text):
@@ -771,6 +1026,12 @@ def test_every_technical_term_resolves() -> None:
 def test_every_reference_resolves() -> None:
     text = _document_text()
     offences = all_reference_offences(text, REPO_ROOT)
+    assert not offences, "\n".join(offences)
+
+
+def test_mapped_terms_are_referenced_from_more_than_one_place() -> None:
+    text = _document_text()
+    offences = mapped_term_reference_offences(text, REPO_ROOT)
     assert not offences, "\n".join(offences)
 
 
@@ -810,6 +1071,12 @@ def test_every_candidate_appears_in_the_epistemic_register() -> None:
     assert not offences, "\n".join(offences)
 
 
+def test_candidate_verdict_agrees_with_the_epistemic_register() -> None:
+    text = _document_text()
+    offences = verdict_disagreement_offences(text)
+    assert not offences, "\n".join(offences)
+
+
 def test_no_technical_term_is_silently_unmapped() -> None:
     text = _document_text()
     offences = unmapped_technical_term_offences(text)
@@ -842,6 +1109,11 @@ def test_adopted_terms_name_no_renderer() -> None:
 def test_the_document_carries_no_rooted_path() -> None:
     text = _document_text()
     offences = rooted_path_offences(text)
+    assert not offences, "\n".join(offences)
+
+
+def test_adoption_changed_no_structure() -> None:
+    offences = structural_change_offences(REPO_ROOT)
     assert not offences, "\n".join(offences)
 
 
@@ -1006,3 +1278,96 @@ def test_the_document_carries_no_rooted_path_detects_a_rooted_path() -> None:
     )
     offences = rooted_path_offences(text)
     assert offences, "the control sample should have produced an offence"
+
+
+def test_mapped_terms_are_referenced_from_more_than_one_place_detects_a_single_reference() -> None:
+    text = _fixture_text("epistemic_single_reference_term.md")
+    offences = mapped_term_reference_offences(text, REPO_ROOT)
+    assert offences, "the control fixture should have produced an offence"
+
+
+def test_candidate_verdict_agrees_with_the_epistemic_register_detects_a_flip() -> None:
+    text = _fixture_text("candidates_verdict_disagreement.md")
+    offences = verdict_disagreement_offences(text)
+    assert offences, "the control fixture should have produced an offence"
+
+
+def test_every_reference_resolves_detects_a_meaning_mismatch() -> None:
+    # A candidate or defect-table reference can drift to an unrelated but
+    # otherwise valid line and an existence-only check would never notice.
+    # This fixture cites a real, non-blank line that simply does not contain
+    # the identifier named alongside the reference.
+    text = _fixture_text("reference_meaning_mismatch.md")
+    offences = all_reference_offences(text, REPO_ROOT)
+    assert offences, "the control fixture should have produced an offence"
+
+
+def test_every_reference_resolves_records_the_existence_only_fallback() -> None:
+    # A reference with no backticked identifier anywhere in its scope has
+    # nothing to check its meaning against, so it falls back to the existence
+    # check alone — and that fallback must be recorded, not silently treated
+    # as equivalent to the stronger check.
+    text = _fixture_text("reference_existence_only_fallback.md")
+    offences = all_reference_offences(text, REPO_ROOT)
+    assert not offences, "the reference is real and should resolve on existence alone"
+    assert REFERENCES_CHECKED_BY_EXISTENCE_ONLY == ["src/nous_os/canonical.py:42"]
+
+
+def _run_git(arguments: list[str], cwd: Path) -> str:
+    return subprocess.run(["git", *arguments], cwd=cwd, capture_output=True, text=True, check=True).stdout
+
+
+def _init_scratch_repo(repo: Path) -> None:
+    repo.mkdir()
+    _run_git(["init", "-q"], repo)
+    _run_git(["config", "user.email", "scratch@localhost"], repo)
+    _run_git(["config", "user.name", "scratch"], repo)
+
+
+def test_structural_change_offences_detects_a_real_diff(tmp_path: Path) -> None:
+    repo = tmp_path / "diff_repo"
+    _init_scratch_repo(repo)
+    source = repo / "src"
+    source.mkdir()
+    (source / "example.py").write_text("value = 1\n", encoding="utf-8")
+    _run_git(["add", "."], repo)
+    _run_git(["commit", "-q", "-m", "base"], repo)
+    base_sha = _run_git(["rev-parse", "HEAD"], repo).strip()
+    (source / "example.py").write_text("value = 2\n", encoding="utf-8")
+    _run_git(["add", "."], repo)
+    _run_git(["commit", "-q", "-m", "structural change"], repo)
+    offences = structural_change_offences(repo, base_sha=base_sha, head="HEAD")
+    assert offences, "the control repository's real diff should have produced an offence"
+
+
+def test_structural_change_offences_detects_a_non_ancestor_base(tmp_path: Path) -> None:
+    repo = tmp_path / "non_ancestor_repo"
+    _init_scratch_repo(repo)
+    (repo / "README.md").write_text("root\n", encoding="utf-8")
+    _run_git(["add", "."], repo)
+    _run_git(["commit", "-q", "-m", "root"], repo)
+    base_sha = _run_git(["rev-parse", "HEAD"], repo).strip()
+    _run_git(["checkout", "-q", "--orphan", "unrelated"], repo)
+    _run_git(["rm", "-rf", "-q", "."], repo)
+    (repo / "OTHER.md").write_text("other\n", encoding="utf-8")
+    _run_git(["add", "."], repo)
+    _run_git(["commit", "-q", "-m", "unrelated root"], repo)
+    offences = structural_change_offences(repo, base_sha=base_sha, head="HEAD")
+    assert offences, "a base that is not an ancestor of HEAD must be an offence, never a silent pass"
+
+
+def test_module_level_enum_names_detects_every_closed_vocabulary_base() -> None:
+    # The old base test recognised only the literal word "Enum". Every
+    # closed-vocabulary base the standard `enum` module exports — StrEnum,
+    # IntEnum, IntFlag, Flag, ReprEnum — plain or dotted, must be recognised.
+    names = _module_level_enum_names(FIXTURE_DIR / "python_scanner_shapes")
+    expected = {"PlainStrEnum", "PlainIntEnum", "PlainIntFlag", "PlainFlag", "PlainReprEnum", "DottedStrEnum"}
+    assert expected <= names, f"expected {expected} within {names}"
+
+
+def test_module_level_string_union_names_detects_tight_spacing_and_a_comment() -> None:
+    # `export type Tight="a"|"b";` has no whitespace around `=`, and a union
+    # body containing `/* comment */` between literals used to fail to parse.
+    names = _module_level_string_union_names(FIXTURE_DIR / "ts_scanner_shapes")
+    expected = {"TightSpacing", "CommentedUnion"}
+    assert expected <= names, f"expected {expected} within {names}"
