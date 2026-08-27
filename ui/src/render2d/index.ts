@@ -5,7 +5,10 @@ import { parseColor } from "sigma/utils";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { ORTHOGRAPHIC } from "#engine/camera-kind.ts";
+import type { CameraKind } from "#engine/camera-kind.ts";
 import type { Coordinates, DerivedValue, VisualGraph } from "#engine/contract.ts";
+import type { WorldAnchorWitness } from "#engine/renderer-handle.ts";
+import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
 import { createFilamentProgram, FilamentProgram } from "#render2d/filament-program.ts";
@@ -109,6 +112,12 @@ export type RenderHandle = {
   readRelationGeometryWitnesses(): readonly RenderRelationGeometryWitness[];
   /** This reports node and relation ids from mounted Sigma state and does not read the render model. */
   readSurfaceWitness(): RenderSurfaceWitness;
+  /** This reports world anchors from MOUNTED renderer state and does not read the model that fed it. */
+  readWorldAnchorWitnesses(): readonly WorldAnchorWitness[];
+  /** This counts layout passes this handle has run since mount and does not run one. */
+  readLayoutPassCount(): number;
+  /** This names the camera this renderer draws through and does not offer to change it. */
+  readonly cameraKind: CameraKind;
   /** This stacks two live programs for one relation, renders them, and restores the single-program pipeline. */
   proveStackedMaterialControlRejects(): StackedMaterialControlWitness;
   /** This returns the node the mounted renderer itself picks at one viewport position. */
@@ -149,6 +158,9 @@ export function mount(
     : createVisualState(visualGraph, initialVisualState);
   const activeOptions = resolveRenderOptions(suppliedState === undefined ? options : renderOptionsForVisualState(options, suppliedState));
   const model = buildRenderModel(visualGraph, activeOptions);
+  // Incremented where layout is actually resolved, so the number is a record of what ran rather
+  // than a literal describing what is expected to have run.
+  const layoutPasses = 1;
   const calibration = activeOptions.calibration ?? DEFAULT_CALIBRATION;
   const baseNodeAttributes = new Map<string, RenderNodeAttributes>(
     model.graph.nodes().map((id) => [id, model.graph.getNodeAttributes(id)]),
@@ -316,6 +328,22 @@ export function mount(
     readRelationGeometryWitnesses(): readonly RenderRelationGeometryWitness[] {
       return liveRelationGeometryWitnesses(sigma, geometryBindings);
     },
+    // Read from the graph Sigma is actually holding, not from `model.anchors`, so a parity check
+    // asking whether a camera change moved an anchor is answered by the mounted renderer rather
+    // than by the model that fed it — comparing a model with itself would pass forever.
+    readWorldAnchorWitnesses(): readonly WorldAnchorWitness[] {
+      return model.graph.nodes().map((id) => {
+        const attributes = model.graph.getNodeAttributes(id) as { readonly x: number; readonly y: number };
+        return { id, position: { x: attributes.x, y: attributes.y, z: 0 } };
+      });
+    },
+    // Sigma runs layout once, at mount, and has no camera change that could run another. The count
+    // is therefore a constant here — and it is reported rather than omitted, because a parity check
+    // needs the same question answered by every renderer to mean anything.
+    readLayoutPassCount(): number {
+      return layoutPasses;
+    },
+    cameraKind: ORTHOGRAPHIC,
     readSurfaceWitness(): RenderSurfaceWitness {
       return liveSurfaceWitness(sigma);
     },
@@ -862,8 +890,12 @@ function boundedPermille(value: number, calibration: CalibrationProfile): number
   return Math.max(0, Math.min(permilleScale(calibration), value));
 }
 
-function permilleScale(calibration: CalibrationProfile): number {
-  return calibration.morphology.stellar.opacityPermille;
+function permilleScale(_calibration: CalibrationProfile): number {
+  // Was `calibration.morphology.stellar.opacityPermille`, which happens to hold the permille base
+  // and is therefore the right value for entirely the wrong reason: restyling a morphology's
+  // opacity would silently move the base every permille quantity in this file is expressed
+  // against. The scale is a representation unit, not a tuneable one, and now reads as one.
+  return SCENE_PERMILLE_SCALE;
 }
 
 /** This formats one resolved token for the canvas and does not establish an alpha policy. */

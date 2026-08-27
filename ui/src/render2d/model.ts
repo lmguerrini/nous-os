@@ -1,6 +1,13 @@
 import { MultiDirectedGraph } from "graphology";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
+// The governed RENDERED composition is NOT resolved here. It lives in the shared scene layer, which
+// composes the two axes of a relation's carrier positionally instead of averaging them: the local
+// version collapsed nine legal combinations onto five values, so two elements in different semantic
+// states drew byte-identical. Importing it is how this renderer inherits that repair rather than
+// carrying a second copy of the arithmetic that would drift from it.
+import { renderedStateToken } from "#scene/rendered-state.ts";
 import { assertEngineAccessTrace, assertVisualGraphFieldRegister, createEngineGraphView } from "#engine/contract.ts";
 import type { Coordinates, DerivedValue, EngineAccessTrace, RenderedState, RenderedStateCarrier, VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
@@ -419,59 +426,6 @@ function nodeColorForMaterial(
   return tokenColor(renderedStateToken(nodeTokenForMaterial(tokens, material, resolved, calibration), rendered, calibration), material.opacityPermille, calibration);
 }
 
-/** This applies the bounded governed RENDERED material delta and does not alter hue, opacity, topology-derived prominence, or node mass. */
-function renderedStateToken(
-  token: OklchToken,
-  rendered: RenderedStateCarrier,
-  calibration: CalibrationProfile,
-): OklchToken {
-  if (rendered === null) {
-    return token;
-  }
-  let total = 0;
-  for (let index = 0; index < rendered.length; index += 1) {
-    const state = rendered[index];
-    if (state === undefined) {
-      throw new TypeError("renderer governed state carrier is incomplete");
-    }
-    total += renderedStateLightnessDelta(state, calibration);
-  }
-  const delta = Math.round(total / rendered.length);
-  return {
-    ...token,
-    lightnessPermille: Math.max(0, Math.min(permilleScale(calibration), token.lightnessPermille + delta)),
-  };
-}
-
-/** This reads one calibrated RENDERED material delta and does not supply a renderer-local semantic literal. */
-function renderedStateLightnessDelta(state: RenderedState, calibration: CalibrationProfile): number {
-  if (state.enumType === "TemporalDisposition") {
-    if (state.member === "established") {
-      return calibration.renderedState.temporalEstablishedLightnessDeltaPermille;
-    }
-    if (state.member === "excluded") {
-      return calibration.renderedState.temporalExcludedLightnessDeltaPermille;
-    }
-    return calibration.renderedState.temporalUndeterminedLightnessDeltaPermille;
-  }
-  if (state.enumType === "BridgeDisposition") {
-    if (state.member === "accepted") {
-      return calibration.renderedState.bridgeAcceptedLightnessDeltaPermille;
-    }
-    if (state.member === "rejected") {
-      return calibration.renderedState.bridgeRejectedLightnessDeltaPermille;
-    }
-    return calibration.renderedState.bridgeUndeterminedLightnessDeltaPermille;
-  }
-  if (state.member === "explicit") {
-    return calibration.renderedState.epistemicExplicitLightnessDeltaPermille;
-  }
-  if (state.member === "derived") {
-    return calibration.renderedState.epistemicDerivedLightnessDeltaPermille;
-  }
-  return calibration.renderedState.epistemicSpeculativeLightnessDeltaPermille;
-}
-
 /** This resolves the node token in OKLCH and does not convert it to renderer bytes. */
 export function nodeTokenForMaterial(
   tokens: TokenMap,
@@ -796,8 +750,12 @@ function namedCoefficients<const Values extends readonly string[]>(...values: Va
 }
 
 /** This obtains the pinned scaled-integer base and does not introduce a renderer-local tuning number. */
-function permilleScale(calibration: CalibrationProfile): number {
-  return calibration.morphology.stellar.opacityPermille;
+function permilleScale(_calibration: CalibrationProfile): number {
+  // Was `calibration.morphology.stellar.opacityPermille`, which happens to hold the permille base
+  // and is therefore the right value for entirely the wrong reason: restyling a morphology's
+  // opacity would silently move the base every permille quantity in this file is expressed
+  // against. The scale is a representation unit, not a tuneable one, and now reads as one.
+  return SCENE_PERMILLE_SCALE;
 }
 
 /** This turns elapsed time into calibrated path distance and does not schedule continuous movement. */

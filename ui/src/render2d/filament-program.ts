@@ -4,6 +4,7 @@ import type { EdgeDisplayData, NodeDisplayData, RenderParams } from "sigma/types
 import type { InstancedProgramDefinition, ProgramInfo } from "sigma/rendering";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { liveFilamentGeometry } from "#render2d/geometry.ts";
+import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 
 const FILAMENT_VERTEX_DATA = [[0, 1], [0, -1], [1, 1], [0, -1], [1, 1], [1, -1]];
 const FILAMENT_VERTEX_COUNT = FILAMENT_VERTEX_DATA.length;
@@ -43,7 +44,8 @@ export type FilamentUniformMaterial = {
   readonly hotColor?: string;
 };
 
-const DEFAULT_MATERIAL_SCALE = DEFAULT_CALIBRATION.morphology.stellar.opacityPermille;
+// Was the Stellar morphology's opacity, which holds the permille base by coincidence, not by meaning.
+const DEFAULT_MATERIAL_SCALE = SCENE_PERMILLE_SCALE;
 const DEFAULT_FILAMENT_UNIFORM_MATERIAL: FilamentUniformMaterial = {
   minimumWidthFactor: DEFAULT_CALIBRATION.filament.minimumWidthFactorPermille / DEFAULT_MATERIAL_SCALE,
   minimumBodyWidth: DEFAULT_CALIBRATION.filament.minimumDeviceWidthPermille / DEFAULT_MATERIAL_SCALE,
