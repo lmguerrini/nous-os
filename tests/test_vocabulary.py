@@ -91,12 +91,6 @@ FORBIDDEN_RENDERER_FRAGMENTS = (
     "glsl",
 )
 
-#: Honest limitations of the checks in this module, kept as data rather than
-#: left implicit. Each entry names one shape a scanner or denylist below does
-#: not detect. Non-empty and every entry non-blank is asserted by a test, so
-#: emptying this list to look complete is itself a failure.
-_UNTRUTHFUL_ROW = re.compile(r"^\| \d+ \| ")
-
 #: Spelled numbers the defect-count check understands. Prose, not digits, because
 #: the document is written for a reader rather than for a parser.
 _NUMBER_WORDS = {
@@ -104,7 +98,18 @@ _NUMBER_WORDS = {
     "Sixteen": 16, "Seventeen": 17, "Eighteen": 18,
 }
 
+#: Honest limitations of the checks in this module, kept as data rather than
+#: left implicit. Each entry names one shape a scanner or denylist below does
+#: not detect. Non-empty and every entry non-blank is asserted by a test, so
+#: emptying this list to look complete is itself a failure.
+_UNTRUTHFUL_ROW = re.compile(r"^\| \d+ \| ")
+
 UNDETECTED_VOCABULARY_SHAPES = (
+    "a Python enum whose base is a member-less Enum subclass declared in the same module: "
+    "the base-name test resolves imports from the enum module and does not follow a local "
+    "subclass",
+    "a TypeScript string-literal union with no terminating semicolon",
+    "a TypeScript string-literal union one of whose literals contains a semicolon",
     "a second closed vocabulary declared under a name another module already uses: both "
     "scanners key by bare name, so a later declaration silently replaces an earlier one and "
     "neither is then reported as undocumented",
@@ -1152,6 +1157,82 @@ def defect_count_offences(text: str) -> list[str]:
     if not any(f"{word} of them are recorded above as" in text for word in _NUMBER_WORDS):
         offences.append("no prose count of the defect table was found to check against it")
     return offences
+
+
+_DELTA_ASSIGNMENT = re.compile(r"(\w*(?:Accepted|Rejected|Undetermined|Explicit|Derived|Speculative))LightnessDeltaPermille:\s*(-?\d+)")
+
+#: The two governed vocabularies a bridge element carries at once. Named here
+#: because the collision the document publishes is a property of THIS pairing,
+#: and a future carrier of a different shape must not silently reuse this check.
+_BRIDGE_CARRIER_PREFIXES = ("bridge", "epistemic")
+
+
+def _rendered_state_collision_groups(repo_root: Path) -> dict[int, list[str]]:
+    """The distinct rendered values the nine bridge combinations land on.
+
+    Derived from the shipping calibration and the renderer's own averaging,
+    never from the document. The document publishes this table and a count of
+    the groups that collide; both are then checked against what the code
+    actually produces, which is the only form in which a published arithmetic
+    claim stays true after someone edits a number.
+    """
+    calibration = (repo_root / "ui" / "src" / "engine" / "calibration.ts").read_text(encoding="utf-8")
+    deltas: dict[str, int] = {}
+    for match in _DELTA_ASSIGNMENT.finditer(calibration):
+        deltas[match.group(1)] = int(match.group(2))
+    dispositions = {name: value for name, value in deltas.items() if name.startswith("bridge")}
+    classes = {name: value for name, value in deltas.items() if name.startswith("epistemic")}
+    groups: dict[int, list[str]] = {}
+    for disposition, left in sorted(dispositions.items()):
+        for epistemic, right in sorted(classes.items()):
+            # The renderer averages the two members' deltas; see renderedStateToken.
+            groups.setdefault(round((left + right) / 2), []).append(f"{disposition}+{epistemic}")
+    return groups
+
+
+def rendered_state_collision_offences(text: str, repo_root: Path) -> list[str]:
+    """The document's published collision claim matches the shipping calibration."""
+    groups = _rendered_state_collision_groups(repo_root)
+    if not groups:
+        return ["no rendered-state deltas were found in the calibration, so nothing was checked"]
+    combinations = sum(len(members) for members in groups.values())
+    colliding = [value for value, members in groups.items() if len(members) > 1]
+    offences = []
+    published = f"the **nine** legal combinations land on only **five** distinct values"
+    if combinations != 9 or len(groups) != 5:
+        offences.append(
+            f"the calibration now yields {combinations} combinations over {len(groups)} values; "
+            f"the document still says nine over five"
+        )
+    elif published not in text:
+        offences.append("the document no longer states the nine-onto-five claim this check verifies")
+    further = len(colliding) - 1
+    spelled = {1: "one further group", 2: "two further groups", 3: "three further groups"}
+    expected = spelled.get(further)
+    if expected is None:
+        offences.append(f"{further} further colliding groups has no spelled form to check")
+    elif expected not in text:
+        offences.append(
+            f"the calibration yields {len(colliding)} colliding groups, so the document should say "
+            f"'{expected}' beside the one it names explicitly"
+        )
+    return offences
+
+
+def test_the_published_collision_arithmetic_matches_the_calibration() -> None:
+    text = _document_text()
+    offences = rendered_state_collision_offences(text, REPO_ROOT)
+    assert not offences, "\n".join(offences)
+
+
+def test_the_collision_check_detects_a_count_that_has_drifted() -> None:
+    # The same function, against the real calibration and a document whose
+    # spelled count has been moved by one. This is the exact defect a review
+    # found here: the noun beside the numeral was rewritten and the numeral
+    # was not.
+    text = _document_text().replace("two further groups", "three further groups", 1)
+    offences = rendered_state_collision_offences(text, REPO_ROOT)
+    assert offences, "the control should have produced an offence"
 
 
 def test_the_defect_count_agrees_with_the_defect_table() -> None:
