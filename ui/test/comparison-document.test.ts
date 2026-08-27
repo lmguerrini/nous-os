@@ -77,11 +77,31 @@ test("the scale-wall check refuses an artifact that does not support the claim",
 });
 
 test("the document's attribution of the wall to shared layout is the one the layout artifact records", async () => {
+  const document = await readFile(DOCUMENT_PATH, "utf8");
   const artifact = await readJson(LAYOUT_SCALE_PATH);
+  // Skipping when the artifact is absent would let this pass vacuously, and a check that passes
+  // because its evidence is missing is the defect this file exists to prevent. So the requirement is
+  // tied to the CLAIM rather than to the machine: if the document attributes the scale wall to the
+  // shared layout, the measurement behind that attribution must be present and must support it. A
+  // document that stops making the claim stops needing the artifact.
+  const claimsLayoutAttribution = /\*\*The wall is the renderer-independent force-directed layout\.\*\*/u.test(document);
   if (artifact === null) {
+    assert.ok(
+      !claimsLayoutAttribution,
+      "the comparison document attributes the scale wall to shared layout, but "
+      + `${LAYOUT_SCALE_PATH} is absent. Run \`npm --prefix ui run evidence:layout-scale\`, or stop `
+      + "making the claim. Do not let this check pass because its evidence is missing.",
+    );
     return;
   }
   assertLayoutAloneExceedsTheRendererBudget(artifact);
+});
+
+test("the layout-attribution requirement is refused when the claim stands without its evidence", () => {
+  // The negative control for the vacuity guard itself.
+  const claiming = "**The wall is the renderer-independent force-directed layout.**";
+  assert.match(claiming, /\*\*The wall is the renderer-independent force-directed layout\.\*\*/u);
+  assert.doesNotMatch("The wall was not attributed.", /\*\*The wall is the renderer-independent force-directed layout\.\*\*/u);
 });
 
 test("the layout-attribution check refuses a layout cost that does not explain the wall", () => {
