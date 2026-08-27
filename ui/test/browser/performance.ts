@@ -12,8 +12,11 @@ import { mount as mountSigma } from "#render2d/index.ts";
 import type { RenderHandle } from "#render2d/index.ts";
 import type { RenderOptions } from "#render2d/model.ts";
 import { mount as mountThree } from "#render3f/mount.tsx";
-import type { GraphRendererHandle, MultiCameraRendererHandle, RetainedResourceWitness } from "#engine/renderer-handle.ts";
+import type { GraphRendererHandle, MultiCameraRendererHandle,
+  ResourceCountingRendererHandle, RetainedResourceWitness } from "#engine/renderer-handle.ts";
 import type { CameraKind } from "#engine/camera-kind.ts";
+import { assertLitPixelFloor } from "#browser/lit-floor.ts";
+import type { PixelImage } from "#browser/lit-floor.ts";
 
 /** This labels every performance figure as software rasterisation and does not imply GPU execution. */
 export const SOFTWARE_RASTERISATION_LABEL: "software-rasterised — not GPU performance" = "software-rasterised — not GPU performance";
@@ -119,6 +122,15 @@ export type PerformanceResult = {
   readonly syntheticFixtureDeclaration: string;
   readonly observedCommitSha: string;
   readonly browser: { readonly devicePixelRatio: number };
+  readonly summary: {
+    readonly passing: boolean;
+    readonly bound: boolean;
+    readonly required: number;
+    readonly passed: number;
+    readonly notRun: number;
+    readonly unknown: number;
+    readonly rule: string;
+  };
   readonly records: readonly PerformanceRecord[];
 };
 
@@ -219,6 +231,7 @@ async function runPerformance(observedCommitSha: string): Promise<PerformanceRes
     syntheticFixtureDeclaration,
     observedCommitSha,
     browser: { devicePixelRatio: window.devicePixelRatio },
+    summary: performanceSummary(records, observedCommitSha),
     records,
   };
 }
@@ -243,6 +256,47 @@ async function loadFixtures(): Promise<readonly FixtureLoad[]> {
     }
   }
   return fixtures;
+}
+
+/** This narrows a handle to one that can enumerate its own graphics resources and does not assume a renderer can. */
+function resourceCountingHandle(handle: GraphRendererHandle): ResourceCountingRendererHandle | null {
+  const candidate = handle as { readonly readRetainedResources?: unknown };
+  return typeof candidate.readRetainedResources === "function" ? handle as ResourceCountingRendererHandle : null;
+}
+
+function performanceSummary(
+  records: readonly PerformanceRecord[],
+  observedCommitSha: string,
+): PerformanceResult["summary"] {
+  const statuses = records.flatMap(performanceMeasurementStatuses);
+  const passed = statuses.filter((status) => status === "PASS").length;
+  const notRun = statuses.filter((status) => status === "NOT_RUN").length;
+  const unknown = statuses.filter((status) => status === "UNKNOWN").length;
+  const bound = records.length === rendererDefinitions.length * 3
+    && records.every((record) => record.observedCommitSha === observedCommitSha);
+  return {
+    passing: bound && notRun === 0 && unknown === 0 && passed === statuses.length,
+    bound,
+    required: statuses.length,
+    passed,
+    notRun,
+    unknown,
+    rule: "The performance run passes only when every recorded measurement criterion is commit-bound and PASS; NOT_RUN and UNKNOWN retain their reasons and make the run verdict false.",
+  };
+}
+
+function performanceMeasurementStatuses(record: PerformanceRecord): readonly MeasurementStatus[] {
+  const measurements = record.measurements;
+  const statuses: MeasurementStatus[] = Object.values(measurements).map((measurement) => measurement.status);
+  if (measurements.memory.status === "PASS") {
+    statuses.push(measurements.memory.value.browserMemory.status, measurements.memory.value.retainedResources.status);
+  }
+  if (measurements.progressiveDisclosure.status === "PASS") {
+    for (const band of measurements.progressiveDisclosure.value.bands) {
+      statuses.push(band.aggregateCount.status, band.mountToFirstPaint.status, band.renderedElementCounts.status);
+    }
+  }
+  return statuses;
 }
 
 function unavailableRecord(
@@ -281,9 +335,9 @@ function adaptSigmaHandle(handle: RenderHandle): GraphRendererHandle {
     // switch measurement records NOT_RUN rather than timing a call that never happened.
     cameraKind: ORTHOGRAPHIC,
     readNodeFootprintWitnesses: handle.readGlowWitnesses,
-    readRetainedResources(): RetainedResourceWitness {
-      throw new Error("Sigma 2D retained resources are not exposed by its handle");
-    },
+    // No `readRetainedResources` either. Sigma's WebGL resources are owned inside the graph library
+    // and are not enumerable from outside it, so this renderer does not claim the capability and the
+    // memory measurement records UNKNOWN for it rather than a number nobody read.
   };
 }
 
@@ -441,15 +495,46 @@ async function collectFrames(count: number): Promise<FrameResult> {
 }
 
 async function firstPaintContainingGraph(handle: GraphRendererHandle, start: number): Promise<number> {
+  let consecutiveBlankFrames = 0;
+  let lastCanvasImage: PixelImage | undefined;
   for (let frame = 0; frame < 180; frame += 1) {
     await nextPaint();
     const surface = safeSurface(handle);
     const canvas = document.querySelector("canvas");
     if (surface !== null && surface.nodeIds.length + surface.edgeIds.length > 0 && canvas !== null && canvas.width > 0 && canvas.height > 0 && canvasFingerprint().length > 0) {
-      return performance.now() - start;
+      const image = await canvasPixelImage(canvas);
+      try {
+        assertLitPixelFloor(image, "performance first-paint canvas");
+        return performance.now() - start;
+      } catch {
+        consecutiveBlankFrames += 1;
+        lastCanvasImage = image;
+        if (consecutiveBlankFrames >= 3) {
+          assertLitPixelFloor(image, "performance first-paint canvas");
+        }
+      }
     }
   }
+  if (lastCanvasImage !== undefined) {
+    assertLitPixelFloor(lastCanvasImage, "performance first-paint canvas");
+  }
   throw new Error("no painted frame containing graph content");
+}
+
+async function canvasPixelImage(canvas: HTMLCanvasElement): Promise<PixelImage> {
+  const response = await fetch(canvas.toDataURL("image/png"));
+  const bitmap = await createImageBitmap(await response.blob());
+  const copy = document.createElement("canvas");
+  copy.width = bitmap.width;
+  copy.height = bitmap.height;
+  const context = copy.getContext("2d", { willReadFrequently: true });
+  if (context === null) {
+    bitmap.close();
+    throw new Error("performance first-paint canvas cannot be read as pixels");
+  }
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return { width: copy.width, height: copy.height, data: context.getImageData(0, 0, copy.width, copy.height).data };
 }
 
 async function measureInteraction(handle: GraphRendererHandle, graph: VisualGraph): Promise<Measurement<Distribution>> {
@@ -515,10 +600,15 @@ function measurePicking(handle: GraphRendererHandle, graph: VisualGraph): Measur
 function measureMemory(handle: GraphRendererHandle): Measurement<MemoryValue> {
   const browserMemory = browserMemoryMeasurement();
   let retainedResources: Measurement<RetainedResourceWitness>;
-  try {
-    retainedResources = pass(handle.readRetainedResources(), "renderer-owned retained resources read from the renderer handle");
-  } catch (error: unknown) {
-    retainedResources = unknown(`renderer retained-resource witness unavailable: ${errorMessage(error)}`);
+  const counting = resourceCountingHandle(handle);
+  if (counting === null) {
+    retainedResources = unknown("this renderer does not enumerate its own graphics resources, so none were read");
+  } else {
+    try {
+      retainedResources = pass(counting.readRetainedResources(), "renderer-owned retained resources read from the renderer handle");
+    } catch (error: unknown) {
+      retainedResources = unknown(`renderer retained-resource witness unavailable: ${errorMessage(error)}`);
+    }
   }
   return pass({ browserMemory, retainedResources }, "browser heap and renderer-owned resources are recorded independently");
 }

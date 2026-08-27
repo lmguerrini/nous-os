@@ -7,7 +7,7 @@ import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { ORTHOGRAPHIC } from "#engine/camera-kind.ts";
 import type { CameraKind } from "#engine/camera-kind.ts";
 import type { Coordinates, DerivedValue, VisualGraph } from "#engine/contract.ts";
-import type { WorldAnchorWitness } from "#engine/renderer-handle.ts";
+import type { NodeFootprintWitness, WorldAnchorWitness } from "#engine/renderer-handle.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
@@ -118,6 +118,8 @@ export type RenderHandle = {
   readLayoutPassCount(): number;
   /** This names the camera this renderer draws through and does not offer to change it. */
   readonly cameraKind: CameraKind;
+  /** This reports live drawn node footprints under the name every renderer answers to. */
+  readNodeFootprintWitnesses(): readonly NodeFootprintWitness[];
   /** This stacks two live programs for one relation, renders them, and restores the single-program pipeline. */
   proveStackedMaterialControlRejects(): StackedMaterialControlWitness;
   /** This returns the node the mounted renderer itself picks at one viewport position. */
@@ -344,6 +346,13 @@ export function mount(
       return layoutPasses;
     },
     cameraKind: ORTHOGRAPHIC,
+    // The same live footprints `readGlowWitnesses` reports, under the name every renderer answers to.
+    // One reading, two names: the older one is this renderer's own vocabulary and is kept because its
+    // existing evidence cites it; the common one exists so a parity check can ask all three renderers
+    // the same question.
+    readNodeFootprintWitnesses(): readonly NodeFootprintWitness[] {
+      return glow.readWitnesses();
+    },
     readSurfaceWitness(): RenderSurfaceWitness {
       return liveSurfaceWitness(sigma);
     },

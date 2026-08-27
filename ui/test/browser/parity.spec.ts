@@ -9,15 +9,15 @@ import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import type { CameraKind } from "#engine/camera-kind.ts";
 import { fieldPixel, isLitPixel } from "#browser/filament-continuity.ts";
 import type { DecodedPng } from "#browser/filament-continuity.ts";
-import {
-  PARITY_RENDERERS,
-  PROJECTION_DEPENDENT_SCENE_CHANNELS,
-  assertSceneCameraParity,
-  assertSurfaceParity,
-  derivedNonNullRenderedStateDomain,
-  failingControlOutput,
-  renderedStateKey,
-} from "#browser/parity.ts";
+import { assertLitPixelFloor } from "#browser/lit-floor.ts";
+// One owner, in a module that touches no browser API. This constant and this assertion existed in
+// BOTH files and only one copy was repaired; the surviving copy rejected legal camera differences
+// for two full runs. Importing the PAGE module to share them instead crashed the suite at Node
+// level and left the previous run's evidence to be misread as this run's result.
+import { PROJECTION_DEPENDENT_SCENE_CHANNELS, assertSceneCameraParity } from "#browser/parity-contract.ts";
+import { legalRenderedCombinations } from "#scene/index.ts";
+import type { RenderedStateCarrier } from "#engine/contract.ts";
+import type { SurfaceWitness } from "#engine/renderer-handle.ts";
 import type {
   CameraLayoutCapabilityWitness,
   DeterminismSemanticWitness,
@@ -34,6 +34,10 @@ import type {
   RenderedStatePixelWitness,
   ZeroToleranceWitness,
 } from "#browser/parity.ts";
+
+// This spec must stay Node-side: the browser page module is bundled below and is
+// loaded only after Playwright has navigated to the served document.
+const PARITY_RENDERERS = ["sigma-2d", "r3f-2d", "r3f-3d"] as const satisfies readonly ParityRenderer[];
 
 type Status = "PASS" | "FAIL" | "NOT_RUN" | "UNKNOWN";
 type CheckName = "P1 surface parity" | "P2 semantic-channel parity" | "P3 governed-state separation" | "P4 interaction and provenance" | "P5 drawing and picking" | "P6 camera switch" | "P7 determinism" | "P8 non-colour encoding" | "full-app-smoke";
@@ -135,6 +139,56 @@ const CVD_MATRICES: Readonly<Record<Deficiency, readonly [Rgb, Rgb, Rgb]>> = {
     [0.004733, 0.691367, 0.303900],
   ],
 };
+
+
+function assertSurfaceParity(reference: SurfaceWitness, observed: SurfaceWitness, renderer: ParityRenderer): void {
+  assertSameIdSet("P1 rendered node ids", reference.nodeIds, observed.nodeIds, renderer);
+  assertSameIdSet("P1 rendered relation ids", reference.edgeIds, observed.edgeIds, renderer);
+  for (const id of sortedIds(reference.edgeIds)) {
+    const expected = reference.incidence[id];
+    const actual = observed.incidence[id];
+    if (expected === undefined || actual === undefined || expected.source !== actual.source || expected.target !== actual.target) {
+      throw new Error(`P1 ${renderer} relation ${id} has incidence ${formatIncidence(actual)} instead of ${formatIncidence(expected)}`);
+    }
+  }
+}
+
+function assertSameIdSet(label: string, left: readonly string[], right: readonly string[], renderer: ParityRenderer): void {
+  const expected = sortedIds(left);
+  const actual = sortedIds(right);
+  if (expected.length !== actual.length || expected.some((id, index) => id !== actual[index])) {
+    throw new Error(`${label} differs for ${renderer}: expected [${expected.join(", ")}], observed [${actual.join(", ")}]`);
+  }
+}
+
+function sortedIds(ids: readonly string[]): readonly string[] {
+  return [...ids].sort((left, right) => left.localeCompare(right));
+}
+
+function formatIncidence(value: { readonly source: string; readonly target: string } | undefined): string {
+  return value === undefined ? "missing" : `${value.source}->${value.target}`;
+}
+
+function failingControlOutput(operation: () => void): string {
+  try {
+    operation();
+  } catch (error: unknown) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error("control unexpectedly passed");
+}
+
+function derivedNonNullRenderedStateDomain(): readonly RenderedStateCarrier[] {
+  const domain = legalRenderedCombinations().filter((carrier): carrier is Exclude<RenderedStateCarrier, null> => carrier !== null);
+  if (domain.length !== 12) {
+    throw new Error(`P3 derived legal non-null governed domain has ${domain.length} members instead of 12`);
+  }
+  return domain;
+}
+
+function renderedStateKey(carrier: RenderedStateCarrier): string {
+  return carrier === null ? "null" : carrier.map((member) => `${member.enumType}.${member.member}`).join("+");
+}
 
 test("renderer parity oracle", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "parity", "run this through the dedicated parity project");
@@ -392,6 +446,7 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
     await record("P5 drawing and picking", renderer, async () => {
       await invoke<MountedParityWitness>("mountBase", renderer);
       const image = await captureRenderer(page, renderer);
+      const litPixels = assertLitPixelFloor(image, `P5 ${renderer} final compositor capture`);
       const samples = await invoke<readonly NodePickWitness[]>("nodePickSamples", renderer, 3);
       if (samples.length === 0) {
         throw new Error(`P5 ${renderer} has no node samples`);
@@ -411,9 +466,9 @@ test("renderer parity oracle", async ({ page }, testInfo) => {
       const zeroTolerance = await invoke<ZeroToleranceWitness>("mountZeroToleranceControl", renderer);
       const p5Control = failingControlOutput(() => assertPositivePickTolerance(zeroTolerance.configuredPickTolerancePx));
       return {
-        measured: { samples, zeroTolerance },
-        threshold: "renderer pick returns the renderer-projected drawn node id; configured pick tolerance is greater than zero",
-        turnsRed: "a renderer-projected node is not lit, does not pick itself, or the zero-tolerance control is accepted",
+        measured: { samples, zeroTolerance, litPixels },
+        threshold: "final compositor frame clears the shared lit-pixel floor; renderer pick returns the renderer-projected drawn node id; configured pick tolerance is greater than zero",
+        turnsRed: "the final compositor frame is blank, a renderer-projected node is not lit, does not pick itself, or the zero-tolerance control is accepted",
         control: { status: "FAILED_AS_EXPECTED", output: p5Control },
       };
     });
@@ -736,8 +791,12 @@ function assertFullAppGraphPresent(witness: FullAppMountWitness, label: string):
   if (witness.footprints.some((footprint) => !renderedNodeIds.has(footprint.id))) {
     throw new Error(`${label} renderer reported a node footprint outside its live surface`);
   }
-  if (witness.retainedResources.geometries <= 0 || witness.retainedResources.materials <= 0 || witness.retainedResources.textures <= 0) {
-    throw new Error(`${label} renderer reported an empty live graphics resource set`);
+  // Only a renderer that claims the capability is held to it. A renderer whose graphics resources
+  // are owned inside a library it does not control reports none, and asserting an empty set against
+  // that absence would fail it for a question it never claimed to answer.
+  const retained = witness.retainedResources;
+  if (retained !== null && (retained.geometries <= 0 || retained.materials <= 0 || retained.textures <= 0)) {
+    throw new Error(`${label} renderer claims to enumerate graphics resources but reported an empty set`);
   }
 }
 

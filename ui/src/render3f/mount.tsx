@@ -7,6 +7,7 @@ import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import type { Coordinates, DerivedValue, VisualGraph } from "#engine/contract.ts";
 import type {
   MultiCameraRendererHandle,
+  ResourceCountingRendererHandle,
   NodeFootprintWitness,
   RetainedResourceWitness,
   SurfaceWitness,
@@ -71,7 +72,7 @@ export function mount(
   options: Render3fOptions,
   framingBox?: Render3fFramingBox,
   initialVisualState?: VisualState,
-): MultiCameraRendererHandle {
+): MultiCameraRendererHandle & ResourceCountingRendererHandle {
   const dimensions = containerDimensions(container);
   const devicePixelRatio = requiredDevicePixelRatio();
   const previousPositionStyle = container.style.position;
@@ -226,13 +227,15 @@ export function mount(
     frameloop: "never",
     size: { width: dimensions.width, height: dimensions.height, top: 0, left: 0 },
     dpr: devicePixelRatio,
+    onCreated: () => {
+      renderFrame();
+    },
   }).then(() => {
     if (destroyed) {
       return;
     }
     fiberStore = fiberRoot.render(<WorldLayer world={world} />);
     fiberStore.setState({ camera: rig.camera });
-    renderFrame();
   });
 
   const resizeObserver = new ResizeObserver(() => {
@@ -270,7 +273,6 @@ export function mount(
     renderFrame();
   };
 
-  renderFrame();
   return {
     get cameraKind(): CameraKind {
       return rig.kind;

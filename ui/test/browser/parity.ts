@@ -5,7 +5,8 @@ import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import type { CameraKind } from "#engine/camera-kind.ts";
 import { assertVisualGraphFieldRegister, createRenderedStateCarrier } from "#engine/contract.ts";
 import type { Coordinates, RenderedStateCarrier, VisualGraph } from "#engine/contract.ts";
-import type { GraphRendererHandle, MultiCameraRendererHandle, NodeFootprintWitness, RetainedResourceWitness, SurfaceWitness, WorldAnchorWitness } from "#engine/renderer-handle.ts";
+import type { GraphRendererHandle, MultiCameraRendererHandle,
+  ResourceCountingRendererHandle, NodeFootprintWitness, RetainedResourceWitness, SurfaceWitness, WorldAnchorWitness } from "#engine/renderer-handle.ts";
 import { createVisualState, deserializeVisualState, serializeVisualState } from "#engine/visual-state.ts";
 import type { VisualState } from "#engine/visual-state.ts";
 import { mount as mountSigma } from "#render2d/index.ts";
@@ -27,8 +28,8 @@ export type FullAppRenderer = Exclude<ParityRenderer, "sigma-2d">;
 /** This names the synthetic policy fixtures used by the full-app smoke and does not name renderer state. */
 export type FullAppPolicy = "Discovery" | "Reliability";
 
-/** This pins the only resolved-scene channel permitted to vary by camera and does not allow an empty allowance. */
-export const PROJECTION_DEPENDENT_SCENE_CHANNELS = ["camera.kind", "camera.navigation"] as const;
+import { PROJECTION_DEPENDENT_SCENE_CHANNELS, assertSceneCameraParity } from "#browser/parity-contract.ts";
+export { PROJECTION_DEPENDENT_SCENE_CHANNELS, assertSceneCameraParity };
 
 /** This records the live surface and node witnesses of one mounted renderer and does not retain its input graph. */
 export type MountedParityWitness = {
@@ -88,7 +89,8 @@ export type FullAppMountWitness = {
   readonly surface: SurfaceWitness;
   readonly footprints: readonly NodeFootprintWitness[];
   readonly visualState: VisualState;
-  readonly retainedResources: RetainedResourceWitness;
+  /** This is null when the renderer does not enumerate its own graphics resources, and is never a fabricated zero. */
+  readonly retainedResources: RetainedResourceWitness | null;
 };
 
 /** This records one R3F camera switch through live renderer witnesses and does not infer anchors from input data. */
@@ -225,7 +227,6 @@ const REQUIRED_HANDLE_METHODS = [
   "readNodeFootprintWitnesses",
   "pickNodeAtPosition",
   "pickEdgeAtPoint",
-  "readRetainedResources",
   "destroy",
 ] as const;
 const WORLD_LAYOUT_METHODS = ["readWorldAnchorWitnesses", "readLayoutPassCount"] as const;
@@ -248,20 +249,6 @@ export function sceneDifferencePaths(left: unknown, right: unknown, path = ""): 
   return [path];
 }
 
-/** This rejects camera scene changes outside the pinned projection channel list and does not accept a vacuous camera change. */
-export function assertSceneCameraParity(differences: readonly string[]): void {
-  const declaredProjectionChannels: readonly string[] = PROJECTION_DEPENDENT_SCENE_CHANNELS;
-  if (declaredProjectionChannels.length === 0) {
-    throw new Error("P2 projection-dependent scene channel list is empty");
-  }
-  const illegal = differences.filter((path) => !PROJECTION_DEPENDENT_SCENE_CHANNELS.includes(path as typeof PROJECTION_DEPENDENT_SCENE_CHANNELS[number]));
-  if (illegal.length > 0) {
-    throw new Error(`P2 illegal scene-channel difference: ${illegal.join(", ")}`);
-  }
-  if (!differences.includes("camera.kind")) {
-    throw new Error("P2 camera-kind control did not produce the pinned camera.kind difference");
-  }
-}
 
 /** This rejects unequal mounted surfaces and does not use the scene model as either side of the comparison. */
 export function assertSurfaceParity(reference: SurfaceWitness, observed: SurfaceWitness, renderer: ParityRenderer): void {
@@ -594,13 +581,21 @@ if (typeof window !== "undefined") {
   void installParityPage();
 }
 
+/** This narrows a handle to one that can enumerate its own graphics resources and does not assume a renderer can. */
+function resourceCountingHandle(handle: GraphRendererHandle): ResourceCountingRendererHandle | null {
+  const candidate = handle as { readonly readRetainedResources?: unknown };
+  return typeof candidate.readRetainedResources === "function" ? handle as ResourceCountingRendererHandle : null;
+}
+
 function fullAppMountWitness(renderer: FullAppRenderer, handle: GraphRendererHandle): FullAppMountWitness {
   return {
     renderer,
     surface: handle.readSurfaceWitness(),
     footprints: handle.readNodeFootprintWitnesses(),
     visualState: handle.readVisualState(),
-    retainedResources: handle.readRetainedResources(),
+    // A renderer that cannot enumerate its own graphics resources reports none rather than a
+    // fabricated zero: an unmeasured zero and a measured "nothing leaked" are indistinguishable.
+    retainedResources: resourceCountingHandle(handle)?.readRetainedResources() ?? null,
   };
 }
 

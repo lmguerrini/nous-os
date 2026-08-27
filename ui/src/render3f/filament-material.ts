@@ -59,8 +59,7 @@ vec2 filamentDistance(vec2 point, vec2 b0, vec2 b1, vec2 b2) {
 }`;
 
 /** This expands each quadratic relation into a cap-safe device-space quad and does not use platform line width. */
-export const FILAMENT_VERTEX_SHADER = `#version 300 es
-precision highp float;
+export const FILAMENT_VERTEX_SHADER = `precision highp float;
 in vec3 position;
 in vec3 a_start;
 in vec3 a_control;
@@ -143,8 +142,7 @@ void main() {
 }`;
 
 /** This analytically anti-aliases a layered luminous curve and does not assign relation meaning to luminance. */
-export const FILAMENT_FRAGMENT_SHADER = `#version 300 es
-precision highp float;
+export const FILAMENT_FRAGMENT_SHADER = `precision highp float;
 flat in vec3 v_color;
 flat in vec3 v_hotColor;
 flat in float v_opacity;
@@ -234,6 +232,7 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
   geometry.setAttribute("a_propagationPermille", instanced(buffers.endLuminanceAndPropagation, packedChannelCount()));
   geometry.instanceCount = buffers.edgeIds.length;
   const material = new THREE.RawShaderMaterial({
+    glslVersion: THREE.GLSL3,
     vertexShader: FILAMENT_VERTEX_SHADER,
     fragmentShader: FILAMENT_FRAGMENT_SHADER,
     uniforms: {

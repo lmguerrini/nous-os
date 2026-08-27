@@ -22,8 +22,7 @@ export type NodeRenderResources = {
 };
 
 /** This expands node instances in device space and does not derive core or halo magnitudes. */
-export const NODE_VERTEX_SHADER = `#version 300 es
-precision highp float;
+export const NODE_VERTEX_SHADER = `precision highp float;
 in vec3 position;
 in vec3 a_worldPosition;
 in vec3 a_color;
@@ -42,7 +41,7 @@ uniform float u_orthographicSizeScale;
 uniform float u_isPerspective;
 uniform float u_referenceViewDepth;
 uniform float u_permilleScale;
-noperspective out vec2 v_localDevicePx;
+out vec2 v_localDevicePx;
 flat out vec3 v_color;
 flat out float v_coreRadiusDevicePx;
 flat out float v_haloRadiusDevicePx;
@@ -74,9 +73,8 @@ void main() {
 }`;
 
 /** This composes a soft core with scene-sampled halo alpha and does not invent a bloom magnitude. */
-export const NODE_FRAGMENT_SHADER = `#version 300 es
-precision highp float;
-noperspective in vec2 v_localDevicePx;
+export const NODE_FRAGMENT_SHADER = `precision highp float;
+in vec2 v_localDevicePx;
 flat in vec3 v_color;
 flat in float v_coreRadiusDevicePx;
 flat in float v_haloRadiusDevicePx;
@@ -130,6 +128,7 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
   geometry.instanceCount = buffers.ids.length;
   const haloStops = haloStopTexture(buffers);
   const material = new THREE.RawShaderMaterial({
+    glslVersion: THREE.GLSL3,
     vertexShader: NODE_VERTEX_SHADER,
     fragmentShader: NODE_FRAGMENT_SHADER,
     uniforms: {

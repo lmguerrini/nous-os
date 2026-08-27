@@ -44,6 +44,7 @@ test("CAP-13 renderer performance", async ({ page }) => {
   if (output === undefined) {
     throw new Error("performance page module did not bundle");
   }
+  await page.goto("/");
   await page.setContent("<!doctype html><html><body></body></html>");
   await page.addScriptTag({ content: output.text });
   const result = await page.evaluate((commitSha) => {
@@ -53,9 +54,9 @@ test("CAP-13 renderer performance", async ({ page }) => {
     }
     return api.run(commitSha);
   }, observedCommitSha);
-  assertPerformanceResult(result, observedCommitSha);
   await mkdir(["dist", "evidence"].join("/"), { recursive: true });
   await writeFile(OUTPUT_FILE, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+  assertPerformanceResult(result, observedCommitSha);
 });
 
 function assertPerformanceResult(result: PerformanceResult, observedCommitSha: string): void {
@@ -63,6 +64,7 @@ function assertPerformanceResult(result: PerformanceResult, observedCommitSha: s
   expect(result.rasterisationLabel).toBe(SOFTWARE_RASTERISATION_LABEL);
   expect(result.observedCommitSha).toBe(observedCommitSha);
   expect(result.records).toHaveLength(9);
+  expect(result.records.some((record) => record.measurements.sceneModelBuildCost.status === "PASS"), "at least one fixture-backed scene-model measurement must complete").toBe(true);
   for (const record of result.records) {
     expect(record.observedCommitSha).toBe(observedCommitSha);
     expect(record.rasterisationLabel).toBe(SOFTWARE_RASTERISATION_LABEL);
@@ -72,6 +74,8 @@ function assertPerformanceResult(result: PerformanceResult, observedCommitSha: s
       expect(measurement.label).toBe(SOFTWARE_RASTERISATION_LABEL);
     }
   }
+  expect(result.summary.bound).toBe(true);
+  expect(result.summary.passing, "renderer performance requires every commit-bound measurement criterion to pass; NOT_RUN and UNKNOWN are never a passing run").toBe(true);
 }
 
 async function readObservedCommitSha(): Promise<string> {

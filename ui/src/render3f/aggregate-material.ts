@@ -12,8 +12,7 @@ export type AggregateRenderResources = {
 };
 
 /** This expands resolved aggregate radii into device-space quads and does not alter their world centers. */
-export const AGGREGATE_VERTEX_SHADER = `#version 300 es
-precision highp float;
+export const AGGREGATE_VERTEX_SHADER = `precision highp float;
 in vec3 position;
 in vec3 a_center;
 in vec3 a_color;
@@ -26,7 +25,7 @@ uniform mat4 projectionMatrix;
 uniform vec2 u_resolutionDevicePx;
 uniform float u_devicePixelRatio;
 uniform float u_permilleScale;
-noperspective out vec2 v_localDevicePx;
+out vec2 v_localDevicePx;
 flat out vec3 v_color;
 flat out float v_radiusDevicePx;
 flat out float v_strokeWidthDevicePx;
@@ -57,9 +56,8 @@ void main() {
 }`;
 
 /** This analytically anti-aliases resolved aggregate strokes and does not fill aggregate interiors. */
-export const AGGREGATE_FRAGMENT_SHADER = `#version 300 es
-precision highp float;
-noperspective in vec2 v_localDevicePx;
+export const AGGREGATE_FRAGMENT_SHADER = `precision highp float;
+in vec2 v_localDevicePx;
 flat in vec3 v_color;
 flat in float v_radiusDevicePx;
 flat in float v_strokeWidthDevicePx;
@@ -89,6 +87,7 @@ export function createAggregateRenderResources(buffers: AggregateBuffers): Aggre
   geometry.setAttribute("a_strokeOpacityPermille", instanced(buffers.strokeOpacityPermille, scalarCount()));
   geometry.instanceCount = buffers.ids.length;
   const material = new THREE.RawShaderMaterial({
+    glslVersion: THREE.GLSL3,
     vertexShader: AGGREGATE_VERTEX_SHADER,
     fragmentShader: AGGREGATE_FRAGMENT_SHADER,
     uniforms: {

@@ -96,8 +96,6 @@ export type GraphRendererHandle = {
   pickNodeAtPosition(position: { readonly x: number; readonly y: number }): string | null;
   /** This returns the relation the mounted renderer itself picks at one viewport position. */
   pickEdgeAtPoint(x: number, y: number): string | null;
-  /** This counts retained graphics resources and does not free them. */
-  readRetainedResources(): RetainedResourceWitness;
   /** This releases every resource this handle created and does not leave a DOM overlay behind. */
   destroy(): void;
 };
@@ -114,6 +112,21 @@ export type GraphRendererHandle = {
  * `cameraKind` stays on the common interface because every renderer can answer it truthfully: the
  * Sigma renderer is always orthographic and says so.
  */
+/**
+ * This is a renderer that can enumerate its own graphics resources, and it is NOT the common interface.
+ *
+ * The Three renderer owns its geometries, materials and textures and can count them, which is what
+ * makes "unmounting disposes everything" a measurement. The Sigma renderer's WebGL resources are
+ * owned inside the graph library and are not enumerable from outside it — so requiring the count on
+ * the common interface would force that renderer to return fabricated zeros, and a zero nobody
+ * measured is indistinguishable from a zero that means nothing leaked. A measurement it cannot make
+ * is recorded UNKNOWN by whoever asks, which is the honest shape.
+ */
+export type ResourceCountingRendererHandle = GraphRendererHandle & {
+  /** This counts retained graphics resources and does not free them. */
+  readRetainedResources(): RetainedResourceWitness;
+};
+
 export type MultiCameraRendererHandle = GraphRendererHandle & {
   /** This switches the camera and does not rebuild the graph, re-run layout, or move a world anchor. */
   setCameraKind(kind: CameraKind): void;

@@ -20,8 +20,9 @@
     "test:browser": "playwright test",
     "test:a4": "A4_STIMULI=1 playwright test --project=a4",
     "test:review": "REVIEW_CAPTURES=1 playwright test --project=review-dpr-1 --project=review-dpr-2",
-    "test:parity": "PARITY_SUITE=1 playwright test --project=parity",
-    "test:performance": "PERFORMANCE_SUITE=1 playwright test --project=performance"
+    "test:parity": "rm -f dist/evidence/parity.json && PARITY_SUITE=1 playwright test --project=parity",
+    "test:performance": "rm -f dist/evidence/performance.json && PERFORMANCE_SUITE=1 playwright test --project=performance",
+    "test:review3d": "rm -rf dist/review3d && REVIEW3D_CAPTURES=1 playwright test --project=review3d"
   },
   "dependencies": {
     "@react-three/fiber": "9.7.0",
