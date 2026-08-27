@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
+import { assertLitPixelFloor } from "#browser/lit-floor.ts";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
+import type { Coordinates } from "#engine/contract.ts";
+import {
+  canonicalCameraFramingPoints,
+  quantizeCameraFramingValue,
+} from "#render3f/camera-framing.ts";
+import { assertDarkestShippingField } from "./capture-field.ts";
+import {
+  resolveVisibleScreenLabelIds,
+} from "#render3f/label-collision.ts";
+import type { ScreenLabelBounds } from "#render3f/label-collision.ts";
 import { ResourceRegistry } from "#render3f/resources.ts";
 import {
   LiveSceneState,
@@ -9,7 +20,7 @@ import {
 } from "#render3f/state.ts";
 import { resolvedCameraScenes } from "./support.ts";
 
-test("camera switching changes only projection and leaves live anchors and layout count unchanged", () => {
+test("projection changes preserve live anchors while screen label collisions preserve scene priority", (context) => {
   const scenes = resolvedCameraScenes();
   const live = new LiveSceneState(scenes, ORTHOGRAPHIC, cameraKindCount());
   const buffers = live.buffers;
@@ -37,6 +48,65 @@ test("camera switching changes only projection and leaves live anchors and layou
     ),
     /camera switch changed layout pass count/,
   );
+
+  const labels = collidingLabels();
+  assert.deepEqual(resolveVisibleScreenLabelIds(labels), ["label:higher"]);
+  assert.deepEqual(resolveVisibleScreenLabelIds([...labels].reverse()), ["label:higher"]);
+  const reversedPriority = labels.map((label) => ({
+    ...label,
+    priority: label.id === "label:higher" ? 10 : 20,
+  }));
+  assert.throws(
+    () => assert.deepEqual(
+      resolveVisibleScreenLabelIds(reversedPriority),
+      ["label:higher"],
+      "priority-reversal control must retain the original survivor",
+    ),
+    /priority-reversal control/,
+  );
+  const reversedSurvivors = resolveVisibleScreenLabelIds(reversedPriority);
+  assert.deepEqual(reversedSurvivors, ["label:lower"]);
+  context.diagnostic(`label-priority reversal control observed survivor: ${reversedSurvivors.join(",")}`);
+
+  const framingPoints: readonly Coordinates[] = [
+    { x: 1, y: 2, z: 3 },
+    { x: -4, y: 5, z: -0 },
+    { x: 0, y: 0, z: 0 },
+  ];
+  const perturbed = framingPoints.map((point, index) => ({
+    ...point,
+    x: index === 0 ? point.x + Number.EPSILON : point.x,
+  })).reverse();
+  assert.notEqual(perturbed[2]?.x, framingPoints[0]?.x);
+  assert.deepEqual(
+    canonicalCameraFramingPoints(framingPoints),
+    canonicalCameraFramingPoints(perturbed),
+  );
+  assert.equal(quantizeCameraFramingValue(1 + Number.EPSILON), Math.fround(1));
+  context.diagnostic("camera framing order and sub-single-precision control resolved identically");
+
+  const contentAtFirstPixel = pixelImage([11, 11, 11, 255, 9, 9, 9, 255], 2);
+  const darkestField = assertDarkestShippingField(contentAtFirstPixel, "darkest-field content control");
+  assert.deepEqual(darkestField, [9, 9, 9]);
+  const whiteFieldOutput = failureOutput(() => assertDarkestShippingField(
+    pixelImage([255, 255, 255, 255], 1),
+    "review3d white-field control",
+  ));
+  assert.match(whiteFieldOutput, /darkest pixel rgb\(255, 255, 255\).*rgb\(9, 9, 9\)/);
+  const lightenedFieldOutput = failureOutput(() => assertDarkestShippingField(
+    pixelImage([10, 10, 10, 255], 1),
+    "review3d lightened-field control",
+  ));
+  assert.match(lightenedFieldOutput, /darkest pixel rgb\(10, 10, 10\).*rgb\(9, 9, 9\)/);
+  const blankFrameOutput = failureOutput(() => assertLitPixelFloor(
+    pixelImage([9, 9, 9, 255], 1),
+    "review3d blank-frame control",
+  ));
+  assert.match(blankFrameOutput, /has 0 lit pixels, below the required floor of 1/);
+  context.diagnostic(`darkest-field content control observed rgb(${darkestField.join(", ")})`);
+  context.diagnostic(whiteFieldOutput);
+  context.diagnostic(lightenedFieldOutput);
+  context.diagnostic(blankFrameOutput);
 });
 
 test("world-anchor witnesses read the mounted buffer copy rather than the handed scene", () => {
@@ -109,10 +179,48 @@ function cameraKindCount(): number {
   return [ORTHOGRAPHIC, PERSPECTIVE].length;
 }
 
+function collidingLabels(): readonly ScreenLabelBounds[] {
+  return [
+    {
+      id: "label:lower",
+      priority: 10,
+      sceneOrder: 0,
+      collisionPaddingPx: 5,
+      minimumX: 10,
+      minimumY: 10,
+      maximumX: 30,
+      maximumY: 20,
+    },
+    {
+      id: "label:higher",
+      priority: 20,
+      sceneOrder: 1,
+      collisionPaddingPx: 5,
+      minimumX: 20,
+      minimumY: 10,
+      maximumX: 40,
+      maximumY: 20,
+    },
+  ];
+}
+
 function requiredItem<T>(values: readonly T[], index: number, name: string): T {
   const value = values[index];
   if (value === undefined) {
     throw new TypeError(`${name} is unavailable`);
   }
   return value;
+}
+
+function pixelImage(data: readonly number[], width: number): { readonly width: number; readonly height: 1; readonly data: Uint8Array } {
+  return { width, height: 1, data: Uint8Array.from(data) };
+}
+
+function failureOutput(operation: () => void): string {
+  try {
+    operation();
+  } catch (error: unknown) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error("field control unexpectedly passed");
 }

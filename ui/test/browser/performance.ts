@@ -17,122 +17,27 @@ import type { GraphRendererHandle, MultiCameraRendererHandle,
 import type { CameraKind } from "#engine/camera-kind.ts";
 import { assertLitPixelFloor } from "#browser/lit-floor.ts";
 import type { PixelImage } from "#browser/lit-floor.ts";
+import {
+  PERFORMANCE_VIEWPORT,
+  SOFTWARE_RASTERISATION_LABEL,
+  WARMUP_FRAMES,
+  notRunPerformanceRecord,
+  type Distribution,
+  type MemoryUsage,
+  type MemoryValue,
+  type PerformanceCombination,
+  type PerformanceMeasurements,
+  type PerformanceRecord,
+  type PerformanceScale,
+  type ProgressiveBand,
+  type ProgressiveValue,
+  type Measurement,
+} from "#browser/performance-contract.ts";
 
-/** This labels every performance figure as software rasterisation and does not imply GPU execution. */
-export const SOFTWARE_RASTERISATION_LABEL: "software-rasterised — not GPU performance" = "software-rasterised — not GPU performance";
-
-const WARMUP_FRAMES = 5;
 const FRAME_SAMPLES = 60;
 const LATENCY_SAMPLES = 3;
 const PICK_SAMPLES = 24;
 const PROGRESSIVE_BANDS = [MACRO, MESO, MICRO] as const;
-const VIEWPORT = { width: 960, height: 640 } as const;
-
-type MeasurementStatus = "PASS" | "NOT_RUN" | "UNKNOWN";
-
-type Distribution = {
-  readonly samplesMs: readonly number[];
-  readonly medianMs: number;
-  readonly p95Ms: number;
-};
-
-type Measurement<Value> =
-  | {
-      readonly status: "PASS";
-      readonly label: typeof SOFTWARE_RASTERISATION_LABEL;
-      readonly warmupFramesExcluded: number;
-      readonly warmupReason: string;
-      readonly value: Value;
-    }
-  | {
-      readonly status: Exclude<MeasurementStatus, "PASS">;
-      readonly label: typeof SOFTWARE_RASTERISATION_LABEL;
-      readonly warmupFramesExcluded: number;
-      readonly warmupReason: string;
-      readonly reason: string;
-    };
-
-type MemoryUsage = {
-  readonly usedJsHeapSize: number;
-  readonly totalJsHeapSize: number;
-  readonly jsHeapSizeLimit: number;
-};
-
-type MemoryValue = {
-  readonly browserMemory: Measurement<MemoryUsage>;
-  readonly retainedResources: Measurement<RetainedResourceWitness>;
-};
-
-type ProgressiveBand = {
-  readonly band: (typeof PROGRESSIVE_BANDS)[number];
-  readonly aggregationMaterial: readonly string[];
-  readonly aggregateCount: Measurement<number>;
-  readonly mountToFirstPaint: Measurement<Distribution>;
-  readonly renderedElementCounts: Measurement<{ readonly nodes: number; readonly edges: number }>;
-};
-
-type ProgressiveValue = {
-  readonly aggregationForcedAtScale: PerformanceRecord["scale"] | null;
-  readonly aggregationForcedBand: (typeof PROGRESSIVE_BANDS)[number] | null;
-  readonly aggregationCriterion: string;
-  readonly bands: readonly ProgressiveBand[];
-};
-
-type PerformanceMeasurements = {
-  readonly frameTime: Measurement<Distribution>;
-  readonly initialRenderLatency: Measurement<Distribution>;
-  readonly layoutCost: Measurement<Distribution>;
-  readonly sceneModelBuildCost: Measurement<Distribution>;
-  readonly interactionLatency: Measurement<Distribution>;
-  readonly pickingLatency: Measurement<Distribution>;
-  readonly memory: Measurement<MemoryValue>;
-  readonly cameraTransitionCost: Measurement<Distribution>;
-  readonly cameraSwitchCost: Measurement<Distribution>;
-  readonly progressiveDisclosure: Measurement<ProgressiveValue>;
-};
-
-type PerformanceRecord = {
-  readonly renderer: "sigma-2d" | "r3f-2d" | "r3f-3d";
-  readonly scale: "10^2" | "10^3" | "10^4";
-  readonly fixture: string;
-  readonly syntheticFixture: true;
-  readonly rasterisationLabel: typeof SOFTWARE_RASTERISATION_LABEL;
-  readonly elementCounts: {
-    readonly fixtureNodes: number | "NOT_RUN";
-    readonly fixtureEdges: number | "NOT_RUN";
-    readonly renderedNodes: number | "NOT_RUN";
-    readonly renderedEdges: number | "NOT_RUN";
-  };
-  readonly devicePixelRatio: number;
-  readonly viewport: { readonly width: number; readonly height: number };
-  readonly observedCommitSha: string;
-  readonly warmup: {
-    readonly framesExcluded: number;
-    readonly reason: string;
-  };
-  readonly measurements: PerformanceMeasurements;
-  readonly error?: string;
-};
-
-/** This is the complete browser-produced performance evidence and does not contain semantic claims about fixtures. */
-export type PerformanceResult = {
-  readonly schemaVersion: 1;
-  readonly suite: "CAP-13 renderer performance";
-  readonly rasterisationLabel: typeof SOFTWARE_RASTERISATION_LABEL;
-  readonly syntheticFixtureDeclaration: string;
-  readonly observedCommitSha: string;
-  readonly browser: { readonly devicePixelRatio: number };
-  readonly summary: {
-    readonly passing: boolean;
-    readonly bound: boolean;
-    readonly required: number;
-    readonly passed: number;
-    readonly notRun: number;
-    readonly unknown: number;
-    readonly rule: string;
-  };
-  readonly records: readonly PerformanceRecord[];
-};
 
 type RendererDefinition = {
   readonly name: PerformanceRecord["renderer"];
@@ -142,13 +47,13 @@ type RendererDefinition = {
 
 type Fixture = {
   readonly file: string;
-  readonly scale: PerformanceRecord["scale"];
+  readonly scale: PerformanceScale;
   readonly graph: VisualGraph;
 };
 
 type FixtureLoad = {
   readonly file: string;
-  readonly scale: PerformanceRecord["scale"];
+  readonly scale: PerformanceScale;
   readonly graph: VisualGraph | null;
   readonly error: string | null;
 };
@@ -165,10 +70,9 @@ declare global {
 }
 
 type PerformancePageApi = {
-  readonly run: (observedCommitSha: string) => Promise<PerformanceResult>;
+  readonly run: (combination: PerformanceCombination, observedCommitSha: string) => Promise<PerformanceRecord>;
 };
 
-const syntheticFixtureDeclaration = "SYNTHETIC STRESS MATERIAL ONLY: carries no semantic meaning, is never canon, and exists only to measure renderer performance.";
 const options: RenderOptions = {
   morphology: "stellar",
   organization: "indra",
@@ -204,58 +108,34 @@ export function installPerformancePage(): void {
   window.__performance = { run: runPerformance };
 }
 
-async function runPerformance(observedCommitSha: string): Promise<PerformanceResult> {
-  const fixtures = await loadFixtures();
-  const container = createContainer();
-  const modelCosts = new Map(
-    fixtures.map((fixture) => [
-      fixture.file,
-      fixture.graph === null ? null : measureModelCosts(fixture.graph, ORTHOGRAPHIC),
-    ] as const),
-  );
-  const records: PerformanceRecord[] = [];
-  for (const renderer of rendererDefinitions) {
-    for (const fixture of fixtures) {
-      if (fixture.graph === null) {
-        records.push(unavailableRecord(renderer, fixture, observedCommitSha));
-      } else {
-        records.push(await measureRecord(renderer, { file: fixture.file, scale: fixture.scale, graph: fixture.graph }, container, observedCommitSha, modelCosts.get(fixture.file) ?? null));
-      }
-    }
+async function runPerformance(combination: PerformanceCombination, observedCommitSha: string): Promise<PerformanceRecord> {
+  const renderer = rendererDefinitions.find((definition) => definition.name === combination.renderer);
+  if (renderer === undefined) {
+    throw new Error(`unknown renderer ${combination.renderer}`);
   }
-  container.remove();
-  return {
-    schemaVersion: 1,
-    suite: "CAP-13 renderer performance",
-    rasterisationLabel: SOFTWARE_RASTERISATION_LABEL,
-    syntheticFixtureDeclaration,
-    observedCommitSha,
-    browser: { devicePixelRatio: window.devicePixelRatio },
-    summary: performanceSummary(records, observedCommitSha),
-    records,
-  };
+  const fixture = await loadFixture(combination);
+  const container = createContainer();
+  try {
+    if (fixture.graph === null) {
+      return unavailableRecord(renderer, fixture, observedCommitSha);
+    }
+    const modelCosts = measureModelCosts(fixture.graph, ORTHOGRAPHIC);
+    return await measureRecord(renderer, { file: fixture.file, scale: fixture.scale, graph: fixture.graph }, container, observedCommitSha, modelCosts);
+  } finally {
+    container.remove();
+  }
 }
 
-async function loadFixtures(): Promise<readonly FixtureLoad[]> {
-  const definitions: readonly { readonly file: string; readonly scale: PerformanceRecord["scale"] }[] = [
-    { file: "stress-100.json", scale: "10^2" },
-    { file: "stress-1000.json", scale: "10^3" },
-    { file: "stress-10000.json", scale: "10^4" },
-  ];
-  const fixtures: FixtureLoad[] = [];
-  for (const definition of definitions) {
-    try {
-      const response = await fetch(["fixtures", "synthetic", "projection", "stress", definition.file].join("/"), { cache: "no-store" });
-      if (!response.ok) {
-        fixtures.push({ file: definition.file, scale: definition.scale, graph: null, error: `fixture failed with ${response.status}` });
-        continue;
-      }
-      fixtures.push({ file: definition.file, scale: definition.scale, graph: toVisualGraph(JSON.parse(await response.text()) as unknown), error: null });
-    } catch (error: unknown) {
-      fixtures.push({ file: definition.file, scale: definition.scale, graph: null, error: errorMessage(error) });
+async function loadFixture(combination: PerformanceCombination): Promise<FixtureLoad> {
+  try {
+    const response = await fetch(["fixtures", "synthetic", "projection", "stress", combination.fixture].join("/"), { cache: "no-store" });
+    if (!response.ok) {
+      return { file: combination.fixture, scale: combination.scale, graph: null, error: `fixture failed with ${response.status}` };
     }
+    return { file: combination.fixture, scale: combination.scale, graph: toVisualGraph(JSON.parse(await response.text()) as unknown), error: null };
+  } catch (error: unknown) {
+    return { file: combination.fixture, scale: combination.scale, graph: null, error: errorMessage(error) };
   }
-  return fixtures;
 }
 
 /** This narrows a handle to one that can enumerate its own graphics resources and does not assume a renderer can. */
@@ -264,61 +144,18 @@ function resourceCountingHandle(handle: GraphRendererHandle): ResourceCountingRe
   return typeof candidate.readRetainedResources === "function" ? handle as ResourceCountingRendererHandle : null;
 }
 
-function performanceSummary(
-  records: readonly PerformanceRecord[],
-  observedCommitSha: string,
-): PerformanceResult["summary"] {
-  const statuses = records.flatMap(performanceMeasurementStatuses);
-  const passed = statuses.filter((status) => status === "PASS").length;
-  const notRun = statuses.filter((status) => status === "NOT_RUN").length;
-  const unknown = statuses.filter((status) => status === "UNKNOWN").length;
-  const bound = records.length === rendererDefinitions.length * 3
-    && records.every((record) => record.observedCommitSha === observedCommitSha);
-  return {
-    passing: bound && notRun === 0 && unknown === 0 && passed === statuses.length,
-    bound,
-    required: statuses.length,
-    passed,
-    notRun,
-    unknown,
-    rule: "The performance run passes only when every recorded measurement criterion is commit-bound and PASS; NOT_RUN and UNKNOWN retain their reasons and make the run verdict false.",
-  };
-}
-
-function performanceMeasurementStatuses(record: PerformanceRecord): readonly MeasurementStatus[] {
-  const measurements = record.measurements;
-  const statuses: MeasurementStatus[] = Object.values(measurements).map((measurement) => measurement.status);
-  if (measurements.memory.status === "PASS") {
-    statuses.push(measurements.memory.value.browserMemory.status, measurements.memory.value.retainedResources.status);
-  }
-  if (measurements.progressiveDisclosure.status === "PASS") {
-    for (const band of measurements.progressiveDisclosure.value.bands) {
-      statuses.push(band.aggregateCount.status, band.mountToFirstPaint.status, band.renderedElementCounts.status);
-    }
-  }
-  return statuses;
-}
-
 function unavailableRecord(
   renderer: RendererDefinition,
   fixture: FixtureLoad,
   observedCommitSha: string,
 ): PerformanceRecord {
   const reason = `fixture ${fixture.file} did not load: ${fixture.error ?? "unknown fixture failure"}`;
-  return {
-    renderer: renderer.name,
-    scale: fixture.scale,
-    fixture: fixture.file,
-    syntheticFixture: true,
-    rasterisationLabel: SOFTWARE_RASTERISATION_LABEL,
-    elementCounts: { fixtureNodes: "NOT_RUN", fixtureEdges: "NOT_RUN", renderedNodes: "NOT_RUN", renderedEdges: "NOT_RUN" },
-    devicePixelRatio: window.devicePixelRatio,
-    viewport: VIEWPORT,
+  return notRunPerformanceRecord(
+    { renderer: renderer.name, scale: fixture.scale, fixture: fixture.file },
     observedCommitSha,
-    warmup: { framesExcluded: WARMUP_FRAMES, reason: "No frames were warmed because the synthetic fixture did not load." },
-    measurements: notRunMeasurements(reason),
-    error: reason,
-  };
+    window.devicePixelRatio,
+    reason,
+  );
 }
 
 /** This narrows a handle to one that can switch camera and does not assume a renderer can. */
@@ -343,7 +180,7 @@ function adaptSigmaHandle(handle: RenderHandle): GraphRendererHandle {
 
 function createContainer(): HTMLElement {
   const shell = document.createElement("main");
-  shell.style.cssText = `width:${VIEWPORT.width}px;height:${VIEWPORT.height}px;position:relative`;
+  shell.style.cssText = `width:${PERFORMANCE_VIEWPORT.width}px;height:${PERFORMANCE_VIEWPORT.height}px;position:relative`;
   const container = document.createElement("div");
   container.style.cssText = "width:100%;height:100%;position:relative";
   shell.append(container);
@@ -371,7 +208,7 @@ async function measureRecord(
       renderedEdges: "NOT_RUN" as const,
     },
     devicePixelRatio: window.devicePixelRatio,
-    viewport: VIEWPORT,
+    viewport: PERFORMANCE_VIEWPORT,
     observedCommitSha,
     warmup: { framesExcluded: WARMUP_FRAMES, reason: "Warm-up frames let browser and renderer scheduling settle; they are excluded from all timed frame distributions." },
   };

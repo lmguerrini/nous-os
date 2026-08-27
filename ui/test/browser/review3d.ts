@@ -41,6 +41,11 @@ export type Review3dCaptureWitness = {
     readonly kind: VisualState["cameraKind"];
     readonly comparisonNote: string | null;
   };
+  readonly microFraming: {
+    readonly selectedElementId: string;
+    readonly selectionRule: string;
+    readonly degree: number;
+  };
 };
 
 /** This exposes fixed review capture operations and does not expose renderer-private state. */
@@ -61,6 +66,19 @@ type RendererMount = (
 
 type MountedRenderer = {
   readonly handle: GraphRendererHandle;
+};
+
+type ReviewFraming = {
+  readonly bounds: VisualStateCamera["bounds"];
+  readonly micro: {
+    readonly selectedElementId: string;
+    readonly selectionRule: string;
+    readonly degree: number;
+    readonly cameraCenter: {
+      readonly x: number;
+      readonly y: number;
+    };
+  };
 };
 
 declare global {
@@ -94,6 +112,7 @@ const CAPTURE_OPTIONS: RenderOptions = {
   elapsedMilliseconds: DEFAULT_CALIBRATION.lod.crossfadeDurationMs,
 };
 const PERSPECTIVE_COMPARISON_NOTE = "Perspective uses camera.ratio as a calibrated dolly distance and camera.angle as an orbit; it has no equivalent orthographic zoom ratio.";
+const MICRO_FRAMING_RULE = "unique node with the maximum count of incident relations; ties are rejected";
 
 const rendererMounts: Readonly<Record<Review3dRenderer, RendererMount>> = {
   "sigma-2d": mountSigma as unknown as RendererMount,
@@ -172,6 +191,11 @@ export async function installReview3dPage(): Promise<void> {
           kind: observedVisualState.cameraKind,
           comparisonNote: request.renderer === "r3f-3d" ? PERSPECTIVE_COMPARISON_NOTE : null,
         },
+        microFraming: {
+          selectedElementId: framing.micro.selectedElementId,
+          selectionRule: framing.micro.selectionRule,
+          degree: framing.micro.degree,
+        },
       };
     };
     window.__review3d = { ready: true, errors, capture, destroy };
@@ -184,19 +208,20 @@ export async function installReview3dPage(): Promise<void> {
 function requestedState(
   graph: VisualGraph,
   request: Review3dCaptureRequest,
-  framing: VisualStateCamera["bounds"],
+  framing: ReviewFraming,
   targetId: string,
 ): VisualState {
   const configuration = viewConfiguration(request.view);
+  const micro2d = request.view === "micro" && request.renderer !== "r3f-3d";
   return createVisualState(graph, {
     selectedId: configuration.interaction === "selected" ? targetId : null,
     focusedId: configuration.interaction === "focused" ? targetId : null,
     camera: {
-      x: 0.5,
-      y: 0.5,
+      x: micro2d ? framing.micro.cameraCenter.x : 0.5,
+      y: micro2d ? framing.micro.cameraCenter.y : 0.5,
       angle: configuration.angle,
       ratio: configuration.ratio,
-      bounds: framing,
+      bounds: framing.bounds,
     },
     cameraKind: request.renderer === "r3f-3d" ? PERSPECTIVE : ORTHOGRAPHIC,
     morphology: CAPTURE_OPTIONS.morphology,
@@ -245,14 +270,33 @@ function applyInteractionState(handle: GraphRendererHandle, state: VisualState):
   }
 }
 
-function framingFor(graph: VisualGraph): VisualStateCamera["bounds"] {
-  const anchors = [...layoutAnchors(createEngineGraphView(graph).graph, DEFAULT_CALIBRATION).values()];
-  if (anchors.length === 0) {
+function framingFor(graph: VisualGraph): ReviewFraming {
+  const anchors = layoutAnchors(createEngineGraphView(graph).graph, DEFAULT_CALIBRATION);
+  if (anchors.size === 0) {
     throw new Error("review3d framing requires at least one layout anchor");
   }
-  const x = extentWithMargin(anchors.map((anchor) => anchor.x));
-  const y = extentWithMargin(anchors.map((anchor) => anchor.y));
-  return { x, y };
+  const values = [...anchors.values()];
+  const bounds = {
+    x: extentWithMargin(values.map((anchor) => anchor.x)),
+    y: extentWithMargin(values.map((anchor) => anchor.y)),
+  };
+  const target = highestDegreeNode(graph);
+  const anchor = anchors.get(target.id);
+  if (anchor === undefined) {
+    throw new Error(`review3d micro framing lacks a layout anchor for ${target.id}`);
+  }
+  return {
+    bounds,
+    micro: {
+      selectedElementId: target.id,
+      selectionRule: MICRO_FRAMING_RULE,
+      degree: target.degree,
+      cameraCenter: {
+        x: normaliseWithinBounds(anchor.x, bounds.x),
+        y: normaliseWithinBounds(anchor.y, bounds.y),
+      },
+    },
+  };
 }
 
 function extentWithMargin(values: readonly number[]): readonly [number, number] {
@@ -263,6 +307,36 @@ function extentWithMargin(values: readonly number[]): readonly [number, number] 
     ? 1
     : (span * DEFAULT_CALIBRATION.layout.framingMarginPermille) / 1_000;
   return [minimum - margin, maximum + margin];
+}
+
+function highestDegreeNode(graph: VisualGraph): { readonly id: string; readonly degree: number } {
+  const degrees = new Map(graph.nodes.map((node) => [node.id, 0]));
+  for (const edge of graph.edges) {
+    const sourceDegree = degrees.get(edge.source);
+    const targetDegree = degrees.get(edge.target);
+    if (sourceDegree === undefined || targetDegree === undefined) {
+      throw new Error(`review3d micro framing relation ${edge.id} has an unavailable endpoint`);
+    }
+    degrees.set(edge.source, sourceDegree + 1);
+    if (edge.target !== edge.source) {
+      degrees.set(edge.target, targetDegree + 1);
+    }
+  }
+  const ranked = [...degrees.entries()]
+    .map(([id, degree]) => ({ id, degree }))
+    .sort((left, right) => right.degree - left.degree || left.id.localeCompare(right.id));
+  const target = ranked[0];
+  if (target === undefined) {
+    throw new Error("review3d micro framing requires one graph node");
+  }
+  if (ranked[1]?.degree === target.degree) {
+    throw new Error(`review3d micro framing maximum degree ${target.degree} is not unique`);
+  }
+  return target;
+}
+
+function normaliseWithinBounds(value: number, bounds: readonly [number, number]): number {
+  return (value - bounds[0]) / (bounds[1] - bounds[0]);
 }
 
 function primaryNodeId(graph: VisualGraph): string {

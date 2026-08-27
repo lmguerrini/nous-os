@@ -25,7 +25,6 @@ import {
   attachCameraInteractions,
   cameraStateForBounds,
   resolvedNodeBounds,
-  resolvedWorldCenterZ,
 } from "#render3f/camera.tsx";
 import type { Render3fFramingBox } from "#render3f/camera.tsx";
 import { tokenToSrgb } from "#render3f/buffers.ts";
@@ -114,14 +113,14 @@ export function mount(
   const initialScenes = scenesForState(visualGraph, currentState, options.calibration);
   layoutPassCount += cameraKindCount();
   const live = new LiveSceneState(initialScenes, currentState.cameraKind, layoutPassCount);
-  const worldCenterZ = resolvedWorldCenterZ(live.scene.nodes.map((node) => node.position));
+  const worldFramingPoints = sceneFramingPoints(live.scene);
   const rig = new CameraRig(
     currentState.cameraKind,
     live.scene.camera,
     dimensions.width,
     dimensions.height,
     devicePixelRatio,
-    worldCenterZ,
+    worldFramingPoints,
   );
 
   const registry = new ResourceRegistry();
@@ -280,7 +279,7 @@ export function mount(
     live.replaceScenes(scenes, cameraKindCount());
     updateNodeRenderResources(nodeResources, live.buffers.nodes);
     updateFilamentRenderResources(filamentResources, live.buffers.filaments);
-    rig.setWorldCenterZ(resolvedWorldCenterZ(live.scene.nodes.map((node) => node.position)));
+    rig.setWorldFramingPoints(sceneFramingPoints(live.scene));
     picker.replaceScene(live.scene);
     updateField(renderer, live.scene);
     renderFrame();
@@ -445,6 +444,23 @@ function readNodeFootprints(live: LiveSceneState, rig: CameraRig): readonly Node
       haloRadiusPx: Math.max(requestedHaloRadius, gapHaloRadius),
     };
   });
+}
+
+function sceneFramingPoints(scene: Scene): readonly Coordinates[] {
+  return [
+    ...scene.nodes.map((node) => node.position),
+    ...scene.edges.flatMap((edge) => [
+      ...edge.path,
+      edge.controlPoint,
+      edge.propagation.position,
+    ]),
+    ...scene.aggregates.flatMap((aggregate) => [
+      { x: aggregate.bounds.minimumX, y: aggregate.bounds.minimumY, z: aggregate.center.z },
+      { x: aggregate.bounds.minimumX, y: aggregate.bounds.maximumY, z: aggregate.center.z },
+      { x: aggregate.bounds.maximumX, y: aggregate.bounds.minimumY, z: aggregate.center.z },
+      { x: aggregate.bounds.maximumX, y: aggregate.bounds.maximumY, z: aggregate.center.z },
+    ]),
+  ];
 }
 
 function updateField(renderer: THREE.WebGLRenderer, scene: Scene): void {

@@ -8,6 +8,10 @@ import type { Coordinates } from "#engine/contract.ts";
 import type { VisualStateCamera } from "#engine/visual-state.ts";
 import { SCENE_PERMILLE_SCALE, SCENE_PERMILLE_QUANTUM } from "#scene/contract.ts";
 import type { SceneCameraRequest } from "#scene/contract.ts";
+import {
+  canonicalCameraFramingPoints,
+  quantizeCameraFramingValue,
+} from "#render3f/camera-framing.ts";
 
 /** This is one explicit renderer framing box and does not change world anchors. */
 export type Render3fFramingBox = {
@@ -36,6 +40,7 @@ export class CameraRig {
   private heightCssPx: number;
   private devicePixelRatio: number;
   private worldCenterZ: number;
+  private worldFramingPoints: readonly Coordinates[];
 
   /** This creates both projections over copied state and does not modify a world object. */
   constructor(
@@ -44,7 +49,7 @@ export class CameraRig {
     widthCssPx: number,
     heightCssPx: number,
     devicePixelRatio: number,
-    worldCenterZ: number,
+    worldFramingPoints: readonly Coordinates[],
   ) {
     this.kindValue = kind;
     this.stateValue = copyCameraState(request);
@@ -52,7 +57,8 @@ export class CameraRig {
     this.widthCssPx = requiredDimension(widthCssPx, "camera viewport width");
     this.heightCssPx = requiredDimension(heightCssPx, "camera viewport height");
     this.devicePixelRatio = requiredDimension(devicePixelRatio, "camera device pixel ratio");
-    this.worldCenterZ = worldCenterZ;
+    this.worldFramingPoints = canonicalCameraFramingPoints(worldFramingPoints);
+    this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(this.worldFramingPoints));
     this.updateCameras();
   }
 
@@ -92,9 +98,10 @@ export class CameraRig {
     this.updateCameras();
   }
 
-  /** This updates the layout-depth center used for framing and does not infer it from semantics. */
-  setWorldCenterZ(value: number): void {
-    this.worldCenterZ = value;
+  /** This updates resolved framing geometry and does not infer it from semantics. */
+  setWorldFramingPoints(points: readonly Coordinates[]): void {
+    this.worldFramingPoints = canonicalCameraFramingPoints(points);
+    this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(this.worldFramingPoints));
     this.updateCameras();
   }
 
@@ -222,6 +229,7 @@ export class CameraRig {
       this.widthCssPx,
       this.heightCssPx,
       this.worldCenterZ,
+      this.worldFramingPoints,
     );
   }
 }
@@ -362,6 +370,7 @@ function updatePerspectiveCamera(
   widthCssPx: number,
   heightCssPx: number,
   worldCenterZ: number,
+  worldFramingPoints: readonly Coordinates[],
 ): void {
   const target = perspectiveTarget(state, worldCenterZ);
   const span = Math.max(
@@ -374,11 +383,25 @@ function updatePerspectiveCamera(
     (state.bounds.y[1] - state.bounds.y[0]) / bisectionDivisor(),
     (state.bounds.x[1] - state.bounds.x[0]) / (bisectionDivisor() * aspect),
   );
+  const defaultTangent = perspectiveDefaultHalfAngleTangent(
+    state,
+    aspect,
+    span,
+    verticalHalfSpan,
+    worldCenterZ,
+    worldFramingPoints,
+  );
+  const defaultBoundsTangent = verticalHalfSpan / span;
+  const framingScale = defaultTangent / defaultBoundsTangent;
   const navigationRange = request.kind === "perspective"
     ? request.navigation.maximumDollyPermille / request.navigation.minimumDollyPermille
     : request.navigation.maximumZoomPermille / request.navigation.minimumZoomPermille;
   camera.aspect = aspect;
-  camera.fov = (bisectionDivisor() * Math.atan(verticalHalfSpan / distance) * halfTurnDegrees()) / Math.PI;
+  camera.fov = (
+    bisectionDivisor()
+    * Math.atan((verticalHalfSpan / distance) * framingScale)
+    * halfTurnDegrees()
+  ) / Math.PI;
   camera.near = distance / navigationRange;
   camera.far = distance * (navigationRange + scalarCount());
   camera.up.set(0, 0, scalarCount());
@@ -392,10 +415,49 @@ function updatePerspectiveCamera(
   camera.updateMatrixWorld(true);
 }
 
+function perspectiveDefaultHalfAngleTangent(
+  state: VisualStateCamera,
+  aspect: number,
+  span: number,
+  verticalHalfSpan: number,
+  worldCenterZ: number,
+  worldFramingPoints: readonly Coordinates[],
+): number {
+  const target = perspectiveBoundsCenter(state, worldCenterZ);
+  const position = new THREE.Vector3(
+    target.x + (Math.cos(state.angle) * span),
+    target.y + (Math.sin(state.angle) * span),
+    target.z + span,
+  );
+  const matrixWorld = new THREE.Matrix4().lookAt(position, target, new THREE.Vector3(0, 0, scalarCount()));
+  matrixWorld.setPosition(position);
+  const matrixWorldInverse = matrixWorld.invert();
+  let requiredTangent = 0;
+  for (const point of worldFramingPoints) {
+    const view = new THREE.Vector3(point.x, point.y, point.z).applyMatrix4(matrixWorldInverse);
+    const depth = Math.max(-view.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
+    requiredTangent = Math.max(
+      requiredTangent,
+      Math.abs(view.y) / depth,
+      Math.abs(view.x) / (depth * aspect),
+    );
+  }
+  const targetDistance = position.distanceTo(target);
+  return quantizeCameraFramingValue(Math.max(verticalHalfSpan / targetDistance, requiredTangent));
+}
+
 function perspectiveTarget(state: VisualStateCamera, worldCenterZ: number): THREE.Vector3 {
   const normalise = createNormalizationFunction(copyMutableBounds(state.bounds));
   const target = normalise.inverse({ x: state.x, y: state.y });
   return new THREE.Vector3(target.x, target.y, worldCenterZ);
+}
+
+function perspectiveBoundsCenter(state: VisualStateCamera, worldCenterZ: number): THREE.Vector3 {
+  return new THREE.Vector3(
+    (state.bounds.x[0] + state.bounds.x[1]) / bisectionDivisor(),
+    (state.bounds.y[0] + state.bounds.y[1]) / bisectionDivisor(),
+    worldCenterZ,
+  );
 }
 
 function panSensitivity(request: SceneCameraRequest): number {

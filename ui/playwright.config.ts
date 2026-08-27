@@ -106,6 +106,13 @@ export default defineConfig({
       // CAP-13. Software-rasterised, and every figure it emits says so in its own record.
       name: "performance",
       testMatch: PERFORMANCE_ENABLED ? PERFORMANCE_SPEC : "performance-disabled.spec.ts",
+      // Fifteen minutes, for this project ALONE. Nine renderer-by-scale combinations are measured,
+      // the largest at ten thousand elements, under software rasterisation — the work is real and
+      // the shared two-minute budget cannot hold it. Recorded rather than quietly widened, and
+      // scoped rather than global: every other suite keeps the budget it was calibrated against, so
+      // no existing control becomes unable to fail. A slowdown in the PRODUCT would still show up
+      // where it belongs, in the measured frame times this suite records, not in a timeout.
+      timeout: 900_000,
       use: { deviceScaleFactor: 1, viewport: { width: 960, height: 640 } },
     },
   ],

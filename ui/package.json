@@ -11,6 +11,7 @@
     "#render2d/*": "./src/render2d/*",
     "#render3f/*": "./src/render3f/*",
     "#scene/*": "./src/scene/*",
+    "#test-render3f/*": "./test/render3f/*",
     "#test-scene/*": "./test/scene/*"
   },
   "scripts": {

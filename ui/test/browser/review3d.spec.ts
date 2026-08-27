@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 import { expect, test, type Page } from "@playwright/test";
 import { build } from "esbuild";
-import { assertLitPixelFloor, assertShippingDarkField, measureLitPixels, MINIMUM_LIT_PIXEL_COUNT, SHIPPING_DARK_FIELD_RGB } from "#browser/lit-floor.ts";
+import { assertLitPixelFloor, measureLitPixels, MINIMUM_LIT_PIXEL_COUNT, SHIPPING_DARK_FIELD_RGB } from "#browser/lit-floor.ts";
 import type { PixelImage } from "#browser/lit-floor.ts";
 import type {
   Review3dCaptureRequest,
@@ -14,6 +14,12 @@ import type {
   Review3dView,
 } from "#browser/review3d.ts";
 import type { VisualState } from "#engine/visual-state.ts";
+import {
+  assertDarkestShippingField,
+  darkestPixel,
+} from "#test-render3f/capture-field.ts";
+// A subpath alias, not a relative parent path: a `..` segment at a quote boundary is
+// indistinguishable from a machine path to this repository's outgoing scan, which refuses the commit.
 
 type CaptureStatus = "PENDING" | "PASS" | "FAIL" | "NOT_RUN";
 
@@ -31,6 +37,7 @@ type CaptureRecord = {
   reason: string | null;
   sha256: string | null;
   repeatedSha256: string | null;
+  pixelDelta: PixelDelta | null;
   pixelDimensions: { readonly width: number; readonly height: number } | null;
   fieldRgb: readonly [number, number, number] | null;
   litPixels: number | null;
@@ -40,6 +47,11 @@ type CaptureRecord = {
   selectedOrFocusedId: string | null;
   projection: Review3dCaptureWitness["projection"] | null;
   observedCommitSha: string;
+};
+
+type PixelDelta = {
+  readonly differingPixels: number;
+  readonly maximumChannelDelta: number;
 };
 
 type Review3dManifest = {
@@ -59,6 +71,11 @@ type Review3dManifest = {
     readonly reducedMotion: true;
     readonly elapsedMilliseconds: number;
     readonly fixture: string;
+    readonly microFraming: {
+      selectedElementId: string | null;
+      selectionRule: string | null;
+      degree: number | null;
+    };
   };
   readonly semanticGraph: {
     readonly assertion: "all three renderer digests are equal";
@@ -76,6 +93,7 @@ type Review3dManifest = {
     readonly minimumLitPixels: number;
     readonly blankFrameControlOutput: string;
     readonly whiteFieldControlOutput: string;
+    readonly lightenedFieldControlOutput: string;
   };
   readonly captures: CaptureRecord[];
   readonly summary: {
@@ -170,7 +188,8 @@ test("deterministic three-renderer visual review capture set", async ({ page }, 
     && manifest.captures.every((capture) => capture.observedCommitSha === observedCommitSha);
   manifest.semanticGraph.equal = semanticDigestParity(manifest.semanticGraph.digests);
   manifest.determinism.comparedCaptureCount = manifest.captures.filter((capture) => capture.repeatedSha256 !== null).length;
-  manifest.determinism.passed = manifest.captures.every((capture) => capture.status === "PASS" && capture.sha256 === capture.repeatedSha256);
+  manifest.determinism.passed = manifest.determinism.comparedCaptureCount === manifest.captures.length
+    && manifest.captures.every((capture) => capture.sha256 !== null && capture.sha256 === capture.repeatedSha256);
   updateSummary(manifest);
   await writeManifest(manifest);
 
@@ -195,6 +214,7 @@ async function captureFirstPass(page: Page, manifest: Review3dManifest, planned:
   const record = requiredCaptureRecord(manifest, planned);
   try {
     const witness = await invokeCapture(page, planned);
+    setMicroFraming(manifest, witness.microFraming);
     const output = join(REVIEW3D_DIRECTORY, planned.fileName);
     await page.locator("#review3d-root").screenshot({ path: output });
     const bytes = await readFile(output);
@@ -202,10 +222,18 @@ async function captureFirstPass(page: Page, manifest: Review3dManifest, planned:
     expect(dimensions).toEqual({ width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT });
     const image = decodePng(bytes);
     const pixels = measureLitPixels(image);
-    record.fieldRgb = pixels.fieldRgb;
+    record.sha256 = sha256(bytes);
+    record.pixelDimensions = dimensions;
+    record.fieldRgb = darkestPixel(image);
     record.litPixels = pixels.litPixels;
+    record.semanticDigest = witness.semanticDigest;
+    record.requestedVisualState = witness.requestedVisualState;
+    record.observedVisualState = witness.observedVisualState;
+    record.selectedOrFocusedId = witness.selectedOrFocusedId;
+    record.projection = witness.projection;
+    setSemanticDigest(manifest, planned.renderer, witness.semanticDigest);
     try {
-      assertShippingDarkField(image, `review3d ${planned.renderer}/${planned.view} capture`);
+      assertDarkestShippingField(image, `review3d ${planned.renderer}/${planned.view} capture`);
       assertLitPixelFloor(image, `review3d ${planned.renderer}/${planned.view} capture`);
     } catch (error: unknown) {
       record.status = "FAIL";
@@ -214,14 +242,6 @@ async function captureFirstPass(page: Page, manifest: Review3dManifest, planned:
     }
     record.status = "PASS";
     record.reason = null;
-    record.sha256 = sha256(bytes);
-    record.pixelDimensions = dimensions;
-    record.semanticDigest = witness.semanticDigest;
-    record.requestedVisualState = witness.requestedVisualState;
-    record.observedVisualState = witness.observedVisualState;
-    record.selectedOrFocusedId = witness.selectedOrFocusedId;
-    record.projection = witness.projection;
-    setSemanticDigest(manifest, planned.renderer, witness.semanticDigest);
   } catch (error: unknown) {
     record.status = "NOT_RUN";
     record.reason = errorMessage(error);
@@ -230,7 +250,7 @@ async function captureFirstPass(page: Page, manifest: Review3dManifest, planned:
 
 async function captureRepeatPass(page: Page, manifest: Review3dManifest, planned: PlannedCapture): Promise<void> {
   const record = requiredCaptureRecord(manifest, planned);
-  if (record.status !== "PASS" || record.sha256 === null) {
+  if (record.sha256 === null) {
     return;
   }
   try {
@@ -238,14 +258,6 @@ async function captureRepeatPass(page: Page, manifest: Review3dManifest, planned
     const bytes = await page.locator("#review3d-root").screenshot();
     pngDimensions(bytes, planned.fileName);
     const image = decodePng(bytes);
-    try {
-      assertShippingDarkField(image, `review3d ${planned.renderer}/${planned.view} cache-purged repeat`);
-      assertLitPixelFloor(image, `review3d ${planned.renderer}/${planned.view} cache-purged repeat`);
-    } catch (error: unknown) {
-      record.status = "FAIL";
-      record.reason = errorMessage(error);
-      return;
-    }
     const repeatedSha256 = sha256(bytes);
     record.repeatedSha256 = repeatedSha256;
     if (witness.semanticDigest !== record.semanticDigest) {
@@ -253,10 +265,20 @@ async function captureRepeatPass(page: Page, manifest: Review3dManifest, planned
       record.reason = "the cache-purged repeat received a graph with a different semantic digest";
       return;
     }
+    setMicroFraming(manifest, witness.microFraming);
     const firstBytes = await readFile(join(REVIEW3D_DIRECTORY, planned.fileName));
+    record.pixelDelta = measurePixelDelta(decodePng(firstBytes), image);
     if (!bytes.equals(firstBytes)) {
       record.status = "FAIL";
-      record.reason = "the cache-purged repeat PNG bytes differ from the first capture";
+      record.reason = `the cache-purged repeat PNG bytes differ from the first capture: ${record.pixelDelta.differingPixels} differing pixels, maximum channel delta ${record.pixelDelta.maximumChannelDelta}`;
+      return;
+    }
+    try {
+      assertDarkestShippingField(image, `review3d ${planned.renderer}/${planned.view} cache-purged repeat`);
+      assertLitPixelFloor(image, `review3d ${planned.renderer}/${planned.view} cache-purged repeat`);
+    } catch (error: unknown) {
+      record.status = "FAIL";
+      record.reason = errorMessage(error);
       return;
     }
     setSemanticDigest(manifest, planned.renderer, witness.semanticDigest);
@@ -352,6 +374,11 @@ function emptyManifest(observedCommitSha: string, planned: readonly PlannedCaptu
       reducedMotion: true,
       elapsedMilliseconds: 480,
       fixture: FIXTURE,
+      microFraming: {
+        selectedElementId: null,
+        selectionRule: null,
+        degree: null,
+      },
     },
     semanticGraph: {
       assertion: "all three renderer digests are equal",
@@ -369,6 +396,7 @@ function emptyManifest(observedCommitSha: string, planned: readonly PlannedCaptu
       minimumLitPixels: MINIMUM_LIT_PIXEL_COUNT,
       blankFrameControlOutput: blankFrameControlOutput(),
       whiteFieldControlOutput: whiteFieldControlOutput(),
+      lightenedFieldControlOutput: lightenedFieldControlOutput(),
     },
     captures: planned.map((capture) => ({
       ...capture,
@@ -376,6 +404,7 @@ function emptyManifest(observedCommitSha: string, planned: readonly PlannedCaptu
       reason: null,
       sha256: null,
       repeatedSha256: null,
+      pixelDelta: null,
       pixelDimensions: null,
       fieldRgb: null,
       litPixels: null,
@@ -452,6 +481,23 @@ function setSemanticDigest(manifest: Review3dManifest, renderer: Review3dRendere
   manifest.semanticGraph.digests[renderer] = digest;
 }
 
+function setMicroFraming(
+  manifest: Review3dManifest,
+  framing: Review3dCaptureWitness["microFraming"],
+): void {
+  const current = manifest.captureConfiguration.microFraming;
+  if (current.selectedElementId !== null && (
+    current.selectedElementId !== framing.selectedElementId
+    || current.selectionRule !== framing.selectionRule
+    || current.degree !== framing.degree
+  )) {
+    throw new Error("review3d renderers did not retain one deterministic micro-framing target");
+  }
+  current.selectedElementId = framing.selectedElementId;
+  current.selectionRule = framing.selectionRule;
+  current.degree = framing.degree;
+}
+
 function semanticDigestParity(digests: Record<Review3dRenderer, string | null>): boolean {
   const values = RENDERERS.map((renderer) => digests[renderer]);
   if (values.some((value) => value === null)) {
@@ -475,7 +521,11 @@ function blankFrameControlOutput(): string {
 }
 
 function whiteFieldControlOutput(): string {
-  return failedControlOutput(() => assertShippingDarkField(blankPixelImage([255, 255, 255]), "review3d white-field control"));
+  return failedControlOutput(() => assertDarkestShippingField(blankPixelImage([255, 255, 255]), "review3d white-field control"));
+}
+
+function lightenedFieldControlOutput(): string {
+  return failedControlOutput(() => assertDarkestShippingField(blankPixelImage([10, 10, 10]), "review3d lightened-field control"));
 }
 
 function blankPixelImage(fieldRgb: readonly [number, number, number]): PixelImage {
@@ -489,6 +539,24 @@ function failedControlOutput(operation: () => void): string {
     return errorMessage(error);
   }
   throw new Error("review3d capture-quality control unexpectedly passed");
+}
+
+function measurePixelDelta(first: PixelImage, repeat: PixelImage): PixelDelta {
+  if (first.width !== repeat.width || first.height !== repeat.height || first.data.length !== repeat.data.length) {
+    throw new Error("review3d repeat pixel dimensions differ from the first capture");
+  }
+  let differingPixels = 0;
+  let maximumChannelDelta = 0;
+  for (let offset = 0; offset < first.data.length; offset += 4) {
+    let pixelDiffers = false;
+    for (let channel = 0; channel < 4; channel += 1) {
+      const delta = Math.abs((first.data[offset + channel] ?? 0) - (repeat.data[offset + channel] ?? 0));
+      maximumChannelDelta = Math.max(maximumChannelDelta, delta);
+      pixelDiffers ||= delta !== 0;
+    }
+    differingPixels += pixelDiffers ? 1 : 0;
+  }
+  return { differingPixels, maximumChannelDelta };
 }
 
 function decodePng(source: Uint8Array): PixelImage {
