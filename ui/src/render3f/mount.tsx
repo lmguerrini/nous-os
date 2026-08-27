@@ -27,6 +27,8 @@ import {
   resolvedNodeBounds,
 } from "#render3f/camera.tsx";
 import type { Render3fFramingBox } from "#render3f/camera.tsx";
+import { sceneCameraFramingSubjects } from "#render3f/camera-framing.ts";
+import type { ProjectedCameraFramingSubject } from "#render3f/camera-framing.ts";
 import { tokenToSrgb } from "#render3f/buffers.ts";
 import {
   createAggregateRenderResources,
@@ -64,6 +66,11 @@ export type Render3fOptions = {
   readonly calibration?: CalibrationProfile;
 };
 
+/** This exposes renderer-owned framing witnesses without widening the shared renderer handle. */
+export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountingRendererHandle & {
+  readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[];
+};
+
 /** This mounts one shared Three scene behind two cameras and does not compute renderer-local material. */
 export function mount(
   container: HTMLElement,
@@ -71,7 +78,7 @@ export function mount(
   options: Render3fOptions,
   framingBox?: Render3fFramingBox,
   initialVisualState?: VisualState,
-): MultiCameraRendererHandle & ResourceCountingRendererHandle {
+): Render3fRendererHandle {
   const dimensions = containerDimensions(container);
   const devicePixelRatio = requiredDevicePixelRatio();
   const previousPositionStyle = container.style.position;
@@ -113,14 +120,14 @@ export function mount(
   const initialScenes = scenesForState(visualGraph, currentState, options.calibration);
   layoutPassCount += cameraKindCount();
   const live = new LiveSceneState(initialScenes, currentState.cameraKind, layoutPassCount);
-  const worldFramingPoints = sceneFramingPoints(live.scene);
+  const worldFramingSubjects = sceneCameraFramingSubjects(live.scene);
   const rig = new CameraRig(
     currentState.cameraKind,
     live.scene.camera,
     dimensions.width,
     dimensions.height,
     devicePixelRatio,
-    worldFramingPoints,
+    worldFramingSubjects,
   );
 
   const registry = new ResourceRegistry();
@@ -279,7 +286,7 @@ export function mount(
     live.replaceScenes(scenes, cameraKindCount());
     updateNodeRenderResources(nodeResources, live.buffers.nodes);
     updateFilamentRenderResources(filamentResources, live.buffers.filaments);
-    rig.setWorldFramingPoints(sceneFramingPoints(live.scene));
+    rig.setWorldFramingSubjects(sceneCameraFramingSubjects(live.scene));
     picker.replaceScene(live.scene);
     updateField(renderer, live.scene);
     renderFrame();
@@ -345,6 +352,9 @@ export function mount(
     },
     readNodeFootprintWitnesses(): readonly NodeFootprintWitness[] {
       return readNodeFootprints(live, rig);
+    },
+    readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[] {
+      return rig.projectFramingSubjects();
     },
     readWorldAnchorWitnesses(): readonly WorldAnchorWitness[] {
       return live.readWorldAnchorWitnesses();
@@ -444,23 +454,6 @@ function readNodeFootprints(live: LiveSceneState, rig: CameraRig): readonly Node
       haloRadiusPx: Math.max(requestedHaloRadius, gapHaloRadius),
     };
   });
-}
-
-function sceneFramingPoints(scene: Scene): readonly Coordinates[] {
-  return [
-    ...scene.nodes.map((node) => node.position),
-    ...scene.edges.flatMap((edge) => [
-      ...edge.path,
-      edge.controlPoint,
-      edge.propagation.position,
-    ]),
-    ...scene.aggregates.flatMap((aggregate) => [
-      { x: aggregate.bounds.minimumX, y: aggregate.bounds.minimumY, z: aggregate.center.z },
-      { x: aggregate.bounds.minimumX, y: aggregate.bounds.maximumY, z: aggregate.center.z },
-      { x: aggregate.bounds.maximumX, y: aggregate.bounds.minimumY, z: aggregate.center.z },
-      { x: aggregate.bounds.maximumX, y: aggregate.bounds.maximumY, z: aggregate.center.z },
-    ]),
-  ];
 }
 
 function updateField(renderer: THREE.WebGLRenderer, scene: Scene): void {

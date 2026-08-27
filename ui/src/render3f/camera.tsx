@@ -9,8 +9,14 @@ import type { VisualStateCamera } from "#engine/visual-state.ts";
 import { SCENE_PERMILLE_SCALE, SCENE_PERMILLE_QUANTUM } from "#scene/contract.ts";
 import type { SceneCameraRequest } from "#scene/contract.ts";
 import {
-  canonicalCameraFramingPoints,
+  canonicalCameraFramingSubjects,
+  quantizeCameraFramingUpperBound,
   quantizeCameraFramingValue,
+  requiredPerspectiveFramingTangent,
+} from "#render3f/camera-framing.ts";
+import type {
+  CameraFramingSubject,
+  ProjectedCameraFramingSubject,
 } from "#render3f/camera-framing.ts";
 
 /** This is one explicit renderer framing box and does not change world anchors. */
@@ -40,7 +46,7 @@ export class CameraRig {
   private heightCssPx: number;
   private devicePixelRatio: number;
   private worldCenterZ: number;
-  private worldFramingPoints: readonly Coordinates[];
+  private worldFramingSubjects: readonly CameraFramingSubject[];
 
   /** This creates both projections over copied state and does not modify a world object. */
   constructor(
@@ -49,7 +55,7 @@ export class CameraRig {
     widthCssPx: number,
     heightCssPx: number,
     devicePixelRatio: number,
-    worldFramingPoints: readonly Coordinates[],
+    worldFramingSubjects: readonly CameraFramingSubject[],
   ) {
     this.kindValue = kind;
     this.stateValue = copyCameraState(request);
@@ -57,8 +63,10 @@ export class CameraRig {
     this.widthCssPx = requiredDimension(widthCssPx, "camera viewport width");
     this.heightCssPx = requiredDimension(heightCssPx, "camera viewport height");
     this.devicePixelRatio = requiredDimension(devicePixelRatio, "camera device pixel ratio");
-    this.worldFramingPoints = canonicalCameraFramingPoints(worldFramingPoints);
-    this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(this.worldFramingPoints));
+    this.worldFramingSubjects = canonicalCameraFramingSubjects(worldFramingSubjects);
+    this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(
+      this.worldFramingSubjects.map((subject) => subject.position),
+    ));
     this.updateCameras();
   }
 
@@ -99,9 +107,11 @@ export class CameraRig {
   }
 
   /** This updates resolved framing geometry and does not infer it from semantics. */
-  setWorldFramingPoints(points: readonly Coordinates[]): void {
-    this.worldFramingPoints = canonicalCameraFramingPoints(points);
-    this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(this.worldFramingPoints));
+  setWorldFramingSubjects(subjects: readonly CameraFramingSubject[]): void {
+    this.worldFramingSubjects = canonicalCameraFramingSubjects(subjects);
+    this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(
+      this.worldFramingSubjects.map((subject) => subject.position),
+    ));
     this.updateCameras();
   }
 
@@ -148,6 +158,17 @@ export class CameraRig {
     const pointView = new THREE.Vector3(point.x, point.y, point.z).applyMatrix4(this.perspective.matrixWorldInverse);
     return Math.max(-target.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE)
       / Math.max(-pointView.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
+  }
+
+  /** This projects resolved framing subjects with their live screen-space drawn extents. */
+  projectFramingSubjects(
+    subjects: readonly CameraFramingSubject[] = this.worldFramingSubjects,
+  ): readonly ProjectedCameraFramingSubject[] {
+    return canonicalCameraFramingSubjects(subjects).map((subject) => ({
+      id: subject.id,
+      viewportCenter: this.graphToViewport(subject.position),
+      extentCssPx: subject.extentCssPx * this.framingExtentScale(subject),
+    }));
   }
 
   /** This pans the active projection from device motion and does not change zoom or orbit. */
@@ -229,8 +250,18 @@ export class CameraRig {
       this.widthCssPx,
       this.heightCssPx,
       this.worldCenterZ,
-      this.worldFramingPoints,
+      this.worldFramingSubjects,
     );
+  }
+
+  private framingExtentScale(subject: CameraFramingSubject): number {
+    if (subject.sizeMode === "node") {
+      return this.sizeScaleAt(subject.position);
+    }
+    if (subject.sizeMode === "filament") {
+      return this.readProjectionState().filamentSizeScale;
+    }
+    return scalarCount();
   }
 }
 
@@ -370,7 +401,7 @@ function updatePerspectiveCamera(
   widthCssPx: number,
   heightCssPx: number,
   worldCenterZ: number,
-  worldFramingPoints: readonly Coordinates[],
+  worldFramingSubjects: readonly CameraFramingSubject[],
 ): void {
   const target = perspectiveTarget(state, worldCenterZ);
   const span = Math.max(
@@ -389,7 +420,9 @@ function updatePerspectiveCamera(
     span,
     verticalHalfSpan,
     worldCenterZ,
-    worldFramingPoints,
+    worldFramingSubjects,
+    widthCssPx,
+    heightCssPx,
   );
   const defaultBoundsTangent = verticalHalfSpan / span;
   const framingScale = defaultTangent / defaultBoundsTangent;
@@ -421,7 +454,9 @@ function perspectiveDefaultHalfAngleTangent(
   span: number,
   verticalHalfSpan: number,
   worldCenterZ: number,
-  worldFramingPoints: readonly Coordinates[],
+  worldFramingSubjects: readonly CameraFramingSubject[],
+  widthCssPx: number,
+  heightCssPx: number,
 ): number {
   const target = perspectiveBoundsCenter(state, worldCenterZ);
   const position = new THREE.Vector3(
@@ -432,18 +467,21 @@ function perspectiveDefaultHalfAngleTangent(
   const matrixWorld = new THREE.Matrix4().lookAt(position, target, new THREE.Vector3(0, 0, scalarCount()));
   matrixWorld.setPosition(position);
   const matrixWorldInverse = matrixWorld.invert();
-  let requiredTangent = 0;
-  for (const point of worldFramingPoints) {
+  const targetDistance = position.distanceTo(target);
+  const samples = worldFramingSubjects.map((subject) => {
+    const point = subject.position;
     const view = new THREE.Vector3(point.x, point.y, point.z).applyMatrix4(matrixWorldInverse);
     const depth = Math.max(-view.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
-    requiredTangent = Math.max(
-      requiredTangent,
-      Math.abs(view.y) / depth,
-      Math.abs(view.x) / (depth * aspect),
-    );
-  }
-  const targetDistance = position.distanceTo(target);
-  return quantizeCameraFramingValue(Math.max(verticalHalfSpan / targetDistance, requiredTangent));
+    const extentScale = subject.sizeMode === "node" ? targetDistance / depth : scalarCount();
+    return {
+      id: subject.id,
+      horizontalTangent: view.x / (depth * aspect),
+      verticalTangent: view.y / depth,
+      extentCssPx: subject.extentCssPx * extentScale,
+    };
+  });
+  const requiredTangent = requiredPerspectiveFramingTangent(samples, widthCssPx, heightCssPx);
+  return quantizeCameraFramingUpperBound(Math.max(verticalHalfSpan / targetDistance, requiredTangent));
 }
 
 function perspectiveTarget(state: VisualStateCamera, worldCenterZ: number): THREE.Vector3 {

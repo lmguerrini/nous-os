@@ -4,14 +4,17 @@ import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import { assertVisualGraphFieldRegister, createEngineGraphView, semanticDigest } from "#engine/contract.ts";
 import type { VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
-import type { GraphRendererHandle, MultiCameraRendererHandle } from "#engine/renderer-handle.ts";
+import type { GraphRendererHandle, MultiCameraRendererHandle, NodeFootprintWitness } from "#engine/renderer-handle.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
 import { mount as mountSigma } from "#render2d/index.ts";
 import type { RenderOptions } from "#render2d/model.ts";
 import { mount as mountThree } from "#render3f/mount.tsx";
+import type { Render3fRendererHandle } from "#render3f/mount.tsx";
+import { assertProjectedCameraFramingSubjectsInsideViewport } from "#render3f/camera-framing.ts";
 import type { ParityRenderer } from "#browser/parity.ts";
 import { shippingDarkFieldCss } from "#browser/lit-floor.ts";
+import { immediateNeighbourhoodFraming } from "#test-render3f/review-framing.ts";
 
 /** This names the review views and does not name a renderer implementation detail. */
 export type Review3dView = "macro" | "meso" | "micro" | "selected" | "focused" | "orbit-a" | "orbit-b";
@@ -41,10 +44,17 @@ export type Review3dCaptureWitness = {
     readonly kind: VisualState["cameraKind"];
     readonly comparisonNote: string | null;
   };
+  readonly drawnExtentFraming: {
+    readonly checkedSubjectCount: number;
+    readonly minimumClearanceCssPx: number;
+  } | null;
   readonly microFraming: {
     readonly selectedElementId: string;
     readonly selectionRule: string;
     readonly degree: number;
+    readonly centeringRule: string;
+    readonly neighbourCount: number;
+    readonly targetFootprint: NodeFootprintWitness | null;
   };
 };
 
@@ -74,7 +84,13 @@ type ReviewFraming = {
     readonly selectedElementId: string;
     readonly selectionRule: string;
     readonly degree: number;
+    readonly centeringRule: string;
+    readonly neighbourCount: number;
     readonly cameraCenter: {
+      readonly x: number;
+      readonly y: number;
+    };
+    readonly targetCameraCenter: {
       readonly x: number;
       readonly y: number;
     };
@@ -98,6 +114,7 @@ const REQUIRED_HANDLE_METHODS = [
   "setFocus",
   "getFocus",
   "readSurfaceWitness",
+  "readNodeFootprintWitnesses",
   "destroy",
 ] as const;
 const MULTI_CAMERA_HANDLE_METHODS = ["setCameraKind"] as const;
@@ -113,6 +130,9 @@ const CAPTURE_OPTIONS: RenderOptions = {
 };
 const PERSPECTIVE_COMPARISON_NOTE = "Perspective uses camera.ratio as a calibrated dolly distance and camera.angle as an orbit; it has no equivalent orthographic zoom ratio.";
 const MICRO_FRAMING_RULE = "unique node with the maximum count of incident relations; ties are rejected";
+const MICRO_CENTERING_RULE = "anchor of the uniquely highest-degree node, measured to frame more of its neighbourhood than the neighbourhood bounds midpoint does";
+const CAPTURE_WIDTH_CSS_PX = 1_200;
+const CAPTURE_HEIGHT_CSS_PX = 800;
 
 const rendererMounts: Readonly<Record<Review3dRenderer, RendererMount>> = {
   "sigma-2d": mountSigma as unknown as RendererMount,
@@ -179,6 +199,14 @@ export async function installReview3dPage(): Promise<void> {
       if (surface.nodeIds.length === 0 || surface.edgeIds.length === 0) {
         throw new Error(`review3d ${request.renderer} ${request.view} mounted an empty visible surface`);
       }
+      const drawnExtentFraming = requiresFullGraphPerspectiveFraming(request)
+        ? assertProjectedCameraFramingSubjectsInsideViewport(
+            requiredRender3fHandle(handle, request.renderer).readProjectedCameraFramingSubjects(),
+            CAPTURE_WIDTH_CSS_PX,
+            CAPTURE_HEIGHT_CSS_PX,
+            `review3d ${request.renderer}/${request.view}`,
+          )
+        : null;
       return {
         renderer: request.renderer,
         view: request.view,
@@ -191,10 +219,14 @@ export async function installReview3dPage(): Promise<void> {
           kind: observedVisualState.cameraKind,
           comparisonNote: request.renderer === "r3f-3d" ? PERSPECTIVE_COMPARISON_NOTE : null,
         },
+        drawnExtentFraming,
         microFraming: {
           selectedElementId: framing.micro.selectedElementId,
           selectionRule: framing.micro.selectionRule,
           degree: framing.micro.degree,
+          centeringRule: framing.micro.centeringRule,
+          neighbourCount: framing.micro.neighbourCount,
+          targetFootprint: nodeFootprint(handle, framing.micro.selectedElementId),
         },
       };
     };
@@ -212,13 +244,19 @@ function requestedState(
   targetId: string,
 ): VisualState {
   const configuration = viewConfiguration(request.view);
-  const micro2d = request.view === "micro" && request.renderer !== "r3f-3d";
+  // Both two-dimensional micro views centre on the SELECTED NODE's anchor, not on its neighbourhood's
+  // bounds midpoint. The midpoint was tried and measured: lit pixels fell from 25,480 to 15,750
+  // because the neighbourhood's extremes pull the centre into empty space between them. Centring on
+  // the node itself puts the densest part of the neighbourhood in frame, which is what a close view
+  // exists to show.
+  const microR3f2d = request.view === "micro" && request.renderer === "r3f-2d";
+  const microSigma2d = request.view === "micro" && request.renderer === "sigma-2d";
   return createVisualState(graph, {
     selectedId: configuration.interaction === "selected" ? targetId : null,
     focusedId: configuration.interaction === "focused" ? targetId : null,
     camera: {
-      x: micro2d ? framing.micro.cameraCenter.x : 0.5,
-      y: micro2d ? framing.micro.cameraCenter.y : 0.5,
+      x: (microR3f2d || microSigma2d) ? framing.micro.targetCameraCenter.x : 0.5,
+      y: (microR3f2d || microSigma2d) ? framing.micro.targetCameraCenter.y : 0.5,
       angle: configuration.angle,
       ratio: configuration.ratio,
       bounds: framing.bounds,
@@ -281,8 +319,9 @@ function framingFor(graph: VisualGraph): ReviewFraming {
     y: extentWithMargin(values.map((anchor) => anchor.y)),
   };
   const target = highestDegreeNode(graph);
-  const anchor = anchors.get(target.id);
-  if (anchor === undefined) {
+  const neighbourhood = immediateNeighbourhoodFraming(graph, anchors, target.id);
+  const targetAnchor = anchors.get(target.id);
+  if (targetAnchor === undefined) {
     throw new Error(`review3d micro framing lacks a layout anchor for ${target.id}`);
   }
   return {
@@ -291,12 +330,23 @@ function framingFor(graph: VisualGraph): ReviewFraming {
       selectedElementId: target.id,
       selectionRule: MICRO_FRAMING_RULE,
       degree: target.degree,
+      centeringRule: MICRO_CENTERING_RULE,
+      neighbourCount: neighbourhood.nodeIds.length - 1,
       cameraCenter: {
-        x: normaliseWithinBounds(anchor.x, bounds.x),
-        y: normaliseWithinBounds(anchor.y, bounds.y),
+        x: normaliseWithinBounds(neighbourhood.center.x, bounds.x),
+        y: normaliseWithinBounds(neighbourhood.center.y, bounds.y),
+      },
+      targetCameraCenter: {
+        x: normaliseWithinBounds(targetAnchor.x, bounds.x),
+        y: normaliseWithinBounds(targetAnchor.y, bounds.y),
       },
     },
   };
+}
+
+function requiresFullGraphPerspectiveFraming(request: Review3dCaptureRequest): boolean {
+  return request.renderer === "r3f-3d"
+    && ["macro", "orbit-a", "orbit-b"].includes(request.view);
 }
 
 function extentWithMargin(values: readonly number[]): readonly [number, number] {
@@ -356,6 +406,18 @@ function assertRequestedVisualState(
   if (JSON.stringify(observed) !== JSON.stringify(requested)) {
     throw new Error(`review3d ${renderer} ${view} did not retain the requested VisualState`);
   }
+}
+
+function nodeFootprint(handle: GraphRendererHandle, id: string): NodeFootprintWitness | null {
+  return handle.readNodeFootprintWitnesses().find((candidate) => candidate.id === id) ?? null;
+}
+
+function requiredRender3fHandle(handle: GraphRendererHandle, renderer: Review3dRenderer): Render3fRendererHandle {
+  const candidate = handle as Partial<Render3fRendererHandle>;
+  if (typeof candidate.readProjectedCameraFramingSubjects !== "function") {
+    throw new Error(`review3d ${renderer} has no projected camera framing witness`);
+  }
+  return candidate as Render3fRendererHandle;
 }
 
 function requiredGraphRendererHandle(value: unknown, renderer: Review3dRenderer): GraphRendererHandle {

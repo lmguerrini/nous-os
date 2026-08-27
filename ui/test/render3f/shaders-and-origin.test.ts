@@ -32,10 +32,24 @@ test("filament shader uses expanded quads, analytic AA, the width floor, and sup
   assert.throws(() => assertFilamentShaderTechnique(FILAMENT_VERTEX_SHADER, control), /missing derivative anti-aliasing/);
 });
 
-test("node shader consumes sampled halo values and renders a soft premultiplied core", () => {
+test("node shader consumes sampled halo values and renders a gradient core weighted toward the centre", () => {
   assert.doesNotThrow(() => assertNodeShaderTechnique(NODE_VERTEX_SHADER, NODE_FRAGMENT_SHADER));
   const control = NODE_FRAGMENT_SHADER.replaceAll("texelFetch(u_haloStops", "texelFetch(u_removedStops");
   assert.throws(() => assertNodeShaderTechnique(NODE_VERTEX_SHADER, control), /missing scene halo samples/);
+  // The two controls below replace a pair that guarded the OPPOSITE properties — a hard-edged core
+  // and a square-rooted halo offset. Those were briefly asserted, measured a fourteenfold better
+  // core-concentration ratio, and rendered every node as a flat grey circle: the exact identity this
+  // engine exists to replace. The controls now fail on the shapes that produced that regression.
+  const hardEdgedCoreControl = NODE_FRAGMENT_SHADER.replace("pow(coreProfile, 0.5)", "step(radialDistance, v_coreRadiusDevicePx)");
+  assert.throws(
+    () => assertNodeShaderTechnique(NODE_VERTEX_SHADER, hardEdgedCoreControl),
+    /missing gradient core weighted toward the centre/,
+  );
+  const dimmedHaloControl = NODE_FRAGMENT_SHADER.replace("sampledHaloAlpha(haloOffset)", "sampledHaloAlpha(sqrt(haloOffset))");
+  assert.throws(
+    () => assertNodeShaderTechnique(NODE_VERTEX_SHADER, dimmedHaloControl),
+    /missing linearly sampled halo falloff/,
+  );
 });
 
 test("live translucent materials use premultiplied source-over with depth writes disabled", () => {

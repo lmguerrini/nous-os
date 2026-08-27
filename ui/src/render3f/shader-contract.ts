@@ -23,7 +23,13 @@ export function assertNodeShaderTechnique(vertexShader: string, fragmentShader: 
     { name: "scene core radius", source: vertexShader, marker: "a_coreRadiusPx" },
     { name: "scene halo radius", source: vertexShader, marker: "a_haloRadiusPx" },
     { name: "scene halo samples", source: fragmentShader, marker: "texelFetch(u_haloStops" },
-    { name: "soft radial core", source: fragmentShader, marker: "smoothstep(0.0, v_coreRadiusDevicePx" },
+    // A GRADIENT core weighted toward the centre, and a halo sampled linearly. These two requirements
+    // replace a pair that briefly asserted a hard-edged core and a square-rooted halo offset. Those
+    // measured a fourteenfold better core-concentration ratio and made every node render as a flat
+    // grey circle — the identity this engine exists to replace. A check can be satisfied by exactly
+    // the result its criterion was written to prevent, and that is what these two now guard against.
+    { name: "gradient core weighted toward the centre", source: fragmentShader, marker: "pow(coreProfile, 0.5)" },
+    { name: "linearly sampled halo falloff", source: fragmentShader, marker: "sampledHaloAlpha(haloOffset)" },
     { name: "premultiplied output", source: fragmentShader, marker: "vec4(v_color * alpha, alpha)" },
   ];
   for (const requirement of requirements) {

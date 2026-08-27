@@ -18,6 +18,7 @@ import {
   assertDarkestShippingField,
   darkestPixel,
 } from "#test-render3f/capture-field.ts";
+import { assertProjectedCameraFramingSubjectsInsideViewport } from "#render3f/camera-framing.ts";
 // A subpath alias, not a relative parent path: a `..` segment at a quote boundary is
 // indistinguishable from a machine path to this repository's outgoing scan, which refuses the commit.
 
@@ -46,7 +47,18 @@ type CaptureRecord = {
   observedVisualState: VisualState | null;
   selectedOrFocusedId: string | null;
   projection: Review3dCaptureWitness["projection"] | null;
+  drawnExtentFraming: Review3dCaptureWitness["drawnExtentFraming"] | null;
+  coreConcentration: CoreConcentration | null;
   observedCommitSha: string;
+};
+
+type CoreConcentration = {
+  readonly highThreshold: number;
+  readonly lowThreshold: number;
+  readonly highPixels: number;
+  readonly lowPixels: number;
+  readonly ratio: number;
+  readonly targetFootprint: Review3dCaptureWitness["microFraming"]["targetFootprint"];
 };
 
 type PixelDelta = {
@@ -75,6 +87,8 @@ type Review3dManifest = {
       selectedElementId: string | null;
       selectionRule: string | null;
       degree: number | null;
+      centeringRule: string | null;
+      neighbourCount: number | null;
     };
   };
   readonly semanticGraph: {
@@ -94,6 +108,7 @@ type Review3dManifest = {
     readonly blankFrameControlOutput: string;
     readonly whiteFieldControlOutput: string;
     readonly lightenedFieldControlOutput: string;
+    readonly removedDrawnExtentControlOutput: string;
   };
   readonly captures: CaptureRecord[];
   readonly summary: {
@@ -116,6 +131,8 @@ const MANIFEST_FILE = join(REVIEW3D_DIRECTORY, "manifest.json");
 const REVIEW3D_COMMAND = "REVIEW3D_CAPTURES=1 npm --prefix ui exec playwright test --project=review3d";
 const FIXTURE = ["fixtures", "synthetic", "projection", "discovery-at-question.json"].join("/");
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const CORE_CONCENTRATION_HIGH_THRESHOLD = 192;
+const CORE_CONCENTRATION_LOW_THRESHOLD = 32;
 const RENDERERS = ["sigma-2d", "r3f-2d", "r3f-3d"] as const satisfies readonly Review3dRenderer[];
 const COMMON_VIEWS = ["macro", "meso", "micro", "selected", "focused"] as const satisfies readonly Review3dView[];
 const ORBIT_VIEWS = ["orbit-a", "orbit-b"] as const satisfies readonly Review3dView[];
@@ -231,6 +248,10 @@ async function captureFirstPass(page: Page, manifest: Review3dManifest, planned:
     record.observedVisualState = witness.observedVisualState;
     record.selectedOrFocusedId = witness.selectedOrFocusedId;
     record.projection = witness.projection;
+    record.drawnExtentFraming = witness.drawnExtentFraming;
+    record.coreConcentration = planned.renderer === "r3f-2d" && planned.view === "macro"
+      ? measureCoreConcentration(image, witness.microFraming.targetFootprint)
+      : null;
     setSemanticDigest(manifest, planned.renderer, witness.semanticDigest);
     try {
       assertDarkestShippingField(image, `review3d ${planned.renderer}/${planned.view} capture`);
@@ -378,6 +399,8 @@ function emptyManifest(observedCommitSha: string, planned: readonly PlannedCaptu
         selectedElementId: null,
         selectionRule: null,
         degree: null,
+        centeringRule: null,
+        neighbourCount: null,
       },
     },
     semanticGraph: {
@@ -397,6 +420,7 @@ function emptyManifest(observedCommitSha: string, planned: readonly PlannedCaptu
       blankFrameControlOutput: blankFrameControlOutput(),
       whiteFieldControlOutput: whiteFieldControlOutput(),
       lightenedFieldControlOutput: lightenedFieldControlOutput(),
+      removedDrawnExtentControlOutput: removedDrawnExtentControlOutput(),
     },
     captures: planned.map((capture) => ({
       ...capture,
@@ -413,6 +437,8 @@ function emptyManifest(observedCommitSha: string, planned: readonly PlannedCaptu
       observedVisualState: null,
       selectedOrFocusedId: null,
       projection: null,
+      drawnExtentFraming: null,
+      coreConcentration: null,
       observedCommitSha,
     })),
     summary: {
@@ -490,12 +516,16 @@ function setMicroFraming(
     current.selectedElementId !== framing.selectedElementId
     || current.selectionRule !== framing.selectionRule
     || current.degree !== framing.degree
+    || current.centeringRule !== framing.centeringRule
+    || current.neighbourCount !== framing.neighbourCount
   )) {
     throw new Error("review3d renderers did not retain one deterministic micro-framing target");
   }
   current.selectedElementId = framing.selectedElementId;
   current.selectionRule = framing.selectionRule;
   current.degree = framing.degree;
+  current.centeringRule = framing.centeringRule;
+  current.neighbourCount = framing.neighbourCount;
 }
 
 function semanticDigestParity(digests: Record<Review3dRenderer, string | null>): boolean {
@@ -526,6 +556,46 @@ function whiteFieldControlOutput(): string {
 
 function lightenedFieldControlOutput(): string {
   return failedControlOutput(() => assertDarkestShippingField(blankPixelImage([10, 10, 10]), "review3d lightened-field control"));
+}
+
+function removedDrawnExtentControlOutput(): string {
+  return failedControlOutput(() => assertProjectedCameraFramingSubjectsInsideViewport(
+    [{ id: "removed-margin", viewportCenter: { x: 1, y: 1 }, extentCssPx: 2 }],
+    3,
+    3,
+    "review3d removed drawn-extent control",
+  ));
+}
+
+function measureCoreConcentration(
+  image: PixelImage,
+  footprint: Review3dCaptureWitness["microFraming"]["targetFootprint"],
+): CoreConcentration {
+  let highPixels = 0;
+  let lowPixels = 0;
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      const offset = ((y * image.width) + x) * 4;
+      const maximumChannel = Math.max(
+        image.data[offset] ?? 0,
+        image.data[offset + 1] ?? 0,
+        image.data[offset + 2] ?? 0,
+      );
+      highPixels += maximumChannel >= CORE_CONCENTRATION_HIGH_THRESHOLD ? 1 : 0;
+      lowPixels += maximumChannel >= CORE_CONCENTRATION_LOW_THRESHOLD ? 1 : 0;
+    }
+  }
+  if (lowPixels === 0) {
+    throw new Error("review3d core-concentration sample has no low-threshold pixels");
+  }
+  return {
+    highThreshold: CORE_CONCENTRATION_HIGH_THRESHOLD,
+    lowThreshold: CORE_CONCENTRATION_LOW_THRESHOLD,
+    highPixels,
+    lowPixels,
+    ratio: highPixels / lowPixels,
+    targetFootprint: footprint,
+  };
 }
 
 function blankPixelImage(fieldRgb: readonly [number, number, number]): PixelImage {

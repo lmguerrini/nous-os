@@ -6,7 +6,11 @@ import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import {
   canonicalCameraFramingPoints,
+  assertProjectedCameraFramingSubjectsInsideViewport,
+  quantizeCameraFramingUpperBound,
   quantizeCameraFramingValue,
+  requiredPerspectiveFramingTangent,
+  sceneCameraFramingSubjects,
 } from "#render3f/camera-framing.ts";
 import { assertDarkestShippingField } from "./capture-field.ts";
 import {
@@ -19,6 +23,8 @@ import {
   assertCameraSwitchInvariant,
 } from "#render3f/state.ts";
 import { resolvedCameraScenes } from "./support.ts";
+import { immediateNeighbourhoodFraming } from "./review-framing.ts";
+import { sceneFixtureGraph } from "#test-scene/support.ts";
 
 test("projection changes preserve live anchors while screen label collisions preserve scene priority", (context) => {
   const scenes = resolvedCameraScenes();
@@ -83,7 +89,58 @@ test("projection changes preserve live anchors while screen label collisions pre
     canonicalCameraFramingPoints(perturbed),
   );
   assert.equal(quantizeCameraFramingValue(1 + Number.EPSILON), Math.fround(1));
+  assert.ok(quantizeCameraFramingUpperBound(1 + Number.EPSILON) >= 1 + Number.EPSILON);
   context.diagnostic("camera framing order and sub-single-precision control resolved identically");
+
+  const perspectiveScene = scenes.perspective;
+  const framingSubjects = sceneCameraFramingSubjects(perspectiveScene);
+  assert.ok(framingSubjects.some((subject) => subject.sizeMode === "node" && subject.extentCssPx > 0));
+  assert.ok(framingSubjects.some((subject) => subject.sizeMode === "filament" && subject.extentCssPx > 0));
+  const bottomSubject = {
+    id: "bottom-node",
+    horizontalTangent: 0,
+    verticalTangent: -1,
+    extentCssPx: 40,
+  };
+  const extentAwareTangent = requiredPerspectiveFramingTangent([bottomSubject], 1_200, 800);
+  const extentAwareCenterY = (1 - (bottomSubject.verticalTangent / extentAwareTangent)) * 800 / 2;
+  const extentClearance = assertProjectedCameraFramingSubjectsInsideViewport(
+    [{ id: bottomSubject.id, viewportCenter: { x: 600, y: extentAwareCenterY }, extentCssPx: 40 }],
+    1_200,
+    800,
+    "extent-aware perspective control",
+  );
+  const anchorOnlyTangent = requiredPerspectiveFramingTangent(
+    [{ ...bottomSubject, extentCssPx: 0 }],
+    1_200,
+    800,
+  );
+  const anchorOnlyCenterY = (1 - (bottomSubject.verticalTangent / anchorOnlyTangent)) * 800 / 2;
+  const removedExtentOutput = failureOutput(() => assertProjectedCameraFramingSubjectsInsideViewport(
+    [{ id: bottomSubject.id, viewportCenter: { x: 600, y: anchorOnlyCenterY }, extentCssPx: 40 }],
+    1_200,
+    800,
+    "removed drawn-extent control",
+  ));
+  assert.match(removedExtentOutput, /removed drawn-extent control drawn extent .* falls .* outside the capture/);
+  context.diagnostic(
+    `perspective extent check observed ${extentClearance.checkedSubjectCount} subjects with minimum clearance `
+      + `${extentClearance.minimumClearanceCssPx.toFixed(6)} CSS pixels`,
+  );
+  context.diagnostic(removedExtentOutput);
+
+  const graph = sceneFixtureGraph();
+  const anchorMap = new Map(perspectiveScene.nodes.map((node) => [node.id, node.position]));
+  const microTarget = highestDegreeNodeId(graph);
+  const neighbourhood = immediateNeighbourhoodFraming(graph, anchorMap, microTarget);
+  const targetAnchor = anchorMap.get(microTarget);
+  assert.ok(targetAnchor !== undefined);
+  assert.notDeepEqual(neighbourhood.center, { x: targetAnchor.x, y: targetAnchor.y });
+  assert.equal(neighbourhood.nodeIds.includes(microTarget), true);
+  context.diagnostic(
+    `micro neighbourhood control moved ${microTarget} from its anchor to the bounds midpoint of `
+      + `${neighbourhood.nodeIds.length} nodes`,
+  );
 
   const contentAtFirstPixel = pixelImage([11, 11, 11, 255, 9, 9, 9, 255], 2);
   const darkestField = assertDarkestShippingField(contentAtFirstPixel, "darkest-field content control");
@@ -223,4 +280,20 @@ function failureOutput(operation: () => void): string {
     return error instanceof Error ? error.message : String(error);
   }
   throw new Error("field control unexpectedly passed");
+}
+
+function highestDegreeNodeId(graph: ReturnType<typeof sceneFixtureGraph>): string {
+  const degrees = new Map(graph.nodes.map((node) => [node.id, 0]));
+  for (const edge of graph.edges) {
+    degrees.set(edge.source, (degrees.get(edge.source) ?? 0) + 1);
+    if (edge.target !== edge.source) {
+      degrees.set(edge.target, (degrees.get(edge.target) ?? 0) + 1);
+    }
+  }
+  const target = [...degrees.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0];
+  if (target === undefined) {
+    throw new TypeError("micro neighbourhood control has no node");
+  }
+  return target[0];
 }

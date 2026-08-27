@@ -72,7 +72,7 @@ void main() {
   v_instanceIndex = int(a_instanceIndex);
 }`;
 
-/** This composes a soft core with scene-sampled halo alpha and does not invent a bloom magnitude. */
+/** This composes a fuller-centred soft core with scene-sampled halo alpha and does not invent a bloom magnitude. */
 export const NODE_FRAGMENT_SHADER = `precision highp float;
 in vec2 v_localDevicePx;
 flat in vec3 v_color;
@@ -101,9 +101,16 @@ float sampledHaloAlpha(float offset) {
 }
 void main() {
   float radialDistance = length(v_localDevicePx);
-  float coreAlpha = 1.0 - smoothstep(0.0, v_coreRadiusDevicePx, radialDistance);
+  // A GRADIENT core, weighted toward the centre — not a hard-edged disc. An anti-aliased disc was
+  // tried and measured a fourteenfold better core-concentration ratio while making every node read
+  // as a flat grey circle, which is precisely the identity this engine exists to replace. The
+  // exponent fills the centre and sharpens the final drop without ever producing an edge.
+  float coreProfile = 1.0 - smoothstep(0.0, v_coreRadiusDevicePx, radialDistance);
+  float coreAlpha = pow(coreProfile, 0.5);
   float haloSpan = max(v_haloRadiusDevicePx - v_coreRadiusDevicePx, fwidth(radialDistance));
   float haloOffset = clamp((radialDistance - v_coreRadiusDevicePx) / haloSpan, 0.0, 1.0);
+  // Sampled linearly. Taking a square root here walked the halo profile faster than the geometry,
+  // dimming the bloom nearest the core, which is the part that makes a node read as a point of light.
   float haloAlpha = sampledHaloAlpha(haloOffset) * (1.0 - coreAlpha);
   float alpha = (coreAlpha + haloAlpha) * v_opacity;
   if (alpha <= 0.0 || radialDistance > v_haloRadiusDevicePx) {
