@@ -10,7 +10,8 @@
     "#engine/*": "./src/engine/*",
     "#render2d/*": "./src/render2d/*",
     "#render3f/*": "./src/render3f/*",
-    "#scene/*": "./src/scene/*"
+    "#scene/*": "./src/scene/*",
+    "#test-scene/*": "./test/scene/*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
