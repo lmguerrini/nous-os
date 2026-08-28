@@ -498,11 +498,29 @@ function updateField(renderer: THREE.WebGLRenderer, scene: Scene): void {
   renderer.setClearColor(new THREE.Color().setRGB(field.red, field.green, field.blue));
 }
 
+/**
+ * The governed placement offset, or the node's drawn extent, whichever clears the glow.
+ *
+ * The scene model supplies `placementOffsetPx` and the renderer is not inventing a visual value by
+ * taking the larger of it and the radius the node is actually drawn at: screen-space placement is
+ * already the renderer's responsibility here — the caller scales this by the projection — and the
+ * label-collision pass resolves label against label in screen space for the same reason.
+ *
+ * Without it, an emphasised node's bloom swallows the middle of its own label. In the two `focused`
+ * captures the emphasised node's word read as `conflic ▮ ember`, and those are the two images whose
+ * entire purpose is to emphasise one element. Nothing could see it: the collision pass compares
+ * labels with labels and never with the glow beneath them.
+ *
+ * `Math.max` rather than a sum: where the governed offset already clears the drawn extent it is
+ * unchanged, so this moves only the labels that were sitting inside a node.
+ */
 function requiredNodeLabelOffset(node: SceneNode): number {
   if (node.labelCandidacy === null) {
     throw new TypeError(`mounted node ${node.id} has no label offset`);
   }
-  return node.labelCandidacy.placementOffsetPx;
+  // The same drawn extent the footprint witness reports, so placement and measurement agree.
+  const drawnExtentPx = Math.max(node.haloRadiusPx, node.radiusPx + node.haloCoreGapPx);
+  return Math.max(node.labelCandidacy.placementOffsetPx, drawnExtentPx);
 }
 
 function coordinatesAt(values: Float32Array, index: number): Coordinates {

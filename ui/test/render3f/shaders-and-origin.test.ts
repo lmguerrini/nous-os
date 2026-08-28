@@ -352,8 +352,9 @@ function observedFailure(label: string, operation: () => void, expected: RegExp)
   throw new Error(`${label} did not fail`);
 }
 
-// The twelve evasion forms. Each was run against the controls before they were hardened; the five
-// marked below passed straight through. The first of those is the serious one: the interleaved
+// The thirteen evasion forms — seven depth, six material. Each was run against the controls before they were hardened; the five
+// marked below passed straight through. An auditor later found further escapes in adjacent controls;
+// this table is the set that was demonstrated here, not a claim that no other form exists. The first of those is the serious one: the interleaved
 // attribute buffers write depth as `array[offset + 2] = value`, so the control that was supposed to
 // keep semantics out of depth had never inspected the statement form this renderer actually uses.
 // Each probe is asserted individually so a regression names the form it stopped catching.

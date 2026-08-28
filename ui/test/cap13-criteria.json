@@ -27,8 +27,9 @@
       "source": {
         "kind": "artifactCheck",
         "artifact": "parity",
-        "checkName": "P1 surface parity"
-      }
+        "checkName": "P5 drawing and picking"
+      },
+      "note": "B3 claims picking and resolved only to P1 surface parity, whose threshold names id sets and incidence and no picking at all. An auditor failed every P5 record in a copy and the register stayed green. It now names the picking check it claims; P1 remains bound by B1 and by the artifact's own run verdict."
     },
     {
       "id": "B4",
@@ -116,7 +117,7 @@
       "source": {
         "kind": "artifactBound",
         "artifact": "performance",
-        "note": "reports passing:false by design. NOT_RUN appears at TWO distinct scales for two distinct reasons and the row previously named only one: at 10^3 and 10^4 every renderer is NOT_RUN because the shared layout consumes the per-combination budget, and at 10^2 the single-camera renderer is NOT_RUN for cameraTransitionCost and cameraSwitchCost because it has one camera and cannot switch. Both are governed truth; neither is a gap. Every unbound measurement carries its own reason, which is what the artifact-exemption check verifies."
+        "note": "reports passing:false by design. NOT_RUN is governed truth wherever it carries its own reason, and this row deliberately does NOT enumerate the causes: an earlier version claimed two distinct kinds at two scales, an auditor found four distinct kinds and ten unbound readings at the completing scale alone, and a summary that under-counts reads as a complete account. Sixty of the unbound readings are the two large scales, where the shared layout fails before any renderer draws. The rest are per-measurement and are stated in the artifact, which is the only place they are complete."
       }
     },
     {

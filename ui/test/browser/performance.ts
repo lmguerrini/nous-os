@@ -511,7 +511,7 @@ async function measureProgressiveDisclosure(
     const bandOptions = { ...options, lodBand: band };
     let handle: GraphRendererHandle | undefined;
     try {
-      const state = initialState(fixture.graph, renderer.cameraKind);
+      const state = initialState(fixture.graph, renderer.cameraKind, band);
       const start = performance.now();
       handle = renderer.mount(container, fixture.graph, bandOptions, state);
       const latency = await firstPaintContainingGraph(handle, start);
@@ -558,7 +558,16 @@ function browserMemoryMeasurement(): Measurement<MemoryUsage> {
   }, "Chromium performance.memory heap reading");
 }
 
-function initialState(graph: VisualGraph, cameraKind: CameraKind) {
+/**
+ * The LOD band is a parameter, because the progressive-disclosure measurement varies it.
+ *
+ * It used to read the module-level `options` constant, which is fixed at MICRO. The band loop
+ * overrode `RenderOptions.lodBand` and left `VisualState.lodBand` at micro, so the three "bands" were
+ * three micro states with an options field changing underneath — the measurement never varied what
+ * it claimed to vary. The Three renderers then painted an entirely black canvas at macro on that
+ * inconsistent pair and were recorded NOT_RUN, which was published as governed truth.
+ */
+function initialState(graph: VisualGraph, cameraKind: CameraKind, lodBand: RenderOptions["lodBand"] = options.lodBand) {
   const anchors = [...layoutAnchors(createEngineGraphView(graph).graph, DEFAULT_CALIBRATION).values()];
   const minimumX = Math.min(...anchors.map((anchor) => anchor.x));
   const maximumX = Math.max(...anchors.map((anchor) => anchor.x));
@@ -580,7 +589,7 @@ function initialState(graph: VisualGraph, cameraKind: CameraKind) {
     palette: options.palette ?? "monochrome",
     temperature: options.temperature,
     theme: options.theme,
-    lodBand: options.lodBand,
+    lodBand,
     reducedMotion: options.reducedMotion,
   });
 }

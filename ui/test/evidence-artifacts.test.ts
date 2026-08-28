@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { SOFTWARE_RASTERISATION_LABEL } from "#browser/performance-contract.ts";
 import { promisify } from "node:util";
 import {
   assertEvidenceArtifactCurrent,
@@ -27,8 +28,12 @@ type ParsedArtifact = {
  * Every artifact must be revision-bound. Only some may additionally be required to PASS.
  *
  * The performance artifact reports `passing: false` at this revision and that is the GOVERNED TRUTH,
- * not a defect: sixty-five of its measurements are NOT_RUN because a renderer-independent layout
- * consumes the budget before any renderer draws, and the capability's own criterion requires the
+ * not a defect. Sixty of its measurements are NOT_RUN because a renderer-independent layout consumes
+ * the budget before any renderer draws — but that accounts for the two large scales only, and NOT for
+ * every unbound reading. A count and a single cause were stated here as though they covered all of
+ * them, and an auditor found ten further unbound readings at the completing scale of four distinct
+ * kinds, one of which was a renderer painting nothing. Each unbound measurement carries its OWN
+ * reason and this comment does not summarise them. The capability's own criterion requires the
  * run-level verdict to be false while anything is unbound. Demanding it pass would force exactly two
  * outcomes, both forbidden — hiding the NOT_RUN states, or lowering the criterion. So it is held to
  * the binding requirement and to the rule that every unbound measurement carries its reason, which
@@ -137,6 +142,12 @@ function assertPerformanceExemption(raw: unknown, label: string): void {
     if (candidate["fixture"] !== combination.fixture) {
       throw new Error(`${label} ${key} names unexpected fixture ${String(candidate["fixture"])}`);
     }
+    if (candidate["rasterisationLabel"] !== SOFTWARE_RASTERISATION_LABEL) {
+      throw new Error(
+        `${label} ${key} is labelled ${String(candidate["rasterisationLabel"])}, not ${SOFTWARE_RASTERISATION_LABEL}. `
+        + "Every figure here is software-rasterised; a record that says otherwise is claiming a measurement nobody took.",
+      );
+    }
     const measurements = candidate["measurements"];
     if (!isRecord(measurements)) {
       throw new Error(`${label} ${key} has no measurement object`);
@@ -154,6 +165,7 @@ function assertPerformanceExemption(raw: unknown, label: string): void {
       if (!isRecord(measurement)) {
         throw new Error(`${label} ${key} measurement ${name} is not an object`);
       }
+      assertSoftwareRasterisationLabel(measurement, `${label} ${key} measurement ${name}`);
       unbound += assertKnownMeasurementStatuses(measurement, `${label} ${key} measurement ${name}`);
     }
     if (combination.scale === COMPLETING_SCALE) {
@@ -444,3 +456,29 @@ test("the performance exemption refuses a nested PASS whose value is not a measu
   ));
   console.info(`nested measurement tampering controls: ${nullValue} | ${emptyDistribution}`);
 });
+
+/**
+ * Every label at every depth must be the software literal.
+ *
+ * The exemption validated statuses and never the labels, so an artifact whose every label said
+ * "headed GPU performance" passed unchanged — the one claim in this evidence that must never drift,
+ * because software rasterisation and GPU behaviour may not be pooled and the difference is invisible
+ * once the label is wrong.
+ */
+function assertSoftwareRasterisationLabel(value: unknown, path: string): void {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => { assertSoftwareRasterisationLabel(entry, `${path}[${index}]`); });
+    return;
+  }
+  if (!isRecord(value)) {
+    return;
+  }
+  if ("label" in value && value["label"] !== SOFTWARE_RASTERISATION_LABEL) {
+    throw new Error(`${path} is labelled ${String(value["label"])}, not ${SOFTWARE_RASTERISATION_LABEL}`);
+  }
+  for (const [name, entry] of Object.entries(value)) {
+    if (name !== "label") {
+      assertSoftwareRasterisationLabel(entry, `${path}.${name}`);
+    }
+  }
+}

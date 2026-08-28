@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { currentTrackedTreeState } from "#test/tracked-tree.ts";
 
 /**
  * This resolves every CAP-13 criterion to a machine-readable status and does not accept silence as one.
@@ -98,6 +99,11 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
   if (source.kind === "artifactCheck") {
     const parsed = await readArtifact(requiredFirstArtifactPath(source.artifact));
     const checks = Array.isArray(parsed["checks"]) ? parsed["checks"] as readonly Record<string, unknown>[] : [];
+    if (source.checkName.trim() === "") {
+      // Every string starts with the empty string, so an empty name matched every record and the
+      // criterion resolved against whatever happened to be in the artifact.
+      throw new Error(`${criterion.id} names an empty check, which matches every record`);
+    }
     const matching = checks.filter((check) => String(check["checkName"] ?? "").startsWith(source.checkName));
     if (matching.length === 0) {
       throw new Error(`${criterion.id} names no check "${source.checkName}" in the ${source.artifact} artifact`);
@@ -110,8 +116,20 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
   }
   if (source.kind === "artifactBound") {
     const parsed = await readArtifact(requiredFirstArtifactPath(source.artifact));
-    if (!isRecord(parsed["run"]) || !isRecord((parsed["run"] as Record<string, unknown>)["trackedTree"])) {
+    const run = parsed["run"];
+    const tree = isRecord(run) ? run["trackedTree"] : undefined;
+    if (!isRecord(tree)) {
       throw new Error(`${criterion.id} artifact carries no tracked-tree identity`);
+    }
+    // Presence was the whole check, so an all-zero, dirty, unstable identity resolved. That is the
+    // F26 shape exactly — the artifact looks bound and is not — so the recorded identity is now
+    // compared against the tree that exists.
+    const current = await currentTrackedTreeState();
+    if (tree["measuredSha256"] !== current.sha256 || tree["completedSha256"] !== current.sha256) {
+      throw new Error(`${criterion.id} artifact identity ${String(tree["measuredSha256"]).slice(0, 12)} is not the current tree ${current.sha256.slice(0, 12)}`);
+    }
+    if (tree["measuredStatusPorcelain"] !== "" || tree["completedStatusPorcelain"] !== "" || tree["stable"] !== true) {
+      throw new Error(`${criterion.id} artifact was measured against a moving or dirty tree`);
     }
     return;
   }
@@ -129,7 +147,10 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
     if (body === null) {
       throw new Error(`${criterion.id} names unit-test file ${source.file}, which does not exist`);
     }
-    if (!body.includes(`test("${source.name}"`)) {
+    // A DECLARATION, not a textual occurrence. `includes` matched a name written inside a comment,
+    // so a criterion could resolve against a test that had been commented out or never written.
+    const declaration = new RegExp(String.raw`^[ \t]*(?:await\s+)?test\(\s*"${escapeForPattern(source.name)}"`, "mu");
+    if (!declaration.test(body)) {
       throw new Error(`${criterion.id} names unit test "${source.name}", which ${source.file} does not declare`);
     }
     return;
@@ -222,3 +243,8 @@ test("the closure register refuses a unit-test source that names nothing real", 
   assert.match(missingTest, /names unit test "a test nobody wrote", which .* does not declare/);
   console.info(`closure-register unit-test source controls: ${missingFile} | ${missingTest}`);
 });
+
+/** This escapes a criterion's test name for use inside a declaration pattern. */
+function escapeForPattern(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, String.raw`\$&`);
+}

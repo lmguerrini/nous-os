@@ -129,7 +129,10 @@ export function assertGovernedPixelSampleLit(sample: GovernedPixelSample, label:
  */
 export const PROJECTION_DEPENDENT_SCENE_CHANNELS = [
   "camera.kind",
-  "camera.navigation",
+  // The parent `camera.navigation` path is deliberately NOT admitted. The differ recurses into two
+  // records and emits only leaves, so the parent is unreachable for legal input — but admitting it
+  // meant a whole-object difference would have been accepted, taking every unlisted leaf inside it
+  // with it. An allowance that is enumerated leaf by leaf must not carry a branch.
   "camera.navigation.panSensitivityPermille",
   "camera.navigation.zoomSensitivityPermille",
   "camera.navigation.minimumZoomPermille",

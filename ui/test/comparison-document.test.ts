@@ -179,6 +179,14 @@ function assertLayoutAloneExceedsTheRendererBudget(artifact: unknown): void {
   if (typeof elapsed !== "number") {
     throw new Error("the layout artifact records no elapsed time at 10^3");
   }
+  // A throw was accepted regardless of when or why, so a layout that failed instantly for an
+  // unrelated reason satisfied a document claiming it "runs for minutes and then fails".
+  if (large.outcome === "THREW" && elapsed <= RENDERER_COMBINATION_BUDGET_MS) {
+    throw new Error(
+      `shared layout at 10^3 threw after only ${elapsed}ms, which does not exceed the `
+      + `${RENDERER_COMBINATION_BUDGET_MS}ms per-combination budget and so does not explain the renderers' NOT_RUN results`,
+    );
+  }
   if (large.outcome !== "THREW" && elapsed <= RENDERER_COMBINATION_BUDGET_MS) {
     throw new Error(
       `shared layout at 10^3 does not exceed the ${RENDERER_COMBINATION_BUDGET_MS}ms per-combination budget `
@@ -200,5 +208,68 @@ async function readJson(path: string): Promise<unknown | null> {
     return JSON.parse(await readFile(path, "utf8")) as unknown;
   } catch {
     return null;
+  }
+}
+
+/** D-056.2: no promotion. The document may state qualification; it may not claim a default surface. */
+const PROMOTION_CLAIMS = [
+  /replaces\s+Sigma/iu,
+  /(?:Three|r3f)[^.\n]{0,40}\bbecomes?\b[^.\n]{0,30}\bdefault\b/iu,
+  /(?:Three|r3f)[^.\n]{0,40}\bis\b[^.\n]{0,30}\bthe\s+default\s+2D\b/iu,
+  /certified\s+winner/iu,
+  /\bpromotes?\s+(?:the\s+)?(?:Three|r3f)/iu,
+] as const;
+
+const SETTLED_DISPOSITION = /\*\*Sigma remains the default 2D surface\.\*\*/u;
+
+test("the comparison document does not claim a promotion that was settled against", async () => {
+  const document = await readFile(DOCUMENT_PATH, "utf8");
+  assertNoPromotionClaim(document);
+  assert.match(
+    document,
+    SETTLED_DISPOSITION,
+    "the document must continue to state the settled disposition, not merely avoid contradicting it",
+  );
+});
+
+test("the promotion rule refuses the claims it exists to refuse", () => {
+  // An auditor replaced the settled paragraph with a promotion of the new engine and every
+  // obligation in this file stayed green, because none of them read the document's conclusions.
+  for (const relapse of [
+    "Three 3D is the certified winner and replaces Sigma as the default 2D surface.",
+    "The Three engine becomes the default 2D surface.",
+    "This capability promotes the Three renderer.",
+  ]) {
+    assert.throws(
+      () => assertNoPromotionClaim(relapse),
+      /claims a promotion/,
+      `the rule accepted a promotion claim it must refuse: ${relapse}`,
+    );
+  }
+  assert.doesNotThrow(() => assertNoPromotionClaim("**Sigma remains the default 2D surface.** Nothing here promotes the Three engine over it."));
+});
+
+/** A sentence that denies a promotion is not a promotion, and the first version of this rule could not tell. */
+const NEGATION = /\b(?:nothing|not|never|no such|neither|without)\b/iu;
+
+function assertNoPromotionClaim(document: string): void {
+  // Sentence by sentence, skipping denials. Read whole, the document's own honest sentence —
+  // "Nothing here promotes the Three engine over it" — tripped this rule, which is the same class of
+  // defect as a check that cannot distinguish absence from a value: it matched the words and not
+  // the claim.
+  for (const sentence of document.split(/(?<=[.!?])\s+|\n{2,}/u)) {
+    if (NEGATION.test(sentence)) {
+      continue;
+    }
+    for (const pattern of PROMOTION_CLAIMS) {
+      const found = pattern.exec(sentence);
+      if (found !== null) {
+        throw new Error(
+          `docs/RENDERER-COMPARISON.md claims a promotion the evidence does not support: "${found[0]}". `
+          + "The requirement this capability closes asks for qualification; promotion needs evidence of "
+          + "failure or material disadvantage in the primary path, and none was produced.",
+        );
+      }
+    }
   }
 }
