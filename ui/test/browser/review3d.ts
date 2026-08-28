@@ -93,6 +93,7 @@ type ReviewFraming = {
     readonly centeringRule: string;
     readonly neighbourCount: number;
     readonly targetCameraCenter: { readonly x: number; readonly y: number };
+    readonly bounds: VisualStateCamera["bounds"];
   };
 };
 
@@ -244,11 +245,14 @@ function requestedState(
   targetId: string,
 ): VisualState {
   const configuration = viewConfiguration(request.view);
-  const defaultCamera = cameraStateForBounds(framing.bounds);
+  const framingBounds = request.view === "micro" ? framing.micro.bounds : framing.bounds;
+  const defaultCamera = cameraStateForBounds(framingBounds);
   const baseCamera = {
     ...defaultCamera,
     angle: configuration.angle,
-    ratio: configuration.ratio,
+    // The close view's zoom comes from its own bounds, so it keeps the framing helper's ratio rather
+    // than multiplying a second zoom on top of an already-tight frame.
+    ratio: request.view === "micro" ? defaultCamera.ratio : configuration.ratio,
   };
   const baseState = createVisualState(graph, {
     selectedId: configuration.interaction === "selected" ? targetId : null,
@@ -269,11 +273,9 @@ function requestedState(
   // principled, and produced a close-up containing no nodes at all — the centroid falls in the void
   // between clusters, and at a ratio of 0.28 that void fills the frame. Every gate stayed green on
   // it, because a lit-pixel floor cannot tell a subject from three filaments passing through (F33).
-  const center = configuration.ratio >= defaultCamera.ratio
+  const center = request.view === "micro" || configuration.ratio >= defaultCamera.ratio
     ? baseCamera
-    : request.view === "micro"
-      ? framing.micro.targetCameraCenter
-      : resolvedSceneCameraCenter(graph, baseState);
+    : resolvedSceneCameraCenter(graph, baseState);
   return createVisualState(graph, {
     selectedId: configuration.interaction === "selected" ? targetId : null,
     focusedId: configuration.interaction === "focused" ? targetId : null,
@@ -360,6 +362,22 @@ function framingFor(graph: VisualGraph): ReviewFraming {
   };
   const target = highestDegreeNode(graph);
   const neighbourhood = immediateNeighbourhoodFraming(graph, anchors, target.id);
+  // The close view frames the neighbourhood's OWN extent through the same helper the widest view
+  // uses, rather than applying a zoom ratio to a centre expressed in a normalised space this harness
+  // has to guess the convention of. Two attempts to compute that centre put the subject against the
+  // top edge and then out of frame entirely, while every gate stayed green; deriving bounds and
+  // letting the established helper turn them into a camera removes the guess rather than tuning it.
+  const neighbourhoodAnchors = neighbourhood.nodeIds.map((id) => {
+    const anchor = anchors.get(id);
+    if (anchor === undefined) {
+      throw new Error(`review3d micro framing lacks a layout anchor for ${id}`);
+    }
+    return anchor;
+  });
+  const microBounds = {
+    x: extentWithMargin(neighbourhoodAnchors.map((anchor) => anchor.x)),
+    y: extentWithMargin(neighbourhoodAnchors.map((anchor) => anchor.y)),
+  };
   return {
     bounds,
     micro: {
@@ -368,6 +386,7 @@ function framingFor(graph: VisualGraph): ReviewFraming {
       degree: target.degree,
       centeringRule: MICRO_CENTERING_RULE,
       neighbourCount: neighbourhood.nodeIds.length - 1,
+      bounds: microBounds,
       targetCameraCenter: {
         x: normaliseWithinBounds(neighbourhood.center.x, bounds.x),
         y: normaliseWithinBounds(neighbourhood.center.y, bounds.y),
