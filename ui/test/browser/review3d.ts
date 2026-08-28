@@ -59,6 +59,7 @@ export type Review3dCaptureWitness = {
     readonly degree: number;
     readonly centeringRule: string;
     readonly neighbourCount: number;
+    readonly targetCameraCenter: { readonly x: number; readonly y: number };
     readonly targetFootprint: NodeFootprintWitness | null;
   };
 };
@@ -91,6 +92,7 @@ type ReviewFraming = {
     readonly degree: number;
     readonly centeringRule: string;
     readonly neighbourCount: number;
+    readonly targetCameraCenter: { readonly x: number; readonly y: number };
   };
 };
 
@@ -127,7 +129,7 @@ const CAPTURE_OPTIONS: RenderOptions = {
 };
 const PERSPECTIVE_COMPARISON_NOTE = "Perspective uses camera.ratio as a calibrated dolly distance and camera.angle as an orbit; it has no equivalent orthographic zoom ratio.";
 const MICRO_FRAMING_RULE = "unique node with the maximum count of incident relations; ties are rejected";
-const MICRO_CENTERING_RULE = "arithmetic mean of canonical resolved-scene camera-framing-subject positions";
+const MICRO_CENTERING_RULE = "bounding-box midpoint of the selected node and every immediate relation endpoint";
 const CAPTURE_WIDTH_CSS_PX = 1_200;
 const CAPTURE_HEIGHT_CSS_PX = 800;
 
@@ -223,6 +225,7 @@ export async function installReview3dPage(): Promise<void> {
           degree: framing.micro.degree,
           centeringRule: framing.micro.centeringRule,
           neighbourCount: framing.micro.neighbourCount,
+          targetCameraCenter: framing.micro.targetCameraCenter,
           targetFootprint: nodeFootprint(handle, framing.micro.selectedElementId),
         },
       };
@@ -260,9 +263,17 @@ function requestedState(
     lodBand: configuration.lodBand,
     reducedMotion: true,
   });
-  const center = configuration.ratio < defaultCamera.ratio
-    ? resolvedSceneCameraCenter(graph, baseState)
-    : baseCamera;
+  // A zoomed view recentres on the content that view is about, by one rule for every renderer.
+  // Uniform in mechanism, not in target: meso shows the graph and micro shows a neighbourhood, and
+  // they are about different things. Centring micro on the whole-scene centroid was uniform,
+  // principled, and produced a close-up containing no nodes at all — the centroid falls in the void
+  // between clusters, and at a ratio of 0.28 that void fills the frame. Every gate stayed green on
+  // it, because a lit-pixel floor cannot tell a subject from three filaments passing through (F33).
+  const center = configuration.ratio >= defaultCamera.ratio
+    ? baseCamera
+    : request.view === "micro"
+      ? framing.micro.targetCameraCenter
+      : resolvedSceneCameraCenter(graph, baseState);
   return createVisualState(graph, {
     selectedId: configuration.interaction === "selected" ? targetId : null,
     focusedId: configuration.interaction === "focused" ? targetId : null,
@@ -357,6 +368,10 @@ function framingFor(graph: VisualGraph): ReviewFraming {
       degree: target.degree,
       centeringRule: MICRO_CENTERING_RULE,
       neighbourCount: neighbourhood.nodeIds.length - 1,
+      targetCameraCenter: {
+        x: normaliseWithinBounds(neighbourhood.center.x, bounds.x),
+        y: normaliseWithinBounds(neighbourhood.center.y, bounds.y),
+      },
     },
   };
 }
