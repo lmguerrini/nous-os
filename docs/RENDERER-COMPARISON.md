@@ -68,6 +68,15 @@ Every measurement reads the **mounted** renderer or the **composited pixel**. No
 that fed it — a comparison between a model and itself proves nothing, and this project has shipped
 that defect once already.
 
+**With one stated asymmetry.** The drawing-versus-picking check reads mounted geometry for both Three
+cameras and a rebuilt scene for Sigma, which does not expose relation geometry through the shared
+handle. The artifact records the source per renderer, so a reader can tell which is which. Rewiring
+Sigma uniformly would have recorded its relation picking as *not measurable* — a real loss of coverage
+on a renderer that passes — so the asymmetry is stated rather than removed, exactly as Sigma's
+unknown retained-resource count is. **That weaker half is the one that hid a genuine defect for
+several rounds**: the check could see that mounted picking and a rebuilt model disagreed, and could
+not say which was wrong.
+
 The governed-state check takes the **whole derived cross-product** rather than a sample. That matters
 more than it sounds: the governed fixture contains exactly three bridge states, and they are exactly
 the three that cannot collide with each other. **No fixture-based check could have caught the defect
@@ -107,8 +116,13 @@ The cause was then measured **outside the browser entirely**, with no canvas, no
 DOM, so that the answer could not be attributed to one of the three. That measurement is its own
 committed producer and its own artifact — `npm --prefix ui run evidence:layout-scale`, written to
 `ui/dist/evidence/layout-scale.json` and bound to the tree that produced it. At the small fixture the
-shared layout is trivial. At the larger one it **alone exceeds the per-combination budget the browser
-suite gives an entire renderer**, before any renderer has been asked to draw anything.
+shared layout is trivial. At the larger one it **does not merely exceed the budget — it runs for
+minutes and then fails**, raising an error because it cannot satisfy its own pairwise separation floor
+in CSS pixels at that density, before any renderer has been asked to draw anything.
+
+That distinction matters more than a timing would. **The wall is not that layout is slow at this
+size; it is that this layout has no solution at this size** under its own legibility constraint. A
+faster machine does not move it, and neither would a faster renderer.
 
 The figures are in the artifact rather than here, and that is not fastidiousness: three drafts of
 this document quoted layout and mount timings, and all three were wrong within hours. A check now
