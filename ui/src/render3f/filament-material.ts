@@ -3,6 +3,7 @@ import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import type { FilamentBuffers } from "#render3f/buffers.ts";
 
 const FILAMENT_RENDER_ORDER = 2;
+const RADIANS_PER_TURN = Math.PI * 2;
 
 /** This names the filament shader's live viewport inputs and does not choose their values. */
 export type FilamentProjectionUniforms = {
@@ -17,6 +18,23 @@ export type FilamentRenderResources = {
   readonly material: THREE.RawShaderMaterial;
   readonly mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.RawShaderMaterial>;
 };
+
+/** This measures the shader's signed medial displacement relative to span and does not move a relation endpoint. */
+export function filamentMedialOffsetFraction(
+  parameter: number,
+  amplitudePermille: number,
+  frequencyMilliradians: number,
+  phasePermille: number,
+): number {
+  const clampedParameter = Math.max(0, Math.min(1, parameter));
+  const endpointEnvelope = Math.sin(Math.PI * clampedParameter);
+  const phaseRadians = (phasePermille / SCENE_PERMILLE_SCALE) * RADIANS_PER_TURN;
+  return (amplitudePermille / SCENE_PERMILLE_SCALE)
+    * endpointEnvelope
+    * Math.sin(
+      ((frequencyMilliradians / SCENE_PERMILLE_SCALE) * clampedParameter) + phaseRadians,
+    );
+}
 
 /** This computes the signed device-space distance to a quadratic curve and does not approximate it with drawn line segments. */
 export const FILAMENT_DISTANCE_GLSL = `
@@ -109,8 +127,7 @@ void main() {
   float maximumBaseWidth = max(a_widthsAndPicking.x, a_widthsAndPicking.y) * u_sizeScale * u_devicePixelRatio;
   float maximumWidthFactor = max(
     a_minimumAndJunctionPermille.x / u_permilleScale,
-    1.0 + abs(a_hotAndWobble.z / u_permilleScale)
-      + max(a_minimumAndJunctionPermille.y, a_minimumAndJunctionPermille.z) / u_permilleScale
+    1.0 + max(a_minimumAndJunctionPermille.y, a_minimumAndJunctionPermille.z) / u_permilleScale
   );
   float maximumBodyHalfWidth = max(
     a_widthsAndPicking.z * u_devicePixelRatio * 0.5,
@@ -120,7 +137,8 @@ void main() {
     maximumBodyHalfWidth * a_sheathAndCorePermille.x / u_permilleScale,
     maximumBodyHalfWidth + (a_widthsAndPicking.w * u_devicePixelRatio)
   );
-  float normalExtent = (curveOffset * 0.5) + materialExtent;
+  float medialExtent = chordLength * abs(a_hotAndWobble.z / u_permilleScale);
+  float normalExtent = (curveOffset * 0.5) + medialExtent + materialExtent;
   float endpointExtent = mix(-materialExtent, materialExtent, position.x);
   vec2 chordPoint = mix(deviceStart, deviceEnd, position.x);
   vec2 devicePosition = chordPoint + (normal * normalExtent * position.y) + (tangent * endpointExtent);
@@ -182,20 +200,42 @@ float endpointJunctionProfile(float parameter) {
 float luminanceWeightedAlpha(float luminance) {
   return clamp(luminance, 0.0, 1.0);
 }
+const float MEDIAL_OFFSET_WIDTH_LIMIT = 5.0;
+float filamentMedialOffsetPx(float parameter, float span) {
+  float endpointEnvelope = sin(3.141592653589793 * parameter);
+  float phase = v_phaseAndLuminancePermille.x / u_permilleScale;
+  float wave = sin(
+    (v_hotAndWobble.w / u_permilleScale) * parameter
+      + phase * 2.0 * 3.141592653589793
+  );
+  // A filament meanders by a few times its OWN THICKNESS, not by a fraction of its length.
+  //
+  // Span-relative alone put Mycelium's excursion at a quarter of the span, which on the long
+  // relations of this fixture became sweeps of roughly a hundred pixels: multi-inflection by the
+  // measurement, and illegible in the picture — you could no longer tell which node joined which.
+  // That is the F22 shape exactly, a channel improving while the render got worse. Bounding the
+  // excursion by the filament's own width keeps the meander fine at every span and every zoom, so
+  // the irregularity reads as material character rather than as a waveform drawn over the graph.
+  float widthPx = mix(v_widthsAndPicking.x, v_widthsAndPicking.y, parameter)
+    * u_sizeScale * u_devicePixelRatio;
+  float excursionPx = min(
+    span * (v_hotAndWobble.z / u_permilleScale),
+    max(widthPx, v_widthsAndPicking.z * u_devicePixelRatio) * MEDIAL_OFFSET_WIDTH_LIMIT
+  );
+  return excursionPx * endpointEnvelope * wave;
+}
 void main() {
   vec2 distanceSample = filamentDistance(gl_FragCoord.xy, v_cpA, v_cpB, v_cpC);
   float parameter = distanceSample.y;
   float baseWidth = mix(v_widthsAndPicking.x, v_widthsAndPicking.y, parameter) * u_sizeScale * u_devicePixelRatio;
-  float phase = v_phaseAndLuminancePermille.x / u_permilleScale;
-  float wobble = (v_hotAndWobble.z / u_permilleScale)
-    * sin((v_hotAndWobble.w / u_permilleScale) * parameter + phase * 2.0 * 3.141592653589793);
   float junction = endpointJunctionProfile(parameter);
-  float widthFactor = max(v_minimumAndJunctionPermille.x / u_permilleScale, 1.0 + wobble + junction);
+  float widthFactor = max(v_minimumAndJunctionPermille.x / u_permilleScale, 1.0 + junction);
   float bodyHalfWidth = max(
     v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
     baseWidth * widthFactor * 0.5
   );
-  float distance = abs(distanceSample.x);
+  float medialOffset = filamentMedialOffsetPx(parameter, length(v_cpC - v_cpA));
+  float distance = abs(distanceSample.x - medialOffset);
   float feather = max(fwidth(distance), 1.0 / u_permilleScale);
   float sheathHalfWidth = bodyHalfWidth * v_sheathAndCorePermille.x / u_permilleScale;
   float sheathCoverage = 1.0 - smoothstep(sheathHalfWidth - feather, sheathHalfWidth + feather, distance);

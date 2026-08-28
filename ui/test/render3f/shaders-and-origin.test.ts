@@ -9,6 +9,7 @@ import {
   FILAMENT_FRAGMENT_SHADER,
   FILAMENT_VERTEX_SHADER,
   createFilamentRenderResources,
+  filamentMedialOffsetFraction,
 } from "#render3f/filament-material.ts";
 import {
   assertNoRendererMaterialLiterals,
@@ -23,7 +24,10 @@ import {
   assertFilamentShaderTechnique,
   assertNodeShaderTechnique,
 } from "#render3f/shader-contract.ts";
+import { buildScene } from "#scene/build.ts";
+import type { SceneEdge } from "#scene/contract.ts";
 import { resolvedScene } from "./support.ts";
+import { sceneFixtureGraph, sceneVisualState } from "#test-scene/support.ts";
 
 test("filament shader uses expanded quads, analytic AA, the width floor, and supplied luminance", () => {
   assert.doesNotThrow(() => assertFilamentShaderTechnique(FILAMENT_VERTEX_SHADER, FILAMENT_FRAGMENT_SHADER));
@@ -44,6 +48,112 @@ test("filament shader uses expanded quads, analytic AA, the width floor, and sup
     () => assertFilamentShaderTechnique(FILAMENT_VERTEX_SHADER, terminalControl),
     /missing luminance-weighted terminal fade/,
   );
+  const medialControl = FILAMENT_FRAGMENT_SHADER.replace("distanceSample.x - medialOffset", "distanceSample.x");
+  assert.throws(
+    () => assertFilamentShaderTechnique(FILAMENT_VERTEX_SHADER, medialControl),
+    /missing shader-space medial offset/,
+  );
+  const extentControl = FILAMENT_VERTEX_SHADER.replace("medialExtent + materialExtent", "materialExtent");
+  assert.throws(
+    () => assertFilamentShaderTechnique(extentControl, FILAMENT_FRAGMENT_SHADER),
+    /missing medial-offset quad extent/,
+  );
+});
+
+test("medial offset separates every morphology at meso and micro without adding filament strokes", () => {
+  const graph = sceneFixtureGraph();
+  const measurements: string[] = [];
+  for (const morphology of ["stellar", "neural", "mycelium"] as const) {
+    for (const lodBand of ["meso", "micro"] as const) {
+      const state = { ...sceneVisualState(graph), morphology, lodBand };
+      const scene = buildScene(graph, state);
+      const buffers = buildSceneBuffers(scene);
+      const resources = createFilamentRenderResources(buffers.filaments);
+      assert.equal(scene.edges.length, graph.edges.length, `${morphology}/${lodBand} relation count changed`);
+      assert.equal(
+        resources.geometry.instanceCount,
+        graph.edges.length,
+        `${morphology}/${lodBand} emitted more than one stroke per governed relation`,
+      );
+      assert.deepEqual(
+        [...buffers.filaments.edgeIds].sort(),
+        graph.edges.map((edge) => edge.id).sort(),
+        `${morphology}/${lodBand} stroke ids differ from governed relation ids`,
+      );
+      const peak = peakMedialOffsetFraction(scene.edges);
+      measurements.push(`${morphology}/${lodBand}=${peak.toFixed(6)}`);
+      for (const edge of scene.edges) {
+        assert.ok(
+          Math.abs(edgeMedialOffsetFraction(edge, 0)) <= Number.EPSILON
+            && Math.abs(edgeMedialOffsetFraction(edge, 1)) <= Number.EPSILON,
+          `${morphology}/${lodBand}/${edge.id} medial offset moved a governed endpoint`,
+        );
+      }
+      if (morphology === "mycelium") {
+        assert.ok(
+          scene.edges.every((edge) => medialInflectionCount(edge) >= 4),
+          `${morphology}/${lodBand} lost multi-inflection medial irregularity`,
+        );
+      }
+      resources.geometry.dispose();
+      resources.material.dispose();
+    }
+  }
+  const parsed = new Map(measurements.map((measurement) => {
+    const [name, value] = measurement.split("=");
+    if (name === undefined || value === undefined) {
+      throw new TypeError("medial-offset measurement is unavailable");
+    }
+    return [name, Number(value)] as const;
+  }));
+  for (const band of ["meso", "micro"] as const) {
+    const stellar = requiredMeasurement(parsed, `stellar/${band}`);
+    const neural = requiredMeasurement(parsed, `neural/${band}`);
+    const mycelium = requiredMeasurement(parsed, `mycelium/${band}`);
+    assert.ok(stellar <= 0.015, `${band} Stellar no longer stays within its smooth excursion ceiling`);
+    assert.ok(stellar < neural && neural < mycelium, `${band} medial offset lost morphology separation`);
+  }
+  process.stdout.write(
+    `medial-offset peak perpendicular deviation/span: ${measurements.join(", ")}; `
+      + `filament strokes/governed relations: ${graph.edges.length}/${graph.edges.length} for every morphology\n`,
+  );
+});
+
+test("Neural fans only its real incident relations from widened, thickened soma endpoints", () => {
+  const graph = sceneFixtureGraph();
+  for (const lodBand of ["meso", "micro"] as const) {
+    const state = { ...sceneVisualState(graph), morphology: "neural" as const, lodBand };
+    const scene = buildScene(graph, state);
+    const degree = new Map(scene.nodes.map((node) => [node.id, 0]));
+    for (const edge of scene.edges) {
+      degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+      degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+    }
+    const soma = [...degree.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0];
+    if (soma === undefined || soma[1] < 3) {
+      throw new TypeError(`Neural ${lodBand} fan fixture has no soma with at least three real incident relations`);
+    }
+    const incident = scene.edges.filter((edge) => edge.source === soma[0] || edge.target === soma[0]);
+    assert.equal(incident.length, soma[1]);
+    const departureSlopes = incident.map((edge) => {
+      const somaAtStart = edge.source === soma[0];
+      const somaWidth = somaAtStart ? edge.widthStartPx : edge.widthEndPx;
+      const distalWidth = somaAtStart ? edge.widthEndPx : edge.widthStartPx;
+      const junction = somaAtStart
+        ? edge.filament.junctionStartPermille
+        : edge.filament.junctionEndPermille;
+      assert.ok(somaWidth > distalWidth, `${edge.id} lost source-side soma widening`);
+      assert.ok(junction > 0, `${edge.id} lost real-relation junction thickening at the soma`);
+      return endpointMedialDepartureSlope(edge, somaAtStart);
+    });
+    const separation = Math.max(...departureSlopes) - Math.min(...departureSlopes);
+    assert.ok(separation > 0.1, `Neural ${lodBand} incident relations lost angular fan separation: ${separation}`);
+    assert.equal(
+      new Set(incident.map((edge) => edge.id)).size,
+      incident.length,
+      `Neural ${lodBand} fan repeated a relation stroke`,
+    );
+  }
 });
 
 test("node shader consumes sampled halo values and renders a gradient core weighted toward the centre", () => {
@@ -422,6 +532,62 @@ test("every known material-literal evasion form is refused", () => {
     );
   }
 });
+
+function peakMedialOffsetFraction(edges: readonly SceneEdge[]): number {
+  let peak = 0;
+  for (const edge of edges) {
+    for (let sample = 0; sample <= 4096; sample += 1) {
+      peak = Math.max(peak, Math.abs(edgeMedialOffsetFraction(edge, sample / 4096)));
+    }
+  }
+  return peak;
+}
+
+function medialInflectionCount(edge: SceneEdge): number {
+  let previousCurvatureSign = 0;
+  let inflections = 0;
+  const intervalCount = 1024;
+  let previous = edgeMedialOffsetFraction(edge, 0);
+  let current = edgeMedialOffsetFraction(edge, 1 / intervalCount);
+  for (let sample = 2; sample <= intervalCount; sample += 1) {
+    const next = edgeMedialOffsetFraction(edge, sample / intervalCount);
+    const secondDifference = next - (2 * current) + previous;
+    const curvatureSign = Math.abs(secondDifference) < Number.EPSILON ? 0 : Math.sign(secondDifference);
+    if (curvatureSign !== 0 && previousCurvatureSign !== 0 && curvatureSign !== previousCurvatureSign) {
+      inflections += 1;
+    }
+    if (curvatureSign !== 0) {
+      previousCurvatureSign = curvatureSign;
+    }
+    previous = current;
+    current = next;
+  }
+  return inflections;
+}
+
+function endpointMedialDepartureSlope(edge: SceneEdge, start: boolean): number {
+  const parameterStep = 1 / 4096;
+  return start
+    ? edgeMedialOffsetFraction(edge, parameterStep) / parameterStep
+    : -edgeMedialOffsetFraction(edge, 1 - parameterStep) / parameterStep;
+}
+
+function edgeMedialOffsetFraction(edge: SceneEdge, parameter: number): number {
+  return filamentMedialOffsetFraction(
+    parameter,
+    edge.filament.wobbleAmplitudePermille,
+    edge.filament.wobbleFrequencyMilliradians,
+    edge.filament.phasePermille,
+  );
+}
+
+function requiredMeasurement(measurements: ReadonlyMap<string, number>, name: string): number {
+  const value = measurements.get(name);
+  if (value === undefined) {
+    throw new TypeError(`medial-offset measurement ${name} is unavailable`);
+  }
+  return value;
+}
 
 // The mirror obligation. A control that refuses everything is as useless as one that refuses
 // nothing: hardening must not have been bought by making the legitimate write illegal. The renderer
