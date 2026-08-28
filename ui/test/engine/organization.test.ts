@@ -4,11 +4,13 @@ import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
-import { layoutAnchors } from "#engine/layout.ts";
+import { aggregateMemberships, layoutAnchors } from "#engine/layout.ts";
 import {
   INDRA,
+  assertIndraLayout,
   assertIndraOrganization,
   flatOrganization,
+  indraLayout,
   indraOrganization,
   rejectionBoundsDisjointFromWindows,
 } from "#engine/organization.ts";
@@ -112,3 +114,45 @@ test("the predicate accepts the shape the organization result actually exposes",
 function distance(left: { readonly x: number; readonly y: number }, right: { readonly x: number; readonly y: number }): number {
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
+
+test("Indra's independent re-layout resolves the same node and relation id sets as Flat, and every window's membership is exactly governed, on both fixtures", () => {
+  for (const relativePath of [
+    ["discovery-at-question.json"],
+    ["indra", "indra-community-windows.json"],
+  ]) {
+    const visualGraph = toVisualGraph(JSON.parse(readFileSync(
+      join(process.cwd(), "..", "fixtures", "synthetic", "projection", ...relativePath),
+      "utf8",
+    )) as unknown);
+    const label = relativePath.join("/");
+    const flat = flatOrganization(visualGraph);
+    const relayout = indraLayout(visualGraph, DEFAULT_CALIBRATION);
+    const governedNodeIds = visualGraph.nodes.map((node) => node.id).sort();
+    const governedEdgeIds = visualGraph.edges.map((edge) => edge.id).sort();
+    assert.deepEqual([...relayout.nodeIds].sort(), governedNodeIds, label);
+    assert.deepEqual([...relayout.edgeIds].sort(), governedEdgeIds, label);
+    assert.deepEqual([...flat.nodeIds].sort(), governedNodeIds, label);
+    assert.deepEqual([...flat.edgeIds].sort(), governedEdgeIds, label);
+    assertIndraLayout(visualGraph, relayout);
+
+    const expectedMemberships = aggregateMemberships(visualGraph);
+    assert.ok(relayout.windows.length > 0, `${label} needs real aggregates to prove this`);
+    for (const window of relayout.windows) {
+      const expected = expectedMemberships.get(window.id);
+      assert.ok(expected !== undefined, label);
+      assert.deepEqual([...window.members].sort(), [...expected].sort(), `${label} ${window.id}`);
+    }
+
+    // Demonstrate the membership check actually fails on a fabricated member, then restore it.
+    const targetWindow = relayout.windows.find((window) => window.members.length > 0);
+    assert.ok(targetWindow !== undefined, `${label} needs a non-empty window to fabricate a member into`);
+    const fabricated = {
+      ...relayout,
+      windows: relayout.windows.map((window) => window.id === targetWindow.id
+        ? { ...window, members: [...window.members, "fabricated-member-not-real"] }
+        : window),
+    };
+    assert.throws(() => assertIndraLayout(visualGraph, fabricated), /membership/);
+    assertIndraLayout(visualGraph, relayout);
+  }
+});

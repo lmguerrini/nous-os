@@ -14,11 +14,13 @@ import {
   createEngineGraphView,
 } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
+import type { LayoutAnchors } from "#engine/layout.ts";
 import type { ResolvedMaterial } from "#engine/lod.ts";
 import { MACRO, MESO, lodView } from "#engine/lod.ts";
 import type { EdgeMaterial, MorphologyProfile, NodeMaterial } from "#engine/morphology.ts";
 import { MYCELIUM, NEURAL, SHARED_SCENE_MATERIAL_TARGET, STELLAR, applyMorphology } from "#engine/morphology.ts";
-import { assertIndraOrganization, flatOrganization, indraOrganization } from "#engine/organization.ts";
+import { assertIndraLayout, flatOrganization, indraLayout } from "#engine/organization.ts";
+import type { AggregateWindow } from "#engine/organization.ts";
 import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
 import { contrastRatio, relativeLuminance, resolveTokens } from "#engine/tokens.ts";
 import type { OklchToken, TokenMap } from "#engine/tokens.ts";
@@ -83,13 +85,8 @@ export function buildScene(
   const morphology = morphologyProfile(visualState.morphology);
   const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration, SHARED_SCENE_MATERIAL_TARGET);
   const activeTokens = shippingTokens(inputs.tokens, visualState.palette, visualState.theme, calibration);
-  const organization = visualState.organization === "indra"
-    ? indraOrganization(engineGraph, calibration, anchors)
-    : flatOrganization(engineGraph, anchors);
-  if (visualState.organization === "indra") {
-    assertIndraOrganization(engineGraph, organization);
-  }
-  const view = lodView(engineGraph, anchors, visualState.lodBand);
+  const organization = resolveOrganization(engineGraph, calibration, anchors, visualState.organization);
+  const view = lodView(engineGraph, organization.nodeAnchors, visualState.lodBand);
   const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
   const edgeMaterials = new Map(morphologyMaterial.edges.map((edge) => [edge.id, edge]));
   const nodes = engineGraph.nodes.map((node) => sceneNode(
@@ -483,6 +480,27 @@ function sceneCameraRequest(
     kind,
     navigation: { ...calibration.camera.perspective },
   };
+}
+
+/** This is the scene layer's uniform organization result and does not distinguish Flat's shared anchors from Indra's independent re-layout at the call site. */
+type ResolvedOrganization = {
+  readonly windows: readonly AggregateWindow[];
+  readonly nodeAnchors: LayoutAnchors;
+};
+
+/** This selects Flat's unchanged shared-anchor windows or Indra's independent re-layout and does not let either leak into the other's node positions. */
+function resolveOrganization(
+  graph: EngineGraph,
+  calibration: CalibrationProfile,
+  sharedAnchors: LayoutAnchors,
+  organization: VisualState["organization"],
+): ResolvedOrganization {
+  if (organization === "indra") {
+    const relayout = indraLayout(graph, calibration);
+    assertIndraLayout(graph, relayout);
+    return { windows: relayout.windows, nodeAnchors: relayout.nodeAnchors };
+  }
+  return { windows: flatOrganization(graph, sharedAnchors).windows, nodeAnchors: sharedAnchors };
 }
 
 function orderEngineGraph(graph: EngineGraph): EngineGraph {
