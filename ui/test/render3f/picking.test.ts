@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createVisualState } from "#engine/visual-state.ts";
+import { FILAMENT_FRAGMENT_SHADER } from "#render3f/filament-material.ts";
 import type { Scene, SceneEdge } from "#scene/contract.ts";
+import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
+import { buildScene } from "#scene/build.ts";
 import { ScenePicker, edgeContainsViewportPoint } from "#render3f/picking.ts";
 import type { PickingProjection } from "#render3f/picking.ts";
+import { sceneFixtureGraph, sceneVisualState } from "#test-scene/support.ts";
 import { resolvedScene } from "./support.ts";
 
 const IDENTITY_PROJECTION: PickingProjection = {
@@ -44,6 +49,54 @@ test("filament picking follows the resolved path and consumes its supplied toler
     y: pathPoint.y,
   };
   assert.equal(picker.pickEdgeAtPoint(distant.x, distant.y), null);
+});
+
+test("filament picking follows the shader's width-capped medial line at every morphology midpoint", (context) => {
+  const graph = sceneFixtureGraph();
+  const provisionalState = sceneVisualState(graph);
+  const measurements: string[] = [];
+
+  for (const morphology of ["stellar", "neural", "mycelium"] as const) {
+    const state = createVisualState(graph, { ...provisionalState, morphology });
+    const scene = buildScene(graph, state);
+    const projection = parityDprOneProjection(scene);
+    let maximum: { readonly offset: number; readonly threshold: number; readonly id: string } | undefined;
+    let outsideThreshold = 0;
+    for (const edge of scene.edges) {
+      const offset = Math.abs(shaderMedialOffsetViewportPx(edge, 0.5, projection));
+      const threshold = pickThresholdAtParameter(edge, 0.5, projection.filamentSizeScale());
+      if (offset > threshold) {
+        outsideThreshold += 1;
+      }
+      if (maximum === undefined || offset > maximum.offset) {
+        maximum = { offset, threshold, id: edge.id };
+      }
+      assertDrawnMidpointPicked(edge, shaderDrawnPoint(edge, 0.5, projection), projection);
+    }
+    assert.ok(maximum !== undefined, `${morphology} has no relation midpoint to measure`);
+    assert.ok(outsideThreshold > 0, `${morphology} no longer exercises a medial offset outside the old pick threshold`);
+    measurements.push(
+      `${morphology}=${maximum.offset.toFixed(3)}px/${maximum.threshold.toFixed(3)}px threshold`
+        + ` (${outsideThreshold}/${scene.edges.length} outside; ${maximum.id})`,
+    );
+  }
+
+  const control = medialOffsetControlEdge();
+  const drawnPoint = shaderDrawnPoint(control, 0.5, IDENTITY_PROJECTION);
+  assertDrawnMidpointPicked(control, drawnPoint, IDENTITY_PROJECTION);
+  assert.equal(
+    edgeContainsViewportPoint(control, { x: 50, y: 0 }, IDENTITY_PROJECTION),
+    false,
+    "the unshifted quadratic midpoint is outside the drawn filament's pick threshold",
+  );
+  const inflatedPoint = shaderDrawnPoint(control, 0.5, IDENTITY_PROJECTION, 2);
+  assert.throws(
+    () => assertDrawnMidpointPicked(control, inflatedPoint, IDENTITY_PROJECTION),
+    /drawn midpoint diverged from the picked medial line/,
+  );
+
+  context.diagnostic(`medial midpoint device-pixel divergence: ${measurements.join(", ")}`);
+  context.diagnostic("inflated-offset negative control diverged from the picked medial line as required");
 });
 
 test("picking is deterministic for reordered scene arrays because stacking priority governs", () => {
@@ -119,6 +172,187 @@ function straightRelation(
     path: [{ ...source, z: 0 }, { ...target, z: 0 }],
     controlPoint: { ...control, z: 0 },
   };
+}
+
+function parityDprOneProjection(scene: Scene): PickingProjection {
+  const viewport = { width: 1_200, height: 800 };
+  const stagePaddingPx = 30;
+  const xValues = scene.nodes.map((node) => node.position.x);
+  const yValues = scene.nodes.map((node) => node.position.y);
+  const bounds = {
+    minimumX: Math.min(...xValues),
+    maximumX: Math.max(...xValues),
+    minimumY: Math.min(...yValues),
+    maximumY: Math.max(...yValues),
+  };
+  const graphDimensions = {
+    width: bounds.maximumX - bounds.minimumX,
+    height: bounds.maximumY - bounds.minimumY,
+  };
+  const normalisationSpan = Math.max(graphDimensions.width, graphDimensions.height);
+  const correctionRatio = cameraCorrectionRatio(viewport, graphDimensions);
+  const projectedScale = (Math.min(viewport.width, viewport.height) - (2 * stagePaddingPx))
+    * correctionRatio / normalisationSpan;
+  const center = {
+    x: (bounds.minimumX + bounds.maximumX) / 2,
+    y: (bounds.minimumY + bounds.maximumY) / 2,
+  };
+  return {
+    project(point) {
+      return {
+        x: (viewport.width / 2) + ((point.x - center.x) * projectedScale),
+        y: (viewport.height / 2) - ((point.y - center.y) * projectedScale),
+      };
+    },
+    nodeRadiusPx(node) {
+      return node.radiusPx;
+    },
+    filamentSizeScale() {
+      return 1;
+    },
+  };
+}
+
+/** This is Sigma's default-camera correction used by Three's orthographic parity camera. */
+function cameraCorrectionRatio(
+  viewport: { readonly width: number; readonly height: number },
+  graph: { readonly width: number; readonly height: number },
+): number {
+  const viewportRatio = viewport.height / viewport.width;
+  const graphRatio = graph.height / graph.width;
+  if ((viewportRatio < 1 && graphRatio > 1) || (viewportRatio > 1 && graphRatio < 1)) {
+    return 1;
+  }
+  return Math.min(
+    Math.max(graphRatio, 1 / graphRatio),
+    Math.max(1 / viewportRatio, viewportRatio),
+  );
+}
+
+/** This independently evaluates the fragment shader's medial line in top-down viewport coordinates. */
+function shaderDrawnPoint(
+  edge: SceneEdge,
+  parameter: number,
+  projection: PickingProjection,
+  offsetMultiplier = 1,
+): { readonly x: number; readonly y: number } {
+  const source = projection.project(requiredItem(edge.path, 0, `${edge.id} source`));
+  const control = projection.project(edge.controlPoint);
+  const target = projection.project(requiredLast(edge.path, `${edge.id} target`));
+  const inverse = 1 - parameter;
+  const pathPoint = {
+    x: (inverse * inverse * source.x) + (2 * inverse * parameter * control.x) + (parameter * parameter * target.x),
+    y: (inverse * inverse * source.y) + (2 * inverse * parameter * control.y) + (parameter * parameter * target.y),
+  };
+  const tangent = {
+    x: 2 * (inverse * (control.x - source.x) + parameter * (target.x - control.x)),
+    y: 2 * (inverse * (control.y - source.y) + parameter * (target.y - control.y)),
+  };
+  const tangentLength = Math.hypot(tangent.x, tangent.y);
+  if (tangentLength === 0) {
+    return pathPoint;
+  }
+  const offset = shaderMedialOffsetViewportPx(edge, parameter, projection) * offsetMultiplier;
+  // gl_FragCoord is bottom-up while the picking viewport is top-down, so the shader's left normal
+  // becomes this right normal after projection back to CSS coordinates.
+  return {
+    x: pathPoint.x + ((tangent.y / tangentLength) * offset),
+    y: pathPoint.y - ((tangent.x / tangentLength) * offset),
+  };
+}
+
+/** This evaluates the shader text's span/width excursion rule without calling picking code. */
+function shaderMedialOffsetViewportPx(
+  edge: SceneEdge,
+  parameter: number,
+  projection: PickingProjection,
+): number {
+  const source = projection.project(requiredItem(edge.path, 0, `${edge.id} source`));
+  const target = projection.project(requiredLast(edge.path, `${edge.id} target`));
+  const sizeScale = projection.filamentSizeScale();
+  const width = interpolate(edge.widthStartPx, edge.widthEndPx, parameter) * sizeScale;
+  const span = Math.hypot(target.x - source.x, target.y - source.y);
+  const excursion = Math.min(
+    span * (edge.filament.wobbleAmplitudePermille / SCENE_PERMILLE_SCALE),
+    Math.max(width, edge.minimumDeviceWidthPx) * shaderMedialOffsetWidthLimit(),
+  );
+  const phase = (edge.filament.phasePermille / SCENE_PERMILLE_SCALE) * Math.PI * 2;
+  return excursion
+    * Math.sin(Math.PI * parameter)
+    * Math.sin((edge.filament.wobbleFrequencyMilliradians / SCENE_PERMILLE_SCALE) * parameter + phase);
+}
+
+function shaderMedialOffsetWidthLimit(): number {
+  const match = /MEDIAL_OFFSET_WIDTH_LIMIT = ([0-9.]+);/.exec(FILAMENT_FRAGMENT_SHADER);
+  const value = Number(match?.[1]);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new TypeError("filament shader medial-offset width limit is unavailable");
+  }
+  return value;
+}
+
+function pickThresholdAtParameter(edge: SceneEdge, parameter: number, sizeScale: number): number {
+  const baseWidth = interpolate(edge.widthStartPx, edge.widthEndPx, parameter) * sizeScale;
+  const phase = edge.filament.phasePermille / SCENE_PERMILLE_SCALE;
+  const wobble = (edge.filament.wobbleAmplitudePermille / SCENE_PERMILLE_SCALE)
+    * Math.sin(
+      (edge.filament.wobbleFrequencyMilliradians / SCENE_PERMILLE_SCALE) * parameter
+        + (phase * Math.PI * 2),
+    );
+  const junction = interpolate(
+    edge.filament.junctionStartPermille,
+    edge.filament.junctionEndPermille,
+    parameter,
+  ) / SCENE_PERMILLE_SCALE;
+  const widthFactor = Math.max(
+    edge.filament.minimumWidthFactorPermille / SCENE_PERMILLE_SCALE,
+    1 + wobble + junction,
+  );
+  const width = Math.max(edge.minimumDeviceWidthPx, baseWidth * widthFactor);
+  return (width / 2) + edge.pickTolerancePx;
+}
+
+function assertDrawnMidpointPicked(
+  edge: SceneEdge,
+  point: { readonly x: number; readonly y: number },
+  projection: PickingProjection,
+): void {
+  if (!edgeContainsViewportPoint(edge, point, projection)) {
+    throw new Error(`${edge.id} drawn midpoint diverged from the picked medial line`);
+  }
+}
+
+function medialOffsetControlEdge(): SceneEdge {
+  const edge = straightRelation({ x: 0, y: 0 }, { x: 100, y: 0 });
+  return {
+    ...edge,
+    id: "inflated-medial-offset-control",
+    widthStartPx: 2,
+    widthEndPx: 2,
+    pickTolerancePx: 2,
+    minimumDeviceWidthPx: 1.5,
+    filament: {
+      ...edge.filament,
+      minimumWidthFactorPermille: 120,
+      junctionStartPermille: 0,
+      junctionEndPermille: 0,
+      wobbleAmplitudePermille: 240,
+      wobbleFrequencyMilliradians: 0,
+      phasePermille: 250,
+    },
+  };
+}
+
+function interpolate(start: number, end: number, parameter: number): number {
+  return start + ((end - start) * parameter);
+}
+
+function requiredLast<T>(values: readonly T[], name: string): T {
+  const value = values.at(-1);
+  if (value === undefined) {
+    throw new TypeError(`${name} is unavailable`);
+  }
+  return value;
 }
 
 test("a straight relation is pickable at its own midpoint after projection rounding", () => {

@@ -9,6 +9,12 @@ import type { Scene, SceneEdge, SceneNode } from "#scene/contract.ts";
  */
 const COLLINEAR_RELATIVE_TOLERANCE = 1e-12;
 
+/** Kept equal to the filament shader's width-relative medial excursion ceiling. */
+const MEDIAL_OFFSET_WIDTH_LIMIT = 5;
+
+/** This is the phase scale used by the filament shader and does not encode a picking threshold. */
+const RADIANS_PER_TURN = Math.PI * 2;
+
 /** This is the live projection surface used by CPU picking and does not retain a camera implementation. */
 export type PickingProjection = {
   project(point: Coordinates): { readonly x: number; readonly y: number };
@@ -98,7 +104,45 @@ export function edgeContainsViewportPoint(
     1 + wobble + junction,
   );
   const width = Math.max(edge.minimumDeviceWidthPx, baseWidth * widthFactor);
-  return sample.distance <= (width / bisectionDivisor()) + edge.pickTolerancePx;
+  const medialOffset = filamentMedialOffsetViewportPx(
+    edge,
+    sample.parameter,
+    source,
+    target,
+    sizeScale,
+  );
+  return Math.abs(sample.shaderSignedDistance - medialOffset)
+    <= (width / bisectionDivisor()) + edge.pickTolerancePx;
+}
+
+/**
+ * This mirrors `filamentMedialOffsetPx` in the fragment shader in CSS viewport units.
+ *
+ * Every shader input is multiplied by the same device-pixel ratio, so it cancels when the CPU
+ * picker answers in CSS pixels. The width-relative cap is therefore applied after projection but
+ * before any device-pixel conversion, from the same resolved edge values the shader receives.
+ */
+export function filamentMedialOffsetViewportPx(
+  edge: SceneEdge,
+  parameter: number,
+  source: { readonly x: number; readonly y: number },
+  target: { readonly x: number; readonly y: number },
+  sizeScale: number,
+): number {
+  const clampedParameter = Math.max(0, Math.min(1, parameter));
+  const widthPx = interpolate(edge.widthStartPx, edge.widthEndPx, clampedParameter) * sizeScale;
+  const span = Math.hypot(target.x - source.x, target.y - source.y);
+  const excursionPx = Math.min(
+    span * (edge.filament.wobbleAmplitudePermille / SCENE_PERMILLE_SCALE),
+    Math.max(widthPx, edge.minimumDeviceWidthPx) * MEDIAL_OFFSET_WIDTH_LIMIT,
+  );
+  const endpointEnvelope = Math.sin(Math.PI * clampedParameter);
+  const phaseRadians = (edge.filament.phasePermille / SCENE_PERMILLE_SCALE) * RADIANS_PER_TURN;
+  const wave = Math.sin(
+    (edge.filament.wobbleFrequencyMilliradians / SCENE_PERMILLE_SCALE) * clampedParameter
+      + phaseRadians,
+  );
+  return excursionPx * endpointEnvelope * wave;
 }
 
 function quadraticDistanceSample(
@@ -106,7 +150,7 @@ function quadraticDistanceSample(
   source: { readonly x: number; readonly y: number },
   control: { readonly x: number; readonly y: number },
   target: { readonly x: number; readonly y: number },
-): { readonly distance: number; readonly parameter: number } {
+): FilamentDistanceSample {
   const relativeSource = { x: source.x - point.x, y: source.y - point.y };
   const relativeControl = { x: control.x - point.x, y: control.y - point.y };
   const relativeTarget = { x: target.x - point.x, y: target.y - point.y };
@@ -145,8 +189,20 @@ function quadraticDistanceSample(
     // right one. Fall back to the straight-line measure instead of returning it.
     return segmentDistanceSample(point, source, target);
   }
-  return { distance, parameter };
+  const tangent = scale(mix(
+    subtract(control, source),
+    subtract(target, control),
+    parameter,
+  ), bisectionDivisor());
+  return filamentDistanceSample(distance, tangent, scale(curvePoint, -1), parameter);
 }
+
+type FilamentDistanceSample = {
+  readonly distance: number;
+  /** Signed in the shader's bottom-up fragment-coordinate convention. */
+  readonly shaderSignedDistance: number;
+  readonly parameter: number;
+};
 
 /**
  * Rounding-scale collinearity, normalised to the magnitudes that produced it.
@@ -180,14 +236,31 @@ function segmentDistanceSample(
   point: { readonly x: number; readonly y: number },
   start: { readonly x: number; readonly y: number },
   end: { readonly x: number; readonly y: number },
-): { readonly distance: number; readonly parameter: number } {
+): FilamentDistanceSample {
   const delta = subtract(end, start);
   const squaredLength = dot(delta, delta);
   const parameter = squaredLength === 0
     ? 0
     : Math.max(0, Math.min(1, dot(subtract(point, start), delta) / squaredLength));
   const closest = add(start, scale(delta, parameter));
-  return { distance: Math.hypot(point.x - closest.x, point.y - closest.y), parameter };
+  const pointFromClosest = subtract(point, closest);
+  const distance = Math.hypot(pointFromClosest.x, pointFromClosest.y);
+  return filamentDistanceSample(distance, delta, pointFromClosest, parameter);
+}
+
+/** This converts the top-down viewport cross product to the shader's bottom-up signed distance. */
+function filamentDistanceSample(
+  distance: number,
+  tangent: { readonly x: number; readonly y: number },
+  pointFromClosest: { readonly x: number; readonly y: number },
+  parameter: number,
+): FilamentDistanceSample {
+  const shaderSign = -Math.sign(cross(tangent, pointFromClosest));
+  return {
+    distance,
+    shaderSignedDistance: shaderSign * distance,
+    parameter,
+  };
 }
 
 function interpolate(start: number, end: number, parameter: number): number {

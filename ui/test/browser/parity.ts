@@ -11,7 +11,7 @@ import type { GraphRendererHandle, MultiCameraRendererHandle,
 import { createVisualState, deserializeVisualState, serializeVisualState } from "#engine/visual-state.ts";
 import type { VisualState } from "#engine/visual-state.ts";
 import { mount as mountSigma } from "#render2d/index.ts";
-import type { RenderFramingBox } from "#render2d/index.ts";
+import type { RenderFramingBox, RenderHandle } from "#render2d/index.ts";
 import type { RenderOptions } from "#render2d/model.ts";
 import { mount as mountThree } from "#render3f/mount.tsx";
 import { buildScene, legalRenderedCombinations } from "#scene/index.ts";
@@ -60,8 +60,8 @@ export type PickingTargetWitness = {
   readonly unavailableReason: string | null;
 };
 
-/** This names whether P5 relation geometry came from the mounted renderer or Sigma's retained rebuild coverage. */
-export type RelationPickingGeometrySource = "MOUNTED_RENDERER" | "REBUILT_SCENE";
+/** This names the mounted relation surface P5 read and does not describe a reconstructed scene. */
+export type RelationPickingGeometrySource = "MOUNTED_RENDERER" | "MOUNTED_SIGMA_PROGRAM";
 
 /** This records every node and relation the mounted renderer exposes to its picking API. */
 export type PickingTargetSetWitness = {
@@ -595,9 +595,22 @@ export async function installParityPage(): Promise<void> {
               unavailableReason: "mounted surface has no resolved relation geometry",
             };
           }
-          const point = active.handle.graphToViewport(quadraticMidpoint(relation.source, relation.controlPoint, relation.target));
-          const projectedExtent = relationProjectedExtent(relation.source, relation.controlPoint, relation.target, active.handle.graphToViewport)
+          const project = relation.coordinateSpace === "WORLD"
+            ? active.handle.graphToViewport
+            : viewportCoordinates;
+          const projected = {
+            source: viewportCoordinates(project(relation.source)),
+            controlPoint: viewportCoordinates(project(relation.controlPoint)),
+            target: viewportCoordinates(project(relation.target)),
+          };
+          const projectedExtent = relationProjectedExtent(
+            projected.source,
+            projected.controlPoint,
+            projected.target,
+            viewportCoordinates,
+          )
             * window.devicePixelRatio;
+          const point = relationPickingProbe(active.handle, id, projected, projectedExtent);
           const pickedId = active.handle.pickEdgeAtPoint(point.x, point.y);
           return pickingTargetAtPoint(id, point, pickedId, projectedExtent);
         });
@@ -735,39 +748,59 @@ if (typeof window !== "undefined") {
   void installParityPage();
 }
 
-type P5RelationGeometryWitness = Pick<RelationGeometryWitness, "id" | "source" | "controlPoint" | "target">;
+type P5RelationGeometryWitness = Pick<RelationGeometryWitness, "id" | "source" | "controlPoint" | "target"> & {
+  readonly coordinateSpace: "WORLD" | "VIEWPORT";
+};
 
 type P5RelationGeometry = {
   readonly source: RelationPickingGeometrySource;
   readonly witnesses: readonly P5RelationGeometryWitness[];
 };
 
-/** This reads Three's picker-held geometry while preserving Sigma's decided rebuild-based relation coverage. */
+/** This reads relation geometry from each mounted renderer and does not rebuild a shared scene. */
 function relationGeometryForP5(active: MountedRenderer, renderer: ParityRenderer): P5RelationGeometry {
   if (renderer === "sigma-2d") {
+    const handle = requiredSigmaRelationGeometryHandle(active.handle);
+    const controls = new Map(handle.readRelationGeometryWitnesses().map((relation) => [relation.relationId, relation]));
+    const surface = active.handle.readSurfaceWitness();
+    const anchors = new Map(active.handle.readWorldAnchorWitnesses().map((anchor) => [anchor.id, anchor.position]));
     return {
-      source: "REBUILT_SCENE",
-      witnesses: buildScene(
-        active.graph,
-        active.handle.readVisualState(),
-        active.options.calibration,
-      ).edges.map(rebuiltP5RelationGeometry),
+      source: "MOUNTED_SIGMA_PROGRAM",
+      witnesses: surface.edgeIds.map((id): P5RelationGeometryWitness => {
+        const incidence = surface.incidence[id];
+        const control = controls.get(id);
+        const source = incidence === undefined ? undefined : anchors.get(incidence.source);
+        const target = incidence === undefined ? undefined : anchors.get(incidence.target);
+        if (incidence === undefined || control === undefined || source === undefined || target === undefined) {
+          throw new Error(`P5 mounted Sigma relation geometry is incomplete for ${id}`);
+        }
+        return {
+          id,
+          source: viewportCoordinates(active.handle.graphToViewport(source)),
+          controlPoint: viewportCoordinates(control.controlPoint),
+          target: viewportCoordinates(active.handle.graphToViewport(target)),
+          coordinateSpace: "VIEWPORT",
+        };
+      }),
     };
   }
   return {
     source: "MOUNTED_RENDERER",
-    witnesses: requiredRelationGeometryHandle(active.handle, renderer).readRelationGeometryWitnesses(),
+    witnesses: requiredRelationGeometryHandle(active.handle, renderer).readRelationGeometryWitnesses().map((relation) => ({
+      ...relation,
+      coordinateSpace: "WORLD",
+    })),
   };
 }
 
-/** This copies the endpoint form P5 consumes from Sigma's existing rebuilt relation scene. */
-function rebuiltP5RelationGeometry(relation: Scene["edges"][number]): P5RelationGeometryWitness {
-  const source = relation.path[0];
-  const target = relation.path[relation.path.length - 1];
-  if (source === undefined || target === undefined) {
-    throw new Error("P5 resolved relation has no endpoint path");
+/** This narrows Sigma's renderer-specific live program witness without widening the shared handle. */
+function requiredSigmaRelationGeometryHandle(
+  handle: GraphRendererHandle,
+): GraphRendererHandle & Pick<RenderHandle, "readRelationGeometryWitnesses"> {
+  if (typeof (handle as { readonly readRelationGeometryWitnesses?: unknown }).readRelationGeometryWitnesses !== "function") {
+    throw new Error("sigma-2d is missing its mounted program relation-geometry witness");
   }
-  return { id: relation.id, source, controlPoint: relation.controlPoint, target };
+  return handle as GraphRendererHandle & Pick<RenderHandle, "readRelationGeometryWitnesses">;
 }
 
 /** This narrows a handle to one that can enumerate its own graphics resources and does not assume a renderer can. */
@@ -946,15 +979,89 @@ function isViewportPoint(point: { readonly x: number; readonly y: number }): boo
     && point.y < PARITY_VIEWPORT_HEIGHT_CSS_PX;
 }
 
+/**
+ * This finds the mounted picker's relation body on the normal through the mounted path midpoint.
+ *
+ * Three's filament body may be medially displaced from its quadratic path, while Sigma's current
+ * body is centred on its own straight path. Searching both normal directions in one-device-pixel
+ * increments asks every renderer the same physical question without reconstructing either material.
+ */
+function relationPickingProbe(
+  handle: GraphRendererHandle,
+  id: string,
+  relation: {
+    readonly source: Coordinates;
+    readonly controlPoint: Coordinates;
+    readonly target: Coordinates;
+  },
+  projectedExtentDevicePx: number,
+): Coordinates {
+  const devicePixelRatio = window.devicePixelRatio;
+  const maximumDeviceOffset = Math.ceil(projectedExtentDevicePx / 2);
+  for (const parameter of [0.5, 0.25, 0.75, 0.125, 0.375, 0.625, 0.875, 0, 1]) {
+    const pathPoint = quadraticPoint(relation.source, relation.controlPoint, relation.target, parameter);
+    if (handle.pickEdgeAtPoint(pathPoint.x, pathPoint.y) === id) {
+      return pathPoint;
+    }
+    const inverse = 1 - parameter;
+    const tangent = {
+      x: 2 * (inverse * (relation.controlPoint.x - relation.source.x)
+        + parameter * (relation.target.x - relation.controlPoint.x)),
+      y: 2 * (inverse * (relation.controlPoint.y - relation.source.y)
+        + parameter * (relation.target.y - relation.controlPoint.y)),
+    };
+    const tangentLength = Math.hypot(tangent.x, tangent.y);
+    if (tangentLength === 0) {
+      continue;
+    }
+    const normal = { x: -tangent.y / tangentLength, y: tangent.x / tangentLength };
+    for (let deviceOffset = 1; deviceOffset <= maximumDeviceOffset; deviceOffset += 1) {
+      const offsetCssPx = deviceOffset / devicePixelRatio;
+      for (const direction of [-1, 1] as const) {
+        const point = {
+          x: pathPoint.x + (normal.x * offsetCssPx * direction),
+          y: pathPoint.y + (normal.y * offsetCssPx * direction),
+          z: 0,
+        };
+        if (handle.pickEdgeAtPoint(point.x, point.y) === id) {
+          return point;
+        }
+      }
+    }
+  }
+  return quadraticMidpoint(relation.source, relation.controlPoint, relation.target);
+}
+
+/** This promotes a viewport point to the coordinate shape shared by P5 geometry helpers. */
+function viewportCoordinates(point: { readonly x: number; readonly y: number }): Coordinates {
+  return { x: point.x, y: point.y, z: 0 };
+}
+
 function quadraticMidpoint(
   source: Coordinates,
   controlPoint: Coordinates,
   target: Coordinates,
 ): Coordinates {
+  return quadraticPoint(source, controlPoint, target, 0.5);
+}
+
+function quadraticPoint(
+  source: Coordinates,
+  controlPoint: Coordinates,
+  target: Coordinates,
+  parameter: number,
+): Coordinates {
+  const inverse = 1 - parameter;
   return {
-    x: (source.x + (2 * controlPoint.x) + target.x) / 4,
-    y: (source.y + (2 * controlPoint.y) + target.y) / 4,
-    z: (source.z + (2 * controlPoint.z) + target.z) / 4,
+    x: (inverse * inverse * source.x)
+      + (2 * inverse * parameter * controlPoint.x)
+      + (parameter * parameter * target.x),
+    y: (inverse * inverse * source.y)
+      + (2 * inverse * parameter * controlPoint.y)
+      + (parameter * parameter * target.y),
+    z: (inverse * inverse * source.z)
+      + (2 * inverse * parameter * controlPoint.z)
+      + (parameter * parameter * target.z),
   };
 }
 
