@@ -81,11 +81,10 @@ export function buildScene(
   const inputs = resolveSceneInputs(visualState, tokensOrCamera, cameraOrTokens);
   const { graph: tracedGraph, trace } = createEngineGraphView(graph);
   const engineGraph = orderEngineGraph(tracedGraph);
-  const anchors = layoutAnchors(engineGraph, calibration);
   const morphology = morphologyProfile(visualState.morphology);
   const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration, SHARED_SCENE_MATERIAL_TARGET);
   const activeTokens = shippingTokens(inputs.tokens, visualState.palette, visualState.theme, calibration);
-  const organization = resolveOrganization(engineGraph, calibration, anchors, visualState.organization);
+  const organization = resolveOrganization(engineGraph, calibration, () => layoutAnchors(engineGraph, calibration), visualState.organization);
   const view = lodView(engineGraph, organization.nodeAnchors, visualState.lodBand);
   const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
   const edgeMaterials = new Map(morphologyMaterial.edges.map((edge) => [edge.id, edge]));
@@ -488,11 +487,18 @@ type ResolvedOrganization = {
   readonly nodeAnchors: LayoutAnchors;
 };
 
-/** This selects Flat's unchanged shared-anchor windows or Indra's independent re-layout and does not let either leak into the other's node positions. */
+/**
+ * This selects Flat's unchanged shared-anchor windows or Indra's independent re-layout and does not
+ * let either leak into the other's node positions. The shared anchors arrive as a thunk because
+ * Indra never reads them: it re-derives every position from the governed aggregates. Computing them
+ * eagerly did not merely waste the work, it decided the outcome, since the disc layout raises on
+ * graphs whose aggregates are large enough to fill the reference frame and so failed builds that
+ * were going to discard its result. Flat still calls it, and still raises where it always did.
+ */
 function resolveOrganization(
   graph: EngineGraph,
   calibration: CalibrationProfile,
-  sharedAnchors: LayoutAnchors,
+  sharedAnchors: () => LayoutAnchors,
   organization: VisualState["organization"],
 ): ResolvedOrganization {
   if (organization === "indra") {
@@ -500,7 +506,8 @@ function resolveOrganization(
     assertIndraLayout(graph, relayout);
     return { windows: relayout.windows, nodeAnchors: relayout.nodeAnchors };
   }
-  return { windows: flatOrganization(graph, sharedAnchors).windows, nodeAnchors: sharedAnchors };
+  const anchors = sharedAnchors();
+  return { windows: flatOrganization(graph, anchors).windows, nodeAnchors: anchors };
 }
 
 function orderEngineGraph(graph: EngineGraph): EngineGraph {

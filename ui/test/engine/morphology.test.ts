@@ -119,6 +119,84 @@ test("the shared-scene extension activates curvature and widened material withou
   assert.deepEqual(shared.incidence, legacy.incidence);
 });
 
+// The meander (medial-offset wobble) channel is resolved downstream in scene/build.ts from raw
+// calibration and never reaches MorphologyMaterial at all, so none of these six channels can be
+// meander-related even by accident — "more wobble" cannot inflate this count. Halo is included
+// deliberately: it is the channel node softness/prominence-gating (H3) actually lives in.
+type MorphologyMaterialChannel = "core" | "halo" | "width" | "junction" | "terminal" | "hotCore";
+
+const MORPHOLOGY_MATERIAL_CHANNELS: readonly MorphologyMaterialChannel[] = [
+  "core", "halo", "width", "junction", "terminal", "hotCore",
+];
+
+function morphologyMaterialFingerprint(
+  binding: ReturnType<typeof applyMorphology>,
+  channel: MorphologyMaterialChannel,
+): string {
+  if (channel === "core") {
+    return JSON.stringify(binding.nodes.map((node) => [node.id, node.coreSizePx]));
+  }
+  if (channel === "halo") {
+    return JSON.stringify(binding.nodes.map((node) => [node.id, node.haloRadiusPx, node.haloIntensityPermille]));
+  }
+  if (channel === "width") {
+    return JSON.stringify(binding.edges.map((edge) => [
+      edge.id, edge.widthPx, edge.widthStartPermille, edge.widthEndPermille, edge.taperPermille,
+    ]));
+  }
+  if (channel === "junction") {
+    return JSON.stringify({
+      nodes: binding.nodes.map((node) => [node.id, node.junctionGeometry]),
+      edges: binding.edges.map((edge) => [edge.id, edge.junctionStartPermille, edge.junctionEndPermille]),
+    });
+  }
+  if (channel === "terminal") {
+    return JSON.stringify({
+      nodes: binding.nodes.map((node) => [node.id, node.terminalTreatment]),
+      edges: binding.edges.map((edge) => [edge.id, edge.sourceTerminal, edge.targetTerminal, edge.terminalTreatment]),
+    });
+  }
+  return JSON.stringify(binding.edges.map((edge) => [edge.id, edge.hotCorePermille]));
+}
+
+function differingMorphologyMaterialChannels(
+  left: ReturnType<typeof applyMorphology>,
+  right: ReturnType<typeof applyMorphology>,
+): MorphologyMaterialChannel[] {
+  return MORPHOLOGY_MATERIAL_CHANNELS.filter(
+    (channel) => morphologyMaterialFingerprint(left, channel) !== morphologyMaterialFingerprint(right, channel),
+  );
+}
+
+test("shared-scene neural and mycelium differ in at least three non-meander material channels", () => {
+  const visualGraph = graph();
+  const neural = applyMorphology(visualGraph, NEURAL, DEFAULT_CALIBRATION, SHARED_SCENE_MATERIAL_TARGET);
+  const mycelium = applyMorphology(visualGraph, MYCELIUM, DEFAULT_CALIBRATION, SHARED_SCENE_MATERIAL_TARGET);
+  const differing = differingMorphologyMaterialChannels(neural, mycelium);
+  assert.ok(
+    differing.length >= 3,
+    `neural/mycelium resolved to ${differing.length} distinct non-meander channels: ${differing.join(",")}`,
+  );
+});
+
+test("the non-meander channel count is not tautological: it reports zero for a morphology compared with itself, and the three-channel bar is demonstrably reachable and demonstrably failable", () => {
+  const visualGraph = graph();
+  const neural = applyMorphology(visualGraph, NEURAL, DEFAULT_CALIBRATION, SHARED_SCENE_MATERIAL_TARGET);
+  const neuralAgain = applyMorphology(visualGraph, NEURAL, DEFAULT_CALIBRATION, SHARED_SCENE_MATERIAL_TARGET);
+  assert.deepEqual(differingMorphologyMaterialChannels(neural, neuralAgain), []);
+
+  // A rigged pair that shares every field but one demonstrates the >= 3 bar actually rejects a
+  // collapsed material profile, rather than passing regardless of what the two morphologies resolve to.
+  const collapsedMycelium = {
+    ...neural,
+    morphology: MYCELIUM.id,
+    nodes: neural.nodes.map((node) => ({ ...node, haloIntensityPermille: node.haloIntensityPermille + 1 })),
+  };
+  const collapsedDiffering = differingMorphologyMaterialChannels(neural, collapsedMycelium);
+  assert.deepEqual(collapsedDiffering, ["halo"]);
+  assert.ok(collapsedDiffering.length < 3, "the rigged pair must expose fewer than three channels for the bar to be a real gate");
+});
+
 function requiredBinding(
   bindings: ReadonlyMap<string, ReturnType<typeof applyMorphology>>,
   id: string,

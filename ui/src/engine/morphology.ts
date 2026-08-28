@@ -1,4 +1,4 @@
-import type { CalibrationProfile } from "#engine/calibration.ts";
+import type { CalibrationProfile, MorphologyMaterial as CalibrationMorphologyMaterial } from "#engine/calibration.ts";
 import type { DerivedValue, EngineGraph } from "#engine/contract.ts";
 
 const PERMILLE = 1000;
@@ -135,12 +135,19 @@ export function applyMorphology(
         ? (Math.max(morphologyCore, calibration.luminance.coreBeforeHaloMinimumPx) * terminalSizeMultiplier) / PERMILLE
         : Math.max(terminalCore, calibration.luminance.coreBeforeHaloMinimumPx))
       : terminalCore;
+    const prominencePermilleValue = Math.round(prominence * PERMILLE);
+    // The legacy renderer keeps the flat, un-gated halo intensity it always had — moving it here would
+    // move render2d's frozen pixels. Only the shared-scene target gates halo intensity by rendered
+    // prominence, so a hard core stays legible and only genuinely important nodes bloom.
+    const haloIntensityPermille = sharedScene
+      ? sharedSceneHaloIntensityPermille(material, prominencePermilleValue)
+      : material.haloIntensityPermille;
     return {
       id: node.id,
       coreSizePx: renderedCore,
       haloRadiusPx: ((renderedCore * calibration.luminance.haloRadiusFactorPermille) / PERMILLE * material.haloRadiusMultiplierPermille) / PERMILLE,
-      haloIntensityPermille: material.haloIntensityPermille,
-      prominencePermille: Math.round(prominence * PERMILLE),
+      haloIntensityPermille,
+      prominencePermille: prominencePermilleValue,
       opacityPermille: material.opacityPermille,
       junctionGeometry: morphology.junctionGeometry,
       terminalTreatment: morphology.terminalTreatment,
@@ -148,7 +155,7 @@ export function applyMorphology(
         degree: { value: nodeDegree, origin: "morphology:edge-incidence" },
         hopDistanceFromHub: { value: hopDistance, origin: "morphology:shortest-hop-from-max-degree-node" },
         terminal: { value: terminal, origin: "morphology:edge-incidence" },
-        prominence: { value: Math.round(prominence * PERMILLE), origin: "morphology:edge-incidence-normalised-within-rendered-graph-degree-range-not-authority" },
+        prominence: { value: prominencePermilleValue, origin: "morphology:edge-incidence-normalised-within-rendered-graph-degree-range-not-authority" },
       },
     };
   });
@@ -245,6 +252,16 @@ function junctionThickening(
     return 0;
   }
   return Math.round(thickeningPermille * endpointDegree / maximumDegree);
+}
+
+/** This gates the shared-scene halo peak by rendered prominence between a per-morphology floor and its full value. */
+function sharedSceneHaloIntensityPermille(
+  material: CalibrationMorphologyMaterial,
+  prominencePermilleValue: number,
+): number {
+  const floor = material.haloProminenceFloorPermille;
+  const factorPermille = floor + (((PERMILLE - floor) * prominencePermilleValue) / PERMILLE);
+  return Math.round((material.sharedSceneHaloIntensityPermille * factorPermille) / PERMILLE);
 }
 
 function phaseSeedPermille(id: string, morphologySeed: number): number {
