@@ -17,7 +17,7 @@ const FIXTURE_EDGE_COUNT = 177;
 const INDRA_WINDOW_COUNT = 30;
 
 const PORTAL_FIXTURE_FILE = "indra-portal-windows.json";
-const PORTAL_NODE_COUNT = 122;
+const PORTAL_NODE_COUNT = 125;
 const PORTAL_EDGE_COUNT = 284;
 const PORTAL_WINDOW_COUNT = 8;
 const PORTAL_MINIMUM_MEMBERS = 8;
@@ -178,8 +178,11 @@ test("the Indra fixture resolves every organization and morphology", () => {
 // portal, each is a ring around a single node or a pair, which does not read
 // as portal organization. indra-portal-windows.json fixes the *topology*:
 // 4 clusters (bridges via IN_CLUSTER) and 4 conflicts (assertions via
-// CONFLICT_MEMBER) sized 8-15 members each, real hub-source sharing across
-// every window, satellites, and rejections outside every window.
+// CONFLICT_MEMBER) sized 8-15 members each, real source sharing across a few
+// windows at a time (most shared sources cited by 2-3 windows, a couple by
+// 4, several sources local to a single window -- never a source cited by
+// every window, which read as illegible complete-bipartite starburst),
+// satellites, and rejections outside every window.
 //
 // That topology fully resolves through the actual Indra rendering path
 // (`indraLayout`/`assertIndraLayout` in #engine/organization.ts, what

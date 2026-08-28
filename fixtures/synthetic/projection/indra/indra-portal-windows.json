@@ -12,7 +12,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -30,8 +30,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -41,7 +41,7 @@
       "id": "side:asr_i2_portal_bridge_0000:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0000",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -55,7 +55,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -73,8 +73,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -84,7 +84,7 @@
       "id": "side:asr_i2_portal_bridge_0001:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0001",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -98,7 +98,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -116,8 +116,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -127,7 +127,7 @@
       "id": "side:asr_i2_portal_bridge_0002:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0002",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -141,7 +141,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -159,8 +159,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -170,7 +170,7 @@
       "id": "side:asr_i2_portal_bridge_0003:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0003",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -184,7 +184,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -202,8 +202,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_04",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -213,7 +213,7 @@
       "id": "side:asr_i2_portal_bridge_0004:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0004",
-      "target": "source:src_i2_portal_hub_04"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -227,7 +227,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -245,8 +245,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_05",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -256,7 +256,7 @@
       "id": "side:asr_i2_portal_bridge_0005:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0005",
-      "target": "source:src_i2_portal_hub_05"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -270,7 +270,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -288,8 +288,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_06",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -299,7 +299,7 @@
       "id": "side:asr_i2_portal_bridge_0006:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0006",
-      "target": "source:src_i2_portal_hub_06"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -313,7 +313,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -331,8 +331,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_07",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -342,7 +342,7 @@
       "id": "side:asr_i2_portal_bridge_0007:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0007",
-      "target": "source:src_i2_portal_hub_07"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -356,7 +356,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -374,8 +374,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -385,7 +385,7 @@
       "id": "side:asr_i2_portal_bridge_0008:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0008",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -399,7 +399,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -417,8 +417,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -428,7 +428,7 @@
       "id": "side:asr_i2_portal_bridge_0009:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0009",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -442,7 +442,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -460,8 +460,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -471,7 +471,7 @@
       "id": "side:asr_i2_portal_bridge_0010:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0010",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_shared_01"
     },
     {
       "attributes": null,
@@ -485,7 +485,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -503,8 +503,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -514,7 +514,7 @@
       "id": "side:asr_i2_portal_bridge_0011:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0011",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -528,7 +528,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -546,8 +546,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_04",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -557,7 +557,7 @@
       "id": "side:asr_i2_portal_bridge_0012:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0012",
-      "target": "source:src_i2_portal_hub_04"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -571,7 +571,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -589,8 +589,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_05",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -600,7 +600,7 @@
       "id": "side:asr_i2_portal_bridge_0013:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0013",
-      "target": "source:src_i2_portal_hub_05"
+      "target": "source:src_i2_portal_shared_01"
     },
     {
       "attributes": null,
@@ -614,7 +614,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -632,8 +632,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_06",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -643,7 +643,7 @@
       "id": "side:asr_i2_portal_bridge_0014:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0014",
-      "target": "source:src_i2_portal_hub_06"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -657,7 +657,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -675,8 +675,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_07",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -686,7 +686,7 @@
       "id": "side:asr_i2_portal_bridge_0015:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0015",
-      "target": "source:src_i2_portal_hub_07"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -700,7 +700,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -718,8 +718,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -729,7 +729,7 @@
       "id": "side:asr_i2_portal_bridge_0016:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0016",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_shared_01"
     },
     {
       "attributes": null,
@@ -743,7 +743,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -761,8 +761,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -772,7 +772,7 @@
       "id": "side:asr_i2_portal_bridge_0017:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0017",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -786,7 +786,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -804,8 +804,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -815,7 +815,7 @@
       "id": "side:asr_i2_portal_bridge_0018:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0018",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -829,7 +829,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -847,8 +847,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -858,7 +858,7 @@
       "id": "side:asr_i2_portal_bridge_0019:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0019",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_shared_01"
     },
     {
       "attributes": null,
@@ -872,7 +872,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -890,8 +890,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_04",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -901,7 +901,7 @@
       "id": "side:asr_i2_portal_bridge_0020:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0020",
-      "target": "source:src_i2_portal_hub_04"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -915,7 +915,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -933,8 +933,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_05",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -944,7 +944,7 @@
       "id": "side:asr_i2_portal_bridge_0021:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0021",
-      "target": "source:src_i2_portal_hub_05"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -958,7 +958,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -976,8 +976,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_06",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -987,7 +987,7 @@
       "id": "side:asr_i2_portal_bridge_0022:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0022",
-      "target": "source:src_i2_portal_hub_06"
+      "target": "source:src_i2_portal_shared_01"
     },
     {
       "attributes": null,
@@ -1001,7 +1001,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1019,8 +1019,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_07",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1030,7 +1030,7 @@
       "id": "side:asr_i2_portal_bridge_0023:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0023",
-      "target": "source:src_i2_portal_hub_07"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -1044,7 +1044,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1062,8 +1062,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1073,7 +1073,7 @@
       "id": "side:asr_i2_portal_bridge_0024:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0024",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_shared_01"
     },
     {
       "attributes": null,
@@ -1087,7 +1087,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1105,8 +1105,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1116,7 +1116,7 @@
       "id": "side:asr_i2_portal_bridge_0025:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0025",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -1130,7 +1130,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1148,8 +1148,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_06",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1159,7 +1159,7 @@
       "id": "side:asr_i2_portal_bridge_0026:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0026",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_shared_06"
     },
     {
       "attributes": null,
@@ -1173,7 +1173,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1191,8 +1191,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1202,7 +1202,7 @@
       "id": "side:asr_i2_portal_bridge_0027:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0027",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_shared_01"
     },
     {
       "attributes": null,
@@ -1216,7 +1216,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1234,8 +1234,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_04",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1245,7 +1245,7 @@
       "id": "side:asr_i2_portal_bridge_0028:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0028",
-      "target": "source:src_i2_portal_hub_04"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -1259,7 +1259,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1277,8 +1277,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_05",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_06",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1288,7 +1288,7 @@
       "id": "side:asr_i2_portal_bridge_0029:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0029",
-      "target": "source:src_i2_portal_hub_05"
+      "target": "source:src_i2_portal_shared_06"
     },
     {
       "attributes": null,
@@ -1302,7 +1302,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1320,8 +1320,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_06",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1331,7 +1331,7 @@
       "id": "side:asr_i2_portal_bridge_0030:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0030",
-      "target": "source:src_i2_portal_hub_06"
+      "target": "source:src_i2_portal_shared_01"
     },
     {
       "attributes": null,
@@ -1345,7 +1345,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1363,8 +1363,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_07",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1374,7 +1374,7 @@
       "id": "side:asr_i2_portal_bridge_0031:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0031",
-      "target": "source:src_i2_portal_hub_07"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -1388,7 +1388,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1406,8 +1406,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1417,7 +1417,7 @@
       "id": "side:asr_i2_portal_bridge_0032:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0032",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -1431,7 +1431,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1449,8 +1449,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1460,7 +1460,7 @@
       "id": "side:asr_i2_portal_bridge_0033:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0033",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -1474,7 +1474,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1492,8 +1492,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1503,7 +1503,7 @@
       "id": "side:asr_i2_portal_bridge_0034:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0034",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -1517,7 +1517,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1535,8 +1535,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1546,7 +1546,7 @@
       "id": "side:asr_i2_portal_bridge_0035:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0035",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -1560,7 +1560,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1578,8 +1578,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_04",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1589,7 +1589,7 @@
       "id": "side:asr_i2_portal_bridge_0036:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0036",
-      "target": "source:src_i2_portal_hub_04"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -1603,7 +1603,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1621,8 +1621,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_05",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1632,7 +1632,7 @@
       "id": "side:asr_i2_portal_bridge_0037:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0037",
-      "target": "source:src_i2_portal_hub_05"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -1646,7 +1646,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1664,8 +1664,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_06",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1675,7 +1675,7 @@
       "id": "side:asr_i2_portal_bridge_0038:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0038",
-      "target": "source:src_i2_portal_hub_06"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -1689,7 +1689,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1707,8 +1707,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_07",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1718,7 +1718,7 @@
       "id": "side:asr_i2_portal_bridge_0039:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0039",
-      "target": "source:src_i2_portal_hub_07"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -1732,7 +1732,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1750,8 +1750,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1761,7 +1761,7 @@
       "id": "side:asr_i2_portal_bridge_0040:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0040",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -1775,7 +1775,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1793,8 +1793,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1804,7 +1804,7 @@
       "id": "side:asr_i2_portal_bridge_0041:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0041",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -1818,7 +1818,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1836,8 +1836,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1847,7 +1847,7 @@
       "id": "side:asr_i2_portal_bridge_0042:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0042",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -1861,7 +1861,7 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888881",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888881",
           "source_id": "src_i2_portal_local_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
@@ -1879,8 +1879,8 @@
         "project": "synthetic-indra-fixture",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888882",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888882",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -1890,7 +1890,7 @@
       "id": "side:asr_i2_portal_bridge_0043:right",
       "kind": "bridge_side",
       "source": "bridge:asr_i2_portal_bridge_0043",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -1902,15 +1902,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_00",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_04",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_0_00",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_0_00",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_local_04"
     },
     {
       "attributes": null,
@@ -1922,15 +1922,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_01",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_00",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_0_01",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_0_01",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -1942,15 +1942,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_02",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_03",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_0_02",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_0_02",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -1962,15 +1962,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_03",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_04",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_0_03",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_0_03",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_shared_04"
     },
     {
       "attributes": null,
@@ -1982,15 +1982,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_04",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_04",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_0_04",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_0_04",
-      "target": "source:src_i2_portal_hub_04"
+      "target": "source:src_i2_portal_local_04"
     },
     {
       "attributes": null,
@@ -2002,15 +2002,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_05",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_00",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_0_05",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_0_05",
-      "target": "source:src_i2_portal_hub_05"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -2022,15 +2022,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_06",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_03",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_0_06",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_0_06",
-      "target": "source:src_i2_portal_hub_06"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -2042,15 +2042,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_07",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_04",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_0_07",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_0_07",
-      "target": "source:src_i2_portal_hub_07"
+      "target": "source:src_i2_portal_shared_04"
     },
     {
       "attributes": null,
@@ -2118,15 +2118,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_00",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_05",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_00",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_00",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_local_05"
     },
     {
       "attributes": null,
@@ -2138,15 +2138,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_01",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_02",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_01",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_01",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -2158,15 +2158,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_02",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_04",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_02",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_02",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_shared_04"
     },
     {
       "attributes": null,
@@ -2178,15 +2178,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_03",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_05",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_03",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_03",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -2198,15 +2198,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_04",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_05",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_04",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_04",
-      "target": "source:src_i2_portal_hub_04"
+      "target": "source:src_i2_portal_local_05"
     },
     {
       "attributes": null,
@@ -2218,15 +2218,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_05",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_02",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_05",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_05",
-      "target": "source:src_i2_portal_hub_05"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -2238,15 +2238,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_06",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_04",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_06",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_06",
-      "target": "source:src_i2_portal_hub_06"
+      "target": "source:src_i2_portal_shared_04"
     },
     {
       "attributes": null,
@@ -2258,15 +2258,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_07",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_05",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_07",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_07",
-      "target": "source:src_i2_portal_hub_07"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -2278,15 +2278,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_00",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_05",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_08",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_08",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_local_05"
     },
     {
       "attributes": null,
@@ -2298,15 +2298,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_01",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_02",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_09",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_09",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -2318,15 +2318,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_02",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_04",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_10",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_10",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_shared_04"
     },
     {
       "attributes": null,
@@ -2338,15 +2338,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_03",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_05",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_11",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_11",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -2358,15 +2358,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_04",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_05",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_12",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_12",
-      "target": "source:src_i2_portal_hub_04"
+      "target": "source:src_i2_portal_local_05"
     },
     {
       "attributes": null,
@@ -2378,15 +2378,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_05",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_02",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_13",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_13",
-      "target": "source:src_i2_portal_hub_05"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -2398,15 +2398,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_06",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_04",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_1_14",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_1_14",
-      "target": "source:src_i2_portal_hub_06"
+      "target": "source:src_i2_portal_shared_04"
     },
     {
       "attributes": null,
@@ -2523,15 +2523,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_07",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_06",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_2_00",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_2_00",
-      "target": "source:src_i2_portal_hub_07"
+      "target": "source:src_i2_portal_local_06"
     },
     {
       "attributes": null,
@@ -2543,15 +2543,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_00",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_03",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_2_01",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_2_01",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -2563,15 +2563,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_01",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_05",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_2_02",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_2_02",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -2583,15 +2583,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_02",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_06",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_2_03",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_2_03",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_shared_06"
     },
     {
       "attributes": null,
@@ -2603,15 +2603,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_03",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_06",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_2_04",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_2_04",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_local_06"
     },
     {
       "attributes": null,
@@ -2623,15 +2623,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_04",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_03",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_2_05",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_2_05",
-      "target": "source:src_i2_portal_hub_04"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -2643,15 +2643,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_05",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_05",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_2_06",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_2_06",
-      "target": "source:src_i2_portal_hub_05"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -2663,15 +2663,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_06",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_06",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_2_07",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_2_07",
-      "target": "source:src_i2_portal_hub_06"
+      "target": "source:src_i2_portal_shared_06"
     },
     {
       "attributes": null,
@@ -2683,15 +2683,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_07",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_06",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_2_08",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_2_08",
-      "target": "source:src_i2_portal_hub_07"
+      "target": "source:src_i2_portal_local_06"
     },
     {
       "attributes": null,
@@ -2703,15 +2703,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_00",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_03",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_2_09",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_2_09",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -2793,15 +2793,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_01",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_07",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_00",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_00",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_local_07"
     },
     {
       "attributes": null,
@@ -2813,15 +2813,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_02",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_03",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_01",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_01",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -2833,15 +2833,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_03",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_06",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_02",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_02",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_shared_06"
     },
     {
       "attributes": null,
@@ -2853,15 +2853,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_04",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_07",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_03",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_03",
-      "target": "source:src_i2_portal_hub_04"
+      "target": "source:src_i2_portal_local_07"
     },
     {
       "attributes": null,
@@ -2873,15 +2873,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_05",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_03",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_04",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_04",
-      "target": "source:src_i2_portal_hub_05"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -2893,15 +2893,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_06",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_06",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_05",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_05",
-      "target": "source:src_i2_portal_hub_06"
+      "target": "source:src_i2_portal_shared_06"
     },
     {
       "attributes": null,
@@ -2913,15 +2913,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_07",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_07",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_06",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_06",
-      "target": "source:src_i2_portal_hub_07"
+      "target": "source:src_i2_portal_local_07"
     },
     {
       "attributes": null,
@@ -2933,15 +2933,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_00",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_03",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_07",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_07",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -2953,15 +2953,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_01",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_06",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_08",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_08",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_shared_06"
     },
     {
       "attributes": null,
@@ -2973,15 +2973,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_02",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_07",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_09",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_09",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_local_07"
     },
     {
       "attributes": null,
@@ -2993,15 +2993,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_03",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_03",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_10",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_10",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -3013,15 +3013,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_04",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_shared_06",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_11",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_11",
-      "target": "source:src_i2_portal_hub_04"
+      "target": "source:src_i2_portal_shared_06"
     },
     {
       "attributes": null,
@@ -3033,15 +3033,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-        "source_id": "src_i2_portal_hub_05",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+        "source_id": "src_i2_portal_local_07",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_conflict_3_12",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_conflict_3_12",
-      "target": "source:src_i2_portal_hub_05"
+      "target": "source:src_i2_portal_local_07"
     },
     {
       "attributes": null,
@@ -3144,15 +3144,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888884",
-        "source_id": "src_i2_portal_hub_06",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888884",
+        "source_id": "src_i2_portal_shared_00",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_satellite_00",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_satellite_00",
-      "target": "source:src_i2_portal_hub_06"
+      "target": "source:src_i2_portal_shared_00"
     },
     {
       "attributes": null,
@@ -3164,15 +3164,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888884",
-        "source_id": "src_i2_portal_hub_07",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888884",
+        "source_id": "src_i2_portal_shared_01",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_satellite_01",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_satellite_01",
-      "target": "source:src_i2_portal_hub_07"
+      "target": "source:src_i2_portal_shared_01"
     },
     {
       "attributes": null,
@@ -3184,15 +3184,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888884",
-        "source_id": "src_i2_portal_hub_00",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888884",
+        "source_id": "src_i2_portal_shared_02",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_satellite_02",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_satellite_02",
-      "target": "source:src_i2_portal_hub_00"
+      "target": "source:src_i2_portal_shared_02"
     },
     {
       "attributes": null,
@@ -3204,15 +3204,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888884",
-        "source_id": "src_i2_portal_hub_01",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888884",
+        "source_id": "src_i2_portal_shared_03",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_satellite_03",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_satellite_03",
-      "target": "source:src_i2_portal_hub_01"
+      "target": "source:src_i2_portal_shared_03"
     },
     {
       "attributes": null,
@@ -3224,15 +3224,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888884",
-        "source_id": "src_i2_portal_hub_02",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888884",
+        "source_id": "src_i2_portal_shared_04",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_satellite_04",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_satellite_04",
-      "target": "source:src_i2_portal_hub_02"
+      "target": "source:src_i2_portal_shared_04"
     },
     {
       "attributes": null,
@@ -3244,15 +3244,15 @@
     {
       "attributes": {
         "end_byte": 125,
-        "snapshot_digest": "888888888888888888888888888888888888888888888888888888884",
-        "source_id": "src_i2_portal_hub_03",
+        "snapshot_digest": "888888888888888888888888888888888888888888888888888888888884",
+        "source_id": "src_i2_portal_shared_05",
         "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
         "start_byte": 0
       },
       "id": "cites:asr_i2_portal_satellite_05",
       "kind": "cites",
       "source": "assertion:asr_i2_portal_satellite_05",
-      "target": "source:src_i2_portal_hub_03"
+      "target": "source:src_i2_portal_shared_05"
     },
     {
       "attributes": null,
@@ -3300,58 +3300,79 @@
     },
     {
       "attributes": {
-        "source_id": "src_i2_portal_hub_00"
+        "source_id": "src_i2_portal_local_04"
       },
-      "id": "source:src_i2_portal_hub_00",
+      "id": "source:src_i2_portal_local_04",
       "kind": "source"
     },
     {
       "attributes": {
-        "source_id": "src_i2_portal_hub_01"
+        "source_id": "src_i2_portal_local_05"
       },
-      "id": "source:src_i2_portal_hub_01",
+      "id": "source:src_i2_portal_local_05",
       "kind": "source"
     },
     {
       "attributes": {
-        "source_id": "src_i2_portal_hub_02"
+        "source_id": "src_i2_portal_local_06"
       },
-      "id": "source:src_i2_portal_hub_02",
+      "id": "source:src_i2_portal_local_06",
       "kind": "source"
     },
     {
       "attributes": {
-        "source_id": "src_i2_portal_hub_03"
+        "source_id": "src_i2_portal_local_07"
       },
-      "id": "source:src_i2_portal_hub_03",
+      "id": "source:src_i2_portal_local_07",
       "kind": "source"
     },
     {
       "attributes": {
-        "source_id": "src_i2_portal_hub_04"
+        "source_id": "src_i2_portal_shared_00"
       },
-      "id": "source:src_i2_portal_hub_04",
+      "id": "source:src_i2_portal_shared_00",
       "kind": "source"
     },
     {
       "attributes": {
-        "source_id": "src_i2_portal_hub_05"
+        "source_id": "src_i2_portal_shared_01"
       },
-      "id": "source:src_i2_portal_hub_05",
+      "id": "source:src_i2_portal_shared_01",
       "kind": "source"
     },
     {
       "attributes": {
-        "source_id": "src_i2_portal_hub_06"
+        "source_id": "src_i2_portal_shared_02"
       },
-      "id": "source:src_i2_portal_hub_06",
+      "id": "source:src_i2_portal_shared_02",
       "kind": "source"
     },
     {
       "attributes": {
-        "source_id": "src_i2_portal_hub_07"
+        "source_id": "src_i2_portal_shared_03"
       },
-      "id": "source:src_i2_portal_hub_07",
+      "id": "source:src_i2_portal_shared_03",
+      "kind": "source"
+    },
+    {
+      "attributes": {
+        "source_id": "src_i2_portal_shared_04"
+      },
+      "id": "source:src_i2_portal_shared_04",
+      "kind": "source"
+    },
+    {
+      "attributes": {
+        "source_id": "src_i2_portal_shared_05"
+      },
+      "id": "source:src_i2_portal_shared_05",
+      "kind": "source"
+    },
+    {
+      "attributes": {
+        "source_id": "src_i2_portal_shared_06"
+      },
+      "id": "source:src_i2_portal_shared_06",
       "kind": "source"
     },
     {
@@ -3359,27 +3380,6 @@
         "cluster_id": "synthetic-indra-portal-cluster-0"
       },
       "id": "cluster:synthetic-indra-portal-cluster-0",
-      "kind": "cluster"
-    },
-    {
-      "attributes": {
-        "cluster_id": "synthetic-indra-portal-cluster-1"
-      },
-      "id": "cluster:synthetic-indra-portal-cluster-1",
-      "kind": "cluster"
-    },
-    {
-      "attributes": {
-        "cluster_id": "synthetic-indra-portal-cluster-2"
-      },
-      "id": "cluster:synthetic-indra-portal-cluster-2",
-      "kind": "cluster"
-    },
-    {
-      "attributes": {
-        "cluster_id": "synthetic-indra-portal-cluster-3"
-      },
-      "id": "cluster:synthetic-indra-portal-cluster-3",
       "kind": "cluster"
     },
     {
@@ -3768,6 +3768,13 @@
       },
       "id": "bridge:asr_i2_portal_bridge_0008",
       "kind": "bridge"
+    },
+    {
+      "attributes": {
+        "cluster_id": "synthetic-indra-portal-cluster-1"
+      },
+      "id": "cluster:synthetic-indra-portal-cluster-1",
+      "kind": "cluster"
     },
     {
       "attributes": {
@@ -4416,6 +4423,13 @@
     },
     {
       "attributes": {
+        "cluster_id": "synthetic-indra-portal-cluster-2"
+      },
+      "id": "cluster:synthetic-indra-portal-cluster-2",
+      "kind": "cluster"
+    },
+    {
+      "attributes": {
         "card_id": "asr_i2_portal_bridge_0024",
         "cluster_id": "synthetic-indra-portal-cluster-2",
         "consequence": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
@@ -4757,6 +4771,13 @@
       },
       "id": "bridge:asr_i2_portal_bridge_0031",
       "kind": "bridge"
+    },
+    {
+      "attributes": {
+        "cluster_id": "synthetic-indra-portal-cluster-3"
+      },
+      "id": "cluster:synthetic-indra-portal-cluster-3",
+      "kind": "cluster"
     },
     {
       "attributes": {
@@ -5308,8 +5329,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_04",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5329,8 +5350,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5350,8 +5371,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5371,8 +5392,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_04",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5392,8 +5413,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_04",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_04",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5413,8 +5434,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_05",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5434,8 +5455,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_06",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5455,8 +5476,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_07",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_04",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5494,8 +5515,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5515,8 +5536,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5536,8 +5557,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_04",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5557,8 +5578,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5578,8 +5599,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_04",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5599,8 +5620,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_05",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5620,8 +5641,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_06",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_04",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5641,8 +5662,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_07",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5662,8 +5683,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5683,8 +5704,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5704,8 +5725,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_04",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5725,8 +5746,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5746,8 +5767,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_04",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5767,8 +5788,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_05",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5788,8 +5809,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_06",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_04",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5834,8 +5855,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_07",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_06",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5855,8 +5876,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5876,8 +5897,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5897,8 +5918,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_06",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5918,8 +5939,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_06",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5939,8 +5960,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_04",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5960,8 +5981,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_05",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -5981,8 +6002,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_06",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_06",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6002,8 +6023,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_07",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_06",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6023,8 +6044,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6064,8 +6085,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_07",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6085,8 +6106,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6106,8 +6127,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_06",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6127,8 +6148,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_04",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_07",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6148,8 +6169,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_05",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6169,8 +6190,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_06",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_06",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6190,8 +6211,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_07",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_07",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6211,8 +6232,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6232,8 +6253,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_06",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6253,8 +6274,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_07",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6274,8 +6295,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6295,8 +6316,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_04",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_shared_06",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6316,8 +6337,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888883",
-          "source_id": "src_i2_portal_hub_05",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888883",
+          "source_id": "src_i2_portal_local_07",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6360,8 +6381,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888884",
-          "source_id": "src_i2_portal_hub_06",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888884",
+          "source_id": "src_i2_portal_shared_00",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6381,8 +6402,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888884",
-          "source_id": "src_i2_portal_hub_07",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888884",
+          "source_id": "src_i2_portal_shared_01",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6402,8 +6423,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888884",
-          "source_id": "src_i2_portal_hub_00",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888884",
+          "source_id": "src_i2_portal_shared_02",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6423,8 +6444,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888884",
-          "source_id": "src_i2_portal_hub_01",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888884",
+          "source_id": "src_i2_portal_shared_03",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6444,8 +6465,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888884",
-          "source_id": "src_i2_portal_hub_02",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888884",
+          "source_id": "src_i2_portal_shared_04",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
@@ -6465,8 +6486,8 @@
         "lifecycle": "canonical",
         "provenance": {
           "end_byte": 125,
-          "snapshot_digest": "888888888888888888888888888888888888888888888888888888884",
-          "source_id": "src_i2_portal_hub_03",
+          "snapshot_digest": "888888888888888888888888888888888888888888888888888888888884",
+          "source_id": "src_i2_portal_shared_05",
           "span": "SYNTHETIC INDRA FIXTURE ONLY: carries no semantic meaning, is never canon, and exists only to exercise renderer organization.",
           "start_byte": 0
         },
