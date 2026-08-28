@@ -308,7 +308,7 @@ function resolvedSceneCameraCenter(
   );
   return {
     x: normaliseWithinBounds(total.x / subjects.length, state.camera.bounds.x),
-    y: normaliseWithinBounds(total.y / subjects.length, state.camera.bounds.y),
+    y: normaliseCameraY(total.y / subjects.length, state.camera.bounds.y),
   };
 }
 
@@ -370,7 +370,7 @@ function framingFor(graph: VisualGraph): ReviewFraming {
       neighbourCount: neighbourhood.nodeIds.length - 1,
       targetCameraCenter: {
         x: normaliseWithinBounds(neighbourhood.center.x, bounds.x),
-        y: normaliseWithinBounds(neighbourhood.center.y, bounds.y),
+        y: normaliseCameraY(neighbourhood.center.y, bounds.y),
       },
     },
   };
@@ -419,6 +419,21 @@ function highestDegreeNode(graph: VisualGraph): { readonly id: string; readonly 
 
 function normaliseWithinBounds(value: number, bounds: readonly [number, number]): number {
   return (value - bounds[0]) / (bounds[1] - bounds[0]);
+}
+
+/**
+ * The camera's normalised vertical axis runs opposite to the scene's.
+ *
+ * Scene coordinates increase upward; the camera state this harness writes into is the renderer's
+ * normalised space, whose vertical axis increases downward. Mapping a scene centre through
+ * `normaliseWithinBounds` alone therefore mirrors it about the midpoint. The error is invisible
+ * wherever the centre is already near the middle — the whole-scene centroid sits at 0.505, and
+ * mirroring that moves it by half a per cent — and it is severe for a neighbourhood centre well away
+ * from the middle, which is exactly the case a close view uses. The close capture placed its subject
+ * against the top edge with two thirds of the frame empty below it.
+ */
+function normaliseCameraY(value: number, bounds: readonly [number, number]): number {
+  return 1 - normaliseWithinBounds(value, bounds);
 }
 
 function primaryNodeId(graph: VisualGraph): string {
