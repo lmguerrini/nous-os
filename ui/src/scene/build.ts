@@ -17,7 +17,7 @@ import { layoutAnchors } from "#engine/layout.ts";
 import type { ResolvedMaterial } from "#engine/lod.ts";
 import { MACRO, MESO, lodView } from "#engine/lod.ts";
 import type { EdgeMaterial, MorphologyProfile, NodeMaterial } from "#engine/morphology.ts";
-import { MYCELIUM, NEURAL, STELLAR, applyMorphology } from "#engine/morphology.ts";
+import { MYCELIUM, NEURAL, SHARED_SCENE_MATERIAL_TARGET, STELLAR, applyMorphology } from "#engine/morphology.ts";
 import { assertIndraOrganization, flatOrganization, indraOrganization } from "#engine/organization.ts";
 import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
 import { contrastRatio, relativeLuminance, resolveTokens } from "#engine/tokens.ts";
@@ -49,6 +49,9 @@ const BISECTION_DIVISOR = 2;
 /** This is the fixed instant sampled by the pure scene model; elapsed scene time is not a calibration property and no runtime clock enters this module. */
 const PROPAGATION_SAMPLE_ELAPSED_MILLISECONDS = 220;
 
+/** This is the fully faded luminance endpoint of a blind terminal and does not remove its governed node or relation. */
+const BLIND_TERMINAL_LUMINANCE_PERMILLE = 0;
+
 type LabelPlacementCandidate = {
   readonly id: string;
   readonly priority: number;
@@ -78,7 +81,7 @@ export function buildScene(
   const engineGraph = orderEngineGraph(tracedGraph);
   const anchors = layoutAnchors(engineGraph, calibration);
   const morphology = morphologyProfile(visualState.morphology);
-  const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration);
+  const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration, SHARED_SCENE_MATERIAL_TARGET);
   const activeTokens = shippingTokens(inputs.tokens, visualState.palette, visualState.theme, calibration);
   const organization = visualState.organization === "indra"
     ? indraOrganization(engineGraph, calibration, anchors)
@@ -188,6 +191,38 @@ export function resolveSceneFilamentLuminance(calibration: CalibrationProfile): 
   };
 }
 
+/** This resolves categorical terminal material into existing endpoint luminance channels and does not inspect relation semantics. */
+function resolveTerminalFilamentLuminance(
+  material: EdgeMaterial,
+  calibration: CalibrationProfile,
+): ReturnType<typeof resolveSceneFilamentLuminance> {
+  const resolved = resolveSceneFilamentLuminance(calibration);
+  if (material.terminalTreatment !== MYCELIUM.terminalTreatment) {
+    return resolved;
+  }
+  return {
+    ...resolved,
+    luminanceStartPermille: material.sourceTerminal
+      ? BLIND_TERMINAL_LUMINANCE_PERMILLE
+      : resolved.luminanceStartPermille,
+    luminanceEndPermille: material.targetTerminal
+      ? BLIND_TERMINAL_LUMINANCE_PERMILLE
+      : resolved.luminanceEndPermille,
+  };
+}
+
+/** This narrows a visible terminal endpoint while a blind terminal retains a blunt filament width. */
+function terminalWidthPx(
+  widthPx: number,
+  terminal: boolean,
+  treatment: EdgeMaterial["terminalTreatment"],
+  terminalSizeMultiplierPermille: number,
+): number {
+  return terminal && treatment === STELLAR.terminalTreatment
+    ? (widthPx * terminalSizeMultiplierPermille) / SCENE_PERMILLE_SCALE
+    : widthPx;
+}
+
 /** This selects calibrated non-colliding labels and does not measure text with renderer or DOM APIs. */
 export function resolveSceneLabelIds(
   candidates: readonly LabelPlacementCandidate[],
@@ -223,21 +258,29 @@ function sceneNode(
     : 1;
   const baseRadiusPx = nodeSizeForMaterial(material, resolved, morphology, calibration);
   const radiusPx = baseRadiusPx * selectedMultiplier;
+  const isJunction = Number(material.facts.degree.value) >= 2;
+  const isTerminal = material.facts.terminal.value === true;
+  const fusedJunction = isJunction && material.junctionGeometry === MYCELIUM.junctionGeometry;
+  const blindTerminal = isTerminal && material.terminalTreatment === MYCELIUM.terminalTreatment;
   const channel = renderedStateChannel(node.rendered ?? null, calibration);
   const baseToken = nodeTokenForMaterial(tokens, material, resolved, calibration);
-  const haloRadiusPx = (materialIncludes(resolved.node, "halo") ? material.haloRadiusPx : baseRadiusPx) * selectedMultiplier;
-  const haloIntensityPermille = materialIncludes(resolved.node, "halo")
+  const requestedHaloRadiusPx = (materialIncludes(resolved.node, "halo") ? material.haloRadiusPx : baseRadiusPx) * selectedMultiplier;
+  const requestedHaloIntensityPermille = materialIncludes(resolved.node, "halo")
     ? material.haloIntensityPermille
     : 0;
+  const haloRadiusPx = fusedJunction || blindTerminal ? radiusPx : requestedHaloRadiusPx;
+  const haloIntensityPermille = fusedJunction || blindTerminal ? 0 : requestedHaloIntensityPermille;
   return {
     id: node.id,
     kind: node.kind,
     position: copyCoordinates(anchor),
     radiusPx,
     token: copyToken(applyRenderedStateChannel(baseToken, channel, calibration)),
-    opacityPermille: interactionOpacity(material.opacityPermille, node.id, visualState, calibration),
+    opacityPermille: blindTerminal ? 0 : interactionOpacity(material.opacityPermille, node.id, visualState, calibration),
+    junctionGeometry: isJunction ? material.junctionGeometry : null,
+    terminalTreatment: isTerminal ? material.terminalTreatment : null,
     haloRadiusPx,
-    haloCoreGapPx: calibration.luminance.coreBeforeHaloMinimumPx,
+    haloCoreGapPx: fusedJunction || blindTerminal ? 0 : calibration.luminance.coreBeforeHaloMinimumPx,
     haloIntensityPermille,
     haloAlphaStops: resolveSceneHaloAlphaStops(haloIntensityPermille, calibration),
     labelCandidacy: materialIncludes(resolved.node, "label") ? {
@@ -275,6 +318,19 @@ function sceneEdge(
     ? calibration.selection.emphasisMultiplierPermille / scale
     : 1;
   const width = edgeWidthForMaterial(material, resolved, calibration) * emphasis;
+  const filamentMaterial = calibration.morphology[morphology.id];
+  const widthStartPx = terminalWidthPx(
+    (width * material.widthStartPermille) / scale,
+    material.sourceTerminal,
+    material.terminalTreatment,
+    filamentMaterial.sharedSceneTerminalSizeMultiplierPermille,
+  );
+  const widthEndPx = terminalWidthPx(
+    (width * material.widthEndPermille) / scale,
+    material.targetTerminal,
+    material.terminalTreatment,
+    filamentMaterial.sharedSceneTerminalSizeMultiplierPermille,
+  );
   const curvature = edgeCurvatureForMaterial(material, resolved);
   const controlPoint = quadraticControlPoint(source, target, curvature);
   const path = sampleQuadraticPath(source, target, controlPoint, curvature, calibration.lod.bandThresholds.length);
@@ -289,16 +345,19 @@ function sceneEdge(
     ? normalisedPropagationPosition(travelledDistance, length)
     : 1;
   const channel = renderedStateChannel(edge.rendered ?? null, calibration);
-  const filamentMaterial = calibration.morphology[morphology.id];
   return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
+    junctionStartGeometry: material.sourceJunction ? material.junctionGeometry : null,
+    junctionEndGeometry: material.targetJunction ? material.junctionGeometry : null,
+    terminalStartTreatment: material.sourceTerminal ? material.terminalTreatment : null,
+    terminalEndTreatment: material.targetTerminal ? material.terminalTreatment : null,
     path,
     controlPoint,
     bodyWidthPx: width,
-    widthStartPx: (width * material.widthStartPermille) / scale,
-    widthEndPx: (width * material.widthEndPermille) / scale,
+    widthStartPx,
+    widthEndPx,
     pickTolerancePx: calibration.filament.pickTolerancePx,
     minimumDeviceWidthPx: calibration.filament.minimumDeviceWidthPermille / scale,
     token: copyToken(applyRenderedStateChannel(
@@ -325,7 +384,7 @@ function sceneEdge(
       wobbleFrequencyMilliradians: filamentMaterial.wobbleFrequencyMilliradians,
       phasePermille: material.phasePermille,
       afterglowDecayPermille: calibration.motion.afterglowDecayPermille,
-      ...resolveSceneFilamentLuminance(calibration),
+      ...resolveTerminalFilamentLuminance(material, calibration),
     },
     propagation: {
       position: copyCoordinates(propagation.position),

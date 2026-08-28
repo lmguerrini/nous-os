@@ -5,6 +5,7 @@ import type { CalibrationProfile } from "#engine/calibration.ts";
 import { PERSPECTIVE } from "#engine/camera-kind.ts";
 import type { RenderedStateCarrier, VisualEdge, VisualGraph, VisualNode } from "#engine/contract.ts";
 import { createEngineGraphView, createRenderedStateCarrier, createSemantic, assertEngineAccessTrace } from "#engine/contract.ts";
+import type { Morphology } from "#engine/morphology.ts";
 import type { Scene } from "#scene/contract.ts";
 import {
   SCENE_LABEL_FONT_FAMILY,
@@ -213,6 +214,33 @@ test("scene resolves renderer inputs for filament picking, labels, aggregates, a
   const controlOutput = captureFailure(() => assertResolvedRendererInputs(mutant, DEFAULT_CALIBRATION, tokens));
   assert.match(controlOutput, /filament device-width floor changed/);
   process.stdout.write(`scene-renderer-input negative control observed: ${controlOutput}\n`);
+});
+
+test("all three morphologies remain separated in at least three resolved non-halo channels at meso and micro", () => {
+  const graph = sceneFixtureGraph();
+  const morphologies: readonly Morphology[] = ["stellar", "neural", "mycelium"];
+  const scenes = new Map<Morphology, MorphologyBandScenes>();
+  for (const morphology of morphologies) {
+    const base = sceneVisualState(graph);
+    const mesoState = { ...base, morphology, lodBand: "meso" as const };
+    const microState = { ...base, morphology, lodBand: "micro" as const };
+    scenes.set(morphology, {
+      meso: buildScene(graph, mesoState, DEFAULT_CALIBRATION, sceneTokens(mesoState)),
+      micro: buildScene(graph, microState, DEFAULT_CALIBRATION, sceneTokens(microState)),
+    });
+  }
+  assertMorphologySceneStructure(graph, scenes);
+  assertMorphologySceneSeparation(scenes);
+
+  const neural = requiredMorphologyScenes(scenes, "neural");
+  const identicalControl = new Map(scenes);
+  identicalControl.set("mycelium", {
+    meso: structuredClone(neural.meso),
+    micro: structuredClone(neural.micro),
+  });
+  const controlOutput = captureFailure(() => assertMorphologySceneSeparation(identicalControl));
+  assert.match(controlOutput, /neural\/mycelium.*0 distinct non-halo channels/);
+  process.stdout.write(`morphology-separation negative control observed: ${controlOutput}\n`);
 });
 
 test("camera selection changes only the camera request while scene channels remain shared", () => {
@@ -791,6 +819,121 @@ function forbidEdgeSemantic(edge: VisualEdge): VisualEdge {
   return protectedEdge;
 }
 
+type MorphologyBandScenes = {
+  readonly meso: Scene;
+  readonly micro: Scene;
+};
+
+type MorphologyChannel = "width" | "curvature" | "junction" | "terminal" | "halo";
+
+const NON_HALO_MORPHOLOGY_CHANNELS: readonly MorphologyChannel[] = [
+  "width",
+  "curvature",
+  "junction",
+  "terminal",
+];
+
+function assertMorphologySceneStructure(
+  graph: VisualGraph,
+  scenes: ReadonlyMap<Morphology, MorphologyBandScenes>,
+): void {
+  const expectedNodes = graph.nodes.map((node) => node.id).sort();
+  const expectedEdges = graph.edges
+    .map((edge) => [edge.id, edge.source, edge.target])
+    .sort(([left], [right]) => String(left).localeCompare(String(right)));
+  let expectedAggregates: string | undefined;
+  for (const morphology of ["stellar", "neural", "mycelium"] as const) {
+    const bands = requiredMorphologyScenes(scenes, morphology);
+    for (const scene of [bands.meso, bands.micro]) {
+      assert.deepEqual(scene.nodes.map((node) => node.id).sort(), expectedNodes, `${morphology} node set changed`);
+      assert.deepEqual(
+        scene.edges.map((edge) => [edge.id, edge.source, edge.target]).sort(([left], [right]) => String(left).localeCompare(String(right))),
+        expectedEdges,
+        `${morphology} edge set or incidence changed`,
+      );
+      const aggregates = JSON.stringify(scene.aggregates.map((aggregate) => [aggregate.id, aggregate.members]).sort());
+      expectedAggregates ??= aggregates;
+      assert.equal(aggregates, expectedAggregates, `${morphology} aggregate/group set changed`);
+    }
+  }
+}
+
+function assertMorphologySceneSeparation(scenes: ReadonlyMap<Morphology, MorphologyBandScenes>): void {
+  const pairs: readonly (readonly [Morphology, Morphology])[] = [
+    ["stellar", "neural"],
+    ["stellar", "mycelium"],
+    ["neural", "mycelium"],
+  ];
+  for (const band of ["meso", "micro"] as const) {
+    for (const [leftName, rightName] of pairs) {
+      const left = requiredMorphologyScenes(scenes, leftName)[band];
+      const right = requiredMorphologyScenes(scenes, rightName)[band];
+      const differing = NON_HALO_MORPHOLOGY_CHANNELS.filter(
+        (channel) => morphologyChannelFingerprint(left, channel) !== morphologyChannelFingerprint(right, channel),
+      );
+      if (differing.length < 3) {
+        throw new Error(
+          `${band} ${leftName}/${rightName} resolved to ${differing.length} distinct non-halo channels: ${differing.join(",")}`,
+        );
+      }
+    }
+  }
+}
+
+function morphologyChannelFingerprint(scene: Scene, channel: MorphologyChannel): string {
+  if (channel === "width") {
+    return JSON.stringify(scene.edges.map((edge) => [edge.id, edge.bodyWidthPx, edge.widthStartPx, edge.widthEndPx]));
+  }
+  if (channel === "curvature") {
+    return JSON.stringify(scene.edges.map((edge) => [edge.id, edge.controlPoint]));
+  }
+  if (channel === "junction") {
+    return JSON.stringify({
+      nodes: scene.nodes
+        .filter((node) => node.junctionGeometry !== null)
+        .map((node) => [node.id, node.junctionGeometry]),
+      edges: scene.edges.map((edge) => [
+        edge.id,
+        edge.junctionStartGeometry,
+        edge.junctionEndGeometry,
+        edge.filament.junctionStartPermille,
+        edge.filament.junctionEndPermille,
+      ]),
+    });
+  }
+  if (channel === "terminal") {
+    return JSON.stringify({
+      nodes: scene.nodes
+        .filter((node) => node.terminalTreatment !== null)
+        .map((node) => [node.id, node.terminalTreatment, node.radiusPx, node.opacityPermille]),
+      edges: scene.edges.map((edge) => [
+        edge.id,
+        edge.terminalStartTreatment,
+        edge.terminalEndTreatment,
+        edge.filament.luminanceStartPermille,
+        edge.filament.luminanceEndPermille,
+      ]),
+    });
+  }
+  return JSON.stringify(scene.nodes.map((node) => [
+    node.id,
+    node.haloRadiusPx / node.radiusPx,
+    node.haloCoreGapPx,
+    node.haloIntensityPermille,
+  ]));
+}
+
+function requiredMorphologyScenes(
+  scenes: ReadonlyMap<Morphology, MorphologyBandScenes>,
+  morphology: Morphology,
+): MorphologyBandScenes {
+  const resolved = scenes.get(morphology);
+  if (resolved === undefined) {
+    throw new TypeError(`${morphology} scene is unavailable`);
+  }
+  return resolved;
+}
+
 function captureFailure(operation: () => void): string {
   try {
     operation();
@@ -800,36 +943,45 @@ function captureFailure(operation: () => void): string {
   throw new Error("negative control did not fail");
 }
 
-test("the resolved filament body width is the one base both endpoint widths are scaled from", () => {
+test("the resolved filament body width carries the calibrated profile and visible-terminal narrowing", () => {
   const graph = sceneFixtureGraph();
   const state = sceneVisualState(graph);
   const scene = buildScene(graph, state, DEFAULT_CALIBRATION, sceneTokens(state));
   assert.ok(scene.edges.length > 1, "the fixture must supply more than one relation for a shared-ratio claim");
 
-  // The base width is a morphology constant scaled by per-relation prominence, and each endpoint
-  // width is that base scaled by a permille the scene deliberately does not re-export. So the
-  // falsifiable claim is not a magnitude but a RATIO: every relation must show the same
-  // start-to-body and end-to-body ratio, because the same two permille factors produced all of them.
-  // A body width recovered by guessing from the endpoints, or read off a neighbouring value, breaks
-  // that immediately — which is what the control below demonstrates.
+  const stellar = DEFAULT_CALIBRATION.morphology.stellar;
   const ratios = scene.edges.map((edge) => {
     assert.ok(Number.isFinite(edge.bodyWidthPx) && edge.bodyWidthPx > 0, `${edge.id} has no positive body width`);
     return { id: edge.id, start: edge.widthStartPx / edge.bodyWidthPx, end: edge.widthEndPx / edge.bodyWidthPx };
   });
-  const first = ratios[0];
-  if (first === undefined) {
-    throw new TypeError("the ratio claim requires at least one relation");
-  }
-  for (const ratio of ratios) {
-    assert.equal(ratio.start, first.start, `${ratio.id} start-to-body ratio differs from ${first.id}`);
-    assert.equal(ratio.end, first.end, `${ratio.id} end-to-body ratio differs from ${first.id}`);
+  for (const [index, ratio] of ratios.entries()) {
+    const edge = scene.edges[index];
+    if (edge === undefined) {
+      throw new TypeError("the ratio claim requires a matching relation");
+    }
+    const startTerminalFactor = edge.terminalStartTreatment === "visible-terminal"
+      ? stellar.sharedSceneTerminalSizeMultiplierPermille / SCENE_PERMILLE_SCALE
+      : 1;
+    const endTerminalFactor = edge.terminalEndTreatment === "visible-terminal"
+      ? stellar.sharedSceneTerminalSizeMultiplierPermille / SCENE_PERMILLE_SCALE
+      : 1;
+    const expectedStart = stellar.sharedSceneFilamentWidthStartPermille / SCENE_PERMILLE_SCALE * startTerminalFactor;
+    const expectedEnd = stellar.sharedSceneFilamentWidthEndPermille / SCENE_PERMILLE_SCALE * endTerminalFactor;
+    assert.ok(
+      Math.abs(ratio.start - expectedStart) <= Number.EPSILON,
+      `${ratio.id} start-to-body ratio lost its material binding`,
+    );
+    assert.ok(
+      Math.abs(ratio.end - expectedEnd) <= Number.EPSILON,
+      `${ratio.id} end-to-body ratio lost its material binding`,
+    );
   }
 
   const perturbed = scene.edges.map((edge, index) => ({
     id: edge.id,
     start: edge.widthStartPx / (index === 0 ? edge.bodyWidthPx * 2 : edge.bodyWidthPx),
   }));
-  const control = perturbed.every((ratio) => ratio.start === perturbed[0]?.start);
-  assert.equal(control, false, "the shared-ratio claim must fail when one relation's body width is wrong");
+  const control = perturbed.every((ratio, index) => ratio.start === ratios[index]?.start);
+  assert.equal(control, false, "the bound-ratio claim must fail when one relation's body width is wrong");
   process.stdout.write("filament body-width ratio negative control observed: a single perturbed base broke the shared ratio\n");
 });

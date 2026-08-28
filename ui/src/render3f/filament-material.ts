@@ -169,6 +169,19 @@ float alongLengthLuminance(float parameter) {
     ? mix(startValue, middleValue, parameter * 2.0)
     : mix(middleValue, endValue, (parameter - 0.5) * 2.0);
 }
+float endpointJunctionProfile(float parameter) {
+  float startWeight = 1.0 - parameter;
+  float endWeight = parameter;
+  startWeight *= startWeight;
+  startWeight *= startWeight;
+  endWeight *= endWeight;
+  endWeight *= endWeight;
+  return ((v_minimumAndJunctionPermille.y * startWeight)
+    + (v_minimumAndJunctionPermille.z * endWeight)) / u_permilleScale;
+}
+float luminanceWeightedAlpha(float luminance) {
+  return clamp(luminance, 0.0, 1.0);
+}
 void main() {
   vec2 distanceSample = filamentDistance(gl_FragCoord.xy, v_cpA, v_cpB, v_cpC);
   float parameter = distanceSample.y;
@@ -176,7 +189,7 @@ void main() {
   float phase = v_phaseAndLuminancePermille.x / u_permilleScale;
   float wobble = (v_hotAndWobble.z / u_permilleScale)
     * sin((v_hotAndWobble.w / u_permilleScale) * parameter + phase * 2.0 * 3.141592653589793);
-  float junction = mix(v_minimumAndJunctionPermille.y, v_minimumAndJunctionPermille.z, parameter) / u_permilleScale;
+  float junction = endpointJunctionProfile(parameter);
   float widthFactor = max(v_minimumAndJunctionPermille.x / u_permilleScale, 1.0 + wobble + junction);
   float bodyHalfWidth = max(
     v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
@@ -194,12 +207,13 @@ void main() {
   float lightPosition = v_propagationPermille.z > 0.0 ? propagationPosition : 1.0;
   float propagationAlpha = max(afterglowDecay, 1.0 - abs(parameter - lightPosition) / afterglowDecay);
   float luminance = alongLengthLuminance(parameter);
+  float luminanceAlpha = luminanceWeightedAlpha(luminance);
   vec3 bodyColor = v_color * luminance;
-  float sheathAlpha = v_opacity * propagationAlpha
+  float sheathAlpha = v_opacity * propagationAlpha * luminanceAlpha
     * (v_sheathAndCorePermille.y / u_permilleScale) * sheathCoverage;
-  float bodyAlpha = v_opacity * propagationAlpha * bodyCoverage;
+  float bodyAlpha = v_opacity * propagationAlpha * luminanceAlpha * bodyCoverage;
   float hotMix = v_sheathAndCorePermille.w / u_permilleScale;
-  float hotAlpha = v_opacity * propagationAlpha
+  float hotAlpha = v_opacity * propagationAlpha * luminanceAlpha
     * (v_hotAndWobble.x / u_permilleScale)
     * (v_hotAndWobble.y / u_permilleScale) * coreCoverage;
   vec4 sheath = vec4(bodyColor * sheathAlpha, sheathAlpha);

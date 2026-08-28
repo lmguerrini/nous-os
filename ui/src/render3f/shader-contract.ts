@@ -7,6 +7,8 @@ export function assertFilamentShaderTechnique(vertexShader: string, fragmentShad
     { name: "analytic medial-axis distance", source: fragmentShader, marker: "filamentDistance(gl_FragCoord.xy" },
     { name: "derivative anti-aliasing", source: fragmentShader, marker: "fwidth(distance)" },
     { name: "along-length luminance", source: fragmentShader, marker: "alongLengthLuminance(parameter)" },
+    { name: "endpoint-local junction geometry", source: fragmentShader, marker: "endpointJunctionProfile(parameter)" },
+    { name: "luminance-weighted terminal fade", source: fragmentShader, marker: "luminanceWeightedAlpha(luminance)" },
     { name: "premultiplied output", source: fragmentShader, marker: "vec4(bodyColor * bodyAlpha, bodyAlpha)" },
   ];
   for (const requirement of requirements) {

@@ -8,6 +8,7 @@ import { createSemantic, semanticDigest } from "#engine/contract.ts";
 import {
   MYCELIUM,
   NEURAL,
+  SHARED_SCENE_MATERIAL_TARGET,
   STELLAR,
   applyMorphology,
   assertMorphologyBinding,
@@ -97,6 +98,25 @@ test("morphology normalises prominence from rendered graph incidence and carries
     neural.nodes.map((node) => [node.coreSizePx, node.haloRadiusPx]),
     mycelium.nodes.map((node) => [node.coreSizePx, node.haloRadiusPx]),
   );
+});
+
+test("the shared-scene extension activates curvature and widened material without moving the legacy renderer path", () => {
+  const visualGraph = graph();
+  const legacy = applyMorphology(visualGraph, NEURAL, DEFAULT_CALIBRATION);
+  const shared = applyMorphology(visualGraph, NEURAL, DEFAULT_CALIBRATION, SHARED_SCENE_MATERIAL_TARGET);
+  assert.ok(legacy.edges.every((edge) => edge.curvaturePermille === 0));
+  assert.ok(shared.edges.every((edge) => edge.curvaturePermille > 0));
+  assert.ok(shared.edges.some((edge, index) => {
+    const legacyEdge = legacy.edges[index];
+    return legacyEdge !== undefined && (
+      edge.widthPx !== legacyEdge.widthPx
+      || edge.widthStartPermille !== legacyEdge.widthStartPermille
+      || edge.widthEndPermille !== legacyEdge.widthEndPermille
+    );
+  }));
+  assert.deepEqual(shared.nodeIds, legacy.nodeIds);
+  assert.deepEqual(shared.edgeIds, legacy.edgeIds);
+  assert.deepEqual(shared.incidence, legacy.incidence);
 });
 
 function requiredBinding(

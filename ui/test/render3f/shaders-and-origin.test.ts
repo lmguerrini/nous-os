@@ -31,6 +31,19 @@ test("filament shader uses expanded quads, analytic AA, the width floor, and sup
   assert.equal(FILAMENT_VERTEX_SHADER.includes("THREE.Line"), false);
   const control = FILAMENT_FRAGMENT_SHADER.replace("fwidth(distance)", "distance");
   assert.throws(() => assertFilamentShaderTechnique(FILAMENT_VERTEX_SHADER, control), /missing derivative anti-aliasing/);
+  const junctionControl = FILAMENT_FRAGMENT_SHADER.replace(
+    "endpointJunctionProfile(parameter)",
+    "mix(v_minimumAndJunctionPermille.y, v_minimumAndJunctionPermille.z, parameter)",
+  );
+  assert.throws(
+    () => assertFilamentShaderTechnique(FILAMENT_VERTEX_SHADER, junctionControl),
+    /missing endpoint-local junction geometry/,
+  );
+  const terminalControl = FILAMENT_FRAGMENT_SHADER.replace("luminanceWeightedAlpha(luminance)", "1.0");
+  assert.throws(
+    () => assertFilamentShaderTechnique(FILAMENT_VERTEX_SHADER, terminalControl),
+    /missing luminance-weighted terminal fade/,
+  );
 });
 
 test("node shader consumes sampled halo values and renders a gradient core weighted toward the centre", () => {

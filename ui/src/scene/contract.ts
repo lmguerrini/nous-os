@@ -2,6 +2,7 @@ import { CAMERA_KINDS } from "#engine/camera-kind.ts";
 import type { Coordinates, DerivedValue } from "#engine/contract.ts";
 import type { LodBand } from "#engine/lod.ts";
 import { MACRO, MESO, MICRO } from "#engine/lod.ts";
+import type { JunctionGeometry, TerminalTreatment } from "#engine/morphology.ts";
 import { TOKEN_RAMPS, resolveTokens } from "#engine/tokens.ts";
 import type { OklchToken, TokenMap } from "#engine/tokens.ts";
 
@@ -60,6 +61,8 @@ export type SceneNode = {
   readonly radiusPx: number;
   readonly token: OklchToken;
   readonly opacityPermille: number;
+  readonly junctionGeometry: JunctionGeometry | null;
+  readonly terminalTreatment: TerminalTreatment | null;
   readonly haloRadiusPx: number;
   readonly haloCoreGapPx: number;
   readonly haloIntensityPermille: number;
@@ -118,6 +121,10 @@ export type SceneEdge = {
   readonly id: string;
   readonly source: string;
   readonly target: string;
+  readonly junctionStartGeometry: JunctionGeometry | null;
+  readonly junctionEndGeometry: JunctionGeometry | null;
+  readonly terminalStartTreatment: TerminalTreatment | null;
+  readonly terminalEndTreatment: TerminalTreatment | null;
   readonly path: readonly Coordinates[];
   /** This is the direct quadratic control point for path and does not require renderer-local fitting. */
   readonly controlPoint: Coordinates;
@@ -224,11 +231,11 @@ export const SCENE_FIELD_REGISTER = {
   field: ["token"],
   tokenEncoding: ["gamutCompressionRange", "gamutCompressionExponent"],
   node: [
-    "id", "kind", "position", "radiusPx", "token", "opacityPermille", "haloRadiusPx", "haloCoreGapPx",
+    "id", "kind", "position", "radiusPx", "token", "opacityPermille", "junctionGeometry", "terminalTreatment", "haloRadiusPx", "haloCoreGapPx",
     "haloIntensityPermille", "haloAlphaStops", "labelCandidacy", "renderedStateChannel", "interaction", "lodBand", "stackingPriority",
   ],
   edge: [
-    "id", "source", "target", "path", "controlPoint", "bodyWidthPx", "widthStartPx", "widthEndPx", "pickTolerancePx", "minimumDeviceWidthPx", "token", "opacityPermille",
+    "id", "source", "target", "junctionStartGeometry", "junctionEndGeometry", "terminalStartTreatment", "terminalEndTreatment", "path", "controlPoint", "bodyWidthPx", "widthStartPx", "widthEndPx", "pickTolerancePx", "minimumDeviceWidthPx", "token", "opacityPermille",
     "renderedStateChannel", "labelCandidacy", "interaction", "lodBand", "filament", "propagation", "stackingPriority",
   ],
   aggregate: ["id", "kind", "members", "center", "radius", "windowPaddingPx", "token", "strokeWidthPx", "strokeOpacityPermille", "bounds"],
@@ -255,6 +262,8 @@ export const SCENE_FIELD_REGISTER = {
 
 const INTERACTION_STATES: readonly SceneInteractionState[] = ["none", "selected", "focused", "dimmed"];
 const LOD_BANDS: readonly LodBand[] = [MACRO, MESO, MICRO];
+const JUNCTION_GEOMETRIES: readonly JunctionGeometry[] = ["separate-luminous-point", "core-before-halo", "fused-filament"];
+const TERMINAL_TREATMENTS: readonly TerminalTreatment[] = ["visible-terminal", "blind-terminal"];
 
 /** This is the complete non-ramp token-name register returned by the resolver and does not select renderer-specific names. */
 const SCENE_BASE_TOKEN_NAMES = ["background", "surface", "textMuted", "text", "edge", "peak"] as const;
@@ -280,7 +289,6 @@ export function assertSceneFieldRegister(value: unknown): asserts value is Scene
   for (const [index, edge] of scene.edges.entries()) {
     assertEdge(edge, `scene.edges[${index}]`);
   }
-  assertUniformSceneFilamentLuminance(scene.edges, "scene.edges");
   for (const [index, aggregate] of scene.aggregates.entries()) {
     assertAggregate(aggregate, `scene.aggregates[${index}]`);
   }
@@ -297,6 +305,8 @@ function assertNode(value: unknown, path: string): void {
   assertFiniteNumber(node.radiusPx, `${path}.radiusPx`);
   assertToken(node.token, `${path}.token`);
   assertSafeInteger(node.opacityPermille, `${path}.opacityPermille`);
+  assertNullableChoice(node.junctionGeometry, JUNCTION_GEOMETRIES, `${path}.junctionGeometry`);
+  assertNullableChoice(node.terminalTreatment, TERMINAL_TREATMENTS, `${path}.terminalTreatment`);
   assertFiniteNumber(node.haloRadiusPx, `${path}.haloRadiusPx`);
   assertSafeInteger(node.haloCoreGapPx, `${path}.haloCoreGapPx`);
   assertSafeInteger(node.haloIntensityPermille, `${path}.haloIntensityPermille`);
@@ -317,6 +327,10 @@ function assertEdge(value: unknown, path: string): void {
   assertString(edge.id, `${path}.id`);
   assertString(edge.source, `${path}.source`);
   assertString(edge.target, `${path}.target`);
+  assertNullableChoice(edge.junctionStartGeometry, JUNCTION_GEOMETRIES, `${path}.junctionStartGeometry`);
+  assertNullableChoice(edge.junctionEndGeometry, JUNCTION_GEOMETRIES, `${path}.junctionEndGeometry`);
+  assertNullableChoice(edge.terminalStartTreatment, TERMINAL_TREATMENTS, `${path}.terminalStartTreatment`);
+  assertNullableChoice(edge.terminalEndTreatment, TERMINAL_TREATMENTS, `${path}.terminalEndTreatment`);
   assertArray(edge.path, `${path}.path`);
   for (const [index, point] of edge.path.entries()) {
     assertCoordinates(point, `${path}.path[${index}]`);
@@ -333,6 +347,7 @@ function assertEdge(value: unknown, path: string): void {
   assertChoice(edge.interaction, INTERACTION_STATES, `${path}.interaction`);
   assertChoice(edge.lodBand, LOD_BANDS, `${path}.lodBand`);
   assertFilament(edge.filament, `${path}.filament`);
+  assertEndpointTreatments(edge, path);
   assertPropagation(edge.propagation, `${path}.propagation`);
   assertFiniteNumber(edge.stackingPriority, `${path}.stackingPriority`);
 }
@@ -442,29 +457,25 @@ function assertFilament(value: unknown, path: string): void {
   for (const key of SCENE_FIELD_REGISTER.filament) {
     assertSafeInteger(filament[key], `${path}.${key}`);
   }
-  if (filament.luminanceStartPermille !== filament.luminanceEndPermille) {
-    throw new TypeError(`${path} endpoint luminance gains must match`);
-  }
-  if ((filament.luminanceStartPermille as number) <= (filament.luminanceMidPermille as number)) {
-    throw new TypeError(`${path} endpoints must be brighter than the mid-span`);
+  for (const key of ["luminanceStartPermille", "luminanceMidPermille", "luminanceEndPermille"] as const) {
+    if ((filament[key] as number) < 0) {
+      throw new TypeError(`${path}.${key} must be non-negative`);
+    }
   }
 }
 
-function assertUniformSceneFilamentLuminance(edges: readonly unknown[], path: string): void {
-  const first = edges[0] as Record<string, unknown> | undefined;
-  if (first === undefined) {
-    return;
-  }
-  const expected = first.filament as Record<string, unknown>;
-  for (const [index, edgeValue] of edges.entries()) {
-    const edge = edgeValue as Record<string, unknown>;
-    const filament = edge.filament as Record<string, unknown>;
-    if (
-      filament.luminanceStartPermille !== expected.luminanceStartPermille
-      || filament.luminanceMidPermille !== expected.luminanceMidPermille
-      || filament.luminanceEndPermille !== expected.luminanceEndPermille
-    ) {
-      throw new TypeError(`${path}[${index}] filament luminance taper must be uniform across relations`);
+function assertEndpointTreatments(edge: Record<string, unknown>, path: string): void {
+  const filament = edge.filament as Record<string, unknown>;
+  const endpoints = [
+    ["Start", edge.terminalStartTreatment, filament.luminanceStartPermille],
+    ["End", edge.terminalEndTreatment, filament.luminanceEndPermille],
+  ] as const;
+  for (const [name, treatment, luminance] of endpoints) {
+    if (treatment === "blind-terminal" && luminance !== 0) {
+      throw new TypeError(`${path}.terminal${name}Treatment must resolve to a fully faded endpoint`);
+    }
+    if (treatment !== "blind-terminal" && (luminance as number) <= (filament.luminanceMidPermille as number)) {
+      throw new TypeError(`${path}.terminal${name}Treatment must retain a visible endpoint`);
     }
   }
 }
@@ -630,5 +641,15 @@ function assertBoolean(value: unknown, path: string): asserts value is boolean {
 function assertChoice<Value extends string>(value: unknown, choices: readonly Value[], path: string): asserts value is Value {
   if (typeof value !== "string" || !choices.includes(value as Value)) {
     throw new TypeError(`${path} is outside its closed vocabulary`);
+  }
+}
+
+function assertNullableChoice<Value extends string>(
+  value: unknown,
+  choices: readonly Value[],
+  path: string,
+): asserts value is Value | null {
+  if (value !== null) {
+    assertChoice(value, choices, path);
   }
 }

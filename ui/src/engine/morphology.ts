@@ -3,15 +3,30 @@ import type { DerivedValue, EngineGraph } from "#engine/contract.ts";
 
 const PERMILLE = 1000;
 const TERMINAL_DEGREE = 1;
+const JUNCTION_MINIMUM_DEGREE = 2;
 
 /** This is a material vocabulary and does not select or alter graph structure. */
 export type Morphology = "stellar" | "neural" | "mycelium";
 
+/** This is a junction material vocabulary and does not add geometry between incident relations. */
+export type JunctionGeometry = "separate-luminous-point" | "core-before-halo" | "fused-filament";
+
+/** This is a terminal material vocabulary and does not add or remove an endpoint node. */
+export type TerminalTreatment = "visible-terminal" | "blind-terminal";
+
+/** This selects the shared-scene material extension without changing the legacy renderer's resolved pixels. */
+export type MorphologyMaterialTarget = "legacy-renderer" | "shared-scene";
+
+/** This is the explicit shared-scene target and does not make the legacy renderer consume the shared scene. */
+export const SHARED_SCENE_MATERIAL_TARGET: MorphologyMaterialTarget = "shared-scene";
+
+const LEGACY_RENDERER_MATERIAL_TARGET: MorphologyMaterialTarget = "legacy-renderer";
+
 /** This is a named material profile and does not establish a semantic category. */
 export type MorphologyProfile = {
   readonly id: Morphology;
-  readonly junctionGeometry: string;
-  readonly terminalTreatment: string;
+  readonly junctionGeometry: JunctionGeometry;
+  readonly terminalTreatment: TerminalTreatment;
 };
 
 /** This is the stellar material profile and does not create a stellar topology. */
@@ -51,8 +66,8 @@ export type NodeMaterial = {
   readonly haloIntensityPermille: number;
   readonly prominencePermille: number;
   readonly opacityPermille: number;
-  readonly junctionGeometry: string;
-  readonly terminalTreatment: string;
+  readonly junctionGeometry: JunctionGeometry;
+  readonly terminalTreatment: TerminalTreatment;
   readonly facts: StructuralFacts;
 };
 
@@ -69,6 +84,12 @@ export type EdgeMaterial = {
   readonly taperPermille: number;
   readonly phasePermille: number;
   readonly hotCorePermille: number;
+  readonly sourceJunction: boolean;
+  readonly targetJunction: boolean;
+  readonly junctionGeometry: JunctionGeometry;
+  readonly sourceTerminal: boolean;
+  readonly targetTerminal: boolean;
+  readonly terminalTreatment: TerminalTreatment;
   readonly kind: DerivedValue;
 };
 
@@ -87,10 +108,12 @@ export function applyMorphology(
   graph: EngineGraph,
   morphology: MorphologyProfile,
   calibration: CalibrationProfile,
+  target: MorphologyMaterialTarget = LEGACY_RENDERER_MATERIAL_TARGET,
 ): MorphologyMaterial {
   const degree = degrees(graph);
   const hops = hopDistances(graph, degree);
   const material = calibration.morphology[morphology.id];
+  const sharedScene = target === SHARED_SCENE_MATERIAL_TARGET;
   const nodeIds = graph.nodes.map((node) => node.id);
   const edgeIds = graph.edges.map((edge) => edge.id);
   const minimumDegree = Math.min(...degree.values());
@@ -102,11 +125,16 @@ export function applyMorphology(
     const sizeRange = calibration.salience.maxNodeSizePx - calibration.salience.minNodeSizePx;
     const prominence = normalisedProminence(nodeDegree, minimumDegree, maximumDegree, calibration);
     const baseSize = calibration.salience.minNodeSizePx + (prominence * sizeRange);
-    const terminalSizeMultiplier = terminal ? material.terminalSizeMultiplierPermille : PERMILLE;
-    const coreSize = ((baseSize * material.nodeSizeMultiplierPermille) / PERMILLE * terminalSizeMultiplier) / PERMILLE;
+    const terminalSizeMultiplier = terminal
+      ? (sharedScene ? material.sharedSceneTerminalSizeMultiplierPermille : material.terminalSizeMultiplierPermille)
+      : PERMILLE;
+    const morphologyCore = (baseSize * material.nodeSizeMultiplierPermille) / PERMILLE;
+    const terminalCore = (morphologyCore * terminalSizeMultiplier) / PERMILLE;
     const renderedCore = morphology.id === NEURAL.id
-      ? Math.max(coreSize, calibration.luminance.coreBeforeHaloMinimumPx)
-      : coreSize;
+      ? (sharedScene
+        ? (Math.max(morphologyCore, calibration.luminance.coreBeforeHaloMinimumPx) * terminalSizeMultiplier) / PERMILLE
+        : Math.max(terminalCore, calibration.luminance.coreBeforeHaloMinimumPx))
+      : terminalCore;
     return {
       id: node.id,
       coreSizePx: renderedCore,
@@ -136,37 +164,53 @@ export function applyMorphology(
     const targetProminence = normalisedProminence(targetDegree, minimumDegree, maximumDegree, calibration);
     const sourceIsProximal = sourceHop <= targetHop;
     const widthStartPermille = morphology.id === NEURAL.id && !sourceIsProximal
-      ? material.filamentWidthEndPermille
-      : material.filamentWidthStartPermille;
+      ? (sharedScene ? material.sharedSceneFilamentWidthEndPermille : material.filamentWidthEndPermille)
+      : (sharedScene ? material.sharedSceneFilamentWidthStartPermille : material.filamentWidthStartPermille);
     const widthEndPermille = morphology.id === NEURAL.id && !sourceIsProximal
-      ? material.filamentWidthStartPermille
-      : material.filamentWidthEndPermille;
+      ? (sharedScene ? material.sharedSceneFilamentWidthStartPermille : material.filamentWidthStartPermille)
+      : (sharedScene ? material.sharedSceneFilamentWidthEndPermille : material.filamentWidthEndPermille);
     const junctionStartPermille = junctionThickening(
       morphology,
+      sourceDegree,
+      maximumDegree,
       sourceHop,
       targetHop,
       sourceProminence,
       material.junctionThickeningPermille,
+      target,
     );
     const junctionEndPermille = junctionThickening(
       morphology,
+      targetDegree,
+      maximumDegree,
       targetHop,
       sourceHop,
       targetProminence,
       material.junctionThickeningPermille,
+      target,
     );
     return {
       id: edge.id,
-      widthPx: ((calibration.filament.baseWidthPx * material.filamentWidthMultiplierPermille) / PERMILLE * taperPermille) / PERMILLE,
+      widthPx: ((calibration.filament.baseWidthPx * (sharedScene
+        ? material.sharedSceneFilamentWidthMultiplierPermille
+        : material.filamentWidthMultiplierPermille)) / PERMILLE * taperPermille) / PERMILLE,
       widthStartPermille,
       widthEndPermille,
       junctionStartPermille,
       junctionEndPermille,
       opacityPermille: (calibration.filament.opacityPermille * material.opacityPermille) / PERMILLE,
-      curvaturePermille: (calibration.filament.curvatureMagnitudePermille * material.curvatureMagnitudePermille) / PERMILLE,
+      curvaturePermille: sharedScene
+        ? (calibration.filament.curvatureMagnitudePermille * material.curvatureMagnitudePermille) / PERMILLE
+        : 0,
       taperPermille,
       phasePermille: phaseSeedPermille(edge.id, material.filamentPhaseSeed),
       hotCorePermille: morphology.id === NEURAL.id && hopDistance <= material.hotCoreMaximumHop ? PERMILLE : 0,
+      sourceJunction: sourceDegree >= JUNCTION_MINIMUM_DEGREE,
+      targetJunction: targetDegree >= JUNCTION_MINIMUM_DEGREE,
+      junctionGeometry: morphology.junctionGeometry,
+      sourceTerminal: sourceDegree <= TERMINAL_DEGREE,
+      targetTerminal: targetDegree <= TERMINAL_DEGREE,
+      terminalTreatment: morphology.terminalTreatment,
       kind: { value: edge.kind, origin: "morphology:visual-edge-kind" },
     };
   });
@@ -182,15 +226,25 @@ export function applyMorphology(
 
 function junctionThickening(
   morphology: MorphologyProfile,
+  endpointDegree: number,
+  maximumDegree: number,
   endpointHop: number,
   otherHop: number,
   prominence: number,
   thickeningPermille: number,
+  target: MorphologyMaterialTarget,
 ): number {
-  if (morphology.id === STELLAR.id || (morphology.id === NEURAL.id && endpointHop > otherHop)) {
+  if (target === LEGACY_RENDERER_MATERIAL_TARGET) {
+    if (morphology.id === STELLAR.id || (morphology.id === NEURAL.id && endpointHop > otherHop)) {
+      return 0;
+    }
+    return Math.round(thickeningPermille * prominence);
+  }
+  if (endpointDegree < JUNCTION_MINIMUM_DEGREE || morphology.junctionGeometry === STELLAR.junctionGeometry
+    || (morphology.junctionGeometry === NEURAL.junctionGeometry && endpointHop > otherHop)) {
     return 0;
   }
-  return Math.round(thickeningPermille * prominence);
+  return Math.round(thickeningPermille * endpointDegree / maximumDegree);
 }
 
 function phaseSeedPermille(id: string, morphologySeed: number): number {
