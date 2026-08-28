@@ -168,6 +168,71 @@
         "why": "judgement against generated images is the one criterion this capability proved a machine cannot stand in for: a metric improved fourteenfold while the picture regressed to the identity the engine exists to replace",
         "outsideRepository": "deliberately, under this project's public/private boundary; this repository must not name that path in a tracked byte, so the DECLARATION is what is verified here and the record itself is verified by the governance gate"
       }
+    },
+    {
+      "id": "B18",
+      "claim": "all six morphology × organization combinations rendered in both projections for each governed fixture",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "matrix",
+        "path": [
+          "combinationCoverage",
+          "passed"
+        ],
+        "note": "both matrix manifests carry all twelve cells; the evidence consumer independently refuses missing, repeated, or unexpected combinations"
+      }
+    },
+    {
+      "id": "B19",
+      "claim": "every matrix cell exactly preserves governed fixture node ids, relation ids, incidence, and counts",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "matrix",
+        "path": [
+          "topologyInvariant",
+          "passed"
+        ],
+        "note": "the matrix oracle compares mounted surfaces to the fixture; the evidence consumer independently re-derives both topology digests and exact governed topology records"
+      }
+    },
+    {
+      "id": "B20",
+      "claim": "D-028 one submitted filament instance per governed relation in every matrix cell",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "matrix",
+        "path": [
+          "strokeInvariant",
+          "passed"
+        ],
+        "note": "each capture records the live instanced WebGL filament submission count and the evidence consumer requires it to equal the governed relation count"
+      }
+    },
+    {
+      "id": "B21",
+      "claim": "morphologies and all matrix cells are distinct in decoded pixels rather than PNG container bytes",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "matrix",
+        "path": [
+          "imageDistinctness",
+          "passed"
+        ],
+        "note": "the evidence consumer decodes every persisted PNG, re-hashes RGBA pixels, and re-derives group and all-cell distinctness"
+      }
+    },
+    {
+      "id": "B22",
+      "claim": "both projection contact sheets exist for each governed fixture",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "matrix",
+        "path": [
+          "contactSheetEvidence",
+          "passed"
+        ],
+        "note": "the matrix producer and evidence consumer both require the exact two contact-sheet names and decode their persisted PNG pixels"
+      }
     }
   ]
 }

@@ -27,6 +27,13 @@ const ARTIFACT_PATHS = {
   // as a stale artifact several times before it was read as a defect. Requiring the flag in BOTH is
   // also strictly stronger than the file it was looking for would have been.
   review3d: ["dist/review3d/dpr-1/manifest.json", "dist/review3d/dpr-2/manifest.json"],
+  // The extension is one matrix run over two governed fixtures. Every matrix criterion is required
+  // in both manifests; resolving against only the smaller fixture would leave the 177-relation case
+  // silent, which is exactly where a dropped relation was previously accepted.
+  matrix: [
+    "dist/matrix/discovery-at-question-manifest.json",
+    "dist/matrix/indra-community-windows-manifest.json",
+  ],
 } as const;
 
 type Source =
@@ -40,7 +47,7 @@ type Criterion = { readonly id: string; readonly claim: string; readonly source:
 
 test("every CAP-13 criterion resolves to a machine-readable status", async () => {
   const criteria = await readCriteria();
-  assert.equal(criteria.length, 17, "the register must carry all seventeen criteria");
+  assert.equal(criteria.length, 22, "the register must carry the seventeen base and five extension criteria");
 
   const unresolved: string[] = [];
   for (const criterion of criteria) {

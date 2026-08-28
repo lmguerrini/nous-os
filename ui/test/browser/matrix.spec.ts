@@ -3,7 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
 import { expect, test, type Page } from "@playwright/test";
-import { build } from "esbuild";
+import { build, type Plugin } from "esbuild";
 import {
   assertLitPixelFloor,
   MINIMUM_LIT_PIXEL_COUNT,
@@ -31,7 +31,33 @@ import type { TrackedTreeState } from "#test/tracked-tree.ts";
 type FixtureDefinition = {
   readonly id: string;
   readonly path: string;
-  readonly expectedNodeCount: number;
+};
+
+type FixtureRelation = {
+  readonly id: string;
+  readonly source: string;
+  readonly target: string;
+};
+
+type GovernedFixtureTopology = {
+  readonly nodeIds: readonly string[];
+  readonly relations: readonly FixtureRelation[];
+  readonly identifierDigest: string;
+  readonly incidenceDigest: string;
+};
+
+type MatrixCaptureWitnessWithIncidence = Omit<MatrixCaptureWitness, "surface"> & {
+  readonly surface: MatrixCaptureWitness["surface"] & {
+    readonly incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>;
+  };
+};
+
+type DrawnStrokeWitness = {
+  readonly assertion: "Every filament submission contains exactly one instance per governed relation.";
+  readonly governedRelationCount: number;
+  readonly submittedFilamentInstances: number;
+  readonly submissionCount: number;
+  readonly passed: true;
 };
 
 type MatrixCaptureRecord = {
@@ -50,8 +76,11 @@ type MatrixCaptureRecord = {
     readonly edgeCount: number;
     readonly aggregateCount: number;
     readonly identifierDigest: string;
+    readonly incidenceDigest: string;
   };
-  readonly sha256: string;
+  readonly drawnStrokeWitness: DrawnStrokeWitness;
+  readonly pixelSha256: string;
+  readonly controlledRecapturePixelSha256: string;
   readonly pixelDimensions: { readonly width: number; readonly height: number };
   readonly fieldRgb: readonly [number, number, number];
   readonly litPixels: number;
@@ -62,6 +91,7 @@ type MatrixTopologyGroup = {
   readonly nodeCount: number;
   readonly edgeCount: number;
   readonly identifierDigest: string;
+  readonly incidenceDigest: string;
   readonly aggregateCount: number;
   readonly captureFiles: readonly string[];
 };
@@ -73,7 +103,8 @@ type MatrixDistinctDigestGroup = {
 };
 
 type MatrixManifest = {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
+  readonly summary: { readonly passing: true };
   readonly run: {
     readonly command: string;
     readonly trackedTree: TrackedTreeIdentity;
@@ -83,8 +114,10 @@ type MatrixManifest = {
     readonly path: string;
     readonly semanticDigest: string;
     readonly declaredNodeCount: number;
+    readonly declaredRelationCount: number;
     readonly resolvedNodeCount: number;
     readonly resolvedEdgeCount: number;
+    readonly governedTopology: GovernedFixtureTopology;
   };
   readonly captureConfiguration: {
     readonly viewport: { readonly width: number; readonly height: number };
@@ -99,23 +132,33 @@ type MatrixManifest = {
     readonly derivedOnceCamera: VisualStateCamera;
   };
   readonly controlledComparison: {
-    readonly assertion: "Within each projection, every cell has the fixture-derived camera and identical non-axis VisualState fields; only morphology and organization vary.";
+    readonly assertion: "Every cell has the fixture-derived camera and identical non-axis VisualState fields; an immediate decoded-pixel recapture proves the recorded raster retained that controlled content.";
     readonly passed: true;
   };
+  readonly combinationCoverage: {
+    readonly assertion: "All six morphology × organization combinations are rendered in both projections.";
+    readonly passed: true;
+    readonly combinationsPerProjection: 6;
+    readonly totalCaptures: 12;
+  };
   readonly topologyInvariant: {
-    readonly assertion: "Within each organization, every morphology and projection preserves node count, edge count, and the combined node-and-edge identifier digest.";
+    readonly assertion: "Every cell exactly matches the governed fixture's node ids, relation ids, incidence, counts, and independently-derived topology digests.";
     readonly passed: true;
     readonly groups: readonly MatrixTopologyGroup[];
   };
   readonly imageDistinctness: {
-    readonly assertion: "Each morphology has a distinct image SHA-256 within every organization/projection group, and all twelve fixture captures are distinct.";
+    readonly assertion: "Each morphology has a distinct decoded-pixel SHA-256 within every organization/projection group, and all twelve fixture pixel rasters are distinct.";
     readonly passed: true;
     readonly groups: readonly MatrixDistinctDigestGroup[];
     readonly allTwelveDistinct: true;
   };
   readonly negativeControls: {
     readonly forcedIdenticalMorphologies: { readonly message: string; readonly restored: true };
-    readonly perturbedCamera: { readonly message: string; readonly restored: true };
+    readonly shiftedRaster: { readonly message: string; readonly restored: true };
+  };
+  readonly strokeInvariant: {
+    readonly assertion: "Every capture witnesses one submitted filament instance per governed relation.";
+    readonly passed: true;
   };
   readonly captureQuality: {
     readonly requiredFieldRgb: readonly [number, number, number];
@@ -123,6 +166,10 @@ type MatrixManifest = {
   };
   readonly captures: readonly MatrixCaptureRecord[];
   readonly contactSheets: readonly string[];
+  readonly contactSheetEvidence: {
+    readonly assertion: "Both projection contact sheets exist as decodable PNG files.";
+    readonly passed: true;
+  };
 };
 
 const MATRIX_ENABLED = process.env.MATRIX_CAPTURES === "1";
@@ -139,12 +186,10 @@ const FIXTURES = [
   {
     id: "discovery-at-question",
     path: ["fixtures", "synthetic", "projection", "discovery-at-question.json"].join("/"),
-    expectedNodeCount: 22,
   },
   {
     id: "indra-community-windows",
     path: ["fixtures", "synthetic", "projection", "indra", "indra-community-windows.json"].join("/"),
-    expectedNodeCount: 124,
   },
 ] as const satisfies readonly FixtureDefinition[];
 
@@ -162,37 +207,43 @@ test("governed morphology × organization evidence matrix", async ({ page }, tes
   await installMatrixPage(page, pageModule);
   try {
     for (const fixture of FIXTURES) {
+      const governedTopology = await readGovernedFixtureTopology(fixture.path);
       const fixtureWitness = await prepareFixture(page, fixture.path);
       expect(fixtureWitness.fixture).toBe(fixture.path);
-      expect(fixtureWitness.nodeCount).toBe(fixture.expectedNodeCount);
-      const captures = await captureFixtureMatrix(page, fixture, fixtureWitness);
-      const topologyGroups = assertTopologyInvariant(captures);
+      expect(fixtureWitness.nodeCount).toBe(governedTopology.nodeIds.length);
+      expect(fixtureWitness.edgeCount).toBe(governedTopology.relations.length);
+      const captures = await captureFixtureMatrix(page, fixture, fixtureWitness, governedTopology);
+      const topologyGroups = assertTopologyInvariant(captures, governedTopology);
       const distinctDigestGroups = assertMorphologyDigestDistinctness(captures);
       assertAllTwelveDigestsDistinct(captures);
       assertOrganizationAggregateCounts(captures);
-      const negativeControls = negativeControlsFor(captures);
+      const negativeControls = await negativeControlsFor(page, captures);
       // Re-running every positive invariant after the cloned controls proves the actual evidence was
       // restored; controls never mutate a captured record or its persisted PNG.
       assertControlledComparison(captures);
-      assertTopologyInvariant(captures);
+      assertTopologyInvariant(captures, governedTopology);
       assertMorphologyDigestDistinctness(captures);
       assertAllTwelveDigestsDistinct(captures);
       const contactSheets = await writeContactSheets(fixture, captures);
+      await assertContactSheetsExist(contactSheets);
       const completedTrackedTree = await currentTrackedTreeState();
       const trackedTree = trackedTreeIdentity(observedTrackedTree, completedTrackedTree);
       if (!trackedTree.stable) {
         throw new Error(`matrix ${fixture.id} tracked-tree digest changed while its captures were produced`);
       }
       const manifest: MatrixManifest = {
-        schemaVersion: 1,
+        schemaVersion: 2,
+        summary: { passing: true },
         run: { command: MATRIX_COMMAND, trackedTree },
         fixture: {
           id: fixture.id,
           path: fixture.path,
           semanticDigest: fixtureWitness.semanticDigest,
-          declaredNodeCount: fixture.expectedNodeCount,
+          declaredNodeCount: governedTopology.nodeIds.length,
+          declaredRelationCount: governedTopology.relations.length,
           resolvedNodeCount: fixtureWitness.nodeCount,
           resolvedEdgeCount: fixtureWitness.edgeCount,
+          governedTopology,
         },
         captureConfiguration: {
           viewport: { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT },
@@ -207,27 +258,41 @@ test("governed morphology × organization evidence matrix", async ({ page }, tes
           derivedOnceCamera: fixtureWitness.camera,
         },
         controlledComparison: {
-          assertion: "Within each projection, every cell has the fixture-derived camera and identical non-axis VisualState fields; only morphology and organization vary.",
+          assertion: "Every cell has the fixture-derived camera and identical non-axis VisualState fields; an immediate decoded-pixel recapture proves the recorded raster retained that controlled content.",
           passed: true,
         },
+        combinationCoverage: {
+          assertion: "All six morphology × organization combinations are rendered in both projections.",
+          passed: true,
+          combinationsPerProjection: 6,
+          totalCaptures: 12,
+        },
         topologyInvariant: {
-          assertion: "Within each organization, every morphology and projection preserves node count, edge count, and the combined node-and-edge identifier digest.",
+          assertion: "Every cell exactly matches the governed fixture's node ids, relation ids, incidence, counts, and independently-derived topology digests.",
           passed: true,
           groups: topologyGroups,
         },
         imageDistinctness: {
-          assertion: "Each morphology has a distinct image SHA-256 within every organization/projection group, and all twelve fixture captures are distinct.",
+          assertion: "Each morphology has a distinct decoded-pixel SHA-256 within every organization/projection group, and all twelve fixture pixel rasters are distinct.",
           passed: true,
           groups: distinctDigestGroups,
           allTwelveDistinct: true,
         },
         negativeControls,
+        strokeInvariant: {
+          assertion: "Every capture witnesses one submitted filament instance per governed relation.",
+          passed: true,
+        },
         captureQuality: {
           requiredFieldRgb: SHIPPING_DARK_FIELD_RGB,
           minimumLitPixels: MINIMUM_LIT_PIXEL_COUNT,
         },
         captures,
         contactSheets,
+        contactSheetEvidence: {
+          assertion: "Both projection contact sheets exist as decodable PNG files.",
+          passed: true,
+        },
       };
       const manifestFile = join(MATRIX_ROOT_DIRECTORY, `${fixture.id}-manifest.json`);
       await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
@@ -246,6 +311,7 @@ async function bundleMatrixPage(): Promise<string> {
     target: "es2022",
     write: false,
     entryPoints: [["test", "browser", "matrix.ts"].join("/")],
+    plugins: [matrixIncidenceWitnessPlugin()],
   });
   const output = bundled.outputFiles[0];
   if (output === undefined) {
@@ -254,16 +320,65 @@ async function bundleMatrixPage(): Promise<string> {
   return output.text;
 }
 
+/** This exposes incidence already read from the mounted surface only inside this evidence bundle. */
+function matrixIncidenceWitnessPlugin(): Plugin {
+  const entrySuffix = join("test", "browser", "matrix.ts");
+  const marker = "edgeIds: [...surface.edgeIds],";
+  return {
+    name: "matrix-incidence-witness",
+    setup(pluginBuild): void {
+      pluginBuild.onLoad({ filter: /matrix\.ts$/ }, async (args) => {
+        if (!args.path.endsWith(entrySuffix)) {
+          return undefined;
+        }
+        const original = await readFile(args.path, "utf8");
+        if (!original.includes(marker)) {
+          throw new Error("matrix incidence instrumentation could not find the mounted surface return");
+        }
+        return {
+          contents: original.replace(
+            marker,
+            `${marker}\n          incidence: Object.fromEntries(Object.entries(surface.incidence).map(([id, endpoints]) => [id, { ...endpoints }])),`,
+          ),
+          loader: "ts",
+        };
+      });
+    },
+  };
+}
+
 async function installMatrixPage(page: Page, pageModule: string): Promise<void> {
   await page.goto("/");
   await page.setContent("<!doctype html><html><body></body></html>");
   await page.evaluate(() => {
+    type RecorderWindow = Window & { __matrixFilamentSubmissions?: number[] };
     const epoch = 1_735_689_600_000;
     Date.now = (): number => epoch;
     performance.now = (): number => 0;
     Math.random = (): number => 0.5;
     const nativeRequestAnimationFrame = window.requestAnimationFrame.bind(window);
     window.requestAnimationFrame = (callback): number => nativeRequestAnimationFrame(() => callback(0));
+    const recorderWindow = window as RecorderWindow;
+    recorderWindow.__matrixFilamentSubmissions = [];
+    const prototype = WebGL2RenderingContext.prototype;
+    const nativeDrawArraysInstanced = prototype.drawArraysInstanced;
+    Object.defineProperty(prototype, "drawArraysInstanced", {
+      configurable: true,
+      value(this: WebGL2RenderingContext, mode: number, first: number, count: number, instanceCount: number): void {
+        const program = this.getParameter(this.CURRENT_PROGRAM) as WebGLProgram | null;
+        if (program !== null) {
+          const hasControl = this.getAttribLocation(program, "a_control") >= 0;
+          const hasSource = this.getAttribLocation(program, "a_start") >= 0
+            || this.getAttribLocation(program, "a_source") >= 0;
+          const hasTarget = this.getAttribLocation(program, "a_end") >= 0
+            || this.getAttribLocation(program, "a_target") >= 0;
+          if (hasControl && hasSource && hasTarget) {
+            recorderWindow.__matrixFilamentSubmissions?.push(instanceCount);
+          }
+        }
+        nativeDrawArraysInstanced.call(this, mode, first, count, instanceCount);
+      },
+    });
   });
   await page.addScriptTag({ content: pageModule });
   await expect.poll(async () => (await readMatrixApi(page)).ready).toBe(true);
@@ -299,32 +414,59 @@ async function prepareFixture(page: Page, fixture: string): Promise<MatrixFixtur
   }, fixture);
 }
 
-async function invokeCapture(page: Page, request: MatrixCaptureRequest): Promise<MatrixCaptureWitness> {
+async function invokeCapture(page: Page, request: MatrixCaptureRequest): Promise<MatrixCaptureWitnessWithIncidence> {
   return page.evaluate(async (value) => {
     const api = window.__matrix;
     if (api === undefined) {
       throw new Error("matrix page module is unavailable");
     }
-    return api.capture(value);
+    return api.capture(value) as Promise<MatrixCaptureWitnessWithIncidence>;
   }, request);
+}
+
+async function resetFilamentSubmissionWitness(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const recorderWindow = window as Window & { __matrixFilamentSubmissions?: number[] };
+    recorderWindow.__matrixFilamentSubmissions = [];
+  });
+}
+
+async function readFilamentSubmissionWitness(page: Page): Promise<readonly number[]> {
+  return page.evaluate(() => {
+    const recorderWindow = window as Window & { __matrixFilamentSubmissions?: number[] };
+    return [...(recorderWindow.__matrixFilamentSubmissions ?? [])];
+  });
 }
 
 async function captureFixtureMatrix(
   page: Page,
   fixture: FixtureDefinition,
   fixtureWitness: MatrixFixtureWitness,
+  governedTopology: GovernedFixtureTopology,
 ): Promise<readonly MatrixCaptureRecord[]> {
   const records: MatrixCaptureRecord[] = [];
   for (const projection of PROJECTIONS) {
     for (const organization of ORGANIZATIONS) {
       for (const morphology of MORPHOLOGIES) {
         const request: MatrixCaptureRequest = { morphology, organization, projection };
+        await resetFilamentSubmissionWitness(page);
         const witness = await invokeCapture(page, request);
         const fileName = `${fixture.id}-${morphology}-${organization}-${projection}.png`;
+        assertCaptureTopology(witness, governedTopology, fileName);
         const outputFile = join(MATRIX_ROOT_DIRECTORY, fileName);
         await page.locator("#matrix-root").screenshot({ path: outputFile });
         const bytes = await readFile(outputFile);
         const image = decodePng(bytes, fileName);
+        const controlledRecapture = decodePng(
+          await page.locator("#matrix-root").screenshot(),
+          `${fileName} controlled recapture`,
+        );
+        assertControlledRasterIdentity(image, controlledRecapture, fileName);
+        const drawnStrokeWitness = assertDrawnStrokeWitness(
+          await readFilamentSubmissionWitness(page),
+          governedTopology.relations.length,
+          fileName,
+        );
         const dimensions = pngDimensions(bytes, fileName);
         expect(dimensions).toEqual({ width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT });
         expect(witness.fixture).toBe(fixture.path);
@@ -351,8 +493,11 @@ async function captureFixtureMatrix(
             edgeCount: witness.surface.edgeIds.length,
             aggregateCount: witness.aggregateCount,
             identifierDigest: identifierDigest(witness.surface.nodeIds, witness.surface.edgeIds),
+            incidenceDigest: digestIncidence(witness.surface.incidence),
           },
-          sha256: sha256(bytes),
+          drawnStrokeWitness,
+          pixelSha256: pixelSha256(image),
+          controlledRecapturePixelSha256: pixelSha256(controlledRecapture),
           pixelDimensions: dimensions,
           fieldRgb: darkestPixel(image),
           litPixels,
@@ -365,6 +510,149 @@ async function captureFixtureMatrix(
   }
   assertControlledComparison(records);
   return records;
+}
+
+async function readGovernedFixtureTopology(fixturePath: string): Promise<GovernedFixtureTopology> {
+  const raw: unknown = JSON.parse(await readFile(join("..", fixturePath), "utf8"));
+  if (!isRecord(raw) || !Array.isArray(raw["nodes"]) || !Array.isArray(raw["edges"])) {
+    throw new Error(`matrix governed fixture ${fixturePath} has no node and relation arrays`);
+  }
+  const nodeIds = raw["nodes"].map((candidate, index) => requiredStringField(candidate, "id", `${fixturePath} node ${index}`)).sort();
+  const relations = raw["edges"].map((candidate, index): FixtureRelation => ({
+    id: requiredStringField(candidate, "id", `${fixturePath} relation ${index}`),
+    source: requiredStringField(candidate, "source", `${fixturePath} relation ${index}`),
+    target: requiredStringField(candidate, "target", `${fixturePath} relation ${index}`),
+  })).sort((left, right) => left.id.localeCompare(right.id));
+  assertUniqueStrings(nodeIds, `${fixturePath} node ids`);
+  assertUniqueStrings(relations.map((relation) => relation.id), `${fixturePath} relation ids`);
+  const nodes = new Set(nodeIds);
+  for (const relation of relations) {
+    if (!nodes.has(relation.source) || !nodes.has(relation.target)) {
+      throw new Error(`matrix governed fixture ${fixturePath} relation ${relation.id} has an endpoint outside its node set`);
+    }
+  }
+  return {
+    nodeIds,
+    relations,
+    // These are deliberately derived without identifierDigest/digestIncidence. A constant-output
+    // mutation in either observed-witness function must disagree with the governed fixture.
+    identifierDigest: sha256Text(JSON.stringify({
+      nodes: nodeIds,
+      edges: relations.map((relation) => relation.id),
+    })),
+    incidenceDigest: sha256Text(JSON.stringify(relations)),
+  };
+}
+
+function requiredStringField(candidate: unknown, field: string, label: string): string {
+  const value = isRecord(candidate) ? candidate[field] : undefined;
+  if (typeof value !== "string" || value === "") {
+    throw new Error(`matrix governed fixture ${label} has no ${field}`);
+  }
+  return value;
+}
+
+function assertUniqueStrings(values: readonly string[], label: string): void {
+  if (new Set(values).size !== values.length) {
+    throw new Error(`matrix governed fixture repeats ${label}`);
+  }
+}
+
+function assertCaptureTopology(
+  witness: MatrixCaptureWitnessWithIncidence,
+  governed: GovernedFixtureTopology,
+  fileName: string,
+): void {
+  const expectedRelationIds = governed.relations.map((relation) => relation.id);
+  assertExactIdSet(witness.surface.nodeIds, governed.nodeIds, "node", fileName);
+  assertExactIdSet(witness.surface.edgeIds, expectedRelationIds, "relation", fileName);
+  if (witness.surface.nodeIds.length !== governed.nodeIds.length || witness.surface.edgeIds.length !== governed.relations.length) {
+    throw new Error(
+      `matrix topology invariant failed for ${fileName}: resolved nodes=${witness.surface.nodeIds.length}, `
+      + `relations=${witness.surface.edgeIds.length}; governed fixture nodes=${governed.nodeIds.length}, relations=${governed.relations.length}`,
+    );
+  }
+  const observedIncidenceIds = Object.keys(witness.surface.incidence).sort();
+  assertExactIdSet(observedIncidenceIds, expectedRelationIds, "incidence relation", fileName);
+  for (const relation of governed.relations) {
+    const observed = witness.surface.incidence[relation.id];
+    if (observed === undefined || observed.source !== relation.source || observed.target !== relation.target) {
+      throw new Error(
+        `matrix topology invariant failed for ${fileName}: relation ${relation.id} incidence is `
+        + `${observed?.source ?? "missing"}->${observed?.target ?? "missing"}; governed fixture requires ${relation.source}->${relation.target}`,
+      );
+    }
+  }
+  const observedIdentifierDigest = identifierDigest(witness.surface.nodeIds, witness.surface.edgeIds);
+  if (observedIdentifierDigest !== governed.identifierDigest) {
+    throw new Error(
+      `matrix topology invariant failed for ${fileName}: identifier digest ${observedIdentifierDigest} `
+      + `does not match governed fixture ${governed.identifierDigest}`,
+    );
+  }
+  const observedIncidenceDigest = digestIncidence(witness.surface.incidence);
+  if (observedIncidenceDigest !== governed.incidenceDigest) {
+    throw new Error(
+      `matrix topology invariant failed for ${fileName}: incidence digest ${observedIncidenceDigest} `
+      + `does not match governed fixture ${governed.incidenceDigest}`,
+    );
+  }
+}
+
+function assertExactIdSet(
+  observed: readonly string[],
+  expected: readonly string[],
+  kind: string,
+  fileName: string,
+): void {
+  const observedSorted = [...observed].sort();
+  const expectedSorted = [...expected].sort();
+  if (JSON.stringify(observedSorted) !== JSON.stringify(expectedSorted)) {
+    const expectedSet = new Set(expectedSorted);
+    const observedSet = new Set(observedSorted);
+    const missing = expectedSorted.filter((id) => !observedSet.has(id));
+    const extra = observedSorted.filter((id) => !expectedSet.has(id));
+    throw new Error(
+      `matrix topology invariant failed for ${fileName}: ${kind} ids differ from governed fixture; `
+      + `observed=${observedSorted.length}, expected=${expectedSorted.length}, missing=[${missing.join(", ")}], extra=[${extra.join(", ")}]`,
+    );
+  }
+}
+
+function assertDrawnStrokeWitness(
+  submissions: readonly number[],
+  governedRelationCount: number,
+  fileName: string,
+): DrawnStrokeWitness {
+  if (submissions.length === 0) {
+    throw new Error(`matrix stroke invariant failed for ${fileName}: renderer submitted no identifiable filament draw`);
+  }
+  const mismatches = submissions.filter((count) => count !== governedRelationCount);
+  if (mismatches.length > 0) {
+    throw new Error(
+      `matrix stroke invariant failed for ${fileName}: filament submissions [${submissions.join(", ")}] `
+      + `must each equal ${governedRelationCount} governed relations`,
+    );
+  }
+  return {
+    assertion: "Every filament submission contains exactly one instance per governed relation.",
+    governedRelationCount,
+    submittedFilamentInstances: submissions[0] ?? 0,
+    submissionCount: submissions.length,
+    passed: true,
+  };
+}
+
+function assertControlledRasterIdentity(observed: PixelImage, recaptured: PixelImage, fileName: string): void {
+  if (
+    observed.width !== recaptured.width
+    || observed.height !== recaptured.height
+    || pixelSha256(observed) !== pixelSha256(recaptured)
+  ) {
+    throw new Error(
+      `matrix controlled-comparison raster invariant failed for ${fileName}: decoded pixels differ from the immediate governed-camera recapture`,
+    );
+  }
 }
 
 function assertControlledComparison(captures: readonly MatrixCaptureRecord[]): void {
@@ -390,6 +678,9 @@ function assertControlledComparison(captures: readonly MatrixCaptureRecord[]): v
     if (JSON.stringify(controlledState(capture.visualState)) !== JSON.stringify(expectedState)) {
       throw new Error(`matrix controlled-comparison invariant failed for ${capture.fileName}: non-axis VisualState fields differ`);
     }
+    if (capture.pixelSha256 !== capture.controlledRecapturePixelSha256) {
+      throw new Error(`matrix controlled-comparison raster invariant failed for ${capture.fileName}: decoded pixels differ from the immediate governed-camera recapture`);
+    }
   }
 }
 
@@ -406,7 +697,10 @@ function controlledState(state: VisualState): Omit<VisualState, "morphology" | "
   };
 }
 
-function assertTopologyInvariant(captures: readonly MatrixCaptureRecord[]): readonly MatrixTopologyGroup[] {
+function assertTopologyInvariant(
+  captures: readonly MatrixCaptureRecord[],
+  governed: GovernedFixtureTopology,
+): readonly MatrixTopologyGroup[] {
   return ORGANIZATIONS.map((organization) => {
     const group = captures.filter((capture) => capture.organization === organization);
     const baseline = group[0];
@@ -414,28 +708,36 @@ function assertTopologyInvariant(captures: readonly MatrixCaptureRecord[]): read
       throw new Error(`matrix topology invariant failed for organization=${organization}: expected six captures`);
     }
     for (const capture of group) {
-      const expected = baseline.resolved;
       const observed = capture.resolved;
       if (
-        observed.nodeCount !== expected.nodeCount
-        || observed.edgeCount !== expected.edgeCount
-        || observed.identifierDigest !== expected.identifierDigest
+        observed.nodeCount !== governed.nodeIds.length
+        || observed.edgeCount !== governed.relations.length
+        || observed.identifierDigest !== governed.identifierDigest
+        || observed.incidenceDigest !== governed.incidenceDigest
       ) {
         throw new Error(
           `matrix topology invariant failed for organization=${organization}: ${capture.fileName} recorded `
-          + `nodes=${observed.nodeCount}, edges=${observed.edgeCount}, identifiers=${observed.identifierDigest}; expected `
-          + `nodes=${expected.nodeCount}, edges=${expected.edgeCount}, identifiers=${expected.identifierDigest}`,
+          + `nodes=${observed.nodeCount}, relations=${observed.edgeCount}, identifiers=${observed.identifierDigest}, incidence=${observed.incidenceDigest}; governed fixture requires `
+          + `nodes=${governed.nodeIds.length}, relations=${governed.relations.length}, identifiers=${governed.identifierDigest}, incidence=${governed.incidenceDigest}`,
         );
       }
-      if (observed.aggregateCount !== expected.aggregateCount) {
+      if (observed.aggregateCount !== baseline.resolved.aggregateCount) {
         throw new Error(`matrix topology invariant failed for organization=${organization}: aggregate count differs at ${capture.fileName}`);
+      }
+      if (
+        capture.drawnStrokeWitness.submittedFilamentInstances !== governed.relations.length
+        || capture.drawnStrokeWitness.governedRelationCount !== governed.relations.length
+        || !capture.drawnStrokeWitness.passed
+      ) {
+        throw new Error(`matrix stroke invariant failed for ${capture.fileName}: recorded witness does not equal the governed relation count`);
       }
     }
     return {
       organization,
-      nodeCount: baseline.resolved.nodeCount,
-      edgeCount: baseline.resolved.edgeCount,
-      identifierDigest: baseline.resolved.identifierDigest,
+      nodeCount: governed.nodeIds.length,
+      edgeCount: governed.relations.length,
+      identifierDigest: governed.identifierDigest,
+      incidenceDigest: governed.incidenceDigest,
       aggregateCount: baseline.resolved.aggregateCount,
       captureFiles: group.map((capture) => capture.fileName),
     };
@@ -467,12 +769,12 @@ function assertMorphologyDigestDistinctness(captures: readonly MatrixCaptureReco
         if (capture === undefined) {
           throw new Error(`matrix distinct-digest invariant failed for organization=${organization}, projection=${projection}: missing ${morphology}`);
         }
-        digests[morphology] = capture.sha256;
+        digests[morphology] = capture.pixelSha256;
       }
       if (new Set(Object.values(digests)).size !== MORPHOLOGIES.length) {
         throw new Error(
           `matrix distinct-digest invariant failed for organization=${organization}, projection=${projection}: `
-          + `morphology image SHA-256 values must be distinct (${MORPHOLOGIES.map((morphology) => `${morphology}=${digests[morphology]}`).join(", ")})`,
+          + `morphology decoded-pixel SHA-256 values must be distinct (${MORPHOLOGIES.map((morphology) => `${morphology}=${digests[morphology]}`).join(", ")})`,
         );
       }
       groups.push({ organization, projection, digests });
@@ -482,37 +784,68 @@ function assertMorphologyDigestDistinctness(captures: readonly MatrixCaptureReco
 }
 
 function assertAllTwelveDigestsDistinct(captures: readonly MatrixCaptureRecord[]): void {
-  if (captures.length !== 12 || new Set(captures.map((capture) => capture.sha256)).size !== 12) {
-    throw new Error("matrix all-cell distinct-digest invariant failed: all twelve fixture image SHA-256 values must be distinct");
+  if (captures.length !== 12 || new Set(captures.map((capture) => capture.pixelSha256)).size !== 12) {
+    throw new Error("matrix all-cell distinct-digest invariant failed: all twelve fixture decoded-pixel SHA-256 values must be distinct");
   }
 }
 
-function negativeControlsFor(captures: readonly MatrixCaptureRecord[]): MatrixManifest["negativeControls"] {
+async function negativeControlsFor(
+  page: Page,
+  captures: readonly MatrixCaptureRecord[],
+): Promise<MatrixManifest["negativeControls"]> {
   const source = requiredCapture(captures, "stellar", "flat", "2d");
   const target = requiredCapture(captures, "mycelium", "flat", "2d");
-  const forcedSameDigest = captures.map((capture) => capture.fileName === target.fileName
-    ? { ...capture, sha256: source.sha256 }
+  await invokeCapture(page, { morphology: "stellar", organization: "flat", projection: "2d" });
+  const firstStellarPixels = decodePng(await page.locator("#matrix-root").screenshot(), "identical-morphology control A");
+  await invokeCapture(page, { morphology: "stellar", organization: "flat", projection: "2d" });
+  const secondStellarPixels = decodePng(await page.locator("#matrix-root").screenshot(), "identical-morphology control B");
+  const actuallyIdenticalMorphologies = captures.map((capture) => capture.fileName === source.fileName
+    ? { ...capture, pixelSha256: pixelSha256(firstStellarPixels) }
+    : capture.fileName === target.fileName
+    ? { ...capture, pixelSha256: pixelSha256(secondStellarPixels) }
     : capture);
-  const forcedIdenticalMorphologies = failedControlOutput(() => assertMorphologyDigestDistinctness(forcedSameDigest));
+  const forcedIdenticalMorphologies = failedControlOutput(() => assertMorphologyDigestDistinctness(actuallyIdenticalMorphologies));
   if (!forcedIdenticalMorphologies.includes("matrix distinct-digest invariant failed")) {
     throw new Error(`matrix identical-morphology negative control produced the wrong failure: ${forcedIdenticalMorphologies}`);
   }
 
-  const alteredTarget = requiredCapture(captures, "stellar", "indra", "3d");
-  const alteredCamera: VisualStateCamera = { ...alteredTarget.camera, ratio: alteredTarget.camera.ratio + 0.125 };
-  const perturbedCamera = captures.map((capture) => capture.fileName === alteredTarget.fileName
-    ? { ...capture, camera: alteredCamera, visualState: { ...capture.visualState, camera: alteredCamera } }
-    : capture);
-  const cameraFailure = failedControlOutput(() => assertControlledComparison(perturbedCamera));
-  if (!cameraFailure.includes("matrix controlled-comparison invariant failed")) {
-    throw new Error(`matrix camera negative control produced the wrong failure: ${cameraFailure}`);
+  await invokeCapture(page, { morphology: "stellar", organization: "indra", projection: "3d" });
+  const governedCameraPixels = decodePng(await page.locator("#matrix-root").screenshot(), "shifted-raster control source");
+  const shiftedPixels = shiftPixels(governedCameraPixels, 40, 0);
+  const shiftedRaster = failedControlOutput(
+    () => assertControlledRasterIdentity(shiftedPixels, governedCameraPixels, "shifted-raster control"),
+  );
+  if (!shiftedRaster.includes("matrix controlled-comparison raster invariant failed")) {
+    throw new Error(`matrix shifted-raster negative control produced the wrong failure: ${shiftedRaster}`);
   }
   process.stdout.write(`matrix negative control identical morphologies: ${forcedIdenticalMorphologies}\n`);
-  process.stdout.write(`matrix negative control perturbed camera: ${cameraFailure}\n`);
+  process.stdout.write(`matrix negative control shifted raster: ${shiftedRaster}\n`);
   return {
     forcedIdenticalMorphologies: { message: forcedIdenticalMorphologies, restored: true },
-    perturbedCamera: { message: cameraFailure, restored: true },
+    shiftedRaster: { message: shiftedRaster, restored: true },
   };
+}
+
+function shiftPixels(image: PixelImage, deltaX: number, deltaY: number): PixelImage {
+  const source = Buffer.from(image.data);
+  const data = Buffer.alloc(source.length);
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      const sourceX = x - deltaX;
+      const sourceY = y - deltaY;
+      const targetOffset = ((y * image.width) + x) * 4;
+      if (sourceX >= 0 && sourceX < image.width && sourceY >= 0 && sourceY < image.height) {
+        const sourceOffset = ((sourceY * image.width) + sourceX) * 4;
+        source.copy(data, targetOffset, sourceOffset, sourceOffset + 4);
+      } else {
+        data[targetOffset] = SHIPPING_DARK_FIELD_RGB[0];
+        data[targetOffset + 1] = SHIPPING_DARK_FIELD_RGB[1];
+        data[targetOffset + 2] = SHIPPING_DARK_FIELD_RGB[2];
+        data[targetOffset + 3] = 255;
+      }
+    }
+  }
+  return { width: image.width, height: image.height, data };
 }
 
 function requiredCapture(
@@ -543,6 +876,18 @@ async function writeContactSheets(
     files.push(fileName);
   }
   return files;
+}
+
+async function assertContactSheetsExist(files: readonly string[]): Promise<void> {
+  if (files.length !== PROJECTIONS.length) {
+    throw new Error(`matrix contact-sheet evidence has ${files.length} files rather than ${PROJECTIONS.length}`);
+  }
+  for (const fileName of files) {
+    const image = decodePng(await readFile(join(MATRIX_ROOT_DIRECTORY, fileName)), fileName);
+    if (image.width === 0 || image.height === 0) {
+      throw new Error(`matrix contact-sheet evidence ${fileName} has no decoded pixels`);
+    }
+  }
 }
 
 async function matrixContactSheet(
@@ -876,6 +1221,19 @@ function identifierDigest(nodeIds: readonly string[], edgeIds: readonly string[]
   return sha256Text(JSON.stringify({ nodes: [...nodeIds].sort(), edges: [...edgeIds].sort() }));
 }
 
+function digestIncidence(
+  incidence: Readonly<Record<string, { readonly source: string; readonly target: string }>>,
+): string {
+  const relations = Object.entries(incidence)
+    .map(([id, endpoints]) => ({ id, source: endpoints.source, target: endpoints.target }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return sha256Text(JSON.stringify(relations));
+}
+
+function pixelSha256(image: PixelImage): string {
+  return sha256(Uint8Array.from(image.data));
+}
+
 function trackedTreeIdentity(measured: TrackedTreeState, completed: TrackedTreeState): TrackedTreeIdentity {
   return {
     algorithm: TRACKED_TREE_IDENTITY_ALGORITHM,
@@ -919,11 +1277,15 @@ function matrixSummary(
     if (capture === undefined) {
       throw new Error(`matrix summary lacks ${organization}`);
     }
-    return `${organization}: nodes=${capture.resolved.nodeCount}, edges=${capture.resolved.edgeCount}, aggregates=${capture.resolved.aggregateCount}`;
+    return `${organization}: nodes=${capture.resolved.nodeCount}, relations=${capture.resolved.edgeCount}, drawn-strokes=${capture.drawnStrokeWitness.submittedFilamentInstances}, aggregates=${capture.resolved.aggregateCount}`;
   });
-  return `matrix ${fixture.id}: ${captures.length} captures; ${resolved.join("; ")}; all twelve image digests distinct; manifest=${manifestFile}; contact sheets=${contactSheets.map((file) => join(MATRIX_ROOT_DIRECTORY, file)).join(", ")}\n`;
+  return `matrix ${fixture.id}: ${captures.length} captures; ${resolved.join("; ")}; all twelve decoded-pixel digests distinct; manifest=${manifestFile}; contact sheets=${contactSheets.map((file) => join(MATRIX_ROOT_DIRECTORY, file)).join(", ")}\n`;
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

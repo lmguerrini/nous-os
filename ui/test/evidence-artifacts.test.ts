@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { inflateSync } from "node:zlib";
 import { SOFTWARE_RASTERISATION_LABEL } from "#browser/performance-contract.ts";
 import { promisify } from "node:util";
 import {
@@ -18,6 +19,11 @@ import {
 } from "#browser/performance-contract.ts";
 
 const execFileAsync = promisify(execFile);
+const MATRIX_MORPHOLOGIES = ["stellar", "neural", "mycelium"] as const;
+const MATRIX_ORGANIZATIONS = ["flat", "indra"] as const;
+const MATRIX_PROJECTIONS = ["2d", "3d"] as const;
+const MATRIX_DIRECTORY = join("dist", "matrix");
+const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
 type ParsedArtifact = {
   readonly summary: { readonly passing: boolean };
@@ -50,6 +56,22 @@ const ARTIFACTS = [
   // some of a duplicated thing's sites and not others.
   { label: "review3d manifest (dpr-1)", path: "dist/review3d/dpr-1/manifest.json", mustPass: true },
   { label: "review3d manifest (dpr-2)", path: "dist/review3d/dpr-2/manifest.json", mustPass: true },
+  {
+    label: "matrix manifest (discovery-at-question)",
+    path: "dist/matrix/discovery-at-question-manifest.json",
+    mustPass: true,
+    matrix: true,
+    fixtureId: "discovery-at-question",
+    fixturePath: "fixtures/synthetic/projection/discovery-at-question.json",
+  },
+  {
+    label: "matrix manifest (indra-community-windows)",
+    path: "dist/matrix/indra-community-windows-manifest.json",
+    mustPass: true,
+    matrix: true,
+    fixtureId: "indra-community-windows",
+    fixturePath: "fixtures/synthetic/projection/indra/indra-community-windows.json",
+  },
 ] as const;
 
 test("evidence artifacts are currently certifiable against the tracked tree", async () => {
@@ -78,9 +100,12 @@ test("evidence artifacts are currently certifiable against the tracked tree", as
   const rejections: string[] = [];
   for (const artifact of ARTIFACTS) {
     try {
-      if (!artifact.mustPass) {
+      const raw: unknown = JSON.parse(await readFile(artifact.path, "utf8"));
+      if ("matrix" in artifact) {
+        await assertMatrixEvidence(raw, artifact.label, artifact.fixtureId, artifact.fixturePath);
+      } else if (!artifact.mustPass) {
         assertPerformanceExemption(
-          JSON.parse(await readFile(artifact.path, "utf8")) as unknown,
+          raw,
           artifact.label,
         );
       }
@@ -101,6 +126,405 @@ test("evidence artifacts are currently certifiable against the tracked tree", as
   }
   assert.deepEqual(rejections, []);
 });
+
+type MatrixFixtureTopology = {
+  readonly nodeIds: readonly string[];
+  readonly relations: readonly { readonly id: string; readonly source: string; readonly target: string }[];
+  readonly identifierDigest: string;
+  readonly incidenceDigest: string;
+};
+
+/** This independently consumes matrix structure, decoded pixels, coverage, and contact-sheet files. */
+async function assertMatrixEvidence(
+  raw: unknown,
+  label: string,
+  fixtureId: string,
+  fixturePath: string,
+): Promise<void> {
+  const manifest = requiredMatrixRecord(raw, label);
+  if (manifest["schemaVersion"] !== 2) {
+    throw new Error(`${label} uses matrix schema ${String(manifest["schemaVersion"])}, expected 2`);
+  }
+  const summary = requiredMatrixRecord(manifest["summary"], `${label} summary`);
+  if (summary["passing"] !== true) {
+    throw new Error(`${label} run-level verdict is not passing`);
+  }
+  const run = requiredMatrixRecord(manifest["run"], `${label} run`);
+  if (run["command"] !== "npm --prefix ui run test:matrix") {
+    throw new Error(`${label} records unexpected command ${String(run["command"])}`);
+  }
+  const fixture = requiredMatrixRecord(manifest["fixture"], `${label} fixture`);
+  if (fixture["id"] !== fixtureId || fixture["path"] !== fixturePath) {
+    throw new Error(
+      `${label} names fixture ${String(fixture["id"])} at ${String(fixture["path"])}, expected ${fixtureId} at ${fixturePath}`,
+    );
+  }
+  const governed = await readMatrixFixtureTopology(fixturePath, label);
+  if (
+    fixture["declaredNodeCount"] !== governed.nodeIds.length
+    || fixture["resolvedNodeCount"] !== governed.nodeIds.length
+    || fixture["declaredRelationCount"] !== governed.relations.length
+    || fixture["resolvedEdgeCount"] !== governed.relations.length
+  ) {
+    throw new Error(
+      `${label} fixture counts are nodes=${String(fixture["resolvedNodeCount"])}, relations=${String(fixture["resolvedEdgeCount"])}; `
+      + `governed fixture requires nodes=${governed.nodeIds.length}, relations=${governed.relations.length}`,
+    );
+  }
+  assertRecordedGovernedTopology(fixture["governedTopology"], governed, label);
+
+  for (const [path, description] of [
+    [["controlledComparison", "passed"], "controlled comparison"],
+    [["combinationCoverage", "passed"], "combination coverage"],
+    [["topologyInvariant", "passed"], "topology invariant"],
+    [["strokeInvariant", "passed"], "stroke invariant"],
+    [["imageDistinctness", "passed"], "decoded-pixel distinctness"],
+    [["imageDistinctness", "allTwelveDistinct"], "all-cell decoded-pixel distinctness"],
+    [["contactSheetEvidence", "passed"], "contact-sheet existence"],
+  ] as const) {
+    assertMatrixFlag(manifest, path, description, label);
+  }
+
+  const coverage = requiredMatrixRecord(manifest["combinationCoverage"], `${label} combination coverage`);
+  if (coverage["combinationsPerProjection"] !== 6 || coverage["totalCaptures"] !== 12) {
+    throw new Error(`${label} does not record six combinations in both projections`);
+  }
+  const captures = requiredMatrixArray(manifest["captures"], `${label} captures`);
+  if (captures.length !== 12) {
+    throw new Error(`${label} has ${captures.length} captures; expected 12`);
+  }
+  const expectedKeys = new Set<string>();
+  for (const projection of MATRIX_PROJECTIONS) {
+    for (const organization of MATRIX_ORGANIZATIONS) {
+      for (const morphology of MATRIX_MORPHOLOGIES) {
+        expectedKeys.add(`${morphology}:${organization}:${projection}`);
+      }
+    }
+  }
+  const seen = new Set<string>();
+  const pixelDigests = new Map<string, string>();
+  for (const [index, candidate] of captures.entries()) {
+    const capture = requiredMatrixRecord(candidate, `${label} capture ${index}`);
+    const morphology = requiredMatrixMember(capture["morphology"], MATRIX_MORPHOLOGIES, `${label} capture ${index} morphology`);
+    const organization = requiredMatrixMember(capture["organization"], MATRIX_ORGANIZATIONS, `${label} capture ${index} organization`);
+    const projection = requiredMatrixMember(capture["projection"], MATRIX_PROJECTIONS, `${label} capture ${index} projection`);
+    const key = `${morphology}:${organization}:${projection}`;
+    if (!expectedKeys.has(key) || seen.has(key)) {
+      throw new Error(`${label} has unexpected or repeated capture ${key}`);
+    }
+    seen.add(key);
+    const expectedFileName = `${fixtureId}-${morphology}-${organization}-${projection}.png`;
+    if (capture["fileName"] !== expectedFileName || capture["fixture"] !== fixturePath) {
+      throw new Error(`${label} capture ${key} is not bound to ${expectedFileName} and ${fixturePath}`);
+    }
+    if (capture["semanticDigest"] !== fixture["semanticDigest"]) {
+      throw new Error(`${label} capture ${key} has a semantic digest outside its fixture record`);
+    }
+    const resolved = requiredMatrixRecord(capture["resolved"], `${label} capture ${key} topology`);
+    if (
+      resolved["nodeCount"] !== governed.nodeIds.length
+      || resolved["edgeCount"] !== governed.relations.length
+      || resolved["identifierDigest"] !== governed.identifierDigest
+      || resolved["incidenceDigest"] !== governed.incidenceDigest
+    ) {
+      throw new Error(
+        `${label} capture ${key} records nodes=${String(resolved["nodeCount"])}, relations=${String(resolved["edgeCount"])} `
+        + `or topology digests that differ from the governed fixture (${governed.nodeIds.length}/${governed.relations.length})`,
+      );
+    }
+    const aggregateCount = resolved["aggregateCount"];
+    if (typeof aggregateCount !== "number" || (organization === "flat" ? aggregateCount !== 0 : aggregateCount <= 0)) {
+      throw new Error(`${label} capture ${key} records invalid aggregate count ${String(aggregateCount)}`);
+    }
+    const stroke = requiredMatrixRecord(capture["drawnStrokeWitness"], `${label} capture ${key} stroke witness`);
+    if (
+      stroke["passed"] !== true
+      || stroke["governedRelationCount"] !== governed.relations.length
+      || stroke["submittedFilamentInstances"] !== governed.relations.length
+      || typeof stroke["submissionCount"] !== "number"
+      || stroke["submissionCount"] <= 0
+    ) {
+      throw new Error(
+        `${label} capture ${key} submitted ${String(stroke["submittedFilamentInstances"])} filament instances; `
+        + `governed fixture requires ${governed.relations.length}`,
+      );
+    }
+    const pixelDigest = requiredSha256(capture["pixelSha256"], `${label} capture ${key} decoded-pixel digest`);
+    const recaptureDigest = requiredSha256(
+      capture["controlledRecapturePixelSha256"],
+      `${label} capture ${key} controlled recapture digest`,
+    );
+    if (pixelDigest !== recaptureDigest) {
+      throw new Error(`${label} capture ${key} decoded pixels differ from its controlled recapture`);
+    }
+    const pngBytes = await readFile(join(MATRIX_DIRECTORY, expectedFileName));
+    const actualDigest = sha256Bytes(decodeMatrixPngPixels(pngBytes, `${label} ${expectedFileName}`).data);
+    if (actualDigest !== pixelDigest) {
+      throw new Error(`${label} capture ${key} decoded-pixel digest does not bind ${expectedFileName}`);
+    }
+    pixelDigests.set(key, pixelDigest);
+  }
+  const missing = [...expectedKeys].filter((key) => !seen.has(key));
+  if (missing.length > 0) {
+    throw new Error(`${label} is missing captures: ${missing.join(", ")}`);
+  }
+  if (new Set(pixelDigests.values()).size !== 12) {
+    throw new Error(`${label} does not contain twelve distinct decoded-pixel rasters`);
+  }
+  for (const projection of MATRIX_PROJECTIONS) {
+    for (const organization of MATRIX_ORGANIZATIONS) {
+      const group = MATRIX_MORPHOLOGIES.map((morphology) => pixelDigests.get(`${morphology}:${organization}:${projection}`));
+      if (group.some((digest) => digest === undefined) || new Set(group).size !== MATRIX_MORPHOLOGIES.length) {
+        throw new Error(`${label} morphology pixels are not distinct for ${organization}/${projection}`);
+      }
+    }
+  }
+  await assertMatrixContactSheets(manifest["contactSheets"], fixtureId, label);
+
+  const controls = requiredMatrixRecord(manifest["negativeControls"], `${label} negative controls`);
+  const identical = requiredMatrixRecord(controls["forcedIdenticalMorphologies"], `${label} identical-morphology control`);
+  const shifted = requiredMatrixRecord(controls["shiftedRaster"], `${label} shifted-raster control`);
+  if (
+    identical["restored"] !== true
+    || typeof identical["message"] !== "string"
+    || !identical["message"].includes("decoded-pixel SHA-256 values must be distinct")
+    || shifted["restored"] !== true
+    || typeof shifted["message"] !== "string"
+    || !shifted["message"].includes("controlled-comparison raster invariant failed")
+  ) {
+    throw new Error(`${label} does not carry both real-content negative-control refusals`);
+  }
+}
+
+async function readMatrixFixtureTopology(fixturePath: string, label: string): Promise<MatrixFixtureTopology> {
+  const fixture = requiredMatrixRecord(
+    JSON.parse(await readFile(join("..", fixturePath), "utf8")) as unknown,
+    `${label} governed fixture`,
+  );
+  const nodes = requiredMatrixArray(fixture["nodes"], `${label} governed fixture nodes`)
+    .map((candidate, index) => requiredMatrixStringField(candidate, "id", `${label} governed node ${index}`))
+    .sort();
+  const relations = requiredMatrixArray(fixture["edges"], `${label} governed fixture relations`)
+    .map((candidate, index) => ({
+      id: requiredMatrixStringField(candidate, "id", `${label} governed relation ${index}`),
+      source: requiredMatrixStringField(candidate, "source", `${label} governed relation ${index}`),
+      target: requiredMatrixStringField(candidate, "target", `${label} governed relation ${index}`),
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  if (new Set(nodes).size !== nodes.length || new Set(relations.map((relation) => relation.id)).size !== relations.length) {
+    throw new Error(`${label} governed fixture repeats a structural identifier`);
+  }
+  const nodeSet = new Set(nodes);
+  if (relations.some((relation) => !nodeSet.has(relation.source) || !nodeSet.has(relation.target))) {
+    throw new Error(`${label} governed fixture contains incidence outside its node set`);
+  }
+  return {
+    nodeIds: nodes,
+    relations,
+    identifierDigest: sha256Text(JSON.stringify({ nodes, edges: relations.map((relation) => relation.id) })),
+    incidenceDigest: sha256Text(JSON.stringify(relations)),
+  };
+}
+
+function assertRecordedGovernedTopology(raw: unknown, expected: MatrixFixtureTopology, label: string): void {
+  const recorded = requiredMatrixRecord(raw, `${label} governed-topology record`);
+  if (
+    JSON.stringify(recorded["nodeIds"]) !== JSON.stringify(expected.nodeIds)
+    || JSON.stringify(recorded["relations"]) !== JSON.stringify(expected.relations)
+    || recorded["identifierDigest"] !== expected.identifierDigest
+    || recorded["incidenceDigest"] !== expected.incidenceDigest
+  ) {
+    throw new Error(`${label} governed-topology record differs from the governed fixture`);
+  }
+}
+
+async function assertMatrixContactSheets(raw: unknown, fixtureId: string, label: string): Promise<void> {
+  const files = requiredMatrixArray(raw, `${label} contact sheets`);
+  const expected = MATRIX_PROJECTIONS.map((projection) => `${fixtureId}-${projection}-contact-sheet.png`);
+  if (JSON.stringify(files) !== JSON.stringify(expected)) {
+    throw new Error(`${label} contact-sheet list is ${JSON.stringify(files)}, expected ${JSON.stringify(expected)}`);
+  }
+  for (const fileName of expected) {
+    const decoded = decodeMatrixPngPixels(await readFile(join(MATRIX_DIRECTORY, fileName)), `${label} ${fileName}`);
+    if (decoded.width <= 0 || decoded.height <= 0 || decoded.data.length === 0) {
+      throw new Error(`${label} contact sheet ${fileName} has no decoded pixels`);
+    }
+  }
+}
+
+function assertMatrixFlag(
+  root: Record<string, unknown>,
+  path: readonly string[],
+  description: string,
+  label: string,
+): void {
+  let value: unknown = root;
+  for (const segment of path) {
+    value = isRecord(value) && !Array.isArray(value) ? value[segment] : undefined;
+  }
+  if (value !== true) {
+    throw new Error(`${label} ${description} flag is ${String(value)}, not true`);
+  }
+}
+
+function requiredMatrixRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value) || Array.isArray(value)) {
+    throw new Error(`${label} is not an object`);
+  }
+  return value;
+}
+
+function requiredMatrixArray(value: unknown, label: string): readonly unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} is not an array`);
+  }
+  return value;
+}
+
+function requiredMatrixStringField(candidate: unknown, field: string, label: string): string {
+  const value = requiredMatrixRecord(candidate, label)[field];
+  if (typeof value !== "string" || value === "") {
+    throw new Error(`${label} has no ${field}`);
+  }
+  return value;
+}
+
+function requiredMatrixMember<const Members extends readonly string[]>(
+  value: unknown,
+  members: Members,
+  label: string,
+): Members[number] {
+  if (typeof value !== "string" || !(members as readonly string[]).includes(value)) {
+    throw new Error(`${label} is outside [${members.join(", ")}]`);
+  }
+  return value;
+}
+
+function requiredSha256(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/iu.test(value)) {
+    throw new Error(`${label} is not a SHA-256`);
+  }
+  return value;
+}
+
+function decodeMatrixPngPixels(
+  source: Uint8Array,
+  label: string,
+): { readonly width: number; readonly height: number; readonly data: Buffer } {
+  const input = Buffer.from(source);
+  if (!input.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+    throw new Error(`${label} is not a PNG`);
+  }
+  let offset = PNG_SIGNATURE.length;
+  let width: number | undefined;
+  let height: number | undefined;
+  let channels: number | undefined;
+  const idat: Buffer[] = [];
+  while (offset < input.length) {
+    if (offset + 12 > input.length) {
+      throw new Error(`${label} ends within a PNG chunk`);
+    }
+    const length = input.readUInt32BE(offset);
+    const type = input.toString("ascii", offset + 4, offset + 8);
+    const end = offset + length + 12;
+    if (end > input.length) {
+      throw new Error(`${label} has an invalid PNG chunk length`);
+    }
+    if (type === "IHDR") {
+      width = input.readUInt32BE(offset + 8);
+      height = input.readUInt32BE(offset + 12);
+      const bitDepth = input[offset + 16];
+      const colourType = input[offset + 17];
+      const compression = input[offset + 18];
+      const filtering = input[offset + 19];
+      const interlace = input[offset + 20];
+      if (bitDepth !== 8 || compression !== 0 || filtering !== 0 || interlace !== 0 || (colourType !== 2 && colourType !== 6)) {
+        throw new Error(`${label} has an unsupported PNG format`);
+      }
+      channels = colourType === 2 ? 3 : 4;
+    } else if (type === "IDAT") {
+      idat.push(input.subarray(offset + 8, offset + 8 + length));
+    } else if (type === "IEND") {
+      if (end !== input.length) {
+        throw new Error(`${label} has trailing PNG bytes`);
+      }
+      break;
+    }
+    offset = end;
+  }
+  if (width === undefined || height === undefined || channels === undefined) {
+    throw new Error(`${label} lacks PNG dimensions`);
+  }
+  const scanlines = inflateSync(Buffer.concat(idat));
+  const rowBytes = width * channels;
+  if (scanlines.length !== (rowBytes + 1) * height) {
+    throw new Error(`${label} has invalid PNG scanline bytes`);
+  }
+  const data = Buffer.alloc(width * height * 4);
+  const previous = Buffer.alloc(rowBytes);
+  for (let row = 0; row < height; row += 1) {
+    const start = row * (rowBytes + 1);
+    const filter = scanlines[start];
+    const current = Buffer.alloc(rowBytes);
+    for (let column = 0; column < rowBytes; column += 1) {
+      const sample = scanlines[start + 1 + column] ?? 0;
+      const left = column >= channels ? (current[column - channels] ?? 0) : 0;
+      const above = previous[column] ?? 0;
+      const upperLeft = column >= channels ? (previous[column - channels] ?? 0) : 0;
+      current[column] = unfilterMatrixPng(sample, filter, left, above, upperLeft);
+    }
+    for (let column = 0; column < width; column += 1) {
+      const sourceIndex = column * channels;
+      const targetIndex = ((row * width) + column) * 4;
+      data[targetIndex] = current[sourceIndex] ?? 0;
+      data[targetIndex + 1] = current[sourceIndex + 1] ?? 0;
+      data[targetIndex + 2] = current[sourceIndex + 2] ?? 0;
+      data[targetIndex + 3] = channels === 4 ? (current[sourceIndex + 3] ?? 255) : 255;
+    }
+    current.copy(previous);
+  }
+  return { width, height, data };
+}
+
+function unfilterMatrixPng(
+  value: number,
+  filter: number | undefined,
+  left: number,
+  above: number,
+  upperLeft: number,
+): number {
+  if (filter === 0) {
+    return value;
+  }
+  if (filter === 1) {
+    return (value + left) & 0xff;
+  }
+  if (filter === 2) {
+    return (value + above) & 0xff;
+  }
+  if (filter === 3) {
+    return (value + Math.floor((left + above) / 2)) & 0xff;
+  }
+  if (filter === 4) {
+    const estimate = left + above - upperLeft;
+    const leftDistance = Math.abs(estimate - left);
+    const aboveDistance = Math.abs(estimate - above);
+    const upperLeftDistance = Math.abs(estimate - upperLeft);
+    const predictor = leftDistance <= aboveDistance && leftDistance <= upperLeftDistance
+      ? left
+      : aboveDistance <= upperLeftDistance ? above : upperLeft;
+    return (value + predictor) & 0xff;
+  }
+  throw new Error(`matrix evidence PNG has unsupported filter ${String(filter)}`);
+}
+
+function sha256Bytes(value: Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function sha256Text(value: string): string {
+  return sha256Bytes(Buffer.from(value, "utf8"));
+}
 
 const PERFORMANCE_STATUSES = new Set(["PASS", "NOT_RUN", "UNKNOWN"] as const);
 const COMPLETING_SCALE = "10^2";
