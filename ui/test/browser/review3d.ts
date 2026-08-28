@@ -11,9 +11,14 @@ import { mount as mountSigma } from "#render2d/index.ts";
 import type { RenderOptions } from "#render2d/model.ts";
 import { mount as mountThree } from "#render3f/mount.tsx";
 import type { Render3fRendererHandle } from "#render3f/mount.tsx";
-import { assertProjectedCameraFramingSubjectsInsideViewport } from "#render3f/camera-framing.ts";
+import { cameraStateForBounds } from "#render3f/camera.tsx";
+import {
+  assertProjectedCameraFramingSubjectsInsideViewport,
+  sceneCameraFramingSubjects,
+} from "#render3f/camera-framing.ts";
 import type { ParityRenderer } from "#browser/parity.ts";
 import { shippingDarkFieldCss } from "#browser/lit-floor.ts";
+import { buildScene } from "#scene/index.ts";
 import { immediateNeighbourhoodFraming } from "#test-render3f/review-framing.ts";
 
 /** This names the review views and does not name a renderer implementation detail. */
@@ -86,14 +91,6 @@ type ReviewFraming = {
     readonly degree: number;
     readonly centeringRule: string;
     readonly neighbourCount: number;
-    readonly cameraCenter: {
-      readonly x: number;
-      readonly y: number;
-    };
-    readonly targetCameraCenter: {
-      readonly x: number;
-      readonly y: number;
-    };
   };
 };
 
@@ -130,7 +127,7 @@ const CAPTURE_OPTIONS: RenderOptions = {
 };
 const PERSPECTIVE_COMPARISON_NOTE = "Perspective uses camera.ratio as a calibrated dolly distance and camera.angle as an orbit; it has no equivalent orthographic zoom ratio.";
 const MICRO_FRAMING_RULE = "unique node with the maximum count of incident relations; ties are rejected";
-const MICRO_CENTERING_RULE = "anchor of the uniquely highest-degree node, measured to frame more of its neighbourhood than the neighbourhood bounds midpoint does";
+const MICRO_CENTERING_RULE = "arithmetic mean of canonical resolved-scene camera-framing-subject positions";
 const CAPTURE_WIDTH_CSS_PX = 1_200;
 const CAPTURE_HEIGHT_CSS_PX = 800;
 
@@ -244,22 +241,35 @@ function requestedState(
   targetId: string,
 ): VisualState {
   const configuration = viewConfiguration(request.view);
-  // Both two-dimensional micro views centre on the SELECTED NODE's anchor, not on its neighbourhood's
-  // bounds midpoint. The midpoint was tried and measured: lit pixels fell from 25,480 to 15,750
-  // because the neighbourhood's extremes pull the centre into empty space between them. Centring on
-  // the node itself puts the densest part of the neighbourhood in frame, which is what a close view
-  // exists to show.
-  const microR3f2d = request.view === "micro" && request.renderer === "r3f-2d";
-  const microSigma2d = request.view === "micro" && request.renderer === "sigma-2d";
+  const defaultCamera = cameraStateForBounds(framing.bounds);
+  const baseCamera = {
+    ...defaultCamera,
+    angle: configuration.angle,
+    ratio: configuration.ratio,
+  };
+  const baseState = createVisualState(graph, {
+    selectedId: configuration.interaction === "selected" ? targetId : null,
+    focusedId: configuration.interaction === "focused" ? targetId : null,
+    camera: baseCamera,
+    cameraKind: request.renderer === "r3f-3d" ? PERSPECTIVE : ORTHOGRAPHIC,
+    morphology: CAPTURE_OPTIONS.morphology,
+    organization: CAPTURE_OPTIONS.organization,
+    palette: CAPTURE_OPTIONS.palette ?? "monochrome",
+    temperature: CAPTURE_OPTIONS.temperature,
+    theme: CAPTURE_OPTIONS.theme,
+    lodBand: configuration.lodBand,
+    reducedMotion: true,
+  });
+  const center = configuration.ratio < defaultCamera.ratio
+    ? resolvedSceneCameraCenter(graph, baseState)
+    : baseCamera;
   return createVisualState(graph, {
     selectedId: configuration.interaction === "selected" ? targetId : null,
     focusedId: configuration.interaction === "focused" ? targetId : null,
     camera: {
-      x: (microR3f2d || microSigma2d) ? framing.micro.targetCameraCenter.x : 0.5,
-      y: (microR3f2d || microSigma2d) ? framing.micro.targetCameraCenter.y : 0.5,
-      angle: configuration.angle,
-      ratio: configuration.ratio,
-      bounds: framing.bounds,
+      ...baseCamera,
+      x: center.x,
+      y: center.y,
     },
     cameraKind: request.renderer === "r3f-3d" ? PERSPECTIVE : ORTHOGRAPHIC,
     morphology: CAPTURE_OPTIONS.morphology,
@@ -270,6 +280,25 @@ function requestedState(
     lodBand: configuration.lodBand,
     reducedMotion: true,
   });
+}
+
+/** This centres a zoomed capture on the positions resolved for the renderer-facing scene. */
+function resolvedSceneCameraCenter(
+  graph: VisualGraph,
+  state: VisualState,
+): { readonly x: number; readonly y: number } {
+  const subjects = sceneCameraFramingSubjects(buildScene(graph, state));
+  if (subjects.length === 0) {
+    throw new Error("review3d zoom framing requires one resolved scene subject");
+  }
+  const total = subjects.reduce(
+    (sum, subject) => ({ x: sum.x + subject.position.x, y: sum.y + subject.position.y }),
+    { x: 0, y: 0 },
+  );
+  return {
+    x: normaliseWithinBounds(total.x / subjects.length, state.camera.bounds.x),
+    y: normaliseWithinBounds(total.y / subjects.length, state.camera.bounds.y),
+  };
 }
 
 function viewConfiguration(view: Review3dView): {
@@ -320,10 +349,6 @@ function framingFor(graph: VisualGraph): ReviewFraming {
   };
   const target = highestDegreeNode(graph);
   const neighbourhood = immediateNeighbourhoodFraming(graph, anchors, target.id);
-  const targetAnchor = anchors.get(target.id);
-  if (targetAnchor === undefined) {
-    throw new Error(`review3d micro framing lacks a layout anchor for ${target.id}`);
-  }
   return {
     bounds,
     micro: {
@@ -332,14 +357,6 @@ function framingFor(graph: VisualGraph): ReviewFraming {
       degree: target.degree,
       centeringRule: MICRO_CENTERING_RULE,
       neighbourCount: neighbourhood.nodeIds.length - 1,
-      cameraCenter: {
-        x: normaliseWithinBounds(neighbourhood.center.x, bounds.x),
-        y: normaliseWithinBounds(neighbourhood.center.y, bounds.y),
-      },
-      targetCameraCenter: {
-        x: normaliseWithinBounds(targetAnchor.x, bounds.x),
-        y: normaliseWithinBounds(targetAnchor.y, bounds.y),
-      },
     },
   };
 }
