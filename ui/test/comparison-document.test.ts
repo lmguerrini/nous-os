@@ -118,6 +118,13 @@ test("the layout-attribution check refuses a layout cost that does not explain t
     () => assertLayoutAloneExceedsTheRendererBudget({ records: [{ scale: "10^2", nodes: 40, outcome: "COMPLETED", elapsedMs: 90 }] }),
     /records nothing at 10\^3/,
   );
+  // An over-budget SUCCESS cannot support a document that says the layout fails.
+  assert.throws(
+    () => assertLayoutAloneExceedsTheRendererBudget({
+      records: [{ scale: "10^3", nodes: 358, outcome: "COMPLETED", elapsedMs: 356_818, failure: null }],
+    }),
+    /may not rest on a record of a success/,
+  );
 });
 
 test("the engine size the document states is the size its own command reproduces", async () => {
@@ -181,16 +188,20 @@ function assertLayoutAloneExceedsTheRendererBudget(artifact: unknown): void {
   }
   // A throw was accepted regardless of when or why, so a layout that failed instantly for an
   // unrelated reason satisfied a document claiming it "runs for minutes and then fails".
-  if (large.outcome === "THREW" && elapsed <= RENDERER_COMBINATION_BUDGET_MS) {
+  // The document claims the layout FAILS, not merely that it is slow, so the artifact must show a
+  // failure AND a duration that explains the budget. Accepting any over-budget outcome let a record
+  // that COMPLETED support a document saying it has no solution.
+  if (elapsed <= RENDERER_COMBINATION_BUDGET_MS) {
     throw new Error(
-      `shared layout at 10^3 threw after only ${elapsed}ms, which does not exceed the `
+      `shared layout at 10^3 took ${elapsed}ms, which does not exceed the `
       + `${RENDERER_COMBINATION_BUDGET_MS}ms per-combination budget and so does not explain the renderers' NOT_RUN results`,
     );
   }
-  if (large.outcome !== "THREW" && elapsed <= RENDERER_COMBINATION_BUDGET_MS) {
+  if (large.outcome !== "THREW" || typeof large.failure !== "string" || large.failure.trim() === "") {
     throw new Error(
-      `shared layout at 10^3 does not exceed the ${RENDERER_COMBINATION_BUDGET_MS}ms per-combination budget `
-      + `(it took ${elapsed}ms and completed), so the renderers' NOT_RUN results are not explained by layout alone`,
+      `the comparison document states that shared layout fails at 10^3, but the artifact records `
+      + `outcome ${String(large.outcome)} with failure ${String(large.failure)}. A document claiming a `
+      + "failure may not rest on a record of a success.",
     );
   }
 }
@@ -239,6 +250,8 @@ test("the promotion rule refuses the claims it exists to refuse", () => {
     "Three 3D is the certified winner and replaces Sigma as the default 2D surface.",
     "The Three engine becomes the default 2D surface.",
     "This capability promotes the Three renderer.",
+    // An unrelated negation in an earlier clause must not excuse a promotion in a later one.
+    "Sigma is not the default 2D surface; Three replaces Sigma.",
   ]) {
     assert.throws(
       () => assertNoPromotionClaim(relapse),
@@ -257,12 +270,18 @@ function assertNoPromotionClaim(document: string): void {
   // "Nothing here promotes the Three engine over it" — tripped this rule, which is the same class of
   // defect as a check that cannot distinguish absence from a value: it matched the words and not
   // the claim.
-  for (const sentence of document.split(/(?<=[.!?])\s+|\n{2,}/u)) {
-    if (NEGATION.test(sentence)) {
-      continue;
-    }
+  // CLAUSE by clause, not sentence by sentence, and a negation only excuses what FOLLOWS it. A
+  // sentence-wide skip was defeated by "Sigma is not the default 2D surface; Three replaces Sigma."
+  // — an unrelated negation in the first clause suppressed a promotion in the second.
+  for (const clause of document.split(/(?<=[.!?;:])\s+|\n{2,}/u)) {
     for (const pattern of PROMOTION_CLAIMS) {
-      const found = pattern.exec(sentence);
+      const found = pattern.exec(clause);
+      if (found !== null && found.index !== undefined) {
+        const negation = NEGATION.exec(clause.slice(0, found.index));
+        if (negation !== null) {
+          continue;
+        }
+      }
       if (found !== null) {
         throw new Error(
           `docs/RENDERER-COMPARISON.md claims a promotion the evidence does not support: "${found[0]}". `

@@ -128,6 +128,11 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
     if (tree["measuredSha256"] !== current.sha256 || tree["completedSha256"] !== current.sha256) {
       throw new Error(`${criterion.id} artifact identity ${String(tree["measuredSha256"]).slice(0, 12)} is not the current tree ${current.sha256.slice(0, 12)}`);
     }
+    // The CURRENT tree must also be clean. The recorded statuses were compared and the live one was
+    // not, so an artifact recording clean statuses resolved against a dirty working tree.
+    if (current.statusPorcelain !== "") {
+      throw new Error(`${criterion.id} resolves against a dirty working tree, whatever the artifact recorded`);
+    }
     if (tree["measuredStatusPorcelain"] !== "" || tree["completedStatusPorcelain"] !== "" || tree["stable"] !== true) {
       throw new Error(`${criterion.id} artifact was measured against a moving or dirty tree`);
     }
@@ -142,6 +147,14 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
     // this run is red and no closure verdict is available at all.
     if (source.name.trim() === "" || source.file.trim() === "") {
       throw new Error(`${criterion.id} names no unit test`);
+    }
+    // The file must be one the declared unit command actually selects. A criterion was rebound to a
+    // test inside a `.spec.ts`, which `test/**/*.test.ts` does not match and which is skipped without
+    // its own Playwright project, and the register resolved against it.
+    if (!/^test\/.+\.test\.ts$/u.test(source.file)) {
+      throw new Error(
+        `${criterion.id} names ${source.file}, which the unit command's test/**/*.test.ts selection does not run`,
+      );
     }
     const body = await readFile(source.file, "utf8").catch(() => null);
     if (body === null) {

@@ -114,6 +114,14 @@ const REQUIRED_NUMERIC_PASSES = [
 
 /** This permits governed shortfalls only inside the complete, measured performance matrix. */
 function assertPerformanceExemption(raw: unknown, label: string): void {
+  // The validator began at `records`, so the artifact-ROOT rasterisation label was never read and
+  // could be changed to claim hardware acceleration on its own.
+  if (isRecord(raw) && "rasterisationLabel" in raw && raw["rasterisationLabel"] !== SOFTWARE_RASTERISATION_LABEL) {
+    throw new Error(
+      `${label} artifact root is labelled ${String(raw["rasterisationLabel"])}, not ${SOFTWARE_RASTERISATION_LABEL}`,
+    );
+  }
+  assertDerivedRunVerdict(raw, label);
   const records = isRecord(raw) && Array.isArray(raw["records"]) ? raw["records"] : [];
   if (records.length !== PERFORMANCE_COMBINATIONS.length) {
     throw new Error(
@@ -225,6 +233,11 @@ function assertKnownMeasurementStatuses(value: unknown, path: string): number {
       }
       if (isRecord(measured) && "samplesMs" in measured && !isNumericDistribution(measured)) {
         throw new Error(`${path} PASS records a distribution with no finite non-empty samples`);
+      }
+      // No measurement in this artifact is a bare string. A count of ten was replaced with the words
+      // "fabricated aggregate count" and passed, because only null was refused.
+      if (typeof measured === "string") {
+        throw new Error(`${path} PASS records the string ${JSON.stringify(measured)}, which is not a measurement`);
       }
     }
   }
@@ -509,3 +522,55 @@ test("the performance exemption refuses an artifact relabelled as GPU performanc
   ));
   console.info(`performance relabelling control: ${topLevel}`);
 });
+
+/**
+ * The run verdict is RECOMPUTED from the records rather than read from the summary.
+ *
+ * The consumer substituted `true` for this artifact's verdict, so a summary claiming everything
+ * passed sat happily above records that included a renderer painting a blank frame. That is the
+ * "summary conceals a blank renderer" class this capability has already been bitten by twice, and a
+ * summary is exactly the wrong place to take a verdict from, because it is the one field that can be
+ * written without touching a measurement.
+ */
+function assertDerivedRunVerdict(raw: unknown, label: string): void {
+  if (!isRecord(raw) || !isRecord(raw["summary"])) {
+    return;
+  }
+  const records = Array.isArray(raw["records"]) ? raw["records"] : [];
+  let unbound = 0;
+  for (const record of records) {
+    const measurements = isRecord(record) ? record["measurements"] : undefined;
+    if (isRecord(measurements)) {
+      unbound += countUnboundStatuses(measurements);
+    }
+  }
+  const summary = raw["summary"] as Record<string, unknown>;
+  const derived = unbound === 0;
+  if (summary["passing"] !== derived) {
+    throw new Error(
+      `${label} summary claims passing:${String(summary["passing"])} while the records carry ${unbound} `
+      + `unbound measurement(s), which derives passing:${String(derived)}`,
+    );
+  }
+  if ("notRun" in summary || "unknown" in summary) {
+    const claimed = Number(summary["notRun"] ?? 0) + Number(summary["unknown"] ?? 0);
+    if (claimed !== unbound) {
+      throw new Error(`${label} summary counts ${claimed} unbound measurement(s); the records carry ${unbound}`);
+    }
+  }
+}
+
+/** This counts unbound statuses at any depth and does not stop at the top level. */
+function countUnboundStatuses(value: unknown): number {
+  if (Array.isArray(value)) {
+    return value.reduce((total: number, entry) => total + countUnboundStatuses(entry), 0);
+  }
+  if (!isRecord(value)) {
+    return 0;
+  }
+  const own = typeof value["status"] === "string" && value["status"] !== "PASS" ? 1 : 0;
+  return Object.entries(value).reduce(
+    (total, [name, entry]) => total + (name === "status" ? 0 : countUnboundStatuses(entry)),
+    own,
+  );
+}

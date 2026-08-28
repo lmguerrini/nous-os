@@ -165,43 +165,62 @@ function projectedLabels(scene: Scene, projection: LabelProjection): readonly Pr
       priority: candidate.priority,
       sceneOrder,
       collisionPaddingPx: candidate.collisionPaddingPx,
-      style: edgeStyle(candidate, clearOfNodeGlow(projection.project(midpoint), scene, projection), scene.tokenEncoding),
+      style: edgeStyle(
+        candidate,
+        clearOfNodeGlow(projection.project(midpoint), scene, projection, candidate.collisionPaddingPx),
+        scene.tokenEncoding,
+      ),
     });
   }
   return labels.sort(compareScreenLabelPriority);
 }
 
 /**
- * Nudges a relation label clear of any node whose glow would swallow it.
+ * Places a relation label clear of every node's drawn extent, not merely clear of the first one.
  *
- * A relation label sits at its filament's midpoint, centred. When an emphasised node sits at that
- * midpoint its bloom obliterates the middle of the word — in the two `focused` captures the label
- * read `conflic ▮ amber`, and those are the two images whose whole purpose is to emphasise one
- * element. The collision pass could not see it: it resolves label against label and never against
- * what is drawn beneath.
+ * A relation label sits centred on its filament's midpoint. When a node sits at that midpoint its
+ * bloom obliterates the middle of the word — in the emphasis captures the label read as its first and
+ * last syllables with a bright disc between them.
  *
- * The displacement is perpendicular to nothing and simply vertical, because a relation label is
- * centred on its midpoint and moving it along the filament would slide it toward one endpoint and
- * misreport which relation it names. It moves by the node's own drawn extent plus the label's own
- * governed collision padding, so a label already clear of every node does not move at all.
+ * The first repair computed one clearance from the original position and applied it downward, once,
+ * without rechecking. That moved the label off the node it was on and **onto an adjacent one**, which
+ * an auditor found in the perspective capture. So this searches instead: it offers candidate offsets
+ * outward in both directions and returns the first that clears EVERY node, rather than assuming one
+ * displacement is enough. Vertical only, because a relation label is centred on its midpoint and
+ * sliding it along the filament would move it toward one endpoint and misreport which relation it
+ * names. If nothing clears — a label boxed in on both sides — the original position is returned
+ * rather than a worse one, and the label stays where the geometry actually puts it.
  */
 function clearOfNodeGlow(
   center: { readonly x: number; readonly y: number },
   scene: Scene,
   projection: LabelProjection,
+  marginPx: number,
 ): { readonly x: number; readonly y: number } {
-  let clearance = 0;
-  for (const node of scene.nodes) {
-    const nodeCenter = projection.project(node.position);
-    const drawnExtentPx = Math.max(node.haloRadiusPx, node.radiusPx + node.haloCoreGapPx)
-      * projection.nodeSizeScale(node);
-    const distance = Math.hypot(center.x - nodeCenter.x, center.y - nodeCenter.y);
-    if (distance < drawnExtentPx) {
-      clearance = Math.max(clearance, drawnExtentPx - (center.y - nodeCenter.y));
+  const extents = scene.nodes.map((node) => ({
+    center: projection.project(node.position),
+    radiusPx: Math.max(node.haloRadiusPx, node.radiusPx + node.haloCoreGapPx) * projection.nodeSizeScale(node),
+  }));
+  const clears = (candidate: { readonly x: number; readonly y: number }): boolean => extents.every(
+    (extent) => Math.hypot(candidate.x - extent.center.x, candidate.y - extent.center.y) >= extent.radiusPx + marginPx,
+  );
+  if (clears(center)) {
+    return center;
+  }
+  const step = Math.max(marginPx, 1);
+  for (let multiple = 1; multiple <= SEARCH_STEPS; multiple += 1) {
+    for (const direction of [1, -1]) {
+      const candidate = { x: center.x, y: center.y + (direction * step * multiple) };
+      if (clears(candidate)) {
+        return candidate;
+      }
     }
   }
-  return clearance === 0 ? center : { x: center.x, y: center.y + clearance };
+  return center;
 }
+
+/** Bounded so a label boxed in on both sides terminates rather than wandering off the frame. */
+const SEARCH_STEPS = 24;
 
 function nodeStyle(
   candidate: Exclude<SceneNodeLabelCandidacy, null>,
