@@ -394,13 +394,16 @@ function performanceControlArtifact(
   return {
     records: PERFORMANCE_COMBINATIONS.map((combination, combinationIndex) => ({
       ...combination,
+      // Controls carry the honest label, so each one fails for the reason it was written to test
+      // rather than for a missing label — the shape of defect this whole file exists to refuse.
+      rasterisationLabel: SOFTWARE_RASTERISATION_LABEL,
       measurements: Object.fromEntries(PERFORMANCE_MEASUREMENTS.map((name, measurementIndex) => {
         const status = combinationIndex === 0 && measurementIndex === 0 && firstStatusOverride !== undefined
           ? firstStatusOverride
           : combination.scale === COMPLETING_SCALE ? completingStatus : "NOT_RUN";
         return [name, status === "PASS"
-          ? { status, value: { samplesMs: [1], medianMs: 1, p95Ms: 1 } }
-          : { status, reason: "governed control shortfall" }];
+          ? { status, label: SOFTWARE_RASTERISATION_LABEL, value: { samplesMs: [1], medianMs: 1, p95Ms: 1 } }
+          : { status, label: SOFTWARE_RASTERISATION_LABEL, reason: "governed control shortfall" }];
       })),
     })),
   };
@@ -423,15 +426,17 @@ test("the performance exemption refuses a nested PASS whose value is not a measu
   const withNestedValue = (value: unknown): unknown => ({
     records: PERFORMANCE_COMBINATIONS.map((combination) => ({
       ...combination,
+      rasterisationLabel: SOFTWARE_RASTERISATION_LABEL,
       measurements: Object.fromEntries(PERFORMANCE_MEASUREMENTS.map((name) => [
         name,
         combination.scale === COMPLETING_SCALE
           ? {
             status: "PASS",
+            label: SOFTWARE_RASTERISATION_LABEL,
             value: { samplesMs: [1], medianMs: 1, p95Ms: 1 },
-            bands: [{ mountToFirstPaint: { status: "PASS", value } }],
+            bands: [{ mountToFirstPaint: { status: "PASS", label: SOFTWARE_RASTERISATION_LABEL, value } }],
           }
-          : { status: "NOT_RUN", reason: "governed control shortfall" },
+          : { status: "NOT_RUN", label: SOFTWARE_RASTERISATION_LABEL, reason: "governed control shortfall" },
       ])),
     })),
   });
@@ -482,3 +487,25 @@ function assertSoftwareRasterisationLabel(value: unknown, path: string): void {
     }
   }
 }
+
+test("the performance exemption refuses an artifact relabelled as GPU performance", () => {
+  // An auditor changed every label in a copy of the artifact to claim hardware acceleration and the
+  // suite stayed green: statuses were validated and labels never were. Software rasterisation and GPU
+  // behaviour may not be pooled, and once the label is wrong the difference is invisible.
+  const relabel = (artifact: unknown, label: string): unknown => JSON.parse(
+    JSON.stringify(artifact).split(SOFTWARE_RASTERISATION_LABEL).join(label),
+  ) as unknown;
+
+  const topLevel = failedControlOutput(() => assertPerformanceExemption(
+    relabel(performanceControlArtifact("PASS"), "headed GPU performance"),
+    "performance relabelled control",
+  ));
+  assert.match(topLevel, /is labelled headed GPU performance, not software-rasterised/);
+
+  // And the honest artifact must still be accepted, or the rule is refusing everything.
+  assert.doesNotThrow(() => assertPerformanceExemption(
+    performanceControlArtifact("PASS"),
+    "performance honest-label control",
+  ));
+  console.info(`performance relabelling control: ${topLevel}`);
+});
