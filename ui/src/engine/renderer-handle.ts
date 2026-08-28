@@ -24,6 +24,18 @@ export type NodeFootprintWitness = {
   readonly haloRadiusPx: number;
 };
 
+/** This reports one picker-held resolved relation and does not rebuild its path or expose a live scene reference. */
+export type RelationGeometryWitness = {
+  readonly id: string;
+  readonly source: Coordinates;
+  readonly controlPoint: Coordinates;
+  readonly target: Coordinates;
+  readonly pickTolerancePx: number;
+  readonly minimumDeviceWidthPx: number;
+  readonly widthStartPx: number;
+  readonly widthEndPx: number;
+};
+
 /** This records ids and incidence read from the MOUNTED renderer and does not inspect the model that fed it. */
 export type SurfaceWitness = {
   readonly nodeIds: readonly string[];
@@ -142,4 +154,22 @@ export type ResourceCountingRendererHandle = GraphRendererHandle & {
 export type MultiCameraRendererHandle = GraphRendererHandle & {
   /** This switches the camera and does not rebuild the graph, re-run layout, or move a world anchor. */
   setCameraKind(kind: CameraKind): void;
+};
+
+/**
+ * This is a renderer that can read relation geometry from the live scene its picker holds, and it is
+ * deliberately NOT the common interface.
+ *
+ * Sigma's picker is library-owned and does not expose a resolved relation scene for inspection. Making
+ * the common handle promise this reader would force Sigma to rebuild a separate model or fabricate a
+ * witness, neither of which can establish what its mounted picker actually reads. Three owns both the
+ * resolved scene and its picker, so it can report that live geometry truthfully; callers that require
+ * this evidence must ask for this capability rather than treating its absence as an empty result.
+ */
+export type RelationGeometryRendererHandle = GraphRendererHandle & {
+  /**
+   * This copies relation geometry from the picker-held live scene and does not rebuild a scene, read
+   * GPU buffers, or return references into renderer internals.
+   */
+  readRelationGeometryWitnesses(): readonly RelationGeometryWitness[];
 };

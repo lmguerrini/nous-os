@@ -25,7 +25,7 @@ const LAYOUT_SCALE_PATH = ["dist", "evidence", "layout-scale.json"].join("/");
 const TIMING_FIGURE = /\b\d[\d,.]*\s*(?:ms|s|milliseconds?|seconds?)\b/giu;
 
 /** The document states this band for the engine's size; the command beside it must reproduce it. */
-const LINE_COUNT_BAND = { atLeast: 5000, below: 6000 } as const;
+const LINE_COUNT_BAND = { atLeast: 6000, below: 7000 } as const;
 
 test("the comparison document transcribes no timing figure", async () => {
   assertNoTimingFigures(await readFile(DOCUMENT_PATH, "utf8"));

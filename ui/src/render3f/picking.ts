@@ -2,6 +2,13 @@ import type { Coordinates } from "#engine/contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import type { Scene, SceneEdge, SceneNode } from "#scene/contract.ts";
 
+/**
+ * Chosen to sit in the empty gap between projection rounding and any perceptible curvature, not at
+ * the edge of either. Measured relative cross products: straight relations 1e-16 to 1e-15, a bowed
+ * relation 1e-1.
+ */
+const COLLINEAR_RELATIVE_TOLERANCE = 1e-12;
+
 /** This is the live projection surface used by CPU picking and does not retain a camera implementation. */
 export type PickingProjection = {
   project(point: Coordinates): { readonly x: number; readonly y: number };
@@ -23,6 +30,19 @@ export class ScenePicker {
   /** This replaces resolved material-state geometry and does not change the projection surface. */
   replaceScene(scene: Scene): void {
     this.sceneValue = scene;
+  }
+
+  /**
+   * The scene this picker is answering from, right now.
+   *
+   * A witness that wants to compare drawing against picking must read the object the picker actually
+   * holds — not a rebuild, and not a reference captured at mount time. Both were tried while
+   * diagnosing F30 and both agreed with each other while disagreeing with the picker, which is how a
+   * real defect stayed unattributed through four wrong hypotheses. This accessor exists so that the
+   * witness cannot accidentally read anything else.
+   */
+  get scene(): Scene {
+    return this.sceneValue;
   }
 
   /** This returns the topmost visible core at one viewport point and does not inspect node semantics. */
@@ -92,7 +112,7 @@ function quadraticDistanceSample(
   const relativeTarget = { x: target.x - point.x, y: target.y - point.y };
   const chord = subtract(relativeTarget, relativeSource);
   const controlOffset = subtract(relativeControl, relativeSource);
-  if (cross(chord, controlOffset) === 0) {
+  if (isCollinearWithinRounding(chord, controlOffset)) {
     return segmentDistanceSample(point, source, target);
   }
   const a = cross(relativeSource, relativeTarget);
@@ -117,7 +137,43 @@ function quadraticDistanceSample(
   const first = mix(relativeSource, relativeControl, parameter);
   const second = mix(relativeControl, relativeTarget, parameter);
   const curvePoint = mix(first, second, parameter);
-  return { distance: Math.hypot(curvePoint.x, curvePoint.y), parameter };
+  const distance = Math.hypot(curvePoint.x, curvePoint.y);
+  if (!Number.isFinite(distance)) {
+    // The remaining exact-zero guards above protect divisions, and a value that is merely NEAR zero
+    // produces a non-finite distance rather than a caught degeneracy. `distance <= threshold` is
+    // false for NaN, so that would read as a clean miss — a wrong answer wearing the shape of a
+    // right one. Fall back to the straight-line measure instead of returning it.
+    return segmentDistanceSample(point, source, target);
+  }
+  return { distance, parameter };
+}
+
+/**
+ * Rounding-scale collinearity, normalised to the magnitudes that produced it.
+ *
+ * This guard decides whether a relation is straight enough to measure as a segment. It used to read
+ * `cross(chord, controlOffset) === 0`, and that exact comparison protected only a case that does not
+ * occur. The scene builder emits a control point at exactly the chord midpoint when curvature is
+ * zero, so a straight relation IS collinear — but this test runs on PROJECTED coordinates, and
+ * projection rounds. The cross product of a genuinely straight relation came out around 1e-12 rather
+ * than 0, the guard missed, and the analytic solver below received a degenerate quadratic it is
+ * ill-conditioned for. It returned a distance of roughly twenty pixels for a point lying exactly on
+ * the curve, and three relations became unpickable while still being drawn.
+ *
+ * Normalising separates the two populations by fifteen orders of magnitude — projection rounding
+ * lands near 1e-16, a bow a reader could see lands near 1e-1 — so the threshold sits in the middle of
+ * a very large empty gap. It is not a sensitivity that can be tuned to change an outcome, and the
+ * picking tolerance itself is untouched: what changes is which branch measures the distance.
+ */
+function isCollinearWithinRounding(
+  chord: { readonly x: number; readonly y: number },
+  controlOffset: { readonly x: number; readonly y: number },
+): boolean {
+  const magnitude = Math.hypot(chord.x, chord.y) * Math.hypot(controlOffset.x, controlOffset.y);
+  if (magnitude === 0) {
+    return true;
+  }
+  return Math.abs(cross(chord, controlOffset)) <= COLLINEAR_RELATIVE_TOLERANCE * magnitude;
 }
 
 function segmentDistanceSample(

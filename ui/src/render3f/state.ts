@@ -4,6 +4,23 @@ import type { Scene } from "#scene/contract.ts";
 import { buildSceneBuffers } from "#render3f/buffers.ts";
 import type { SceneBuffers } from "#render3f/buffers.ts";
 
+type RelationGeometryPoint = {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+};
+
+type RelationGeometryWitness = {
+  readonly id: string;
+  readonly source: RelationGeometryPoint;
+  readonly controlPoint: RelationGeometryPoint;
+  readonly target: RelationGeometryPoint;
+  readonly pickTolerancePx: number;
+  readonly minimumDeviceWidthPx: number;
+  readonly widthStartPx: number;
+  readonly widthEndPx: number;
+};
+
 /** This pairs the two projection requests over one visual scene and does not permit camera switching to rebuild it. */
 export type CameraScenes = Readonly<Record<CameraKind, Scene>>;
 
@@ -75,6 +92,24 @@ export class LiveSceneState {
       id,
       position: coordinatesAt(this.buffersValue.nodes.positions, index),
     }));
+  }
+
+  /**
+   * This copies resolved relation geometry from the ScenePicker's current scene and does not rebuild
+   * a scene, use a mount-time snapshot, inspect GPU buffers, or return live scene references.
+   */
+  readRelationGeometryWitnesses(pickerScene: Scene): readonly RelationGeometryWitness[] {
+    assertPickerSceneMatchesDrawScene(pickerScene, this.scene);
+    return Object.freeze(pickerScene.edges.map((edge) => Object.freeze({
+      id: edge.id,
+      source: frozenPoint(requiredItem(edge.path, 0, `mounted relation ${edge.id} source`)),
+      controlPoint: frozenPoint(edge.controlPoint),
+      target: frozenPoint(requiredLast(edge.path, `mounted relation ${edge.id} target`)),
+      pickTolerancePx: edge.pickTolerancePx,
+      minimumDeviceWidthPx: edge.minimumDeviceWidthPx,
+      widthStartPx: edge.widthStartPx,
+      widthEndPx: edge.widthEndPx,
+    })));
   }
 
   /** This reports the honest scene-build layout count and does not run layout. */
@@ -149,6 +184,19 @@ function assertSameAnchors(current: SceneBuffers, next: SceneBuffers): void {
   }
 }
 
+function assertPickerSceneMatchesDrawScene(pickerScene: Scene, drawScene: Scene): void {
+  if (pickerScene !== drawScene) {
+    throw new TypeError(
+      `RED: ScenePicker and draw path hold different scene objects (picker relation ids: ${relationIds(pickerScene)}; `
+        + `draw relation ids: ${relationIds(drawScene)})`,
+    );
+  }
+}
+
+function relationIds(scene: Scene): string {
+  return scene.edges.map((edge) => edge.id).join(",") || "none";
+}
+
 function assertEqualDepth(id: string, expected: number, actual: number | undefined): void {
   if (!Object.is(Math.fround(expected), actual)) {
     throw new TypeError(`depth buffer for ${id} is not copied from scene position.z`);
@@ -170,6 +218,10 @@ function coordinatesAt(values: Float32Array, index: number): { readonly x: numbe
     y: requiredNumber(values[offset + 1], "mounted anchor y"),
     z: requiredNumber(values[offset + 2], "mounted anchor z"),
   };
+}
+
+function frozenPoint(point: RelationGeometryPoint): RelationGeometryPoint {
+  return Object.freeze({ x: point.x, y: point.y, z: point.z });
 }
 
 function requiredNumber(value: number | undefined, name: string): number {

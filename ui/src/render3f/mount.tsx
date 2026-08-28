@@ -68,7 +68,20 @@ export type Render3fOptions = {
 
 /** This exposes renderer-owned framing witnesses without widening the shared renderer handle. */
 export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountingRendererHandle & {
+  /** This copies the picker-held resolved relation geometry and does not rebuild scene geometry. */
+  readRelationGeometryWitnesses(): readonly RelationGeometryWitness[];
   readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[];
+};
+
+type RelationGeometryWitness = {
+  readonly id: string;
+  readonly source: Coordinates;
+  readonly controlPoint: Coordinates;
+  readonly target: Coordinates;
+  readonly pickTolerancePx: number;
+  readonly minimumDeviceWidthPx: number;
+  readonly widthStartPx: number;
+  readonly widthEndPx: number;
 };
 
 /** This mounts one shared Three scene behind two cameras and does not compute renderer-local material. */
@@ -357,6 +370,9 @@ export function mount(
     readNodeFootprintWitnesses(): readonly NodeFootprintWitness[] {
       return readNodeFootprints(live, rig);
     },
+    readRelationGeometryWitnesses(): readonly RelationGeometryWitness[] {
+      return live.readRelationGeometryWitnesses(readSceneHeldByPicker(picker));
+    },
     readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[] {
       return rig.projectFramingSubjects();
     },
@@ -464,6 +480,14 @@ function readNodeFootprints(live: LiveSceneState, rig: CameraRig): readonly Node
       haloRadiusPx: Math.max(requestedHaloRadius, gapHaloRadius),
     };
   });
+}
+
+/** This reads ScenePicker's actual retained scene object and does not substitute a mount-time scene reference. */
+function readSceneHeldByPicker(picker: ScenePicker): Scene {
+  // Through the picker's own accessor rather than a cast into its internals: the guarantee this
+  // witness needs is that it reads the object the picker answers from, and an accessor states that
+  // where a reflective read only assumes it.
+  return picker.scene;
 }
 
 function updateField(renderer: THREE.WebGLRenderer, scene: Scene): void {

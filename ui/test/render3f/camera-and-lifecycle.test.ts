@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
+import { chromium } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { build } from "esbuild";
 import * as THREE from "three";
 import { assertLitPixelFloor } from "#browser/lit-floor.ts";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import type { Coordinates } from "#engine/contract.ts";
-import type { RetainedResourceWitness } from "#engine/renderer-handle.ts";
+import type {
+  RelationGeometryWitness,
+  RetainedResourceWitness,
+  SurfaceWitness,
+} from "#engine/renderer-handle.ts";
 import {
   canonicalCameraFramingPoints,
   assertProjectedCameraFramingSubjectsInsideViewport,
@@ -27,6 +36,21 @@ import {
 import { resolvedCameraScenes } from "./support.ts";
 import { immediateNeighbourhoodFraming } from "./review-framing.ts";
 import { sceneFixtureGraph } from "#test-scene/support.ts";
+
+type MountedRelationGeometryPageApi = {
+  readonly error: string | null;
+  readonly relationWitnesses?: readonly RelationGeometryWitness[];
+  readonly surfaceWitness?: SurfaceWitness;
+  pickEdgeAtGraphPosition?(position: Coordinates): string | null;
+  destroy?(): void;
+};
+
+declare global {
+  interface Window {
+    __mountedRelationGeometryFixture?: unknown;
+    __mountedRelationGeometryWitness?: MountedRelationGeometryPageApi;
+  }
+}
 
 test("projection changes preserve live anchors while screen label collisions preserve scene priority", (context) => {
   const scenes = resolvedCameraScenes();
@@ -181,6 +205,106 @@ test("world-anchor witnesses read the mounted buffer copy rather than the handed
   assert.equal(sceneNode.position.x, sceneX);
 });
 
+test("relation geometry witnesses copy the current picker scene and reject a different draw scene", () => {
+  const scenes = resolvedCameraScenes();
+  const live = new LiveSceneState(scenes, ORTHOGRAPHIC, cameraKindCount());
+  const witnesses = live.readRelationGeometryWitnesses(scenes.orthographic);
+  const witness = requiredItem(witnesses, 0, "mounted relation witness");
+  const relation = scenes.orthographic.edges.find((edge) => edge.id === witness.id);
+  assert.ok(relation !== undefined);
+  assert.equal(Object.isFrozen(witnesses), true);
+  assert.equal(Object.isFrozen(witness), true);
+  assert.equal(Object.isFrozen(witness.source), true);
+  assert.notEqual(witness.source, requiredItem(relation.path, 0, `relation ${relation.id} source`));
+  assert.deepEqual(witness.source, requiredItem(relation.path, 0, `relation ${relation.id} source`));
+  assert.equal(witness.pickTolerancePx, relation.pickTolerancePx);
+  assert.equal(witness.minimumDeviceWidthPx, relation.minimumDeviceWidthPx);
+  assert.equal(witness.widthStartPx, relation.widthStartPx);
+  assert.equal(witness.widthEndPx, relation.widthEndPx);
+
+  const redOutput = failureOutput(() => live.readRelationGeometryWitnesses({ ...scenes.orthographic }));
+  assert.match(redOutput, /^RED: ScenePicker and draw path hold different scene objects/);
+});
+
+test("mounted Three relation witness covers every drawn relation and its endpoints are picker-held", async (context) => {
+  const fixturePath = join(process.cwd(), "..", "fixtures", "synthetic", "projection", "discovery-at-question.json");
+  const fixture = JSON.parse(await readFile(fixturePath, "utf8")) as unknown;
+  const pageModule = await mountedRelationGeometryPageBundle();
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      "--single-process",
+      "--use-angle=swiftshader-webgl",
+      "--use-gl=angle",
+      "--enable-webgl",
+      "--ignore-gpu-blocklist",
+      "--disable-gpu-vsync",
+      "--force-color-profile=srgb",
+    ],
+  });
+  try {
+    const page = await browser.newPage({ viewport: { width: 640, height: 480 }, deviceScaleFactor: 1 });
+    const browserErrors: string[] = [];
+    page.on("pageerror", (error) => browserErrors.push(`pageerror: ${error.message}`));
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        browserErrors.push(`console: ${message.text()}`);
+      }
+    });
+    await page.setContent("<!doctype html><html><body></body></html>");
+    await page.evaluate(() => {
+      window.ResizeObserver = class {
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+      };
+    });
+    await page.evaluate((value) => {
+      window.__mountedRelationGeometryFixture = value;
+    }, fixture);
+    await page.addScriptTag({ content: pageModule });
+    await page.waitForFunction(() => window.__mountedRelationGeometryWitness !== undefined);
+    await settleMountedRelationGeometryPage(page);
+
+    const mounted = await page.evaluate(() => {
+      const witness = window.__mountedRelationGeometryWitness;
+      return witness === undefined ? undefined : {
+        error: witness.error,
+        relationWitnesses: witness.relationWitnesses,
+        surfaceWitness: witness.surfaceWitness,
+      };
+    });
+    assert.ok(mounted !== undefined, "mounted relation geometry witness is unavailable");
+    assert.equal(mounted.error, null);
+    assert.ok(mounted.relationWitnesses !== undefined, "mounted relation geometry witness is unavailable");
+    assert.ok(mounted.surfaceWitness !== undefined, "mounted relation surface witness is unavailable");
+    assertMountedRelationWitnessCoverage(mounted.relationWitnesses, mounted.surfaceWitness);
+
+    const surfaceWitness = mounted.surfaceWitness;
+    const emptyWitnessOutput = failureOutput(() => assertMountedRelationWitnessCoverage([], surfaceWitness));
+    assert.equal(emptyWitnessOutput, "mounted relation geometry witness is empty");
+
+    for (const witness of mounted.relationWitnesses) {
+      for (const [endpoint, position] of [["source", witness.source], ["target", witness.target]] as const) {
+        const pickedId = await pickMountedRelationAtGraphPosition(page, position);
+        assert.equal(
+          pickedId,
+          witness.id,
+          `mounted picker does not use relation witness ${endpoint} endpoint for ${witness.id}`,
+        );
+      }
+    }
+    context.diagnostic(
+      `mounted relation witness covered ${mounted.relationWitnesses.length} drawn relation(s): `
+        + `${mounted.relationWitnesses.map((witness) => witness.id).join(", ")}; empty-witness control: ${emptyWitnessOutput}`,
+    );
+    await page.evaluate(() => window.__mountedRelationGeometryWitness?.destroy?.());
+    assert.deepEqual(browserErrors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
 test("resource registry disposes registered resources exactly once", () => {
   const registry = new ResourceRegistry();
   const geometry = registry.registerGeometry(new THREE.BufferGeometry());
@@ -274,6 +398,98 @@ test("repeated renderer resource ownership cycles retain nothing after each tear
   );
   process.stdout.write(`JS retention unknown control observed: ${unknownOutput}\n`);
 });
+
+async function mountedRelationGeometryPageBundle(): Promise<string> {
+  const bundled = await build({
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    target: "es2022",
+    write: false,
+    stdin: {
+      resolveDir: process.cwd(),
+      sourcefile: "mounted-relation-geometry-page.ts",
+      loader: "ts",
+      contents: [
+        "import { toVisualGraph } from \"#adapter/projection.ts\";",
+        "import { mount } from \"#render3f/mount.tsx\";",
+        "const pageWindow = window as typeof window & {",
+        "  __mountedRelationGeometryFixture?: unknown;",
+        "  __mountedRelationGeometryWitness?: unknown;",
+        "};",
+        "try {",
+        "  const graph = toVisualGraph(pageWindow.__mountedRelationGeometryFixture);",
+        "  const relation = graph.edges[0];",
+        "  if (relation === undefined) { throw new Error(\"relation witness fixture has no relation\"); }",
+        "  const singleRelationGraph = {",
+        "    ...graph,",
+        "    nodes: graph.nodes.filter((node) => node.id === relation.source || node.id === relation.target),",
+        "    edges: [relation],",
+        "  };",
+        "  const container = document.createElement(\"div\");",
+        "  container.style.cssText = \"width:640px;height:480px;position:relative;overflow:hidden\";",
+        "  document.body.replaceChildren(container);",
+        "  const handle = mount(container, singleRelationGraph, {",
+        "    morphology: \"stellar\", organization: \"indra\", palette: \"monochrome\",",
+        "    temperature: \"balanced\", theme: \"dark\", lodBand: \"meso\",",
+        "    reducedMotion: true, elapsedMilliseconds: 0,",
+        "  });",
+        "  pageWindow.__mountedRelationGeometryWitness = {",
+        "    error: null,",
+        "    relationWitnesses: handle.readRelationGeometryWitnesses(),",
+        "    surfaceWitness: handle.readSurfaceWitness(),",
+        "    pickEdgeAtGraphPosition(point: { readonly x: number; readonly y: number; readonly z: number }) {",
+        "      const viewport = handle.graphToViewport(point);",
+        "      return handle.pickEdgeAtPoint(viewport.x, viewport.y);",
+        "    },",
+        "    destroy() { handle.destroy(); },",
+        "  };",
+        "} catch (error: unknown) {",
+        "  pageWindow.__mountedRelationGeometryWitness = {",
+        "    error: error instanceof Error ? error.message : String(error),",
+        "  };",
+        "}",
+      ].join("\n"),
+    },
+  });
+  return requiredItem(bundled.outputFiles, 0, "mounted relation geometry page bundle").text;
+}
+
+function assertMountedRelationWitnessCoverage(
+  witnesses: readonly RelationGeometryWitness[],
+  surface: SurfaceWitness,
+): void {
+  assert.ok(witnesses.length > 0, "mounted relation geometry witness is empty");
+  assert.equal(
+    witnesses.length,
+    surface.edgeIds.length,
+    "mounted relation geometry witness does not have one entry per drawn relation",
+  );
+  assert.deepEqual(
+    witnesses.map((witness) => witness.id).sort(),
+    [...surface.edgeIds].sort(),
+    "mounted relation geometry witness ids do not match drawn relation ids",
+  );
+}
+
+async function pickMountedRelationAtGraphPosition(page: Page, position: Coordinates): Promise<string | null> {
+  return page.evaluate((point) => {
+    const picker = window.__mountedRelationGeometryWitness?.pickEdgeAtGraphPosition;
+    if (picker === undefined) {
+      throw new Error("mounted relation picker is unavailable");
+    }
+    return picker(point);
+  }, position);
+}
+
+async function settleMountedRelationGeometryPage(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const nextPaint = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    await nextPaint();
+    await nextPaint();
+    await nextPaint();
+  });
+}
 
 function cameraKindCount(): number {
   return [ORTHOGRAPHIC, PERSPECTIVE].length;
