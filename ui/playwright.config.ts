@@ -10,10 +10,12 @@ const PERFORMANCE_ENABLED = process.env.PERFORMANCE_SUITE === "1";
 const PERFORMANCE_SPEC = "performance.spec.ts";
 const REVIEW3D_ENABLED = process.env.REVIEW3D_CAPTURES === "1";
 const REVIEW3D_SPEC = "review3d.spec.ts";
+const MATRIX_ENABLED = process.env.MATRIX_CAPTURES === "1";
+const MATRIX_SPEC = "matrix.spec.ts";
 // The evidence record is owned by the plain DPR projects alone. Every added suite has to be listed
 // here as well as ignored below: an owner test that also ran one of them would re-initialise the
 // record mid-run, which is the wipe already recorded as CE-14 and worked around by ordering.
-const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED && !PARITY_ENABLED && !PERFORMANCE_ENABLED && !REVIEW3D_ENABLED;
+const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED && !PARITY_ENABLED && !PERFORMANCE_ENABLED && !REVIEW3D_ENABLED && !MATRIX_ENABLED;
 
 const PREPARE_EVIDENCE = [
   "node --input-type=module --eval '",
@@ -69,8 +71,8 @@ export default defineConfig({
     },
   },
   projects: [
-    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC], use: { deviceScaleFactor: 1 } },
-    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC], use: { deviceScaleFactor: 2 } },
+    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC], use: { deviceScaleFactor: 1 } },
+    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC], use: { deviceScaleFactor: 2 } },
     {
       name: "a4",
       testMatch: A4_ENABLED ? A4_SPEC : "a4-disabled.spec.ts",
@@ -109,6 +111,13 @@ export default defineConfig({
       dependencies: ["review3d-dpr-1"],
       testMatch: REVIEW3D_ENABLED ? REVIEW3D_SPEC : "review3d-disabled.spec.ts",
       use: { deviceScaleFactor: 2, viewport: { width: 1_200, height: 800 } },
+    },
+    {
+      // CAP-13 W-C. One DPR deliberately: each fixture cell is a controlled grammar comparison,
+      // not a device-scale review set, and the manifest records the one emitted raster scale.
+      name: "matrix",
+      testMatch: MATRIX_ENABLED ? MATRIX_SPEC : "matrix-disabled.spec.ts",
+      use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
     },
     {
       // CAP-13. Software-rasterised, and every figure it emits says so in its own record.
