@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import { currentTrackedTreeState } from "#test/tracked-tree.ts";
 
@@ -36,6 +38,17 @@ const ARTIFACT_PATHS = {
   ],
 } as const;
 
+const MATRIX_VALIDATION_TARGETS = [
+  {
+    manifestPath: "dist/matrix/discovery-at-question-manifest.json",
+    fixturePath: "fixtures/synthetic/projection/discovery-at-question.json",
+  },
+  {
+    manifestPath: "dist/matrix/indra-community-windows-manifest.json",
+    fixturePath: "fixtures/synthetic/projection/indra/indra-community-windows.json",
+  },
+] as const;
+
 type Source =
   | { readonly kind: "artifactCheck"; readonly artifact: keyof typeof ARTIFACT_PATHS; readonly checkName: string }
   | { readonly kind: "artifactBound"; readonly artifact: keyof typeof ARTIFACT_PATHS; readonly note: string }
@@ -47,7 +60,7 @@ type Criterion = { readonly id: string; readonly claim: string; readonly source:
 
 test("every CAP-13 criterion resolves to a machine-readable status", async () => {
   const criteria = await readCriteria();
-  assert.equal(criteria.length, 22, "the register must carry the seventeen base and five extension criteria");
+  assert.equal(criteria.length, 25, "the register must carry the seventeen base and eight extension criteria");
 
   const unresolved: string[] = [];
   for (const criterion of criteria) {
@@ -57,6 +70,87 @@ test("every CAP-13 criterion resolves to a machine-readable status", async () =>
     }
   }
   assert.deepEqual(unresolved, [], "a criterion that cannot be resolved is undischarged, not silent");
+});
+
+test("matrix manifests independently validate governed topology from fixtures and captures", async () => {
+  for (const target of MATRIX_VALIDATION_TARGETS) {
+    const fixture = await readIndependentMatrixFixture(target.fixturePath);
+    const manifest = await readArtifact(target.manifestPath);
+    const captures = requiredArray(manifest["captures"], `${target.manifestPath} captures`);
+    assert.equal(captures.length, 12, `${target.manifestPath} must contain all twelve matrix cells`);
+    for (const [index, candidate] of captures.entries()) {
+      const capture = requiredRecord(candidate, `${target.manifestPath} capture ${index}`);
+      const resolved = requiredRecord(capture["resolved"], `${target.manifestPath} capture ${index} resolved topology`);
+      assert.equal(resolved["nodeCount"], fixture.nodeIds.length, `${target.manifestPath} capture ${index} node count`);
+      assert.equal(resolved["edgeCount"], fixture.relationIds.length, `${target.manifestPath} capture ${index} relation count`);
+      assert.equal(resolved["identifierDigest"], fixture.identifierDigest, `${target.manifestPath} capture ${index} identifier digest`);
+      assert.equal(resolved["incidenceDigest"], fixture.incidenceDigest, `${target.manifestPath} capture ${index} incidence digest`);
+    }
+  }
+});
+
+test("matrix manifests independently validate one submitted stroke per governed relation identifier", async () => {
+  for (const target of MATRIX_VALIDATION_TARGETS) {
+    const fixture = await readIndependentMatrixFixture(target.fixturePath);
+    const manifest = await readArtifact(target.manifestPath);
+    const captures = requiredArray(manifest["captures"], `${target.manifestPath} captures`);
+    assert.equal(captures.length, 12, `${target.manifestPath} must contain all twelve matrix cells`);
+    for (const [index, candidate] of captures.entries()) {
+      const capture = requiredRecord(candidate, `${target.manifestPath} capture ${index}`);
+      const label = String(capture["fileName"] ?? `capture ${index}`);
+      const stroke = requiredRecord(capture["drawnStrokeWitness"], `${target.manifestPath} ${label} stroke witness`);
+      const drawnRelationIds = requiredStringArray(
+        stroke["drawnRelationIds"],
+        `${target.manifestPath} ${label} drawn relation identifiers`,
+      );
+      assertIndependentRelationIdentifierMultiset(drawnRelationIds, fixture.relationIds, label);
+      const recomputedDigest = relationIdentifierDigest(drawnRelationIds);
+      assert.equal(
+        stroke["drawnRelationIdentifierDigest"],
+        recomputedDigest,
+        `${target.manifestPath} ${label} recorded drawn-relation digest`,
+      );
+      assert.equal(recomputedDigest, fixture.relationIdentifierDigest, `${target.manifestPath} ${label} governed relation digest`);
+      const submissionDigests = requiredStringArray(
+        stroke["submissionIdentifierDigests"],
+        `${target.manifestPath} ${label} submission identifier digests`,
+      );
+      assert.equal(submissionDigests.length, stroke["submissionCount"], `${target.manifestPath} ${label} submission count`);
+      assert.ok(submissionDigests.length > 0, `${target.manifestPath} ${label} must record a filament submission`);
+      assert.deepEqual(
+        submissionDigests,
+        submissionDigests.map(() => fixture.relationIdentifierDigest),
+        `${target.manifestPath} ${label} every filament submission must establish the governed identifier digest`,
+      );
+    }
+  }
+});
+
+test("matrix negative controls demonstrate the evidence can fail and are restored", async () => {
+  for (const target of MATRIX_VALIDATION_TARGETS) {
+    const manifest = await readArtifact(target.manifestPath);
+    const controls = requiredRecord(manifest["negativeControls"], `${target.manifestPath} negative controls`);
+    for (const name of ["forcedIdenticalMorphologies", "shiftedRaster"] as const) {
+      const control = requiredRecord(controls[name], `${target.manifestPath} ${name} control`);
+      assert.equal(control["restored"], true, `${target.manifestPath} ${name} control must be restored`);
+      assert.equal(typeof control["message"], "string", `${target.manifestPath} ${name} control must name its refusal`);
+    }
+  }
+  const target = MATRIX_VALIDATION_TARGETS[1];
+  const manifest = await readArtifact(target.manifestPath);
+  const controls = requiredRecord(manifest["negativeControls"], `${target.manifestPath} negative controls`);
+  const relationControl = requiredRecord(
+    controls["omittedAndDuplicatedRelation"],
+    `${target.manifestPath} omit-one/duplicate-one control`,
+  );
+  const omitted = requiredString(relationControl["omittedRelationId"], "omitted relation id");
+  const duplicated = requiredString(relationControl["duplicatedRelationId"], "duplicated relation id");
+  const message = requiredString(relationControl["message"], "omit-one/duplicate-one refusal");
+  assert.equal(relationControl["governedRelationCount"], 177);
+  assert.equal(relationControl["controlledRelationCount"], 177, "the identity control must preserve cardinality");
+  assert.equal(relationControl["restored"], true);
+  assert.match(message, new RegExp(`missing=\\[${escapeForPattern(omitted)}\\]`));
+  assert.match(message, new RegExp(`duplicated=\\[${escapeForPattern(duplicated)}×2\\]`));
 });
 
 test("the closure register refuses a criterion with no resolvable source", async () => {
@@ -249,6 +343,114 @@ async function failingOutput(operation: () => Promise<void>): Promise<string> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+type IndependentMatrixFixture = {
+  readonly nodeIds: readonly string[];
+  readonly relationIds: readonly string[];
+  readonly identifierDigest: string;
+  readonly incidenceDigest: string;
+  readonly relationIdentifierDigest: string;
+};
+
+async function readIndependentMatrixFixture(fixturePath: string): Promise<IndependentMatrixFixture> {
+  const fixture = requiredRecord(
+    JSON.parse(await readFile(join("..", fixturePath), "utf8")) as unknown,
+    `${fixturePath} fixture`,
+  );
+  const nodeIds = requiredArray(fixture["nodes"], `${fixturePath} nodes`)
+    .map((candidate, index) => requiredRecordStringField(candidate, "id", `${fixturePath} node ${index}`))
+    .sort();
+  const relations = requiredArray(fixture["edges"], `${fixturePath} relations`)
+    .map((candidate, index) => ({
+      id: requiredRecordStringField(candidate, "id", `${fixturePath} relation ${index}`),
+      source: requiredRecordStringField(candidate, "source", `${fixturePath} relation ${index}`),
+      target: requiredRecordStringField(candidate, "target", `${fixturePath} relation ${index}`),
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const relationIds = relations.map((relation) => relation.id);
+  assert.equal(new Set(nodeIds).size, nodeIds.length, `${fixturePath} node identifiers must be unique`);
+  assert.equal(new Set(relationIds).size, relationIds.length, `${fixturePath} relation identifiers must be unique`);
+  const nodeSet = new Set(nodeIds);
+  assert.ok(
+    relations.every((relation) => nodeSet.has(relation.source) && nodeSet.has(relation.target)),
+    `${fixturePath} relation incidence must stay inside the fixture node set`,
+  );
+  return {
+    nodeIds,
+    relationIds,
+    identifierDigest: sha256Text(JSON.stringify({ nodes: nodeIds, edges: relationIds })),
+    incidenceDigest: sha256Text(JSON.stringify(relations)),
+    relationIdentifierDigest: relationIdentifierDigest(relationIds),
+  };
+}
+
+function assertIndependentRelationIdentifierMultiset(
+  observed: readonly string[],
+  governed: readonly string[],
+  label: string,
+): void {
+  const observedCounts = identifierMultiplicities(observed);
+  const governedCounts = identifierMultiplicities(governed);
+  const missing = governed.filter((id) => (observedCounts.get(id) ?? 0) < (governedCounts.get(id) ?? 0));
+  const duplicated = [...observedCounts.entries()]
+    .filter(([id, count]) => count > (governedCounts.get(id) ?? 0) && governedCounts.has(id))
+    .map(([id, count]) => `${id}×${count}`);
+  const unexpected = [...observedCounts.keys()].filter((id) => !governedCounts.has(id));
+  assert.deepEqual(
+    { missing, duplicated, unexpected, observedCount: observed.length },
+    { missing: [], duplicated: [], unexpected: [], observedCount: governed.length },
+    `${label} drawn relation identifiers must equal the governed multiset`,
+  );
+}
+
+function identifierMultiplicities(ids: readonly string[]): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
+  for (const id of ids) {
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function relationIdentifierDigest(ids: readonly string[]): string {
+  return sha256Text(JSON.stringify([...ids].sort()));
+}
+
+function sha256Text(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function requiredArray(value: unknown, label: string): readonly unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} is not an array`);
+  }
+  return value;
+}
+
+function requiredRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error(`${label} is not an object`);
+  }
+  return value;
+}
+
+function requiredString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value === "") {
+    throw new Error(`${label} is not a non-empty string`);
+  }
+  return value;
+}
+
+function requiredStringArray(value: unknown, label: string): readonly string[] {
+  const values = requiredArray(value, label);
+  if (!values.every((candidate) => typeof candidate === "string" && candidate !== "")) {
+    throw new Error(`${label} contains a non-string identifier`);
+  }
+  return values as readonly string[];
+}
+
+function requiredRecordStringField(candidate: unknown, field: string, label: string): string {
+  return requiredString(requiredRecord(candidate, label)[field], `${label} ${field}`);
 }
 
 test("the closure register refuses a unit-test source that names nothing real", async () => {

@@ -186,26 +186,18 @@
       "id": "B19",
       "claim": "every matrix cell exactly preserves governed fixture node ids, relation ids, incidence, and counts",
       "source": {
-        "kind": "artifactFlag",
-        "artifact": "matrix",
-        "path": [
-          "topologyInvariant",
-          "passed"
-        ],
-        "note": "the matrix oracle compares mounted surfaces to the fixture; the evidence consumer independently re-derives both topology digests and exact governed topology records"
+        "kind": "unitTest",
+        "name": "matrix manifests independently validate governed topology from fixtures and captures",
+        "file": "test/closure-register.test.ts"
       }
     },
     {
       "id": "B20",
-      "claim": "D-028 one submitted filament instance per governed relation in every matrix cell",
+      "claim": "D-028 exactly one submitted filament instance per governed relation identifier in every matrix cell",
       "source": {
-        "kind": "artifactFlag",
-        "artifact": "matrix",
-        "path": [
-          "strokeInvariant",
-          "passed"
-        ],
-        "note": "each capture records the live instanced WebGL filament submission count and the evidence consumer requires it to equal the governed relation count"
+        "kind": "unitTest",
+        "name": "matrix manifests independently validate one submitted stroke per governed relation identifier",
+        "file": "test/closure-register.test.ts"
       }
     },
     {
@@ -232,6 +224,37 @@
           "passed"
         ],
         "note": "the matrix producer and evidence consumer both require the exact two contact-sheet names and decode their persisted PNG pixels"
+      }
+    },
+    {
+      "id": "WS-E",
+      "claim": "closure bar E: coordinator art-direction judgement is recorded against the governed references",
+      "source": {
+        "kind": "humanRecord",
+        "location": "governance",
+        "record": "GR-X",
+        "why": "bar E is explicitly a coordinator art-direction judgement over the completed visual evidence, so replacing it with a repository-authored metric would change the criterion",
+        "outsideRepository": "the judgement belongs to the governance record under the project's public/private boundary; this declaration names the record and the governance gate verifies it"
+      }
+    },
+    {
+      "id": "WS-G",
+      "claim": "closure bar G: cross-project transfer evidence is complete",
+      "source": {
+        "kind": "humanRecord",
+        "location": "governance",
+        "record": "GR-X",
+        "why": "the transfer record covers delivery and acceptance outside this repository, including the governed evidence package and its receiving context, which repository tests cannot attest",
+        "outsideRepository": "the a neighbouring system transfer and acceptance record is governance-held because it names external delivery material; the governance gate verifies the named record"
+      }
+    },
+    {
+      "id": "WS-H",
+      "claim": "closure bar H: negative controls demonstrate that the matrix evidence can fail and is restored afterwards",
+      "source": {
+        "kind": "unitTest",
+        "name": "matrix negative controls demonstrate the evidence can fail and are restored",
+        "file": "test/closure-register.test.ts"
       }
     }
   ]
