@@ -6,7 +6,8 @@ import type { CameraKind } from "#engine/camera-kind.ts";
 import { assertVisualGraphFieldRegister, createRenderedStateCarrier } from "#engine/contract.ts";
 import type { Coordinates, RenderedStateCarrier, VisualGraph } from "#engine/contract.ts";
 import type { GraphRendererHandle, MultiCameraRendererHandle,
-  ResourceCountingRendererHandle, NodeFootprintWitness, RetainedResourceWitness, SurfaceWitness, WorldAnchorWitness } from "#engine/renderer-handle.ts";
+  RelationGeometryRendererHandle, RelationGeometryWitness, ResourceCountingRendererHandle,
+  NodeFootprintWitness, RetainedResourceWitness, SurfaceWitness, WorldAnchorWitness } from "#engine/renderer-handle.ts";
 import { createVisualState, deserializeVisualState, serializeVisualState } from "#engine/visual-state.ts";
 import type { VisualState } from "#engine/visual-state.ts";
 import { mount as mountSigma } from "#render2d/index.ts";
@@ -59,10 +60,15 @@ export type PickingTargetWitness = {
   readonly unavailableReason: string | null;
 };
 
+/** This names whether P5 relation geometry came from the mounted renderer or Sigma's retained rebuild coverage. */
+export type RelationPickingGeometrySource = "MOUNTED_RENDERER" | "REBUILT_SCENE";
+
 /** This records every node and relation the mounted renderer exposes to its picking API. */
 export type PickingTargetSetWitness = {
   readonly renderer: ParityRenderer;
   readonly surface: SurfaceWitness;
+  /** This identifies the relation-geometry source for this renderer and never infers a missing capability. */
+  readonly relationGeometrySource: RelationPickingGeometrySource;
   readonly nodes: readonly PickingTargetWitness[];
   readonly relations: readonly PickingTargetWitness[];
 };
@@ -576,11 +582,8 @@ export async function installParityPage(): Promise<void> {
           const pickedId = active.handle.pickNodeAtPosition(point);
           return pickingTargetAtPoint(id, point, pickedId, (footprint.coreRadiusPx * 2) * window.devicePixelRatio);
         });
-        const resolvedRelations = new Map(buildScene(
-          active.graph,
-          active.handle.readVisualState(),
-          active.options.calibration,
-        ).edges.map((relation) => [relation.id, relation]));
+        const relationGeometry = relationGeometryForP5(active, renderer);
+        const resolvedRelations = new Map(relationGeometry.witnesses.map((relation) => [relation.id, relation]));
         const relations = sortedIds(surface.edgeIds).map((id): PickingTargetWitness => {
           const relation = resolvedRelations.get(id);
           if (relation === undefined) {
@@ -592,13 +595,13 @@ export async function installParityPage(): Promise<void> {
               unavailableReason: "mounted surface has no resolved relation geometry",
             };
           }
-          const point = active.handle.graphToViewport(quadraticMidpoint(relation.path, relation.controlPoint));
-          const projectedExtent = relationProjectedExtent(relation.path, relation.controlPoint, active.handle.graphToViewport)
+          const point = active.handle.graphToViewport(quadraticMidpoint(relation.source, relation.controlPoint, relation.target));
+          const projectedExtent = relationProjectedExtent(relation.source, relation.controlPoint, relation.target, active.handle.graphToViewport)
             * window.devicePixelRatio;
           const pickedId = active.handle.pickEdgeAtPoint(point.x, point.y);
           return pickingTargetAtPoint(id, point, pickedId, projectedExtent);
         });
-        return { renderer, surface, nodes, relations };
+        return { renderer, surface, relationGeometrySource: relationGeometry.source, nodes, relations };
       },
       async mountZeroToleranceControl(renderer: ParityRenderer): Promise<ZeroToleranceWitness> {
         const zeroToleranceCalibration = {
@@ -732,6 +735,41 @@ if (typeof window !== "undefined") {
   void installParityPage();
 }
 
+type P5RelationGeometryWitness = Pick<RelationGeometryWitness, "id" | "source" | "controlPoint" | "target">;
+
+type P5RelationGeometry = {
+  readonly source: RelationPickingGeometrySource;
+  readonly witnesses: readonly P5RelationGeometryWitness[];
+};
+
+/** This reads Three's picker-held geometry while preserving Sigma's decided rebuild-based relation coverage. */
+function relationGeometryForP5(active: MountedRenderer, renderer: ParityRenderer): P5RelationGeometry {
+  if (renderer === "sigma-2d") {
+    return {
+      source: "REBUILT_SCENE",
+      witnesses: buildScene(
+        active.graph,
+        active.handle.readVisualState(),
+        active.options.calibration,
+      ).edges.map(rebuiltP5RelationGeometry),
+    };
+  }
+  return {
+    source: "MOUNTED_RENDERER",
+    witnesses: requiredRelationGeometryHandle(active.handle, renderer).readRelationGeometryWitnesses(),
+  };
+}
+
+/** This copies the endpoint form P5 consumes from Sigma's existing rebuilt relation scene. */
+function rebuiltP5RelationGeometry(relation: Scene["edges"][number]): P5RelationGeometryWitness {
+  const source = relation.path[0];
+  const target = relation.path[relation.path.length - 1];
+  if (source === undefined || target === undefined) {
+    throw new Error("P5 resolved relation has no endpoint path");
+  }
+  return { id: relation.id, source, controlPoint: relation.controlPoint, target };
+}
+
 /** This narrows a handle to one that can enumerate its own graphics resources and does not assume a renderer can. */
 function resourceCountingHandle(handle: GraphRendererHandle): ResourceCountingRendererHandle | null {
   const candidate = handle as { readonly readRetainedResources?: unknown };
@@ -783,6 +821,14 @@ function requiredMultiCameraHandle(handle: GraphRendererHandle, renderer: Parity
     throw new Error(`${renderer} is missing MultiCameraRendererHandle ${missing.join(", ")}`);
   }
   return handle as MultiCameraRendererHandle;
+}
+
+/** This narrows only the Three P5 path to its declared mounted relation-geometry capability. */
+function requiredRelationGeometryHandle(handle: GraphRendererHandle, renderer: Exclude<ParityRenderer, "sigma-2d">): RelationGeometryRendererHandle {
+  if (typeof (handle as { readonly readRelationGeometryWitnesses?: unknown }).readRelationGeometryWitnesses !== "function") {
+    throw new Error(`${renderer} is missing RelationGeometryRendererHandle readRelationGeometryWitnesses`);
+  }
+  return handle as RelationGeometryRendererHandle;
 }
 
 function mountedWitness(renderer: ParityRenderer, handle: GraphRendererHandle): MountedParityWitness {
@@ -901,14 +947,10 @@ function isViewportPoint(point: { readonly x: number; readonly y: number }): boo
 }
 
 function quadraticMidpoint(
-  path: readonly Coordinates[],
+  source: Coordinates,
   controlPoint: Coordinates,
+  target: Coordinates,
 ): Coordinates {
-  const source = path[0];
-  const target = path[path.length - 1];
-  if (source === undefined || target === undefined) {
-    throw new Error("P5 resolved relation has no endpoint path");
-  }
   return {
     x: (source.x + (2 * controlPoint.x) + target.x) / 4,
     y: (source.y + (2 * controlPoint.y) + target.y) / 4,
@@ -917,15 +959,11 @@ function quadraticMidpoint(
 }
 
 function relationProjectedExtent(
-  path: readonly Coordinates[],
+  source: Coordinates,
   controlPoint: Coordinates,
+  target: Coordinates,
   project: (point: Coordinates) => { readonly x: number; readonly y: number },
 ): number {
-  const source = path[0];
-  const target = path[path.length - 1];
-  if (source === undefined || target === undefined) {
-    return 0;
-  }
   const points = [project(source), project(controlPoint), project(target)];
   return Math.max(...points.flatMap((left, leftIndex) => points.slice(leftIndex + 1).map((right) => Math.hypot(
     left.x - right.x,
