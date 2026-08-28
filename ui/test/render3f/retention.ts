@@ -12,10 +12,10 @@ export function assertRetainedResourcesDoNotGrow(
   }
   const beforeJs = requiredJsRetention(before, "before switching");
   const afterJs = requiredJsRetention(after, "after switching");
-  if (afterJs.retainedSceneReferences > beforeJs.retainedSceneReferences) {
+  if (afterJs.value.retainedSceneReferences > beforeJs.value.retainedSceneReferences) {
     throw new TypeError(
-      `renderer JS retention grew from ${beforeJs.retainedSceneReferences} to `
-        + `${afterJs.retainedSceneReferences} retained scene references`,
+      `renderer JS retention grew from ${beforeJs.value.retainedSceneReferences} to `
+        + `${afterJs.value.retainedSceneReferences} retained scene references`,
     );
   }
 }
@@ -23,7 +23,7 @@ export function assertRetainedResourcesDoNotGrow(
 function requiredJsRetention(
   witness: RetainedResourceWitness,
   phase: string,
-): { readonly status: "MEASURED"; readonly retainedSceneReferences: number } {
+): { readonly status: "PASS"; readonly value: { readonly retainedSceneReferences: number } } {
   const measurement = witness.jsRetention;
   if (measurement === undefined) {
     throw new TypeError(`renderer JS retention is UNKNOWN ${phase}: the witness omitted its measurement`);

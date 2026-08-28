@@ -21,7 +21,11 @@ const CRITERIA_PATH = ["test", "cap13-criteria.json"].join("/");
 const ARTIFACT_PATHS = {
   parity: ["dist", "evidence", "parity.json"].join("/"),
   performance: ["dist", "evidence", "performance.json"].join("/"),
-  review3d: ["dist", "review3d", "manifest.json"].join("/"),
+  // Two manifests, one per device-pixel ratio. The register named a single top-level manifest that
+  // the capture suite has never written, so B4 and B10 could not resolve — and the failure was read
+  // as a stale artifact several times before it was read as a defect. Requiring the flag in BOTH is
+  // also strictly stronger than the file it was looking for would have been.
+  review3d: ["dist/review3d/dpr-1/manifest.json", "dist/review3d/dpr-2/manifest.json"],
 } as const;
 
 type Source =
@@ -92,7 +96,7 @@ async function resolve(criterion: Criterion): Promise<string> {
 async function resolveOrThrow(criterion: Criterion): Promise<void> {
   const source = criterion.source;
   if (source.kind === "artifactCheck") {
-    const parsed = await readArtifact(ARTIFACT_PATHS[source.artifact]);
+    const parsed = await readArtifact(requiredFirstArtifactPath(source.artifact));
     const checks = Array.isArray(parsed["checks"]) ? parsed["checks"] as readonly Record<string, unknown>[] : [];
     const matching = checks.filter((check) => String(check["checkName"] ?? "").startsWith(source.checkName));
     if (matching.length === 0) {
@@ -105,7 +109,7 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
     return;
   }
   if (source.kind === "artifactBound") {
-    const parsed = await readArtifact(ARTIFACT_PATHS[source.artifact]);
+    const parsed = await readArtifact(requiredFirstArtifactPath(source.artifact));
     if (!isRecord(parsed["run"]) || !isRecord((parsed["run"] as Record<string, unknown>)["trackedTree"])) {
       throw new Error(`${criterion.id} artifact carries no tracked-tree identity`);
     }
@@ -131,13 +135,15 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
     return;
   }
   if (source.kind === "artifactFlag") {
-    const parsed = await readArtifact(ARTIFACT_PATHS[source.artifact]);
-    let value: unknown = parsed;
-    for (const segment of source.path) {
-      value = isRecord(value) ? value[segment] : undefined;
-    }
-    if (value !== true) {
-      throw new Error(`${criterion.id} flag ${source.path.join(".")} in the ${source.artifact} artifact is ${String(value)}, not true`);
+    for (const path of artifactPaths(source.artifact)) {
+      const parsed = await readArtifact(path);
+      let value: unknown = parsed;
+      for (const segment of source.path) {
+        value = isRecord(value) ? value[segment] : undefined;
+      }
+      if (value !== true) {
+        throw new Error(`${criterion.id} flag ${source.path.join(".")} in ${path} is ${String(value)}, not true`);
+      }
     }
     return;
   }
@@ -166,6 +172,21 @@ async function readCriteria(): Promise<readonly Criterion[]> {
     throw new Error("the criteria register is malformed");
   }
   return parsed["criteria"] as readonly Criterion[];
+}
+
+/** This returns every file an artifact spans and does not silently read only the first of several. */
+function artifactPaths(artifact: keyof typeof ARTIFACT_PATHS): readonly string[] {
+  const value = ARTIFACT_PATHS[artifact];
+  return typeof value === "string" ? [value] : value;
+}
+
+/** This names the single file a one-file artifact spans and refuses a multi-file artifact. */
+function requiredFirstArtifactPath(artifact: keyof typeof ARTIFACT_PATHS): string {
+  const [only, ...rest] = artifactPaths(artifact);
+  if (only === undefined || rest.length > 0) {
+    throw new Error(`${artifact} spans ${artifactPaths(artifact).length} files; this source kind reads one`);
+  }
+  return only;
 }
 
 async function readArtifact(path: string): Promise<Record<string, unknown>> {

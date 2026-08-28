@@ -61,8 +61,11 @@ export type RetainedResourceWitness = {
    * callers asserting JS retention must treat omission as UNKNOWN, never as zero.
    */
   readonly jsRetention?: {
-    readonly status: "MEASURED";
-    readonly retainedSceneReferences: number;
+    // PASS with a value, in the governed status vocabulary of PASS, NOT_RUN and UNKNOWN. This said
+    // MEASURED, a fourth member invented at one emission site, which the evidence checker refuses —
+    // and which reads as a measurement everywhere a consumer does not know to special-case it.
+    readonly status: "PASS";
+    readonly value: { readonly retainedSceneReferences: number };
   } | {
     readonly status: "UNKNOWN";
     readonly reason: string;

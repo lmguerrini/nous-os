@@ -362,8 +362,8 @@ test("repeated renderer resource ownership cycles retain nothing after each tear
         textures: 1,
         domOverlayNodes: 1,
         jsRetention: {
-          status: "MEASURED",
-          retainedSceneReferences: retained.length,
+          status: "PASS",
+          value: { retainedSceneReferences: retained.length },
         },
       };
     },

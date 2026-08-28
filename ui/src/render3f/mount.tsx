@@ -392,8 +392,11 @@ export function mount(
       return {
         ...registry.readRetainedResources(labels.readNodeCount()),
         jsRetention: {
-          status: "MEASURED",
-          retainedSceneReferences: retainedSceneReferences.size,
+          // PASS with a value, not a status of its own. The governed vocabulary is PASS, NOT_RUN and
+          // UNKNOWN; a fourth member invented at one emission site reads as a measurement everywhere
+          // it is consumed and is refused by the artifact checker, which is how this was found.
+          status: "PASS",
+          value: { retainedSceneReferences: retainedSceneReferences.size },
         },
       };
     },
