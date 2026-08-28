@@ -39,7 +39,12 @@ type ParsedArtifact = {
 const ARTIFACTS = [
   { label: "parity evidence", path: ["dist", "evidence", "parity.json"].join("/"), mustPass: true },
   { label: "performance evidence", path: ["dist", "evidence", "performance.json"].join("/"), mustPass: false },
-  { label: "review3d manifest", path: ["dist", "review3d", "manifest.json"].join("/"), mustPass: true },
+  // One manifest per device-pixel ratio; there is no top-level file and there never was. Both are
+  // required, so a run that produced only one cannot certify. This path was wrong in TWO files and
+  // the repair reached one of them first — the fourth time in this capability that a fix landed on
+  // some of a duplicated thing's sites and not others.
+  { label: "review3d manifest (dpr-1)", path: "dist/review3d/dpr-1/manifest.json", mustPass: true },
+  { label: "review3d manifest (dpr-2)", path: "dist/review3d/dpr-2/manifest.json", mustPass: true },
 ] as const;
 
 test("evidence artifacts are currently certifiable against the tracked tree", async () => {
