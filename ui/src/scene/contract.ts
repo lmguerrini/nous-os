@@ -168,6 +168,12 @@ export type SceneAggregate = {
   readonly center: Coordinates;
   readonly radius: number;
   readonly windowPaddingPx: number;
+  /** This is the resolved interior-fill peak alpha at the portal's core and does not change the rim stroke. */
+  readonly windowFillOpacityPermille: number;
+  /** This is the resolved fraction of the aggregate radius held at the fill's peak before the vignette begins. */
+  readonly windowFillCoreRadiusFractionPermille: number;
+  /** This is the resolved vignette falloff exponent shaping the fill from its core to the rim. */
+  readonly windowFillFalloffPermille: number;
   readonly token: OklchToken;
   readonly strokeWidthPx: number;
   readonly strokeOpacityPermille: number;
@@ -238,7 +244,11 @@ export const SCENE_FIELD_REGISTER = {
     "id", "source", "target", "junctionStartGeometry", "junctionEndGeometry", "terminalStartTreatment", "terminalEndTreatment", "path", "controlPoint", "bodyWidthPx", "widthStartPx", "widthEndPx", "pickTolerancePx", "minimumDeviceWidthPx", "token", "opacityPermille",
     "renderedStateChannel", "labelCandidacy", "interaction", "lodBand", "filament", "propagation", "stackingPriority",
   ],
-  aggregate: ["id", "kind", "members", "center", "radius", "windowPaddingPx", "token", "strokeWidthPx", "strokeOpacityPermille", "bounds"],
+  aggregate: [
+    "id", "kind", "members", "center", "radius", "windowPaddingPx",
+    "windowFillOpacityPermille", "windowFillCoreRadiusFractionPermille", "windowFillFalloffPermille",
+    "token", "strokeWidthPx", "strokeOpacityPermille", "bounds",
+  ],
   coordinates: ["x", "y", "z"],
   token: ["lightnessPermille", "chromaPermille", "hueDegrees"],
   renderedStateChannel: ["lightnessDeltaPermille"],
@@ -361,6 +371,9 @@ function assertAggregate(value: unknown, path: string): void {
   assertCoordinates(aggregate.center, `${path}.center`);
   assertFiniteNumber(aggregate.radius, `${path}.radius`);
   assertSafeInteger(aggregate.windowPaddingPx, `${path}.windowPaddingPx`);
+  assertSafeInteger(aggregate.windowFillOpacityPermille, `${path}.windowFillOpacityPermille`);
+  assertSafeInteger(aggregate.windowFillCoreRadiusFractionPermille, `${path}.windowFillCoreRadiusFractionPermille`);
+  assertSafeInteger(aggregate.windowFillFalloffPermille, `${path}.windowFillFalloffPermille`);
   assertToken(aggregate.token, `${path}.token`);
   assertFiniteNumber(aggregate.strokeWidthPx, `${path}.strokeWidthPx`);
   assertSafeInteger(aggregate.strokeOpacityPermille, `${path}.strokeOpacityPermille`);

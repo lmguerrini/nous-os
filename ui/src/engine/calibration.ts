@@ -24,6 +24,8 @@ export type MorphologyMaterial = {
   readonly haloIntensityPermille: number;
   /** This is the shared-scene halo peak and does not alter the legacy renderer's flat halo intensity. */
   readonly sharedSceneHaloIntensityPermille: number;
+  /** This is the shared-scene halo radius multiplier and does not alter the legacy renderer's frozen halo extent. */
+  readonly sharedSceneHaloRadiusMultiplierPermille: number;
   /** This is the shared-scene minimum retained fraction of the halo peak at zero rendered prominence, scaled by one thousand, and does not affect the legacy renderer. */
   readonly haloProminenceFloorPermille: number;
   readonly terminalSizeMultiplierPermille: number;
@@ -170,6 +172,12 @@ export type CalibrationProfile = {
     readonly disclosureThreshold: number;
     readonly windowPaddingPx: number;
     readonly windowStrokeAlphaPermille: number;
+    /** This is the aggregate interior fill's peak alpha at the portal's core, scaled by one thousand, and does not change the rim stroke. */
+    readonly windowFillOpacityPermille: number;
+    /** This is the fraction of the aggregate radius held at the fill's peak before the vignette begins, scaled by one thousand. */
+    readonly windowFillCoreRadiusFractionPermille: number;
+    /** This is the vignette falloff exponent shaping the fill from its core to the rim, scaled by one thousand, and does not change stroke width. */
+    readonly windowFillFalloffPermille: number;
   };
   readonly camera: {
     readonly orthographic: {
@@ -281,6 +289,7 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "morphology.stellar.haloRadiusMultiplierPermille",
   "morphology.stellar.haloIntensityPermille",
   "morphology.stellar.sharedSceneHaloIntensityPermille",
+  "morphology.stellar.sharedSceneHaloRadiusMultiplierPermille",
   "morphology.stellar.haloProminenceFloorPermille",
   "morphology.stellar.terminalSizeMultiplierPermille",
   "morphology.stellar.sharedSceneTerminalSizeMultiplierPermille",
@@ -306,6 +315,7 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "morphology.neural.haloRadiusMultiplierPermille",
   "morphology.neural.haloIntensityPermille",
   "morphology.neural.sharedSceneHaloIntensityPermille",
+  "morphology.neural.sharedSceneHaloRadiusMultiplierPermille",
   "morphology.neural.haloProminenceFloorPermille",
   "morphology.neural.terminalSizeMultiplierPermille",
   "morphology.neural.sharedSceneTerminalSizeMultiplierPermille",
@@ -331,6 +341,7 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "morphology.mycelium.haloRadiusMultiplierPermille",
   "morphology.mycelium.haloIntensityPermille",
   "morphology.mycelium.sharedSceneHaloIntensityPermille",
+  "morphology.mycelium.sharedSceneHaloRadiusMultiplierPermille",
   "morphology.mycelium.haloProminenceFloorPermille",
   "morphology.mycelium.terminalSizeMultiplierPermille",
   "morphology.mycelium.sharedSceneTerminalSizeMultiplierPermille",
@@ -361,6 +372,9 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "aggregate.disclosureThreshold",
   "aggregate.windowPaddingPx",
   "aggregate.windowStrokeAlphaPermille",
+  "aggregate.windowFillOpacityPermille",
+  "aggregate.windowFillCoreRadiusFractionPermille",
+  "aggregate.windowFillFalloffPermille",
   "camera.orthographic.panSensitivityPermille",
   "camera.orthographic.zoomSensitivityPermille",
   "camera.orthographic.minimumZoomPermille",
@@ -403,13 +417,20 @@ export const DEFAULT_CALIBRATION: CalibrationProfile = {
   filament: { baseWidthPx: 1,
     pickTolerancePx: 2, opacityPermille: 430, curvatureMagnitudePermille: 160, minimumWidthFactorPermille: 120, minimumDeviceWidthPermille: 1500, endpointLuminanceGainPermille: 1200, midSpanLuminanceFactorPermille: 650 },
   morphology: {
-    stellar: { nodeSizeMultiplierPermille: 1100, filamentWidthMultiplierPermille: 900, filamentWidthStartPermille: 650, filamentWidthEndPermille: 650, sharedSceneFilamentWidthMultiplierPermille: 1600, sharedSceneFilamentWidthStartPermille: 1000, sharedSceneFilamentWidthEndPermille: 1000, filamentWobbleAmplitudePermille: 15, junctionThickeningPermille: 0, sheathScalePermille: 2700, sheathAlphaPermille: 60, coreScalePermille: 400, hotMixPermille: 0, hotAlphaPermille: 0, hotCoreMaximumHop: 0, filamentPhaseSeed: 17, wobbleFrequencyMilliradians: 6283, opacityPermille: 1000, curvatureMagnitudePermille: 700, haloRadiusMultiplierPermille: 2000, haloIntensityPermille: 440, sharedSceneHaloIntensityPermille: 550, haloProminenceFloorPermille: 80, terminalSizeMultiplierPermille: 1000, sharedSceneTerminalSizeMultiplierPermille: 700 },
-    neural: { nodeSizeMultiplierPermille: 900, filamentWidthMultiplierPermille: 1050, filamentWidthStartPermille: 1800, filamentWidthEndPermille: 500, sharedSceneFilamentWidthMultiplierPermille: 1800, sharedSceneFilamentWidthStartPermille: 2200, sharedSceneFilamentWidthEndPermille: 900, filamentWobbleAmplitudePermille: 80, junctionThickeningPermille: 800, sheathScalePermille: 2700, sheathAlphaPermille: 130, coreScalePermille: 400, hotMixPermille: 850, hotAlphaPermille: 950, hotCoreMaximumHop: 2, filamentPhaseSeed: 31, wobbleFrequencyMilliradians: 9425, opacityPermille: 900, curvatureMagnitudePermille: 1150, haloRadiusMultiplierPermille: 1000, haloIntensityPermille: 900, sharedSceneHaloIntensityPermille: 260, haloProminenceFloorPermille: 500, terminalSizeMultiplierPermille: 1000, sharedSceneTerminalSizeMultiplierPermille: 350 },
-    mycelium: { nodeSizeMultiplierPermille: 1000, filamentWidthMultiplierPermille: 950, filamentWidthStartPermille: 1250, filamentWidthEndPermille: 1250, sharedSceneFilamentWidthMultiplierPermille: 1800, sharedSceneFilamentWidthStartPermille: 1150, sharedSceneFilamentWidthEndPermille: 1150, filamentWobbleAmplitudePermille: 240, junctionThickeningPermille: 750, sheathScalePermille: 2700, sheathAlphaPermille: 200, coreScalePermille: 400, hotMixPermille: 0, hotAlphaPermille: 0, hotCoreMaximumHop: 0, filamentPhaseSeed: 47, wobbleFrequencyMilliradians: 18850, opacityPermille: 820, curvatureMagnitudePermille: 1350, haloRadiusMultiplierPermille: 620, haloIntensityPermille: 170, sharedSceneHaloIntensityPermille: 140, haloProminenceFloorPermille: 700, terminalSizeMultiplierPermille: 500, sharedSceneTerminalSizeMultiplierPermille: 500 },
+    stellar: { nodeSizeMultiplierPermille: 1100, filamentWidthMultiplierPermille: 900, filamentWidthStartPermille: 650, filamentWidthEndPermille: 650, sharedSceneFilamentWidthMultiplierPermille: 1600, sharedSceneFilamentWidthStartPermille: 1000, sharedSceneFilamentWidthEndPermille: 1000, filamentWobbleAmplitudePermille: 15, junctionThickeningPermille: 0, sheathScalePermille: 2700, sheathAlphaPermille: 60, coreScalePermille: 400, hotMixPermille: 0, hotAlphaPermille: 0, hotCoreMaximumHop: 0, filamentPhaseSeed: 17, wobbleFrequencyMilliradians: 6283, opacityPermille: 1000, curvatureMagnitudePermille: 700, haloRadiusMultiplierPermille: 2000, haloIntensityPermille: 440, sharedSceneHaloIntensityPermille: 550, sharedSceneHaloRadiusMultiplierPermille: 1150, haloProminenceFloorPermille: 80, terminalSizeMultiplierPermille: 1000, sharedSceneTerminalSizeMultiplierPermille: 700 },
+    neural: { nodeSizeMultiplierPermille: 900, filamentWidthMultiplierPermille: 1050, filamentWidthStartPermille: 1800, filamentWidthEndPermille: 500, sharedSceneFilamentWidthMultiplierPermille: 1800, sharedSceneFilamentWidthStartPermille: 2200, sharedSceneFilamentWidthEndPermille: 900, filamentWobbleAmplitudePermille: 80, junctionThickeningPermille: 800, sheathScalePermille: 2700, sheathAlphaPermille: 130, coreScalePermille: 400, hotMixPermille: 850, hotAlphaPermille: 950, hotCoreMaximumHop: 2, filamentPhaseSeed: 31, wobbleFrequencyMilliradians: 9425, opacityPermille: 900, curvatureMagnitudePermille: 1150, haloRadiusMultiplierPermille: 1000, haloIntensityPermille: 900, sharedSceneHaloIntensityPermille: 260, sharedSceneHaloRadiusMultiplierPermille: 820, haloProminenceFloorPermille: 500, terminalSizeMultiplierPermille: 1000, sharedSceneTerminalSizeMultiplierPermille: 350 },
+    mycelium: { nodeSizeMultiplierPermille: 1000, filamentWidthMultiplierPermille: 950, filamentWidthStartPermille: 1250, filamentWidthEndPermille: 1250, sharedSceneFilamentWidthMultiplierPermille: 1800, sharedSceneFilamentWidthStartPermille: 1150, sharedSceneFilamentWidthEndPermille: 1150, filamentWobbleAmplitudePermille: 240, junctionThickeningPermille: 750, sheathScalePermille: 2700, sheathAlphaPermille: 200, coreScalePermille: 400, hotMixPermille: 0, hotAlphaPermille: 0, hotCoreMaximumHop: 0, filamentPhaseSeed: 47, wobbleFrequencyMilliradians: 18850, opacityPermille: 820, curvatureMagnitudePermille: 1350, haloRadiusMultiplierPermille: 620, haloIntensityPermille: 170, sharedSceneHaloIntensityPermille: 140, sharedSceneHaloRadiusMultiplierPermille: 560, haloProminenceFloorPermille: 700, terminalSizeMultiplierPermille: 500, sharedSceneTerminalSizeMultiplierPermille: 500 },
   },
   lod: { bandThresholds: [0, 250, 500, 750], hysteresisMarginPermille: 50, crossfadeDurationMs: 220, macroNodeSizeMultiplierPermille: 1250, macroFilamentWidthMultiplierPermille: 500, macroAggregateOutlineWidthMultiplierPermille: 1000, macroAggregateOutlineAlphaPermille: 200, microHopDistanceLightnessStepPermille: 60, minimumAdjacentPixelDeltaPermille: 1 },
   labels: { densityCap: 12, nodeLabelSizePx: 10, nodeLabelOpacityPermille: 520, edgeDensityCap: 3, edgeLabelSizePx: 9, edgeLabelOpacityPermille: 420, edgeLabelFocusOpacityPermille: 700, edgeLabelSelectedOpacityPermille: 920, edgeFocusPriorityBoost: 600, edgeSelectionPriorityBoost: 1000, priorityWeights: { node: 1000, edge: 500, assertion: 900, bridge: 1100 }, collisionPaddingPx: 5 },
-  aggregate: { disclosureThreshold: 12, windowPaddingPx: 14, windowStrokeAlphaPermille: 260 },
+  aggregate: {
+    disclosureThreshold: 12,
+    windowPaddingPx: 14,
+    windowStrokeAlphaPermille: 260,
+    windowFillOpacityPermille: 180,
+    windowFillCoreRadiusFractionPermille: 550,
+    windowFillFalloffPermille: 1800,
+  },
   camera: {
     orthographic: { panSensitivityPermille: 1000, zoomSensitivityPermille: 1700, minimumZoomPermille: 250, maximumZoomPermille: 4000 },
     perspective: { orbitSensitivityPermille: 1000, dollySensitivityPermille: 1000, panSensitivityPermille: 1000, minimumDollyPermille: 500, maximumDollyPermille: 10000 },

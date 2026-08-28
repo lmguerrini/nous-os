@@ -145,7 +145,7 @@ export function applyMorphology(
     return {
       id: node.id,
       coreSizePx: renderedCore,
-      haloRadiusPx: ((renderedCore * calibration.luminance.haloRadiusFactorPermille) / PERMILLE * material.haloRadiusMultiplierPermille) / PERMILLE,
+      haloRadiusPx: ((renderedCore * calibration.luminance.haloRadiusFactorPermille) / PERMILLE * (sharedScene ? material.sharedSceneHaloRadiusMultiplierPermille : material.haloRadiusMultiplierPermille)) / PERMILLE,
       haloIntensityPermille,
       prominencePermille: prominencePermilleValue,
       opacityPermille: material.opacityPermille,

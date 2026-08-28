@@ -131,6 +131,9 @@ export function buildScene(
         center: copyCoordinates(window.center),
         radius: window.radius,
         windowPaddingPx: calibration.aggregate.windowPaddingPx,
+        windowFillOpacityPermille: calibration.aggregate.windowFillOpacityPermille,
+        windowFillCoreRadiusFractionPermille: calibration.aggregate.windowFillCoreRadiusFractionPermille,
+        windowFillFalloffPermille: calibration.aggregate.windowFillFalloffPermille,
         token: copyToken(requiredToken(activeTokens, "accent3")),
         strokeWidthPx: materialIncludes(view.material.aggregate, "outline")
           ? (calibration.filament.baseWidthPx * calibration.lod.macroAggregateOutlineWidthMultiplierPermille) / SCENE_PERMILLE_SCALE

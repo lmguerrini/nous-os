@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
 import * as THREE from "three";
+import {
+  AGGREGATE_FRAGMENT_SHADER,
+  AGGREGATE_VERTEX_SHADER,
+  createAggregateRenderResources,
+} from "#render3f/aggregate-material.ts";
 import { buildSceneBuffers } from "#render3f/buffers.ts";
 import {
   FILAMENT_FRAGMENT_SHADER,
@@ -21,6 +26,7 @@ import {
   createNodeRenderResources,
 } from "#render3f/node-material.ts";
 import {
+  assertAggregateShaderTechnique,
   assertFilamentShaderTechnique,
   assertNodeShaderTechnique,
 } from "#render3f/shader-contract.ts";
@@ -176,17 +182,58 @@ test("node shader consumes sampled halo values and renders a gradient core weigh
   );
 });
 
+test("aggregate shader derives a radial fill composited behind an anti-aliased rim", () => {
+  assert.doesNotThrow(() => assertAggregateShaderTechnique(AGGREGATE_VERTEX_SHADER, AGGREGATE_FRAGMENT_SHADER));
+  const hardEdgedRimControl = AGGREGATE_FRAGMENT_SHADER.replace("fwidth(ringDistance)", "1.0");
+  assert.throws(
+    () => assertAggregateShaderTechnique(AGGREGATE_VERTEX_SHADER, hardEdgedRimControl),
+    /missing analytic rim anti-aliasing/,
+  );
+  const flatFillControl = AGGREGATE_FRAGMENT_SHADER.replace("centerDistance / v_radiusDevicePx", "0.5");
+  assert.throws(
+    () => assertAggregateShaderTechnique(AGGREGATE_VERTEX_SHADER, flatFillControl),
+    /missing radial fill profile derived from the resolved radius/,
+  );
+  const linearFalloffControl = AGGREGATE_FRAGMENT_SHADER.replace(
+    "pow(1.0 - vignetteInput, v_fillFalloffExponent)",
+    "1.0 - vignetteInput",
+  );
+  assert.throws(
+    () => assertAggregateShaderTechnique(AGGREGATE_VERTEX_SHADER, linearFalloffControl),
+    /missing vignette falloff toward the rim/,
+  );
+  const occludingFillControl = AGGREGATE_FRAGMENT_SHADER.replace(
+    "strokeAlpha + (fillAlpha * (1.0 - strokeAlpha))",
+    "strokeAlpha + fillAlpha",
+  );
+  assert.throws(
+    () => assertAggregateShaderTechnique(AGGREGATE_VERTEX_SHADER, occludingFillControl),
+    /missing fill composited behind the rim stroke/,
+  );
+  const nonPremultipliedControl = AGGREGATE_FRAGMENT_SHADER.replace(
+    "outputColor = vec4(premultipliedColor, alpha)",
+    "outputColor = vec4(premultipliedColor, 1.0)",
+  );
+  assert.throws(
+    () => assertAggregateShaderTechnique(AGGREGATE_VERTEX_SHADER, nonPremultipliedControl),
+    /missing premultiplied output/,
+  );
+});
+
 test("live translucent materials use premultiplied source-over with depth writes disabled", () => {
   const buffers = buildSceneBuffers(resolvedScene());
+  const aggregates = createAggregateRenderResources(buffers.aggregates);
   const filaments = createFilamentRenderResources(buffers.filaments);
   const nodes = createNodeRenderResources(buffers.nodes);
-  for (const material of [filaments.material, nodes.material]) {
+  for (const material of [aggregates.material, filaments.material, nodes.material]) {
     assert.equal(material.transparent, true);
     assert.equal(material.depthWrite, false);
     assert.equal(material.blending, THREE.CustomBlending);
     assert.equal(material.blendSrc, THREE.OneFactor);
     assert.equal(material.blendDst, THREE.OneMinusSrcAlphaFactor);
   }
+  aggregates.geometry.dispose();
+  aggregates.material.dispose();
   filaments.geometry.dispose();
   filaments.material.dispose();
   nodes.geometry.dispose();

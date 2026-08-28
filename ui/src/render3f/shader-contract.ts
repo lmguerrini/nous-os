@@ -20,6 +20,23 @@ export function assertFilamentShaderTechnique(vertexShader: string, fragmentShad
   }
 }
 
+/** This verifies the required derived aggregate-window fill technique and does not compile a WebGL program. */
+export function assertAggregateShaderTechnique(vertexShader: string, fragmentShader: string): void {
+  const requirements: readonly { readonly name: string; readonly source: string; readonly marker: string }[] = [
+    { name: "screen-space quad expansion", source: vertexShader, marker: "u_resolutionDevicePx" },
+    { name: "analytic rim anti-aliasing", source: fragmentShader, marker: "fwidth(ringDistance)" },
+    { name: "radial fill profile derived from the resolved radius", source: fragmentShader, marker: "centerDistance / v_radiusDevicePx" },
+    { name: "vignette falloff toward the rim", source: fragmentShader, marker: "pow(1.0 - vignetteInput, v_fillFalloffExponent)" },
+    { name: "fill composited behind the rim stroke", source: fragmentShader, marker: "strokeAlpha + (fillAlpha * (1.0 - strokeAlpha))" },
+    { name: "premultiplied output", source: fragmentShader, marker: "outputColor = vec4(premultipliedColor, alpha)" },
+  ];
+  for (const requirement of requirements) {
+    if (!requirement.source.includes(requirement.marker)) {
+      throw new TypeError(`aggregate shader is missing ${requirement.name}`);
+    }
+  }
+}
+
 /** This verifies scene-sampled luminous-node composition and does not compile a WebGL program. */
 export function assertNodeShaderTechnique(vertexShader: string, fragmentShader: string): void {
   const requirements: readonly { readonly name: string; readonly source: string; readonly marker: string }[] = [

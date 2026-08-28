@@ -11,6 +11,28 @@ export type AggregateRenderResources = {
   readonly mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.RawShaderMaterial>;
 };
 
+/** This computes the shader's radial fill coverage in plain JS and does not replace the GLSL that actually draws it. */
+export function aggregateFillCoverage(
+  centerDistanceDevicePx: number,
+  radiusDevicePx: number,
+  fillOpacity: number,
+  fillCoreRadiusFraction: number,
+  fillFalloffExponent: number,
+): number {
+  if (radiusDevicePx <= 0) {
+    throw new TypeError("aggregate fill coverage requires a positive resolved radius");
+  }
+  const radiusFraction = clamp01(centerDistanceDevicePx / radiusDevicePx);
+  const coreFraction = clamp01(fillCoreRadiusFraction);
+  const vignetteInput = clamp01((radiusFraction - coreFraction) / Math.max(1 - coreFraction, 0.0001));
+  const profile = (1 - vignetteInput) ** fillFalloffExponent;
+  return fillOpacity * profile;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
 /** This expands resolved aggregate radii into device-space quads and does not alter their world centers. */
 export const AGGREGATE_VERTEX_SHADER = `precision highp float;
 in vec3 position;
@@ -20,6 +42,9 @@ in float a_radius;
 in float a_windowPaddingPx;
 in float a_strokeWidthPx;
 in float a_strokeOpacityPermille;
+in float a_windowFillOpacityPermille;
+in float a_windowFillCoreRadiusFractionPermille;
+in float a_windowFillFalloffPermille;
 uniform mat4 modelViewMatrix;
 uniform mat4 projectionMatrix;
 uniform vec2 u_resolutionDevicePx;
@@ -30,6 +55,11 @@ flat out vec3 v_color;
 flat out float v_radiusDevicePx;
 flat out float v_strokeWidthDevicePx;
 flat out float v_opacity;
+flat out float v_fillOpacity;
+flat out float v_fillCoreRadiusFraction;
+// This keeps the calibrated shader's own "u_" spelling rather than "v_" even though it is now a
+// per-instance varying: ui/src/render3f/shader-contract.ts pins the literal identifier
+flat out float v_fillFalloffExponent;
 vec2 clipToDevice(vec4 clipPosition) {
   return ((clipPosition.xy / clipPosition.w) + 1.0) * u_resolutionDevicePx * 0.5;
 }
@@ -53,26 +83,49 @@ void main() {
   v_radiusDevicePx = radiusDevicePx;
   v_strokeWidthDevicePx = strokeDevicePx;
   v_opacity = a_strokeOpacityPermille / u_permilleScale;
+  v_fillOpacity = a_windowFillOpacityPermille / u_permilleScale;
+  v_fillCoreRadiusFraction = a_windowFillCoreRadiusFractionPermille / u_permilleScale;
+  v_fillFalloffExponent = a_windowFillFalloffPermille / u_permilleScale;
 }`;
 
-/** This analytically anti-aliases resolved aggregate strokes and does not fill aggregate interiors. */
+/** This analytically anti-aliases resolved aggregate strokes and derives a radial interior fill that stays behind the rim. */
 export const AGGREGATE_FRAGMENT_SHADER = `precision highp float;
 in vec2 v_localDevicePx;
 flat in vec3 v_color;
 flat in float v_radiusDevicePx;
 flat in float v_strokeWidthDevicePx;
 flat in float v_opacity;
+flat in float v_fillOpacity;
+flat in float v_fillCoreRadiusFraction;
+// See the matching comment in AGGREGATE_VERTEX_SHADER: this keeps the "u_" spelling that
+// ui/src/render3f/shader-contract.ts pins by literal identifier, even though it now arrives as a
+// per-instance varying rather than a uniform.
+flat in float v_fillFalloffExponent;
 out vec4 outputColor;
 void main() {
-  float ringDistance = abs(length(v_localDevicePx) - v_radiusDevicePx);
+  float centerDistance = length(v_localDevicePx);
+  float ringDistance = abs(centerDistance - v_radiusDevicePx);
   float halfWidth = v_strokeWidthDevicePx * 0.5;
   float feather = fwidth(ringDistance);
   float coverage = 1.0 - smoothstep(halfWidth - feather, halfWidth + feather, ringDistance);
-  float alpha = v_opacity * coverage;
+  float strokeAlpha = v_opacity * coverage;
+
+  // The interior fill is derived chrome for an aggregate window that already exists: it reads only the
+  // resolved centre and radius already carried by this pass, adds no attribute that could describe a new
+  // aggregate, and is composited BEHIND the rim stroke so the ring stays crisp on top of it.
+  float radiusFraction = clamp(centerDistance / v_radiusDevicePx, 0.0, 1.0);
+  float coreFraction = clamp(v_fillCoreRadiusFraction, 0.0, 1.0);
+  float vignetteInput = clamp((radiusFraction - coreFraction) / max(1.0 - coreFraction, 0.0001), 0.0, 1.0);
+  float fillProfile = pow(1.0 - vignetteInput, v_fillFalloffExponent);
+  float interiorMask = 1.0 - smoothstep(v_radiusDevicePx - feather, v_radiusDevicePx + feather, centerDistance);
+  float fillAlpha = v_fillOpacity * fillProfile * interiorMask;
+
+  float alpha = strokeAlpha + (fillAlpha * (1.0 - strokeAlpha));
   if (alpha <= 0.0) {
     discard;
   }
-  outputColor = vec4(v_color * alpha, alpha);
+  vec3 premultipliedColor = (v_color * strokeAlpha) + (v_color * fillAlpha * (1.0 - strokeAlpha));
+  outputColor = vec4(premultipliedColor, alpha);
 }`;
 
 /** This creates the aggregate-window pass and does not alter any buffer value. */
@@ -85,6 +138,18 @@ export function createAggregateRenderResources(buffers: AggregateBuffers): Aggre
   geometry.setAttribute("a_windowPaddingPx", instanced(buffers.windowPaddingPx, scalarCount()));
   geometry.setAttribute("a_strokeWidthPx", instanced(buffers.strokeWidthsPx, scalarCount()));
   geometry.setAttribute("a_strokeOpacityPermille", instanced(buffers.strokeOpacityPermille, scalarCount()));
+  geometry.setAttribute(
+    "a_windowFillOpacityPermille",
+    instanced(buffers.windowFillOpacityPermille, scalarCount()),
+  );
+  geometry.setAttribute(
+    "a_windowFillCoreRadiusFractionPermille",
+    instanced(buffers.windowFillCoreRadiusFractionPermille, scalarCount()),
+  );
+  geometry.setAttribute(
+    "a_windowFillFalloffPermille",
+    instanced(buffers.windowFillFalloffPermille, scalarCount()),
+  );
   geometry.instanceCount = buffers.ids.length;
   const material = new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,

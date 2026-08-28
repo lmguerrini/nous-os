@@ -159,7 +159,7 @@ lifecycle, and that is why its handle cannot answer two of the questions the sha
 it has one camera and cannot enumerate resources it does not own. Those are honest absences, recorded
 as capabilities it does not declare rather than as fabricated answers.
 
-**The Three engine** is a little over six thousand lines of source and its own tests together. The
+**The Three engine** is a little over seven thousand lines of source and its own tests together. The
 figure grows every time its controls are strengthened — it has moved three times while this document
 was being written, and a check now refuses the claim when the command below stops reproducing it — so
 it is deliberately given as an order of magnitude and reproduced rather than pinned:

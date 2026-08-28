@@ -44,6 +44,9 @@ export type AggregateBuffers = {
   readonly centers: Float32Array;
   readonly radii: Float32Array;
   readonly windowPaddingPx: Float32Array;
+  readonly windowFillOpacityPermille: Float32Array;
+  readonly windowFillCoreRadiusFractionPermille: Float32Array;
+  readonly windowFillFalloffPermille: Float32Array;
   readonly strokeWidthsPx: Float32Array;
   readonly strokeOpacityPermille: Float32Array;
   readonly colorsSrgb: Float32Array;
@@ -212,6 +215,9 @@ export function buildAggregateBuffers(aggregates: readonly SceneAggregate[], enc
   const centers = new Float32Array(ordered.length * coordinateCount());
   const radii = new Float32Array(ordered.length);
   const windowPaddingPx = new Float32Array(ordered.length);
+  const windowFillOpacityPermille = new Float32Array(ordered.length);
+  const windowFillCoreRadiusFractionPermille = new Float32Array(ordered.length);
+  const windowFillFalloffPermille = new Float32Array(ordered.length);
   const strokeWidthsPx = new Float32Array(ordered.length);
   const strokeOpacityPermille = new Float32Array(ordered.length);
   const colorsSrgb = new Float32Array(ordered.length * colorChannelCount());
@@ -220,6 +226,9 @@ export function buildAggregateBuffers(aggregates: readonly SceneAggregate[], enc
     writeCoordinates(centers, index, aggregate.center);
     radii[index] = aggregate.radius;
     windowPaddingPx[index] = aggregate.windowPaddingPx;
+    windowFillOpacityPermille[index] = aggregate.windowFillOpacityPermille;
+    windowFillCoreRadiusFractionPermille[index] = aggregate.windowFillCoreRadiusFractionPermille;
+    windowFillFalloffPermille[index] = aggregate.windowFillFalloffPermille;
     strokeWidthsPx[index] = aggregate.strokeWidthPx;
     strokeOpacityPermille[index] = aggregate.strokeOpacityPermille;
     writeColor(colorsSrgb, index, tokenToSrgb(aggregate.token, encoding));
@@ -235,6 +244,9 @@ export function buildAggregateBuffers(aggregates: readonly SceneAggregate[], enc
     centers,
     radii,
     windowPaddingPx,
+    windowFillOpacityPermille,
+    windowFillCoreRadiusFractionPermille,
+    windowFillFalloffPermille,
     strokeWidthsPx,
     strokeOpacityPermille,
     colorsSrgb,

@@ -1,3 +1,4 @@
+import type { CalibrationProfile } from "#engine/calibration.ts";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState } from "#engine/visual-state.ts";
@@ -10,9 +11,11 @@ import type { Scene } from "#scene/index.ts";
 import { sceneFixtureGraph, sceneVisualState } from "#test-scene/support.ts";
 
 /** This builds one production scene fixture and does not manufacture renderer material. */
-export function resolvedScene(): Scene {
+export function resolvedScene(calibration?: CalibrationProfile): Scene {
   const graph = sceneFixtureGraph();
-  return buildScene(graph, sceneVisualState(graph));
+  return calibration === undefined
+    ? buildScene(graph, sceneVisualState(graph))
+    : buildScene(graph, sceneVisualState(graph), calibration);
 }
 
 /** This builds the two projection requests over one production scene state and does not vary visual material. */
