@@ -217,6 +217,9 @@ export function mount(
       nodeOffsetPx(node: SceneNode): number {
         return requiredNodeLabelOffset(node) * rig.sizeScaleAt(node.position);
       },
+      nodeSizeScale(node: SceneNode): number {
+        return rig.sizeScaleAt(node.position);
+      },
     });
   };
   const renderFrame = (): void => {

@@ -22,6 +22,8 @@ import type { ScreenLabelBounds } from "#render3f/label-collision.ts";
 export type LabelProjection = {
   project(point: Coordinates): { readonly x: number; readonly y: number };
   nodeOffsetPx(node: SceneNode): number;
+  /** This reports the projection's own size scale for a node and does not resolve a material value. */
+  nodeSizeScale(node: SceneNode): number;
 };
 
 type ProjectedLabel = {
@@ -163,10 +165,42 @@ function projectedLabels(scene: Scene, projection: LabelProjection): readonly Pr
       priority: candidate.priority,
       sceneOrder,
       collisionPaddingPx: candidate.collisionPaddingPx,
-      style: edgeStyle(candidate, projection.project(midpoint), scene.tokenEncoding),
+      style: edgeStyle(candidate, clearOfNodeGlow(projection.project(midpoint), scene, projection), scene.tokenEncoding),
     });
   }
   return labels.sort(compareScreenLabelPriority);
+}
+
+/**
+ * Nudges a relation label clear of any node whose glow would swallow it.
+ *
+ * A relation label sits at its filament's midpoint, centred. When an emphasised node sits at that
+ * midpoint its bloom obliterates the middle of the word — in the two `focused` captures the label
+ * read `conflic ▮ amber`, and those are the two images whose whole purpose is to emphasise one
+ * element. The collision pass could not see it: it resolves label against label and never against
+ * what is drawn beneath.
+ *
+ * The displacement is perpendicular to nothing and simply vertical, because a relation label is
+ * centred on its midpoint and moving it along the filament would slide it toward one endpoint and
+ * misreport which relation it names. It moves by the node's own drawn extent plus the label's own
+ * governed collision padding, so a label already clear of every node does not move at all.
+ */
+function clearOfNodeGlow(
+  center: { readonly x: number; readonly y: number },
+  scene: Scene,
+  projection: LabelProjection,
+): { readonly x: number; readonly y: number } {
+  let clearance = 0;
+  for (const node of scene.nodes) {
+    const nodeCenter = projection.project(node.position);
+    const drawnExtentPx = Math.max(node.haloRadiusPx, node.radiusPx + node.haloCoreGapPx)
+      * projection.nodeSizeScale(node);
+    const distance = Math.hypot(center.x - nodeCenter.x, center.y - nodeCenter.y);
+    if (distance < drawnExtentPx) {
+      clearance = Math.max(clearance, drawnExtentPx - (center.y - nodeCenter.y));
+    }
+  }
+  return clearance === 0 ? center : { x: center.x, y: center.y + clearance };
 }
 
 function nodeStyle(
