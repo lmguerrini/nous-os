@@ -434,6 +434,15 @@ function measurePicking(handle: GraphRendererHandle, graph: VisualGraph): Measur
   }
 }
 
+/** This stamps the suite's rasterisation label onto a renderer-supplied witness and does not alter its readings. */
+function labelledRetainedResources(witness: RetainedResourceWitness): RetainedResourceWitness {
+  const retention = witness.jsRetention;
+  if (retention === undefined) {
+    return witness;
+  }
+  return { ...witness, jsRetention: { ...retention, label: SOFTWARE_RASTERISATION_LABEL } };
+}
+
 function measureMemory(handle: GraphRendererHandle): Measurement<MemoryValue> {
   const browserMemory = browserMemoryMeasurement();
   let retainedResources: Measurement<RetainedResourceWitness>;
@@ -442,7 +451,14 @@ function measureMemory(handle: GraphRendererHandle): Measurement<MemoryValue> {
     retainedResources = unknown("this renderer does not enumerate its own graphics resources, so none were read");
   } else {
     try {
-      retainedResources = pass(counting.readRetainedResources(), "renderer-owned retained resources read from the renderer handle");
+      // The renderer's witness carries its own status vocabulary and knows nothing about
+      // rasterisation. The performance suite is what turns it into a published measurement, so the
+      // suite stamps its label on the way in rather than emitting sub-records whose environment is
+      // unstated — an auditor deleted such a label and the consumer had nothing to say about it.
+      retainedResources = pass(
+        labelledRetainedResources(counting.readRetainedResources()),
+        "renderer-owned retained resources read from the renderer handle",
+      );
     } catch (error: unknown) {
       retainedResources = unknown(`renderer retained-resource witness unavailable: ${errorMessage(error)}`);
     }

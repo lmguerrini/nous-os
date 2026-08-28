@@ -66,9 +66,12 @@ export type RetainedResourceWitness = {
     // and which reads as a measurement everywhere a consumer does not know to special-case it.
     readonly status: "PASS";
     readonly value: { readonly retainedSceneReferences: number };
+    /** This is stamped by the measuring suite, not by the renderer, which knows nothing of rasterisation. */
+    readonly label?: string;
   } | {
     readonly status: "UNKNOWN";
     readonly reason: string;
+    readonly label?: string;
   };
 };
 

@@ -236,8 +236,12 @@ function assertKnownMeasurementStatuses(value: unknown, path: string): number {
       }
       // No measurement in this artifact is a bare string. A count of ten was replaced with the words
       // "fabricated aggregate count" and passed, because only null was refused.
-      if (typeof measured === "string") {
-        throw new Error(`${path} PASS records the string ${JSON.stringify(measured)}, which is not a measurement`);
+      if (typeof measured === "string" || typeof measured === "boolean") {
+        // Strings were refused and booleans were not, so a count of ten became `false` and passed.
+        // Nothing measured here is a word or a flag; a measurement is a number or a structure.
+        throw new Error(
+          `${path} PASS records ${JSON.stringify(measured)}, which is a ${typeof measured} and not a measurement`,
+        );
       }
     }
   }
@@ -490,6 +494,12 @@ function assertSoftwareRasterisationLabel(value: unknown, path: string): void {
   }
   if (!isRecord(value)) {
     return;
+  }
+  if ("status" in value && !("label" in value)) {
+    // Validated only when present, so deleting a nested label passed. A record carrying a status is
+    // a measurement, and a measurement in this artifact without its rasterisation label is a figure
+    // whose environment is unstated.
+    throw new Error(`${path} carries a status with no rasterisation label`);
   }
   if ("label" in value && value["label"] !== SOFTWARE_RASTERISATION_LABEL) {
     throw new Error(`${path} is labelled ${String(value["label"])}, not ${SOFTWARE_RASTERISATION_LABEL}`);
