@@ -252,12 +252,13 @@ export function indraLayout(graph: EngineGraph, calibration: CalibrationProfile)
       .filter((edge) => ownerOf.get(edge.source) === windowId && ownerOf.get(edge.target) === windowId)
       .map((edge) => ({ source: edge.source, target: edge.target }));
     const local = settleWindowLocalPositions(windowId, members, intraEdges, calibration);
-    localPositionsByWindow.set(windowId, local);
-    const maxMemberDistance = members.reduce(
+    const naturalRadius = members.reduce(
       (farthest, memberId) => Math.max(farthest, planarDistance(requiredVector(local, memberId), ORIGIN)),
       0,
     );
-    radiusByWindow.set(windowId, maxMemberDistance + calibration.aggregate.windowPaddingPx);
+    const boundedRadius = compressMemberExtent(naturalRadius, calibration);
+    localPositionsByWindow.set(windowId, scaleLocalPositions(local, members, naturalRadius, boundedRadius));
+    radiusByWindow.set(windowId, boundedRadius + calibration.aggregate.windowPaddingPx);
   }
 
   const crossWindowEdges: MetaEdge[] = [];
@@ -432,6 +433,45 @@ function settleWindowLocalPositions(
   return positions;
 }
 
+/**
+ * This bounds one window's real member-extent radius toward a calibrated ceiling and does not
+ * compress a radius already at or below the calibrated threshold. A window's real extent (how far its
+ * force-settled members actually spread) stays the sole input; a small window is left exactly as its
+ * data placed it, and only a window whose real spread already exceeds the threshold is pulled toward
+ * the ceiling, more so the farther past the threshold it started. This is monotonic and never a
+ * constant: two windows past the threshold with different real extents still resolve to different
+ * bounded extents, just closer together than their real extents were.
+ */
+function compressMemberExtent(naturalRadiusPx: number, calibration: CalibrationProfile): number {
+  const threshold = calibration.aggregate.memberExtentCompressionThresholdPx;
+  if (naturalRadiusPx <= threshold) {
+    return naturalRadiusPx;
+  }
+  const ceiling = calibration.aggregate.memberExtentCompressionCeilingPx;
+  const saturation = calibration.aggregate.memberExtentCompressionSaturationPx;
+  const excess = naturalRadiusPx - threshold;
+  return threshold + (((ceiling - threshold) * excess) / (excess + saturation));
+}
+
+/** This uniformly rescales one window's already-settled member positions toward its bounded extent and does not alter their relative shape, angle, or the hub's own position at the origin. */
+function scaleLocalPositions(
+  local: ReadonlyMap<string, Vector>,
+  members: readonly string[],
+  naturalRadiusPx: number,
+  boundedRadiusPx: number,
+): ReadonlyMap<string, Vector> {
+  if (naturalRadiusPx === boundedRadiusPx || naturalRadiusPx === 0) {
+    return local;
+  }
+  const scale = boundedRadiusPx / naturalRadiusPx;
+  const scaled = new Map<string, Vector>(local);
+  for (const memberId of members) {
+    const position = requiredVector(local, memberId);
+    scaled.set(memberId, { x: position.x * scale, y: position.y * scale });
+  }
+  return scaled;
+}
+
 /** This settles every window's own center as a meta-graph over real cross-window relations and then removes any remaining overlap. */
 function settleWindowMetaCenters(
   windowIds: readonly string[],
@@ -579,11 +619,21 @@ function settleSatellitePositions(
   return positions;
 }
 
-/** This pushes one candidate position outside every window's rim plus padding and does not change a window's radius or center. */
+/**
+ * This pushes one candidate position outside every window's rim plus padding and does not change a
+ * window's radius or center. The geometric guarantee `assertIndraLayout` actually enforces for a
+ * satellite or rejection is disjointness from `window.bounds`, an axis-aligned SQUARE of half-width
+ * `window.radius` -- not the circle this function reasons about. A push of exactly `radius + padding`
+ * along an arbitrary (non-axis-aligned) direction can land inside that square's corner while still
+ * outside the circle: at 45 degrees, only `clearance / sqrt(2)` of it lands on each axis. SQRT2 is the
+ * exact worst-case diagonal factor that keeps every direction clear of the square too, not only the
+ * circle; smaller windows a member-extent compression tightened made this reachable where it was not
+ * before.
+ */
 function clearWindows(position: Vector, windows: readonly AggregateWindow[], calibration: CalibrationProfile): Vector {
   let constrained = position;
   for (const window of windows) {
-    const clearance = window.radius + calibration.aggregate.windowPaddingPx;
+    const clearance = (window.radius + calibration.aggregate.windowPaddingPx) * Math.SQRT2;
     const gap = planarDistance(window.center, constrained);
     if (gap < clearance) {
       const direction = directionOrHash(window.center, constrained, `clear:${window.id}`);

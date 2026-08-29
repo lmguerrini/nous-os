@@ -663,17 +663,42 @@ function assertEdgeLabelStateResolution(
     || focusedCandidate === null || focusedCandidate === undefined) {
     throw new TypeError("scene fixture requires ordinary, selected, and focused edge labels");
   }
-  const ordinaryPriority = relation.visual.label_priority + calibration.labels.priorityWeights.edge;
+  // The fixture's default VisualState organizes as Indra, so a relation touching a satellite or
+  // spanning two governed aggregates is cross-community and its label carries the same calibrated
+  // dampening its filament does (see crossCommunityOpacity/crossCommunityRelationIds in
+  // #scene/build.ts). That dampening is state-independent -- it applies identically whether the
+  // relation is ordinary, selected, or focused -- so it only shifts every expected value below by the
+  // same calibrated amount rather than changing what this check actually proves about state transitions.
+  const crossCommunity = isCrossCommunityRelation(ordinary, relation);
+  const expectedOpacity = (opacityPermille: number): number => crossCommunity
+    ? Math.round((opacityPermille * calibration.aggregate.crossWindowRelationOpacityFactorPermille) / SCENE_PERMILLE_SCALE)
+    : opacityPermille;
+  const ordinaryPriority = relation.visual.label_priority + calibration.labels.priorityWeights.edge
+    - (crossCommunity ? calibration.aggregate.crossWindowRelationLabelPriorityPenalty : 0);
   if (
     ordinaryCandidate.priority !== ordinaryPriority
-    || ordinaryCandidate.opacityPermille !== calibration.labels.edgeLabelOpacityPermille
+    || ordinaryCandidate.opacityPermille !== expectedOpacity(calibration.labels.edgeLabelOpacityPermille)
     || selectedCandidate.priority !== ordinaryPriority + calibration.labels.edgeSelectionPriorityBoost
-    || selectedCandidate.opacityPermille !== calibration.labels.edgeLabelSelectedOpacityPermille
+    || selectedCandidate.opacityPermille !== expectedOpacity(calibration.labels.edgeLabelSelectedOpacityPermille)
     || focusedCandidate.priority !== ordinaryPriority + calibration.labels.edgeFocusPriorityBoost
-    || focusedCandidate.opacityPermille !== calibration.labels.edgeLabelFocusOpacityPermille
+    || focusedCandidate.opacityPermille !== expectedOpacity(calibration.labels.edgeLabelFocusOpacityPermille)
   ) {
     throw new Error(`edge label state material changed for ${relation.id}`);
   }
+}
+
+/** This derives cross-community status from the scene's own resolved aggregates and does not duplicate build.ts's window-derivation logic. */
+function isCrossCommunityRelation(scene: Scene, relation: VisualEdge): boolean {
+  const ownerOf = new Map<string, string>();
+  for (const aggregate of scene.aggregates) {
+    ownerOf.set(aggregate.id, aggregate.id);
+    for (const member of aggregate.members) {
+      ownerOf.set(member, aggregate.id);
+    }
+  }
+  const sourceOwner = ownerOf.get(relation.source);
+  const targetOwner = ownerOf.get(relation.target);
+  return sourceOwner === undefined || targetOwner === undefined || sourceOwner !== targetOwner;
 }
 
 function assertLayoutDepthOnly(scene: Scene, calibration: CalibrationProfile): void {

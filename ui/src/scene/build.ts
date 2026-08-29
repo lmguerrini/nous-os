@@ -54,6 +54,9 @@ const PROPAGATION_SAMPLE_ELAPSED_MILLISECONDS = 220;
 /** This is the fully faded luminance endpoint of a blind terminal and does not remove its governed node or relation. */
 const BLIND_TERMINAL_LUMINANCE_PERMILLE = 0;
 
+/** This is Flat's own empty cross-community relation set: Flat resolves no windows, so nothing is ever cross-community there. */
+const NO_CROSS_COMMUNITY_RELATIONS: ReadonlySet<string> = new Set();
+
 type LabelPlacementCandidate = {
   readonly id: string;
   readonly priority: number;
@@ -85,6 +88,12 @@ export function buildScene(
   const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration, SHARED_SCENE_MATERIAL_TARGET);
   const activeTokens = shippingTokens(inputs.tokens, visualState.palette, visualState.theme, calibration);
   const organization = resolveOrganization(engineGraph, calibration, () => layoutAnchors(engineGraph, calibration), visualState.organization);
+  // Cross-community weighting is Indra-only: Flat's `organization.windows` is always empty, and
+  // treating every edge as "no owning window" there would dim the entire Flat scene rather than
+  // nothing at all.
+  const crossCommunityEdgeIds = visualState.organization === "indra"
+    ? crossCommunityRelationIds(engineGraph, organization.windows)
+    : NO_CROSS_COMMUNITY_RELATIONS;
   const view = lodView(engineGraph, organization.nodeAnchors, visualState.lodBand);
   const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
   const edgeMaterials = new Map(morphologyMaterial.edges.map((edge) => [edge.id, edge]));
@@ -98,7 +107,7 @@ export function buildScene(
     calibration,
     activeTokens,
   ));
-  const edgeCandidacies = edgeLabelCandidacies(engineGraph, visualState, calibration, activeTokens);
+  const edgeCandidacies = edgeLabelCandidacies(engineGraph, visualState, calibration, activeTokens, crossCommunityEdgeIds);
   const edges = engineGraph.edges.map((edge) => sceneEdge(
     edge,
     requiredCoordinate(view.anchors, edge.source),
@@ -110,6 +119,7 @@ export function buildScene(
     visualState,
     calibration,
     activeTokens,
+    crossCommunityEdgeIds.has(edge.id),
   ));
   const selectedLabelIds = selectedSceneLabelIds(nodes, edges, visualState, calibration);
   assertEngineAccessTrace(trace);
@@ -312,12 +322,16 @@ function sceneEdge(
   visualState: VisualState,
   calibration: CalibrationProfile,
   tokens: TokenMap,
+  crossCommunity: boolean,
 ): SceneEdge {
   const scale = SCENE_PERMILLE_SCALE;
   const emphasis = visualState.selectedId === edge.id
     ? calibration.selection.emphasisMultiplierPermille / scale
     : 1;
-  const width = edgeWidthForMaterial(material, resolved, calibration) * emphasis;
+  const crossWidthFactor = crossCommunity
+    ? calibration.aggregate.crossWindowRelationWidthFactorPermille / scale
+    : 1;
+  const width = edgeWidthForMaterial(material, resolved, calibration) * emphasis * crossWidthFactor;
   const filamentMaterial = calibration.morphology[morphology.id];
   const widthStartPx = terminalWidthPx(
     (width * material.widthStartPermille) / scale,
@@ -365,7 +379,12 @@ function sceneEdge(
       channel,
       calibration,
     )),
-    opacityPermille: interactionOpacity(material.opacityPermille, edge.id, visualState, calibration),
+    opacityPermille: interactionOpacity(
+      crossCommunityOpacity(material.opacityPermille, crossCommunity, calibration),
+      edge.id,
+      visualState,
+      calibration,
+    ),
     renderedStateChannel: channel,
     labelCandidacy,
     interaction: interactionState(edge.id, visualState),
@@ -515,6 +534,38 @@ function resolveOrganization(
   }
   const anchors = sharedAnchors();
   return { windows: flatOrganization(graph, anchors).windows, nodeAnchors: anchors };
+}
+
+/**
+ * This derives, purely as a rendering weight, which real relations cross between governed aggregates
+ * or touch a satellite outside every window. It changes no relation's identity, drawn status, or
+ * binding -- every governed relation id from `graph.edges` is still present in the returned scene
+ * unconditionally; this only marks which of those already-drawn relations render quieter.
+ */
+function crossCommunityRelationIds(graph: EngineGraph, windows: readonly AggregateWindow[]): ReadonlySet<string> {
+  const ownerOf = new Map<string, string>();
+  for (const window of windows) {
+    ownerOf.set(window.id, window.id);
+    for (const member of window.members) {
+      ownerOf.set(member, window.id);
+    }
+  }
+  const cross = new Set<string>();
+  for (const edge of graph.edges) {
+    const sourceOwner = ownerOf.get(edge.source);
+    const targetOwner = ownerOf.get(edge.target);
+    if (sourceOwner === undefined || targetOwner === undefined || sourceOwner !== targetOwner) {
+      cross.add(edge.id);
+    }
+  }
+  return cross;
+}
+
+/** This dampens one already-resolved opacity for a cross-community relation or its label and does not alter a local relation's opacity. */
+function crossCommunityOpacity(opacityPermille: number, crossCommunity: boolean, calibration: CalibrationProfile): number {
+  return crossCommunity
+    ? Math.round((opacityPermille * calibration.aggregate.crossWindowRelationOpacityFactorPermille) / SCENE_PERMILLE_SCALE)
+    : opacityPermille;
 }
 
 function orderEngineGraph(graph: EngineGraph): EngineGraph {
@@ -741,6 +792,7 @@ function edgeLabelCandidacies(
   state: VisualState,
   calibration: CalibrationProfile,
   tokens: TokenMap,
+  crossCommunityEdgeIds: ReadonlySet<string>,
 ): ReadonlyMap<string, SceneEdgeLabelCandidacy> {
   if (state.lodBand === MACRO) {
     return new Map();
@@ -770,16 +822,22 @@ function edgeLabelCandidacies(
   return new Map(candidates.map((edge) => {
     const selected = edge.id === selectedRelation;
     const focused = edge.id === focusedRelation || (focusedNode !== null && (edge.source === focusedNode || edge.target === focusedNode));
+    const crossCommunity = crossCommunityEdgeIds.has(edge.id);
+    const basePriority = edge.visual.label_priority + calibration.labels.priorityWeights.edge
+      + (selected
+        ? calibration.labels.edgeSelectionPriorityBoost
+        : focused ? calibration.labels.edgeFocusPriorityBoost : 0);
+    const baseOpacity = selected
+      ? calibration.labels.edgeLabelSelectedOpacityPermille
+      : focused ? calibration.labels.edgeLabelFocusOpacityPermille : calibration.labels.edgeLabelOpacityPermille;
     return [edge.id, {
       text: edge.kind,
       token: copyToken(requiredToken(tokens, "textMuted")),
-      priority: edge.visual.label_priority + calibration.labels.priorityWeights.edge
-        + (selected
-          ? calibration.labels.edgeSelectionPriorityBoost
-          : focused ? calibration.labels.edgeFocusPriorityBoost : 0),
-      opacityPermille: selected
-        ? calibration.labels.edgeLabelSelectedOpacityPermille
-        : focused ? calibration.labels.edgeLabelFocusOpacityPermille : calibration.labels.edgeLabelOpacityPermille,
+      // A local relation's label wins the density cap ahead of a cross-community one at the same
+      // base priority; this only reorders which already-eligible labels are selected first under the
+      // density cap and never removes a governed label from candidacy.
+      priority: crossCommunity ? basePriority - calibration.aggregate.crossWindowRelationLabelPriorityPenalty : basePriority,
+      opacityPermille: crossCommunityOpacity(baseOpacity, crossCommunity, calibration),
       sizePx: calibration.labels.edgeLabelSizePx,
       fontFamily: SCENE_LABEL_FONT_FAMILY,
       fontWeight: SCENE_LABEL_FONT_WEIGHT,

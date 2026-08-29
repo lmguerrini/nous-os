@@ -195,6 +195,18 @@ export type CalibrationProfile = {
     readonly windowFillCoreRadiusFractionPermille: number;
     /** This is the vignette falloff exponent shaping the fill from its core to the rim, scaled by one thousand, and does not change stroke width. */
     readonly windowFillFalloffPermille: number;
+    /** This is the real member-extent radius, in CSS pixels, below which a window's rendered size is left exactly data-derived. */
+    readonly memberExtentCompressionThresholdPx: number;
+    /** This is the asymptotic bound a window's rendered member-extent radius is compressed toward once its real extent exceeds the threshold; it is approached, never reached, so extent stays monotonic in real membership. */
+    readonly memberExtentCompressionCeilingPx: number;
+    /** This is the excess-extent, in CSS pixels, past the threshold at which compression reaches half of its remaining headroom to the ceiling; a smaller value compresses large windows harder. */
+    readonly memberExtentCompressionSaturationPx: number;
+    /** This is the opacity multiplier, scaled by one thousand, applied to a relation whose endpoints span different governed aggregates or touch a satellite outside every window, and does not change which relations are drawn or their identity. */
+    readonly crossWindowRelationOpacityFactorPermille: number;
+    /** This is the body-width multiplier, scaled by one thousand, applied to the same cross-community relations the opacity factor above dims. */
+    readonly crossWindowRelationWidthFactorPermille: number;
+    /** This is the label-selection priority subtracted from a cross-community relation's own label so a local relation's label wins the density cap first, and does not remove a governed label from candidacy. */
+    readonly crossWindowRelationLabelPriorityPenalty: number;
   };
   readonly camera: {
     readonly orthographic: {
@@ -404,6 +416,12 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "aggregate.windowFillOpacityPermille",
   "aggregate.windowFillCoreRadiusFractionPermille",
   "aggregate.windowFillFalloffPermille",
+  "aggregate.memberExtentCompressionThresholdPx",
+  "aggregate.memberExtentCompressionCeilingPx",
+  "aggregate.memberExtentCompressionSaturationPx",
+  "aggregate.crossWindowRelationOpacityFactorPermille",
+  "aggregate.crossWindowRelationWidthFactorPermille",
+  "aggregate.crossWindowRelationLabelPriorityPenalty",
   "camera.orthographic.panSensitivityPermille",
   "camera.orthographic.zoomSensitivityPermille",
   "camera.orthographic.minimumZoomPermille",
@@ -456,9 +474,15 @@ export const DEFAULT_CALIBRATION: CalibrationProfile = {
     disclosureThreshold: 12,
     windowPaddingPx: 14,
     windowStrokeAlphaPermille: 260,
-    windowFillOpacityPermille: 180,
-    windowFillCoreRadiusFractionPermille: 550,
-    windowFillFalloffPermille: 1800,
+    windowFillOpacityPermille: 220,
+    windowFillCoreRadiusFractionPermille: 600,
+    windowFillFalloffPermille: 1400,
+    memberExtentCompressionThresholdPx: 45,
+    memberExtentCompressionCeilingPx: 65,
+    memberExtentCompressionSaturationPx: 30,
+    crossWindowRelationOpacityFactorPermille: 400,
+    crossWindowRelationWidthFactorPermille: 550,
+    crossWindowRelationLabelPriorityPenalty: 400,
   },
   camera: {
     orthographic: { panSensitivityPermille: 1000, zoomSensitivityPermille: 1700, minimumZoomPermille: 250, maximumZoomPermille: 4000 },
