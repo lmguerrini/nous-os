@@ -136,11 +136,25 @@ export function applyMorphology(
     const nodeSizeMultiplierPermille = sharedScene ? material.sharedSceneNodeSizeMultiplierPermille : material.nodeSizeMultiplierPermille;
     const morphologyCore = (baseSize * nodeSizeMultiplierPermille) / PERMILLE;
     const terminalCore = (morphologyCore * terminalSizeMultiplier) / PERMILLE;
-    const renderedCore = morphology.id === NEURAL.id
+    const morphologyResolvedCore = morphology.id === NEURAL.id
       ? (sharedScene
         ? (Math.max(morphologyCore, calibration.luminance.coreBeforeHaloMinimumPx) * terminalSizeMultiplier) / PERMILLE
         : Math.max(terminalCore, calibration.luminance.coreBeforeHaloMinimumPx))
       : terminalCore;
+    // `salience.minNodeSizePx` is the governed floor on how small a node may be DRAWN, and the
+    // shared-scene size and terminal multipliers were defeating it: they apply after the floor, so a
+    // low-prominence stellar terminal resolved to 1.120px at 34-permille halo, and a mycelium one to
+    // 0.420px. At that size a node's own centre pixel is not lit, which the renderer-parity oracle
+    // caught on a `rejection` node - an element the graph governs and the picture had stopped drawing.
+    //
+    // Subordination is a claim about relative weight, not about disappearing. Mycelium keeps its
+    // subordinated identity through its quiet halo, its small halo radius and the dominance of its
+    // filaments; flattening its smallest nodes toward the floor arguably serves "no dominant soma"
+    // better than letting them vanish. Shared scene only, so the legacy renderer's frozen node scale
+    // does not move.
+    const renderedCore = sharedScene
+      ? Math.max(morphologyResolvedCore, calibration.salience.minNodeSizePx)
+      : morphologyResolvedCore;
     const prominencePermilleValue = Math.round(prominence * PERMILLE);
     // The legacy renderer keeps the flat, un-gated halo intensity it always had — moving it here would
     // move render2d's frozen pixels. Only the shared-scene target gates halo intensity by rendered
