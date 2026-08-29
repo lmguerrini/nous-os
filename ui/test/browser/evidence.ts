@@ -895,40 +895,48 @@ async function boot(): Promise<void> {
     certifyCurrentRelationPicking(): RelationPickingCertification {
       return certifyRelationPicking(requiredHandle(product));
     },
+    // Before the morphology rebuild at 92c5497, this scene contained a pair of distinct,
+    // non-coincident relations close enough that one's own geometry passed a full geometric
+    // occlusion certificate at every one of the other's calibrated witness points -- so the forced
+    // wrong answer this control produces was, independently, a plausible one, and the coverage
+    // machinery had to reject it anyway. That rebuild tightened the shared-scene picking geometry
+    // used here (stellar's shared-scene filament width 1600->1300 permille, shared-scene halo
+    // radius 1150->950 permille, and stellar's own curvature 700->480 permille), and measured
+    // exhaustively over every ordered pair of non-coincident relations in this scene -- both
+    // shipping policies, all three LOD bands, both DPR projects -- no pair anywhere reaches a full
+    // certificate any more. The closest miss, unchanged across all of those states, is relation
+    // "about:asr_3N8REEPQF5FW301DG544P5B6PD" against "about:asr_SMTB0CSZJQ358QNW8833KCCV38": their
+    // three calibrated witness probes land at per-probe margins of [+0.463, -0.166, -0.795]px
+    // against the candidate's own pick radius -- two of three probes already sit inside it, and the
+    // worst one misses by under half a device-independent pixel. So the specific claim this control
+    // used to make -- that the coverage machinery rejects a wrong answer even when a real geometric
+    // certificate backs it -- is no longer constructible, and asserting it anyway would either wait
+    // forever on a pair that will not appear or force a fabricated certificate this file is not
+    // authorised to grant. What remains true, and is what this control now proves: forced onto the
+    // closest available pair (the hardest case actually present in the shipped scene), a wrong
+    // live-picker answer is still never accepted as the source relation's own coverage. It comes
+    // back "unpickable" -- no covering id, no occlusion certificate, because none is geometrically
+    // available -- rather than the coverage layer manufacturing one because the raw picker said so.
     wrongRelationPickCoverageControl(): WrongRelationPickCoverageControl {
       const handle = requiredHandle(product);
-      for (const edgeId of [...handle.model.graph.edges()].sort()) {
-        const probePoints = directRelationProbePointsFor(handle, edgeId);
-        const certifiedCoincidentPartnerIds = coincidentPartnersFor(handle, edgeId) ?? [];
-        for (const candidate of [...handle.model.graph.edges()].sort()) {
-          if (candidate === edgeId || certifiedCoincidentPartnerIds.includes(candidate)) {
-            continue;
-          }
-          const forcedProbes = probePoints.map((probe) => ({ ...probe, returnedEdgeId: candidate }));
-          const certificate = occlusionCertificateForDirectProbes(handle, edgeId, forcedProbes);
-          if (certificate === null) {
-            continue;
-          }
-          const mutableHandle = handle as MutableRenderHandle;
-          const originalPick = mutableHandle.pickEdgeAtPoint;
-          mutableHandle.pickEdgeAtPoint = (x, y): string | null => (
-            probePoints.some((probe) => probe.point.x === x && probe.point.y === y)
-              ? candidate
-              : originalPick(x, y)
-          );
-          try {
-            const pickingTarget = pickingTargetSetWitness(handle);
-            const outcome = pickingTarget.edgePickCoverage[edgeId];
-            if (outcome === undefined) {
-              throw new Error(`wrong relation-pick coverage control lost ${edgeId}`);
-            }
-            return { edgeId, forcedReturnedEdgeId: candidate, outcome, pickingTarget };
-          } finally {
-            mutableHandle.pickEdgeAtPoint = originalPick;
-          }
+      const { edgeId, candidateEdgeId, probePoints } = closestNonCoincidentRelationPair(handle);
+      const mutableHandle = handle as MutableRenderHandle;
+      const originalPick = mutableHandle.pickEdgeAtPoint;
+      mutableHandle.pickEdgeAtPoint = (x, y): string | null => (
+        probePoints.some((probe) => probe.point.x === x && probe.point.y === y)
+          ? candidateEdgeId
+          : originalPick(x, y)
+      );
+      try {
+        const pickingTarget = pickingTargetSetWitness(handle);
+        const outcome = pickingTarget.edgePickCoverage[edgeId];
+        if (outcome === undefined) {
+          throw new Error(`wrong relation-pick coverage control lost ${edgeId}`);
         }
+        return { edgeId, forcedReturnedEdgeId: candidateEdgeId, outcome, pickingTarget };
+      } finally {
+        mutableHandle.pickEdgeAtPoint = originalPick;
       }
-      throw new Error("wrong relation-pick coverage control requires a geometrically certified distinct occluder");
     },
     pickChord(edgeId): PickWitness {
       const handle = requiredHandle(product);
@@ -1613,6 +1621,67 @@ function occlusionCertificateForDirectProbes(
   return partnerId === null
     ? null
     : { occludingEdgeId: partnerId, probes: certificateProbes };
+}
+
+/**
+ * This finds the pair of distinct, non-coincident relations whose geometry comes closest to
+ * letting one plausibly explain a wrong pick at every one of the other's calibrated witness
+ * points, ranked by the worst (largest) signed margin any single probe has against the
+ * candidate's own pick radius. A margin at or below zero means that probe sits inside the
+ * candidate's radius; the pair returned is whichever has the smallest such worst-case margin
+ * across the whole scene. It does not require that margin to actually close -- see
+ * wrongRelationPickCoverageControl for what is currently measured and why.
+ */
+function closestNonCoincidentRelationPair(handle: RenderHandle): {
+  readonly edgeId: string;
+  readonly candidateEdgeId: string;
+  readonly probePoints: readonly Omit<DirectRelationProbe, "returnedEdgeId">[];
+} {
+  let best: {
+    readonly edgeId: string;
+    readonly candidateEdgeId: string;
+    readonly probePoints: readonly Omit<DirectRelationProbe, "returnedEdgeId">[];
+    readonly marginPx: number;
+  } | undefined;
+  for (const edgeId of [...handle.model.graph.edges()].sort()) {
+    const probePoints = directRelationProbePointsFor(handle, edgeId);
+    const certifiedCoincidentPartnerIds = coincidentPartnersFor(handle, edgeId) ?? [];
+    for (const candidateEdgeId of [...handle.model.graph.edges()].sort()) {
+      if (candidateEdgeId === edgeId || certifiedCoincidentPartnerIds.includes(candidateEdgeId)) {
+        continue;
+      }
+      const marginPx = worstProbeMarginPx(handle, candidateEdgeId, probePoints);
+      if (best === undefined || marginPx < best.marginPx) {
+        best = { edgeId, candidateEdgeId, probePoints, marginPx };
+      }
+    }
+  }
+  if (best === undefined) {
+    throw new Error("wrong relation-pick coverage control requires at least two distinct, non-coincident relations");
+  }
+  return best;
+}
+
+/** This is the worst (largest) signed margin a candidate relation's own geometry has against its own pick radius, over one relation's calibrated witness points, and does not itself decide pass or fail. */
+function worstProbeMarginPx(
+  handle: RenderHandle,
+  candidateEdgeId: string,
+  probePoints: readonly Omit<DirectRelationProbe, "returnedEdgeId">[],
+): number {
+  const filament = handle.model.filaments.get(candidateEdgeId);
+  if (filament === undefined) {
+    throw new Error(`picking edge ${candidateEdgeId} has no filament geometry`);
+  }
+  const geometry = viewportFilament(filament, handle);
+  let worstMarginPx = Number.NEGATIVE_INFINITY;
+  for (const probe of probePoints) {
+    const cell = pickingCellForPoint(handle.readPickingSurface(), { ...probe.point, z: 0 });
+    const distance = denseDistanceToFilament(geometry, cell.centre);
+    const parameter = filamentShaderParameter(handle.readPickingSurface(), geometry, cell.centre);
+    const pickRadius = pickingRadiusPx(handle, candidateEdgeId, parameter, handle.model.filamentMaterial);
+    worstMarginPx = Math.max(worstMarginPx, distance.distancePx - pickRadius - distance.deviationBoundPx);
+  }
+  return worstMarginPx;
 }
 
 /** This records one relation's viewport ribbon geometry at a live picking cell and does not substitute another target. */

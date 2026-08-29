@@ -401,12 +401,26 @@ export function contrastRatio(a: OklchToken, b: OklchToken): number {
  * assert. The historical curve is kept here, named for what it does, rather than restoring the error
  * inside a function whose contract says WCAG.
  *
+ * **The decode is per channel, before the luminance weighting, and that ordering is the whole point.**
+ * A first version of this function decoded once after weighting instead. The two agree only where
+ * R = G = B, so every chromatic token shifted and the legacy renderer's frozen node colours moved in
+ * 2400 of 4062 configurations — a gate violation produced by a function whose own docstring claimed to
+ * reproduce history and had never been diffed against it.
+ *
  * `luminance.minimumNodeContrastPermille` is 1200 against this curve. That is a separation heuristic,
  * not a WCAG tier, and nothing may present it as one.
  */
 export function separationLuminance(token: OklchToken): number {
-  const wcag = relativeLuminance(token);
-  return wcag <= 0.040_45 ? wcag / 12.92 : ((wcag + 0.055) / 1.055) ** 2.4;
+  assertToken(token);
+  const { red, green, blue } = oklchToLinearSrgb(token);
+  return (0.2126 * srgbToLinear(clamp01(red)))
+    + (0.7152 * srgbToLinear(clamp01(green)))
+    + (0.0722 * srgbToLinear(clamp01(blue)));
+}
+
+/** This is the extra per-channel gamma decode the separation curve applies and is not part of any WCAG luminance. */
+function srgbToLinear(channel: number): number {
+  return channel <= 0.040_45 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
 }
 
 /** This compares two tokens on the renderers' separation curve and does not report a WCAG contrast ratio. */

@@ -234,32 +234,34 @@ test("Recursive walks five real levels deep on the fixture, reusing the same ent
   path = enterChildWorld(graph, path, SHARED_CLUSTER);
   assert.equal(path.worlds.length, 1);
   assert.equal(path.worlds[0]?.kind, "containment");
-  assert.deepEqual(currentNavigableNodeIds(graph, path), sorted([SHARED_CLUSTER, BRIDGE_A, BRIDGE_B, BRIDGE_C]));
+  // The world's own root (SHARED_CLUSTER) is excluded from what is navigable from inside it: a
+  // root is what got entered to produce this world, not a member of it available to enter again.
+  assert.deepEqual(currentNavigableNodeIds(graph, path), sorted([BRIDGE_A, BRIDGE_B, BRIDGE_C]));
 
   path = enterChildWorld(graph, path, BRIDGE_A);
   assert.equal(path.worlds.length, 2);
   assert.equal(path.worlds[1]?.kind, "neighbourhood");
-  assert.deepEqual(currentNavigableNodeIds(graph, path), sorted([BRIDGE_A, SHARED_CLUSTER, SOURCE_W01T, SOURCE_VMZQH]));
+  assert.deepEqual(currentNavigableNodeIds(graph, path), sorted([SHARED_CLUSTER, SOURCE_W01T, SOURCE_VMZQH]));
 
   path = enterChildWorld(graph, path, SOURCE_VMZQH);
   assert.equal(path.worlds.length, 3);
   assert.equal(path.worlds[2]?.kind, "neighbourhood");
   assert.deepEqual(
     currentNavigableNodeIds(graph, path),
-    sorted([SOURCE_VMZQH, ASSERTION_ESSGDR0N, ASSERTION_SRMYMBJ, BRIDGE_A, BRIDGE_B, BRIDGE_C]),
+    sorted([ASSERTION_ESSGDR0N, ASSERTION_SRMYMBJ, BRIDGE_A, BRIDGE_B, BRIDGE_C]),
   );
 
   path = enterChildWorld(graph, path, ASSERTION_ESSGDR0N);
   assert.equal(path.worlds.length, 4);
   assert.equal(path.worlds[3]?.kind, "neighbourhood");
-  assert.deepEqual(currentNavigableNodeIds(graph, path), sorted([ASSERTION_ESSGDR0N, SUBJECT_CONFLICT, SOURCE_VMZQH, CONFLICT_A]));
+  assert.deepEqual(currentNavigableNodeIds(graph, path), sorted([SUBJECT_CONFLICT, SOURCE_VMZQH, CONFLICT_A]));
 
   path = enterChildWorld(graph, path, CONFLICT_A);
   assert.equal(path.worlds.length, 5);
   assert.equal(path.worlds[4]?.kind, "containment");
   assert.deepEqual(
     currentNavigableNodeIds(graph, path),
-    sorted([CONFLICT_A, ASSERTION_3N8REEP, ASSERTION_ESSGDR0N, ASSERTION_SMTB0CS]),
+    sorted([ASSERTION_3N8REEP, ASSERTION_ESSGDR0N, ASSERTION_SMTB0CS]),
   );
 
   // Back navigation restores the previous world exactly, one level per call.
@@ -281,11 +283,19 @@ test("enterChildWorld refuses a target that is not part of the current navigable
   assert.throws(() => enterChildWorld(graph, path, ASSERTION_3N8REEP), /not part of the current world/);
 });
 
-test("Hierarchical caps depth at one: the declared containment root enters, its member does not", () => {
+test("Hierarchical caps depth at one: the declared containment root enters, its member does not, and the root cannot be re-entered from inside its own world", () => {
   const graph = discoveryGraph();
   const path = enterChildWorld(graph, rootNavigationPath(HIERARCHICAL), SHARED_CLUSTER);
   assert.equal(path.worlds.length, 1);
   assert.throws(() => enterChildWorld(graph, path, BRIDGE_A), /cannot enter this element/);
+  // The root itself is not part of what is navigable from inside its own child world, so entering
+  // it again is refused for the same reason any other outside id would be: it is not on offer here.
+  // Without this, the root stays part of its own world's nodeIds and a caller can re-enter it from
+  // itself without limit, producing a breadcrumb of identical worlds and no real depth cap at all.
+  assert.throws(() => enterChildWorld(graph, path, SHARED_CLUSTER), /not part of the current world/);
+  for (let repetition = 0; repetition < 6; repetition += 1) {
+    assert.throws(() => enterChildWorld(graph, path, SHARED_CLUSTER), /not part of the current world/);
+  }
 });
 
 function pathTo(graph: VisualGraph, policy: ScaleTopology, ids: readonly string[]) {

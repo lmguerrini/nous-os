@@ -130,6 +130,16 @@ export function enterableKind(graph: VisualGraph, nodeId: string, policy: ScaleT
  * containment world is exactly the aggregate, its real members, and the defining membership
  * relations between them. A neighbourhood world is exactly one node, every relation incident to it,
  * and the endpoints of those relations — adjacency, never containment.
+ *
+ * For an aggregate root, the two kinds are two different constructions, never conflated — but on
+ * the governed fixtures, an aggregate's only incident relations are typically its own membership
+ * relations, so both constructions read the same edges and land on the same node and edge sets:
+ * measured on discovery-at-question, 3 of its 4 aggregates produce identical containment and
+ * neighbourhood worlds, and 29 of 30 do on indra-community-windows. Only an aggregate that also
+ * carries a non-membership relation (for example one the lonely cluster carries, in a fixture
+ * used by this module's own tests) yields two worlds with different content. So for almost every
+ * aggregate, "containment" versus "neighbourhood" is a distinction of provenance and label — which
+ * operation produced the world and what it is named — not, in practice, of resulting subgraph.
  */
 export function childWorld(graph: VisualGraph, nodeId: string, kind: ChildWorldKind): ChildWorld {
   const engineGraph = engineView(graph);
@@ -177,11 +187,18 @@ export function rootNavigationPath(policy: ScaleTopology): ScaleNavigationPath {
   return { policy, worlds: [] };
 }
 
-/** This is the node id set currently navigable: the canonical graph at the root, or the current world's own members one level in. */
+/**
+ * This is the node id set currently navigable: the canonical graph at the root, or the current
+ * world's own members one level in, excluding that world's own root. A world's root is what got
+ * entered to produce this world, not a member of it available to enter again; admitting it back
+ * into the navigable set is what let a root be re-entered from inside its own child world without
+ * limit, which is exactly what caps Hierarchical's depth at one and keeps every other policy from
+ * looping a world back onto the root that produced it.
+ */
 export function currentNavigableNodeIds(graph: VisualGraph, path: ScaleNavigationPath): readonly string[] {
   const lastWorld = path.worlds[path.worlds.length - 1];
   if (lastWorld !== undefined) {
-    return lastWorld.nodeIds;
+    return lastWorld.nodeIds.filter((nodeId) => nodeId !== lastWorld.rootId);
   }
   const engineGraph = engineView(graph);
   return [...engineGraph.nodes.map((node) => node.id)].sort(compareText);

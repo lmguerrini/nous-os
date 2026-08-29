@@ -1289,26 +1289,30 @@ test("browser evidence and full app smoke", async ({ page, browserName }, testIn
         expect(control.forcedReturnedEdgeId, "wrong relation-id control does not return the source relation").not.toBe(control.edgeId);
         expect(control.outcome.certifiedCoincidentPartnerIds.includes(control.forcedReturnedEdgeId), "wrong relation-id control does not use a certified coincident partner").toBe(false);
         expect(control.outcome.coveringEdgeId, "a live-picker occluder is not marked as coverage").toBeNull();
-        expect(control.outcome.occlusion, "wrong relation-id control records the forced occluder separately").not.toBeNull();
-        if (control.outcome.occlusion === null) {
-          throw new Error("wrong relation-id control did not retain its occlusion certificate");
-        }
-        expect(control.outcome.occlusion.occludingEdgeId, "wrong relation-id control names the forced occluding relation").toBe(control.forcedReturnedEdgeId);
-        expect(control.outcome.occlusion.probes, "wrong relation-id control records geometry for every forced live-picker probe").toHaveLength(DEFAULT_CALIBRATION.budget.oracleCrossProductPixelWitnessCount);
+        // No pair of distinct, non-coincident relations in the shipped scene is close enough, under
+        // the rebuilt morphology, for one to carry a geometric occlusion certificate at every one of
+        // the other's calibrated witness points -- see wrongRelationPickCoverageControl for the
+        // measured margins on the closest pair actually present. So the forced wrong answer this
+        // control produces cannot come back "occluded"; what it must still do, and what is asserted
+        // here, is come back "unpickable" -- rejected for lack of any geometric backing, not silently
+        // trusted because the raw picker said so.
+        expect(control.outcome.outcome, "wrong relation-id control's forced answer has no geometric certificate to be occluded by").toBe("unpickable");
+        expect(control.outcome.occlusion, "wrong relation-id control does not fabricate an occlusion certificate it cannot geometrically back").toBeNull();
         expect(control.pickingTarget.edgePickCoverageIds.includes(control.edgeId), "wrong live-picker answer is absent from the interactable coverage set").toBe(false);
-        expect(control.pickingTarget.edgeOcclusionIds.includes(control.edgeId), "wrong live-picker answer is emitted as a disclosed occlusion").toBe(true);
+        expect(control.pickingTarget.edgeOcclusionIds.includes(control.edgeId), "wrong live-picker answer is not disclosed as a geometric occlusion it cannot back").toBe(false);
+        expect(control.pickingTarget.edgeUnpickableIds.includes(control.edgeId), "wrong live-picker answer is disclosed as unpickable instead").toBe(true);
         let rejection: string | undefined;
         try {
           assertEveryRelationIsInteractable(control.pickingTarget, `${stateKey} forced wrong live-picker answer`);
         } catch (error: unknown) {
           rejection = message(error);
         }
-        expect(rejection, "A3 interactable-coverage assertion rejects a forced wrong live-picker answer despite its occlusion certificate").toBeDefined();
+        expect(rejection, "A3 interactable-coverage assertion rejects a forced wrong live-picker answer with no geometric backing").toBeDefined();
         if (rejection === undefined) {
           throw new Error("A3 interactable-coverage assertion accepted a forced wrong live-picker answer");
         }
         expect(rejection, "wrong relation-id rejection names the source relation that is not interactable").toContain(control.edgeId);
-        wrongRelationPickCoverageControlDetail = `${control.edgeId} forced live-picker return ${control.forcedReturnedEdgeId}; coverage rejected it despite a recorded occlusion certificate: ${rejection}`;
+        wrongRelationPickCoverageControlDetail = `${control.edgeId} forced live-picker return ${control.forcedReturnedEdgeId}; coverage rejected it as unpickable, with no geometric occlusion certificate available: ${rejection}`;
       }
       assertShippingPickingTargetSet(setSnapshot, stateKey);
       expect(setSnapshot.pickingTarget.edgeUnpickableIds, `${stateKey} reports no actually missing relation instead of silently treating it as coverage; ids=[${setSnapshot.pickingTarget.edgeUnpickableIds.join(",")}]`).toEqual([]);

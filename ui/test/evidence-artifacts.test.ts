@@ -72,6 +72,17 @@ const ARTIFACTS = [
     fixtureId: "indra-community-windows",
     fixturePath: "fixtures/synthetic/projection/indra/indra-community-windows.json",
   },
+  // Bound to the commit it was produced at, not the tracked-tree hash the artifacts above use:
+  // PREPARE_EVIDENCE (playwright.config.ts) writes run.commitSha before the DPR projects even
+  // start, so this record carries no run.trackedTree at all. A record fifteen commits behind HEAD,
+  // already reporting passing:false, shipped in a candidate unnoticed because nothing here read
+  // it — see assertBrowserEvidenceCurrent.
+  {
+    label: "browser evidence run",
+    path: ["dist", "evidence", "evidence.json"].join("/"),
+    mustPass: true,
+    browserEvidence: true,
+  },
 ] as const;
 
 test("evidence artifacts are currently certifiable against the tracked tree", async () => {
@@ -101,6 +112,10 @@ test("evidence artifacts are currently certifiable against the tracked tree", as
   for (const artifact of ARTIFACTS) {
     try {
       const raw: unknown = JSON.parse(await readFile(artifact.path, "utf8"));
+      if ("browserEvidence" in artifact) {
+        await assertBrowserEvidenceCurrent(raw, artifact.label);
+        continue;
+      }
       if ("matrix" in artifact) {
         await assertMatrixEvidence(raw, artifact.label, artifact.fixtureId, artifact.fixturePath);
       } else if (!artifact.mustPass) {
@@ -867,6 +882,35 @@ async function indexedTreeSha256(): Promise<string> {
   const repositoryDirectory = [".."].join("/");
   const { stdout } = await execFileAsync("git", ["ls-files", "-s"], { cwd: repositoryDirectory, encoding: "utf8" });
   return createHash("sha256").update(stdout).digest("hex");
+}
+
+/**
+ * dist/evidence/evidence.json is bound to the commit it was produced at, not to the tracked-tree
+ * hash the other artifacts above carry, so it cannot go through readArtifact/
+ * assertEvidenceArtifactCurrent. A record shipped fifteen commits behind HEAD, already reporting
+ * passing:false, went unnoticed at a real closure audit because nothing in this file read this
+ * path at all; this both re-derives the run-level verdict and requires it be bound to HEAD.
+ */
+async function assertBrowserEvidenceCurrent(raw: unknown, label: string): Promise<void> {
+  if (!isRecord(raw) || !isRecord(raw["summary"]) || typeof raw["summary"]["passing"] !== "boolean") {
+    throw new Error(`${label} has no boolean run-level verdict`);
+  }
+  if (raw["summary"]["passing"] !== true) {
+    throw new Error(`${label} run-level verdict is not passing`);
+  }
+  if (!isRecord(raw["run"]) || typeof raw["run"]["commitSha"] !== "string" || !/^[0-9a-f]{40,64}$/iu.test(raw["run"]["commitSha"])) {
+    throw new Error(`${label} has no bound commit SHA`);
+  }
+  const headSha = await currentHeadCommitSha();
+  if (raw["run"]["commitSha"] !== headSha) {
+    throw new Error(`${label} is bound to commit ${raw["run"]["commitSha"]}, HEAD is ${headSha}`);
+  }
+}
+
+async function currentHeadCommitSha(): Promise<string> {
+  const repositoryDirectory = [".."].join("/");
+  const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repositoryDirectory, encoding: "utf8" });
+  return stdout.trim();
 }
 
 function uint64be(value: number): Buffer {
