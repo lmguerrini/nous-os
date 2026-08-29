@@ -319,11 +319,13 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
     return;
   }
   // A governed record kept OUTSIDE this repository, deliberately, under the project's public/private
-  // boundary. This repository must not name that path in a tracked byte, so what is verified here has
-  // two independent parts: that the DECLARATION is complete — the record, the reason a machine cannot
-  // resolve it, and the statement of why it lives elsewhere — and that the named record actually
-  // EXISTS at the governance root. A complete declaration naming a file nobody wrote used to resolve
-  // here; a criterion may not reach RESOLVED that way any longer.
+  // boundary. No absolute path, home directory or username is tracked — the root is composed at
+  // runtime from homedir() — but the store's relative layout and project id ARE named above, which is
+  // the price of checking that a record exists rather than only that one was declared. What is
+  // verified here has two independent parts: that the DECLARATION is complete — the record, the reason
+  // a machine cannot resolve it, and the statement of why it lives elsewhere — and that the named
+  // record actually EXISTS at the governance root. A complete declaration naming a file nobody wrote
+  // used to resolve here; a criterion may not reach RESOLVED that way any longer.
   if (source.record.trim() === "" || source.why.trim() === "" || (source.outsideRepository ?? "").trim() === "") {
     throw new Error(`${criterion.id} declares a governance record without naming it, its reason, and why it is not in this repository`);
   }

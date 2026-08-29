@@ -181,9 +181,21 @@ async function assertMatrixEvidence(
     [["imageDistinctness", "passed"], "decoded-pixel distinctness"],
     [["imageDistinctness", "allTwelveDistinct"], "all-cell decoded-pixel distinctness"],
     [["contactSheetEvidence", "passed"], "contact-sheet existence"],
+    [["frameContainmentInvariant", "passed"], "frame-containment invariant"],
   ] as const) {
     assertMatrixFlag(manifest, path, description, label);
   }
+
+  // aggregateFillInvariant and aggregateRimInvariant are NOT required to carry passed:true on every
+  // manifest: a fixture whose own aggregate windows never clear the shared testability floor legitimately
+  // measures zero cells and reports passed:false there (see matrix.spec.ts's per-fixture measurement and
+  // R2's repair). What IS required is that the flag is present, honest about what it measured, and -- when
+  // it reports false -- carries a stated reason rather than an unexplained shortfall. The run-level
+  // requirement that the fixtures POOLED TOGETHER carry at least one measured cell is enforced by
+  // matrix.spec.ts itself throwing before either manifest is written; nothing here re-derives that across
+  // manifests, since each manifest is read independently and neither, alone, proves the other's coverage.
+  assertMatrixCoverageInvariant(manifest, "aggregateFillInvariant", label);
+  assertMatrixCoverageInvariant(manifest, "aggregateRimInvariant", label);
 
   const coverage = requiredMatrixRecord(manifest["combinationCoverage"], `${label} combination coverage`);
   if (coverage["combinationsPerProjection"] !== 6 || coverage["totalCaptures"] !== 12) {
@@ -364,6 +376,41 @@ function assertMatrixFlag(
   }
   if (value !== true) {
     throw new Error(`${label} ${description} flag is ${String(value)}, not true`);
+  }
+}
+
+/**
+ * This requires presence and internal honesty for a coverage-style invariant that may legitimately
+ * report passed:false on one manifest while the run as a whole still passes (see aggregateFillInvariant
+ * and aggregateRimInvariant). A blanket passed:true requirement here would be wrong for a fixture whose
+ * own windows never clear the shared testability floor; what must hold is that measuredCells agrees with
+ * passed, and that a false verdict is never left unexplained.
+ */
+function assertMatrixCoverageInvariant(root: Record<string, unknown>, key: string, label: string): void {
+  const invariant = requiredMatrixRecord(root[key], `${label} ${key}`);
+  const measuredCells = invariant["measuredCells"];
+  if (typeof measuredCells !== "number" || !Number.isInteger(measuredCells) || measuredCells < 0) {
+    throw new Error(`${label} ${key} measuredCells is ${String(measuredCells)}, not a non-negative integer`);
+  }
+  const passed = invariant["passed"];
+  if (typeof passed !== "boolean") {
+    throw new Error(`${label} ${key} passed is ${String(passed)}, not a boolean`);
+  }
+  if (passed) {
+    if (measuredCells <= 0) {
+      throw new Error(`${label} ${key} claims passed:true with measuredCells:${measuredCells}`);
+    }
+    if (invariant["reason"] !== null) {
+      throw new Error(`${label} ${key} claims passed:true but still carries a reason (${String(invariant["reason"])})`);
+    }
+    return;
+  }
+  if (measuredCells !== 0) {
+    throw new Error(`${label} ${key} claims passed:false but recorded measuredCells:${measuredCells}`);
+  }
+  const reason = invariant["reason"];
+  if (typeof reason !== "string" || reason.trim() === "") {
+    throw new Error(`${label} ${key} reports passed:false with no recorded reason`);
   }
 }
 

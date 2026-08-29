@@ -166,7 +166,7 @@
         "location": "governance",
         "record": "GR-1",
         "why": "judgement against generated images is the one criterion this capability proved a machine cannot stand in for: a metric improved fourteenfold while the picture regressed to the identity the engine exists to replace",
-        "outsideRepository": "deliberately, under this project's public/private boundary; this repository must not name that path in a tracked byte, so the DECLARATION is what is verified here and the record itself is verified by the governance gate"
+        "outsideRepository": "deliberately, under this project's public/private boundary. What this repository must not name in a tracked byte -- and does not -- is the resolved location: no absolute path, no home directory, and no username appear anywhere tracked, because the default governance root is computed from homedir() at runtime in test/closure-register.test.ts rather than written as a literal. What IS present in a tracked byte, in that same default, is the governance store's relative layout (.local/share/governance-store/projects/<project-id>) and this project's id (project); that is a structural convention name, not a location or any private content, so naming it does not cross the boundary. The DECLARATION verified here is therefore narrower than 'this path is never named': it is that no machine-specific location is named, and the record itself is verified by the governance gate"
       }
     },
     {

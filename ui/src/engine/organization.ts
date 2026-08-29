@@ -340,7 +340,13 @@ export function assertIndraLayout(graph: EngineGraph, result: IndraLayout): void
   assertExactIds(result.edgeIds, graph.edges.map((edge) => edge.id), "edge");
   assertExactIds([...result.nodeAnchors.keys()].sort(compareText), [...result.nodeIds].sort(compareText), "node anchor");
   const expected = aggregateMemberships(graph);
-  const aggregateIds = graph.nodes.filter((node) => node.kind === "cluster" || node.kind === "conflict").map((node) => node.id);
+  // result.windows is indraLayout's own sortedWindows, sorted by id regardless of the graph's node
+  // array order. Comparing that against aggregateIds in raw graph-array order made this an
+  // order-sensitive check disguised as an id-set check: every shipped fixture's cluster/conflict
+  // nodes already happen to appear in sorted order, so it never threw, but a governed graph whose
+  // aggregates arrived in any other order would fail this on valid data. Sorting both sides the same
+  // way makes the comparison what it was always meant to be -- an id-set match, not an array match.
+  const aggregateIds = graph.nodes.filter((node) => node.kind === "cluster" || node.kind === "conflict").map((node) => node.id).sort(compareText);
   assertExactIds(result.windows.map((window) => window.id), aggregateIds, "aggregate");
   for (const window of result.windows) {
     const members = expected.get(window.id);

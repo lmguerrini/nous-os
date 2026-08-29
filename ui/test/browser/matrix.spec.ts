@@ -88,6 +88,22 @@ type AggregateFillWitness = {
   readonly windows: readonly AggregateWindowFillWitness[];
 } | null;
 
+/** This is one window's decoded-pixel rim measurement and does not read shader source. */
+type AggregateWindowRimWitness = {
+  readonly id: string;
+  readonly cleanRimAngles: number;
+  readonly minimumRimDelta: number;
+  readonly typicalBackgroundDelta: number;
+};
+
+/** This is a capture's complete decoded-pixel rim witness and is null for Flat, which resolves no aggregate windows. */
+type AggregateRimWitness = {
+  readonly windowCount: number;
+  readonly minimumRimDelta: number;
+  readonly typicalBackgroundDelta: number;
+  readonly windows: readonly AggregateWindowRimWitness[];
+} | null;
+
 type MatrixCaptureRecord = {
   readonly fixture: string;
   readonly morphology: Morphology;
@@ -108,6 +124,7 @@ type MatrixCaptureRecord = {
   };
   readonly drawnStrokeWitness: DrawnStrokeWitness;
   readonly aggregateFillWitness: AggregateFillWitness;
+  readonly aggregateRimWitness: AggregateRimWitness;
   readonly pixelSha256: string;
   readonly controlledRecapturePixelSha256: string;
   readonly pixelDimensions: { readonly width: number; readonly height: number };
@@ -203,9 +220,16 @@ type MatrixManifest = {
     readonly passed: true;
   };
   readonly aggregateFillInvariant: {
-    readonly assertion: "Every Indra cell whose aggregate windows are large enough to sample has decoded-pixel interior fill measurably brighter than background and measurably darker than its own member-node content, sampled at real decoded pixels rather than shader source or a reimplementation the shader never calls. A cell whose windows are all too small or empty to sample is not counted as passing OR failing here; the run-level check requires at least one measured cell across every fixture.";
+    readonly assertion: "Every Indra cell whose aggregate windows are large enough to sample has decoded-pixel interior fill measurably brighter than background and measurably darker than its own member-node content, sampled at real decoded pixels rather than shader source or a reimplementation the shader never calls. A cell whose windows are all too small or empty to sample is not counted as passing OR failing here. The run-level check requires the fixtures POOLED TOGETHER to carry at least one measured cell; it does not require every individual fixture to. A fixture whose own windows never clear the testability floor legitimately reports measuredCells: 0 and passed: false here, and `reason` states that plainly -- that is not itself evidence of a defect in this fixture, only that its windows are too small to carry this particular proof.";
     readonly measuredCells: number;
     readonly passed: boolean;
+    readonly reason: string | null;
+  };
+  readonly aggregateRimInvariant: {
+    readonly assertion: "Every Indra cell whose aggregate windows are large enough to sample has a decoded-pixel rim, sampled on the annulus at the window's resolved radius, measurably brighter than its immediately surrounding background, sampled at real decoded pixels rather than shader source. A cell whose windows are all too small or empty to sample is not counted as passing OR failing here. The run-level check requires the fixtures POOLED TOGETHER to carry at least one measured cell; it does not require every individual fixture to. A fixture whose own windows never clear the testability floor legitimately reports measuredCells: 0 and passed: false here, and `reason` states that plainly -- that is not itself evidence of a defect in this fixture, only that its windows are too small to carry this particular proof.";
+    readonly measuredCells: number;
+    readonly passed: boolean;
+    readonly reason: string | null;
   };
   readonly captureQuality: {
     readonly requiredFieldRgb: readonly [number, number, number];
@@ -244,8 +268,20 @@ const MINIMUM_NODE_EXCLUSION_RADIUS_CSS_PX = 2;
 const MINIMUM_CLEAN_FILL_POINTS_PER_WINDOW = 4;
 // Below this resolved on-screen radius, stroke, fill and content anti-alias into a handful of shared
 // pixels and no decoded sample can be attributed to fill alone; see indra-community-windows's own
-// two-member conflict windows in 3D, which resolve well under 10px from some camera angles.
+// two-member conflict windows in 3D, which resolve well under 10px from some camera angles. The same
+// floor gates the rim sample below: the rim is only about a pixel wide (baseWidthPx=1 at DPR 1), so it
+// needs the same on-screen room to be attributable to stroke coverage rather than shared anti-aliasing.
 const MINIMUM_TESTABLE_WINDOW_VIEWPORT_RADIUS_CSS_PX = 24;
+// The rim stroke is one device pixel wide and analytically anti-aliased (see AGGREGATE_FRAGMENT_SHADER's
+// fwidth-based feather), so its peak coverage can land up to roughly a pixel off the window's nominal
+// resolved radius once a sample point rounds to its nearest decoded pixel. Sampling a small band of
+// radii around the nominal radius and keeping the maximum reading per angle finds that peak instead of
+// missing it by rounding.
+const RIM_RADIAL_SAMPLE_OFFSETS_CSS_PX = [-1, -0.5, 0, 0.5, 1] as const;
+// Sampled well outside the stroke's antialiased feather (and still short of windowPaddingPx=14, so the
+// point stays inside the window's own blank padding rather than drifting into unrelated content) so it
+// reads the field this window is drawn over, not the rim itself.
+const RIM_BACKGROUND_OFFSET_CSS_PX = 6;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const MORPHOLOGIES = ["stellar", "neural", "mycelium"] as const satisfies readonly Morphology[];
 const ORGANIZATIONS = ["flat", "indra"] as const satisfies readonly Organization[];
@@ -273,11 +309,12 @@ test("governed morphology × organization evidence matrix", async ({ page }, tes
   await mkdir(MATRIX_ROOT_DIRECTORY, { recursive: true });
   const pageModule = await bundleMatrixPage();
   await installMatrixPage(page, pageModule);
-  // Not every fixture's Indra windows are large enough to sample interior fill against member content
-  // (see assertAggregateWindowFillPixels); this accumulates the cells that WERE, across every fixture,
-  // so the run as a whole can still require genuine positive coverage rather than passing on a run
-  // where every cell happened to skip.
+  // Not every fixture's Indra windows are large enough to sample interior fill or rim against member
+  // content (see assertAggregateWindowFillPixels and assertAggregateWindowRimPixels); this accumulates
+  // the cells that WERE, across every fixture, so the run as a whole can still require genuine positive
+  // coverage rather than passing on a run where every cell happened to skip.
   const fillWitnessCoverage: { readonly fixtureId: string; readonly fileName: string; readonly windowCount: number }[] = [];
+  const rimWitnessCoverage: { readonly fixtureId: string; readonly fileName: string; readonly windowCount: number }[] = [];
   try {
     for (const fixture of FIXTURES) {
       const governedTopology = await readGovernedFixtureTopology(fixture.path);
@@ -291,6 +328,12 @@ test("governed morphology × organization evidence matrix", async ({ page }, tes
         .filter((entry): entry is { capture: MatrixCaptureRecord; witness: NonNullable<AggregateFillWitness> } => entry.witness !== null);
       for (const { capture, witness } of fixtureFillMeasurements) {
         fillWitnessCoverage.push({ fixtureId: fixture.id, fileName: capture.fileName, windowCount: witness.windowCount });
+      }
+      const fixtureRimMeasurements = captures
+        .map((capture) => ({ capture, witness: capture.aggregateRimWitness }))
+        .filter((entry): entry is { capture: MatrixCaptureRecord; witness: NonNullable<AggregateRimWitness> } => entry.witness !== null);
+      for (const { capture, witness } of fixtureRimMeasurements) {
+        rimWitnessCoverage.push({ fixtureId: fixture.id, fileName: capture.fileName, windowCount: witness.windowCount });
       }
       const topologyGroups = assertTopologyInvariant(captures, governedTopology);
       const distinctDigestGroups = assertMorphologyDigestDistinctness(captures);
@@ -368,9 +411,20 @@ test("governed morphology × organization evidence matrix", async ({ page }, tes
           passed: true,
         },
         aggregateFillInvariant: {
-          assertion: "Every Indra cell whose aggregate windows are large enough to sample has decoded-pixel interior fill measurably brighter than background and measurably darker than its own member-node content, sampled at real decoded pixels rather than shader source or a reimplementation the shader never calls. A cell whose windows are all too small or empty to sample is not counted as passing OR failing here; the run-level check requires at least one measured cell across every fixture.",
+          assertion: "Every Indra cell whose aggregate windows are large enough to sample has decoded-pixel interior fill measurably brighter than background and measurably darker than its own member-node content, sampled at real decoded pixels rather than shader source or a reimplementation the shader never calls. A cell whose windows are all too small or empty to sample is not counted as passing OR failing here. The run-level check requires the fixtures POOLED TOGETHER to carry at least one measured cell; it does not require every individual fixture to. A fixture whose own windows never clear the testability floor legitimately reports measuredCells: 0 and passed: false here, and `reason` states that plainly -- that is not itself evidence of a defect in this fixture, only that its windows are too small to carry this particular proof.",
           measuredCells: fixtureFillMeasurements.length,
           passed: fixtureFillMeasurements.length > 0,
+          reason: fixtureFillMeasurements.length > 0
+            ? null
+            : `no captured cell in ${fixture.id} had a populated aggregate window at or above the ${MINIMUM_TESTABLE_WINDOW_VIEWPORT_RADIUS_CSS_PX}px minimum testable resolved viewport radius; coverage for this run's own aggregateFillInvariant floor is expected to come from another fixture`,
+        },
+        aggregateRimInvariant: {
+          assertion: "Every Indra cell whose aggregate windows are large enough to sample has a decoded-pixel rim, sampled on the annulus at the window's resolved radius, measurably brighter than its immediately surrounding background, sampled at real decoded pixels rather than shader source. A cell whose windows are all too small or empty to sample is not counted as passing OR failing here. The run-level check requires the fixtures POOLED TOGETHER to carry at least one measured cell; it does not require every individual fixture to. A fixture whose own windows never clear the testability floor legitimately reports measuredCells: 0 and passed: false here, and `reason` states that plainly -- that is not itself evidence of a defect in this fixture, only that its windows are too small to carry this particular proof.",
+          measuredCells: fixtureRimMeasurements.length,
+          passed: fixtureRimMeasurements.length > 0,
+          reason: fixtureRimMeasurements.length > 0
+            ? null
+            : `no captured cell in ${fixture.id} had a populated aggregate window at or above the ${MINIMUM_TESTABLE_WINDOW_VIEWPORT_RADIUS_CSS_PX}px minimum testable resolved viewport radius; coverage for this run's own aggregateRimInvariant floor is expected to come from another fixture`,
         },
         captureQuality: {
           requiredFieldRgb: SHIPPING_DARK_FIELD_RGB,
@@ -390,9 +444,16 @@ test("governed morphology × organization evidence matrix", async ({ page }, tes
     if (fillWitnessCoverage.length === 0) {
       throw new Error("matrix aggregate fill invariant failed: no captured cell across either fixture had a window both populated and large enough to measure interior fill against its own content");
     }
+    if (rimWitnessCoverage.length === 0) {
+      throw new Error("matrix aggregate rim invariant failed: no captured cell across either fixture had a window both populated and large enough to measure rim against its own surrounding background");
+    }
     process.stdout.write(
       `matrix aggregate fill coverage: ${fillWitnessCoverage.length} cell(s) measured; `
       + `${fillWitnessCoverage.map((entry) => `${entry.fixtureId}/${entry.fileName}=${entry.windowCount} window(s)`).join(", ")}\n`,
+    );
+    process.stdout.write(
+      `matrix aggregate rim coverage: ${rimWitnessCoverage.length} cell(s) measured; `
+      + `${rimWitnessCoverage.map((entry) => `${entry.fixtureId}/${entry.fileName}=${entry.windowCount} window(s)`).join(", ")}\n`,
     );
   } finally {
     await destroyMatrixPage(page);
@@ -615,6 +676,9 @@ async function captureFixtureMatrix(
         const aggregateFillWitness = organization === "indra"
           ? assertAggregateWindowFillPixels(witness, image, fileName)
           : null;
+        const aggregateRimWitness = organization === "indra"
+          ? assertAggregateWindowRimPixels(witness, image, fileName)
+          : null;
         records.push({
           fixture: witness.fixture,
           morphology,
@@ -635,6 +699,7 @@ async function captureFixtureMatrix(
           },
           drawnStrokeWitness,
           aggregateFillWitness,
+          aggregateRimWitness,
           pixelSha256: pixelSha256(image),
           controlledRecapturePixelSha256: pixelSha256(controlledRecapture),
           pixelDimensions: dimensions,
@@ -1100,6 +1165,129 @@ function ringCandidates(
     const angle = (index / count) * Math.PI * 2;
     return { x: center.x + (Math.cos(angle) * radius), y: center.y + (Math.sin(angle) * radius) };
   });
+}
+
+/**
+ * This proves the aggregate window's rim stroke is actually composited into decoded pixels, not merely
+ * described by shader source text (see shader-contract.ts's "analytic rim anti-aliasing" and "fill
+ * composited behind the rim stroke" markers, which a zero-alpha stroke satisfies verbatim). It samples
+ * real decoded pixels on the annulus at the window's own resolved viewport radius and requires them to
+ * be both measurably above the required background-distinguishability floor and measurably brighter than
+ * the immediately surrounding background sampled a few pixels further out, past the stroke's own
+ * antialiased feather.
+ *
+ * If the stroke's alpha were zeroed at the source (windowStrokeAlphaPermille: 0), every sample on the
+ * rim annulus would decode to exactly the interior fill or field color already present there -- the
+ * minimum-rim-delta and rim-vs-background comparisons below would fail outright on the measured near-zero
+ * or non-positive values, not pass on shader-source text that a zero-alpha stroke satisfies unchanged.
+ *
+ * The rim is drawn one device pixel wide (calibration.filament.baseWidthPx at the micro LOD band), so its
+ * peak coverage can land within roughly a pixel of the window's nominal resolved radius once a sample
+ * point rounds to its nearest decoded pixel; RIM_RADIAL_SAMPLE_OFFSETS_CSS_PX samples a small band around
+ * that nominal radius per angle and keeps the maximum reading, so a rounding-induced miss of the peak does
+ * not read as an absent rim.
+ *
+ * Not every Indra cell can run this, for the same reason the fill measurement cannot: a window below
+ * MINIMUM_TESTABLE_WINDOW_VIEWPORT_RADIUS_CSS_PX packs stroke, fill and content into a handful of shared
+ * pixels with no sample attributable to the rim alone (indra-community-windows' own 30 windows resolve at
+ * roughly 7px, far under this floor). Such a cell returns null rather than a false pass; the caller
+ * requires at least one non-null witness across the whole run so the proof cannot be silently skipped
+ * everywhere.
+ */
+function assertAggregateWindowRimPixels(
+  witness: MatrixCaptureWitnessWithIncidence,
+  image: PixelImage,
+  fileName: string,
+): AggregateRimWitness {
+  if (witness.windows.length === 0) {
+    throw new Error(`matrix aggregate rim invariant failed for ${fileName}: Indra capture resolved no aggregate windows`);
+  }
+  const testableWindows = witness.windows.filter((window) => (
+    window.members.length > 0 && window.viewportRadius >= MINIMUM_TESTABLE_WINDOW_VIEWPORT_RADIUS_CSS_PX
+  ));
+  if (testableWindows.length === 0) {
+    return null;
+  }
+  const threshold = DEFAULT_CALIBRATION.luminance.minimumCompositedPixelChannelDelta;
+  const allNodePositions = Object.values(witness.nodeViewportPositions);
+  const windows = testableWindows.map((window) => assertAggregateWindowRimPixel(window, image, allNodePositions, threshold, fileName));
+  return {
+    windowCount: windows.length,
+    minimumRimDelta: Math.min(...windows.map((window) => window.minimumRimDelta)),
+    typicalBackgroundDelta: Math.max(...windows.map((window) => window.typicalBackgroundDelta)),
+    windows,
+  };
+}
+
+function assertAggregateWindowRimPixel(
+  window: MatrixAggregateWindowWitness,
+  image: PixelImage,
+  allNodePositions: readonly { readonly x: number; readonly y: number }[],
+  threshold: number,
+  fileName: string,
+): AggregateWindowRimWitness {
+  const exclusionRadius = Math.max(MINIMUM_NODE_EXCLUSION_RADIUS_CSS_PX, window.viewportRadius * NODE_EXCLUSION_RADIUS_FRACTION);
+  const isClean = (point: { readonly x: number; readonly y: number }): boolean => allNodePositions.every((position) => (
+    Math.hypot(position.x - point.x, position.y - point.y) > exclusionRadius
+  ));
+  const rimDeltas: number[] = [];
+  for (let index = 0; index < FILL_RING_SAMPLE_COUNT; index += 1) {
+    const angle = (index / FILL_RING_SAMPLE_COUNT) * Math.PI * 2;
+    const offsetPoints = RIM_RADIAL_SAMPLE_OFFSETS_CSS_PX.map((offset) => ({
+      x: window.viewportCenter.x + (Math.cos(angle) * (window.viewportRadius + offset)),
+      y: window.viewportCenter.y + (Math.sin(angle) * (window.viewportRadius + offset)),
+    }));
+    if (!offsetPoints.every(isClean)) {
+      continue;
+    }
+    rimDeltas.push(Math.max(...offsetPoints.map((point) => channelDeviationAtPoint(image, point))));
+  }
+  if (rimDeltas.length < MINIMUM_CLEAN_FILL_POINTS_PER_WINDOW) {
+    throw new Error(
+      `matrix aggregate rim invariant failed for ${fileName}: window ${window.id} (viewport radius `
+      + `${window.viewportRadius.toFixed(1)}px / ${exclusionRadius.toFixed(1)}px exclusion) yielded only ${rimDeltas.length} `
+      + `clean rim angles, fewer than the required ${MINIMUM_CLEAN_FILL_POINTS_PER_WINDOW}`,
+    );
+  }
+  const minimumRimDelta = Math.min(...rimDeltas);
+  if (minimumRimDelta < threshold) {
+    throw new Error(
+      `matrix aggregate rim invariant failed for ${fileName}: window ${window.id} rim delta `
+      + `${minimumRimDelta} is below the required background-distinguishability floor of ${threshold}`,
+    );
+  }
+  const backgroundDeltas = ringCandidates(window.viewportCenter, window.viewportRadius + RIM_BACKGROUND_OFFSET_CSS_PX, FILL_RING_SAMPLE_COUNT)
+    .filter(isClean)
+    .map((point) => channelDeviationAtPoint(image, point));
+  if (backgroundDeltas.length < MINIMUM_CLEAN_FILL_POINTS_PER_WINDOW) {
+    throw new Error(
+      `matrix aggregate rim invariant failed for ${fileName}: window ${window.id} yielded only ${backgroundDeltas.length} `
+      + `clean immediate-background points, fewer than the required ${MINIMUM_CLEAN_FILL_POINTS_PER_WINDOW}`,
+    );
+  }
+  // The node-position exclusion above clears halo and content bleed, but a governed relation is free to
+  // route a filament radially through this exact band -- a bridge attaching to the window's own hub, in
+  // particular, legitimately crosses it (measured: discovery-at-question's cluster:shared-synthetic-cluster
+  // puts a real filament through its own immediate background at some angles). A worst-case maximum would
+  // fail on that legitimate content; the median is robust to the handful of angles a single relation can
+  // cross while still measuring what "immediately surrounding background" actually means at the rest of
+  // the ring.
+  const typicalBackgroundDelta = median(backgroundDeltas);
+  if (minimumRimDelta <= typicalBackgroundDelta) {
+    throw new Error(
+      `matrix aggregate rim invariant failed for ${fileName}: window ${window.id} rim delta ${minimumRimDelta} `
+      + `is not measurably brighter than its immediately surrounding background delta (median) ${typicalBackgroundDelta}`,
+    );
+  }
+  return { id: window.id, cleanRimAngles: rimDeltas.length, minimumRimDelta, typicalBackgroundDelta };
+}
+
+function median(values: readonly number[]): number {
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2)
+    : (sorted[middle] ?? 0);
 }
 
 function assertMorphologyDigestDistinctness(captures: readonly MatrixCaptureRecord[]): readonly MatrixDistinctDigestGroup[] {

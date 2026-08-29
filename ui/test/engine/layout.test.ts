@@ -8,6 +8,7 @@ import { DEFAULT_AGGREGATE_LAYOUT_CALIBRATION, DEFAULT_CALIBRATION } from "#engi
 import { detectCommunities } from "#engine/community.ts";
 import type { Coordinates, EngineGraph, VisualGraph } from "#engine/contract.ts";
 import { aggregateDiscs, aggregateMemberships, layoutAnchors, sharedAnchors } from "#engine/layout.ts";
+import { assertIndraLayout, indraLayout } from "#engine/organization.ts";
 
 const FIXTURE_NAMES = [
   "discovery-all-time.json",
@@ -256,10 +257,21 @@ test("aggregate members scatter through their disc's interior at varying distanc
   // memberAnchor scatters a disc's members by both angle and radius (radial
   // hash times available radius), so real members should span a meaningful
   // range of distances from their disc's center rather than sitting on a
-  // single ring. This is measured directly against memberAnchor's real
-  // output through the public aggregateDiscs/layoutAnchors surface, on the
-  // community-scale Indra portal fixture, whose aggregates carry 8-15 real
-  // members each -- enough for the range to be a signal, not noise.
+  // single ring. This is measured against layoutAnchors' actual FINAL
+  // output -- memberAnchor's radial placement AFTER settleAnchors and
+  // enforceMinimumScreenPairwiseSeparation have both run over it -- not
+  // memberAnchor's raw output directly, since layoutAnchors is the only
+  // public surface that exposes a member's final position. That gap is
+  // real: collapsing memberAnchor's own radial hash onto one fixed
+  // mid-disc ring (distance = 0.5 * availableRadius for every member)
+  // leaves this test green, because the downstream separation pass alone
+  // reintroduces enough spread to clear the 0.2 floor. Only a more severe
+  // collapse -- every member forced onto the disc's outer rim -- turns it
+  // red, which is what keeps this a real, non-vacuous check of the FINAL
+  // rendered placement property (what a viewer actually sees), even though
+  // it cannot isolate memberAnchor's own contribution to it. Measured on
+  // the community-scale Indra portal fixture, whose aggregates carry 8-15
+  // real members each -- enough for the range to be a signal, not noise.
   const visualGraph = fixtureGraph(["indra", "indra-portal-windows.json"]);
   const anchors = layoutAnchors(visualGraph);
   const discs = aggregateDiscs(visualGraph);
@@ -409,6 +421,44 @@ test("every fixture keeps non-members outside every aggregate disc after settlin
       }
     }
   }
+});
+
+// This targets organization.ts's assertIndraLayout, whose own tests live in
+// test/engine/organization.test.ts, which is outside this delegation's write scope; this file already
+// imports the layout surface assertIndraLayout is built on, so the control lives here instead.
+test("assertIndraLayout resolves a governed graph whose aggregate nodes are not in sorted-id order", () => {
+  // Every shipped fixture happens to have its cluster/conflict nodes already in ascending id order
+  // inside the graph's own node array. assertIndraLayout used to compare indraLayout's own
+  // alphabetically sorted window ids against aggregate ids read straight out of graph.nodes in
+  // whatever order the graph put them, so that accident of fixture data -- not anything the
+  // assertion actually checked -- was what kept it from throwing on valid input. This reverses just
+  // the aggregate nodes' relative order, leaving every other node's array position untouched, to
+  // prove the assertion no longer depends on that accident.
+  const visualGraph = fixtureGraph(["indra", "indra-community-windows.json"]);
+  const aggregateSlots = visualGraph.nodes
+    .map((node, index) => ({ node, index }))
+    .filter(({ node }) => node.kind === "cluster" || node.kind === "conflict");
+  assert.ok(aggregateSlots.length > 1, "the fixture needs more than one aggregate to prove order independence");
+  const originalAggregateOrder = aggregateSlots.map(({ node }) => node.id);
+  assert.deepEqual(
+    originalAggregateOrder,
+    [...originalAggregateOrder].sort(compareText),
+    "the fixture's own aggregate order must already be sorted, or reversing it proves nothing about the accident being relied on",
+  );
+  const reversedAggregateNodes = [...aggregateSlots].reverse().map(({ node }) => node);
+  const reorderedNodes = visualGraph.nodes.map((node, index) => {
+    const slot = aggregateSlots.findIndex((entry) => entry.index === index);
+    return slot === -1 ? node : (reversedAggregateNodes[slot] ?? node);
+  });
+  assert.notDeepEqual(reorderedNodes.map((node) => node.id), visualGraph.nodes.map((node) => node.id));
+  assert.deepEqual([...reorderedNodes.map((node) => node.id)].sort(), [...visualGraph.nodes.map((node) => node.id)].sort());
+  const reorderedGraph = { ...visualGraph, nodes: reorderedNodes };
+
+  const relayout = indraLayout(reorderedGraph, DEFAULT_CALIBRATION);
+  assert.doesNotThrow(
+    () => assertIndraLayout(reorderedGraph, relayout),
+    "a governed graph whose aggregates are not in sorted-id order must still resolve",
+  );
 });
 
 function median(values: readonly number[]): number {
