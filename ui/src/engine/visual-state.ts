@@ -7,6 +7,8 @@ import { MYCELIUM, NEURAL, STELLAR } from "#engine/morphology.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import { FLAT, INDRA } from "#engine/organization.ts";
 import type { Organization } from "#engine/organization.ts";
+import { SCALE_TOPOLOGIES } from "#engine/scale-topology.ts";
+import type { ScaleTopology } from "#engine/scale-topology.ts";
 import { ALL_PALETTES, TEMPERATURES, THEMES, isHueAnchorDegrees } from "#engine/tokens.ts";
 import type { Palette, Temperature, Theme } from "#engine/tokens.ts";
 
@@ -28,7 +30,10 @@ export type VisualStateCamera = {
  * VISUAL_STATE_FIELD_REGISTER.state, the mandatory list) purely so every existing VisualState producer
  * that has never heard of accent-hue keeps constructing a valid state without it. It is not optional in
  * practice: assertVisualState below requires it exactly when `palette` is `"accent-hue"`, and forbids
- * it from carrying meaning for any other palette.
+ * it from carrying meaning for any other palette. `scaleTopology` follows the same precedent for the
+ * same reason: it is a producer-optional field so every existing VisualState producer that predates the
+ * scale/navigation axis keeps constructing a valid state without it, and its absence means Atomic, the
+ * current baseline, rather than materialising a default value here.
  */
 export type VisualState = {
   readonly selectedId: string | null;
@@ -43,9 +48,10 @@ export type VisualState = {
   readonly lodBand: LodBand;
   readonly reducedMotion: boolean;
   readonly hueAnchorDegrees?: number;
+  readonly scaleTopology?: ScaleTopology;
 };
 
-/** This is the complete literal VisualState field register and does not permit extension fields; `optionalState` names the one field a producer may omit entirely. */
+/** This is the complete literal VisualState field register and does not permit extension fields; `optionalState` names the fields a producer may omit entirely. */
 export const VISUAL_STATE_FIELD_REGISTER = {
   state: [
     "selectedId",
@@ -60,7 +66,7 @@ export const VISUAL_STATE_FIELD_REGISTER = {
     "lodBand",
     "reducedMotion",
   ],
-  optionalState: ["hueAnchorDegrees"],
+  optionalState: ["hueAnchorDegrees", "scaleTopology"],
   camera: ["x", "y", "angle", "ratio", "bounds"],
   bounds: ["x", "y"],
 } as const;
@@ -77,6 +83,7 @@ export const VISUAL_STATE_VALIDATION_RULES = {
   increasingBoundsAxis: "increasing-bounds-axis",
   hueAnchorRange: "hue-anchor-range",
   accentHueRequiresAnchor: "accent-hue-requires-anchor",
+  scaleTopologyVocabulary: "scale-topology-vocabulary",
 } as const;
 
 /** This names one VisualState validator rule and does not name a construction route. */
@@ -112,11 +119,13 @@ export function createVisualState(graph: VisualGraph, value: unknown): VisualSta
     lodBand: state.lodBand,
     reducedMotion: state.reducedMotion,
   };
-  // hueAnchorDegrees is only ever set here when the input actually carried it (assertVisualState has
-  // already required that to be exactly when palette is "accent-hue"); an explicit `undefined` is never
-  // written, so a legacy caller's state round-trips through serialisation with the exact key set it
-  // came in with, byte-identical to before this field existed.
-  return state.hueAnchorDegrees === undefined ? base : { ...base, hueAnchorDegrees: state.hueAnchorDegrees };
+  // hueAnchorDegrees and scaleTopology are only ever set here when the input actually carried them
+  // (assertVisualState has already required hueAnchorDegrees exactly when palette is "accent-hue", and
+  // validated scaleTopology only if present); an explicit `undefined` is never written, so a legacy
+  // caller's state round-trips through serialisation with the exact key set it came in with,
+  // byte-identical to before either field existed.
+  const withHueAnchor = state.hueAnchorDegrees === undefined ? base : { ...base, hueAnchorDegrees: state.hueAnchorDegrees };
+  return state.scaleTopology === undefined ? withHueAnchor : { ...withHueAnchor, scaleTopology: state.scaleTopology };
 }
 
 /** This serialises validated view state and does not include graph contents. */
@@ -162,6 +171,7 @@ export function assertVisualState(graph: VisualGraph, value: unknown): asserts v
     throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.reducedMotionBoolean, "VisualState.reducedMotion must be boolean");
   }
   assertHueAnchorDegrees(state.palette, state.hueAnchorDegrees);
+  assertScaleTopology(state.scaleTopology);
   assertCamera(state.camera);
 }
 
@@ -175,6 +185,16 @@ function assertHueAnchorDegrees(palette: unknown, hueAnchorDegrees: unknown): vo
   }
   if (!isHueAnchorDegrees(hueAnchorDegrees)) {
     throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.hueAnchorRange, "VisualState.hueAnchorDegrees must be an integer degree in [0, 360)");
+  }
+}
+
+/** This validates a present scaleTopology against its closed vocabulary and does not require its presence, matching the hueAnchorDegrees precedent for every VisualState producer that predates this axis. */
+function assertScaleTopology(value: unknown): void {
+  if (value === undefined) {
+    return;
+  }
+  if (typeof value !== "string" || !SCALE_TOPOLOGIES.includes(value as ScaleTopology)) {
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.scaleTopologyVocabulary, "VisualState.scaleTopology is outside its closed vocabulary");
   }
 }
 

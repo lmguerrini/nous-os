@@ -6,6 +6,7 @@ import { toVisualGraph } from "#adapter/projection.ts";
 import { CAMERA_KINDS, ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import { SHIPPING_MORPHOLOGY } from "#engine/contract.ts";
 import type { VisualGraph } from "#engine/contract.ts";
+import { ATOMIC, HOLOGRAPHIC, SCALE_TOPOLOGIES } from "#engine/scale-topology.ts";
 import {
   VISUAL_STATE_FIELD_REGISTER,
   VISUAL_STATE_VALIDATION_RULES,
@@ -87,15 +88,32 @@ test("VisualState has a pinned view-only register and round-trips exactly", () =
   const original = createVisualState(visualGraph, state(visualGraph));
   assert.deepEqual(VISUAL_STATE_FIELD_REGISTER, {
     state: ["selectedId", "focusedId", "camera", "cameraKind", "morphology", "organization", "palette", "temperature", "theme", "lodBand", "reducedMotion"],
-    optionalState: ["hueAnchorDegrees"],
+    optionalState: ["hueAnchorDegrees", "scaleTopology"],
     camera: ["x", "y", "angle", "ratio", "bounds"],
     bounds: ["x", "y"],
   });
   assert.deepEqual(deserializeVisualState(visualGraph, serializeVisualState(original)), original);
   assert.deepEqual(Object.keys(original).sort(), [...VISUAL_STATE_FIELD_REGISTER.state].sort());
   assert.equal("hueAnchorDegrees" in original, false, "a state built without hueAnchorDegrees must not gain the key");
+  assert.equal("scaleTopology" in original, false, "a state built without scaleTopology must not gain the key");
   assert.equal("graph" in original, false);
   assert.equal("semantic" in original, false);
+});
+
+test("VisualState carries scaleTopology only when a producer supplies it, and round-trips it exactly", () => {
+  const visualGraph = graph();
+  for (const scaleTopology of SCALE_TOPOLOGIES) {
+    const carried = { ...state(visualGraph), scaleTopology };
+    const original = createVisualState(visualGraph, carried);
+    assert.equal(original.scaleTopology, scaleTopology);
+    assert.deepEqual(Object.keys(original).sort(), [...VISUAL_STATE_FIELD_REGISTER.state, "scaleTopology"].sort());
+    const restored = deserializeVisualState(visualGraph, serializeVisualState(original));
+    assert.deepEqual(restored, original);
+    assert.equal(restored.scaleTopology, scaleTopology);
+  }
+  assert.equal(SCALE_TOPOLOGIES.length, 4);
+  assert.equal(ATOMIC, "atomic");
+  assert.equal(HOLOGRAPHIC, "holographic");
 });
 
 test("VisualState carries hueAnchorDegrees only for the accent-hue palette and round-trips it exactly", () => {
@@ -183,6 +201,7 @@ test("VisualState refuses every validator-owned rule through every validating as
     { name: "VisualState increasing Y bounds", value: { ...valid, camera: { ...valid.camera, bounds: { ...valid.camera.bounds, y: [1, -1] } } }, rule: VISUAL_STATE_VALIDATION_RULES.increasingBoundsAxis, message: /VisualState\.camera\.bounds\.y must be increasing/ },
     { name: "VisualState accent-hue without an anchor", value: { ...valid, palette: "accent-hue" }, rule: VISUAL_STATE_VALIDATION_RULES.accentHueRequiresAnchor, message: /VisualState\.hueAnchorDegrees is required when palette is "accent-hue"/ },
     { name: "VisualState hue anchor out of range", value: { ...valid, hueAnchorDegrees: 360 }, rule: VISUAL_STATE_VALIDATION_RULES.hueAnchorRange, message: /VisualState\.hueAnchorDegrees must be an integer degree in \[0, 360\)/ },
+    { name: "VisualState scaleTopology vocabulary", value: { ...valid, scaleTopology: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.scaleTopologyVocabulary, message: /VisualState\.scaleTopology is outside its closed vocabulary/ },
   ];
   const directConstruction: ConstructionRoute = { name: "direct construction", refuse: (input, value) => { createVisualState(input, value); } };
   const deserialisation: ConstructionRoute = { name: "deserialisation", refuse: (input, value) => { deserializeVisualState(input, JSON.stringify(value)); } };
