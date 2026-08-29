@@ -14,10 +14,14 @@ const MATRIX_ENABLED = process.env.MATRIX_CAPTURES === "1";
 const MATRIX_SPEC = "matrix.spec.ts";
 const BLIND_ENABLED = process.env.BLIND_CAPTURES === "1";
 const BLIND_SPEC = "blind.spec.ts";
+const SCALE_TOPOLOGY_ENABLED = process.env.SCALE_TOPOLOGY_CAPTURES === "1";
+const SCALE_TOPOLOGY_SPEC = "scale-topology.spec.ts";
+const CALIBRATION_EVIDENCE_ENABLED = process.env.CALIBRATION_EVIDENCE_CAPTURES === "1";
+const CALIBRATION_EVIDENCE_SPEC = "calibration-evidence.spec.ts";
 // The evidence record is owned by the plain DPR projects alone. Every added suite has to be listed
 // here as well as ignored below: an owner test that also ran one of them would re-initialise the
 // record mid-run, which is the wipe already recorded as CE-14 and worked around by ordering.
-const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED && !PARITY_ENABLED && !PERFORMANCE_ENABLED && !REVIEW3D_ENABLED && !MATRIX_ENABLED && !BLIND_ENABLED;
+const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED && !PARITY_ENABLED && !PERFORMANCE_ENABLED && !REVIEW3D_ENABLED && !MATRIX_ENABLED && !BLIND_ENABLED && !SCALE_TOPOLOGY_ENABLED && !CALIBRATION_EVIDENCE_ENABLED;
 
 const PREPARE_EVIDENCE = [
   "node --input-type=module --eval '",
@@ -73,8 +77,8 @@ export default defineConfig({
     },
   },
   projects: [
-    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC], use: { deviceScaleFactor: 1 } },
-    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC], use: { deviceScaleFactor: 2 } },
+    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC], use: { deviceScaleFactor: 1 } },
+    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC], use: { deviceScaleFactor: 2 } },
     {
       name: "a4",
       testMatch: A4_ENABLED ? A4_SPEC : "a4-disabled.spec.ts",
@@ -125,6 +129,21 @@ export default defineConfig({
       // CAP-13 W-BLIND. This only copies and audits existing matrix rasters; it must never mount a renderer.
       name: "blind",
       testMatch: BLIND_ENABLED ? BLIND_SPEC : "blind-disabled.spec.ts",
+      use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
+    },
+    {
+      // CAP-13. The ScaleTopology ablation: ISOLATE, COMPOSE and TRANSFER over one governed fixture.
+      // One DPR deliberately, matching matrix's own reasoning: every cell is a controlled grammar
+      // comparison, not a device-scale review set.
+      name: "scale-topology",
+      testMatch: SCALE_TOPOLOGY_ENABLED ? SCALE_TOPOLOGY_SPEC : "scale-topology-disabled.spec.ts",
+      use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
+    },
+    {
+      // CAP-13. The calibration evidence matrix: twelve cells over one controlled base, isolating
+      // node sharpness/bloom, palette and preset one variable at a time.
+      name: "calibration-evidence",
+      testMatch: CALIBRATION_EVIDENCE_ENABLED ? CALIBRATION_EVIDENCE_SPEC : "calibration-evidence-disabled.spec.ts",
       use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
     },
     {

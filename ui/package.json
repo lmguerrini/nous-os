@@ -27,6 +27,8 @@
     "test:review3d": "rm -rf dist/review3d && REVIEW3D_CAPTURES=1 playwright test --project=review3d-dpr-1 --project=review3d-dpr-2",
     "test:matrix": "rm -rf dist/matrix && MATRIX_CAPTURES=1 playwright test --project=matrix",
     "test:blind": "rm -rf dist/blind && BLIND_CAPTURES=1 playwright test --project=blind",
+    "test:scale-topology": "rm -rf dist/scale-topology && SCALE_TOPOLOGY_CAPTURES=1 playwright test --project=scale-topology",
+    "test:calibration-evidence": "rm -rf dist/calibration-evidence && CALIBRATION_EVIDENCE_CAPTURES=1 playwright test --project=calibration-evidence",
     "evidence:layout-scale": "rm -f dist/evidence/layout-scale.json && node --experimental-strip-types test/layout-scale.ts"
   },
   "dependencies": {
