@@ -347,6 +347,72 @@ test("all three morphologies remain separated in at least three resolved non-hal
   process.stdout.write(`morphology-separation negative control observed: ${controlOutput}\n`);
 });
 
+/**
+ * GEOMETRY ONLY, per the binding human decision this pins: Neural's axon-like process is selected by
+ * the longest incident relation's span in the layout actually resolved, and nothing else. This is a
+ * view-dependent visual/material role, not a claim about a stable per-relation property -- the second
+ * half of this test demonstrates that directly by re-resolving the same fixture under Indra's
+ * independent re-layout and observing the pick move for the same soma. A different committed fixture,
+ * calibration, or layout is free to select a different relation; this only pins what the CURRENT
+ * fixture resolves to today.
+ */
+test("Neural's axon-like endpoint is the longest incident relation by resolved span, and the pick is view-dependent under a different layout", () => {
+  const graph = sceneFixtureGraph();
+  const flatState = { ...sceneVisualState(graph), morphology: "neural" as const, organization: "flat" as const, lodBand: "micro" as const };
+  const scene = buildScene(graph, flatState, DEFAULT_CALIBRATION, sceneTokens(flatState));
+  const junctions = junctionNodeIds(scene, 2);
+  assert.ok(junctions.length > 0, "the fixture requires at least one junction to exercise axon-like selection");
+
+  for (const nodeId of junctions) {
+    const incident = incidentEdgesWithSpan(scene, nodeId);
+    assert.ok(incident.length >= 2, `${nodeId} is a junction and must carry at least two incident relations`);
+    const longest = longestSpan(incident);
+    const longestWidth = myEndWidth(longest.edge, nodeId);
+    for (const candidate of incident) {
+      if (candidate.edge.id === longest.edge.id) {
+        continue;
+      }
+      const candidateWidth = myEndWidth(candidate.edge, nodeId);
+      assert.ok(
+        longestWidth > candidateWidth,
+        `${nodeId}'s longest incident relation ${longest.edge.id} (span ${longest.span}) did not resolve a `
+          + `wider endpoint (${longestWidth}) than ${candidate.edge.id} (span ${candidate.span}, width ${candidateWidth})`,
+      );
+    }
+  }
+
+  // Stellar and Mycelium never make this selection: every incident relation at a junction carries the
+  // SAME per-morphology dendrite factor, so no relation is ever singled out as strictly widest by span.
+  for (const otherMorphology of ["stellar", "mycelium"] as const) {
+    const otherState = { ...sceneVisualState(graph), morphology: otherMorphology, organization: "flat" as const, lodBand: "micro" as const };
+    const otherScene = buildScene(graph, otherState, DEFAULT_CALIBRATION, sceneTokens(otherState));
+    const anyStrictlyWidestBySpan = junctionNodeIds(otherScene, 2).some((nodeId) => {
+      const incident = incidentEdgesWithSpan(otherScene, nodeId);
+      const longest = longestSpan(incident);
+      const longestWidth = myEndWidth(longest.edge, nodeId);
+      return incident.some((candidate) => candidate.edge.id !== longest.edge.id && longestWidth > myEndWidth(candidate.edge, nodeId));
+    });
+    assert.equal(anyStrictlyWidestBySpan, false, `${otherMorphology} must never select a span-based axon-like endpoint`);
+  }
+
+  // View-dependence: Indra re-lays the same fixture out independently, so the same soma's longest
+  // incident relation is free to change -- and here it does, which is the accepted instability, not a
+  // regression to guard against.
+  const indraState = { ...sceneVisualState(graph), morphology: "neural" as const, organization: "indra" as const, lodBand: "micro" as const };
+  const indraScene = buildScene(graph, indraState, DEFAULT_CALIBRATION, sceneTokens(indraState));
+  const indraJunctions = new Set(junctionNodeIds(indraScene, 2));
+  const sharedJunctionIds = junctions.filter((nodeId) => indraJunctions.has(nodeId));
+  assert.ok(sharedJunctionIds.length > 0, "flat and Indra must share at least one junction node id to compare");
+  const picks = sharedJunctionIds.map((nodeId) => ({
+    nodeId,
+    flatPick: longestSpan(incidentEdgesWithSpan(scene, nodeId)).edge.id,
+    indraPick: longestSpan(incidentEdgesWithSpan(indraScene, nodeId)).edge.id,
+  }));
+  const moved = picks.find((pick) => pick.flatPick !== pick.indraPick);
+  assert.ok(moved !== undefined, "no junction's axon-like pick moved between Flat and Indra layouts -- the instability this test exists to demonstrate did not occur");
+  process.stdout.write(`axon-like view-dependence observed: ${moved.nodeId} flat picked ${moved.flatPick}, Indra picked ${moved.indraPick}\n`);
+});
+
 test("camera selection changes only the camera request while scene channels remain shared", () => {
   const graph = sceneFixtureGraph();
   const state = sceneVisualState(graph);
@@ -1059,6 +1125,47 @@ function morphologyChannelFingerprint(scene: Scene, channel: MorphologyChannel):
     node.haloCoreGapPx,
     node.haloIntensityPermille,
   ]));
+}
+
+type IncidentRelationSpan = { readonly edge: Scene["edges"][number]; readonly span: number };
+
+/** This lists every node id with at least `minimumDegree` incident relations in a resolved scene. */
+function junctionNodeIds(scene: Scene, minimumDegree: number): readonly string[] {
+  const degree = new Map<string, number>();
+  for (const edge of scene.edges) {
+    degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+  }
+  return [...degree.entries()].filter(([, count]) => count >= minimumDegree).map(([id]) => id).sort();
+}
+
+/** This pairs every relation incident to one node with its resolved layout span and does not weight by any material channel. */
+function incidentEdgesWithSpan(scene: Scene, nodeId: string): readonly IncidentRelationSpan[] {
+  const positionOf = new Map(scene.nodes.map((node) => [node.id, node.position]));
+  const nodePosition = positionOf.get(nodeId);
+  if (nodePosition === undefined) {
+    throw new TypeError(`${nodeId} has no resolved scene position`);
+  }
+  return scene.edges
+    .filter((edge) => edge.source === nodeId || edge.target === nodeId)
+    .map((edge) => {
+      const otherId = edge.source === nodeId ? edge.target : edge.source;
+      const otherPosition = positionOf.get(otherId);
+      if (otherPosition === undefined) {
+        throw new TypeError(`${otherId} has no resolved scene position`);
+      }
+      return { edge, span: Math.hypot(nodePosition.x - otherPosition.x, nodePosition.y - otherPosition.y) };
+    });
+}
+
+/** This is one relation's resolved endpoint width at the given node's own end and does not read the other endpoint. */
+function myEndWidth(edge: Scene["edges"][number], nodeId: string): number {
+  return edge.source === nodeId ? edge.widthStartPx : edge.widthEndPx;
+}
+
+/** This finds the greatest-span candidate, keeping the first on a tie, and requires a non-empty list. */
+function longestSpan(candidates: readonly IncidentRelationSpan[]): IncidentRelationSpan {
+  return candidates.reduce((max, candidate) => (candidate.span > max.span ? candidate : max));
 }
 
 function requiredMorphologyScenes(

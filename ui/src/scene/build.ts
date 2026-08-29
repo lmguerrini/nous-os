@@ -1,4 +1,4 @@
-import type { CalibrationProfile } from "#engine/calibration.ts";
+import type { CalibrationProfile, MorphologyMaterial as CalibrationMorphologyMaterial } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION, assertCalibrationProfile } from "#engine/calibration.ts";
 import type { CameraKind } from "#engine/camera-kind.ts";
 import type {
@@ -18,7 +18,7 @@ import type { LayoutAnchors } from "#engine/layout.ts";
 import type { ResolvedMaterial } from "#engine/lod.ts";
 import { MACRO, MESO, lodView } from "#engine/lod.ts";
 import type { EdgeMaterial, MorphologyProfile, NodeMaterial } from "#engine/morphology.ts";
-import { MYCELIUM, NEURAL, SHARED_SCENE_MATERIAL_TARGET, STELLAR, applyMorphology } from "#engine/morphology.ts";
+import { JUNCTION_MINIMUM_DEGREE, MYCELIUM, NEURAL, SHARED_SCENE_MATERIAL_TARGET, STELLAR, applyMorphology } from "#engine/morphology.ts";
 import { assertIndraLayout, flatOrganization, indraLayout } from "#engine/organization.ts";
 import type { AggregateWindow } from "#engine/organization.ts";
 import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
@@ -56,6 +56,15 @@ const BLIND_TERMINAL_LUMINANCE_PERMILLE = 0;
 
 /** This is Flat's own empty cross-community relation set: Flat resolves no windows, so nothing is ever cross-community there. */
 const NO_CROSS_COMMUNITY_RELATIONS: ReadonlySet<string> = new Set();
+
+/** This names one relation's resolved axon-like status at each of its own two endpoints. */
+type AxonLikeEndpoints = { readonly source: boolean; readonly target: boolean };
+
+/** This is the resolved absence of any axon-like selection, carried by every morphology but Neural. */
+const NO_AXON_LIKE_ENDPOINTS: AxonLikeEndpoints = { source: false, target: false };
+
+/** This is Neural's own empty axon-like selection outside the morphology it is ever made for. */
+const NO_AXON_LIKE_SELECTION: ReadonlyMap<string, AxonLikeEndpoints> = new Map();
 
 type LabelPlacementCandidate = {
   readonly id: string;
@@ -98,6 +107,11 @@ export function buildScene(
     ? crossCommunityRelationIds(engineGraph, organization.windows)
     : NO_CROSS_COMMUNITY_RELATIONS;
   const view = lodView(engineGraph, organization.nodeAnchors, visualState.lodBand);
+  // GEOMETRY ONLY, and Neural-only: every other morphology carries the empty selection above.
+  // See neuralAxonLikeEndpoints for the full statement of what this is and is not.
+  const axonLikeEndpoints = morphology.id === NEURAL.id
+    ? neuralAxonLikeEndpoints(engineGraph, view.anchors)
+    : NO_AXON_LIKE_SELECTION;
   const nodeMaterials = new Map(morphologyMaterial.nodes.map((node) => [node.id, node]));
   const edgeMaterials = new Map(morphologyMaterial.edges.map((edge) => [edge.id, edge]));
   const nodes = engineGraph.nodes.map((node) => sceneNode(
@@ -123,6 +137,7 @@ export function buildScene(
     calibration,
     activeTokens,
     crossCommunityEdgeIds.has(edge.id),
+    axonLikeEndpoints.get(edge.id) ?? NO_AXON_LIKE_ENDPOINTS,
   ));
   const selectedLabelIds = selectedSceneLabelIds(nodes, edges, visualState, calibration);
   assertEngineAccessTrace(trace);
@@ -326,6 +341,7 @@ function sceneEdge(
   calibration: CalibrationProfile,
   tokens: TokenMap,
   crossCommunity: boolean,
+  axonLike: AxonLikeEndpoints,
 ): SceneEdge {
   const scale = SCENE_PERMILLE_SCALE;
   const emphasis = visualState.selectedId === edge.id
@@ -336,19 +352,31 @@ function sceneEdge(
     : 1;
   const width = edgeWidthForMaterial(material, resolved, calibration) * emphasis * crossWidthFactor;
   const filamentMaterial = calibration.morphology[morphology.id];
+  // The width/curvature/wobble axon-vs-dendrite split below only ever applies where axonLike carries
+  // a true endpoint, which buildScene only ever computes for Neural (see neuralAxonLikeEndpoints) --
+  // every other morphology's axonLike is always {source:false, target:false} and every governed
+  // multiplier below is otherwise carried at its 1000 (no-op) identity value.
+  const taperResolved = materialIncludes(resolved.edge, "taper");
   const widthStartPx = terminalWidthPx(
-    (width * material.widthStartPermille) / scale,
+    axonLikeWidthPx((width * material.widthStartPermille) / scale, material.sourceJunction, axonLike.source, taperResolved, filamentMaterial),
     material.sourceTerminal,
     material.terminalTreatment,
     filamentMaterial.sharedSceneTerminalSizeMultiplierPermille,
   );
   const widthEndPx = terminalWidthPx(
-    (width * material.widthEndPermille) / scale,
+    axonLikeWidthPx((width * material.widthEndPermille) / scale, material.targetJunction, axonLike.target, taperResolved, filamentMaterial),
     material.targetTerminal,
     material.terminalTreatment,
     filamentMaterial.sharedSceneTerminalSizeMultiplierPermille,
   );
-  const curvature = edgeCurvatureForMaterial(material, resolved);
+  // Curvature and wobble amplitude are each a single whole-relation channel (one bowed path, one
+  // meander), unlike width which already carries an independent value at each endpoint. A relation
+  // reads as axon-like here whenever EITHER of its two somas independently picked it as their own
+  // longest reach -- so a relation touching a high-degree hub often reads as axon-like from its far,
+  // low-degree endpoint's own selection even where it is not that hub's own pick, and the same
+  // relation can legitimately be one node's axon and, on a later layout, no longer be either node's.
+  const isAxonLikeRelation = axonLike.source || axonLike.target;
+  const curvature = edgeCurvatureForMaterial(material, resolved, isAxonLikeRelation, filamentMaterial);
   const controlPoint = quadraticControlPoint(source, target, curvature);
   const path = sampleQuadraticPath(source, target, controlPoint, curvature, calibration.lod.bandThresholds.length);
   const travelledDistance = propagationDistance(PROPAGATION_SAMPLE_ELAPSED_MILLISECONDS, calibration);
@@ -405,7 +433,11 @@ function sceneEdge(
       // scene/build.ts only ever feeds the shared-scene render3f pipeline (render2d resolves its own
       // filament material directly from calibration), so the shared-scene meander knobs are always
       // the correct read here and never touch the legacy renderer's frozen meander.
-      wobbleAmplitudePermille: filamentMaterial.sharedSceneFilamentWobbleAmplitudePermille,
+      wobbleAmplitudePermille: axonLikeWobblePermille(
+        filamentMaterial.sharedSceneFilamentWobbleAmplitudePermille,
+        isAxonLikeRelation,
+        filamentMaterial,
+      ),
       wobbleFrequencyMilliradians: filamentMaterial.sharedSceneWobbleFrequencyMilliradians,
       phasePermille: material.phasePermille,
       afterglowDecayPermille: calibration.motion.afterglowDecayPermille,
@@ -640,10 +672,109 @@ function edgeWidthForMaterial(edge: EdgeMaterial, material: ResolvedMaterial, ca
   return materialIncludes(material.edge, "taper") ? edge.widthPx : resolvedKindWidth;
 }
 
-function edgeCurvatureForMaterial(edge: EdgeMaterial, material: ResolvedMaterial): number {
-  return materialIncludes(material.edge, "curvature")
-    ? edge.curvaturePermille / SCENE_PERMILLE_SCALE
-    : 0;
+function edgeCurvatureForMaterial(
+  edge: EdgeMaterial,
+  material: ResolvedMaterial,
+  isAxonLikeRelation: boolean,
+  filamentMaterial: CalibrationMorphologyMaterial,
+): number {
+  if (!materialIncludes(material.edge, "curvature")) {
+    return 0;
+  }
+  const base = edge.curvaturePermille / SCENE_PERMILLE_SCALE;
+  return isAxonLikeRelation ? (base * filamentMaterial.axonCurvatureFactorPermille) / SCENE_PERMILLE_SCALE : base;
+}
+
+/**
+ * This picks, for every node with at least JUNCTION_MINIMUM_DEGREE incident relations (a soma, not a
+ * bare terminal tip), the single incident relation with the greatest projected span between its two
+ * endpoints in THIS resolved layout, and records that relation as this one node's axon-like extension
+ * at the one endpoint touching it.
+ *
+ * GEOMETRY ONLY, per the governed decision this selection implements: it is a view-dependent
+ * visual/material role and nothing else. It never reads `edge.source` or `edge.target` as anything
+ * but the same positional endpoint label every other per-endpoint channel here already carries
+ * (junctionStart/EndPermille, terminalStart/EndTreatment, luminanceStart/EndPermille) -- it does not
+ * consult, and must never come to consult, which endpoint the governed relation direction calls
+ * "source" or "target". Because the pick is purely a function of resolved anchor positions, a
+ * different organization, projection, layout, or camera-driven re-layout may legitimately hand the
+ * role to a different relation on a later build; that instability is accepted and is not a claim
+ * about a stable per-relation property.
+ */
+function neuralAxonLikeEndpoints(
+  graph: EngineGraph,
+  anchors: ReadonlyMap<string, Coordinates>,
+): ReadonlyMap<string, AxonLikeEndpoints> {
+  const incidentByNode = new Map<string, { readonly edgeId: string; readonly span: number }[]>();
+  for (const node of graph.nodes) {
+    incidentByNode.set(node.id, []);
+  }
+  for (const edge of graph.edges) {
+    const span = coordinateSpan(requiredCoordinate(anchors, edge.source), requiredCoordinate(anchors, edge.target));
+    incidentByNode.get(edge.source)?.push({ edgeId: edge.id, span });
+    incidentByNode.get(edge.target)?.push({ edgeId: edge.id, span });
+  }
+  const axonEdgeIdByNode = new Map<string, string>();
+  for (const [nodeId, incident] of incidentByNode) {
+    if (incident.length < JUNCTION_MINIMUM_DEGREE) {
+      continue;
+    }
+    // graph.edges is already id-sorted (orderEngineGraph), and incident entries were pushed in that
+    // same order, so a strict `>` comparison keeps the lowest edge id on every span tie: deterministic
+    // without a second explicit tie-break.
+    let longestEdgeId: string | undefined;
+    let longestSpan = -1;
+    for (const candidate of incident) {
+      if (candidate.span > longestSpan) {
+        longestSpan = candidate.span;
+        longestEdgeId = candidate.edgeId;
+      }
+    }
+    if (longestEdgeId !== undefined) {
+      axonEdgeIdByNode.set(nodeId, longestEdgeId);
+    }
+  }
+  const result = new Map<string, AxonLikeEndpoints>();
+  for (const edge of graph.edges) {
+    result.set(edge.id, {
+      source: axonEdgeIdByNode.get(edge.source) === edge.id,
+      target: axonEdgeIdByNode.get(edge.target) === edge.id,
+    });
+  }
+  return result;
+}
+
+/** This applies the axon/dendrite endpoint-width split at a junction only, and only where taper material is resolved. */
+function axonLikeWidthPx(
+  widthPx: number,
+  nodeIsJunction: boolean,
+  isAxonLikeAtThisEnd: boolean,
+  taperResolved: boolean,
+  filamentMaterial: CalibrationMorphologyMaterial,
+): number {
+  if (!taperResolved || !nodeIsJunction) {
+    return widthPx;
+  }
+  const factorPermille = isAxonLikeAtThisEnd
+    ? filamentMaterial.axonWidthSustainPermille
+    : filamentMaterial.dendriteTaperBoostPermille;
+  return (widthPx * factorPermille) / SCENE_PERMILLE_SCALE;
+}
+
+/** This applies the axon wobble-amplitude reduction and does not touch a non-axon-like relation's meander. */
+function axonLikeWobblePermille(
+  basePermille: number,
+  isAxonLikeRelation: boolean,
+  filamentMaterial: CalibrationMorphologyMaterial,
+): number {
+  return isAxonLikeRelation
+    ? Math.round((basePermille * filamentMaterial.axonWobbleFactorPermille) / SCENE_PERMILLE_SCALE)
+    : basePermille;
+}
+
+/** This is the plain Euclidean span between two resolved anchors and does not weight by any material channel. */
+function coordinateSpan(left: Coordinates, right: Coordinates): number {
+  return Math.hypot(right.x - left.x, right.y - left.y);
 }
 
 function kindWidth(edge: EdgeMaterial): number {

@@ -3,7 +3,9 @@ import type { DerivedValue, EngineGraph } from "#engine/contract.ts";
 
 const PERMILLE = 1000;
 const TERMINAL_DEGREE = 1;
-const JUNCTION_MINIMUM_DEGREE = 2;
+
+/** This is the shared junction-degree threshold: a node with this many or more incident relations is a soma/junction, not a terminal tip. Exported so scene/build.ts's geometry-only axon-like selection uses the same threshold rather than a second copy of it. */
+export const JUNCTION_MINIMUM_DEGREE = 2;
 
 /** This is a material vocabulary and does not select or alter graph structure. */
 export type Morphology = "stellar" | "neural" | "mycelium";
