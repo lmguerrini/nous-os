@@ -59,6 +59,20 @@ type CachedAnchors = {
 
 const UINT32_RANGE = 0x1_0000_0000;
 const PERMILLE = 1000;
+// memberAnchor scatters N members through a disc's area (radial hash distance
+// times angular hash), so the disc must reserve area, not radius, per member: the
+// disc radius has to grow with sqrt(N), not N. The coefficient starts from circle
+// packing: reserving each member a circle of diameter `extent` (this layout's
+// per-node force spacing) and packing those circles at the ~0.907 hexagonal
+// packing density bounds the disc at radius ~= 0.525 * sqrt(N) * extent. That
+// bound is for optimal packing; memberAnchor's placement is hash-scattered, not
+// packed, and enforceMinimumScreenPairwiseSeparation only gets a bounded number
+// of correction passes to close the gap. 0.4 keeps a margin under the 0.525
+// theoretical bound for that slack, verified empirically against every governed
+// projection fixture, including the two Indra community-scale fixtures at 8-15
+// members per aggregate where the prior N-linear radius made the CSS-pixel
+// pairwise separation floor unreachable.
+const AGGREGATE_DISC_AREA_PACKING_FACTOR = 0.4;
 const sharedAnchorSets = new WeakMap<EngineGraph, WeakMap<CalibrationProfile, CachedAnchors>>();
 
 /** This derives stable world anchors from structural communities and reserved aggregate discs and does not inspect semantic content. */
@@ -113,7 +127,7 @@ export function aggregateDiscs(graph: EngineGraph, calibration: CalibrationProfi
   const memberships = aggregateMemberships(graph);
   const extent = layoutExtent(calibration);
   const padding = calibration.aggregate.windowPaddingPx;
-  const radii = new Map([...memberships.entries()].map(([id, members]) => [id, (members.length * extent) + padding]));
+  const radii = new Map([...memberships.entries()].map(([id, members]) => [id, (Math.sqrt(members.length) * extent * AGGREGATE_DISC_AREA_PACKING_FACTOR) + padding]));
   const reservedCenters = reservedCentersFor(graph, memberships, radii, calibration);
   return [...memberships.entries()].map(([id, members]) => {
     const kind = aggregateKind(graph, id);

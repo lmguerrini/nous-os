@@ -186,16 +186,17 @@ test("the Indra fixture resolves every organization and morphology", () => {
 //
 // That topology fully resolves through the actual Indra rendering path
 // (`indraLayout`/`assertIndraLayout` in #engine/organization.ts, what
-// `buildScene` calls for organization "indra") in milliseconds. But
-// `buildScene` unconditionally computes the *older*, disc-based
-// `layoutAnchors` first -- used for real by "flat" organization, and merely
-// discarded for "indra" -- and that function's aggregate-disc radius grows
-// linearly with member count against a fixed 1200x800 DEFAULT_CALIBRATION
-// reference frame. At community scale the fit-to-frame scale shrinks far
-// enough that the required >=16px pairwise screen separation becomes
-// geometrically unreachable, and `layoutAnchors` throws. This is demonstrated,
-// not hidden, below: it is a calibration/engine limitation outside this
-// fixture's own file ceiling, not a defect in the fixture or the schema.
+// `buildScene` calls for organization "indra") in milliseconds. It also
+// resolves through the *older*, disc-based `layoutAnchors` -- used for real
+// by "flat" organization, and merely discarded for "indra" -- which used to
+// throw at this fixture's scale: `aggregateDiscs` sized a disc's radius
+// linearly in member count while `memberAnchor` scatters members through
+// the disc by area, so a fifteen-member window reserved far more of the
+// fixed 1200x800 DEFAULT_CALIBRATION reference frame than its own contents
+// needed, and the fit-to-frame scale fell below the required >=16px pairwise
+// screen separation. `aggregateDiscs` now sizes the radius by sqrt(member
+// count), matching the area its contents actually occupy, and both
+// organizations resolve below.
 
 test("the Indra portal fixture declares itself synthetic in adapter-carried bytes", () => {
   const raw = fixturePortal();
@@ -339,7 +340,7 @@ test("the Indra portal fixture's aggregate windows are hub-spoke only inside a w
   }
 });
 
-test("the Indra portal fixture resolves through buildScene at community scale, and Flat still cannot", () => {
+test("the Indra portal fixture resolves through buildScene at community scale, for both Indra and Flat", () => {
   const raw = fixturePortal();
   const graph = toVisualGraph(raw);
   const stateFor = (organization: "flat" | "indra") => createVisualState(graph, {
@@ -367,14 +368,14 @@ test("the Indra portal fixture resolves through buildScene at community scale, a
   // are read, and the portal fixture resolves with every governed node placed.
   assert.equal(scene("indra").nodes.length, raw.nodes.length);
 
-  // Flat genuinely reads the disc layout, and at this fixture's community scale it cannot converge
-  // under the shipped DEFAULT_CALIBRATION reference frame. `aggregateDiscs` grows a disc's radius
-  // linearly in member count while `memberAnchor` scatters members through the disc by area, so a
-  // fifteen-member window reserves far more of the frame than its own contents need and the
-  // fit-to-frame scale falls below the pairwise floor. That inconsistency is a real defect, but
-  // correcting it moves every Flat layout in the product, so it is recorded rather than taken here.
-  // Pinned so the fix is a visible, deliberate change to this test and not a silent one.
-  assert.throws(() => scene("flat"), /CSS-pixel pairwise separation floor/);
+  // Flat genuinely reads the disc layout, and at this fixture's community scale it used to be unable
+  // to converge under the shipped DEFAULT_CALIBRATION reference frame: `aggregateDiscs` grew a
+  // disc's radius linearly in member count while `memberAnchor` scatters members through the disc by
+  // area, so a fifteen-member window reserved far more of the frame than its own contents needed and
+  // the fit-to-frame scale fell below the pairwise floor. `aggregateDiscs` now sizes the radius by
+  // sqrt(member count) instead, matching the area its contents occupy, and Flat now resolves with
+  // every governed node placed.
+  assert.equal(scene("flat").nodes.length, raw.nodes.length);
 });
 
 function requiredMembers(
