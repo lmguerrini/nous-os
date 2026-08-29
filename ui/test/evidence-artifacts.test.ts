@@ -891,12 +891,35 @@ async function indexedTreeSha256(): Promise<string> {
  * passing:false, went unnoticed at a real closure audit because nothing in this file read this
  * path at all; this both re-derives the run-level verdict and requires it be bound to HEAD.
  */
+/**
+ * This binds the browser evidence record to HEAD and requires its own checks to have passed, and it
+ * deliberately does NOT require the record's run-level verdict.
+ *
+ * That verdict aggregates the whole capability — it reads `unit-result.json`'s exit code, the pytest
+ * artifact and the gauntlet artifact. Requiring it here would be circular: this assertion runs inside
+ * `test:unit`, so `test:unit` would have to have already passed for `test:unit` to be able to pass. A
+ * first version did require it, and deadlocked exactly that way. The verdict also carries pre-existing
+ * `NOT_RUN` and `SUPERSEDED` entries that no browser run can clear.
+ *
+ * What is asserted instead is everything this artifact can actually speak for: it is bound to the
+ * candidate, both projects completed, and every recorded check passed. A stale record, or a red one,
+ * still fails — which is the defect this was added to catch.
+ */
 async function assertBrowserEvidenceCurrent(raw: unknown, label: string): Promise<void> {
-  if (!isRecord(raw) || !isRecord(raw["summary"]) || typeof raw["summary"]["passing"] !== "boolean") {
-    throw new Error(`${label} has no boolean run-level verdict`);
+  if (!isRecord(raw) || !isRecord(raw["summary"])) {
+    throw new Error(`${label} has no run summary`);
   }
-  if (raw["summary"]["passing"] !== true) {
-    throw new Error(`${label} run-level verdict is not passing`);
+  const summary = raw["summary"];
+  if (summary["projectsComplete"] !== true) {
+    throw new Error(`${label} did not complete both device-pixel-ratio projects`);
+  }
+  for (const counter of ["failed", "notRun", "unknown"]) {
+    if (summary[counter] !== 0) {
+      throw new Error(`${label} records ${String(summary[counter])} ${counter} checks; every recorded check must pass`);
+    }
+  }
+  if (typeof summary["passed"] !== "number" || summary["passed"] <= 0) {
+    throw new Error(`${label} records no passing checks`);
   }
   if (!isRecord(raw["run"]) || typeof raw["run"]["commitSha"] !== "string" || !/^[0-9a-f]{40,64}$/iu.test(raw["run"]["commitSha"])) {
     throw new Error(`${label} has no bound commit SHA`);
