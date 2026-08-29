@@ -921,6 +921,15 @@ async function assertBrowserEvidenceCurrent(raw: unknown, label: string): Promis
   if (typeof summary["passed"] !== "number" || summary["passed"] <= 0) {
     throw new Error(`${label} records no passing checks`);
   }
+  // A criterion resolves to FAIL from a red EXTERNAL suite, which `summary.failed` — computed from
+  // this run's own checks — cannot see. An audit set `acceptance.failed = 7` and every other mutation
+  // was rejected while this one passed. Requiring it is not the circularity this function exists to
+  // avoid: it constrains the state of other suites at the time the browser run was produced, not the
+  // outcome of the run this assertion executes inside.
+  const acceptance = raw["acceptance"];
+  if (isRecord(acceptance) && acceptance["failed"] !== 0) {
+    throw new Error(`${label} records ${String(acceptance["failed"])} failed acceptance criteria`);
+  }
   if (!isRecord(raw["run"]) || typeof raw["run"]["commitSha"] !== "string" || !/^[0-9a-f]{40,64}$/iu.test(raw["run"]["commitSha"])) {
     throw new Error(`${label} has no bound commit SHA`);
   }

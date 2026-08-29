@@ -47,3 +47,8 @@ test-results/
 !tests/**/*.jsonl
 !schemas/**/*.jsonl
 !fixtures/synthetic/**/*.jsonl
+
+# Agent workflow directories. These were excluded only by .git/info/exclude, which does not
+# travel with a clone, so a fresh checkout would have tracked whatever they later contain.
+.claude/
+.codex/

@@ -643,7 +643,7 @@ const UNIT_A2_RESULTS = [
 ] as const;
 const UNIT_A5_RESULTS = [
   "Indra windows are exactly the fixture's real aggregates and memberships",
-  "Indra reserves disjoint discs before placing members and non-members",
+  "Indra reserves disjoint discs before placing members and non-members, on the plain fixture and both community-scale Indra fixtures",
   "a rejection inside an aggregate window fails the geometric predicate",
   "a window made from rejects targets fails exact cluster membership",
   "the predicate accepts the shape the organization result actually exposes",
