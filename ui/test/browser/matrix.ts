@@ -5,6 +5,7 @@ import { assertVisualGraphFieldRegister, createEngineGraphView, semanticDigest }
 import type { VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
 import type { Morphology } from "#engine/morphology.ts";
+import { indraLayout } from "#engine/organization.ts";
 import type { Organization } from "#engine/organization.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
@@ -34,6 +35,14 @@ export type MatrixFixtureWitness = {
   readonly camera: VisualStateCamera;
 };
 
+/** This reports one resolved aggregate window's live viewport footprint and does not expose scene material. */
+export type MatrixAggregateWindowWitness = {
+  readonly id: string;
+  readonly members: readonly string[];
+  readonly viewportCenter: { readonly x: number; readonly y: number };
+  readonly viewportRadius: number;
+};
+
 /** This records renderer-observed structure and state for one matrix cell. */
 export type MatrixCaptureWitness = {
   readonly fixture: string;
@@ -45,6 +54,10 @@ export type MatrixCaptureWitness = {
     readonly edgeIds: readonly string[];
   };
   readonly aggregateCount: number;
+  /** This is every resolved aggregate window's live viewport center and radius, empty for Flat. */
+  readonly windows: readonly MatrixAggregateWindowWitness[];
+  /** This is every governed node's live viewport position and lets an evidence suite exclude node content from a fill sample without re-deriving layout. */
+  readonly nodeViewportPositions: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly semanticDigest: string;
 };
 
@@ -112,8 +125,12 @@ export async function installMatrixPage(): Promise<void> {
       assertVisualGraphFieldRegister(nextGraph);
       graph = nextGraph;
       fixture = fixtureUrl;
-      // Layout anchors are graph-derived and therefore cannot vary with morphology, organization,
-      // or camera projection. This is the one camera derivation used by all twelve cells.
+      // Layout anchors cannot vary with morphology or camera projection, but they DO vary with
+      // organization: Flat reuses the shared continuous layout while Indra re-derives every position
+      // from its own independent aggregate disc/meta-graph re-layout (see scene/build.ts's
+      // resolveOrganization, which this mirrors). One camera still governs all twelve cells, but it
+      // has to be derived from the UNION of what both organizations actually resolve, or whichever
+      // organization's resolved extent is smaller gets cropped by the other's camera.
       fixtureCamera = cameraFor(nextGraph);
       return {
         fixture,
@@ -151,6 +168,25 @@ export async function installMatrixPage(): Promise<void> {
       if (surface.nodeIds.length === 0 || surface.edgeIds.length === 0) {
         throw new Error(`matrix ${request.morphology}/${request.organization}/${request.projection} mounted an empty visible surface`);
       }
+      const handle = mounted;
+      const scene = buildScene(graph, observed);
+      const nodeViewportPositions = Object.fromEntries(
+        handle.readWorldAnchorWitnesses().map((anchor) => [anchor.id, handle.graphToViewport(anchor.position)]),
+      );
+      const windows = scene.aggregates.map((aggregate) => {
+        const viewportCenter = handle.graphToViewport(aggregate.center);
+        const radiusPoint = handle.graphToViewport({
+          x: aggregate.center.x + aggregate.radius,
+          y: aggregate.center.y,
+          z: aggregate.center.z,
+        });
+        return {
+          id: aggregate.id,
+          members: [...aggregate.members],
+          viewportCenter,
+          viewportRadius: Math.hypot(radiusPoint.x - viewportCenter.x, radiusPoint.y - viewportCenter.y),
+        };
+      });
       return {
         fixture,
         projection: request.projection,
@@ -160,7 +196,9 @@ export async function installMatrixPage(): Promise<void> {
           nodeIds: [...surface.nodeIds],
           edgeIds: [...surface.edgeIds],
         },
-        aggregateCount: buildScene(graph, observed).aggregates.length,
+        aggregateCount: scene.aggregates.length,
+        windows,
+        nodeViewportPositions,
         semanticDigest: semanticDigest(graph),
       };
     };
@@ -172,14 +210,16 @@ export async function installMatrixPage(): Promise<void> {
 }
 
 function cameraFor(graph: VisualGraph): VisualStateCamera {
-  const anchors = layoutAnchors(createEngineGraphView(graph).graph, DEFAULT_CALIBRATION);
-  if (anchors.size === 0) {
-    throw new Error("matrix camera requires at least one layout anchor");
+  const engineGraph = createEngineGraphView(graph).graph;
+  const flatAnchors = [...layoutAnchors(engineGraph, DEFAULT_CALIBRATION).values()];
+  const indraAnchors = [...indraLayout(engineGraph, DEFAULT_CALIBRATION).nodeAnchors.values()];
+  const resolvedPoints = [...flatAnchors, ...indraAnchors];
+  if (resolvedPoints.length === 0) {
+    throw new Error("matrix camera requires at least one resolved layout anchor");
   }
-  const values = [...anchors.values()];
   return cameraStateForBounds({
-    x: extentWithMargin(values.map((anchor) => anchor.x)),
-    y: extentWithMargin(values.map((anchor) => anchor.y)),
+    x: extentWithMargin(resolvedPoints.map((point) => point.x)),
+    y: extentWithMargin(resolvedPoints.map((point) => point.y)),
   });
 }
 

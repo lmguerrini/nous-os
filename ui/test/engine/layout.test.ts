@@ -51,6 +51,14 @@ function graph(name: string): VisualGraph {
   return toVisualGraph(JSON.parse(readFileSync(join(process.cwd(), "..", "fixtures", "synthetic", "projection", name), "utf8")) as unknown);
 }
 
+/** This reads a checked-in projection by relative path segments and does not manufacture graph structure. */
+function fixtureGraph(relativePath: readonly string[]): VisualGraph {
+  return toVisualGraph(JSON.parse(readFileSync(
+    join(process.cwd(), "..", "fixtures", "synthetic", "projection", ...relativePath),
+    "utf8",
+  )) as unknown);
+}
+
 /** This maps anchors into a comparison record and does not reorder the source graph. */
 function recordOf(anchors: ReadonlyMap<string, Coordinates>): Record<string, Coordinates> {
   return Object.fromEntries([...anchors.entries()].sort(([left], [right]) => left.localeCompare(right)));
@@ -204,17 +212,69 @@ test("community layout bounds measured bridge-to-intra medians on both sides", (
   assert.ok(ratio <= maximum, `expected median bridge/intra ratio <= ${maximum}, received ${ratio} (${bridgeMedian}/${intraMedian})`);
 });
 
-// The 0.35 floor (was 0.5) was recalibrated for the corrected sqrt(member count) aggregate-disc
-// radius: the prior N-linear radius over-reserved area for multi-member aggregates, which
-// exaggerated the spread between densely hashed in-disc members and sparsely jittered non-members
-// and inflated this CV independently of any real placement variety. Measured 0.419 on this fixture
-// under the corrected radius; 0.35 keeps a margin below that while still rejecting a uniform grid,
-// whose CV would sit near zero.
-test("community layout has varied nearest-neighbour density within pinned communities", () => {
+// A prior version of this test asserted hasVariedWithinCommunityDensity(...) > 0.35
+// against the shipped layout and justified the 0.35 floor (down from 0.5) with a
+// claim that a uniform grid's CV "would sit near zero." That claim was never
+// measured. It is false: a plain uniform grid in id order measures 0.448 here,
+// and a single equally-spaced ring -- a layout with no community structure at
+// all -- measures 0.488, both *above* the shipped layout's 0.419. No floor can
+// accept the shipped layout while rejecting either control, since both score
+// higher than what they were supposed to be rejecting. The metric rewards
+// disorder over community-aware placement and cannot support a pass/fail claim
+// about "varied density," so it is retired as a gate here, in favour of a
+// direct assertion of the placement property it was standing in for (below).
+test("the within-community nearest-neighbour CV cannot separate the shipped layout from structure-free controls that have no community structure at all", () => {
   const anchors = layoutAnchors(graph("discovery-all-time.json"));
-  const coefficientOfVariation = withinCommunityNearestCoefficientOfVariation(anchors, PINNED_DISCOVERY_MEMBERSHIPS);
+  const ids = [...PINNED_DISCOVERY_MEMBERSHIPS.keys()].sort(compareText);
 
-  assert.ok(hasVariedWithinCommunityDensity(anchors, PINNED_DISCOVERY_MEMBERSHIPS), `expected within-community nearest-neighbour CV > 0.35, received ${coefficientOfVariation}`);
+  const shippedCv = withinCommunityNearestCoefficientOfVariation(anchors, PINNED_DISCOVERY_MEMBERSHIPS);
+  const uniformGridIdOrderCv = withinCommunityNearestCoefficientOfVariation(uniformGridIdOrder(ids), PINNED_DISCOVERY_MEMBERSHIPS);
+  const uniformGridCommunityBlockedCv = withinCommunityNearestCoefficientOfVariation(
+    uniformGridCommunityBlocked(ids, PINNED_DISCOVERY_MEMBERSHIPS),
+    PINNED_DISCOVERY_MEMBERSHIPS,
+  );
+  const singleRingCv = withinCommunityNearestCoefficientOfVariation(singleEquallySpacedRing(ids), PINNED_DISCOVERY_MEMBERSHIPS);
+
+  console.log(`within-community CV controls: ${JSON.stringify({ shippedCv, uniformGridIdOrderCv, uniformGridCommunityBlockedCv, singleRingCv })}`);
+
+  // Regression-pin every number this test's own reasoning depends on, so no
+  // comment near this test can ever again state a figure nothing measures.
+  assert.ok(Math.abs(shippedCv - 0.419) < 0.001, `shipped layout CV drifted from the measured baseline: ${shippedCv}`);
+  assert.ok(Math.abs(uniformGridIdOrderCv - 0.448) < 0.001, `uniform-grid (id order) CV drifted from the measured baseline: ${uniformGridIdOrderCv}`);
+  assert.equal(uniformGridCommunityBlockedCv, 0, "a grid uniform within every community block should measure exactly zero spread");
+  assert.ok(Math.abs(singleRingCv - 0.488) < 0.001, `single-ring CV drifted from the measured baseline: ${singleRingCv}`);
+
+  // The two controls that carry no community structure both outscore the
+  // shipped layout, which is the fact that makes this metric unusable as a
+  // pass/fail floor.
+  assert.ok(shippedCv < uniformGridIdOrderCv, "expected the shipped layout to score below a structure-free uniform grid it should have beaten");
+  assert.ok(shippedCv < singleRingCv, "expected the shipped layout to score below a structure-free single ring it should have beaten");
+});
+
+test("aggregate members scatter through their disc's interior at varying distances from its center, not only along its rim", () => {
+  // This is the placement property the retired CV floor was standing in for:
+  // memberAnchor scatters a disc's members by both angle and radius (radial
+  // hash times available radius), so real members should span a meaningful
+  // range of distances from their disc's center rather than sitting on a
+  // single ring. This is measured directly against memberAnchor's real
+  // output through the public aggregateDiscs/layoutAnchors surface, on the
+  // community-scale Indra portal fixture, whose aggregates carry 8-15 real
+  // members each -- enough for the range to be a signal, not noise.
+  const visualGraph = fixtureGraph(["indra", "indra-portal-windows.json"]);
+  const anchors = layoutAnchors(visualGraph);
+  const discs = aggregateDiscs(visualGraph);
+  const multiMemberDiscs = discs.filter((disc) => disc.members.length >= 4);
+  assert.ok(multiMemberDiscs.length > 0, "the fixture needs a multi-member aggregate to measure interior scatter");
+  for (const disc of multiMemberDiscs) {
+    const distances = disc.members.map((id) => {
+      const anchor = requiredAnchor(anchors, id);
+      return Math.hypot(anchor.x - disc.center.x, anchor.y - disc.center.y);
+    });
+    const range = Math.max(...distances) - Math.min(...distances);
+    const availableRadius = disc.radius - DEFAULT_CALIBRATION.aggregate.windowPaddingPx;
+    assert.ok(availableRadius > 0, `${disc.id} needs interior room for members to scatter into`);
+    assert.ok(range / availableRadius > 0.2, `${disc.id} expected member distances from center to span more than a fifth of the disc's interior, received range ${range} over available radius ${availableRadius}`);
+  }
 });
 
 test("fixed-count settling is bit-identical across runs", () => {
@@ -465,6 +525,63 @@ function withinCommunityNearestCoefficientOfVariation(
   const mean = nearest.reduce((sum, distance) => sum + distance, 0) / nearest.length;
   const standardDeviation = Math.sqrt(nearest.reduce((sum, distance) => sum + ((distance - mean) ** 2), 0) / nearest.length);
   return standardDeviation / mean;
+}
+
+/** This lays every id on a single regular grid in sorted-id order and encodes no community structure. */
+function uniformGridIdOrder(ids: readonly string[]): ReadonlyMap<string, Coordinates> {
+  const spacing = 100;
+  const columns = Math.ceil(Math.sqrt(ids.length));
+  const anchors = new Map<string, Coordinates>();
+  for (const [index, id] of ids.entries()) {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    anchors.set(id, { x: column * spacing, y: row * spacing, z: 0 });
+  }
+  return anchors;
+}
+
+/** This lays every community's own members on their own regular grid block, so within-community spacing is exactly uniform. */
+function uniformGridCommunityBlocked(
+  ids: readonly string[],
+  memberships: ReadonlyMap<string, string>,
+): ReadonlyMap<string, Coordinates> {
+  const spacing = 10;
+  const blockSeparation = 100000;
+  const byCommunity = new Map<string, string[]>();
+  for (const id of ids) {
+    const community = requiredCommunity(memberships, id);
+    byCommunity.set(community, [...(byCommunity.get(community) ?? []), id]);
+  }
+  const anchors = new Map<string, Coordinates>();
+  for (const [blockIndex, community] of [...byCommunity.keys()].sort(compareText).entries()) {
+    const members = [...requiredMembers(byCommunity, community)].sort(compareText);
+    const columns = Math.ceil(Math.sqrt(members.length));
+    for (const [index, id] of members.entries()) {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      anchors.set(id, { x: (blockIndex * blockSeparation) + (column * spacing), y: row * spacing, z: 0 });
+    }
+  }
+  return anchors;
+}
+
+/** This lays every id on one shared, equally spaced ring in sorted-id order and encodes no community structure. */
+function singleEquallySpacedRing(ids: readonly string[]): ReadonlyMap<string, Coordinates> {
+  const radius = 100;
+  const anchors = new Map<string, Coordinates>();
+  for (const [index, id] of ids.entries()) {
+    const angle = (Math.PI * 2 * index) / ids.length;
+    anchors.set(id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, z: 0 });
+  }
+  return anchors;
+}
+
+function requiredMembers(byCommunity: ReadonlyMap<string, string[]>, community: string): string[] {
+  const members = byCommunity.get(community);
+  if (members === undefined) {
+    throw new TypeError(`missing community block for ${community}`);
+  }
+  return members;
 }
 
 function requiredCommunity(memberships: ReadonlyMap<string, string>, id: string): string {

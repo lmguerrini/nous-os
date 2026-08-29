@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { currentTrackedTreeState } from "#test/tracked-tree.ts";
@@ -37,6 +38,14 @@ const ARTIFACT_PATHS = {
     "dist/matrix/indra-community-windows-manifest.json",
   ],
 } as const;
+
+// The governance store lives OUTSIDE this repository and its location is machine-specific, so it
+// cannot be assembled from repository-relative segments the way the fixture paths above are. It is
+// named through an environment variable with a documented default; the default is computed from
+// `homedir()` rather than written as a literal, so no absolute home-directory path is a tracked byte.
+const GOVERNANCE_ROOT =
+  process.env["NOUS_GOVERNANCE_ROOT"] ??
+  join(homedir(), ".local", "share", "governance-store", "projects", "project");
 
 const MATRIX_VALIDATION_TARGETS = [
   {
@@ -177,6 +186,24 @@ test("the closure register refuses an incomplete governance declaration", async 
   console.info(`closure-register incomplete-declaration control: ${output}`);
 });
 
+test("the closure register refuses a governance record that does not exist", async () => {
+  const output = await failingOutput(async () => {
+    await resolveOrThrow({
+      id: "control",
+      claim: "control",
+      source: {
+        kind: "humanRecord",
+        location: "governance",
+        record: "GR-X",
+        why: "control",
+        outsideRepository: "control",
+      },
+    });
+  });
+  assert.match(output, /governance record .* is absent or empty at the governance root/);
+  console.info(`closure-register missing-governance-record control: ${output}`);
+});
+
 test("the closure register refuses an artifact flag that is not true", async () => {
   const output = await failingOutput(async () => {
     await resolveOrThrow({ id: "control", claim: "control", source: { kind: "artifactFlag", artifact: "review3d", path: ["determinism", "notAFlag"], note: "control" } });
@@ -292,12 +319,19 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
     return;
   }
   // A governed record kept OUTSIDE this repository, deliberately, under the project's public/private
-  // boundary. This repository must not name that path in a tracked byte, so what is verified here is
-  // that the DECLARATION is complete — the record, the reason a machine cannot resolve it, and the
-  // statement of why it lives elsewhere. The record itself is verified by the governance gate. A
-  // criterion may not reach this branch by omitting any of the three.
+  // boundary. This repository must not name that path in a tracked byte, so what is verified here has
+  // two independent parts: that the DECLARATION is complete — the record, the reason a machine cannot
+  // resolve it, and the statement of why it lives elsewhere — and that the named record actually
+  // EXISTS at the governance root. A complete declaration naming a file nobody wrote used to resolve
+  // here; a criterion may not reach RESOLVED that way any longer.
   if (source.record.trim() === "" || source.why.trim() === "" || (source.outsideRepository ?? "").trim() === "") {
     throw new Error(`${criterion.id} declares a governance record without naming it, its reason, and why it is not in this repository`);
+  }
+  const present = await readFile(join(GOVERNANCE_ROOT, source.record), "utf8")
+    .then((text) => text.trim().length > 0)
+    .catch(() => false);
+  if (!present) {
+    throw new Error(`${criterion.id} governance record ${source.record} is absent or empty at the governance root`);
   }
 }
 

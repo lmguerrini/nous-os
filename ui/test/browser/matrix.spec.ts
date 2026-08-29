@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
 import { expect, test, type Page } from "@playwright/test";
 import { build, type Plugin } from "esbuild";
+import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import {
   assertLitPixelFloor,
   MINIMUM_LIT_PIXEL_COUNT,
@@ -11,6 +12,7 @@ import {
 } from "#browser/lit-floor.ts";
 import type { PixelImage } from "#browser/lit-floor.ts";
 import type {
+  MatrixAggregateWindowWitness,
   MatrixCaptureRequest,
   MatrixCaptureWitness,
   MatrixFixtureWitness,
@@ -70,6 +72,22 @@ type FilamentSubmissionWitness = {
   readonly relationIds: readonly string[];
 };
 
+/** This is one window's decoded-pixel interior-fill measurement and does not read shader source. */
+type AggregateWindowFillWitness = {
+  readonly id: string;
+  readonly cleanInteriorPoints: number;
+  readonly minimumFillDelta: number;
+  readonly contentDelta: number;
+};
+
+/** This is a capture's complete decoded-pixel fill witness and is null for Flat, which resolves no aggregate windows. */
+type AggregateFillWitness = {
+  readonly windowCount: number;
+  readonly minimumFillDelta: number;
+  readonly minimumContentDelta: number;
+  readonly windows: readonly AggregateWindowFillWitness[];
+} | null;
+
 type MatrixCaptureRecord = {
   readonly fixture: string;
   readonly morphology: Morphology;
@@ -89,6 +107,7 @@ type MatrixCaptureRecord = {
     readonly incidenceDigest: string;
   };
   readonly drawnStrokeWitness: DrawnStrokeWitness;
+  readonly aggregateFillWitness: AggregateFillWitness;
   readonly pixelSha256: string;
   readonly controlledRecapturePixelSha256: string;
   readonly pixelDimensions: { readonly width: number; readonly height: number };
@@ -178,6 +197,16 @@ type MatrixManifest = {
     readonly assertion: "Every capture witnesses the exact governed relation-identifier multiset in every filament submission.";
     readonly passed: true;
   };
+  readonly frameContainmentInvariant: {
+    readonly assertion: "Every cell's resolved node positions fall inside the captured frame, within a fixed pixel margin.";
+    readonly marginCssPx: number;
+    readonly passed: true;
+  };
+  readonly aggregateFillInvariant: {
+    readonly assertion: "Every Indra cell whose aggregate windows are large enough to sample has decoded-pixel interior fill measurably brighter than background and measurably darker than its own member-node content, sampled at real decoded pixels rather than shader source or a reimplementation the shader never calls. A cell whose windows are all too small or empty to sample is not counted as passing OR failing here; the run-level check requires at least one measured cell across every fixture.";
+    readonly measuredCells: number;
+    readonly passed: boolean;
+  };
   readonly captureQuality: {
     readonly requiredFieldRgb: readonly [number, number, number];
     readonly minimumLitPixels: number;
@@ -196,6 +225,27 @@ const MATRIX_COMMAND = "npm --prefix ui run test:matrix";
 const MATRIX_ROOT_DIRECTORY = join("dist", "matrix");
 const CAPTURE_WIDTH = 1_200;
 const CAPTURE_HEIGHT = 800;
+// This is deliberately generous: it exists to catch the shape of defect this capability already hit
+// once (a camera framing one organization while cropping the other's independently-resolved nodes off
+// every edge of the frame), not to police a node sitting a few px from the true edge.
+const FRAME_CONTAINMENT_MARGIN_CSS_PX = 64;
+// The core-opacity plateau of the aggregate fill runs from the window's center out to
+// windowFillCoreRadiusFractionPermille (550/1000 = 0.55) of its radius; sampling well inside that
+// plateau keeps the measurement independent of the falloff curve's exact shape.
+const FILL_SAMPLE_RADIUS_FRACTION = 0.35;
+const FILL_RING_SAMPLE_COUNT = 48;
+// Clears a node's own drawn footprint so an interior-fill sample cannot land on node content instead
+// of fill. This is a FRACTION of the window's own resolved viewport radius, not a fixed pixel count,
+// because a window's on-screen size varies enormously with camera zoom (a two-member window in a
+// small fixture versus a fifteen-member community-scale portal); a fixed pixel floor either misses
+// content on a large window or, as measured, excludes every candidate on a small one.
+const NODE_EXCLUSION_RADIUS_FRACTION = 0.15;
+const MINIMUM_NODE_EXCLUSION_RADIUS_CSS_PX = 2;
+const MINIMUM_CLEAN_FILL_POINTS_PER_WINDOW = 4;
+// Below this resolved on-screen radius, stroke, fill and content anti-alias into a handful of shared
+// pixels and no decoded sample can be attributed to fill alone; see indra-community-windows's own
+// two-member conflict windows in 3D, which resolve well under 10px from some camera angles.
+const MINIMUM_TESTABLE_WINDOW_VIEWPORT_RADIUS_CSS_PX = 24;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const MORPHOLOGIES = ["stellar", "neural", "mycelium"] as const satisfies readonly Morphology[];
 const ORGANIZATIONS = ["flat", "indra"] as const satisfies readonly Organization[];
@@ -223,6 +273,11 @@ test("governed morphology × organization evidence matrix", async ({ page }, tes
   await mkdir(MATRIX_ROOT_DIRECTORY, { recursive: true });
   const pageModule = await bundleMatrixPage();
   await installMatrixPage(page, pageModule);
+  // Not every fixture's Indra windows are large enough to sample interior fill against member content
+  // (see assertAggregateWindowFillPixels); this accumulates the cells that WERE, across every fixture,
+  // so the run as a whole can still require genuine positive coverage rather than passing on a run
+  // where every cell happened to skip.
+  const fillWitnessCoverage: { readonly fixtureId: string; readonly fileName: string; readonly windowCount: number }[] = [];
   try {
     for (const fixture of FIXTURES) {
       const governedTopology = await readGovernedFixtureTopology(fixture.path);
@@ -231,6 +286,12 @@ test("governed morphology × organization evidence matrix", async ({ page }, tes
       expect(fixtureWitness.nodeCount).toBe(governedTopology.nodeIds.length);
       expect(fixtureWitness.edgeCount).toBe(governedTopology.relations.length);
       const captures = await captureFixtureMatrix(page, fixture, fixtureWitness, governedTopology);
+      const fixtureFillMeasurements = captures
+        .map((capture) => ({ capture, witness: capture.aggregateFillWitness }))
+        .filter((entry): entry is { capture: MatrixCaptureRecord; witness: NonNullable<AggregateFillWitness> } => entry.witness !== null);
+      for (const { capture, witness } of fixtureFillMeasurements) {
+        fillWitnessCoverage.push({ fixtureId: fixture.id, fileName: capture.fileName, windowCount: witness.windowCount });
+      }
       const topologyGroups = assertTopologyInvariant(captures, governedTopology);
       const distinctDigestGroups = assertMorphologyDigestDistinctness(captures);
       assertAllTwelveDigestsDistinct(captures);
@@ -301,6 +362,16 @@ test("governed morphology × organization evidence matrix", async ({ page }, tes
           assertion: "Every capture witnesses the exact governed relation-identifier multiset in every filament submission.",
           passed: true,
         },
+        frameContainmentInvariant: {
+          assertion: "Every cell's resolved node positions fall inside the captured frame, within a fixed pixel margin.",
+          marginCssPx: FRAME_CONTAINMENT_MARGIN_CSS_PX,
+          passed: true,
+        },
+        aggregateFillInvariant: {
+          assertion: "Every Indra cell whose aggregate windows are large enough to sample has decoded-pixel interior fill measurably brighter than background and measurably darker than its own member-node content, sampled at real decoded pixels rather than shader source or a reimplementation the shader never calls. A cell whose windows are all too small or empty to sample is not counted as passing OR failing here; the run-level check requires at least one measured cell across every fixture.",
+          measuredCells: fixtureFillMeasurements.length,
+          passed: fixtureFillMeasurements.length > 0,
+        },
         captureQuality: {
           requiredFieldRgb: SHIPPING_DARK_FIELD_RGB,
           minimumLitPixels: MINIMUM_LIT_PIXEL_COUNT,
@@ -316,6 +387,13 @@ test("governed morphology × organization evidence matrix", async ({ page }, tes
       await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
       process.stdout.write(matrixSummary(fixture, captures, contactSheets, manifestFile));
     }
+    if (fillWitnessCoverage.length === 0) {
+      throw new Error("matrix aggregate fill invariant failed: no captured cell across either fixture had a window both populated and large enough to measure interior fill against its own content");
+    }
+    process.stdout.write(
+      `matrix aggregate fill coverage: ${fillWitnessCoverage.length} cell(s) measured; `
+      + `${fillWitnessCoverage.map((entry) => `${entry.fixtureId}/${entry.fileName}=${entry.windowCount} window(s)`).join(", ")}\n`,
+    );
   } finally {
     await destroyMatrixPage(page);
   }
@@ -509,6 +587,7 @@ async function captureFixtureMatrix(
         const witness = await invokeCapture(page, request);
         const fileName = `${fixture.id}-${morphology}-${organization}-${projection}.png`;
         assertCaptureTopology(witness, governedTopology, fileName);
+        assertNodesInsideCapturedFrame(witness, fileName);
         const outputFile = join(MATRIX_ROOT_DIRECTORY, fileName);
         await page.locator("#matrix-root").screenshot({ path: outputFile });
         const bytes = await readFile(outputFile);
@@ -533,6 +612,9 @@ async function captureFixtureMatrix(
         expect(witness.cameraKind).toBe(cameraKindFor(projection));
         assertDarkestShippingField(image, `matrix ${fileName}`);
         const litPixels = assertLitPixelFloor(image, `matrix ${fileName}`).litPixels;
+        const aggregateFillWitness = organization === "indra"
+          ? assertAggregateWindowFillPixels(witness, image, fileName)
+          : null;
         records.push({
           fixture: witness.fixture,
           morphology,
@@ -552,6 +634,7 @@ async function captureFixtureMatrix(
             incidenceDigest: digestIncidence(witness.surface.incidence),
           },
           drawnStrokeWitness,
+          aggregateFillWitness,
           pixelSha256: pixelSha256(image),
           controlledRecapturePixelSha256: pixelSha256(controlledRecapture),
           pixelDimensions: dimensions,
@@ -861,6 +944,162 @@ function assertOrganizationAggregateCounts(captures: readonly MatrixCaptureRecor
       throw new Error(`matrix Indra organization resolved no aggregates at ${capture.fileName}`);
     }
   }
+}
+
+/**
+ * This proves every resolved node position landed inside the frame that was actually captured. A
+ * single shared camera governs all twelve cells (see matrix.ts's cameraFor); every gate this suite ran
+ * before this one — topology, drawn strokes, decoded-pixel distinctness — passes even when that camera
+ * frames one organization while cropping the other's independently-resolved nodes off every edge, which
+ * is exactly the defect this capability already hit once. Nothing upstream checks that a node is where
+ * the picture can show it; this does.
+ */
+function assertNodesInsideCapturedFrame(witness: MatrixCaptureWitnessWithIncidence, fileName: string): void {
+  const minimumX = -FRAME_CONTAINMENT_MARGIN_CSS_PX;
+  const maximumX = CAPTURE_WIDTH + FRAME_CONTAINMENT_MARGIN_CSS_PX;
+  const minimumY = -FRAME_CONTAINMENT_MARGIN_CSS_PX;
+  const maximumY = CAPTURE_HEIGHT + FRAME_CONTAINMENT_MARGIN_CSS_PX;
+  const positions = Object.entries(witness.nodeViewportPositions);
+  if (positions.length === 0) {
+    throw new Error(`matrix frame-containment invariant failed for ${fileName}: capture resolved no node viewport positions`);
+  }
+  const outside = positions.filter(([, point]) => (
+    point.x < minimumX || point.x > maximumX || point.y < minimumY || point.y > maximumY
+  ));
+  if (outside.length > 0) {
+    const sample = outside.slice(0, 5).map(([id, point]) => `${id}@(${point.x.toFixed(1)}, ${point.y.toFixed(1)})`).join(", ");
+    throw new Error(
+      `matrix frame-containment invariant failed for ${fileName}: ${outside.length}/${positions.length} resolved node `
+      + `positions fall outside the captured ${CAPTURE_WIDTH}x${CAPTURE_HEIGHT} frame (±${FRAME_CONTAINMENT_MARGIN_CSS_PX}px margin); e.g. ${sample}`,
+    );
+  }
+}
+
+/**
+ * This proves the aggregate portal's radial interior fill is actually composited into decoded pixels,
+ * not merely described by shader source text or reproduced by aggregateFillCoverage, the JS
+ * reimplementation the GLSL never calls (see shader-contract.ts and aggregate-material.ts). It samples
+ * real decoded pixels on a ring well inside a window's core-opacity plateau, excludes any candidate
+ * point that falls near a governed node's own live viewport position so a fill measurement cannot
+ * accidentally read node or halo content instead, and requires the survivors to be both measurably
+ * above the shipping dark field and measurably below the window's own member-node content — the fill is
+ * deliberately subordinate to what it contains.
+ *
+ * If the fill were zeroed at the source (as the R-3 audit mutation did), every one of these interior
+ * points would decode to exactly the field color: the minimum-fill-delta assertion below would fail
+ * outright, reporting the near-zero measured value rather than passing on shader-source text or an
+ * unreachable reimplementation.
+ *
+ * Not every Indra cell can run this: a window with no members (a rejected cluster left without a
+ * bridge, see discovery-at-question's "lonely-synthetic-cluster") has no member-node content to be
+ * measurably darker than, and a window below MINIMUM_TESTABLE_WINDOW_VIEWPORT_RADIUS_CSS_PX (this
+ * fixture's own conflict windows, which never exceed two members and resolve under 8px once the
+ * shared camera is widened to frame Indra's full extent) is too small for stroke, fill and content to
+ * decode as separable pixels at all. Such a cell returns null rather than a false pass; the caller
+ * requires at least one non-null witness across the whole run so the proof cannot be silently skipped
+ * everywhere.
+ */
+function assertAggregateWindowFillPixels(
+  witness: MatrixCaptureWitnessWithIncidence,
+  image: PixelImage,
+  fileName: string,
+): AggregateFillWitness {
+  if (witness.windows.length === 0) {
+    throw new Error(`matrix aggregate fill invariant failed for ${fileName}: Indra capture resolved no aggregate windows`);
+  }
+  const testableWindows = witness.windows.filter((window) => (
+    window.members.length > 0 && window.viewportRadius >= MINIMUM_TESTABLE_WINDOW_VIEWPORT_RADIUS_CSS_PX
+  ));
+  if (testableWindows.length === 0) {
+    return null;
+  }
+  const threshold = DEFAULT_CALIBRATION.luminance.minimumCompositedPixelChannelDelta;
+  const nodePositions = Object.values(witness.nodeViewportPositions);
+  const windows = testableWindows.map((window) => assertAggregateWindowFillPixel(window, image, nodePositions, witness.nodeViewportPositions, threshold, fileName));
+  return {
+    windowCount: windows.length,
+    minimumFillDelta: Math.min(...windows.map((window) => window.minimumFillDelta)),
+    minimumContentDelta: Math.min(...windows.map((window) => window.contentDelta)),
+    windows,
+  };
+}
+
+function assertAggregateWindowFillPixel(
+  window: MatrixAggregateWindowWitness,
+  image: PixelImage,
+  allNodePositions: readonly { readonly x: number; readonly y: number }[],
+  nodeViewportPositions: Readonly<Record<string, { readonly x: number; readonly y: number }>>,
+  threshold: number,
+  fileName: string,
+): AggregateWindowFillWitness {
+  const fillRadius = window.viewportRadius * FILL_SAMPLE_RADIUS_FRACTION;
+  const exclusionRadius = Math.max(MINIMUM_NODE_EXCLUSION_RADIUS_CSS_PX, window.viewportRadius * NODE_EXCLUSION_RADIUS_FRACTION);
+  const clean = ringCandidates(window.viewportCenter, fillRadius, FILL_RING_SAMPLE_COUNT)
+    .filter((point) => allNodePositions.every((position) => (
+      Math.hypot(position.x - point.x, position.y - point.y) > exclusionRadius
+    )));
+  if (clean.length < MINIMUM_CLEAN_FILL_POINTS_PER_WINDOW) {
+    throw new Error(
+      `matrix aggregate fill invariant failed for ${fileName}: window ${window.id} (viewport radius `
+      + `${fillRadius.toFixed(1)}px fill / ${exclusionRadius.toFixed(1)}px exclusion) yielded only ${clean.length} `
+      + `clean interior points, fewer than the required ${MINIMUM_CLEAN_FILL_POINTS_PER_WINDOW}`,
+    );
+  }
+  const fillDeltas = clean.map((point) => channelDeviationAtPoint(image, point));
+  const minimumFillDelta = Math.min(...fillDeltas);
+  if (minimumFillDelta < threshold) {
+    throw new Error(
+      `matrix aggregate fill invariant failed for ${fileName}: window ${window.id} interior fill delta `
+      + `${minimumFillDelta} is below the required background-distinguishability floor of ${threshold}`,
+    );
+  }
+  const memberPositions = window.members.map((memberId) => requiredNodeViewportPosition(nodeViewportPositions, memberId, window.id, fileName));
+  const contentDelta = Math.max(...memberPositions.map((point) => channelDeviationAtPoint(image, point)));
+  if (minimumFillDelta >= contentDelta) {
+    throw new Error(
+      `matrix aggregate fill invariant failed for ${fileName}: window ${window.id} interior fill delta `
+      + `${minimumFillDelta} is not below its own member-node content delta ${contentDelta}`,
+    );
+  }
+  return { id: window.id, cleanInteriorPoints: clean.length, minimumFillDelta, contentDelta };
+}
+
+function requiredNodeViewportPosition(
+  nodeViewportPositions: Readonly<Record<string, { readonly x: number; readonly y: number }>>,
+  nodeId: string,
+  windowId: string,
+  fileName: string,
+): { readonly x: number; readonly y: number } {
+  const position = nodeViewportPositions[nodeId];
+  if (position === undefined) {
+    throw new Error(`matrix aggregate fill invariant failed for ${fileName}: window ${windowId} member ${nodeId} has no resolved viewport position`);
+  }
+  return position;
+}
+
+function channelDeviationAtPoint(image: PixelImage, point: { readonly x: number; readonly y: number }): number {
+  const x = Math.max(0, Math.min(image.width - 1, Math.round(point.x)));
+  const y = Math.max(0, Math.min(image.height - 1, Math.round(point.y)));
+  const offset = ((y * image.width) + x) * 4;
+  const red = image.data[offset] ?? 0;
+  const green = image.data[offset + 1] ?? 0;
+  const blue = image.data[offset + 2] ?? 0;
+  return Math.max(
+    Math.abs(red - SHIPPING_DARK_FIELD_RGB[0]),
+    Math.abs(green - SHIPPING_DARK_FIELD_RGB[1]),
+    Math.abs(blue - SHIPPING_DARK_FIELD_RGB[2]),
+  );
+}
+
+function ringCandidates(
+  center: { readonly x: number; readonly y: number },
+  radius: number,
+  count: number,
+): readonly { readonly x: number; readonly y: number }[] {
+  return Array.from({ length: count }, (_, index) => {
+    const angle = (index / count) * Math.PI * 2;
+    return { x: center.x + (Math.cos(angle) * radius), y: center.y + (Math.sin(angle) * radius) };
+  });
 }
 
 function assertMorphologyDigestDistinctness(captures: readonly MatrixCaptureRecord[]): readonly MatrixDistinctDigestGroup[] {

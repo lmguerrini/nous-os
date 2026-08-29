@@ -346,11 +346,131 @@ function regionCentersFor(
     return new Map();
   }
   const maximumRadius = Math.max(...ordered.map((reservation) => reservation.radius));
-  return centersOnEllipse(
+  const initial = centersOnEllipse(
     ordered.map((reservation) => reservation.key),
     (maximumRadius * calibration.layout.communityRegionDistributionRadiusPermille) / PERMILLE,
     calibration.layout.communityRegionDistributionVerticalRadiusPermille / PERMILLE,
   );
+  return resolveRegionOverlaps(initial, ordered.flatMap(aggregateSlotAnchors), calibration);
+}
+
+type AggregateSlotAnchor = {
+  readonly regionKey: string;
+  readonly localOffset: PlanarVector;
+  readonly radius: number;
+};
+
+/** This lists one region's own aggregate discs at their fixed offset from the region's own center and does not include its plain node slots. */
+function aggregateSlotAnchors(reservation: CommunityReservation): readonly AggregateSlotAnchor[] {
+  const anchors: AggregateSlotAnchor[] = [];
+  for (const slot of reservation.slots) {
+    if (!slot.id.startsWith(AGGREGATE_SLOT_PREFIX)) {
+      continue;
+    }
+    const localCenter = requiredCenter(reservation.localCenters, slot.id);
+    anchors.push({ regionKey: reservation.key, localOffset: localCenter, radius: slot.radius });
+  }
+  return anchors;
+}
+
+// centersOnEllipse places every region on the same circle regardless of where
+// its own aggregate discs actually sit relative to its center, which is what
+// let differently sized (and differently laid-out) communities' discs
+// overlap across community boundaries. A region's reservationRadius bounds
+// its *entire* reserved area, including the plain (non-aggregate) node slots
+// that give it elbow room for its own settling; separating every pair of
+// regions by the sum of that full radius demands far more inter-community
+// distance than disjointness actually requires and, on the community-scale
+// Indra fixtures, inflates the frame enough to cost the unrelated CSS-pixel
+// anchor-separation floor. What disjointness actually needs is that no two
+// *discs* -- at their real, fixed local offset from their own region's
+// center -- come closer than their combined radius, so this corrects region
+// centers directly against the real disc geometry instead of a
+// region-level approximation of it. Every violating disc pair is corrected
+// by moving the two regions that own it, one worst-violating pair per
+// iteration -- the same approach enforceMinimumScreenPairwiseSeparation and
+// organization.ts's resolveWindowOverlaps already take for anchors and
+// windows, because resolving every violating pair within one pass,
+// simultaneously, can cycle forever: fixing one pair's overlap can
+// reintroduce another pair's overlap it had just cleared.
+const COMMUNITY_REGION_OVERLAP_RESOLUTION_ITERATIONS = 512;
+
+function resolveRegionOverlaps(
+  centers: ReadonlyMap<string, Coordinates>,
+  slotAnchors: readonly AggregateSlotAnchor[],
+  calibration: CalibrationProfile,
+): ReadonlyMap<string, Coordinates> {
+  const positions = new Map(centers);
+  const orderedAnchors = [...slotAnchors].sort((left, right) => compareText(left.regionKey, right.regionKey));
+  const zero = 0;
+  for (let pass = 0; pass < COMMUNITY_REGION_OVERLAP_RESOLUTION_ITERATIONS; pass += 1) {
+    const worst = worstOverlappingDiscPair(positions, orderedAnchors, calibration);
+    if (worst === undefined) {
+      return positions;
+    }
+    const left = requiredCenter(positions, worst.left.regionKey);
+    const right = requiredCenter(positions, worst.right.regionKey);
+    const deficit = (worst.minimumSeparation - worst.distance) / MIDPOINT_DIVISOR;
+    positions.set(worst.left.regionKey, { x: left.x - (worst.direction.x * deficit), y: left.y - (worst.direction.y * deficit), z: zero });
+    positions.set(worst.right.regionKey, { x: right.x + (worst.direction.x * deficit), y: right.y + (worst.direction.y * deficit), z: zero });
+  }
+  const worst = worstOverlappingDiscPair(positions, orderedAnchors, calibration);
+  if (worst !== undefined) {
+    throw new TypeError(`community regions cannot be separated within the iteration budget: ${worst.left.regionKey}/${worst.right.regionKey}`);
+  }
+  return positions;
+}
+
+type DiscOverlap = {
+  readonly left: AggregateSlotAnchor;
+  readonly right: AggregateSlotAnchor;
+  readonly minimumSeparation: number;
+  readonly distance: number;
+  readonly direction: PlanarVector;
+};
+
+function worstOverlappingDiscPair(
+  positions: ReadonlyMap<string, Coordinates>,
+  orderedAnchors: readonly AggregateSlotAnchor[],
+  calibration: CalibrationProfile,
+): DiscOverlap | undefined {
+  let worst: DiscOverlap | undefined;
+  let worstDeficit = 0;
+  for (const [leftIndex, leftAnchor] of orderedAnchors.entries()) {
+    const leftCenter = discWorldCenter(positions, leftAnchor);
+    for (const rightAnchor of orderedAnchors.slice(leftIndex + 1)) {
+      if (rightAnchor.regionKey === leftAnchor.regionKey) {
+        // Two discs in the same community region are already kept apart by
+        // that region's own uniform slot grid (communityReservationFor); the
+        // region cannot be moved relative to itself to fix this.
+        continue;
+      }
+      const rightCenter = discWorldCenter(positions, rightAnchor);
+      const minimumSeparation = leftAnchor.radius + rightAnchor.radius + calibration.aggregate.windowPaddingPx;
+      const direction = directionBetween(
+        leftCenter,
+        rightCenter,
+        `region-overlap:${leftAnchor.regionKey}:${rightAnchor.regionKey}`,
+        calibration,
+      );
+      const deficit = minimumSeparation - direction.distance;
+      // Correcting a pair moves it to exactly minimumSeparation in exact arithmetic,
+      // but floating-point round-trip through repeated moves leaves a residual on
+      // the order of 1e-13; treating that as a still-violating pair cycles this
+      // loop forever between two boundary-precision pairs. The same tolerance
+      // meetsScreenSeparationFloor already uses for this reason applies here too.
+      if (deficit > Math.sqrt(Number.EPSILON) && deficit > worstDeficit) {
+        worst = { left: leftAnchor, right: rightAnchor, minimumSeparation, distance: direction.distance, direction };
+        worstDeficit = deficit;
+      }
+    }
+  }
+  return worst;
+}
+
+function discWorldCenter(positions: ReadonlyMap<string, Coordinates>, anchor: AggregateSlotAnchor): Coordinates {
+  const regionCenter = requiredCenter(positions, anchor.regionKey);
+  return { x: regionCenter.x + anchor.localOffset.x, y: regionCenter.y + anchor.localOffset.y, z: 0 };
 }
 
 function centersOnEllipse(
@@ -789,8 +909,10 @@ function isAggregateDiscList(
   return Array.isArray(value);
 }
 
+const AGGREGATE_SLOT_PREFIX = "aggregate:";
+
 function aggregateSlot(id: string): string {
-  return `aggregate:${id}`;
+  return `${AGGREGATE_SLOT_PREFIX}${id}`;
 }
 
 function nodeSlot(id: string): string {

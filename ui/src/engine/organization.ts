@@ -111,6 +111,13 @@ export function assertIndraOrganization(graph: EngineGraph, result: Organization
       throw new TypeError("aggregate membership changed");
     }
   }
+  for (const [index, window] of result.windows.entries()) {
+    for (const other of result.windows.slice(index + 1)) {
+      if (planarDistance(window.center, other.center) <= window.radius + other.radius) {
+        throw new TypeError("aggregate windows overlap");
+      }
+    }
+  }
   if (!rejectionBoundsDisjointFromWindows(result.rejectionBounds.map((item) => item.bounds), result.windows)) {
     throw new TypeError("rejection bounds intersect aggregate window");
   }

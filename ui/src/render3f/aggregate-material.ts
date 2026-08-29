@@ -57,8 +57,7 @@ flat out float v_strokeWidthDevicePx;
 flat out float v_opacity;
 flat out float v_fillOpacity;
 flat out float v_fillCoreRadiusFraction;
-// This keeps the calibrated shader's own "u_" spelling rather than "v_" even though it is now a
-// per-instance varying: ui/src/render3f/shader-contract.ts pins the literal identifier
+// ui/src/render3f/shader-contract.ts pins this varying by its literal identifier.
 flat out float v_fillFalloffExponent;
 vec2 clipToDevice(vec4 clipPosition) {
   return ((clipPosition.xy / clipPosition.w) + 1.0) * u_resolutionDevicePx * 0.5;
@@ -97,9 +96,8 @@ flat in float v_strokeWidthDevicePx;
 flat in float v_opacity;
 flat in float v_fillOpacity;
 flat in float v_fillCoreRadiusFraction;
-// See the matching comment in AGGREGATE_VERTEX_SHADER: this keeps the "u_" spelling that
-// ui/src/render3f/shader-contract.ts pins by literal identifier, even though it now arrives as a
-// per-instance varying rather than a uniform.
+// See the matching comment in AGGREGATE_VERTEX_SHADER: shader-contract.ts pins this varying by its
+// literal identifier.
 flat in float v_fillFalloffExponent;
 out vec4 outputColor;
 void main() {
