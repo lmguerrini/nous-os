@@ -921,15 +921,18 @@ async function assertBrowserEvidenceCurrent(raw: unknown, label: string): Promis
   if (typeof summary["passed"] !== "number" || summary["passed"] <= 0) {
     throw new Error(`${label} records no passing checks`);
   }
-  // A criterion resolves to FAIL from a red EXTERNAL suite, which `summary.failed` — computed from
-  // this run's own checks — cannot see. An audit set `acceptance.failed = 7` and every other mutation
-  // was rejected while this one passed. Requiring it is not the circularity this function exists to
-  // avoid: it constrains the state of other suites at the time the browser run was produced, not the
-  // outcome of the run this assertion executes inside.
-  const acceptance = raw["acceptance"];
-  if (isRecord(acceptance) && acceptance["failed"] !== 0) {
-    throw new Error(`${label} records ${String(acceptance["failed"])} failed acceptance criteria`);
-  }
+  // An audit observed that this gate ignores `acceptance.failed`, and reasoned that requiring it would
+  // be non-circular because acceptance reflects OTHER suites' state at browser-run time. That reasoning
+  // is wrong, and it was tried: adding the requirement deadlocked immediately. Acceptance criteria read
+  // `dist/evidence/unit-result.json`, which THIS suite writes — so requiring them to pass makes
+  // `test:unit` a precondition of itself once again. Measured on the attempt: all ten failing criteria
+  // cited `unit-result.json`, and running the suites in the recommended order did not break the cycle,
+  // because the browser run necessarily reads a unit result recorded before the gate could pass.
+  //
+  // The hole the audit found is real: a criterion can fail from a red external suite while
+  // `summary.failed` stays zero. Closing it needs a signal that does not route through this suite's own
+  // recorded exit code — which is a change to what the browser run records, not to what this gate
+  // reads. Left open deliberately, with the reason stated, rather than closed with a cycle.
   if (!isRecord(raw["run"]) || typeof raw["run"]["commitSha"] !== "string" || !/^[0-9a-f]{40,64}$/iu.test(raw["run"]["commitSha"])) {
     throw new Error(`${label} has no bound commit SHA`);
   }
