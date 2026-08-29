@@ -18,7 +18,7 @@ import type { EdgeMaterial, Morphology, MorphologyProfile, NodeMaterial } from "
 import { assertIndraOrganization, flatOrganization, indraOrganization } from "#engine/organization.ts";
 import type { AggregateWindow, Organization, OrganizationResult } from "#engine/organization.ts";
 import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
-import { contrastRatio, relativeLuminance, resolveTokens } from "#engine/tokens.ts";
+import { resolveTokens, separationLuminance, separationRatio } from "#engine/tokens.ts";
 import type { OklchToken, Palette, Temperature, Theme, TokenMap } from "#engine/tokens.ts";
 import { assertVisualState } from "#engine/visual-state.ts";
 import type { VisualState } from "#engine/visual-state.ts";
@@ -69,6 +69,8 @@ export type RenderOptions = {
   readonly morphology: Morphology;
   readonly organization: Organization;
   readonly palette?: Palette;
+  /** This is the human-selected hue anchor and is required only when `palette` is `"accent-hue"`; every other palette ignores it, exactly as `resolveTokens` does. */
+  readonly hueAnchorDegrees?: number;
   readonly temperature: Temperature;
   readonly theme: Theme;
   readonly lodBand: LodBand;
@@ -175,7 +177,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
   const morphology = morphologyProfile(activeOptions.morphology);
   const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration);
   const tokens = shippingTokens(
-    resolveTokens(activeOptions.palette, activeOptions.temperature, activeOptions.theme),
+    resolveTokens(activeOptions.palette, activeOptions.temperature, activeOptions.theme, activeOptions.hueAnchorDegrees),
     activeOptions.palette,
     activeOptions.theme,
     calibration,
@@ -285,8 +287,12 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
 
 /** This applies VisualState's active view settings and leaves elapsed runtime settings unchanged. */
 export function renderOptionsForVisualState(options: RenderOptions, state: VisualState): RenderOptions {
-  return {
-    ...options,
+  // hueAnchorDegrees is dropped from the carried-over options before it is (conditionally)
+  // reapplied below, so a caller's own stale value can never survive alongside a state that carries
+  // none of its own -- the field always reflects `state`, exactly like the other overridden fields.
+  const { hueAnchorDegrees: _carriedHueAnchorDegrees, ...carriedOptions } = options;
+  const resolved: RenderOptions = {
+    ...carriedOptions,
     morphology: state.morphology,
     organization: state.organization,
     palette: state.palette,
@@ -295,6 +301,10 @@ export function renderOptionsForVisualState(options: RenderOptions, state: Visua
     lodBand: state.lodBand,
     reducedMotion: state.reducedMotion,
   };
+  // hueAnchorDegrees is optional on both VisualState and RenderOptions; under exactOptionalPropertyTypes
+  // an explicit `undefined` is not the same as an absent key, so it is set only when the state
+  // actually carries one -- mirroring how VisualState's own constructor treats the same field.
+  return state.hueAnchorDegrees === undefined ? resolved : { ...resolved, hueAnchorDegrees: state.hueAnchorDegrees };
 }
 
 /** This selects IR-derived relation labels by LOD and current focus without changing graph structure. */
@@ -540,15 +550,15 @@ function minimumNodeContrastToken(
 ): OklchToken {
   const scale = permilleScale(calibration);
   const minimumContrast = calibration.luminance.minimumNodeContrastPermille / scale;
-  const backgroundLuminance = relativeLuminance(background);
+  const backgroundLuminance = separationLuminance(background);
   let candidate = token;
   while (
-    (relativeLuminance(candidate) <= backgroundLuminance || contrastRatio(candidate, background) < minimumContrast)
+    (separationLuminance(candidate) <= backgroundLuminance || separationRatio(candidate, background) < minimumContrast)
     && candidate.lightnessPermille < scale
   ) {
     candidate = { ...candidate, lightnessPermille: candidate.lightnessPermille + 1 };
   }
-  if (relativeLuminance(candidate) <= backgroundLuminance || contrastRatio(candidate, background) < minimumContrast) {
+  if (separationLuminance(candidate) <= backgroundLuminance || separationRatio(candidate, background) < minimumContrast) {
     throw new TypeError("renderer node contrast calibration is unreachable");
   }
   return candidate;

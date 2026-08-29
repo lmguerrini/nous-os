@@ -46,23 +46,41 @@ export const TOKEN_RAMPS = {
 } as const;
 
 /**
- * This is the pre-theme accent-ramp lightness ladder used only by the two experimental chromatic
- * modes, in place of makeBase's own ramp for that one role; like every other named token it still goes
- * through applyTemperature and applyTheme below. Its floor was chosen empirically against the resolved
- * (post-theme) background: it is low enough to leave real spacing for CATEGORICAL_HUE_DEGREES below,
- * yet every rung still clears the WCAG 2.2 AA non-text contrast floor (3:1) -- plain and under both
- * dichromacy simulations -- at any hue this module derives, in either theme, with margin. A post-hoc
- * per-slot shift was tried first and rejected: correcting each slot only as far as its own floor
- * requires converges every slot on nearly the same lightness (they share one background and chroma,
- * and differ mostly in hue), which clears the floor but erases the spacing colour-vision-deficient
- * viewers rely on to tell slots apart.
+ * This is the pre-theme accent-ramp lightness ladder used only by the `accent-hue` experimental mode,
+ * in place of makeBase's own ramp for that one role; like every other named token it still goes through
+ * applyTemperature and applyTheme below. Its floor was chosen empirically against the resolved
+ * (post-theme) background: every rung clears the WCAG 2.2 AA non-text contrast floor (3:1) -- plain and
+ * under both dichromacy simulations -- at any hue this module derives, in either theme, with margin.
+ * `accent-hue`'s ramp is one prominence gradient (the same shape every other palette's accent ramp
+ * already is), not a set of simultaneously-meaningful categories, so it is not held to pairwise
+ * distinguishability and keeps this wide a spread on purpose. CATEGORICAL_LIGHTNESS_LADDER_PERMILLE
+ * below is `categorical`'s own, separately-derived ladder; the two modes no longer share one.
  */
-const CHROMATIC_ACCENT_LIGHTNESS_LADDER_PERMILLE = [815, 852, 889, 926, 963, 1000] as const;
+const ACCENT_HUE_LIGHTNESS_LADDER_PERMILLE = [815, 852, 889, 926, 963, 1000] as const;
 
-function chromaticAccentRamp(chromaPermille: number, hueDegreesForIndex: (index: number) => number): Record<string, OklchToken> {
+/**
+ * This is `categorical`'s own pre-theme accent-ramp lightness ladder, deliberately tighter than
+ * `accent-hue`'s: [600, 620, 640, 660, 680, 700], a 20-permille uniform step. A tight ladder is
+ * necessary, not incidental -- measured directly (see CATEGORICAL_HUE_DEGREES below), this step alone,
+ * with every hue collapsed to one value, produces a worst-case post-dichromacy perceptual distance of
+ * ~1.97 ΔE76: below CATEGORICAL_MINIMUM_PAIRWISE_DELTA_E on its own. That is intentional: the wide
+ * ladder this module shipped with earlier let lightness alone carry every measured pairwise result,
+ * which made the six categorical hues decorative rather than load-bearing -- undetectable by the very
+ * distinguishability check meant to hold them accountable. Every rung still individually clears the
+ * WCAG 2.2 AA non-text contrast floor (3:1) against categorical's background, plain and under both
+ * dichromacy simulations, across all nine temperature/theme combinations, with real margin (measured
+ * worst case ~4.36:1 at the shipped chroma and hue set).
+ */
+const CATEGORICAL_LIGHTNESS_LADDER_PERMILLE = [600, 620, 640, 660, 680, 700] as const;
+
+function chromaticAccentRamp(
+  ladderPermille: readonly number[],
+  chromaPermille: number,
+  hueDegreesForIndex: (index: number) => number,
+): Record<string, OklchToken> {
   const ramp: Record<string, OklchToken> = {};
   TOKEN_RAMPS.accent.forEach((role, index) => {
-    const lightnessPermille = CHROMATIC_ACCENT_LIGHTNESS_LADDER_PERMILLE[index];
+    const lightnessPermille = ladderPermille[index];
     if (lightnessPermille === undefined) {
       throw new TypeError("chromatic accent ladder is incomplete");
     }
@@ -72,19 +90,33 @@ function chromaticAccentRamp(chromaPermille: number, hueDegreesForIndex: (index:
 }
 
 /**
- * These are the six fixed, non-human-selectable categorical hues: an evenly-stepped 10-degree-apart arc
- * from 40 to 90, not a spread around the full wheel. A full even six-way spread was tried first and
- * measured worse under simulatedContrastRatio: full-severity protanopia and deuteranopia collapse
- * discrimination along one axis, and a full-wheel spread necessarily places some pairs on or near it. A
- * lightness-differentiated single arc, low chroma, and this ladder's floor were chosen together by
- * sweeping candidates against every temperature/theme combination and keeping the worst pairwise
- * post-simulation result -- picked for what that search measured, not for how they read as colour
- * names. CATEGORICAL_MINIMUM_PAIRWISE_CONTRAST records the margin below what this combination reaches.
+ * These are the six fixed, non-human-selectable categorical hues, already in ladder-slot order (index 0
+ * pairs with CATEGORICAL_LIGHTNESS_LADDER_PERMILLE[0], and so on) -- not sorted by hue value, because the
+ * assignment order is itself load-bearing: the two closest-lightness rungs must not also be the two
+ * closest hues, or their post-dichromacy separation collapses toward the tight ladder's own ΔL-only
+ * floor (see CATEGORICAL_LIGHTNESS_LADDER_PERMILLE). The six values are an evenly-stepped 16-degree-apart
+ * arc from 140 to 220 (green through cyan), not a spread around the full wheel: a full even six-way
+ * spread was tried first and measured worse -- full-severity protanopia and deuteranopia collapse
+ * discrimination along one axis, and a full-wheel spread necessarily places some pairs on or near it.
+ * This arc, this chroma, and this slot assignment were chosen together by an exhaustive search over hue
+ * arcs (start and span), chroma, and every one of the 720 assignments of a six-hue arc onto six ladder
+ * slots, keeping the combination whose worst pairwise post-dichromacy ΔE76 (see
+ * CATEGORICAL_MINIMUM_PAIRWISE_DELTA_E) was largest, subject to every ramp entry individually clearing
+ * WCAG AA against the background at every temperature and theme -- picked for what that search measured,
+ * not for how the hues read as colour names. Measured worst case at this combination: ~13.3 ΔE76 (vs.
+ * ~1.97 for the same ladder with every hue collapsed to one value -- see the dedicated test proving that
+ * collapse now fails the floor).
  */
-const CATEGORICAL_HUE_DEGREES = [40, 50, 60, 70, 80, 90] as const;
+const CATEGORICAL_HUE_DEGREES = [220, 188, 140, 172, 156, 204] as const;
 
-/** This is the fixed chroma for the six categorical slots; every other named token stays at zero chroma so community colour never leaks into text, edges, or the field. */
-const CATEGORICAL_ACCENT_CHROMA_PERMILLE = 25;
+/**
+ * This is the fixed chroma for the six categorical slots; every other named token stays at zero chroma
+ * so community colour never leaks into text, edges, or the field. It was chosen by the same exhaustive
+ * search as CATEGORICAL_HUE_DEGREES, across chroma values from 100 to 180 permille: 150 produced the
+ * largest worst-case pairwise ΔE76 while every ramp entry still individually cleared WCAG AA against the
+ * background at every temperature and theme.
+ */
+const CATEGORICAL_ACCENT_CHROMA_PERMILLE = 150;
 
 /**
  * This derives the fixed six-member categorical ramp used to render already-derived community
@@ -96,7 +128,7 @@ function makeCategoricalBase(): TokenMap {
   const base = makeBase(0, 0);
   return {
     ...base,
-    ...chromaticAccentRamp(CATEGORICAL_ACCENT_CHROMA_PERMILLE, (index) => requiredCategoricalHueDegrees(index)),
+    ...chromaticAccentRamp(CATEGORICAL_LIGHTNESS_LADDER_PERMILLE, CATEGORICAL_ACCENT_CHROMA_PERMILLE, (index) => requiredCategoricalHueDegrees(index)),
   };
 }
 
@@ -164,7 +196,7 @@ function accentHueBase(hueAnchorDegrees: number): TokenMap {
   const complementaryHueDegrees = normalizeHue(hueAnchorDegrees + ACCENT_HUE_COMPLEMENTARY_OFFSET_DEGREES);
   return {
     ...base,
-    ...chromaticAccentRamp(ACCENT_HUE_CHROMA_PERMILLE, () => hueAnchorDegrees),
+    ...chromaticAccentRamp(ACCENT_HUE_LIGHTNESS_LADDER_PERMILLE, ACCENT_HUE_CHROMA_PERMILLE, () => hueAnchorDegrees),
     // The muted supporting role and the relation role read as coherent with the anchor without
     // repeating it verbatim, which is the "supporting / analogous / complementary" derivation the
     // human decision asks for -- expressed as hue-only offsets within the existing token vocabulary,
@@ -183,8 +215,23 @@ export const WCAG_AA_NON_TEXT_CONTRAST = 3;
 const ACCESSIBLE_TEXT_ROLES = ["text", "textMuted"] as const;
 const ACCESSIBLE_NON_RAMP_ROLES = ["edge"] as const;
 
-/** This is the minimum pairwise WCAG-style contrast ratio the six categorical ramp entries must keep, against each other, after either dichromacy simulation. It is not the WCAG AA non-text figure: that figure governs a token against its background, and no even six-way hue spread can also hold every categorical pair to 3:1 once every entry is independently pinned above the AA floor against a shared near-black field -- the two constraints compete for the same lightness range. This is the achieved worst case (see CATEGORICAL_HUE_DEGREES) with a safety margin subtracted, not a number chosen first and then fitted. */
-export const CATEGORICAL_MINIMUM_PAIRWISE_CONTRAST = 1.15;
+/**
+ * This is the minimum pairwise perceptual colour difference (ΔE76, Euclidean distance in CIE L*a*b*,
+ * D65) the six categorical ramp entries must keep, against each other, plain and after either
+ * dichromacy simulation. A WCAG-style contrast ratio was tried here first and rejected: it is a
+ * luminance-only measure, near-blind to the a-star/b-star (chromatic) plane that carries hue, so it
+ * cannot tell a palette that actually varies hue from one that varies only lightness -- see the
+ * dedicated test that collapses every categorical hue to one value and confirms the WCAG-ratio measure
+ * barely notices while this measure drops well below this floor. 3.0 is not fitted to this palette's
+ * achieved numbers; it is the published "clearly visible difference" threshold on the standard ΔE scale
+ * (ΔE < 1 imperceptible, 1-2 perceptible only on close inspection, ΔE >= 3 clearly visible -- Konica
+ * Minolta, "What Is Delta E (ΔE)? Understanding Colour Difference in Quality Control"), one step above
+ * the ~2.3 ΔE that colour science treats as the bare just-noticeable-difference (CIE76; see the
+ * "Just-noticeable difference" entry under Wikipedia's "Color difference" article) -- chosen because
+ * categorical swatches are read at a glance, not compared side by side under lab conditions, so the bare
+ * JND is too weak a bar.
+ */
+export const CATEGORICAL_MINIMUM_PAIRWISE_DELTA_E = 3;
 
 const CONTRAST_LIGHTNESS_STEP_PERMILLE = 1;
 const MAXIMUM_LIGHTNESS_PERMILLE = 1000;
@@ -195,6 +242,15 @@ function worstCaseContrastRatio(a: OklchToken, b: OklchToken): number {
     contrastRatio(a, b),
     simulatedContrastRatio(a, b, "protanopia"),
     simulatedContrastRatio(a, b, "deuteranopia"),
+  );
+}
+
+/** This is the worst of a token pair's plain perceptual colour difference and its difference after each dichromacy simulation -- the pairwise counterpart of `worstCaseContrastRatio`, used only for categorical's distinguishability floor. */
+function worstCasePerceptualDifference(a: OklchToken, b: OklchToken): number {
+  return Math.min(
+    perceptualColorDifference(a, b),
+    simulatedPerceptualColorDifference(a, b, "protanopia"),
+    simulatedPerceptualColorDifference(a, b, "deuteranopia"),
   );
 }
 
@@ -220,13 +276,13 @@ function withMinimumContrast(token: OklchToken, background: OklchToken, minimumR
 /**
  * This verifies, and never itself corrects, that the accent ramp already clears the contrast floor
  * (plain and under both dichromacy simulations) and, for the categorical ramp specifically, that every
- * pair also clears CATEGORICAL_MINIMUM_PAIRWISE_CONTRAST under both simulations.
- * CHROMATIC_ACCENT_LIGHTNESS_LADDER_PERMILLE and CATEGORICAL_HUE_DEGREES were chosen with enough
- * margin that this should never trip; correcting a ramp slot in place here would only repeat the
- * failure mode the ladder and hue set already exist to avoid -- raising a low slot toward the same
- * floor every other slot already clears, and collapsing the separation colour-vision-deficient viewers
- * rely on to tell slots apart. A derivation that cannot clear the floor is a defect in the ladder or
- * hue set, not something to paper over here.
+ * pair also clears CATEGORICAL_MINIMUM_PAIRWISE_DELTA_E under both simulations.
+ * ACCENT_HUE_LIGHTNESS_LADDER_PERMILLE, CATEGORICAL_LIGHTNESS_LADDER_PERMILLE, and
+ * CATEGORICAL_HUE_DEGREES were chosen with enough margin that this should never trip; correcting a ramp
+ * slot in place here would only repeat the failure mode the ladder and hue set already exist to avoid --
+ * raising a low slot toward the same floor every other slot already clears, and collapsing the
+ * separation colour-vision-deficient viewers rely on to tell slots apart. A derivation that cannot clear
+ * the floor is a defect in the ladder or hue set, not something to paper over here.
  */
 function assertAccessibleRamp(tokens: Record<string, OklchToken>, background: OklchToken, minimumRatio: number, checkPairwiseDistinguishability: boolean): void {
   let previousLightnessPermille = -1;
@@ -250,8 +306,8 @@ function assertAccessibleRamp(tokens: Record<string, OklchToken>, background: Ok
       if (leftRole === undefined || rightRole === undefined) {
         throw new TypeError("accent ramp pairwise distinguishability check requires two ramp slots");
       }
-      const pairContrast = worstCaseContrastRatio(requiredEntry(tokens, leftRole), requiredEntry(tokens, rightRole));
-      if (pairContrast < CATEGORICAL_MINIMUM_PAIRWISE_CONTRAST) {
+      const pairDeltaE = worstCasePerceptualDifference(requiredEntry(tokens, leftRole), requiredEntry(tokens, rightRole));
+      if (pairDeltaE < CATEGORICAL_MINIMUM_PAIRWISE_DELTA_E) {
         throw new TypeError(`derived categorical slots ${leftRole} and ${rightRole} are not distinguishable after dichromacy simulation`);
       }
     }
@@ -309,17 +365,54 @@ function oklchToLinearSrgb(token: OklchToken): LinearRgb {
   };
 }
 
-/** This computes relative luminance from an OKLCH token and does not claim perceptual luminance equality. */
+/**
+ * This computes WCAG relative luminance from an OKLCH token and does not claim perceptual luminance
+ * equality. `oklchToLinearSrgb` already returns linear sRGB, so the WCAG luminance weights are applied
+ * directly to its (clamped) output; a gamma-decode step (as the sRGB standard defines for gamma-encoded
+ * input) must not be applied here, since there is no gamma-encoded input to decode.
+ */
 export function relativeLuminance(token: OklchToken): number {
   assertToken(token);
   const { red, green, blue } = oklchToLinearSrgb(token);
-  return 0.2126 * srgbToLinear(clamp01(red)) + 0.7152 * srgbToLinear(clamp01(green)) + 0.0722 * srgbToLinear(clamp01(blue));
+  return 0.2126 * clamp01(red) + 0.7152 * clamp01(green) + 0.0722 * clamp01(blue);
 }
 
 /** This computes WCAG contrast symmetrically and does not assign semantic importance to either token. */
 export function contrastRatio(a: OklchToken, b: OklchToken): number {
   const left = relativeLuminance(a);
   const right = relativeLuminance(b);
+  if (left === right) {
+    return 1;
+  }
+  return (Math.max(left, right) + 0.05) / (Math.min(left, right) + 0.05);
+}
+
+/**
+ * This is the compressive luminance curve the two renderers' node-contrast floors have always used, and
+ * it is deliberately NOT a WCAG relative luminance. It applies one further gamma decode to the WCAG
+ * value, which compresses the scale and therefore spreads tokens apart at the dark end of a ramp — the
+ * property `minimumNodeContrastToken` actually depends on when it walks a token up to a separation
+ * floor.
+ *
+ * It was, until this capability, the same function as `relativeLuminance`, because that function
+ * carried a doubled gamma decode by mistake. Correcting `relativeLuminance` to the real WCAG figure
+ * made the floor reachable at a much lower lightness, which collapsed `surface`, `neutral0` and
+ * `accent0` onto a single converged lightness and destroyed the prominence separation the renderers
+ * assert. The historical curve is kept here, named for what it does, rather than restoring the error
+ * inside a function whose contract says WCAG.
+ *
+ * `luminance.minimumNodeContrastPermille` is 1200 against this curve. That is a separation heuristic,
+ * not a WCAG tier, and nothing may present it as one.
+ */
+export function separationLuminance(token: OklchToken): number {
+  const wcag = relativeLuminance(token);
+  return wcag <= 0.040_45 ? wcag / 12.92 : ((wcag + 0.055) / 1.055) ** 2.4;
+}
+
+/** This compares two tokens on the renderers' separation curve and does not report a WCAG contrast ratio. */
+export function separationRatio(a: OklchToken, b: OklchToken): number {
+  const left = separationLuminance(a);
+  const right = separationLuminance(b);
   if (left === right) {
     return 1;
   }
@@ -363,11 +456,16 @@ function simulateDichromacy(rgb: LinearRgb, simulation: DichromacySimulation): L
   };
 }
 
-/** This is relative luminance computed from a token's colour after full-severity dichromacy simulation and does not reconstruct a simulated OKLCH token. */
+/**
+ * This is WCAG relative luminance computed from a token's colour after full-severity dichromacy
+ * simulation and does not reconstruct a simulated OKLCH token. `simulateDichromacy` operates on, and
+ * returns, linear sRGB, so -- as in `relativeLuminance` -- the WCAG weights are applied directly to its
+ * (clamped) output rather than through a second, spurious gamma-decode step.
+ */
 export function simulatedRelativeLuminance(token: OklchToken, simulation: DichromacySimulation): number {
   assertToken(token);
   const simulated = simulateDichromacy(oklchToLinearSrgb(token), simulation);
-  return 0.2126 * srgbToLinear(clamp01(simulated.red)) + 0.7152 * srgbToLinear(clamp01(simulated.green)) + 0.0722 * srgbToLinear(clamp01(simulated.blue));
+  return 0.2126 * clamp01(simulated.red) + 0.7152 * clamp01(simulated.green) + 0.0722 * clamp01(simulated.blue);
 }
 
 /** This is the WCAG contrast ratio between two tokens after both are put through the same dichromacy simulation, and is the distinguishability measure this module asserts for colour-vision-deficient viewers. */
@@ -378,6 +476,83 @@ export function simulatedContrastRatio(a: OklchToken, b: OklchToken, simulation:
     return 1;
   }
   return (Math.max(left, right) + 0.05) / (Math.min(left, right) + 0.05);
+}
+
+/** This is CIE L*a*b*, D65, and does not itself imply a perceptual-difference formula; `deltaE76` below is the Euclidean distance across it. */
+type Lab = {
+  readonly l: number;
+  readonly a: number;
+  readonly b: number;
+};
+
+// IEC 61966-2-1 (sRGB) linear-light to CIE XYZ, D65, verified against the published 7-significant-figure
+// matrix (e.g. Lindbloom's "RGB/XYZ Matrices", mina86.com's "sRGB <-> XYZ conversion").
+const LINEAR_SRGB_TO_XYZ_D65_MATRIX: readonly (readonly [number, number, number])[] = [
+  [0.4124564, 0.3575761, 0.1804375],
+  [0.2126729, 0.7151522, 0.0721750],
+  [0.0193339, 0.1191920, 0.9503041],
+];
+
+function linearSrgbToXyz(rgb: LinearRgb): { readonly x: number; readonly y: number; readonly z: number } {
+  const applyRow = (row: readonly [number, number, number]): number => (
+    (row[0] * rgb.red) + (row[1] * rgb.green) + (row[2] * rgb.blue)
+  );
+  const xRow = LINEAR_SRGB_TO_XYZ_D65_MATRIX[0];
+  const yRow = LINEAR_SRGB_TO_XYZ_D65_MATRIX[1];
+  const zRow = LINEAR_SRGB_TO_XYZ_D65_MATRIX[2];
+  if (xRow === undefined || yRow === undefined || zRow === undefined) {
+    throw new TypeError("sRGB-to-XYZ matrix is incomplete");
+  }
+  return { x: applyRow(xRow), y: applyRow(yRow), z: applyRow(zRow) };
+}
+
+// CIE standard D65 reference white (2 degree observer) and the CIE 1976 XYZ-to-Lab breakpoint constants.
+const CIE_D65_WHITE_XYZ = { x: 0.95047, y: 1.0, z: 1.08883 };
+const CIE_LAB_EPSILON = 0.008856;
+const CIE_LAB_KAPPA = 903.3;
+
+function cieLabF(t: number): number {
+  return t > CIE_LAB_EPSILON ? Math.cbrt(t) : ((CIE_LAB_KAPPA * t) + 16) / 116;
+}
+
+function xyzToLab(xyz: { readonly x: number; readonly y: number; readonly z: number }): Lab {
+  const fx = cieLabF(xyz.x / CIE_D65_WHITE_XYZ.x);
+  const fy = cieLabF(xyz.y / CIE_D65_WHITE_XYZ.y);
+  const fz = cieLabF(xyz.z / CIE_D65_WHITE_XYZ.z);
+  return {
+    l: (116 * fy) - 16,
+    a: 500 * (fx - fy),
+    b: 200 * (fy - fz),
+  };
+}
+
+function labFromToken(token: OklchToken): Lab {
+  const { red, green, blue } = oklchToLinearSrgb(token);
+  return xyzToLab(linearSrgbToXyz({ red: clamp01(red), green: clamp01(green), blue: clamp01(blue) }));
+}
+
+function labFromSimulatedToken(token: OklchToken, simulation: DichromacySimulation): Lab {
+  const simulated = simulateDichromacy(oklchToLinearSrgb(token), simulation);
+  return xyzToLab(linearSrgbToXyz({ red: clamp01(simulated.red), green: clamp01(simulated.green), blue: clamp01(simulated.blue) }));
+}
+
+/** This is CIE76 ΔE: Euclidean distance in CIE L*a*b*. Unlike a WCAG contrast ratio it is sensitive to the a-star/b-star (chromatic) plane, so two tokens that differ only in hue register as different even when their luminance is identical. */
+function deltaE76(left: Lab, right: Lab): number {
+  return Math.hypot(left.l - right.l, left.a - right.a, left.b - right.b);
+}
+
+/** This is the plain (no dichromacy simulation) CIE76 ΔE between two tokens' rendered colour. */
+export function perceptualColorDifference(a: OklchToken, b: OklchToken): number {
+  assertToken(a);
+  assertToken(b);
+  return deltaE76(labFromToken(a), labFromToken(b));
+}
+
+/** This is the CIE76 ΔE between two tokens' colour after both are put through the same dichromacy simulation. */
+export function simulatedPerceptualColorDifference(a: OklchToken, b: OklchToken, simulation: DichromacySimulation): number {
+  assertToken(a);
+  assertToken(b);
+  return deltaE76(labFromSimulatedToken(a, simulation), labFromSimulatedToken(b, simulation));
 }
 
 function makeBase(hueDegrees: number, chromaPermille: number): TokenMap {
@@ -427,10 +602,6 @@ function applyTheme(token: OklchToken, theme: Theme): OklchToken {
 function normalizeHue(value: number): number {
   const normalized = value % 360;
   return normalized < 0 ? normalized + 360 : normalized;
-}
-
-function srgbToLinear(value: number): number {
-  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
 }
 
 function clamp01(value: number): number {

@@ -142,7 +142,8 @@ left for a reader to discover by being wrong.
 | `MorphologyMaterialTarget` | `ui/src/engine/morphology.ts:18` | `legacy-renderer` · `shared-scene` | Which renderer a resolved morphology material is being resolved for. The two consume different channels, and the older one is a closed audited artifact whose values may not move, so the target names which set of channels applies rather than letting one renderer's changes reach the other. |
 | `Organization` | `ui/src/engine/organization.ts:7` | `flat` · `indra` | Whether elements are laid out as one field or gathered into one level of groups. |
 | `LodBand` | `ui/src/engine/lod.ts:7` | `macro` · `meso` · `micro` | How much detail the current view earns. |
-| `Palette` | `ui/src/engine/tokens.ts:9` | `monochrome` · `interstellar` · `perceptual` · `solar` · `custom` | Which colour vocabulary is in force. |
+| `Palette` | `ui/src/engine/tokens.ts:9` | `monochrome` · `interstellar` · `perceptual` · `solar` · `custom` · `accent-hue` · `categorical` | Which colour vocabulary is in force: the five shipping palettes, then the two experimental chromatic ones. |
+| `DichromacySimulation` | `ui/src/engine/tokens.ts:423` | `protanopia` · `deuteranopia` | Which colour-vision-deficiency model a contrast check simulates against. It never changes which token is rendered, only whether a contrast measurement counts as passing. |
 | `Temperature` | `ui/src/engine/tokens.ts:10` | `cold` · `balanced` · `warm` | A colour-temperature axis, independent of palette. |
 | `Theme` | `ui/src/engine/tokens.ts:11` | `system` · `dark` · `light` | Which ground the drawing sits on. |
 | `Assertion` | `src/nous_os/canonical.py:130` | — | One claim, with its citation and its validity bounds. The unit canon is made of. |
@@ -189,7 +190,7 @@ left for a reader to discover by being wrong.
 | `EngineGraph` | `ui/src/engine/contract.ts:143` | — | The much smaller view the drawing layer is actually handed. |
 | `EngineAccessTrace` | `ui/src/engine/contract.ts:149` | — | A record of what the drawing layer read, so that reading too much is detectable. |
 | `Coordinates` | `ui/src/engine/contract.ts:32` | — | A position. Which space it is in is not carried by the type. |
-| `VisualStateValidationRule` | `ui/src/engine/visual-state.ts:72` | `field-register` · `known-element-id` · `closed-vocabulary` · `reduced-motion-boolean` · `finite-camera-number` · `positive-camera-ratio` · `bounds-axis-pair` · `increasing-bounds-axis` | The eight named ways a saved view can be malformed. A refusal carries which rule it broke, so a rejection is diagnosable rather than merely negative. |
+| `VisualStateValidationRule` | `ui/src/engine/visual-state.ts:83` | `field-register` · `known-element-id` · `closed-vocabulary` · `reduced-motion-boolean` · `finite-camera-number` · `positive-camera-ratio` · `bounds-axis-pair` · `increasing-bounds-axis` · `hue-anchor-range` · `accent-hue-requires-anchor` | The ten named ways a saved view can be malformed. A refusal carries which rule it broke, so a rejection is diagnosable rather than merely negative. |
 | `CameraKind` | `ui/src/engine/camera-kind.ts:2` | `orthographic` · `perspective` | Which projection the viewer is looking through. A camera, not a graph and not a policy: the same resolved scene reaches either one, and in the perspective camera depth is layout only and carries no epistemic meaning. |
 | `LayoutAnchors` | `ui/src/engine/layout.ts:7` | — | Where elements sit, in world units, computed against a fixed reference frame. |
 
@@ -383,7 +384,8 @@ mapping above; a term is in one register or the other, and the build refuses a t
 | `Overlap` · `TemporalDisposition` | Answers about intervals. "Time" is not an epistemic register. |
 | `QuarantineReason` | Four named attack shapes. A security vocabulary, correctly kept separate. |
 | `CameraKind` | Names a projection, not a knowledge relation. Any epistemic term would imply the two cameras show different knowledge; they show the same knowledge, differently projected. |
-| `VisualStateValidationRule` | Names eight ways a saved view can be malformed. A validation vocabulary, about well-formedness rather than about knowledge. |
+| `VisualStateValidationRule` | Names ten ways a saved view can be malformed. A validation vocabulary, about well-formedness rather than about knowledge. |
+| `DichromacySimulation` | Names which colour-vision model a contrast check simulates against. An accessibility engineering parameter, not a claim about what is known. |
 | `NodeKind` · `EdgeKind` · `Side` | The graph vocabulary. Node and edge are exact, universal, and carry no meaning they should not. |
 | `BridgeDisposition` | What a whole rubric vector amounts to. Naming it epistemically would invite reading it as a confidence. |
 | `PolicyId` · `ProjectionPolicy` | An omission policy. See the note below on what its two members are called. |

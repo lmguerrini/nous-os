@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ALL_PALETTES,
-  CATEGORICAL_MINIMUM_PAIRWISE_CONTRAST,
+  CATEGORICAL_MINIMUM_PAIRWISE_DELTA_E,
   EXPERIMENTAL_PALETTES,
   HUE_ANCHOR_DEGREES_COUNT,
   PALETTES,
@@ -13,9 +13,11 @@ import {
   WCAG_AA_TEXT_CONTRAST,
   contrastRatio,
   isHueAnchorDegrees,
+  perceptualColorDifference,
   relativeLuminance,
   resolveTokens,
   simulatedContrastRatio,
+  simulatedPerceptualColorDifference,
 } from "#engine/tokens.ts";
 import type { OklchToken } from "#engine/tokens.ts";
 
@@ -237,7 +239,7 @@ test("categorical clears WCAG 2.2 AA non-text contrast against its own backgroun
   assert.equal(checked, THEMES.length * TEMPERATURES.length * TOKEN_RAMPS.accent.length);
 });
 
-test("every pair of categorical ramp entries stays distinguishable, plain and under both dichromacy simulations, for every theme and temperature", () => {
+test("every pair of categorical ramp entries stays perceptually distinguishable, plain and under both dichromacy simulations, for every theme and temperature", () => {
   let checkedPairs = 0;
   for (const theme of THEMES) {
     for (const temperature of TEMPERATURES) {
@@ -248,13 +250,13 @@ test("every pair of categorical ramp entries stays distinguishable, plain and un
           const leftToken = requiredToken(tokens, TOKEN_RAMPS.accent[left]!);
           const rightToken = requiredToken(tokens, TOKEN_RAMPS.accent[right]!);
           assert.ok(
-            contrastRatio(leftToken, rightToken) >= CATEGORICAL_MINIMUM_PAIRWISE_CONTRAST,
-            `categorical ${theme}/${temperature} ${TOKEN_RAMPS.accent[left]}/${TOKEN_RAMPS.accent[right]} plain pairwise contrast below the distinguishability floor`,
+            perceptualColorDifference(leftToken, rightToken) >= CATEGORICAL_MINIMUM_PAIRWISE_DELTA_E,
+            `categorical ${theme}/${temperature} ${TOKEN_RAMPS.accent[left]}/${TOKEN_RAMPS.accent[right]} plain pairwise ΔE below the distinguishability floor`,
           );
           for (const simulation of DICHROMACY_SIMULATIONS) {
             assert.ok(
-              simulatedContrastRatio(leftToken, rightToken, simulation) >= CATEGORICAL_MINIMUM_PAIRWISE_CONTRAST,
-              `categorical ${theme}/${temperature} ${TOKEN_RAMPS.accent[left]}/${TOKEN_RAMPS.accent[right]} ${simulation} pairwise contrast below the distinguishability floor`,
+              simulatedPerceptualColorDifference(leftToken, rightToken, simulation) >= CATEGORICAL_MINIMUM_PAIRWISE_DELTA_E,
+              `categorical ${theme}/${temperature} ${TOKEN_RAMPS.accent[left]}/${TOKEN_RAMPS.accent[right]} ${simulation} pairwise ΔE below the distinguishability floor`,
             );
           }
         }
@@ -263,6 +265,45 @@ test("every pair of categorical ramp entries stays distinguishable, plain and un
   }
   const pairsPerCombination = (TOKEN_RAMPS.accent.length * (TOKEN_RAMPS.accent.length - 1)) / 2;
   assert.equal(checkedPairs, THEMES.length * TEMPERATURES.length * pairsPerCombination);
+});
+
+test("the categorical distinguishability floor actually depends on hue: collapsing every categorical hue to one value drops the worst-case pairwise ΔE below CATEGORICAL_MINIMUM_PAIRWISE_DELTA_E, even though the lightness ladder is untouched", () => {
+  const tokens = resolveTokens("categorical", "balanced", "dark");
+  const rampTokens = TOKEN_RAMPS.accent.map((role) => requiredToken(tokens, role));
+  const collapsedHueDegrees = rampTokens[0]!.hueDegrees;
+  const collapsed = rampTokens.map((token) => ({ ...token, hueDegrees: collapsedHueDegrees }));
+
+  let worstCollapsedDeltaE = Infinity;
+  let worstRealDeltaE = Infinity;
+  for (let left = 0; left < collapsed.length; left += 1) {
+    for (let right = left + 1; right < collapsed.length; right += 1) {
+      const collapsedPairDeltaE = Math.min(
+        perceptualColorDifference(collapsed[left]!, collapsed[right]!),
+        simulatedPerceptualColorDifference(collapsed[left]!, collapsed[right]!, "protanopia"),
+        simulatedPerceptualColorDifference(collapsed[left]!, collapsed[right]!, "deuteranopia"),
+      );
+      worstCollapsedDeltaE = Math.min(worstCollapsedDeltaE, collapsedPairDeltaE);
+      const realPairDeltaE = Math.min(
+        perceptualColorDifference(rampTokens[left]!, rampTokens[right]!),
+        simulatedPerceptualColorDifference(rampTokens[left]!, rampTokens[right]!, "protanopia"),
+        simulatedPerceptualColorDifference(rampTokens[left]!, rampTokens[right]!, "deuteranopia"),
+      );
+      worstRealDeltaE = Math.min(worstRealDeltaE, realPairDeltaE);
+    }
+  }
+
+  assert.ok(
+    worstCollapsedDeltaE < CATEGORICAL_MINIMUM_PAIRWISE_DELTA_E,
+    `collapsing every categorical hue should drop the worst pairwise ΔE below the floor, but it measured ${worstCollapsedDeltaE}`,
+  );
+  assert.ok(
+    worstRealDeltaE >= CATEGORICAL_MINIMUM_PAIRWISE_DELTA_E,
+    `the shipped (non-collapsed) categorical ramp should clear the floor, but its worst pairwise ΔE measured ${worstRealDeltaE}`,
+  );
+  assert.ok(
+    worstRealDeltaE > worstCollapsedDeltaE,
+    "the shipped hue set must contribute real separation beyond what the lightness ladder alone provides",
+  );
 });
 
 test("dichromacy simulation actually changes colour: a chromatic accent-hue token's simulated luminance differs from its plain luminance for at least one swept anchor", () => {

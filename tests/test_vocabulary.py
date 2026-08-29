@@ -130,6 +130,9 @@ UNDETECTED_VOCABULARY_SHAPES = (
     "passes unflagged",
     "the excluded-vocabulary denylist is a finite five-literal list; the document's prose excludes a "
     "broader class of interpretive metaphor that a literal outside the five is not checked against",
+    "a TypeScript closed vocabulary declared as a bare `export type NAME = typeof X[number];` with no "
+    "union at all: the typeof-array-union scanner requires at least two `|`-joined `typeof "
+    "X[number]` operands and does not resolve the single-operand form",
 )
 
 #: The commit this capability's documentation and checker work began from. The
@@ -178,6 +181,20 @@ _LINE_COMMENT = re.compile(r"//[^\n]*")
 _EXPORT_CONST_OBJECT_AS_CONST = re.compile(r"^export const (\w+) = \{.*?\}\s*as const;", re.MULTILINE | re.DOTALL)
 #: ``export type NAME = typeof OBJ[keyof typeof OBJ];`` — the type half.
 _KEYOF_TYPEOF_ALIAS = re.compile(r"^export type (\w+) = typeof (\w+)\[keyof typeof \2\];", re.MULTILINE)
+#: ``export const OBJ = [...] as const;`` — the array half of the
+#: ``typeof A[number] | typeof B[number] | ...`` closed-vocabulary shape, the
+#: form a type alias takes when it is assembled from more than one closed
+#: array rather than from one object's keys (``Palette`` over ``PALETTES``
+#: and ``EXPERIMENTAL_PALETTES`` is the shape this exists for).
+_EXPORT_CONST_ARRAY_AS_CONST = re.compile(r"^export const (\w+) = \[.*?\]\s*as const;", re.MULTILINE | re.DOTALL)
+#: One operand of a ``typeof OBJ[number] | typeof OBJ[number] | ...`` union,
+#: matched against a single ``|``-split, stripped part of the union body.
+_TYPEOF_ARRAY_INDEX = re.compile(r"^typeof (\w+)\[number\]$")
+#: The bracketed element list of an ``export const X = [...] as const;``
+#: array declaration, isolated from its ``export const X =`` prefix and
+#: ``as const;`` suffix so its elements can be read comma-separated rather
+#: than ``|``-separated.
+_ARRAY_CONST_ELEMENTS = re.compile(r"=\s*\[(.*)\]\s*as const;", re.DOTALL)
 _CANDIDATE_HEADER = re.compile(r"^###\s*Candidate\s*—\s*`([^`]*)`\s*$", re.MULTILINE)
 _BULLET = re.compile(r"^-\s*\*\*([^*:]+):\*\*\s*(.*)$")
 
@@ -506,9 +523,70 @@ def _ts_keyof_typeof_names(repo_root: Path) -> set[str]:
 
 def _module_level_string_union_names(repo_root: Path) -> set[str]:
     """Every closed TypeScript string vocabulary in ui/src/engine, recursive:
-    plain string-literal unions and the ``typeof OBJ[keyof typeof OBJ]`` shape.
+    plain string-literal unions, the ``typeof OBJ[keyof typeof OBJ]`` shape,
+    and the ``typeof A[number] | typeof B[number] | ...`` shape.
     """
-    return set(_ts_string_union_values(repo_root)) | _ts_keyof_typeof_names(repo_root)
+    return (
+        set(_ts_string_union_values(repo_root))
+        | _ts_keyof_typeof_names(repo_root)
+        | set(_ts_typeof_array_union_values(repo_root))
+    )
+
+
+def _typeof_array_union_names(body: str) -> list[str] | None:
+    """The ordered array names of a ``typeof A[number] | typeof B[number] |
+    ...`` union body, or ``None`` if ``body`` is not one. Comments are
+    stripped first, the same way ``_string_union_literal_values`` does.
+
+    Requires at least two ``|``-joined operands, deliberately: a bare single
+    ``typeof X[number]`` (no union at all, no ``|``) is a different,
+    still-undetected shape this scanner does not claim to cover, and treating
+    it as this shape would pull an unrelated single-array alias like
+    ``PresetName`` into a check this capability was not asked to extend to.
+    """
+    stripped = _LINE_COMMENT.sub("", _BLOCK_COMMENT.sub("", body)).strip()
+    if not stripped or "|" not in stripped:
+        return None
+    names: list[str] = []
+    for part in stripped.split("|"):
+        match = _TYPEOF_ARRAY_INDEX.match(part.strip())
+        if match is None:
+            return None
+        names.append(match.group(1))
+    return names
+
+
+def _ts_typeof_array_union_values(repo_root: Path) -> dict[str, list[str]]:
+    """Every ``export type NAME = typeof A[number] | typeof B[number] | ...;``
+    in ui/src/engine, recursive, whose every ``typeof`` operand is itself an
+    ``export const X = [...] as const;`` array — the shape ``Palette`` takes
+    over ``PALETTES`` and ``EXPERIMENTAL_PALETTES`` — mapped to the
+    concatenation of each operand's own ordered string-literal values, in the
+    union's own written order.
+    """
+    values: dict[str, list[str]] = {}
+    for module in sorted((repo_root / "ui" / "src" / "engine").rglob("*.ts")):
+        source = module.read_text(encoding="utf-8")
+        array_bodies = {match.group(1): match.group(0) for match in _EXPORT_CONST_ARRAY_AS_CONST.finditer(source)}
+        for match in _EXPORT_TYPE.finditer(source):
+            terminator = source.find(";", match.end())
+            if terminator == -1:
+                continue
+            body = source[match.end():terminator]
+            array_names = _typeof_array_union_names(body)
+            if array_names is None or not all(name in array_bodies for name in array_names):
+                continue
+            member_values: list[str] = []
+            for name in array_names:
+                elements = _ARRAY_CONST_ELEMENTS.search(array_bodies[name])
+                if elements is None:
+                    member_values.clear()
+                    break
+                stripped = _LINE_COMMENT.sub("", _BLOCK_COMMENT.sub("", elements.group(1)))
+                member_values.extend(literal.group(0)[1:-1] for literal in _STRING_LITERAL_RE.finditer(stripped))
+            if member_values:
+                values[match.group(1)] = member_values
+    return values
 
 
 def _ts_object_const_property_values(repo_root: Path) -> dict[str, list[str]]:
@@ -780,15 +858,18 @@ def closed_member_offences(text: str, repo_root: Path) -> list[str]:
     the source, as an ordered list — not merely a row that exists.
 
     A row's cell may be plain names, compared against a Python enum's member
-    names, a TypeScript union's literal values, or the ordered property values
-    of a ``typeof OBJ[keyof typeof OBJ]`` closed vocabulary; or it may be
-    qualified names of the form ``EnumType.member`` (``RenderedState``'s
+    names, a TypeScript union's literal values, the ordered property values
+    of a ``typeof OBJ[keyof typeof OBJ]`` closed vocabulary, or the
+    concatenated ordered literal values of a
+    ``typeof A[number] | typeof B[number] | ...`` closed vocabulary; or it may
+    be qualified names of the form ``EnumType.member`` (``RenderedState``'s
     shape), compared against the named enums' own members instead. A cell that
     resolves to none of these is an offence, not a silent pass.
     """
     enum_members = _python_enum_members(repo_root)
     ts_values = _ts_string_union_values(repo_root)
     ts_object_const_values = _ts_object_const_property_values(repo_root)
+    ts_typeof_array_union_values = _ts_typeof_array_union_values(repo_root)
     offences = []
     for row in technical_table(text):
         term, cell = row["term"], row["closed_members"]
@@ -836,6 +917,13 @@ def closed_member_offences(text: str, repo_root: Path) -> list[str]:
                 offences.append(
                     f"{term}: closed members {cell!r} do not match the source's property values "
                     f"{ts_object_const_values[term]!r}"
+                )
+            continue
+        if term in ts_typeof_array_union_values:
+            if cell != ts_typeof_array_union_values[term]:
+                offences.append(
+                    f"{term}: closed members {cell!r} do not match the source's typeof-array-union "
+                    f"values {ts_typeof_array_union_values[term]!r}"
                 )
             continue
         offences.append(

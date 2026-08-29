@@ -548,6 +548,13 @@ function assertCanonicalScalar(value: unknown, path: string): void {
   if (!isSafeInteger(value)) {
     throw new TypeError(`${path} must be a finite safe integer`);
   }
+  // coreSharpnessPermille is a shader exponent (node-material.ts: `pow(coreProfile, coreSharpness)`).
+  // At zero, pow(coreProfile, 0.0) is 1.0 wherever coreProfile is positive, degenerating the governed
+  // radial gradient into the flat, hard-edged binary-coverage disc B17 measured and rejected -- a
+  // value a safe-integer bound alone does not exclude.
+  if (path.endsWith(".coreSharpnessPermille") && value <= 0) {
+    throw new TypeError(`${path} must be a positive safe integer`);
+  }
 }
 
 function isSafeInteger(value: unknown): value is number {

@@ -123,12 +123,46 @@ test("aggregate fill coverage holds its peak across the core radius, then falls 
   }
 });
 
-test("aggregate fill coverage stays clearly subordinate to the rim stroke's own opacity", () => {
-  const fillOpacity = DEFAULT_CALIBRATION.aggregate.windowFillOpacityPermille / 1000;
-  const strokeOpacity = DEFAULT_CALIBRATION.aggregate.windowStrokeAlphaPermille / 1000;
+/**
+ * The fill must stay strictly below the rim's own opacity, because a fill that reaches or passes it
+ * stops reading as an interior and swallows the boundary. That is the whole of what an alpha ratio can
+ * honestly assert here.
+ *
+ * An earlier version of this file demanded the fill stay under three-quarters of the rim, on the
+ * reasoning that the rim should keep more visual weight. **The human product direction has since
+ * inverted that**: portals must read as "softly filled containers, not UI circles", with rims
+ * "thin/subordinate". Under that direction a fill at 85% of a deliberately thin rim is the intent, not
+ * a drift, so a ceiling that fails it would be encoding a superseded art direction as a gate.
+ *
+ * The magnitude of subordination is measured where it is actually visible, in decoded pixels, by the
+ * matrix suite: the fill must sit measurably above the field and measurably below the node and filament
+ * content drawn inside the portal, and the rim must sit measurably above its immediate background. An
+ * audit correctly observed that a bare comparison could not see the fill move from 69% to 85% of the
+ * rim. The answer is not a tighter ratio — it is that the ratio was the wrong instrument, and the
+ * instrument that can see it already exists and already fires.
+ */
+function assertFillBelowStroke(fillOpacity: number, strokeOpacity: number): void {
   assert.ok(
     fillOpacity < strokeOpacity,
-    `fill peak alpha ${fillOpacity} is not clearly subtler than the rim stroke alpha ${strokeOpacity}`,
+    `fill peak alpha ${fillOpacity} is not below the rim stroke alpha ${strokeOpacity}, so the rim stops reading as a boundary`,
+  );
+}
+
+test("aggregate fill opacity stays below the rim stroke's own opacity", () => {
+  const fillOpacity = DEFAULT_CALIBRATION.aggregate.windowFillOpacityPermille / 1000;
+  const strokeOpacity = DEFAULT_CALIBRATION.aggregate.windowStrokeAlphaPermille / 1000;
+  assertFillBelowStroke(fillOpacity, strokeOpacity);
+
+  // Negative controls: a fill that reaches or passes the rim must fail, because that is the point at
+  // which the boundary stops being readable. The magnitude short of that is measured in decoded pixels
+  // by the matrix suite, not here.
+  assert.throws(
+    () => assertFillBelowStroke(0.26, 0.26),
+    /is not below the rim stroke alpha/,
+  );
+  assert.throws(
+    () => assertFillBelowStroke(0.30, 0.26),
+    /is not below the rim stroke alpha/,
   );
 });
 

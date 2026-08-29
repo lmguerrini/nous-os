@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
-import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { toVisualGraph } from "#adapter/projection.ts";
+import { DEFAULT_CALIBRATION, assertCalibrationProfile } from "#engine/calibration.ts";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { PERSPECTIVE } from "#engine/camera-kind.ts";
 import type { RenderedStateCarrier, VisualEdge, VisualGraph, VisualNode } from "#engine/contract.ts";
@@ -12,6 +15,7 @@ import {
   SCENE_LABEL_FONT_WEIGHT,
   SCENE_PERMILLE_QUANTUM,
   SCENE_PERMILLE_SCALE,
+  assertSceneFieldRegister,
 } from "#scene/contract.ts";
 import { buildScene, resolveSceneFilamentLuminance, resolveSceneLabelIds } from "#scene/build.ts";
 import { sceneFixtureGraph, sceneTokens, sceneVisualState } from "./support.ts";
@@ -27,6 +31,12 @@ const NO_KIND_PRIORITY_BOOST = 0;
 
 /** This is the endpoint count of an unsampled straight quadratic and is not a tuneable path value. */
 const QUADRATIC_ENDPOINT_COUNT = 2;
+
+/** This reads the checked-in projection fixture that resolves zero aggregate windows under Indra and does not manufacture graph structure. */
+function zeroAggregateFixtureGraph(): VisualGraph {
+  const path = join(process.cwd(), "..", "fixtures", "synthetic", "projection", "reliability-at-question.json");
+  return toVisualGraph(JSON.parse(readFileSync(path, "utf8")) as unknown);
+}
 
 test("buildScene is byte-deterministic across independent calls and shuffled graph input", () => {
   const graph = sceneFixtureGraph();
@@ -214,6 +224,100 @@ test("scene resolves renderer inputs for filament picking, labels, aggregates, a
   const controlOutput = captureFailure(() => assertResolvedRendererInputs(mutant, DEFAULT_CALIBRATION, tokens));
   assert.match(controlOutput, /filament device-width floor changed/);
   process.stdout.write(`scene-renderer-input negative control observed: ${controlOutput}\n`);
+});
+
+test("Indra with zero resolved aggregate windows treats no relation as cross-community", () => {
+  const graph = zeroAggregateFixtureGraph();
+  const indraState = sceneVisualState(graph);
+  const indraScene = buildScene(graph, indraState, DEFAULT_CALIBRATION, sceneTokens(indraState));
+  assert.equal(indraScene.aggregates.length, 0, "fixture is expected to resolve zero aggregate windows under Indra");
+  assert.equal(indraScene.edges.length, 6, "fixture is expected to carry six relations");
+
+  // Flat's `organization.windows` is always empty, and build.ts already guards Flat against reading
+  // that as "every edge is cross-community". None of the material channels crossCommunityOpacity and
+  // the cross-community width factor scale (opacityPermille, bodyWidthPx) depend on node position --
+  // only on morphology material, the resolved LOD band, and interaction state, all of which this
+  // comparison holds fixed across organizations. So if Indra's own zero-window case is guarded the
+  // same way Flat already is, its edges' opacity and width must match Flat's, edge for edge; this
+  // does not reuse crossCommunityRelationIds or its ownership algorithm at all.
+  const flatState = { ...indraState, organization: "flat" as const };
+  const flatScene = buildScene(graph, flatState, DEFAULT_CALIBRATION, sceneTokens(flatState));
+  assert.equal(flatScene.aggregates.length, 0, "flat control is expected to resolve zero aggregate windows");
+  for (const edge of indraScene.edges) {
+    const flatEdge = flatScene.edges.find((candidate) => candidate.id === edge.id);
+    if (flatEdge === undefined) {
+      throw new TypeError(`flat control scene is missing relation ${edge.id}`);
+    }
+    assert.equal(edge.opacityPermille, flatEdge.opacityPermille, `${edge.id} opacity dampened as cross-community with zero resolved windows`);
+    assert.equal(edge.bodyWidthPx, flatEdge.bodyWidthPx, `${edge.id} width dampened as cross-community with zero resolved windows`);
+  }
+
+  // Negative control: prove the two comparisons above can actually fail, by dampening a flat edge the
+  // way the unfixed code dampened every Indra edge on this fixture (40% opacity, 55% width -- this
+  // fixture's own calibrated cross-community factors).
+  const dampenedFirst = flatScene.edges[0];
+  if (dampenedFirst === undefined) {
+    throw new TypeError("flat control scene requires at least one relation");
+  }
+  const dampenedControl: Scene = {
+    ...flatScene,
+    edges: flatScene.edges.map((edge) => (edge.id === dampenedFirst.id
+      ? {
+        ...edge,
+        opacityPermille: Math.round((edge.opacityPermille * DEFAULT_CALIBRATION.aggregate.crossWindowRelationOpacityFactorPermille) / SCENE_PERMILLE_SCALE),
+        bodyWidthPx: (edge.bodyWidthPx * DEFAULT_CALIBRATION.aggregate.crossWindowRelationWidthFactorPermille) / SCENE_PERMILLE_SCALE,
+      }
+      : edge)),
+  };
+  const controlOutput = captureFailure(() => {
+    const dampenedEdge = dampenedControl.edges.find((candidate) => candidate.id === dampenedFirst.id);
+    if (dampenedEdge === undefined) {
+      throw new TypeError("dampened control is missing its target relation");
+    }
+    assert.equal(dampenedEdge.opacityPermille, dampenedFirst.opacityPermille, `${dampenedEdge.id} opacity dampened as cross-community with zero resolved windows`);
+  });
+  assert.match(controlOutput, /opacity dampened as cross-community/);
+  process.stdout.write(`indra-zero-window negative control observed: ${controlOutput}\n`);
+});
+
+test("a non-positive coreSharpnessPermille is refused at both the calibration boundary and the built-scene boundary", () => {
+  // node-material.ts (the live shader) applies coreSharpnessPermille as `pow(coreProfile, sharpness)`.
+  // At zero this collapses the governed radial gradient into a flat, hard-edged binary-coverage disc --
+  // exactly the disc criterion B17 measured and rejected -- so a safe-integer bound alone (which zero
+  // and every negative integer already clear) is not enough; both boundaries must refuse it.
+  for (const nonPositive of [0, -1]) {
+    const badCalibration: CalibrationProfile = {
+      ...DEFAULT_CALIBRATION,
+      morphology: {
+        ...DEFAULT_CALIBRATION.morphology,
+        stellar: { ...DEFAULT_CALIBRATION.morphology.stellar, coreSharpnessPermille: nonPositive },
+      },
+    };
+    assert.throws(
+      () => assertCalibrationProfile(badCalibration),
+      /morphology\.stellar\.coreSharpnessPermille must be a positive safe integer/,
+      `calibration boundary accepted coreSharpnessPermille ${nonPositive}`,
+    );
+  }
+
+  const graph = sceneFixtureGraph();
+  const state = sceneVisualState(graph);
+  const scene = buildScene(graph, state, DEFAULT_CALIBRATION, sceneTokens(state));
+  const first = scene.nodes[0];
+  if (first === undefined) {
+    throw new TypeError("scene fixture requires a node to mutate for the coreSharpnessPermille control");
+  }
+  for (const nonPositive of [0, -1]) {
+    const mutant: Scene = {
+      ...scene,
+      nodes: scene.nodes.map((node) => (node.id === first.id ? { ...node, coreSharpnessPermille: nonPositive } : node)),
+    };
+    assert.throws(
+      () => assertSceneFieldRegister(mutant),
+      /coreSharpnessPermille must be a positive safe integer/,
+      `built-scene boundary accepted coreSharpnessPermille ${nonPositive}`,
+    );
+  }
 });
 
 test("all three morphologies remain separated in at least three resolved non-halo channels at meso and micro", () => {
@@ -687,7 +791,16 @@ function assertEdgeLabelStateResolution(
   }
 }
 
-/** This derives cross-community status from the scene's own resolved aggregates and does not duplicate build.ts's window-derivation logic. */
+/**
+ * This reads the scene's already-resolved aggregates and reapplies the same ownership rule
+ * build.ts's crossCommunityRelationIds uses over that same production-derived membership: owned by
+ * the window it is a member of, and cross-community when unowned or split between two owners. It
+ * does not re-derive window membership itself -- that still comes from the built scene. Because the
+ * classification rule is the same rule under test, applied to the same data, this function cannot by
+ * itself catch a defect in *which* edges build.ts calls cross-community; what it lets the assertions
+ * below confirm is that whatever classification the built scene already reports is dampened by the
+ * calibrated magnitude consistently across the ordinary, selected, and focused label states.
+ */
 function isCrossCommunityRelation(scene: Scene, relation: VisualEdge): boolean {
   const ownerOf = new Map<string, string>();
   for (const aggregate of scene.aggregates) {

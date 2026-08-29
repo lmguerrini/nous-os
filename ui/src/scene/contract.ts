@@ -326,7 +326,7 @@ function assertNode(value: unknown, path: string): void {
   for (const [index, stop] of node.haloAlphaStops.entries()) {
     assertHaloAlphaStop(stop, `${path}.haloAlphaStops[${index}]`);
   }
-  assertSafeInteger(node.coreSharpnessPermille, `${path}.coreSharpnessPermille`);
+  assertPositiveSafeInteger(node.coreSharpnessPermille, `${path}.coreSharpnessPermille`);
   assertNodeLabelCandidacy(node.labelCandidacy, `${path}.labelCandidacy`);
   assertRenderedStateChannel(node.renderedStateChannel, `${path}.renderedStateChannel`);
   assertChoice(node.interaction, INTERACTION_STATES, `${path}.interaction`);
@@ -639,6 +639,15 @@ function assertFiniteNumber(value: unknown, path: string): asserts value is numb
 function assertSafeInteger(value: unknown, path: string): asserts value is number {
   if (!Number.isSafeInteger(value)) {
     throw new TypeError(`${path} must be a safe integer`);
+  }
+}
+
+// A zero or negative coreSharpnessPermille reaches the shader as `pow(coreProfile, 0.0)`, which is
+// 1.0 wherever coreProfile is positive -- the flat, hard-edged binary-coverage disc B17 rejected. A
+// safe-integer bound alone does not exclude it, so this field is bounded strictly positive.
+function assertPositiveSafeInteger(value: unknown, path: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${path} must be a positive safe integer`);
   }
 }
 

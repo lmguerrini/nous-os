@@ -22,7 +22,7 @@ import { MYCELIUM, NEURAL, SHARED_SCENE_MATERIAL_TARGET, STELLAR, applyMorpholog
 import { assertIndraLayout, flatOrganization, indraLayout } from "#engine/organization.ts";
 import type { AggregateWindow } from "#engine/organization.ts";
 import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
-import { TOKEN_RAMPS, contrastRatio, relativeLuminance, resolveTokens } from "#engine/tokens.ts";
+import { TOKEN_RAMPS, resolveTokens, separationLuminance, separationRatio } from "#engine/tokens.ts";
 import type { OklchToken, TokenMap } from "#engine/tokens.ts";
 import { assertVisualState } from "#engine/visual-state.ts";
 import type { VisualState } from "#engine/visual-state.ts";
@@ -90,8 +90,11 @@ export function buildScene(
   const organization = resolveOrganization(engineGraph, calibration, () => layoutAnchors(engineGraph, calibration), visualState.organization);
   // Cross-community weighting is Indra-only: Flat's `organization.windows` is always empty, and
   // treating every edge as "no owning window" there would dim the entire Flat scene rather than
-  // nothing at all.
-  const crossCommunityEdgeIds = visualState.organization === "indra"
+  // nothing at all. The same reasoning holds when Indra itself resolves zero windows (no
+  // aggregates to cross between): with no owner map to consult, every edge would otherwise be
+  // marked "outside every window" and dampened as cross-community when there is no community for
+  // it to be outside of.
+  const crossCommunityEdgeIds = visualState.organization === "indra" && organization.windows.length > 0
     ? crossCommunityRelationIds(engineGraph, organization.windows)
     : NO_CROSS_COMMUNITY_RELATIONS;
   const view = lodView(engineGraph, organization.nodeAnchors, visualState.lodBand);
@@ -677,10 +680,10 @@ function minimumNodeContrastToken(
 ): OklchToken {
   const scale = SCENE_PERMILLE_SCALE;
   const minimumContrast = calibration.luminance.minimumNodeContrastPermille / scale;
-  const backgroundLuminance = relativeLuminance(background);
+  const backgroundLuminance = separationLuminance(background);
   let candidate = token;
   while (
-    (relativeLuminance(candidate) <= backgroundLuminance || contrastRatio(candidate, background) < minimumContrast)
+    (separationLuminance(candidate) <= backgroundLuminance || separationRatio(candidate, background) < minimumContrast)
     && candidate.lightnessPermille < scale
   ) {
     candidate = {
@@ -688,7 +691,7 @@ function minimumNodeContrastToken(
       lightnessPermille: candidate.lightnessPermille + SCENE_PERMILLE_QUANTUM,
     };
   }
-  if (relativeLuminance(candidate) <= backgroundLuminance || contrastRatio(candidate, background) < minimumContrast) {
+  if (separationLuminance(candidate) <= backgroundLuminance || separationRatio(candidate, background) < minimumContrast) {
     throw new TypeError("scene node contrast calibration is unreachable");
   }
   return candidate;
@@ -995,10 +998,12 @@ function requiredToken(tokens: TokenMap, name: string): OklchToken {
 /**
  * This is the one place community membership becomes visible as colour. Every other palette keeps
  * today's single fixed "accent3" window token, unconditionally; only `categorical` cycles the accent
- * ramp by each window's position in the already-sorted, already-deterministic window list, so distinct
- * windows read as distinct colours while sharing the same ramp every other palette already resolves.
- * Nothing here decides which nodes belong to which window -- organization.windows already did, and
- * this only chooses which already-derived colour renders it.
+ * ramp by each window's position in the already-sorted, already-deterministic window list, modulo the
+ * ramp's own length (`TOKEN_RAMPS.accent`, six roles) -- so windows read as distinct colours only
+ * within one pass of the ramp, and the ramp then repeats: on the 30-window Indra portal fixture
+ * (test/scene/indra-fixture.test.ts), the six colours are shared five ways each. Nothing here decides
+ * which nodes belong to which window -- organization.windows already did, and this only chooses which
+ * already-derived colour renders it.
  */
 function aggregateWindowToken(tokens: TokenMap, palette: VisualState["palette"], windowIndex: number): OklchToken {
   if (palette !== "categorical") {

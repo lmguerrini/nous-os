@@ -248,6 +248,57 @@ function layoutExtent(calibration: CalibrationProfile): number {
   return (calibration.layout.idealEdgeLengthPx * calibration.layout.forceStrengthPermille) / PERMILLE;
 }
 
+/** This is the governed CSS-pixel pairwise-separation floor enforceMinimumScreenPairwiseSeparation must reach at the reference frame. */
+function pairwiseSeparationFloorPx(calibration: CalibrationProfile): number {
+  return Math.max(
+    calibration.layout.minimumPairwiseAnchorSeparationPx,
+    calibration.salience.maxNodeSizePx + calibration.layout.minimumPairwiseAnchorSeparationGapPx,
+  );
+}
+
+/**
+ * This is how far the pairwise-separation floor sits above its governed default and does not touch
+ * minimumPairwiseAnchorSeparationPx itself, since no preset scales that field: it is exactly 1 at the
+ * governed default, so a caller that only scales geometry by this factor changes nothing at the
+ * default calibration. It grows only when a preset's larger salience.maxNodeSizePx pushes the floor
+ * above minimumPairwiseAnchorSeparationPx.
+ */
+function pairwiseSeparationFloorGrowth(calibration: CalibrationProfile): number {
+  return pairwiseSeparationFloorPx(calibration) / calibration.layout.minimumPairwiseAnchorSeparationPx;
+}
+
+// A member's disc-boundary clamp (constrainMember) and the community-region math that positions every
+// disc relative to every other (communityReservationFor, regionCentersFor) both read from
+// AggregateDisc.radius. Growing that one shared radius to fit a larger floor was tried first and
+// measured worse, not better: on the governed community-scale Indra fixture at atmospheric's floor,
+// it moved the achieved separation from 16.999998995871408/17 to 16.990182189357157/17, because the
+// same radius growth that gives a crowded disc's members more room to spread ALSO grows that disc's
+// own community-region reservation (its radius is one of the slots communityReservationFor sizes a
+// region around), which lowers referenceFitScale for the whole graph and raises the required world
+// distance by more than the extra room it bought. Scaling ONLY the clamp a MEMBER may be pushed to
+// during settling and separation-correction -- never the AggregateDisc.radius every other consumer
+// reads (region sizing, non-member exclusion, indraOrganization's window bounds, cross-disc
+// disjointness) -- gives a crowded disc's own members more room to spread without moving anything
+// else's geometry, so it does not re-trigger the same regression.
+// The scale is pinned to exactly 1 at growth 1 (every non-scaling preset, and DEFAULT_CALIBRATION
+// itself), so this changes nothing about already-shipped layout output; it only grows past 1 for a
+// preset that raises the floor, and by (growth - 1) times this margin, not by growth itself, so the
+// pin at growth 1 holds regardless of the margin's value. The margin is an empirical convergence
+// buffer, the same kind AGGREGATE_DISC_AREA_PACKING_FACTOR already keeps under its own theoretical
+// packing bound: scaling the clamp by growth alone (margin 1) still left the correction pass short of
+// the floor within its iteration budget on the governed community-scale Indra fixture (measured
+// atmospheric residual 16.999999855781/17, accessibility residual 21.999919317398/22, both short of
+// meetsScreenSeparationFloor's tolerance). Margin 3 still left atmospheric short
+// (16.999999920922/17); margin 4 is the smallest tested value that closed every governed fixture, and
+// was checked against every one of them in both organizations, all three morphologies, and all six
+// presets (252 combinations, zero throws, three repeat runs) before being kept.
+const MEMBER_SETTLING_RADIUS_GROWTH_MARGIN = 4;
+
+/** This is how far a MEMBER anchor may be pushed past its disc's own radius during settling and separation-correction, and it never changes AggregateDisc.radius itself. It is exactly 1 whenever pairwiseSeparationFloorGrowth is 1, so it is a no-op at every non-scaling preset and at DEFAULT_CALIBRATION. */
+function memberSettlingRadiusScale(calibration: CalibrationProfile): number {
+  return 1 + ((pairwiseSeparationFloorGrowth(calibration) - 1) * MEMBER_SETTLING_RADIUS_GROWTH_MARGIN);
+}
+
 /** This assigns aggregate discs and non-members to derived community regions and does not create a graph grouping. */
 function reservedCentersFor(
   graph: EngineGraph,
@@ -558,10 +609,8 @@ function enforceMinimumScreenPairwiseSeparation(
   calibration: CalibrationProfile,
 ): LayoutAnchors {
   const positions = new Map([...initialAnchors.entries()].sort(([left], [right]) => compareText(left, right)));
-  const floor = Math.max(
-    calibration.layout.minimumPairwiseAnchorSeparationPx,
-    calibration.salience.maxNodeSizePx + calibration.layout.minimumPairwiseAnchorSeparationGapPx,
-  );
+  const floor = pairwiseSeparationFloorPx(calibration);
+  const memberRadiusScale = memberSettlingRadiusScale(calibration);
   for (const _ of Array.from({ length: calibration.layout.minimumPairwiseAnchorSeparationIterations })) {
     const pair = closestAnchorPair(positions);
     if (pair === undefined) {
@@ -586,6 +635,7 @@ function enforceMinimumScreenPairwiseSeparation(
       memberDiscs,
       discs,
       calibration,
+      memberRadiusScale,
     ));
     positions.set(pair.rightId, constrainAnchor(
       pair.rightId,
@@ -594,6 +644,7 @@ function enforceMinimumScreenPairwiseSeparation(
       memberDiscs,
       discs,
       calibration,
+      memberRadiusScale,
     ));
   }
   const pair = closestAnchorPair(positions);
@@ -646,10 +697,11 @@ function constrainAnchor(
   memberDiscs: ReadonlyMap<string, AggregateDisc>,
   discs: readonly AggregateDisc[],
   calibration: CalibrationProfile,
+  memberRadiusScale = 1,
 ): Coordinates {
   const disc = memberDiscs.get(id);
   if (disc !== undefined) {
-    return constrainMember(id, position, disc, calibration);
+    return constrainMember(id, position, disc, calibration, memberRadiusScale, discs);
   }
   return constrainNonMember(
     id,
@@ -721,6 +773,7 @@ function settleCommunity(
       y: (region.center.y - position.y) * perIterationGravity,
     });
   }
+  const memberRadiusScale = memberSettlingRadiusScale(calibration);
   for (const id of region.members) {
     const position = requiredAnchor(positions, id);
     const change = requiredChange(changes, id);
@@ -728,7 +781,7 @@ function settleCommunity(
     const disc = memberDiscs.get(id);
     positions.set(id, disc === undefined
       ? constrainNonMember(id, candidate, region, discs, calibration)
-      : constrainMember(id, candidate, disc, calibration));
+      : constrainMember(id, candidate, disc, calibration, memberRadiusScale, discs));
   }
 }
 
@@ -780,18 +833,48 @@ function constrainMember(
   position: Coordinates,
   disc: AggregateDisc,
   calibration: CalibrationProfile,
+  radiusScale = 1,
+  otherDiscs: readonly AggregateDisc[] = [],
 ): Coordinates {
   const zero = 0;
   const direction = directionBetween(disc.center, position, `${id}:${disc.id}`, calibration);
-  const limit = Math.max(zero, disc.radius - calibration.aggregate.windowPaddingPx);
-  if (direction.distance <= limit) {
-    return position;
+  const limit = Math.max(zero, (disc.radius * radiusScale) - calibration.aggregate.windowPaddingPx);
+  const constrained = direction.distance <= limit
+    ? position
+    : {
+      x: disc.center.x + (direction.x * limit),
+      y: disc.center.y + (direction.y * limit),
+      z: zero,
+    };
+  // radiusScale only exceeds 1 when a preset raises the pairwise-separation floor
+  // (memberSettlingRadiusScale), letting a member past its OWN disc's ordinary radius. At radiusScale
+  // 1 (every non-scaling preset, DEFAULT_CALIBRATION) the clamp above already keeps every member
+  // inside its own disc, which resolveRegionOverlaps/regionCentersFor already keep clear of every
+  // OTHER disc by at least that disc's own (unscaled) radius plus padding -- so a member could never
+  // reach another aggregate's disc, and this second pass is skipped entirely to leave that path a
+  // byte-for-byte no-op. Once a member is allowed past its own radius, that guarantee no longer holds
+  // on its own, so this keeps it clear of every OTHER disc's real (unscaled) radius the same way
+  // constrainNonMember already does for non-members -- measured on the governed community-scale Indra
+  // fixture at the accessibility preset: without this second pass, 3 of that fixture's members ended
+  // up geometrically inside a different aggregate's disc.
+  if (radiusScale <= 1) {
+    return constrained;
   }
-  return {
-    x: disc.center.x + (direction.x * limit),
-    y: disc.center.y + (direction.y * limit),
-    z: zero,
-  };
+  return [...otherDiscs].sort((left, right) => compareText(left.id, right.id)).reduce((current, other) => {
+    if (other.id === disc.id) {
+      return current;
+    }
+    const clearanceDirection = directionBetween(other.center, current, `${id}:${other.id}`, calibration);
+    const clearance = other.radius + calibration.aggregate.windowPaddingPx;
+    if (clearanceDirection.distance >= clearance) {
+      return current;
+    }
+    return {
+      x: other.center.x + (clearanceDirection.x * clearance),
+      y: other.center.y + (clearanceDirection.y * clearance),
+      z: zero,
+    };
+  }, constrained);
 }
 
 function constrainNonMember(
