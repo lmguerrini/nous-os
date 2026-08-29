@@ -87,13 +87,30 @@ test("VisualState has a pinned view-only register and round-trips exactly", () =
   const original = createVisualState(visualGraph, state(visualGraph));
   assert.deepEqual(VISUAL_STATE_FIELD_REGISTER, {
     state: ["selectedId", "focusedId", "camera", "cameraKind", "morphology", "organization", "palette", "temperature", "theme", "lodBand", "reducedMotion"],
+    optionalState: ["hueAnchorDegrees"],
     camera: ["x", "y", "angle", "ratio", "bounds"],
     bounds: ["x", "y"],
   });
   assert.deepEqual(deserializeVisualState(visualGraph, serializeVisualState(original)), original);
   assert.deepEqual(Object.keys(original).sort(), [...VISUAL_STATE_FIELD_REGISTER.state].sort());
+  assert.equal("hueAnchorDegrees" in original, false, "a state built without hueAnchorDegrees must not gain the key");
   assert.equal("graph" in original, false);
   assert.equal("semantic" in original, false);
+});
+
+test("VisualState carries hueAnchorDegrees only for the accent-hue palette and round-trips it exactly", () => {
+  const visualGraph = graph();
+  const accentHueState = { ...state(visualGraph), palette: "accent-hue" as const, hueAnchorDegrees: 214 };
+  const original = createVisualState(visualGraph, accentHueState);
+  assert.equal(original.hueAnchorDegrees, 214);
+  assert.deepEqual(Object.keys(original).sort(), [...VISUAL_STATE_FIELD_REGISTER.state, "hueAnchorDegrees"].sort());
+  const restored = deserializeVisualState(visualGraph, serializeVisualState(original));
+  assert.deepEqual(restored, original);
+  assert.equal(restored.hueAnchorDegrees, 214);
+  // A non-accent-hue palette may still carry a validated hueAnchorDegrees (resolveTokens itself
+  // ignores it for every other palette); only its absence is required specifically by accent-hue.
+  const carriedAnyway = createVisualState(visualGraph, { ...state(visualGraph), hueAnchorDegrees: 90 });
+  assert.equal(carriedAnyway.hueAnchorDegrees, 90);
 });
 
 test("VisualState cameraKind round-trips both closed-vocabulary members", () => {
@@ -164,6 +181,8 @@ test("VisualState refuses every validator-owned rule through every validating as
     { name: "VisualState finite camera x", value: { ...valid, camera: { ...valid.camera, x: Number.NaN } }, rule: VISUAL_STATE_VALIDATION_RULES.finiteCameraNumber, message: /VisualState\.camera\.x must be finite/ },
     { name: "VisualState positive camera ratio", value: { ...valid, camera: { ...valid.camera, ratio: 0 } }, rule: VISUAL_STATE_VALIDATION_RULES.positiveCameraRatio, message: /VisualState\.camera\.ratio must be positive/ },
     { name: "VisualState increasing Y bounds", value: { ...valid, camera: { ...valid.camera, bounds: { ...valid.camera.bounds, y: [1, -1] } } }, rule: VISUAL_STATE_VALIDATION_RULES.increasingBoundsAxis, message: /VisualState\.camera\.bounds\.y must be increasing/ },
+    { name: "VisualState accent-hue without an anchor", value: { ...valid, palette: "accent-hue" }, rule: VISUAL_STATE_VALIDATION_RULES.accentHueRequiresAnchor, message: /VisualState\.hueAnchorDegrees is required when palette is "accent-hue"/ },
+    { name: "VisualState hue anchor out of range", value: { ...valid, hueAnchorDegrees: 360 }, rule: VISUAL_STATE_VALIDATION_RULES.hueAnchorRange, message: /VisualState\.hueAnchorDegrees must be an integer degree in \[0, 360\)/ },
   ];
   const directConstruction: ConstructionRoute = { name: "direct construction", refuse: (input, value) => { createVisualState(input, value); } };
   const deserialisation: ConstructionRoute = { name: "deserialisation", refuse: (input, value) => { deserializeVisualState(input, JSON.stringify(value)); } };

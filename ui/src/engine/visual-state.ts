@@ -7,7 +7,7 @@ import { MYCELIUM, NEURAL, STELLAR } from "#engine/morphology.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import { FLAT, INDRA } from "#engine/organization.ts";
 import type { Organization } from "#engine/organization.ts";
-import { PALETTES, TEMPERATURES, THEMES } from "#engine/tokens.ts";
+import { ALL_PALETTES, TEMPERATURES, THEMES, isHueAnchorDegrees } from "#engine/tokens.ts";
 import type { Palette, Temperature, Theme } from "#engine/tokens.ts";
 
 /** This is the serialisable camera record and does not retain a renderer instance. */
@@ -22,7 +22,14 @@ export type VisualStateCamera = {
   };
 };
 
-/** This records what is being viewed and does not carry graph semantics, evidence, or authority. */
+/**
+ * This records what is being viewed and does not carry graph semantics, evidence, or authority.
+ * `hueAnchorDegrees` is the human-selected Accent Hue anchor; it is optional here (and absent from
+ * VISUAL_STATE_FIELD_REGISTER.state, the mandatory list) purely so every existing VisualState producer
+ * that has never heard of accent-hue keeps constructing a valid state without it. It is not optional in
+ * practice: assertVisualState below requires it exactly when `palette` is `"accent-hue"`, and forbids
+ * it from carrying meaning for any other palette.
+ */
 export type VisualState = {
   readonly selectedId: string | null;
   readonly focusedId: string | null;
@@ -35,9 +42,10 @@ export type VisualState = {
   readonly theme: Theme;
   readonly lodBand: LodBand;
   readonly reducedMotion: boolean;
+  readonly hueAnchorDegrees?: number;
 };
 
-/** This is the complete literal VisualState field register and does not permit extension fields. */
+/** This is the complete literal VisualState field register and does not permit extension fields; `optionalState` names the one field a producer may omit entirely. */
 export const VISUAL_STATE_FIELD_REGISTER = {
   state: [
     "selectedId",
@@ -52,6 +60,7 @@ export const VISUAL_STATE_FIELD_REGISTER = {
     "lodBand",
     "reducedMotion",
   ],
+  optionalState: ["hueAnchorDegrees"],
   camera: ["x", "y", "angle", "ratio", "bounds"],
   bounds: ["x", "y"],
 } as const;
@@ -66,6 +75,8 @@ export const VISUAL_STATE_VALIDATION_RULES = {
   positiveCameraRatio: "positive-camera-ratio",
   boundsAxisPair: "bounds-axis-pair",
   increasingBoundsAxis: "increasing-bounds-axis",
+  hueAnchorRange: "hue-anchor-range",
+  accentHueRequiresAnchor: "accent-hue-requires-anchor",
 } as const;
 
 /** This names one VisualState validator rule and does not name a construction route. */
@@ -79,7 +90,7 @@ const LOD_BANDS = [MACRO, MESO, MICRO] as const;
 export function createVisualState(graph: VisualGraph, value: unknown): VisualState {
   assertVisualState(graph, value);
   const state = value as VisualState;
-  return {
+  const base: VisualState = {
     selectedId: state.selectedId,
     focusedId: state.focusedId,
     camera: {
@@ -101,6 +112,11 @@ export function createVisualState(graph: VisualGraph, value: unknown): VisualSta
     lodBand: state.lodBand,
     reducedMotion: state.reducedMotion,
   };
+  // hueAnchorDegrees is only ever set here when the input actually carried it (assertVisualState has
+  // already required that to be exactly when palette is "accent-hue"); an explicit `undefined` is never
+  // written, so a legacy caller's state round-trips through serialisation with the exact key set it
+  // came in with, byte-identical to before this field existed.
+  return state.hueAnchorDegrees === undefined ? base : { ...base, hueAnchorDegrees: state.hueAnchorDegrees };
 }
 
 /** This serialises validated view state and does not include graph contents. */
@@ -122,7 +138,7 @@ export function deserializeVisualState(graph: VisualGraph, serialized: string): 
 
 /** This refuses fields outside the VisualState register and does not read graph semantics. */
 export function assertVisualStateFieldRegister(value: unknown): asserts value is VisualState {
-  assertExactFields(value, "VisualState", VISUAL_STATE_FIELD_REGISTER.state);
+  assertExactFields(value, "VisualState", VISUAL_STATE_FIELD_REGISTER.state, VISUAL_STATE_FIELD_REGISTER.optionalState);
   const state = value as Record<string, unknown>;
   assertExactFields(state.camera, "VisualState.camera", VISUAL_STATE_FIELD_REGISTER.camera);
   const camera = state.camera as Record<string, unknown>;
@@ -138,14 +154,28 @@ export function assertVisualState(graph: VisualGraph, value: unknown): asserts v
   assertChoice(state.cameraKind, CAMERA_KINDS, "cameraKind");
   assertChoice(state.morphology, MORPHOLOGIES, "morphology");
   assertChoice(state.organization, ORGANIZATIONS, "organization");
-  assertChoice(state.palette, PALETTES, "palette");
+  assertChoice(state.palette, ALL_PALETTES, "palette");
   assertChoice(state.temperature, TEMPERATURES, "temperature");
   assertChoice(state.theme, THEMES, "theme");
   assertChoice(state.lodBand, LOD_BANDS, "lodBand");
   if (typeof state.reducedMotion !== "boolean") {
     throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.reducedMotionBoolean, "VisualState.reducedMotion must be boolean");
   }
+  assertHueAnchorDegrees(state.palette, state.hueAnchorDegrees);
   assertCamera(state.camera);
+}
+
+/** This requires a hue anchor exactly when the palette is `accent-hue`, and otherwise validates only its range if a caller happens to carry one anyway (harmless: resolveTokens itself ignores it for every other palette). */
+function assertHueAnchorDegrees(palette: unknown, hueAnchorDegrees: unknown): void {
+  if (hueAnchorDegrees === undefined) {
+    if (palette === "accent-hue") {
+      throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.accentHueRequiresAnchor, "VisualState.hueAnchorDegrees is required when palette is \"accent-hue\"");
+    }
+    return;
+  }
+  if (!isHueAnchorDegrees(hueAnchorDegrees)) {
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.hueAnchorRange, "VisualState.hueAnchorDegrees must be an integer degree in [0, 360)");
+  }
 }
 
 function assertKnownElementId(value: unknown, graph: VisualGraph, name: string): void {
@@ -204,7 +234,7 @@ function assertChoice<T extends string>(value: unknown, choices: readonly T[], n
   }
 }
 
-function assertExactFields(value: unknown, path: string, fields: readonly string[]): void {
+function assertExactFields(value: unknown, path: string, fields: readonly string[], optionalFields: readonly string[] = []): void {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.fieldRegister, `${path} must be an object`);
   }
@@ -220,9 +250,14 @@ function assertExactFields(value: unknown, path: string, fields: readonly string
     }
     actual.push(field);
   }
-  actual.sort();
-  const expected = [...fields].sort();
-  if (actual.length !== expected.length || actual.some((field, index) => field !== expected[index])) {
+  // Every mandatory field must be present, and every present field must be either mandatory or in the
+  // small optional set (VISUAL_STATE_FIELD_REGISTER.optionalState) -- so an omitted optional field is
+  // accepted (this is the whole point) while an unrelated stray field is still refused exactly as
+  // before.
+  const allowed = new Set([...fields, ...optionalFields]);
+  const missingMandatory = fields.some((field) => !actual.includes(field));
+  const hasDisallowedField = actual.some((field) => !allowed.has(field));
+  if (missingMandatory || hasDisallowedField) {
     throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.fieldRegister, `${path} fields do not match the pinned register`);
   }
 }

@@ -22,7 +22,7 @@ import { MYCELIUM, NEURAL, SHARED_SCENE_MATERIAL_TARGET, STELLAR, applyMorpholog
 import { assertIndraLayout, flatOrganization, indraLayout } from "#engine/organization.ts";
 import type { AggregateWindow } from "#engine/organization.ts";
 import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
-import { contrastRatio, relativeLuminance, resolveTokens } from "#engine/tokens.ts";
+import { TOKEN_RAMPS, contrastRatio, relativeLuminance, resolveTokens } from "#engine/tokens.ts";
 import type { OklchToken, TokenMap } from "#engine/tokens.ts";
 import { assertVisualState } from "#engine/visual-state.ts";
 import type { VisualState } from "#engine/visual-state.ts";
@@ -134,7 +134,7 @@ export function buildScene(
     edges,
     aggregates: [...organization.windows]
       .sort(compareIds)
-      .map((window) => ({
+      .map((window, index) => ({
         id: window.id,
         kind: window.kind,
         members: [...window.members],
@@ -144,7 +144,7 @@ export function buildScene(
         windowFillOpacityPermille: calibration.aggregate.windowFillOpacityPermille,
         windowFillCoreRadiusFractionPermille: calibration.aggregate.windowFillCoreRadiusFractionPermille,
         windowFillFalloffPermille: calibration.aggregate.windowFillFalloffPermille,
-        token: copyToken(requiredToken(activeTokens, "accent3")),
+        token: copyToken(aggregateWindowToken(activeTokens, visualState.palette, index)),
         strokeWidthPx: materialIncludes(view.material.aggregate, "outline")
           ? (calibration.filament.baseWidthPx * calibration.lod.macroAggregateOutlineWidthMultiplierPermille) / SCENE_PERMILLE_SCALE
           : calibration.filament.baseWidthPx,
@@ -428,6 +428,7 @@ function resolveSceneInputs(
     visualState.palette,
     visualState.temperature,
     visualState.theme,
+    visualState.hueAnchorDegrees,
   ) as SceneTokenMap;
   if (tokensOrCamera === undefined) {
     if (cameraOrTokens !== undefined) {
@@ -989,6 +990,25 @@ function requiredToken(tokens: TokenMap, name: string): OklchToken {
     throw new TypeError(`scene token is unavailable: ${name}`);
   }
   return token;
+}
+
+/**
+ * This is the one place community membership becomes visible as colour. Every other palette keeps
+ * today's single fixed "accent3" window token, unconditionally; only `categorical` cycles the accent
+ * ramp by each window's position in the already-sorted, already-deterministic window list, so distinct
+ * windows read as distinct colours while sharing the same ramp every other palette already resolves.
+ * Nothing here decides which nodes belong to which window -- organization.windows already did, and
+ * this only chooses which already-derived colour renders it.
+ */
+function aggregateWindowToken(tokens: TokenMap, palette: VisualState["palette"], windowIndex: number): OklchToken {
+  if (palette !== "categorical") {
+    return requiredToken(tokens, "accent3");
+  }
+  const role = TOKEN_RAMPS.accent[windowIndex % TOKEN_RAMPS.accent.length];
+  if (role === undefined) {
+    throw new TypeError("categorical aggregate window token ramp is unavailable");
+  }
+  return requiredToken(tokens, role);
 }
 
 function requiredNodeMaterial(materials: ReadonlyMap<string, NodeMaterial>, id: string): NodeMaterial {
