@@ -31,6 +31,7 @@ in float a_haloRadiusPx;
 in float a_haloCoreGapPx;
 in float a_opacityPermille;
 in float a_haloIntensityPermille;
+in float a_coreSharpnessPermille;
 in float a_haloStopCount;
 in float a_instanceIndex;
 uniform mat4 modelViewMatrix;
@@ -47,6 +48,7 @@ flat out float v_coreRadiusDevicePx;
 flat out float v_haloRadiusDevicePx;
 flat out float v_opacity;
 flat out float v_haloIntensityPermille;
+flat out float v_coreSharpnessPermille;
 flat out int v_haloStopCount;
 flat out int v_instanceIndex;
 void main() {
@@ -68,6 +70,7 @@ void main() {
   v_haloRadiusDevicePx = haloRadius;
   v_opacity = a_opacityPermille / u_permilleScale;
   v_haloIntensityPermille = a_haloIntensityPermille;
+  v_coreSharpnessPermille = a_coreSharpnessPermille;
   v_haloStopCount = int(a_haloStopCount);
   v_instanceIndex = int(a_instanceIndex);
 }`;
@@ -80,9 +83,11 @@ flat in float v_coreRadiusDevicePx;
 flat in float v_haloRadiusDevicePx;
 flat in float v_opacity;
 flat in float v_haloIntensityPermille;
+flat in float v_coreSharpnessPermille;
 flat in int v_haloStopCount;
 flat in int v_instanceIndex;
 uniform sampler2D u_haloStops;
+uniform float u_permilleScale;
 out vec4 outputColor;
 float sampledHaloAlpha(float offset) {
   if (v_haloStopCount <= 0 || v_haloIntensityPermille <= 0.0) {
@@ -104,9 +109,12 @@ void main() {
   // A GRADIENT core, weighted toward the centre — not a hard-edged disc. An anti-aliased disc was
   // tried and measured a fourteenfold better core-concentration ratio while making every node read
   // as a flat grey circle, which is precisely the identity this engine exists to replace. The
-  // exponent fills the centre and sharpens the final drop without ever producing an edge.
+  // SAME smoothstep gradient still runs across the whole core radius; only how quickly its alpha
+  // rises toward the centre is governed, per morphology, as coreSharpness. Raising it concentrates
+  // and sharpens the readable centre without ever collapsing the gradient into that rejected edge.
   float coreProfile = 1.0 - smoothstep(0.0, v_coreRadiusDevicePx, radialDistance);
-  float coreAlpha = pow(coreProfile, 0.5);
+  float coreSharpness = v_coreSharpnessPermille / u_permilleScale;
+  float coreAlpha = pow(coreProfile, coreSharpness);
   float haloSpan = max(v_haloRadiusDevicePx - v_coreRadiusDevicePx, fwidth(radialDistance));
   float haloOffset = clamp((radialDistance - v_coreRadiusDevicePx) / haloSpan, 0.0, 1.0);
   // Sampled linearly. Taking a square root here walked the halo profile faster than the geometry,
@@ -130,6 +138,7 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
   geometry.setAttribute("a_haloCoreGapPx", instanced(buffers.haloCoreGapsPx, scalarCount()));
   geometry.setAttribute("a_opacityPermille", instanced(buffers.opacityPermille, scalarCount()));
   geometry.setAttribute("a_haloIntensityPermille", instanced(buffers.haloIntensityPermille, scalarCount()));
+  geometry.setAttribute("a_coreSharpnessPermille", instanced(buffers.coreSharpnessPermille, scalarCount()));
   geometry.setAttribute("a_haloStopCount", instanced(buffers.haloStopCounts, scalarCount()));
   geometry.setAttribute("a_instanceIndex", instanced(instanceIndices(buffers.ids.length), scalarCount()));
   geometry.instanceCount = buffers.ids.length;
@@ -169,6 +178,7 @@ export function updateNodeRenderResources(resources: NodeRenderResources, buffer
   copyAttribute(resources.geometry, "a_haloCoreGapPx", buffers.haloCoreGapsPx);
   copyAttribute(resources.geometry, "a_opacityPermille", buffers.opacityPermille);
   copyAttribute(resources.geometry, "a_haloIntensityPermille", buffers.haloIntensityPermille);
+  copyAttribute(resources.geometry, "a_coreSharpnessPermille", buffers.coreSharpnessPermille);
   copyAttribute(resources.geometry, "a_haloStopCount", buffers.haloStopCounts);
   const textureData = resources.haloStops.image.data;
   const expectedTextureLength = Math.max(scalarCount(), buffers.haloStopCount)

@@ -51,7 +51,10 @@ test("filament picking follows the resolved path and consumes its supplied toler
   assert.equal(picker.pickEdgeAtPoint(distant.x, distant.y), null);
 });
 
-test("filament picking follows the shader's width-capped medial line at every morphology midpoint", (context) => {
+/** Sampled off the endpoints, where every morphology's medial offset is genuinely exercised. */
+const ALIGNMENT_SAMPLE_PARAMETERS: readonly number[] = [0.1, 0.3, 0.5, 0.7, 0.9];
+
+test("filament picking follows the shader's width-capped medial line at several points along every morphology's relations", (context) => {
   const graph = sceneFixtureGraph();
   const provisionalState = sceneVisualState(graph);
   const measurements: string[] = [];
@@ -60,24 +63,31 @@ test("filament picking follows the shader's width-capped medial line at every mo
     const state = createVisualState(graph, { ...provisionalState, morphology });
     const scene = buildScene(graph, state);
     const projection = parityDprOneProjection(scene);
-    let maximum: { readonly offset: number; readonly threshold: number; readonly id: string } | undefined;
+    let maximum: { readonly offset: number; readonly threshold: number; readonly id: string; readonly parameter: number } | undefined;
     let outsideThreshold = 0;
+    let sampleCount = 0;
     for (const edge of scene.edges) {
-      const offset = Math.abs(shaderMedialOffsetViewportPx(edge, 0.5, projection));
-      const threshold = pickThresholdAtParameter(edge, 0.5, projection.filamentSizeScale());
-      if (offset > threshold) {
-        outsideThreshold += 1;
+      for (const parameter of ALIGNMENT_SAMPLE_PARAMETERS) {
+        sampleCount += 1;
+        const offset = Math.abs(shaderMedialOffsetViewportPx(edge, parameter, projection));
+        const threshold = pickThresholdAtParameter(edge, parameter, projection.filamentSizeScale());
+        if (offset > threshold) {
+          outsideThreshold += 1;
+        }
+        if (maximum === undefined || offset > maximum.offset) {
+          maximum = { offset, threshold, id: edge.id, parameter };
+        }
+        // This is the drawn-vs-picked alignment obligation: every sampled parameter's drawn point
+        // (independently evaluated from the shader's own quadratic/medial-offset formulas) must fall
+        // inside what the CPU picker will actually accept, not merely the midpoint.
+        assertDrawnMidpointPicked(edge, shaderDrawnPoint(edge, parameter, projection), projection);
       }
-      if (maximum === undefined || offset > maximum.offset) {
-        maximum = { offset, threshold, id: edge.id };
-      }
-      assertDrawnMidpointPicked(edge, shaderDrawnPoint(edge, 0.5, projection), projection);
     }
-    assert.ok(maximum !== undefined, `${morphology} has no relation midpoint to measure`);
+    assert.ok(maximum !== undefined, `${morphology} has no relation sample to measure`);
     assert.ok(outsideThreshold > 0, `${morphology} no longer exercises a medial offset outside the old pick threshold`);
     measurements.push(
       `${morphology}=${maximum.offset.toFixed(3)}px/${maximum.threshold.toFixed(3)}px threshold`
-        + ` (${outsideThreshold}/${scene.edges.length} outside; ${maximum.id})`,
+        + ` (${outsideThreshold}/${sampleCount} outside; ${maximum.id}@t=${maximum.parameter})`,
     );
   }
 

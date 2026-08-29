@@ -282,6 +282,7 @@ function sceneNode(
     haloCoreGapPx: fusedJunction || blindTerminal ? 0 : calibration.luminance.coreBeforeHaloMinimumPx,
     haloIntensityPermille,
     haloAlphaStops: resolveSceneHaloAlphaStops(haloIntensityPermille, calibration),
+    coreSharpnessPermille: calibration.morphology[morphology.id].coreSharpnessPermille,
     labelCandidacy: materialIncludes(resolved.node, "label") ? {
       text: node.visual.role,
       token: copyToken(requiredToken(tokens, "text")),
@@ -379,8 +380,11 @@ function sceneEdge(
       hotMixPermille: filamentMaterial.hotMixPermille,
       hotAlphaPermille: filamentMaterial.hotAlphaPermille,
       hotCorePermille: material.hotCorePermille,
-      wobbleAmplitudePermille: filamentMaterial.filamentWobbleAmplitudePermille,
-      wobbleFrequencyMilliradians: filamentMaterial.wobbleFrequencyMilliradians,
+      // scene/build.ts only ever feeds the shared-scene render3f pipeline (render2d resolves its own
+      // filament material directly from calibration), so the shared-scene meander knobs are always
+      // the correct read here and never touch the legacy renderer's frozen meander.
+      wobbleAmplitudePermille: filamentMaterial.sharedSceneFilamentWobbleAmplitudePermille,
+      wobbleFrequencyMilliradians: filamentMaterial.sharedSceneWobbleFrequencyMilliradians,
       phasePermille: material.phasePermille,
       afterglowDecayPermille: calibration.motion.afterglowDecayPermille,
       ...resolveTerminalFilamentLuminance(material, calibration),

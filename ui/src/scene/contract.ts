@@ -67,6 +67,8 @@ export type SceneNode = {
   readonly haloCoreGapPx: number;
   readonly haloIntensityPermille: number;
   readonly haloAlphaStops: readonly SceneHaloAlphaStop[];
+  /** This is the governed core-alpha falloff exponent, scaled by one thousand, and does not change core radius. */
+  readonly coreSharpnessPermille: number;
   readonly labelCandidacy: SceneNodeLabelCandidacy;
   readonly renderedStateChannel: RenderedStateChannel;
   readonly interaction: SceneInteractionState;
@@ -238,7 +240,7 @@ export const SCENE_FIELD_REGISTER = {
   tokenEncoding: ["gamutCompressionRange", "gamutCompressionExponent"],
   node: [
     "id", "kind", "position", "radiusPx", "token", "opacityPermille", "junctionGeometry", "terminalTreatment", "haloRadiusPx", "haloCoreGapPx",
-    "haloIntensityPermille", "haloAlphaStops", "labelCandidacy", "renderedStateChannel", "interaction", "lodBand", "stackingPriority",
+    "haloIntensityPermille", "haloAlphaStops", "coreSharpnessPermille", "labelCandidacy", "renderedStateChannel", "interaction", "lodBand", "stackingPriority",
   ],
   edge: [
     "id", "source", "target", "junctionStartGeometry", "junctionEndGeometry", "terminalStartTreatment", "terminalEndTreatment", "path", "controlPoint", "bodyWidthPx", "widthStartPx", "widthEndPx", "pickTolerancePx", "minimumDeviceWidthPx", "token", "opacityPermille",
@@ -324,6 +326,7 @@ function assertNode(value: unknown, path: string): void {
   for (const [index, stop] of node.haloAlphaStops.entries()) {
     assertHaloAlphaStop(stop, `${path}.haloAlphaStops[${index}]`);
   }
+  assertSafeInteger(node.coreSharpnessPermille, `${path}.coreSharpnessPermille`);
   assertNodeLabelCandidacy(node.labelCandidacy, `${path}.labelCandidacy`);
   assertRenderedStateChannel(node.renderedStateChannel, `${path}.renderedStateChannel`);
   assertChoice(node.interaction, INTERACTION_STATES, `${path}.interaction`);

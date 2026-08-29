@@ -49,7 +49,17 @@ export function assertNodeShaderTechnique(vertexShader: string, fragmentShader: 
     // measured a fourteenfold better core-concentration ratio and made every node render as a flat
     // grey circle — the identity this engine exists to replace. A check can be satisfied by exactly
     // the result its criterion was written to prevent, and that is what these two now guard against.
-    { name: "gradient core weighted toward the centre", source: fragmentShader, marker: "pow(coreProfile, 0.5)" },
+    //
+    // CAP-13 (B17) replaced the literal `pow(coreProfile, 0.5)` with a governed `coreSharpness`
+    // exponent so a sharper, more information-bearing default core could ship without reopening the
+    // hard-edged-core regression above. The two are not the same change: the rejected version threw
+    // the smoothstep gradient away in favour of a flat anti-aliased disc (binary coverage inside a
+    // radius). This one keeps that exact gradient — `coreProfile` is still the same continuous
+    // smoothstep falloff across the whole core radius — and only makes how fast its alpha rises
+    // toward the centre a per-morphology governed value instead of a fixed constant. The marker below
+    // still requires `coreProfile` to feed a `pow(...)`, so a return to the flat-disc technique (which
+    // has no `coreProfile` power curve at all) would still fail this assertion.
+    { name: "gradient core weighted toward the centre, governed by coreSharpness", source: fragmentShader, marker: "pow(coreProfile, coreSharpness)" },
     { name: "linearly sampled halo falloff", source: fragmentShader, marker: "sampledHaloAlpha(haloOffset)" },
     { name: "premultiplied output", source: fragmentShader, marker: "vec4(v_color * alpha, alpha)" },
   ];

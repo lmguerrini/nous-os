@@ -170,10 +170,18 @@ test("node shader consumes sampled halo values and renders a gradient core weigh
   // and a square-rooted halo offset. Those were briefly asserted, measured a fourteenfold better
   // core-concentration ratio, and rendered every node as a flat grey circle: the exact identity this
   // engine exists to replace. The controls now fail on the shapes that produced that regression.
-  const hardEdgedCoreControl = NODE_FRAGMENT_SHADER.replace("pow(coreProfile, 0.5)", "step(radialDistance, v_coreRadiusDevicePx)");
+  const hardEdgedCoreControl = NODE_FRAGMENT_SHADER.replace("pow(coreProfile, coreSharpness)", "step(radialDistance, v_coreRadiusDevicePx)");
   assert.throws(
     () => assertNodeShaderTechnique(NODE_VERTEX_SHADER, hardEdgedCoreControl),
-    /missing gradient core weighted toward the centre/,
+    /missing gradient core weighted toward the centre, governed by coreSharpness/,
+  );
+  // CAP-13 (B17): coreSharpness is a governed per-morphology exponent, not a rewrite of the profile
+  // itself. A control that keeps the gradient but hardcodes the exponent back to a constant must still
+  // fail, so a regression that quietly drops the governed read cannot pass this shader technique gate.
+  const hardcodedExponentControl = NODE_FRAGMENT_SHADER.replace("pow(coreProfile, coreSharpness)", "pow(coreProfile, 0.5)");
+  assert.throws(
+    () => assertNodeShaderTechnique(NODE_VERTEX_SHADER, hardcodedExponentControl),
+    /missing gradient core weighted toward the centre, governed by coreSharpness/,
   );
   const dimmedHaloControl = NODE_FRAGMENT_SHADER.replace("sampledHaloAlpha(haloOffset)", "sampledHaloAlpha(sqrt(haloOffset))");
   assert.throws(

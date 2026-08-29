@@ -13,6 +13,7 @@ export type NodeBuffers = {
   readonly colorsSrgb: Float32Array;
   readonly opacityPermille: Float32Array;
   readonly haloIntensityPermille: Float32Array;
+  readonly coreSharpnessPermille: Float32Array;
   readonly haloStopOffsets: Float32Array;
   readonly haloStopAlphaMultipliers: Float32Array;
   readonly haloStopCounts: Float32Array;
@@ -86,6 +87,7 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
   const haloCoreGapsPx = new Float32Array(ordered.length);
   const opacityPermille = new Float32Array(ordered.length);
   const haloIntensityPermille = new Float32Array(ordered.length);
+  const coreSharpnessPermille = new Float32Array(ordered.length);
   const haloStopCount = ordered.reduce((maximum, node) => Math.max(maximum, node.haloAlphaStops.length), 0);
   const haloStopOffsets = new Float32Array(ordered.length * haloStopCount);
   const haloStopAlphaMultipliers = new Float32Array(ordered.length * haloStopCount);
@@ -98,6 +100,7 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
     haloCoreGapsPx[index] = node.haloCoreGapPx;
     opacityPermille[index] = node.opacityPermille;
     haloIntensityPermille[index] = node.haloIntensityPermille;
+    coreSharpnessPermille[index] = node.coreSharpnessPermille;
     haloStopCounts[index] = node.haloAlphaStops.length;
     for (const [stopIndex, stop] of node.haloAlphaStops.entries()) {
       const offset = (index * haloStopCount) + stopIndex;
@@ -114,6 +117,7 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
     colorsSrgb,
     opacityPermille,
     haloIntensityPermille,
+    coreSharpnessPermille,
     haloStopOffsets,
     haloStopAlphaMultipliers,
     haloStopCounts,

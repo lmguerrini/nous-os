@@ -128,7 +128,11 @@ export function applyMorphology(
     const terminalSizeMultiplier = terminal
       ? (sharedScene ? material.sharedSceneTerminalSizeMultiplierPermille : material.terminalSizeMultiplierPermille)
       : PERMILLE;
-    const morphologyCore = (baseSize * material.nodeSizeMultiplierPermille) / PERMILLE;
+    // The shared-scene multiplier is a distinct governed knob so a grammar's node-size identity (a
+    // discrete Neural soma, a subordinated Mycelium waypoint) can move without touching the legacy
+    // renderer's frozen node scale, the same separation `sharedSceneHaloIntensityPermille` already keeps.
+    const nodeSizeMultiplierPermille = sharedScene ? material.sharedSceneNodeSizeMultiplierPermille : material.nodeSizeMultiplierPermille;
+    const morphologyCore = (baseSize * nodeSizeMultiplierPermille) / PERMILLE;
     const terminalCore = (morphologyCore * terminalSizeMultiplier) / PERMILLE;
     const renderedCore = morphology.id === NEURAL.id
       ? (sharedScene
