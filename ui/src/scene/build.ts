@@ -336,18 +336,33 @@ function applyMotionGrammar(scene: Scene, graph: EngineGraph, policy: MotionGram
   const nodeModulationById = new Map(modulation.nodes.map((node) => [node.id, node] as const));
   const edgeModulationById = new Map(modulation.edges.map((edge) => [edge.id, edge] as const));
   const condenseGeometry = policy === CONDENSE ? resolveCondenseGeometry(scene, nodeModulationById) : null;
+  // Both of a node's own offset sources -- the axis's declared offsetXPermille/offsetYPermille and
+  // Condense's own geometry-resolved convergence -- are resolved once here, by the same function
+  // modulateSceneNode itself uses, so an edge incident to a node is displaced by exactly the same
+  // pixel vector that node's own drawn position was, not a second independently derived one.
+  const nodeOffsetById = new Map(scene.nodes.map((node) => [
+    node.id,
+    resolveNodeMotionOffsetPx(requiredNodeMotionModulation(nodeModulationById, node.id), calibration, condenseGeometry?.nodes.get(node.id) ?? null),
+  ] as const));
   const nodes = scene.nodes.map((node) => modulateSceneNode(
     node,
     requiredNodeMotionModulation(nodeModulationById, node.id),
-    calibration,
+    requiredNodeMotionOffsetPx(nodeOffsetById, node.id),
     condenseGeometry?.nodes.get(node.id) ?? null,
   ));
   const edges = scene.edges.map((edge) => modulateSceneEdge(
     edge,
     requiredEdgeMotionModulation(edgeModulationById, edge.id),
     condenseGeometry?.edges.get(edge.id) ?? null,
+    requiredNodeMotionOffsetPx(nodeOffsetById, edge.source),
+    requiredNodeMotionOffsetPx(nodeOffsetById, edge.target),
+    calibration,
   ));
   assertMotionGovernedIdentity(scene, nodes, edges);
+  // A relation drawn not touching its own two endpoints is a false statement about the governed
+  // graph -- checked directly against what this call actually produced, the same way governed
+  // identity and resting completeness are, not merely covered by a test elsewhere.
+  assertMotionEdgeEndpointsFollowNodes(nodes, edges);
   return { ...scene, nodes, edges };
 }
 
@@ -397,38 +412,56 @@ function assertExactIdOrder(expected: readonly string[], actual: readonly string
   }
 }
 
+/** This is one node's resolved motion offset, already in drawn pixels, shared between that node's own displacement and every relation incident to it. */
+type NodeMotionOffsetPx = { readonly x: number; readonly y: number };
+
+/** This is the zero displacement every policy's own resting phase declares for every node, kept as one identity value rather than reconstructed at each call site. */
+const NO_NODE_MOTION_OFFSET_PX: NodeMotionOffsetPx = { x: 0, y: 0 };
+
+/**
+ * This resolves one node's real, already-scaled pixel displacement from its two possible offset
+ * sources, and does not itself touch a drawn position: `modulateSceneNode` applies the result to that
+ * node's own drawing, and `applyMotionGrammar` applies the identical result to every relation incident
+ * to it, so a node and the relations that terminate on it are never displaced by two independently
+ * computed vectors. The offset channel is declared unitless in [-1000, 1000] by the motion axis (see
+ * motion-grammar.ts); this is the first place it meets a concrete drawn quantity. It is scaled by
+ * `calibration.layout.idealEdgeLengthPx`, the governed force-layout target spacing between adjacent
+ * nodes, rather than by the node's own resolved radius: a node's radius answers how big that one node
+ * draws, not how far apart this graph's own layout holds its elements, and scaling displacement by it
+ * (the prior approach) tied "how far a node can move" to "how big that node happens to be" -- a fusion
+ * of two unrelated calibrated quantities that, at this scene's own mass range, capped every node's own
+ * reach at a few px regardless of the offset permille requested. idealEdgeLengthPx is the layout's own
+ * declared unit of spatial separation, already governed and registered, so a given offset permille now
+ * reads as the same fraction of "how far this layout places neighbours" for every node alike,
+ * independent of that node's own prominence, morphology, or LOD band. `condense` is non-null only for
+ * the Condense policy (see `resolveCondenseGeometry`): its offset is real pixels, already resolved
+ * against this scene's own anchors, added on top of whatever `offsetXPermille`/`offsetYPermille`
+ * declare (always zero for Condense today, see motion-grammar.ts's own condense case).
+ */
+function resolveNodeMotionOffsetPx(modulation: NodeMotionModulation, calibration: CalibrationProfile, condense: CondenseNodeResolution | null): NodeMotionOffsetPx {
+  const offsetXPx = motionOffsetPx(modulation.offsetXPermille, calibration.layout.idealEdgeLengthPx) + (condense?.offsetXPx ?? 0);
+  const offsetYPx = motionOffsetPx(modulation.offsetYPermille, calibration.layout.idealEdgeLengthPx) + (condense?.offsetYPx ?? 0);
+  return offsetXPx === 0 && offsetYPx === 0 ? NO_NODE_MOTION_OFFSET_PX : { x: offsetXPx, y: offsetYPx };
+}
+
 /**
  * This applies one node's resolved motion channels onto its already fully-resolved static drawing and
- * does not recompute layout, material, or label placement. The offset channel is declared unitless in
- * [-1000, 1000] by the motion axis (see motion-grammar.ts); the scene layer is the first place it
- * meets a concrete drawn quantity. It is scaled by `calibration.layout.idealEdgeLengthPx`, the
- * governed force-layout target spacing between adjacent nodes, rather than by the node's own resolved
- * radius: a node's radius answers how big that one node draws, not how far apart this graph's own
- * layout holds its elements, and scaling displacement by it (the prior approach) tied "how far a node
- * can move" to "how big that node happens to be" -- a fusion of two unrelated calibrated quantities
- * that, at this scene's own mass range, capped every node's own reach at a few px regardless of the
- * offset permille requested. idealEdgeLengthPx is the layout's own declared unit of spatial
- * separation, already governed and registered, so a given offset permille now reads as the same
- * fraction of "how far this layout places neighbours" for every node alike, independent of that
- * node's own prominence, morphology, or LOD band. The halo is scaled by the same factor as the core
- * so the two never visually decouple as a node's own scale channel breathes or shrinks. `condense` is
- * non-null only for the Condense policy (see `resolveCondenseGeometry`): its offset is real pixels,
- * already resolved against this scene's own anchors, added on top of whatever `offsetXPermille`/
- * `offsetYPermille` declare (always zero for Condense today, see motion-grammar.ts's own condense
- * case), and its opacity/scale replace the axis's own declared ceiling with the real, geometry-resolved
- * value that ceiling was spent on.
+ * does not recompute layout, material, or label placement. `offsetPx` is already resolved, in drawn
+ * pixels, by `resolveNodeMotionOffsetPx` -- the same value every relation incident to this node also
+ * received, so a node and its own relations move together. The halo is scaled by the same factor as
+ * the core so the two never visually decouple as a node's own scale channel breathes or shrinks.
+ * `condense` is non-null only for the Condense policy, and its opacity/scale replace the axis's own
+ * declared ceiling with the real, geometry-resolved value that ceiling was spent on.
  */
-function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, calibration: CalibrationProfile, condense: CondenseNodeResolution | null): SceneNode {
+function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, offsetPx: NodeMotionOffsetPx, condense: CondenseNodeResolution | null): SceneNode {
   const opacityPermille = condense?.opacityPermille ?? modulation.opacityPermille;
   const scalePermille = condense?.scalePermille ?? modulation.scalePermille;
   const scaleFactor = motionFactor(scalePermille);
-  const offsetXPx = motionOffsetPx(modulation.offsetXPermille, calibration.layout.idealEdgeLengthPx) + (condense?.offsetXPx ?? 0);
-  const offsetYPx = motionOffsetPx(modulation.offsetYPermille, calibration.layout.idealEdgeLengthPx) + (condense?.offsetYPx ?? 0);
   return {
     ...node,
     position: {
-      x: applyMotionOffset(node.position.x, offsetXPx),
-      y: applyMotionOffset(node.position.y, offsetYPx),
+      x: applyMotionOffset(node.position.x, offsetPx.x),
+      y: applyMotionOffset(node.position.y, offsetPx.y),
       z: node.position.z,
     },
     radiusPx: applyMotionFactor(node.radiusPx, scaleFactor),
@@ -447,16 +480,162 @@ function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, ca
  * the two diverge. `condense` is non-null only for the Condense policy, and entirely replaces the
  * axis's own declared (always-identity, see motion-grammar.ts's own condense case) channel with the
  * real, geometry-resolved fade `resolveCondenseGeometry` computed from this relation's own two
- * endpoints.
+ * endpoints. `sourceOffsetPx`/`targetOffsetPx` are this relation's own two endpoints' resolved motion
+ * offsets (see `resolveNodeMotionOffsetPx`) -- the same values `modulateSceneNode` applied to those two
+ * nodes' own drawn positions -- and are what keeps this relation's drawn geometry attached to them
+ * (see `motionEdgeGeometry`); junctionStart/EndGeometry and terminalStart/EndTreatment carry no
+ * position or angle of their own (each is one of a small fixed categorical set describing HOW an
+ * endpoint is drawn, not WHERE -- see morphology.ts's own JunctionGeometry/TerminalTreatment), so they
+ * pass through unchanged.
  */
-function modulateSceneEdge(edge: SceneEdge, modulation: EdgeMotionModulation, condense: CondenseEdgeResolution | null): SceneEdge {
+function modulateSceneEdge(
+  edge: SceneEdge,
+  modulation: EdgeMotionModulation,
+  condense: CondenseEdgeResolution | null,
+  sourceOffsetPx: NodeMotionOffsetPx,
+  targetOffsetPx: NodeMotionOffsetPx,
+  calibration: CalibrationProfile,
+): SceneEdge {
   const visibilityPermille = condense === null
     ? Math.min(modulation.opacityPermille, modulation.revealPermille)
     : Math.min(condense.opacityPermille, condense.revealPermille);
+  const geometry = motionEdgeGeometry(edge, sourceOffsetPx, targetOffsetPx, calibration);
   return {
     ...edge,
+    path: geometry.path,
+    controlPoint: geometry.controlPoint,
     opacityPermille: Math.round((edge.opacityPermille * visibilityPermille) / SCENE_PERMILLE_SCALE),
   };
+}
+
+/** This is one relation's drawn curve, recomputed so it stays attached to its own two moved endpoints. */
+type MotionEdgeGeometry = { readonly path: readonly Coordinates[]; readonly controlPoint: Coordinates };
+
+/**
+ * This recomputes one relation's drawn `path`/`controlPoint` so the curve stays attached to its own
+ * two endpoints after `modulateSceneNode` has displaced them, using the identical construction
+ * `sceneEdge` used to draw it in the first place (`quadraticControlPoint`, `sampleQuadraticPath`)
+ * rather than inventing a second geometry model. Both endpoints, at zero displacement, is the resting
+ * case every policy declares (see `assertMotionRestingCompleteness`): returning `edge.path`/
+ * `edge.controlPoint` unchanged there, rather than recomputing an arithmetically-identical result,
+ * keeps Still and every policy's own resting phase byte-identical to the frozen static baseline (see
+ * M3), the same discipline `applyMotionOffset` already applies to a single coordinate. Off that
+ * shortcut, this relation's own two static endpoints are read back from `edge.path`'s own first and
+ * last samples -- `sampleQuadraticPath` always places the untranslated source and target there exactly,
+ * whichever of its own two branches built this path -- and the curvature that produced `edge.controlPoint`
+ * from those two points is recovered algebraically (`edgeCurvatureFromGeometry`): SceneEdge itself
+ * carries no separate curvature field, only its already-resolved effect on the control point, so this
+ * is the one value this reconstruction needs and does not already have in hand. Recomputing from the
+ * displaced endpoints with that same curvature is what keeps a bowed relation bowed sensibly as its own
+ * two ends move apart or together, instead of rigidly translating the old curve's own sampled points by
+ * two different vectors and letting it buckle.
+ */
+function motionEdgeGeometry(
+  edge: SceneEdge,
+  sourceOffsetPx: NodeMotionOffsetPx,
+  targetOffsetPx: NodeMotionOffsetPx,
+  calibration: CalibrationProfile,
+): MotionEdgeGeometry {
+  if (sourceOffsetPx.x === 0 && sourceOffsetPx.y === 0 && targetOffsetPx.x === 0 && targetOffsetPx.y === 0) {
+    return { path: edge.path, controlPoint: edge.controlPoint };
+  }
+  const staticSource = requiredEdgePathPoint(edge.path, 0, edge.id);
+  const staticTarget = requiredEdgePathPoint(edge.path, edge.path.length - 1, edge.id);
+  const curvature = edgeCurvatureFromGeometry(staticSource, staticTarget, edge.controlPoint);
+  const source: Coordinates = {
+    x: applyMotionOffset(staticSource.x, sourceOffsetPx.x),
+    y: applyMotionOffset(staticSource.y, sourceOffsetPx.y),
+    z: staticSource.z,
+  };
+  const target: Coordinates = {
+    x: applyMotionOffset(staticTarget.x, targetOffsetPx.x),
+    y: applyMotionOffset(staticTarget.y, targetOffsetPx.y),
+    z: staticTarget.z,
+  };
+  const controlPoint = quadraticControlPoint(source, target, curvature);
+  const path = sampleQuadraticPath(source, target, controlPoint, curvature, calibration.lod.bandThresholds.length);
+  return { path, controlPoint };
+}
+
+/**
+ * This recovers the curvature `quadraticControlPoint(source, target, curvature)` was built with, from
+ * the three already-resolved points it produced, so `motionEdgeGeometry` can reapply that same
+ * construction to this relation's own two displaced endpoints without SceneEdge needing to carry
+ * curvature as a field of its own. `quadraticControlPoint` places the control point at the segment's
+ * own midpoint plus `curvature * perpendicular(target - source)`; projecting the control point's own
+ * offset from that midpoint back onto that same perpendicular (and dividing by its squared length)
+ * recovers exactly the curvature that produced it. Two endpoints that coincide have no perpendicular
+ * direction to recover a curvature against -- `quadraticControlPoint` would then place the control
+ * point exactly at that shared point regardless of curvature -- so this returns 0 rather than dividing
+ * by zero, which is also the value that reconstruction needs in that degenerate case.
+ */
+function edgeCurvatureFromGeometry(source: Coordinates, target: Coordinates, controlPoint: Coordinates): number {
+  const deltaX = target.x - source.x;
+  const deltaY = target.y - source.y;
+  const deltaSquared = (deltaX * deltaX) + (deltaY * deltaY);
+  if (deltaSquared === 0) {
+    return 0;
+  }
+  const midpointX = (source.x + target.x) / BISECTION_DIVISOR;
+  const midpointY = (source.y + target.y) / BISECTION_DIVISOR;
+  const controlOffsetX = controlPoint.x - midpointX;
+  const controlOffsetY = controlPoint.y - midpointY;
+  return ((controlOffsetX * -deltaY) + (controlOffsetY * deltaX)) / deltaSquared;
+}
+
+function requiredEdgePathPoint(path: readonly Coordinates[], index: number, edgeId: string): Coordinates {
+  const point = path[index];
+  if (point === undefined) {
+    throw new TypeError(`scene relation motion geometry has no resolved path point to displace: ${edgeId}`);
+  }
+  return point;
+}
+
+function requiredNodeMotionOffsetPx(offsets: ReadonlyMap<string, NodeMotionOffsetPx>, id: string): NodeMotionOffsetPx {
+  const offset = offsets.get(id);
+  if (offset === undefined) {
+    throw new TypeError("scene motion modulation is missing a resolved node offset for relation attachment");
+  }
+  return offset;
+}
+
+/** This is the tight pixel tolerance `assertMotionEdgeEndpointsFollowNodes` allows between a relation's own drawn endpoint and its node's own drawn position: not exactly 0, so an unrelated future rounding change in an unrelated channel cannot spuriously trip this invariant, but far below anything a reader could see as detachment. */
+const EDGE_ENDPOINT_GAP_TOLERANCE_PX = 1e-6;
+
+/**
+ * This is the hard governed-drawing invariant this capability adds: a relation the governed graph
+ * asserts is real must be DRAWN touching the two nodes it names, at every phase, for every policy, not
+ * only at rest (`assertMotionRestingCompleteness` already covers rest). A relation whose drawn path
+ * does not reach its own node's drawn position is a false statement about the graph -- the node moved
+ * and the relation did not -- so this is enforced at every call inside `applyMotionGrammar`, directly
+ * against the concrete nodes and relations one call actually produced, the same way governed identity
+ * and resting completeness already are. It is exported so this refusal is directly testable against a
+ * fabricated node or relation array, without needing a broken motion policy to reach it.
+ */
+export function assertMotionEdgeEndpointsFollowNodes(nodes: readonly SceneNode[], edges: readonly SceneEdge[]): void {
+  const positionById = new Map(nodes.map((node) => [node.id, node.position] as const));
+  for (const edge of edges) {
+    const sourcePosition = requiredNodeMotionPosition(positionById, edge.source, edge.id);
+    const targetPosition = requiredNodeMotionPosition(positionById, edge.target, edge.id);
+    const start = requiredEdgePathPoint(edge.path, 0, edge.id);
+    const end = requiredEdgePathPoint(edge.path, edge.path.length - 1, edge.id);
+    const startGapPx = Math.hypot(start.x - sourcePosition.x, start.y - sourcePosition.y);
+    if (startGapPx > EDGE_ENDPOINT_GAP_TOLERANCE_PX) {
+      throw new TypeError(`scene relation is drawn detached from its own source node: ${edge.id} gap=${startGapPx}px`);
+    }
+    const endGapPx = Math.hypot(end.x - targetPosition.x, end.y - targetPosition.y);
+    if (endGapPx > EDGE_ENDPOINT_GAP_TOLERANCE_PX) {
+      throw new TypeError(`scene relation is drawn detached from its own target node: ${edge.id} gap=${endGapPx}px`);
+    }
+  }
+}
+
+function requiredNodeMotionPosition(positionById: ReadonlyMap<string, Coordinates>, id: string, edgeId: string): Coordinates {
+  const position = positionById.get(id);
+  if (position === undefined) {
+    throw new TypeError(`scene relation motion endpoint invariant is missing a drawn node position: ${edgeId} -> ${id}`);
+  }
+  return position;
 }
 
 /** This is Condense's own migrated core floor (see motion-grammar.ts's own CONDENSE_CONVERGENCE_AMPLITUDE_PERMILLE docstring): the shrink a node exactly at the structure's own centre still receives at the envelope's own peak, unchanged from the pre-fix core-vs-periphery split's own value. */

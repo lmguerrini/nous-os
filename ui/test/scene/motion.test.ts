@@ -21,8 +21,8 @@ import type { Morphology } from "#engine/morphology.ts";
 import type { Organization } from "#engine/organization.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState } from "#engine/visual-state.ts";
-import type { SceneNode } from "#scene/contract.ts";
-import { assertMotionGovernedIdentity, assertMotionRestingCompleteness, buildScene } from "#scene/build.ts";
+import type { SceneEdge, SceneNode } from "#scene/contract.ts";
+import { assertMotionEdgeEndpointsFollowNodes, assertMotionGovernedIdentity, assertMotionRestingCompleteness, buildScene } from "#scene/build.ts";
 import { sceneFixtureGraph, sceneTokens } from "./support.ts";
 
 /** This is the sampled phase set used to check governed identity continuity is not a once-only property, mirroring the axis's own sample density (see ui/test/engine/motion-grammar.test.ts). */
@@ -159,6 +159,114 @@ test("governed identity continuity: the modulated node and relation id sets equa
   }
   assert.equal(checks, subjects.length * MOTION_GRAMMARS.length * SAMPLE_PHASES.length);
   process.stdout.write(`per-phase governed identity checked across ${checks} scene builds\n`);
+});
+
+test("every relation's own drawn endpoints coincide with its source and target nodes' drawn positions, for every policy at every sampled phase", () => {
+  const subjects: readonly (readonly [string, VisualGraph])[] = [
+    ["discovery-at-question", sceneFixtureGraph()],
+    ["reliability-at-question", fixtureGraph("reliability-at-question.json")],
+  ];
+  let maxGapPx = 0;
+  let checks = 0;
+  for (const [label, graph] of subjects) {
+    for (const policy of MOTION_GRAMMARS) {
+      for (const phase of SAMPLE_PHASES) {
+        const state: VisualState = { ...motionBaseState(graph, "stellar", "flat", "orthographic"), motionGrammar: policy };
+        const scene = buildScene(graph, state, DEFAULT_CALIBRATION, sceneTokens(state), "orthographic", phase);
+        // buildScene already enforces this invariant internally (applyMotionGrammar calls it directly
+        // against what it produced); this call re-checks it from the outside, against this scene's own
+        // already-built nodes and relations, so the claim below is not merely "it didn't throw".
+        assert.doesNotThrow(
+          () => assertMotionEdgeEndpointsFollowNodes(scene.nodes, scene.edges),
+          `${label} "${policy}"@${phase} drew at least one relation detached from its own node`,
+        );
+        const positionById = new Map(scene.nodes.map((node) => [node.id, node.position] as const));
+        for (const edge of scene.edges) {
+          const sourcePosition = positionById.get(edge.source);
+          const targetPosition = positionById.get(edge.target);
+          const start = edge.path[0];
+          const end = edge.path[edge.path.length - 1];
+          if (sourcePosition === undefined || targetPosition === undefined || start === undefined || end === undefined) {
+            throw new TypeError(`${label} "${policy}"@${phase} relation ${edge.id} is missing resolved geometry`);
+          }
+          maxGapPx = Math.max(maxGapPx, Math.hypot(start.x - sourcePosition.x, start.y - sourcePosition.y));
+          maxGapPx = Math.max(maxGapPx, Math.hypot(end.x - targetPosition.x, end.y - targetPosition.y));
+        }
+        checks += 1;
+      }
+    }
+  }
+  assert.equal(checks, subjects.length * MOTION_GRAMMARS.length * SAMPLE_PHASES.length);
+  process.stdout.write(`relation-endpoint attachment checked across ${checks} scene builds; measured maximum endpoint gap = ${maxGapPx}px\n`);
+});
+
+test("negative control: assertMotionEdgeEndpointsFollowNodes refuses a relation left detached from a node that moved", () => {
+  const graph = sceneFixtureGraph();
+  const state: VisualState = { ...motionBaseState(graph, "stellar", "flat", "orthographic"), motionGrammar: RECONFIGURE };
+  const scene = buildScene(graph, state, DEFAULT_CALIBRATION, sceneTokens(state), "orthographic", 0.25);
+  const targetEdge = scene.edges.find((edge) => edge.path[0] !== undefined && edge.path[edge.path.length - 1] !== undefined);
+  if (targetEdge === undefined) {
+    throw new TypeError("motion fixture requires at least one relation with resolved geometry");
+  }
+  const displacedNodes: readonly SceneNode[] = scene.nodes.map((node) => (
+    node.id === targetEdge.source
+      ? { ...node, position: { x: node.position.x + 500, y: node.position.y - 500, z: node.position.z } }
+      : node
+  ));
+  const output = captureFailure(() => assertMotionEdgeEndpointsFollowNodes(displacedNodes, scene.edges));
+  assert.match(output, /scene relation is drawn detached from its own source node: /);
+  process.stdout.write(`motion-edge-attachment negative control (source detached) observed: ${output}\n`);
+});
+
+test("negative control: assertMotionEdgeEndpointsFollowNodes reports a distinct message for a detached target endpoint", () => {
+  const graph = sceneFixtureGraph();
+  const state: VisualState = { ...motionBaseState(graph, "stellar", "flat", "orthographic"), motionGrammar: RECONFIGURE };
+  const scene = buildScene(graph, state, DEFAULT_CALIBRATION, sceneTokens(state), "orthographic", 0.25);
+  const targetEdge = scene.edges.find((edge) => edge.path[0] !== undefined && edge.path[edge.path.length - 1] !== undefined);
+  if (targetEdge === undefined) {
+    throw new TypeError("motion fixture requires at least one relation with resolved geometry");
+  }
+  const displacedNodes: readonly SceneNode[] = scene.nodes.map((node) => (
+    node.id === targetEdge.target
+      ? { ...node, position: { x: node.position.x - 500, y: node.position.y + 500, z: node.position.z } }
+      : node
+  ));
+  const output = captureFailure(() => assertMotionEdgeEndpointsFollowNodes(displacedNodes, scene.edges));
+  assert.match(output, /scene relation is drawn detached from its own target node: /);
+  process.stdout.write(`motion-edge-attachment negative control (target detached) observed: ${output}\n`);
+});
+
+test("assertMotionEdgeEndpointsFollowNodes accepts the genuinely attached case", () => {
+  const graph = sceneFixtureGraph();
+  const scene = buildScene(graph, motionBaseState(graph, "stellar", "flat", "orthographic"), DEFAULT_CALIBRATION, sceneTokens(motionBaseState(graph, "stellar", "flat", "orthographic")), "orthographic");
+  assert.doesNotThrow(() => assertMotionEdgeEndpointsFollowNodes(scene.nodes, scene.edges));
+});
+
+test("Reconfigure genuinely moves a relation's own drawn endpoints away from its resting geometry mid-phase, proving the edge-follows-node fix is live and not a no-op", () => {
+  const graph = sceneFixtureGraph();
+  const baseState = motionBaseState(graph, "stellar", "flat", "orthographic");
+  const stillScene = buildScene(graph, baseState, DEFAULT_CALIBRATION, sceneTokens(baseState), "orthographic");
+  const stillPathById = new Map<string, readonly { readonly x: number; readonly y: number }[]>(
+    stillScene.edges.map((edge) => [edge.id, edge.path]),
+  );
+  const reconfigureState: VisualState = { ...baseState, motionGrammar: RECONFIGURE };
+  const midCycle = buildScene(graph, reconfigureState, DEFAULT_CALIBRATION, sceneTokens(reconfigureState), "orthographic", 0.25);
+  let movedEdgeCount = 0;
+  for (const edge of midCycle.edges) {
+    const restingPath = stillPathById.get(edge.id);
+    if (restingPath === undefined) {
+      throw new TypeError(`reconfigure edge-geometry fixture is missing a resting path for relation: ${edge.id}`);
+    }
+    const restingStart = restingPath[0];
+    const movedStart = edge.path[0];
+    if (restingStart === undefined || movedStart === undefined) {
+      throw new TypeError(`reconfigure edge-geometry fixture is missing resolved geometry for relation: ${edge.id}`);
+    }
+    if (restingStart.x !== movedStart.x || restingStart.y !== movedStart.y) {
+      movedEdgeCount += 1;
+    }
+  }
+  assert.ok(movedEdgeCount > 0, "Reconfigure at phase 0.25 moved no relation's own drawn path relative to the static baseline");
 });
 
 test("no invented element: every drawn node and relation id at every sampled phase is a real graph id, not merely the same count", () => {
