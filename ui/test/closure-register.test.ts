@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -37,6 +37,29 @@ const ARTIFACT_PATHS = {
     "dist/matrix/discovery-at-question-manifest.json",
     "dist/matrix/indra-community-windows-manifest.json",
   ],
+  // Written by one `npm run test:scale-topology` command: the ablation comparisons themselves, and
+  // the static human-review comparison the ablation's own holographic-headroom finding is about.
+  scaleTopology: [
+    "dist/scale-topology/scale-topology-manifest.json",
+    "dist/scale-topology/static-controlled-manifest.json",
+  ],
+  // Written by one `npm run test:motion` command, alongside motionBlind below. Kept separate from
+  // motionBlind because these two manifests are the SEVEN-POLICY evidence (Still/resting byte match,
+  // governed identity, resting completeness, reduced motion, traceability, structural ablation);
+  // motionBlind is the blind-strip generation machinery, a materially different claim.
+  motionGrammar: [
+    "dist/motion/motion-m3-manifest.json",
+    "dist/motion/motion-ablation-manifest.json",
+  ],
+  // The M1 and M2 blind-strip manifests: what makes the strips genuinely blind (no policy or
+  // scaleTopology token in any path, frames that genuinely differ from rest), not the discrimination
+  // score itself -- that is an agent judgement recorded in governance, per B26.
+  motionBlind: [
+    "dist/motion/motion-m1-manifest.json",
+    "dist/motion/motion-m2-manifest.json",
+  ],
+  temporal: "dist/temporal/temporal-manifest.json",
+  opening: "dist/opening/opening-manifest.json",
 } as const;
 
 // The governance store lives OUTSIDE this repository and its location is machine-specific, so it
@@ -69,7 +92,11 @@ type Criterion = { readonly id: string; readonly claim: string; readonly source:
 
 test("every CAP-13 criterion resolves to a machine-readable status", async () => {
   const criteria = await readCriteria();
-  assert.equal(criteria.length, 25, "the register must carry the seventeen base and eight extension criteria");
+  assert.equal(
+    criteria.length,
+    42,
+    "the register must carry the seventeen base, eight extension, and seventeen phase-2 (ScaleTopology/MotionGrammar/Temporal Playback/Opening/Control API/capture-integrity/relation-attachment) criteria",
+  );
 
   const unresolved: string[] = [];
   for (const criterion of criteria) {
@@ -161,6 +188,76 @@ test("matrix negative controls demonstrate the evidence can fail and are restore
   assert.match(message, new RegExp(`missing=\\[${escapeForPattern(omitted)}\\]`));
   assert.match(message, new RegExp(`duplicated=\\[${escapeForPattern(duplicated)}×2\\]`));
 });
+
+/**
+ * B36. Capture integrity is a property of the browser evidence HARNESS itself (every capture module
+ * under test/browser), not a fact any one suite's own manifest records about itself, so it is checked
+ * here by source inspection rather than by an artifact command -- the same reason B1 and B6 check
+ * renderer source directly instead of trusting a runtime flag.
+ */
+test("capture integrity: every browser evidence page module reads pixels back only through the shared GPU completion barrier, and an introduced bypass is refused", async () => {
+  const barrierFile = "test/browser/gpu-sync.ts";
+  // Every page module known to actually produce a rendered capture, not a support module (png-codec,
+  // parity-contract, frame-counter, and so on) that never touches a GL context of its own.
+  const captureModules = [
+    "test/browser/calibration-evidence.ts",
+    "test/browser/evidence.ts",
+    "test/browser/matrix.ts",
+    "test/browser/motion.ts",
+    "test/browser/opening.ts",
+    "test/browser/parity.ts",
+    "test/browser/review3d.ts",
+    "test/browser/scale-topology.ts",
+    "test/browser/temporal.ts",
+  ];
+
+  const harnessFiles = await browserHarnessSources();
+  assert.doesNotThrow(() => assertNoGpuBarrierBypass(harnessFiles, barrierFile));
+
+  for (const file of captureModules) {
+    const source = await readFile(file, "utf8");
+    assert.match(
+      source,
+      /import\s*\{[^}]*\b(?:settleRendered|settleRenderedCanvases)\b[^}]*\}\s*from\s*"#browser\/gpu-sync\.ts"/u,
+      `${file} must import the shared GPU completion barrier from #browser/gpu-sync.ts`,
+    );
+    assert.match(
+      source,
+      /\b(?:settleRendered|settleRenderedCanvases)\(/u,
+      `${file} must call the shared GPU completion barrier, not merely import it`,
+    );
+  }
+
+  const bypass = [{
+    name: "introduced-bypass.ts",
+    source: "gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);",
+  }];
+  assert.throws(
+    () => assertNoGpuBarrierBypass(bypass, barrierFile),
+    /introduced-bypass\.ts reads pixels back outside the shared GPU completion barrier/,
+  );
+});
+
+async function browserHarnessSources(): Promise<readonly { readonly name: string; readonly source: string }[]> {
+  const directory = "test/browser";
+  const entries = await readdir(directory);
+  const files = entries.filter((entry) => entry.endsWith(".ts"));
+  return Promise.all(
+    files.map(async (entry) => ({ name: `${directory}/${entry}`, source: await readFile(`${directory}/${entry}`, "utf8") })),
+  );
+}
+
+/** Only `barrierFile` may read GPU pixels back directly; every other harness file must go through it. */
+function assertNoGpuBarrierBypass(files: readonly { readonly name: string; readonly source: string }[], barrierFile: string): void {
+  for (const file of files) {
+    if (file.name === barrierFile) {
+      continue;
+    }
+    if (/\breadPixels\(/u.test(file.source)) {
+      throw new Error(`${file.name} reads pixels back outside the shared GPU completion barrier`);
+    }
+  }
+}
 
 test("the closure register refuses a criterion with no resolvable source", async () => {
   const output = await failingOutput(async () => {

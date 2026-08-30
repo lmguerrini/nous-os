@@ -256,6 +256,176 @@
         "name": "matrix negative controls demonstrate the evidence can fail and are restored",
         "file": "test/closure-register.test.ts"
       }
+    },
+    {
+      "id": "B23",
+      "claim": "ScaleTopology: all four policies exercise per-level containment and neighbourhood worlds under the subset invariant, refusals are enforced by policy, and the holographic context bundle is actually drawn",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "scaleTopology",
+        "path": ["summary", "passing"],
+        "note": "scale-topology-manifest.json and static-controlled-manifest.json are both written by one `npm run test:scale-topology` command, only after every enumerated assertion above -- the four policies' containment and neighbourhood subset invariants, the three refusal controls, the holographic context bundle, the frame-containment invariant, and the negative control -- has thrown or resolved true. summary.passing is the only boolean either manifest exposes, and it is reached exclusively by that path; a failure anywhere upstream aborts the test before either file is written."
+      }
+    },
+    {
+      "id": "B24",
+      "claim": "MotionGrammar: all seven policies resolve; Still and every policy's own resting phase are byte-identical to the frozen static baselines (M3); governed identity holds per frame; resting completeness holds; reduced motion is a complete path; and the traceability/ablation evidence is genuine, not gated on wall-clock time",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "motionGrammar",
+        "path": ["summary", "passing"],
+        "note": "motion-m3-manifest.json and motion-ablation-manifest.json are both written by one `npm run test:motion` command. m3's own sections construct governedIdentity, frameContainmentInvariant, allByteIdentical, reducedMotionCollapsesToOmittedPhase and both restored negative controls (pixel-mismatch, resting-completeness) before summary.passing is set; a failure anywhere upstream throws and the file is never written."
+      }
+    },
+    {
+      "id": "B25",
+      "claim": "Motion blind materials (M1, M2) are honestly generated: no filename or path carries a policy or scaleTopology label, and sampled frames genuinely differ from rest",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "motionBlind",
+        "path": ["summary", "passing"],
+        "note": "motion-m1-manifest.json (noPolicyTokenInPaths) and motion-m2-manifest.json (noLabelInPaths) each name their own leakage control, but summary.passing is the one field name common to both files this single artifactFlag path can require; it is reached only after those named flags, and M1's framesGenuinelyDiffer control, have already asserted true. Both are written by the same `npm run test:motion` command as B24."
+      }
+    },
+    {
+      "id": "B26",
+      "claim": "Motion blind discrimination bars M1 and M2 are scored against the frozen preregistration -- by agent evaluators, not people",
+      "source": {
+        "kind": "humanRecord",
+        "location": "governance",
+        "record": "GR-4",
+        "why": "the M1/M2 score is a qualitative reading of rendered frames by an evaluator with no capability context, which nothing in this tree computes. The record itself states plainly that both evaluators are agents, not people, and that every human-comprehension question in the preregistration stays NOT_TESTED -- so this criterion may not be read as human evidence, only as a recorded agent judgement against a frozen bar.",
+        "outsideRepository": "the blind-discrimination result is governance-held under the project's public/private boundary alongside this capability's other judgement records; the governance gate verifies the named record exists"
+      }
+    },
+    {
+      "id": "B27",
+      "claim": "Temporal Playback: the three temporal classes stay distinct, every derived placement is traceable and never written back as an explicit fact, the unknown class is never dated, playback invents no element, no motion policy or phase changes historical membership, and enter/scrub/exit restores the all-time union",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "temporal",
+        "path": ["summary", "passing"],
+        "note": "temporal-manifest.json carries no per-test passed flag: all seven falsification tests (wrong clock, derived-as-fact, unknown silently dated, invented elements, motion changing membership, resting state wrong for its instant, exit not restoring the union), their seven negative controls, and the class-partition check are asserted inline and throw before the manifest is written, so summary.passing is the artifact's only boolean surface and is reached only once every one of them holds."
+      }
+    },
+    {
+      "id": "B28",
+      "claim": "Opening: policy off is a complete resting path, byte-identical to the accepted static foundation",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "opening",
+        "path": ["off", "matchesFoundation"],
+        "note": "opening-manifest.json's off.matchesFoundation compares the off capture's own decoded-pixel hash against the foundation capture's, both produced in the same run."
+      }
+    },
+    {
+      "id": "B29",
+      "claim": "Opening: reduced motion is a complete resting path, byte-identical to the accepted static foundation",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "opening",
+        "path": ["reducedMotion", "matchesFoundation"],
+        "note": "reducedMotion.resolvedPolicy records the configured opening policy collapsing to off under reducedMotion, and matchesFoundation compares that capture's decoded-pixel hash against the foundation's."
+      }
+    },
+    {
+      "id": "B30",
+      "claim": "Opening: the played arrival frame, derived from the fixture's own real governed valid-time history under a recorded deterministic seed, lands byte-identical to the accepted static foundation",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "opening",
+        "path": ["arrival", "matchesFoundation"],
+        "note": "opening.seed and opening.timeline record the deterministic basis (real history, never hardcoded) the played frames were derived from; arrival.matchesFoundation compares the final played frame's decoded-pixel hash against the accepted static foundation's."
+      }
+    },
+    {
+      "id": "B31",
+      "claim": "Opening: the recorded frame sequence is deterministic -- repeated generation under the same recorded seed produces an identical frame list",
+      "source": {
+        "kind": "artifactFlag",
+        "artifact": "opening",
+        "path": ["determinism", "repeatedFrameListIdentical"],
+        "note": "determinism.repeatedFrameListIdentical is computed by generating the timeline twice from the same recorded seed and comparing the resulting frame lists, not merely asserting the seed value is present."
+      }
+    },
+    {
+      "id": "B32",
+      "claim": "Control API: ControlState validation refuses every impossible state, through every validating construction route",
+      "source": {
+        "kind": "unitTest",
+        "name": "ControlState refuses every validator-owned rule through every validating assertion route, each with its own message",
+        "file": "test/engine/control-state.test.ts"
+      }
+    },
+    {
+      "id": "B33",
+      "claim": "Control API: normalizeControlState is idempotent",
+      "source": {
+        "kind": "unitTest",
+        "name": "normalizeControlState is idempotent",
+        "file": "test/engine/control-state.test.ts"
+      }
+    },
+    {
+      "id": "B34",
+      "claim": "Control API: serialize-then-load round-trips exactly, including through JSON, for a state with every field non-default",
+      "source": {
+        "kind": "unitTest",
+        "name": "serialize then load round-trips exactly, including through JSON, for a state with every field non-default",
+        "file": "test/engine/control-state.test.ts"
+      }
+    },
+    {
+      "id": "B35",
+      "claim": "Control API: eligibility is distinct from activation -- only the selected policy is ever resolved, regardless of how many policies are eligible",
+      "source": {
+        "kind": "unitTest",
+        "name": "eligibility does not mean simultaneous activation: only the selected policy is ever resolved, regardless of how many policies are eligible",
+        "file": "test/engine/control-state.test.ts"
+      }
+    },
+    {
+      "id": "B36",
+      "claim": "Capture integrity: every pixel read-back in the browser evidence harness waits on a GPU completion barrier rather than elapsed frames",
+      "source": {
+        "kind": "unitTest",
+        "name": "capture integrity: every browser evidence page module reads pixels back only through the shared GPU completion barrier, and an introduced bypass is refused",
+        "file": "test/closure-register.test.ts"
+      },
+      "note": "checked by source inspection rather than one evidence command, because the property is that no capture module bypasses test/browser/gpu-sync.ts, not a fact any single suite's own manifest records about itself."
+    },
+    {
+      "id": "B37",
+      "claim": "Relation attachment: every relation's drawn endpoints coincide with its source and target nodes' drawn positions, for every MotionGrammar policy at every sampled phase",
+      "source": {
+        "kind": "unitTest",
+        "name": "every relation's own drawn endpoints coincide with its source and target nodes' drawn positions, for every policy at every sampled phase",
+        "file": "test/scene/motion.test.ts"
+      }
+    },
+    {
+      "id": "B38",
+      "claim": "The human visual gate for MotionGrammar is PENDING: no human has approved the motion artifacts, and this register may not record one as having done so",
+      "source": {
+        "kind": "humanRecord",
+        "location": "governance",
+        "record": "GR-5",
+        "why": "human aesthetic acceptance of rendered motion is a judgement no machine check in this tree can make or fake. The record itself is explicit machine-side coordinator judgement, distinct from the human gate, and states in its own words that HUMAN_VISUAL_GATE for motion remains PENDING.",
+        "outsideRepository": "the coordinator's motion judgement, and the human gate status it names, are governance-held under the project's public/private boundary alongside this capability's other judgement records; the governance gate verifies the named record exists"
+      },
+      "note": "RESOLVED here means the PENDING declaration is verifiably present and named, not that the gate has been granted. Nothing in this repository may report human sign-off on motion, and this criterion is part of what keeps that true."
+    },
+    {
+      "id": "B39",
+      "claim": "Whether MotionGrammar, Temporal Playback or the opening sequence aid human comprehension is NOT_TESTED: both blind evaluators used for M1/M2 are agents, not people, and every human-comprehension question in the preregistration stays open",
+      "source": {
+        "kind": "humanRecord",
+        "location": "governance",
+        "record": "GR-4",
+        "why": "whether motion, temporal placement or opening playback aid a person's understanding is not something any test in this tree measures, and the record itself states that both evaluators are agents and that every human question in the preregistration remains NOT_TESTED.",
+        "outsideRepository": "the same governance record B26 verifies also carries this NOT_TESTED declaration; it is governance-held under the project's public/private boundary and the governance gate verifies it exists"
+      },
+      "note": "RESOLVED here means the NOT_TESTED declaration is verifiably present and named, not that comprehension has been measured. This is the deliberately weak-but-honest kind this register's own rule requires rather than silence."
     }
   ]
 }
