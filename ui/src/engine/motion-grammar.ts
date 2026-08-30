@@ -96,8 +96,26 @@ const RESTING_PHASES: Readonly<Record<MotionGrammar, number>> = {
   "recursive-bloom": 1,
 };
 
-const PULSE_AMPLITUDE_PERMILLE = 60;
-const RECONFIGURE_AMPLITUDE_PERMILLE = 260;
+/**
+ * These two are chosen against a measured readability bound, not against the [0, 1000] declared
+ * ceiling those two channels could otherwise reach: at each amplitude's own extreme (an envelope at
+ * its own peak magnitude, a max-seed element), Reconfigure's scale channel swings no lower than 0.3x
+ * and no higher than 1.7x identity size, and its offset channel displaces a node by at most roughly
+ * six tenths of that node's own radius; Pulse, sharing the mechanism at a visibly smaller amplitude,
+ * swings no lower than 0.65x and no higher than 1.35x. Measured against six sampled phases of the
+ * `discovery-at-question` fixture rendered at 1200x800 (the same method REF-MOTION-001's own finding
+ * used): raising these from 60/260 to 350/700 took Pulse's peak changed-pixel fraction from ~0.31% to
+ * ~0.81% of the frame and Reconfigure's from ~0.69% to ~1.08%, with the maximum single-channel delta
+ * and the mean delta over changed pixels rising alongside rather than merely the area, so the gain is
+ * genuinely stronger contrast and not only a wider blur. Amplitudes at or near the declared ceiling
+ * were measured and rejected: at 1000 permille (Reconfigure's own contractual maximum) a max-seed
+ * element's scale collapses to 0.001x at the envelope's peak -- a node effectively vanishing while its
+ * own opacity channel still reports full -- which is exactly the kind of excessive visual effect this
+ * capability's own standing finding on softness already found regresses topology readability, so
+ * headroom was kept below that ceiling rather than spent.
+ */
+const PULSE_AMPLITUDE_PERMILLE = 350;
+const RECONFIGURE_AMPLITUDE_PERMILLE = 700;
 /** This splits governed elements roughly in half by their own seed: everything at or above the midpoint of the seed range condenses away at the peak phase, everything below it only shrinks. */
 const CONDENSE_PERIPHERAL_THRESHOLD_PERMILLE = 500;
 const CONDENSE_CORE_SHRINK_PERMILLE = 500;
@@ -148,6 +166,80 @@ export function restingPhase(policy: MotionGrammar): number {
 /** This is the modulation at a policy's own resting phase, which the resting-completeness decision requires be complete for every governed node and relation. */
 export function restingModulation(policy: MotionGrammar, elementIds: MotionElementIds): MotionModulation {
   return motionModulation(policy, restingPhase(policy), elementIds);
+}
+
+/**
+ * This is the ground truth for one policy's own envelope symmetry: whether `phaseA` and `phaseB` are
+ * two distinct phases that policy's shared cyclic or converging envelope evaluates to the identical
+ * number at, before that number ever reaches a per-element amplitude, direction, or window -- which
+ * are all phase-independent, so an envelope tie is exactly the condition under which every governed
+ * node and relation renders byte-identically at both phases. Pulse and Reconfigure share
+ * `breathingEnvelope`, one full sine cycle across the phase domain, symmetric about both its own
+ * quarter points (0.25 and 0.75) as well as tying at every multiple of one half (0, 0.5, 1, all zero);
+ * Condense's single-hump `convergenceEnvelope` is symmetric about its own midpoint (0.5) alone. Still
+ * is exact identity at every phase by construction, not by envelope tie, so it is deliberately excluded
+ * here rather than reported as universally degenerate; Assemble, Dissolve, and RecursiveBloom reduce to
+ * `staggeredProgress`, a monotonic ramp with no repeated value across (0, 1) for a fixed element, so
+ * they report no ties either. This is what a sampler should consult instead of discovering a duplicate
+ * rendered frame by assertion failure, the way an earlier measurement here did at the half-cycle zero
+ * crossings and the way the phase pair (0.125, 0.375) would have at the quarter-point mirror.
+ */
+export function motionPhasesShareEnvelope(policy: MotionGrammar, phaseA: number, phaseB: number): boolean {
+  assertMotionGrammarMember(policy);
+  assertPhase(phaseA);
+  assertPhase(phaseB);
+  if (phaseA === phaseB) {
+    return false;
+  }
+  const envelopeA = sharedEnvelopeValue(policy, phaseA);
+  const envelopeB = sharedEnvelopeValue(policy, phaseB);
+  if (envelopeA === undefined || envelopeB === undefined) {
+    return false;
+  }
+  // Two mathematically equal envelope arguments (e.g. 2*pi*0.125 for one phase and 2*pi*0.375 for its
+  // own quarter-point mirror) do not always reach Math.sin as bit-identical floats, so this compares
+  // with a tolerance many orders below the smallest difference that could ever change a rendered
+  // channel: every formula built on this envelope rounds amplitude*envelope (amplitude at most 1000
+  // permille) to the nearest integer permille, so an envelope difference under 0.0005 can never change
+  // a rounded output, and ENVELOPE_TIE_EPSILON is far below even that.
+  return Math.abs(envelopeA - envelopeB) <= ENVELOPE_TIE_EPSILON;
+}
+
+/**
+ * This is `motionPhasesShareEnvelope` applied to filter one candidate phase list down to a subset with
+ * no two phases tying under this policy's own envelope, first occurrence winning and input order
+ * otherwise preserved, so a caller sampling evidence frames can ask for phases up front rather than
+ * detect a duplicate after having already rendered one.
+ */
+export function distinctMotionPhases(policy: MotionGrammar, candidatePhases: readonly number[]): readonly number[] {
+  assertMotionGrammarMember(policy);
+  const kept: number[] = [];
+  for (const phase of candidatePhases) {
+    assertPhase(phase);
+    if (!kept.some((keptPhase) => motionPhasesShareEnvelope(policy, keptPhase, phase))) {
+      kept.push(phase);
+    }
+  }
+  return kept;
+}
+
+const ENVELOPE_TIE_EPSILON = 1e-9;
+
+function sharedEnvelopeValue(policy: MotionGrammar, phase: number): number | undefined {
+  switch (policy) {
+    case "pulse":
+    case "reconfigure":
+      return breathingEnvelope(phase);
+    case "condense":
+      return convergenceEnvelope(phase);
+    case "still":
+    case "assemble":
+    case "dissolve":
+    case "recursive-bloom":
+      return undefined;
+    default:
+      return exhaustive(policy);
+  }
 }
 
 /**

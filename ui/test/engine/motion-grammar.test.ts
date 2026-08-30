@@ -11,7 +11,9 @@ import {
   STILL,
   assertMotionModulationKeying,
   assertRestingCompleteness,
+  distinctMotionPhases,
   motionModulation,
+  motionPhasesShareEnvelope,
   motionTraceability,
   restingModulation,
   restingPhase,
@@ -267,5 +269,114 @@ test("Pulse and Reconfigure share the same envelope: both are exactly identity w
   for (const phase of [0, 0.5, 1]) {
     identityCheck(motionModulation(PULSE, phase, ELEMENT_IDS));
     identityCheck(motionModulation(RECONFIGURE, phase, ELEMENT_IDS));
+  }
+});
+
+test("Pulse and Reconfigure are legible at mid-cycle: at least one governed node's scale (and, for Reconfigure, offset) moves well past a threshold no reader would mistake for stillness", () => {
+  const pulseMidCycle = motionModulation(PULSE, 0.25, ELEMENT_IDS);
+  assert.ok(
+    pulseMidCycle.nodes.some((node) => Math.abs(node.scalePermille - 1000) >= 150),
+    "Pulse at phase 0.25 never moved any node's scale by at least 150 permille (15% of identity size)",
+  );
+  const reconfigureMidCycle = motionModulation(RECONFIGURE, 0.25, ELEMENT_IDS);
+  assert.ok(
+    reconfigureMidCycle.nodes.some((node) => Math.abs(node.scalePermille - 1000) >= 300),
+    "Reconfigure at phase 0.25 never moved any node's scale by at least 300 permille (30% of identity size)",
+  );
+  assert.ok(
+    reconfigureMidCycle.nodes.some((node) => Math.hypot(node.offsetXPermille, node.offsetYPermille) >= 300),
+    "Reconfigure at phase 0.25 never displaced any node by at least 300 permille (30% of that node's own radius)",
+  );
+});
+
+test("Reconfigure's readability ceiling holds across every sampled phase: scale never collapses toward vanishing or balloons past double, matching the bound its own amplitude was chosen against", () => {
+  for (const phase of SAMPLE_PHASES) {
+    const modulation = motionModulation(RECONFIGURE, phase, ELEMENT_IDS);
+    for (const node of modulation.nodes) {
+      assert.ok(node.scalePermille >= 250, `Reconfigure@${phase} shrank ${node.id} to ${node.scalePermille} permille, past the chosen readability floor`);
+      assert.ok(node.scalePermille <= 1750, `Reconfigure@${phase} grew ${node.id} to ${node.scalePermille} permille, past the chosen readability ceiling`);
+    }
+  }
+});
+
+test("envelope symmetry: motionPhasesShareEnvelope agrees exactly with actual modulation equality, for every policy and a spread of phase pairs, not merely for the pairs it was designed against", () => {
+  const phases = [0, 0.1, 0.125, 0.2, 0.25, 0.3, 0.375, 0.4, 0.5, 0.6, 0.625, 0.7, 0.75, 0.8, 0.875, 0.9, 1];
+  const policiesWithSharedEnvelope = new Set<string>([PULSE, RECONFIGURE, CONDENSE]);
+  let ties = 0;
+  let distinctions = 0;
+  for (const policy of MOTION_GRAMMARS) {
+    for (const phaseA of phases) {
+      for (const phaseB of phases) {
+        if (phaseA === phaseB) {
+          continue;
+        }
+        const claimedTie = motionPhasesShareEnvelope(policy, phaseA, phaseB);
+        const actuallyTied = JSON.stringify(motionModulation(policy, phaseA, ELEMENT_IDS).nodes)
+          === JSON.stringify(motionModulation(policy, phaseB, ELEMENT_IDS).nodes);
+        // Still and the three staggered/converging-window policies (Assemble, Dissolve, RecursiveBloom)
+        // never claim a tie (see motion-grammar.ts's own reasoning), so this only cross-checks that a
+        // claimed tie is never wrong; it does not require every actual tie to be claimed for those four.
+        if (claimedTie) {
+          assert.ok(actuallyTied, `${policy} claimed phases ${phaseA} and ${phaseB} tie but their modulations differ`);
+          ties += 1;
+        } else if (actuallyTied && policiesWithSharedEnvelope.has(policy)) {
+          assert.fail(`${policy} phases ${phaseA} and ${phaseB} actually tie but were not claimed as a tie`);
+        } else {
+          distinctions += 1;
+        }
+      }
+    }
+  }
+  assert.ok(ties > 0, "no policy pair was ever claimed as a tie, so the positive half of this check is vacuous");
+  assert.ok(distinctions > 0, "every phase pair was claimed tied, so the negative half of this check is vacuous");
+});
+
+test("envelope symmetry: the specific pairs the CAP-13 finding named really do tie for Pulse and Reconfigure, and Condense has its own analogous tie the finding did not name", () => {
+  for (const policy of [PULSE, RECONFIGURE] as const) {
+    assert.ok(motionPhasesShareEnvelope(policy, 0.125, 0.375), `${policy} 0.125/0.375 expected to tie`);
+    assert.ok(motionPhasesShareEnvelope(policy, 0.625, 0.875), `${policy} 0.625/0.875 expected to tie`);
+  }
+  assert.ok(motionPhasesShareEnvelope(CONDENSE, 0.125, 0.875), "condense 0.125/0.875 expected to tie");
+  assert.ok(motionPhasesShareEnvelope(CONDENSE, 0.25, 0.75), "condense 0.25/0.75 expected to tie");
+  assert.ok(motionPhasesShareEnvelope(CONDENSE, 0.375, 0.625), "condense 0.375/0.625 expected to tie");
+  // Reconfigure's own 0.25 and 0.75 do not tie (unlike Condense's): the shared breathing envelope is
+  // an odd function about the half-cycle, not a mirror the way Condense's single hump is.
+  assert.ok(!motionPhasesShareEnvelope(RECONFIGURE, 0.25, 0.75), "reconfigure 0.25/0.75 unexpectedly tied");
+});
+
+test("envelope symmetry negative control: Still and the three staggered/window policies never report a tie, and a genuinely asymmetric pair never does either", () => {
+  for (const policy of [STILL, ASSEMBLE, DISSOLVE, RECURSIVE_BLOOM] as const) {
+    for (const phase of SAMPLE_PHASES) {
+      if (phase !== 0) {
+        assert.ok(!motionPhasesShareEnvelope(policy, 0, phase), `${policy} 0/${phase} unexpectedly tied`);
+      }
+    }
+  }
+  assert.ok(!motionPhasesShareEnvelope(RECONFIGURE, 0.1, 0.2), "reconfigure 0.1/0.2 unexpectedly tied");
+  assert.ok(!motionPhasesShareEnvelope(PULSE, 0.1, 0.2), "pulse 0.1/0.2 unexpectedly tied");
+});
+
+test("motionPhasesShareEnvelope requires a real phase pair and refuses reusing one phase against itself", () => {
+  assert.equal(motionPhasesShareEnvelope(RECONFIGURE, 0.25, 0.25), false);
+  assert.throws(() => motionPhasesShareEnvelope(RECONFIGURE, -0.1, 0.5), /phase must be a finite number in \[0, 1\]/);
+  assert.throws(() => motionPhasesShareEnvelope("outside" as never, 0, 0.5), /outside its closed vocabulary/);
+});
+
+test("distinctMotionPhases drops every later phase tied to an earlier one, keeps first-occurrence order, and is a no-op for policies with no envelope tie", () => {
+  const eighths = [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1];
+  assert.deepEqual(distinctMotionPhases(RECONFIGURE, eighths), [0, 0.125, 0.25, 0.625, 0.75]);
+  assert.deepEqual(distinctMotionPhases(CONDENSE, eighths), [0, 0.125, 0.25, 0.375, 0.5]);
+  for (const policy of [STILL, ASSEMBLE, DISSOLVE, RECURSIVE_BLOOM] as const) {
+    assert.deepEqual(distinctMotionPhases(policy, eighths), eighths, `${policy} unexpectedly dropped a phase`);
+  }
+  // Every phase distinctMotionPhases keeps is pairwise genuinely distinct in rendered output, cross-
+  // checking the filter against the same ground truth the earlier property test used.
+  const kept = distinctMotionPhases(RECONFIGURE, eighths);
+  for (let i = 0; i < kept.length; i += 1) {
+    for (let j = i + 1; j < kept.length; j += 1) {
+      const a = JSON.stringify(motionModulation(RECONFIGURE, kept[i] as number, ELEMENT_IDS).nodes);
+      const b = JSON.stringify(motionModulation(RECONFIGURE, kept[j] as number, ELEMENT_IDS).nodes);
+      assert.notEqual(a, b, `distinctMotionPhases kept ${kept[i]} and ${kept[j]} but they render identically`);
+    }
   }
 });

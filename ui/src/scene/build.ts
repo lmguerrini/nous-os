@@ -29,6 +29,8 @@ import { JUNCTION_MINIMUM_DEGREE, MYCELIUM, NEURAL, SHARED_SCENE_MATERIAL_TARGET
 import { assertIndraLayout, flatOrganization, indraLayout } from "#engine/organization.ts";
 import type { AggregateWindow } from "#engine/organization.ts";
 import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
+import { ATOMIC, HOLOGRAPHIC, assertChildWorld, holographicContext } from "#engine/scale-topology.ts";
+import type { ScaleNavigationPath } from "#engine/scale-topology.ts";
 import { TOKEN_RAMPS, resolveTokens, separationLuminance, separationRatio } from "#engine/tokens.ts";
 import type { OklchToken, TokenMap } from "#engine/tokens.ts";
 import { assertVisualState } from "#engine/visual-state.ts";
@@ -93,7 +95,14 @@ type ResolvedSceneInputs = {
  * from `VisualState` -- see motion-grammar.ts), so it is accepted only as this optional trailing
  * argument and defaults to `visualState.motionGrammar`'s own resting phase, at which every policy's
  * modulation is exact identity: an omitted phase, like an omitted `motionGrammar`, reproduces today's
- * static scene byte for byte.
+ * static scene byte for byte. `navigationPath` is the same kind of render input, one axis later: it is
+ * never carried by `VisualState` either (see visual-state.ts's own precedent for `scaleTopology`), so
+ * it too is accepted only as this optional trailing argument. An omitted or root-only navigationPath
+ * renders the whole canonical graph exactly as before this axis existed, for every scaleTopology policy
+ * alike, which is what keeps top-level rendering byte-identical. Once a world is entered, Atomic,
+ * Hierarchical, and Recursive render exactly that world's own node and relation ids; Holographic renders
+ * the same world plus its own preserved-context bundle -- computed by `#engine/scale-topology.ts` and
+ * never fabricated here (see resolveScaleNavigationGraph).
  */
 export function buildScene(
   graph: VisualGraph,
@@ -102,11 +111,13 @@ export function buildScene(
   tokensOrCamera?: TokenMap | CameraKind,
   cameraOrTokens?: CameraKind | TokenMap,
   phase?: number,
+  navigationPath?: ScaleNavigationPath,
 ): Scene {
   assertCalibrationProfile(calibration);
   assertVisualState(graph, visualState);
   const inputs = resolveSceneInputs(visualState, tokensOrCamera, cameraOrTokens);
-  const { graph: tracedGraph, trace } = createEngineGraphView(graph);
+  const renderedGraph = resolveScaleNavigationGraph(graph, visualState, navigationPath);
+  const { graph: tracedGraph, trace } = createEngineGraphView(renderedGraph);
   const engineGraph = orderEngineGraph(tracedGraph);
   const morphology = morphologyProfile(visualState.morphology);
   const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration, SHARED_SCENE_MATERIAL_TARGET);
@@ -196,6 +207,97 @@ export function buildScene(
   const motionScene = applyMotionGrammar(scene, engineGraph, motionPolicy, motionPhase);
   assertSceneFieldRegister(motionScene);
   return motionScene;
+}
+
+/**
+ * This resolves what buildScene actually renders once a scale-topology navigation path has entered a
+ * child world. Atomic, Hierarchical, and Recursive render exactly that world's own node and relation
+ * ids, nothing more -- the same restriction the browser scale-topology harness already applies by hand
+ * today. Holographic renders the same world plus its own preserved-context bundle: real relations
+ * crossing the world's own boundary, their real outside endpoints, and every root on the path back to
+ * the canonical top level -- all three read directly from `holographicContext`, which this module only
+ * consumes and never recomputes or approximates. An omitted or root-only navigationPath (path.worlds
+ * empty) returns the canonical graph unchanged, which is what keeps top-level rendering byte-identical
+ * for every scaleTopology policy alike.
+ */
+function resolveScaleNavigationGraph(
+  graph: VisualGraph,
+  visualState: VisualState,
+  navigationPath: ScaleNavigationPath | undefined,
+): VisualGraph {
+  if (navigationPath === undefined || navigationPath.worlds.length === 0) {
+    return graph;
+  }
+  const declaredPolicy = visualState.scaleTopology ?? ATOMIC;
+  if (navigationPath.policy !== declaredPolicy) {
+    throw new TypeError("scene navigation path policy does not match visualState.scaleTopology");
+  }
+  const currentWorld = navigationPath.worlds[navigationPath.worlds.length - 1];
+  if (currentWorld === undefined) {
+    throw new TypeError("scene navigation path is missing its current world");
+  }
+  assertChildWorld(graph, currentWorld);
+  const nodeIds = new Set(currentWorld.nodeIds);
+  const edgeIds = new Set(currentWorld.edgeIds);
+  if (navigationPath.policy === HOLOGRAPHIC) {
+    const context = holographicContext(graph, navigationPath);
+    for (const relation of context.boundaryRelations) {
+      edgeIds.add(relation.edgeId);
+      nodeIds.add(relation.outsideNodeId);
+    }
+    for (const breadcrumb of context.pathBack) {
+      nodeIds.add(breadcrumb.rootId);
+    }
+  }
+  const navigatedGraph = projectNavigatedGraph(graph, nodeIds, edgeIds);
+  assertNavigatedGraphSubset(graph, navigatedGraph);
+  return navigatedGraph;
+}
+
+/**
+ * This filters the canonical graph down to exactly the requested node and relation ids and does not
+ * itself decide which ids belong: resolveScaleNavigationGraph has already assembled that set from
+ * scale-topology.ts's own governed computation.
+ */
+function projectNavigatedGraph(
+  graph: VisualGraph,
+  nodeIds: ReadonlySet<string>,
+  edgeIds: ReadonlySet<string>,
+): VisualGraph {
+  return {
+    schema_version: graph.schema_version,
+    policy_id: graph.policy_id,
+    question: { valid_at: graph.question.valid_at, recorded_as_of: graph.question.recorded_as_of },
+    nodes: graph.nodes.filter((node) => nodeIds.has(node.id)),
+    edges: graph.edges.filter((edge) => edgeIds.has(edge.id)),
+  };
+}
+
+/**
+ * This is the same cross-level subset invariant scale-topology.ts's own assertChildWorld enforces,
+ * re-checked directly against what this module is about to render: every node this scene is about to
+ * draw must already be a member of the canonical graph, and every relation it draws must both be a
+ * member of the canonical graph and have both endpoints inside the graph actually being drawn. It is
+ * exported so this boundary's own refusal is directly testable against a fabricated navigated graph,
+ * without needing a broken navigation path to reach it.
+ */
+export function assertNavigatedGraphSubset(canonical: VisualGraph, navigated: VisualGraph): void {
+  const canonicalNodeIds = new Set(canonical.nodes.map((node) => node.id));
+  const canonicalEdgeIds = new Set(canonical.edges.map((edge) => edge.id));
+  const navigatedNodeIds = new Set(navigated.nodes.map((node) => node.id));
+  for (const node of navigated.nodes) {
+    if (!canonicalNodeIds.has(node.id)) {
+      throw new TypeError(`scene navigated graph names a node absent from the canonical graph: ${node.id}`);
+    }
+  }
+  for (const edge of navigated.edges) {
+    if (!canonicalEdgeIds.has(edge.id)) {
+      throw new TypeError(`scene navigated graph names a relation absent from the canonical graph: ${edge.id}`);
+    }
+    if (!navigatedNodeIds.has(edge.source) || !navigatedNodeIds.has(edge.target)) {
+      throw new TypeError(`scene navigated graph relation endpoint is missing from its own node set: ${edge.id}`);
+    }
+  }
 }
 
 /**
