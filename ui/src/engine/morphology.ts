@@ -125,7 +125,7 @@ export function applyMorphology(
     const hopDistance = hops.get(node.id) ?? 0;
     const terminal = nodeDegree <= TERMINAL_DEGREE;
     const sizeRange = calibration.salience.maxNodeSizePx - calibration.salience.minNodeSizePx;
-    const prominence = normalisedProminence(nodeDegree, minimumDegree, maximumDegree, calibration);
+    const prominence = normalisedProminence(nodeDegree, minimumDegree, maximumDegree, calibration, sharedScene);
     const baseSize = calibration.salience.minNodeSizePx + (prominence * sizeRange);
     const terminalSizeMultiplier = terminal
       ? (sharedScene ? material.sharedSceneTerminalSizeMultiplierPermille : material.terminalSizeMultiplierPermille)
@@ -187,8 +187,8 @@ export function applyMorphology(
     const taperPermille = morphology.id === NEURAL.id ? neuralTaper : PERMILLE;
     const sourceDegree = degree.get(edge.source) ?? 0;
     const targetDegree = degree.get(edge.target) ?? 0;
-    const sourceProminence = normalisedProminence(sourceDegree, minimumDegree, maximumDegree, calibration);
-    const targetProminence = normalisedProminence(targetDegree, minimumDegree, maximumDegree, calibration);
+    const sourceProminence = normalisedProminence(sourceDegree, minimumDegree, maximumDegree, calibration, sharedScene);
+    const targetProminence = normalisedProminence(targetDegree, minimumDegree, maximumDegree, calibration, sharedScene);
     const sourceIsProximal = sourceHop <= targetHop;
     const widthStartPermille = morphology.id === NEURAL.id && !sourceIsProximal
       ? (sharedScene ? material.sharedSceneFilamentWidthEndPermille : material.filamentWidthEndPermille)
@@ -296,9 +296,19 @@ function normalisedProminence(
   minimumDegree: number,
   maximumDegree: number,
   calibration: CalibrationProfile,
+  sharedScene: boolean,
 ): number {
   if (maximumDegree === minimumDegree) {
-    return 0;
+    // A rendered set whose every node carries the same incidence count gives degree no basis to call
+    // any one of them more or less prominent than another. Returning the floor here silently invented
+    // a demotion the graph does not support: a node that was the unique maximum in a narrower rendered
+    // set (Recursive's own world) fell to the same minimum as its neighbours the moment a wider,
+    // degree-levelling rendered set (Holographic's preserved-context bundle) made every degree equal,
+    // even though nothing about that node's own governed incidence changed. The neutral midpoint
+    // renders every tied node at one consistent, unprivileged weight instead of the floor.
+    // Shared-scene only: the legacy renderer keeps its original (frozen, unexamined) zero so its
+    // pixels do not move.
+    return sharedScene ? 0.5 : 0;
   }
   const exponent = calibration.salience.degreeExponentPermille / PERMILLE;
   const raw = (value: number): number => Math.pow(value + TERMINAL_DEGREE, exponent);

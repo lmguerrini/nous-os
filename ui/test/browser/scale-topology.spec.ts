@@ -34,6 +34,7 @@ import {
   rootNavigationPath,
 } from "#engine/scale-topology.ts";
 import type { ChildWorld, HolographicContext, ScaleNavigationPath, ScaleTopology } from "#engine/scale-topology.ts";
+import type { VisualStateCamera } from "#engine/visual-state.ts";
 import { assertLitPixelFloor, SHIPPING_DARK_FIELD_RGB } from "#browser/lit-floor.ts";
 import type { PixelImage } from "#browser/lit-floor.ts";
 import { decodePng, pixelSha256, pngDimensions } from "#browser/png-codec.ts";
@@ -73,7 +74,7 @@ type Level = {
 
 type CaptureRecord = {
   readonly fileName: string;
-  readonly comparison: "isolate" | "compose" | "transfer";
+  readonly comparison: "isolate" | "compose" | "transfer" | "static-controlled";
   readonly scaleTopology: ScaleTopology;
   readonly organization: Organization;
   readonly projection: "2d" | "3d";
@@ -395,6 +396,180 @@ test("governed scale-topology ablation", async ({ page }, testInfo) => {
 });
 
 // ---------------------------------------------------------------------------------------------
+// Static controlled comparison: Recursive vs Holographic, AT REST, under one shared camera per level.
+// This answers a human verdict recorded against the frozen static captures -- "STRUCTURALLY QUALIFIED
+// BUT STATICALLY UNDER-DIFFERENTIATED FROM RECURSIVE" -- with the still-frame measurement that verdict
+// was actually about; everything measured elsewhere in this repository (the M2 test in motion.spec.ts)
+// is under motion. It reports what is measured and re-judges nothing. Runs after the primary ablation
+// test above (never a top-level `rm` of its own: this suite's single worker runs the file in
+// declaration order, and this test's own files must survive alongside, not replace, the primary
+// test's own `dist/scale-topology/` output).
+// ---------------------------------------------------------------------------------------------
+
+type StaticControlledLevelRecord = {
+  readonly levelIndex: number;
+  readonly rootId: string;
+  readonly recursive: { readonly fileName: string; readonly nodeIds: readonly string[]; readonly edgeIds: readonly string[] };
+  readonly holographic: { readonly fileName: string; readonly nodeIds: readonly string[]; readonly edgeIds: readonly string[] };
+  readonly holographicAddedNodeIds: readonly string[];
+  readonly holographicAddedEdgeIds: readonly string[];
+  readonly holographicUnavailable: typeof HOLOGRAPHIC_UNAVAILABLE_CONTEXT;
+  readonly noClippingInvariant: { readonly marginCssPx: number; readonly passed: true };
+  readonly identical: boolean;
+  readonly changedPixelFraction: number;
+};
+
+type StaticControlledManifest = {
+  readonly schemaVersion: 1;
+  readonly summary: { readonly passing: true };
+  readonly run: { readonly command: string; readonly trackedTree: TrackedTreeIdentity };
+  readonly label: "HUMAN REVIEW -- for a person to look at directly, not a blind evaluation artifact";
+  readonly assertion: string;
+  readonly heldConstant: Readonly<Record<string, string>>;
+  readonly sharedCamera: { readonly source: "holographic"; readonly note: string };
+  readonly levels: readonly StaticControlledLevelRecord[];
+};
+
+test("CAP-13 human review: Recursive vs Holographic, static, one shared camera per level", async ({ page }, testInfo) => {
+  test.skip(!SCALE_TOPOLOGY_ENABLED || testInfo.project.name !== SCALE_TOPOLOGY_PROJECT, "run this through the dedicated scale-topology project");
+  if (!SCALE_TOPOLOGY_ENABLED || testInfo.project.name !== SCALE_TOPOLOGY_PROJECT) {
+    return;
+  }
+  expect(await page.evaluate(() => window.devicePixelRatio)).toBe(1);
+
+  const observedTrackedTree = await currentTrackedTreeState();
+  await mkdir(ROOT_DIRECTORY, { recursive: true });
+
+  const raw: unknown = JSON.parse(await readFile(join("..", FIXTURE_PATH), "utf8"));
+  const graph = toVisualGraph(raw);
+  assertVisualGraphFieldRegister(graph);
+  const canonicalNodeIds = graph.nodes.map((node) => node.id).sort();
+  const canonicalEdgeIds = graph.edges.map((edge) => edge.id).sort();
+
+  const containmentRootId = strongestContainmentRoot(graph);
+  const recursiveWalk = buildRecursiveWalk(graph, RECURSIVE, containmentRootId, RECURSIVE_TARGET_DEPTH);
+  const holographicWalk = buildRecursiveWalk(graph, HOLOGRAPHIC, containmentRootId, RECURSIVE_TARGET_DEPTH);
+  if (recursiveWalk.path.worlds.length < RECURSIVE_TARGET_DEPTH || holographicWalk.path.worlds.length < RECURSIVE_TARGET_DEPTH) {
+    throw new Error(
+      `scale-topology static controlled comparison requires ${RECURSIVE_TARGET_DEPTH} reachable levels, `
+      + `found recursive=${recursiveWalk.path.worlds.length}, holographic=${holographicWalk.path.worlds.length}`,
+    );
+  }
+  const recursiveLevels = walkLevels(RECURSIVE, recursiveWalk.path);
+  const holographicLevels = walkLevels(HOLOGRAPHIC, holographicWalk.path);
+
+  const pageModule = await bundlePageModule();
+  await installPage(page, pageModule);
+  const levelRecords: StaticControlledLevelRecord[] = [];
+  try {
+    const fixtureWitness = await prepareFixture(page, FIXTURE_PATH);
+    expect(fixtureWitness.semanticDigest).toBe(semanticDigest(graph));
+
+    for (let index = 0; index < RECURSIVE_TARGET_DEPTH; index += 1) {
+      const holographicLevel = holographicLevels[index];
+      const recursiveLevel = recursiveLevels[index];
+      if (holographicLevel === undefined || recursiveLevel === undefined || holographicLevel.world === null || recursiveLevel.world === null) {
+        throw new Error(`scale-topology static controlled comparison is missing level ${index + 1}`);
+      }
+      const levelIndex = index + 1;
+      // Holographic first, at this level's own resolved (marginedAnchorBounds-refit) camera; its
+      // extent is a superset of Recursive's at every level (see the finding table this test answers),
+      // so the shared frame this camera produces contains both policies' own rendered anchors.
+      const holographicCapture = await requestCapture(
+        page,
+        "static-controlled",
+        HOLOGRAPHIC,
+        INDRA,
+        "3d",
+        levelIndex,
+        holographicLevel.world,
+        holographicLevel.navigationPath,
+        canonicalNodeIds,
+        canonicalEdgeIds,
+      );
+      // Recursive re-captured under Holographic's own camera -- an observed output made an input,
+      // never recomputed -- so the changed-pixel fraction below is attributable to what is drawn, not
+      // to two different cameras (mirrors motion.spec.ts's own M2 controlled comparison exactly).
+      const recursiveCapture = await requestCapture(
+        page,
+        "static-controlled",
+        RECURSIVE,
+        INDRA,
+        "3d",
+        levelIndex,
+        recursiveLevel.world,
+        recursiveLevel.navigationPath,
+        canonicalNodeIds,
+        canonicalEdgeIds,
+        holographicCapture.camera,
+      );
+      if (recursiveCapture.pixelSha256 === holographicCapture.pixelSha256) {
+        throw new Error(`scale-topology static controlled comparison level ${levelIndex} rendered identically despite Holographic carrying more governed content`);
+      }
+      const holographicImage = decodePng(await readFile(join(ROOT_DIRECTORY, holographicCapture.fileName)), holographicCapture.fileName);
+      const recursiveImage = decodePng(await readFile(join(ROOT_DIRECTORY, recursiveCapture.fileName)), recursiveCapture.fileName);
+      const fraction = changedPixelFraction(recursiveImage, holographicImage, recursiveCapture.fileName, holographicCapture.fileName);
+
+      const context = holographicContext(graph, holographicLevel.navigationPath ?? rootNavigationPath(HOLOGRAPHIC));
+      const recursiveNodeIdSet = new Set(recursiveCapture.nodeIds);
+      const recursiveEdgeIdSet = new Set(recursiveCapture.edgeIds);
+      const holographicAddedNodeIds = holographicCapture.nodeIds.filter((id) => !recursiveNodeIdSet.has(id));
+      const holographicAddedEdgeIds = holographicCapture.edgeIds.filter((id) => !recursiveEdgeIdSet.has(id));
+
+      levelRecords.push({
+        levelIndex,
+        rootId: holographicLevel.world.rootId,
+        recursive: { fileName: recursiveCapture.fileName, nodeIds: recursiveCapture.nodeIds, edgeIds: recursiveCapture.edgeIds },
+        holographic: { fileName: holographicCapture.fileName, nodeIds: holographicCapture.nodeIds, edgeIds: holographicCapture.edgeIds },
+        holographicAddedNodeIds,
+        holographicAddedEdgeIds,
+        holographicUnavailable: context.unavailable,
+        noClippingInvariant: { marginCssPx: FRAME_CONTAINMENT_MARGIN_CSS_PX, passed: true },
+        identical: false,
+        changedPixelFraction: fraction,
+      });
+    }
+
+    const completedTrackedTree = await currentTrackedTreeState();
+    const trackedTree = trackedTreeIdentity(observedTrackedTree, completedTrackedTree);
+    if (!trackedTree.stable) {
+      throw new Error("scale-topology static controlled comparison tracked-tree digest changed while its captures were produced");
+    }
+
+    const manifest: StaticControlledManifest = {
+      schemaVersion: 1,
+      summary: { passing: true },
+      run: { command: SCALE_TOPOLOGY_COMMAND, trackedTree },
+      label: "HUMAN REVIEW -- for a person to look at directly, not a blind evaluation artifact",
+      assertion:
+        "Recursive and Holographic captured AT REST (this suite's own reducedMotion: true) at the same three navigated levels of the same "
+        + "containment walk, Recursive re-rendered under Holographic's own camera (read back off Holographic's mounted renderer via "
+        + "ScaleTopologyCaptureWitness.visualState.camera, never recomputed) so the changed-pixel fraction below is attributable to what "
+        + "is drawn, not to two different cameras. This measures the still frame a prior human verdict against the frozen static captures "
+        + "(\"STRUCTURALLY QUALIFIED BUT STATICALLY UNDER-DIFFERENTIATED FROM RECURSIVE\") was actually about; everything measured "
+        + "elsewhere in this repository (motion.spec.ts's own M2 test) is under motion. This artifact reports what is measured; it does "
+        + "not re-judge that verdict.",
+      heldConstant: { graph: FIXTURE_ID, organization: INDRA, morphology: MORPHOLOGY, projection: "3d", calibration: "DEFAULT_CALIBRATION", reducedMotion: "true" },
+      sharedCamera: {
+        source: "holographic",
+        note: "Holographic's rendered extent is a superset of Recursive's at every level, so the frame this camera resolves against contains both policies' own rendered anchors; Recursive's own capture at this camera is checked (not assumed) to fall inside it by the same 64px-margin frame-containment invariant every capture in this suite already carries.",
+      },
+      levels: levelRecords,
+    };
+    const manifestFile = join(ROOT_DIRECTORY, "static-controlled-manifest.json");
+    await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    process.stdout.write(
+      `scale-topology static controlled (human review): `
+      + levelRecords.map((record) => `level${record.levelIndex} recursive=${record.recursive.nodeIds.length}n/${record.recursive.edgeIds.length}e `
+        + `holographic=${record.holographic.nodeIds.length}n/${record.holographic.edgeIds.length}e changed=${(record.changedPixelFraction * 100).toFixed(3)}%`).join("; ")
+      + `; manifest=${manifestFile}\n`,
+    );
+  } finally {
+    await destroyPage(page);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
 // Structural helpers -- pure `#engine/scale-topology.ts` arithmetic, no mounted renderer required.
 // ---------------------------------------------------------------------------------------------
 
@@ -603,7 +778,7 @@ async function captureComparison(
  */
 async function requestCapture(
   page: Page,
-  comparison: "isolate" | "compose" | "transfer",
+  comparison: "isolate" | "compose" | "transfer" | "static-controlled",
   policy: ScaleTopology,
   organization: Organization,
   projection: "2d" | "3d",
@@ -612,13 +787,15 @@ async function requestCapture(
   navigationPath: ScaleNavigationPath | undefined,
   canonicalNodeIds: readonly string[],
   canonicalEdgeIds: readonly string[],
-): Promise<CaptureRecord> {
+  sharedCamera?: VisualStateCamera,
+): Promise<CaptureRecord & { readonly camera: VisualStateCamera }> {
   const request: ScaleTopologyCaptureRequest = {
     morphology: MORPHOLOGY,
     organization,
     projection,
     scaleTopology: policy,
     ...(navigationPath === undefined ? {} : { navigationPath }),
+    ...(sharedCamera === undefined ? {} : { sharedCamera }),
   };
   const witness = await invokeCapture(page, request);
   const fileName = `${comparison}-${policy}-${organization}-${projection}-level${levelIndex}.png`;
@@ -662,6 +839,7 @@ async function requestCapture(
     cameraKind: witness.cameraKind,
     pixelSha256: pixelSha256(image),
     pixelDimensions: dimensions,
+    camera: witness.visualState.camera,
   };
 }
 
@@ -729,6 +907,32 @@ function assertNodesInsideCapturedFrame(
       + `resolved node positions fall outside the captured frame; e.g. ${sample}`,
     );
   }
+}
+
+/**
+ * The fraction of RGBA pixels that differ between two equally-dimensioned decoded rasters, used to
+ * measure (never gate) how much a rendered comparison actually changed. Mirrors motion.ts's own
+ * `changedPixelFraction` exactly (duplicated rather than imported: that file exports nothing this
+ * suite is allowed to import from, and motion.ts is outside this suite's own write ceiling).
+ */
+function changedPixelFraction(a: PixelImage, b: PixelImage, aName: string, bName: string): number {
+  if (a.width !== b.width || a.height !== b.height) {
+    throw new Error(`scale-topology changed-pixel comparison requires equal dimensions: ${aName} is ${a.width}x${a.height}, ${bName} is ${b.width}x${b.height}`);
+  }
+  const totalPixels = a.width * a.height;
+  let changed = 0;
+  for (let pixelIndex = 0; pixelIndex < totalPixels; pixelIndex += 1) {
+    const offset = pixelIndex * 4;
+    if (
+      a.data[offset] !== b.data[offset]
+      || a.data[offset + 1] !== b.data[offset + 1]
+      || a.data[offset + 2] !== b.data[offset + 2]
+      || a.data[offset + 3] !== b.data[offset + 3]
+    ) {
+      changed += 1;
+    }
+  }
+  return changed / totalPixels;
 }
 
 // ---------------------------------------------------------------------------------------------

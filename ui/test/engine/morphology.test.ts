@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import type { EngineGraph } from "#engine/contract.ts";
 import { createSemantic, semanticDigest } from "#engine/contract.ts";
 import {
   MYCELIUM,
@@ -98,6 +99,44 @@ test("morphology normalises prominence from rendered graph incidence and carries
     neural.nodes.map((node) => [node.coreSizePx, node.haloRadiusPx]),
     mycelium.nodes.map((node) => [node.coreSizePx, node.haloRadiusPx]),
   );
+});
+
+/**
+ * This is a rendered set where every node carries the same incidence count (a triangle: three nodes,
+ * each degree 2) -- the exact condition Holographic's own preserved-context bundle can produce by
+ * levelling a navigated world's degree range (see the level-1 `cluster:shared-synthetic-cluster` case
+ * this test reproduces structurally), not a graph any node happens to name.
+ */
+function uniformDegreeTriangle(): EngineGraph {
+  const visualRole = { role: "generic", label_priority: 0 };
+  return {
+    nodes: [
+      { id: "n1", kind: "node", visual: visualRole },
+      { id: "n2", kind: "node", visual: visualRole },
+      { id: "n3", kind: "node", visual: visualRole },
+    ],
+    edges: [
+      { id: "e12", kind: "relation", source: "n1", target: "n2", visual: visualRole },
+      { id: "e23", kind: "relation", source: "n2", target: "n3", visual: visualRole },
+      { id: "e31", kind: "relation", source: "n3", target: "n1", visual: visualRole },
+    ],
+  };
+}
+
+test("a rendered set with no degree spread renders every node at a neutral shared-scene prominence, not the floor", () => {
+  const graph = uniformDegreeTriangle();
+  const shared = applyMorphology(graph, STELLAR, DEFAULT_CALIBRATION, SHARED_SCENE_MATERIAL_TARGET);
+  for (const node of shared.nodes) {
+    assert.equal(node.prominencePermille, 500);
+  }
+});
+
+test("a rendered set with no degree spread keeps the legacy renderer's original floor prominence, unmoved", () => {
+  const graph = uniformDegreeTriangle();
+  const legacy = applyMorphology(graph, STELLAR, DEFAULT_CALIBRATION);
+  for (const node of legacy.nodes) {
+    assert.equal(node.prominencePermille, 0);
+  }
 });
 
 test("the shared-scene extension activates curvature and widened material without moving the legacy renderer path", () => {

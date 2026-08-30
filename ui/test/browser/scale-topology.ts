@@ -33,6 +33,16 @@ export type ScaleTopologyCaptureRequest = {
   /** This is recorded into VisualState.scaleTopology and does not itself select what is rendered; `navigationPath`, if present, does that. */
   readonly scaleTopology: ScaleTopology;
   readonly navigationPath?: ScaleNavigationPath;
+  /**
+   * When present, this capture's camera is driven directly by this value instead of being refit from
+   * this capture's own rendered anchors (the `marginedAnchorBounds` refit below, applied whenever
+   * `navigationPath` names at least one world and this is omitted). The intended source is another
+   * capture's own `ScaleTopologyCaptureWitness.visualState.camera` -- itself read off that renderer's
+   * `readCameraState()` (see mount.tsx) -- fed here as this capture's input, an observed output made an
+   * input rather than anything recomputed. Mirrors `MotionCaptureRequest.sharedCamera`
+   * (`ui/test/browser/motion.ts`) exactly. Requires `navigationPath`.
+   */
+  readonly sharedCamera?: VisualStateCamera;
 };
 
 export type ScaleTopologyFixtureWitness = {
@@ -131,11 +141,15 @@ export async function installScaleTopologyPage(): Promise<void> {
       if (request.navigationPath !== undefined && request.navigationPath.policy !== request.scaleTopology) {
         throw new Error("scale-topology capture navigationPath policy does not match its own scaleTopology");
       }
+      if (request.sharedCamera !== undefined && request.navigationPath === undefined) {
+        throw new Error("scale-topology capture requires navigationPath to drive a sharedCamera");
+      }
       await destroy();
+      const camera = request.sharedCamera !== undefined ? request.sharedCamera : fixtureCamera;
       const visualState = createVisualState(canonicalGraph, {
         selectedId: null,
         focusedId: null,
-        camera: copyCamera(fixtureCamera),
+        camera: copyCamera(camera),
         cameraKind: cameraKindFor(request.projection),
         morphology: request.morphology,
         organization: request.organization,
@@ -166,8 +180,13 @@ export async function installScaleTopologyPage(): Promise<void> {
       // projection computed here -- the navigated node set is never recomputed, only its already-
       // mounted positions are read. The canonical root (`navigationPath` omitted, or present with no
       // worlds entered) keeps `fixtureCamera` unrefined, matching every other top-level capture.
+      // request.sharedCamera !== undefined: the mount above was already seeded (via `visualState.camera`
+      // passed as mount()'s own `initialVisualState`) with the caller-supplied camera, so there is
+      // nothing to refit here -- `expectedState` stays `visualState` and the camera this capture
+      // renders with is exactly the one the caller handed in, unperturbed by this capture's own content
+      // (mirrors motion.ts's own `sharedCamera` handling exactly).
       let expectedState = visualState;
-      if (request.navigationPath !== undefined && request.navigationPath.worlds.length > 0) {
+      if (request.navigationPath !== undefined && request.navigationPath.worlds.length > 0 && request.sharedCamera === undefined) {
         const anchors = mounted.readWorldAnchorWitnesses();
         if (anchors.length === 0) {
           throw new Error("scale-topology capture navigationPath rendered no anchors to frame");
