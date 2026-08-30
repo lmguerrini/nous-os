@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { currentTrackedTreeState } from "#test/tracked-tree.ts";
+import type { TrackedTreeState } from "#test/tracked-tree.ts";
 
 /**
  * This resolves every CAP-13 criterion to a machine-readable status and does not accept silence as one.
@@ -322,7 +323,9 @@ async function resolve(criterion: Criterion): Promise<string> {
 async function resolveOrThrow(criterion: Criterion): Promise<void> {
   const source = criterion.source;
   if (source.kind === "artifactCheck") {
-    const parsed = await readArtifact(requiredFirstArtifactPath(source.artifact));
+    const path = requiredFirstArtifactPath(source.artifact);
+    const parsed = await readArtifact(path);
+    await assertArtifactBoundToCurrentTree(criterion.id, path, parsed);
     const checks = Array.isArray(parsed["checks"]) ? parsed["checks"] as readonly Record<string, unknown>[] : [];
     if (source.checkName.trim() === "") {
       // Every string starts with the empty string, so an empty name matched every record and the
@@ -340,27 +343,9 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
     return;
   }
   if (source.kind === "artifactBound") {
-    const parsed = await readArtifact(requiredFirstArtifactPath(source.artifact));
-    const run = parsed["run"];
-    const tree = isRecord(run) ? run["trackedTree"] : undefined;
-    if (!isRecord(tree)) {
-      throw new Error(`${criterion.id} artifact carries no tracked-tree identity`);
-    }
-    // Presence was the whole check, so an all-zero, dirty, unstable identity resolved. That is the
-    // F26 shape exactly — the artifact looks bound and is not — so the recorded identity is now
-    // compared against the tree that exists.
-    const current = await currentTrackedTreeState();
-    if (tree["measuredSha256"] !== current.sha256 || tree["completedSha256"] !== current.sha256) {
-      throw new Error(`${criterion.id} artifact identity ${String(tree["measuredSha256"]).slice(0, 12)} is not the current tree ${current.sha256.slice(0, 12)}`);
-    }
-    // The CURRENT tree must also be clean. The recorded statuses were compared and the live one was
-    // not, so an artifact recording clean statuses resolved against a dirty working tree.
-    if (current.statusPorcelain !== "") {
-      throw new Error(`${criterion.id} resolves against a dirty working tree, whatever the artifact recorded`);
-    }
-    if (tree["measuredStatusPorcelain"] !== "" || tree["completedStatusPorcelain"] !== "" || tree["stable"] !== true) {
-      throw new Error(`${criterion.id} artifact was measured against a moving or dirty tree`);
-    }
+    const path = requiredFirstArtifactPath(source.artifact);
+    const parsed = await readArtifact(path);
+    await assertArtifactBoundToCurrentTree(criterion.id, path, parsed);
     return;
   }
   if (source.kind === "unitTest") {
@@ -396,6 +381,7 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
   if (source.kind === "artifactFlag") {
     for (const path of artifactPaths(source.artifact)) {
       const parsed = await readArtifact(path);
+      await assertArtifactBoundToCurrentTree(criterion.id, path, parsed);
       let value: unknown = parsed;
       for (const segment of source.path) {
         value = isRecord(value) ? value[segment] : undefined;
@@ -455,6 +441,46 @@ function requiredFirstArtifactPath(artifact: keyof typeof ARTIFACT_PATHS): strin
     throw new Error(`${artifact} spans ${artifactPaths(artifact).length} files; this source kind reads one`);
   }
   return only;
+}
+
+// Every criterion resolution in one process run shares one reading of the tracked tree — the tree
+// cannot move between one criterion and the next inside a single invocation of this file — so the
+// full-worktree digest is computed once and reused, rather than re-hashing every tracked byte again
+// for each of the criteria that resolve against an artifact.
+let cachedTrackedTreeState: Promise<TrackedTreeState> | undefined;
+function currentTrackedTreeStateOnce(): Promise<TrackedTreeState> {
+  cachedTrackedTreeState ??= currentTrackedTreeState();
+  return cachedTrackedTreeState;
+}
+
+/**
+ * This binds an artifact to the tree that produced it, for EVERY criterion that resolves against an
+ * artifact — not only the artifactBound kind B12 introduced. An auditor demonstrated the consequence
+ * of leaving artifactCheck and artifactFlag unbound: a preserved bundle from an earlier build carrying
+ * a known defect was substituted in, and criteria reading only a named check or a named flag inside it
+ * resolved anyway. Presence of a tracked-tree identity was never the whole check — an all-zero, dirty,
+ * unstable identity would resolve too — so the recorded identity is compared against the tree that
+ * actually exists, and the CURRENT tree's own cleanliness is checked independently of what the artifact
+ * recorded.
+ */
+async function assertArtifactBoundToCurrentTree(criterionId: string, artifactPath: string, parsed: Record<string, unknown>): Promise<void> {
+  const run = parsed["run"];
+  const tree = isRecord(run) ? run["trackedTree"] : undefined;
+  if (!isRecord(tree)) {
+    throw new Error(`${criterionId} artifact ${artifactPath} carries no tracked-tree identity`);
+  }
+  const current = await currentTrackedTreeStateOnce();
+  if (tree["measuredSha256"] !== current.sha256 || tree["completedSha256"] !== current.sha256) {
+    throw new Error(`${criterionId} artifact ${artifactPath} identity ${String(tree["measuredSha256"]).slice(0, 12)} is not the current tree ${current.sha256.slice(0, 12)}`);
+  }
+  // The CURRENT tree must also be clean. The recorded statuses were compared and the live one was
+  // not, so an artifact recording clean statuses resolved against a dirty working tree.
+  if (current.statusPorcelain !== "") {
+    throw new Error(`${criterionId} resolves against a dirty working tree, whatever ${artifactPath} recorded`);
+  }
+  if (tree["measuredStatusPorcelain"] !== "" || tree["completedStatusPorcelain"] !== "" || tree["stable"] !== true) {
+    throw new Error(`${criterionId} artifact ${artifactPath} was measured against a moving or dirty tree`);
+  }
 }
 
 async function readArtifact(path: string): Promise<Record<string, unknown>> {

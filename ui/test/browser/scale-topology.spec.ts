@@ -124,7 +124,7 @@ type RefusalRecord = {
 
 type ScaleTopologyManifest = {
   readonly schemaVersion: 1;
-  readonly summary: { readonly passing: true };
+  readonly summary: { readonly passing: boolean };
   readonly run: { readonly command: string; readonly trackedTree: TrackedTreeIdentity };
   readonly fixture: {
     readonly id: string;
@@ -315,9 +315,29 @@ test("governed scale-topology ablation", async ({ page }, testInfo) => {
       throw new Error("scale-topology tracked-tree digest changed while its captures were produced");
     }
 
+    const frameContainmentInvariant = {
+      assertion: "Every capture's resolved node positions fall inside the captured frame, within a fixed pixel margin.",
+      marginCssPx: FRAME_CONTAINMENT_MARGIN_CSS_PX,
+      passed: true,
+    } as const;
+    const negativeControl = { message: negativeControlMessage, restored: true } as const;
+    // Composed from the sections already built above, rather than restated: the containment and
+    // every neighbourhood world's own subset invariant, all three refusal controls, the holographic
+    // context bundle actually having levels to report, the frame-containment invariant, and the
+    // restored negative control.
+    const summaryPassing: boolean =
+      containmentRecord.subsetInvariant.passed
+      && neighbourhoodRecords.every((record) => record.subsetInvariant.passed)
+      && atomicRefusesContainment.refused
+      && atomicRefusesNeighbourhood.refused
+      && hierarchicalRefusesNeighbourhood.refused
+      && holographicLevels.length > 0
+      && frameContainmentInvariant.passed
+      && negativeControl.restored;
+
     const manifest: ScaleTopologyManifest = {
       schemaVersion: 1,
-      summary: { passing: true },
+      summary: { passing: summaryPassing },
       run: { command: SCALE_TOPOLOGY_COMMAND, trackedTree },
       fixture: {
         id: FIXTURE_ID,
@@ -376,12 +396,8 @@ test("governed scale-topology ablation", async ({ page }, testInfo) => {
         ),
       },
       captures,
-      frameContainmentInvariant: {
-        assertion: "Every capture's resolved node positions fall inside the captured frame, within a fixed pixel margin.",
-        marginCssPx: FRAME_CONTAINMENT_MARGIN_CSS_PX,
-        passed: true,
-      },
-      negativeControl: { message: negativeControlMessage, restored: true },
+      frameContainmentInvariant,
+      negativeControl,
     };
     const manifestFile = join(ROOT_DIRECTORY, "scale-topology-manifest.json");
     await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
@@ -421,7 +437,7 @@ type StaticControlledLevelRecord = {
 
 type StaticControlledManifest = {
   readonly schemaVersion: 1;
-  readonly summary: { readonly passing: true };
+  readonly summary: { readonly passing: boolean };
   readonly run: { readonly command: string; readonly trackedTree: TrackedTreeIdentity };
   readonly label: "HUMAN REVIEW -- for a person to look at directly, not a blind evaluation artifact";
   readonly assertion: string;
@@ -536,9 +552,16 @@ test("CAP-13 human review: Recursive vs Holographic, static, one shared camera p
       throw new Error("scale-topology static controlled comparison tracked-tree digest changed while its captures were produced");
     }
 
+    // Composed from every level's own already-computed record: all RECURSIVE_TARGET_DEPTH levels
+    // rendered (never a silently truncated set), each one's shared frame never clipped either strip,
+    // and each one genuinely non-identical (guarded above by the byte-identity throw).
+    const summaryPassing: boolean =
+      levelRecords.length === RECURSIVE_TARGET_DEPTH
+      && levelRecords.every((record) => record.noClippingInvariant.passed && !record.identical);
+
     const manifest: StaticControlledManifest = {
       schemaVersion: 1,
-      summary: { passing: true },
+      summary: { passing: summaryPassing },
       run: { command: SCALE_TOPOLOGY_COMMAND, trackedTree },
       label: "HUMAN REVIEW -- for a person to look at directly, not a blind evaluation artifact",
       assertion:

@@ -205,7 +205,7 @@ type StructuralModulationRecord = {
 
 type M3Manifest = {
   readonly schemaVersion: 1;
-  readonly summary: { readonly passing: true };
+  readonly summary: { readonly passing: boolean };
   readonly run: { readonly command: string; readonly trackedTree: TrackedTreeIdentity };
   readonly candidateSha: string;
   readonly captureConfiguration: {
@@ -221,7 +221,7 @@ type M3Manifest = {
     readonly fixtures: readonly { readonly fixtureId: string; readonly path: string; readonly semanticDigest: string; readonly nodeIds: readonly string[]; readonly edgeIds: readonly string[] }[];
     readonly frameContainmentInvariant: { readonly marginCssPx: number; readonly passed: true };
     readonly captures: readonly M3CaptureRecord[];
-    readonly allByteIdentical: true;
+    readonly allByteIdentical: boolean;
   };
   readonly defaultPhaseControl: DefaultPhaseControlRecord;
   readonly reducedMotionOverride: ReducedMotionOverrideRecord;
@@ -525,9 +525,28 @@ test("CAP-13 W-MOTION M3 Still control, default phase, and reduced motion", asyn
       throw new Error("motion tracked-tree digest changed while its captures were produced");
     }
 
+    const frameContainmentInvariant = { marginCssPx: FRAME_CONTAINMENT_MARGIN_CSS_PX, passed: true } as const;
+    const allByteIdentical = m3Captures.every((capture) => capture.decodedPixelsIdentical);
+    const negativeControls = {
+      pixelMismatch: { message: pixelMismatchMessage, restored: true },
+      restingCompletenessViolation: { message: restingCompletenessMessage, restored: true },
+    } as const;
+    // Composed, not asserted: every one of these already-computed sections is read back here rather
+    // than restated, so summary.passing is a conjunction of what was actually checked above (governed
+    // identity per capture, frame containment, byte-identity to the frozen baseline, the reduced-motion
+    // collapse, and both restored negative controls) rather than an assertion that this test reached
+    // its own last line.
+    const summaryPassing: boolean =
+      m3Captures.every((capture) => capture.governedIdentity.nodeIdsMatchCanonical && capture.governedIdentity.edgeIdsMatchCanonical)
+      && frameContainmentInvariant.passed
+      && allByteIdentical
+      && reducedMotionOverride.reducedMotionCollapsesToOmittedPhase
+      && negativeControls.pixelMismatch.restored
+      && negativeControls.restingCompletenessViolation.restored;
+
     const manifest: M3Manifest = {
       schemaVersion: 1,
-      summary: { passing: true },
+      summary: { passing: summaryPassing },
       run: { command: MOTION_COMMAND, trackedTree },
       candidateSha,
       captureConfiguration: {
@@ -541,9 +560,9 @@ test("CAP-13 W-MOTION M3 Still control, default phase, and reduced motion", asyn
       m3StillControl: {
         assertion: "Still, explicitly selected, renders byte-identically to the frozen static baseline in ui/dist/matrix/. Checked first: a motion axis that perturbs its own zero state would invalidate every static result beneath it.",
         fixtures: m3FixtureWitnesses,
-        frameContainmentInvariant: { marginCssPx: FRAME_CONTAINMENT_MARGIN_CSS_PX, passed: true },
+        frameContainmentInvariant,
         captures: m3Captures,
-        allByteIdentical: true,
+        allByteIdentical,
       },
       defaultPhaseControl,
       reducedMotionOverride,
@@ -572,10 +591,7 @@ test("CAP-13 W-MOTION M3 Still control, default phase, and reduced motion", asyn
         heldConstant: { graph: TRACEABILITY_FIXTURE.id, calibration: "DEFAULT_CALIBRATION" },
         perPolicy: perPolicyStructural,
       },
-      negativeControls: {
-        pixelMismatch: { message: pixelMismatchMessage, restored: true },
-        restingCompletenessViolation: { message: restingCompletenessMessage, restored: true },
-      },
+      negativeControls,
     };
     const manifestFile = join(ROOT_DIRECTORY, "motion-m3-manifest.json");
     await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
@@ -700,9 +716,20 @@ test("CAP-13 W-MOTION M1 policy discrimination strips", async ({ page }, testInf
       throw new Error("motion M1 tracked-tree digest changed while its captures were produced");
     }
 
+    const noPolicyTokenInPaths = true;
+    // Still strips must never differ (framesDiffer: false); every other strip must (framesDiffer:
+    // true, already guarded by the throw above). Reading that field back here, rather than restating
+    // "true", is what makes framesGenuinelyDiffer.passed a genuine conjunction of what every strip
+    // actually rendered.
+    const framesGenuinelyDiffer = {
+      rule: "every non-Still strip's own distinctMotionPhases-selected frames are all pairwise pixel-distinct; Still is excluded by definition and asserted identical instead.",
+      passed: stripRecords.every((record) => record.framesDiffer === (record.motionGrammar !== STILL)),
+    };
+    const summaryPassing: boolean = noPolicyTokenInPaths && framesGenuinelyDiffer.passed;
+
     const manifest = {
       schemaVersion: 1,
-      summary: { passing: true },
+      summary: { passing: summaryPassing },
       run: { command: MOTION_COMMAND, trackedTree },
       assertion: "4 strips per shipped motion policy (plus Still, as the discriminable no-motion class), same governed graph/organization/scaleTopology/morphology/projection/calibration throughout -- only the motion policy varies between strips. Strip order is a deterministic shuffle keyed by the recorded seed below; no filename or path under m1/ names a policy (verified against every MOTION_GRAMMARS member by read-back after every frame was written -- see noPolicyTokenInPaths).",
       governedGraph: {
@@ -724,11 +751,8 @@ test("CAP-13 W-MOTION M1 policy discrimination strips", async ({ page }, testInf
       stripPhaseCandidates: STRIP_PHASE_CANDIDATES,
       stripPhasesByPolicy: MOTION_GRAMMARS.map((policy) => ({ motionGrammar: policy, phases: distinctMotionPhases(policy, STRIP_PHASE_CANDIDATES) })),
       shuffle: { algorithm: "mulberry32 + Fisher-Yates", seed: M1_SHUFFLE_SEED, stripRepeatsPerPolicy: M1_STRIP_REPEATS },
-      noPolicyTokenInPaths: true,
-      framesGenuinelyDiffer: {
-        rule: "every non-Still strip's own distinctMotionPhases-selected frames are all pairwise pixel-distinct; Still is excluded by definition and asserted identical instead.",
-        passed: true,
-      },
+      noPolicyTokenInPaths,
+      framesGenuinelyDiffer,
       // This is the de-blinding key: which anonymous strip id was actually rendered from which
       // (policy, repeat) pair. It is fine for this JSON manifest to name policies -- the blind
       // property M1 requires is that the PNG paths under m1/ never do, checked above.
@@ -869,6 +893,15 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
 
   const outputDirectory = join(ROOT_DIRECTORY, "m2");
   await mkdir(outputDirectory, { recursive: true });
+  // The controlled comparison always renders Recursive (see renderM2PairSpec below: it is the pair's
+  // own primary result, camera-matched to Holographic, and is never one of the two anonymous strip
+  // slots). Writing it inside m2/ alongside the deliberately anonymous pair-1/pair-2 strips identified
+  // Recursive in every set by directory name alone, with no filename or path check able to catch a
+  // structural leak of that kind. It is written to a sibling directory outside the m2/ sample tree
+  // instead, so the delivered m2/ tree is blind by construction rather than by a coordinator
+  // remembering to delete it.
+  const controlledRootDirectory = join(ROOT_DIRECTORY, "m2-controlled");
+  await mkdir(controlledRootDirectory, { recursive: true });
 
   const pageModule = await bundlePageModule();
   await installPage(page, pageModule);
@@ -885,19 +918,33 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
     // never precomputed here).
     const pairSpecRecords: M2PairSpecRecord[] = [];
     for (const spec of M2_PAIR_SPECS) {
-      pairSpecRecords.push(await renderM2PairSpec(page, canonicalGraph, containmentRootId, outputDirectory, spec));
+      pairSpecRecords.push(await renderM2PairSpec(page, canonicalGraph, containmentRootId, outputDirectory, controlledRootDirectory, spec));
     }
 
-    // Checked once, over every PNG this test produced across all six pairs (both ecological strips
-    // and the controlled strip of each) -- run last so every path under m2/ is covered by the same
-    // blind-path discipline.
+    // Checked once, over every PNG this test produced across all six pairs' own ecological strips --
+    // run last so every path under m2/ is covered by the same blind-path discipline. The controlled
+    // comparison lives outside m2/ (see controlledRootDirectory above) and is deliberately excluded
+    // from this scan: it is the answer key, not blind material.
     const producedFiles = await pngFilesUnder(outputDirectory);
     assertNoPolicyTokenInPaths(producedFiles, "motion M2");
-    for (const token of ["recursive", "holographic"]) {
+    for (const token of ["recursive", "holographic", "controlled"]) {
       for (const file of producedFiles) {
         if (file.toLowerCase().includes(token)) {
           throw new Error(`motion M2 leaked its scaleTopology label "${token}" into a path: ${file}`);
         }
+      }
+    }
+    // Defensive, structural check: every pair set under m2/ must contain exactly its two anonymous
+    // strip directories and nothing else -- no third directory (such as a reintroduced "controlled")
+    // whose mere presence, independent of any filename it contains, would identify a topology.
+    for (const spec of M2_PAIR_SPECS) {
+      const pairSetDirectory = join(outputDirectory, spec.pairSpecId);
+      const pairSetEntries = (await readdir(pairSetDirectory, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort();
+      if (JSON.stringify(pairSetEntries) !== JSON.stringify(["pair-1", "pair-2"])) {
+        throw new Error(`motion M2 ${spec.pairSpecId} carries ${JSON.stringify(pairSetEntries)} under m2/, not exactly the two anonymous pair directories; nothing else under m2/ may identify a topology by its own position in the sample tree`);
       }
     }
 
@@ -907,9 +954,21 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
       throw new Error("motion M2 tracked-tree digest changed while its captures were produced");
     }
 
+    const noLabelInPaths = true;
+    // Composed from the per-pair invariants already computed by renderM2PairSpec, rather than
+    // restated: every pair's holographic capture must be a genuine strict superset of recursive's own
+    // (both node and relation sides), and the controlled comparison's shared-camera frame must never
+    // clip either strip.
+    const summaryPassing: boolean =
+      noLabelInPaths
+      && pairSpecRecords.every((record) =>
+        record.finding.supersetInvariant.nodesStrictSuperset
+        && record.finding.supersetInvariant.edgesStrictSuperset
+        && record.finding.controlled.noClippingInvariant.passed);
+
     const manifest = {
       schemaVersion: 1,
-      summary: { passing: true },
+      summary: { passing: summaryPassing },
       run: { command: MOTION_COMMAND, trackedTree },
       assertion: "Six independent pairs (three navigation depths x two motion policies -- see changedAxes below), each a paired strip of the same navigation event (entering the same containment child world at that pair's own depth), everything held constant except scaleTopology, both members animated with that pair's own motion policy. Every pair independently shuffles which anonymous strip slot (pair-1/pair-2) is Recursive vs Holographic, with its own recorded seed; no path under m2/ names either scaleTopology label, verified by read-back.",
       method: "A real ScaleNavigationPath (built with #engine/scale-topology.ts's own rootNavigationPath and enterChildWorld, walked to each pair's own depth exactly as scale-topology.spec.ts's own buildRecursiveWalk does) is passed straight through mount()'s own Render3fOptions.navigationPath (ui/src/render3f/mount.tsx) to buildScene (#scene/build.ts), which alone resolves it to a rendered node/relation set via resolveScaleNavigationGraph. This suite computes no id set of its own for what gets rendered; every nodeIds/edgeIds value recorded below is read back from the mounted scene's own surface witness.",
@@ -923,7 +982,7 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
         ],
       },
       stripPhaseCandidates: STRIP_PHASE_CANDIDATES,
-      noLabelInPaths: true,
+      noLabelInPaths,
       pairSpecs: pairSpecRecords,
     };
     const manifestFile = join(ROOT_DIRECTORY, "motion-m2-manifest.json");
@@ -1057,9 +1116,15 @@ test("CAP-13 W-MOTION phase-frames ablation", async ({ page }, testInfo) => {
       throw new Error("motion ablation tracked-tree digest changed while its captures were produced");
     }
 
+    // Composed from what every policy's own phase frames already record: at least one sampled phase
+    // per policy, and every one of them genuinely differing from that policy's own resting frame
+    // (differsFromResting, guarded above by the byte-identity throw).
+    const summaryPassing: boolean = policyRecords.every((record) =>
+      record.phaseFrames.length > 0 && record.phaseFrames.every((frame) => frame.differsFromResting));
+
     const manifest = {
       schemaVersion: 1,
-      summary: { passing: true },
+      summary: { passing: summaryPassing },
       run: { command: MOTION_COMMAND, trackedTree },
       assertion: "The resting frame beside several genuinely distinct (distinctMotionPhases-selected) phase frames for one controlled configuration, per amplitude-raised policy, so a reader can see what each policy actually does and by how much. Not blind: filenames name the policy deliberately.",
       heldConstant: { organization: M1_ORGANIZATION, scaleTopology: M1_SCALE_TOPOLOGY, morphology: M1_MORPHOLOGY, projection: M1_PROJECTION, calibration: "DEFAULT_CALIBRATION", reducedMotion: false },
@@ -1247,13 +1312,17 @@ function buildRecursiveWalk(
  * strict superset of Recursive's (an actual set relation checked below, not inferred from a count),
  * then re-render Recursive under Holographic's own per-phase camera for the controlled comparison.
  * Every count and id set in the returned record is read back from the mounted scene's own surface
- * witness (`rendered.witness.surface`), never recomputed here.
+ * witness (`rendered.witness.surface`), never recomputed here. The controlled comparison is written
+ * under `controlledRootDirectory`, a sibling of `outputRootDirectory` rather than a child of it: it
+ * always renders Recursive, so writing it inside the sample tree would identify a topology by
+ * directory position alone, independent of any filename.
  */
 async function renderM2PairSpec(
   page: Page,
   canonicalGraph: VisualGraph,
   containmentRootId: string,
   outputRootDirectory: string,
+  controlledRootDirectory: string,
   spec: M2PairSpec,
 ): Promise<M2PairSpecRecord> {
   const recursiveWalk = buildRecursiveWalk(canonicalGraph, RECURSIVE, containmentRootId, spec.depth);
@@ -1382,7 +1451,7 @@ async function renderM2PairSpec(
   // strips being compared differ only in scaleTopology, not in framing. Holographic's own frame under
   // that camera is exactly the ecological frame captured above (it is that camera's source); only
   // Recursive needs a second, camera-driven capture. ----
-  const controlledDirectory = join(outputDirectory, "controlled");
+  const controlledDirectory = join(controlledRootDirectory, spec.pairSpecId, "controlled");
   await mkdir(controlledDirectory, { recursive: true });
   const controlledComparisons: M2PhaseComparisonRecord[] = [];
   for (const phase of phases) {

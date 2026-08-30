@@ -113,6 +113,20 @@ test("resolveOpeningFrames is deterministic: the same graph, policy, and seed al
   assert.deepEqual(first, second);
 });
 
+test("resolveOpeningFrames pins the recorded seed's own sampled phases, so a mutated seed is caught rather than only a repeated one", () => {
+  // The two tests above (same seed twice, two distinct seeds) both stay true under `mulberry32(seed)`
+  // silently mutated to `mulberry32(seed + 1)`: neither compares a seed's OUTPUT to anything the seed
+  // itself is supposed to determine. These two values were independently measured against seed 4177,
+  // Assemble, the real temporal-genesis fixture -- not copied from elsewhere -- and pin the seed to
+  // what it actually produces.
+  const graph = temporalGraph();
+  const frames = resolveOpeningFrames(graph, ASSEMBLE, 4177);
+  const intermediates = frames.filter((frame) => !frame.rest);
+  assert.ok(intermediates.length >= 2, "seed 4177 must sample at least two intermediate phases to pin");
+  assert.equal(intermediates[0]?.phase, 0.14129222556948662);
+  assert.equal(intermediates[1]?.phase, 0.39733023825101554);
+});
+
 test("a different seed reproduces a different, but still fully deterministic, intermediate sample -- never a different arrival", () => {
   const graph = temporalGraph();
   const seedA = resolveOpeningFrames(graph, ASSEMBLE, 1);

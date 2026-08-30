@@ -96,7 +96,7 @@ type FalsificationRecord = {
 
 type TemporalManifest = {
   readonly schemaVersion: 1;
-  readonly summary: { readonly passing: true };
+  readonly summary: { readonly passing: boolean };
   readonly run: { readonly command: string; readonly trackedTree: TrackedTreeIdentity };
   readonly fixture: {
     readonly id: string;
@@ -383,9 +383,14 @@ test("temporal playback evidence: seven falsification tests, each with a negativ
     const completedTrackedTree = await currentTrackedTreeState();
     const trackedTree = trackedTreeIdentity(observedTrackedTree, completedTrackedTree);
 
+    // Composed from the seven falsification tests already built above, rather than restated: all
+    // seven must be present (never a silently dropped test) and every one of their own negative
+    // controls must have been restored.
+    const summaryPassing: boolean = falsificationTests.length === 7 && falsificationTests.every((record) => record.negativeControl.restored);
+
     const manifest: TemporalManifest = {
       schemaVersion: 1,
-      summary: { passing: true },
+      summary: { passing: summaryPassing },
       run: { command: TEMPORAL_COMMAND, trackedTree },
       fixture: {
         id: FIXTURE_ID,
