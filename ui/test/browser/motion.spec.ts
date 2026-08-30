@@ -1011,8 +1011,15 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
 
 // Every policy whose amplitude was raised (see motion-grammar.ts's own PULSE_AMPLITUDE_PERMILLE,
 // RECONFIGURE_AMPLITUDE_PERMILLE, RECONFIGURE_OFFSET_AMPLITUDE_PERMILLE, and
-// CONDENSE_CORE_SHRINK_PERMILLE), so the record this ablation produces carries current amplitudes'
-// measured effect rather than the pre-raise numbers.
+// CONDENSE_CONVERGENCE_AMPLITUDE_PERMILLE), so the record this ablation produces carries current
+// amplitudes' measured effect rather than the pre-raise numbers. Assemble, Dissolve, and
+// RecursiveBloom are deliberately excluded here: their own construction/release windows saturate
+// (every element reaches its own resting reveal fraction) before SAMPLE_PHASES's own 0.875 sample --
+// RecursiveBloom's third generation window already closes at phase 0.875 by construction (see
+// motion-grammar.ts's own bloomWindow) -- which collides with this ablation's own
+// pixel-identical-to-resting guard; that guard is a genuine, pre-existing property of the nested-window
+// construction this pass's own structural-order fix did not change, not something this pass should
+// widen this file's own phase selection to work around.
 const ABLATION_MOTION_GRAMMARS = [PULSE, RECONFIGURE, CONDENSE] as const satisfies readonly MotionGrammar[];
 
 type AblationPhaseFrameRecord = {

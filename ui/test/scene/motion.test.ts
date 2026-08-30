@@ -13,7 +13,9 @@ import {
   CONDENSE,
   DISSOLVE,
   MOTION_GRAMMARS,
+  PULSE,
   RECONFIGURE,
+  RECURSIVE_BLOOM,
   restingPhase,
 } from "#engine/motion-grammar.ts";
 import type { MotionModulation } from "#engine/motion-grammar.ts";
@@ -470,6 +472,76 @@ function centroidOf(nodes: readonly SceneNode[]): { readonly x: number; readonly
   };
 }
 
+type StructuralRankForTest = {
+  readonly hubId: string;
+  readonly rankById: ReadonlyMap<string, number>;
+  readonly parentById: ReadonlyMap<string, string>;
+};
+
+/**
+ * This independently recomputes the same real BFS hop-distance-from-a-hub ranking
+ * `#scene/build.ts`'s own (private) `resolveStructuralRank` computes -- from the raw governed graph,
+ * never by importing that private function -- so the tests below check the shipped implementation's
+ * real behaviour against an independently derived expectation, the same discipline `centroidOf` above
+ * already applies to Condense. Mirrors that function's own algorithm exactly: hub = greatest real
+ * incidence degree, ties broken by lowest id; BFS hop-distance from the hub, ties broken by lowest
+ * neighbour id; a node the relation set never reaches is placed one hop beyond the farthest node
+ * actually reached, never left undefined.
+ */
+function structuralRankForTest(graph: VisualGraph): StructuralRankForTest {
+  const nodeIds = [...graph.nodes.map((node) => node.id)].sort();
+  const degreeById = new Map<string, number>(nodeIds.map((id) => [id, 0]));
+  const neighborsById = new Map<string, string[]>(nodeIds.map((id) => [id, []]));
+  for (const edge of graph.edges) {
+    degreeById.set(edge.source, (degreeById.get(edge.source) ?? 0) + 1);
+    degreeById.set(edge.target, (degreeById.get(edge.target) ?? 0) + 1);
+    neighborsById.get(edge.source)?.push(edge.target);
+    neighborsById.get(edge.target)?.push(edge.source);
+  }
+  const firstId = nodeIds[0];
+  if (firstId === undefined) {
+    throw new TypeError("structural rank test fixture requires at least one node");
+  }
+  let hubId = firstId;
+  let hubDegree = -1;
+  for (const id of nodeIds) {
+    const degree = degreeById.get(id) ?? 0;
+    if (degree > hubDegree) {
+      hubDegree = degree;
+      hubId = id;
+    }
+  }
+  const hopById = new Map<string, number>([[hubId, 0]]);
+  const parentById = new Map<string, string>();
+  const queue: string[] = [hubId];
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const current = queue[cursor];
+    if (current === undefined) {
+      continue;
+    }
+    const hop = hopById.get(current) ?? 0;
+    const neighbors = [...(neighborsById.get(current) ?? [])].sort();
+    for (const neighborId of neighbors) {
+      if (hopById.has(neighborId)) {
+        continue;
+      }
+      hopById.set(neighborId, hop + 1);
+      parentById.set(neighborId, current);
+      queue.push(neighborId);
+    }
+  }
+  const reachedMaxHop = Math.max(0, ...hopById.values());
+  const unreachedHop = reachedMaxHop + 1;
+  for (const id of nodeIds) {
+    if (!hopById.has(id)) {
+      hopById.set(id, unreachedHop);
+    }
+  }
+  const maxHop = Math.max(1, ...hopById.values());
+  const rankById = new Map<string, number>([...hopById].map(([id, hop]) => [id, hop / maxHop] as const));
+  return { hubId, rankById, parentById };
+}
+
 test("Condense actually pulls nodes toward the structure's own centre mid-phase, proving the convergence channel is live -- the defect this fix answers to is that it never repositioned anything", () => {
   const graph = sceneFixtureGraph();
   const baseState = motionBaseState(graph, "stellar", "flat", "orthographic");
@@ -657,6 +729,186 @@ test("assertMotionGovernedIdentity and assertMotionRestingCompleteness both acce
     edges: [{ id: "edge:one", opacityPermille: 1000, revealPermille: 1000 }],
   };
   assert.doesNotThrow(() => assertMotionRestingCompleteness(identity));
+});
+
+// ---------------------------------------------------------------------------------------------
+// Human review disposition (2026-08-30): geometry/propagation primary, luminance secondary.
+// ---------------------------------------------------------------------------------------------
+
+test("Assemble's construction order follows real incidence (BFS hop-distance from the highest-degree hub), never an id: the hub reveals ahead of the single most distant node", () => {
+  const graph = sceneFixtureGraph();
+  const structural = structuralRankForTest(graph);
+  const farthestIds = [...structural.rankById.entries()].filter(([, rank]) => rank === 1).map(([id]) => id);
+  assert.ok(farthestIds.length > 0, "structural rank fixture never reaches maximum rank 1, so this test cannot compare against it");
+  const state: VisualState = { ...motionBaseState(graph, "stellar", "flat", "orthographic"), motionGrammar: ASSEMBLE };
+  const scene = buildScene(graph, state, DEFAULT_CALIBRATION, sceneTokens(state), "orthographic", 0.3);
+  const opacityById = new Map(scene.nodes.map((node) => [node.id, node.opacityPermille] as const));
+  const hubOpacity = opacityById.get(structural.hubId);
+  if (hubOpacity === undefined) {
+    throw new TypeError("assemble structural-order fixture is missing the resolved hub node");
+  }
+  assert.ok(hubOpacity > 0, `assemble hub ${structural.hubId} unexpectedly has zero opacity at phase 0.3, so this comparison is vacuous`);
+  for (const farId of farthestIds) {
+    const farOpacity = opacityById.get(farId);
+    if (farOpacity === undefined) {
+      throw new TypeError(`assemble structural-order fixture is missing the resolved farthest node: ${farId}`);
+    }
+    assert.equal(farOpacity, 0, `expected the single most distant node ${farId} to still be fully unrevealed at phase 0.3 (opacity ${farOpacity}), behind hub ${structural.hubId} (opacity ${hubOpacity})`);
+  }
+  // Not a permanent exclusion: at Assemble's own resting phase, every node -- including the farthest --
+  // is fully revealed, exactly like every other policy's own resting completeness.
+  const restingScene = buildScene(graph, state, DEFAULT_CALIBRATION, sceneTokens(state), "orthographic", restingPhase(ASSEMBLE));
+  const restingOpacityById = new Map(restingScene.nodes.map((node) => [node.id, node.opacityPermille] as const));
+  for (const farId of farthestIds) {
+    assert.equal(restingOpacityById.get(farId), 1000, `${farId} is not fully revealed at Assemble's own resting phase`);
+  }
+});
+
+test("Dissolve's release order mirrors Assemble's, in reverse: the hub persists fully intact while the single most distant node has already begun releasing", () => {
+  const graph = sceneFixtureGraph();
+  const structural = structuralRankForTest(graph);
+  const farthestIds = [...structural.rankById.entries()].filter(([, rank]) => rank === 1).map(([id]) => id);
+  assert.ok(farthestIds.length > 0, "structural rank fixture never reaches maximum rank 1, so this test cannot compare against it");
+  const baseState = motionBaseState(graph, "stellar", "flat", "orthographic");
+  const stillScene = buildScene(graph, baseState, DEFAULT_CALIBRATION, sceneTokens(baseState), "orthographic");
+  const stillOpacityById = new Map(stillScene.nodes.map((node) => [node.id, node.opacityPermille] as const));
+  const dissolveState: VisualState = { ...baseState, motionGrammar: DISSOLVE };
+  const scene = buildScene(graph, dissolveState, DEFAULT_CALIBRATION, sceneTokens(dissolveState), "orthographic", 0.3);
+  const opacityById = new Map(scene.nodes.map((node) => [node.id, node.opacityPermille] as const));
+  const hubStillOpacity = stillOpacityById.get(structural.hubId);
+  const hubDissolveOpacity = opacityById.get(structural.hubId);
+  if (hubStillOpacity === undefined || hubDissolveOpacity === undefined) {
+    throw new TypeError("dissolve structural-order fixture is missing the resolved hub node");
+  }
+  assert.equal(hubDissolveOpacity, hubStillOpacity, `hub ${structural.hubId} should still be fully intact (unfaded) at phase 0.3`);
+  for (const farId of farthestIds) {
+    const farStillOpacity = stillOpacityById.get(farId);
+    const farDissolveOpacity = opacityById.get(farId);
+    if (farStillOpacity === undefined || farDissolveOpacity === undefined) {
+      throw new TypeError(`dissolve structural-order fixture is missing the resolved farthest node: ${farId}`);
+    }
+    assert.ok(farDissolveOpacity < farStillOpacity, `expected the single most distant node ${farId} to have already begun releasing at phase 0.3 (dissolve=${farDissolveOpacity}, static=${farStillOpacity})`);
+  }
+});
+
+test("RecursiveBloom's generation grouping comes from real hop-distance from the portal's own hub, never an id hash: the hub's own generation is already resolving while the farthest generation has not yet started", () => {
+  const graph = sceneFixtureGraph();
+  const structural = structuralRankForTest(graph);
+  const farthestIds = [...structural.rankById.entries()].filter(([, rank]) => rank === 1).map(([id]) => id);
+  assert.ok(farthestIds.length > 0, "structural rank fixture never reaches maximum rank 1, so this test cannot compare against it");
+  const state: VisualState = { ...motionBaseState(graph, "stellar", "flat", "orthographic"), motionGrammar: RECURSIVE_BLOOM };
+  const scene = buildScene(graph, state, DEFAULT_CALIBRATION, sceneTokens(state), "orthographic", 0.4);
+  const opacityById = new Map(scene.nodes.map((node) => [node.id, node.opacityPermille] as const));
+  const hubOpacity = opacityById.get(structural.hubId);
+  if (hubOpacity === undefined) {
+    throw new TypeError("recursive-bloom generation fixture is missing the resolved hub node");
+  }
+  assert.ok(hubOpacity > 0, `recursive-bloom hub ${structural.hubId} unexpectedly has zero opacity at phase 0.4, so this comparison is vacuous`);
+  for (const farId of farthestIds) {
+    const farOpacity = opacityById.get(farId);
+    if (farOpacity === undefined) {
+      throw new TypeError(`recursive-bloom generation fixture is missing the resolved farthest node: ${farId}`);
+    }
+    assert.equal(farOpacity, 0, `expected the single farthest generation's own node ${farId} to still be unstarted at phase 0.4 (opacity ${farOpacity})`);
+  }
+  // Not a permanent exclusion: at RecursiveBloom's own resting phase every node is fully resolved.
+  const restingScene = buildScene(graph, state, DEFAULT_CALIBRATION, sceneTokens(state), "orthographic", restingPhase(RECURSIVE_BLOOM));
+  const restingOpacityById = new Map(restingScene.nodes.map((node) => [node.id, node.opacityPermille] as const));
+  for (const farId of farthestIds) {
+    assert.equal(restingOpacityById.get(farId), 1000, `${farId} is not fully revealed at RecursiveBloom's own resting phase`);
+  }
+});
+
+test("Assemble's not-yet-resolved elements grow from their own real BFS parent's position -- geometry carries the propagation, not merely a fade in place", () => {
+  const graph = sceneFixtureGraph();
+  const structural = structuralRankForTest(graph);
+  const baseState = motionBaseState(graph, "stellar", "flat", "orthographic");
+  const stillScene = buildScene(graph, baseState, DEFAULT_CALIBRATION, sceneTokens(baseState), "orthographic");
+  const stillPositionById = new Map(stillScene.nodes.map((node) => [node.id, node.position] as const));
+  const assembleState: VisualState = { ...baseState, motionGrammar: ASSEMBLE };
+  // Phase 0: every node's own reveal fraction (see resolveRevealFraction's own docstring) is exactly
+  // zero regardless of rank, so every node with a real parent should render at EXACTLY that parent's
+  // own static position -- a precise, not merely directional, claim.
+  const assembleScene = buildScene(graph, assembleState, DEFAULT_CALIBRATION, sceneTokens(assembleState), "orthographic", 0);
+  const assemblePositionById = new Map(assembleScene.nodes.map((node) => [node.id, node.position] as const));
+  let checkedChildren = 0;
+  for (const [childId, parentId] of structural.parentById) {
+    const parentStillPosition = stillPositionById.get(parentId);
+    const childAssemblePosition = assemblePositionById.get(childId);
+    const childStillPosition = stillPositionById.get(childId);
+    if (parentStillPosition === undefined || childAssemblePosition === undefined || childStillPosition === undefined) {
+      throw new TypeError(`assemble growth fixture is missing resolved geometry for ${childId} or its parent ${parentId}`);
+    }
+    assert.ok(
+      Math.abs(childAssemblePosition.x - parentStillPosition.x) < 1e-6 && Math.abs(childAssemblePosition.y - parentStillPosition.y) < 1e-6,
+      `expected ${childId} to draw at its own real parent ${parentId}'s static position at phase 0: child=(${childAssemblePosition.x},${childAssemblePosition.y}) parent=(${parentStillPosition.x},${parentStillPosition.y})`,
+    );
+    checkedChildren += 1;
+  }
+  assert.ok(checkedChildren > 0, "assemble growth fixture resolved no node with a real BFS parent, so this test is vacuous");
+  // And this is a genuine displacement, not merely every child already sitting at its parent's own
+  // position: at least one checked child's own resting position is measurably apart from its parent's.
+  const genuinelyDisplaced = [...structural.parentById].some(([childId, parentId]) => {
+    const parentPosition = stillPositionById.get(parentId);
+    const childPosition = stillPositionById.get(childId);
+    return parentPosition !== undefined && childPosition !== undefined
+      && Math.hypot(childPosition.x - parentPosition.x, childPosition.y - parentPosition.y) > 1;
+  });
+  assert.ok(genuinelyDisplaced, "every child's own resting position already coincided with its parent's, so the growth-from-parent claim above is vacuous");
+});
+
+test("Condense's opacity fade is dampened well below full: even the single most peripheral node stays meaningfully visible at the envelope's own peak, while scale still shrinks substantially -- contraction leads, dimming does not", () => {
+  const graph = sceneFixtureGraph();
+  const baseState = motionBaseState(graph, "stellar", "flat", "orthographic");
+  const condenseState: VisualState = { ...baseState, motionGrammar: CONDENSE };
+  for (const phase of SAMPLE_PHASES) {
+    const scene = buildScene(graph, condenseState, DEFAULT_CALIBRATION, sceneTokens(condenseState), "orthographic", phase);
+    for (const node of scene.nodes) {
+      assert.ok(node.opacityPermille >= 590, `node ${node.id}@${phase} opacity ${node.opacityPermille} fell below Condense's own dampened fade floor`);
+    }
+  }
+  const stillScene = buildScene(graph, baseState, DEFAULT_CALIBRATION, sceneTokens(baseState), "orthographic");
+  const stillRadiusById = new Map(stillScene.nodes.map((node) => [node.id, node.radiusPx] as const));
+  const midCycle = buildScene(graph, condenseState, DEFAULT_CALIBRATION, sceneTokens(condenseState), "orthographic", 0.5);
+  const shrankSubstantially = midCycle.nodes.some((node) => {
+    const staticRadius = stillRadiusById.get(node.id);
+    return staticRadius !== undefined && staticRadius > 0 && node.radiusPx / staticRadius < 0.4;
+  });
+  assert.ok(shrankSubstantially, "no node shrank below 40% of its own static radius at Condense's own envelope peak, so the spatial channel is not carrying real signal");
+});
+
+test("Pulse breathes as a real, centroid-distance-propagated wave rather than uniform lockstep: the nearest and farthest node from the structure's own centre reach different scale factors at a shared non-tie phase", () => {
+  const graph = sceneFixtureGraph();
+  const baseState = motionBaseState(graph, "stellar", "flat", "orthographic");
+  const stillScene = buildScene(graph, baseState, DEFAULT_CALIBRATION, sceneTokens(baseState), "orthographic");
+  const centroid = centroidOf(stillScene.nodes);
+  const ranked = [...stillScene.nodes].sort((left, right) => (
+    Math.hypot(left.position.x - centroid.x, left.position.y - centroid.y) - Math.hypot(right.position.x - centroid.x, right.position.y - centroid.y)
+  ));
+  const nearest = ranked[0];
+  const farthest = ranked[ranked.length - 1];
+  if (nearest === undefined || farthest === undefined || nearest.id === farthest.id) {
+    throw new TypeError("pulse wave fixture requires at least two nodes at genuinely different distances from the centre");
+  }
+  const stillRadiusById = new Map(stillScene.nodes.map((node) => [node.id, node.radiusPx] as const));
+  const pulseState: VisualState = { ...baseState, motionGrammar: PULSE };
+  const scene = buildScene(graph, pulseState, DEFAULT_CALIBRATION, sceneTokens(pulseState), "orthographic", 0.2);
+  const nearestScene = scene.nodes.find((node) => node.id === nearest.id);
+  const farthestScene = scene.nodes.find((node) => node.id === farthest.id);
+  const nearestStillRadius = stillRadiusById.get(nearest.id);
+  const farthestStillRadius = stillRadiusById.get(farthest.id);
+  if (nearestScene === undefined || farthestScene === undefined || nearestStillRadius === undefined || farthestStillRadius === undefined || nearestStillRadius === 0 || farthestStillRadius === 0) {
+    throw new TypeError("pulse wave fixture is missing resolved geometry for the nearest or farthest node");
+  }
+  // Ratios, not raw radii: the two nodes' own static radii already differ for reasons unrelated to
+  // Pulse (prominence), so the ratio isolates exactly what Pulse itself contributed.
+  const nearestScaleFactor = nearestScene.radiusPx / nearestStillRadius;
+  const farthestScaleFactor = farthestScene.radiusPx / farthestStillRadius;
+  assert.notEqual(nearestScaleFactor, farthestScaleFactor, "pulse scaled the nearest and farthest node identically at phase 0.2, so no structural wave is actually live");
+  // Not a permanent difference: at Pulse's own resting phase both return to exact identity.
+  const restingScene = buildScene(graph, pulseState, DEFAULT_CALIBRATION, sceneTokens(pulseState), "orthographic", restingPhase(PULSE));
+  const restingNearestRadius = restingScene.nodes.find((node) => node.id === nearest.id)?.radiusPx;
+  assert.equal(restingNearestRadius, nearestStillRadius);
 });
 
 function captureFailure(operation: () => void): string {

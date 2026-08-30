@@ -394,6 +394,24 @@ test("motionPhasesShareEnvelope requires a real phase pair and refuses reusing o
   assert.throws(() => motionPhasesShareEnvelope("outside" as never, 0, 0.5), /outside its closed vocabulary/);
 });
 
+test("Assemble, Dissolve, RecursiveBloom, and Pulse declare a uniform, id-independent value at the axis level: real per-element ordering is resolved only at the scene layer, never from an id hash (CAP-13 finding F79)", () => {
+  for (const policy of [ASSEMBLE, DISSOLVE, RECURSIVE_BLOOM, PULSE] as const) {
+    for (const phase of SAMPLE_PHASES) {
+      const modulation = motionModulation(policy, phase, ELEMENT_IDS);
+      const distinctNodeValues = new Set(modulation.nodes.map((node) => JSON.stringify({ opacity: node.opacityPermille, scale: node.scalePermille })));
+      assert.equal(distinctNodeValues.size, 1, `${policy}@${phase} declared a different node value for different ids at the axis level`);
+      const distinctEdgeValues = new Set(modulation.edges.map((edge) => JSON.stringify({ opacity: edge.opacityPermille, reveal: edge.revealPermille })));
+      assert.equal(distinctEdgeValues.size, 1, `${policy}@${phase} declared a different relation value for different ids at the axis level`);
+    }
+  }
+});
+
+test("Reconfigure still varies by id at the axis level: its own per-node amplitude and direction are not part of this pass's scene-layer generalisation", () => {
+  const modulation = motionModulation(RECONFIGURE, 0.25, ELEMENT_IDS);
+  const distinctScales = new Set(modulation.nodes.map((node) => node.scalePermille));
+  assert.ok(distinctScales.size > 1, "reconfigure unexpectedly declared the identical scale for every node at the axis level");
+});
+
 test("distinctMotionPhases drops every later phase tied to an earlier one, keeps first-occurrence order, and is a no-op for policies with no envelope tie", () => {
   const eighths = [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1];
   assert.deepEqual(distinctMotionPhases(RECONFIGURE, eighths), [0, 0.125, 0.25, 0.625, 0.75]);

@@ -18,11 +18,23 @@ import type { LayoutAnchors } from "#engine/layout.ts";
 import type { ResolvedMaterial } from "#engine/lod.ts";
 import { MACRO, MESO, lodView } from "#engine/lod.ts";
 import {
+  ASSEMBLE,
+  ASSEMBLE_STAGGER_FRACTION,
   CONDENSE,
+  DISSOLVE,
+  DISSOLVE_STAGGER_FRACTION,
+  PULSE,
+  PULSE_AMPLITUDE_PERMILLE,
+  RECURSIVE_BLOOM,
+  RECURSIVE_BLOOM_GENERATIONS,
+  RECURSIVE_BLOOM_STAGGER_FRACTION,
   STILL,
   assertMotionModulationKeying,
+  bloomWindow,
+  breathingEnvelope,
   motionModulation,
   restingPhase,
+  staggeredProgress,
 } from "#engine/motion-grammar.ts";
 import type { EdgeMotionModulation, MotionElementIds, MotionGrammar, MotionModulation, NodeMotionModulation } from "#engine/motion-grammar.ts";
 import type { EdgeMaterial, MorphologyProfile, NodeMaterial } from "#engine/morphology.ts";
@@ -358,9 +370,10 @@ export function assertNavigatedGraphSubset(canonical: VisualGraph, navigated: Vi
  * label selection (`selectedLabelIds` and each label's placement stay pinned to the static resolved
  * layout, so a label never jitters as its node moves), aggregates, or camera; only the channels the
  * motion axis itself declares move -- Condense's own `convergencePermille` included: it is the axis's
- * declared channel, this is only the one place, of every policy alike, where a declared channel is
- * resolved against this scene's own already-resolved anchors instead of against calibration alone (see
- * `resolveCondenseGeometry`).
+ * declared channel, this is only the one place, of every policy alike, where a declared channel (or, for
+ * Condense, Assemble, Dissolve, RecursiveBloom, and Pulse, a real geometry resolution built from it --
+ * see `resolveMotionGeometry`) is resolved against this scene's own already-resolved anchors and real
+ * incidence instead of against calibration alone.
  */
 function applyMotionGrammar(scene: Scene, graph: EngineGraph, policy: MotionGrammar, phase: number, calibration: CalibrationProfile): Scene {
   const elementIds: MotionElementIds = {
@@ -381,25 +394,30 @@ function applyMotionGrammar(scene: Scene, graph: EngineGraph, policy: MotionGram
   }
   const nodeModulationById = new Map(modulation.nodes.map((node) => [node.id, node] as const));
   const edgeModulationById = new Map(modulation.edges.map((edge) => [edge.id, edge] as const));
-  const condenseGeometry = policy === CONDENSE ? resolveCondenseGeometry(scene, nodeModulationById) : null;
-  // Both of a node's own offset sources -- the axis's declared offsetXPermille/offsetYPermille and
-  // Condense's own geometry-resolved convergence -- are resolved once here, by the same function
+  // The one place a policy's own declared, position/topology-blind channel meets this scene's own
+  // already-resolved anchors and real incidence (see `resolveMotionGeometry`'s own docstring for which
+  // policy resolves what, and why): null for every policy that needs no such resolution (Still,
+  // Reconfigure), in which case every node and relation below draws from the axis's own declared
+  // modulation alone, unchanged from before this function existed.
+  const geometryResolution = resolveMotionGeometry(scene, graph, policy, phase, nodeModulationById);
+  // Both of a node's own offset sources -- the axis's declared offsetXPermille/offsetYPermille and a
+  // geometry resolution's own resolved displacement -- are resolved once here, by the same function
   // modulateSceneNode itself uses, so an edge incident to a node is displaced by exactly the same
   // pixel vector that node's own drawn position was, not a second independently derived one.
   const nodeOffsetById = new Map(scene.nodes.map((node) => [
     node.id,
-    resolveNodeMotionOffsetPx(requiredNodeMotionModulation(nodeModulationById, node.id), calibration, condenseGeometry?.nodes.get(node.id) ?? null),
+    resolveNodeMotionOffsetPx(requiredNodeMotionModulation(nodeModulationById, node.id), calibration, geometryResolution?.nodes.get(node.id) ?? null),
   ] as const));
   const nodes = scene.nodes.map((node) => modulateSceneNode(
     node,
     requiredNodeMotionModulation(nodeModulationById, node.id),
     requiredNodeMotionOffsetPx(nodeOffsetById, node.id),
-    condenseGeometry?.nodes.get(node.id) ?? null,
+    geometryResolution?.nodes.get(node.id) ?? null,
   ));
   const edges = scene.edges.map((edge) => modulateSceneEdge(
     edge,
     requiredEdgeMotionModulation(edgeModulationById, edge.id),
-    condenseGeometry?.edges.get(edge.id) ?? null,
+    geometryResolution?.edges.get(edge.id) ?? null,
     requiredNodeMotionOffsetPx(nodeOffsetById, edge.source),
     requiredNodeMotionOffsetPx(nodeOffsetById, edge.target),
     calibration,
@@ -479,14 +497,15 @@ const NO_NODE_MOTION_OFFSET_PX: NodeMotionOffsetPx = { x: 0, y: 0 };
  * reach at a few px regardless of the offset permille requested. idealEdgeLengthPx is the layout's own
  * declared unit of spatial separation, already governed and registered, so a given offset permille now
  * reads as the same fraction of "how far this layout places neighbours" for every node alike,
- * independent of that node's own prominence, morphology, or LOD band. `condense` is non-null only for
- * the Condense policy (see `resolveCondenseGeometry`): its offset is real pixels, already resolved
- * against this scene's own anchors, added on top of whatever `offsetXPermille`/`offsetYPermille`
- * declare (always zero for Condense today, see motion-grammar.ts's own condense case).
+ * independent of that node's own prominence, morphology, or LOD band. `geometry` is non-null only for a
+ * policy `resolveMotionGeometry` resolves (Condense, Assemble, Dissolve, RecursiveBloom): its offset is
+ * real pixels, already resolved against this scene's own anchors, added on top of whatever
+ * `offsetXPermille`/`offsetYPermille` declare (always zero for all four of those policies at the axis
+ * level today, see motion-grammar.ts's own cases).
  */
-function resolveNodeMotionOffsetPx(modulation: NodeMotionModulation, calibration: CalibrationProfile, condense: CondenseNodeResolution | null): NodeMotionOffsetPx {
-  const offsetXPx = motionOffsetPx(modulation.offsetXPermille, calibration.layout.idealEdgeLengthPx) + (condense?.offsetXPx ?? 0);
-  const offsetYPx = motionOffsetPx(modulation.offsetYPermille, calibration.layout.idealEdgeLengthPx) + (condense?.offsetYPx ?? 0);
+function resolveNodeMotionOffsetPx(modulation: NodeMotionModulation, calibration: CalibrationProfile, geometry: MotionGeometryNodeResolution | null): NodeMotionOffsetPx {
+  const offsetXPx = motionOffsetPx(modulation.offsetXPermille, calibration.layout.idealEdgeLengthPx) + (geometry?.offsetXPx ?? 0);
+  const offsetYPx = motionOffsetPx(modulation.offsetYPermille, calibration.layout.idealEdgeLengthPx) + (geometry?.offsetYPx ?? 0);
   return offsetXPx === 0 && offsetYPx === 0 ? NO_NODE_MOTION_OFFSET_PX : { x: offsetXPx, y: offsetYPx };
 }
 
@@ -496,12 +515,13 @@ function resolveNodeMotionOffsetPx(modulation: NodeMotionModulation, calibration
  * pixels, by `resolveNodeMotionOffsetPx` -- the same value every relation incident to this node also
  * received, so a node and its own relations move together. The halo is scaled by the same factor as
  * the core so the two never visually decouple as a node's own scale channel breathes or shrinks.
- * `condense` is non-null only for the Condense policy, and its opacity/scale replace the axis's own
- * declared ceiling with the real, geometry-resolved value that ceiling was spent on.
+ * `geometry` is non-null only for a policy `resolveMotionGeometry` resolves, and its opacity/scale
+ * replace the axis's own declared ceiling with the real, geometry-resolved value that ceiling was
+ * spent on.
  */
-function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, offsetPx: NodeMotionOffsetPx, condense: CondenseNodeResolution | null): SceneNode {
-  const opacityPermille = condense?.opacityPermille ?? modulation.opacityPermille;
-  const scalePermille = condense?.scalePermille ?? modulation.scalePermille;
+function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, offsetPx: NodeMotionOffsetPx, geometry: MotionGeometryNodeResolution | null): SceneNode {
+  const opacityPermille = geometry?.opacityPermille ?? modulation.opacityPermille;
+  const scalePermille = geometry?.scalePermille ?? modulation.scalePermille;
   const scaleFactor = motionFactor(scalePermille);
   return {
     ...node,
@@ -523,28 +543,27 @@ function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, of
  * restrictive of the two rather than being silently dropped -- every policy motion-grammar.ts defines
  * today keeps a relation's own opacity and reveal numerically equal, so this composition changes
  * nothing about their current behaviour, and it also holds correctly should a future policy ever let
- * the two diverge. `condense` is non-null only for the Condense policy, and entirely replaces the
- * axis's own declared (always-identity, see motion-grammar.ts's own condense case) channel with the
- * real, geometry-resolved fade `resolveCondenseGeometry` computed from this relation's own two
- * endpoints. `sourceOffsetPx`/`targetOffsetPx` are this relation's own two endpoints' resolved motion
- * offsets (see `resolveNodeMotionOffsetPx`) -- the same values `modulateSceneNode` applied to those two
- * nodes' own drawn positions -- and are what keeps this relation's drawn geometry attached to them
- * (see `motionEdgeGeometry`); junctionStart/EndGeometry and terminalStart/EndTreatment carry no
- * position or angle of their own (each is one of a small fixed categorical set describing HOW an
- * endpoint is drawn, not WHERE -- see morphology.ts's own JunctionGeometry/TerminalTreatment), so they
- * pass through unchanged.
+ * the two diverge. `geometryResolution` is non-null only for a policy `resolveMotionGeometry` resolves,
+ * and entirely replaces the axis's own declared channel with the real, geometry-resolved fade that
+ * function computed from this relation's own two endpoints. `sourceOffsetPx`/`targetOffsetPx` are this
+ * relation's own two endpoints' resolved motion offsets (see `resolveNodeMotionOffsetPx`) -- the same
+ * values `modulateSceneNode` applied to those two nodes' own drawn positions -- and are what keeps this
+ * relation's drawn geometry attached to them (see `motionEdgeGeometry`); junctionStart/EndGeometry and
+ * terminalStart/EndTreatment carry no position or angle of their own (each is one of a small fixed
+ * categorical set describing HOW an endpoint is drawn, not WHERE -- see morphology.ts's own
+ * JunctionGeometry/TerminalTreatment), so they pass through unchanged.
  */
 function modulateSceneEdge(
   edge: SceneEdge,
   modulation: EdgeMotionModulation,
-  condense: CondenseEdgeResolution | null,
+  geometryResolution: MotionGeometryEdgeResolution | null,
   sourceOffsetPx: NodeMotionOffsetPx,
   targetOffsetPx: NodeMotionOffsetPx,
   calibration: CalibrationProfile,
 ): SceneEdge {
-  const visibilityPermille = condense === null
+  const visibilityPermille = geometryResolution === null
     ? Math.min(modulation.opacityPermille, modulation.revealPermille)
-    : Math.min(condense.opacityPermille, condense.revealPermille);
+    : Math.min(geometryResolution.opacityPermille, geometryResolution.revealPermille);
   const geometry = motionEdgeGeometry(edge, sourceOffsetPx, targetOffsetPx, calibration);
   return {
     ...edge,
@@ -684,22 +703,71 @@ function requiredNodeMotionPosition(positionById: ReadonlyMap<string, Coordinate
   return position;
 }
 
-/** This is Condense's own migrated core floor (see motion-grammar.ts's own CONDENSE_CONVERGENCE_AMPLITUDE_PERMILLE docstring): the shrink a node exactly at the structure's own centre still receives at the envelope's own peak, unchanged from the pre-fix core-vs-periphery split's own value. */
-const CONDENSE_CORE_SHRINK_FLOOR_PERMILLE = 650;
-
-/** This is one node's real, geometry-resolved contribution to Condense, replacing the axis's own uniform declared ceiling. */
-type CondenseNodeResolution = {
+/** This is one node's real, geometry-resolved contribution under a policy `resolveMotionGeometry` resolves, replacing the axis's own uniform declared ceiling. */
+type MotionGeometryNodeResolution = {
   readonly offsetXPx: number;
   readonly offsetYPx: number;
   readonly opacityPermille: number;
   readonly scalePermille: number;
 };
 
-/** This is one relation's real, geometry-resolved fade under Condense, replacing the axis's own always-identity declared channel. */
-type CondenseEdgeResolution = {
+/** This is one relation's real, geometry-resolved contribution under a policy `resolveMotionGeometry` resolves, replacing the axis's own always-identity declared channel. */
+type MotionGeometryEdgeResolution = {
   readonly opacityPermille: number;
   readonly revealPermille: number;
 };
+
+/** This is the shared return shape every geometry resolver below produces, and the shape `applyMotionGrammar` consumes uniformly regardless of which policy produced it. */
+type MotionGeometryResolution = {
+  readonly nodes: ReadonlyMap<string, MotionGeometryNodeResolution>;
+  readonly edges: ReadonlyMap<string, MotionGeometryEdgeResolution>;
+};
+
+/**
+ * This is the one dispatch point for the "the axis declares a scalar intent; the scene layer resolves
+ * it against real geometry" precedent this capability's Condense fix established and this pass extends
+ * to four more policies (see each resolver's own docstring for what it resolves and why): Condense's own
+ * centroid-convergence, Assemble/Dissolve/RecursiveBloom's real incidence-ordered construction and
+ * release, and Pulse's real centroid-distance breathing wave. Still and Reconfigure need no such
+ * resolution -- Still is exact identity everywhere by construction, and Reconfigure's own declared
+ * per-node scale and offset already come from that node's own id-seeded amplitude and direction, with
+ * no further geometry to resolve -- so both return null here, unchanged from before this dispatch
+ * existed.
+ */
+function resolveMotionGeometry(
+  scene: Scene,
+  graph: EngineGraph,
+  policy: MotionGrammar,
+  phase: number,
+  nodeModulationById: ReadonlyMap<string, NodeMotionModulation>,
+): MotionGeometryResolution | null {
+  if (policy === CONDENSE) {
+    return resolveCondenseGeometry(scene, nodeModulationById);
+  }
+  if (policy === ASSEMBLE || policy === DISSOLVE || policy === RECURSIVE_BLOOM) {
+    return resolveStructuralGeometry(scene, graph, policy, phase);
+  }
+  if (policy === PULSE) {
+    return resolvePulseGeometry(scene, phase);
+  }
+  return null;
+}
+
+/** This is Condense's own migrated core floor (see motion-grammar.ts's own CONDENSE_CONVERGENCE_AMPLITUDE_PERMILLE docstring): the shrink a node exactly at the structure's own centre still receives at the envelope's own peak, unchanged from the pre-fix core-vs-periphery split's own value. */
+const CONDENSE_CORE_SHRINK_FLOOR_PERMILLE = 650;
+
+/**
+ * This is the fraction of Condense's own declared ceiling that its OPACITY channel alone may spend, out
+ * of one thousand -- introduced under the human review disposition's binding instruction that Condense
+ * "must not be reducible to dimming": the pre-fix formula let the single farthest node's own opacity
+ * reach exactly zero at the envelope's own peak (fully invisible, not merely dim), while the SCALE
+ * channel below still spends the full ceiling. Dropping opacity's own share to 400 (40%) leaves even the
+ * farthest node at least 60% opaque at the envelope's own peak, so contraction and densification -- the
+ * spatial read the disposition asks this policy to lead with -- are what a reader actually follows; the
+ * fade that remains still marks depth honestly (farther still dims more than nearer, monotonically, per
+ * the same test that already covered Condense's pre-fix formula) without ever reading as a switch-off.
+ */
+const CONDENSE_OPACITY_FADE_CEILING_FRACTION_PERMILLE = 400;
 
 /**
  * This is the one place Condense's declared, position-blind ceiling (see motion-grammar.ts's own
@@ -710,25 +778,25 @@ type CondenseEdgeResolution = {
  * is exactly why it is admissible where the id-hash it replaces was not. Each node's own real distance
  * from that centroid -- never an id -- decides how much of the declared ceiling it actually spends: a
  * node exactly at the centroid keeps full opacity and shrinks only by `CONDENSE_CORE_SHRINK_FLOOR_PERMILLE`,
- * the single farthest node spends the whole declared ceiling (fading and shrinking the way the pre-fix
- * "peripheral" bucket did), and every node between interpolates smoothly by that same real fraction --
- * a continuous function of distance rather than the two-bucket hash threshold this replaces, because a
- * node a hair on either side of a smooth gradient reads almost identically, where a node a hair on
- * either side of a threshold used to read as two different populations. A relation's own fade is the
- * average of its two real endpoints' own fractions: it has no position of its own to be peripheral
- * about, but its two endpoints do, and a relation strung between a central and a peripheral node reads
- * as partway faded rather than wholly one or the other.
+ * the single farthest node spends the whole declared ceiling on SCALE and shrinking, and a dampened
+ * `CONDENSE_OPACITY_FADE_CEILING_FRACTION_PERMILLE` share of it on OPACITY (see that constant's own
+ * docstring for why the two channels no longer spend the ceiling equally), and every node between
+ * interpolates smoothly by that same real fraction -- a continuous function of distance rather than the
+ * two-bucket hash threshold this replaces, because a node a hair on either side of a smooth gradient
+ * reads almost identically, where a node a hair on either side of a threshold used to read as two
+ * different populations. A relation's own fade is the average of its two real endpoints' own fractions:
+ * it has no position of its own to be peripheral about, but its two endpoints do, and a relation strung
+ * between a central and a peripheral node reads as partway faded rather than wholly one or the other.
  */
 function resolveCondenseGeometry(
   scene: Scene,
   nodeModulationById: ReadonlyMap<string, NodeMotionModulation>,
-): { readonly nodes: ReadonlyMap<string, CondenseNodeResolution>; readonly edges: ReadonlyMap<string, CondenseEdgeResolution> } {
+): MotionGeometryResolution {
   if (scene.nodes.length === 0) {
     throw new TypeError("condense geometry requires at least one governed node");
   }
   const centroid = nodeCentroid(scene.nodes);
-  const distanceById = new Map(scene.nodes.map((node) => [node.id, Math.hypot(node.position.x - centroid.x, node.position.y - centroid.y)] as const));
-  const maxDistance = Math.max(0, ...distanceById.values());
+  const { peripheralityById } = resolvePeripherality(scene, centroid);
   // Every node declares the identical ceiling for Condense (see motion-grammar.ts's own condense
   // case), so any one of them names the whole phase's own envelope; taking the maximum rather than an
   // arbitrary index keeps this correct even if that uniformity were ever relaxed.
@@ -736,15 +804,13 @@ function resolveCondenseGeometry(
     0,
     ...scene.nodes.map((node) => SCENE_PERMILLE_SCALE - requiredNodeMotionModulation(nodeModulationById, node.id).opacityPermille),
   );
-  const peripheralityById = new Map<string, number>();
-  const nodes = new Map<string, CondenseNodeResolution>();
+  const opacityFadeCeilingPermille = Math.round((envelopeCeilingPermille * CONDENSE_OPACITY_FADE_CEILING_FRACTION_PERMILLE) / SCENE_PERMILLE_SCALE);
+  const nodes = new Map<string, MotionGeometryNodeResolution>();
   for (const node of scene.nodes) {
     const declared = requiredNodeMotionModulation(nodeModulationById, node.id);
-    const distance = requiredDistance(distanceById, node.id);
-    const peripherality = maxDistance === 0 ? 0 : distance / maxDistance;
-    peripheralityById.set(node.id, peripherality);
+    const peripherality = requiredPeripherality(peripheralityById, node.id);
     const convergenceFraction = declared.convergencePermille / SCENE_PERMILLE_SCALE;
-    const opacityPermille = clampScenePermille(SCENE_PERMILLE_SCALE - Math.round(envelopeCeilingPermille * peripherality));
+    const opacityPermille = clampScenePermille(SCENE_PERMILLE_SCALE - Math.round(opacityFadeCeilingPermille * peripherality));
     const envelopeFraction = envelopeCeilingPermille / SCENE_PERMILLE_SCALE;
     const shrinkAmountPermille = Math.round(
       envelopeFraction * (CONDENSE_CORE_SHRINK_FLOOR_PERMILLE + ((SCENE_PERMILLE_SCALE - CONDENSE_CORE_SHRINK_FLOOR_PERMILLE) * peripherality)),
@@ -756,10 +822,10 @@ function resolveCondenseGeometry(
       scalePermille: clampScenePermille(SCENE_PERMILLE_SCALE - shrinkAmountPermille),
     });
   }
-  const edges = new Map<string, CondenseEdgeResolution>();
+  const edges = new Map<string, MotionGeometryEdgeResolution>();
   for (const edge of scene.edges) {
     const endpointPeripherality = (requiredPeripherality(peripheralityById, edge.source) + requiredPeripherality(peripheralityById, edge.target)) / 2;
-    const opacityPermille = clampScenePermille(SCENE_PERMILLE_SCALE - Math.round(envelopeCeilingPermille * endpointPeripherality));
+    const opacityPermille = clampScenePermille(SCENE_PERMILLE_SCALE - Math.round(opacityFadeCeilingPermille * endpointPeripherality));
     edges.set(edge.id, { opacityPermille, revealPermille: opacityPermille });
   }
   return { nodes, edges };
@@ -772,14 +838,44 @@ function nodeCentroid(nodes: readonly SceneNode[]): Coordinates {
   return { x, y, z: 0 };
 }
 
+/**
+ * This is the real, per-node normalised distance from a given centre -- 0 at the centre itself, 1 at
+ * the single farthest node this scene draws -- shared between Condense (peripherality drives its own
+ * fade/shrink split) and Pulse (peripherality drives its own structural phase-wave, see
+ * `resolvePulseGeometry`) so the two policies' own notion of "how far out is this node" is computed once
+ * and identically, not by two independently maintained copies of the same distance arithmetic.
+ */
+function resolvePeripherality(
+  scene: Scene,
+  centroid: Coordinates,
+): { readonly peripheralityById: ReadonlyMap<string, number> } {
+  const distanceById = new Map(scene.nodes.map((node) => [node.id, Math.hypot(node.position.x - centroid.x, node.position.y - centroid.y)] as const));
+  const maxDistance = Math.max(0, ...distanceById.values());
+  const peripheralityById = new Map(scene.nodes.map((node) => {
+    const distance = requiredDistance(distanceById, node.id);
+    return [node.id, maxDistance === 0 ? 0 : distance / maxDistance] as const;
+  }));
+  return { peripheralityById };
+}
+
 function clampScenePermille(value: number): number {
   return Math.min(SCENE_PERMILLE_SCALE, Math.max(0, value));
+}
+
+/** This is the same clamp as `clampScenePermille` but over the SCALE channel's own doubled declared range ([0, 2*SCENE_PERMILLE_SCALE]), the shared-scene equivalent of motion-grammar.ts's own `clampScale`. */
+function clampSceneScalePermille(value: number): number {
+  return Math.min(2 * SCENE_PERMILLE_SCALE, Math.max(0, value));
+}
+
+/** This clamps a plain [0, 1] fraction and does not itself carry a permille scale, unlike every clamp above it -- used only where the value being clamped is already a bare ratio (a generation sub-rank, a growth-remaining fraction), never a permille channel. */
+function clampUnitFraction(value: number): number {
+  return Math.min(1, Math.max(0, value));
 }
 
 function requiredDistance(distanceById: ReadonlyMap<string, number>, id: string): number {
   const distance = distanceById.get(id);
   if (distance === undefined) {
-    throw new TypeError(`condense geometry is missing a resolved distance for node: ${id}`);
+    throw new TypeError(`motion geometry is missing a resolved distance for node: ${id}`);
   }
   return distance;
 }
@@ -787,9 +883,223 @@ function requiredDistance(distanceById: ReadonlyMap<string, number>, id: string)
 function requiredPeripherality(peripheralityById: ReadonlyMap<string, number>, id: string): number {
   const peripherality = peripheralityById.get(id);
   if (peripherality === undefined) {
-    throw new TypeError(`condense geometry is missing a resolved peripherality for node: ${id}`);
+    throw new TypeError(`motion geometry is missing a resolved peripherality for node: ${id}`);
   }
   return peripherality;
+}
+
+/**
+ * This is one node's real position in the governed relation set, resolved once from the same
+ * `EngineGraph` `applyMotionGrammar` already carries and reused by every structural geometry resolver
+ * below: `rank` is a BFS hop-distance from a real incidence-degree hub, normalised to [0, 1] (0 = the
+ * hub itself, 1 = the single most distant reached node, or a node the governed relation set never
+ * reaches at all -- see this function's own body for how the latter is placed without fabricating a
+ * distance), and `parentId` is the real neighbour that hop-distance was first reached through, absent
+ * only for the hub and for a node the relation set never reaches. Neither is an id hash (CAP-13 finding
+ * F79): the hub is the node with the greatest real incidence degree, and every BFS tie among same-degree
+ * or same-hop candidates is broken by comparing ids lexicographically -- a deterministic tie-break, the
+ * same idiom `neuralAxonLikeEndpoints` already uses, never a hash standing in for meaning.
+ */
+type StructuralRank = {
+  readonly rankById: ReadonlyMap<string, number>;
+  readonly parentById: ReadonlyMap<string, string>;
+};
+
+function resolveStructuralRank(graph: EngineGraph): StructuralRank {
+  const firstNode = graph.nodes[0];
+  if (firstNode === undefined) {
+    return { rankById: new Map(), parentById: new Map() };
+  }
+  const degreeById = new Map<string, number>(graph.nodes.map((node) => [node.id, 0] as const));
+  const neighborsById = new Map<string, string[]>(graph.nodes.map((node) => [node.id, []] as const));
+  for (const edge of graph.edges) {
+    degreeById.set(edge.source, (degreeById.get(edge.source) ?? 0) + 1);
+    degreeById.set(edge.target, (degreeById.get(edge.target) ?? 0) + 1);
+    neighborsById.get(edge.source)?.push(edge.target);
+    neighborsById.get(edge.target)?.push(edge.source);
+  }
+  // graph.nodes is already id-sorted (orderEngineGraph), so a strict `>` comparison below keeps the
+  // lowest id on a degree tie without a second explicit tie-break, the same idiom
+  // neuralAxonLikeEndpoints already uses for its own longest-span tie.
+  let hubId = firstNode.id;
+  let hubDegree = -1;
+  for (const node of graph.nodes) {
+    const degree = degreeById.get(node.id) ?? 0;
+    if (degree > hubDegree) {
+      hubDegree = degree;
+      hubId = node.id;
+    }
+  }
+  const hopById = new Map<string, number>([[hubId, 0]]);
+  const parentById = new Map<string, string>();
+  const queue: string[] = [hubId];
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const current = requiredQueueEntry(queue, cursor);
+    const hop = hopById.get(current) ?? 0;
+    const neighbors = [...(neighborsById.get(current) ?? [])].sort(compareText);
+    for (const neighborId of neighbors) {
+      if (hopById.has(neighborId)) {
+        continue;
+      }
+      hopById.set(neighborId, hop + 1);
+      parentById.set(neighborId, current);
+      queue.push(neighborId);
+    }
+  }
+  // A node the governed relation set never reaches from the hub (a disconnected component) is placed
+  // one hop beyond the farthest node the traversal above did reach: it resolves last, deterministically,
+  // without fabricating a distance the relation set itself never establishes.
+  const reachedMaxHop = Math.max(0, ...hopById.values());
+  const unreachedHop = reachedMaxHop + 1;
+  for (const node of graph.nodes) {
+    if (!hopById.has(node.id)) {
+      hopById.set(node.id, unreachedHop);
+    }
+  }
+  const maxHop = Math.max(1, ...hopById.values());
+  const rankById = new Map<string, number>([...hopById].map(([id, hop]) => [id, hop / maxHop] as const));
+  return { rankById, parentById };
+}
+
+function requiredQueueEntry(queue: readonly string[], index: number): string {
+  const entry = queue[index];
+  if (entry === undefined) {
+    throw new TypeError("structural rank traversal queue is missing an entry");
+  }
+  return entry;
+}
+
+function requiredStructuralRank(rankById: ReadonlyMap<string, number>, id: string): number {
+  const rank = rankById.get(id);
+  if (rank === undefined) {
+    throw new TypeError(`structural rank is missing for node: ${id}`);
+  }
+  return rank;
+}
+
+/**
+ * This resolves Assemble, Dissolve, and RecursiveBloom against real incidence instead of an id (CAP-13
+ * finding F79 and the human review disposition's binding rule that structural propagation "needs an
+ * ordering" the graph itself, never an id hash, must supply). `resolveStructuralRank` above supplies
+ * that ordering; this function spends it two ways per node, both genuinely geometric rather than merely
+ * luminance: WHEN a node resolves or releases (its own `revealFraction`, see `resolveRevealFraction`,
+ * drives opacity and scale exactly as the pre-fix id-staggered formula did) and WHERE it draws while
+ * doing so -- a node not yet fully resolved is pulled toward its own real BFS parent's already-drawn
+ * position by exactly `1 - revealFraction`, arriving at its own final position only once fully resolved,
+ * so a newly-assembling element visibly grows outward FROM the existing structure it attaches to rather
+ * than appearing in place -- what the disposition's diagnosis named "individual lights switch on." A
+ * relation's own reveal is keyed by the LESSER (nearer, more-already-resolved) of its two endpoints' own
+ * ranks: per the disposition's own sequence ("existing structure -> a relation propagates -> a new
+ * governed element resolves"), the relation reaching a newly-resolving node begins revealing at least as
+ * early as that node does, never after it. `assertMotionEdgeEndpointsFollowNodes` still holds here for
+ * free: a relation's own drawn path is recomputed from its two endpoints' own resolved offsets by the
+ * same `motionEdgeGeometry` every other policy already shares (see `applyMotionGrammar`), so a relation
+ * touching a still-growing node visibly follows it, never floating free of it.
+ */
+function resolveStructuralGeometry(
+  scene: Scene,
+  graph: EngineGraph,
+  policy: MotionGrammar,
+  phase: number,
+): MotionGeometryResolution {
+  const structural = resolveStructuralRank(graph);
+  const positionById = new Map(scene.nodes.map((node) => [node.id, node.position] as const));
+  const nodes = new Map<string, MotionGeometryNodeResolution>();
+  for (const node of scene.nodes) {
+    const rank = requiredStructuralRank(structural.rankById, node.id);
+    const revealFraction = resolveRevealFraction(policy, phase, rank);
+    const levelPermille = clampScenePermille(Math.round(revealFraction * SCENE_PERMILLE_SCALE));
+    const growthRemaining = 1 - revealFraction;
+    const parentId = structural.parentById.get(node.id);
+    const parentPosition = parentId === undefined ? undefined : positionById.get(parentId);
+    nodes.set(node.id, {
+      offsetXPx: parentPosition === undefined ? 0 : (parentPosition.x - node.position.x) * growthRemaining,
+      offsetYPx: parentPosition === undefined ? 0 : (parentPosition.y - node.position.y) * growthRemaining,
+      opacityPermille: levelPermille,
+      scalePermille: levelPermille,
+    });
+  }
+  const edges = new Map<string, MotionGeometryEdgeResolution>();
+  for (const edge of scene.edges) {
+    const sourceRank = requiredStructuralRank(structural.rankById, edge.source);
+    const targetRank = requiredStructuralRank(structural.rankById, edge.target);
+    const edgeRank = Math.min(sourceRank, targetRank);
+    const levelPermille = clampScenePermille(Math.round(resolveRevealFraction(policy, phase, edgeRank) * SCENE_PERMILLE_SCALE));
+    edges.set(edge.id, { opacityPermille: levelPermille, revealPermille: levelPermille });
+  }
+  return { nodes, edges };
+}
+
+/**
+ * This resolves one governed element's own reveal fraction in [0, 1] from its real structural `rank`
+ * (0 = the hub / already-there, 1 = the single most distant element -- see `resolveStructuralRank`),
+ * reusing motion-grammar.ts's own `staggeredProgress` primitive exactly as the pre-fix id-staggered
+ * formulas did, with `rank` (or, for RecursiveBloom, a rank-derived generation and within-generation
+ * sub-rank) standing in for that primitive's own `seedFraction(id)` argument. Assemble uses `rank`
+ * directly: the hub (rank 0) begins resolving from phase 0, the farthest element begins latest,
+ * propagating outward exactly as the disposition's own "existing structure -> relation propagates ->
+ * new element resolves" sequence describes. Dissolve uses `1 - rank`: the single most peripheral element
+ * (rank 1, so `1 - rank = 0`) begins releasing from phase 0, the hub (rank 0, so `1 - rank = 1`) persists
+ * longest -- "progressive structural release" starting from the structure's own extremities, not an
+ * arbitrary independent switch-off. RecursiveBloom buckets `rank` into `RECURSIVE_BLOOM_GENERATIONS`
+ * real, hop-distance-derived generations (never an id-hash generation, replacing the pre-fix
+ * `bloomGeneration(id)`) and reapplies `staggeredProgress` inside that generation's own nested
+ * `bloomWindow`, with the fractional remainder of `rank * RECURSIVE_BLOOM_GENERATIONS` standing in for
+ * the within-generation seed -- the same nested self-similar shape motion-grammar.ts's own module
+ * docstring for RecursiveBloom describes, now keyed by real distance from the portal's own hub instead
+ * of an id.
+ */
+function resolveRevealFraction(policy: MotionGrammar, phase: number, rank: number): number {
+  if (policy === ASSEMBLE) {
+    return staggeredProgress(phase, rank, 0, 1, ASSEMBLE_STAGGER_FRACTION);
+  }
+  if (policy === DISSOLVE) {
+    return 1 - staggeredProgress(phase, 1 - rank, 0, 1, DISSOLVE_STAGGER_FRACTION);
+  }
+  const generation = Math.min(RECURSIVE_BLOOM_GENERATIONS - 1, Math.floor(rank * RECURSIVE_BLOOM_GENERATIONS));
+  const withinGeneration = clampUnitFraction((rank * RECURSIVE_BLOOM_GENERATIONS) - generation);
+  const window = bloomWindow(generation);
+  return staggeredProgress(phase, withinGeneration, window.start, window.end, RECURSIVE_BLOOM_STAGGER_FRACTION);
+}
+
+/**
+ * This is the fraction, out of one thousand, of one full breathing cycle that the single most peripheral
+ * node's own effective phase lags every other node's by, relative to the hub -- introduced under the
+ * human review disposition's binding rule that even Pulse must "breathe structurally rather than blink
+ * independently." The pre-fix formula gave every node the identical envelope at the identical phase
+ * (only amplitude varied, by an id-seeded spread that named no real structure): the whole scene's own
+ * total drawn area therefore swelled and shrank in exact lockstep, reading as a single synchronized
+ * flash rather than a breath moving through the structure. Multiplying (never adding to) `phase` by a
+ * peripherality-derived factor keeps every node's own envelope exactly zero whenever `phase` itself is
+ * zero -- Pulse's own resting phase -- regardless of that node's own distance, so resting completeness
+ * holds by construction; away from rest, a peripheral node's own effective phase runs behind the hub's,
+ * producing a real outward-propagating wave instead of a uniform pulse.
+ */
+const PULSE_WAVE_SPREAD_PERMILLE = 350;
+
+/**
+ * This resolves Pulse's own breathing envelope per node against a real, centroid-distance-shifted phase
+ * (see `PULSE_WAVE_SPREAD_PERMILLE`'s own docstring) rather than the axis's own synchronized, uniform
+ * declaration -- the "declare a scalar intent, resolve it against real geometry" precedent applied to
+ * Pulse's own phase rather than to a position offset, because Pulse (unlike Condense, Assemble, Dissolve,
+ * and RecursiveBloom) never declares a nonzero offset channel: only the WHEN of its breath is resolved
+ * here, never a WHERE. Opacity and edges are left at their axis-declared identity (this policy never
+ * touches either -- see motion-grammar.ts's own pulse cases), so this function returns an empty edge map
+ * and a full-opacity node map throughout.
+ */
+function resolvePulseGeometry(scene: Scene, phase: number): MotionGeometryResolution {
+  const centroid = nodeCentroid(scene.nodes);
+  const { peripheralityById } = resolvePeripherality(scene, centroid);
+  const nodes = new Map<string, MotionGeometryNodeResolution>();
+  for (const node of scene.nodes) {
+    const peripherality = requiredPeripherality(peripheralityById, node.id);
+    const phaseFactorPermille = SCENE_PERMILLE_SCALE - Math.round(peripherality * PULSE_WAVE_SPREAD_PERMILLE);
+    const effectivePhase = (phase * phaseFactorPermille) / SCENE_PERMILLE_SCALE;
+    const envelope = breathingEnvelope(effectivePhase);
+    const scalePermille = clampSceneScalePermille(SCENE_PERMILLE_SCALE + Math.round(PULSE_AMPLITUDE_PERMILLE * envelope));
+    nodes.set(node.id, { offsetXPx: 0, offsetYPx: 0, opacityPermille: SCENE_PERMILLE_SCALE, scalePermille });
+  }
+  return { nodes, edges: new Map() };
 }
 
 function motionFactor(valuePermille: number): number {

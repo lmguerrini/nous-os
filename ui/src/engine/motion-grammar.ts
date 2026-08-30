@@ -50,13 +50,13 @@ export const DISSOLVE: MotionGrammar = "dissolve";
 
 /**
  * This is nested, self-similar staggered construction: the same `staggeredProgress` primitive
- * Assemble uses, reapplied within recursively halved phase windows keyed by a generation derived
- * from each element's own id. REF-MOTION-001 found no support for genuine recursion in the prior art
- * it reviewed, only symmetry, and this implementation bears that finding out -- once built,
- * RecursiveBloom's own arithmetic is Assemble's primitive windowed, not a distinct mechanism. It
- * stays a separate, independently reachable member regardless, because the identity-traceability
- * decision this wave answers to requires every candidate state to stay reachable no matter what a
- * later measurement finds; nothing here narrows that reachability on the strength of this finding.
+ * Assemble uses, reapplied within recursively halved phase windows keyed by a generation. REF-MOTION-001
+ * found no support for genuine recursion in the prior art it reviewed, only symmetry, and this
+ * implementation bears that finding out -- once built, RecursiveBloom's own arithmetic is Assemble's
+ * primitive windowed, not a distinct mechanism. It stays a separate, independently reachable member
+ * regardless, because the identity-traceability decision this wave answers to requires every candidate
+ * state to stay reachable no matter what a later measurement finds; nothing here narrows that
+ * reachability on the strength of this finding.
  */
 export const RECURSIVE_BLOOM: MotionGrammar = "recursive-bloom";
 
@@ -131,7 +131,15 @@ const RESTING_PHASES: Readonly<Record<MotionGrammar, number>> = {
  * capability's own standing finding on softness already found regresses topology readability, so
  * headroom was kept below that ceiling rather than spent.
  */
-const PULSE_AMPLITUDE_PERMILLE = 350;
+/**
+ * This is exported (unlike every other axis-local amplitude constant below it) because `#scene/build.ts`'s
+ * own `resolvePulseGeometry` needs this exact number to recompute Pulse's scale envelope against a
+ * per-node, structurally-shifted phase (see that function's own docstring for why phase itself, not
+ * amplitude, is what varies by node under the human review disposition's binding rule that even Pulse
+ * must breathe structurally rather than blink independently) -- reading it here rather than restating it
+ * keeps the one calibrated number in one place.
+ */
+export const PULSE_AMPLITUDE_PERMILLE = 350;
 const RECONFIGURE_AMPLITUDE_PERMILLE = 700;
 /**
  * This is Reconfigure's own displacement amplitude, independent of `RECONFIGURE_AMPLITUDE_PERMILLE`
@@ -184,12 +192,28 @@ const RECONFIGURE_OFFSET_AMPLITUDE_PERMILLE = 450;
  * envelope-scaled ceiling doubles as the node-level opacity and scale ceiling every node declares
  * uniformly (as if every node were fully peripheral): the scene layer alone decides, from real distance,
  * how much of that ceiling a given node or relation actually spends.
+ *
+ * Raised from 200 to 320 under the human review disposition's binding instruction to strengthen
+ * Condense's own spatial read rather than its fade: the farthest node on the same phase-frames fixture
+ * this constant's own prior value was measured against now moves on the order of 145px at the envelope's
+ * own peak (still an inward-only pull, so it can only shrink the resting layout's own extent, never grow
+ * past where the resting frame already fit -- the same frame-containment reasoning the prior value relied
+ * on holds at any amplitude below the declared 1000-permille ceiling) -- a visibly stronger contraction
+ * without approaching the crowding this constant's own prior account warned against.
  */
-const CONDENSE_CONVERGENCE_AMPLITUDE_PERMILLE = 200;
-const ASSEMBLE_STAGGER_FRACTION = 0.7;
-const DISSOLVE_STAGGER_FRACTION = 0.7;
-const RECURSIVE_BLOOM_STAGGER_FRACTION = 0.6;
-const RECURSIVE_BLOOM_GENERATIONS = 3;
+const CONDENSE_CONVERGENCE_AMPLITUDE_PERMILLE = 320;
+/**
+ * This is exported so `#scene/build.ts`'s own structural reveal/withdrawal geometry (Assemble, Dissolve,
+ * RecursiveBloom) can drive the identical `staggeredProgress` primitive below with a real, governed
+ * per-element position in [0, 1] -- BFS hop-distance from a real incidence-degree hub, never an id hash
+ * -- in place of the `seedFraction(id)` this axis itself no longer computes for these three policies (see
+ * `nodeModulation`'s own cases and CAP-13 finding F79: an id-seeded hash once drove a visible core/
+ * periphery gradient that encoded nothing).
+ */
+export const ASSEMBLE_STAGGER_FRACTION = 0.7;
+export const DISSOLVE_STAGGER_FRACTION = 0.7;
+export const RECURSIVE_BLOOM_STAGGER_FRACTION = 0.6;
+export const RECURSIVE_BLOOM_GENERATIONS = 3;
 const RECURSIVE_BLOOM_DECAY = 0.5;
 
 /** This channel's declared range is [0, 1000]; used to derive `NODE_STEP_MAGNITUDE_PERMILLE` and `EDGE_STEP_MAGNITUDE_PERMILLE` below rather than a chosen constant. */
@@ -424,22 +448,39 @@ function nodeModulation(policy: MotionGrammar, phase: number, id: string): NodeM
     case "still":
       return identityNode(id);
     case "assemble": {
-      const level = Math.round(staggeredProgress(phase, seed, 0, 1, ASSEMBLE_STAGGER_FRACTION) * PERMILLE);
+      // This axis declares the same, uniform, phase-only value for every id (see this module's own
+      // opening docstring: no access to a resolved layout, and per CAP-13 finding F79, never an id
+      // hash either): a real per-element construction ORDER -- existing structure resolving first, a
+      // relation propagating, a new element resolving -- requires real incidence, which only
+      // `#scene/build.ts`'s own `resolveStructuralGeometry` has (BFS hop-distance from a real
+      // incidence-degree hub). What this declaration alone still guarantees is resting completeness at
+      // phase 1 and genuine incompleteness away from it, both independent of that later resolution.
+      const level = Math.round(phase * PERMILLE);
       return { id, opacityPermille: level, scalePermille: level, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 };
     }
     case "dissolve": {
-      const level = PERMILLE - Math.round(staggeredProgress(phase, seed, 0, 1, DISSOLVE_STAGGER_FRACTION) * PERMILLE);
+      // Mirrors Assemble's own reasoning above, in reverse: uniform and phase-only here, with the real
+      // structural withdrawal order (periphery releasing first, the hub persisting longest) resolved
+      // only at `#scene/build.ts`.
+      const level = PERMILLE - Math.round(phase * PERMILLE);
       return { id, opacityPermille: level, scalePermille: level, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 };
     }
     case "recursive-bloom": {
-      const window = bloomWindow(bloomGeneration(id));
-      const level = Math.round(staggeredProgress(phase, seed, window.start, window.end, RECURSIVE_BLOOM_STAGGER_FRACTION) * PERMILLE);
+      // Uniform and phase-only for the same reason: the real nested-generation grouping this policy's
+      // own "next level emerging from the previous one" reading depends on is resolved from real
+      // hop-distance at `#scene/build.ts`, never from an id.
+      const level = Math.round(phase * PERMILLE);
       return { id, opacityPermille: level, scalePermille: level, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 };
     }
     case "pulse": {
+      // Uniform amplitude, no id-seeded spread: the human review disposition's binding rule requires
+      // even Pulse to breathe structurally rather than blink independently, which this axis alone
+      // cannot do (it has no distance from a real centre to phase-shift by -- see this module's own
+      // opening docstring); `#scene/build.ts`'s own `resolvePulseGeometry` recomputes this same
+      // envelope per node against a real, centroid-distance-shifted phase instead of trusting this
+      // declared, synchronized value directly.
       const envelope = breathingEnvelope(phase);
-      const amplitude = breathingAmplitude(seed, PULSE_AMPLITUDE_PERMILLE);
-      const scalePermille = clampScale(PERMILLE + Math.round(amplitude * envelope));
+      const scalePermille = clampScale(PERMILLE + Math.round(PULSE_AMPLITUDE_PERMILLE * envelope));
       return { id, opacityPermille: PERMILLE, scalePermille, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 };
     }
     case "reconfigure": {
@@ -472,21 +513,22 @@ function nodeModulation(policy: MotionGrammar, phase: number, id: string): NodeM
 }
 
 function edgeModulation(policy: MotionGrammar, phase: number, id: string): EdgeMotionModulation {
-  const seed = seedFraction(id);
   switch (policy) {
     case "still":
       return identityEdge(id);
     case "assemble": {
-      const level = Math.round(staggeredProgress(phase, seed, 0, 1, ASSEMBLE_STAGGER_FRACTION) * PERMILLE);
+      // Uniform and phase-only, for the same reason as the node case above: a relation's own real
+      // reveal order (propagating alongside the nearer of its two endpoints) is resolved only at
+      // `#scene/build.ts`, from those endpoints' own real structural rank.
+      const level = Math.round(phase * PERMILLE);
       return { id, opacityPermille: level, revealPermille: level };
     }
     case "dissolve": {
-      const level = PERMILLE - Math.round(staggeredProgress(phase, seed, 0, 1, DISSOLVE_STAGGER_FRACTION) * PERMILLE);
+      const level = PERMILLE - Math.round(phase * PERMILLE);
       return { id, opacityPermille: level, revealPermille: level };
     }
     case "recursive-bloom": {
-      const window = bloomWindow(bloomGeneration(id));
-      const level = Math.round(staggeredProgress(phase, seed, window.start, window.end, RECURSIVE_BLOOM_STAGGER_FRACTION) * PERMILLE);
+      const level = Math.round(phase * PERMILLE);
       return { id, opacityPermille: level, revealPermille: level };
     }
     case "pulse":
@@ -517,8 +559,17 @@ function breathingAmplitude(seed: number, baseAmplitudePermille: number): number
   return (baseAmplitudePermille * (500 + Math.round(seed * 500))) / PERMILLE;
 }
 
-/** This is the shared cyclic mechanism behind Pulse and Reconfigure: exactly zero at phase 0 (so both rest at exact identity there) and one full cycle across the phase domain. */
-function breathingEnvelope(phase: number): number {
+/**
+ * This is the shared cyclic mechanism behind Pulse and Reconfigure: exactly zero at phase 0 (so both
+ * rest at exact identity there) and one full cycle across the phase domain. Exported so
+ * `#scene/build.ts`'s own `resolvePulseGeometry` can recompute this identical envelope against a real,
+ * per-node phase-shifted argument (never a different formula standing in for it) -- see that function's
+ * own docstring for why a phase shift, evaluated through this same envelope, is what turns synchronized
+ * breathing into a structural wave without ever breaking exact identity at phase 0 (multiplying phase by
+ * any per-node factor still passes 0 through unchanged, so the shift never desyncs the one phase every
+ * policy's own resting completeness depends on).
+ */
+export function breathingEnvelope(phase: number): number {
   return Math.sin(2 * Math.PI * phase);
 }
 
@@ -531,11 +582,15 @@ function convergenceEnvelope(phase: number): number {
  * This is the staggered-reveal primitive Assemble, Dissolve, and RecursiveBloom all reduce to: a
  * per-element progress in [0, 1] that is exactly 0 at `windowStart`, reaches 1 at `windowEnd` or
  * later, and is shifted later within that window by up to `staggerFraction` of the window's own span
- * according to the element's own seed, so elements sharing one window do not all move in lockstep.
+ * according to `rank`, so elements sharing one window do not all move in lockstep. Exported so
+ * `#scene/build.ts`'s own `resolveStructuralGeometry` can drive this identical primitive with a real,
+ * governed per-element rank in [0, 1] (BFS hop-distance from a real incidence-degree hub, normalised) in
+ * place of the id-hash `seedFraction(id)` this axis itself no longer computes for these three policies
+ * (see CAP-13 finding F79 and this module's own `ASSEMBLE_STAGGER_FRACTION` docstring).
  */
-function staggeredProgress(phase: number, seed: number, windowStart: number, windowEnd: number, staggerFraction: number): number {
+export function staggeredProgress(phase: number, rank: number, windowStart: number, windowEnd: number, staggerFraction: number): number {
   const span = windowEnd - windowStart;
-  const elementStart = windowStart + (seed * staggerFraction * span);
+  const elementStart = windowStart + (rank * staggerFraction * span);
   const elementSpan = windowEnd - elementStart;
   if (elementSpan <= 0) {
     return phase >= windowEnd ? 1 : 0;
@@ -543,11 +598,15 @@ function staggeredProgress(phase: number, seed: number, windowStart: number, win
   return clampUnit((phase - elementStart) / elementSpan);
 }
 
-function bloomGeneration(id: string): number {
-  return seedPermille(id) % RECURSIVE_BLOOM_GENERATIONS;
-}
-
-function bloomWindow(generation: number): { readonly start: number; readonly end: number } {
+/**
+ * This is RecursiveBloom's own nested-window boundary for one generation, unchanged in shape from
+ * before this pass: each successive generation gets a geometrically shrinking slice of the phase
+ * domain's own remaining span, so an outer generation's own window is always nested inside the span its
+ * inner generation left unclaimed. Exported so `#scene/build.ts`'s own `resolveStructuralGeometry` can
+ * place a real, hop-distance-bucketed generation (never an id hash -- see this module's own
+ * `RECURSIVE_BLOOM_GENERATIONS` docstring) into the same nested windows this axis always used.
+ */
+export function bloomWindow(generation: number): { readonly start: number; readonly end: number } {
   return {
     start: 1 - (RECURSIVE_BLOOM_DECAY ** generation),
     end: 1 - (RECURSIVE_BLOOM_DECAY ** (generation + 1)),
