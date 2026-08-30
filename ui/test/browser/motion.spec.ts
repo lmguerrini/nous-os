@@ -531,11 +531,13 @@ test("CAP-13 W-MOTION M3 Still control, default phase, and reduced motion", asyn
       pixelMismatch: { message: pixelMismatchMessage, restored: true },
       restingCompletenessViolation: { message: restingCompletenessMessage, restored: true },
     } as const;
-    // Composed, not asserted: every one of these already-computed sections is read back here rather
-    // than restated, so summary.passing is a conjunction of what was actually checked above (governed
-    // identity per capture, frame containment, byte-identity to the frozen baseline, the reduced-motion
-    // collapse, and both restored negative controls) rather than an assertion that this test reached
-    // its own last line.
+    // Every operand read back below (governedIdentity per capture, frameContainmentInvariant.passed,
+    // allByteIdentical, reducedMotionCollapsesToOmittedPhase, both negativeControls.*.restored) is a
+    // compile-time `true` literal, written only after the real check it names has already run and
+    // would have thrown on failure (m3Captures.push, frameContainmentInvariant's own `as const`,
+    // reducedMotionOverride above, negativeControls above). So summary.passing is a completion signal
+    // -- this suite did not throw before reaching this point -- not an independent measurement of its
+    // own; its force comes entirely from the throws above it.
     const summaryPassing: boolean =
       m3Captures.every((capture) => capture.governedIdentity.nodeIdsMatchCanonical && capture.governedIdentity.edgeIdsMatchCanonical)
       && frameContainmentInvariant.passed
@@ -970,7 +972,7 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
       schemaVersion: 1,
       summary: { passing: summaryPassing },
       run: { command: MOTION_COMMAND, trackedTree },
-      assertion: "Six independent pairs (three navigation depths x two motion policies -- see changedAxes below), each a paired strip of the same navigation event (entering the same containment child world at that pair's own depth), everything held constant except scaleTopology, both members animated with that pair's own motion policy. Every pair independently shuffles which anonymous strip slot (pair-1/pair-2) is Recursive vs Holographic, with its own recorded seed; no path under m2/ names either scaleTopology label, verified by read-back.",
+      assertion: "Six independent pairs (three navigation depths x two motion policies -- see changedAxes below), each a paired strip of the same navigation event (entering the same containment child world, from the same containmentRootId, to that pair's own target depth), both members animated with that pair's own motion policy. organization/morphology/projection/calibration/reducedMotion are held constant (see heldConstant above); scaleTopology is the axis manipulated within the pair, but its downstream consequences are not held constant -- each member's ScaleNavigationPath is built by that policy's own walk (renderM2PairSpec), so the path taken differs, and so does the entered world's own contents: Holographic's rendered node/edge ids are a strict superset of Recursive's, not merely a difference in outside context. Every pair independently shuffles which anonymous strip slot (pair-1/pair-2) is Recursive vs Holographic, with its own recorded seed; no path under m2/ names either scaleTopology label, verified by read-back.",
       method: "A real ScaleNavigationPath (built with #engine/scale-topology.ts's own rootNavigationPath and enterChildWorld, walked to each pair's own depth exactly as scale-topology.spec.ts's own buildRecursiveWalk does) is passed straight through mount()'s own Render3fOptions.navigationPath (ui/src/render3f/mount.tsx) to buildScene (#scene/build.ts), which alone resolves it to a rendered node/relation set via resolveScaleNavigationGraph. This suite computes no id set of its own for what gets rendered; every nodeIds/edgeIds value recorded below is read back from the mounted scene's own surface witness.",
       containmentRootId,
       heldConstant: { organization: M2_ORGANIZATION, morphology: M2_MORPHOLOGY, projection: M2_PROJECTION, calibration: "DEFAULT_CALIBRATION", reducedMotion: false },

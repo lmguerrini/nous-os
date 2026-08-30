@@ -321,10 +321,14 @@ test("governed scale-topology ablation", async ({ page }, testInfo) => {
       passed: true,
     } as const;
     const negativeControl = { message: negativeControlMessage, restored: true } as const;
-    // Composed from the sections already built above, rather than restated: the containment and
-    // every neighbourhood world's own subset invariant, all three refusal controls, the holographic
-    // context bundle actually having levels to report, the frame-containment invariant, and the
-    // restored negative control.
+    // Composed from the sections already built above, rather than restated. holographicLevels.length
+    // > 0 is a genuine measurement; every other operand below (subsetInvariant.passed, the refused
+    // flags, frameContainmentInvariant.passed, negativeControl.restored) is a compile-time `true`
+    // literal, written only after the check it names has already run and would have thrown on
+    // failure (worldRecord, refusalRecord, frameContainmentInvariant's own `as const`, negativeControl
+    // above). So summary.passing is a completion signal -- this suite did not throw before reaching
+    // this point -- not an independent measurement of its own; its force comes from the throws above
+    // it and from holographicLevels.length.
     const summaryPassing: boolean =
       containmentRecord.subsetInvariant.passed
       && neighbourhoodRecords.every((record) => record.subsetInvariant.passed)
@@ -553,8 +557,10 @@ test("CAP-13 human review: Recursive vs Holographic, static, one shared camera p
     }
 
     // Composed from every level's own already-computed record: all RECURSIVE_TARGET_DEPTH levels
-    // rendered (never a silently truncated set), each one's shared frame never clipped either strip,
-    // and each one genuinely non-identical (guarded above by the byte-identity throw).
+    // rendered (never a silently truncated set); noClippingInvariant.passed is a compile-time `true`
+    // literal guarded by assertNodesInsideCapturedFrame's own throw inside requestCapture, not a
+    // measurement taken here; and each one genuinely non-identical (record.identical is likewise a
+    // literal, guarded above by the byte-identity throw).
     const summaryPassing: boolean =
       levelRecords.length === RECURSIVE_TARGET_DEPTH
       && levelRecords.every((record) => record.noClippingInvariant.passed && !record.identical);

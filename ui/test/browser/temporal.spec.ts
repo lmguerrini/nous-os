@@ -383,9 +383,13 @@ test("temporal playback evidence: seven falsification tests, each with a negativ
     const completedTrackedTree = await currentTrackedTreeState();
     const trackedTree = trackedTreeIdentity(observedTrackedTree, completedTrackedTree);
 
-    // Composed from the seven falsification tests already built above, rather than restated: all
-    // seven must be present (never a silently dropped test) and every one of their own negative
-    // controls must have been restored.
+    // Composed from the seven falsification tests already built above, rather than restated:
+    // falsificationTests.length === 7 is a genuine measurement (never a silently dropped test);
+    // record.negativeControl.restored is a compile-time `true` literal, written only after
+    // failureMessage() above has already run and would itself have thrown ("negative control did not
+    // fail") had the negative control not genuinely failed. So summary.passing is a completion signal
+    // -- this suite did not throw before reaching this point -- not an independent measurement of its
+    // own; its force comes from the throws above it and from the length check.
     const summaryPassing: boolean = falsificationTests.length === 7 && falsificationTests.every((record) => record.negativeControl.restored);
 
     const manifest: TemporalManifest = {

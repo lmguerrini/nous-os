@@ -38,6 +38,11 @@ const RECORDED_AT: Readonly<Record<string, string>> = {
   a8: "2026-03-01T00:00:00+00:00",
 };
 
+// F83 (open, routed to the human): PREREGISTERED_CLASS_B/C below, and the {explicit: 8, derived:
+// 13, unknown: 1} counts asserted further down, rest on one reading of the human ruling on
+// ambiguous fixture elements. That reading is contested -- the ruling's own clarification implies
+// counts of 8/7/7, not 8/13/1 -- and no decision has landed. These constants pin shipped behaviour
+// so this suite keeps catching regressions; they are not a claim that this reading is settled.
 const PREREGISTERED_CLASS_A = [
   "assertion:a1", "assertion:a2", "assertion:a3", "assertion:a4",
   "assertion:a5", "assertion:a6", "assertion:a7", "assertion:a8",

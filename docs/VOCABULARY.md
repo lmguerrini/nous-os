@@ -13,7 +13,9 @@ Much of it is checked rather than asserted, and the parts that are not are marke
 which is most but not all of them — **must land on a line that contains something the reference is
 offered as evidence for**; every reference in the register must land on a *definition* of its
 term rather than on a line that merely mentions it; every member list must match the enumeration it
-claims to describe, in order; every closed vocabulary in the code must appear here; every term the
+claims to describe, in order; every enumeration in `src/nous_os/` and every named, exported closed
+string vocabulary in `ui/src/engine/` must appear here (the technical register's stated surface —
+see below; a closed vocabulary elsewhere in the code is legitimately outside it); every term the
 epistemic register maps must be referenced from more than one file; the excluded vocabulary below
 must be absent from the canonical layer; and the tree's source must be unchanged from the revision
 this work began at — the claim that naming changed no structure is a check, not a promise, and it
