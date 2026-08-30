@@ -6,6 +6,7 @@ import { toVisualGraph } from "#adapter/projection.ts";
 import { CAMERA_KINDS, ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import { SHIPPING_MORPHOLOGY } from "#engine/contract.ts";
 import type { VisualGraph } from "#engine/contract.ts";
+import { MOTION_GRAMMARS, STILL } from "#engine/motion-grammar.ts";
 import { ATOMIC, HOLOGRAPHIC, SCALE_TOPOLOGIES } from "#engine/scale-topology.ts";
 import {
   VISUAL_STATE_FIELD_REGISTER,
@@ -88,7 +89,7 @@ test("VisualState has a pinned view-only register and round-trips exactly", () =
   const original = createVisualState(visualGraph, state(visualGraph));
   assert.deepEqual(VISUAL_STATE_FIELD_REGISTER, {
     state: ["selectedId", "focusedId", "camera", "cameraKind", "morphology", "organization", "palette", "temperature", "theme", "lodBand", "reducedMotion"],
-    optionalState: ["hueAnchorDegrees", "scaleTopology"],
+    optionalState: ["hueAnchorDegrees", "scaleTopology", "motionGrammar"],
     camera: ["x", "y", "angle", "ratio", "bounds"],
     bounds: ["x", "y"],
   });
@@ -96,6 +97,7 @@ test("VisualState has a pinned view-only register and round-trips exactly", () =
   assert.deepEqual(Object.keys(original).sort(), [...VISUAL_STATE_FIELD_REGISTER.state].sort());
   assert.equal("hueAnchorDegrees" in original, false, "a state built without hueAnchorDegrees must not gain the key");
   assert.equal("scaleTopology" in original, false, "a state built without scaleTopology must not gain the key");
+  assert.equal("motionGrammar" in original, false, "a state built without motionGrammar must not gain the key");
   assert.equal("graph" in original, false);
   assert.equal("semantic" in original, false);
 });
@@ -114,6 +116,31 @@ test("VisualState carries scaleTopology only when a producer supplies it, and ro
   assert.equal(SCALE_TOPOLOGIES.length, 4);
   assert.equal(ATOMIC, "atomic");
   assert.equal(HOLOGRAPHIC, "holographic");
+});
+
+test("VisualState carries motionGrammar only when a producer supplies it, and round-trips it exactly", () => {
+  const visualGraph = graph();
+  for (const motionGrammar of MOTION_GRAMMARS) {
+    const carried = { ...state(visualGraph), motionGrammar };
+    const original = createVisualState(visualGraph, carried);
+    assert.equal(original.motionGrammar, motionGrammar);
+    assert.deepEqual(Object.keys(original).sort(), [...VISUAL_STATE_FIELD_REGISTER.state, "motionGrammar"].sort());
+    const restored = deserializeVisualState(visualGraph, serializeVisualState(original));
+    assert.deepEqual(restored, original);
+    assert.equal(restored.motionGrammar, motionGrammar);
+  }
+  assert.equal(MOTION_GRAMMARS.length, 7);
+  assert.equal(STILL, "still");
+});
+
+test("VisualState carries scaleTopology and motionGrammar together, each round-tripping independently", () => {
+  const visualGraph = graph();
+  const carried = { ...state(visualGraph), scaleTopology: ATOMIC, motionGrammar: STILL };
+  const original = createVisualState(visualGraph, carried);
+  const restored = deserializeVisualState(visualGraph, serializeVisualState(original));
+  assert.deepEqual(restored, original);
+  assert.equal(restored.scaleTopology, ATOMIC);
+  assert.equal(restored.motionGrammar, STILL);
 });
 
 test("VisualState carries hueAnchorDegrees only for the accent-hue palette and round-trips it exactly", () => {
@@ -202,6 +229,7 @@ test("VisualState refuses every validator-owned rule through every validating as
     { name: "VisualState accent-hue without an anchor", value: { ...valid, palette: "accent-hue" }, rule: VISUAL_STATE_VALIDATION_RULES.accentHueRequiresAnchor, message: /VisualState\.hueAnchorDegrees is required when palette is "accent-hue"/ },
     { name: "VisualState hue anchor out of range", value: { ...valid, hueAnchorDegrees: 360 }, rule: VISUAL_STATE_VALIDATION_RULES.hueAnchorRange, message: /VisualState\.hueAnchorDegrees must be an integer degree in \[0, 360\)/ },
     { name: "VisualState scaleTopology vocabulary", value: { ...valid, scaleTopology: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.scaleTopologyVocabulary, message: /VisualState\.scaleTopology is outside its closed vocabulary/ },
+    { name: "VisualState motionGrammar vocabulary", value: { ...valid, motionGrammar: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.motionGrammarVocabulary, message: /VisualState\.motionGrammar is outside its closed vocabulary/ },
   ];
   const directConstruction: ConstructionRoute = { name: "direct construction", refuse: (input, value) => { createVisualState(input, value); } };
   const deserialisation: ConstructionRoute = { name: "deserialisation", refuse: (input, value) => { deserializeVisualState(input, JSON.stringify(value)); } };

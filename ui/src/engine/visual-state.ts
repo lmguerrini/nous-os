@@ -3,6 +3,8 @@ import { CAMERA_KINDS } from "#engine/camera-kind.ts";
 import type { CameraKind } from "#engine/camera-kind.ts";
 import { MACRO, MESO, MICRO } from "#engine/lod.ts";
 import type { LodBand } from "#engine/lod.ts";
+import { MOTION_GRAMMARS } from "#engine/motion-grammar.ts";
+import type { MotionGrammar } from "#engine/motion-grammar.ts";
 import { MYCELIUM, NEURAL, STELLAR } from "#engine/morphology.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import { FLAT, INDRA } from "#engine/organization.ts";
@@ -33,7 +35,12 @@ export type VisualStateCamera = {
  * it from carrying meaning for any other palette. `scaleTopology` follows the same precedent for the
  * same reason: it is a producer-optional field so every existing VisualState producer that predates the
  * scale/navigation axis keeps constructing a valid state without it, and its absence means Atomic, the
- * current baseline, rather than materialising a default value here.
+ * current baseline, rather than materialising a default value here. `motionGrammar` is the same kind
+ * of producer-optional field again, for the same reason, one axis later: every existing VisualState
+ * producer that predates the motion axis keeps constructing a valid state without it, and its absence
+ * means Still, motion's own baseline, rather than materialising a default value here. Animation phase
+ * is deliberately absent from this type: it is a render input, not governed state, so it is never
+ * carried, validated, serialised, or digested here.
  */
 export type VisualState = {
   readonly selectedId: string | null;
@@ -49,6 +56,7 @@ export type VisualState = {
   readonly reducedMotion: boolean;
   readonly hueAnchorDegrees?: number;
   readonly scaleTopology?: ScaleTopology;
+  readonly motionGrammar?: MotionGrammar;
 };
 
 /** This is the complete literal VisualState field register and does not permit extension fields; `optionalState` names the fields a producer may omit entirely. */
@@ -66,7 +74,7 @@ export const VISUAL_STATE_FIELD_REGISTER = {
     "lodBand",
     "reducedMotion",
   ],
-  optionalState: ["hueAnchorDegrees", "scaleTopology"],
+  optionalState: ["hueAnchorDegrees", "scaleTopology", "motionGrammar"],
   camera: ["x", "y", "angle", "ratio", "bounds"],
   bounds: ["x", "y"],
 } as const;
@@ -84,6 +92,7 @@ export const VISUAL_STATE_VALIDATION_RULES = {
   hueAnchorRange: "hue-anchor-range",
   accentHueRequiresAnchor: "accent-hue-requires-anchor",
   scaleTopologyVocabulary: "scale-topology-vocabulary",
+  motionGrammarVocabulary: "motion-grammar-vocabulary",
 } as const;
 
 /** This names one VisualState validator rule and does not name a construction route. */
@@ -119,13 +128,14 @@ export function createVisualState(graph: VisualGraph, value: unknown): VisualSta
     lodBand: state.lodBand,
     reducedMotion: state.reducedMotion,
   };
-  // hueAnchorDegrees and scaleTopology are only ever set here when the input actually carried them
-  // (assertVisualState has already required hueAnchorDegrees exactly when palette is "accent-hue", and
-  // validated scaleTopology only if present); an explicit `undefined` is never written, so a legacy
-  // caller's state round-trips through serialisation with the exact key set it came in with,
-  // byte-identical to before either field existed.
+  // hueAnchorDegrees, scaleTopology, and motionGrammar are only ever set here when the input actually
+  // carried them (assertVisualState has already required hueAnchorDegrees exactly when palette is
+  // "accent-hue", and validated scaleTopology and motionGrammar only if present); an explicit
+  // `undefined` is never written, so a legacy caller's state round-trips through serialisation with
+  // the exact key set it came in with, byte-identical to before any of the three fields existed.
   const withHueAnchor = state.hueAnchorDegrees === undefined ? base : { ...base, hueAnchorDegrees: state.hueAnchorDegrees };
-  return state.scaleTopology === undefined ? withHueAnchor : { ...withHueAnchor, scaleTopology: state.scaleTopology };
+  const withScaleTopology = state.scaleTopology === undefined ? withHueAnchor : { ...withHueAnchor, scaleTopology: state.scaleTopology };
+  return state.motionGrammar === undefined ? withScaleTopology : { ...withScaleTopology, motionGrammar: state.motionGrammar };
 }
 
 /** This serialises validated view state and does not include graph contents. */
@@ -172,6 +182,7 @@ export function assertVisualState(graph: VisualGraph, value: unknown): asserts v
   }
   assertHueAnchorDegrees(state.palette, state.hueAnchorDegrees);
   assertScaleTopology(state.scaleTopology);
+  assertMotionGrammar(state.motionGrammar);
   assertCamera(state.camera);
 }
 
@@ -195,6 +206,16 @@ function assertScaleTopology(value: unknown): void {
   }
   if (typeof value !== "string" || !SCALE_TOPOLOGIES.includes(value as ScaleTopology)) {
     throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.scaleTopologyVocabulary, "VisualState.scaleTopology is outside its closed vocabulary");
+  }
+}
+
+/** This validates a present motionGrammar against its closed vocabulary and does not require its presence, matching the scaleTopology precedent for every VisualState producer that predates this axis. */
+function assertMotionGrammar(value: unknown): void {
+  if (value === undefined) {
+    return;
+  }
+  if (typeof value !== "string" || !MOTION_GRAMMARS.includes(value as MotionGrammar)) {
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.motionGrammarVocabulary, "VisualState.motionGrammar is outside its closed vocabulary");
   }
 }
 
