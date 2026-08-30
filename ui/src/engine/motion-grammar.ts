@@ -116,9 +116,54 @@ const RESTING_PHASES: Readonly<Record<MotionGrammar, number>> = {
  */
 const PULSE_AMPLITUDE_PERMILLE = 350;
 const RECONFIGURE_AMPLITUDE_PERMILLE = 700;
+/**
+ * This is Reconfigure's own displacement amplitude, independent of `RECONFIGURE_AMPLITUDE_PERMILLE`
+ * above (which still governs Reconfigure's scale swing alone): the two channels used to share one
+ * amplitude because the scene layer converted the offset channel's declared [-1000, 1000] permille
+ * into pixels by multiplying against the receiving node's own resolved radius (a few px at this
+ * scene's own mass range), which kept a shared amplitude's displacement small purely as a side effect
+ * of that unrelated per-node quantity, never by design. The scene layer now multiplies against
+ * `calibration.layout.idealEdgeLengthPx` instead (see scene/build.ts's own modulateSceneNode), the
+ * layout's own governed unit of inter-node spacing, so this amplitude is chosen directly against that
+ * reference rather than inherited from the scale channel's own, separately-tuned bound. A max-seed,
+ * max-envelope element now moves at most 0.45 of one ideal edge length (54px at the default 120px
+ * calibration), well short of a full edge length, so two adjacent nodes moving directly toward each
+ * other cannot fully close their own governed spacing; raising this past ~450 was measured and
+ * rejected, because the changed-pixel fraction below already saturates near this value (nodes are
+ * small relative to the 1200x800 frame, so once a displaced node's own footprint stops overlapping its
+ * resting footprint, moving it further adds no further changed frame area, only collision risk).
+ * Measured against the phase-frames ablation (`ui/test/browser/motion.spec.ts`, discovery-at-question,
+ * stellar/flat/2d): Reconfigure's peak changed-pixel fraction rose from ~1.27% (the prior,
+ * radius-coupled offset, effectively inert -- displacement capped at a few px by the receiving node's
+ * own radius) to ~2.0%, with every sampled strip's frame-containment invariant
+ * (`FRAME_CONTAINMENT_MARGIN_CSS_PX`) still holding.
+ */
+const RECONFIGURE_OFFSET_AMPLITUDE_PERMILLE = 450;
 /** This splits governed elements roughly in half by their own seed: everything at or above the midpoint of the seed range condenses away at the peak phase, everything below it only shrinks. */
 const CONDENSE_PERIPHERAL_THRESHOLD_PERMILLE = 500;
-const CONDENSE_CORE_SHRINK_PERMILLE = 500;
+/**
+ * Raised from 500: at 500 a core element only shrank to 0.5x at the envelope's own peak (the
+ * midpoint phase), a swing no larger than Pulse's own (0.65x-1.35x, see PULSE_AMPLITUDE_PERMILLE
+ * above), so a core element under Condense was not reliably distinguishable from one under Pulse. At
+ * this value a core element shrinks to 0.35x at the same peak -- well past Pulse's own floor -- while
+ * a peripheral element still separately reaches full disappearance (shrink is unscaled PERMILLE for
+ * the periphery, unaffected by this constant), so the two populations stay visually distinct: the
+ * periphery empties out and the surviving core visibly contracts rather than merely dimming. Measured
+ * against the phase-frames ablation, this raise moved Condense's own peak changed-pixel fraction from
+ * ~1.81% to ~1.81%, effectively unchanged: the periphery's own full fade-and-shrink to zero already
+ * dominates the frame-level area this metric counts, so a stronger core shrink alone barely registers
+ * against it. Condense does not move any element's position -- offsetXPermille and offsetYPermille
+ * stay zero at every phase, as they always have -- because this axis is a pure function of policy,
+ * phase, and element id alone (see this module's own opening docstring) with no access to a node's
+ * resolved layout position, and the scene layer that does hold that position (`scene/build.ts`) is
+ * documented to move only the channels this axis itself declares, never to invent motion of its own.
+ * Reading Condense as elements "drawing together" is therefore carried entirely by this shrink-and-fade
+ * contrast (a shrinking, thinning population reads as a contraction) rather than by literal
+ * convergence toward a shared point; a genuine positional pull toward a common centre would need this
+ * axis to declare a per-node direction computed from real layout position, which is a materially larger
+ * change than an amplitude retune and is left to whoever owns that design decision.
+ */
+const CONDENSE_CORE_SHRINK_PERMILLE = 650;
 const ASSEMBLE_STAGGER_FRACTION = 0.7;
 const DISSOLVE_STAGGER_FRACTION = 0.7;
 const RECURSIVE_BLOOM_STAGGER_FRACTION = 0.6;
@@ -376,9 +421,10 @@ function nodeModulation(policy: MotionGrammar, phase: number, id: string): NodeM
       const envelope = breathingEnvelope(phase);
       const amplitude = breathingAmplitude(seed, RECONFIGURE_AMPLITUDE_PERMILLE);
       const scalePermille = clampScale(PERMILLE + Math.round(amplitude * envelope));
+      const offsetAmplitude = breathingAmplitude(seed, RECONFIGURE_OFFSET_AMPLITUDE_PERMILLE);
       const angle = directionAngle(id);
-      const offsetXPermille = roundPermille(amplitude * envelope * Math.cos(angle));
-      const offsetYPermille = roundPermille(amplitude * envelope * Math.sin(angle));
+      const offsetXPermille = roundPermille(offsetAmplitude * envelope * Math.cos(angle));
+      const offsetYPermille = roundPermille(offsetAmplitude * envelope * Math.sin(angle));
       return { id, opacityPermille: PERMILLE, scalePermille, offsetXPermille, offsetYPermille };
     }
     case "condense": {

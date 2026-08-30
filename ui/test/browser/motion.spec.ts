@@ -47,6 +47,7 @@ import { assertVisualGraphFieldRegister, semanticDigest } from "#engine/contract
 import type { VisualGraph } from "#engine/contract.ts";
 import {
   ASSEMBLE,
+  CONDENSE,
   MOTION_GRAMMARS,
   PULSE,
   RECONFIGURE,
@@ -947,10 +948,11 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
 // Phase-frames ablation: the resting frame beside several phase frames, for one configuration.
 // ---------------------------------------------------------------------------------------------
 
-// Both policies whose amplitude was raised (see motion-grammar.ts's own PULSE_AMPLITUDE_PERMILLE and
-// RECONFIGURE_AMPLITUDE_PERMILLE), so the record this ablation produces carries current amplitudes'
+// Every policy whose amplitude was raised (see motion-grammar.ts's own PULSE_AMPLITUDE_PERMILLE,
+// RECONFIGURE_AMPLITUDE_PERMILLE, RECONFIGURE_OFFSET_AMPLITUDE_PERMILLE, and
+// CONDENSE_CORE_SHRINK_PERMILLE), so the record this ablation produces carries current amplitudes'
 // measured effect rather than the pre-raise numbers.
-const ABLATION_MOTION_GRAMMARS = [PULSE, RECONFIGURE] as const satisfies readonly MotionGrammar[];
+const ABLATION_MOTION_GRAMMARS = [PULSE, RECONFIGURE, CONDENSE] as const satisfies readonly MotionGrammar[];
 
 type AblationPhaseFrameRecord = {
   readonly phase: number;

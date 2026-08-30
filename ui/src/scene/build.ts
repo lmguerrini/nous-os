@@ -204,7 +204,7 @@ export function buildScene(
   assertSceneFieldRegister(scene);
   const motionPolicy = visualState.motionGrammar ?? STILL;
   const motionPhase = phase ?? restingPhase(motionPolicy);
-  const motionScene = applyMotionGrammar(scene, engineGraph, motionPolicy, motionPhase);
+  const motionScene = applyMotionGrammar(scene, engineGraph, motionPolicy, motionPhase, calibration);
   assertSceneFieldRegister(motionScene);
   return motionScene;
 }
@@ -312,7 +312,7 @@ export function assertNavigatedGraphSubset(canonical: VisualGraph, navigated: Vi
  * layout, so a label never jitters as its node moves), aggregates, or camera; only the channels the
  * motion axis itself declares move.
  */
-function applyMotionGrammar(scene: Scene, graph: EngineGraph, policy: MotionGrammar, phase: number): Scene {
+function applyMotionGrammar(scene: Scene, graph: EngineGraph, policy: MotionGrammar, phase: number, calibration: CalibrationProfile): Scene {
   const elementIds: MotionElementIds = {
     nodeIds: graph.nodes.map((node) => node.id),
     edgeIds: graph.edges.map((edge) => edge.id),
@@ -331,7 +331,7 @@ function applyMotionGrammar(scene: Scene, graph: EngineGraph, policy: MotionGram
   }
   const nodeModulationById = new Map(modulation.nodes.map((node) => [node.id, node] as const));
   const edgeModulationById = new Map(modulation.edges.map((edge) => [edge.id, edge] as const));
-  const nodes = scene.nodes.map((node) => modulateSceneNode(node, requiredNodeMotionModulation(nodeModulationById, node.id)));
+  const nodes = scene.nodes.map((node) => modulateSceneNode(node, requiredNodeMotionModulation(nodeModulationById, node.id), calibration));
   const edges = scene.edges.map((edge) => modulateSceneEdge(edge, requiredEdgeMotionModulation(edgeModulationById, edge.id)));
   assertMotionGovernedIdentity(scene, nodes, edges);
   return { ...scene, nodes, edges };
@@ -386,16 +386,22 @@ function assertExactIdOrder(expected: readonly string[], actual: readonly string
  * This applies one node's resolved motion channels onto its already fully-resolved static drawing and
  * does not recompute layout, material, or label placement. The offset channel is declared unitless in
  * [-1000, 1000] by the motion axis (see motion-grammar.ts); the scene layer is the first place it
- * meets a concrete drawn quantity, and the node's own already-resolved radius is the one per-node size
- * already available here, so an offset reads as the same relative fraction of the node's own drawn
- * size regardless of prominence, morphology, or LOD band, rather than requiring a new calibrated
- * pixel constant. The halo is scaled by the same factor as the core so the two never visually
- * decouple as a node's own scale channel breathes or shrinks.
+ * meets a concrete drawn quantity. It is scaled by `calibration.layout.idealEdgeLengthPx`, the
+ * governed force-layout target spacing between adjacent nodes, rather than by the node's own resolved
+ * radius: a node's radius answers how big that one node draws, not how far apart this graph's own
+ * layout holds its elements, and scaling displacement by it (the prior approach) tied "how far a node
+ * can move" to "how big that node happens to be" -- a fusion of two unrelated calibrated quantities
+ * that, at this scene's own mass range, capped every node's own reach at a few px regardless of the
+ * offset permille requested. idealEdgeLengthPx is the layout's own declared unit of spatial
+ * separation, already governed and registered, so a given offset permille now reads as the same
+ * fraction of "how far this layout places neighbours" for every node alike, independent of that
+ * node's own prominence, morphology, or LOD band. The halo is scaled by the same factor as the core
+ * so the two never visually decouple as a node's own scale channel breathes or shrinks.
  */
-function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation): SceneNode {
+function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, calibration: CalibrationProfile): SceneNode {
   const scaleFactor = motionFactor(modulation.scalePermille);
-  const offsetXPx = motionOffsetPx(modulation.offsetXPermille, node.radiusPx);
-  const offsetYPx = motionOffsetPx(modulation.offsetYPermille, node.radiusPx);
+  const offsetXPx = motionOffsetPx(modulation.offsetXPermille, calibration.layout.idealEdgeLengthPx);
+  const offsetYPx = motionOffsetPx(modulation.offsetYPermille, calibration.layout.idealEdgeLengthPx);
   return {
     ...node,
     position: {

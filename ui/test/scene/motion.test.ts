@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import type { CalibrationProfile } from "#engine/calibration.ts";
 import { CAMERA_KINDS } from "#engine/camera-kind.ts";
 import type { CameraKind } from "#engine/camera-kind.ts";
 import type { VisualGraph } from "#engine/contract.ts";
@@ -262,6 +263,94 @@ test("Reconfigure actually displaces a node away from its resolved static positi
     }),
     "Reconfigure at phase 0.25 displaced no node relative to the static baseline",
   );
+});
+
+test("Reconfigure's offset channel is genuinely driven by calibration.layout.idealEdgeLengthPx: displacement scales exactly with that parameter, not with a node's own radius or a fixed constant", () => {
+  const graph = sceneFixtureGraph();
+  const baseState = motionBaseState(graph, "stellar", "flat", "orthographic");
+  const reconfigureState: VisualState = { ...baseState, motionGrammar: RECONFIGURE };
+  const tokens = sceneTokens(reconfigureState);
+  // breathingEnvelope(0.25) = sin(2*pi*0.25) = 1, its own peak magnitude, so every node's offset
+  // channel is live here (see motion-grammar.ts's own breathingAmplitude, never zero at any seed).
+  const displacedPhase = 0.25;
+
+  function narrowedCalibration(idealEdgeLengthPx: number): CalibrationProfile {
+    return { ...DEFAULT_CALIBRATION, layout: { ...DEFAULT_CALIBRATION.layout, idealEdgeLengthPx } };
+  }
+
+  // Only layout.idealEdgeLengthPx differs between the two profiles below; every node-sizing
+  // parameter (salience.min/maxNodeSizePx, degreeExponentPermille) is held fixed, so a node's own
+  // resolved radiusPx is identical under both -- isolating this test's claim to the reference this
+  // capability's own defect and fix are about, not to a confound from node size also moving.
+  const narrowCalibration = narrowedCalibration(60);
+  const wideCalibration = narrowedCalibration(240);
+  const referenceRatio = wideCalibration.layout.idealEdgeLengthPx / narrowCalibration.layout.idealEdgeLengthPx;
+
+  type ResolvedMotion = {
+    readonly offsets: ReadonlyMap<string, { readonly dx: number; readonly dy: number }>;
+    readonly restingRadiusById: ReadonlyMap<string, number>;
+  };
+
+  function resolveMotion(calibration: CalibrationProfile): ResolvedMotion {
+    // The resting-phase build and the displaced-phase build below share this one calibration, so
+    // idealEdgeLengthPx's own separate effect on the force layout itself (it is also the layout's
+    // target edge length) cancels out of this per-calibration delta: what is left is exactly the
+    // offset channel's own contribution. (Radius is NOT compared resting-vs-displaced here: Reconfigure's
+    // own scale channel legitimately changes radiusPx between those two phases, independent of this
+    // control's own claim about the offset channel.)
+    const resting = buildScene(graph, reconfigureState, calibration, tokens, "orthographic", restingPhase(RECONFIGURE));
+    const displaced = buildScene(graph, reconfigureState, calibration, tokens, "orthographic", displacedPhase);
+    const restingPositionById = new Map(resting.nodes.map((node) => [node.id, node.position]));
+    const restingRadiusById = new Map(resting.nodes.map((node) => [node.id, node.radiusPx]));
+    const offsets = new Map<string, { readonly dx: number; readonly dy: number }>();
+    for (const node of displaced.nodes) {
+      const restingPosition = restingPositionById.get(node.id);
+      if (restingPosition === undefined) {
+        throw new TypeError(`reconfigure wiring control is missing a resting position for node: ${node.id}`);
+      }
+      offsets.set(node.id, { dx: node.position.x - restingPosition.x, dy: node.position.y - restingPosition.y });
+    }
+    return { offsets, restingRadiusById };
+  }
+
+  const narrowMotion = resolveMotion(narrowCalibration);
+  const wideMotion = resolveMotion(wideCalibration);
+  const narrowOffsets = narrowMotion.offsets;
+  const wideOffsets = wideMotion.offsets;
+  assert.equal(narrowOffsets.size, wideOffsets.size);
+
+  // Confirms the isolation claimed above: a node's own resting radius is unaffected by
+  // idealEdgeLengthPx (no node-sizing calibration path was touched), so any offset difference below
+  // is attributable only to the reference this test is actually about.
+  for (const [nodeId, narrowRadius] of narrowMotion.restingRadiusById) {
+    assert.equal(wideMotion.restingRadiusById.get(nodeId), narrowRadius, `node ${nodeId} resting radius differed between calibrations that only change layout.idealEdgeLengthPx`);
+  }
+
+  let liveChecks = 0;
+  for (const [nodeId, narrowOffset] of narrowOffsets) {
+    const wideOffset = wideOffsets.get(nodeId);
+    if (wideOffset === undefined) {
+      throw new TypeError(`reconfigure wiring control is missing a wide-calibration offset for node: ${nodeId}`);
+    }
+    if (narrowOffset.dx === 0 && narrowOffset.dy === 0) {
+      continue;
+    }
+    // Exact, not approximate: both builds share the identical rounded offsetXPermille/offsetYPermille
+    // integer from motion-grammar.ts (calibration never reaches that pure, position-blind axis), so
+    // the two calibrations' own pixel offsets differ by exactly referenceRatio -- a fixed reference
+    // (the pre-fix node-radius coupling, or a hardcoded constant standing in for idealEdgeLengthPx)
+    // would instead leave narrowOffset and wideOffset equal, failing this assertion.
+    assert.ok(
+      Math.abs(wideOffset.dx - (narrowOffset.dx * referenceRatio)) < 1e-6,
+      `node ${nodeId} x offset did not scale with calibration.layout.idealEdgeLengthPx: narrow=${narrowOffset.dx}, wide=${wideOffset.dx}, expected wide=${narrowOffset.dx * referenceRatio}`,
+    );
+    assert.ok(
+      Math.abs(wideOffset.dy - (narrowOffset.dy * referenceRatio)) < 1e-6,
+      `node ${nodeId} y offset did not scale with calibration.layout.idealEdgeLengthPx: narrow=${narrowOffset.dy}, wide=${wideOffset.dy}, expected wide=${narrowOffset.dy * referenceRatio}`,
+    );
+    liveChecks += 1;
+  }
+  assert.ok(liveChecks > 0, "reconfigure wiring control never observed a live (non-zero) offset to compare, so the claim above is vacuous");
 });
 
 test("negative control: assertMotionGovernedIdentity refuses a fabricated extra node id", () => {
