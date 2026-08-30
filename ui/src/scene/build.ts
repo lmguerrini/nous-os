@@ -32,6 +32,7 @@ import type { AggregateWindow } from "#engine/organization.ts";
 import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
 import { ATOMIC, HOLOGRAPHIC, assertChildWorld, holographicContext } from "#engine/scale-topology.ts";
 import type { ScaleNavigationPath } from "#engine/scale-topology.ts";
+import { resolveTemporalMembership, resolveTemporalPlacements } from "#engine/temporal.ts";
 import { TOKEN_RAMPS, resolveTokens, separationLuminance, separationRatio } from "#engine/tokens.ts";
 import type { OklchToken, TokenMap } from "#engine/tokens.ts";
 import { assertVisualState } from "#engine/visual-state.ts";
@@ -103,7 +104,18 @@ type ResolvedSceneInputs = {
  * alike, which is what keeps top-level rendering byte-identical. Once a world is entered, Atomic,
  * Hierarchical, and Recursive render exactly that world's own node and relation ids; Holographic renders
  * the same world plus its own preserved-context bundle -- computed by `#engine/scale-topology.ts` and
- * never fabricated here (see resolveScaleNavigationGraph).
+ * never fabricated here (see resolveScaleNavigationGraph). `temporalInstant` is the same kind of render
+ * input again, one axis later still: Temporal Playback decides WHAT governed historical state exists,
+ * never HOW it is drawn, so it is resolved here, before scale-topology and before motion, as a further
+ * optional trailing argument rather than as anything carried by `VisualState` (see
+ * resolveTemporalRenderGraph). An omitted temporalInstant renders the unconditional all-time union --
+ * every canonical node and relation, exactly today's graph -- which is both this axis's own zero state
+ * and, per the temporal addendum's binding ruling, Temporal Playback's own normal resting state:
+ * "currently valid" is never the default. Motion is applied after this filtering, over whichever node
+ * and relation ids survive it, so a motion policy can only ever change HOW a temporally-present element
+ * is drawn, never WHICH elements are present -- the same governed-identity guarantee
+ * assertMotionGovernedIdentity already enforces for scale-topology narrowing now equally covers temporal
+ * narrowing, because both narrow the graph this function hands to motion before motion ever runs.
  */
 export function buildScene(
   graph: VisualGraph,
@@ -113,11 +125,13 @@ export function buildScene(
   cameraOrTokens?: CameraKind | TokenMap,
   phase?: number,
   navigationPath?: ScaleNavigationPath,
+  temporalInstant?: string,
 ): Scene {
   assertCalibrationProfile(calibration);
   assertVisualState(graph, visualState);
   const inputs = resolveSceneInputs(visualState, tokensOrCamera, cameraOrTokens);
-  const renderedGraph = resolveScaleNavigationGraph(graph, visualState, navigationPath);
+  const temporalGraph = resolveTemporalRenderGraph(graph, temporalInstant);
+  const renderedGraph = resolveScaleNavigationGraph(temporalGraph, visualState, navigationPath);
   const { graph: tracedGraph, trace } = createEngineGraphView(renderedGraph);
   const engineGraph = orderEngineGraph(tracedGraph);
   const morphology = morphologyProfile(visualState.morphology);
@@ -256,9 +270,40 @@ function resolveScaleNavigationGraph(
 }
 
 /**
+ * This resolves what buildScene actually renders once Temporal Playback has entered an instant, and is
+ * the composition point the temporal addendum requires: it decides WHAT governed historical state
+ * exists and nothing about HOW it is drawn, so it runs before scale-topology narrowing and long before
+ * motion. It calls `#engine/temporal.ts`'s own `resolveTemporalPlacements`/`resolveTemporalMembership`
+ * directly against the untouched canonical `graph` -- never against an already-narrowed view, and never
+ * re-deriving their arithmetic here -- so the returned membership is exactly what that module's own
+ * preregistered fixture and unit suite already prove correct: a defensible governed placement only,
+ * derived placement never written back as an element's own valid_from, and TEMPORALLY UNKNOWN elements
+ * never silently dated. An omitted `temporalInstant` returns the canonical graph unchanged, both this
+ * axis's own zero state and, per the temporal addendum's binding ruling, Temporal Playback's own normal
+ * resting state (ALL-TIME UNION, not "currently valid"; see `#engine/control-state.ts`'s own
+ * `TemporalPlaybackControl` docstring) -- which is what keeps every existing render byte-identical to
+ * before this axis existed. The projection reuses `projectNavigatedGraph`/`assertNavigatedGraphSubset`
+ * unchanged: "filter the canonical graph down to a governed id subset, then prove the result really is
+ * one" is the same operation scale-topology's own navigation already needed, not a second one written
+ * for this axis, and `resolveTemporalMembership` only ever returns ids it read off `graph.nodes`/
+ * `graph.edges` in the first place, so that proof holds by construction here.
+ */
+function resolveTemporalRenderGraph(graph: VisualGraph, temporalInstant: string | undefined): VisualGraph {
+  if (temporalInstant === undefined) {
+    return graph;
+  }
+  const placements = resolveTemporalPlacements(graph);
+  const membership = resolveTemporalMembership(graph, placements, temporalInstant);
+  const temporalGraph = projectNavigatedGraph(graph, membership.nodeIds, membership.edgeIds);
+  assertNavigatedGraphSubset(graph, temporalGraph);
+  return temporalGraph;
+}
+
+/**
  * This filters the canonical graph down to exactly the requested node and relation ids and does not
- * itself decide which ids belong: resolveScaleNavigationGraph has already assembled that set from
- * scale-topology.ts's own governed computation.
+ * itself decide which ids belong: resolveScaleNavigationGraph and resolveTemporalRenderGraph have each
+ * already assembled that set, from scale-topology.ts's or temporal.ts's own governed computation
+ * respectively -- this is the one shared filtering step both axes narrow the graph through.
  */
 function projectNavigatedGraph(
   graph: VisualGraph,
@@ -280,7 +325,8 @@ function projectNavigatedGraph(
  * draw must already be a member of the canonical graph, and every relation it draws must both be a
  * member of the canonical graph and have both endpoints inside the graph actually being drawn. It is
  * exported so this boundary's own refusal is directly testable against a fabricated navigated graph,
- * without needing a broken navigation path to reach it.
+ * without needing a broken navigation path (or, since resolveTemporalRenderGraph reuses it too, a
+ * broken temporal instant) to reach it.
  */
 export function assertNavigatedGraphSubset(canonical: VisualGraph, navigated: VisualGraph): void {
   const canonicalNodeIds = new Set(canonical.nodes.map((node) => node.id));

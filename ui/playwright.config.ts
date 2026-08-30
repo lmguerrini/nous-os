@@ -20,10 +20,12 @@ const CALIBRATION_EVIDENCE_ENABLED = process.env.CALIBRATION_EVIDENCE_CAPTURES =
 const CALIBRATION_EVIDENCE_SPEC = "calibration-evidence.spec.ts";
 const MOTION_ENABLED = process.env.MOTION_CAPTURES === "1";
 const MOTION_SPEC = "motion.spec.ts";
+const TEMPORAL_ENABLED = process.env.TEMPORAL_CAPTURES === "1";
+const TEMPORAL_SPEC = "temporal.spec.ts";
 // The evidence record is owned by the plain DPR projects alone. Every added suite has to be listed
 // here as well as ignored below: an owner test that also ran one of them would re-initialise the
 // record mid-run, which is the wipe already recorded as CE-14 and worked around by ordering.
-const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED && !PARITY_ENABLED && !PERFORMANCE_ENABLED && !REVIEW3D_ENABLED && !MATRIX_ENABLED && !BLIND_ENABLED && !SCALE_TOPOLOGY_ENABLED && !CALIBRATION_EVIDENCE_ENABLED && !MOTION_ENABLED;
+const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED && !PARITY_ENABLED && !PERFORMANCE_ENABLED && !REVIEW3D_ENABLED && !MATRIX_ENABLED && !BLIND_ENABLED && !SCALE_TOPOLOGY_ENABLED && !CALIBRATION_EVIDENCE_ENABLED && !MOTION_ENABLED && !TEMPORAL_ENABLED;
 
 const PREPARE_EVIDENCE = [
   "node --input-type=module --eval '",
@@ -79,8 +81,8 @@ export default defineConfig({
     },
   },
   projects: [
-    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC, MOTION_SPEC], use: { deviceScaleFactor: 1 } },
-    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC, MOTION_SPEC], use: { deviceScaleFactor: 2 } },
+    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC, MOTION_SPEC, TEMPORAL_SPEC], use: { deviceScaleFactor: 1 } },
+    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC, MOTION_SPEC, TEMPORAL_SPEC], use: { deviceScaleFactor: 2 } },
     {
       name: "a4",
       testMatch: A4_ENABLED ? A4_SPEC : "a4-disabled.spec.ts",
@@ -154,6 +156,15 @@ export default defineConfig({
       // and scale-topology's own reasoning.
       name: "motion",
       testMatch: MOTION_ENABLED ? MOTION_SPEC : "motion-disabled.spec.ts",
+      use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
+    },
+    {
+      // CAP-13. Temporal Playback evidence: the seven preregistered falsification tests, each with a
+      // negative control, over the temporal-genesis fixture. One DPR deliberately, matching motion's
+      // and scale-topology's own reasoning: every capture is a controlled governed-membership
+      // comparison, not a device-scale review set.
+      name: "temporal",
+      testMatch: TEMPORAL_ENABLED ? TEMPORAL_SPEC : "temporal-disabled.spec.ts",
       use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
     },
     {

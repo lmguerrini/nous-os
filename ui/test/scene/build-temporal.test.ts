@@ -1,0 +1,172 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import test from "node:test";
+import { toVisualGraph } from "#adapter/projection.ts";
+import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import type { VisualGraph } from "#engine/contract.ts";
+import { MOTION_GRAMMARS, restingPhase } from "#engine/motion-grammar.ts";
+import type { MotionGrammar } from "#engine/motion-grammar.ts";
+import { HIERARCHICAL, enterChildWorld, rootNavigationPath } from "#engine/scale-topology.ts";
+import { allTimeMembership, resolveTemporalMembership, resolveTemporalPlacements } from "#engine/temporal.ts";
+import { createVisualState } from "#engine/visual-state.ts";
+import type { VisualState } from "#engine/visual-state.ts";
+import type { Scene } from "#scene/contract.ts";
+import { assertNavigatedGraphSubset, buildScene } from "#scene/build.ts";
+import { sceneTokens } from "./support.ts";
+
+// This is the composition mechanism CAP-13's temporal addendum requires: buildScene accepts a temporal
+// instant the same way it already accepts a ScaleTopology navigationPath -- an optional trailing render
+// input, resolved from #engine/temporal.ts and never carried by VisualState. These tests exercise that
+// composition directly, at the scene layer, independent of a mounted renderer: Temporal Playback (WHAT
+// exists) and MotionGrammar (HOW it moves) must compose without either axis ever leaking into the
+// other's own concern.
+
+const T0 = "2024-01-15T00:00:00+00:00";
+const T3 = "2024-09-22T00:00:00+00:00";
+const T7 = "2025-06-18T00:00:00+00:00";
+
+function temporalGraph(): VisualGraph {
+  const path = join(process.cwd(), "..", "fixtures", "synthetic", "projection", "temporal", "temporal-genesis.json");
+  return toVisualGraph(JSON.parse(readFileSync(path, "utf8")) as unknown);
+}
+
+function temporalState(graph: VisualGraph, motionGrammar?: MotionGrammar): VisualState {
+  return createVisualState(graph, {
+    selectedId: null,
+    focusedId: null,
+    cameraKind: "orthographic",
+    camera: { x: 0, y: 0, angle: 0, ratio: 1, bounds: { x: [-1, 1], y: [-1, 1] } },
+    morphology: "stellar",
+    organization: "flat",
+    palette: "monochrome",
+    temperature: "balanced",
+    theme: "dark",
+    lodBand: "micro",
+    reducedMotion: false,
+    ...(motionGrammar === undefined ? {} : { motionGrammar }),
+  });
+}
+
+function sceneIds(scene: Scene): { readonly nodes: readonly string[]; readonly edges: readonly string[] } {
+  return {
+    nodes: [...scene.nodes.map((node) => node.id)].sort(),
+    edges: [...scene.edges.map((edge) => edge.id)].sort(),
+  };
+}
+
+test("an omitted temporalInstant renders the unconditional all-time union, byte-identical to no temporal axis at all", () => {
+  const graph = temporalGraph();
+  const state = temporalState(graph);
+  const tokens = sceneTokens(state);
+  const withoutAxis = buildScene(graph, state, DEFAULT_CALIBRATION, tokens);
+  const explicitlyOmitted = buildScene(graph, state, DEFAULT_CALIBRATION, tokens, "orthographic", undefined, undefined, undefined);
+  assert.equal(JSON.stringify(explicitlyOmitted), JSON.stringify(withoutAxis));
+  const ids = sceneIds(withoutAxis);
+  const allTime = allTimeMembership(graph);
+  assert.deepEqual(ids.nodes, [...allTime.nodeIds].sort());
+  assert.deepEqual(ids.edges, [...allTime.edgeIds].sort());
+  // The all-time union is unconditional: it includes the temporally unknown orphan and an assertion
+  // that has since expired, neither of which any dated instant ever renders (see below).
+  assert.ok(ids.nodes.includes("source:src-orphan"));
+  assert.ok(ids.nodes.includes("assertion:a2"));
+});
+
+test("a temporal instant renders exactly the governed membership at that instant, and never invents an id", () => {
+  const graph = temporalGraph();
+  const placements = resolveTemporalPlacements(graph);
+  const state = temporalState(graph);
+  const tokens = sceneTokens(state);
+  for (const instant of [T0, T3, T7]) {
+    const scene = buildScene(graph, state, DEFAULT_CALIBRATION, tokens, "orthographic", undefined, undefined, instant);
+    const ids = sceneIds(scene);
+    const membership = resolveTemporalMembership(graph, placements, instant);
+    assert.deepEqual(ids.nodes, [...membership.nodeIds].sort(), instant);
+    assert.deepEqual(ids.edges, [...membership.edgeIds].sort(), instant);
+    assert.ok(!ids.nodes.includes("source:src-orphan"), `temporally unknown element rendered at ${instant}`);
+  }
+});
+
+test("MotionGrammar never changes which ids a temporal instant renders, at rest or mid-phase, for every policy", () => {
+  const graph = temporalGraph();
+  const placements = resolveTemporalPlacements(graph);
+  const membership = resolveTemporalMembership(graph, placements, T3);
+  const expectedNodeIds = [...membership.nodeIds].sort();
+  const expectedEdgeIds = [...membership.edgeIds].sort();
+  assert.ok(expectedNodeIds.length > 0 && expectedNodeIds.length < graph.nodes.length, "T3 must be a genuine partial membership for this test to mean anything");
+
+  const pixelDistinctSignatures = new Set<string>();
+  for (const policy of MOTION_GRAMMARS) {
+    const state = temporalState(graph, policy);
+    const tokens = sceneTokens(state);
+    for (const phase of [0, 0.35, restingPhase(policy)]) {
+      const scene = buildScene(graph, state, DEFAULT_CALIBRATION, tokens, "orthographic", phase, undefined, T3);
+      const ids = sceneIds(scene);
+      assert.deepEqual(ids.nodes, expectedNodeIds, `${policy}@${phase} changed the rendered node id set`);
+      assert.deepEqual(ids.edges, expectedEdgeIds, `${policy}@${phase} changed the rendered relation id set`);
+      pixelDistinctSignatures.add(JSON.stringify(scene.nodes.map((node) => [node.opacityPermille, node.radiusPx])));
+    }
+  }
+  // Motion is not a no-op: different policies/phases really do draw the fixed id set differently.
+  assert.ok(pixelDistinctSignatures.size > 1, "no policy/phase combination visually differed, motion evidence would be vacuous");
+});
+
+test("an animated transition converges exactly to the governed membership at its own target T, at every policy's own resting phase", () => {
+  const graph = temporalGraph();
+  const placements = resolveTemporalPlacements(graph);
+  for (const instant of [T0, T3, T7]) {
+    const membership = resolveTemporalMembership(graph, placements, instant);
+    const expectedNodeIds = [...membership.nodeIds].sort();
+    const expectedEdgeIds = [...membership.edgeIds].sort();
+    for (const policy of MOTION_GRAMMARS) {
+      const state = temporalState(graph, policy);
+      const tokens = sceneTokens(state);
+      const scene = buildScene(graph, state, DEFAULT_CALIBRATION, tokens, "orthographic", restingPhase(policy), undefined, instant);
+      const ids = sceneIds(scene);
+      assert.deepEqual(ids.nodes, expectedNodeIds, `${policy} resting phase at ${instant} did not converge to the governed membership`);
+      assert.deepEqual(ids.edges, expectedEdgeIds, `${policy} resting phase at ${instant} did not converge to the governed membership`);
+      // Resting means resting: every node and relation actually present must be drawn at full
+      // strength, never left mid-transition.
+      for (const node of scene.nodes) {
+        assert.equal(node.opacityPermille, 1000, `${policy}@rest left a node not fully opaque at ${instant}: ${node.id}`);
+      }
+    }
+  }
+});
+
+test("negative control: a fabricated temporal membership containing an id absent from the canonical graph is refused by the same boundary scale-topology already shares", () => {
+  const graph = temporalGraph();
+  const placements = resolveTemporalPlacements(graph);
+  const membership = resolveTemporalMembership(graph, placements, T7);
+  const genuinelyRendered: VisualGraph = {
+    ...graph,
+    nodes: graph.nodes.filter((node) => membership.nodeIds.has(node.id)),
+    edges: graph.edges.filter((edge) => membership.edgeIds.has(edge.id)),
+  };
+  // This is exactly what resolveTemporalRenderGraph itself checks (assertNavigatedGraphSubset) before
+  // handing the result on: the genuine result passes, and a version carrying one fabricated id the
+  // canonical graph never had is refused. Exercised directly, the same way
+  // ui/test/scene/scale-topology-context.test.ts already exercises this shared boundary, rather than
+  // needing a genuinely broken temporal resolver to reach it.
+  assert.doesNotThrow(() => assertNavigatedGraphSubset(graph, genuinelyRendered));
+  const fabricated: VisualGraph = {
+    ...genuinelyRendered,
+    nodes: [...genuinelyRendered.nodes, { ...graph.nodes[0]!, id: "assertion:a999-invented" }],
+  };
+  assert.throws(() => assertNavigatedGraphSubset(graph, fabricated), /names a node absent from the canonical graph/);
+});
+
+test("combining a scale-topology navigationPath with a temporal instant fails closed rather than silently drawing an inconsistent world", () => {
+  const graph = temporalGraph();
+  const state = createVisualState(graph, { ...temporalState(graph), scaleTopology: HIERARCHICAL });
+  const tokens = sceneTokens(state);
+  // cluster:cluster-beta is a valid Hierarchical containment world against the untouched canonical
+  // graph (scale-topology itself never consults time), but at T0 none of its governed members have
+  // yet become valid: the temporal instant has already excluded every one of them before scale-topology
+  // ever gets to check the world it was handed against what remains. This composition is not required
+  // to render something sensible -- only to refuse rather than silently draw an inconsistent world.
+  const path = enterChildWorld(graph, rootNavigationPath(HIERARCHICAL), "cluster:cluster-beta");
+  assert.throws(
+    () => buildScene(graph, state, DEFAULT_CALIBRATION, tokens, "orthographic", undefined, path, T0),
+  );
+});

@@ -30,6 +30,7 @@
     "test:scale-topology": "rm -rf dist/scale-topology && SCALE_TOPOLOGY_CAPTURES=1 playwright test --project=scale-topology",
     "test:calibration-evidence": "rm -rf dist/calibration-evidence && CALIBRATION_EVIDENCE_CAPTURES=1 playwright test --project=calibration-evidence",
     "test:motion": "rm -rf dist/motion && MOTION_CAPTURES=1 playwright test --project=motion",
+    "test:temporal": "rm -rf dist/temporal && TEMPORAL_CAPTURES=1 playwright test --project=temporal",
     "evidence:layout-scale": "rm -f dist/evidence/layout-scale.json && node --experimental-strip-types test/layout-scale.ts"
   },
   "dependencies": {
