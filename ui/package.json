@@ -31,6 +31,7 @@
     "test:calibration-evidence": "rm -rf dist/calibration-evidence && CALIBRATION_EVIDENCE_CAPTURES=1 playwright test --project=calibration-evidence",
     "test:motion": "rm -rf dist/motion && MOTION_CAPTURES=1 playwright test --project=motion",
     "test:temporal": "rm -rf dist/temporal && TEMPORAL_CAPTURES=1 playwright test --project=temporal",
+    "test:opening": "rm -rf dist/opening && OPENING_CAPTURES=1 playwright test --project=opening",
     "evidence:layout-scale": "rm -f dist/evidence/layout-scale.json && node --experimental-strip-types test/layout-scale.ts"
   },
   "dependencies": {

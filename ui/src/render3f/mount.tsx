@@ -85,6 +85,15 @@ export type Render3fOptions = {
    * animation, and dropping it would silently return them to the root.
    */
   readonly navigationPath?: ScaleNavigationPath;
+  /**
+   * This is `buildScene`'s own optional trailing `temporalInstant` (see scene/build.ts): the instant
+   * whose governed temporal state is being viewed, which selects WHICH elements existed then. Omitted,
+   * every mount renders the unconditional all-time union -- the accepted static foundation -- so
+   * leaving it out is exactly today's graph. Like `navigationPath` it is a position rather than an
+   * animation, and is NOT suppressed under reduced motion: which moment a reader is looking at is
+   * their choice, and dropping it would silently return them to the present.
+   */
+  readonly temporalInstant?: string;
 };
 
 /** This exposes renderer-owned framing witnesses without widening the shared renderer handle. */
@@ -144,7 +153,7 @@ export function mount(
       // transient phase happened to be requested. `navigationPath` IS passed, unlike `phase`: it
       // selects which nodes exist at all, so probing without it would frame the root graph while the
       // drawn scene shows an entered world.
-      const provisionalScene = buildSceneWithCalibration(visualGraph, provisionalState, options.calibration, undefined, options.navigationPath);
+      const provisionalScene = buildSceneWithCalibration(visualGraph, provisionalState, options.calibration, undefined, options.navigationPath, options.temporalInstant);
       layoutPassCount += 1;
       const bounds = provisionalScene.nodes.length === 0
         ? provisionalBounds
@@ -157,7 +166,7 @@ export function mount(
       currentState = provisionalState;
     }
   }
-  const initialScenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath);
+  const initialScenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath, options.temporalInstant);
   layoutPassCount += cameraKindCount();
   const live = new LiveSceneState(initialScenes, currentState.cameraKind, layoutPassCount);
   const retainedSceneReferences = new Set<Scene>([initialScenes.orthographic, initialScenes.perspective]);
@@ -326,7 +335,7 @@ export function mount(
       selectedId,
       focusedId,
     });
-    const scenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath);
+    const scenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath, options.temporalInstant);
     live.replaceScenes(scenes, cameraKindCount());
     retainedSceneReferences.clear();
     retainedSceneReferences.add(scenes.orthographic);
@@ -458,12 +467,13 @@ function scenesForState(
   calibration: CalibrationProfile | undefined,
   phase: number | undefined,
   navigationPath: ScaleNavigationPath | undefined,
+  temporalInstant: string | undefined,
 ): CameraScenes {
   const orthographicState = createVisualState(graph, { ...state, cameraKind: ORTHOGRAPHIC });
   const perspectiveState = createVisualState(graph, { ...state, cameraKind: PERSPECTIVE });
   return {
-    orthographic: buildSceneWithCalibration(graph, orthographicState, calibration, phase, navigationPath),
-    perspective: buildSceneWithCalibration(graph, perspectiveState, calibration, phase, navigationPath),
+    orthographic: buildSceneWithCalibration(graph, orthographicState, calibration, phase, navigationPath, temporalInstant),
+    perspective: buildSceneWithCalibration(graph, perspectiveState, calibration, phase, navigationPath, temporalInstant),
   };
 }
 
@@ -479,11 +489,12 @@ function buildSceneWithCalibration(
   calibration: CalibrationProfile | undefined,
   phase: number | undefined,
   navigationPath: ScaleNavigationPath | undefined,
+  temporalInstant: string | undefined,
 ): Scene {
   const effectivePhase = state.reducedMotion ? undefined : phase;
   return calibration === undefined
-    ? buildScene(graph, state, undefined, undefined, undefined, effectivePhase, navigationPath)
-    : buildScene(graph, state, calibration, undefined, undefined, effectivePhase, navigationPath);
+    ? buildScene(graph, state, undefined, undefined, undefined, effectivePhase, navigationPath, temporalInstant)
+    : buildScene(graph, state, calibration, undefined, undefined, effectivePhase, navigationPath, temporalInstant);
 }
 
 function stateFromOptions(

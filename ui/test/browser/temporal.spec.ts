@@ -407,14 +407,19 @@ test("temporal playback evidence: seven falsification tests, each with a negativ
       falsificationTests,
       captures,
       compositionNote:
-        "Playback (WHAT exists) is resolved entirely by #engine/temporal.ts before a graph ever reaches "
-        + "mount(); MotionGrammar (HOW it is drawn) is applied only after that filtering, over whichever "
-        + "ids survive it, and never changes that set (falsification 5). buildScene's own composition "
-        + "(the temporalInstant trailing argument, see #scene/build.ts's resolveTemporalRenderGraph) is "
-        + "exercised directly at the Node level in ui/test/scene/build-temporal.test.ts, since mount.tsx "
-        + "is outside this capability's write ceiling; this suite reaches the identical governed result "
-        + "by resolving membership in-browser and pre-filtering the graph, mirroring motion.ts's own "
-        + "nodeIds/edgeIds precedent exactly.",
+        "Every non-corrupted capture (`corrupted: false`) hands mount() the untouched canonical graph "
+        + "plus buildScene's own temporalInstant trailing argument (see #scene/build.ts's "
+        + "resolveTemporalRenderGraph) and lets that production composition decide WHAT governed "
+        + "historical state exists; MotionGrammar (HOW it is drawn) is applied only after that filtering, "
+        + "over whichever ids survive it, and never changes that set (falsification 5). Every recorded id "
+        + "in a capture's `surface` field is read back from the mounted scene's own surface witness, never "
+        + "recomputed here. A corrupted capture (`corrupted: true`) is the one case buildScene cannot "
+        + "reach: resolveTemporalRenderGraph always resolves placements itself from the graph's own "
+        + "governed structure and accepts no externally supplied placements map, so a corrupted capture "
+        + "still resolves membership in-browser against a deliberately wrong placements map and "
+        + "pre-filters the graph before mounting, with no temporalInstant, mirroring motion.ts's own "
+        + "nodeIds/edgeIds precedent. buildScene's own composition is exercised directly at the Node "
+        + "level too, in ui/test/scene/build-temporal.test.ts.",
     };
     const manifestFile = join(ROOT_DIRECTORY, "temporal-manifest.json");
     await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");

@@ -21,19 +21,27 @@ import { settle, settleRendered } from "#browser/gpu-sync.ts";
 import { shippingDarkFieldCss } from "#browser/lit-floor.ts";
 
 /**
- * This is the temporal evidence page. Playback (WHAT governed historical state exists) is resolved
- * entirely from real, unmodified `#engine/temporal.ts` calls before a graph ever reaches `mount()`;
- * MotionGrammar (HOW a transition is rendered) is carried through to `mount()` exactly the way
- * motion.ts already does (`Render3fOptions.phase`, `VisualState.motionGrammar`). This harness never
- * routes a temporal instant through `buildScene`'s own trailing argument (see `#scene/build.ts`'s
- * `resolveTemporalRenderGraph`): `mount()` (`#render3f/mount.tsx`) is outside this capability's write
- * ceiling, so -- mirroring `MotionCaptureRequest.nodeIds`/`edgeIds` in motion.ts exactly, and for the
- * identical reason stated there (a VisualGraph's `semantic` fields are branded by object identity in a
- * WeakMap, which cannot cross the Node/browser `page.evaluate` boundary) -- the membership this harness
- * resolves is projected down to a plain `VisualGraph` here, in-browser, against the graph `prepare()`
- * already built in this realm, and handed to `mount()` as the graph itself. The composition this
- * capability adds to `buildScene` is exercised directly by `ui/test/scene/build-temporal.test.ts`
- * instead, at the Node level, with no DOM in the loop.
+ * This is the temporal evidence page. `mount()` (`#render3f/mount.tsx`) now accepts `temporalInstant`
+ * and threads it straight through to `buildScene`'s own trailing argument (see `#scene/build.ts`'s
+ * `resolveTemporalRenderGraph`), so a real (non-corrupted) capture hands the untouched, unfiltered
+ * canonical graph `prepare()` built to `mount()` and lets that production composition decide WHAT
+ * governed historical state exists -- Playback -- exactly the way it decides it for every other caller.
+ * MotionGrammar (HOW a transition is rendered) is carried through the same way motion.ts already does
+ * (`Render3fOptions.phase`, `VisualState.motionGrammar`).
+ *
+ * A corrupted request is the one case this cannot cover: `resolveTemporalRenderGraph` always resolves
+ * placements itself, straight from the graph's own governed structure (`resolveTemporalPlacements`
+ * inside `#scene/build.ts`), and accepts no externally supplied placements map -- which is exactly the
+ * guarantee this negative-control machinery exists to probe: production `buildScene` cannot be fed a
+ * lie about what governed evidence says. So a corrupted capture keeps the previous shape -- membership
+ * is resolved here against a deliberately wrong placements map, the graph is pre-filtered to that wrong
+ * membership (mirroring `MotionCaptureRequest.nodeIds`/`edgeIds` in motion.ts, and for the identical
+ * reason stated there: a VisualGraph's `semantic` fields are branded by object identity in a WeakMap,
+ * which cannot cross the Node/browser `page.evaluate` boundary, so this stays entirely in-browser
+ * against the graph `prepare()` already built in this realm), and is handed to `mount()` with no
+ * `temporalInstant` (the pre-filtered graph already IS exactly the wrong instant it represents). The
+ * composition this capability adds to `buildScene` is exercised directly by
+ * `ui/test/scene/build-temporal.test.ts` too, at the Node level, with no DOM in the loop.
  */
 export type TemporalCorruption =
   /** The sharpest falsification instrument: every assertion's placement reads recorded_at where valid_from belongs. */
@@ -167,13 +175,21 @@ export async function installTemporalPage(): Promise<void> {
         throw new Error("temporal capture requires a prepared fixture");
       }
       await destroy();
-      const placements = request.corruption === undefined
-        ? governedPlacements
-        : corruptedPlacements(graph, governedPlacements, request.corruption);
+      const corrupted = request.corruption !== undefined;
+      // A real request resolves membership from the same real governedPlacements buildScene's own
+      // resolveTemporalRenderGraph will independently recompute; this copy is reported as `membership`
+      // (the expected governed answer to grade the mounted scene's own `surface` witness against), never
+      // fed to mount() as a filtered graph. A corrupted request resolves membership from a deliberately
+      // wrong placements map instead -- see the module docstring for why that map cannot reach buildScene.
+      const placements = corrupted
+        ? corruptedPlacements(graph, governedPlacements, request.corruption as TemporalCorruption)
+        : governedPlacements;
       const membership: TemporalMembership = request.instant === "all-time"
         ? allTimeMembership(graph)
         : resolveTemporalMembership(graph, placements, request.instant);
-      const renderedGraph = projectVisualGraph(graph, [...membership.nodeIds], [...membership.edgeIds]);
+      // Real: the untouched canonical graph, filtered by buildScene itself via temporalInstant.
+      // Corrupted: pre-filtered here to the wrong membership, since buildScene has no seam to accept it.
+      const renderedGraph = corrupted ? projectVisualGraph(graph, [...membership.nodeIds], [...membership.edgeIds]) : graph;
       const reducedMotion = request.reducedMotion ?? CAPTURE_OPTIONS.reducedMotion;
       const visualState = createVisualState(renderedGraph, {
         selectedId: null,
@@ -197,6 +213,7 @@ export async function installTemporalPage(): Promise<void> {
           morphology: request.morphology,
           organization: request.organization,
           ...(request.phase === undefined ? {} : { phase: request.phase }),
+          ...(corrupted || request.instant === "all-time" ? {} : { temporalInstant: request.instant }),
         },
         undefined,
         visualState,
