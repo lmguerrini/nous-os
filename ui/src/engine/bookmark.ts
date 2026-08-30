@@ -1,0 +1,198 @@
+/**
+ * This is the shape of a human-authored temporal/view annotation and does not carry, imply, or confer
+ * any epistemic authority: a Bookmark is never canonical knowledge, is never read by
+ * `#adapter/projection.ts` or `#scene/build.ts`, and its existence must never be mistaken for truth,
+ * governed importance, or an algorithmic ranking signal. It is bounded on purpose to exactly the six
+ * fields below — a temporal position, an optional reference to a governed element, a portable view
+ * snapshot, a human title and note, and where it should be offered — and this module builds no storage
+ * for it: a future application capability decides where a Bookmark lives and how it is listed.
+ *
+ * Like `#engine/control-state.ts`, this is storage- and transport-agnostic: `validateBookmark` /
+ * `assertBookmark` reject an impossible shape, `normalizeBookmark` is idempotent, and
+ * `serializeBookmark` / `deserializeBookmark` round-trip exactly through JSON. There is no apply stage
+ * here, deliberately: a Bookmark is a record to return to, not a preference that changes what renders,
+ * so there is nothing for it to resolve into. Restoring the view it names, and any highlighting of its
+ * governed target, is wiring left to the capability that builds the application.
+ */
+export type Bookmark = {
+  readonly temporalPosition: string;
+  readonly governedTargetId: string | null;
+  readonly viewState: BookmarkCamera;
+  readonly title: string;
+  readonly note: string;
+  readonly visibility: VisibilityMode;
+};
+
+/**
+ * This is the portable camera snapshot a Bookmark carries: exactly enough to restore how a view was
+ * framed (position, orientation, zoom), and deliberately not the full `VisualStateCamera` bounds
+ * rectangle `#engine/visual-state.ts` defines — a render viewport's own bounds are recomputed from its
+ * aspect ratio at restore time, not part of what a human meant to bookmark.
+ */
+export type BookmarkCamera = {
+  readonly x: number;
+  readonly y: number;
+  readonly angle: number;
+  readonly ratio: number;
+};
+
+/** This is the closed visibility vocabulary a Bookmark may declare and does not admit a fourth member. */
+export type VisibilityMode = "timeline" | "graph" | "both";
+export const TIMELINE_VISIBILITY: VisibilityMode = "timeline";
+export const GRAPH_VISIBILITY: VisibilityMode = "graph";
+export const BOTH_VISIBILITY: VisibilityMode = "both";
+export const VISIBILITY_MODES = [TIMELINE_VISIBILITY, GRAPH_VISIBILITY, BOTH_VISIBILITY] as const;
+
+/** This is the all-time sentinel `Bookmark.temporalPosition` may carry, matching `#engine/temporal.ts`'s own `allTimeMembership().instant`, the resting state Temporal Playback enters from and returns to. */
+export const ALL_TIME_POSITION = "all-time" as const;
+
+/** This is the complete pinned Bookmark field register and does not permit an unpinned or extension field anywhere in the tree. */
+export const BOOKMARK_FIELD_REGISTER = {
+  state: ["temporalPosition", "governedTargetId", "viewState", "title", "note", "visibility"],
+  camera: ["x", "y", "angle", "ratio"],
+} as const;
+
+/** This is the complete Bookmark validator rule register and does not create a second, test-maintained rule list. */
+export const BOOKMARK_VALIDATION_RULES = {
+  fieldRegister: "field-register",
+  temporalPositionUnparseable: "temporal-position-unparseable",
+  governedTargetIdType: "governed-target-id-type",
+  finiteCameraNumber: "finite-camera-number",
+  positiveCameraRatio: "positive-camera-ratio",
+  titleRequired: "title-required",
+  noteType: "note-type",
+  closedVocabulary: "closed-vocabulary",
+} as const;
+
+/** This names one Bookmark validator rule and does not name a construction route. */
+export type BookmarkValidationRule = typeof BOOKMARK_VALIDATION_RULES[keyof typeof BOOKMARK_VALIDATION_RULES];
+
+/** This is the validate stage's assertion: the complete set of impossible Bookmark shapes this module refuses, each with a message naming what was wrong. */
+export function assertBookmark(value: unknown): asserts value is Bookmark {
+  assertExactFields(value, "Bookmark", BOOKMARK_FIELD_REGISTER.state);
+  const bookmark = value as Record<string, unknown>;
+  assertTemporalPosition(bookmark.temporalPosition);
+  assertGovernedTargetId(bookmark.governedTargetId);
+  assertBookmarkCamera(bookmark.viewState);
+  assertTitle(bookmark.title);
+  assertNote(bookmark.note);
+  assertChoice(bookmark.visibility, VISIBILITY_MODES, "Bookmark.visibility");
+}
+
+/** This is the validate stage as a returning function rather than an assertion, for a caller that prefers a typed result over a type-guard. */
+export function validateBookmark(value: unknown): Bookmark {
+  assertBookmark(value);
+  return value;
+}
+
+/** This is the normalize stage and is idempotent: it trims leading and trailing whitespace from `title` and `note`, the only fields with more than one representation of the same meaning; every other field is already single-valued once validated. */
+export function normalizeBookmark(bookmark: Bookmark): Bookmark {
+  assertBookmark(bookmark);
+  const title = bookmark.title.trim();
+  const note = bookmark.note.trim();
+  return title === bookmark.title && note === bookmark.note ? bookmark : { ...bookmark, title, note };
+}
+
+/** This is the load stage: validate, then normalize, in one call. */
+export function loadBookmark(value: unknown): Bookmark {
+  return normalizeBookmark(validateBookmark(value));
+}
+
+/** This is the serialize/export stage and does not normalize its input first, matching `#engine/visual-state.ts`'s own `serializeVisualState` precedent: a caller who wants a canonical wire form calls `normalizeBookmark` before this. */
+export function serializeBookmark(bookmark: Bookmark): string {
+  assertExactFields(bookmark, "Bookmark", BOOKMARK_FIELD_REGISTER.state);
+  return JSON.stringify(bookmark);
+}
+
+/** This is deserialize-then-load: JSON parse, then the full load stage (validate, normalize). */
+export function deserializeBookmark(serialized: string): Bookmark {
+  let value: unknown;
+  try {
+    value = JSON.parse(serialized) as unknown;
+  } catch {
+    throw new TypeError("Bookmark serialization is not valid JSON");
+  }
+  return loadBookmark(value);
+}
+
+function assertTemporalPosition(value: unknown): void {
+  if (typeof value !== "string" || value.length === 0) {
+    throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.temporalPositionUnparseable, "Bookmark.temporalPosition must be a non-empty string");
+  }
+  if (value === ALL_TIME_POSITION) {
+    return;
+  }
+  if (Number.isNaN(Date.parse(value))) {
+    throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.temporalPositionUnparseable, `Bookmark.temporalPosition must be "${ALL_TIME_POSITION}" or a parseable instant`);
+  }
+}
+
+function assertGovernedTargetId(value: unknown): void {
+  if (value !== null && typeof value !== "string") {
+    throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.governedTargetIdType, "Bookmark.governedTargetId must be a string or null");
+  }
+}
+
+function assertBookmarkCamera(value: unknown): void {
+  assertExactFields(value, "Bookmark.viewState", BOOKMARK_FIELD_REGISTER.camera);
+  const camera = value as Record<string, unknown>;
+  assertFiniteNumber(camera.x, "Bookmark.viewState.x");
+  assertFiniteNumber(camera.y, "Bookmark.viewState.y");
+  assertFiniteNumber(camera.angle, "Bookmark.viewState.angle");
+  assertFiniteNumber(camera.ratio, "Bookmark.viewState.ratio");
+  if ((camera.ratio as number) <= 0) {
+    throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.positiveCameraRatio, "Bookmark.viewState.ratio must be positive");
+  }
+}
+
+function assertFiniteNumber(value: unknown, path: string): void {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.finiteCameraNumber, `${path} must be finite`);
+  }
+}
+
+function assertTitle(value: unknown): void {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.titleRequired, "Bookmark.title must be a non-empty string");
+  }
+}
+
+function assertNote(value: unknown): void {
+  if (typeof value !== "string") {
+    throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.noteType, "Bookmark.note must be a string");
+  }
+}
+
+function assertChoice<T extends string>(value: unknown, choices: readonly T[], path: string): asserts value is T {
+  if (typeof value !== "string" || !choices.includes(value as T)) {
+    throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.closedVocabulary, `${path} is outside its closed vocabulary`);
+  }
+}
+
+function assertExactFields(value: unknown, path: string, fields: readonly string[]): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.fieldRegister, `${path} must be an object`);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.fieldRegister, `${path} must be a plain object`);
+  }
+  const ownKeys = Reflect.ownKeys(value);
+  const actual: string[] = [];
+  for (const field of ownKeys) {
+    if (typeof field !== "string") {
+      throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.fieldRegister, `${path} fields do not match the pinned register`);
+    }
+    actual.push(field);
+  }
+  const expected = new Set(fields);
+  const missing = fields.some((field) => !actual.includes(field));
+  const extra = actual.some((field) => !expected.has(field));
+  if (missing || extra) {
+    throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.fieldRegister, `${path} fields do not match the pinned register`);
+  }
+}
+
+function bookmarkValidationError(rule: BookmarkValidationRule, message: string): TypeError {
+  return new TypeError(`${message} [${rule}]`);
+}
