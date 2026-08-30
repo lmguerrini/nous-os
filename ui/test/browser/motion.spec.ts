@@ -12,10 +12,14 @@
  * shipped policy -- indistinguishable from Still. M1 and M2 below are what that gap had blocked.
  *
  * Each preregistered test is its own Playwright `test()` rather than one combined test: the four
- * together (M3 + traceability, M1, M2, the phase-frames ablation) render on the order of 120 frames
+ * together (M3 + traceability, M1, M2, the phase-frames ablation) render on the order of 180 frames
  * through a real WebGL context, and `playwright.config.ts` (outside this suite's write ceiling) fixes
  * one 120s timeout per test for every project including this one. Splitting keeps each rendered
- * evidence product inside that fixed budget instead of trimming any of them to fit a shared one.
+ * evidence product inside that fixed budget instead of trimming any of them to fit a shared one. M2
+ * alone renders six independent pairs (three navigation depths x two motion policies, see M2_PAIR_SPECS
+ * below) rather than one: the preregistered bar's "the evaluator distinguishes the pair correctly in
+ * EVERY pair" condition is uninformative over a single binary decision, and the preregistration never
+ * fixed the number of pairs.
  *
  * M3 -- byte identity of Still against the frozen static baseline, plus every other shipped policy's
  * own resting-phase frame against that same Still frame, plus reduced motion overriding a requested
@@ -42,6 +46,7 @@ import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { assertVisualGraphFieldRegister, semanticDigest } from "#engine/contract.ts";
 import type { VisualGraph } from "#engine/contract.ts";
 import {
+  ASSEMBLE,
   MOTION_GRAMMARS,
   PULSE,
   RECONFIGURE,
@@ -64,7 +69,7 @@ import {
   enterableKind,
   rootNavigationPath,
 } from "#engine/scale-topology.ts";
-import type { ScaleTopology } from "#engine/scale-topology.ts";
+import type { ScaleNavigationPath, ScaleTopology } from "#engine/scale-topology.ts";
 import type { VisualStateCamera } from "#engine/visual-state.ts";
 import { assertMotionRestingCompleteness } from "#scene/build.ts";
 import { assertLitPixelFloor } from "#browser/lit-floor.ts";
@@ -747,11 +752,58 @@ test("CAP-13 W-MOTION M1 policy discrimination strips", async ({ page }, testInf
 const M2_ORGANIZATION: Organization = INDRA;
 const M2_MORPHOLOGY: Morphology = "stellar";
 const M2_PROJECTION: "2d" | "3d" = "3d";
-const M2_MOTION_GRAMMAR: MotionGrammar = MOTION_GRAMMARS[1] ?? STILL; // assemble
-// A second, independently recorded seed: M2 shuffles which of the two paired strips (Recursive,
-// Holographic) is labelled pair-1 vs pair-2, exactly as M1 shuffles strip-to-policy assignment, but
-// keeps its own seed so the two blinds do not share one source of randomness.
+// M2 renders one pair per (navigation depth, motion policy) combination rather than a single pair:
+// the preregistered bar's "the evaluator distinguishes the pair correctly in EVERY pair" condition is
+// uninformative over one binary decision (a guessing evaluator passes it half the time), and the
+// preregistration never fixed the number of pairs -- only what each pair must show. Depth walks the
+// same containment-then-neighbourhood path scale-topology.spec.ts's own static-controlled comparison
+// walks (buildRecursiveWalk below, duplicated from that file for the same reason projectVisualGraph
+// and strongestContainmentRoot already are: it exports nothing this file is allowed to import from),
+// to depths 1 through M2_TARGET_DEPTH. Motion policy varies between Assemble (staggered per-element
+// construction, which holds newly-arriving elements collapsed near their parent at low phase and
+// measurably suppresses the visible difference) and Reconfigure (the same breathingEnvelope mechanism
+// Pulse uses, at the amplitude that also carries a positional offset -- modulating every already-
+// present element uniformly, with no staggered-arrival suppression), so every depth is compared under
+// a policy that does not carry Assemble's own low-phase suppression as well as one that does.
+const M2_TARGET_DEPTH = 3;
+const M2_MOTION_GRAMMARS = [ASSEMBLE, RECONFIGURE] as const satisfies readonly MotionGrammar[];
+// The base seed each pair's own shuffle is derived from (see pairSpecShuffleSeed below): kept apart
+// from M1_SHUFFLE_SEED, as before, so the two blinds do not share one source of randomness.
 const M2_SHUFFLE_SEED = 0x484f_4c4f;
+// Folds a pair's own 1-based index into M2_SHUFFLE_SEED with a fixed odd multiplicative constant, so
+// every one of the six pairs gets its own distinct, recorded, deterministic shuffle seed -- independent
+// per pair, as the brief requires -- rather than all six sharing one order.
+const M2_SEED_FOLD_CONSTANT = 0x9e37_79b1;
+
+type M2PairSpec = {
+  readonly pairSpecId: string;
+  readonly depth: number;
+  readonly motionGrammar: MotionGrammar;
+  readonly shuffleSeed: number;
+};
+
+function pairSpecShuffleSeed(pairSpecIndex: number): number {
+  return (M2_SHUFFLE_SEED + pairSpecIndex * M2_SEED_FOLD_CONSTANT) >>> 0;
+}
+
+function buildM2PairSpecs(): readonly M2PairSpec[] {
+  const specs: M2PairSpec[] = [];
+  let pairSpecIndex = 0;
+  for (let depth = 1; depth <= M2_TARGET_DEPTH; depth += 1) {
+    for (const motionGrammar of M2_MOTION_GRAMMARS) {
+      pairSpecIndex += 1;
+      specs.push({
+        pairSpecId: `pair-set-${String(pairSpecIndex).padStart(2, "0")}`,
+        depth,
+        motionGrammar,
+        shuffleSeed: pairSpecShuffleSeed(pairSpecIndex),
+      });
+    }
+  }
+  return specs;
+}
+
+const M2_PAIR_SPECS: readonly M2PairSpec[] = buildM2PairSpecs();
 
 type M2FrameRecord = { readonly phase: number; readonly path: string; readonly pixelSha256: string };
 type M2StripRecord = {
@@ -766,6 +818,34 @@ type M2PhaseComparisonRecord = {
   readonly phase: number;
   readonly identical: boolean;
   readonly changedPixelFraction: number;
+};
+type M2PairSpecRecord = {
+  readonly pairSpecId: string;
+  readonly depth: number;
+  readonly motionGrammar: MotionGrammar;
+  readonly navigationEvent: {
+    readonly containmentRootId: string;
+    readonly recursive: { readonly nodeIds: readonly string[]; readonly edgeIds: readonly string[] };
+    readonly holographic: { readonly nodeIds: readonly string[]; readonly edgeIds: readonly string[] };
+    readonly holographicAddedNodeCount: number;
+    readonly holographicAddedEdgeCount: number;
+  };
+  readonly stripPhases: readonly number[];
+  readonly shuffle: { readonly algorithm: string; readonly seed: number };
+  readonly pairAssignment: readonly { readonly pairId: string; readonly scaleTopology: ScaleTopology; readonly nodeCount: number; readonly edgeCount: number }[];
+  readonly pairs: readonly M2StripRecord[];
+  readonly finding: {
+    readonly recursive: { readonly nodeCount: number; readonly edgeCount: number };
+    readonly holographic: { readonly nodeCount: number; readonly edgeCount: number };
+    readonly supersetInvariant: { readonly nodesStrictSuperset: true; readonly edgesStrictSuperset: true };
+    readonly ecological: { readonly assertion: string; readonly perPhase: readonly M2PhaseComparisonRecord[] };
+    readonly controlled: {
+      readonly assertion: string;
+      readonly sharedCameraSource: "holographic";
+      readonly noClippingInvariant: { readonly marginCssPx: number; readonly passed: true };
+      readonly perPhase: readonly M2PhaseComparisonRecord[];
+    };
+  };
 };
 
 test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ page }, testInfo) => {
@@ -786,18 +866,6 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
     throw new Error(`motion M2 fixture ${TRACEABILITY_FIXTURE.id} resolved a containment world too small to render (${containmentWorld.nodeIds.length} nodes)`);
   }
 
-  // Real navigation paths into the same containment root, one per compared policy -- built with the
-  // same exported #engine/scale-topology.ts functions any real caller uses (rootNavigationPath,
-  // enterChildWorld), never with a hand-assembled node/relation id set. `Render3fOptions.navigationPath`
-  // (ui/src/render3f/mount.tsx) carries each straight through to `buildScene`, which alone decides
-  // what is rendered (see #scene/build.ts's resolveScaleNavigationGraph): this suite computes nothing
-  // about what gets drawn, only which position on the map to navigate to. The rendered node/relation
-  // id sets recorded below (stripRecords[].nodeIds/edgeIds) are read back from what mount() actually
-  // drew (rendered.witness.surface), never precomputed here.
-  const recursivePath = enterChildWorld(canonicalGraph, rootNavigationPath(RECURSIVE), containmentRootId);
-  const holographicPath = enterChildWorld(canonicalGraph, rootNavigationPath(HOLOGRAPHIC), containmentRootId);
-  const phases = distinctMotionPhases(M2_MOTION_GRAMMAR, STRIP_PHASE_CANDIDATES);
-
   const outputDirectory = join(ROOT_DIRECTORY, "m2");
   await mkdir(outputDirectory, { recursive: true });
 
@@ -807,158 +875,21 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
     const fixtureWitness = await prepareFixture(page, TRACEABILITY_FIXTURE.path);
     expect(fixtureWitness.semanticDigest).toBe(semanticDigest(canonicalGraph));
 
-    const topologies = [RECURSIVE, HOLOGRAPHIC] as const;
-    const shuffled = deterministicShuffle(topologies, M2_SHUFFLE_SEED);
-
-    // Holographic's own per-phase camera, read back off its mounted renderer
-    // (rendered.witness.visualState.camera, itself sourced from readCameraState() -- see
-    // MotionCaptureWitness and mount.tsx's readVisualState()) as it is captured below. This is the
-    // single camera the controlled comparison drives BOTH strips with: an observed output of the
-    // Holographic render fed as an input to the Recursive one, never recomputed.
-    const holographicCameraByPhase = new Map<number, VisualStateCamera>();
-
-    const stripRecords: M2StripRecord[] = [];
-    for (const [index, scaleTopology] of shuffled.entries()) {
-      const pairId = `pair-${index + 1}`;
-      const pairDirectory = join(outputDirectory, pairId);
-      await mkdir(pairDirectory, { recursive: true });
-      const navigationPath = scaleTopology === HOLOGRAPHIC ? holographicPath : recursivePath;
-      const frames: M2FrameRecord[] = [];
-      let pairNodeIds: readonly string[] | undefined;
-      let pairEdgeIds: readonly string[] | undefined;
-      for (const phase of phases) {
-        const request: MotionCaptureRequest = {
-          morphology: M2_MORPHOLOGY,
-          organization: M2_ORGANIZATION,
-          projection: M2_PROJECTION,
-          motionGrammar: M2_MOTION_GRAMMAR,
-          scaleTopology,
-          navigationPath,
-          reducedMotion: false,
-          phase,
-        };
-        const fileName = `phase-${phase}.png`;
-        const rendered = await renderFrame(page, request, pairDirectory, fileName);
-        const renderedNodeIds = [...rendered.witness.surface.nodeIds].sort();
-        const renderedEdgeIds = [...rendered.witness.surface.edgeIds].sort();
-        if (pairNodeIds === undefined || pairEdgeIds === undefined) {
-          pairNodeIds = renderedNodeIds;
-          pairEdgeIds = renderedEdgeIds;
-        } else if (JSON.stringify(renderedNodeIds) !== JSON.stringify(pairNodeIds) || JSON.stringify(renderedEdgeIds) !== JSON.stringify(pairEdgeIds)) {
-          throw new Error(`motion M2 ${pairId} rendered a different governed id set at phase ${phase} than at its own earlier phases; motion must never change what exists`);
-        }
-        expect(rendered.witness.phaseRendered).toBe(phase);
-        if (scaleTopology === HOLOGRAPHIC) {
-          holographicCameraByPhase.set(phase, rendered.witness.visualState.camera);
-        }
-        frames.push({ phase, path: join("m2", pairId, fileName), pixelSha256: rendered.pixelSha256 });
-      }
-      if (pairNodeIds === undefined || pairEdgeIds === undefined) {
-        throw new Error(`motion M2 ${pairId} rendered no frames`);
-      }
-      const distinctFrameCount = new Set(frames.map((frame) => frame.pixelSha256)).size;
-      if (distinctFrameCount !== frames.length) {
-        throw new Error(`motion M2 ${pairId} renders at least two byte-identical frames among its ${frames.length} sampled phases; ${M2_MOTION_GRAMMAR} is not genuinely animating across every sampled phase`);
-      }
-      stripRecords.push({ pairId, scaleTopology, nodeIds: pairNodeIds, edgeIds: pairEdgeIds, framesDiffer: distinctFrameCount > 1, frames });
+    // Six independent pairs, one per (navigationDepth, motionGrammar) combination -- see M2_PAIR_SPECS
+    // above. Each is its own genuine navigation event with everything held constant except
+    // scaleTopology, rendered and compared by renderM2PairSpec below exactly as the prior single-pair
+    // implementation compared its one pair (real ScaleNavigationPath through mount()'s own
+    // Render3fOptions.navigationPath to buildScene, which alone resolves what is rendered; every
+    // nodeIds/edgeIds value recorded below is read back from the mounted scene's own surface witness,
+    // never precomputed here).
+    const pairSpecRecords: M2PairSpecRecord[] = [];
+    for (const spec of M2_PAIR_SPECS) {
+      pairSpecRecords.push(await renderM2PairSpec(page, canonicalGraph, containmentRootId, outputDirectory, spec));
     }
 
-    // ---- The primary Phase B research question, answered directly against production output rather
-    // than a precomputed expectation: does Holographic's preserved-context bundle render more governed
-    // content than Recursive for the same navigation event, and does that make it render differently?
-    // Both node/relation counts below are read from what mount() actually drew (stripRecords[].nodeIds
-    // /edgeIds, themselves read from rendered.witness.surface above), not assumed. ----
-    const recursivePair = stripRecords.find((record) => record.scaleTopology === RECURSIVE);
-    const holographicPair = stripRecords.find((record) => record.scaleTopology === HOLOGRAPHIC);
-    if (recursivePair === undefined || holographicPair === undefined) {
-      throw new Error("motion M2 requires both a Recursive and a Holographic strip to compare");
-    }
-    if (holographicPair.nodeIds.length <= recursivePair.nodeIds.length || holographicPair.edgeIds.length <= recursivePair.edgeIds.length) {
-      throw new Error(
-        `motion M2 fixture ${TRACEABILITY_FIXTURE.id} holographic capture adds no real boundary content over the recursive `
-        + `capture of the same navigation event (nodes ${holographicPair.nodeIds.length} vs ${recursivePair.nodeIds.length}, `
-        + `relations ${holographicPair.edgeIds.length} vs ${recursivePair.edgeIds.length}); the comparison below would be vacuous`,
-      );
-    }
-    if (recursivePair.frames.length !== holographicPair.frames.length) {
-      throw new Error("motion M2 paired strips have a mismatched frame count");
-    }
-    const comparisons: M2PhaseComparisonRecord[] = [];
-    for (let index = 0; index < recursivePair.frames.length; index += 1) {
-      const recursiveFrame = recursivePair.frames[index];
-      const holographicFrame = holographicPair.frames[index];
-      if (recursiveFrame === undefined || holographicFrame === undefined || recursiveFrame.phase !== holographicFrame.phase) {
-        throw new Error("motion M2 paired strips are not phase-aligned");
-      }
-      const recursiveImage = decodePng(await readFile(join(ROOT_DIRECTORY, recursiveFrame.path)), recursiveFrame.path);
-      const holographicImage = decodePng(await readFile(join(ROOT_DIRECTORY, holographicFrame.path)), holographicFrame.path);
-      comparisons.push({
-        phase: recursiveFrame.phase,
-        identical: recursiveFrame.pixelSha256 === holographicFrame.pixelSha256,
-        changedPixelFraction: changedPixelFraction(recursiveImage, holographicImage, recursiveFrame.path, holographicFrame.path),
-      });
-    }
-    if (comparisons.some((record) => record.identical)) {
-      throw new Error("motion M2 finding is vacuous: Recursive and Holographic rendered byte-identically at a sampled phase despite Holographic carrying strictly more governed nodes and relations");
-    }
-
-    // ---- Controlled comparison (this test's primary result): one camera per phase, Holographic's
-    // own -- read back off its mounted renderer above, never recomputed -- drives BOTH strips, so the
-    // two strips being compared differ only in scaleTopology, not in framing. Holographic's own frame
-    // under that camera is exactly the ecological frame captured above (it is that camera's source);
-    // only Recursive needs a second, camera-driven capture. ----
-    const controlledDirectory = join(outputDirectory, "controlled");
-    await mkdir(controlledDirectory, { recursive: true });
-    const controlledComparisons: M2PhaseComparisonRecord[] = [];
-    for (const phase of phases) {
-      const sharedCamera = holographicCameraByPhase.get(phase);
-      if (sharedCamera === undefined) {
-        throw new Error(`motion M2 controlled comparison is missing holographic's own camera for phase ${phase}`);
-      }
-      const holographicFrame = holographicPair.frames.find((frame) => frame.phase === phase);
-      if (holographicFrame === undefined) {
-        throw new Error(`motion M2 controlled comparison is missing holographic's own frame for phase ${phase}`);
-      }
-      const request: MotionCaptureRequest = {
-        morphology: M2_MORPHOLOGY,
-        organization: M2_ORGANIZATION,
-        projection: M2_PROJECTION,
-        motionGrammar: M2_MOTION_GRAMMAR,
-        scaleTopology: RECURSIVE,
-        navigationPath: recursivePath,
-        sharedCamera,
-        reducedMotion: false,
-        phase,
-      };
-      const fileName = `phase-${phase}.png`;
-      const rendered = await renderFrame(page, request, controlledDirectory, fileName);
-      // renderFrame's own assertNodesInsideCapturedFrame call above just checked every one of
-      // Recursive's rendered anchors falls inside this shared frame; Holographic's own anchors were
-      // already checked inside this same frame when its ecological capture (the camera's own source)
-      // was rendered above, since that capture's camera and this one are identical. Together that is
-      // "every rendered anchor of both policies inside the frame" -- checked, not assumed from the
-      // superset relation.
-      const renderedNodeIds = [...rendered.witness.surface.nodeIds].sort();
-      const renderedEdgeIds = [...rendered.witness.surface.edgeIds].sort();
-      if (JSON.stringify(renderedNodeIds) !== JSON.stringify(recursivePair.nodeIds) || JSON.stringify(renderedEdgeIds) !== JSON.stringify(recursivePair.edgeIds)) {
-        throw new Error(`motion M2 controlled comparison rendered a different governed id set for Recursive at phase ${phase} than its own ecological capture; the shared camera must never change what is drawn`);
-      }
-      expect(rendered.witness.phaseRendered).toBe(phase);
-      const recursiveControlledImage = decodePng(await readFile(rendered.filePath), rendered.fileName);
-      const holographicImage = decodePng(await readFile(join(ROOT_DIRECTORY, holographicFrame.path)), holographicFrame.path);
-      controlledComparisons.push({
-        phase,
-        identical: rendered.pixelSha256 === holographicFrame.pixelSha256,
-        changedPixelFraction: changedPixelFraction(recursiveControlledImage, holographicImage, rendered.fileName, holographicFrame.path),
-      });
-    }
-    if (controlledComparisons.some((record) => record.identical)) {
-      throw new Error("motion M2 controlled comparison is vacuous: Recursive and Holographic rendered byte-identically at a sampled phase under the same shared camera despite Holographic carrying strictly more governed nodes and relations");
-    }
-
-    // Checked once, over every PNG this test produced (both ecological pairs and the controlled
-    // strip) -- run last so a path under m2/controlled/ is covered by the same blind-path discipline
-    // as everything under m2/pair-*/.
+    // Checked once, over every PNG this test produced across all six pairs (both ecological strips
+    // and the controlled strip of each) -- run last so every path under m2/ is covered by the same
+    // blind-path discipline.
     const producedFiles = await pngFilesUnder(outputDirectory);
     assertNoPolicyTokenInPaths(producedFiles, "motion M2");
     for (const token of ["recursive", "holographic"]) {
@@ -979,59 +910,33 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
       schemaVersion: 1,
       summary: { passing: true },
       run: { command: MOTION_COMMAND, trackedTree },
-      assertion: "Paired strips of the same navigation event (entering the same containment child world), everything held constant except scaleTopology, both animated with the same motion policy. Pair order is a deterministically shuffled, independently seeded assignment; no path under m2/ names either scaleTopology label, verified by read-back.",
-      method: "A real ScaleNavigationPath (built with #engine/scale-topology.ts's own rootNavigationPath and enterChildWorld) is passed straight through mount()'s own Render3fOptions.navigationPath (ui/src/render3f/mount.tsx) to buildScene (#scene/build.ts), which alone resolves it to a rendered node/relation set via resolveScaleNavigationGraph. This suite computes no id set of its own for what gets rendered; every nodeIds/edgeIds value recorded below is read back from the mounted scene's own surface witness.",
-      navigationEvent: {
-        containmentRootId,
-        kind: containmentWorld.kind,
-        recursive: { nodeIds: recursivePair.nodeIds, edgeIds: recursivePair.edgeIds },
-        holographic: { nodeIds: holographicPair.nodeIds, edgeIds: holographicPair.edgeIds },
-        holographicAddedNodeCount: holographicPair.nodeIds.length - recursivePair.nodeIds.length,
-        holographicAddedEdgeCount: holographicPair.edgeIds.length - recursivePair.edgeIds.length,
+      assertion: "Six independent pairs (three navigation depths x two motion policies -- see changedAxes below), each a paired strip of the same navigation event (entering the same containment child world at that pair's own depth), everything held constant except scaleTopology, both members animated with that pair's own motion policy. Every pair independently shuffles which anonymous strip slot (pair-1/pair-2) is Recursive vs Holographic, with its own recorded seed; no path under m2/ names either scaleTopology label, verified by read-back.",
+      method: "A real ScaleNavigationPath (built with #engine/scale-topology.ts's own rootNavigationPath and enterChildWorld, walked to each pair's own depth exactly as scale-topology.spec.ts's own buildRecursiveWalk does) is passed straight through mount()'s own Render3fOptions.navigationPath (ui/src/render3f/mount.tsx) to buildScene (#scene/build.ts), which alone resolves it to a rendered node/relation set via resolveScaleNavigationGraph. This suite computes no id set of its own for what gets rendered; every nodeIds/edgeIds value recorded below is read back from the mounted scene's own surface witness.",
+      containmentRootId,
+      heldConstant: { organization: M2_ORGANIZATION, morphology: M2_MORPHOLOGY, projection: M2_PROJECTION, calibration: "DEFAULT_CALIBRATION", reducedMotion: false },
+      changedAxes: {
+        withinPair: { name: "scaleTopology", values: [RECURSIVE, HOLOGRAPHIC] },
+        acrossPairs: [
+          { name: "navigationDepth", values: Array.from({ length: M2_TARGET_DEPTH }, (_, index) => index + 1) },
+          { name: "motionGrammar", values: [...M2_MOTION_GRAMMARS] },
+        ],
       },
-      heldConstant: { organization: M2_ORGANIZATION, morphology: M2_MORPHOLOGY, projection: M2_PROJECTION, motionGrammar: M2_MOTION_GRAMMAR, calibration: "DEFAULT_CALIBRATION", reducedMotion: false },
-      changedAxis: { name: "scaleTopology", values: [...topologies] },
       stripPhaseCandidates: STRIP_PHASE_CANDIDATES,
-      stripPhases: phases,
-      shuffle: { algorithm: "mulberry32 + Fisher-Yates", seed: M2_SHUFFLE_SEED },
       noLabelInPaths: true,
-      finding: {
-        claim: "Holographic's preserved-context bundle is real governed content, not metadata: entering the same containment world renders strictly more nodes and relations under Holographic than Recursive, and the rendered pixels differ from Recursive's at every sampled phase, measured directly below against production output rather than assumed.",
-        recursive: { nodeCount: recursivePair.nodeIds.length, edgeCount: recursivePair.edgeIds.length },
-        holographic: { nodeCount: holographicPair.nodeIds.length, edgeCount: holographicPair.edgeIds.length },
-        // Two measurements of the same pixel difference, kept apart and labelled: `ecological` frames
-        // each policy on its OWN camera (marginedAnchorBounds refit from that policy's own rendered
-        // anchors -- what a real caller navigating that policy would actually see), so part of any
-        // difference it reports is attributable to the two cameras differing, not to what is drawn.
-        // `controlled` frames both policies on ONE camera -- Holographic's own, read back off its
-        // mounted renderer via readCameraState() and driven straight through Recursive's own capture
-        // as `sharedCamera` -- so its own difference is attributable to content alone. `controlled` is
-        // this test's primary result; `ecological` is retained because it reflects what a reader would
-        // actually see, and neither can be mistaken for the other under these names.
-        ecological: {
-          assertion: "Each strip's camera is refit from its own rendered anchors after navigating (marginedAnchorBounds, applied per policy). Holographic's anchor extent is a superset of Recursive's, so the two cameras differ, and part of the changed-pixel fraction below is attributable to that framing difference rather than to what is drawn.",
-          perPhase: comparisons,
-        },
-        controlled: {
-          assertion: "One camera per phase -- Holographic's own, read back off its mounted renderer and driven straight through Recursive's capture as sharedCamera -- shared by both strips, so the changed-pixel fraction below is attributable to what is drawn, not to two different cameras. This is M2's primary result.",
-          sharedCameraSource: "holographic",
-          noClippingInvariant: { marginCssPx: FRAME_CONTAINMENT_MARGIN_CSS_PX, passed: true },
-          perPhase: controlledComparisons,
-        },
-      },
-      // De-blinding key: which anonymous pair id renders which scaleTopology. Fine for this JSON
-      // manifest to name it; the blind property is the PNG paths, checked above.
-      pairAssignment: stripRecords.map((record) => ({ pairId: record.pairId, scaleTopology: record.scaleTopology, nodeCount: record.nodeIds.length, edgeCount: record.edgeIds.length })),
-      pairs: stripRecords,
+      pairSpecs: pairSpecRecords,
     };
     const manifestFile = join(ROOT_DIRECTORY, "motion-m2-manifest.json");
     await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     process.stdout.write(
-      `motion M2: 2 paired strips (${M2_MOTION_GRAMMAR}) x ${phases.length} phases, shuffled (seed ${M2_SHUFFLE_SEED}); `
-      + `recursive=${recursivePair.nodeIds.length}n/${recursivePair.edgeIds.length}e, holographic=${holographicPair.nodeIds.length}n/${holographicPair.edgeIds.length}e; `
-      + `ecological changed-pixel fraction per phase: ${comparisons.map((record) => `${record.phase}:${(record.changedPixelFraction * 100).toFixed(3)}%`).join(", ")}; `
-      + `controlled (shared camera) changed-pixel fraction per phase: ${controlledComparisons.map((record) => `${record.phase}:${(record.changedPixelFraction * 100).toFixed(3)}%`).join(", ")}; `
-      + `manifest=${manifestFile}\n`,
+      `motion M2: ${pairSpecRecords.length} pairs (${M2_TARGET_DEPTH} depths x ${M2_MOTION_GRAMMARS.length} policies): `
+      + pairSpecRecords.map((record) => (
+        `${record.pairSpecId}[depth${record.depth}/${record.motionGrammar}] `
+        + `recursive=${record.finding.recursive.nodeCount}n/${record.finding.recursive.edgeCount}e `
+        + `holographic=${record.finding.holographic.nodeCount}n/${record.finding.holographic.edgeCount}e `
+        + `ecological=${record.finding.ecological.perPhase.map((entry) => `${entry.phase}:${(entry.changedPixelFraction * 100).toFixed(3)}%`).join(",")} `
+        + `controlled=${record.finding.controlled.perPhase.map((entry) => `${entry.phase}:${(entry.changedPixelFraction * 100).toFixed(3)}%`).join(",")}`
+      )).join("; ")
+      + `; manifest=${manifestFile}\n`,
     );
   } finally {
     await destroyPage(page);
@@ -1296,6 +1201,274 @@ function strongestContainmentRoot(graph: VisualGraph): string {
     throw new Error(`motion M2 fixture ${TRACEABILITY_FIXTURE.id} has no populated containment root`);
   }
   return best.id;
+}
+
+/**
+ * This walks containment once, then reuses `enterChildWorld` at each further step to open a real
+ * governed neighbourhood, stopping at `targetDepth` or at the first level with no further enterable
+ * member -- an experimental bound, not a claim that recursion terminates there. Mirrors
+ * scale-topology.spec.ts's own `buildRecursiveWalk` exactly (duplicated rather than imported, for the
+ * same reason `strongestContainmentRoot` above already is), because M2's own navigation-depth axis
+ * needs the identical real per-level walk that suite's own static-controlled comparison already builds.
+ */
+function buildRecursiveWalk(
+  graph: VisualGraph,
+  policy: ScaleTopology,
+  containmentRootId: string,
+  targetDepth: number,
+): { readonly path: ScaleNavigationPath; readonly steps: readonly string[] } {
+  let path = enterChildWorld(graph, rootNavigationPath(policy), containmentRootId);
+  const steps: string[] = [containmentRootId];
+  const visited = new Set<string>([containmentRootId]);
+  while (steps.length < targetDepth) {
+    const lastWorld = path.worlds[path.worlds.length - 1];
+    if (lastWorld === undefined) {
+      throw new Error("motion M2 recursive walk lost its current world");
+    }
+    const candidate = lastWorld.nodeIds.find((id) => (
+      id !== lastWorld.rootId && !visited.has(id) && enterableKind(graph, id, policy) !== "not-enterable"
+    ));
+    if (candidate === undefined) {
+      break;
+    }
+    path = enterChildWorld(graph, path, candidate);
+    steps.push(candidate);
+    visited.add(candidate);
+  }
+  return { path, steps };
+}
+
+/**
+ * This is the complete render-and-compare procedure for one M2 pair: build both policies' own real
+ * navigation paths to this pair's own depth, render the ecological (own-camera) strips in a
+ * deterministically shuffled, independently seeded order, verify Holographic's rendered id sets are a
+ * strict superset of Recursive's (an actual set relation checked below, not inferred from a count),
+ * then re-render Recursive under Holographic's own per-phase camera for the controlled comparison.
+ * Every count and id set in the returned record is read back from the mounted scene's own surface
+ * witness (`rendered.witness.surface`), never recomputed here.
+ */
+async function renderM2PairSpec(
+  page: Page,
+  canonicalGraph: VisualGraph,
+  containmentRootId: string,
+  outputRootDirectory: string,
+  spec: M2PairSpec,
+): Promise<M2PairSpecRecord> {
+  const recursiveWalk = buildRecursiveWalk(canonicalGraph, RECURSIVE, containmentRootId, spec.depth);
+  const holographicWalk = buildRecursiveWalk(canonicalGraph, HOLOGRAPHIC, containmentRootId, spec.depth);
+  if (recursiveWalk.path.worlds.length < spec.depth || holographicWalk.path.worlds.length < spec.depth) {
+    throw new Error(
+      `motion M2 ${spec.pairSpecId} requires depth ${spec.depth} reachable under both scaleTopology policies, `
+      + `found recursive=${recursiveWalk.path.worlds.length}, holographic=${holographicWalk.path.worlds.length}`,
+    );
+  }
+  const recursivePath: ScaleNavigationPath = { policy: RECURSIVE, worlds: recursiveWalk.path.worlds.slice(0, spec.depth) };
+  const holographicPath: ScaleNavigationPath = { policy: HOLOGRAPHIC, worlds: holographicWalk.path.worlds.slice(0, spec.depth) };
+  const phases = distinctMotionPhases(spec.motionGrammar, STRIP_PHASE_CANDIDATES);
+
+  const outputDirectory = join(outputRootDirectory, spec.pairSpecId);
+  await mkdir(outputDirectory, { recursive: true });
+
+  const topologies = [RECURSIVE, HOLOGRAPHIC] as const;
+  const shuffled = deterministicShuffle(topologies, spec.shuffleSeed);
+
+  // Holographic's own per-phase camera, read back off its mounted renderer
+  // (rendered.witness.visualState.camera, itself sourced from readCameraState() -- see
+  // MotionCaptureWitness and mount.tsx's readVisualState()) as it is captured below. This is the
+  // single camera the controlled comparison drives BOTH strips with: an observed output of the
+  // Holographic render fed as an input to the Recursive one, never recomputed.
+  const holographicCameraByPhase = new Map<number, VisualStateCamera>();
+
+  const stripRecords: M2StripRecord[] = [];
+  for (const [index, scaleTopology] of shuffled.entries()) {
+    const pairId = `pair-${index + 1}`;
+    const pairDirectory = join(outputDirectory, pairId);
+    await mkdir(pairDirectory, { recursive: true });
+    const navigationPath = scaleTopology === HOLOGRAPHIC ? holographicPath : recursivePath;
+    const frames: M2FrameRecord[] = [];
+    let pairNodeIds: readonly string[] | undefined;
+    let pairEdgeIds: readonly string[] | undefined;
+    for (const phase of phases) {
+      const request: MotionCaptureRequest = {
+        morphology: M2_MORPHOLOGY,
+        organization: M2_ORGANIZATION,
+        projection: M2_PROJECTION,
+        motionGrammar: spec.motionGrammar,
+        scaleTopology,
+        navigationPath,
+        reducedMotion: false,
+        phase,
+      };
+      const fileName = `phase-${phase}.png`;
+      const rendered = await renderFrame(page, request, pairDirectory, fileName);
+      const renderedNodeIds = [...rendered.witness.surface.nodeIds].sort();
+      const renderedEdgeIds = [...rendered.witness.surface.edgeIds].sort();
+      if (pairNodeIds === undefined || pairEdgeIds === undefined) {
+        pairNodeIds = renderedNodeIds;
+        pairEdgeIds = renderedEdgeIds;
+      } else if (JSON.stringify(renderedNodeIds) !== JSON.stringify(pairNodeIds) || JSON.stringify(renderedEdgeIds) !== JSON.stringify(pairEdgeIds)) {
+        throw new Error(`motion M2 ${spec.pairSpecId}/${pairId} rendered a different governed id set at phase ${phase} than at its own earlier phases; motion must never change what exists`);
+      }
+      expect(rendered.witness.phaseRendered).toBe(phase);
+      if (scaleTopology === HOLOGRAPHIC) {
+        holographicCameraByPhase.set(phase, rendered.witness.visualState.camera);
+      }
+      frames.push({ phase, path: join("m2", spec.pairSpecId, pairId, fileName), pixelSha256: rendered.pixelSha256 });
+    }
+    if (pairNodeIds === undefined || pairEdgeIds === undefined) {
+      throw new Error(`motion M2 ${spec.pairSpecId}/${pairId} rendered no frames`);
+    }
+    const distinctFrameCount = new Set(frames.map((frame) => frame.pixelSha256)).size;
+    if (distinctFrameCount !== frames.length) {
+      throw new Error(`motion M2 ${spec.pairSpecId}/${pairId} renders at least two byte-identical frames among its ${frames.length} sampled phases; ${spec.motionGrammar} is not genuinely animating across every sampled phase`);
+    }
+    stripRecords.push({ pairId, scaleTopology, nodeIds: pairNodeIds, edgeIds: pairEdgeIds, framesDiffer: distinctFrameCount > 1, frames });
+  }
+
+  // ---- The primary Phase B research question, answered directly against production output rather
+  // than a precomputed expectation: does Holographic's preserved-context bundle render more governed
+  // content than Recursive for the same navigation event, and does that make it render differently?
+  // Both id sets below are read from what mount() actually drew (stripRecords[].nodeIds/edgeIds,
+  // themselves read from rendered.witness.surface above), not assumed. ----
+  const recursivePair = stripRecords.find((record) => record.scaleTopology === RECURSIVE);
+  const holographicPair = stripRecords.find((record) => record.scaleTopology === HOLOGRAPHIC);
+  if (recursivePair === undefined || holographicPair === undefined) {
+    throw new Error(`motion M2 ${spec.pairSpecId} requires both a Recursive and a Holographic strip to compare`);
+  }
+  // Strict superset, checked as an actual set relation over the rendered ids -- not inferred from a
+  // count comparison alone -- so "Holographic carries strictly more governed content" means every
+  // Recursive id is also one of Holographic's, plus at least one more.
+  const holographicNodeIdSet = new Set(holographicPair.nodeIds);
+  const holographicEdgeIdSet = new Set(holographicPair.edgeIds);
+  const nodesAreSubset = recursivePair.nodeIds.every((id) => holographicNodeIdSet.has(id));
+  const edgesAreSubset = recursivePair.edgeIds.every((id) => holographicEdgeIdSet.has(id));
+  if (
+    !nodesAreSubset || !edgesAreSubset
+    || holographicPair.nodeIds.length <= recursivePair.nodeIds.length
+    || holographicPair.edgeIds.length <= recursivePair.edgeIds.length
+  ) {
+    throw new Error(
+      `motion M2 ${spec.pairSpecId} holographic capture is not a strict superset of the recursive capture of the same navigation event `
+      + `(nodes ${holographicPair.nodeIds.length} vs ${recursivePair.nodeIds.length}, `
+      + `relations ${holographicPair.edgeIds.length} vs ${recursivePair.edgeIds.length}); the comparison below would be vacuous`,
+    );
+  }
+  if (recursivePair.frames.length !== holographicPair.frames.length) {
+    throw new Error(`motion M2 ${spec.pairSpecId} paired strips have a mismatched frame count`);
+  }
+  const comparisons: M2PhaseComparisonRecord[] = [];
+  for (let index = 0; index < recursivePair.frames.length; index += 1) {
+    const recursiveFrame = recursivePair.frames[index];
+    const holographicFrame = holographicPair.frames[index];
+    if (recursiveFrame === undefined || holographicFrame === undefined || recursiveFrame.phase !== holographicFrame.phase) {
+      throw new Error(`motion M2 ${spec.pairSpecId} paired strips are not phase-aligned`);
+    }
+    const recursiveImage = decodePng(await readFile(join(ROOT_DIRECTORY, recursiveFrame.path)), recursiveFrame.path);
+    const holographicImage = decodePng(await readFile(join(ROOT_DIRECTORY, holographicFrame.path)), holographicFrame.path);
+    comparisons.push({
+      phase: recursiveFrame.phase,
+      identical: recursiveFrame.pixelSha256 === holographicFrame.pixelSha256,
+      changedPixelFraction: changedPixelFraction(recursiveImage, holographicImage, recursiveFrame.path, holographicFrame.path),
+    });
+  }
+  if (comparisons.some((record) => record.identical)) {
+    throw new Error(`motion M2 ${spec.pairSpecId} finding is vacuous: Recursive and Holographic rendered byte-identically at a sampled phase despite Holographic carrying strictly more governed nodes and relations`);
+  }
+
+  // ---- Controlled comparison (this pair's primary result): one camera per phase, Holographic's own
+  // -- read back off its mounted renderer above, never recomputed -- drives BOTH strips, so the two
+  // strips being compared differ only in scaleTopology, not in framing. Holographic's own frame under
+  // that camera is exactly the ecological frame captured above (it is that camera's source); only
+  // Recursive needs a second, camera-driven capture. ----
+  const controlledDirectory = join(outputDirectory, "controlled");
+  await mkdir(controlledDirectory, { recursive: true });
+  const controlledComparisons: M2PhaseComparisonRecord[] = [];
+  for (const phase of phases) {
+    const sharedCamera = holographicCameraByPhase.get(phase);
+    if (sharedCamera === undefined) {
+      throw new Error(`motion M2 ${spec.pairSpecId} controlled comparison is missing holographic's own camera for phase ${phase}`);
+    }
+    const holographicFrame = holographicPair.frames.find((frame) => frame.phase === phase);
+    if (holographicFrame === undefined) {
+      throw new Error(`motion M2 ${spec.pairSpecId} controlled comparison is missing holographic's own frame for phase ${phase}`);
+    }
+    const request: MotionCaptureRequest = {
+      morphology: M2_MORPHOLOGY,
+      organization: M2_ORGANIZATION,
+      projection: M2_PROJECTION,
+      motionGrammar: spec.motionGrammar,
+      scaleTopology: RECURSIVE,
+      navigationPath: recursivePath,
+      sharedCamera,
+      reducedMotion: false,
+      phase,
+    };
+    const fileName = `phase-${phase}.png`;
+    const rendered = await renderFrame(page, request, controlledDirectory, fileName);
+    // renderFrame's own assertNodesInsideCapturedFrame call above just checked every one of
+    // Recursive's rendered anchors falls inside this shared frame; Holographic's own anchors were
+    // already checked inside this same frame when its ecological capture (the camera's own source)
+    // was rendered above, since that capture's camera and this one are identical. Together that is
+    // "every rendered anchor of both policies inside the frame" -- checked, not assumed from the
+    // superset relation.
+    const renderedNodeIds = [...rendered.witness.surface.nodeIds].sort();
+    const renderedEdgeIds = [...rendered.witness.surface.edgeIds].sort();
+    if (JSON.stringify(renderedNodeIds) !== JSON.stringify(recursivePair.nodeIds) || JSON.stringify(renderedEdgeIds) !== JSON.stringify(recursivePair.edgeIds)) {
+      throw new Error(`motion M2 ${spec.pairSpecId} controlled comparison rendered a different governed id set for Recursive at phase ${phase} than its own ecological capture; the shared camera must never change what is drawn`);
+    }
+    expect(rendered.witness.phaseRendered).toBe(phase);
+    const recursiveControlledImage = decodePng(await readFile(rendered.filePath), rendered.fileName);
+    const holographicImage = decodePng(await readFile(join(ROOT_DIRECTORY, holographicFrame.path)), holographicFrame.path);
+    controlledComparisons.push({
+      phase,
+      identical: rendered.pixelSha256 === holographicFrame.pixelSha256,
+      changedPixelFraction: changedPixelFraction(recursiveControlledImage, holographicImage, rendered.fileName, holographicFrame.path),
+    });
+  }
+  if (controlledComparisons.some((record) => record.identical)) {
+    throw new Error(`motion M2 ${spec.pairSpecId} controlled comparison is vacuous: Recursive and Holographic rendered byte-identically at a sampled phase under the same shared camera despite Holographic carrying strictly more governed nodes and relations`);
+  }
+
+  return {
+    pairSpecId: spec.pairSpecId,
+    depth: spec.depth,
+    motionGrammar: spec.motionGrammar,
+    navigationEvent: {
+      containmentRootId,
+      recursive: { nodeIds: recursivePair.nodeIds, edgeIds: recursivePair.edgeIds },
+      holographic: { nodeIds: holographicPair.nodeIds, edgeIds: holographicPair.edgeIds },
+      holographicAddedNodeCount: holographicPair.nodeIds.length - recursivePair.nodeIds.length,
+      holographicAddedEdgeCount: holographicPair.edgeIds.length - recursivePair.edgeIds.length,
+    },
+    stripPhases: phases,
+    shuffle: { algorithm: "mulberry32 + Fisher-Yates", seed: spec.shuffleSeed },
+    // De-blinding key: which anonymous pair id renders which scaleTopology. Fine for this JSON
+    // manifest to name it; the blind property is the PNG paths, checked above.
+    pairAssignment: stripRecords.map((record) => ({ pairId: record.pairId, scaleTopology: record.scaleTopology, nodeCount: record.nodeIds.length, edgeCount: record.edgeIds.length })),
+    pairs: stripRecords,
+    finding: {
+      recursive: { nodeCount: recursivePair.nodeIds.length, edgeCount: recursivePair.edgeIds.length },
+      holographic: { nodeCount: holographicPair.nodeIds.length, edgeCount: holographicPair.edgeIds.length },
+      supersetInvariant: { nodesStrictSuperset: true, edgesStrictSuperset: true },
+      // Two measurements of the same pixel difference, kept apart and labelled: `ecological` frames
+      // each policy on its OWN camera (marginedAnchorBounds refit from that policy's own rendered
+      // anchors -- what a real caller navigating that policy would actually see), so part of any
+      // difference it reports is attributable to the two cameras differing, not to what is drawn.
+      // `controlled` frames both policies on ONE camera -- Holographic's own, read back off its
+      // mounted renderer via readCameraState() and driven straight through Recursive's own capture as
+      // `sharedCamera` -- so its own difference is attributable to content alone.
+      ecological: {
+        assertion: "Each strip's camera is refit from its own rendered anchors after navigating (marginedAnchorBounds, applied per policy). Holographic's anchor extent is a superset of Recursive's, so the two cameras differ, and part of the changed-pixel fraction below is attributable to that framing difference rather than to what is drawn.",
+        perPhase: comparisons,
+      },
+      controlled: {
+        assertion: "One camera per phase -- Holographic's own, read back off its mounted renderer and driven straight through Recursive's capture as sharedCamera -- shared by both strips, so the changed-pixel fraction below is attributable to what is drawn, not to two different cameras. This is this pair's primary result.",
+        sharedCameraSource: "holographic",
+        noClippingInvariant: { marginCssPx: FRAME_CONTAINMENT_MARGIN_CSS_PX, passed: true },
+        perPhase: controlledComparisons,
+      },
+    },
+  };
 }
 
 /** This is a small deterministic PRNG (mulberry32), seeded once and never reseeded mid-shuffle, so the same seed always produces the same order. */
