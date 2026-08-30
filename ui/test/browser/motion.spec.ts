@@ -303,7 +303,7 @@ test("CAP-13 W-MOTION M3 Still control, default phase, and reduced motion", asyn
     assertMotionRestingCompleteness({
       policy: STILL,
       phase: restingPhase(STILL),
-      nodes: [{ id: "not-a-real-node", opacityPermille: 500, scalePermille: 1_000, offsetXPermille: 0, offsetYPermille: 0 }],
+      nodes: [{ id: "not-a-real-node", opacityPermille: 500, scalePermille: 1_000, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 }],
       edges: [],
     });
   });

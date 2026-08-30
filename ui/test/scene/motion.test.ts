@@ -10,6 +10,7 @@ import type { CameraKind } from "#engine/camera-kind.ts";
 import type { VisualGraph } from "#engine/contract.ts";
 import {
   ASSEMBLE,
+  CONDENSE,
   DISSOLVE,
   MOTION_GRAMMARS,
   RECONFIGURE,
@@ -353,6 +354,131 @@ test("Reconfigure's offset channel is genuinely driven by calibration.layout.ide
   assert.ok(liveChecks > 0, "reconfigure wiring control never observed a live (non-zero) offset to compare, so the claim above is vacuous");
 });
 
+/** This is the same plain, unweighted centroid `#scene/build.ts`'s own resolveCondenseGeometry computes, recomputed here from the static scene rather than imported, so this file's own claims about Condense are checked against an independently derived reference point. */
+function centroidOf(nodes: readonly SceneNode[]): { readonly x: number; readonly y: number } {
+  return {
+    x: nodes.reduce((total, node) => total + node.position.x, 0) / nodes.length,
+    y: nodes.reduce((total, node) => total + node.position.y, 0) / nodes.length,
+  };
+}
+
+test("Condense actually pulls nodes toward the structure's own centre mid-phase, proving the convergence channel is live -- the defect this fix answers to is that it never repositioned anything", () => {
+  const graph = sceneFixtureGraph();
+  const baseState = motionBaseState(graph, "stellar", "flat", "orthographic");
+  const stillScene = buildScene(graph, baseState, DEFAULT_CALIBRATION, sceneTokens(baseState), "orthographic");
+  const centroid = centroidOf(stillScene.nodes);
+  const stillById = new Map(stillScene.nodes.map((node) => [node.id, node]));
+  const condenseState: VisualState = { ...baseState, motionGrammar: CONDENSE };
+  const midCycle = buildScene(graph, condenseState, DEFAULT_CALIBRATION, sceneTokens(condenseState), "orthographic", 0.5);
+
+  let moved = 0;
+  for (const node of midCycle.nodes) {
+    const still = stillById.get(node.id);
+    if (still === undefined) {
+      throw new TypeError(`condense fixture is missing a resting position for node: ${node.id}`);
+    }
+    if (node.position.x === still.position.x && node.position.y === still.position.y) {
+      continue;
+    }
+    moved += 1;
+    const restingDistance = Math.hypot(still.position.x - centroid.x, still.position.y - centroid.y);
+    const midDistance = Math.hypot(node.position.x - centroid.x, node.position.y - centroid.y);
+    assert.ok(midDistance < restingDistance, `node ${node.id} moved away from the structure's own centre instead of toward it: resting=${restingDistance}, mid=${midDistance}`);
+  }
+  assert.ok(moved > 0, "Condense at phase 0.5 displaced no node relative to the static baseline, so the claim above is vacuous");
+});
+
+test("Condense only ever moves a node closer to the structure's own centre than its resting position, never further, at every sampled phase", () => {
+  const graph = sceneFixtureGraph();
+  const baseState = motionBaseState(graph, "stellar", "flat", "orthographic");
+  const stillScene = buildScene(graph, baseState, DEFAULT_CALIBRATION, sceneTokens(baseState), "orthographic");
+  const centroid = centroidOf(stillScene.nodes);
+  const restingDistanceById = new Map(stillScene.nodes.map((node) => [node.id, Math.hypot(node.position.x - centroid.x, node.position.y - centroid.y)]));
+  const condenseState: VisualState = { ...baseState, motionGrammar: CONDENSE };
+  for (const phase of SAMPLE_PHASES) {
+    const scene = buildScene(graph, condenseState, DEFAULT_CALIBRATION, sceneTokens(condenseState), "orthographic", phase);
+    for (const node of scene.nodes) {
+      const restingDistance = restingDistanceById.get(node.id);
+      if (restingDistance === undefined) {
+        throw new TypeError(`condense fixture is missing a resting distance for node: ${node.id}`);
+      }
+      const distance = Math.hypot(node.position.x - centroid.x, node.position.y - centroid.y);
+      assert.ok(
+        distance <= restingDistance + 1e-6,
+        `node ${node.id}@${phase} sits at distance ${distance} from the structure's own centre, further than its own resting distance ${restingDistance}`,
+      );
+    }
+  }
+});
+
+test("Condense's fade and shrink now track each node's own real distance from the structure's centre -- farther nodes fade and shrink strictly more than nearer ones -- replacing the id-hash split this fix removes", () => {
+  const graph = sceneFixtureGraph();
+  const baseState = motionBaseState(graph, "stellar", "flat", "orthographic");
+  const stillScene = buildScene(graph, baseState, DEFAULT_CALIBRATION, sceneTokens(baseState), "orthographic");
+  const centroid = centroidOf(stillScene.nodes);
+  const stillById = new Map(stillScene.nodes.map((node) => [node.id, node]));
+  const distanceById = new Map(stillScene.nodes.map((node) => [node.id, Math.hypot(node.position.x - centroid.x, node.position.y - centroid.y)]));
+
+  const condenseState: VisualState = { ...baseState, motionGrammar: CONDENSE };
+  const midCycle = buildScene(graph, condenseState, DEFAULT_CALIBRATION, sceneTokens(condenseState), "orthographic", 0.5);
+
+  // Ratios (mid-phase over resting), not raw pixel values: two nodes' own static radius and opacity
+  // already differ for reasons unrelated to Condense (prominence, morphology), so comparing raw
+  // radiusPx/opacityPermille across two different nodes would confound Condense's own contribution
+  // with that pre-existing difference. The ratio isolates exactly what Condense itself did to a node.
+  const ranked = [...midCycle.nodes].sort((left, right) => {
+    const leftDistance = distanceById.get(left.id);
+    const rightDistance = distanceById.get(right.id);
+    if (leftDistance === undefined || rightDistance === undefined) {
+      throw new TypeError("condense fixture is missing a resolved distance");
+    }
+    return leftDistance - rightDistance;
+  });
+
+  let strictComparisons = 0;
+  for (let index = 1; index < ranked.length; index += 1) {
+    const nearer = ranked[index - 1];
+    const farther = ranked[index];
+    if (nearer === undefined || farther === undefined) {
+      continue;
+    }
+    const nearerDistance = distanceById.get(nearer.id);
+    const fartherDistance = distanceById.get(farther.id);
+    if (nearerDistance === undefined || fartherDistance === undefined || nearerDistance === fartherDistance) {
+      continue;
+    }
+    const nearerStill = stillById.get(nearer.id);
+    const fartherStill = stillById.get(farther.id);
+    if (nearerStill === undefined || fartherStill === undefined) {
+      throw new TypeError("condense fixture is missing a resting node");
+    }
+    const nearerOpacityRatio = nearerStill.opacityPermille === 0 ? 0 : nearer.opacityPermille / nearerStill.opacityPermille;
+    const fartherOpacityRatio = fartherStill.opacityPermille === 0 ? 0 : farther.opacityPermille / fartherStill.opacityPermille;
+    const nearerScaleRatio = nearerStill.radiusPx === 0 ? 0 : nearer.radiusPx / nearerStill.radiusPx;
+    const fartherScaleRatio = fartherStill.radiusPx === 0 ? 0 : farther.radiusPx / fartherStill.radiusPx;
+    assert.ok(
+      fartherOpacityRatio <= nearerOpacityRatio + 1e-9,
+      `node ${farther.id} (distance ${fartherDistance}) faded less than closer node ${nearer.id} (distance ${nearerDistance}): ${fartherOpacityRatio} > ${nearerOpacityRatio}`,
+    );
+    assert.ok(
+      fartherScaleRatio <= nearerScaleRatio + 1e-9,
+      `node ${farther.id} (distance ${fartherDistance}) shrank less than closer node ${nearer.id} (distance ${nearerDistance}): ${fartherScaleRatio} > ${nearerScaleRatio}`,
+    );
+    strictComparisons += 1;
+  }
+  assert.ok(strictComparisons > 0, "condense monotonic-fade check made no real distance comparisons, so the claim above is vacuous");
+
+  // And the two ends of the ranked-by-distance list are genuinely distinct, not merely non-increasing
+  // by coincidence of rounding: the single farthest node fades and shrinks strictly more than the
+  // single nearest one.
+  const nearest = ranked[0];
+  const farthest = ranked[ranked.length - 1];
+  if (nearest === undefined || farthest === undefined) {
+    throw new TypeError("condense fixture requires at least two nodes");
+  }
+  assert.ok(farthest.opacityPermille < nearest.opacityPermille, "the single farthest node was not strictly more faded than the single nearest node");
+});
+
 test("negative control: assertMotionGovernedIdentity refuses a fabricated extra node id", () => {
   const graph = sceneFixtureGraph();
   const state = motionBaseState(graph, "stellar", "flat", "orthographic");
@@ -391,7 +517,7 @@ test("negative control: assertMotionRestingCompleteness refuses a node left dark
   const dark: MotionModulation = {
     policy: "assemble",
     phase: 1,
-    nodes: [{ id: "node:one", opacityPermille: 0, scalePermille: 1000, offsetXPermille: 0, offsetYPermille: 0 }],
+    nodes: [{ id: "node:one", opacityPermille: 0, scalePermille: 1000, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 }],
     edges: [{ id: "edge:one", opacityPermille: 1000, revealPermille: 1000 }],
   };
   const output = captureFailure(() => assertMotionRestingCompleteness(dark));
@@ -403,7 +529,7 @@ test("negative control: assertMotionRestingCompleteness refuses a relation left 
   const dark: MotionModulation = {
     policy: "dissolve",
     phase: 0,
-    nodes: [{ id: "node:one", opacityPermille: 1000, scalePermille: 1000, offsetXPermille: 0, offsetYPermille: 0 }],
+    nodes: [{ id: "node:one", opacityPermille: 1000, scalePermille: 1000, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 }],
     edges: [{ id: "edge:one", opacityPermille: 0, revealPermille: 0 }],
   };
   const output = captureFailure(() => assertMotionRestingCompleteness(dark));
@@ -419,7 +545,7 @@ test("assertMotionGovernedIdentity and assertMotionRestingCompleteness both acce
   const identity: MotionModulation = {
     policy: "still",
     phase: 0,
-    nodes: [{ id: "node:one", opacityPermille: 1000, scalePermille: 1000, offsetXPermille: 0, offsetYPermille: 0 }],
+    nodes: [{ id: "node:one", opacityPermille: 1000, scalePermille: 1000, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 }],
     edges: [{ id: "edge:one", opacityPermille: 1000, revealPermille: 1000 }],
   };
   assert.doesNotThrow(() => assertMotionRestingCompleteness(identity));

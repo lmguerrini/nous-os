@@ -18,6 +18,7 @@ import type { LayoutAnchors } from "#engine/layout.ts";
 import type { ResolvedMaterial } from "#engine/lod.ts";
 import { MACRO, MESO, lodView } from "#engine/lod.ts";
 import {
+  CONDENSE,
   STILL,
   assertMotionModulationKeying,
   motionModulation,
@@ -310,7 +311,10 @@ export function assertNavigatedGraphSubset(canonical: VisualGraph, navigated: Vi
  * something a renderer would have to be trusted to preserve. It never recomputes layout, material,
  * label selection (`selectedLabelIds` and each label's placement stay pinned to the static resolved
  * layout, so a label never jitters as its node moves), aggregates, or camera; only the channels the
- * motion axis itself declares move.
+ * motion axis itself declares move -- Condense's own `convergencePermille` included: it is the axis's
+ * declared channel, this is only the one place, of every policy alike, where a declared channel is
+ * resolved against this scene's own already-resolved anchors instead of against calibration alone (see
+ * `resolveCondenseGeometry`).
  */
 function applyMotionGrammar(scene: Scene, graph: EngineGraph, policy: MotionGrammar, phase: number, calibration: CalibrationProfile): Scene {
   const elementIds: MotionElementIds = {
@@ -331,8 +335,18 @@ function applyMotionGrammar(scene: Scene, graph: EngineGraph, policy: MotionGram
   }
   const nodeModulationById = new Map(modulation.nodes.map((node) => [node.id, node] as const));
   const edgeModulationById = new Map(modulation.edges.map((edge) => [edge.id, edge] as const));
-  const nodes = scene.nodes.map((node) => modulateSceneNode(node, requiredNodeMotionModulation(nodeModulationById, node.id), calibration));
-  const edges = scene.edges.map((edge) => modulateSceneEdge(edge, requiredEdgeMotionModulation(edgeModulationById, edge.id)));
+  const condenseGeometry = policy === CONDENSE ? resolveCondenseGeometry(scene, nodeModulationById) : null;
+  const nodes = scene.nodes.map((node) => modulateSceneNode(
+    node,
+    requiredNodeMotionModulation(nodeModulationById, node.id),
+    calibration,
+    condenseGeometry?.nodes.get(node.id) ?? null,
+  ));
+  const edges = scene.edges.map((edge) => modulateSceneEdge(
+    edge,
+    requiredEdgeMotionModulation(edgeModulationById, edge.id),
+    condenseGeometry?.edges.get(edge.id) ?? null,
+  ));
   assertMotionGovernedIdentity(scene, nodes, edges);
   return { ...scene, nodes, edges };
 }
@@ -351,7 +365,8 @@ export function assertMotionRestingCompleteness(modulation: MotionModulation): v
     if (node.opacityPermille !== SCENE_PERMILLE_SCALE
       || node.scalePermille !== SCENE_PERMILLE_SCALE
       || node.offsetXPermille !== 0
-      || node.offsetYPermille !== 0) {
+      || node.offsetYPermille !== 0
+      || node.convergencePermille !== 0) {
       throw new TypeError(`scene motion modulation leaves node dark, scaled away, or displaced at its own resting phase: ${node.id}`);
     }
   }
@@ -396,12 +411,19 @@ function assertExactIdOrder(expected: readonly string[], actual: readonly string
  * separation, already governed and registered, so a given offset permille now reads as the same
  * fraction of "how far this layout places neighbours" for every node alike, independent of that
  * node's own prominence, morphology, or LOD band. The halo is scaled by the same factor as the core
- * so the two never visually decouple as a node's own scale channel breathes or shrinks.
+ * so the two never visually decouple as a node's own scale channel breathes or shrinks. `condense` is
+ * non-null only for the Condense policy (see `resolveCondenseGeometry`): its offset is real pixels,
+ * already resolved against this scene's own anchors, added on top of whatever `offsetXPermille`/
+ * `offsetYPermille` declare (always zero for Condense today, see motion-grammar.ts's own condense
+ * case), and its opacity/scale replace the axis's own declared ceiling with the real, geometry-resolved
+ * value that ceiling was spent on.
  */
-function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, calibration: CalibrationProfile): SceneNode {
-  const scaleFactor = motionFactor(modulation.scalePermille);
-  const offsetXPx = motionOffsetPx(modulation.offsetXPermille, calibration.layout.idealEdgeLengthPx);
-  const offsetYPx = motionOffsetPx(modulation.offsetYPermille, calibration.layout.idealEdgeLengthPx);
+function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, calibration: CalibrationProfile, condense: CondenseNodeResolution | null): SceneNode {
+  const opacityPermille = condense?.opacityPermille ?? modulation.opacityPermille;
+  const scalePermille = condense?.scalePermille ?? modulation.scalePermille;
+  const scaleFactor = motionFactor(scalePermille);
+  const offsetXPx = motionOffsetPx(modulation.offsetXPermille, calibration.layout.idealEdgeLengthPx) + (condense?.offsetXPx ?? 0);
+  const offsetYPx = motionOffsetPx(modulation.offsetYPermille, calibration.layout.idealEdgeLengthPx) + (condense?.offsetYPx ?? 0);
   return {
     ...node,
     position: {
@@ -411,7 +433,7 @@ function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, ca
     },
     radiusPx: applyMotionFactor(node.radiusPx, scaleFactor),
     haloRadiusPx: applyMotionFactor(node.haloRadiusPx, scaleFactor),
-    opacityPermille: Math.round((node.opacityPermille * modulation.opacityPermille) / SCENE_PERMILLE_SCALE),
+    opacityPermille: Math.round((node.opacityPermille * opacityPermille) / SCENE_PERMILLE_SCALE),
   };
 }
 
@@ -422,14 +444,127 @@ function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, ca
  * restrictive of the two rather than being silently dropped -- every policy motion-grammar.ts defines
  * today keeps a relation's own opacity and reveal numerically equal, so this composition changes
  * nothing about their current behaviour, and it also holds correctly should a future policy ever let
- * the two diverge.
+ * the two diverge. `condense` is non-null only for the Condense policy, and entirely replaces the
+ * axis's own declared (always-identity, see motion-grammar.ts's own condense case) channel with the
+ * real, geometry-resolved fade `resolveCondenseGeometry` computed from this relation's own two
+ * endpoints.
  */
-function modulateSceneEdge(edge: SceneEdge, modulation: EdgeMotionModulation): SceneEdge {
-  const visibilityPermille = Math.min(modulation.opacityPermille, modulation.revealPermille);
+function modulateSceneEdge(edge: SceneEdge, modulation: EdgeMotionModulation, condense: CondenseEdgeResolution | null): SceneEdge {
+  const visibilityPermille = condense === null
+    ? Math.min(modulation.opacityPermille, modulation.revealPermille)
+    : Math.min(condense.opacityPermille, condense.revealPermille);
   return {
     ...edge,
     opacityPermille: Math.round((edge.opacityPermille * visibilityPermille) / SCENE_PERMILLE_SCALE),
   };
+}
+
+/** This is Condense's own migrated core floor (see motion-grammar.ts's own CONDENSE_CONVERGENCE_AMPLITUDE_PERMILLE docstring): the shrink a node exactly at the structure's own centre still receives at the envelope's own peak, unchanged from the pre-fix core-vs-periphery split's own value. */
+const CONDENSE_CORE_SHRINK_FLOOR_PERMILLE = 650;
+
+/** This is one node's real, geometry-resolved contribution to Condense, replacing the axis's own uniform declared ceiling. */
+type CondenseNodeResolution = {
+  readonly offsetXPx: number;
+  readonly offsetYPx: number;
+  readonly opacityPermille: number;
+  readonly scalePermille: number;
+};
+
+/** This is one relation's real, geometry-resolved fade under Condense, replacing the axis's own always-identity declared channel. */
+type CondenseEdgeResolution = {
+  readonly opacityPermille: number;
+  readonly revealPermille: number;
+};
+
+/**
+ * This is the one place Condense's declared, position-blind ceiling (see motion-grammar.ts's own
+ * condense case: every node declares the identical envelope-scaled ceiling, as if it were the single
+ * farthest node from the structure's own centre) meets this scene's own already-resolved anchors. The
+ * centre is the plain geometric centroid of every node this scene is about to draw: it asserts no
+ * topology, hierarchy, community, or authority, only "the middle of what is actually drawn here," which
+ * is exactly why it is admissible where the id-hash it replaces was not. Each node's own real distance
+ * from that centroid -- never an id -- decides how much of the declared ceiling it actually spends: a
+ * node exactly at the centroid keeps full opacity and shrinks only by `CONDENSE_CORE_SHRINK_FLOOR_PERMILLE`,
+ * the single farthest node spends the whole declared ceiling (fading and shrinking the way the pre-fix
+ * "peripheral" bucket did), and every node between interpolates smoothly by that same real fraction --
+ * a continuous function of distance rather than the two-bucket hash threshold this replaces, because a
+ * node a hair on either side of a smooth gradient reads almost identically, where a node a hair on
+ * either side of a threshold used to read as two different populations. A relation's own fade is the
+ * average of its two real endpoints' own fractions: it has no position of its own to be peripheral
+ * about, but its two endpoints do, and a relation strung between a central and a peripheral node reads
+ * as partway faded rather than wholly one or the other.
+ */
+function resolveCondenseGeometry(
+  scene: Scene,
+  nodeModulationById: ReadonlyMap<string, NodeMotionModulation>,
+): { readonly nodes: ReadonlyMap<string, CondenseNodeResolution>; readonly edges: ReadonlyMap<string, CondenseEdgeResolution> } {
+  if (scene.nodes.length === 0) {
+    throw new TypeError("condense geometry requires at least one governed node");
+  }
+  const centroid = nodeCentroid(scene.nodes);
+  const distanceById = new Map(scene.nodes.map((node) => [node.id, Math.hypot(node.position.x - centroid.x, node.position.y - centroid.y)] as const));
+  const maxDistance = Math.max(0, ...distanceById.values());
+  // Every node declares the identical ceiling for Condense (see motion-grammar.ts's own condense
+  // case), so any one of them names the whole phase's own envelope; taking the maximum rather than an
+  // arbitrary index keeps this correct even if that uniformity were ever relaxed.
+  const envelopeCeilingPermille = Math.max(
+    0,
+    ...scene.nodes.map((node) => SCENE_PERMILLE_SCALE - requiredNodeMotionModulation(nodeModulationById, node.id).opacityPermille),
+  );
+  const peripheralityById = new Map<string, number>();
+  const nodes = new Map<string, CondenseNodeResolution>();
+  for (const node of scene.nodes) {
+    const declared = requiredNodeMotionModulation(nodeModulationById, node.id);
+    const distance = requiredDistance(distanceById, node.id);
+    const peripherality = maxDistance === 0 ? 0 : distance / maxDistance;
+    peripheralityById.set(node.id, peripherality);
+    const convergenceFraction = declared.convergencePermille / SCENE_PERMILLE_SCALE;
+    const opacityPermille = clampScenePermille(SCENE_PERMILLE_SCALE - Math.round(envelopeCeilingPermille * peripherality));
+    const envelopeFraction = envelopeCeilingPermille / SCENE_PERMILLE_SCALE;
+    const shrinkAmountPermille = Math.round(
+      envelopeFraction * (CONDENSE_CORE_SHRINK_FLOOR_PERMILLE + ((SCENE_PERMILLE_SCALE - CONDENSE_CORE_SHRINK_FLOOR_PERMILLE) * peripherality)),
+    );
+    nodes.set(node.id, {
+      offsetXPx: (centroid.x - node.position.x) * convergenceFraction,
+      offsetYPx: (centroid.y - node.position.y) * convergenceFraction,
+      opacityPermille,
+      scalePermille: clampScenePermille(SCENE_PERMILLE_SCALE - shrinkAmountPermille),
+    });
+  }
+  const edges = new Map<string, CondenseEdgeResolution>();
+  for (const edge of scene.edges) {
+    const endpointPeripherality = (requiredPeripherality(peripheralityById, edge.source) + requiredPeripherality(peripheralityById, edge.target)) / 2;
+    const opacityPermille = clampScenePermille(SCENE_PERMILLE_SCALE - Math.round(envelopeCeilingPermille * endpointPeripherality));
+    edges.set(edge.id, { opacityPermille, revealPermille: opacityPermille });
+  }
+  return { nodes, edges };
+}
+
+/** This is the plain, unweighted average position of every node this scene is about to draw, asserting no topology of its own. */
+function nodeCentroid(nodes: readonly SceneNode[]): Coordinates {
+  const x = nodes.reduce((total, node) => total + node.position.x, 0) / nodes.length;
+  const y = nodes.reduce((total, node) => total + node.position.y, 0) / nodes.length;
+  return { x, y, z: 0 };
+}
+
+function clampScenePermille(value: number): number {
+  return Math.min(SCENE_PERMILLE_SCALE, Math.max(0, value));
+}
+
+function requiredDistance(distanceById: ReadonlyMap<string, number>, id: string): number {
+  const distance = distanceById.get(id);
+  if (distance === undefined) {
+    throw new TypeError(`condense geometry is missing a resolved distance for node: ${id}`);
+  }
+  return distance;
+}
+
+function requiredPeripherality(peripheralityById: ReadonlyMap<string, number>, id: string): number {
+  const peripherality = peripheralityById.get(id);
+  if (peripherality === undefined) {
+    throw new TypeError(`condense geometry is missing a resolved peripherality for node: ${id}`);
+  }
+  return peripherality;
 }
 
 function motionFactor(valuePermille: number): number {

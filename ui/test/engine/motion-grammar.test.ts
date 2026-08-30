@@ -33,6 +33,7 @@ function identityCheck(modulation: MotionModulation): void {
     assert.equal(node.scalePermille, 1000, node.id);
     assert.equal(node.offsetXPermille, 0, node.id);
     assert.equal(node.offsetYPermille, 0, node.id);
+    assert.equal(node.convergencePermille, 0, node.id);
   }
   for (const edge of modulation.edges) {
     assert.equal(edge.opacityPermille, 1000, edge.id);
@@ -71,7 +72,7 @@ test("identity invariant: the modulated id sets equal the input id sets exactly,
 
 test("identity invariant negative control: assertMotionModulationKeying refuses a fabricated extra node id", () => {
   const real = motionModulation(ASSEMBLE, 0.5, ELEMENT_IDS);
-  const fabricated: MotionModulation = { ...real, nodes: [...real.nodes, { id: "node:ghost", opacityPermille: 1000, scalePermille: 1000, offsetXPermille: 0, offsetYPermille: 0 }] };
+  const fabricated: MotionModulation = { ...real, nodes: [...real.nodes, { id: "node:ghost", opacityPermille: 1000, scalePermille: 1000, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 }] };
   assert.throws(() => assertMotionModulationKeying(ELEMENT_IDS, fabricated), /modulation ids do not match the input keying exactly/);
 });
 
@@ -196,11 +197,41 @@ test("Reconfigure never omits and, unlike Pulse, actually displaces position awa
   assert.ok(pulseSamePhase.nodes.every((node) => node.offsetXPermille === 0 && node.offsetYPermille === 0));
 });
 
-test("Condense never repositions: offsets stay zero throughout while opacity and scale change", () => {
+test("Condense never repositions at the axis level: offsetX/offsetY stay zero throughout, even though it now declares a convergence fraction", () => {
   for (const phase of SAMPLE_PHASES) {
     const modulation = motionModulation(CONDENSE, phase, ELEMENT_IDS);
     assert.ok(modulation.nodes.every((node) => node.offsetXPermille === 0 && node.offsetYPermille === 0), `Condense moved a node at phase ${phase}`);
   }
+});
+
+test("Condense declares a nonzero, uniform convergence fraction away from its resting phase, and every other policy holds it at zero", () => {
+  const midCycle = motionModulation(CONDENSE, 0.5, ELEMENT_IDS);
+  assert.ok(midCycle.nodes.every((node) => node.convergencePermille > 0), "Condense at its own envelope peak left some node's convergence at zero");
+  const distinctValues = new Set(midCycle.nodes.map((node) => node.convergencePermille));
+  assert.equal(distinctValues.size, 1, "Condense's own convergence fraction is meant to be position-blind (uniform across nodes), but varied by id");
+  for (const policy of MOTION_GRAMMARS) {
+    if (policy === CONDENSE) {
+      continue;
+    }
+    for (const phase of SAMPLE_PHASES) {
+      const modulation = motionModulation(policy, phase, ELEMENT_IDS);
+      assert.ok(modulation.nodes.every((node) => node.convergencePermille === 0), `${policy}@${phase} unexpectedly declared a nonzero convergence fraction`);
+    }
+  }
+});
+
+test("Condense's own convergence fraction rises and falls with its single-hump envelope: zero at both ends of the phase domain, positive at the midpoint", () => {
+  assert.ok(motionModulation(CONDENSE, 0, ELEMENT_IDS).nodes.every((node) => node.convergencePermille === 0));
+  assert.ok(motionModulation(CONDENSE, 1, ELEMENT_IDS).nodes.every((node) => node.convergencePermille === 0));
+  const quarterNode = motionModulation(CONDENSE, 0.25, ELEMENT_IDS).nodes[0];
+  const halfNode = motionModulation(CONDENSE, 0.5, ELEMENT_IDS).nodes[0];
+  if (quarterNode === undefined || halfNode === undefined) {
+    throw new TypeError("motion-grammar test fixture requires at least one node");
+  }
+  assert.ok(
+    quarterNode.convergencePermille > 0 && quarterNode.convergencePermille < halfNode.convergencePermille,
+    `expected 0 < convergence(0.25)=${quarterNode.convergencePermille} < convergence(0.5)=${halfNode.convergencePermille}`,
+  );
 });
 
 test("motion-grammar formulas stay within their own declared channel ranges", () => {
@@ -212,6 +243,7 @@ test("motion-grammar formulas stay within their own declared channel ranges", ()
         assert.ok(node.scalePermille >= 0 && node.scalePermille <= 2000, `${policy}@${phase} node scale out of range`);
         assert.ok(node.offsetXPermille >= -1000 && node.offsetXPermille <= 1000, `${policy}@${phase} node offsetX out of range`);
         assert.ok(node.offsetYPermille >= -1000 && node.offsetYPermille <= 1000, `${policy}@${phase} node offsetY out of range`);
+        assert.ok(node.convergencePermille >= 0 && node.convergencePermille <= 1000, `${policy}@${phase} node convergence out of range`);
       }
       for (const edge of modulation.edges) {
         assert.ok(edge.opacityPermille >= 0 && edge.opacityPermille <= 1000, `${policy}@${phase} edge opacity out of range`);

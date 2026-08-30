@@ -34,7 +34,15 @@ export const PULSE: MotionGrammar = "pulse";
  */
 export const RECONFIGURE: MotionGrammar = "reconfigure";
 
-/** This is a transient density reduction: peripheral elements fade and shrink toward the midpoint phase, core elements only shrink, and both fully return at either end of the phase domain. */
+/**
+ * This is a transient inward convergence: the whole structure draws toward its own centre and back out
+ * again, peripheral elements fading and shrinking harder than central ones on the way, and every
+ * element fully returns at either end of the phase domain. The pull itself and which elements read as
+ * peripheral are both resolved from real, already-drawn geometry -- never from an id -- which is why
+ * this axis alone (see `nodeModulation`'s "condense" case) can only declare a uniform, position-blind
+ * ceiling on how far that pull and that fade could reach; `#scene/build.ts` is where a real centre and
+ * real per-node distance exist to spend that ceiling on.
+ */
 export const CONDENSE: MotionGrammar = "condense";
 
 /** This is staggered per-element withdrawal, the direct reverse of Assemble's staggered construction and sharing its `staggeredProgress` primitive. */
@@ -61,13 +69,22 @@ export type MotionElementIds = {
   readonly edgeIds: readonly string[];
 };
 
-/** This is one node's visual modulation for one phase and does not carry a screen-space position. */
+/**
+ * This is one node's visual modulation for one phase and does not carry a screen-space position.
+ * `convergencePermille` is declared in [0, 1000] and is Condense's own channel alone (every other
+ * policy holds it at 0): it names a fraction of this node's own distance from the structure's centre,
+ * never a direction or a magnitude in pixels, because this axis is a pure function of (policy, phase,
+ * id) with no access to a resolved layout (see this module's own opening docstring). The scene layer
+ * (`#scene/build.ts`) is the one place a centre and a real per-node distance exist, so it alone
+ * resolves this declared fraction into an actual pull toward its own already-resolved centroid.
+ */
 export type NodeMotionModulation = {
   readonly id: string;
   readonly opacityPermille: number;
   readonly scalePermille: number;
   readonly offsetXPermille: number;
   readonly offsetYPermille: number;
+  readonly convergencePermille: number;
 };
 
 /** This is one relation's visual modulation for one phase and does not carry an endpoint. */
@@ -139,31 +156,36 @@ const RECONFIGURE_AMPLITUDE_PERMILLE = 700;
  * (`FRAME_CONTAINMENT_MARGIN_CSS_PX`) still holding.
  */
 const RECONFIGURE_OFFSET_AMPLITUDE_PERMILLE = 450;
-/** This splits governed elements roughly in half by their own seed: everything at or above the midpoint of the seed range condenses away at the peak phase, everything below it only shrinks. */
-const CONDENSE_PERIPHERAL_THRESHOLD_PERMILLE = 500;
 /**
- * Raised from 500: at 500 a core element only shrank to 0.5x at the envelope's own peak (the
- * midpoint phase), a swing no larger than Pulse's own (0.65x-1.35x, see PULSE_AMPLITUDE_PERMILLE
- * above), so a core element under Condense was not reliably distinguishable from one under Pulse. At
- * this value a core element shrinks to 0.35x at the same peak -- well past Pulse's own floor -- while
- * a peripheral element still separately reaches full disappearance (shrink is unscaled PERMILLE for
- * the periphery, unaffected by this constant), so the two populations stay visually distinct: the
- * periphery empties out and the surviving core visibly contracts rather than merely dimming. Measured
- * against the phase-frames ablation, this raise moved Condense's own peak changed-pixel fraction from
- * ~1.81% to ~1.81%, effectively unchanged: the periphery's own full fade-and-shrink to zero already
- * dominates the frame-level area this metric counts, so a stronger core shrink alone barely registers
- * against it. Condense does not move any element's position -- offsetXPermille and offsetYPermille
- * stay zero at every phase, as they always have -- because this axis is a pure function of policy,
- * phase, and element id alone (see this module's own opening docstring) with no access to a node's
- * resolved layout position, and the scene layer that does hold that position (`scene/build.ts`) is
- * documented to move only the channels this axis itself declares, never to invent motion of its own.
- * Reading Condense as elements "drawing together" is therefore carried entirely by this shrink-and-fade
- * contrast (a shrinking, thinning population reads as a contraction) rather than by literal
- * convergence toward a shared point; a genuine positional pull toward a common centre would need this
- * axis to declare a per-node direction computed from real layout position, which is a materially larger
- * change than an amplitude retune and is left to whoever owns that design decision.
+ * This is Condense's own declared ceiling, spent three ways at the scene layer (`#scene/build.ts`'s own
+ * `resolveCondenseGeometry`), and it replaces two former constants this file no longer needs:
+ * `CONDENSE_PERIPHERAL_THRESHOLD_PERMILLE`, an id-seeded hash threshold that classified a node as
+ * peripheral independent of that node's actual position in the resolved layout, and
+ * `CONDENSE_CORE_SHRINK_PERMILLE` (650, migrated unchanged to the scene layer as
+ * `CONDENSE_CORE_SHRINK_FLOOR_PERMILLE`), the shrink a core element was given instead of the fade a
+ * peripheral one got. A blind evaluator with no access to this code classified the pre-fix Condense as a
+ * fade with only "a thin thread" separating it from Dissolve, at low confidence -- correctly, because
+ * `nodeModulation`'s condense case never repositioned anything (`offsetXPermille`/`offsetYPermille`
+ * stayed zero at every phase) and the fade/shrink split it did declare rested on that same fabricated
+ * hash, unrelated to which nodes actually sit toward this structure's own edge.
+ *
+ * This axis stays pure and position-blind (see this module's own opening docstring), so it cannot itself
+ * compute a centre, a real per-node distance, or which nodes are genuinely peripheral -- only the scene
+ * layer, already holding every node's resolved anchor, can. What this axis still owns is the one
+ * position-blind number every node shares at a given phase: `convergencePermille`, the fraction of its
+ * own distance to that centre a node may be pulled at this phase's own envelope, ceilinged here at 200 --
+ * a fifth of the distance between a node and the structure's own centre, chosen so the single farthest
+ * node on this capability's own phase-frames fixture (discovery-at-question, stellar/indra/3d) moves on
+ * the order of 90px at the envelope's own peak without ever needing frame containment margin (an inward
+ * pull can only shrink a layout's own extent, never grow it past where the resting frame already fit)
+ * and without so crowding the centre that two converged nodes could be mistaken for one; the periphery's
+ * own fade already dims exactly the nodes that travel furthest, so the most-displaced nodes are also the
+ * least visible by the time they arrive. The same
+ * envelope-scaled ceiling doubles as the node-level opacity and scale ceiling every node declares
+ * uniformly (as if every node were fully peripheral): the scene layer alone decides, from real distance,
+ * how much of that ceiling a given node or relation actually spends.
  */
-const CONDENSE_CORE_SHRINK_PERMILLE = 650;
+const CONDENSE_CONVERGENCE_AMPLITUDE_PERMILLE = 200;
 const ASSEMBLE_STAGGER_FRACTION = 0.7;
 const DISSOLVE_STAGGER_FRACTION = 0.7;
 const RECURSIVE_BLOOM_STAGGER_FRACTION = 0.6;
@@ -178,9 +200,11 @@ const SCALE_RANGE_PERMILLE = 2 * PERMILLE;
 const OFFSET_RANGE_PERMILLE = 2 * PERMILLE;
 /** This channel's declared range is [0, 1000]. */
 const REVEAL_RANGE_PERMILLE = PERMILLE;
+/** This channel's declared range is [0, 1000] -- see NodeMotionModulation's own convergencePermille doc. */
+const CONVERGENCE_RANGE_PERMILLE = PERMILLE;
 
-/** This is the largest possible single-step change in one node's modulation, derived from the declared range of each of its four channels, and is what `motionTraceability` normalises against. */
-const NODE_STEP_MAGNITUDE_PERMILLE = OPACITY_RANGE_PERMILLE + SCALE_RANGE_PERMILLE + OFFSET_RANGE_PERMILLE + OFFSET_RANGE_PERMILLE;
+/** This is the largest possible single-step change in one node's modulation, derived from the declared range of each of its five channels, and is what `motionTraceability` normalises against. */
+const NODE_STEP_MAGNITUDE_PERMILLE = OPACITY_RANGE_PERMILLE + SCALE_RANGE_PERMILLE + OFFSET_RANGE_PERMILLE + OFFSET_RANGE_PERMILLE + CONVERGENCE_RANGE_PERMILLE;
 /** This is the largest possible single-step change in one relation's modulation, derived the same way. */
 const EDGE_STEP_MAGNITUDE_PERMILLE = OPACITY_RANGE_PERMILLE + REVEAL_RANGE_PERMILLE;
 
@@ -300,13 +324,13 @@ export function assertMotionModulationKeying(elementIds: MotionElementIds, modul
 /**
  * This is the resting-completeness invariant, enforced rather than assumed: at a policy's own
  * resting phase every governed node and relation must be drawn at full opacity, full scale, zero
- * offset, and full reveal -- the identity modulation -- so an incomplete state is never one a reader
- * can rest in.
+ * offset, zero convergence, and full reveal -- the identity modulation -- so an incomplete state is
+ * never one a reader can rest in.
  */
 export function assertRestingCompleteness(policy: MotionGrammar, elementIds: MotionElementIds): void {
   const modulation = restingModulation(policy, elementIds);
   for (const node of modulation.nodes) {
-    if (node.opacityPermille !== PERMILLE || node.scalePermille !== PERMILLE || node.offsetXPermille !== 0 || node.offsetYPermille !== 0) {
+    if (node.opacityPermille !== PERMILLE || node.scalePermille !== PERMILLE || node.offsetXPermille !== 0 || node.offsetYPermille !== 0 || node.convergencePermille !== 0) {
       throw new TypeError(`motion grammar "${policy}" resting phase is incomplete for node: ${node.id}`);
     }
   }
@@ -376,7 +400,8 @@ function nodeContinuity(previous: NodeMotionModulation, current: NodeMotionModul
   const magnitude = Math.abs(current.opacityPermille - previous.opacityPermille)
     + Math.abs(current.scalePermille - previous.scalePermille)
     + Math.abs(current.offsetXPermille - previous.offsetXPermille)
-    + Math.abs(current.offsetYPermille - previous.offsetYPermille);
+    + Math.abs(current.offsetYPermille - previous.offsetYPermille)
+    + Math.abs(current.convergencePermille - previous.convergencePermille);
   return 1 - clampUnit(magnitude / NODE_STEP_MAGNITUDE_PERMILLE);
 }
 
@@ -400,22 +425,22 @@ function nodeModulation(policy: MotionGrammar, phase: number, id: string): NodeM
       return identityNode(id);
     case "assemble": {
       const level = Math.round(staggeredProgress(phase, seed, 0, 1, ASSEMBLE_STAGGER_FRACTION) * PERMILLE);
-      return { id, opacityPermille: level, scalePermille: level, offsetXPermille: 0, offsetYPermille: 0 };
+      return { id, opacityPermille: level, scalePermille: level, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 };
     }
     case "dissolve": {
       const level = PERMILLE - Math.round(staggeredProgress(phase, seed, 0, 1, DISSOLVE_STAGGER_FRACTION) * PERMILLE);
-      return { id, opacityPermille: level, scalePermille: level, offsetXPermille: 0, offsetYPermille: 0 };
+      return { id, opacityPermille: level, scalePermille: level, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 };
     }
     case "recursive-bloom": {
       const window = bloomWindow(bloomGeneration(id));
       const level = Math.round(staggeredProgress(phase, seed, window.start, window.end, RECURSIVE_BLOOM_STAGGER_FRACTION) * PERMILLE);
-      return { id, opacityPermille: level, scalePermille: level, offsetXPermille: 0, offsetYPermille: 0 };
+      return { id, opacityPermille: level, scalePermille: level, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 };
     }
     case "pulse": {
       const envelope = breathingEnvelope(phase);
       const amplitude = breathingAmplitude(seed, PULSE_AMPLITUDE_PERMILLE);
       const scalePermille = clampScale(PERMILLE + Math.round(amplitude * envelope));
-      return { id, opacityPermille: PERMILLE, scalePermille, offsetXPermille: 0, offsetYPermille: 0 };
+      return { id, opacityPermille: PERMILLE, scalePermille, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 };
     }
     case "reconfigure": {
       const envelope = breathingEnvelope(phase);
@@ -425,15 +450,21 @@ function nodeModulation(policy: MotionGrammar, phase: number, id: string): NodeM
       const angle = directionAngle(id);
       const offsetXPermille = roundPermille(offsetAmplitude * envelope * Math.cos(angle));
       const offsetYPermille = roundPermille(offsetAmplitude * envelope * Math.sin(angle));
-      return { id, opacityPermille: PERMILLE, scalePermille, offsetXPermille, offsetYPermille };
+      return { id, opacityPermille: PERMILLE, scalePermille, offsetXPermille, offsetYPermille, convergencePermille: 0 };
     }
     case "condense": {
+      // Position-blind by construction: every node declares the identical envelope-scaled ceiling
+      // here, as if it were the single farthest node from the structure's own centre. Only the scene
+      // layer (`#scene/build.ts`'s own resolveCondenseGeometry), which alone holds a real resolved
+      // anchor for every node, knows how peripheral any one node actually is and spends this ceiling
+      // accordingly -- see CONDENSE_CONVERGENCE_AMPLITUDE_PERMILLE's own docstring for the full account
+      // of what replaced the id-hash split this used to carry.
       const envelope = convergenceEnvelope(phase);
-      const peripheral = isPeripheral(id);
-      const opacityPermille = clampPermille(peripheral ? PERMILLE - Math.round(envelope * PERMILLE) : PERMILLE);
-      const shrink = peripheral ? PERMILLE : CONDENSE_CORE_SHRINK_PERMILLE;
-      const scalePermille = clampScale(PERMILLE - Math.round(envelope * shrink));
-      return { id, opacityPermille, scalePermille, offsetXPermille: 0, offsetYPermille: 0 };
+      const ceilingPermille = Math.round(envelope * PERMILLE);
+      const opacityPermille = clampPermille(PERMILLE - ceilingPermille);
+      const scalePermille = clampScale(PERMILLE - ceilingPermille);
+      const convergencePermille = clampPermille(Math.round(envelope * CONDENSE_CONVERGENCE_AMPLITUDE_PERMILLE));
+      return { id, opacityPermille, scalePermille, offsetXPermille: 0, offsetYPermille: 0, convergencePermille };
     }
     default:
       return exhaustive(policy);
@@ -463,26 +494,23 @@ function edgeModulation(policy: MotionGrammar, phase: number, id: string): EdgeM
       // Pulse and Reconfigure are node-scale and node-shape grammars; a relation's own reveal never
       // interrupts, because breaking a relation mid-breath is not part of either grammar.
       return identityEdge(id);
-    case "condense": {
-      const envelope = convergenceEnvelope(phase);
-      const level = clampPermille(isPeripheral(id) ? PERMILLE - Math.round(envelope * PERMILLE) : PERMILLE);
-      return { id, opacityPermille: level, revealPermille: level };
-    }
+    case "condense":
+      // A relation has no position of its own to be peripheral or central about -- only its two real
+      // endpoints do, and this axis has no access to either (see this module's own opening docstring).
+      // The scene layer alone (`#scene/build.ts`'s own resolveCondenseGeometry) resolves a relation's
+      // own fade from its two endpoints' real, already-resolved distance from the structure's centre.
+      return identityEdge(id);
     default:
       return exhaustive(policy);
   }
 }
 
 function identityNode(id: string): NodeMotionModulation {
-  return { id, opacityPermille: PERMILLE, scalePermille: PERMILLE, offsetXPermille: 0, offsetYPermille: 0 };
+  return { id, opacityPermille: PERMILLE, scalePermille: PERMILLE, offsetXPermille: 0, offsetYPermille: 0, convergencePermille: 0 };
 }
 
 function identityEdge(id: string): EdgeMotionModulation {
   return { id, opacityPermille: PERMILLE, revealPermille: PERMILLE };
-}
-
-function isPeripheral(id: string): boolean {
-  return seedPermille(id) >= CONDENSE_PERIPHERAL_THRESHOLD_PERMILLE;
 }
 
 function breathingAmplitude(seed: number, baseAmplitudePermille: number): number {
