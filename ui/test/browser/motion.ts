@@ -9,11 +9,13 @@ import { restingPhase } from "#engine/motion-grammar.ts";
 import type { MotionGrammar } from "#engine/motion-grammar.ts";
 import { indraLayout } from "#engine/organization.ts";
 import type { Organization } from "#engine/organization.ts";
-import type { ScaleTopology } from "#engine/scale-topology.ts";
+import type { ScaleNavigationPath, ScaleTopology } from "#engine/scale-topology.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
 import type { RenderOptions } from "#render2d/model.ts";
-import { cameraStateForBounds } from "#render3f/camera.tsx";
+import { cameraStateForBounds, resolvedNodeBounds } from "#render3f/camera.tsx";
+import type { Render3fFramingBox } from "#render3f/camera.tsx";
+import type { Coordinates } from "#engine/contract.ts";
 import { mount } from "#render3f/mount.tsx";
 import type { Render3fRendererHandle } from "#render3f/mount.tsx";
 import { shippingDarkFieldCss } from "#browser/lit-floor.ts";
@@ -51,6 +53,25 @@ export type MotionCaptureRequest = {
    */
   readonly nodeIds?: readonly string[];
   readonly edgeIds?: readonly string[];
+  /**
+   * Passed straight through to `mount()`'s own `navigationPath` option (`Render3fOptions.navigationPath`,
+   * see `ui/src/render3f/mount.tsx`): the governed scale-topology position `#scene/build.ts`'s own
+   * `buildScene` resolves down to a rendered subgraph. Mutually exclusive with `nodeIds`/`edgeIds` --
+   * those pre-filter the graph in this harness before it ever reaches `mount()`; this instead hands
+   * `mount()` the full prepared graph and lets the production `buildScene` call chain decide what is
+   * drawn, exactly as a real caller would. Requires `scaleTopology` to name the same policy.
+   */
+  readonly navigationPath?: ScaleNavigationPath;
+  /**
+   * When present, this capture's camera is driven directly by this value instead of being refit from
+   * this capture's own rendered anchors (the `marginedAnchorBounds` refit below, applied whenever
+   * `navigationPath` is set and this is omitted). The intended source is another capture's own
+   * `MotionCaptureWitness.visualState.camera` -- itself read off that renderer's `readCameraState()`
+   * (see mount.tsx) -- fed here as this capture's input, an observed output made an input rather than
+   * anything recomputed. Requires `navigationPath`; mutually exclusive with `nodeIds`/`edgeIds` for the
+   * same reason `navigationPath` itself is.
+   */
+  readonly sharedCamera?: VisualStateCamera;
   /** A render input passed to `mount()`'s own `phase` option, never to VisualState. Omitted, the mount renders at the policy's own resting phase. */
   readonly phase?: number;
   /** Defaults to this page's own shipping default (`true`) when omitted, matching every prior capture request's behaviour. Set false to let a requested `phase` actually take effect. */
@@ -155,10 +176,22 @@ export async function installMotionPage(): Promise<void> {
       if ((request.nodeIds === undefined) !== (request.edgeIds === undefined)) {
         throw new Error("motion capture requires both nodeIds and edgeIds to project a child world, not one alone");
       }
-      const renderedGraph = request.nodeIds !== undefined && request.edgeIds !== undefined
+      if (request.navigationPath !== undefined && (request.nodeIds !== undefined || request.edgeIds !== undefined)) {
+        throw new Error("motion capture cannot combine navigationPath with an explicit nodeIds/edgeIds projection");
+      }
+      if (request.sharedCamera !== undefined && request.navigationPath === undefined) {
+        throw new Error("motion capture requires navigationPath to drive a sharedCamera");
+      }
+      // navigationPath is never applied here: the whole point of threading it through is that
+      // #scene/build.ts's own buildScene (reached via mount()) resolves it against the full prepared
+      // graph, exactly as a real caller would. nodeIds/edgeIds remain this harness's own pre-filter,
+      // used only when no navigationPath is given.
+      const renderedGraph = request.navigationPath === undefined && request.nodeIds !== undefined && request.edgeIds !== undefined
         ? projectVisualGraph(graph, request.nodeIds, request.edgeIds)
         : graph;
-      const camera = renderedGraph === graph ? fixtureCamera : cameraFor(renderedGraph);
+      const camera = request.sharedCamera !== undefined
+        ? request.sharedCamera
+        : renderedGraph === graph ? fixtureCamera : cameraFor(renderedGraph);
       const reducedMotion = request.reducedMotion ?? CAPTURE_OPTIONS.reducedMotion;
       const visualState = createVisualState(renderedGraph, {
         selectedId: null,
@@ -183,13 +216,35 @@ export async function installMotionPage(): Promise<void> {
           morphology: request.morphology,
           organization: request.organization,
           ...(request.phase === undefined ? {} : { phase: request.phase }),
+          ...(request.navigationPath === undefined ? {} : { navigationPath: request.navigationPath }),
         },
         undefined,
         visualState,
       );
       await settle();
+      // navigationPath's own render input narrows what buildScene draws below the graph this harness
+      // handed to mount() (`renderedGraph`, the full prepared fixture): `visualState.camera` above was
+      // framed against that wider extent, the same rough starting point mount.tsx's own bounds probe
+      // would use before a drawn frame exists. This refines it against the MOUNTED, already-navigated
+      // scene's own resolved anchors, using the identical two functions mount.tsx's own bounds probe
+      // calls (`resolvedNodeBounds`, `cameraStateForBounds`) rather than a second projection computed
+      // here -- the navigated node set is never recomputed, only its already-mounted positions are read.
+      let expectedState = visualState;
+      if (request.navigationPath !== undefined && request.sharedCamera === undefined) {
+        const anchors = mounted.readWorldAnchorWitnesses();
+        if (anchors.length === 0) {
+          throw new Error(`motion ${request.morphology}/${request.organization}/${request.projection}/${request.motionGrammar} navigationPath rendered no anchors to frame`);
+        }
+        mounted.restoreCameraState(cameraStateForBounds(marginedAnchorBounds(anchors.map((anchor) => anchor.position))));
+        expectedState = createVisualState(renderedGraph, { ...visualState, camera: mounted.readCameraState() });
+        await settle();
+      }
+      // request.sharedCamera !== undefined: the mount above was already seeded (via `visualState.camera`
+      // passed as mount()'s own `initialVisualState`) with the caller-supplied camera, so there is
+      // nothing to refit here -- `expectedState` stays `visualState` and the camera this capture
+      // renders with is exactly the one the caller handed in, unperturbed by this capture's own content.
       const observed = mounted.readVisualState();
-      if (JSON.stringify(observed) !== JSON.stringify(visualState)) {
+      if (JSON.stringify(observed) !== JSON.stringify(expectedState)) {
         throw new Error(`motion ${request.morphology}/${request.organization}/${request.projection}/${request.motionGrammar} did not retain the prepared VisualState`);
       }
       const surface = mounted.readSurfaceWitness();
@@ -236,6 +291,27 @@ function cameraFor(graph: VisualGraph): VisualStateCamera {
     x: extentWithMargin(resolvedPoints.map((point) => point.x)),
     y: extentWithMargin(resolvedPoints.map((point) => point.y)),
   });
+}
+
+/**
+ * `resolvedNodeBounds` fits node CENTRES with no margin, which is right for mount.tsx's own probe
+ * (it only seeds a camera that interaction then moves) but wrong for a capture: the outermost nodes
+ * would sit half outside the frame, and the changed-pixel measurements below would be partly a
+ * measurement of clipped geometry. This pads that fit with the same `framingMarginPermille` every
+ * other capture in this evidence corpus uses, so a navigated frame is comparable to a root frame.
+ */
+function marginedAnchorBounds(points: readonly Coordinates[]): Render3fFramingBox {
+  const fitted = resolvedNodeBounds(points);
+  return {
+    x: paddedExtent(fitted.x),
+    y: paddedExtent(fitted.y),
+  };
+}
+
+function paddedExtent(extent: readonly [number, number]): readonly [number, number] {
+  const span = extent[1] - extent[0];
+  const margin = span === 0 ? 1 : (span * DEFAULT_CALIBRATION.layout.framingMarginPermille) / 1_000;
+  return [extent[0] - margin, extent[1] + margin];
 }
 
 function extentWithMargin(values: readonly number[]): readonly [number, number] {

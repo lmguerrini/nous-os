@@ -67,6 +67,8 @@ type Level = {
   readonly index: number;
   readonly label: "root" | ChildWorld["kind"];
   readonly world: ChildWorld | null;
+  /** Undefined at the canonical root (rendering there never navigates); present and equal to the prefix of the owning walk up to and including this level everywhere else. */
+  readonly navigationPath: ScaleNavigationPath | undefined;
 };
 
 type CaptureRecord = {
@@ -223,7 +225,8 @@ test("governed scale-topology ablation", async ({ page }, testInfo) => {
   const atomicRefusesContainment = refusalRecord(graph, containmentRootId, ATOMIC);
   const atomicRefusesNeighbourhood = refusalRecord(graph, nonAggregateRootId, ATOMIC);
   const hierarchicalMemberId = firstNonRootId(containmentWorld);
-  const hierarchicalRefusesNeighbourhood = refusalRecord(graph, hierarchicalMemberId, HIERARCHICAL, pathThroughContainment(graph, containmentRootId));
+  const hierarchicalPath = pathThroughContainment(graph, containmentRootId);
+  const hierarchicalRefusesNeighbourhood = refusalRecord(graph, hierarchicalMemberId, HIERARCHICAL, hierarchicalPath);
 
   const holographicLevels: HolographicLevelRecord[] = [];
   let holographicPath = rootNavigationPath(HOLOGRAPHIC);
@@ -258,16 +261,16 @@ test("governed scale-topology ablation", async ({ page }, testInfo) => {
 
     const isolateCaptures = await captureComparison(page, "isolate", FLAT, [
       { policy: ATOMIC, levels: [rootLevel()] },
-      { policy: HIERARCHICAL, levels: [rootLevel(), level(1, containmentWorld)] },
-      { policy: RECURSIVE, levels: [rootLevel(), ...recursiveWalk.path.worlds.map((world, index) => level(index + 1, world))] },
-      { policy: HOLOGRAPHIC, levels: [rootLevel(), ...holographicWalk.path.worlds.map((world, index) => level(index + 1, world))] },
+      { policy: HIERARCHICAL, levels: [rootLevel(), ...walkLevels(HIERARCHICAL, hierarchicalPath)] },
+      { policy: RECURSIVE, levels: [rootLevel(), ...walkLevels(RECURSIVE, recursiveWalk.path)] },
+      { policy: HOLOGRAPHIC, levels: [rootLevel(), ...walkLevels(HOLOGRAPHIC, holographicWalk.path)] },
     ], canonicalNodeIds, canonicalEdgeIds);
     captures.push(...isolateCaptures);
 
     const composeCaptures = await captureComparison(page, "compose", INDRA, [
       { policy: ATOMIC, levels: [rootLevel()] },
-      { policy: RECURSIVE, levels: [rootLevel(), ...recursiveWalk.path.worlds.map((world, index) => level(index + 1, world))] },
-      { policy: HOLOGRAPHIC, levels: [rootLevel(), ...holographicWalk.path.worlds.map((world, index) => level(index + 1, world))] },
+      { policy: RECURSIVE, levels: [rootLevel(), ...walkLevels(RECURSIVE, recursiveWalk.path)] },
+      { policy: HOLOGRAPHIC, levels: [rootLevel(), ...walkLevels(HOLOGRAPHIC, holographicWalk.path)] },
     ], canonicalNodeIds, canonicalEdgeIds);
     captures.push(...composeCaptures);
 
@@ -292,8 +295,8 @@ test("governed scale-topology ablation", async ({ page }, testInfo) => {
       throw new Error("scale-topology transfer comparison requires a reached holographic level");
     }
     const transferLevelIndex = holographicWalk.path.worlds.length;
-    const transfer2d = await requestCapture(page, "transfer", HOLOGRAPHIC, INDRA, "2d", transferLevelIndex, deepestHolographicWorld);
-    const transfer3d = await requestCapture(page, "transfer", HOLOGRAPHIC, INDRA, "3d", transferLevelIndex, deepestHolographicWorld);
+    const transfer2d = await requestCapture(page, "transfer", HOLOGRAPHIC, INDRA, "2d", transferLevelIndex, deepestHolographicWorld, holographicWalk.path, canonicalNodeIds, canonicalEdgeIds);
+    const transfer3d = await requestCapture(page, "transfer", HOLOGRAPHIC, INDRA, "3d", transferLevelIndex, deepestHolographicWorld, holographicWalk.path, canonicalNodeIds, canonicalEdgeIds);
     captures.push(transfer2d, transfer3d);
     if (transfer2d.cameraKind !== "orthographic" || transfer3d.cameraKind !== "perspective") {
       throw new Error("scale-topology transfer comparison did not resolve the two declared camera kinds");
@@ -552,11 +555,21 @@ function failedControlOutput(operation: () => void): string {
 // ---------------------------------------------------------------------------------------------
 
 function rootLevel(): Level {
-  return { index: 0, label: "root", world: null };
+  return { index: 0, label: "root", world: null, navigationPath: undefined };
 }
 
-function level(index: number, world: ChildWorld): Level {
-  return { index, label: world.kind, world };
+function level(index: number, world: ChildWorld, navigationPath: ScaleNavigationPath): Level {
+  return { index, label: world.kind, world, navigationPath };
+}
+
+/**
+ * This turns one already-built walk (the full `ScaleNavigationPath` a real caller would have reached
+ * by repeatedly entering child worlds) into the ordered sequence of `Level`s a comparison renders: the
+ * one-world-deeper prefix at each step, never a fabricated one. `mount()`'s own
+ * `Render3fOptions.navigationPath` receives exactly this prefix per level, unchanged.
+ */
+function walkLevels(policy: ScaleTopology, path: ScaleNavigationPath): readonly Level[] {
+  return path.worlds.map((world, index) => level(index + 1, world, { policy, worlds: path.worlds.slice(0, index + 1) }));
 }
 
 async function captureComparison(
@@ -570,15 +583,24 @@ async function captureComparison(
   const records: CaptureRecord[] = [];
   for (const { policy, levels } of policies) {
     for (const lvl of levels) {
-      const nodeIds = lvl.world?.nodeIds ?? canonicalNodeIds;
-      const edgeIds = lvl.world?.edgeIds ?? canonicalEdgeIds;
-      const record = await requestCapture(page, comparison, policy, organization, "2d", lvl.index, lvl.world, nodeIds, edgeIds);
+      const record = await requestCapture(page, comparison, policy, organization, "2d", lvl.index, lvl.world, lvl.navigationPath, canonicalNodeIds, canonicalEdgeIds);
       records.push(record);
     }
   }
   return records;
 }
 
+/**
+ * This mounts one governed position (the canonical root, or a real navigated world at `navigationPath`)
+ * and does not compute a node/relation id set of its own: `mount()`'s own `Render3fOptions.navigationPath`
+ * (`ui/src/render3f/mount.tsx`) carries the position through to `buildScene`, which alone resolves it
+ * (see `#scene/build.ts`'s own `resolveScaleNavigationGraph`). The witness check below distinguishes
+ * exactly what that resolution promises per policy: the canonical root always renders the full graph;
+ * Hierarchical and Recursive render exactly `world`'s own id set; Holographic renders `world`'s own id
+ * set plus whatever real preserved-context content `resolveScaleNavigationGraph` adds on top -- so this
+ * checks Holographic is a superset of `world`, never an exact match, and the actual rendered ids
+ * (possibly wider than `world`'s) are what gets recorded onto the returned `CaptureRecord`.
+ */
 async function requestCapture(
   page: Page,
   comparison: "isolate" | "compose" | "transfer",
@@ -587,18 +609,16 @@ async function requestCapture(
   projection: "2d" | "3d",
   levelIndex: number,
   world: ChildWorld | null,
-  nodeIdsOverride?: readonly string[],
-  edgeIdsOverride?: readonly string[],
+  navigationPath: ScaleNavigationPath | undefined,
+  canonicalNodeIds: readonly string[],
+  canonicalEdgeIds: readonly string[],
 ): Promise<CaptureRecord> {
-  const nodeIds = nodeIdsOverride ?? world?.nodeIds ?? [];
-  const edgeIds = edgeIdsOverride ?? world?.edgeIds ?? [];
   const request: ScaleTopologyCaptureRequest = {
-    nodeIds,
-    edgeIds,
     morphology: MORPHOLOGY,
     organization,
     projection,
     scaleTopology: policy,
+    ...(navigationPath === undefined ? {} : { navigationPath }),
   };
   const witness = await invokeCapture(page, request);
   const fileName = `${comparison}-${policy}-${organization}-${projection}-level${levelIndex}.png`;
@@ -608,8 +628,23 @@ async function requestCapture(
   const image = decodePng(bytes, fileName);
   const dimensions = pngDimensions(bytes, fileName);
   expect(dimensions).toEqual({ width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT });
-  expect([...witness.surface.nodeIds].sort()).toEqual([...nodeIds].sort());
-  expect([...witness.surface.edgeIds].sort()).toEqual([...edgeIds].sort());
+  const renderedNodeIds = [...witness.surface.nodeIds].sort();
+  const renderedEdgeIds = [...witness.surface.edgeIds].sort();
+  if (world === null) {
+    expect(renderedNodeIds).toEqual(canonicalNodeIds);
+    expect(renderedEdgeIds).toEqual(canonicalEdgeIds);
+  } else if (policy === HOLOGRAPHIC) {
+    const renderedNodeIdSet = new Set(renderedNodeIds);
+    const renderedEdgeIdSet = new Set(renderedEdgeIds);
+    const missingNode = world.nodeIds.find((id) => !renderedNodeIdSet.has(id));
+    const missingEdge = world.edgeIds.find((id) => !renderedEdgeIdSet.has(id));
+    if (missingNode !== undefined || missingEdge !== undefined) {
+      throw new Error(`scale-topology holographic capture ${fileName} dropped a world member: node=${missingNode ?? "none"}, relation=${missingEdge ?? "none"}`);
+    }
+  } else {
+    expect(renderedNodeIds).toEqual([...world.nodeIds].sort());
+    expect(renderedEdgeIds).toEqual([...world.edgeIds].sort());
+  }
   assertDarkestShippingField(image, `scale-topology ${fileName}`);
   assertLitPixelFloor(image, `scale-topology ${fileName}`);
   assertNodesInsideCapturedFrame(fileName, witness.nodeViewportPositions);
@@ -622,8 +657,8 @@ async function requestCapture(
     levelIndex,
     levelLabel: world?.kind ?? "root",
     rootId: world?.rootId ?? null,
-    nodeIds: [...witness.surface.nodeIds].sort(),
-    edgeIds: [...witness.surface.edgeIds].sort(),
+    nodeIds: renderedNodeIds,
+    edgeIds: renderedEdgeIds,
     cameraKind: witness.cameraKind,
     pixelSha256: pixelSha256(image),
     pixelDimensions: dimensions,

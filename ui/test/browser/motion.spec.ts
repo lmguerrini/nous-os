@@ -22,11 +22,13 @@
  * phase back to resting -- is checked first: a motion axis that perturbs its own zero state, or that
  * fails to collapse under reduced motion, would invalidate every static result beneath it.
  *
- * M1 and M2 sample STRIP_PHASES (three points spanning the phase domain) rather than SAMPLE_PHASES's
- * full nine points, and use the smaller of the two governed fixtures throughout: the
- * same 120s-per-test budget applies to rendered work, and `buildScene` recomputes layout on every
- * call (its cache never hits across separate `mount()` calls, and every frame here is a fresh mount,
- * per the "driven, not free-running" design this phase input follows).
+ * M1 and M2 sample each policy's own `distinctMotionPhases(policy, STRIP_PHASE_CANDIDATES)` selection
+ * (three candidates spanning the phase domain, filtered per policy against that policy's own envelope
+ * ties -- see motion-grammar.ts) rather than SAMPLE_PHASES's full nine points, and use the smaller of
+ * the two governed fixtures throughout: the same 120s-per-test budget applies to rendered work, and
+ * `buildScene` recomputes layout on every call (its cache never hits across separate `mount()` calls,
+ * and every frame here is a fresh mount, per the "driven, not free-running" design this phase input
+ * follows).
  */
 
 import { execFile } from "node:child_process";
@@ -41,8 +43,10 @@ import { assertVisualGraphFieldRegister, semanticDigest } from "#engine/contract
 import type { VisualGraph } from "#engine/contract.ts";
 import {
   MOTION_GRAMMARS,
+  PULSE,
   RECONFIGURE,
   STILL,
+  distinctMotionPhases,
   motionModulation,
   motionTraceability,
   restingPhase,
@@ -51,8 +55,17 @@ import type { EdgeMotionModulation, MotionElementIds, MotionGrammar, NodeMotionM
 import type { Morphology } from "#engine/morphology.ts";
 import { INDRA } from "#engine/organization.ts";
 import type { Organization } from "#engine/organization.ts";
-import { HIERARCHICAL, HOLOGRAPHIC, RECURSIVE, childWorld, enterableKind } from "#engine/scale-topology.ts";
+import {
+  HIERARCHICAL,
+  HOLOGRAPHIC,
+  RECURSIVE,
+  childWorld,
+  enterChildWorld,
+  enterableKind,
+  rootNavigationPath,
+} from "#engine/scale-topology.ts";
 import type { ScaleTopology } from "#engine/scale-topology.ts";
+import type { VisualStateCamera } from "#engine/visual-state.ts";
 import { assertMotionRestingCompleteness } from "#scene/build.ts";
 import { assertLitPixelFloor } from "#browser/lit-floor.ts";
 import { decodePng, pixelSha256, pngDimensions } from "#browser/png-codec.ts";
@@ -107,15 +120,18 @@ if (TRACEABILITY_FIXTURE === undefined) {
 // traceability measurement, the structural modulation record, and the phase-frames ablation, none of
 // which render 28+ strips the way M1 does.
 const SAMPLE_PHASES = [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1];
-// Three samples (start, an interior point, end) spanning one full policy cycle, used by every strip
-// M1 and M2 render: enough to show a staggered policy's construction/withdrawal and a cyclic
-// policy's peak, without multiplying render count past what one 120s-budgeted test can complete
-// (M1 alone renders MOTION_GRAMMARS.length x M1_STRIP_REPEATS x STRIP_PHASES.length frames).
-// Deliberately not [0, 0.5, 1]: pulse's and reconfigure's shared breathing envelope
-// (sin(2*pi*phase)) is exactly zero -- identity -- at every multiple of one half, so a strip
-// sampled only at those three points would render Still's own frame three times over for those two
-// policies and look like no motion happened at all. 0.4 is not a multiple of one half.
-const STRIP_PHASES = [0, 0.4, 1];
+// Three candidate samples spanning one full policy cycle, used by every strip M1 and M2 render:
+// enough to show a staggered policy's construction/withdrawal and a cyclic policy's peak, without
+// multiplying render count past what one 120s-budgeted test can complete (M1 alone renders
+// MOTION_GRAMMARS.length x M1_STRIP_REPEATS x (per-policy distinct phase count) frames). These are
+// candidates, not the phases actually sampled: `distinctMotionPhases` (see motion-grammar.ts) is
+// consulted per policy before rendering, because [0, 0.4, 1] -- the set this suite used before --
+// ties 0 and 1 for pulse, reconfigure, and condense (all three render their own resting-phase
+// identity at both ends of the domain), which would have rendered the same frame twice per strip
+// for those policies and silently weakened M1's own discrimination test. [0, 0.4, 0.7] carries no
+// such tie for any shipped policy (verified directly against `distinctMotionPhases` below, not by
+// inspection alone): every non-Still policy samples all three, genuinely distinct every time.
+const STRIP_PHASE_CANDIDATES = [0, 0.4, 0.7];
 
 type M3CaptureRecord = {
   readonly fixtureId: string;
@@ -629,8 +645,15 @@ test("CAP-13 W-MOTION M1 policy discrimination strips", async ({ page }, testInf
       const stripId = `strip-${String(index + 1).padStart(2, "0")}`;
       const stripDirectory = join(outputDirectory, stripId);
       await mkdir(stripDirectory, { recursive: true });
+      // distinctMotionPhases is consulted per policy, not assumed from the shared candidate list:
+      // a strip that should animate must sample phases this policy's own envelope actually renders
+      // differently, or the strip would measure the sampler rather than the grammar (see
+      // motion-grammar.ts's own framing). Still is exempted by that function on purpose (it never
+      // reports a tie, being exact identity everywhere for a different reason entirely), so it is
+      // asserted identical below by direct comparison instead of relying on tie detection.
+      const phases = distinctMotionPhases(slot.policy, STRIP_PHASE_CANDIDATES);
       const frames: M1FrameRecord[] = [];
-      for (const phase of STRIP_PHASES) {
+      for (const phase of phases) {
         const request: MotionCaptureRequest = {
           morphology: M1_MORPHOLOGY,
           organization: M1_ORGANIZATION,
@@ -647,18 +670,19 @@ test("CAP-13 W-MOTION M1 policy discrimination strips", async ({ page }, testInf
         expect(rendered.witness.phaseRendered).toBe(phase);
         frames.push({ phase, path: join("m1", stripId, fileName), pixelSha256: rendered.pixelSha256 });
       }
-      const framesDiffer = new Set(frames.map((frame) => frame.pixelSha256)).size > 1;
+      const distinctFrameCount = new Set(frames.map((frame) => frame.pixelSha256)).size;
+      const framesDiffer = distinctFrameCount > 1;
       if (slot.policy === STILL && framesDiffer) {
         throw new Error(`motion M1 ${stripId} (still, hidden from this message's own filenames) unexpectedly differs across phase; still must be exact identity everywhere`);
       }
-      if (slot.policy !== STILL && !framesDiffer) {
-        throw new Error(`motion M1 ${stripId} renders identical pixels at every sampled phase; its assigned policy is not animating (see the manifest's slotAssignment for which policy that is)`);
+      if (slot.policy !== STILL && distinctFrameCount !== frames.length) {
+        throw new Error(`motion M1 ${stripId} renders at least two byte-identical frames among its ${frames.length} sampled phases; its assigned policy is not genuinely animating across every sampled phase (see the manifest's slotAssignment for which policy that is)`);
       }
       stripRecords.push({ stripId, motionGrammar: slot.policy, repeat: slot.repeat, framesDiffer, frames });
     }
 
     const producedFiles = await pngFilesUnder(outputDirectory);
-    const expectedFrameCount = shuffled.length * STRIP_PHASES.length;
+    const expectedFrameCount = stripRecords.reduce((total, record) => total + record.frames.length, 0);
     if (producedFiles.length !== expectedFrameCount) {
       throw new Error(`motion M1 produced ${producedFiles.length} frames, expected ${expectedFrameCount}`);
     }
@@ -691,11 +715,12 @@ test("CAP-13 W-MOTION M1 policy discrimination strips", async ({ page }, testInf
         reducedMotion: false,
       },
       changedAxis: { name: "motionGrammar", values: [...MOTION_GRAMMARS] },
-      stripPhases: STRIP_PHASES,
+      stripPhaseCandidates: STRIP_PHASE_CANDIDATES,
+      stripPhasesByPolicy: MOTION_GRAMMARS.map((policy) => ({ motionGrammar: policy, phases: distinctMotionPhases(policy, STRIP_PHASE_CANDIDATES) })),
       shuffle: { algorithm: "mulberry32 + Fisher-Yates", seed: M1_SHUFFLE_SEED, stripRepeatsPerPolicy: M1_STRIP_REPEATS },
       noPolicyTokenInPaths: true,
       framesGenuinelyDiffer: {
-        rule: "every non-Still strip's three sampled frames are not all pixel-identical; Still is excluded by definition and asserted identical instead.",
+        rule: "every non-Still strip's own distinctMotionPhases-selected frames are all pairwise pixel-distinct; Still is excluded by definition and asserted identical instead.",
         passed: true,
       },
       // This is the de-blinding key: which anonymous strip id was actually rendered from which
@@ -707,7 +732,7 @@ test("CAP-13 W-MOTION M1 policy discrimination strips", async ({ page }, testInf
     const manifestFile = join(ROOT_DIRECTORY, "motion-m1-manifest.json");
     await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     process.stdout.write(
-      `motion M1: ${stripRecords.length} strips (${MOTION_GRAMMARS.length} policies x ${M1_STRIP_REPEATS} repeats) x ${STRIP_PHASES.length} phases `
+      `motion M1: ${stripRecords.length} strips (${MOTION_GRAMMARS.length} policies x ${M1_STRIP_REPEATS} repeats), each policy's own distinctMotionPhases selection `
       + `= ${producedFiles.length} frames, deterministically shuffled (seed ${M1_SHUFFLE_SEED}), no policy token in any path; manifest=${manifestFile}\n`,
     );
   } finally {
@@ -732,8 +757,15 @@ type M2FrameRecord = { readonly phase: number; readonly path: string; readonly p
 type M2StripRecord = {
   readonly pairId: string;
   readonly scaleTopology: ScaleTopology;
+  readonly nodeIds: readonly string[];
+  readonly edgeIds: readonly string[];
   readonly framesDiffer: boolean;
   readonly frames: readonly M2FrameRecord[];
+};
+type M2PhaseComparisonRecord = {
+  readonly phase: number;
+  readonly identical: boolean;
+  readonly changedPixelFraction: number;
 };
 
 test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ page }, testInfo) => {
@@ -749,12 +781,22 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
   assertVisualGraphFieldRegister(canonicalGraph);
 
   const containmentRootId = strongestContainmentRoot(canonicalGraph);
-  const world = childWorld(canonicalGraph, containmentRootId, "containment");
-  if (world.nodeIds.length < 2) {
-    throw new Error(`motion M2 fixture ${TRACEABILITY_FIXTURE.id} resolved a containment world too small to render (${world.nodeIds.length} nodes)`);
+  const containmentWorld = childWorld(canonicalGraph, containmentRootId, "containment");
+  if (containmentWorld.nodeIds.length < 2) {
+    throw new Error(`motion M2 fixture ${TRACEABILITY_FIXTURE.id} resolved a containment world too small to render (${containmentWorld.nodeIds.length} nodes)`);
   }
-  const projectedNodeIds = [...world.nodeIds].sort();
-  const projectedEdgeIds = [...world.edgeIds].sort();
+
+  // Real navigation paths into the same containment root, one per compared policy -- built with the
+  // same exported #engine/scale-topology.ts functions any real caller uses (rootNavigationPath,
+  // enterChildWorld), never with a hand-assembled node/relation id set. `Render3fOptions.navigationPath`
+  // (ui/src/render3f/mount.tsx) carries each straight through to `buildScene`, which alone decides
+  // what is rendered (see #scene/build.ts's resolveScaleNavigationGraph): this suite computes nothing
+  // about what gets drawn, only which position on the map to navigate to. The rendered node/relation
+  // id sets recorded below (stripRecords[].nodeIds/edgeIds) are read back from what mount() actually
+  // drew (rendered.witness.surface), never precomputed here.
+  const recursivePath = enterChildWorld(canonicalGraph, rootNavigationPath(RECURSIVE), containmentRootId);
+  const holographicPath = enterChildWorld(canonicalGraph, rootNavigationPath(HOLOGRAPHIC), containmentRootId);
+  const phases = distinctMotionPhases(M2_MOTION_GRAMMAR, STRIP_PHASE_CANDIDATES);
 
   const outputDirectory = join(ROOT_DIRECTORY, "m2");
   await mkdir(outputDirectory, { recursive: true });
@@ -768,38 +810,155 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
     const topologies = [RECURSIVE, HOLOGRAPHIC] as const;
     const shuffled = deterministicShuffle(topologies, M2_SHUFFLE_SEED);
 
+    // Holographic's own per-phase camera, read back off its mounted renderer
+    // (rendered.witness.visualState.camera, itself sourced from readCameraState() -- see
+    // MotionCaptureWitness and mount.tsx's readVisualState()) as it is captured below. This is the
+    // single camera the controlled comparison drives BOTH strips with: an observed output of the
+    // Holographic render fed as an input to the Recursive one, never recomputed.
+    const holographicCameraByPhase = new Map<number, VisualStateCamera>();
+
     const stripRecords: M2StripRecord[] = [];
     for (const [index, scaleTopology] of shuffled.entries()) {
       const pairId = `pair-${index + 1}`;
       const pairDirectory = join(outputDirectory, pairId);
       await mkdir(pairDirectory, { recursive: true });
+      const navigationPath = scaleTopology === HOLOGRAPHIC ? holographicPath : recursivePath;
       const frames: M2FrameRecord[] = [];
-      for (const phase of STRIP_PHASES) {
+      let pairNodeIds: readonly string[] | undefined;
+      let pairEdgeIds: readonly string[] | undefined;
+      for (const phase of phases) {
         const request: MotionCaptureRequest = {
           morphology: M2_MORPHOLOGY,
           organization: M2_ORGANIZATION,
           projection: M2_PROJECTION,
           motionGrammar: M2_MOTION_GRAMMAR,
           scaleTopology,
-          nodeIds: world.nodeIds,
-          edgeIds: world.edgeIds,
+          navigationPath,
           reducedMotion: false,
           phase,
         };
         const fileName = `phase-${phase}.png`;
         const rendered = await renderFrame(page, request, pairDirectory, fileName);
-        expect([...rendered.witness.surface.nodeIds].sort()).toEqual(projectedNodeIds);
-        expect([...rendered.witness.surface.edgeIds].sort()).toEqual(projectedEdgeIds);
+        const renderedNodeIds = [...rendered.witness.surface.nodeIds].sort();
+        const renderedEdgeIds = [...rendered.witness.surface.edgeIds].sort();
+        if (pairNodeIds === undefined || pairEdgeIds === undefined) {
+          pairNodeIds = renderedNodeIds;
+          pairEdgeIds = renderedEdgeIds;
+        } else if (JSON.stringify(renderedNodeIds) !== JSON.stringify(pairNodeIds) || JSON.stringify(renderedEdgeIds) !== JSON.stringify(pairEdgeIds)) {
+          throw new Error(`motion M2 ${pairId} rendered a different governed id set at phase ${phase} than at its own earlier phases; motion must never change what exists`);
+        }
         expect(rendered.witness.phaseRendered).toBe(phase);
+        if (scaleTopology === HOLOGRAPHIC) {
+          holographicCameraByPhase.set(phase, rendered.witness.visualState.camera);
+        }
         frames.push({ phase, path: join("m2", pairId, fileName), pixelSha256: rendered.pixelSha256 });
       }
-      const framesDiffer = new Set(frames.map((frame) => frame.pixelSha256)).size > 1;
-      if (!framesDiffer) {
-        throw new Error(`motion M2 ${pairId} renders identical pixels at every sampled phase; ${M2_MOTION_GRAMMAR} is not animating`);
+      if (pairNodeIds === undefined || pairEdgeIds === undefined) {
+        throw new Error(`motion M2 ${pairId} rendered no frames`);
       }
-      stripRecords.push({ pairId, scaleTopology, framesDiffer, frames });
+      const distinctFrameCount = new Set(frames.map((frame) => frame.pixelSha256)).size;
+      if (distinctFrameCount !== frames.length) {
+        throw new Error(`motion M2 ${pairId} renders at least two byte-identical frames among its ${frames.length} sampled phases; ${M2_MOTION_GRAMMAR} is not genuinely animating across every sampled phase`);
+      }
+      stripRecords.push({ pairId, scaleTopology, nodeIds: pairNodeIds, edgeIds: pairEdgeIds, framesDiffer: distinctFrameCount > 1, frames });
     }
 
+    // ---- The primary Phase B research question, answered directly against production output rather
+    // than a precomputed expectation: does Holographic's preserved-context bundle render more governed
+    // content than Recursive for the same navigation event, and does that make it render differently?
+    // Both node/relation counts below are read from what mount() actually drew (stripRecords[].nodeIds
+    // /edgeIds, themselves read from rendered.witness.surface above), not assumed. ----
+    const recursivePair = stripRecords.find((record) => record.scaleTopology === RECURSIVE);
+    const holographicPair = stripRecords.find((record) => record.scaleTopology === HOLOGRAPHIC);
+    if (recursivePair === undefined || holographicPair === undefined) {
+      throw new Error("motion M2 requires both a Recursive and a Holographic strip to compare");
+    }
+    if (holographicPair.nodeIds.length <= recursivePair.nodeIds.length || holographicPair.edgeIds.length <= recursivePair.edgeIds.length) {
+      throw new Error(
+        `motion M2 fixture ${TRACEABILITY_FIXTURE.id} holographic capture adds no real boundary content over the recursive `
+        + `capture of the same navigation event (nodes ${holographicPair.nodeIds.length} vs ${recursivePair.nodeIds.length}, `
+        + `relations ${holographicPair.edgeIds.length} vs ${recursivePair.edgeIds.length}); the comparison below would be vacuous`,
+      );
+    }
+    if (recursivePair.frames.length !== holographicPair.frames.length) {
+      throw new Error("motion M2 paired strips have a mismatched frame count");
+    }
+    const comparisons: M2PhaseComparisonRecord[] = [];
+    for (let index = 0; index < recursivePair.frames.length; index += 1) {
+      const recursiveFrame = recursivePair.frames[index];
+      const holographicFrame = holographicPair.frames[index];
+      if (recursiveFrame === undefined || holographicFrame === undefined || recursiveFrame.phase !== holographicFrame.phase) {
+        throw new Error("motion M2 paired strips are not phase-aligned");
+      }
+      const recursiveImage = decodePng(await readFile(join(ROOT_DIRECTORY, recursiveFrame.path)), recursiveFrame.path);
+      const holographicImage = decodePng(await readFile(join(ROOT_DIRECTORY, holographicFrame.path)), holographicFrame.path);
+      comparisons.push({
+        phase: recursiveFrame.phase,
+        identical: recursiveFrame.pixelSha256 === holographicFrame.pixelSha256,
+        changedPixelFraction: changedPixelFraction(recursiveImage, holographicImage, recursiveFrame.path, holographicFrame.path),
+      });
+    }
+    if (comparisons.some((record) => record.identical)) {
+      throw new Error("motion M2 finding is vacuous: Recursive and Holographic rendered byte-identically at a sampled phase despite Holographic carrying strictly more governed nodes and relations");
+    }
+
+    // ---- Controlled comparison (this test's primary result): one camera per phase, Holographic's
+    // own -- read back off its mounted renderer above, never recomputed -- drives BOTH strips, so the
+    // two strips being compared differ only in scaleTopology, not in framing. Holographic's own frame
+    // under that camera is exactly the ecological frame captured above (it is that camera's source);
+    // only Recursive needs a second, camera-driven capture. ----
+    const controlledDirectory = join(outputDirectory, "controlled");
+    await mkdir(controlledDirectory, { recursive: true });
+    const controlledComparisons: M2PhaseComparisonRecord[] = [];
+    for (const phase of phases) {
+      const sharedCamera = holographicCameraByPhase.get(phase);
+      if (sharedCamera === undefined) {
+        throw new Error(`motion M2 controlled comparison is missing holographic's own camera for phase ${phase}`);
+      }
+      const holographicFrame = holographicPair.frames.find((frame) => frame.phase === phase);
+      if (holographicFrame === undefined) {
+        throw new Error(`motion M2 controlled comparison is missing holographic's own frame for phase ${phase}`);
+      }
+      const request: MotionCaptureRequest = {
+        morphology: M2_MORPHOLOGY,
+        organization: M2_ORGANIZATION,
+        projection: M2_PROJECTION,
+        motionGrammar: M2_MOTION_GRAMMAR,
+        scaleTopology: RECURSIVE,
+        navigationPath: recursivePath,
+        sharedCamera,
+        reducedMotion: false,
+        phase,
+      };
+      const fileName = `phase-${phase}.png`;
+      const rendered = await renderFrame(page, request, controlledDirectory, fileName);
+      // renderFrame's own assertNodesInsideCapturedFrame call above just checked every one of
+      // Recursive's rendered anchors falls inside this shared frame; Holographic's own anchors were
+      // already checked inside this same frame when its ecological capture (the camera's own source)
+      // was rendered above, since that capture's camera and this one are identical. Together that is
+      // "every rendered anchor of both policies inside the frame" -- checked, not assumed from the
+      // superset relation.
+      const renderedNodeIds = [...rendered.witness.surface.nodeIds].sort();
+      const renderedEdgeIds = [...rendered.witness.surface.edgeIds].sort();
+      if (JSON.stringify(renderedNodeIds) !== JSON.stringify(recursivePair.nodeIds) || JSON.stringify(renderedEdgeIds) !== JSON.stringify(recursivePair.edgeIds)) {
+        throw new Error(`motion M2 controlled comparison rendered a different governed id set for Recursive at phase ${phase} than its own ecological capture; the shared camera must never change what is drawn`);
+      }
+      expect(rendered.witness.phaseRendered).toBe(phase);
+      const recursiveControlledImage = decodePng(await readFile(rendered.filePath), rendered.fileName);
+      const holographicImage = decodePng(await readFile(join(ROOT_DIRECTORY, holographicFrame.path)), holographicFrame.path);
+      controlledComparisons.push({
+        phase,
+        identical: rendered.pixelSha256 === holographicFrame.pixelSha256,
+        changedPixelFraction: changedPixelFraction(recursiveControlledImage, holographicImage, rendered.fileName, holographicFrame.path),
+      });
+    }
+    if (controlledComparisons.some((record) => record.identical)) {
+      throw new Error("motion M2 controlled comparison is vacuous: Recursive and Holographic rendered byte-identically at a sampled phase under the same shared camera despite Holographic carrying strictly more governed nodes and relations");
+    }
+
+    // Checked once, over every PNG this test produced (both ecological pairs and the controlled
+    // strip) -- run last so a path under m2/controlled/ is covered by the same blind-path discipline
+    // as everything under m2/pair-*/.
     const producedFiles = await pngFilesUnder(outputDirectory);
     assertNoPolicyTokenInPaths(producedFiles, "motion M2");
     for (const token of ["recursive", "holographic"]) {
@@ -807,30 +966,6 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
         if (file.toLowerCase().includes(token)) {
           throw new Error(`motion M2 leaked its scaleTopology label "${token}" into a path: ${file}`);
         }
-      }
-    }
-
-    // ---- The primary Phase B research question, answered directly: `visualState.scaleTopology` is
-    // read nowhere in `#scene/build.ts` -- it is recorded onto VisualState for navigation/provenance
-    // purposes only (see #engine/scale-topology.ts and scale-topology.spec.ts's own governed
-    // ablation) and has no rendering effect. Entering the same child world under the same motion
-    // policy therefore renders the same pixels regardless of which of Recursive or Holographic was
-    // requested; this is proved here, not assumed. ----
-    const [pairA, pairB] = stripRecords;
-    if (pairA === undefined || pairB === undefined) {
-      throw new Error("motion M2 requires both paired strips to compare");
-    }
-    for (let index = 0; index < STRIP_PHASES.length; index += 1) {
-      const frameA = pairA.frames[index];
-      const frameB = pairB.frames[index];
-      if (frameA === undefined || frameB === undefined) {
-        throw new Error("motion M2 paired strips have a mismatched frame count");
-      }
-      if (frameA.pixelSha256 !== frameB.pixelSha256) {
-        throw new Error(
-          `motion M2 finding failed: Recursive and Holographic entering the same containment world diverged in rendered pixels at phase ${frameA.phase} `
-          + "(scaleTopology is expected to have no rendering effect -- see #scene/build.ts)",
-        );
       }
     }
 
@@ -845,26 +980,58 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
       summary: { passing: true },
       run: { command: MOTION_COMMAND, trackedTree },
       assertion: "Paired strips of the same navigation event (entering the same containment child world), everything held constant except scaleTopology, both animated with the same motion policy. Pair order is a deterministically shuffled, independently seeded assignment; no path under m2/ names either scaleTopology label, verified by read-back.",
-      navigationEvent: { containmentRootId, kind: world.kind, worldNodeIds: projectedNodeIds, worldEdgeIds: projectedEdgeIds },
+      method: "A real ScaleNavigationPath (built with #engine/scale-topology.ts's own rootNavigationPath and enterChildWorld) is passed straight through mount()'s own Render3fOptions.navigationPath (ui/src/render3f/mount.tsx) to buildScene (#scene/build.ts), which alone resolves it to a rendered node/relation set via resolveScaleNavigationGraph. This suite computes no id set of its own for what gets rendered; every nodeIds/edgeIds value recorded below is read back from the mounted scene's own surface witness.",
+      navigationEvent: {
+        containmentRootId,
+        kind: containmentWorld.kind,
+        recursive: { nodeIds: recursivePair.nodeIds, edgeIds: recursivePair.edgeIds },
+        holographic: { nodeIds: holographicPair.nodeIds, edgeIds: holographicPair.edgeIds },
+        holographicAddedNodeCount: holographicPair.nodeIds.length - recursivePair.nodeIds.length,
+        holographicAddedEdgeCount: holographicPair.edgeIds.length - recursivePair.edgeIds.length,
+      },
       heldConstant: { organization: M2_ORGANIZATION, morphology: M2_MORPHOLOGY, projection: M2_PROJECTION, motionGrammar: M2_MOTION_GRAMMAR, calibration: "DEFAULT_CALIBRATION", reducedMotion: false },
       changedAxis: { name: "scaleTopology", values: [...topologies] },
-      stripPhases: STRIP_PHASES,
+      stripPhaseCandidates: STRIP_PHASE_CANDIDATES,
+      stripPhases: phases,
       shuffle: { algorithm: "mulberry32 + Fisher-Yates", seed: M2_SHUFFLE_SEED },
       noLabelInPaths: true,
       finding: {
-        claim: "Recursive and Holographic render byte-identically for the same navigation event under the same motion policy, because scaleTopology has no rendering effect in #scene/build.ts -- proved per-frame above, not assumed.",
-        pixelIdenticalAcrossPairAtEveryPhase: true,
+        claim: "Holographic's preserved-context bundle is real governed content, not metadata: entering the same containment world renders strictly more nodes and relations under Holographic than Recursive, and the rendered pixels differ from Recursive's at every sampled phase, measured directly below against production output rather than assumed.",
+        recursive: { nodeCount: recursivePair.nodeIds.length, edgeCount: recursivePair.edgeIds.length },
+        holographic: { nodeCount: holographicPair.nodeIds.length, edgeCount: holographicPair.edgeIds.length },
+        // Two measurements of the same pixel difference, kept apart and labelled: `ecological` frames
+        // each policy on its OWN camera (marginedAnchorBounds refit from that policy's own rendered
+        // anchors -- what a real caller navigating that policy would actually see), so part of any
+        // difference it reports is attributable to the two cameras differing, not to what is drawn.
+        // `controlled` frames both policies on ONE camera -- Holographic's own, read back off its
+        // mounted renderer via readCameraState() and driven straight through Recursive's own capture
+        // as `sharedCamera` -- so its own difference is attributable to content alone. `controlled` is
+        // this test's primary result; `ecological` is retained because it reflects what a reader would
+        // actually see, and neither can be mistaken for the other under these names.
+        ecological: {
+          assertion: "Each strip's camera is refit from its own rendered anchors after navigating (marginedAnchorBounds, applied per policy). Holographic's anchor extent is a superset of Recursive's, so the two cameras differ, and part of the changed-pixel fraction below is attributable to that framing difference rather than to what is drawn.",
+          perPhase: comparisons,
+        },
+        controlled: {
+          assertion: "One camera per phase -- Holographic's own, read back off its mounted renderer and driven straight through Recursive's capture as sharedCamera -- shared by both strips, so the changed-pixel fraction below is attributable to what is drawn, not to two different cameras. This is M2's primary result.",
+          sharedCameraSource: "holographic",
+          noClippingInvariant: { marginCssPx: FRAME_CONTAINMENT_MARGIN_CSS_PX, passed: true },
+          perPhase: controlledComparisons,
+        },
       },
       // De-blinding key: which anonymous pair id renders which scaleTopology. Fine for this JSON
       // manifest to name it; the blind property is the PNG paths, checked above.
-      pairAssignment: stripRecords.map((record) => ({ pairId: record.pairId, scaleTopology: record.scaleTopology })),
+      pairAssignment: stripRecords.map((record) => ({ pairId: record.pairId, scaleTopology: record.scaleTopology, nodeCount: record.nodeIds.length, edgeCount: record.edgeIds.length })),
       pairs: stripRecords,
     };
     const manifestFile = join(ROOT_DIRECTORY, "motion-m2-manifest.json");
     await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     process.stdout.write(
-      `motion M2: 2 paired strips (${M2_MOTION_GRAMMAR}) x ${STRIP_PHASES.length} phases, shuffled (seed ${M2_SHUFFLE_SEED}); `
-      + `finding: Recursive and Holographic render pixel-identically for the same navigation event; manifest=${manifestFile}\n`,
+      `motion M2: 2 paired strips (${M2_MOTION_GRAMMAR}) x ${phases.length} phases, shuffled (seed ${M2_SHUFFLE_SEED}); `
+      + `recursive=${recursivePair.nodeIds.length}n/${recursivePair.edgeIds.length}e, holographic=${holographicPair.nodeIds.length}n/${holographicPair.edgeIds.length}e; `
+      + `ecological changed-pixel fraction per phase: ${comparisons.map((record) => `${record.phase}:${(record.changedPixelFraction * 100).toFixed(3)}%`).join(", ")}; `
+      + `controlled (shared camera) changed-pixel fraction per phase: ${controlledComparisons.map((record) => `${record.phase}:${(record.changedPixelFraction * 100).toFixed(3)}%`).join(", ")}; `
+      + `manifest=${manifestFile}\n`,
     );
   } finally {
     await destroyPage(page);
@@ -875,11 +1042,24 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
 // Phase-frames ablation: the resting frame beside several phase frames, for one configuration.
 // ---------------------------------------------------------------------------------------------
 
-const ABLATION_MOTION_GRAMMAR: MotionGrammar = RECONFIGURE;
-// Excludes SAMPLE_PHASES's exact multiples of one half: reconfigure's breathing envelope is
-// legitimately zero (identity) there too, and this ablation is meant to show non-identity frames
-// beside the resting one, not to accidentally sample a second identity point and call it motion.
-const ABLATION_PHASES = SAMPLE_PHASES.filter((phase) => phase !== 0 && phase !== 0.5 && phase !== 1);
+// Both policies whose amplitude was raised (see motion-grammar.ts's own PULSE_AMPLITUDE_PERMILLE and
+// RECONFIGURE_AMPLITUDE_PERMILLE), so the record this ablation produces carries current amplitudes'
+// measured effect rather than the pre-raise numbers.
+const ABLATION_MOTION_GRAMMARS = [PULSE, RECONFIGURE] as const satisfies readonly MotionGrammar[];
+
+type AblationPhaseFrameRecord = {
+  readonly phase: number;
+  readonly fileName: string;
+  readonly pixelSha256: string;
+  readonly differsFromResting: true;
+  readonly changedPixelFractionVsResting: number;
+};
+type AblationPolicyRecord = {
+  readonly motionGrammar: MotionGrammar;
+  readonly resting: { readonly phase: number; readonly fileName: string; readonly pixelSha256: string };
+  readonly phaseFrames: readonly AblationPhaseFrameRecord[];
+  readonly peakChangedPixelFraction: number;
+};
 
 test("CAP-13 W-MOTION phase-frames ablation", async ({ page }, testInfo) => {
   test.skip(!MOTION_ENABLED || testInfo.project.name !== MOTION_PROJECT, "run this through the dedicated motion project");
@@ -903,38 +1083,65 @@ test("CAP-13 W-MOTION phase-frames ablation", async ({ page }, testInfo) => {
   try {
     await prepareFixture(page, TRACEABILITY_FIXTURE.path);
 
-    const restingRequest: MotionCaptureRequest = {
-      morphology: M1_MORPHOLOGY,
-      organization: M1_ORGANIZATION,
-      projection: M1_PROJECTION,
-      motionGrammar: ABLATION_MOTION_GRAMMAR,
-      scaleTopology: M1_SCALE_TOPOLOGY,
-      reducedMotion: false,
-      phase: restingPhase(ABLATION_MOTION_GRAMMAR),
-    };
-    const resting = await renderFrame(page, restingRequest, outputDirectory, `${ABLATION_MOTION_GRAMMAR}-resting.png`);
-    expect([...resting.witness.surface.nodeIds].sort()).toEqual(canonicalNodeIds);
-    expect([...resting.witness.surface.edgeIds].sort()).toEqual(canonicalEdgeIds);
+    const policyRecords: AblationPolicyRecord[] = [];
+    for (const motionGrammar of ABLATION_MOTION_GRAMMARS) {
+      // distinctMotionPhases against the full nine-point SAMPLE_PHASES, less the resting phase
+      // (rendered separately below): breathingEnvelope ties 0.125<->0.375 and 0.625<->0.875 at the
+      // quarter-point mirror, so a hand-filtered "exclude the exact halves" list (this ablation's
+      // previous approach) would still have rendered two duplicate pairs for these policies.
+      const phases = distinctMotionPhases(motionGrammar, SAMPLE_PHASES).filter((phase) => phase !== restingPhase(motionGrammar));
 
-    const phaseFrames: { readonly phase: number; readonly fileName: string; readonly pixelSha256: string; readonly differsFromResting: true }[] = [];
-    for (const phase of ABLATION_PHASES) {
-      const request: MotionCaptureRequest = {
+      const restingRequest: MotionCaptureRequest = {
         morphology: M1_MORPHOLOGY,
         organization: M1_ORGANIZATION,
         projection: M1_PROJECTION,
-        motionGrammar: ABLATION_MOTION_GRAMMAR,
+        motionGrammar,
         scaleTopology: M1_SCALE_TOPOLOGY,
         reducedMotion: false,
-        phase,
+        phase: restingPhase(motionGrammar),
       };
-      const fileName = `${ABLATION_MOTION_GRAMMAR}-phase-${phase}.png`;
-      const rendered = await renderFrame(page, request, outputDirectory, fileName);
-      expect([...rendered.witness.surface.nodeIds].sort()).toEqual(canonicalNodeIds);
-      expect([...rendered.witness.surface.edgeIds].sort()).toEqual(canonicalEdgeIds);
-      if (rendered.pixelSha256 === resting.pixelSha256) {
-        throw new Error(`motion ablation phase ${phase} rendered pixel-identically to the resting frame; the ablation needs a genuinely different frame`);
+      const resting = await renderFrame(page, restingRequest, outputDirectory, `${motionGrammar}-resting.png`);
+      expect([...resting.witness.surface.nodeIds].sort()).toEqual(canonicalNodeIds);
+      expect([...resting.witness.surface.edgeIds].sort()).toEqual(canonicalEdgeIds);
+      const restingImage = decodePng(await readFile(resting.filePath), resting.fileName);
+
+      const phaseFrames: AblationPhaseFrameRecord[] = [];
+      for (const phase of phases) {
+        const request: MotionCaptureRequest = {
+          morphology: M1_MORPHOLOGY,
+          organization: M1_ORGANIZATION,
+          projection: M1_PROJECTION,
+          motionGrammar,
+          scaleTopology: M1_SCALE_TOPOLOGY,
+          reducedMotion: false,
+          phase,
+        };
+        const fileName = `${motionGrammar}-phase-${phase}.png`;
+        const rendered = await renderFrame(page, request, outputDirectory, fileName);
+        expect([...rendered.witness.surface.nodeIds].sort()).toEqual(canonicalNodeIds);
+        expect([...rendered.witness.surface.edgeIds].sort()).toEqual(canonicalEdgeIds);
+        if (rendered.pixelSha256 === resting.pixelSha256) {
+          throw new Error(`motion ablation ${motionGrammar} phase ${phase} rendered pixel-identically to the resting frame; the ablation needs a genuinely different frame`);
+        }
+        const image = decodePng(await readFile(rendered.filePath), fileName);
+        phaseFrames.push({
+          phase,
+          fileName,
+          pixelSha256: rendered.pixelSha256,
+          differsFromResting: true,
+          changedPixelFractionVsResting: changedPixelFraction(restingImage, image, resting.fileName, fileName),
+        });
       }
-      phaseFrames.push({ phase, fileName, pixelSha256: rendered.pixelSha256, differsFromResting: true });
+      if (new Set(phaseFrames.map((frame) => frame.pixelSha256)).size !== phaseFrames.length) {
+        throw new Error(`motion ablation ${motionGrammar} renders at least two byte-identical phase frames among its ${phaseFrames.length} sampled phases`);
+      }
+
+      policyRecords.push({
+        motionGrammar,
+        resting: { phase: restingPhase(motionGrammar), fileName: resting.fileName, pixelSha256: resting.pixelSha256 },
+        phaseFrames,
+        peakChangedPixelFraction: Math.max(...phaseFrames.map((frame) => frame.changedPixelFractionVsResting)),
+      });
     }
 
     const completedTrackedTree = await currentTrackedTreeState();
@@ -947,16 +1154,15 @@ test("CAP-13 W-MOTION phase-frames ablation", async ({ page }, testInfo) => {
       schemaVersion: 1,
       summary: { passing: true },
       run: { command: MOTION_COMMAND, trackedTree },
-      assertion: "The resting frame beside several phase frames for one controlled configuration, so a reader can see what one policy actually does. Not blind: filenames name the policy deliberately.",
-      motionGrammar: ABLATION_MOTION_GRAMMAR,
+      assertion: "The resting frame beside several genuinely distinct (distinctMotionPhases-selected) phase frames for one controlled configuration, per amplitude-raised policy, so a reader can see what each policy actually does and by how much. Not blind: filenames name the policy deliberately.",
       heldConstant: { organization: M1_ORGANIZATION, scaleTopology: M1_SCALE_TOPOLOGY, morphology: M1_MORPHOLOGY, projection: M1_PROJECTION, calibration: "DEFAULT_CALIBRATION", reducedMotion: false },
-      resting: { phase: restingPhase(ABLATION_MOTION_GRAMMAR), fileName: resting.fileName, pixelSha256: resting.pixelSha256 },
-      phaseFrames,
+      policies: policyRecords,
     };
     const manifestFile = join(ROOT_DIRECTORY, "motion-ablation-manifest.json");
     await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     process.stdout.write(
-      `motion ablation: ${ABLATION_MOTION_GRAMMAR} resting frame + ${phaseFrames.length} phase frames, every phase frame differs from resting; manifest=${manifestFile}\n`,
+      `motion ablation: ${policyRecords.map((record) => `${record.motionGrammar} peak changed-pixel fraction ${(record.peakChangedPixelFraction * 100).toFixed(3)}% over ${record.phaseFrames.length} distinct phases`).join("; ")}; `
+      + `manifest=${manifestFile}\n`,
     );
   } finally {
     await destroyPage(page);
@@ -1135,6 +1341,27 @@ function assertPixelIdentical(
   if (pixelSha256(candidateImage) !== pixelSha256(baselineImage)) {
     throw new Error(`motion M3 Still control failed: ${candidateFileName} decoded pixels do not match frozen static baseline ${baselineFileName}`);
   }
+}
+
+/** This is the fraction of RGBA pixels that differ between two equally-dimensioned decoded rasters, used to measure (never gate) how much a rendered comparison actually changed. */
+function changedPixelFraction(a: PixelImage, b: PixelImage, aName: string, bName: string): number {
+  if (a.width !== b.width || a.height !== b.height) {
+    throw new Error(`motion changed-pixel comparison requires equal dimensions: ${aName} is ${a.width}x${a.height}, ${bName} is ${b.width}x${b.height}`);
+  }
+  const totalPixels = a.width * a.height;
+  let changed = 0;
+  for (let pixelIndex = 0; pixelIndex < totalPixels; pixelIndex += 1) {
+    const offset = pixelIndex * 4;
+    if (
+      a.data[offset] !== b.data[offset]
+      || a.data[offset + 1] !== b.data[offset + 1]
+      || a.data[offset + 2] !== b.data[offset + 2]
+      || a.data[offset + 3] !== b.data[offset + 3]
+    ) {
+      changed += 1;
+    }
+  }
+  return changed / totalPixels;
 }
 
 async function readManifestOrExplain(path: string): Promise<Buffer> {

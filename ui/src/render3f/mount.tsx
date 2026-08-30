@@ -16,6 +16,7 @@ import type {
 import type { LodBand } from "#engine/lod.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { Organization } from "#engine/organization.ts";
+import type { ScaleNavigationPath } from "#engine/scale-topology.ts";
 import type { Palette, Temperature, Theme } from "#engine/tokens.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
@@ -75,6 +76,15 @@ export type Render3fOptions = {
    * supplies one and this module never advances it on its own.
    */
   readonly phase?: number;
+  /**
+   * This is `buildScene`'s own optional trailing `navigationPath` argument (see scene/build.ts): the
+   * scale-topology position a reader has navigated to, which selects WHICH governed subgraph is
+   * rendered. Omitted, every mount renders the top-level graph, identically for all four policies.
+   * Like `phase` it is a render input rather than governed state, but unlike `phase` it is NOT
+   * suppressed under reduced motion: where a reader has navigated to is a position, not an
+   * animation, and dropping it would silently return them to the root.
+   */
+  readonly navigationPath?: ScaleNavigationPath;
 };
 
 /** This exposes renderer-owned framing witnesses without widening the shared renderer handle. */
@@ -131,8 +141,10 @@ export function mount(
       // This bounds probe frames the initial camera from resolved node positions, not from a drawn
       // frame; it always resolves at the resting phase (an explicit `undefined`) regardless of
       // `options.phase`, so an animated mount's very first camera placement never depends on which
-      // transient phase happened to be requested.
-      const provisionalScene = buildSceneWithCalibration(visualGraph, provisionalState, options.calibration, undefined);
+      // transient phase happened to be requested. `navigationPath` IS passed, unlike `phase`: it
+      // selects which nodes exist at all, so probing without it would frame the root graph while the
+      // drawn scene shows an entered world.
+      const provisionalScene = buildSceneWithCalibration(visualGraph, provisionalState, options.calibration, undefined, options.navigationPath);
       layoutPassCount += 1;
       const bounds = provisionalScene.nodes.length === 0
         ? provisionalBounds
@@ -145,7 +157,7 @@ export function mount(
       currentState = provisionalState;
     }
   }
-  const initialScenes = scenesForState(visualGraph, currentState, options.calibration, options.phase);
+  const initialScenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath);
   layoutPassCount += cameraKindCount();
   const live = new LiveSceneState(initialScenes, currentState.cameraKind, layoutPassCount);
   const retainedSceneReferences = new Set<Scene>([initialScenes.orthographic, initialScenes.perspective]);
@@ -314,7 +326,7 @@ export function mount(
       selectedId,
       focusedId,
     });
-    const scenes = scenesForState(visualGraph, currentState, options.calibration, options.phase);
+    const scenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath);
     live.replaceScenes(scenes, cameraKindCount());
     retainedSceneReferences.clear();
     retainedSceneReferences.add(scenes.orthographic);
@@ -445,12 +457,13 @@ function scenesForState(
   state: VisualState,
   calibration: CalibrationProfile | undefined,
   phase: number | undefined,
+  navigationPath: ScaleNavigationPath | undefined,
 ): CameraScenes {
   const orthographicState = createVisualState(graph, { ...state, cameraKind: ORTHOGRAPHIC });
   const perspectiveState = createVisualState(graph, { ...state, cameraKind: PERSPECTIVE });
   return {
-    orthographic: buildSceneWithCalibration(graph, orthographicState, calibration, phase),
-    perspective: buildSceneWithCalibration(graph, perspectiveState, calibration, phase),
+    orthographic: buildSceneWithCalibration(graph, orthographicState, calibration, phase, navigationPath),
+    perspective: buildSceneWithCalibration(graph, perspectiveState, calibration, phase, navigationPath),
   };
 }
 
@@ -465,11 +478,12 @@ function buildSceneWithCalibration(
   state: VisualState,
   calibration: CalibrationProfile | undefined,
   phase: number | undefined,
+  navigationPath: ScaleNavigationPath | undefined,
 ): Scene {
   const effectivePhase = state.reducedMotion ? undefined : phase;
   return calibration === undefined
-    ? buildScene(graph, state, undefined, undefined, undefined, effectivePhase)
-    : buildScene(graph, state, calibration, undefined, undefined, effectivePhase);
+    ? buildScene(graph, state, undefined, undefined, undefined, effectivePhase, navigationPath)
+    : buildScene(graph, state, calibration, undefined, undefined, effectivePhase, navigationPath);
 }
 
 function stateFromOptions(

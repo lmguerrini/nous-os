@@ -70,6 +70,7 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#engine/lod.ts",
     "#engine/morphology.ts",
     "#engine/organization.ts",
+    "#engine/scale-topology.ts",
     "#engine/tokens.ts",
     "#engine/visual-state.ts",
     "#render2d/model.ts",
@@ -193,6 +194,11 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["#engine/lod.ts", new Set(["LodBand"])],
     ["#engine/morphology.ts", new Set(["Morphology"])],
     ["#engine/organization.ts", new Set(["Organization"])],
+    // Exactly the navigation-position type, matching how the other governed axes reach this option
+    // shape (`Morphology`, `Organization`, `LodBand`): a type erased at compile time, never a
+    // function. Importing `enterChildWorld` or `holographicContext` here would be the renderer
+    // deciding navigation policy locally, and the symbol drift check below still refuses it.
+    ["#engine/scale-topology.ts", new Set(["ScaleNavigationPath"])],
     ["#engine/tokens.ts", new Set(["Palette", "Temperature", "Theme"])],
     ["#engine/visual-state.ts", new Set(["VisualState", "VisualStateCamera", "createVisualState"])],
     ["#render2d/model.ts", new Set(["SHIPPING_RENDER_DEFAULTS"])],

@@ -2,29 +2,37 @@ import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import { assertVisualGraphFieldRegister, createEngineGraphView, semanticDigest } from "#engine/contract.ts";
-import type { VisualEdge, VisualGraph, VisualNode } from "#engine/contract.ts";
+import type { VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import { indraLayout } from "#engine/organization.ts";
 import type { Organization } from "#engine/organization.ts";
-import type { ScaleTopology } from "#engine/scale-topology.ts";
+import type { ScaleNavigationPath, ScaleTopology } from "#engine/scale-topology.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
 import type { RenderOptions } from "#render2d/model.ts";
-import { cameraStateForBounds } from "#render3f/camera.tsx";
+import { cameraStateForBounds, resolvedNodeBounds } from "#render3f/camera.tsx";
+import type { Render3fFramingBox } from "#render3f/camera.tsx";
+import type { Coordinates } from "#engine/contract.ts";
 import { mount } from "#render3f/mount.tsx";
 import type { Render3fRendererHandle } from "#render3f/mount.tsx";
 import { shippingDarkFieldCss } from "#browser/lit-floor.ts";
 
-/** This is one request to render exactly the ids a ChildWorld (or the canonical root) names, under one governed grammar. */
+/**
+ * This is one request to render one governed position: the canonical root (navigationPath omitted),
+ * or a real navigated child world one level or deeper in (navigationPath present). The prepared
+ * fixture is handed to `mount()` whole either way -- this harness computes no node/relation id set of
+ * its own; `#render3f/mount.tsx`'s own `Render3fOptions.navigationPath` carries the position through
+ * to `buildScene` (`#scene/build.ts`), which alone resolves it to what is actually rendered (see
+ * `resolveScaleNavigationGraph`). A present `navigationPath.policy` must equal `scaleTopology`.
+ */
 export type ScaleTopologyCaptureRequest = {
-  readonly nodeIds: readonly string[];
-  readonly edgeIds: readonly string[];
   readonly morphology: Morphology;
   readonly organization: Organization;
   readonly projection: "2d" | "3d";
-  /** This is recorded into VisualState.scaleTopology and does not itself gate what is projected; the caller has already resolved the world's own id set. */
+  /** This is recorded into VisualState.scaleTopology and does not itself select what is rendered; `navigationPath`, if present, does that. */
   readonly scaleTopology: ScaleTopology;
+  readonly navigationPath?: ScaleNavigationPath;
 };
 
 export type ScaleTopologyFixtureWitness = {
@@ -89,6 +97,7 @@ export async function installScaleTopologyPage(): Promise<void> {
     document.body.style.margin = "0";
 
     let canonicalGraph: VisualGraph | undefined;
+    let fixtureCamera: VisualStateCamera | undefined;
     let fixture = "";
     let mounted: Render3fRendererHandle | undefined;
     const destroy = async (): Promise<void> => {
@@ -107,6 +116,7 @@ export async function installScaleTopologyPage(): Promise<void> {
       assertVisualGraphFieldRegister(nextGraph);
       canonicalGraph = nextGraph;
       fixture = fixtureUrl;
+      fixtureCamera = cameraFor(nextGraph);
       return {
         fixture,
         semanticDigest: semanticDigest(nextGraph),
@@ -115,16 +125,17 @@ export async function installScaleTopologyPage(): Promise<void> {
       };
     };
     const capture = async (request: ScaleTopologyCaptureRequest): Promise<ScaleTopologyCaptureWitness> => {
-      if (canonicalGraph === undefined || fixture === "") {
+      if (canonicalGraph === undefined || fixtureCamera === undefined || fixture === "") {
         throw new Error("scale-topology capture requires a prepared fixture");
       }
+      if (request.navigationPath !== undefined && request.navigationPath.policy !== request.scaleTopology) {
+        throw new Error("scale-topology capture navigationPath policy does not match its own scaleTopology");
+      }
       await destroy();
-      const projected = projectVisualGraph(canonicalGraph, request.nodeIds, request.edgeIds);
-      const camera = cameraFor(projected);
-      const visualState = createVisualState(projected, {
+      const visualState = createVisualState(canonicalGraph, {
         selectedId: null,
         focusedId: null,
-        camera,
+        camera: copyCamera(fixtureCamera),
         cameraKind: cameraKindFor(request.projection),
         morphology: request.morphology,
         organization: request.organization,
@@ -135,10 +146,38 @@ export async function installScaleTopologyPage(): Promise<void> {
         reducedMotion: CAPTURE_OPTIONS.reducedMotion,
         scaleTopology: request.scaleTopology,
       });
-      mounted = mount(container, projected, { ...CAPTURE_OPTIONS, morphology: request.morphology, organization: request.organization }, undefined, visualState);
+      mounted = mount(
+        container,
+        canonicalGraph,
+        {
+          ...CAPTURE_OPTIONS,
+          morphology: request.morphology,
+          organization: request.organization,
+          ...(request.navigationPath === undefined ? {} : { navigationPath: request.navigationPath }),
+        },
+        undefined,
+        visualState,
+      );
       await settle();
+      // A navigated (non-root) request renders a strictly narrower world than the canonical extent
+      // `fixtureCamera` above was framed against; this refines the camera against the MOUNTED,
+      // already-navigated scene's own resolved anchors, using the identical two functions mount.tsx's
+      // own bounds probe calls (`resolvedNodeBounds`, `cameraStateForBounds`) rather than a second
+      // projection computed here -- the navigated node set is never recomputed, only its already-
+      // mounted positions are read. The canonical root (`navigationPath` omitted, or present with no
+      // worlds entered) keeps `fixtureCamera` unrefined, matching every other top-level capture.
+      let expectedState = visualState;
+      if (request.navigationPath !== undefined && request.navigationPath.worlds.length > 0) {
+        const anchors = mounted.readWorldAnchorWitnesses();
+        if (anchors.length === 0) {
+          throw new Error("scale-topology capture navigationPath rendered no anchors to frame");
+        }
+        mounted.restoreCameraState(cameraStateForBounds(marginedAnchorBounds(anchors.map((anchor) => anchor.position))));
+        expectedState = createVisualState(canonicalGraph, { ...visualState, camera: mounted.readCameraState() });
+        await settle();
+      }
       const observed = mounted.readVisualState();
-      if (JSON.stringify(observed) !== JSON.stringify(visualState)) {
+      if (JSON.stringify(observed) !== JSON.stringify(expectedState)) {
         throw new Error("scale-topology capture did not retain the prepared VisualState");
       }
       const surface = mounted.readSurfaceWitness();
@@ -156,7 +195,7 @@ export async function installScaleTopologyPage(): Promise<void> {
           nodeIds: [...surface.nodeIds],
           edgeIds: [...surface.edgeIds],
         },
-        projectedSemanticDigest: semanticDigest(projected),
+        projectedSemanticDigest: semanticDigest(canonicalGraph),
         nodeViewportPositions,
       };
     };
@@ -165,60 +204,6 @@ export async function installScaleTopologyPage(): Promise<void> {
     errors.push(errorMessage(error));
     window.__scaleTopology = unavailableApi(errors);
   }
-}
-
-/**
- * This is the projection SCALE-TOPOLOGY-DESIGN.md requires: a child world is a set of ids, not a
- * graph, so rendering one means filtering the canonical VisualGraph down to exactly those ids. This
- * is also where the cross-level invariant is proved rather than assumed: every requested node and
- * relation id must already be a member of the canonical graph, and every requested relation's
- * endpoints must both be present in the requested node set.
- */
-function projectVisualGraph(
-  canonical: VisualGraph,
-  nodeIds: readonly string[],
-  edgeIds: readonly string[],
-): VisualGraph {
-  const canonicalNodeIds = new Set(canonical.nodes.map((node) => node.id));
-  const canonicalEdgeIds = new Set(canonical.edges.map((edge) => edge.id));
-  for (const nodeId of nodeIds) {
-    if (!canonicalNodeIds.has(nodeId)) {
-      throw new TypeError(`scale-topology projection names a node absent from the canonical graph: ${nodeId}`);
-    }
-  }
-  const requestedNodeIds = new Set(nodeIds);
-  const nodesById = new Map(canonical.nodes.map((node): [string, VisualNode] => [node.id, node]));
-  const edgesById = new Map(canonical.edges.map((edge): [string, VisualEdge] => [edge.id, edge]));
-  const projectedEdges: VisualEdge[] = [];
-  for (const edgeId of edgeIds) {
-    if (!canonicalEdgeIds.has(edgeId)) {
-      throw new TypeError(`scale-topology projection names a relation absent from the canonical graph: ${edgeId}`);
-    }
-    const edge = edgesById.get(edgeId);
-    if (edge === undefined) {
-      throw new TypeError(`scale-topology projection relation is unavailable: ${edgeId}`);
-    }
-    if (!requestedNodeIds.has(edge.source) || !requestedNodeIds.has(edge.target)) {
-      throw new TypeError(`scale-topology projection relation endpoint is missing from its own requested node set: ${edgeId}`);
-    }
-    projectedEdges.push(edge);
-  }
-  const projectedNodes = nodeIds.map((nodeId) => {
-    const node = nodesById.get(nodeId);
-    if (node === undefined) {
-      throw new TypeError(`scale-topology projection node is unavailable: ${nodeId}`);
-    }
-    return node;
-  });
-  const projected: VisualGraph = {
-    schema_version: canonical.schema_version,
-    policy_id: canonical.policy_id,
-    question: { valid_at: canonical.question.valid_at, recorded_as_of: canonical.question.recorded_as_of },
-    nodes: projectedNodes,
-    edges: projectedEdges,
-  };
-  assertVisualGraphFieldRegister(projected);
-  return projected;
 }
 
 function cameraFor(graph: VisualGraph): VisualStateCamera {
@@ -235,6 +220,27 @@ function cameraFor(graph: VisualGraph): VisualStateCamera {
   });
 }
 
+/**
+ * `resolvedNodeBounds` fits node CENTRES with no margin, which is right for mount.tsx's own probe
+ * (it only seeds a camera that interaction then moves) but wrong for a capture: the outermost nodes
+ * would sit half outside the frame, and the changed-pixel measurements below would be partly a
+ * measurement of clipped geometry. This pads that fit with the same `framingMarginPermille` every
+ * other capture in this evidence corpus uses, so a navigated frame is comparable to a root frame.
+ */
+function marginedAnchorBounds(points: readonly Coordinates[]): Render3fFramingBox {
+  const fitted = resolvedNodeBounds(points);
+  return {
+    x: paddedExtent(fitted.x),
+    y: paddedExtent(fitted.y),
+  };
+}
+
+function paddedExtent(extent: readonly [number, number]): readonly [number, number] {
+  const span = extent[1] - extent[0];
+  const margin = span === 0 ? 1 : (span * DEFAULT_CALIBRATION.layout.framingMarginPermille) / 1_000;
+  return [extent[0] - margin, extent[1] + margin];
+}
+
 function extentWithMargin(values: readonly number[]): readonly [number, number] {
   const minimum = Math.min(...values);
   const maximum = Math.max(...values);
@@ -247,6 +253,19 @@ function extentWithMargin(values: readonly number[]): readonly [number, number] 
 
 function cameraKindFor(projection: "2d" | "3d"): "orthographic" | "perspective" {
   return projection === "2d" ? ORTHOGRAPHIC : PERSPECTIVE;
+}
+
+function copyCamera(camera: VisualStateCamera): VisualStateCamera {
+  return {
+    x: camera.x,
+    y: camera.y,
+    angle: camera.angle,
+    ratio: camera.ratio,
+    bounds: {
+      x: [camera.bounds.x[0], camera.bounds.x[1]],
+      y: [camera.bounds.y[0], camera.bounds.y[1]],
+    },
+  };
 }
 
 function nextPaint(): Promise<void> {
