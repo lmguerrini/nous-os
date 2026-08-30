@@ -1,5 +1,6 @@
 // MUST be first: installs the frame counter before any renderer module evaluates.
 import { armFrameCounter, firedSinceArming, settleUncounted } from "#browser/frame-counter.ts";
+import { settleRenderedCanvases } from "#browser/gpu-sync.ts";
 import Sigma from "sigma";
 import { MultiDirectedGraph } from "graphology";
 import { toVisualGraph } from "#adapter/projection.ts";
@@ -511,8 +512,7 @@ async function boot(): Promise<void> {
     if (cameraState !== undefined) {
       product.restoreCameraState(cameraState);
     }
-    await nextPaint();
-    await nextPaint();
+    await settleRenderedCanvases(container);
   };
 
   const snapshotFor = (
@@ -765,8 +765,7 @@ async function boot(): Promise<void> {
     },
     async setGlowSuppressed(suppressed): Promise<Snapshot> {
       requiredHandle(product).setGlowVisible(!suppressed);
-      await nextPaint();
-      await nextPaint();
+      await settleRenderedCanvases(container);
       return read();
     },
     async setReducedMotion(next): Promise<Snapshot> {
@@ -781,8 +780,7 @@ async function boot(): Promise<void> {
       selectionIntent = id;
       requiredHandle(product).setSelection(id);
       checks.push(`selected ${id}`);
-      await nextPaint();
-      await nextPaint();
+      await settleRenderedCanvases(container);
       return read();
     },
     async setSelectionNoopControl(id): Promise<Snapshot> {
@@ -807,15 +805,13 @@ async function boot(): Promise<void> {
       }
       selectionIntent = id;
       handle.setSelection(id);
-      await nextPaint();
-      await nextPaint();
+      await settleRenderedCanvases(container);
       return read();
     },
     async clearSelection(): Promise<Snapshot> {
       selectionIntent = null;
       requiredHandle(product).clearSelection();
-      await nextPaint();
-      await nextPaint();
+      await settleRenderedCanvases(container);
       return read();
     },
     async focusElement(id): Promise<Snapshot> {
@@ -825,15 +821,13 @@ async function boot(): Promise<void> {
       }
       focusIntent = id;
       handle.setFocus(id);
-      await nextPaint();
-      await nextPaint();
+      await settleRenderedCanvases(container);
       return read();
     },
     async clearFocus(): Promise<Snapshot> {
       focusIntent = null;
       requiredHandle(product).clearFocus();
-      await nextPaint();
-      await nextPaint();
+      await settleRenderedCanvases(container);
       return read();
     },
     async restoreVisualStateRoundTrip(): Promise<VisualStateRoundTripWitness> {
@@ -851,8 +845,7 @@ async function boot(): Promise<void> {
       selectionIntent = restoredState.selectedId;
       focusIntent = restoredState.focusedId;
       shell.style.background = product.model.fieldColor;
-      await nextPaint();
-      await nextPaint();
+      await settleRenderedCanvases(container);
       const restoredHandle = requiredHandle(product);
       const restored = snapshotFor(restoredHandle, container);
       const restoredPoint = requiredNodePickPoint(restored, pickedNodeId, "restored VisualState frame");
@@ -990,8 +983,7 @@ async function boot(): Promise<void> {
       emptyContainer = control;
       emptyControl = mount(control, EMPTY_VISUAL_GRAPH, options);
       control.style.background = emptyControl.model.fieldColor;
-      await nextPaint();
-      await nextPaint();
+      await settleRenderedCanvases(control);
     },
     hideEmptyGraphControl(): void {
       emptyControl?.destroy();
@@ -1011,8 +1003,7 @@ async function boot(): Promise<void> {
       container.id = "evidence-selection-focus-noop-renderer";
       control.setSelectionFocusFactors(SELECTION_FOCUS_NOOP_CALIBRATION.selection);
       control.setEdgeLabelRevealVisible(false);
-      await nextPaint();
-      await nextPaint();
+      await settleRenderedCanvases(container);
       return snapshotFor(control, container);
     },
     async setSelectionFocusNoopControl(selection, focus): Promise<Snapshot> {
@@ -1032,8 +1023,7 @@ async function boot(): Promise<void> {
       } else {
         control.setFocus(focus);
       }
-      await nextPaint();
-      await nextPaint();
+      await settleRenderedCanvases(container);
       return snapshotFor(control, container);
     },
     hideSelectionFocusNoopControl(): void {

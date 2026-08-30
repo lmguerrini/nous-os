@@ -1,4 +1,5 @@
 import { armFrameCounter, firedSinceArming, settleUncounted } from "#browser/frame-counter.ts";
+import { settle, settleRendered, settleRenderedCanvases } from "#browser/gpu-sync.ts";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
@@ -393,8 +394,11 @@ export async function installParityPage(): Promise<void> {
         requiredMultiCameraHandle(handle, renderer).setCameraKind(PERSPECTIVE);
       }
       mounted.set(renderer, { graph: candidateGraph, handle, options });
-      await nextPaint();
-      await nextPaint();
+      if (renderer === "sigma-2d") {
+        await settleRenderedCanvases(container);
+      } else {
+        await settleRendered(container);
+      }
       return mountedWitness(renderer, handle);
     };
     const current = (renderer: ParityRenderer): MountedRenderer => {
@@ -531,7 +535,12 @@ export async function installParityPage(): Promise<void> {
         if (handle.getSelection() !== id) {
           throw new Error(`P4 ${renderer} did not retain selected id ${id}`);
         }
-        await nextPaint();
+        const container = containerFor(renderer);
+        if (renderer === "sigma-2d") {
+          await settleRenderedCanvases(container);
+        } else {
+          await settleRendered(container);
+        }
       },
       async selectedProvenance(renderer: ParityRenderer): Promise<{ readonly value: unknown; readonly origin: string } | null> {
         return current(renderer).handle.readSelectedProvenance();
@@ -549,7 +558,12 @@ export async function installParityPage(): Promise<void> {
         if (handle.getSelection() !== null) {
           throw new Error(`P4 ${renderer} did not clear selection`);
         }
-        await nextPaint();
+        const container = containerFor(renderer);
+        if (renderer === "sigma-2d") {
+          await settleRenderedCanvases(container);
+        } else {
+          await settleRendered(container);
+        }
       },
       async focus(renderer: ParityRenderer, id: string): Promise<void> {
         const handle = current(renderer).handle;
@@ -557,11 +571,21 @@ export async function installParityPage(): Promise<void> {
         if (handle.getFocus() !== id) {
           throw new Error(`P4 ${renderer} did not retain focused id ${id}`);
         }
-        await nextPaint();
+        const container = containerFor(renderer);
+        if (renderer === "sigma-2d") {
+          await settleRenderedCanvases(container);
+        } else {
+          await settleRendered(container);
+        }
       },
       async clearFocus(renderer: ParityRenderer): Promise<void> {
         current(renderer).handle.clearFocus();
-        await nextPaint();
+        const container = containerFor(renderer);
+        if (renderer === "sigma-2d") {
+          await settleRenderedCanvases(container);
+        } else {
+          await settleRendered(container);
+        }
       },
       async completePickingTargetSet(renderer: ParityRenderer): Promise<PickingTargetSetWitness> {
         const active = current(renderer);
@@ -660,8 +684,7 @@ export async function installParityPage(): Promise<void> {
         const switchable = requiredMultiCameraHandle(handle, renderer);
         const before = fullAppCameraWitness(handle);
         switchable.setCameraKind(target);
-        await nextPaint();
-        await nextPaint();
+        await settleRendered(containerFor(renderer));
         return { renderer, before, after: fullAppCameraWitness(handle) };
       },
       async prepareFullAppInteraction(renderer: FullAppRenderer): Promise<FullAppInteractionWitness> {
@@ -677,7 +700,7 @@ export async function installParityPage(): Promise<void> {
           }
         }
         handle.clearSelection();
-        await nextPaint();
+        await settleRendered(containerFor(renderer));
         if (selected === undefined) {
           throw new Error(`${renderer} has no live selection target with a non-empty derived origin`);
         }
@@ -734,7 +757,7 @@ export async function installParityPage(): Promise<void> {
       },
       async destroy(): Promise<void> {
         destroyMounted();
-        await nextPaint();
+        await settle();
       },
     };
     window.__parity = { ...api, ready: true };
@@ -1175,10 +1198,6 @@ function captureElementIdentity(element: HTMLElement): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function nextPaint(): Promise<void> {
-  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
 async function loadFullAppGraphs(): Promise<Readonly<Record<FullAppPolicy, VisualGraph>>> {
