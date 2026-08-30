@@ -17,6 +17,7 @@ import {
   sceneCameraFramingSubjects,
 } from "#render3f/camera-framing.ts";
 import type { ParityRenderer } from "#browser/parity.ts";
+import { settle, settleRendered } from "#browser/gpu-sync.ts";
 import { shippingDarkFieldCss } from "#browser/lit-floor.ts";
 import { buildScene } from "#scene/index.ts";
 import { immediateNeighbourhoodFraming } from "#test-render3f/review-framing.ts";
@@ -192,7 +193,15 @@ export async function installReview3dPage(): Promise<void> {
       }
       mounted = { handle };
       applyInteractionState(handle, requestedVisualState);
-      await settle();
+      // "sigma-2d" draws through a plain Canvas2D context, which has no separate GL command stream
+      // to flush -- its own draw calls are synchronous by spec, so the shared GL completion barrier
+      // (`settleRendered`, meaningful only for the WebGL-backed "r3f-2d"/"r3f-3d" mounts) does not
+      // apply and would find no render3f canvas to block on.
+      if (request.renderer === "sigma-2d") {
+        await settle();
+      } else {
+        await settleRendered(container);
+      }
       const observedVisualState = handle.readVisualState();
       assertRequestedVisualState(requestedVisualState, observedVisualState, request.renderer, request.view);
       const surface = handle.readSurfaceWitness();
@@ -500,16 +509,6 @@ function isReview3dView(value: string): value is Review3dView {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function nextPaint(): Promise<void> {
-  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
-}
-
-async function settle(): Promise<void> {
-  await nextPaint();
-  await nextPaint();
-  await nextPaint();
 }
 
 function unavailableApi(errors: readonly string[]): Review3dPageApi {

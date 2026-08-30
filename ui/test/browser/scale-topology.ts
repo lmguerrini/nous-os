@@ -16,6 +16,7 @@ import type { Render3fFramingBox } from "#render3f/camera.tsx";
 import type { Coordinates } from "#engine/contract.ts";
 import { mount } from "#render3f/mount.tsx";
 import type { Render3fRendererHandle } from "#render3f/mount.tsx";
+import { settle, settleRendered } from "#browser/gpu-sync.ts";
 import { shippingDarkFieldCss } from "#browser/lit-floor.ts";
 
 /**
@@ -172,7 +173,7 @@ export async function installScaleTopologyPage(): Promise<void> {
         undefined,
         visualState,
       );
-      await settle();
+      await settleRendered(container);
       // A navigated (non-root) request renders a strictly narrower world than the canonical extent
       // `fixtureCamera` above was framed against; this refines the camera against the MOUNTED,
       // already-navigated scene's own resolved anchors, using the identical two functions mount.tsx's
@@ -193,7 +194,7 @@ export async function installScaleTopologyPage(): Promise<void> {
         }
         mounted.restoreCameraState(cameraStateForBounds(marginedAnchorBounds(anchors.map((anchor) => anchor.position))));
         expectedState = createVisualState(canonicalGraph, { ...visualState, camera: mounted.readCameraState() });
-        await settle();
+        await settleRendered(container);
       }
       const observed = mounted.readVisualState();
       if (JSON.stringify(observed) !== JSON.stringify(expectedState)) {
@@ -285,16 +286,6 @@ function copyCamera(camera: VisualStateCamera): VisualStateCamera {
       y: [camera.bounds.y[0], camera.bounds.y[1]],
     },
   };
-}
-
-function nextPaint(): Promise<void> {
-  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
-}
-
-async function settle(): Promise<void> {
-  await nextPaint();
-  await nextPaint();
-  await nextPaint();
 }
 
 function unavailableApi(errors: readonly string[]): ScaleTopologyPageApi {

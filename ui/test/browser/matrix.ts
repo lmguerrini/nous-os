@@ -13,6 +13,7 @@ import type { RenderOptions } from "#render2d/model.ts";
 import { cameraStateForBounds } from "#render3f/camera.tsx";
 import { mount } from "#render3f/mount.tsx";
 import type { Render3fRendererHandle } from "#render3f/mount.tsx";
+import { settle, settleRendered } from "#browser/gpu-sync.ts";
 import { shippingDarkFieldCss } from "#browser/lit-floor.ts";
 import { buildScene } from "#scene/index.ts";
 
@@ -159,7 +160,7 @@ export async function installMatrixPage(): Promise<void> {
         reducedMotion: MATRIX_OPTIONS.reducedMotion,
       });
       mounted = mount(container, graph, { ...MATRIX_OPTIONS, morphology: request.morphology, organization: request.organization }, undefined, visualState);
-      await settle();
+      await settleRendered(container);
       const observed = mounted.readVisualState();
       if (JSON.stringify(observed) !== JSON.stringify(visualState)) {
         throw new Error(`matrix ${request.morphology}/${request.organization}/${request.projection} did not retain the prepared VisualState`);
@@ -248,16 +249,6 @@ function copyCamera(camera: VisualStateCamera): VisualStateCamera {
       y: [camera.bounds.y[0], camera.bounds.y[1]],
     },
   };
-}
-
-function nextPaint(): Promise<void> {
-  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
-}
-
-async function settle(): Promise<void> {
-  await nextPaint();
-  await nextPaint();
-  await nextPaint();
 }
 
 function unavailableApi(errors: readonly string[]): MatrixPageApi {

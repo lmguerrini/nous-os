@@ -13,6 +13,7 @@ import type { RenderOptions } from "#render2d/model.ts";
 import { cameraStateForBounds } from "#render3f/camera.tsx";
 import { mount } from "#render3f/mount.tsx";
 import type { Render3fRendererHandle } from "#render3f/mount.tsx";
+import { settle, settleRendered } from "#browser/gpu-sync.ts";
 import { shippingDarkFieldCss } from "#browser/lit-floor.ts";
 
 /** This is one calibration cell request over the shared controlled base: the fixture, morphology, organization and projection never vary here -- only palette and the fully resolved calibration profile do. */
@@ -144,7 +145,7 @@ export async function installCalibrationEvidencePage(): Promise<void> {
         undefined,
         visualState,
       );
-      await settle();
+      await settleRendered(container);
       const observed = mounted.readVisualState();
       if (JSON.stringify(observed) !== JSON.stringify(visualState)) {
         throw new Error(`calibration-evidence capture for palette ${request.palette} did not retain the prepared VisualState`);
@@ -209,16 +210,6 @@ function copyCamera(camera: VisualStateCamera): VisualStateCamera {
       y: [camera.bounds.y[0], camera.bounds.y[1]],
     },
   };
-}
-
-function nextPaint(): Promise<void> {
-  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
-}
-
-async function settle(): Promise<void> {
-  await nextPaint();
-  await nextPaint();
-  await nextPaint();
 }
 
 function unavailableApi(errors: readonly string[]): CalibrationPageApi {

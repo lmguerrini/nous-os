@@ -18,6 +18,7 @@ import type { Render3fFramingBox } from "#render3f/camera.tsx";
 import type { Coordinates } from "#engine/contract.ts";
 import { mount } from "#render3f/mount.tsx";
 import type { Render3fRendererHandle } from "#render3f/mount.tsx";
+import { settle, settleRendered } from "#browser/gpu-sync.ts";
 import { shippingDarkFieldCss } from "#browser/lit-floor.ts";
 
 /**
@@ -221,7 +222,7 @@ export async function installMotionPage(): Promise<void> {
         undefined,
         visualState,
       );
-      await settle();
+      await settleRendered(container);
       // navigationPath's own render input narrows what buildScene draws below the graph this harness
       // handed to mount() (`renderedGraph`, the full prepared fixture): `visualState.camera` above was
       // framed against that wider extent, the same rough starting point mount.tsx's own bounds probe
@@ -237,7 +238,7 @@ export async function installMotionPage(): Promise<void> {
         }
         mounted.restoreCameraState(cameraStateForBounds(marginedAnchorBounds(anchors.map((anchor) => anchor.position))));
         expectedState = createVisualState(renderedGraph, { ...visualState, camera: mounted.readCameraState() });
-        await settle();
+        await settleRendered(container);
       }
       // request.sharedCamera !== undefined: the mount above was already seeded (via `visualState.camera`
       // passed as mount()'s own `initialVisualState`) with the caller-supplied camera, so there is
@@ -339,16 +340,6 @@ function copyCamera(camera: VisualStateCamera): VisualStateCamera {
       y: [camera.bounds.y[0], camera.bounds.y[1]],
     },
   };
-}
-
-function nextPaint(): Promise<void> {
-  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
-}
-
-async function settle(): Promise<void> {
-  await nextPaint();
-  await nextPaint();
-  await nextPaint();
 }
 
 function unavailableApi(errors: readonly string[]): MotionPageApi {
