@@ -17,6 +17,13 @@ import { layoutAnchors } from "#engine/layout.ts";
 import type { LayoutAnchors } from "#engine/layout.ts";
 import type { ResolvedMaterial } from "#engine/lod.ts";
 import { MACRO, MESO, lodView } from "#engine/lod.ts";
+import {
+  STILL,
+  assertMotionModulationKeying,
+  motionModulation,
+  restingPhase,
+} from "#engine/motion-grammar.ts";
+import type { EdgeMotionModulation, MotionElementIds, MotionGrammar, MotionModulation, NodeMotionModulation } from "#engine/motion-grammar.ts";
 import type { EdgeMaterial, MorphologyProfile, NodeMaterial } from "#engine/morphology.ts";
 import { JUNCTION_MINIMUM_DEGREE, MYCELIUM, NEURAL, SHARED_SCENE_MATERIAL_TARGET, STELLAR, applyMorphology } from "#engine/morphology.ts";
 import { assertIndraLayout, flatOrganization, indraLayout } from "#engine/organization.ts";
@@ -80,13 +87,21 @@ type ResolvedSceneInputs = {
   readonly tokens: SceneTokenMap;
 };
 
-/** This builds a complete pure scene from governed engine inputs and does not allocate a renderer or inspect semantic content. */
+/**
+ * This builds a complete pure scene from governed engine inputs and does not allocate a renderer or
+ * inspect semantic content. `phase` is a render input, never governed state (it is deliberately absent
+ * from `VisualState` -- see motion-grammar.ts), so it is accepted only as this optional trailing
+ * argument and defaults to `visualState.motionGrammar`'s own resting phase, at which every policy's
+ * modulation is exact identity: an omitted phase, like an omitted `motionGrammar`, reproduces today's
+ * static scene byte for byte.
+ */
 export function buildScene(
   graph: VisualGraph,
   visualState: VisualState,
   calibration: CalibrationProfile = DEFAULT_CALIBRATION,
   tokensOrCamera?: TokenMap | CameraKind,
   cameraOrTokens?: CameraKind | TokenMap,
+  phase?: number,
 ): Scene {
   assertCalibrationProfile(calibration);
   assertVisualState(graph, visualState);
@@ -176,7 +191,169 @@ export function buildScene(
     camera: sceneCameraRequest(inputs.cameraKind, visualState, calibration),
   };
   assertSceneFieldRegister(scene);
-  return scene;
+  const motionPolicy = visualState.motionGrammar ?? STILL;
+  const motionPhase = phase ?? restingPhase(motionPolicy);
+  const motionScene = applyMotionGrammar(scene, engineGraph, motionPolicy, motionPhase);
+  assertSceneFieldRegister(motionScene);
+  return motionScene;
+}
+
+/**
+ * This is the one place motion touches an already fully-resolved scene: a pure post-pass, applied
+ * after every anchor, material, label, aggregate, and camera value above is already final, and keyed
+ * strictly by the governed graph's own node and relation ids. Placing it here rather than in a
+ * renderer means render3f and render2d need no change at all, and it makes Still's byte-identity to
+ * today's static scene structural -- Still's own modulation is exact identity for every element (see
+ * motion-grammar.ts), so this pass is a no-op arithmetic-wise whenever motion is unused -- rather than
+ * something a renderer would have to be trusted to preserve. It never recomputes layout, material,
+ * label selection (`selectedLabelIds` and each label's placement stay pinned to the static resolved
+ * layout, so a label never jitters as its node moves), aggregates, or camera; only the channels the
+ * motion axis itself declares move.
+ */
+function applyMotionGrammar(scene: Scene, graph: EngineGraph, policy: MotionGrammar, phase: number): Scene {
+  const elementIds: MotionElementIds = {
+    nodeIds: graph.nodes.map((node) => node.id),
+    edgeIds: graph.edges.map((edge) => edge.id),
+  };
+  const modulation = motionModulation(policy, phase, elementIds);
+  // This is the identity-continuity and no-invented-element guard enforced at every call, not merely
+  // tested for: a fabricated, dropped, or reordered id here would already have come from the axis
+  // itself, but this project's convention is to never trust a frozen dependency's own contract without
+  // also checking it at the boundary that consumes it.
+  assertMotionModulationKeying(elementIds, modulation);
+  if (phase === restingPhase(policy)) {
+    // Resting completeness is reasserted here, directly against the modulation this call actually
+    // used, at the one phase a reader may actually land in and stop -- not a second independently
+    // recomputed check the way the axis's own equivalent (assertRestingCompleteness) would require.
+    assertMotionRestingCompleteness(modulation);
+  }
+  const nodeModulationById = new Map(modulation.nodes.map((node) => [node.id, node] as const));
+  const edgeModulationById = new Map(modulation.edges.map((edge) => [edge.id, edge] as const));
+  const nodes = scene.nodes.map((node) => modulateSceneNode(node, requiredNodeMotionModulation(nodeModulationById, node.id)));
+  const edges = scene.edges.map((edge) => modulateSceneEdge(edge, requiredEdgeMotionModulation(edgeModulationById, edge.id)));
+  assertMotionGovernedIdentity(scene, nodes, edges);
+  return { ...scene, nodes, edges };
+}
+
+/**
+ * This is the resting-completeness invariant re-checked at build.ts's own integration boundary,
+ * directly against the concrete modulation one call actually produced (not a fabricated one, and not
+ * a second independently recomputed one): at a policy's own declared resting phase, a reader must
+ * never land on a governed node or relation that is dark, scaled away, or displaced. It is exported
+ * so this boundary's own refusal -- distinct in wording from the axis's equivalent, and reachable
+ * without needing a broken policy formula to reach it -- is directly testable against a fabricated
+ * MotionModulation.
+ */
+export function assertMotionRestingCompleteness(modulation: MotionModulation): void {
+  for (const node of modulation.nodes) {
+    if (node.opacityPermille !== SCENE_PERMILLE_SCALE
+      || node.scalePermille !== SCENE_PERMILLE_SCALE
+      || node.offsetXPermille !== 0
+      || node.offsetYPermille !== 0) {
+      throw new TypeError(`scene motion modulation leaves node dark, scaled away, or displaced at its own resting phase: ${node.id}`);
+    }
+  }
+  for (const edge of modulation.edges) {
+    if (edge.opacityPermille !== SCENE_PERMILLE_SCALE || edge.revealPermille !== SCENE_PERMILLE_SCALE) {
+      throw new TypeError(`scene motion modulation leaves relation dark at its own resting phase: ${edge.id}`);
+    }
+  }
+}
+
+/**
+ * This is the hard governed-identity invariant (see motion-grammar.ts's own framing: motion answers
+ * how the graph moves, never what exists), enforced at every call and not merely tested for: the
+ * modulated node and relation id sets, in order, must equal the pre-modulation scene's own -- which
+ * already equal the governed graph's, because `scene.nodes`/`scene.edges` above were built by mapping
+ * directly over `engineGraph.nodes`/`engineGraph.edges`. Motion may change how an element draws; it may
+ * never change which elements exist. It is exported so this boundary's own refusal is directly
+ * testable against a fabricated node or relation array, without needing a broken axis to reach it.
+ */
+export function assertMotionGovernedIdentity(scene: Scene, nodes: readonly SceneNode[], edges: readonly SceneEdge[]): void {
+  assertExactIdOrder(scene.nodes.map((node) => node.id), nodes.map((node) => node.id), "node");
+  assertExactIdOrder(scene.edges.map((edge) => edge.id), edges.map((edge) => edge.id), "relation");
+}
+
+function assertExactIdOrder(expected: readonly string[], actual: readonly string[], label: string): void {
+  if (expected.length !== actual.length || expected.some((id, index) => id !== actual[index])) {
+    throw new TypeError(`scene motion modulation changed the governed ${label} id set`);
+  }
+}
+
+/**
+ * This applies one node's resolved motion channels onto its already fully-resolved static drawing and
+ * does not recompute layout, material, or label placement. The offset channel is declared unitless in
+ * [-1000, 1000] by the motion axis (see motion-grammar.ts); the scene layer is the first place it
+ * meets a concrete drawn quantity, and the node's own already-resolved radius is the one per-node size
+ * already available here, so an offset reads as the same relative fraction of the node's own drawn
+ * size regardless of prominence, morphology, or LOD band, rather than requiring a new calibrated
+ * pixel constant. The halo is scaled by the same factor as the core so the two never visually
+ * decouple as a node's own scale channel breathes or shrinks.
+ */
+function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation): SceneNode {
+  const scaleFactor = motionFactor(modulation.scalePermille);
+  const offsetXPx = motionOffsetPx(modulation.offsetXPermille, node.radiusPx);
+  const offsetYPx = motionOffsetPx(modulation.offsetYPermille, node.radiusPx);
+  return {
+    ...node,
+    position: {
+      x: applyMotionOffset(node.position.x, offsetXPx),
+      y: applyMotionOffset(node.position.y, offsetYPx),
+      z: node.position.z,
+    },
+    radiusPx: applyMotionFactor(node.radiusPx, scaleFactor),
+    haloRadiusPx: applyMotionFactor(node.haloRadiusPx, scaleFactor),
+    opacityPermille: Math.round((node.opacityPermille * modulation.opacityPermille) / SCENE_PERMILLE_SCALE),
+  };
+}
+
+/**
+ * This applies one relation's resolved motion channels onto its already fully-resolved static drawing.
+ * Scene carries no separate reveal channel for a relation (see SCENE_FIELD_REGISTER.edge):
+ * `opacityPermille` is its only drawn-visibility channel, so reveal composes into it as the more
+ * restrictive of the two rather than being silently dropped -- every policy motion-grammar.ts defines
+ * today keeps a relation's own opacity and reveal numerically equal, so this composition changes
+ * nothing about their current behaviour, and it also holds correctly should a future policy ever let
+ * the two diverge.
+ */
+function modulateSceneEdge(edge: SceneEdge, modulation: EdgeMotionModulation): SceneEdge {
+  const visibilityPermille = Math.min(modulation.opacityPermille, modulation.revealPermille);
+  return {
+    ...edge,
+    opacityPermille: Math.round((edge.opacityPermille * visibilityPermille) / SCENE_PERMILLE_SCALE),
+  };
+}
+
+function motionFactor(valuePermille: number): number {
+  return valuePermille / SCENE_PERMILLE_SCALE;
+}
+
+function applyMotionFactor(value: number, factor: number): number {
+  return factor === 1 ? value : value * factor;
+}
+
+function motionOffsetPx(offsetPermille: number, referencePx: number): number {
+  return offsetPermille === 0 ? 0 : (offsetPermille / SCENE_PERMILLE_SCALE) * referencePx;
+}
+
+function applyMotionOffset(value: number, offsetPx: number): number {
+  return offsetPx === 0 ? value : value + offsetPx;
+}
+
+function requiredNodeMotionModulation(modulations: ReadonlyMap<string, NodeMotionModulation>, id: string): NodeMotionModulation {
+  const modulation = modulations.get(id);
+  if (modulation === undefined) {
+    throw new TypeError("scene motion modulation is unavailable for node");
+  }
+  return modulation;
+}
+
+function requiredEdgeMotionModulation(modulations: ReadonlyMap<string, EdgeMotionModulation>, id: string): EdgeMotionModulation {
+  const modulation = modulations.get(id);
+  if (modulation === undefined) {
+    throw new TypeError("scene motion modulation is unavailable for relation");
+  }
+  return modulation;
 }
 
 /** This resolves the complete node material token and does not convert it to renderer bytes. */
