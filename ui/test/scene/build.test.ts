@@ -775,6 +775,9 @@ function assertResolvedRendererInputs(
     ) {
       throw new Error(`node halo profile changed for ${node.id}`);
     }
+    if (node.minimumCoreDeviceRadiusPx !== calibration.salience.minimumCoreDeviceRadiusPx) {
+      throw new Error(`node minimum core device radius changed for ${node.id}`);
+    }
     const candidate = node.labelCandidacy;
     if (candidate === null) {
       continue;

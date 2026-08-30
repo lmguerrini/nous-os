@@ -43,6 +43,12 @@ export function assertNodeShaderTechnique(vertexShader: string, fragmentShader: 
     { name: "screen-space node expansion", source: vertexShader, marker: "u_resolutionDevicePx" },
     { name: "scene core radius", source: vertexShader, marker: "a_coreRadiusPx" },
     { name: "scene halo radius", source: vertexShader, marker: "a_haloRadiusPx" },
+    // CAP-13 F82: floors the core in DEVICE space, after camera projection, so a minimum-degree node
+    // framed by a wide camera cannot resolve under one device pixel -- the halo's own gap radius must
+    // be derived from this floored value (see the marker below) or a floored core would render clipped
+    // by its own, still-unfloored halo.
+    { name: "device-pixel core floor", source: vertexShader, marker: "a_minimumCoreDeviceRadiusPx" },
+    { name: "halo gap derived from the floored core", source: vertexShader, marker: "float haloGapRadius = coreRadius +" },
     { name: "scene halo samples", source: fragmentShader, marker: "texelFetch(u_haloStops" },
     // A GRADIENT core weighted toward the centre, and a halo sampled linearly. These two requirements
     // replace a pair that briefly asserted a hard-edged core and a square-rooted halo offset. Those

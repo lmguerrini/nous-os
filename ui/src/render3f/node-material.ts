@@ -32,6 +32,7 @@ in float a_haloCoreGapPx;
 in float a_opacityPermille;
 in float a_haloIntensityPermille;
 in float a_coreSharpnessPermille;
+in float a_minimumCoreDeviceRadiusPx;
 in float a_haloStopCount;
 in float a_instanceIndex;
 uniform mat4 modelViewMatrix;
@@ -56,9 +57,19 @@ void main() {
   vec4 clipCenter = projectionMatrix * viewCenter;
   float perspectiveScale = u_referenceViewDepth / max(-viewCenter.z, u_referenceViewDepth / u_permilleScale);
   float sizeScale = mix(u_orthographicSizeScale, perspectiveScale, u_isPerspective);
-  float coreRadius = a_coreRadiusPx * sizeScale * u_devicePixelRatio;
+  // A node's SCENE-space radius (a_coreRadiusPx) is shrunk by the same camera projection every other
+  // node is, so a minimum-degree node framed by a wide camera can resolve under one device pixel and
+  // read as a glowing line termination rather than a discrete node -- CAP-13 F82's own measured
+  // finding. Flooring here, in DEVICE space after projection, is the node-radius counterpart of the
+  // identical minimumDeviceWidthPx floor filament-material.ts already applies to relation width; it
+  // changes only how small a core is ever ALLOWED to resolve on screen, never a node's own scene-space
+  // size or a larger node's own (unaffected) prominence.
+  float coreRadius = max(a_coreRadiusPx * sizeScale * u_devicePixelRatio, a_minimumCoreDeviceRadiusPx * u_devicePixelRatio);
   float requestedHaloRadius = a_haloRadiusPx * sizeScale * u_devicePixelRatio;
-  float haloGapRadius = (a_coreRadiusPx + a_haloCoreGapPx) * sizeScale * u_devicePixelRatio;
+  // Derived from the FLOORED coreRadius, not the raw scene-space one: a halo whose gap radius still
+  // followed the unfloored core would resolve smaller than the floored core it is meant to surround,
+  // clipping the very core this floor exists to make visible.
+  float haloGapRadius = coreRadius + (a_haloCoreGapPx * sizeScale * u_devicePixelRatio);
   float haloRadius = max(requestedHaloRadius, haloGapRadius);
   vec2 corner = vec2((position.x * 2.0) - 1.0, position.y);
   vec2 clipOffset = corner * haloRadius * 2.0 / u_resolutionDevicePx;
@@ -139,6 +150,7 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
   geometry.setAttribute("a_opacityPermille", instanced(buffers.opacityPermille, scalarCount()));
   geometry.setAttribute("a_haloIntensityPermille", instanced(buffers.haloIntensityPermille, scalarCount()));
   geometry.setAttribute("a_coreSharpnessPermille", instanced(buffers.coreSharpnessPermille, scalarCount()));
+  geometry.setAttribute("a_minimumCoreDeviceRadiusPx", instanced(buffers.minimumCoreDeviceRadiiPx, scalarCount()));
   geometry.setAttribute("a_haloStopCount", instanced(buffers.haloStopCounts, scalarCount()));
   geometry.setAttribute("a_instanceIndex", instanced(instanceIndices(buffers.ids.length), scalarCount()));
   geometry.instanceCount = buffers.ids.length;
@@ -179,6 +191,7 @@ export function updateNodeRenderResources(resources: NodeRenderResources, buffer
   copyAttribute(resources.geometry, "a_opacityPermille", buffers.opacityPermille);
   copyAttribute(resources.geometry, "a_haloIntensityPermille", buffers.haloIntensityPermille);
   copyAttribute(resources.geometry, "a_coreSharpnessPermille", buffers.coreSharpnessPermille);
+  copyAttribute(resources.geometry, "a_minimumCoreDeviceRadiusPx", buffers.minimumCoreDeviceRadiiPx);
   copyAttribute(resources.geometry, "a_haloStopCount", buffers.haloStopCounts);
   const textureData = resources.haloStops.image.data;
   const expectedTextureLength = Math.max(scalarCount(), buffers.haloStopCount)

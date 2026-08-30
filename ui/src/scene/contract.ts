@@ -69,6 +69,8 @@ export type SceneNode = {
   readonly haloAlphaStops: readonly SceneHaloAlphaStop[];
   /** This is the governed core-alpha falloff exponent, scaled by one thousand, and does not change core radius. */
   readonly coreSharpnessPermille: number;
+  /** This is the governed minimum DEVICE-pixel core radius the node shader floors to after camera projection and does not change this node's own scene-space radiusPx. */
+  readonly minimumCoreDeviceRadiusPx: number;
   readonly labelCandidacy: SceneNodeLabelCandidacy;
   readonly renderedStateChannel: RenderedStateChannel;
   readonly interaction: SceneInteractionState;
@@ -240,7 +242,7 @@ export const SCENE_FIELD_REGISTER = {
   tokenEncoding: ["gamutCompressionRange", "gamutCompressionExponent"],
   node: [
     "id", "kind", "position", "radiusPx", "token", "opacityPermille", "junctionGeometry", "terminalTreatment", "haloRadiusPx", "haloCoreGapPx",
-    "haloIntensityPermille", "haloAlphaStops", "coreSharpnessPermille", "labelCandidacy", "renderedStateChannel", "interaction", "lodBand", "stackingPriority",
+    "haloIntensityPermille", "haloAlphaStops", "coreSharpnessPermille", "minimumCoreDeviceRadiusPx", "labelCandidacy", "renderedStateChannel", "interaction", "lodBand", "stackingPriority",
   ],
   edge: [
     "id", "source", "target", "junctionStartGeometry", "junctionEndGeometry", "terminalStartTreatment", "terminalEndTreatment", "path", "controlPoint", "bodyWidthPx", "widthStartPx", "widthEndPx", "pickTolerancePx", "minimumDeviceWidthPx", "token", "opacityPermille",
@@ -327,6 +329,7 @@ function assertNode(value: unknown, path: string): void {
     assertHaloAlphaStop(stop, `${path}.haloAlphaStops[${index}]`);
   }
   assertPositiveSafeInteger(node.coreSharpnessPermille, `${path}.coreSharpnessPermille`);
+  assertFiniteNumber(node.minimumCoreDeviceRadiusPx, `${path}.minimumCoreDeviceRadiusPx`);
   assertNodeLabelCandidacy(node.labelCandidacy, `${path}.labelCandidacy`);
   assertRenderedStateChannel(node.renderedStateChannel, `${path}.renderedStateChannel`);
   assertChoice(node.interaction, INTERACTION_STATES, `${path}.interaction`);

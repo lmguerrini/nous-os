@@ -27,6 +27,7 @@ test("scene buffers are deterministic under input ordering and preserve scene-su
     assert.equal(first.nodes.coreRadiiPx[index], Math.fround(node.radiusPx));
     assert.equal(first.nodes.haloRadiiPx[index], Math.fround(node.haloRadiusPx));
     assert.equal(first.nodes.haloCoreGapsPx[index], Math.fround(node.haloCoreGapPx));
+    assert.equal(first.nodes.minimumCoreDeviceRadiiPx[index], Math.fround(node.minimumCoreDeviceRadiusPx));
     assert.equal(first.nodes.opacityPermille[index], node.opacityPermille);
     assert.equal(first.nodes.haloStopCounts[index], node.haloAlphaStops.length);
   }

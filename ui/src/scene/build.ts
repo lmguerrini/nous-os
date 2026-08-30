@@ -956,6 +956,7 @@ function sceneNode(
     haloIntensityPermille,
     haloAlphaStops: resolveSceneHaloAlphaStops(haloIntensityPermille, calibration),
     coreSharpnessPermille: calibration.morphology[morphology.id].coreSharpnessPermille,
+    minimumCoreDeviceRadiusPx: calibration.salience.minimumCoreDeviceRadiusPx,
     labelCandidacy: materialIncludes(resolved.node, "label") ? {
       text: node.visual.role,
       token: copyToken(requiredToken(tokens, "text")),
