@@ -64,6 +64,17 @@ export type Render3fOptions = {
   readonly reducedMotion: boolean;
   readonly elapsedMilliseconds: number;
   readonly calibration?: CalibrationProfile;
+  /**
+   * This is the render input `buildScene` accepts as its own optional trailing `phase` argument (see
+   * scene/build.ts) and has no Sigma equivalent: motion-grammar phase only exists on this renderer's
+   * side of the shared option shape. Read once per mounted or rebuilt scene, the same way
+   * `calibration` is, and never written onto `VisualState` -- phase is a render input, not governed
+   * state (see motion-grammar.ts). Omitted (or `undefined`), every mounted scene is built at its
+   * policy's own resting phase, which is exact identity for every shipped policy: today's static
+   * scene, byte for byte. There is no free-running clock here; a caller that wants a different phase
+   * supplies one and this module never advances it on its own.
+   */
+  readonly phase?: number;
 };
 
 /** This exposes renderer-owned framing witnesses without widening the shared renderer handle. */
@@ -117,7 +128,11 @@ export function mount(
     const provisionalBounds = framingBox ?? bootstrapBounds();
     const provisionalState = stateFromOptions(visualGraph, options, cameraStateForBounds(provisionalBounds));
     if (framingBox === undefined) {
-      const provisionalScene = buildSceneWithCalibration(visualGraph, provisionalState, options.calibration);
+      // This bounds probe frames the initial camera from resolved node positions, not from a drawn
+      // frame; it always resolves at the resting phase (an explicit `undefined`) regardless of
+      // `options.phase`, so an animated mount's very first camera placement never depends on which
+      // transient phase happened to be requested.
+      const provisionalScene = buildSceneWithCalibration(visualGraph, provisionalState, options.calibration, undefined);
       layoutPassCount += 1;
       const bounds = provisionalScene.nodes.length === 0
         ? provisionalBounds
@@ -130,7 +145,7 @@ export function mount(
       currentState = provisionalState;
     }
   }
-  const initialScenes = scenesForState(visualGraph, currentState, options.calibration);
+  const initialScenes = scenesForState(visualGraph, currentState, options.calibration, options.phase);
   layoutPassCount += cameraKindCount();
   const live = new LiveSceneState(initialScenes, currentState.cameraKind, layoutPassCount);
   const retainedSceneReferences = new Set<Scene>([initialScenes.orthographic, initialScenes.perspective]);
@@ -299,7 +314,7 @@ export function mount(
       selectedId,
       focusedId,
     });
-    const scenes = scenesForState(visualGraph, currentState, options.calibration);
+    const scenes = scenesForState(visualGraph, currentState, options.calibration, options.phase);
     live.replaceScenes(scenes, cameraKindCount());
     retainedSceneReferences.clear();
     retainedSceneReferences.add(scenes.orthographic);
@@ -429,23 +444,32 @@ function scenesForState(
   graph: VisualGraph,
   state: VisualState,
   calibration: CalibrationProfile | undefined,
+  phase: number | undefined,
 ): CameraScenes {
   const orthographicState = createVisualState(graph, { ...state, cameraKind: ORTHOGRAPHIC });
   const perspectiveState = createVisualState(graph, { ...state, cameraKind: PERSPECTIVE });
   return {
-    orthographic: buildSceneWithCalibration(graph, orthographicState, calibration),
-    perspective: buildSceneWithCalibration(graph, perspectiveState, calibration),
+    orthographic: buildSceneWithCalibration(graph, orthographicState, calibration, phase),
+    perspective: buildSceneWithCalibration(graph, perspectiveState, calibration, phase),
   };
 }
 
+/**
+ * `phase` is forced to the resting phase (an explicit `undefined`, which `buildScene` itself
+ * resolves to `restingPhase(motionGrammar)`) whenever `state.reducedMotion` is set, regardless of
+ * what was requested: reduced motion is a complete path, not merely a smaller amplitude, so a reader
+ * who has asked for it never receives a mid-cycle frame.
+ */
 function buildSceneWithCalibration(
   graph: VisualGraph,
   state: VisualState,
   calibration: CalibrationProfile | undefined,
+  phase: number | undefined,
 ): Scene {
+  const effectivePhase = state.reducedMotion ? undefined : phase;
   return calibration === undefined
-    ? buildScene(graph, state)
-    : buildScene(graph, state, calibration);
+    ? buildScene(graph, state, undefined, undefined, undefined, effectivePhase)
+    : buildScene(graph, state, calibration, undefined, undefined, effectivePhase);
 }
 
 function stateFromOptions(

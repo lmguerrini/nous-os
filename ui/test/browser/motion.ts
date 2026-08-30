@@ -2,13 +2,14 @@ import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import { assertVisualGraphFieldRegister, createEngineGraphView, semanticDigest } from "#engine/contract.ts";
-import type { VisualGraph } from "#engine/contract.ts";
+import type { VisualEdge, VisualGraph, VisualNode } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import { restingPhase } from "#engine/motion-grammar.ts";
 import type { MotionGrammar } from "#engine/motion-grammar.ts";
 import { indraLayout } from "#engine/organization.ts";
 import type { Organization } from "#engine/organization.ts";
+import type { ScaleTopology } from "#engine/scale-topology.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
 import type { RenderOptions } from "#render2d/model.ts";
@@ -19,23 +20,41 @@ import { shippingDarkFieldCss } from "#browser/lit-floor.ts";
 
 /**
  * This mirrors matrix.ts's own page shape exactly (same fixtures, same camera derivation, same
- * capture options) with one addition: `motionGrammar` is carried through to the mounted VisualState.
- * It exists as its own page module, duplicating matrix.ts's bootstrap rather than importing it,
- * because that is the established precedent every sibling evidence suite (matrix.ts, scale-topology.ts)
- * already follows for its own page module.
+ * capture options) with two additions: `motionGrammar` is carried through to the mounted
+ * VisualState, and `phase`/`reducedMotion` are threaded into the mount-time render options
+ * `ui/src/render3f/mount.tsx` now accepts (see `Render3fOptions.phase`), rather than into
+ * VisualState -- phase is a render input, never governed state. It exists as its own page module,
+ * duplicating matrix.ts's bootstrap rather than importing it, because that is the established
+ * precedent every sibling evidence suite (matrix.ts, scale-topology.ts) already follows for its
+ * own page module.
  *
- * `mount()` (see #render3f/mount.tsx) never threads a `phase` argument into any of its own internal
- * `buildScene` calls -- bootstrap, `scenesForState`, and `applyMaterialState` all call it with no sixth
- * argument, so every mounted scene is always built at `restingPhase(motionGrammar)` regardless of what
- * this page requests. This capture API is honest about that: it renders exactly one phase, the
- * policy's own resting phase, and reports it as such. It cannot be used to render any other phase
- * without a change to `ui/src/render3f/mount.tsx`, which is outside this suite's write ceiling.
+ * A request that omits both `phase` and `reducedMotion` renders exactly what it always has: the
+ * policy's own resting phase, byte-identical to today's static scene. `reducedMotion: true`
+ * overrides any requested `phase` back to the resting phase (mount.tsx's own rule); `phase` only
+ * takes effect when `reducedMotion` is explicitly false.
  */
 export type MotionCaptureRequest = {
   readonly morphology: Morphology;
   readonly organization: Organization;
   readonly projection: "2d" | "3d";
   readonly motionGrammar: MotionGrammar;
+  /** Recorded into VisualState.scaleTopology and does not itself select what is projected; the caller has already resolved the world's own id set (see `nodeIds`/`edgeIds`). */
+  readonly scaleTopology?: ScaleTopology;
+  /**
+   * Present together, these project the prepared fixture down to exactly this id set before
+   * mounting -- mirrors scale-topology.ts's own `ScaleTopologyCaptureRequest`/`projectVisualGraph`
+   * precedent exactly, and for the same reason: a `VisualGraph`'s `semantic` fields are branded by
+   * object identity in a `WeakMap` (see #engine/contract.ts), which a `page.evaluate` payload cannot
+   * carry across the Node/browser boundary, so the projection has to happen here, in-browser,
+   * against the graph `prepare()` already built in this realm. Omitted, `capture` renders the
+   * prepared fixture's own full id set, exactly as before.
+   */
+  readonly nodeIds?: readonly string[];
+  readonly edgeIds?: readonly string[];
+  /** A render input passed to `mount()`'s own `phase` option, never to VisualState. Omitted, the mount renders at the policy's own resting phase. */
+  readonly phase?: number;
+  /** Defaults to this page's own shipping default (`true`) when omitted, matching every prior capture request's behaviour. Set false to let a requested `phase` actually take effect. */
+  readonly reducedMotion?: boolean;
 };
 
 export type MotionFixtureWitness = {
@@ -133,10 +152,18 @@ export async function installMotionPage(): Promise<void> {
         throw new Error("motion capture requires a prepared fixture");
       }
       await destroy();
-      const visualState = createVisualState(graph, {
+      if ((request.nodeIds === undefined) !== (request.edgeIds === undefined)) {
+        throw new Error("motion capture requires both nodeIds and edgeIds to project a child world, not one alone");
+      }
+      const renderedGraph = request.nodeIds !== undefined && request.edgeIds !== undefined
+        ? projectVisualGraph(graph, request.nodeIds, request.edgeIds)
+        : graph;
+      const camera = renderedGraph === graph ? fixtureCamera : cameraFor(renderedGraph);
+      const reducedMotion = request.reducedMotion ?? CAPTURE_OPTIONS.reducedMotion;
+      const visualState = createVisualState(renderedGraph, {
         selectedId: null,
         focusedId: null,
-        camera: copyCamera(fixtureCamera),
+        camera: copyCamera(camera),
         cameraKind: cameraKindFor(request.projection),
         morphology: request.morphology,
         organization: request.organization,
@@ -144,10 +171,22 @@ export async function installMotionPage(): Promise<void> {
         temperature: CAPTURE_OPTIONS.temperature,
         theme: CAPTURE_OPTIONS.theme,
         lodBand: CAPTURE_OPTIONS.lodBand,
-        reducedMotion: CAPTURE_OPTIONS.reducedMotion,
+        reducedMotion,
         motionGrammar: request.motionGrammar,
+        ...(request.scaleTopology === undefined ? {} : { scaleTopology: request.scaleTopology }),
       });
-      mounted = mount(container, graph, { ...CAPTURE_OPTIONS, morphology: request.morphology, organization: request.organization }, undefined, visualState);
+      mounted = mount(
+        container,
+        renderedGraph,
+        {
+          ...CAPTURE_OPTIONS,
+          morphology: request.morphology,
+          organization: request.organization,
+          ...(request.phase === undefined ? {} : { phase: request.phase }),
+        },
+        undefined,
+        visualState,
+      );
       await settle();
       const observed = mounted.readVisualState();
       if (JSON.stringify(observed) !== JSON.stringify(visualState)) {
@@ -161,6 +200,11 @@ export async function installMotionPage(): Promise<void> {
       const nodeViewportPositions = Object.fromEntries(
         handle.readWorldAnchorWitnesses().map((anchor) => [anchor.id, handle.graphToViewport(anchor.position)]),
       );
+      // Mirrors mount.tsx's own rule (see Render3fOptions.phase and buildSceneWithCalibration) rather
+      // than reading it back off the handle, which exposes no phase accessor: reduced motion forces
+      // the resting phase regardless of what was requested, otherwise the requested phase (defaulting
+      // to the resting phase when none was given) is what was actually rendered.
+      const phaseRendered = reducedMotion ? restingPhase(request.motionGrammar) : (request.phase ?? restingPhase(request.motionGrammar));
       return {
         cameraKind: observed.cameraKind,
         visualState: observed,
@@ -168,8 +212,8 @@ export async function installMotionPage(): Promise<void> {
           nodeIds: [...surface.nodeIds],
           edgeIds: [...surface.edgeIds],
         },
-        phaseRendered: restingPhase(request.motionGrammar),
-        semanticDigest: semanticDigest(graph),
+        phaseRendered,
+        semanticDigest: semanticDigest(renderedGraph),
         nodeViewportPositions,
       };
     };
@@ -242,6 +286,56 @@ function unavailableApi(errors: readonly string[]): MotionPageApi {
     capture: async () => unavailable(),
     destroy: async () => unavailable(),
   };
+}
+
+/**
+ * This is scale-topology.ts's own child-world projection, duplicated rather than imported (that
+ * module exports nothing this file is allowed to import from): filters the prepared fixture down to
+ * exactly the named ids, proving the cross-level invariant (every id already belongs to the
+ * canonical graph, every relation's endpoints are both in the requested node set) rather than
+ * assuming it.
+ */
+function projectVisualGraph(canonical: VisualGraph, nodeIds: readonly string[], edgeIds: readonly string[]): VisualGraph {
+  const canonicalNodeIds = new Set(canonical.nodes.map((node) => node.id));
+  const canonicalEdgeIds = new Set(canonical.edges.map((edge) => edge.id));
+  for (const nodeId of nodeIds) {
+    if (!canonicalNodeIds.has(nodeId)) {
+      throw new TypeError(`motion projection names a node absent from the canonical graph: ${nodeId}`);
+    }
+  }
+  const requestedNodeIds = new Set(nodeIds);
+  const nodesById = new Map(canonical.nodes.map((node): [string, VisualNode] => [node.id, node]));
+  const edgesById = new Map(canonical.edges.map((edge): [string, VisualEdge] => [edge.id, edge]));
+  const projectedEdges: VisualEdge[] = [];
+  for (const edgeId of edgeIds) {
+    if (!canonicalEdgeIds.has(edgeId)) {
+      throw new TypeError(`motion projection names a relation absent from the canonical graph: ${edgeId}`);
+    }
+    const edge = edgesById.get(edgeId);
+    if (edge === undefined) {
+      throw new TypeError(`motion projection relation is unavailable: ${edgeId}`);
+    }
+    if (!requestedNodeIds.has(edge.source) || !requestedNodeIds.has(edge.target)) {
+      throw new TypeError(`motion projection relation endpoint is missing from its own requested node set: ${edgeId}`);
+    }
+    projectedEdges.push(edge);
+  }
+  const projectedNodes = nodeIds.map((nodeId) => {
+    const node = nodesById.get(nodeId);
+    if (node === undefined) {
+      throw new TypeError(`motion projection node is unavailable: ${nodeId}`);
+    }
+    return node;
+  });
+  const projected: VisualGraph = {
+    schema_version: canonical.schema_version,
+    policy_id: canonical.policy_id,
+    question: { valid_at: canonical.question.valid_at, recorded_as_of: canonical.question.recorded_as_of },
+    nodes: projectedNodes,
+    edges: projectedEdges,
+  };
+  assertVisualGraphFieldRegister(projected);
+  return projected;
 }
 
 function errorMessage(error: unknown): string {
