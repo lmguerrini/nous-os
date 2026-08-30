@@ -428,7 +428,10 @@ function referenceBridge(cardId: string, disposition: string): Record<string, un
   return {
     card_id: cardId,
     cluster_id: "public",
-    epistemic_class: "public",
+    // "public" is this payload's marker for public-synthetic data, but epistemic_class is a governed
+    // EpistemicClass enum (explicit | derived | speculative), not free text -- carrying the marker
+    // here made every bridge fail the pinned-RENDERED check and took this whole suite down.
+    epistemic_class: "explicit",
     depth: "shallow",
     non_triviality: "public synthetic relation",
     consequence: "public synthetic consequence",
