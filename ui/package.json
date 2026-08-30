@@ -29,6 +29,7 @@
     "test:blind": "rm -rf dist/blind && BLIND_CAPTURES=1 playwright test --project=blind",
     "test:scale-topology": "rm -rf dist/scale-topology && SCALE_TOPOLOGY_CAPTURES=1 playwright test --project=scale-topology",
     "test:calibration-evidence": "rm -rf dist/calibration-evidence && CALIBRATION_EVIDENCE_CAPTURES=1 playwright test --project=calibration-evidence",
+    "test:motion": "rm -rf dist/motion && MOTION_CAPTURES=1 playwright test --project=motion",
     "evidence:layout-scale": "rm -f dist/evidence/layout-scale.json && node --experimental-strip-types test/layout-scale.ts"
   },
   "dependencies": {
