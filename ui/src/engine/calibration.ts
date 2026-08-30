@@ -133,6 +133,26 @@ export type CalibrationProfile = {
      * `filament.minimumDeviceWidthPermille` floor, which solves the same problem for relation width.
      */
     readonly minimumCoreDeviceRadiusPx: number;
+    /**
+     * This is the shared-scene floor on the RENDERED PROMINENCE a node's own core colour is computed
+     * from (scene/build.ts's `prominenceToken`), scaled by one thousand, and does not change a node's
+     * scene-space size, its halo, or its neighbours' relative prominence. Unfloored, a minimum-degree
+     * node's core colour travels zero distance from `accent2` toward `peak` -- CAP-13's own measured
+     * finding: a degree-1 bridge held a peak channel value in the high-80s against a near-black field,
+     * unmoved by the device-pixel radius floor above, because that floor only ever grew the area a fixed,
+     * dim colour filled and never touched the colour itself. This is the core-colour counterpart of that
+     * radius floor, in the same shared-scene-only, additive idiom: it gates the PROMINENCE VALUE fed to
+     * `prominenceToken`'s lightness-and-chroma travel between this floor and the node's own true rendered
+     * prominence, exactly as `haloProminenceFloorPermille` already gates halo intensity per morphology,
+     * except this floor is a single salience-level value because core legibility is not a per-morphology
+     * stylistic choice the way halo bloom is. `salience.minNodeSizePx`, `haloRadiusPx`, and every other
+     * prominence-driven channel keep reading the node's UNGATED `prominencePermille` -- degree still
+     * drives size and halo, so a degree-1 node stays visibly smaller and less haloed than a degree-3 one;
+     * only how dim its own core colour is allowed to go is bounded. Does not touch the legacy renderer:
+     * render2d/model.ts keeps its own, separately maintained copy of this arithmetic, untouched by this
+     * field.
+     */
+    readonly minimumCoreIntensityPermille: number;
   };
   readonly luminance: {
     /** This is the near-black shipping field lightness, resolved after dark theme selection. */
@@ -304,6 +324,7 @@ export const CALIBRATION_PARAMETER_PATHS = [
   "salience.minNodeSizePx",
   "salience.maxNodeSizePx",
   "salience.minimumCoreDeviceRadiusPx",
+  "salience.minimumCoreIntensityPermille",
   "luminance.fieldLightnessPermille",
   "luminance.filamentLightnessPermille",
   "luminance.nodePeakLightnessPermille",
@@ -499,7 +520,7 @@ export const CALIBRATION_PARAMETER_PATHS = [
 /** This is the default renderer profile and does not choose a semantic interpretation. All fractional values are scaled integers because canonical JSON accepts only integers. */
 export const DEFAULT_CALIBRATION: CalibrationProfile = {
   layout: { forceStrengthPermille: 850, idealEdgeLengthPx: 120, iterations: 180, gravityPermille: 90, seed: 17, cellJitterPermille: 340, framingMarginPermille: 150, minimumPairwiseAnchorSeparationPx: 16, minimumPairwiseAnchorSeparationGapPx: 2, minimumPairwiseAnchorSeparationIterations: 180, referenceFrameWidthPx: 1200, referenceFrameHeightPx: 800, minimumBridgeToIntraMedianRatioPermille: 2000, maximumBridgeToIntraMedianRatioPermille: 5000, minimumCommunityRegionFrameUtilisationPermille: 100, communityRegionDistributionRadiusPermille: 600, communityRegionDistributionVerticalRadiusPermille: 1100 },
-  salience: { degreeExponentPermille: 650, minNodeSizePx: 2, maxNodeSizePx: 14, minimumCoreDeviceRadiusPx: 8 },
+  salience: { degreeExponentPermille: 650, minNodeSizePx: 2, maxNodeSizePx: 14, minimumCoreDeviceRadiusPx: 8, minimumCoreIntensityPermille: 800 },
   luminance: { fieldLightnessPermille: 60, filamentLightnessPermille: 700, nodePeakLightnessPermille: 960, haloRadiusFactorPermille: 1100, haloFalloffPermille: 250, haloSampleCount: 12, coreBeforeHaloMinimumPx: 4, prominenceLightnessGainPermille: 850, prominenceChromaFalloffPermille: 1000, haloProbeRadiusFractionPermille: 700, minimumNodeContrastPermille: 1200, minimumCompositedPixelChannelDelta: 6, minimumRenderedNonHueSeparationMicro: 10, minimumRenderedCvdSeparationMicro: 100 },
   renderedState: {
     temporalEstablishedLightnessDeltaPermille: -36,

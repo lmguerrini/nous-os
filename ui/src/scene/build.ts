@@ -1434,12 +1434,13 @@ function prominenceToken(tokens: TokenMap, prominencePermille: number, calibrati
   const background = requiredToken(tokens, "background");
   const lowProminence = minimumNodeContrastToken(requiredToken(tokens, "accent2"), background, calibration);
   const highProminence = requiredToken(tokens, "peak");
+  const coreProminencePermille = coreIntensityProminencePermille(prominencePermille, calibration);
   const lightnessTravel = prominenceTravel(
-    prominencePermille,
+    coreProminencePermille,
     calibration.luminance.prominenceLightnessGainPermille,
   );
   const chromaTravel = prominenceTravel(
-    prominencePermille,
+    coreProminencePermille,
     calibration.luminance.prominenceChromaFalloffPermille,
   );
   const scale = SCENE_PERMILLE_SCALE;
@@ -1503,6 +1504,21 @@ function prominenceTravel(prominencePermille: number, gainPermille: number): num
     0,
     Math.min(SCENE_PERMILLE_SCALE, (prominencePermille * gainPermille) / SCENE_PERMILLE_SCALE),
   );
+}
+
+/**
+ * This gates the prominence value fed to a node's own core-colour travel between
+ * `salience.minimumCoreIntensityPermille` and the node's true rendered prominence, so a low-degree
+ * node's core colour never travels the zero distance from `accent2` toward `peak` that an unfloored
+ * value produced -- a crisp mark, not the dim smudge CAP-13 measured. Every other prominence-driven
+ * channel (size, halo, label priority) keeps consuming the argument passed in here unmodified; this
+ * floor only ever widens the input to `prominenceToken`'s own lightness-and-chroma travel, never the
+ * `prominencePermille` a caller already holds.
+ */
+function coreIntensityProminencePermille(prominencePermille: number, calibration: CalibrationProfile): number {
+  const floor = calibration.salience.minimumCoreIntensityPermille;
+  const scale = SCENE_PERMILLE_SCALE;
+  return floor + (((scale - floor) * prominencePermille) / scale);
 }
 
 function quadraticControlPoint(

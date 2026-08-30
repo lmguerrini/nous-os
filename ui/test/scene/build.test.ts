@@ -1233,3 +1233,61 @@ test("the resolved filament body width carries the calibrated profile and visibl
   assert.equal(control, false, "the bound-ratio claim must fail when one relation's body width is wrong");
   process.stdout.write("filament body-width ratio negative control observed: a single perturbed base broke the shared ratio\n");
 });
+
+/**
+ * CAP-13: an unfloored minimum-prominence node's core colour travelled zero distance from `accent2`
+ * toward `peak`, rendering as a dim smudge no larger core radius alone could fix. `salience.
+ * minimumCoreIntensityPermille` floors the PROMINENCE fed to that colour travel; this fixture's
+ * lowest-prominence stellar node (`source:src_FMA6T2MD80ZTS2JWZNXWSKY00X`, unchanged degree in this
+ * committed fixture) is the concrete case the floor exists for.
+ */
+test("a low-prominence node's core colour is floored while its size and halo keep tracking prominence unmodified", () => {
+  const graph = sceneFixtureGraph();
+  const state = sceneVisualState(graph);
+  const tokens = sceneTokens(state);
+  const floored = buildScene(graph, state, DEFAULT_CALIBRATION, tokens);
+  const unfloored = buildScene(graph, state, {
+    ...DEFAULT_CALIBRATION,
+    salience: { ...DEFAULT_CALIBRATION.salience, minimumCoreIntensityPermille: 0 },
+  }, tokens);
+
+  const dimNodeId = "source:src_FMA6T2MD80ZTS2JWZNXWSKY00X";
+  const flooredDim = requiredSceneNode(floored, dimNodeId);
+  const unflooredDim = requiredSceneNode(unfloored, dimNodeId);
+  assert.ok(
+    flooredDim.token.lightnessPermille > unflooredDim.token.lightnessPermille,
+    `the floor did not raise ${dimNodeId}'s core lightness: floored=${flooredDim.token.lightnessPermille}, `
+    + `unfloored=${unflooredDim.token.lightnessPermille}`,
+  );
+  assert.equal(flooredDim.radiusPx, unflooredDim.radiusPx, "the floor moved a node's own scene-space size");
+  assert.equal(flooredDim.haloRadiusPx, unflooredDim.haloRadiusPx, "the floor moved a node's own halo radius");
+  assert.equal(
+    flooredDim.haloIntensityPermille,
+    unflooredDim.haloIntensityPermille,
+    "the floor moved a node's own halo intensity",
+  );
+
+  // A node whose true rendered prominence is already at (or near) the top of the range is the gate's
+  // own identity case -- `floor + (scale - floor) * 1000 / scale === scale` -- so the floor and its
+  // absence must resolve to the identical colour for it.
+  const brightNodeId = "source:src_VMZQH8736EREJCH28C4Q2RPHA1";
+  const flooredBright = requiredSceneNode(floored, brightNodeId);
+  const unflooredBright = requiredSceneNode(unfloored, brightNodeId);
+  assert.equal(
+    flooredBright.token.lightnessPermille,
+    unflooredBright.token.lightnessPermille,
+    "the floor changed an already-prominent node's core colour",
+  );
+  assert.ok(
+    flooredBright.token.lightnessPermille > flooredDim.token.lightnessPermille,
+    "degree stopped being legible in core colour once the floor was applied",
+  );
+});
+
+function requiredSceneNode(scene: Scene, id: string): Scene["nodes"][number] {
+  const node = scene.nodes.find((candidate) => candidate.id === id);
+  if (node === undefined) {
+    throw new TypeError(`scene fixture no longer carries node ${id}`);
+  }
+  return node;
+}
