@@ -25,10 +25,15 @@ export type OpeningTemporalStep = {
 };
 
 /**
- * This is the opening's own required arrival instant: the unconditional all-time union, which a
- * caller passes to `buildScene`/`mount()` as an omitted `temporalInstant` (see
- * `resolveTemporalRenderGraph` in `#scene/build.ts`) -- today's accepted static graph, unchanged by
- * anything narrated before it.
+ * This is the opening's own required arrival instant: the unconditional all-time union, which a caller
+ * passes to `buildScene`/`mount()` as this exact, explicit `temporalInstant` value -- today's accepted
+ * static graph at rest, unchanged by anything narrated before it, but (unlike an omitted
+ * `temporalInstant`, which also renders the all-time union) carrying real continuity with the timeline
+ * that just played: `resolveTemporalRenderGraph` (`#scene/build.ts`) recognizes this exact sentinel and
+ * resolves it against `resolveTemporalMembership` at the timeline's own last governed instant, so an
+ * element the timeline already carried to rest stays there through the arrival rather than re-sweeping
+ * from empty -- see that function's own `resolveArrivalGeometryContinuity` for the full rule. Both paths
+ * render byte-identically at rest, for every policy, so this is never a second, different foundation.
  */
 export const OPENING_ARRIVAL_INSTANT = "all-time";
 

@@ -37,7 +37,13 @@ export type OpeningCaptureRequest = {
   readonly motionGrammar: MotionGrammar;
   readonly phase?: number;
   readonly reducedMotion?: boolean;
-  /** The unconditional all-time union, or a real ISO valid-time instant to render at. */
+  /**
+   * The unconditional all-time union (`#engine/opening.ts`'s own `OPENING_ARRIVAL_INSTANT`), or a real
+   * ISO valid-time instant to render at. Passed straight through to `mount()`'s own `temporalInstant` in
+   * every case, including "all-time": `#scene/build.ts`'s own `resolveTemporalRenderGraph` recognizes
+   * that exact sentinel and resolves the opening's own required-arrival continuity from it, which an
+   * omitted `temporalInstant` cannot do.
+   */
   readonly instant: "all-time" | string;
 };
 
@@ -154,7 +160,7 @@ export async function installOpeningPage(): Promise<void> {
           morphology: request.morphology,
           organization: request.organization,
           ...(request.phase === undefined ? {} : { phase: request.phase }),
-          ...(request.instant === "all-time" ? {} : { temporalInstant: request.instant }),
+          temporalInstant: request.instant,
         },
         undefined,
         visualState,

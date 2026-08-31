@@ -310,6 +310,9 @@ test("opening sequence evidence: real-history growth (assemble), off, and reduce
 // Helpers
 // ---------------------------------------------------------------------------------------------
 
+/** This is the render3f WebGL canvas alone, never the DOM label overlay `mount.tsx` layers over it -- see `requestCapture`'s own lit-floor call for why this second, narrower capture exists. */
+const CANVAS_LOCATOR_SELECTOR = '[data-render3f-canvas="true"]';
+
 function assertSameIdSet(actual: readonly string[], expected: readonly string[], label: string): void {
   const actualSet = [...actual].sort();
   const expectedSet = [...expected].sort();
@@ -420,6 +423,14 @@ async function requestCapture(
   const dimensions = pngDimensions(bytes, fileName);
   expect(dimensions).toEqual({ width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT });
   assertDarkestShippingField(image, `opening ${fileName}`);
+  // Checked against the CANVAS ALONE, never the composited frame this file screenshots above:
+  // assertLitPixelFloor's own floor is deliberately low (a couple of anti-aliased label glyphs already
+  // clear it), so run against the composited image it cannot tell "the graph was drawn" apart from "only
+  // a label was drawn" -- a guard that measures the thing it names must measure the canvas, matching
+  // review-opening.spec.ts's own identical fix for the identical reason. render3f draws every node,
+  // relation, and halo exclusively to this canvas and every label exclusively to a DOM overlay layered
+  // above it (see mount.tsx/labels.tsx), so a lit pixel here cannot be a label's.
+  //
   // Checked only at `rest`, never at an intermediate sweep frame: `rest` is the one phase every policy
   // structurally guarantees full visibility at (`assertMotionRestingCompleteness` in #scene/build.ts).
   // A sweep frame carries no such guarantee -- Assemble's own staggered reveal
@@ -429,7 +440,9 @@ async function requestCapture(
   // otherwise still-forming frame; see review-opening.spec.ts's own `requestCapture` for the identical
   // reasoning applied to that suite's denser sampling of the same real sequence.
   if (witness.surface.nodeIds.length > 0 && rest) {
-    assertLitPixelFloor(image, `opening ${fileName}`);
+    const canvasBytes = await page.locator(CANVAS_LOCATOR_SELECTOR).screenshot();
+    const canvasImage = decodePng(canvasBytes, `${fileName} canvas`);
+    assertLitPixelFloor(canvasImage, `opening ${fileName} canvas`);
   }
   return {
     fileName,

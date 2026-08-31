@@ -7,6 +7,7 @@ import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import type { VisualGraph } from "#engine/contract.ts";
 import { ASSEMBLE, MOTION_GRAMMARS, restingPhase } from "#engine/motion-grammar.ts";
 import type { MotionGrammar } from "#engine/motion-grammar.ts";
+import { OPENING_ARRIVAL_INSTANT } from "#engine/opening.ts";
 import { HIERARCHICAL, enterChildWorld, rootNavigationPath } from "#engine/scale-topology.ts";
 import { allTimeMembership, resolveTemporalMembership, resolveTemporalPlacements } from "#engine/temporal.ts";
 import { createVisualState } from "#engine/visual-state.ts";
@@ -194,6 +195,86 @@ test("Assemble under a temporal instant renders an element valid since an earlie
     }
   }
   assert.ok(sawGenuineSweep, "at least one node newly valid at T3 must still be mid-transition at a non-resting phase, or the sweep would be vacuous");
+});
+
+test("Assemble under the opening arrival instant renders every element already valid at the timeline's own last governed instant unchanged across phase, while an element the timeline never carried to rest still visibly sweeps in", () => {
+  // This is the CAP-13 post-audit repair, exercised directly: the opening's own arrival step used to be
+  // indistinguishable from an omitted temporalInstant (both a `null` continuity), which replayed the
+  // whole structural sweep across the entire graph at that one frame -- the exact defect the test above
+  // already proves fixed for every dated instant, just not for the frame the opening plays after them.
+  const graph = temporalGraph();
+  const placements = resolveTemporalPlacements(graph);
+  const state = temporalState(graph, ASSEMBLE);
+  const tokens = sceneTokens(state);
+  const midPhase = 0.4;
+  const restPhase = restingPhase(ASSEMBLE);
+  const midScene = buildScene(graph, state, DEFAULT_CALIBRATION, tokens, "orthographic", midPhase, undefined, OPENING_ARRIVAL_INSTANT);
+  const restScene = buildScene(graph, state, DEFAULT_CALIBRATION, tokens, "orthographic", restPhase, undefined, OPENING_ARRIVAL_INSTANT);
+
+  const allTime = allTimeMembership(graph);
+  assert.deepEqual(sceneIds(midScene).nodes, [...allTime.nodeIds].sort());
+  assert.deepEqual(sceneIds(restScene).nodes, [...allTime.nodeIds].sort());
+
+  let latestDatedInstant: string | undefined;
+  let latestDatedEpoch = Number.NEGATIVE_INFINITY;
+  for (const placement of placements.values()) {
+    if (placement.class === "unknown") {
+      continue;
+    }
+    const epoch = Date.parse(placement.at);
+    if (epoch > latestDatedEpoch) {
+      latestDatedEpoch = epoch;
+      latestDatedInstant = placement.at;
+    }
+  }
+  if (latestDatedInstant === undefined) {
+    throw new Error("temporal fixture unexpectedly has no dated placement");
+  }
+  const alreadyValidIds = resolveTemporalMembership(graph, placements, latestDatedInstant).nodeIds;
+  assert.ok(alreadyValidIds.size > 0, "the timeline's own last governed instant must already carry at least one node to rest for this test to mean anything");
+  // The all-time union includes the fixture's own withdrawn assertion (valid_to before the timeline's
+  // own last governed instant, see the "omitted temporalInstant" test above): it was NOT part of what
+  // the timeline last carried to rest, so it belongs on the sweeping side, alongside the temporally
+  // unknown orphan, never on the already-valid side.
+  assert.ok(!alreadyValidIds.has("assertion:a2"), "an element withdrawn before the timeline's own last governed instant must not count as already valid");
+
+  const midById = new Map(midScene.nodes.map((node) => [node.id, node] as const));
+  const restById = new Map(restScene.nodes.map((node) => [node.id, node] as const));
+
+  for (const id of alreadyValidIds) {
+    const mid = requiredSceneNode(midById, id);
+    const rest = requiredSceneNode(restById, id);
+    assert.equal(mid.opacityPermille, rest.opacityPermille, `node ${id}, already valid at the timeline's own last governed instant, must render at the same opacity mid-phase as at rest`);
+    assert.deepEqual(mid.position, rest.position, `node ${id}, already valid at the timeline's own last governed instant, must render at the same position mid-phase as at rest`);
+  }
+
+  let sawGenuineSweep = false;
+  for (const node of midScene.nodes) {
+    if (alreadyValidIds.has(node.id)) {
+      continue;
+    }
+    const mid = requiredSceneNode(midById, node.id);
+    const rest = requiredSceneNode(restById, node.id);
+    if (mid.opacityPermille !== rest.opacityPermille || JSON.stringify(mid.position) !== JSON.stringify(rest.position)) {
+      sawGenuineSweep = true;
+    }
+  }
+  assert.ok(sawGenuineSweep, "at least one element the timeline never carried to rest must still be mid-transition at the arrival's own non-resting phase, or the sweep would be vacuous");
+});
+
+test("the opening arrival's resting frame stays byte-identical to an omitted temporalInstant's, for every MotionGrammar policy", () => {
+  // This is the hard constraint the post-audit repair must never move: the opening's own arrival is
+  // graded against this SAME byte-identity, pixel for pixel, in ui/test/browser/opening.spec.ts; this
+  // pins the identical guarantee at the scene layer, independent of a mounted renderer or a screenshot.
+  const graph = temporalGraph();
+  for (const policy of MOTION_GRAMMARS) {
+    const state = temporalState(graph, policy);
+    const tokens = sceneTokens(state);
+    const restPhase = restingPhase(policy);
+    const arrival = buildScene(graph, state, DEFAULT_CALIBRATION, tokens, "orthographic", restPhase, undefined, OPENING_ARRIVAL_INSTANT);
+    const omitted = buildScene(graph, state, DEFAULT_CALIBRATION, tokens, "orthographic", restPhase, undefined, undefined);
+    assert.equal(JSON.stringify(arrival), JSON.stringify(omitted), `${policy} arrival diverged from the omitted-temporalInstant render at rest`);
+  }
 });
 
 test("negative control: a fabricated temporal membership containing an id absent from the canonical graph is refused by the same boundary scale-topology already shares", () => {

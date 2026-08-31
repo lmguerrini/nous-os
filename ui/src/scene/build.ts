@@ -39,6 +39,7 @@ import {
 import type { EdgeMotionModulation, MotionElementIds, MotionGrammar, MotionModulation, NodeMotionModulation } from "#engine/motion-grammar.ts";
 import type { EdgeMaterial, MorphologyProfile, NodeMaterial } from "#engine/morphology.ts";
 import { JUNCTION_MINIMUM_DEGREE, MYCELIUM, NEURAL, SHARED_SCENE_MATERIAL_TARGET, STELLAR, applyMorphology } from "#engine/morphology.ts";
+import { OPENING_ARRIVAL_INSTANT } from "#engine/opening.ts";
 import { assertIndraLayout, flatOrganization, indraLayout } from "#engine/organization.ts";
 import type { AggregateWindow } from "#engine/organization.ts";
 import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
@@ -129,6 +130,12 @@ type ResolvedSceneInputs = {
  * is drawn, never WHICH elements are present -- the same governed-identity guarantee
  * assertMotionGovernedIdentity already enforces for scale-topology narrowing now equally covers temporal
  * narrowing, because both narrow the graph this function hands to motion before motion ever runs.
+ * `temporalInstant` also accepts `#engine/opening.ts`'s own `OPENING_ARRIVAL_INSTANT` sentinel ("all-
+ * time") as a real, explicit argument, distinct from omitting the parameter: the rendered graph is the
+ * same unconditional all-time union an omitted temporalInstant already renders, but continuity is no
+ * longer null -- see `resolveTemporalRenderGraph`'s own docstring for why the opening's own required
+ * arrival needs that distinction and how it stays byte-identical to the omitted path at every policy's
+ * own resting phase regardless.
  */
 export function buildScene(
   graph: VisualGraph,
@@ -328,17 +335,76 @@ type TemporalRenderResult = {
  * only ever returns ids it read off `graph.nodes`/`graph.edges` in the first place, so that proof holds
  * by construction here. The continuity itself is resolved from the SAME `placements`/`membership` this
  * call already computed, never a third independent pass over the graph.
+ *
+ * `temporalInstant === OPENING_ARRIVAL_INSTANT` (`#engine/opening.ts`'s own "all-time" sentinel, passed
+ * explicitly rather than omitted) is this same axis's own required-arrival case, and the CAP-13
+ * post-audit repair this branch exists for: the opening's own arrival step used to be indistinguishable
+ * from an omitted `temporalInstant` (both rendered the unconditional all-time union with a `null`
+ * continuity), which replayed EVERY structural policy's own phase-0-to-rest sweep across the whole
+ * graph at that one frame -- the exact defect F90 already repaired for every dated instant, just not for
+ * the one frame the opening plays after them. The rendered graph is unchanged (still the unconditional
+ * all-time union, `graph` itself, never narrowed -- an arrival renders every canonical element,
+ * unconditionally, same as an omitted temporalInstant), but the continuity is resolved by
+ * `resolveArrivalGeometryContinuity` instead of staying `null`, so an element the timeline already
+ * carried to rest stays there.
  */
 function resolveTemporalRenderGraph(graph: VisualGraph, temporalInstant: string | undefined): TemporalRenderResult {
   if (temporalInstant === undefined) {
     return { graph, continuity: null };
   }
   const placements = resolveTemporalPlacements(graph);
+  if (temporalInstant === OPENING_ARRIVAL_INSTANT) {
+    return { graph, continuity: resolveArrivalGeometryContinuity(graph, placements) };
+  }
   const membership = resolveTemporalMembership(graph, placements, temporalInstant);
   const temporalGraph = projectNavigatedGraph(graph, membership.nodeIds, membership.edgeIds);
   assertNavigatedGraphSubset(graph, temporalGraph);
   const continuity = resolveTemporalGeometryContinuity(placements, membership, temporalInstant);
   return { graph: temporalGraph, continuity };
+}
+
+/**
+ * This resolves `OPENING_ARRIVAL_INSTANT`'s own `TemporalGeometryContinuity`, and does not reuse
+ * `resolveTemporalGeometryContinuity` unchanged because that function's own notion of "already valid"
+ * is relative to one narrowed instant's own membership -- the arrival narrows nothing (it is the
+ * unconditional all-time union), so there is no single rendered `instant` to compare a placement's own
+ * `at` against. What the opening's own timeline already carried to rest by the time this frame plays is
+ * exactly `resolveTemporalMembership`'s own real membership at the LATEST dated `at` any canonical
+ * placement carries (explicit or derived, never unknown) -- the same governed instant
+ * `resolveOpeningTimeline`'s own last step already played and rested at, found here from the same
+ * `placements` `resolveTemporalRenderGraph` already computed rather than a second independent pass or a
+ * hardcoded literal. A node still present at that instant was already carried to rest there and must
+ * stay there through the arrival, never re-sweep; a node whose own dated window had already closed by
+ * then (an expired explicit `valid_to`) was NOT part of what the timeline last left at rest, so -- per
+ * this same "already valid at the last governed instant" rule -- it renders as newly arriving here, the
+ * same as a TEMPORALLY UNKNOWN node the timeline never dated at all: both are real "remaining elements"
+ * of the all-time union this arrival, uniquely among every frame, actually reveals. A graph with no
+ * dated placement anywhere has no "latest dated instant" to measure against; every element is then
+ * genuinely new, matching an ordinary empty-timeline opening (`resolveOpeningTimeline`'s own documented
+ * legitimate empty-timeline case), so this returns an empty `alreadyValidNodeIds` rather than
+ * fabricating one.
+ */
+function resolveArrivalGeometryContinuity(
+  graph: VisualGraph,
+  placements: ReadonlyMap<string, TemporalPlacement>,
+): TemporalGeometryContinuity {
+  let latestDatedInstant: string | undefined;
+  let latestDatedEpochMillis = Number.NEGATIVE_INFINITY;
+  for (const placement of placements.values()) {
+    if (placement.class === "unknown") {
+      continue;
+    }
+    const epochMillis = temporalGeometryEpochMillis(placement.at);
+    if (epochMillis > latestDatedEpochMillis) {
+      latestDatedEpochMillis = epochMillis;
+      latestDatedInstant = placement.at;
+    }
+  }
+  if (latestDatedInstant === undefined) {
+    return { instant: OPENING_ARRIVAL_INSTANT, alreadyValidNodeIds: new Set() };
+  }
+  const membership = resolveTemporalMembership(graph, placements, latestDatedInstant);
+  return { instant: OPENING_ARRIVAL_INSTANT, alreadyValidNodeIds: membership.nodeIds };
 }
 
 /**

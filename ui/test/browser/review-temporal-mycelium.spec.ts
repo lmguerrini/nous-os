@@ -176,13 +176,22 @@ test("CAP-13 review-temporal Mycelium valid-time growth, densely sampled, member
         // own scaledLabelCandidacy fix, stayed legible while the node and every relation were fully
         // faded). render3f draws every node, relation, and halo exclusively to this canvas and every
         // label exclusively to a DOM overlay layered above it (see mount.tsx/labels.tsx), so a lit pixel
-        // here cannot be a label's. Phase 0 is Assemble's own documented "genuinely empty phase-0 pose"
-        // (see #scene/build.ts's own resolveStructuralGeometry docstring): staggeredProgress resolves
-        // every element's own reveal fraction to exactly 0 there, hub included, so the canvas is
-        // guaranteed blank by construction independent of governed membership, and is excluded here
-        // rather than asserted against -- once phase advances past 0 the hub has genuinely begun
-        // resolving and the canvas must show it.
-        if (rendered.witness.membership.nodeIds.length > 0 && phase > 0) {
+        // here cannot be a label's.
+        //
+        // Only step 0's own phase 0 is excluded, never every step's own phase 0: step 0 renders the
+        // FIRST governed instant, so nothing has any earlier instant to already be valid at --
+        // `resolveStructuralGeometry`'s own temporal continuity (`#scene/build.ts`) is a real no-op there,
+        // and Assemble's own documented "genuinely empty phase-0 pose" (staggeredProgress resolves every
+        // element's own reveal fraction to exactly 0, hub included) makes step 0's own canvas genuinely
+        // blank by construction. That guarantee does NOT extend to step 1..7's own phase 0, now that
+        // CAP-13's V3 repair is in place: a node already valid since an earlier governed instant renders
+        // complete, at rest, unconditionally on phase (`TEMPORAL_CONTINUITY_NODE_RESOLUTION`), so a later
+        // step's own phase-0 pose already lights every such node before its own newly-arriving elements
+        // begin resolving at all -- excluding every step's own phase 0 here would silently stop checking
+        // the exact frames CAP-13's V3 fix exists to keep lit, and a regression of that fix would go
+        // unnoticed by this suite.
+        const genuinelyBlankByConstruction = step.stepIndex === 0 && phase === 0;
+        if (rendered.witness.membership.nodeIds.length > 0 && !genuinelyBlankByConstruction) {
           assertLitPixelFloor(rendered.canvasImage, `review-temporal ${fileName} canvas`);
         }
         assertDarkestShippingField(rendered.image, `review-temporal ${fileName}`);
