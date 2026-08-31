@@ -28,9 +28,16 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_ROOT = REPO_ROOT / "src" / "nous_os"
 
-#: Third-party runtime dependencies this project has deliberately taken.
-#: Empty, and a change to it is a change to what a clean clone must install.
-ALLOWED_THIRD_PARTY: frozenset[str] = frozenset()
+#: Third-party runtime dependencies this project has deliberately taken. A
+#: change to this set is a change to what a clean clone must install, and each
+#: name here has to earn that: `nous_os.semantic` is a fully offline, in-process
+#: dense index with no substitute in the standard library -- `onnxruntime` runs
+#: the checkpoint, `tokenizers` and `huggingface_hub` load it and its vocabulary
+#: from the local cache, and `numpy` is the array type all three speak. Nothing
+#: else in the package reaches outside the standard library.
+ALLOWED_THIRD_PARTY: frozenset[str] = frozenset(
+    {"numpy", "onnxruntime", "tokenizers", "huggingface_hub"}
+)
 
 
 def _top_level_imports(source: Path) -> set[str]:

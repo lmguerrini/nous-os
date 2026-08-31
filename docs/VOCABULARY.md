@@ -202,6 +202,11 @@ left for a reader to discover by being wrong.
 | `ControlStateValidationRule` | `ui/src/engine/control-state.ts:114` | `field-register` · `boolean-field` · `eligible-policies-array` · `closed-vocabulary` · `duplicate-eligible-policy` · `selected-policy-eligible` · `calibration-range` · `opening-seed-range` · `playback-speed-positive` | The nine named ways a control-state preference record can be malformed, following `VisualStateValidationRule`'s own precedent: a refusal carries which rule it broke. |
 | `VisibilityMode` | `ui/src/engine/bookmark.ts:40` | `timeline` · `graph` · `both` | Where a bookmark may be offered: alongside the timeline, alongside the graph, or both. It never changes what a bookmark points at, only where a caller may surface it. |
 | `BookmarkValidationRule` | `ui/src/engine/bookmark.ts:68` | `field-register` · `temporal-position-unparseable` · `governed-target-id-type` · `finite-camera-number` · `positive-camera-ratio` · `title-required` · `note-type` · `closed-vocabulary` | The eight named ways a bookmark annotation can be malformed. None concerns the graph a bookmark may reference, because a bookmark is never canonical knowledge. |
+| `ModelSpec` | `src/nous_os/semantic.py:60` | — | Which weights a backend loads, named rather than defaulted. |
+| `Backend` | `src/nous_os/semantic.py:86` | — | Anything that turns text into fixed-size, L2-normalised vectors. Pluggable like `AliasTable`; nothing here is chosen for a caller who forgot to. |
+| `SemanticHit` | `src/nous_os/semantic.py:225` | — | One ranked result from the dense index. Rank 1 is the best match. |
+| `SemanticIndex` | `src/nous_os/semantic.py:235` | — | Chunk ids and the vectors that encode them, derived and reconstructible from chunks and a backend alone. |
+| `IndexStatus` | `src/nous_os/semantic.py:50` | `COMPLETE` · `NOT_RUN` | Whether the index actually holds vectors. Mirrors `RunStatus`: weights that could not be loaded are never read as an empty, completed search. |
 
 <!-- /vocabulary:technical -->
 
@@ -410,6 +415,7 @@ mapping above; a term is in one register or the other, and the build refuses a t
 | `Conflict` | Already the right word for a substantive disagreement kept visible. |
 | `BridgeCard` · `Endpoint` · `BridgeRegistry` | A proposed link and its record. See the note below on the word "bridge". |
 | `Chunk` · `SearchHit` · `CohesionStrategy` | Retrieval mechanics. |
+| `ModelSpec` · `Backend` · `SemanticHit` · `SemanticIndex` · `IndexStatus` | Dense retrieval mechanics: which weights, a pluggable encoder, one ranked result, the vectors, and whether they exist. A cosine score is a similarity computed over cached inference, never a claim the system knows or believes anything — mapping it epistemically would misstate what it is. |
 | `InclusionManifest` · `Pack` | What went in, and what was assembled. Both are records, not claims. |
 | `AliasTable` · `AttributedKey` · `DataRoot` | Configuration and naming machinery. |
 | `KnowledgeState` | The one place a knowledge word is already the technical word; nothing is added by a second. |

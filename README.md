@@ -123,6 +123,14 @@ tracked file content or names, one proves the data root really is
 configuration by running the same operation against two different roots, and
 one proves the package imports and works with no external tree present.
 
+`tests/test_semantic.py` is the one exception to "no machine-specific setup":
+it needs the `semantic` extra (`pip install .[semantic]`) and the two ONNX
+checkpoints `semantic.py` names already present in the local Hugging Face
+cache. Resolution passes `local_files_only`, so it never contacts the network
+and never downloads: a checkpoint that is not already cached is reported as
+not-run, with the reason, rather than fetched. Obtaining weights is a separate,
+deliberate human act.
+
 ## Fixtures
 
 `fixtures/synthetic/` holds small, wholly invented documents used by the tests.
@@ -147,6 +155,7 @@ src/
     ├── aliases.py        interchangeable ways of relating terms across languages
     ├── measure.py        the measuring instrument, and its third answer
     ├── chunking.py       pieces of a document that remember where they came from
+    ├── semantic.py       a derived, offline dense index over chunks, and its third answer
     ├── compile.py        assembling a pack, and recording what went into it
     ├── ablation.py       comparing assembly strategies without combining the numbers
     ├── capability.py     four kinds of authority, and the one door they are checked at

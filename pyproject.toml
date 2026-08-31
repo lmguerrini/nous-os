@@ -12,6 +12,11 @@ dependencies = []
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+# Only nous_os.semantic needs these, and only for an in-process, offline dense
+# index over already-cached ONNX checkpoints -- nothing else in the package
+# reaches for a third-party dependency, and this module does not either unless
+# a caller actually asks for semantic retrieval.
+semantic = ["numpy==2.4.4", "onnxruntime==1.25.1", "tokenizers==0.23.1", "huggingface-hub==1.13.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
