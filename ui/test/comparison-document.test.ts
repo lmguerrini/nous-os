@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { promisify } from "node:util";
+import { timingLiteralsIn } from "./comparison/timing-literal.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,9 +21,6 @@ const execFileAsync = promisify(execFile);
 const DOCUMENT_PATH = ["..", "docs", "RENDERER-COMPARISON.md"].join("/");
 const PERFORMANCE_PATH = ["dist", "evidence", "performance.json"].join("/");
 const LAYOUT_SCALE_PATH = ["dist", "evidence", "layout-scale.json"].join("/");
-
-/** Any figure carrying a time unit. The document's own rule is that timings live in artifacts. */
-const TIMING_FIGURE = /\b\d[\d,.]*\s*(?:ms|s|milliseconds?|seconds?)\b/giu;
 
 /** The document states this band for the engine's size; the command beside it must reproduce it. */
 const LINE_COUNT_BAND = { atLeast: 7000, below: 8000 } as const;
@@ -144,7 +142,7 @@ test("the engine size the document states is the size its own command reproduces
 const RENDERER_COMBINATION_BUDGET_MS = 120_000;
 
 function assertNoTimingFigures(document: string): void {
-  const found = [...document.matchAll(TIMING_FIGURE)].map((match) => match[0].trim());
+  const found = timingLiteralsIn(document);
   if (found.length > 0) {
     throw new Error(
       `docs/RENDERER-COMPARISON.md transcribes a timing figure (${found.join(", ")}). `

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import type { ComparisonAnalysis } from "#comparison/analyse.ts";
+import type { PerformanceResult } from "#browser/performance-contract.ts";
+import { renderDocument } from "./comparison/report-document.ts";
+import { redactTimingLiterals, timingLiteralsIn } from "./comparison/timing-literal.ts";
 
 /**
  * `docs/CAP-14-COMPARISON.md` is an artifact consumer, not prose that happens
@@ -13,14 +17,25 @@ const DOCUMENT_PATH = ["..", "docs", "CAP-14-COMPARISON.md"].join("/");
 const COMPARISON_PATH = ["dist", "evidence", "comparison.json"].join("/");
 const PERFORMANCE_PATH = ["dist", "evidence", "performance.json"].join("/");
 
-/** Any numeric figure carrying a time unit, matching the established document-consumer rule. */
-const TIMING_FIGURE = /\b\d[\d,.]*\s*(?:ms|s|milliseconds?|seconds?)\b/giu;
-
 type ComparisonClaim = {
   readonly kind: "projection" | "renderer";
   readonly dimension: string;
   readonly outcome: string;
+  readonly reason: string;
   readonly arms: { readonly first: string; readonly second: string };
+  readonly scales: readonly ComparisonScaleClaim[];
+};
+
+type ComparisonScaleClaim = {
+  readonly scale: string;
+  readonly first: SourceConfigurationClaim;
+  readonly second: SourceConfigurationClaim;
+};
+
+type SourceConfigurationClaim = {
+  readonly arm: string;
+  readonly scale: string;
+  readonly fixture: string | null;
 };
 
 type PerformanceClaim = {
@@ -34,18 +49,13 @@ type PerformanceRecordClaim = {
   readonly elementCounts: { readonly fixtureNodes: number | "NOT_RUN"; readonly fixtureEdges: number | "NOT_RUN" };
 };
 
-test("the CAP-14 report contains only timing figures derived from its artifacts", async () => {
-  const [document, comparison, performance] = await Promise.all([
-    readFile(DOCUMENT_PATH, "utf8"),
-    readJson(COMPARISON_PATH),
-    readJson(PERFORMANCE_PATH),
-  ]);
-  assertNoHandTranscribedTimingFigures(document, timingFiguresDerivedFrom(comparison, performance));
+test("the CAP-14 report transcribes no timing figure", async () => {
+  assertNoTimingFigures(await readFile(DOCUMENT_PATH, "utf8"));
 
-  // A stale timing in prose must fail even when every other report claim remains intact.
+  // The shared renderer-document rule must also refuse a stale CAP-14 timing in prose.
   assert.throws(
-    () => assertNoHandTranscribedTimingFigures("Median: 440 ms", new Set()),
-    /transcribes a timing figure/,
+    () => assertNoTimingFigures("Median: 440 ms"),
+    /contains a timing figure/,
   );
 });
 
@@ -57,7 +67,9 @@ test("the CAP-14 report carries every comparison dimension and its artifact outc
     kind: "projection",
     dimension: "frameTime",
     outcome: "NOT_COMPARABLE",
+    reason: "not comparable",
     arms: { first: "r3f-2d", second: "r3f-3d" },
+    scales: [],
   };
   assert.throws(
     () => assertDimensionOutcomes(
@@ -77,18 +89,33 @@ test("the renderer contrast cannot be read as a projection result", async () => 
   assert.throws(
     () => assertRendererContrastIsNotProjection(
       "### Renderer comparison — sigma-2d vs r3f-2d\n\nSame renderer; projection is the only variable. This supports a 2D-vs-3D statement.\n",
-      { kind: "renderer", dimension: "frameTime", outcome: "NOT_COMPARABLE", arms: { first: "sigma-2d", second: "r3f-2d" } },
+      {
+        kind: "renderer",
+        dimension: "frameTime",
+        outcome: "NOT_COMPARABLE",
+        reason: "not comparable",
+        arms: { first: "sigma-2d", second: "r3f-2d" },
+        scales: [],
+      },
     ),
     /renderer comparison/,
   );
 });
 
-test("every CAP-14 figure carries the artifact caveat", async () => {
-  const [document, performance] = await Promise.all([readFile(DOCUMENT_PATH, "utf8"), readJson(PERFORMANCE_PATH)]);
-  assertFiguresCarryCaveat(document, performanceClaim(performance).rasterisationLabel);
+test("every CAP-14 dimension carries the artifact caveat", async () => {
+  const [document, comparison, performance] = await Promise.all([
+    readFile(DOCUMENT_PATH, "utf8"),
+    readJson(COMPARISON_PATH),
+    readJson(PERFORMANCE_PATH),
+  ]);
+  assertDimensionsCarryCaveat(document, comparisonClaims(comparison), performanceClaim(performance).rasterisationLabel);
 
   assert.throws(
-    () => assertFiguresCarryCaveat("###### Evidence figure — r3f-2d\n\n- Median: `8 ms`\n", "software-rasterised — not GPU performance"),
+    () => assertDimensionsCarryCaveat(
+      "### Projection contrast — r3f-2d vs r3f-3d\n\n#### frameTime\n",
+      [{ kind: "projection", dimension: "frameTime", outcome: "NOT_COMPARABLE", reason: "not comparable", arms: { first: "r3f-2d", second: "r3f-3d" }, scales: [] }],
+      "software-rasterised — not GPU performance",
+    ),
     /has no caveat/,
   );
 });
@@ -110,41 +137,69 @@ test("the CAP-14 report states fixture counts recorded by performance evidence",
   );
 });
 
-function assertNoHandTranscribedTimingFigures(document: string, derivedFigures: ReadonlySet<string>): void {
-  const found = [...document.matchAll(TIMING_FIGURE)].map((match) => match[0].trim());
-  const transcribed = found.filter((figure) => !derivedFigures.has(figure));
-  if (transcribed.length > 0) {
+test("every non-comparable CAP-14 dimension preserves the instrument reason without its timing literal", async () => {
+  const [document, comparison] = await Promise.all([readFile(DOCUMENT_PATH, "utf8"), readJson(COMPARISON_PATH)]);
+  assertNotComparableReasons(document, comparisonClaims(comparison));
+
+  assert.throws(
+    () => assertNotComparableReasons(
+      "### Projection contrast — r3f-2d vs r3f-3d\n\n#### frameTime\n\nOutcome: `NOT_COMPARABLE`\n\nReason (instrument wording): another reason\n",
+      [{ kind: "projection", dimension: "frameTime", outcome: "NOT_COMPARABLE", reason: "instrument reason", arms: { first: "r3f-2d", second: "r3f-3d" }, scales: [] }],
+    ),
+    /instrument reason/,
+  );
+});
+
+test("every CAP-14 dimension points directly to its outcome and value artifacts", async () => {
+  const [document, comparison] = await Promise.all([readFile(DOCUMENT_PATH, "utf8"), readJson(COMPARISON_PATH)]);
+  assertDimensionArtifactPointers(document, comparisonClaims(comparison));
+
+  assert.throws(
+    () => assertDimensionArtifactPointers(
+      "### Projection contrast — r3f-2d vs r3f-3d\n\n#### frameTime\n\nOutcome: `NOT_COMPARABLE`\n",
+      [{
+        kind: "projection",
+        dimension: "frameTime",
+        outcome: "NOT_COMPARABLE",
+        reason: "not comparable",
+        arms: { first: "r3f-2d", second: "r3f-3d" },
+        scales: [{ scale: "10^2", first: { arm: "r3f-2d", scale: "10^2", fixture: "stress-100.json" }, second: { arm: "r3f-3d", scale: "10^2", fixture: "stress-100.json" } }],
+      }],
+    ),
+    /artifact pointer/,
+  );
+});
+
+test("CAP-14 document rendering is byte-stable for repeated and median-different artifacts", async () => {
+  const [comparison, performance] = await Promise.all([readJson(COMPARISON_PATH), readJson(PERFORMANCE_PATH)]);
+  const analysis = comparison as ComparisonAnalysis;
+  const source = performance as PerformanceResult;
+  const first = renderDocument(analysis, source);
+  const repeated = renderDocument(analysis, source);
+  assertIdenticalBytes(first, repeated, "repeated rendering from the same artifacts");
+
+  const medianDifferent = withDifferentMedians(analysis);
+  assert.deepEqual(comparisonClaims(medianDifferent), comparisonClaims(analysis), "the control artifact must retain every outcome and identity");
+  assert.notDeepEqual(medianValues(medianDifferent), medianValues(analysis), "the control artifact must change measured medians");
+  assertIdenticalBytes(first, renderDocument(medianDifferent, source), "rendering from median-different artifacts with identical outcomes");
+
+  const measurementsDifferent = withDifferentMeasurementValues(source);
+  assert.notDeepEqual(measurementsDifferent, source, "the control source artifact must change its measured values");
+  assertIdenticalBytes(first, renderDocument(analysis, measurementsDifferent), "rendering from different p95, sample, and memory values");
+
+  assert.throws(
+    () => assertIdenticalBytes("Outcome: `MEASURED`\nMedian: 8 ms\n", "Outcome: `MEASURED`\nMedian: 9 ms\n", "a document that transcribes a median"),
+    /not byte-stable/,
+  );
+});
+
+function assertNoTimingFigures(document: string): void {
+  const found = timingLiteralsIn(document);
+  if (found.length > 0) {
     throw new Error(
-      `docs/CAP-14-COMPARISON.md transcribes a timing figure (${transcribed.join(", ")}) that neither artifact derives.`,
+      `docs/CAP-14-COMPARISON.md contains a timing figure (${found.join(", ")}). Timings belong in the artifact that produced them.`,
     );
   }
-}
-
-function timingFiguresDerivedFrom(...artifacts: readonly unknown[]): ReadonlySet<string> {
-  const figures = new Set<string>();
-  for (const artifact of artifacts) {
-    const serialized = JSON.stringify(artifact);
-    for (const match of serialized.matchAll(TIMING_FIGURE)) {
-      figures.add(match[0].trim());
-    }
-    collectMedianFigures(artifact, figures);
-  }
-  return figures;
-}
-
-function collectMedianFigures(value: unknown, figures: Set<string>): void {
-  if (Array.isArray(value)) {
-    value.forEach((entry) => collectMedianFigures(entry, figures));
-    return;
-  }
-  if (typeof value !== "object" || value === null) {
-    return;
-  }
-  const record = value as Record<string, unknown>;
-  if (typeof record.medianMs === "number") {
-    figures.add(`${String(record.medianMs)} ms`);
-  }
-  Object.values(record).forEach((entry) => collectMedianFigures(entry, figures));
 }
 
 function assertDimensionOutcomes(document: string, claims: readonly ComparisonClaim[]): void {
@@ -175,24 +230,113 @@ function assertRendererContrastIsNotProjection(document: string, renderer: Compa
   }
 }
 
-function assertFiguresCarryCaveat(document: string, caveat: string): void {
-  const headings = [...document.matchAll(/^###### .+$/gmu)];
-  let figureCount = 0;
-  for (const [index, figure] of headings.entries()) {
-    if (!/^###### (?:Evidence|Comparison) figure — /u.test(figure[0])) {
-      continue;
-    }
-    figureCount += 1;
-    const start = figure.index ?? 0;
-    const next = headings[index + 1]?.index ?? document.length;
-    const block = document.slice(start, next);
-    if (!block.includes(`- Caveat: \`${caveat}\``)) {
-      throw new Error(`CAP-14 figure ${figure[0]} has no caveat ${caveat}`);
+function assertDimensionsCarryCaveat(document: string, claims: readonly ComparisonClaim[], caveat: string): void {
+  for (const claim of claims) {
+    const contrast = contrastSection(document, claim);
+    const dimension = sectionFromHeading(contrast, `#### ${claim.dimension}`, /^#### /mu);
+    if (dimension === null || !dimension.includes(`- Caveat: \`${caveat}\``)) {
+      throw new Error(`CAP-14 dimension ${claim.kind} ${claim.dimension} has no caveat ${caveat}`);
     }
   }
-  if (figureCount === 0) {
-    throw new Error("CAP-14 report records no figures to consume");
+}
+
+function assertNotComparableReasons(document: string, claims: readonly ComparisonClaim[]): void {
+  for (const claim of claims.filter((candidate) => candidate.outcome === "NOT_COMPARABLE" || candidate.outcome === "NOT_RUN")) {
+    const contrast = contrastSection(document, claim);
+    const dimension = sectionFromHeading(contrast, `#### ${claim.dimension}`, /^#### /mu);
+    const reason = redactTimingLiterals(claim.reason);
+    if (dimension === null || !dimension.includes(`Reason (instrument wording): ${reason}`)) {
+      throw new Error(`CAP-14 report omits the instrument reason for ${claim.kind} ${claim.dimension}`);
+    }
   }
+}
+
+function assertDimensionArtifactPointers(document: string, claims: readonly ComparisonClaim[]): void {
+  for (const claim of claims) {
+    const contrast = contrastSection(document, claim);
+    const dimension = sectionFromHeading(contrast, `#### ${claim.dimension}`, /^#### /mu);
+    if (dimension === null) {
+      throw new Error(`CAP-14 report has no artifact pointer for ${claim.kind} ${claim.dimension}`);
+    }
+    const expected = [
+      `- Outcome artifact: \`${COMPARISON_PATH}\`; regenerate: \`npm --prefix ui run evidence:comparison\`; key: \`${comparisonKey(claim)}\`.`,
+      `- Value artifact: \`${PERFORMANCE_PATH}\`; regenerate: \`npm --prefix ui run test:performance\`; keys:`,
+      ...claim.scales.map((scale) => `  - \`${performanceValueKey(scale.first, claim.dimension)}\`; \`${performanceValueKey(scale.second, claim.dimension)}\`.`),
+    ];
+    if (!expected.every((pointer) => dimension.includes(pointer))) {
+      throw new Error(`CAP-14 report has no complete artifact pointer for ${claim.kind} ${claim.dimension}`);
+    }
+  }
+}
+
+function comparisonKey(claim: ComparisonClaim): string {
+  return [
+    `comparisons[kind=${claim.kind}]`,
+    `[arms.first=${claim.arms.first}]`,
+    `[arms.second=${claim.arms.second}]`,
+    `[dimension=${claim.dimension}]`,
+  ].join("");
+}
+
+function performanceValueKey(configuration: SourceConfigurationClaim, dimension: string): string {
+  return `records[renderer=${configuration.arm}][scale=${configuration.scale}].measurements[${dimension}]`;
+}
+
+function assertIdenticalBytes(first: string, second: string, subject: string): void {
+  if (first !== second) {
+    throw new Error(`CAP-14 report is not byte-stable for ${subject}`);
+  }
+}
+
+function withDifferentMedians(analysis: ComparisonAnalysis): ComparisonAnalysis {
+  return changeMedians(analysis) as ComparisonAnalysis;
+}
+
+function changeMedians(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => changeMedians(entry));
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+    key,
+    key === "medianMs" && typeof entry === "number" ? entry + 1 : changeMedians(entry),
+  ]));
+}
+
+function medianValues(value: unknown): readonly number[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => medianValues(entry));
+  }
+  if (typeof value !== "object" || value === null) {
+    return [];
+  }
+  const record = value as Record<string, unknown>;
+  return [
+    ...(typeof record.medianMs === "number" ? [record.medianMs] : []),
+    ...Object.values(record).flatMap((entry) => medianValues(entry)),
+  ];
+}
+
+function withDifferentMeasurementValues(source: PerformanceResult): PerformanceResult {
+  return changeMeasurementValues(source, false) as PerformanceResult;
+}
+
+function changeMeasurementValues(value: unknown, insideMeasurements: boolean): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => changeMeasurementValues(entry, insideMeasurements));
+  }
+  if (typeof value === "number") {
+    return insideMeasurements ? value + 1 : value;
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+    key,
+    changeMeasurementValues(entry, insideMeasurements || key === "measurements"),
+  ]));
 }
 
 type FixtureCounts = { readonly nodes: number | "NOT_RUN"; readonly edges: number | "NOT_RUN" };
@@ -268,12 +412,27 @@ function comparisonClaims(value: unknown): readonly ComparisonClaim[] {
     const record = requiredRecord(candidate, `comparison ${index}`);
     const arms = requiredRecord(record.arms, `comparison ${index} arms`);
     const kind = record.kind;
-    if ((kind !== "projection" && kind !== "renderer") || typeof record.dimension !== "string" || typeof record.outcome !== "string"
+    const scales = requiredArray(record.scales, `comparison ${index} scales`).map((scaleCandidate, scaleIndex) => {
+      const scale = requiredRecord(scaleCandidate, `comparison ${index} scale ${scaleIndex}`);
+      const first = requiredRecord(requiredRecord(scale.first, `comparison ${index} scale ${scaleIndex} first`).provenance, `comparison ${index} scale ${scaleIndex} first provenance`);
+      const second = requiredRecord(requiredRecord(scale.second, `comparison ${index} scale ${scaleIndex} second`).provenance, `comparison ${index} scale ${scaleIndex} second provenance`);
+      const firstConfiguration = requiredRecord(first.configuration, `comparison ${index} scale ${scaleIndex} first configuration`);
+      const secondConfiguration = requiredRecord(second.configuration, `comparison ${index} scale ${scaleIndex} second configuration`);
+      if (typeof scale.scale !== "string" || !isSourceConfiguration(firstConfiguration) || !isSourceConfiguration(secondConfiguration)) {
+        throw new Error(`comparison ${index} scale ${scaleIndex} has no consumer-readable provenance`);
+      }
+      return { scale: scale.scale, first: firstConfiguration, second: secondConfiguration };
+    });
+    if ((kind !== "projection" && kind !== "renderer") || typeof record.dimension !== "string" || typeof record.outcome !== "string" || typeof record.reason !== "string"
       || typeof arms.first !== "string" || typeof arms.second !== "string") {
       throw new Error(`comparison ${index} has no consumer-readable identity`);
     }
-    return { kind, dimension: record.dimension, outcome: record.outcome, arms: { first: arms.first, second: arms.second } };
+    return { kind, dimension: record.dimension, outcome: record.outcome, reason: record.reason, arms: { first: arms.first, second: arms.second }, scales };
   });
+}
+
+function isSourceConfiguration(value: Record<string, unknown>): value is SourceConfigurationClaim {
+  return typeof value.arm === "string" && typeof value.scale === "string" && (typeof value.fixture === "string" || value.fixture === null);
 }
 
 function performanceClaim(value: unknown): PerformanceClaim {
