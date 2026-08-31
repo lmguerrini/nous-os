@@ -686,13 +686,27 @@ function assertPerformanceExemption(raw: unknown, label: string): void {
       assertSoftwareRasterisationLabel(measurement, `${label} ${key} measurement ${name}`);
       unbound += assertKnownMeasurementStatuses(measurement, `${label} ${key} measurement ${name}`);
     }
-    for (const name of SHARED_STAGE_MEASUREMENTS) {
-      const measurement = measurements[name];
-      if (!isRecord(measurement) || measurement["status"] !== "NOT_RUN" || typeof measurement["reason"] !== "string"
-        || !measurement["reason"].startsWith(SHARED_STAGE_NOT_COMPARABLE_REASON)) {
-        throw new Error(
-          `${label} ${key} measurement ${name} must record its shared-stage exclusion as NOT_RUN with a not-comparable-by-construction reason`,
-        );
+    // A combination that never ran cannot have excluded anything. When the per-combination budget
+    // aborts before any measurement is produced, every measurement carries that one abort reason,
+    // and demanding "not comparable by construction" there would assert a claim about a comparison
+    // nobody attempted. The rule therefore applies to records the harness actually measured -- which
+    // still includes a record whose renderer failed after the shared stage ran, because that one did
+    // produce a per-measurement outcome.
+    const abortReason = isRecord(candidate) && typeof candidate["error"] === "string" ? candidate["error"] : null;
+    const abortedBeforeMeasuring = abortReason !== null
+      && PERFORMANCE_MEASUREMENTS.every((name) => {
+        const measurement = measurements[name];
+        return isRecord(measurement) && measurement["reason"] === abortReason;
+      });
+    if (!abortedBeforeMeasuring) {
+      for (const name of SHARED_STAGE_MEASUREMENTS) {
+        const measurement = measurements[name];
+        if (!isRecord(measurement) || measurement["status"] !== "NOT_RUN" || typeof measurement["reason"] !== "string"
+          || !measurement["reason"].startsWith(SHARED_STAGE_NOT_COMPARABLE_REASON)) {
+          throw new Error(
+            `${label} ${key} measurement ${name} must record its shared-stage exclusion as NOT_RUN with a not-comparable-by-construction reason`,
+          );
+        }
       }
     }
     if (combination.scale === COMPLETING_SCALE) {
