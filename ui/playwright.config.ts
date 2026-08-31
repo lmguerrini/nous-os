@@ -30,10 +30,12 @@ const REVIEW_TEMPORAL_ENABLED = process.env.REVIEW_TEMPORAL_CAPTURES === "1";
 const REVIEW_TEMPORAL_SPEC = "review-temporal-mycelium.spec.ts";
 const REVIEW_OPENING_ENABLED = process.env.REVIEW_OPENING_CAPTURES === "1";
 const REVIEW_OPENING_SPEC = "review-opening.spec.ts";
+const REVIEW_HALO_CALIBRATION_ENABLED = process.env.REVIEW_HALO_CALIBRATION_CAPTURES === "1";
+const REVIEW_HALO_CALIBRATION_SPEC = "review-halo-calibration.spec.ts";
 // The evidence record is owned by the plain DPR projects alone. Every added suite has to be listed
 // here as well as ignored below: an owner test that also ran one of them would re-initialise the
 // record mid-run, which is the wipe already recorded as CE-14 and worked around by ordering.
-const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED && !PARITY_ENABLED && !PERFORMANCE_ENABLED && !REVIEW3D_ENABLED && !MATRIX_ENABLED && !BLIND_ENABLED && !SCALE_TOPOLOGY_ENABLED && !CALIBRATION_EVIDENCE_ENABLED && !MOTION_ENABLED && !TEMPORAL_ENABLED && !OPENING_ENABLED && !REVIEW_MOTION_ENABLED && !REVIEW_TEMPORAL_ENABLED && !REVIEW_OPENING_ENABLED;
+const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED && !PARITY_ENABLED && !PERFORMANCE_ENABLED && !REVIEW3D_ENABLED && !MATRIX_ENABLED && !BLIND_ENABLED && !SCALE_TOPOLOGY_ENABLED && !CALIBRATION_EVIDENCE_ENABLED && !MOTION_ENABLED && !TEMPORAL_ENABLED && !OPENING_ENABLED && !REVIEW_MOTION_ENABLED && !REVIEW_TEMPORAL_ENABLED && !REVIEW_OPENING_ENABLED && !REVIEW_HALO_CALIBRATION_ENABLED;
 
 const PREPARE_EVIDENCE = [
   "node --input-type=module --eval '",
@@ -89,8 +91,8 @@ export default defineConfig({
     },
   },
   projects: [
-    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC, MOTION_SPEC, TEMPORAL_SPEC, OPENING_SPEC, REVIEW_MOTION_SPEC, REVIEW_TEMPORAL_SPEC, REVIEW_OPENING_SPEC], use: { deviceScaleFactor: 1 } },
-    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC, MOTION_SPEC, TEMPORAL_SPEC, OPENING_SPEC, REVIEW_MOTION_SPEC, REVIEW_TEMPORAL_SPEC, REVIEW_OPENING_SPEC], use: { deviceScaleFactor: 2 } },
+    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC, MOTION_SPEC, TEMPORAL_SPEC, OPENING_SPEC, REVIEW_MOTION_SPEC, REVIEW_TEMPORAL_SPEC, REVIEW_OPENING_SPEC, REVIEW_HALO_CALIBRATION_SPEC], use: { deviceScaleFactor: 1 } },
+    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC, MOTION_SPEC, TEMPORAL_SPEC, OPENING_SPEC, REVIEW_MOTION_SPEC, REVIEW_TEMPORAL_SPEC, REVIEW_OPENING_SPEC, REVIEW_HALO_CALIBRATION_SPEC], use: { deviceScaleFactor: 2 } },
     {
       name: "a4",
       testMatch: A4_ENABLED ? A4_SPEC : "a4-disabled.spec.ts",
@@ -216,6 +218,17 @@ export default defineConfig({
       // own is raised.
       name: "review-opening",
       testMatch: REVIEW_OPENING_ENABLED ? REVIEW_OPENING_SPEC : "review-opening-disabled.spec.ts",
+      timeout: 900_000,
+      use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
+    },
+    {
+      // CAP-13 F82 residual. Halo radius/intensity calibration sweep: five candidate CalibrationProfiles
+      // over one governed scene each, for human aesthetic judgement -- no closure criterion is attached
+      // to this project, matching review-motion's and review-temporal's own reasoning. One DPR
+      // deliberately, and a raised, scoped timeout for the same reason those two projects' own are
+      // raised: each variant mounts five real WebGL renders plus a Holographic camera probe.
+      name: "review-halo-calibration",
+      testMatch: REVIEW_HALO_CALIBRATION_ENABLED ? REVIEW_HALO_CALIBRATION_SPEC : "review-halo-calibration-disabled.spec.ts",
       timeout: 900_000,
       use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
     },
