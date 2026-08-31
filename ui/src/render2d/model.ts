@@ -11,6 +11,7 @@ import { renderedStateToken } from "#scene/rendered-state.ts";
 import { assertEngineAccessTrace, assertVisualGraphFieldRegister, createEngineGraphView } from "#engine/contract.ts";
 import type { Coordinates, DerivedValue, EngineAccessTrace, RenderedState, RenderedStateCarrier, VisualGraph } from "#engine/contract.ts";
 import { layoutAnchors } from "#engine/layout.ts";
+import type { LayoutAnchors } from "#engine/layout.ts";
 import { lodView } from "#engine/lod.ts";
 import type { LodBand, ResolvedMaterial } from "#engine/lod.ts";
 import { applyMorphology, MYCELIUM, NEURAL, STELLAR } from "#engine/morphology.ts";
@@ -158,8 +159,13 @@ export function resolveLabelIds(
   return selected.map((candidate) => candidate.id);
 }
 
-/** This creates a Sigma graph from the engine state and does not inspect semantic values. */
-export function buildRenderModel(graph: VisualGraph, options: RenderOptions, visualState?: VisualState): RenderModel {
+/** This creates a Sigma graph from the engine state and does not derive a second supplied placement. */
+export function buildRenderModel(
+  graph: VisualGraph,
+  options: RenderOptions,
+  visualState?: VisualState,
+  suppliedAnchors?: LayoutAnchors,
+): RenderModel {
   assertVisualGraphFieldRegister(graph);
   if (visualState !== undefined) {
     assertVisualState(graph, visualState);
@@ -173,7 +179,7 @@ export function buildRenderModel(graph: VisualGraph, options: RenderOptions, vis
   // EngineGraph is intentionally created for every render and cannot carry that
   // transition cache.  The resulting anchors remain the only layout input exposed
   // to the engine below.
-  const anchors = layoutAnchors(graph, calibration);
+  const anchors = suppliedAnchors ?? layoutAnchors(graph, calibration);
   const morphology = morphologyProfile(activeOptions.morphology);
   const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration);
   const tokens = shippingTokens(

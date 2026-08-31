@@ -4,12 +4,18 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { toVisualGraph } from "#adapter/projection.ts";
 import {
   assertTrackedTreeIdentity,
   TRACKED_TREE_IDENTITY_ALGORITHM,
   TRACKED_TREE_STATUS_COMMAND,
 } from "#browser/parity-contract.ts";
 import type { TrackedTreeIdentity } from "#browser/parity-contract.ts";
+import {
+  assertPerformancePlacementDigestAgreement,
+  performancePlacement,
+} from "#browser/performance-placement.ts";
+import type { ResolvedPerformancePlacement } from "#browser/performance-placement.ts";
 import {
   PERFORMANCE_COMBINATIONS,
   PERFORMANCE_MEASUREMENTS,
@@ -72,21 +78,23 @@ for (const combination of PERFORMANCE_COMBINATIONS) {
     const observedCommitSha = await readObservedCommitSha();
     const measuredTree = requiredTrackedTreeState();
     const trackedTreeSha256 = measuredTree.sha256;
+    const placement = await placementForCombination(combination);
     let baseRecord: PerformanceRecord;
     try {
-      baseRecord = await runCombinationWithinBudget(page, combination, observedCommitSha);
+      baseRecord = await runCombinationWithinBudget(page, combination, observedCommitSha, placement);
     } catch (error: unknown) {
       baseRecord = notRunPerformanceRecord(
         combination,
         observedCommitSha,
         1,
         `performance attempt for ${combination.renderer} at ${combination.scale} did not start or complete: ${errorMessage(error)}`,
+        placement.artifact,
       );
     }
     const record: TreeBoundPerformanceRecord = { ...baseRecord, observedTrackedTreeSha256: trackedTreeSha256 };
 
     const result = await writeCompletedRecord(record, observedCommitSha, measuredTree);
-    assertRecord(record, combination, observedCommitSha, trackedTreeSha256);
+    assertRecord(record, combination, observedCommitSha, trackedTreeSha256, placement);
     await assertRunVerdict(result, measuredTree);
   });
 }
@@ -113,6 +121,7 @@ async function runCombinationWithinBudget(
   page: Page,
   combination: PerformanceCombination,
   observedCommitSha: string,
+  placement: ResolvedPerformancePlacement,
 ): Promise<PerformanceRecord> {
   let devicePixelRatio = 1;
   const attempt = (async () => {
@@ -153,6 +162,7 @@ async function runCombinationWithinBudget(
       observedCommitSha,
       devicePixelRatio,
       `combination budget ${COMBINATION_BUDGET_MS}ms exceeded while attempting ${combination.renderer} at ${combination.scale}; the incomplete attempt was recorded as NOT_RUN`,
+      placement.artifact,
     );
   }
   return notRunPerformanceRecord(
@@ -160,6 +170,7 @@ async function runCombinationWithinBudget(
     observedCommitSha,
     devicePixelRatio,
     `performance attempt for ${combination.renderer} at ${combination.scale} failed before producing a record: ${outcome.reason}`,
+    placement.artifact,
   );
 }
 
@@ -174,6 +185,7 @@ async function writeCompletedRecord(
     .filter((candidate) => combinationKey(candidate) !== combinationKey(record))
     .concat(record)
     .sort((left, right) => combinationIndex(left) - combinationIndex(right));
+  assertPerformancePlacementDigestAgreement(records);
   const base = performanceResult(records, observedCommitSha);
   const completedTree = await currentTrackedTreeState();
   const trackedTree: TrackedTreeIdentity = {
@@ -237,6 +249,7 @@ function assertRecord(
   combination: PerformanceCombination,
   observedCommitSha: string,
   observedTreeSha256: string,
+  placement: ResolvedPerformancePlacement,
 ): void {
   expect(record.renderer).toBe(combination.renderer);
   expect(record.scale).toBe(combination.scale);
@@ -244,10 +257,16 @@ function assertRecord(
   expect(record.observedCommitSha).toBe(observedCommitSha);
   expect(record.observedTrackedTreeSha256).toBe(observedTreeSha256);
   expect(record.rasterisationLabel).toBe(SOFTWARE_RASTERISATION_LABEL);
+  expect(record.placement).toEqual(placement.artifact);
   expect(record.warmup.framesExcluded).toBeGreaterThan(0);
   for (const measurementName of PERFORMANCE_MEASUREMENTS) {
     expect(record.measurements[measurementName].label).toBe(SOFTWARE_RASTERISATION_LABEL);
   }
+}
+
+async function placementForCombination(combination: PerformanceCombination): Promise<ResolvedPerformancePlacement> {
+  const fixturePath = ["..", "fixtures", "synthetic", "projection", "stress", combination.fixture].join("/");
+  return performancePlacement(toVisualGraph(JSON.parse(await readFile(fixturePath, "utf8")) as unknown), combination.scale);
 }
 
 async function assertRunVerdict(result: TreeBoundPerformanceResult, observedTree: TrackedTreeState): Promise<void> {

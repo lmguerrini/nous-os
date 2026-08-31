@@ -7,6 +7,7 @@
   "imports": {
     "#adapter/*": "./src/adapter/*",
     "#browser/*": "./test/browser/*",
+    "#comparison/*": "./src/comparison/*",
     "#engine/*": "./src/engine/*",
     "#render2d/*": "./src/render2d/*",
     "#render3f/*": "./src/render3f/*",
@@ -36,7 +37,8 @@
     "test:review-temporal": "rm -rf dist/review-temporal && REVIEW_TEMPORAL_CAPTURES=1 playwright test --project=review-temporal",
     "test:review-opening": "rm -rf dist/review-opening && REVIEW_OPENING_CAPTURES=1 playwright test --project=review-opening",
     "test:review-halo-calibration": "rm -rf dist/review-halo-calibration && REVIEW_HALO_CALIBRATION_CAPTURES=1 playwright test --project=review-halo-calibration",
-    "evidence:layout-scale": "rm -f dist/evidence/layout-scale.json && node --experimental-strip-types test/layout-scale.ts"
+    "evidence:layout-scale": "rm -f dist/evidence/layout-scale.json && node --experimental-strip-types test/layout-scale.ts",
+    "evidence:comparison": "rm -f dist/evidence/comparison.json && node --experimental-strip-types test/comparison/evidence.ts"
   },
   "dependencies": {
     "@react-three/fiber": "9.7.0",

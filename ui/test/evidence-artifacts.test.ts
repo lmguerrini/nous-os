@@ -5,7 +5,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { inflateSync } from "node:zlib";
-import { SOFTWARE_RASTERISATION_LABEL } from "#browser/performance-contract.ts";
+import {
+  SOFTWARE_RASTERISATION_LABEL,
+  SUBSTITUTE_PLACEMENT_SEMANTIC_DECLARATION,
+} from "#browser/performance-contract.ts";
 import { promisify } from "node:util";
 import {
   assertEvidenceArtifactCurrent,
@@ -15,6 +18,7 @@ import {
 import type { TrackedTreeIdentity } from "#browser/parity-contract.ts";
 import {
   PERFORMANCE_COMBINATIONS,
+  PERFORMANCE_FIXTURES,
   PERFORMANCE_MEASUREMENTS,
 } from "#browser/performance-contract.ts";
 
@@ -593,10 +597,10 @@ const COMPLETING_SCALE = "10^2";
 const REQUIRED_NUMERIC_PASSES = [
   "frameTime",
   "initialRenderLatency",
-  "layoutCost",
-  "sceneModelBuildCost",
   "pickingLatency",
 ] as const;
+const SHARED_STAGE_MEASUREMENTS = ["layoutCost", "sceneModelBuildCost"] as const;
+const SHARED_STAGE_NOT_COMPARABLE_REASON = "not comparable by construction:";
 
 /** This permits governed shortfalls only inside the complete, measured performance matrix. */
 function assertPerformanceExemption(raw: unknown, label: string): void {
@@ -619,6 +623,7 @@ function assertPerformanceExemption(raw: unknown, label: string): void {
     combination,
   ]));
   const seen = new Set<string>();
+  const placementDigestsByScale = new Map<string, string[]>();
   let unbound = 0;
   for (const [recordIndex, candidate] of records.entries()) {
     if (!isRecord(candidate)) {
@@ -642,6 +647,25 @@ function assertPerformanceExemption(raw: unknown, label: string): void {
         + "Every figure here is software-rasterised; a record that says otherwise is claiming a measurement nobody took.",
       );
     }
+    const placement = candidate["placement"];
+    if (!isRecord(placement)) {
+      throw new Error(`${label} ${key} records no placement metadata`);
+    }
+    const expectedMethod = combination.scale === "10^2" ? "force-directed-layout" : "seeded-stress-grid";
+    if (placement["method"] !== expectedMethod || typeof placement["anchorDigest"] !== "string" || placement["anchorDigest"].trim() === "") {
+      throw new Error(`${label} ${key} records invalid ${expectedMethod} placement metadata`);
+    }
+    if (combination.scale === "10^2") {
+      if (placement["seed"] !== null || placement["semanticMeaning"] !== null) {
+        throw new Error(`${label} ${key} describes its force-directed placement as a seeded substitute`);
+      }
+    } else if (typeof placement["seed"] !== "string" || placement["seed"].trim() === ""
+      || placement["semanticMeaning"] !== SUBSTITUTE_PLACEMENT_SEMANTIC_DECLARATION) {
+      throw new Error(`${label} ${key} does not declare its seeded substitute placement non-semantic`);
+    }
+    const scaleDigests = placementDigestsByScale.get(combination.scale) ?? [];
+    scaleDigests.push(placement["anchorDigest"]);
+    placementDigestsByScale.set(combination.scale, scaleDigests);
     const measurements = candidate["measurements"];
     if (!isRecord(measurements)) {
       throw new Error(`${label} ${key} has no measurement object`);
@@ -662,6 +686,15 @@ function assertPerformanceExemption(raw: unknown, label: string): void {
       assertSoftwareRasterisationLabel(measurement, `${label} ${key} measurement ${name}`);
       unbound += assertKnownMeasurementStatuses(measurement, `${label} ${key} measurement ${name}`);
     }
+    for (const name of SHARED_STAGE_MEASUREMENTS) {
+      const measurement = measurements[name];
+      if (!isRecord(measurement) || measurement["status"] !== "NOT_RUN" || typeof measurement["reason"] !== "string"
+        || !measurement["reason"].startsWith(SHARED_STAGE_NOT_COMPARABLE_REASON)) {
+        throw new Error(
+          `${label} ${key} measurement ${name} must record its shared-stage exclusion as NOT_RUN with a not-comparable-by-construction reason`,
+        );
+      }
+    }
     if (combination.scale === COMPLETING_SCALE) {
       for (const name of REQUIRED_NUMERIC_PASSES) {
         const measurement = measurements[name];
@@ -680,6 +713,12 @@ function assertPerformanceExemption(raw: unknown, label: string): void {
   const missingRecords = [...expected.keys()].filter((key) => !seen.has(key));
   if (missingRecords.length > 0) {
     throw new Error(`${label} is missing renderer-by-scale records: ${missingRecords.join(", ")}`);
+  }
+  for (const fixture of PERFORMANCE_FIXTURES) {
+    const digests = placementDigestsByScale.get(fixture.scale) ?? [];
+    if (digests.length !== 3 || new Set(digests).size !== 1) {
+      throw new Error(`${label} ${fixture.scale} renderer arms do not carry one byte-identical anchor digest`);
+    }
   }
   if (unbound === 0) {
     throw new Error(`${label} is declared not-required-to-pass but reports nothing unbound, so the exemption is unexamined`);
@@ -964,13 +1003,26 @@ function performanceControlArtifact(
       // Controls carry the honest label, so each one fails for the reason it was written to test
       // rather than for a missing label — the shape of defect this whole file exists to refuse.
       rasterisationLabel: SOFTWARE_RASTERISATION_LABEL,
+      placement: {
+        method: combination.scale === "10^2" ? "force-directed-layout" : "seeded-stress-grid",
+        anchorDigest: `control-${combination.scale}`,
+        seed: combination.scale === "10^2" ? null : `control-seed-${combination.scale}`,
+        semanticMeaning: combination.scale === "10^2" ? null : SUBSTITUTE_PLACEMENT_SEMANTIC_DECLARATION,
+      },
       measurements: Object.fromEntries(PERFORMANCE_MEASUREMENTS.map((name, measurementIndex) => {
         const status = combinationIndex === 0 && measurementIndex === 0 && firstStatusOverride !== undefined
           ? firstStatusOverride
+          : SHARED_STAGE_MEASUREMENTS.includes(name as typeof SHARED_STAGE_MEASUREMENTS[number]) ? "NOT_RUN"
           : combination.scale === COMPLETING_SCALE ? completingStatus : "NOT_RUN";
         return [name, status === "PASS"
           ? { status, label: SOFTWARE_RASTERISATION_LABEL, value: { samplesMs: [1], medianMs: 1, p95Ms: 1 } }
-          : { status, label: SOFTWARE_RASTERISATION_LABEL, reason: "governed control shortfall" }];
+          : {
+            status,
+            label: SOFTWARE_RASTERISATION_LABEL,
+            reason: SHARED_STAGE_MEASUREMENTS.includes(name as typeof SHARED_STAGE_MEASUREMENTS[number])
+              ? "not comparable by construction: governed control shared-stage exclusion"
+              : "governed control shortfall",
+          }];
       })),
     })),
   };
@@ -994,16 +1046,28 @@ test("the performance exemption refuses a nested PASS whose value is not a measu
     records: PERFORMANCE_COMBINATIONS.map((combination) => ({
       ...combination,
       rasterisationLabel: SOFTWARE_RASTERISATION_LABEL,
+      placement: {
+        method: combination.scale === "10^2" ? "force-directed-layout" : "seeded-stress-grid",
+        anchorDigest: `nested-control-${combination.scale}`,
+        seed: combination.scale === "10^2" ? null : `nested-control-seed-${combination.scale}`,
+        semanticMeaning: combination.scale === "10^2" ? null : SUBSTITUTE_PLACEMENT_SEMANTIC_DECLARATION,
+      },
       measurements: Object.fromEntries(PERFORMANCE_MEASUREMENTS.map((name) => [
         name,
-        combination.scale === COMPLETING_SCALE
+        combination.scale === COMPLETING_SCALE && !SHARED_STAGE_MEASUREMENTS.includes(name as typeof SHARED_STAGE_MEASUREMENTS[number])
           ? {
             status: "PASS",
             label: SOFTWARE_RASTERISATION_LABEL,
             value: { samplesMs: [1], medianMs: 1, p95Ms: 1 },
             bands: [{ mountToFirstPaint: { status: "PASS", label: SOFTWARE_RASTERISATION_LABEL, value } }],
           }
-          : { status: "NOT_RUN", label: SOFTWARE_RASTERISATION_LABEL, reason: "governed control shortfall" },
+          : {
+            status: "NOT_RUN",
+            label: SOFTWARE_RASTERISATION_LABEL,
+            reason: SHARED_STAGE_MEASUREMENTS.includes(name as typeof SHARED_STAGE_MEASUREMENTS[number])
+              ? "not comparable by construction: governed control shared-stage exclusion"
+              : "governed control shortfall",
+          },
       ])),
     })),
   });

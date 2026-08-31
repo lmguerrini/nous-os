@@ -2,8 +2,8 @@ import { armFrameCounter, firedSinceArming, settleUncounted } from "#browser/fra
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
-import { createEngineGraphView, type VisualGraph } from "#engine/contract.ts";
-import { layoutAnchors } from "#engine/layout.ts";
+import type { VisualGraph } from "#engine/contract.ts";
+import type { LayoutAnchors } from "#engine/layout.ts";
 import { MACRO, MESO, MICRO, resolvedMaterial } from "#engine/lod.ts";
 import { buildScene } from "#scene/build.ts";
 import { createVisualState } from "#engine/visual-state.ts";
@@ -17,9 +17,12 @@ import type { GraphRendererHandle, MultiCameraRendererHandle,
 import type { CameraKind } from "#engine/camera-kind.ts";
 import { assertLitPixelFloor } from "#browser/lit-floor.ts";
 import type { PixelImage } from "#browser/lit-floor.ts";
+import { performancePlacement } from "#browser/performance-placement.ts";
+import type { ResolvedPerformancePlacement } from "#browser/performance-placement.ts";
 import {
   PERFORMANCE_VIEWPORT,
   SOFTWARE_RASTERISATION_LABEL,
+  SUBSTITUTE_PLACEMENT_SEMANTIC_DECLARATION,
   WARMUP_FRAMES,
   notRunPerformanceRecord,
   type Distribution,
@@ -27,6 +30,7 @@ import {
   type MemoryValue,
   type PerformanceCombination,
   type PerformanceMeasurements,
+  type PerformancePlacement,
   type PerformanceRecord,
   type PerformanceScale,
   type ProgressiveBand,
@@ -42,13 +46,20 @@ const PROGRESSIVE_BANDS = [MACRO, MESO, MICRO] as const;
 type RendererDefinition = {
   readonly name: PerformanceRecord["renderer"];
   readonly cameraKind: CameraKind;
-  readonly mount: (container: HTMLElement, graph: VisualGraph, options: RenderOptions, state: VisualState) => GraphRendererHandle;
+  readonly mount: (
+    container: HTMLElement,
+    graph: VisualGraph,
+    options: RenderOptions,
+    state: VisualState,
+    anchors: LayoutAnchors,
+  ) => GraphRendererHandle;
 };
 
 type Fixture = {
   readonly file: string;
   readonly scale: PerformanceScale;
   readonly graph: VisualGraph;
+  readonly placement: ResolvedPerformancePlacement;
 };
 
 type FixtureLoad = {
@@ -89,17 +100,17 @@ const rendererDefinitions: readonly RendererDefinition[] = [
   {
     name: "sigma-2d",
     cameraKind: ORTHOGRAPHIC,
-    mount: (container, graph, renderOptions, state) => adaptSigmaHandle(mountSigma(container, graph, renderOptions, undefined, state)),
+    mount: (container, graph, renderOptions, state, anchors) => adaptSigmaHandle(mountSigma(container, graph, renderOptions, undefined, state, anchors)),
   },
   {
     name: "r3f-2d",
     cameraKind: ORTHOGRAPHIC,
-    mount: (container, graph, renderOptions, state) => mountThree(container, graph, renderOptions, undefined, state),
+    mount: (container, graph, renderOptions, state, anchors) => mountThree(container, graph, renderOptions, undefined, state, anchors),
   },
   {
     name: "r3f-3d",
     cameraKind: PERSPECTIVE,
-    mount: (container, graph, renderOptions, state) => mountThree(container, graph, renderOptions, undefined, state),
+    mount: (container, graph, renderOptions, state, anchors) => mountThree(container, graph, renderOptions, undefined, state, anchors),
   },
 ];
 
@@ -119,8 +130,10 @@ async function runPerformance(combination: PerformanceCombination, observedCommi
     if (fixture.graph === null) {
       return unavailableRecord(renderer, fixture, observedCommitSha);
     }
-    const modelCosts = measureModelCosts(fixture.graph, ORTHOGRAPHIC);
-    return await measureRecord(renderer, { file: fixture.file, scale: fixture.scale, graph: fixture.graph }, container, observedCommitSha, modelCosts);
+    const placement = performancePlacement(fixture.graph, fixture.scale);
+    const measuredFixture = { file: fixture.file, scale: fixture.scale, graph: fixture.graph, placement };
+    const modelCosts = measureModelCosts(measuredFixture.graph, ORTHOGRAPHIC, measuredFixture.placement);
+    return await measureRecord(renderer, measuredFixture, container, observedCommitSha, modelCosts);
   } finally {
     container.remove();
   }
@@ -155,7 +168,17 @@ function unavailableRecord(
     observedCommitSha,
     window.devicePixelRatio,
     reason,
+    unavailablePlacement(fixture.scale),
   );
+}
+
+function unavailablePlacement(scale: PerformanceScale): PerformancePlacement {
+  return {
+    method: "not-resolved",
+    anchorDigest: "not resolved because the fixture did not load",
+    seed: scale === "10^2" ? null : "not resolved because the fixture did not load",
+    semanticMeaning: scale === "10^2" ? null : SUBSTITUTE_PLACEMENT_SEMANTIC_DECLARATION,
+  };
 }
 
 /** This narrows a handle to one that can switch camera and does not assume a renderer can. */
@@ -193,13 +216,14 @@ async function measureRecord(
   fixture: Fixture,
   container: HTMLElement,
   observedCommitSha: string,
-  modelCosts: ModelCosts | null,
+  modelCosts: ModelCosts,
 ): Promise<PerformanceRecord> {
   const base = {
     renderer: renderer.name,
     scale: fixture.scale,
     fixture: fixture.file,
     syntheticFixture: true as const,
+    placement: fixture.placement.artifact,
     rasterisationLabel: SOFTWARE_RASTERISATION_LABEL,
     elementCounts: {
       fixtureNodes: fixture.graph.nodes.length,
@@ -212,20 +236,21 @@ async function measureRecord(
     observedCommitSha,
     warmup: { framesExcluded: WARMUP_FRAMES, reason: "Warm-up frames let browser and renderer scheduling settle; they are excluded from all timed frame distributions." },
   };
-  if (modelCosts === null) {
+  if ("failure" in modelCosts) {
+    const reason = `scene-model timing failed before renderer mount: ${modelCosts.failure}`;
     return {
       ...base,
-      measurements: notRunMeasurements("scene-model timing failed before renderer mount"),
-      error: "scene-model timing failed before renderer mount",
+      measurements: notRunMeasurements(reason),
+      error: reason,
     };
   }
 
   let handle: GraphRendererHandle | undefined;
   let initialRender: Measurement<Distribution>;
   try {
-    const state = initialState(fixture.graph, renderer.cameraKind);
+    const state = initialState(fixture.graph, renderer.cameraKind, fixture.placement.anchors);
     const start = performance.now();
-    const mounted = renderer.mount(container, fixture.graph, options, state);
+    const mounted = renderer.mount(container, fixture.graph, options, state, fixture.placement.anchors);
     handle = mounted;
     const firstPaint = await firstPaintContainingGraph(mounted, start);
     initialRender = pass(distribution([firstPaint]), "initial render latency is mount start to first RAF with a non-empty renderer surface");
@@ -273,28 +298,23 @@ async function measureRecord(
 type ModelCosts = {
   readonly layoutCost: Measurement<Distribution>;
   readonly sceneModelBuildCost: Measurement<Distribution>;
+} | {
+  readonly failure: string;
 };
 
-function measureModelCosts(graph: VisualGraph, cameraKind: CameraKind): ModelCosts | null {
+function measureModelCosts(
+  graph: VisualGraph,
+  cameraKind: CameraKind,
+  placement: ResolvedPerformancePlacement,
+): ModelCosts {
   try {
-    const layoutSamples: number[] = [];
-    const buildSamples: number[] = [];
-    const state = initialState(graph, cameraKind);
-    for (let sample = 0; sample < LATENCY_SAMPLES; sample += 1) {
-      const { graph: engineGraph } = createEngineGraphView(graph);
-      const layoutStart = performance.now();
-      layoutAnchors(engineGraph, DEFAULT_CALIBRATION);
-      layoutSamples.push(performance.now() - layoutStart);
-      const buildStart = performance.now();
-      buildScene(graph, state, DEFAULT_CALIBRATION, cameraKind);
-      buildSamples.push(performance.now() - buildStart);
-    }
+    initialState(graph, cameraKind, placement.anchors);
     return {
-      layoutCost: pass(distribution(layoutSamples), "layoutAnchors is timed separately from scene construction and painting"),
-      sceneModelBuildCost: pass(distribution(buildSamples), "buildScene is timed as shared renderer-neutral scene-model work"),
+      layoutCost: notRun("not comparable by construction: force-directed layout is a held-constant projection input and is excluded from this contrast"),
+      sceneModelBuildCost: notRun("not comparable by construction: shared renderer-neutral scene construction is excluded from this projection contrast"),
     };
-  } catch {
-    return null;
+  } catch (error: unknown) {
+    return { failure: errorMessage(error) };
   }
 }
 
@@ -517,7 +537,17 @@ async function measureProgressiveDisclosure(
 ): Promise<Measurement<ProgressiveValue>> {
   let scene: ReturnType<typeof buildScene>;
   try {
-    scene = buildScene(fixture.graph, initialState(fixture.graph, renderer.cameraKind), DEFAULT_CALIBRATION, renderer.cameraKind);
+    scene = buildScene(
+      fixture.graph,
+      initialState(fixture.graph, renderer.cameraKind, fixture.placement.anchors),
+      DEFAULT_CALIBRATION,
+      renderer.cameraKind,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      fixture.placement.anchors,
+    );
   } catch (error: unknown) {
     return notRun(`progressive disclosure scene resolution did not run: ${errorMessage(error)}`);
   }
@@ -527,9 +557,9 @@ async function measureProgressiveDisclosure(
     const bandOptions = { ...options, lodBand: band };
     let handle: GraphRendererHandle | undefined;
     try {
-      const state = initialState(fixture.graph, renderer.cameraKind, band);
+      const state = initialState(fixture.graph, renderer.cameraKind, fixture.placement.anchors, band);
       const start = performance.now();
-      handle = renderer.mount(container, fixture.graph, bandOptions, state);
+      handle = renderer.mount(container, fixture.graph, bandOptions, state, fixture.placement.anchors);
       const latency = await firstPaintContainingGraph(handle, start);
       const surface = safeSurface(handle);
       bands.push({
@@ -583,8 +613,13 @@ function browserMemoryMeasurement(): Measurement<MemoryUsage> {
  * it claimed to vary. The Three renderers then painted an entirely black canvas at macro on that
  * inconsistent pair and were recorded NOT_RUN, which was published as governed truth.
  */
-function initialState(graph: VisualGraph, cameraKind: CameraKind, lodBand: RenderOptions["lodBand"] = options.lodBand) {
-  const anchors = [...layoutAnchors(createEngineGraphView(graph).graph, DEFAULT_CALIBRATION).values()];
+function initialState(
+  graph: VisualGraph,
+  cameraKind: CameraKind,
+  suppliedAnchors: LayoutAnchors,
+  lodBand: RenderOptions["lodBand"] = options.lodBand,
+) {
+  const anchors = [...suppliedAnchors.values()];
   const minimumX = Math.min(...anchors.map((anchor) => anchor.x));
   const maximumX = Math.max(...anchors.map((anchor) => anchor.x));
   const minimumY = Math.min(...anchors.map((anchor) => anchor.y));

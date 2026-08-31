@@ -114,13 +114,14 @@ type RelationGeometryWitness = {
   readonly widthEndPx: number;
 };
 
-/** This mounts one shared Three scene behind two cameras and does not compute renderer-local material. */
+/** This mounts one shared Three scene behind two cameras and does not derive a second supplied placement. */
 export function mount(
   container: HTMLElement,
   visualGraph: VisualGraph,
   options: Render3fOptions,
   framingBox?: Render3fFramingBox,
   initialVisualState?: VisualState,
+  suppliedAnchors?: ReadonlyMap<string, Coordinates>,
 ): Render3fRendererHandle {
   const dimensions = containerDimensions(container);
   const devicePixelRatio = requiredDevicePixelRatio();
@@ -153,7 +154,7 @@ export function mount(
       // transient phase happened to be requested. `navigationPath` IS passed, unlike `phase`: it
       // selects which nodes exist at all, so probing without it would frame the root graph while the
       // drawn scene shows an entered world.
-      const provisionalScene = buildSceneWithCalibration(visualGraph, provisionalState, options.calibration, undefined, options.navigationPath, options.temporalInstant);
+      const provisionalScene = buildSceneWithCalibration(visualGraph, provisionalState, options.calibration, undefined, options.navigationPath, options.temporalInstant, suppliedAnchors);
       layoutPassCount += 1;
       const bounds = provisionalScene.nodes.length === 0
         ? provisionalBounds
@@ -166,8 +167,8 @@ export function mount(
       currentState = provisionalState;
     }
   }
-  const initialScenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath, options.temporalInstant);
-  layoutPassCount += cameraKindCount();
+  const initialScenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath, options.temporalInstant, suppliedAnchors);
+  layoutPassCount += suppliedAnchors === undefined ? cameraKindCount() : 0;
   const live = new LiveSceneState(initialScenes, currentState.cameraKind, layoutPassCount);
   const retainedSceneReferences = new Set<Scene>([initialScenes.orthographic, initialScenes.perspective]);
   const worldFramingSubjects = sceneCameraFramingSubjects(live.scene);
@@ -335,8 +336,8 @@ export function mount(
       selectedId,
       focusedId,
     });
-    const scenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath, options.temporalInstant);
-    live.replaceScenes(scenes, cameraKindCount());
+    const scenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath, options.temporalInstant, suppliedAnchors);
+    live.replaceScenes(scenes, suppliedAnchors === undefined ? cameraKindCount() : 0);
     retainedSceneReferences.clear();
     retainedSceneReferences.add(scenes.orthographic);
     retainedSceneReferences.add(scenes.perspective);
@@ -468,12 +469,13 @@ function scenesForState(
   phase: number | undefined,
   navigationPath: ScaleNavigationPath | undefined,
   temporalInstant: string | undefined,
+  suppliedAnchors: ReadonlyMap<string, Coordinates> | undefined,
 ): CameraScenes {
   const orthographicState = createVisualState(graph, { ...state, cameraKind: ORTHOGRAPHIC });
   const perspectiveState = createVisualState(graph, { ...state, cameraKind: PERSPECTIVE });
   return {
-    orthographic: buildSceneWithCalibration(graph, orthographicState, calibration, phase, navigationPath, temporalInstant),
-    perspective: buildSceneWithCalibration(graph, perspectiveState, calibration, phase, navigationPath, temporalInstant),
+    orthographic: buildSceneWithCalibration(graph, orthographicState, calibration, phase, navigationPath, temporalInstant, suppliedAnchors),
+    perspective: buildSceneWithCalibration(graph, perspectiveState, calibration, phase, navigationPath, temporalInstant, suppliedAnchors),
   };
 }
 
@@ -490,11 +492,12 @@ function buildSceneWithCalibration(
   phase: number | undefined,
   navigationPath: ScaleNavigationPath | undefined,
   temporalInstant: string | undefined,
+  suppliedAnchors: ReadonlyMap<string, Coordinates> | undefined,
 ): Scene {
   const effectivePhase = state.reducedMotion ? undefined : phase;
   return calibration === undefined
-    ? buildScene(graph, state, undefined, undefined, undefined, effectivePhase, navigationPath, temporalInstant)
-    : buildScene(graph, state, calibration, undefined, undefined, effectivePhase, navigationPath, temporalInstant);
+    ? buildScene(graph, state, undefined, undefined, undefined, effectivePhase, navigationPath, temporalInstant, suppliedAnchors)
+    : buildScene(graph, state, calibration, undefined, undefined, effectivePhase, navigationPath, temporalInstant, suppliedAnchors);
 }
 
 function stateFromOptions(

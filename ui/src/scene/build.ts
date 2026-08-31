@@ -40,7 +40,7 @@ import type { EdgeMotionModulation, MotionElementIds, MotionGrammar, MotionModul
 import type { EdgeMaterial, MorphologyProfile, NodeMaterial } from "#engine/morphology.ts";
 import { JUNCTION_MINIMUM_DEGREE, MYCELIUM, NEURAL, SHARED_SCENE_MATERIAL_TARGET, STELLAR, applyMorphology } from "#engine/morphology.ts";
 import { OPENING_ARRIVAL_INSTANT } from "#engine/opening.ts";
-import { assertIndraLayout, flatOrganization, indraLayout } from "#engine/organization.ts";
+import { assertIndraLayout, assertIndraOrganization, flatOrganization, indraLayout, indraOrganization } from "#engine/organization.ts";
 import type { AggregateWindow } from "#engine/organization.ts";
 import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
 import { ATOMIC, HOLOGRAPHIC, assertChildWorld, holographicContext } from "#engine/scale-topology.ts";
@@ -135,7 +135,8 @@ type ResolvedSceneInputs = {
  * same unconditional all-time union an omitted temporalInstant already renders, but continuity is no
  * longer null -- see `resolveTemporalRenderGraph`'s own docstring for why the opening's own required
  * arrival needs that distinction and how it stays byte-identical to the omitted path at every policy's
- * own resting phase regardless.
+ * own resting phase regardless. `suppliedAnchors` is a caller-provided measurement input, not a
+ * semantic placement derivation; when present it is the only node-anchor source for both organizations.
  */
 export function buildScene(
   graph: VisualGraph,
@@ -146,6 +147,7 @@ export function buildScene(
   phase?: number,
   navigationPath?: ScaleNavigationPath,
   temporalInstant?: string,
+  suppliedAnchors?: LayoutAnchors,
 ): Scene {
   assertCalibrationProfile(calibration);
   assertVisualState(graph, visualState);
@@ -157,7 +159,7 @@ export function buildScene(
   const morphology = morphologyProfile(visualState.morphology);
   const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration, SHARED_SCENE_MATERIAL_TARGET);
   const activeTokens = shippingTokens(inputs.tokens, visualState.palette, visualState.theme, calibration);
-  const organization = resolveOrganization(engineGraph, calibration, () => layoutAnchors(engineGraph, calibration), visualState.organization);
+  const organization = resolveOrganization(engineGraph, calibration, () => layoutAnchors(engineGraph, calibration), visualState.organization, suppliedAnchors);
   // Cross-community weighting is Indra-only: Flat's `organization.windows` is always empty, and
   // treating every edge as "no owning window" there would dim the entire Flat scene rather than
   // nothing at all. The same reasoning holds when Indra itself resolves zero windows (no
@@ -1756,7 +1758,17 @@ function resolveOrganization(
   calibration: CalibrationProfile,
   sharedAnchors: () => LayoutAnchors,
   organization: VisualState["organization"],
+  suppliedAnchors?: LayoutAnchors,
 ): ResolvedOrganization {
+  if (suppliedAnchors !== undefined) {
+    const resolved = organization === "indra"
+      ? indraOrganization(graph, calibration, suppliedAnchors)
+      : flatOrganization(graph, suppliedAnchors);
+    if (organization === "indra") {
+      assertIndraOrganization(graph, resolved);
+    }
+    return { windows: resolved.windows, nodeAnchors: suppliedAnchors };
+  }
   if (organization === "indra") {
     const relayout = indraLayout(graph, calibration);
     assertIndraLayout(graph, relayout);

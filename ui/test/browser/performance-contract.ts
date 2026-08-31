@@ -4,9 +4,19 @@ export const SOFTWARE_RASTERISATION_LABEL: "software-rasterised — not GPU perf
 export const WARMUP_FRAMES = 5;
 export const PERFORMANCE_VIEWPORT = { width: 960, height: 640 } as const;
 export const SYNTHETIC_FIXTURE_DECLARATION = "SYNTHETIC STRESS MATERIAL ONLY: carries no semantic meaning, is never canon, and exists only to measure renderer performance.";
+/** This declares the seeded stress placement synthetic and does not assign semantic meaning to any anchor. */
+export const SUBSTITUTE_PLACEMENT_SEMANTIC_DECLARATION = "NOT SEMANTICALLY MEANINGFUL: this seeded substitute placement inherits the stress fixture's synthetic-only status and carries no semantic or canonical spatial claim.";
 
 export type RendererName = "sigma-2d" | "r3f-2d" | "r3f-3d";
 export type PerformanceScale = "10^2" | "10^3" | "10^4";
+
+/** This records one performance placement method and does not claim that its anchors encode semantic geography. */
+export type PerformancePlacement = {
+  readonly method: "force-directed-layout" | "seeded-stress-grid" | "not-resolved";
+  readonly anchorDigest: string;
+  readonly seed: string | null;
+  readonly semanticMeaning: typeof SUBSTITUTE_PLACEMENT_SEMANTIC_DECLARATION | null;
+};
 
 export type PerformanceCombination = {
   readonly renderer: RendererName;
@@ -114,6 +124,7 @@ export type PerformanceRecord = {
   readonly scale: PerformanceScale;
   readonly fixture: string;
   readonly syntheticFixture: true;
+  readonly placement?: PerformancePlacement;
   readonly rasterisationLabel: typeof SOFTWARE_RASTERISATION_LABEL;
   readonly elementCounts: {
     readonly fixtureNodes: number | "NOT_RUN";
@@ -137,6 +148,7 @@ export type PerformanceResult = {
   readonly suite: "CAP-13 renderer performance";
   readonly rasterisationLabel: typeof SOFTWARE_RASTERISATION_LABEL;
   readonly syntheticFixtureDeclaration: string;
+  readonly substitutePlacementSemanticDeclaration: typeof SUBSTITUTE_PLACEMENT_SEMANTIC_DECLARATION;
   readonly observedCommitSha: string;
   readonly browser: { readonly devicePixelRatio: number };
   readonly summary: {
@@ -156,10 +168,12 @@ export function notRunPerformanceRecord(
   observedCommitSha: string,
   devicePixelRatio: number,
   reason: string,
+  placement?: PerformancePlacement,
 ): PerformanceRecord {
   return {
     ...combination,
     syntheticFixture: true,
+    ...(placement === undefined ? {} : { placement }),
     rasterisationLabel: SOFTWARE_RASTERISATION_LABEL,
     elementCounts: { fixtureNodes: "NOT_RUN", fixtureEdges: "NOT_RUN", renderedNodes: "NOT_RUN", renderedEdges: "NOT_RUN" },
     devicePixelRatio,
@@ -190,6 +204,7 @@ export function performanceResult(
     suite: "CAP-13 renderer performance",
     rasterisationLabel: SOFTWARE_RASTERISATION_LABEL,
     syntheticFixtureDeclaration: SYNTHETIC_FIXTURE_DECLARATION,
+    substitutePlacementSemanticDeclaration: SUBSTITUTE_PLACEMENT_SEMANTIC_DECLARATION,
     observedCommitSha,
     browser: { devicePixelRatio: records[0]?.devicePixelRatio ?? 1 },
     summary: {

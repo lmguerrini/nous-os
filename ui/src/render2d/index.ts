@@ -7,6 +7,7 @@ import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { ORTHOGRAPHIC } from "#engine/camera-kind.ts";
 import type { CameraKind } from "#engine/camera-kind.ts";
 import type { Coordinates, DerivedValue, VisualGraph } from "#engine/contract.ts";
+import type { LayoutAnchors } from "#engine/layout.ts";
 import type { NodeFootprintWitness, WorldAnchorWitness } from "#engine/renderer-handle.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createVisualState } from "#engine/visual-state.ts";
@@ -147,22 +148,23 @@ export type RenderFramingBox = {
   readonly y: readonly [number, number];
 };
 
-/** This mounts the WebGL boundary and does not create visual data outside the render model. */
+/** This mounts the WebGL boundary and does not derive a second supplied placement. */
 export function mount(
   container: HTMLElement,
   visualGraph: VisualGraph,
   options: RenderOptions,
   framingBox?: RenderFramingBox,
   initialVisualState?: VisualState,
+  suppliedAnchors?: LayoutAnchors,
 ): RenderHandle {
   const suppliedState = initialVisualState === undefined
     ? undefined
     : createVisualState(visualGraph, initialVisualState);
   const activeOptions = resolveRenderOptions(suppliedState === undefined ? options : renderOptionsForVisualState(options, suppliedState));
-  const model = buildRenderModel(visualGraph, activeOptions);
+  const model = buildRenderModel(visualGraph, activeOptions, undefined, suppliedAnchors);
   // Incremented where layout is actually resolved, so the number is a record of what ran rather
   // than a literal describing what is expected to have run.
-  const layoutPasses = 1;
+  const layoutPasses = suppliedAnchors === undefined ? 1 : 0;
   const calibration = activeOptions.calibration ?? DEFAULT_CALIBRATION;
   const baseNodeAttributes = new Map<string, RenderNodeAttributes>(
     model.graph.nodes().map((id) => [id, model.graph.getNodeAttributes(id)]),
