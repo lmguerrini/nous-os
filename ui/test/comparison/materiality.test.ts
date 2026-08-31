@@ -11,9 +11,12 @@ import { analyseMedianMateriality } from "#comparison/materiality.ts";
 import {
   performanceResult,
   SOFTWARE_RASTERISATION_LABEL,
+  INTERACTION_COMPOSITED_READBACK_METHOD,
+  INTERACTION_COMPOSITED_READBACK_SURFACE,
 } from "#browser/performance-contract.ts";
 import type {
   Distribution,
+  InteractionLatencyValue,
   Measurement,
   PerformanceMeasurements,
   PerformanceRecord,
@@ -181,7 +184,7 @@ function measurements(frameMedian: number): PerformanceMeasurements {
     initialRenderLatency: passDistribution(10),
     layoutCost: passDistribution(10),
     sceneModelBuildCost: passDistribution(10),
-    interactionLatency: passDistribution(10),
+    interactionLatency: passInteractionDistribution(10),
     pickingLatency: passDistribution(10),
     memory: pass({
       browserMemory: pass({ usedJsHeapSize: 1, totalJsHeapSize: 2, jsHeapSizeLimit: 3 }),
@@ -200,6 +203,20 @@ function measurements(frameMedian: number): PerformanceMeasurements {
 
 function passDistribution(medianMs: number): Measurement<Distribution> {
   return pass({ samplesMs: [medianMs], medianMs, p95Ms: medianMs });
+}
+
+function passInteractionDistribution(medianMs: number): Measurement<InteractionLatencyValue> {
+  return pass({
+    samplesMs: [medianMs],
+    medianMs,
+    p95Ms: medianMs,
+    readback: {
+      method: INTERACTION_COMPOSITED_READBACK_METHOD,
+      surface: INTERACTION_COMPOSITED_READBACK_SURFACE,
+      selectionSampleIds: ["test-node", "test-node", "test-node"],
+      staticUnselectedControl: { differingPixels: [0], maximumChannelDeltas: [0] },
+    },
+  });
 }
 
 function pass<Value>(value: Value): Measurement<Value> {

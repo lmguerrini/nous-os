@@ -1,4 +1,5 @@
 import { armFrameCounter, firedSinceArming, settleUncounted } from "#browser/frame-counter.ts";
+import { settleRendered, settleRenderedCanvases } from "#browser/gpu-sync.ts";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
@@ -21,11 +22,14 @@ import { performancePlacement } from "#browser/performance-placement.ts";
 import type { ResolvedPerformancePlacement } from "#browser/performance-placement.ts";
 import {
   PERFORMANCE_VIEWPORT,
+  INTERACTION_COMPOSITED_READBACK_METHOD,
+  INTERACTION_COMPOSITED_READBACK_SURFACE,
   SOFTWARE_RASTERISATION_LABEL,
   SUBSTITUTE_PLACEMENT_SEMANTIC_DECLARATION,
   WARMUP_FRAMES,
   notRunPerformanceRecord,
   type Distribution,
+  type InteractionLatencyValue,
   type MemoryUsage,
   type MemoryValue,
   type PerformanceCombination,
@@ -74,9 +78,17 @@ type FrameResult = {
   readonly fired: number;
 };
 
+type CompositedPixelReadback = {
+  readonly baselineId: string;
+  readonly differingPixels: number;
+  readonly maximumChannelDelta: number;
+};
+
 declare global {
   interface Window {
     __performance?: PerformancePageApi;
+    /** Installed only by performance.spec.ts; it reads the same final compositor surface for every arm. */
+    __performanceCompositedPixels?: (baselineId?: string) => Promise<CompositedPixelReadback>;
   }
 }
 
@@ -205,6 +217,7 @@ function createContainer(): HTMLElement {
   const shell = document.createElement("main");
   shell.style.cssText = `width:${PERFORMANCE_VIEWPORT.width}px;height:${PERFORMANCE_VIEWPORT.height}px;position:relative`;
   const container = document.createElement("div");
+  container.id = "performance-root";
   container.style.cssText = "width:100%;height:100%;position:relative";
   shell.append(container);
   document.body.replaceChildren(shell);
@@ -280,7 +293,7 @@ async function measureRecord(
     initialRenderLatency: initialRender,
     layoutCost: modelCosts.layoutCost,
     sceneModelBuildCost: modelCosts.sceneModelBuildCost,
-    interactionLatency: await measureInteraction(handle, fixture.graph),
+    interactionLatency: await measureInteraction(handle, fixture.graph, container),
     pickingLatency: measurePicking(handle, fixture.graph),
     memory: measureMemory(handle),
     cameraTransitionCost: renderer.name === "r3f-3d" ? await measureCameraTransition(handle) : notRun("orbit/dolly transition is only defined for r3f-3d"),
@@ -358,7 +371,7 @@ async function firstPaintContainingGraph(handle: GraphRendererHandle, start: num
     await nextPaint();
     const surface = safeSurface(handle);
     const canvas = document.querySelector("canvas");
-    if (surface !== null && surface.nodeIds.length + surface.edgeIds.length > 0 && canvas !== null && canvas.width > 0 && canvas.height > 0 && canvasFingerprint().length > 0) {
+    if (surface !== null && surface.nodeIds.length + surface.edgeIds.length > 0 && canvas !== null && canvas.width > 0 && canvas.height > 0) {
       const image = await canvasPixelImage(canvas);
       try {
         assertLitPixelFloor(image, "performance first-paint canvas");
@@ -394,37 +407,111 @@ async function canvasPixelImage(canvas: HTMLCanvasElement): Promise<PixelImage> 
   return { width: copy.width, height: copy.height, data: context.getImageData(0, 0, copy.width, copy.height).data };
 }
 
-async function measureInteraction(handle: GraphRendererHandle, graph: VisualGraph): Promise<Measurement<Distribution>> {
-  const ids = graph.nodes.slice(0, LATENCY_SAMPLES).map((node) => node.id);
-  if (ids.length === 0) {
-    return notRun("fixture has no nodes to select");
-  }
+/**
+ * Selection is observed only through the final compositor. `toDataURL()` is deliberately absent:
+ * WebGL contexts without preserveDrawingBuffer retain no presented frame for that API to export.
+ */
+async function measureInteraction(
+  handle: GraphRendererHandle,
+  graph: VisualGraph,
+  container: HTMLElement,
+): Promise<Measurement<InteractionLatencyValue>> {
   try {
+    const ids = interactionSampleIds(graph);
     const samples: number[] = [];
+    const staticUnselectedDifferingPixels: number[] = [];
+    const staticUnselectedMaximumChannelDeltas: number[] = [];
     for (const id of ids) {
-      await settleUncounted();
-      const before = canvasFingerprint();
+      await settleInteractionSurface(container);
+      if (handle.getSelection() !== null) {
+        throw new Error(`selection baseline for ${id} is not unselected`);
+      }
+      const baseline = await readCompositedPixels();
+      await nextPaint();
+      const staticRepeat = await readCompositedPixels(baseline.baselineId);
+      staticUnselectedDifferingPixels.push(staticRepeat.differingPixels);
+      staticUnselectedMaximumChannelDeltas.push(staticRepeat.maximumChannelDelta);
+      if (staticRepeat.differingPixels !== 0 || staticRepeat.maximumChannelDelta !== 0) {
+        throw new Error(
+          `static unselected compositor control changed by ${staticRepeat.differingPixels} pixels with maximum channel delta ${staticRepeat.maximumChannelDelta}`,
+        );
+      }
       const start = performance.now();
       handle.setSelection(id);
+      if (handle.getSelection() !== id) {
+        throw new Error(`selection of ${id} was not retained by the renderer handle`);
+      }
       let changed = false;
       for (let frame = 1; frame <= 12; frame += 1) {
         await nextPaint();
-        if (canvasFingerprint() !== before) {
+        const observed = await readCompositedPixels(baseline.baselineId);
+        if (observed.differingPixels > 0) {
           samples.push(performance.now() - start);
           changed = true;
           break;
         }
       }
       handle.clearSelection();
-      await settleUncounted();
+      if (handle.getSelection() !== null) {
+        throw new Error(`selection of ${id} was not cleared by the renderer handle`);
+      }
+      await settleInteractionSurface(container);
       if (!changed) {
-        return notRun(`selection of ${id} produced no observed pixel change within 12 frames`);
+        return notRun(`selection of ${id} produced no observed final-compositor pixel change within 12 frames through ${INTERACTION_COMPOSITED_READBACK_METHOD}`);
       }
     }
-    return pass(distribution(samples), "selection start to the first RAF whose canvas fingerprint differs from the settled baseline");
+    return pass(
+      {
+        ...distribution(samples),
+        readback: {
+          method: INTERACTION_COMPOSITED_READBACK_METHOD,
+          surface: INTERACTION_COMPOSITED_READBACK_SURFACE,
+          selectionSampleIds: ids,
+          staticUnselectedControl: {
+            differingPixels: staticUnselectedDifferingPixels,
+            maximumChannelDeltas: staticUnselectedMaximumChannelDeltas,
+          },
+        },
+      },
+      "selection start to the first RAF whose decoded final-compositor pixels differ from a settled unselected baseline",
+    );
   } catch (error: unknown) {
     return notRun(`interaction timing did not run: ${errorMessage(error)}`);
   }
+}
+
+/**
+ * The stress fixture deliberately includes overlapping conflict pairs. A latency trial therefore
+ * uses the canonical first fixture node -- the same deterministic visible target for every arm --
+ * and repeats that one real selection for the fixed number of independent trials.
+ */
+function interactionSampleIds(graph: VisualGraph): readonly string[] {
+  const target = graph.nodes[0];
+  if (target === undefined) {
+    throw new Error("fixture has no nodes to select");
+  }
+  return Array.from({ length: LATENCY_SAMPLES }, () => target.id);
+}
+
+/**
+ * This only prepares the renderer for a compositor capture. Sigma needs every one of its WebGL
+ * layers drained; render3f needs its tagged canvas drained. Both are then read through the one
+ * Playwright compositor-screenshot path above.
+ */
+async function settleInteractionSurface(container: HTMLElement): Promise<void> {
+  if (container.querySelector('canvas[data-render3f-canvas="true"]') !== null) {
+    await settleRendered(container);
+    return;
+  }
+  await settleRenderedCanvases(container);
+}
+
+function readCompositedPixels(baselineId?: string): Promise<CompositedPixelReadback> {
+  const readback = window.__performanceCompositedPixels;
+  if (readback === undefined) {
+    throw new Error("performance compositor readback is unavailable");
+  }
+  return readback(baselineId);
 }
 
 function measurePicking(handle: GraphRendererHandle, graph: VisualGraph): Measurement<Distribution> {
@@ -699,16 +786,6 @@ function safeSurface(handle: GraphRendererHandle) {
   } catch {
     return null;
   }
-}
-
-function canvasFingerprint(): string {
-  return [...document.querySelectorAll("canvas")].map((canvas) => {
-    try {
-      return canvas.toDataURL("image/png");
-    } catch {
-      return `${canvas.width}x${canvas.height}`;
-    }
-  }).join("|");
 }
 
 function nextPaint(): Promise<void> {

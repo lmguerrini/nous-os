@@ -57,6 +57,24 @@ export type Distribution = {
   readonly p95Ms: number;
 };
 
+/** The one compositor readback used to observe interaction latency for every renderer arm. */
+export const INTERACTION_COMPOSITED_READBACK_METHOD = "Playwright locator screenshot decoded to RGBA compositor pixels";
+export const INTERACTION_COMPOSITED_READBACK_SURFACE = "#performance-root final composited surface";
+
+export type InteractionLatencyValue = Distribution & {
+  readonly readback: {
+    readonly method: typeof INTERACTION_COMPOSITED_READBACK_METHOD;
+    readonly surface: typeof INTERACTION_COMPOSITED_READBACK_SURFACE;
+    /** The deterministic fixture target is repeated for the fixed number of latency trials. */
+    readonly selectionSampleIds: readonly string[];
+    /** Every settled, unselected repeat is compared to its own decoded-pixel baseline and must be zero. */
+    readonly staticUnselectedControl: {
+      readonly differingPixels: readonly number[];
+      readonly maximumChannelDeltas: readonly number[];
+    };
+  };
+};
+
 export type Measurement<Value> =
   | {
       readonly status: "PASS";
@@ -111,7 +129,7 @@ export type PerformanceMeasurements = {
   readonly initialRenderLatency: Measurement<Distribution>;
   readonly layoutCost: Measurement<Distribution>;
   readonly sceneModelBuildCost: Measurement<Distribution>;
-  readonly interactionLatency: Measurement<Distribution>;
+  readonly interactionLatency: Measurement<InteractionLatencyValue>;
   readonly pickingLatency: Measurement<Distribution>;
   readonly memory: Measurement<MemoryValue>;
   readonly cameraTransitionCost: Measurement<Distribution>;

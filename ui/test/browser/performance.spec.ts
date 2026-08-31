@@ -27,6 +27,8 @@ import {
   type PerformanceRecord,
   type PerformanceResult,
 } from "#browser/performance-contract.ts";
+import { decodePng } from "#browser/png-codec.ts";
+import type { PixelImage } from "#browser/png-codec.ts";
 
 const PERFORMANCE_ENABLED = process.env.PERFORMANCE_SUITE === "1";
 const OUTPUT_FILE = ["dist", "evidence", "performance.json"].join("/");
@@ -41,6 +43,12 @@ type TreeBoundPerformanceRecord = PerformanceRecord & {
 type TrackedTreeState = {
   readonly sha256: string;
   readonly statusPorcelain: string;
+};
+
+type CompositedReadback = {
+  readonly baselineId: string;
+  readonly differingPixels: number;
+  readonly maximumChannelDelta: number;
 };
 
 type TreeBoundPerformanceResult = Omit<PerformanceResult, "records"> & {
@@ -125,6 +133,7 @@ async function runCombinationWithinBudget(
 ): Promise<PerformanceRecord> {
   let devicePixelRatio = 1;
   const attempt = (async () => {
+    await installCompositedReadback(page);
     const source = await performancePageSource();
     await page.goto("/");
     await page.setContent("<!doctype html><html><body></body></html>");
@@ -172,6 +181,56 @@ async function runCombinationWithinBudget(
     `performance attempt for ${combination.renderer} at ${combination.scale} failed before producing a record: ${outcome.reason}`,
     placement.artifact,
   );
+}
+
+/**
+ * The page calls this binding for every interaction sample. A locator screenshot reads the final
+ * composited surface, then the decoded RGBA pixels -- not PNG encoding bytes -- are compared.
+ * This is intentionally renderer-agnostic: all arms own the same #performance-root surface.
+ */
+async function installCompositedReadback(page: Page): Promise<void> {
+  const baselines = new Map<string, PixelImage>();
+  let nextBaseline = 0;
+  await page.exposeFunction("__performanceCompositedPixels", async (baselineId?: string): Promise<CompositedReadback> => {
+    const image = decodePng(
+      await page.locator("#performance-root").screenshot(),
+      "performance final-compositor readback",
+    );
+    if (baselineId === undefined) {
+      const createdBaselineId = `performance-compositor-baseline-${nextBaseline}`;
+      nextBaseline += 1;
+      baselines.set(createdBaselineId, image);
+      return { baselineId: createdBaselineId, differingPixels: 0, maximumChannelDelta: 0 };
+    }
+    const baseline = baselines.get(baselineId);
+    if (baseline === undefined) {
+      throw new Error(`performance compositor readback has no baseline ${baselineId}`);
+    }
+    return {
+      baselineId,
+      ...pixelDelta(baseline, image),
+    };
+  });
+}
+
+function pixelDelta(first: PixelImage, second: PixelImage): Pick<CompositedReadback, "differingPixels" | "maximumChannelDelta"> {
+  if (first.width !== second.width || first.height !== second.height || first.data.length !== second.data.length) {
+    throw new Error("performance final-compositor readback dimensions changed");
+  }
+  let differingPixels = 0;
+  let maximumChannelDelta = 0;
+  for (let offset = 0; offset < first.data.length; offset += 4) {
+    let differs = false;
+    for (let channel = 0; channel < 4; channel += 1) {
+      const delta = Math.abs((first.data[offset + channel] ?? 0) - (second.data[offset + channel] ?? 0));
+      maximumChannelDelta = Math.max(maximumChannelDelta, delta);
+      differs ||= delta !== 0;
+    }
+    if (differs) {
+      differingPixels += 1;
+    }
+  }
+  return { differingPixels, maximumChannelDelta };
 }
 
 async function writeCompletedRecord(

@@ -359,7 +359,7 @@ function measurementDefinition(dimension: ComparisonDimension): string {
     case "sceneModelBuildCost":
       return "This shared renderer-neutral scene construction stage is excluded from the projection contrast.";
     case "interactionLatency":
-      return "This median measures milliseconds from selection start to the first frame whose canvas fingerprint differs.";
+      return "This median measures milliseconds from selection start to the first frame whose decoded final-compositor pixels differ from the settled unselected baseline.";
     case "pickingLatency":
       return "This median measures milliseconds spent in synchronous node and edge picking calls over fixed fixture positions.";
     case "memory":
