@@ -24,10 +24,16 @@ const TEMPORAL_ENABLED = process.env.TEMPORAL_CAPTURES === "1";
 const TEMPORAL_SPEC = "temporal.spec.ts";
 const OPENING_ENABLED = process.env.OPENING_CAPTURES === "1";
 const OPENING_SPEC = "opening.spec.ts";
+const REVIEW_MOTION_ENABLED = process.env.REVIEW_MOTION_CAPTURES === "1";
+const REVIEW_MOTION_SPEC = "review-motion.spec.ts";
+const REVIEW_TEMPORAL_ENABLED = process.env.REVIEW_TEMPORAL_CAPTURES === "1";
+const REVIEW_TEMPORAL_SPEC = "review-temporal-mycelium.spec.ts";
+const REVIEW_OPENING_ENABLED = process.env.REVIEW_OPENING_CAPTURES === "1";
+const REVIEW_OPENING_SPEC = "review-opening.spec.ts";
 // The evidence record is owned by the plain DPR projects alone. Every added suite has to be listed
 // here as well as ignored below: an owner test that also ran one of them would re-initialise the
 // record mid-run, which is the wipe already recorded as CE-14 and worked around by ordering.
-const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED && !PARITY_ENABLED && !PERFORMANCE_ENABLED && !REVIEW3D_ENABLED && !MATRIX_ENABLED && !BLIND_ENABLED && !SCALE_TOPOLOGY_ENABLED && !CALIBRATION_EVIDENCE_ENABLED && !MOTION_ENABLED && !TEMPORAL_ENABLED && !OPENING_ENABLED;
+const BROWSER_EVIDENCE_OWNER = !A4_ENABLED && !REVIEW_ENABLED && !PARITY_ENABLED && !PERFORMANCE_ENABLED && !REVIEW3D_ENABLED && !MATRIX_ENABLED && !BLIND_ENABLED && !SCALE_TOPOLOGY_ENABLED && !CALIBRATION_EVIDENCE_ENABLED && !MOTION_ENABLED && !TEMPORAL_ENABLED && !OPENING_ENABLED && !REVIEW_MOTION_ENABLED && !REVIEW_TEMPORAL_ENABLED && !REVIEW_OPENING_ENABLED;
 
 const PREPARE_EVIDENCE = [
   "node --input-type=module --eval '",
@@ -83,8 +89,8 @@ export default defineConfig({
     },
   },
   projects: [
-    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC, MOTION_SPEC, TEMPORAL_SPEC, OPENING_SPEC], use: { deviceScaleFactor: 1 } },
-    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC, MOTION_SPEC, TEMPORAL_SPEC, OPENING_SPEC], use: { deviceScaleFactor: 2 } },
+    { name: "dpr-1", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC, MOTION_SPEC, TEMPORAL_SPEC, OPENING_SPEC, REVIEW_MOTION_SPEC, REVIEW_TEMPORAL_SPEC, REVIEW_OPENING_SPEC], use: { deviceScaleFactor: 1 } },
+    { name: "dpr-2", testIgnore: [A4_SPEC, REVIEW_SPEC, PARITY_SPEC, PERFORMANCE_SPEC, REVIEW3D_SPEC, MATRIX_SPEC, BLIND_SPEC, SCALE_TOPOLOGY_SPEC, CALIBRATION_EVIDENCE_SPEC, MOTION_SPEC, TEMPORAL_SPEC, OPENING_SPEC, REVIEW_MOTION_SPEC, REVIEW_TEMPORAL_SPEC, REVIEW_OPENING_SPEC], use: { deviceScaleFactor: 2 } },
     {
       name: "a4",
       testMatch: A4_ENABLED ? A4_SPEC : "a4-disabled.spec.ts",
@@ -176,6 +182,41 @@ export default defineConfig({
       // opening played. One DPR deliberately, matching temporal's and motion's own reasoning.
       name: "opening",
       testMatch: OPENING_ENABLED ? OPENING_SPEC : "opening-disabled.spec.ts",
+      use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
+    },
+    {
+      // CAP-13. Human-review motion capture: dense (48-phase) PNG sequences per shipped motion
+      // policy, plus a Recursive-vs-Holographic pair under one shared camera, for offline video
+      // encoding. Review media, not a gate -- no closure criterion is attached to this project. One
+      // DPR deliberately, matching every other capture project's own reasoning. A raised, scoped
+      // timeout (not the shared 120s budget): two tests each render dozens of real WebGL mounts, and
+      // widening the shared budget to fit them would be the same class of dishonesty performance's
+      // own comment above already refuses.
+      name: "review-motion",
+      testMatch: REVIEW_MOTION_ENABLED ? REVIEW_MOTION_SPEC : "review-motion-disabled.spec.ts",
+      timeout: 900_000,
+      use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
+    },
+    {
+      // CAP-13. Human-review temporal capture: the Mycelium morphology's own valid-time growth over
+      // temporal-genesis's governed T0..T7, 12 phases per instant, with the mounted scene's own
+      // surface witness checked against that same capture's own governed membership at every frame.
+      // Review media, not a gate. One DPR deliberately, matching review-motion's own reasoning. A
+      // raised, scoped timeout for the same reason review-motion's own is raised: 96 real WebGL mounts.
+      name: "review-temporal",
+      testMatch: REVIEW_TEMPORAL_ENABLED ? REVIEW_TEMPORAL_SPEC : "review-temporal-disabled.spec.ts",
+      timeout: 900_000,
+      use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
+    },
+    {
+      // CAP-13. Human-review Opening Sequence capture: the same real-history arc opening.spec.ts
+      // proves, sampled far more densely (frameDensity=10 vs the shipping default of 2) for
+      // continuity, landing byte-identically on the same accepted static foundation. Review media,
+      // not a gate. One DPR deliberately; a raised, scoped timeout for the same reason review-motion's
+      // own is raised.
+      name: "review-opening",
+      testMatch: REVIEW_OPENING_ENABLED ? REVIEW_OPENING_SPEC : "review-opening-disabled.spec.ts",
+      timeout: 900_000,
       use: { deviceScaleFactor: 1, viewport: { width: 1_200, height: 800 } },
     },
     {

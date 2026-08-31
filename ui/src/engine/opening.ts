@@ -78,7 +78,7 @@ export type OpeningFrame = {
 const OPENING_ENTRY_PHASE = 0;
 const SWEEPING_OPENING_POLICIES: ReadonlySet<MotionGrammar> = new Set([ASSEMBLE, RECURSIVE_BLOOM]);
 
-/** This is how many deterministic intermediate phases a sweeping policy samples per step, strictly between its own entry and resting phase, purely for evidence variety -- it changes no step's own final, resting frame. */
+/** This is how many deterministic intermediate phases a sweeping policy samples per step, strictly between its own entry and resting phase, purely for evidence variety -- it changes no step's own final, resting frame. Also this function's own default `frameDensity`, so every existing caller that does not pass one keeps this exact frame list. */
 const OPENING_INTERMEDIATE_FRAMES_PER_STEP = 2;
 
 /**
@@ -87,18 +87,27 @@ const OPENING_INTERMEDIATE_FRAMES_PER_STEP = 2;
  * resting -- a complete, non-degraded path, never a smaller opening, matching `applyControlState`'s
  * (`#engine/control-state.ts`) own reduced-motion resolution, which forces this same policy. Any other
  * policy plays `resolveOpeningTimeline`'s own real instants in order, each followed by the arrival
- * step; a sweeping policy (see `SWEEPING_OPENING_POLICIES`) additionally samples
- * `OPENING_INTERMEDIATE_FRAMES_PER_STEP` deterministic phases strictly between its own entry and
- * resting phase before each step's own resting frame -- visual interpolation of HOW that step's
- * already-real membership is drawn, never of WHICH elements belong to it, exactly the distinction
- * `#scene/build.ts`'s own `resolveTemporalRenderGraph` docstring draws between the two axes. The
- * sampling itself is a small seeded PRNG (mulberry32, the same algorithm `ui/test/browser/motion.spec.ts`
- * already uses for its own deterministic shuffling), so a caller who records `seed` can reproduce this
- * exact frame list, and a different seed reproduces a different -- but still fully deterministic --
- * one, never a different arrival.
+ * step; a sweeping policy (see `SWEEPING_OPENING_POLICIES`) additionally samples `frameDensity`
+ * deterministic phases strictly between its own entry and resting phase before each step's own resting
+ * frame -- visual interpolation of HOW that step's already-real membership is drawn, never of WHICH
+ * elements belong to it, exactly the distinction `#scene/build.ts`'s own `resolveTemporalRenderGraph`
+ * docstring draws between the two axes. The sampling itself is a small seeded PRNG (mulberry32, the
+ * same algorithm `ui/test/browser/motion.spec.ts` already uses for its own deterministic shuffling), so
+ * a caller who records `seed` can reproduce this exact frame list, and a different seed reproduces a
+ * different -- but still fully deterministic -- one, never a different arrival. `frameDensity` defaults
+ * to `OPENING_INTERMEDIATE_FRAMES_PER_STEP` (2) so every existing caller is unaffected; a caller that
+ * needs continuity dense enough to read as development rather than a slideshow (review media, never a
+ * closure gate) may pass a larger one -- it only adds more samples of an already-real step's own
+ * construction, never a new step, a new instant, or a different resting frame.
  */
-export function resolveOpeningFrames(graph: VisualGraph, policy: OpeningPolicy, seed: number): readonly OpeningFrame[] {
+export function resolveOpeningFrames(
+  graph: VisualGraph,
+  policy: OpeningPolicy,
+  seed: number,
+  frameDensity: number = OPENING_INTERMEDIATE_FRAMES_PER_STEP,
+): readonly OpeningFrame[] {
   assertOpeningSeed(seed);
+  assertFrameDensity(frameDensity);
   if (policy === "off") {
     return [{ stepIndex: 0, instant: OPENING_ARRIVAL_INSTANT, phase: 0, rest: true }];
   }
@@ -110,8 +119,8 @@ export function resolveOpeningFrames(graph: VisualGraph, policy: OpeningPolicy, 
   const frames: OpeningFrame[] = [];
   for (const step of steps) {
     if (sweeps) {
-      for (let sample = 0; sample < OPENING_INTERMEDIATE_FRAMES_PER_STEP; sample += 1) {
-        const slot = (sample + randomUnit()) / (OPENING_INTERMEDIATE_FRAMES_PER_STEP + 1);
+      for (let sample = 0; sample < frameDensity; sample += 1) {
+        const slot = (sample + randomUnit()) / (frameDensity + 1);
         frames.push({
           stepIndex: step.stepIndex,
           instant: step.instant,
@@ -128,6 +137,12 @@ export function resolveOpeningFrames(graph: VisualGraph, policy: OpeningPolicy, 
 function assertOpeningSeed(seed: number): void {
   if (!Number.isSafeInteger(seed) || seed < 0) {
     throw new TypeError("opening sequence seed must be a non-negative safe integer");
+  }
+}
+
+function assertFrameDensity(frameDensity: number): void {
+  if (!Number.isSafeInteger(frameDensity) || frameDensity < 0) {
+    throw new TypeError("opening sequence frame density must be a non-negative safe integer");
   }
 }
 

@@ -32,6 +32,9 @@
     "test:motion": "rm -rf dist/motion && MOTION_CAPTURES=1 playwright test --project=motion",
     "test:temporal": "rm -rf dist/temporal && TEMPORAL_CAPTURES=1 playwright test --project=temporal",
     "test:opening": "rm -rf dist/opening && OPENING_CAPTURES=1 playwright test --project=opening",
+    "test:review-motion": "rm -rf dist/review-motion && REVIEW_MOTION_CAPTURES=1 playwright test --project=review-motion",
+    "test:review-temporal": "rm -rf dist/review-temporal && REVIEW_TEMPORAL_CAPTURES=1 playwright test --project=review-temporal",
+    "test:review-opening": "rm -rf dist/review-opening && REVIEW_OPENING_CAPTURES=1 playwright test --project=review-opening",
     "evidence:layout-scale": "rm -f dist/evidence/layout-scale.json && node --experimental-strip-types test/layout-scale.ts"
   },
   "dependencies": {
