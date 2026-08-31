@@ -45,6 +45,7 @@ import { arcLength, reducedMotionPosition } from "#engine/propagation.ts";
 import { ATOMIC, HOLOGRAPHIC, assertChildWorld, holographicContext } from "#engine/scale-topology.ts";
 import type { ScaleNavigationPath } from "#engine/scale-topology.ts";
 import { resolveTemporalMembership, resolveTemporalPlacements } from "#engine/temporal.ts";
+import type { TemporalMembership, TemporalPlacement } from "#engine/temporal.ts";
 import { TOKEN_RAMPS, resolveTokens, separationLuminance, separationRatio } from "#engine/tokens.ts";
 import type { OklchToken, TokenMap } from "#engine/tokens.ts";
 import { assertVisualState } from "#engine/visual-state.ts";
@@ -142,8 +143,8 @@ export function buildScene(
   assertCalibrationProfile(calibration);
   assertVisualState(graph, visualState);
   const inputs = resolveSceneInputs(visualState, tokensOrCamera, cameraOrTokens);
-  const temporalGraph = resolveTemporalRenderGraph(graph, temporalInstant);
-  const renderedGraph = resolveScaleNavigationGraph(temporalGraph, visualState, navigationPath);
+  const temporalRender = resolveTemporalRenderGraph(graph, temporalInstant);
+  const renderedGraph = resolveScaleNavigationGraph(temporalRender.graph, visualState, navigationPath);
   const { graph: tracedGraph, trace } = createEngineGraphView(renderedGraph);
   const engineGraph = orderEngineGraph(tracedGraph);
   const morphology = morphologyProfile(visualState.morphology);
@@ -231,7 +232,7 @@ export function buildScene(
   assertSceneFieldRegister(scene);
   const motionPolicy = visualState.motionGrammar ?? STILL;
   const motionPhase = phase ?? restingPhase(motionPolicy);
-  const motionScene = applyMotionGrammar(scene, engineGraph, motionPolicy, motionPhase, calibration);
+  const motionScene = applyMotionGrammar(scene, engineGraph, motionPolicy, motionPhase, calibration, temporalRender.continuity);
   assertSceneFieldRegister(motionScene);
   return motionScene;
 }
@@ -282,6 +283,30 @@ function resolveScaleNavigationGraph(
 }
 
 /**
+ * This is the one piece of temporal information that ever crosses from WHAT (Temporal Playback) into
+ * HOW (MotionGrammar), and it crosses deliberately, not by accident: `alreadyValidNodeIds` names exactly
+ * the governed nodes `resolveTemporalRenderGraph` is about to render whose own resolved
+ * `TemporalPlacement.at` (`#engine/temporal.ts`) is strictly earlier than the instant being rendered --
+ * elements that were already valid-time-present at some earlier governed instant, not newly arriving at
+ * this one. It names no WHICH: every id it carries is already a member of the same narrowed graph this
+ * same call returns, never a second independent membership decision. `resolveStructuralGeometry` is the
+ * only consumer, and only when it is non-null: an already-valid element renders complete, at rest,
+ * regardless of phase, so replaying an instant's own Assemble construction never re-animates history
+ * that has already happened (see that function's own docstring for why the pre-fix formula, which had
+ * no such notion and swept every element from empty at every instant's own phase 0, read as strobing).
+ */
+type TemporalGeometryContinuity = {
+  readonly instant: string;
+  readonly alreadyValidNodeIds: ReadonlySet<string>;
+};
+
+/** This is `resolveTemporalRenderGraph`'s own return shape: the narrowed graph WHAT already decided, paired with the one WHEN-derived fact `resolveStructuralGeometry` alone consumes to decide HOW. */
+type TemporalRenderResult = {
+  readonly graph: VisualGraph;
+  readonly continuity: TemporalGeometryContinuity | null;
+};
+
+/**
  * This resolves what buildScene actually renders once Temporal Playback has entered an instant, and is
  * the composition point the temporal addendum requires: it decides WHAT governed historical state
  * exists and nothing about HOW it is drawn, so it runs before scale-topology narrowing and long before
@@ -290,25 +315,73 @@ function resolveScaleNavigationGraph(
  * re-deriving their arithmetic here -- so the returned membership is exactly what that module's own
  * preregistered fixture and unit suite already prove correct: a defensible governed placement only,
  * derived placement never written back as an element's own valid_from, and TEMPORALLY UNKNOWN elements
- * never silently dated. An omitted `temporalInstant` returns the canonical graph unchanged, both this
- * axis's own zero state and, per the temporal addendum's binding ruling, Temporal Playback's own normal
- * resting state (ALL-TIME UNION, not "currently valid"; see `#engine/control-state.ts`'s own
- * `TemporalPlaybackControl` docstring) -- which is what keeps every existing render byte-identical to
- * before this axis existed. The projection reuses `projectNavigatedGraph`/`assertNavigatedGraphSubset`
- * unchanged: "filter the canonical graph down to a governed id subset, then prove the result really is
- * one" is the same operation scale-topology's own navigation already needed, not a second one written
- * for this axis, and `resolveTemporalMembership` only ever returns ids it read off `graph.nodes`/
- * `graph.edges` in the first place, so that proof holds by construction here.
+ * never silently dated. An omitted `temporalInstant` returns the canonical graph unchanged and a `null`
+ * continuity, both this axis's own zero state and, per the temporal addendum's binding ruling, Temporal
+ * Playback's own normal resting state (ALL-TIME UNION, not "currently valid"; see
+ * `#engine/control-state.ts`'s own `TemporalPlaybackControl` docstring) -- which is what keeps every
+ * existing render byte-identical to before this axis existed, motion geometry included: a `null`
+ * continuity is `resolveStructuralGeometry`'s own signal that no temporal instant is active, and it is
+ * the only thing that signal ever depends on. The projection reuses
+ * `projectNavigatedGraph`/`assertNavigatedGraphSubset` unchanged: "filter the canonical graph down to a
+ * governed id subset, then prove the result really is one" is the same operation scale-topology's own
+ * navigation already needed, not a second one written for this axis, and `resolveTemporalMembership`
+ * only ever returns ids it read off `graph.nodes`/`graph.edges` in the first place, so that proof holds
+ * by construction here. The continuity itself is resolved from the SAME `placements`/`membership` this
+ * call already computed, never a third independent pass over the graph.
  */
-function resolveTemporalRenderGraph(graph: VisualGraph, temporalInstant: string | undefined): VisualGraph {
+function resolveTemporalRenderGraph(graph: VisualGraph, temporalInstant: string | undefined): TemporalRenderResult {
   if (temporalInstant === undefined) {
-    return graph;
+    return { graph, continuity: null };
   }
   const placements = resolveTemporalPlacements(graph);
   const membership = resolveTemporalMembership(graph, placements, temporalInstant);
   const temporalGraph = projectNavigatedGraph(graph, membership.nodeIds, membership.edgeIds);
   assertNavigatedGraphSubset(graph, temporalGraph);
-  return temporalGraph;
+  const continuity = resolveTemporalGeometryContinuity(placements, membership, temporalInstant);
+  return { graph: temporalGraph, continuity };
+}
+
+/**
+ * This resolves one instant's own `TemporalGeometryContinuity` from the SAME `placements`/`membership`
+ * `resolveTemporalRenderGraph` already computed: every node that instant renders (`membership.nodeIds`)
+ * already has a dated placement (`isPresentAt` in `#engine/temporal.ts` never admits an UNKNOWN
+ * placement, so a present node's own placement is always `explicit` or `derived` here, never `unknown`
+ * -- re-checked below rather than assumed). A node is "already valid" when its own placement's `at` is
+ * strictly earlier than `instant`: `resolveTemporalMembership` only ever admits a node whose placement is
+ * at or before `instant` in the first place, so among present nodes this is exactly "was already present
+ * at some strictly earlier governed instant" without needing that earlier instant's own membership
+ * recomputed. A relation carries no `TemporalPlacement` of its own -- `resolveStructuralGeometry` derives
+ * an edge's own continuity directly from its two endpoints' membership in `alreadyValidNodeIds`, since a
+ * governed relation is only ever rendered once both its endpoints are, so a relation between two
+ * already-valid nodes was, by that same rule, already rendered at the earlier instant both endpoints
+ * were.
+ */
+function resolveTemporalGeometryContinuity(
+  placements: ReadonlyMap<string, TemporalPlacement>,
+  membership: TemporalMembership,
+  instant: string,
+): TemporalGeometryContinuity {
+  const instantEpochMillis = temporalGeometryEpochMillis(instant);
+  const alreadyValidNodeIds = new Set<string>();
+  for (const nodeId of membership.nodeIds) {
+    const placement = placements.get(nodeId);
+    if (placement === undefined || placement.class === "unknown") {
+      throw new TypeError(`scene temporal geometry continuity requires a dated placement for a rendered node: ${nodeId}`);
+    }
+    if (temporalGeometryEpochMillis(placement.at) < instantEpochMillis) {
+      alreadyValidNodeIds.add(nodeId);
+    }
+  }
+  return { instant, alreadyValidNodeIds };
+}
+
+/** This is the same ISO-instant-to-epoch parse `#engine/temporal.ts`'s own private `epochMillis` performs, duplicated here rather than exported across the module boundary -- matching `#engine/opening.ts`'s own identical precedent for the identical reason: this is a one-line parse, not shared arithmetic worth a new cross-module export. */
+function temporalGeometryEpochMillis(instant: string): number {
+  const epoch = Date.parse(instant);
+  if (Number.isNaN(epoch)) {
+    throw new TypeError(`scene temporal geometry continuity instant is not parseable: ${instant}`);
+  }
+  return epoch;
 }
 
 /**
@@ -375,7 +448,14 @@ export function assertNavigatedGraphSubset(canonical: VisualGraph, navigated: Vi
  * see `resolveMotionGeometry`) is resolved against this scene's own already-resolved anchors and real
  * incidence instead of against calibration alone.
  */
-function applyMotionGrammar(scene: Scene, graph: EngineGraph, policy: MotionGrammar, phase: number, calibration: CalibrationProfile): Scene {
+function applyMotionGrammar(
+  scene: Scene,
+  graph: EngineGraph,
+  policy: MotionGrammar,
+  phase: number,
+  calibration: CalibrationProfile,
+  temporalContinuity: TemporalGeometryContinuity | null,
+): Scene {
   const elementIds: MotionElementIds = {
     nodeIds: graph.nodes.map((node) => node.id),
     edgeIds: graph.edges.map((edge) => edge.id),
@@ -399,7 +479,7 @@ function applyMotionGrammar(scene: Scene, graph: EngineGraph, policy: MotionGram
   // policy resolves what, and why): null for every policy that needs no such resolution (Still,
   // Reconfigure), in which case every node and relation below draws from the axis's own declared
   // modulation alone, unchanged from before this function existed.
-  const geometryResolution = resolveMotionGeometry(scene, graph, policy, phase, nodeModulationById);
+  const geometryResolution = resolveMotionGeometry(scene, graph, policy, phase, nodeModulationById, temporalContinuity);
   // Both of a node's own offset sources -- the axis's declared offsetXPermille/offsetYPermille and a
   // geometry resolution's own resolved displacement -- are resolved once here, by the same function
   // modulateSceneNode itself uses, so an edge incident to a node is displaced by exactly the same
@@ -782,12 +862,13 @@ function resolveMotionGeometry(
   policy: MotionGrammar,
   phase: number,
   nodeModulationById: ReadonlyMap<string, NodeMotionModulation>,
+  temporalContinuity: TemporalGeometryContinuity | null,
 ): MotionGeometryResolution | null {
   if (policy === CONDENSE) {
     return resolveCondenseGeometry(scene, nodeModulationById);
   }
   if (policy === ASSEMBLE || policy === DISSOLVE || policy === RECURSIVE_BLOOM) {
-    return resolveStructuralGeometry(scene, graph, policy, phase);
+    return resolveStructuralGeometry(scene, graph, policy, phase, temporalContinuity);
   }
   if (policy === PULSE) {
     return resolvePulseGeometry(scene, phase);
@@ -1019,6 +1100,25 @@ function requiredStructuralRank(rankById: ReadonlyMap<string, number>, id: strin
   return rank;
 }
 
+/** This is one already-valid node's own resolved geometry under a structural policy while a temporal instant is active: complete, at rest, and undisplaced regardless of `phase` -- see `TemporalGeometryContinuity`'s own docstring for why replaying an instant must never re-animate a node that was already valid at an earlier one. */
+const TEMPORAL_CONTINUITY_NODE_RESOLUTION: MotionGeometryNodeResolution = {
+  offsetXPx: 0,
+  offsetYPx: 0,
+  opacityPermille: SCENE_PERMILLE_SCALE,
+  scalePermille: SCENE_PERMILLE_SCALE,
+};
+
+/** This is one already-valid relation's own resolved geometry under a structural policy while a temporal instant is active: fully revealed regardless of `phase` -- both its own endpoints were already valid at some strictly earlier governed instant, so (per `resolveTemporalGeometryContinuity`'s own docstring: a relation is only ever rendered once both its endpoints are) this relation was too. */
+const TEMPORAL_CONTINUITY_EDGE_RESOLUTION: MotionGeometryEdgeResolution = {
+  opacityPermille: SCENE_PERMILLE_SCALE,
+  revealPermille: SCENE_PERMILLE_SCALE,
+};
+
+/** This is one node's own already-valid status under an active temporal instant, and is always false when no instant is active (`temporalContinuity` is `null`) -- the one branch below this can ever take. */
+function structuralNodeAlreadyValid(temporalContinuity: TemporalGeometryContinuity | null, nodeId: string): boolean {
+  return temporalContinuity !== null && temporalContinuity.alreadyValidNodeIds.has(nodeId);
+}
+
 /**
  * This resolves Assemble, Dissolve, and RecursiveBloom against real incidence instead of an id (CAP-13
  * finding F79 and the human review disposition's binding rule that structural propagation "needs an
@@ -1037,17 +1137,43 @@ function requiredStructuralRank(rankById: ReadonlyMap<string, number>, id: strin
  * free: a relation's own drawn path is recomputed from its two endpoints' own resolved offsets by the
  * same `motionEdgeGeometry` every other policy already shares (see `applyMotionGrammar`), so a relation
  * touching a still-growing node visibly follows it, never floating free of it.
+ *
+ * `temporalContinuity` is this same mechanism's own temporal correction (CAP-13 V3 repair): WHEN a
+ * governed element resolves is answered by real BFS structure above only for an element genuinely
+ * arriving fresh into an empty scene (Opening Sequence's own true phase-0 pose, or any non-temporal
+ * render of a structural policy). Once Temporal Playback has narrowed the graph to one governed instant,
+ * that same phase-0-to-rest sweep would replay for EVERY element the instant's own graph contains, hub
+ * included, even one whose own `TemporalPlacement` says it has been valid since an earlier instant --
+ * reading, at the historical cadence Opening Sequence and the review captures play instants at, as a
+ * strobe rather than growth. `structuralNodeAlreadyValid` answers WHICH elements that sweep must
+ * therefore exclude, from real governed structure (`TemporalPlacement.at`, never a hash: F79/F86), not a
+ * second one invented here: an already-valid node or relation renders `TEMPORAL_CONTINUITY_NODE_RESOLUTION`/
+ * `TEMPORAL_CONTINUITY_EDGE_RESOLUTION` -- complete, at rest, unconditionally on `phase` -- while an
+ * element newly valid at this exact instant still sweeps in by the unchanged rank-staggered formula
+ * above, still pulled toward its own real BFS parent's position exactly as it would outside Temporal
+ * Playback, so "new nodes germinate from already-visible governed structure" (the human review
+ * disposition's own words for what this instant's arrival must look like) holds for real: the structure
+ * a newly-valid node grows from is, in the ordinary case, structure this same branch has already left at
+ * rest. `temporalContinuity` is `null` for every call outside an active temporal instant (see
+ * `resolveTemporalRenderGraph`), so `structuralNodeAlreadyValid` is unconditionally false there and this
+ * whole branch never fires -- M3's own byte-identity to the frozen static baseline is untouched by
+ * construction, not merely by testing.
  */
 function resolveStructuralGeometry(
   scene: Scene,
   graph: EngineGraph,
   policy: MotionGrammar,
   phase: number,
+  temporalContinuity: TemporalGeometryContinuity | null,
 ): MotionGeometryResolution {
   const structural = resolveStructuralRank(graph);
   const positionById = new Map(scene.nodes.map((node) => [node.id, node.position] as const));
   const nodes = new Map<string, MotionGeometryNodeResolution>();
   for (const node of scene.nodes) {
+    if (structuralNodeAlreadyValid(temporalContinuity, node.id)) {
+      nodes.set(node.id, TEMPORAL_CONTINUITY_NODE_RESOLUTION);
+      continue;
+    }
     const rank = requiredStructuralRank(structural.rankById, node.id);
     const revealFraction = resolveRevealFraction(policy, phase, rank);
     const levelPermille = clampScenePermille(Math.round(revealFraction * SCENE_PERMILLE_SCALE));
@@ -1063,6 +1189,10 @@ function resolveStructuralGeometry(
   }
   const edges = new Map<string, MotionGeometryEdgeResolution>();
   for (const edge of scene.edges) {
+    if (structuralNodeAlreadyValid(temporalContinuity, edge.source) && structuralNodeAlreadyValid(temporalContinuity, edge.target)) {
+      edges.set(edge.id, TEMPORAL_CONTINUITY_EDGE_RESOLUTION);
+      continue;
+    }
     const sourceRank = requiredStructuralRank(structural.rankById, edge.source);
     const targetRank = requiredStructuralRank(structural.rankById, edge.target);
     const edgeRank = Math.min(sourceRank, targetRank);

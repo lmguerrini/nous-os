@@ -5,13 +5,13 @@ import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import type { VisualGraph } from "#engine/contract.ts";
-import { MOTION_GRAMMARS, restingPhase } from "#engine/motion-grammar.ts";
+import { ASSEMBLE, MOTION_GRAMMARS, restingPhase } from "#engine/motion-grammar.ts";
 import type { MotionGrammar } from "#engine/motion-grammar.ts";
 import { HIERARCHICAL, enterChildWorld, rootNavigationPath } from "#engine/scale-topology.ts";
 import { allTimeMembership, resolveTemporalMembership, resolveTemporalPlacements } from "#engine/temporal.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState } from "#engine/visual-state.ts";
-import type { Scene } from "#scene/contract.ts";
+import type { Scene, SceneNode } from "#scene/contract.ts";
 import { assertNavigatedGraphSubset, buildScene } from "#scene/build.ts";
 import { sceneTokens } from "./support.ts";
 
@@ -53,6 +53,14 @@ function sceneIds(scene: Scene): { readonly nodes: readonly string[]; readonly e
     nodes: [...scene.nodes.map((node) => node.id)].sort(),
     edges: [...scene.edges.map((edge) => edge.id)].sort(),
   };
+}
+
+function requiredSceneNode(nodesById: ReadonlyMap<string, SceneNode>, id: string): SceneNode {
+  const node = nodesById.get(id);
+  if (node === undefined) {
+    throw new Error(`temporal continuity test scene is missing node ${id}`);
+  }
+  return node;
 }
 
 test("an omitted temporalInstant renders the unconditional all-time union, byte-identical to no temporal axis at all", () => {
@@ -132,6 +140,60 @@ test("an animated transition converges exactly to the governed membership at its
       }
     }
   }
+});
+
+test("Assemble under a temporal instant renders an element valid since an earlier instant unchanged across phase, while an element newly valid at this instant still visibly sweeps in", () => {
+  // This is CAP-13's V3 repair, exercised directly: replaying an instant's own Assemble construction
+  // must never re-animate history that already happened. Before the fix, resolveStructuralGeometry
+  // staggered EVERY element present at an instant by real BFS hop-distance from the hub alone, with no
+  // notion of which of them had already been valid since an earlier governed instant -- so a node
+  // valid since T0 differed between a mid-phase render of T3 and T3's own resting render exactly as
+  // much as a node newly valid at T3 did. This test would have failed against that formula: it asserts
+  // an already-valid node renders byte-identically at a mid-phase and at rest, and that at least one
+  // newly-valid node genuinely does not.
+  const graph = temporalGraph();
+  const placements = resolveTemporalPlacements(graph);
+  const state = temporalState(graph, ASSEMBLE);
+  const tokens = sceneTokens(state);
+  const midPhase = 0.4;
+  const restPhase = restingPhase(ASSEMBLE);
+  const midScene = buildScene(graph, state, DEFAULT_CALIBRATION, tokens, "orthographic", midPhase, undefined, T3);
+  const restScene = buildScene(graph, state, DEFAULT_CALIBRATION, tokens, "orthographic", restPhase, undefined, T3);
+  const t3Epoch = Date.parse(T3);
+
+  const alreadyValidIds = new Set<string>();
+  const newlyValidIds = new Set<string>();
+  for (const node of midScene.nodes) {
+    const placement = placements.get(node.id);
+    if (placement === undefined || placement.class === "unknown") {
+      throw new Error(`temporal fixture node ${node.id} unexpectedly has no dated placement at T3`);
+    }
+    if (Date.parse(placement.at) < t3Epoch) {
+      alreadyValidIds.add(node.id);
+    } else {
+      newlyValidIds.add(node.id);
+    }
+  }
+  assert.ok(alreadyValidIds.size > 0, "T3 must include a node valid since an earlier governed instant for this test to mean anything");
+  assert.ok(newlyValidIds.size > 0, "T3 must include a node newly valid at T3 for this test to mean anything");
+
+  const midById = new Map(midScene.nodes.map((node) => [node.id, node] as const));
+  const restById = new Map(restScene.nodes.map((node) => [node.id, node] as const));
+  for (const id of alreadyValidIds) {
+    const mid = requiredSceneNode(midById, id);
+    const rest = requiredSceneNode(restById, id);
+    assert.equal(mid.opacityPermille, rest.opacityPermille, `node ${id}, already valid since before T3, must render at the same opacity mid-phase as at rest`);
+    assert.deepEqual(mid.position, rest.position, `node ${id}, already valid since before T3, must render at the same position mid-phase as at rest`);
+  }
+  let sawGenuineSweep = false;
+  for (const id of newlyValidIds) {
+    const mid = requiredSceneNode(midById, id);
+    const rest = requiredSceneNode(restById, id);
+    if (mid.opacityPermille !== rest.opacityPermille || JSON.stringify(mid.position) !== JSON.stringify(rest.position)) {
+      sawGenuineSweep = true;
+    }
+  }
+  assert.ok(sawGenuineSweep, "at least one node newly valid at T3 must still be mid-transition at a non-resting phase, or the sweep would be vacuous");
 });
 
 test("negative control: a fabricated temporal membership containing an id absent from the canonical graph is refused by the same boundary scale-topology already shares", () => {
