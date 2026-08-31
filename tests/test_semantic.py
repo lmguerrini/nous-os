@@ -40,6 +40,7 @@ from nous_os.identity import new_source_id
 from nous_os.semantic import (
     DENSE_EN,
     DENSE_ML,
+    MAX_TOKENS,
     Backend,
     IndexStatus,
     ModelSpec,
@@ -230,6 +231,17 @@ def test_vectors_are_l2_normalised() -> None:
 def test_vectors_are_float32(en_backend: OnnxBackend) -> None:
     vectors = en_backend.encode(("a short sentence",))
     assert vectors.dtype == np.float32
+
+
+def test_preregistered_truncation_length_is_fixed_and_applied(en_backend: OnnxBackend) -> None:
+    """Every published dense vector depends on this exact maximum length.
+
+    Pinning only the value would allow the encoder to stop applying it, so the
+    tokenizer is also given a longer input and required to truncate it.
+    """
+    assert MAX_TOKENS == 256
+    encoding = en_backend._tokenizer.encode("token " * (MAX_TOKENS * 2))
+    assert len(encoding.ids) == MAX_TOKENS
 
 
 def test_pooling_respects_the_attention_mask_not_just_the_raw_average(

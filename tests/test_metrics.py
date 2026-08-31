@@ -7,6 +7,8 @@ from copy import deepcopy
 import pytest
 
 from benchmarks.metrics import (
+    BASELINE,
+    CHUNK_BASELINE,
     MetricsError,
     NotRunArmMetrics,
     RunArmMetrics,
@@ -106,6 +108,48 @@ def test_shared_denominator_and_frozen_materiality_threshold() -> None:
     assert dense.recall_at[10].denominator == 20
     decision = metrics.decisions["DENSE"]
     assert decision.condition_a is False
+
+
+def test_frozen_stratum_regression_threshold_rejects_a_five_point_loss() -> None:
+    """Condition B must retain its -2.0 point floor, not a looser one.
+
+    This fixture gives DENSE a -5.0 point loss against the best lexical arm,
+    which must remain outside the permitted stratum regression.
+    """
+    artifact = _artifact()
+    cells = [
+        {"bridge": f"b{number}", "direction": "A->B", "lang_pair": "en->it",
+         "source_doc": f"s{number}", "target_doc": f"t{number}",
+         "target_chunk": f"c{number}", "status": "RUN", "not_run_reason": None}
+        for number in range(1, 21)
+    ]
+    artifact["cells"] = cells
+    keys = [f"b{number}|A->B" for number in range(1, 21)]
+    for arm_name in (BASELINE, CHUNK_BASELINE, "DENSE"):
+        artifact["arms"][arm_name]["ranks"] = {key: None for key in keys}
+    artifact["arms"][BASELINE]["ranks"].update({key: 1 for key in keys[:12]})
+    artifact["arms"][CHUNK_BASELINE]["ranks"].update({key: 1 for key in keys[:14]})
+    artifact["arms"]["DENSE"]["ranks"].update({key: 1 for key in keys[:13]})
+    artifact["arms"]["EMPTY"]["ranks"] = {key: None for key in keys}
+
+    decision = compute_metrics(artifact).decisions["DENSE"]
+    assert decision.worst_stratum_regression_percentage_points == pytest.approx(-5.0)
+    assert decision.condition_b is False
+
+
+def test_best_lexical_arm_is_selected_from_the_measured_scores() -> None:
+    """The reference arm is the higher measured lexical score, not a default.
+
+    Every non-lexical qualification decision is relative to this selection.
+    """
+    metrics = compute_metrics(_artifact())
+    baseline = metrics.arms[BASELINE]
+    chunk_baseline = metrics.arms[CHUNK_BASELINE]
+    assert isinstance(baseline, RunArmMetrics)
+    assert isinstance(chunk_baseline, RunArmMetrics)
+    assert baseline.recall_at[10].value == 3 / 5
+    assert chunk_baseline.recall_at[10].value == 4 / 5
+    assert metrics.best_lexical_arm == CHUNK_BASELINE
 
 
 def test_two_cell_populations_are_refused_rather_than_pooled() -> None:

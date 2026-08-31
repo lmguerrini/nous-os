@@ -51,6 +51,30 @@ def test_bm25_matches_a_hand_computed_three_chunk_oracle() -> None:
     assert (K1, B) == (1.2, 0.75)
 
 
+def test_bm25_length_normalisation_matches_an_unequal_length_oracle() -> None:
+    """Unequal chunks make the fixed length-normalisation parameter matter.
+
+    Equal lengths make |D|/avgdl one and hide a replacement of the complete
+    normalisation expression with a constant.
+    """
+    index = ChunkBM25(
+        (
+            _chunk("chunk-a", SOURCE_A, "alpha alpha"),
+            _chunk("chunk-b", SOURCE_B, "alpha beta beta beta beta beta"),
+            _chunk("chunk-c", SOURCE_C, "gamma delta epsilon zeta"),
+        )
+    )
+
+    hit = index.search("alpha", limit=1)[0]
+
+    # N=3 and df(alpha)=2, so idf=ln(1.6). avgdl=(2+6+4)/3=4.
+    # For chunk-a, |D|/avgdl=2/4: 1-.75+.75*(2/4)=.625;
+    # f*(k1+1)/(f+k1*.625)=2*2.2/(2+1.2*.625)=1.6.
+    expected = log(1.6) * 1.6
+    assert hit.chunk_id == "chunk-a"
+    assert isclose(hit.score, expected, rel_tol=0.0, abs_tol=1e-12)
+
+
 def test_source_exclusion_happens_before_the_rank_cut() -> None:
     index = ChunkBM25(
         (
