@@ -129,7 +129,7 @@ const RENDERER_ARMS: RendererContrastArms = { first: "sigma-2d", second: "r3f-2d
 const NON_DISTRIBUTION_DIMENSIONS = new Set<ComparisonDimension>(["memory", "progressiveDisclosure"]);
 const NOT_DISTRIBUTION_REASON = "not a distribution-shaped measurement; requires its own rule";
 const SHARED_STAGE_DIMENSIONS = new Set<ComparisonDimension>(["layoutCost", "sceneModelBuildCost"]);
-const SHARED_STAGE_REASON = "not comparable by construction: this is shared renderer-neutral work, not a projection property";
+const SHARED_STAGE_REASON = "not comparable by construction: this is shared renderer-neutral work, excluded from both contrasts";
 
 /** This reads a parsed performance result into both frozen contrasts and does not read files or launch a browser. */
 export function analysePerformanceArtifact(artifact: PerformanceResult): ComparisonAnalysis {
@@ -355,9 +355,9 @@ function measurementDefinition(dimension: ComparisonDimension): string {
     case "initialRenderLatency":
       return "This median measures milliseconds from renderer mount start to the first painted frame containing graph content.";
     case "layoutCost":
-      return "This shared force-directed layout stage is excluded from the projection contrast.";
+      return "This shared force-directed layout stage is renderer-neutral work, excluded from both contrasts.";
     case "sceneModelBuildCost":
-      return "This shared renderer-neutral scene construction stage is excluded from the projection contrast.";
+      return "This shared renderer-neutral scene construction stage is excluded from both contrasts.";
     case "interactionLatency":
       return "This median measures milliseconds from selection start to the first frame whose decoded final-compositor pixels differ from the settled unselected baseline.";
     case "pickingLatency":

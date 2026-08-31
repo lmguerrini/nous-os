@@ -49,6 +49,23 @@ type PerformanceRecordClaim = {
   readonly elementCounts: { readonly fixtureNodes: number | "NOT_RUN"; readonly fixtureEdges: number | "NOT_RUN" };
 };
 
+test("the tracked CAP-14 report exactly equals the current generator output", async () => {
+  const [document, comparison, performance] = await Promise.all([
+    readFile(DOCUMENT_PATH),
+    readJson(COMPARISON_PATH),
+    readJson(PERFORMANCE_PATH),
+  ]);
+  const analysis = comparison as ComparisonAnalysis;
+  const source = performance as PerformanceResult;
+  assertDocumentMatchesGenerator(document, analysis, source);
+
+  const arbitraryInsertion = Buffer.concat([document, Buffer.from("\nArbitrary text inserted by a negative control.\n", "utf8")]);
+  assert.throws(
+    () => assertDocumentMatchesGenerator(arbitraryInsertion, analysis, source),
+    /must exactly equal the generator output/,
+  );
+});
+
 test("the CAP-14 report transcribes no timing figure", async () => {
   assertNoTimingFigures(await readFile(DOCUMENT_PATH, "utf8"));
 
@@ -99,6 +116,21 @@ test("the renderer contrast cannot be read as a projection result", async () => 
       },
     ),
     /renderer comparison/,
+  );
+
+  assert.throws(
+    () => assertRendererContrastIsNotProjection(
+      "### Renderer comparison — sigma-2d vs r3f-2d\n\nRenderer varies while projection is held at 2D. This is a renderer comparison, not a projection or 2D-vs-3D result.\n\n#### layoutCost\n\nMetric definition: This shared force-directed layout stage is excluded from the projection contrast.\n",
+      {
+        kind: "renderer",
+        dimension: "layoutCost",
+        outcome: "NOT_COMPARABLE",
+        reason: "not comparable by construction: this is shared renderer-neutral work, excluded from both contrasts",
+        arms: { first: "sigma-2d", second: "r3f-2d" },
+        scales: [],
+      },
+    ),
+    /projection-only wording/,
   );
 });
 
@@ -228,6 +260,21 @@ function assertRendererContrastIsNotProjection(document: string, renderer: Compa
   if (section.includes("Same renderer; projection is the only variable.") || section.includes("supports a 2D-vs-3D statement.")) {
     throw new Error("CAP-14 renderer comparison is labelled as a projection or 2D-vs-3D result");
   }
+  if (section.includes("excluded from the projection contrast") || section.includes("not a projection property")) {
+    throw new Error("CAP-14 renderer comparison inherits projection-only wording");
+  }
+}
+
+function assertDocumentMatchesGenerator(
+  document: Uint8Array,
+  analysis: ComparisonAnalysis,
+  source: PerformanceResult,
+): void {
+  assert.deepEqual(
+    document,
+    Buffer.from(renderDocument(analysis, source), "utf8"),
+    "docs/CAP-14-COMPARISON.md must exactly equal the generator output for the current artifacts",
+  );
 }
 
 function assertDimensionsCarryCaveat(document: string, claims: readonly ComparisonClaim[], caveat: string): void {

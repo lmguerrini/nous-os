@@ -80,11 +80,11 @@ Artifact pointer (values are not copied into this report):
 
 #### layoutCost
 
-Metric definition: This shared force-directed layout stage is excluded from the projection contrast.
+Metric definition: This shared force-directed layout stage is renderer-neutral work, excluded from both contrasts.
 
 Outcome: `NOT_COMPARABLE`
 
-Reason (instrument wording): not comparable by construction: this is shared renderer-neutral work, not a projection property
+Reason (instrument wording): not comparable by construction: this is shared renderer-neutral work, excluded from both contrasts
 
 Artifact pointer (values are not copied into this report):
 
@@ -110,11 +110,11 @@ Artifact pointer (values are not copied into this report):
 
 #### sceneModelBuildCost
 
-Metric definition: This shared renderer-neutral scene construction stage is excluded from the projection contrast.
+Metric definition: This shared renderer-neutral scene construction stage is excluded from both contrasts.
 
 Outcome: `NOT_COMPARABLE`
 
-Reason (instrument wording): not comparable by construction: this is shared renderer-neutral work, not a projection property
+Reason (instrument wording): not comparable by construction: this is shared renderer-neutral work, excluded from both contrasts
 
 Artifact pointer (values are not copied into this report):
 
@@ -386,11 +386,11 @@ Artifact pointer (values are not copied into this report):
 
 #### layoutCost
 
-Metric definition: This shared force-directed layout stage is excluded from the projection contrast.
+Metric definition: This shared force-directed layout stage is renderer-neutral work, excluded from both contrasts.
 
 Outcome: `NOT_COMPARABLE`
 
-Reason (instrument wording): not comparable by construction: this is shared renderer-neutral work, not a projection property
+Reason (instrument wording): not comparable by construction: this is shared renderer-neutral work, excluded from both contrasts
 
 Artifact pointer (values are not copied into this report):
 
@@ -416,11 +416,11 @@ Artifact pointer (values are not copied into this report):
 
 #### sceneModelBuildCost
 
-Metric definition: This shared renderer-neutral scene construction stage is excluded from the projection contrast.
+Metric definition: This shared renderer-neutral scene construction stage is excluded from both contrasts.
 
 Outcome: `NOT_COMPARABLE`
 
-Reason (instrument wording): not comparable by construction: this is shared renderer-neutral work, not a projection property
+Reason (instrument wording): not comparable by construction: this is shared renderer-neutral work, excluded from both contrasts
 
 Artifact pointer (values are not copied into this report):
 

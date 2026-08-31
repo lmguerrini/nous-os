@@ -104,10 +104,15 @@ test("the analyser emits every dimension for both contrasts with re-derivable pr
 test("shared layout and scene construction remain not comparable even when a fixture carries distributions", () => {
   const analysis = analysePerformanceArtifact(performanceArtifact([100, 100, 100], [125, 125, 125]));
   for (const dimension of ["layoutCost", "sceneModelBuildCost"] as const) {
-    const record = analysis.comparisons.find((candidate) => candidate.kind === "projection" && candidate.dimension === dimension);
-    assert.ok(record !== undefined);
-    assert.equal(record.outcome, "NOT_COMPARABLE");
-    assert.equal(record.reason, "not comparable by construction: this is shared renderer-neutral work, not a projection property");
+    for (const kind of ["projection", "renderer"] as const) {
+      const record = analysis.comparisons.find((candidate) => candidate.kind === kind && candidate.dimension === dimension);
+      assert.ok(record !== undefined);
+      assert.equal(record.outcome, "NOT_COMPARABLE");
+      assert.equal(record.reason, "not comparable by construction: this is shared renderer-neutral work, excluded from both contrasts");
+      assert.doesNotMatch(record.reason, /projection property|projection contrast/u);
+      assert.match(record.metricDefinition, /excluded from both contrasts\.$/u);
+      assert.doesNotMatch(record.metricDefinition, /projection contrast/u);
+    }
   }
 });
 
