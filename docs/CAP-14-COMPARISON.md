@@ -29,7 +29,7 @@ Reason (instrument wording): frameTime for first arm r3f-2d at 10^3 is NOT_RUN: 
 ###### Evidence figure — r3f-2d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `8.299999999999955 ms`
+- Median: `8.399999999999864 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-2d`
@@ -40,7 +40,7 @@ Reason (instrument wording): frameTime for first arm r3f-2d at 10^3 is NOT_RUN: 
 ###### Evidence figure — r3f-3d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `8.300000000000068 ms`
+- Median: `8.300000000000182 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-3d`
@@ -110,7 +110,7 @@ Reason (instrument wording): initialRenderLatency for first arm r3f-2d at 10^3 i
 ###### Evidence figure — r3f-2d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `401.2999999523163 ms`
+- Median: `382.5 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-2d`
@@ -121,7 +121,7 @@ Reason (instrument wording): initialRenderLatency for first arm r3f-2d at 10^3 i
 ###### Evidence figure — r3f-3d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `335.89999997615814 ms`
+- Median: `327.10000002384186 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-3d`
@@ -353,7 +353,7 @@ Reason (instrument wording): interactionLatency for first arm r3f-2d at 10^3 is 
 ###### Evidence figure — r3f-2d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `100.79999995231628 ms`
+- Median: `93.79999995231628 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-2d`
@@ -364,7 +364,7 @@ Reason (instrument wording): interactionLatency for first arm r3f-2d at 10^3 is 
 ###### Evidence figure — r3f-3d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `84.5 ms`
+- Median: `83 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-3d`
@@ -605,7 +605,7 @@ Reason (instrument wording): cameraTransitionCost for first arm r3f-2d at 10^2 i
 ###### Evidence figure — r3f-3d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `7.899999976158142 ms`
+- Median: `8.299999952316284 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-3d`
@@ -675,7 +675,7 @@ Reason (instrument wording): cameraSwitchCost for first arm r3f-2d at 10^3 is NO
 ###### Evidence figure — r3f-2d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `8.300000071525574 ms`
+- Median: `6.600000023841858 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-2d`
@@ -686,7 +686,7 @@ Reason (instrument wording): cameraSwitchCost for first arm r3f-2d at 10^3 is NO
 ###### Evidence figure — r3f-3d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `8.299999952316284 ms`
+- Median: `8.300000071525574 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-3d`
@@ -850,7 +850,7 @@ Reason (instrument wording): frameTime for first arm sigma-2d at 10^3 is NOT_RUN
 ###### Evidence figure — r3f-2d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `8.299999999999955 ms`
+- Median: `8.399999999999864 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-2d`
@@ -920,7 +920,7 @@ Reason (instrument wording): initialRenderLatency for first arm sigma-2d at 10^3
 ###### Evidence figure — sigma-2d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `978.2000000476837 ms`
+- Median: `978.6000000238419 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `sigma-2d`
@@ -931,7 +931,7 @@ Reason (instrument wording): initialRenderLatency for first arm sigma-2d at 10^3
 ###### Evidence figure — r3f-2d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `401.2999999523163 ms`
+- Median: `382.5 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-2d`
@@ -1163,7 +1163,7 @@ Reason (instrument wording): interactionLatency for first arm sigma-2d at 10^3 i
 ###### Evidence figure — sigma-2d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `86.39999997615814 ms`
+- Median: `86.29999995231628 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `sigma-2d`
@@ -1174,7 +1174,7 @@ Reason (instrument wording): interactionLatency for first arm sigma-2d at 10^3 i
 ###### Evidence figure — r3f-2d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `100.79999995231628 ms`
+- Median: `93.79999995231628 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-2d`
@@ -1496,7 +1496,7 @@ Reason (instrument wording): cameraSwitchCost for first arm sigma-2d at 10^2 is 
 ###### Evidence figure — r3f-2d at `10^2` (40 nodes and 60 edges)
 
 - Outcome: `MEASURED`
-- Median: `8.300000071525574 ms`
+- Median: `6.600000023841858 ms`
 - Command: `npm run test:performance`
 - Fixture: `stress-100.json`
 - Arm: `r3f-2d`
