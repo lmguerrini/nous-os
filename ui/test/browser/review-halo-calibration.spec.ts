@@ -32,6 +32,16 @@
  * never hand-typed, and recorded in the manifest alongside V0-V4 so both passes sit in one comparable
  * table.
  *
+ * X0-X4 (third pass): an independent audit found the first two passes stopped one lever short of the
+ * ones actually authorized. `sharedSceneHaloRadiusMultiplierPermille` is proven inert (see V0-V4 above),
+ * `luminance.coreBeforeHaloMinimumPx` and `luminance.haloFalloffPermille` are both effective but SHARED
+ * with the frozen render2d renderer, and `sharedSceneHaloIntensityPermille` is effective, SHARED-SCENE
+ * ONLY, and clear of the render2d freeze -- but the first pass sampled only one point on it (V4, x0.75).
+ * This third pass sweeps that one lever alone, proportionally across all three morphologies, at five
+ * points: X0 (x1.00, control, == V0/W0), X1 (x0.75, == V4's own intensity factor, but without V4's
+ * radius change), X2 (x0.50), X3 (x0.35), X4 (x0.20). Every other calibration value, including
+ * `luminance.coreBeforeHaloMinimumPx`, is left at its shipped value.
+ *
  * Five captures per variant, same graph/camera/everything except the calibration, at ordinary viewing
  * scale (1200x800, full frame, no magnification): (1) discovery-at-question, stellar, indra, 3d, at
  * rest; (2) the same fixture, mycelium, indra, 3d, at rest; (3) the
@@ -42,26 +52,47 @@
  * degree-1 node sits at the salience floor beside a degree-3 node and is therefore the legibility test;
  * (4) one motion frame, Reconfigure at phase 0.4, stellar/indra/3d; (5) one Mycelium temporal frame at
  * a mid governed instant of temporal-genesis, Assemble at rest. Plus, per variant, a 6x diagnostic crop
- * of capture (3)'s own degree-3 cluster and its one degree-1 bridge -- secondary evidence only.
+ * of capture (3)'s own degree-3 cluster and its one degree-1 bridge -- secondary evidence only. Every
+ * one of V0-V4/W0-W4/X0-X4 shares this same five-capture set, camera derivation and measurement
+ * pipeline, so all three passes sit in one comparable manifest.
  *
  * Measurement (not judgement): per variant, the degree-3 and degree-1 CORE peak red-channel value at
- * capture (3) (must not move -- a moved core peak would mean the halo change is leaking into the core),
- * the halo footprint in an 8-24px annulus around the degree-3 node (lit-pixel count and mean red-channel
- * value against that same capture's own local field, reusing the shipped `isLitPixel`/`fieldPixel`
- * predicate filament-continuity.ts already defines), confirmation that every node's own rendered
- * viewport position is unchanged across variants, and (added for the second pass) the halo's own
- * VISIBLE EXTENT for the degree-3 and degree-1 node alike: the radius, walked outward in the same
- * capture's own pixels, at which the radial red/green/blue profile first falls and stays fallen to that
- * capture's own local field value -- the number that corresponds to "too large" -- OR, where the profile
- * never reaches field because the test position sits inside a dense local cluster whose neighbouring
- * nodes and filaments keep the surroundings measurably above field however far the walk searches
- * (measured directly, both positions: the profile stabilises around a constant ~35-40 red against a
- * field of ~9 well past 80px), the radius at which the profile instead stabilises onto that ambient
- * level; which of the two happened is recorded alongside the number itself. Also recorded: the radius
- * at which the profile first drops under half of that node's own measured core peak (a proxy core-edge
- * boundary), so a shrunk `haloBandWidthPx` between the two flags a candidate where the core risks
- * visually merging into its own halo rather than staying legible against it. This suite recommends
- * nothing; a human judges the images.
+ * capture (3), ASSERTED not to move (a moved core peak would mean the halo change is leaking into the
+ * core -- `node-material.ts`'s own fragment shader multiplies the halo term by `(1 - coreAlpha)`, which
+ * is exactly zero wherever `coreAlpha` is 1, i.e. at the measured peak, so this is a structural guarantee
+ * this suite checks rather than merely hopes for), the halo footprint in an 8-24px annulus around the
+ * degree-3 node (lit-pixel count and mean red-channel value against that same capture's own local field,
+ * reusing the shipped `isLitPixel`/`fieldPixel` predicate filament-continuity.ts already defines), and
+ * confirmation, ASSERTED, that every node's own rendered viewport position is unchanged across variants.
+ *
+ * A prior "halo visible extent" metric (a radial walk outward from each test node, carried through
+ * W0-W4) has been REMOVED here, not fixed: an audit found it reported the *smallest* rendered halo as
+ * having the *largest* extent, because it tracked the radius at which the profile settled onto the
+ * surrounding scene's own ambient light level rather than the radius at which the node's own halo
+ * actually ends. That ambient level is AGGREGATE WINDOW FILL -- Indra's own community window rendering --
+ * not, as this suite's own prior comments incorrectly said, neighbouring nodes' and filaments' own light:
+ * an ablation over this same capture found 20,685 pixels at exactly red 35 with Indra windows on and 89
+ * with them off, i.e. the windows account for roughly 84% of all light above field in that frame. The
+ * audit measured the real halo band directly instead, finding it sits at r~11-13px in every variant,
+ * which is recorded here as an established fact rather than re-derived by a metric already shown to
+ * invert.
+ *
+ * X0-X4 add three further measurements relative to X0 (its own control): per-capture CHANGED-PIXEL
+ * SHARE (all five captures, named individually -- a prior table quoted one number without saying which
+ * frame it came from, and a sibling capture broke the stated bound), LABEL DISPLACEMENT (of a capture's
+ * own changed pixels, the count lying further than 20px from any node's own rendered centre -- the
+ * gap-floor W-variants moved node labels because a label's own placement offset IS `haloRadiusPx`
+ * (`scene/build.ts`'s own `placementOffsetPx: haloRadiusPx`), which contaminated their changed-pixel
+ * figures with moved text rather than a changed halo; an intensity-only variant changes no radius, so
+ * this is ASSERTED at zero here, not merely reported), and frame-level INK ABOVE FIELD alongside TOTAL
+ * RED (from capture (3)): total red is the sum of the red channel over every pixel, background included,
+ * and is dominated by the field itself; ink above field sums only the excess red channel of pixels this
+ * suite already classifies as lit (`isLitPixel`) over that same capture's own field value, i.e. the red
+ * channel actually contributed by drawn content. Each X1-X4 variant's own delta from X0 is reported as a
+ * fraction of both denominators side by side, labelled which is which, so a change that reads as small
+ * against total red (mostly background) is not mistaken for small against the light actually drawn.
+ *
+ * This suite recommends nothing; a human judges the images.
  */
 
 import { execFile } from "node:child_process";
@@ -126,22 +157,10 @@ const HALO_ANNULUS_OUTER_PX = 24;
 const CORE_PEAK_HALF_BOX_PX = 3;
 const DIAGNOSTIC_CROP_HALF_BOX_PX = 50;
 const DIAGNOSTIC_CROP_MAGNIFICATION = 6;
-// The second pass's own halo-visible-extent walk (see radialHaloExtent below): a bound comfortably
-// inside DIAGNOSTIC_CROP_HALF_BOX_PX, the number of consecutive not-lit rings required before the walk
-// accepts the halo has fallen to field (guards against a single antialiased ring reading as the edge),
-// the trailing window (in rings, counted from the search bound inward) this walk averages to estimate
-// the ambient plateau a profile that never reaches field instead settles onto, the tolerance band around
-// that estimate a ring must stay inside for the REST of the walk before its own radius counts as where
-// the profile "arrived" (a single ring-to-ring delta threshold was tried first and rejected: two
-// otherwise near-identical profiles could differ by a couple of red-channel units on exactly one ring
-// near the boundary and read as though the halo were several pixels larger, which a sustained-band
-// requirement checked against the profile's own settled tail is not sensitive to), and the fraction of a
-// node's own measured core peak red below which a ring counts as past the core's own proxy edge.
-const HALO_VISIBLE_EXTENT_SEARCH_MAX_PX = 48;
-const HALO_VISIBLE_EXTENT_CONFIRMATION_RINGS = 2;
-const HALO_PLATEAU_TAIL_WINDOW_RINGS = 8;
-const HALO_PLATEAU_TOLERANCE = 5;
-const CORE_EDGE_PEAK_FRACTION = 0.5;
+// Third pass (X0-X4): a changed pixel further than this from every node's own rendered centre is read as
+// a moved label rather than a changed halo (see this file's own docstring -- a label's own placement
+// offset is `haloRadiusPx` itself, so a radius change moves it, while an intensity-only change does not).
+const LABEL_DISPLACEMENT_RADIUS_PX = 20;
 
 type HaloVariant = {
   readonly id: "V0" | "V1" | "V2" | "V3" | "V4";
@@ -179,7 +198,31 @@ const CORE_GAP_VARIANTS: readonly CoreGapVariant[] = [
   { id: "W4", label: "coreBeforeHaloMinimumPx 2, intensity x0.75 across all three morphologies", coreBeforeHaloMinimumPx: 2, intensityFactorPermille: 750 },
 ];
 
-type HaloVariantId = HaloVariant["id"] | CoreGapVariant["id"];
+// Third pass (see this file's own docstring): the one lever the audit found authorized, effective, and
+// clear of the render2d freeze -- `sharedSceneHaloIntensityPermille` alone, proportionally across all
+// three morphologies, with every other value (including `luminance.coreBeforeHaloMinimumPx`) left at its
+// shipped value. X1 reuses V4's own intensity factor without V4's radius change, so the two are directly
+// comparable.
+type IntensityOnlyVariant = {
+  readonly id: "X0" | "X1" | "X2" | "X3" | "X4";
+  readonly label: string;
+  readonly intensityFactorPermille: number;
+};
+
+const INTENSITY_ONLY_VARIANTS: readonly IntensityOnlyVariant[] = [
+  { id: "X0", label: "control: intensity x1.00 (== V0/W0)", intensityFactorPermille: 1_000 },
+  { id: "X1", label: "intensity x0.75 (== V4's own intensity, without V4's radius change)", intensityFactorPermille: 750 },
+  { id: "X2", label: "intensity x0.50", intensityFactorPermille: 500 },
+  { id: "X3", label: "intensity x0.35", intensityFactorPermille: 350 },
+  { id: "X4", label: "intensity x0.20", intensityFactorPermille: 200 },
+];
+const INTENSITY_ONLY_VARIANT_IDS: ReadonlySet<string> = new Set(INTENSITY_ONLY_VARIANTS.map((variant) => variant.id));
+
+function isIntensityOnlyVariantId(id: HaloVariantId): id is IntensityOnlyVariant["id"] {
+  return INTENSITY_ONLY_VARIANT_IDS.has(id);
+}
+
+type HaloVariantId = HaloVariant["id"] | CoreGapVariant["id"] | IntensityOnlyVariant["id"];
 
 type ResolvedHaloValues = Readonly<Record<Morphology, {
   readonly sharedSceneHaloRadiusMultiplierPermille: number;
@@ -191,23 +234,20 @@ type ResolvedCoreGapValues = {
   readonly sharedSceneHaloIntensityPermille: Readonly<Record<Morphology, number>>;
 };
 
-// The proxy pair the second pass's own new measurement is built from: where the radial profile first
-// drops under half of that node's own measured core peak (a core-edge proxy, not the geometric core
-// radius itself), and where it first falls and stays fallen to the local field value (the halo's own
-// visible extent). `haloBandWidthPx` is their difference -- at 0 the two boundaries coincide within this
-// proxy's own resolution, which is reported as a merge risk rather than judged.
-type RadialHaloExtent = {
-  readonly coreEdgeRadiusPx: number;
-  readonly visibleExtentRadiusPx: number;
-  readonly haloBandWidthPx: number;
-  /**
-   * `localField`: the profile actually returned to this capture's own corner-sampled background level.
-   * `ambientPlateau`: it stopped falling before reaching that level and stabilised above it instead --
-   * observed at both test positions in this scene, which sit inside a dense local cluster where
-   * neighbouring nodes' and filaments' own light keeps the immediate surroundings above the empty-field
-   * value no matter how far the walk searches, so this is reported rather than forced to a false zero.
-   */
-  readonly convergedTo: "localField" | "ambientPlateau";
+// Frame-level red-channel accounting (third pass): `totalRedSum` is the sum of the red channel over
+// every pixel in the frame, background included, and is dominated by the field itself. `inkAboveFieldSum`
+// sums only the excess red channel of pixels this suite already classifies as lit (`isLitPixel`) over
+// that same capture's own field value -- the red channel actually contributed by drawn content, not the
+// field it sits on. Both are carried so a delta between variants can be reported as a fraction of each,
+// labelled which is which, rather than only against the total (which the audit found reads roughly 12x
+// smaller than the same delta reads against ink above field, because total red is ~91.6% background in
+// this capture).
+type FrameInkMeasurement = {
+  readonly totalPixelCount: number;
+  readonly totalRedSum: number;
+  readonly litPixelCount: number;
+  readonly inkAboveFieldSum: number;
+  readonly inkAboveFieldFraction: number;
 };
 
 type MeasurementRecord = {
@@ -216,8 +256,7 @@ type MeasurementRecord = {
   readonly degree3CorePeakRed: number;
   readonly degree1CorePeakRed: number;
   readonly haloFootprint: { readonly innerPx: number; readonly outerPx: number; readonly litPixelCount: number; readonly meanRed: number; readonly fieldRgb: readonly [number, number, number] };
-  readonly degree3HaloExtent: RadialHaloExtent;
-  readonly degree1HaloExtent: RadialHaloExtent;
+  readonly frameInk: FrameInkMeasurement;
 };
 
 type VariantRecord = {
@@ -237,6 +276,38 @@ type VariantRecord = {
   };
   readonly measurement: MeasurementRecord;
   readonly nodeViewportPositions: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
+  // Every capture's own rendered node positions, named by capture -- unlike `nodeViewportPositions`
+  // above (capture (3) only, used by the positions-unchanged check), this backs the third pass's own
+  // per-capture label-displacement measurement, which needs a node-centre set for every one of the five
+  // captures, not just capture (3).
+  readonly captureNodeViewportPositions: Readonly<Record<CaptureName, Readonly<Record<string, { readonly x: number; readonly y: number }>>>>;
+};
+
+type CaptureName = "discoveryStellar" | "discoveryMycelium" | "staticControlledLevel1" | "motionReconfigurePhase04" | "temporalMyceliumMidInstant";
+const CAPTURE_NAMES: readonly CaptureName[] = ["discoveryStellar", "discoveryMycelium", "staticControlledLevel1", "motionReconfigurePhase04", "temporalMyceliumMidInstant"];
+
+// Third pass diagnostics, one per named capture, X1-X4 against X0 (its own control).
+type CaptureDiagnostic = {
+  readonly captureName: CaptureName;
+  readonly fileName: string;
+  readonly totalPixelCount: number;
+  readonly changedPixelCount: number;
+  readonly changedPixelFraction: number;
+  readonly labelDisplacedPixelCount: number;
+};
+
+type IntensitySeriesRecord = {
+  readonly id: IntensityOnlyVariant["id"];
+  readonly label: string;
+  readonly frameInk: FrameInkMeasurement;
+  // null for X0 itself, which is its own control.
+  readonly deltaVsControl: {
+    readonly totalRedSumDelta: number;
+    readonly inkAboveFieldSumDelta: number;
+    readonly deltaAsFractionOfControlTotalRed: number;
+    readonly deltaAsFractionOfControlInkAboveField: number;
+  } | null;
+  readonly vsControl: readonly CaptureDiagnostic[] | null;
 };
 
 test("CAP-13 F82 residual: halo radius/intensity calibration sweep for human judgement", async ({ page }, testInfo) => {
@@ -307,13 +378,15 @@ test("CAP-13 F82 residual: halo radius/intensity calibration sweep for human jud
     const discoveryFixtureWitness = await prepareFixture(page, DISCOVERY_FIXTURE.path);
     expect(discoveryFixtureWitness.semanticDigest).toBe(discoverySemanticDigest);
 
-    // Both passes share one comparable loop and one manifest: V0-V4 (radius/intensity, first pass, kept
-    // exactly as originally computed) followed by W0-W4 (coreBeforeHaloMinimumPx/intensity, second
-    // pass). Resolved calibration profiles are built once, up front, so the loop body below -- captures,
-    // measurement, diagnostics -- is identical for every one of the ten variants.
+    // All three passes share one comparable loop and one manifest: V0-V4 (radius/intensity, first pass,
+    // kept exactly as originally computed), W0-W4 (coreBeforeHaloMinimumPx/intensity, second pass), then
+    // X0-X4 (intensity alone, third pass). Resolved calibration profiles are built once, up front, so the
+    // loop body below -- captures, measurement, diagnostics -- is identical for every one of the fifteen
+    // variants.
     const allVariants: readonly { readonly id: HaloVariantId; readonly label: string; readonly calibration: CalibrationProfile; readonly resolved: ResolvedHaloValues | ResolvedCoreGapValues }[] = [
       ...VARIANTS.map((variant) => ({ id: variant.id, label: variant.label, ...buildCalibrationVariant(variant) })),
       ...CORE_GAP_VARIANTS.map((variant) => ({ id: variant.id, label: variant.label, ...buildCoreGapVariant(variant) })),
+      ...INTENSITY_ONLY_VARIANTS.map((variant) => ({ id: variant.id, label: variant.label, ...buildIntensityOnlyVariant(variant) })),
     ];
 
     for (const variant of allVariants) {
@@ -408,8 +481,8 @@ test("CAP-13 F82 residual: halo radius/intensity calibration sweep for human jud
       expect(reprepared.semanticDigest).toBe(discoverySemanticDigest);
 
       // Measurement, taken from capture (3): the degree-3/degree-1 core peaks (must not move across
-      // variants), the halo footprint in the annulus around the degree-3 node, and (second pass) the
-      // degree-3/degree-1 halo visible extent.
+      // variants), the halo footprint in the annulus around the degree-3 node, and the frame-level total
+      // red / ink above field accounting the third pass adds (see this file's own docstring).
       const staticControlledImage = decodePng(await readFile(join(variantDirectory, staticControlledFrame.fileName)), staticControlledFrame.fileName);
       const staticControlledFieldRgb = fieldRgbOf(staticControlledImage);
       const degree3Position = requiredPosition(staticControlledFrame.witness.nodeViewportPositions, degree3Node.id, staticControlledFrame.fileName);
@@ -417,8 +490,7 @@ test("CAP-13 F82 residual: halo radius/intensity calibration sweep for human jud
       const degree3CorePeakRed = corePeakRed(staticControlledImage, degree3Position.x, degree3Position.y, CORE_PEAK_HALF_BOX_PX);
       const degree1CorePeakRed = corePeakRed(staticControlledImage, degree1Position.x, degree1Position.y, CORE_PEAK_HALF_BOX_PX);
       const haloFootprint = haloAnnulusFootprint(staticControlledImage, degree3Position.x, degree3Position.y, HALO_ANNULUS_INNER_PX, HALO_ANNULUS_OUTER_PX, staticControlledFieldRgb);
-      const degree3HaloExtent = radialHaloExtent(staticControlledImage, degree3Position.x, degree3Position.y, degree3CorePeakRed, staticControlledFieldRgb);
-      const degree1HaloExtent = radialHaloExtent(staticControlledImage, degree1Position.x, degree1Position.y, degree1CorePeakRed, staticControlledFieldRgb);
+      const frameInk = frameInkMeasurement(staticControlledImage, staticControlledFieldRgb);
 
       // Diagnostic-only, 6x magnified crops of the degree-3 cluster and the one degree-1 bridge from
       // capture (3). Secondary evidence: never fed into the measurement table above.
@@ -450,16 +522,23 @@ test("CAP-13 F82 residual: halo radius/intensity calibration sweep for human jud
           degree3CorePeakRed,
           degree1CorePeakRed,
           haloFootprint,
-          degree3HaloExtent,
-          degree1HaloExtent,
+          frameInk,
         },
         nodeViewportPositions: staticControlledFrame.witness.nodeViewportPositions,
+        captureNodeViewportPositions: {
+          discoveryStellar: stellarFrame.witness.nodeViewportPositions,
+          discoveryMycelium: myceliumFrame.witness.nodeViewportPositions,
+          staticControlledLevel1: staticControlledFrame.witness.nodeViewportPositions,
+          motionReconfigurePhase04: motionFrame.witness.nodeViewportPositions,
+          temporalMyceliumMidInstant: temporalFrame.witness.nodeViewportPositions,
+        },
       });
     }
 
     // Positions-unchanged confirmation: every variant's own capture (3) node viewport positions must be
     // byte-identical to V0's, since only halo calibration changed -- layout, camera and node/core size
-    // are untouched by every variant this suite constructs.
+    // are untouched by every variant this suite constructs. ASSERTED, not merely reported: the docstring
+    // says a core peak "must not move", and a warning that still exits 0 does not enforce that.
     const baseline = variantRecords[0];
     if (baseline === undefined) {
       throw new Error("review-halo-calibration produced no variant records");
@@ -471,39 +550,67 @@ test("CAP-13 F82 residual: halo radius/intensity calibration sweep for human jud
       }
     }
     const positionsUnchanged = positionMismatches.length === 0;
+    expect(positionsUnchanged, `review-halo-calibration: node viewport positions moved across variants ${JSON.stringify(positionMismatches)}`).toBe(true);
 
     // Core-peak-stability confirmation: a moved peak would mean the halo change is leaking into the
-    // core, which the brief requires be reported loudly rather than silently accepted.
+    // core. ASSERTED for the same reason positionsUnchanged is above.
     const corePeakDeltas = variantRecords.map((record) => ({
       variant: record.id,
       degree3DeltaFromV0: record.measurement.degree3CorePeakRed - baseline.measurement.degree3CorePeakRed,
       degree1DeltaFromV0: record.measurement.degree1CorePeakRed - baseline.measurement.degree1CorePeakRed,
     }));
     const corePeaksStable = corePeakDeltas.every((delta) => delta.degree3DeltaFromV0 === 0 && delta.degree1DeltaFromV0 === 0);
-    if (!corePeaksStable) {
-      process.stdout.write(
-        `review-halo-calibration WARNING: core peak red channel moved across variants -- this would mean the halo `
-        + `change is leaking into the core, which must not happen: ${JSON.stringify(corePeakDeltas)}\n`,
-      );
-    }
+    expect(corePeaksStable, `review-halo-calibration: core peak red channel moved across variants ${JSON.stringify(corePeakDeltas.filter((delta) => delta.degree3DeltaFromV0 !== 0 || delta.degree1DeltaFromV0 !== 0))}`).toBe(true);
 
-    // Core-visible-against-halo confirmation (second pass): a variant where the degree-3 or degree-1
-    // node's own proxy core-edge boundary and its own halo visible extent coincide (`haloBandWidthPx`
-    // 0) is flagged here, plainly, as a merge risk rather than folded into a pass/fail judgement -- the
-    // brief is explicit that a smaller halo footprint is not itself a win if the core stops reading as
-    // distinct from it.
-    const coreHaloMergeRiskVariants = variantRecords
-      .filter((record) => record.measurement.degree3HaloExtent.haloBandWidthPx <= 0 || record.measurement.degree1HaloExtent.haloBandWidthPx <= 0)
-      .map((record) => record.id);
-    if (coreHaloMergeRiskVariants.length > 0) {
-      process.stdout.write(
-        `review-halo-calibration WARNING: core-edge proxy and halo visible extent coincide for `
-        + `${JSON.stringify(coreHaloMergeRiskVariants)} -- the core may be visually merging into its own halo\n`,
-      );
+    // Third pass diagnostics (X0-X4 vs X0, its own control): per-capture changed-pixel share, named by
+    // capture, and label displacement -- the count of a capture's own changed pixels lying further than
+    // LABEL_DISPLACEMENT_RADIUS_PX from any node's own rendered centre in that same capture. Intensity
+    // alone changes no radius, so no label should move; ASSERTED at zero rather than only reported, which
+    // is the "confirm it" the brief asked for.
+    const intensityRecords = variantRecords.filter((record): record is VariantRecord & { readonly id: IntensityOnlyVariant["id"] } => isIntensityOnlyVariantId(record.id));
+    const intensityControl = intensityRecords.find((record) => record.id === "X0");
+    if (intensityControl === undefined) {
+      throw new Error("review-halo-calibration produced no X0 (intensity-only control) record");
+    }
+    const intensitySeries: IntensitySeriesRecord[] = [];
+    for (const record of intensityRecords) {
+      if (record.id === "X0") {
+        intensitySeries.push({ id: record.id, label: record.label, frameInk: record.measurement.frameInk, deltaVsControl: null, vsControl: null });
+        continue;
+      }
+      const vsControl: CaptureDiagnostic[] = [];
+      for (const captureName of CAPTURE_NAMES) {
+        const controlFile = join(ROOT_DIRECTORY, intensityControl.id, intensityControl.captures[captureName].fileName);
+        const variantFile = join(ROOT_DIRECTORY, record.id, record.captures[captureName].fileName);
+        const controlImage = decodePng(await readFile(controlFile), controlFile);
+        const variantImage = decodePng(await readFile(variantFile), variantFile);
+        const diagnostic = changedPixelDiagnostics(
+          controlImage,
+          variantImage,
+          controlFile,
+          variantFile,
+          captureName,
+          record.captureNodeViewportPositions[captureName],
+          LABEL_DISPLACEMENT_RADIUS_PX,
+        );
+        expect(
+          diagnostic.labelDisplacedPixelCount,
+          `review-halo-calibration: ${record.id} capture ${captureName} changed ${diagnostic.labelDisplacedPixelCount} pixels further than `
+          + `${LABEL_DISPLACEMENT_RADIUS_PX}px from any node centre -- an intensity-only variant should move no label`,
+        ).toBe(0);
+        vsControl.push(diagnostic);
+      }
+      const deltaVsControl = {
+        totalRedSumDelta: record.measurement.frameInk.totalRedSum - intensityControl.measurement.frameInk.totalRedSum,
+        inkAboveFieldSumDelta: record.measurement.frameInk.inkAboveFieldSum - intensityControl.measurement.frameInk.inkAboveFieldSum,
+        deltaAsFractionOfControlTotalRed: Math.abs(record.measurement.frameInk.totalRedSum - intensityControl.measurement.frameInk.totalRedSum) / intensityControl.measurement.frameInk.totalRedSum,
+        deltaAsFractionOfControlInkAboveField: Math.abs(record.measurement.frameInk.inkAboveFieldSum - intensityControl.measurement.frameInk.inkAboveFieldSum) / intensityControl.measurement.frameInk.inkAboveFieldSum,
+      };
+      intensitySeries.push({ id: record.id, label: record.label, frameInk: record.measurement.frameInk, deltaVsControl, vsControl });
     }
 
     const manifest = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       candidateSha,
       label: "HUMAN REVIEW CALIBRATION SWEEP -- for a person to judge directly; no winner is selected here.",
       residual: "the diffuse halo remains aesthetically too large / soft / dominant (F82, functionally repaired, aesthetic residual)",
@@ -525,20 +632,35 @@ test("CAP-13 F82 residual: halo radius/intensity calibration sweep for human jud
         renderer: "render3f",
         note: "REVIEW-ONLY calibration sweep for human aesthetic judgement of the F82 halo residual; not a closure gate.",
       },
-      measurementMethod: {
-        corePeak: `max red channel within a ${(CORE_PEAK_HALF_BOX_PX * 2) + 1}x${(CORE_PEAK_HALF_BOX_PX * 2) + 1}px box centred on the node's own rendered viewport position, from static-controlled-recursive-indra-3d-level1`,
-        haloFootprint: `count and mean red channel of lit pixels (isLitPixel against this same capture's own local field, filament-continuity.ts) in an annulus ${HALO_ANNULUS_INNER_PX}-${HALO_ANNULUS_OUTER_PX}px from the degree-3 node's centre, from static-controlled-recursive-indra-3d-level1`,
-        haloVisibleExtent: `for each of the degree-3 and degree-1 node, sampling mean R/G/B over 1px rings at radius 1..${HALO_VISIBLE_EXTENT_SEARCH_MAX_PX}px from static-controlled-recursive-indra-3d-level1; visibleExtentRadiusPx is the first radius at which EITHER ${HALO_VISIBLE_EXTENT_CONFIRMATION_RINGS} consecutive rings' own mean colour stops being lit against this same capture's own local field (convergedTo "localField"), OR the ring mean red channel stays within ${HALO_PLATEAU_TOLERANCE} of the mean red channel over the trailing ${HALO_PLATEAU_TAIL_WINDOW_RINGS} rings (the profile's own settled tail) for every remaining radius out to the bound (convergedTo "ambientPlateau" -- both test positions sit inside a dense local cluster where neighbouring nodes' and filaments' own light keeps the surroundings measurably above field no matter how far the walk searches, so the profile stabilises rather than returning to field); coreEdgeRadiusPx is the first radius at which the ring mean red channel drops under ${CORE_EDGE_PEAK_FRACTION * 100}% of that node's own measured core peak red (a proxy core-edge boundary, not the geometric core radius); haloBandWidthPx is their difference`,
+      // A prior "haloVisibleExtent" entry was removed here, not fixed: an audit found the metric behind
+      // it reported the smallest rendered halo as having the largest extent, because it tracked where a
+      // profile settled onto the surrounding scene's own ambient light level rather than where the
+      // node's own halo actually ends. That level is AGGREGATE WINDOW FILL (Indra's own community window
+      // rendering), not neighbouring nodes' and filaments' own light as this suite's own prior text said
+      // -- an ablation over this same capture found 20,685 pixels at exactly red 35 with Indra windows on
+      // and 89 with them off, i.e. the windows account for roughly 84% of all light above field there.
+      // The audit measured the real halo band directly instead: r~11-13px in every variant.
+      ambientPlateauCorrection: {
+        wasIncorrectlyDescribedAs: "neighbouring nodes' and filaments' own light",
+        actuallyIs: "aggregate window fill (Indra's own community window rendering)",
+        ablation: "20,685 pixels at exactly red 35 with Indra windows on vs. 89 with them off, over the same capture -- windows account for roughly 84% of all light above field there",
+        realHaloBandPx: "r~11-13, measured directly, in every variant",
       },
-      summary: { positionsUnchanged, corePeaksStable, positionMismatchVariants: positionMismatches, corePeakDeltas, coreHaloMergeRiskVariants },
+      measurementMethod: {
+        corePeak: `max red channel within a ${(CORE_PEAK_HALF_BOX_PX * 2) + 1}x${(CORE_PEAK_HALF_BOX_PX * 2) + 1}px box centred on the node's own rendered viewport position, from static-controlled-recursive-indra-3d-level1; ASSERTED not to move across any variant`,
+        haloFootprint: `count and mean red channel of lit pixels (isLitPixel against this same capture's own local field, filament-continuity.ts) in an annulus ${HALO_ANNULUS_INNER_PX}-${HALO_ANNULUS_OUTER_PX}px from the degree-3 node's centre, from static-controlled-recursive-indra-3d-level1`,
+        frameInk: "totalRedSum is the sum of the red channel over every pixel of static-controlled-recursive-indra-3d-level1, background included; inkAboveFieldSum sums only the excess red channel (red minus this same capture's own field red) of pixels classified lit (isLitPixel); inkAboveFieldFraction is inkAboveFieldSum/totalRedSum, i.e. the share of total red that is actually drawn content rather than field. For X1-X4, deltaVsControl reports the delta from X0 as a fraction of EACH of X0's own totalRedSum and inkAboveFieldSum, labelled which is which.",
+        changedPixelDiagnostics: `for X1-X4 only, per named capture, against that same capture from X0: changedPixelCount/changedPixelFraction is the count and fraction of RGBA pixels that differ at all; labelDisplacedPixelCount is the subset of those changed pixels further than ${LABEL_DISPLACEMENT_RADIUS_PX}px from every node's own rendered centre in that capture (an intensity-only change moves no label, so this is asserted at 0, not only reported)`,
+      },
+      summary: { positionsUnchanged, corePeaksStable, positionMismatchVariants: positionMismatches, corePeakDeltas },
       variants: variantRecords,
+      intensitySeries,
     };
     const manifestFile = join(ROOT_DIRECTORY, "review-halo-calibration-manifest.json");
     await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     process.stdout.write(
       `review-halo-calibration: ${variantRecords.length} variants; positionsUnchanged=${positionsUnchanged}; `
-      + `corePeaksStable=${corePeaksStable}; coreHaloMergeRiskVariants=${JSON.stringify(coreHaloMergeRiskVariants)}; `
-      + `manifest=${manifestFile}\n`,
+      + `corePeaksStable=${corePeaksStable}; manifest=${manifestFile}\n`,
     );
   } finally {
     await destroyPage(page);
@@ -589,6 +711,25 @@ function buildCoreGapVariant(variant: CoreGapVariant): { readonly calibration: C
       sharedSceneHaloIntensityPermille: sharedSceneHaloIntensityPermille as Readonly<Record<Morphology, number>>,
     },
   };
+}
+
+// Third pass: overrides only `sharedSceneHaloIntensityPermille`, proportionally per morphology, exactly
+// as buildCalibrationVariant's own intensity factor does -- but never touches
+// `sharedSceneHaloRadiusMultiplierPermille` or `luminance.coreBeforeHaloMinimumPx`, both left at their
+// shipped values, so this is the one lever the audit found authorized, effective, and clear of the
+// render2d freeze, swept alone.
+function buildIntensityOnlyVariant(variant: IntensityOnlyVariant): { readonly calibration: CalibrationProfile; readonly resolved: ResolvedHaloValues } {
+  const resolved: Record<string, { sharedSceneHaloRadiusMultiplierPermille: number; sharedSceneHaloIntensityPermille: number }> = {};
+  const morphology = { ...DEFAULT_CALIBRATION.morphology };
+  for (const id of HALO_MORPHOLOGIES) {
+    const base = DEFAULT_CALIBRATION.morphology[id];
+    const sharedSceneHaloIntensityPermille = Math.round((base.sharedSceneHaloIntensityPermille * variant.intensityFactorPermille) / 1_000);
+    morphology[id] = { ...base, sharedSceneHaloIntensityPermille };
+    resolved[id] = { sharedSceneHaloRadiusMultiplierPermille: base.sharedSceneHaloRadiusMultiplierPermille, sharedSceneHaloIntensityPermille };
+  }
+  const calibration: CalibrationProfile = { ...DEFAULT_CALIBRATION, morphology };
+  assertCalibrationProfile(calibration);
+  return { calibration, resolved: resolved as ResolvedHaloValues };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -737,124 +878,93 @@ function haloAnnulusFootprint(
   return { innerPx, outerPx, litPixelCount, meanRed: litPixelCount > 0 ? redSum / litPixelCount : 0, fieldRgb };
 }
 
-type RingSample = { readonly meanRed: number; readonly meanGreen: number; readonly meanBlue: number };
-
-function ringSample(image: PixelImage, cx: number, cy: number, radius: number): RingSample | undefined {
-  let redSum = 0;
-  let greenSum = 0;
-  let blueSum = 0;
-  let sampleCount = 0;
-  for (let dy = -radius; dy <= radius; dy += 1) {
-    for (let dx = -radius; dx <= radius; dx += 1) {
-      if (Math.round(Math.sqrt((dx * dx) + (dy * dy))) !== radius) {
-        continue;
-      }
-      const x = cx + dx;
-      const y = cy + dy;
-      if (x < 0 || y < 0 || x >= image.width || y >= image.height) {
-        continue;
-      }
-      const offset = ((y * image.width) + x) * 4;
-      redSum += image.data[offset] ?? 0;
-      greenSum += image.data[offset + 1] ?? 0;
-      blueSum += image.data[offset + 2] ?? 0;
-      sampleCount += 1;
+// Frame-level red-channel accounting (third pass, see this file's own docstring for why this exists
+// alongside haloAnnulusFootprint above): totalRedSum sums the red channel over every pixel, background
+// included; inkAboveFieldSum sums only the excess red channel of pixels this suite already classifies as
+// lit (isLitPixel), i.e. the red channel actually contributed by drawn content rather than the field it
+// sits on.
+function frameInkMeasurement(image: PixelImage, fieldRgb: readonly [number, number, number]): FrameInkMeasurement {
+  const totalPixelCount = image.width * image.height;
+  let totalRedSum = 0;
+  let litPixelCount = 0;
+  let inkAboveFieldSum = 0;
+  for (let pixelIndex = 0; pixelIndex < totalPixelCount; pixelIndex += 1) {
+    const offset = pixelIndex * 4;
+    const red = image.data[offset] ?? 0;
+    const green = image.data[offset + 1] ?? 0;
+    const blue = image.data[offset + 2] ?? 0;
+    totalRedSum += red;
+    if (isLitPixel(red, green, blue, fieldRgb)) {
+      litPixelCount += 1;
+      inkAboveFieldSum += Math.max(0, red - fieldRgb[0]);
     }
   }
-  return sampleCount > 0 ? { meanRed: redSum / sampleCount, meanGreen: greenSum / sampleCount, meanBlue: blueSum / sampleCount } : undefined;
+  return {
+    totalPixelCount,
+    totalRedSum,
+    litPixelCount,
+    inkAboveFieldSum,
+    inkAboveFieldFraction: totalRedSum > 0 ? inkAboveFieldSum / totalRedSum : 0,
+  };
 }
 
-// The halo the shader paints is a hard geometric cutoff at its own resolved haloRadius
-// (render3f/node-material.ts: alpha is sampled from a finite stop table and never extends past
-// v_haloRadiusDevicePx). But static-controlled-recursive-indra-3d-level1's own degree-3/degree-1 test
-// pair sits inside a dense local Indra cluster, so a full-circle ring average around either one never
-// actually returns to this capture's own corner-sampled background level -- neighbouring nodes' and
-// filaments' own light keeps the immediate surroundings measurably above field no matter how far the
-// walk searches (measured directly: mean red channel stabilises around 35-40 against a field of 9, from
-// roughly 15px outward to past 80px). haloAnnulusFootprint's own 8-24px annulus measures inside that
-// same contaminated band already, so this is a property of the position being measured, not a defect in
-// this walk. This therefore accepts EITHER of two stopping conditions, and records which one fired: an
-// actual return to field (checked first; unlikely at either test position but not ruled out), or the
-// first radius from which the profile stays within a tolerance band of its own settled tail average for
-// the REST of the walk -- i.e. where the node's own steep falloff has finished giving way to the
-// surrounding scene's ambient level, checked against where the profile actually ends up rather than
-// against a single ring-to-ring step (which two otherwise near-identical profiles can cross a fixed
-// delta threshold on by a couple of red-channel units of dither, reading as though the halo were several
-// pixels larger for no real reason). A walk that satisfies neither within the bound is a genuine anomaly
-// and fails loudly.
-function radialHaloExtent(
-  image: PixelImage,
-  centerX: number,
-  centerY: number,
-  corePeakRedValue: number,
-  fieldRgb: readonly [number, number, number],
-): RadialHaloExtent {
-  const cx = Math.round(centerX);
-  const cy = Math.round(centerY);
-  const rings: (RingSample | undefined)[] = [];
-  for (let radius = 1; radius <= HALO_VISIBLE_EXTENT_SEARCH_MAX_PX; radius += 1) {
-    rings.push(ringSample(image, cx, cy, radius));
+// Third pass: the fraction of RGBA pixels that differ between an X-series variant and X0 (its own
+// control) for one named capture, plus the subset of those changed pixels that lie further than
+// `labelDisplacementRadiusPx` from every node's own rendered centre in that capture -- i.e. changed
+// pixels that cannot be explained by a node's own halo and instead look like a moved label. Mirrors
+// motion.ts's own `changedPixelFraction` (duplicated rather than imported, matching that file's and
+// scale-topology.spec.ts's own stated precedent for the identical duplication), extended with the
+// per-pixel node-distance check the third pass needs.
+function changedPixelDiagnostics(
+  a: PixelImage,
+  b: PixelImage,
+  aName: string,
+  bName: string,
+  captureName: CaptureName,
+  nodeCenters: Readonly<Record<string, { readonly x: number; readonly y: number }>>,
+  labelDisplacementRadiusPx: number,
+): CaptureDiagnostic {
+  if (a.width !== b.width || a.height !== b.height) {
+    throw new Error(`review-halo-calibration changed-pixel comparison requires equal dimensions: ${aName} is ${a.width}x${a.height}, ${bName} is ${b.width}x${b.height}`);
   }
-  let coreEdgeRadiusPx = -1;
-  for (let index = 0; index < rings.length; index += 1) {
-    const ring = rings[index];
-    if (ring !== undefined && ring.meanRed < corePeakRedValue * CORE_EDGE_PEAK_FRACTION) {
-      coreEdgeRadiusPx = index + 1;
-      break;
-    }
+  const centers = Object.values(nodeCenters);
+  if (centers.length === 0) {
+    throw new Error(`review-halo-calibration changed-pixel comparison for ${bName} has no node centres to measure label displacement against`);
   }
-  let unlitRun = 0;
-  let fieldReturnRadiusPx = -1;
-  for (let index = 0; index < rings.length; index += 1) {
-    const ring = rings[index];
-    if (ring === undefined) {
-      continue;
-    }
-    if (isLitPixel(ring.meanRed, ring.meanGreen, ring.meanBlue, fieldRgb)) {
-      unlitRun = 0;
-      continue;
-    }
-    unlitRun += 1;
-    if (unlitRun === HALO_VISIBLE_EXTENT_CONFIRMATION_RINGS) {
-      fieldReturnRadiusPx = (index + 1) - HALO_VISIBLE_EXTENT_CONFIRMATION_RINGS + 1;
-      break;
-    }
-  }
-  const tail = rings.slice(-HALO_PLATEAU_TAIL_WINDOW_RINGS).filter((ring): ring is RingSample => ring !== undefined);
-  let plateauRadiusPx = -1;
-  if (tail.length > 0) {
-    const plateauRed = tail.reduce((sum, ring) => sum + ring.meanRed, 0) / tail.length;
-    for (let index = 0; index < rings.length && plateauRadiusPx === -1; index += 1) {
-      const staysWithinTolerance = rings.slice(index).every((ring) => ring === undefined || Math.abs(ring.meanRed - plateauRed) <= HALO_PLATEAU_TOLERANCE);
-      if (staysWithinTolerance) {
-        plateauRadiusPx = index + 1;
+  const totalPixelCount = a.width * a.height;
+  let changedPixelCount = 0;
+  let labelDisplacedPixelCount = 0;
+  for (let y = 0; y < a.height; y += 1) {
+    for (let x = 0; x < a.width; x += 1) {
+      const offset = ((y * a.width) + x) * 4;
+      if (
+        a.data[offset] === b.data[offset]
+        && a.data[offset + 1] === b.data[offset + 1]
+        && a.data[offset + 2] === b.data[offset + 2]
+        && a.data[offset + 3] === b.data[offset + 3]
+      ) {
+        continue;
+      }
+      changedPixelCount += 1;
+      let nearestDistancePx = Infinity;
+      for (const center of centers) {
+        const distance = Math.hypot(x - center.x, y - center.y);
+        if (distance < nearestDistancePx) {
+          nearestDistancePx = distance;
+        }
+      }
+      if (nearestDistancePx > labelDisplacementRadiusPx) {
+        labelDisplacedPixelCount += 1;
       }
     }
   }
-  let visibleExtentRadiusPx: number;
-  let convergedTo: RadialHaloExtent["convergedTo"];
-  if (fieldReturnRadiusPx !== -1 && (plateauRadiusPx === -1 || fieldReturnRadiusPx <= plateauRadiusPx)) {
-    visibleExtentRadiusPx = fieldReturnRadiusPx;
-    convergedTo = "localField";
-  } else if (plateauRadiusPx !== -1) {
-    visibleExtentRadiusPx = plateauRadiusPx;
-    convergedTo = "ambientPlateau";
-  } else {
-    throw new Error(
-      `review-halo-calibration radial halo profile at (${centerX}, ${centerY}) neither returned to field `
-      + `nor stabilised within ${HALO_VISIBLE_EXTENT_SEARCH_MAX_PX}px`,
-    );
-  }
-  // Never dropping under half its own peak before the halo itself resolves means this proxy could not
-  // find a core-edge boundary distinct from the halo's own outer edge -- reported as coincident
-  // (haloBandWidthPx 0) rather than as a sentinel, since it is itself the merge-risk signal the brief
-  // asks this suite to surface.
-  const resolvedCoreEdgeRadiusPx = coreEdgeRadiusPx === -1 ? visibleExtentRadiusPx : coreEdgeRadiusPx;
   return {
-    coreEdgeRadiusPx: resolvedCoreEdgeRadiusPx,
-    visibleExtentRadiusPx,
-    haloBandWidthPx: visibleExtentRadiusPx - resolvedCoreEdgeRadiusPx,
-    convergedTo,
+    captureName,
+    fileName: bName,
+    totalPixelCount,
+    changedPixelCount,
+    changedPixelFraction: changedPixelCount / totalPixelCount,
+    labelDisplacedPixelCount,
   };
 }
 
