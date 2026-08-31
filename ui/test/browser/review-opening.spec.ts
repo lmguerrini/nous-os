@@ -329,6 +329,9 @@ async function invokeCapture(page: Page, request: OpeningCaptureRequest): Promis
   }, request);
 }
 
+/** This is the render3f WebGL canvas alone, never the DOM label overlay `mount.tsx` layers over it -- see `requestCapture`'s own lit-floor call for why this second, narrower capture exists. */
+const CANVAS_LOCATOR_SELECTOR = '[data-render3f-canvas="true"]';
+
 async function requestCapture(
   page: Page,
   fileNameStem: string,
@@ -357,8 +360,28 @@ async function requestCapture(
     throw new Error(`review-opening frame ${fileName} has unexpected dimensions ${dimensions.width}x${dimensions.height}`);
   }
   assertDarkestShippingField(image, `review-opening ${fileName}`);
-  if (witness.surface.nodeIds.length > 0) {
-    assertLitPixelFloor(image, `review-opening ${fileName}`);
+  // Checked against the CANVAS ALONE, never the composited frame: assertLitPixelFloor's own floor is
+  // deliberately low (a couple of anti-aliased label glyphs already clear it), so run against the
+  // composited image it cannot tell "the graph was drawn" apart from "only a label was drawn" -- the
+  // gap the human review audit found. render3f draws every node, relation, and halo exclusively to this
+  // canvas and every label exclusively to a DOM overlay layered above it (see mount.tsx/labels.tsx), so
+  // a lit pixel here cannot be a label's.
+  //
+  // Checked only at `rest`, never at an intermediate sweep frame: `rest` is the one phase every policy
+  // structurally guarantees full visibility at (`assertMotionRestingCompleteness` in #scene/build.ts),
+  // whereas a sweep frame carries no such guarantee by construction -- `resolveOpeningFrames`'s own
+  // docstring calls its intermediate samples "visual interpolation... purely for evidence variety," and
+  // Assemble's own staggered reveal (`resolveStructuralGeometry`) means an early sweep phase can leave
+  // every element's own reveal fraction, hub included, too small to clear even this floor's own low bar
+  // -- this suite's `FRAME_DENSITY`/seed genuinely samples such a phase (the very first step's own
+  // first sweep frame lands at phase~0.0385). That is not a defect: it is the same "genuinely empty
+  // near-entry pose" review-temporal-mycelium.spec.ts excludes at its own exact phase 0, just reached at
+  // a continuous, seed-dependent phase here rather than a fixed sample index, so no single phase
+  // threshold could exclude it without being tuned to this one seed.
+  if (witness.surface.nodeIds.length > 0 && rest) {
+    const canvasBytes = await page.locator(CANVAS_LOCATOR_SELECTOR).screenshot();
+    const canvasImage = decodePng(canvasBytes, `${fileName} canvas`);
+    assertLitPixelFloor(canvasImage, `review-opening ${fileName} canvas`);
   }
   return {
     fileName,

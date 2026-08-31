@@ -517,7 +517,10 @@ function resolveNodeMotionOffsetPx(modulation: NodeMotionModulation, calibration
  * the core so the two never visually decouple as a node's own scale channel breathes or shrinks.
  * `geometry` is non-null only for a policy `resolveMotionGeometry` resolves, and its opacity/scale
  * replace the axis's own declared ceiling with the real, geometry-resolved value that ceiling was
- * spent on.
+ * spent on. The label carried by `labelCandidacy` is this node's own, never a free-floating scene
+ * element (see `scaledLabelCandidacy`'s own docstring for why its opacity is scaled by this exact same
+ * `opacityPermille` fraction, never a second independently derived one): a node fully faded by motion
+ * must draw its own name fully faded with it, not left legible on an otherwise empty frame.
  */
 function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, offsetPx: NodeMotionOffsetPx, geometry: MotionGeometryNodeResolution | null): SceneNode {
   const opacityPermille = geometry?.opacityPermille ?? modulation.opacityPermille;
@@ -533,6 +536,41 @@ function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, of
     radiusPx: applyMotionFactor(node.radiusPx, scaleFactor),
     haloRadiusPx: applyMotionFactor(node.haloRadiusPx, scaleFactor),
     opacityPermille: Math.round((node.opacityPermille * opacityPermille) / SCENE_PERMILLE_SCALE),
+    labelCandidacy: scaledLabelCandidacy(node.labelCandidacy, opacityPermille),
+  };
+}
+
+/**
+ * This is the one place a label's drawn opacity meets the resolved motion opacity of the element that
+ * owns it (a node's own label with `modulateSceneNode`'s `opacityPermille`, a relation's own label with
+ * `modulateSceneEdge`'s `visibilityPermille`), closing the gap the human review disposition's audit
+ * named: motion modulated a node's own opacity but never touched `labelCandidacy.opacityPermille`
+ * (fixed at calibration, e.g. 520), so a node reaching exactly zero opacity at Assemble's own phase 0
+ * still drew its own name at full calibrated legibility -- a label asserting the presence of an element
+ * the frame does not draw, the same class of falsehood F81 already named for a relation drawn detached
+ * from the elements it relates. Scaling (never suppressing outright below some second, independently
+ * chosen threshold) keeps this identical in shape to how `modulateSceneNode`/`modulateSceneEdge` already
+ * treat their own owner's `opacityPermille`: the SAME multiplicative composition against the label's own
+ * already-resolved calibrated ceiling, so a label's own resolved brightness is always bounded by, and
+ * moves in lockstep with, its owner's -- never independently zero when the owner is visible, and never
+ * independently visible when the owner is not. At every policy's own resting phase `opacityPermille` is
+ * exactly `SCENE_PERMILLE_SCALE` (see `assertMotionRestingCompleteness`), so `Math.round(x * 1000 / 1000)`
+ * returns `x` unchanged there -- this is a no-op at rest, which is what keeps Still and every policy's
+ * resting phase byte-identical to the frozen static baseline (see M3). `labelCandidacy` is `null`
+ * whenever this element carries no label at all (no LOD material selected one): there is nothing to
+ * scale, so `null` passes through unchanged rather than being fabricated into a candidacy that never
+ * existed.
+ */
+function scaledLabelCandidacy<Label extends { readonly opacityPermille: number }>(
+  labelCandidacy: Label | null,
+  ownerOpacityPermille: number,
+): Label | null {
+  if (labelCandidacy === null) {
+    return null;
+  }
+  return {
+    ...labelCandidacy,
+    opacityPermille: Math.round((labelCandidacy.opacityPermille * ownerOpacityPermille) / SCENE_PERMILLE_SCALE),
   };
 }
 
@@ -551,7 +589,10 @@ function modulateSceneNode(node: SceneNode, modulation: NodeMotionModulation, of
  * relation's drawn geometry attached to them (see `motionEdgeGeometry`); junctionStart/EndGeometry and
  * terminalStart/EndTreatment carry no position or angle of their own (each is one of a small fixed
  * categorical set describing HOW an endpoint is drawn, not WHERE -- see morphology.ts's own
- * JunctionGeometry/TerminalTreatment), so they pass through unchanged.
+ * JunctionGeometry/TerminalTreatment), so they pass through unchanged. `labelCandidacy` is scaled by
+ * this same `visibilityPermille` (see `scaledLabelCandidacy`'s own docstring), for the identical reason
+ * `modulateSceneNode` scales a node's own label: a relation faded to nothing by motion must not still
+ * draw its own name legible over empty space.
  */
 function modulateSceneEdge(
   edge: SceneEdge,
@@ -570,6 +611,7 @@ function modulateSceneEdge(
     path: geometry.path,
     controlPoint: geometry.controlPoint,
     opacityPermille: Math.round((edge.opacityPermille * visibilityPermille) / SCENE_PERMILLE_SCALE),
+    labelCandidacy: scaledLabelCandidacy(edge.labelCandidacy, visibilityPermille),
   };
 }
 

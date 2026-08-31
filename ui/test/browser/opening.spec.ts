@@ -420,7 +420,15 @@ async function requestCapture(
   const dimensions = pngDimensions(bytes, fileName);
   expect(dimensions).toEqual({ width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT });
   assertDarkestShippingField(image, `opening ${fileName}`);
-  if (witness.surface.nodeIds.length > 0) {
+  // Checked only at `rest`, never at an intermediate sweep frame: `rest` is the one phase every policy
+  // structurally guarantees full visibility at (`assertMotionRestingCompleteness` in #scene/build.ts).
+  // A sweep frame carries no such guarantee -- Assemble's own staggered reveal
+  // (`resolveStructuralGeometry`) can leave every element's own reveal fraction, hub included, too
+  // small to clear even this floor's own low bar this early in a step's own construction, now that a
+  // node's own label (`scaledLabelCandidacy`) correctly fades with it rather than staying legible on an
+  // otherwise still-forming frame; see review-opening.spec.ts's own `requestCapture` for the identical
+  // reasoning applied to that suite's denser sampling of the same real sequence.
+  if (witness.surface.nodeIds.length > 0 && rest) {
     assertLitPixelFloor(image, `opening ${fileName}`);
   }
   return {

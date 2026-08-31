@@ -168,8 +168,22 @@ test("CAP-13 review-temporal Mycelium valid-time growth, densely sampled, member
         assertSameIdSet(rendered.witness.surface.nodeIds, rendered.witness.membership.nodeIds, `${fileName} node ids (surface vs governed membership)`);
         assertSameIdSet(rendered.witness.surface.edgeIds, rendered.witness.membership.edgeIds, `${fileName} relation ids (surface vs governed membership)`);
 
-        if (rendered.witness.membership.nodeIds.length > 0) {
-          assertLitPixelFloor(rendered.image, `review-temporal ${fileName}`);
+        // Checked against the CANVAS ALONE (CANVAS_LOCATOR_SELECTOR), never the composited frame:
+        // assertLitPixelFloor's own floor is deliberately low (a couple of anti-aliased label glyphs
+        // already clear it), so run against the composited image it cannot tell "the graph was drawn"
+        // apart from "only a label was drawn" -- exactly the gap the human review audit found (a node's
+        // own label, resolved independently of that node's own motion opacity until #scene/build.ts's
+        // own scaledLabelCandidacy fix, stayed legible while the node and every relation were fully
+        // faded). render3f draws every node, relation, and halo exclusively to this canvas and every
+        // label exclusively to a DOM overlay layered above it (see mount.tsx/labels.tsx), so a lit pixel
+        // here cannot be a label's. Phase 0 is Assemble's own documented "genuinely empty phase-0 pose"
+        // (see #scene/build.ts's own resolveStructuralGeometry docstring): staggeredProgress resolves
+        // every element's own reveal fraction to exactly 0 there, hub included, so the canvas is
+        // guaranteed blank by construction independent of governed membership, and is excluded here
+        // rather than asserted against -- once phase advances past 0 the hub has genuinely begun
+        // resolving and the canvas must show it.
+        if (rendered.witness.membership.nodeIds.length > 0 && phase > 0) {
+          assertLitPixelFloor(rendered.canvasImage, `review-temporal ${fileName} canvas`);
         }
         assertDarkestShippingField(rendered.image, `review-temporal ${fileName}`);
 
@@ -242,8 +256,12 @@ test("CAP-13 review-temporal Mycelium valid-time growth, densely sampled, member
 type RenderedFrame = {
   readonly witness: TemporalCaptureWitness;
   readonly image: { readonly width: number; readonly height: number; readonly data: Buffer };
+  readonly canvasImage: { readonly width: number; readonly height: number; readonly data: Buffer };
   readonly rawFileSha256: string;
 };
+
+/** This is the render3f WebGL canvas alone, never the DOM label overlay `mount.tsx` layers over it -- see the `assertLitPixelFloor` call site below for why this second, narrower capture exists. */
+const CANVAS_LOCATOR_SELECTOR = '[data-render3f-canvas="true"]';
 
 async function renderFrame(page: Page, request: TemporalCaptureRequest, fileName: string): Promise<RenderedFrame> {
   const witness = await invokeCapture(page, request);
@@ -255,7 +273,9 @@ async function renderFrame(page: Page, request: TemporalCaptureRequest, fileName
     throw new Error(`review-temporal frame ${fileName} has unexpected dimensions ${dimensions.width}x${dimensions.height}`);
   }
   const image = decodePng(bytes, fileName);
-  return { witness, image, rawFileSha256: sha256(bytes) };
+  const canvasBytes = await page.locator(CANVAS_LOCATOR_SELECTOR).screenshot();
+  const canvasImage = decodePng(canvasBytes, `${fileName} canvas`);
+  return { witness, image, canvasImage, rawFileSha256: sha256(bytes) };
 }
 
 function assertCanonicalSurface(

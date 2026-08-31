@@ -788,10 +788,12 @@ const M2_PROJECTION: "2d" | "3d" = "3d";
 // and strongestContainmentRoot already are: it exports nothing this file is allowed to import from),
 // to depths 1 through M2_TARGET_DEPTH. Motion policy varies between Assemble (staggered per-element
 // construction, which holds newly-arriving elements collapsed near their parent at low phase and
-// measurably suppresses the visible difference) and Reconfigure (the same breathingEnvelope mechanism
-// Pulse uses, at the amplitude that also carries a positional offset -- modulating every already-
-// present element uniformly, with no staggered-arrival suppression), so every depth is compared under
-// a policy that does not carry Assemble's own low-phase suppression as well as one that does.
+// measurably suppresses the visible difference -- and at Assemble's own construction-start phase, phase
+// 0, eliminates the GOVERNED-content difference completely: see isEmptyEntryPose below for exactly what
+// that does and does not make identical) and Reconfigure (the same breathingEnvelope mechanism Pulse
+// uses, at the amplitude that also carries a positional offset -- modulating every already-present
+// element uniformly, with no staggered-arrival suppression), so every depth is compared under a policy
+// that does not carry Assemble's own low-phase suppression as well as one that does.
 const M2_TARGET_DEPTH = 3;
 const M2_MOTION_GRAMMARS = [ASSEMBLE, RECONFIGURE] as const satisfies readonly MotionGrammar[];
 // The base seed each pair's own shuffle is derived from (see pairSpecShuffleSeed below): kept apart
@@ -832,6 +834,74 @@ function buildM2PairSpecs(): readonly M2PairSpec[] {
 
 const M2_PAIR_SPECS: readonly M2PairSpec[] = buildM2PairSpecs();
 
+/**
+ * This is true only for Assemble at phase exactly 0, and reflects a documented, provable fact about
+ * `resolveStructuralGeometry` (`#scene/build.ts`), not an assumption made here: its own `resolveRevealFraction`
+ * gives every GOVERNED node and relation -- including the hub, rank 0 -- a reveal fraction of exactly 0 at
+ * phase 0 (staggeredProgress's own `elementStart` is at least 0 for every rank, so `phase - elementStart`
+ * is at most 0 there), independent of the graph's own size: neither policy draws any governed node or
+ * relation at that one phase. Reconfigure carries no such phase -- `resolvePulseGeometry` never zeroes an
+ * already-present element's own opacity, it only breathes an existing one -- so this is false for every
+ * phase of every other M2_MOTION_GRAMMARS member, and would stay false even if M2 later added Dissolve or
+ * RecursiveBloom without also teaching this function their own empty phase.
+ *
+ * This is deliberately scoped to GOVERNED content only, and this function is consulted below only to
+ * exempt the CONTROLLED comparison's "must differ" requirement, never to require identity: `applyMotionGrammar`
+ * (`#scene/build.ts`) returns `{ ...scene, nodes, edges }`, spreading every other scene field -- including
+ * `scene.aggregates`, INDRA's own community-window fills and strokes -- through completely unmodulated, at
+ * every phase including this one. Those windows are real content, keyed to each topology's own actually-
+ * entered world, not to governed node/edge ids the surface witness tracks; whether they coincide between
+ * Recursive and Holographic at this phase depends on whether the two policies' own real navigation paths
+ * have already diverged by that pair's own depth (measured directly: pair-set-01, depth 1, where both
+ * walks are still on their shared first step, renders byte-identically under the shared camera at phase 0;
+ * deeper pairs, where the walks have already diverged into different real worlds, do not). So this phase
+ * being "empty" only removes governed content as a source of the required difference -- it does not
+ * predict, and must not be asserted to force, identity of the whole frame. The ecological (own-camera)
+ * comparison needs no such exemption at all: each strip's own camera is independently refit from that
+ * strip's own rendered anchors regardless of phase, and Holographic's own anchor extent is a strict
+ * superset of Recursive's, so the two cameras alone already frame the entered world's own furniture
+ * differently -- confirmed directly, not assumed: Recursive's and Holographic's own ecological phase-0
+ * frames are never byte-identical in this suite's own captures.
+ */
+function isEmptyEntryPose(policy: MotionGrammar, phase: number): boolean {
+  return policy === ASSEMBLE && phase === 0;
+}
+
+// The negative finding the human review disposition ordered preserved, now stronger than first recorded
+// and reused verbatim (not paraphrased twice and left to drift) in the controlled assertion text below
+// and in the top-level M2 manifest assertion: motion makes the Recursive/Holographic distinction harder to
+// see at low phase, and at Assemble's own construction-start phase (phase 0) it does not merely suppress
+// that distinction, it eliminates it completely for GOVERNED content (see isEmptyEntryPose above for the
+// proof and for what this does and does not additionally make identical). A 0.034% pixel difference was
+// recorded at this same phase before this pass: that number was never the graph's own governed content --
+// it was the extra elements' own labels rendering at full calibrated legibility over an otherwise-empty
+// frame, a rendering defect (`#scene/build.ts`'s `scaledLabelCandidacy`, which now scales a label's own
+// opacity with its owner's) that supplied false cover for a controlled comparison that was, at that phase,
+// always vacuous on governed content alone. With that defect fixed, phase 0's own controlled comparison no
+// longer requires a difference (governed content cannot supply one there for either policy), and is not
+// scored against the "must differ" bar every substantive (non-empty) phase is still held to -- but it is
+// also not forced to identity: real, phase-invariant scene furniture (community aggregate windows, a
+// world's own containment boundary) may still legitimately differ once the two policies' own navigation
+// paths have diverged, and this suite's own captures show exactly that split by depth.
+const M2_EMPTY_ENTRY_POSE_FINDING =
+  "Motion makes the Recursive/Holographic distinction harder to see at low phase; at Assemble's own phase "
+  + "0 (isEmptyEntryPose) it does not merely suppress that distinction, it eliminates it completely FOR "
+  + "GOVERNED CONTENT, because resolveStructuralGeometry gives every governed node and relation a reveal "
+  + "fraction of exactly 0 there regardless of graph size. A 0.034% difference was recorded at this phase "
+  + "before this pass; that number was the extra elements' own labels rendering over an otherwise-empty "
+  + "frame (a rendering defect since fixed in scaledLabelCandidacy), never the graph's own governed "
+  + "content -- a comparison that was, on governed content alone, always vacuous at this phase. The "
+  + "controlled comparison's own phase-0 entry (see its own emptyEntryPose flag) is therefore no longer "
+  + "held to the 'must differ' bar every other, substantive phase still is, since governed content cannot "
+  + "supply a difference there for either policy -- but it is not forced to identity either: real, motion-"
+  + "invariant scene furniture (INDRA's own community aggregate windows, a world's own containment "
+  + "boundary) can still legitimately differ once the two policies' own real navigation paths have "
+  + "diverged, and this suite's own captures show precisely that split, byte-identical at depth 1 (where "
+  + "both walks are still on a shared first step) and genuinely different at greater depths (where they "
+  + "are not). The ecological comparison's own phase-0 entry carries no exemption at all and is still "
+  + "required to differ, confirmed directly: its own per-policy camera alone already frames the entered "
+  + "world's furniture differently, independent of governed content (see isEmptyEntryPose's own docstring).";
+
 type M2FrameRecord = { readonly phase: number; readonly path: string; readonly pixelSha256: string };
 type M2StripRecord = {
   readonly pairId: string;
@@ -845,6 +915,16 @@ type M2PhaseComparisonRecord = {
   readonly phase: number;
   readonly identical: boolean;
   readonly changedPixelFraction: number;
+  // True only at a phase isEmptyEntryPose recognizes (currently Assemble's own phase 0). Carried here,
+  // per phase and in both the ecological and controlled records, so a reader of this manifest never has
+  // to re-derive it from motionGrammar and phase -- but it only changes what the CONTROLLED record's own
+  // `identical` is scored against: at that phase, GOVERNED content cannot supply a difference for either
+  // policy, so `identical: true` there is not a guard failure, but `identical: false` is not one either
+  // (motion-invariant scene furniture, e.g. INDRA's own community aggregate windows, can still
+  // legitimately differ once the two policies' own navigation paths have diverged -- see isEmptyEntryPose's
+  // own docstring). In the ecological record it is present for the same legibility but exempts nothing,
+  // since each strip's own camera still differs there regardless of this flag.
+  readonly emptyEntryPose: boolean;
 };
 type M2PairSpecRecord = {
   readonly pairSpecId: string;
@@ -972,7 +1052,8 @@ test("CAP-13 W-MOTION M2 recursive versus holographic under motion", async ({ pa
       schemaVersion: 1,
       summary: { passing: summaryPassing },
       run: { command: MOTION_COMMAND, trackedTree },
-      assertion: "Six independent pairs (three navigation depths x two motion policies -- see changedAxes below), each a paired strip of the same navigation event (entering the same containment child world, from the same containmentRootId, to that pair's own target depth), both members animated with that pair's own motion policy. organization/morphology/projection/calibration/reducedMotion are held constant (see heldConstant above); scaleTopology is the axis manipulated within the pair, but its downstream consequences are not held constant -- each member's ScaleNavigationPath is built by that policy's own walk (renderM2PairSpec), so the path taken differs, and so does the entered world's own contents: Holographic's rendered node/edge ids are a strict superset of Recursive's, not merely a difference in outside context. Every pair independently shuffles which anonymous strip slot (pair-1/pair-2) is Recursive vs Holographic, with its own recorded seed; no path under m2/ names either scaleTopology label, verified by read-back.",
+      assertion: "Six independent pairs (three navigation depths x two motion policies -- see changedAxes below), each a paired strip of the same navigation event (entering the same containment child world, from the same containmentRootId, to that pair's own target depth), both members animated with that pair's own motion policy. organization/morphology/projection/calibration/reducedMotion are held constant (see heldConstant above); scaleTopology is the axis manipulated within the pair, but its downstream consequences are not held constant -- each member's ScaleNavigationPath is built by that policy's own walk (renderM2PairSpec), so the path taken differs, and so does the entered world's own contents: Holographic's rendered node/edge ids are a strict superset of Recursive's, not merely a difference in outside context. Every pair independently shuffles which anonymous strip slot (pair-1/pair-2) is Recursive vs Holographic, with its own recorded seed; no path under m2/ names either scaleTopology label, verified by read-back. "
+        + M2_EMPTY_ENTRY_POSE_FINDING,
       method: "A real ScaleNavigationPath (built with #engine/scale-topology.ts's own rootNavigationPath and enterChildWorld, walked to each pair's own depth exactly as scale-topology.spec.ts's own buildRecursiveWalk does) is passed straight through mount()'s own Render3fOptions.navigationPath (ui/src/render3f/mount.tsx) to buildScene (#scene/build.ts), which alone resolves it to a rendered node/relation set via resolveScaleNavigationGraph. This suite computes no id set of its own for what gets rendered; every nodeIds/edgeIds value recorded below is read back from the mounted scene's own surface witness.",
       containmentRootId,
       heldConstant: { organization: M2_ORGANIZATION, morphology: M2_MORPHOLOGY, projection: M2_PROJECTION, calibration: "DEFAULT_CALIBRATION", reducedMotion: false },
@@ -1189,12 +1270,27 @@ type RenderedFrame = {
   readonly dimensions: { readonly width: number; readonly height: number };
 };
 
-/** This is the shared per-frame capture path M1, M2, and the ablation all reduce to: one mount, one screenshot, one read-back, the invariants every rendered frame in this suite must hold. */
+/**
+ * This is the shared per-frame capture path M1, M2, and the ablation all reduce to: one mount, one
+ * screenshot, one read-back, the invariants every rendered frame in this suite must hold.
+ *
+ * `allowEmptyCapture` defaults to false (strict, unchanged) for every M1 and ablation call site, and for
+ * M2's own substantive-phase calls: `assertLitPixelFloor` keeps catching a frame that renders nothing
+ * everywhere else, exactly the defect class the human review disposition's audit found (a label-only
+ * frame silently clearing the floor because motion never modulated a label's own opacity, fixed in
+ * `#scene/build.ts`'s `scaledLabelCandidacy`). M2's own two call sites pass `true` only at a phase
+ * `isEmptyEntryPose` recognizes: at that phase, GOVERNED content is documented to be at reveal fraction 0
+ * for every element (see isEmptyEntryPose's own docstring), and this suite's own captures show that, for
+ * some pairs, no motion-invariant scene furniture (INDRA's own community aggregate windows) is in view of
+ * that policy's own navigated world either -- a literal zero-lit-pixel frame that is the correct, fully
+ * accounted-for outcome there, not the silently-passing defect this floor exists to catch.
+ */
 async function renderFrame(
   page: Page,
   request: MotionCaptureRequest,
   outputDirectory: string,
   fileName: string,
+  options?: { readonly allowEmptyCapture?: boolean },
 ): Promise<RenderedFrame> {
   const witness = await invokeCapture(page, request);
   const filePath = join(outputDirectory, fileName);
@@ -1207,7 +1303,9 @@ async function renderFrame(
   assertMinimalPngChunks(bytes, fileName);
   const image = decodePng(bytes, fileName);
   assertDarkestShippingField(image, `motion ${fileName}`);
-  assertLitPixelFloor(image, `motion ${fileName}`);
+  if (options?.allowEmptyCapture !== true) {
+    assertLitPixelFloor(image, `motion ${fileName}`);
+  }
   assertNodesInsideCapturedFrame(fileName, witness.nodeViewportPositions);
   return { fileName, filePath, witness, pixelSha256: pixelSha256(image), dimensions };
 }
@@ -1380,7 +1478,7 @@ async function renderM2PairSpec(
         phase,
       };
       const fileName = `phase-${phase}.png`;
-      const rendered = await renderFrame(page, request, pairDirectory, fileName);
+      const rendered = await renderFrame(page, request, pairDirectory, fileName, { allowEmptyCapture: isEmptyEntryPose(spec.motionGrammar, phase) });
       const renderedNodeIds = [...rendered.witness.surface.nodeIds].sort();
       const renderedEdgeIds = [...rendered.witness.surface.edgeIds].sort();
       if (pairNodeIds === undefined || pairEdgeIds === undefined) {
@@ -1449,8 +1547,20 @@ async function renderM2PairSpec(
       phase: recursiveFrame.phase,
       identical: recursiveFrame.pixelSha256 === holographicFrame.pixelSha256,
       changedPixelFraction: changedPixelFraction(recursiveImage, holographicImage, recursiveFrame.path, holographicFrame.path),
+      emptyEntryPose: isEmptyEntryPose(spec.motionGrammar, recursiveFrame.phase),
     });
   }
+  // No carve-out here, even at a phase isEmptyEntryPose recognizes: this is the ECOLOGICAL comparison,
+  // each strip on its OWN camera (marginedAnchorBounds refit from that policy's own rendered anchors --
+  // see the ecological assertion text below), and that camera itself is a real, non-vacuous difference a
+  // caller navigating either policy would actually see, independent of whether any governed content is
+  // drawn: Holographic's own anchor extent is a strict superset of Recursive's, so its own camera frames
+  // differently-sized static scene furniture (e.g. the entered world's own containment boundary) even
+  // when every governed node and relation is at reveal fraction 0. Measured directly: at Assemble's own
+  // phase 0, the two ecological frames are NOT byte-identical (a real, camera-driven pixel difference),
+  // so the original "must differ" bar continues to hold on its own here and needs no exemption -- the
+  // vacuousness this file's own empty-entry-pose fix addresses is specific to the controlled comparison
+  // below, where the camera is shared and stops contributing a difference of its own.
   if (comparisons.some((record) => record.identical)) {
     throw new Error(`motion M2 ${spec.pairSpecId} finding is vacuous: Recursive and Holographic rendered byte-identically at a sampled phase despite Holographic carrying strictly more governed nodes and relations`);
   }
@@ -1484,7 +1594,7 @@ async function renderM2PairSpec(
       phase,
     };
     const fileName = `phase-${phase}.png`;
-    const rendered = await renderFrame(page, request, controlledDirectory, fileName);
+    const rendered = await renderFrame(page, request, controlledDirectory, fileName, { allowEmptyCapture: isEmptyEntryPose(spec.motionGrammar, phase) });
     // renderFrame's own assertNodesInsideCapturedFrame call above just checked every one of
     // Recursive's rendered anchors falls inside this shared frame; Holographic's own anchors were
     // already checked inside this same frame when its ecological capture (the camera's own source)
@@ -1503,10 +1613,24 @@ async function renderM2PairSpec(
       phase,
       identical: rendered.pixelSha256 === holographicFrame.pixelSha256,
       changedPixelFraction: changedPixelFraction(recursiveControlledImage, holographicImage, rendered.fileName, holographicFrame.path),
+      emptyEntryPose: isEmptyEntryPose(spec.motionGrammar, phase),
     });
   }
-  if (controlledComparisons.some((record) => record.identical)) {
-    throw new Error(`motion M2 ${spec.pairSpecId} controlled comparison is vacuous: Recursive and Holographic rendered byte-identically at a sampled phase under the same shared camera despite Holographic carrying strictly more governed nodes and relations`);
+  // Here, unlike the ecological comparison above, a carve-out applies at a phase isEmptyEntryPose
+  // recognizes: with the camera shared (both strips driven by Holographic's own, see sharedCamera above),
+  // GOVERNED content -- documented at reveal fraction 0 for both there -- cannot supply the required
+  // difference for either policy, so `identical: true` there is not a guard failure the way it would be at
+  // a substantive phase. It is not forced the other way either: `identical: false` there is also not
+  // flagged, because real, motion-invariant scene furniture untouched by `applyMotionGrammar` (INDRA's own
+  // community aggregate windows, a world's own containment boundary) can still legitimately differ once
+  // the two policies' own real navigation paths have diverged by that pair's own depth -- confirmed
+  // directly in this suite's own captures, byte-identical at depth 1 and genuinely different beyond it (see
+  // isEmptyEntryPose's own docstring). Every other, substantive phase is still held to the original "must
+  // differ" bar -- the vacuousness guard is unchanged there, and is the only branch left below.
+  for (const record of controlledComparisons) {
+    if (!record.emptyEntryPose && record.identical) {
+      throw new Error(`motion M2 ${spec.pairSpecId} controlled comparison is vacuous: Recursive and Holographic rendered byte-identically at phase ${record.phase} under the same shared camera, a phase not documented as ${spec.motionGrammar}'s own empty entry pose, despite Holographic carrying strictly more governed nodes and relations`);
+    }
   }
 
   return {
@@ -1538,11 +1662,13 @@ async function renderM2PairSpec(
       // mounted renderer via readCameraState() and driven straight through Recursive's own capture as
       // `sharedCamera` -- so its own difference is attributable to content alone.
       ecological: {
-        assertion: "Each strip's camera is refit from its own rendered anchors after navigating (marginedAnchorBounds, applied per policy). Holographic's anchor extent is a superset of Recursive's, so the two cameras differ, and part of the changed-pixel fraction below is attributable to that framing difference rather than to what is drawn.",
+        assertion: "Each strip's camera is refit from its own rendered anchors after navigating (marginedAnchorBounds, applied per policy). Holographic's anchor extent is a superset of Recursive's, so the two cameras differ, and part of the changed-pixel fraction below is attributable to that framing difference rather than to what is drawn. "
+          + M2_EMPTY_ENTRY_POSE_FINDING,
         perPhase: comparisons,
       },
       controlled: {
-        assertion: "One camera per phase -- Holographic's own, read back off its mounted renderer and driven straight through Recursive's capture as sharedCamera -- shared by both strips, so the changed-pixel fraction below is attributable to what is drawn, not to two different cameras. This is this pair's primary result.",
+        assertion: "One camera per phase -- Holographic's own, read back off its mounted renderer and driven straight through Recursive's capture as sharedCamera -- shared by both strips, so the changed-pixel fraction below is attributable to what is drawn, not to two different cameras. This is this pair's primary result. "
+          + M2_EMPTY_ENTRY_POSE_FINDING,
         sharedCameraSource: "holographic",
         noClippingInvariant: { marginCssPx: FRAME_CONTAINMENT_MARGIN_CSS_PX, passed: true },
         perPhase: controlledComparisons,
