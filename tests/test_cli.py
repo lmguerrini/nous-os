@@ -45,6 +45,54 @@ def _workspace_argv(tmp_path: Path) -> list[str]:
     ]
 
 
+def _seeded_workspace_argv(tmp_path: Path) -> tuple[list[str], str]:
+    """Workspace startup arguments with one real ingested, indexed document.
+
+    A built derived store and a declared tier are what
+    ``knowledge.search``, ``canon.sources``, ``canon.versions``,
+    ``provenance.span``, and every PROPOSE-tier write actually need to
+    succeed rather than merely be parsed. Returns the real snapshot digest
+    alongside the argv so a citation can name it exactly.
+    """
+    from datetime import datetime, timezone
+
+    from nous_os.derived import build
+    from nous_os.ledger import Ledger, ingest
+    from nous_os.snapshots import SnapshotStore
+    from nous_os.untrusted import UntrustedText
+
+    data_root = tmp_path / "documents"
+    data_root.mkdir()
+    content = "alpha signal in a source document"
+    (data_root / "doc.md").write_text(content, encoding="utf-8")
+    snapshot_root = tmp_path / "snapshots"
+    ledger_path = tmp_path / "ledger.jsonl"
+    derived_path = tmp_path / "derived.sqlite"
+    snapshots = SnapshotStore(snapshot_root)
+    ledger = Ledger(ledger_path)
+    result = ingest(
+        snapshots,
+        ledger,
+        SOURCE_ID,
+        UntrustedText(content),
+        datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc),
+    )
+    assert result.entry is not None
+    build(snapshots, ledger, derived_path)
+    argv = [
+        "--data-root", str(data_root),
+        "--snapshot-root", str(snapshot_root),
+        "--ledger-path", str(ledger_path),
+        "--derived-path", str(derived_path),
+        "--candidate-store-path", str(tmp_path / "candidates.jsonl"),
+        "--bridge-registry-path", str(tmp_path / "bridges.jsonl"),
+        "--rejection-memory-path", str(tmp_path / "rejections.jsonl"),
+        "--tier", "read",
+        "--tier", "propose",
+    ]
+    return argv, result.entry.snapshot_digest
+
+
 def _minimal_argv(external_name: str) -> list[str]:
     """A structurally valid CLI argument tail for every catalogue entry.
 
@@ -100,6 +148,69 @@ def _minimal_argv(external_name: str) -> list[str]:
     }
     if external_name not in table:
         raise AssertionError(f"no minimal argv recorded for {external_name!r}")
+    return table[external_name]
+
+
+def _reachable_argv(external_name: str, digest: str) -> list[str]:
+    """A CLI argument tail that actually succeeds against a seeded workspace.
+
+    Unlike :func:`_minimal_argv`, ``digest`` names a snapshot that really
+    exists, so a read that touches the derived store or the snapshot store --
+    not merely one that stops at the authorization decision -- can succeed.
+    """
+    citation = json.dumps(
+        {
+            "source_id": SOURCE_ID,
+            "snapshot_digest": digest,
+            "start_byte": 0,
+            "end_byte": 5,
+            "span": "alpha",
+        }
+    )
+    empty_index = json.dumps({"assertions": []})
+    table = {
+        "system.capabilities": [],
+        "system.health": [],
+        "knowledge.search": ["--query", "alpha"],
+        "canon.documents": [],
+        "canon.describe": [],
+        "canon.sources": [],
+        "canon.versions": ["--source-id", SOURCE_ID],
+        "provenance.span": ["--citation", citation],
+        "graph.project": [
+            "--state",
+            json.dumps({"index": {"assertions": []}, "bridges": [], "rejections": []}),
+            "--policy",
+            "reliability",
+        ],
+        "time.as_of": ["--index", empty_index],
+        "time.conflicts": ["--index", empty_index],
+        "time.supersession": ["--index", empty_index, "--key", "fixture-key"],
+        "context.compile": [
+            "--chunks", "[]", "--ranking", "[]", "--strategy", "S0-flat", "--budget-tokens", "10",
+        ],
+        "candidate.proposals": [],
+        "candidate.rejections": [],
+        "candidate.bridges": [],
+        "candidate.propose": [
+            "--source-id", SOURCE_ID,
+            "--content", "proposed material",
+            "--proposed-at", "2026-01-02T12:00:00+00:00",
+            "--holder", "fixture holder",
+        ],
+        "candidate.discover": [
+            "--round-number", "1", "--candidates", "[]", "--at", "2026-01-02T12:00:00+00:00",
+        ],
+        "candidate.adjudicate": [
+            "--cluster-id", "fixture-cluster",
+            "--failed-gate", "cross_project",
+            "--reason", "fixture reason",
+            "--round-number", "1",
+            "--rejected-at", "2026-01-02T12:00:00+00:00",
+        ],
+    }
+    if external_name not in table:
+        raise AssertionError(f"no reachable argv recorded for {external_name!r}")
     return table[external_name]
 
 
@@ -260,6 +371,36 @@ def test_an_explicit_tier_flag_outranks_the_environment_variable() -> None:
     namespace = cli._build_parser().parse_args(["--tier", "read"])
     grant = cli._resolve_grant(namespace, environ={cli.TIER_ENV_VAR: "propose"})
     assert grant.tiers == frozenset({Tier.READ})
+
+
+def test_resolve_grant_is_insensitive_to_a_subcommand_holder(tmp_path: Path) -> None:
+    """The exact repro: a process-level and a subcommand ``--holder`` must not collide.
+
+    Before the two were given distinct namespace destinations, whichever
+    ``--holder`` argparse parsed last silently won, and a process-level
+    ``--holder`` given with no subcommand ``--holder`` was dropped entirely.
+    """
+    argv = _workspace_argv(tmp_path) + [
+        "--holder", "GRANT",
+        "candidate.propose",
+        "--source-id", SOURCE_ID,
+        "--content", "x",
+        "--proposed-at", "2026-01-02T12:00:00+00:00",
+        "--holder", "PAYLOAD",
+    ]
+    namespace = cli._build_parser().parse_args(argv)
+    grant = cli._resolve_grant(namespace, environ={})
+    assert grant.holder == "GRANT"
+    # candidate.propose's own declared parameter is untouched by the grant read.
+    assert namespace.holder == "PAYLOAD"
+
+
+def test_a_process_level_holder_survives_with_no_subcommand_holder(tmp_path: Path) -> None:
+    """The other half of the repro: a lone process-level ``--holder`` must not be dropped."""
+    argv = _workspace_argv(tmp_path) + ["--holder", "GRANT", "system.capabilities"]
+    namespace = cli._build_parser().parse_args(argv)
+    grant = cli._resolve_grant(namespace, environ={})
+    assert grant.holder == "GRANT"
 
 
 def test_no_argument_value_widens_the_declared_grant(tmp_path: Path) -> None:
@@ -432,6 +573,138 @@ def test_artifact_import_produces_the_same_recorded_proposal_as_a_direct_call(
     assert imported[0]["provenance"] == {"provider": "a local client", "session": None}
 
 
+# --- import atomicity: validated before any write, and partial writes reported -
+
+
+def test_a_malformed_second_payload_leaves_no_proposal_recorded(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Pre-validation catches a malformed payload before any payload is written.
+
+    The exact repro: a document whose second ``proposed_at`` cannot parse
+    used to exit 1 with the first proposal already durably written.
+    """
+    artifact_path = tmp_path / "artifact.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema": "nous-os.candidate-proposal-artifact",
+                "version": 1,
+                "proposals": [
+                    {
+                        "source_id": SOURCE_ID,
+                        "content": "first proposal",
+                        "proposed_at": "2026-01-02T12:00:00+00:00",
+                        "holder": "fixture holder",
+                    },
+                    {
+                        "source_id": SOURCE_ID,
+                        "content": "second proposal",
+                        "proposed_at": "not-a-real-instant",
+                        "holder": "fixture holder",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    argv = _workspace_argv(tmp_path) + [
+        "--tier", "propose",
+        "candidate.propose",
+        "--from-artifact", str(artifact_path),
+    ]
+    exit_code = cli.main(argv)
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.err.startswith("ArgumentTypeError:")
+    assert not (tmp_path / "candidates.jsonl").exists()
+
+
+def test_a_write_failure_after_validation_reports_what_already_landed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A domain-level check only the write itself performs still reports partial progress.
+
+    Pre-validation runs the identical binder ``core.invoke`` uses, so it
+    cannot reach ``CandidateStore``'s own identifier-format check, which runs
+    only while actually constructing a record. When that still fails after
+    every payload has passed pre-validation, the already-recorded proposal is
+    named on the error path rather than the failure being silent.
+    """
+    artifact_path = tmp_path / "artifact.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema": "nous-os.candidate-proposal-artifact",
+                "version": 1,
+                "proposals": [
+                    {
+                        "source_id": SOURCE_ID,
+                        "content": "first proposal",
+                        "proposed_at": "2026-01-02T12:00:00+00:00",
+                        "holder": "fixture holder",
+                    },
+                    {
+                        "source_id": "not-a-well-formed-identifier",
+                        "content": "second proposal",
+                        "proposed_at": "2026-01-02T12:00:00+00:00",
+                        "holder": "fixture holder",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    argv = _workspace_argv(tmp_path) + [
+        "--tier", "propose",
+        "candidate.propose",
+        "--from-artifact", str(artifact_path),
+    ]
+    exit_code = cli.main(argv)
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.err.startswith("ArtifactImportPartiallyRecorded:")
+    assert "first proposal" in captured.err
+    recorded = (tmp_path / "candidates.jsonl").read_text(encoding="utf-8")
+    assert "first proposal" in recorded
+
+
+# --- an explicit JSON null is refused, not silently dropped --------------------
+
+
+def test_an_explicit_json_null_argument_is_refused_not_silently_dropped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--question null`` used to be silently dropped; the server refuses the same input."""
+    argv = _workspace_argv(tmp_path) + [
+        "graph.project",
+        "--state",
+        json.dumps({"index": {"assertions": []}, "bridges": [], "rejections": []}),
+        "--policy", "reliability",
+        "--question", "null",
+    ]
+    exit_code = cli.main(argv)
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.err.startswith("ExplicitNullArgument:")
+
+
+def test_an_omitted_optional_argument_is_still_accepted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The refusal above is meaningful only if a genuinely omitted option still works."""
+    argv = _workspace_argv(tmp_path) + [
+        "graph.project",
+        "--state",
+        json.dumps({"index": {"assertions": []}, "bridges": [], "rejections": []}),
+        "--policy", "reliability",
+    ]
+    exit_code = cli.main(argv)
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.err == ""
+
+
 # --- every semantic decision is reachable with mcp.py never imported -----------
 
 
@@ -442,20 +715,27 @@ def test_every_catalogue_entry_is_reachable_through_the_cli_without_importing_mc
 
     Proves ``nous_os.mcp`` was never loaded to serve any of them -- every
     semantic decision the CLI makes is reachable with that module absent from
-    ``sys.modules`` for the whole run, not merely unimported at the top.
+    ``sys.modules`` for the whole run, not merely unimported at the top --
+    and that each of those 19 calls actually succeeded. A built derived store
+    and a declared PROPOSE tier are what several of them need to reach that
+    success rather than stop at a refusal along the way.
     """
-    workspace_argv = _workspace_argv(tmp_path)
+    workspace_argv, digest = _seeded_workspace_argv(tmp_path)
     calls = [
-        (workspace_argv + [descriptor.external_name] + _minimal_argv(descriptor.external_name))
+        (
+            descriptor.external_name,
+            workspace_argv + [descriptor.external_name] + _reachable_argv(descriptor.external_name, digest),
+        )
         for descriptor in core.CATALOGUE
     ]
     script = (
         "import sys, json\n"
         "import nous_os.cli as cli\n"
         "calls = json.load(sys.stdin)\n"
-        "for argv in calls:\n"
-        "    cli.main(argv)\n"
+        "for name, argv in calls:\n"
+        "    code = cli.main(argv)\n"
         "    assert 'nous_os.mcp' not in sys.modules, 'mcp module was imported'\n"
+        "    assert code == 0, (name, code)\n"
         "print('ok')\n"
     )
     result = subprocess.run(

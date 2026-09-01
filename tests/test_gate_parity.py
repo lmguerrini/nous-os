@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
@@ -169,6 +168,26 @@ def _cli_names() -> tuple[str, ...]:
     return tuple(action.choices)
 
 
+def _mcp_names(workspace: core.Workspace) -> tuple[str, ...]:
+    """Read published tool names off the real ``tools/list`` route, not the helper.
+
+    ``mcp.tools_list()`` is a convenience export for tests and callers; the
+    real JSON-RPC handler for ``tools/list`` enumerates ``core.CATALOGUE``
+    directly and never calls it, so a control that only mutates the helper
+    cannot break the surface a client actually receives. Driving the real
+    ``mcp.dispatch`` route here is what makes N1 below a control over the
+    published surface rather than over an unused convenience function.
+    """
+    message = {"jsonrpc": "2.0", "id": "tools-list", "method": "tools/list", "params": {}}
+    response = mcp.dispatch(message, Grant("parity", frozenset({Tier.READ, Tier.PROPOSE})), workspace)
+    if type(response) is not dict:
+        raise _ParityFailure("MCP gave no response for tools/list")
+    result = response.get("result")
+    if type(result) is not dict or type(result.get("tools")) is not list:
+        raise _ParityFailure("MCP gave a malformed tools/list result")
+    return tuple(tool.get("name") for tool in result["tools"])
+
+
 def _assert_parity(
     workspace: core.Workspace,
     world: object,
@@ -177,7 +196,7 @@ def _assert_parity(
     """Compare every descriptor or fail with a denominator and every NOT_RUN cause."""
     expected = tuple(descriptor.external_name for descriptor in core.CATALOGUE)
     cli_names = _cli_names()
-    mcp_names = mcp.tools_list()
+    mcp_names = _mcp_names(workspace)
     if cli_names != expected:
         raise _ParityFailure("CLI published set or order differs from the core catalogue")
     if mcp_names != expected:
@@ -229,12 +248,35 @@ def test_g_parity_n1_missing_published_operation_is_detected(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """N1 proves that a name-set break makes the parity gate fail."""
+    """N1 proves that a name-set break on the real ``tools/list`` route makes the gate fail.
+
+    Mutating ``mcp.tools_list()`` would not do this: the real ``tools/list``
+    handler never calls it. This mutates ``mcp.dispatch`` itself -- the exact
+    call ``_mcp_names`` makes, and the one every real client makes -- so the
+    control breaks the surface a client actually receives.
+    """
     monkeypatch.setattr(candidates, "new_assertion_id", lambda: _FIXED_PROPOSAL_ID)
     world, workspace = _workspace(tmp_path / "n1")
-    original: Callable[[], tuple[str, ...]] = mcp.tools_list
+    original = mcp.dispatch
+
+    def truncated(
+        message: object, grant: Grant, bound_workspace: core.Workspace
+    ) -> dict[str, object] | None:
+        response = original(message, grant, bound_workspace)
+        if (
+            type(message) is dict
+            and message.get("method") == "tools/list"
+            and type(response) is dict
+            and type(response.get("result")) is dict
+            and type(response["result"].get("tools")) is list
+        ):
+            response = dict(response)
+            response["result"] = dict(response["result"])
+            response["result"]["tools"] = response["result"]["tools"][1:]
+        return response
+
     with monkeypatch.context() as patch:
-        patch.setattr(mcp, "tools_list", lambda: original()[1:])
+        patch.setattr(mcp, "dispatch", truncated)
         with pytest.raises(_ParityFailure, match="published"):
             _assert_parity(workspace, world, capsys)
 

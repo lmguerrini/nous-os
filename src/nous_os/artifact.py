@@ -229,7 +229,12 @@ def parse_artifact(document: object) -> Artifact:
         raise UnknownArtifactSchema(f"no known schema is named {schema!r}")
 
     version = document.get("version")
-    if version != SCHEMA_VERSION:
+    # Exact type, not bare equality: Python's ``bool`` is a subclass of
+    # ``int``, so ``True == 1`` and, once JSON has parsed a number, ``1.0 ==
+    # 1`` -- either would let a document that never named the real version
+    # parse as though it had. This matches the exact-type strictness
+    # ``_matches_json_type`` already applies to every declared parameter.
+    if type(version) is not int or isinstance(version, bool) or version != SCHEMA_VERSION:
         raise UnsupportedArtifactVersion(
             f"schema {SCHEMA_ID!r} does not support version {version!r}; "
             f"this module supports version {SCHEMA_VERSION}"

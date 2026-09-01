@@ -320,6 +320,21 @@ def test_adding_an_ingest_descriptor_is_refused_by_construction() -> None:
         core._descriptor("canon.ingest", "ingest_source", "would ingest", ())
 
 
+def test_the_public_operation_descriptor_constructor_refuses_promote_directly() -> None:
+    """``_descriptor`` is not the only door: the exported class refuses on its own."""
+    with pytest.raises(core.PromotionNotOffered):
+        core.OperationDescriptor(
+            "candidate.promote", "promote_candidate", Tier.PROMOTE, "would promote", ()
+        )
+
+
+def test_the_public_operation_descriptor_constructor_refuses_eca_directly() -> None:
+    with pytest.raises(core.PromotionNotOffered):
+        core.OperationDescriptor(
+            "system.act", None, Tier.EXTERNAL_CONSEQUENTIAL_ACTION, "would act", ()
+        )
+
+
 # --- unknown operation, unknown argument, wrong argument type -----------------
 
 
@@ -583,6 +598,80 @@ def test_an_explicit_argument_outranks_the_environment_variable(tmp_path: Path) 
     assert workspace.snapshot_root == chosen.resolve()
 
 
+# --- no two workspace locations may name one path --------------------------
+
+
+def _workspace_kwargs(tmp_path: Path, **overrides: object) -> dict[str, object]:
+    data_root = tmp_path / "documents"
+    data_root.mkdir(exist_ok=True)
+    kwargs: dict[str, object] = {
+        "data_root": data_root,
+        "snapshot_root": tmp_path / "snapshots",
+        "ledger_path": tmp_path / "ledger.jsonl",
+        "derived_path": tmp_path / "derived.sqlite",
+        "candidate_store_path": tmp_path / "candidates.jsonl",
+        "bridge_registry_path": tmp_path / "bridges.jsonl",
+        "rejection_memory_path": tmp_path / "rejections.jsonl",
+        "environ": {},
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_a_ledger_path_aliased_to_the_candidate_store_path_is_refused(tmp_path: Path) -> None:
+    """The exact repro: a PROPOSE call would otherwise append straight into the ledger."""
+    aliased = tmp_path / "aliased.jsonl"
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(tmp_path, ledger_path=aliased, candidate_store_path=aliased)
+        )
+
+
+def test_a_store_resolving_inside_the_data_root_is_refused(tmp_path: Path) -> None:
+    kwargs = _workspace_kwargs(tmp_path)
+    inside = kwargs["data_root"] / "candidates.jsonl"
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(**_workspace_kwargs(tmp_path, candidate_store_path=inside))
+
+
+def test_a_symlink_cannot_defeat_the_alias_refusal(tmp_path: Path) -> None:
+    """Paths are resolved fully before comparison, so a symlink cannot spell one file two ways."""
+    real = tmp_path / "real-ledger.jsonl"
+    real.write_text("", encoding="utf-8")
+    link = tmp_path / "linked-candidates.jsonl"
+    link.symlink_to(real)
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(tmp_path, ledger_path=real, candidate_store_path=link)
+        )
+
+
+def test_every_pair_of_the_six_store_locations_is_checked_for_aliasing(tmp_path: Path) -> None:
+    """Not merely one hard-coded pair: every combination of the six fields is compared."""
+    import itertools
+
+    fields = (
+        "snapshot_root",
+        "ledger_path",
+        "derived_path",
+        "candidate_store_path",
+        "bridge_registry_path",
+        "rejection_memory_path",
+    )
+    for first, second in itertools.combinations(fields, 2):
+        aliased = tmp_path / f"{first}-{second}-shared.jsonl"
+        with pytest.raises(core.AliasedWorkspaceLocation):
+            core.resolve_workspace(
+                **_workspace_kwargs(tmp_path, **{first: aliased, second: aliased})
+            )
+
+
+def test_a_workspace_with_no_aliasing_resolves_cleanly(tmp_path: Path) -> None:
+    """The refusal above is meaningful only if seven genuinely distinct locations pass."""
+    workspace = core.resolve_workspace(**_workspace_kwargs(tmp_path))
+    assert isinstance(workspace, core.Workspace)
+
+
 # --- provider neutrality -------------------------------------------------------
 
 
@@ -607,7 +696,65 @@ _FORBIDDEN_PROVIDER_FRAGMENTS = tuple(
 )
 
 
-def test_no_provider_name_appears_in_any_public_identifier_or_rendered_key() -> None:
+def _iter_dict_keys(value: object):
+    """Yield every dict key found at any depth of a JSON-shaped value.
+
+    Keys only, never string leaf values: a citation's ``span`` or an
+    assertion's ``text`` is ordinary content, not an identifier, and scanning
+    it would risk a false refusal over incidental prose. A rendered *key* --
+    a field name a client actually reads a value by -- is exactly the same
+    kind of identifier a catalogue parameter name is.
+    """
+    if type(value) is dict:
+        for key, nested in value.items():
+            yield key
+            yield from _iter_dict_keys(nested)
+    elif type(value) is list:
+        for item in value:
+            yield from _iter_dict_keys(item)
+
+
+def _every_rendered_result(tmp_path: Path) -> list[object]:
+    """Invoke every catalogue operation against a seeded workspace and collect its result."""
+    workspace, digest = _seeded_workspace(tmp_path)
+    grant = Grant("holder", frozenset({Tier.READ, Tier.PROPOSE}))
+    return [
+        core.invoke(
+            grant,
+            descriptor.external_name,
+            workspace,
+            _minimal_arguments(descriptor.external_name, digest),
+        )
+        for descriptor in core.CATALOGUE
+    ]
+
+
+def _every_dataclass_field_name() -> set[str]:
+    """Every field name declared on every dataclass this package defines.
+
+    Walks every module under ``nous_os``, not just the ones Core imports: a
+    field a rendered payload never surfaces today is still part of the
+    project's own type vocabulary, and a provider fragment landing there is
+    exactly as much a leak waiting to happen as one in a published name.
+    """
+    import dataclasses
+    import importlib
+    import pkgutil
+
+    import nous_os
+
+    names: set[str] = set()
+    for module_info in pkgutil.walk_packages(nous_os.__path__, prefix=f"{nous_os.__name__}."):
+        module = importlib.import_module(module_info.name)
+        for attribute in vars(module).values():
+            if isinstance(attribute, type) and dataclasses.is_dataclass(attribute):
+                names.update(field.name for field in dataclasses.fields(attribute))
+    return names
+
+
+def test_no_provider_name_appears_in_any_public_identifier_or_rendered_key(
+    tmp_path: Path,
+) -> None:
     identifiers = set(core.__all__)
     for descriptor in core.CATALOGUE:
         identifiers.add(descriptor.external_name)
@@ -615,7 +762,10 @@ def test_no_provider_name_appears_in_any_public_identifier_or_rendered_key() -> 
             identifiers.add(descriptor.operation)
         for parameter in descriptor.parameters:
             identifiers.add(parameter.name)
-    lowered = {identifier.lower() for identifier in identifiers}
+    identifiers.update(_every_dataclass_field_name())
+    for result in _every_rendered_result(tmp_path):
+        identifiers.update(_iter_dict_keys(result))
+    lowered = {identifier.lower() for identifier in identifiers if type(identifier) is str}
     for fragment in _FORBIDDEN_PROVIDER_FRAGMENTS:
         offending = [identifier for identifier in lowered if fragment in identifier]
         assert offending == [], f"{fragment!r} appears in: {offending}"
@@ -694,6 +844,67 @@ def test_system_health_reports_unknown_when_a_location_is_unreadable(tmp_path: P
         assert health["snapshot_root"] == "unknown"
     finally:
         os.chmod(locked, original_mode)
+
+
+def test_system_health_reports_unknown_for_a_statable_but_unreadable_file(
+    tmp_path: Path,
+) -> None:
+    """``os.stat`` can succeed on a file its own permission bits refuse to open.
+
+    Unlike the unreadable-parent-directory case above, ``os.stat`` on the
+    file itself succeeds here -- only the traversed parent directories need
+    execute permission for that. Reporting this as healthy is exactly the gap
+    this probes: the location exists and is the right kind of node, and
+    nothing could actually read it.
+    """
+    workspace, _digest = _seeded_workspace(tmp_path)
+    locked_file = tmp_path / "locked-ledger.jsonl"
+    locked_file.write_text("some ledger content", encoding="utf-8")
+    original_mode = locked_file.stat().st_mode
+    try:
+        os.chmod(locked_file, 0)
+        assert core._location_health(locked_file, is_directory=False) == "unknown"
+        blocked_workspace = core.Workspace(
+            data_root=workspace.data_root,
+            snapshot_root=workspace.snapshot_root,
+            ledger_path=locked_file,
+            derived_path=workspace.derived_path,
+            candidate_store_path=workspace.candidate_store_path,
+            bridge_registry_path=workspace.bridge_registry_path,
+            rejection_memory_path=workspace.rejection_memory_path,
+        )
+        grant = Grant("holder", frozenset({Tier.READ}))
+        health = core.invoke(grant, "system.health", blocked_workspace, {})
+        assert health["ledger_path"] == "unknown"
+    finally:
+        os.chmod(locked_file, original_mode)
+
+
+def test_system_health_reports_unknown_for_a_statable_but_unreadable_directory(
+    tmp_path: Path,
+) -> None:
+    """The directory analogue: ``stat`` succeeds, ``readdir`` is refused."""
+    workspace, _digest = _seeded_workspace(tmp_path)
+    locked_dir = tmp_path / "locked-snapshots"
+    locked_dir.mkdir()
+    original_mode = locked_dir.stat().st_mode
+    try:
+        os.chmod(locked_dir, 0)
+        assert core._location_health(locked_dir, is_directory=True) == "unknown"
+        blocked_workspace = core.Workspace(
+            data_root=workspace.data_root,
+            snapshot_root=locked_dir,
+            ledger_path=workspace.ledger_path,
+            derived_path=workspace.derived_path,
+            candidate_store_path=workspace.candidate_store_path,
+            bridge_registry_path=workspace.bridge_registry_path,
+            rejection_memory_path=workspace.rejection_memory_path,
+        )
+        grant = Grant("holder", frozenset({Tier.READ}))
+        health = core.invoke(grant, "system.health", blocked_workspace, {})
+        assert health["snapshot_root"] == "unknown"
+    finally:
+        os.chmod(locked_dir, original_mode)
 
 
 # --- core-level reads are tier-checked identically to registered operations ---

@@ -4,10 +4,25 @@ The selected attempt axis contains one fixture row for each live corpus family
 plus the benign reference.  Every catalogue entry and every subset of the
 live ``Tier`` members is covered for both routes.  The remaining corpus rows
 are explicit NOT_RUN scope entries: this file makes no claim about them, so
-the gate is smaller than the pre-existing direct-call matrix.  Hostile text
-is in each startup holder; entries with a plain text field receive it there
-as well.  This checks content-independent authority decisions through the
-actual transports, not arbitrary typed carrier values.
+the gate is smaller than the pre-existing direct-call matrix.  Hostile text is
+in each startup holder, so it travels the way ``Grant.holder`` actually would;
+that value is handed straight to ``dispatch`` on the server arm and never
+crosses the JSON-RPC wire, so it is not itself a request-payload claim.
+Independently, every catalogue entry that declares a parameter capable of
+carrying free text -- a JSON string not otherwise constrained to a closed
+vocabulary, an identifier format, or an exact quoted span -- receives the
+identical hostile text in its request payload too, so it genuinely travels
+the transport: see ``_arguments`` for exactly which parameter each entry
+uses and why. ``system.capabilities``, ``system.health``, and every
+no-parameter read carry no field at all and cannot carry request-payload
+text by construction. ``canon.versions`` and ``provenance.span`` decline on
+purpose: ``canon.versions``'s only parameter is a source identifier that must
+match a closed format, and ``provenance.span``'s only string-bearing field is
+a citation whose quoted span is checked byte-for-byte against a real
+snapshot, so substituting hostile text into either would not exercise a text
+field -- it would build a different, differently invalid request. This
+checks content-independent authority decisions through the actual
+transports, not arbitrary typed carrier values.
 """
 
 from __future__ import annotations
@@ -25,6 +40,7 @@ import nous_os.cli as cli
 import nous_os.core as core
 import nous_os.mcp as mcp
 from nous_os.capability import Grant, Tier
+from nous_os.discovery import Gate
 
 import test_injection as injection
 import test_mcp
@@ -121,18 +137,118 @@ def _workspace_argv(workspace: core.Workspace, holder: str) -> list[str]:
     ]
 
 
+#: A structurally valid citation with no free text of its own -- source
+#: identifier and digest are both format-constrained -- used only to satisfy
+#: an assertion or endpoint's required ``citation`` field so the hostile text
+#: below can sit in the field this file actually claims to drive.
+_HOSTILE_CITATION_PAYLOAD: dict[str, object] = {
+    "source_id": test_mcp.SOURCE_ID,
+    "snapshot_digest": "0" * 64,
+    "start_byte": 0,
+    "end_byte": 5,
+    "span": "a",
+}
+
+#: The one claim key every hostile assertion and ``time.supersession``'s own
+#: ``key`` argument share, so a hostile assertion is always the one that key
+#: would actually return.
+_HOSTILE_CLAIM_KEY = "fixture-key"
+
+
+def _hostile_assertion_payload(text: str) -> dict[str, object]:
+    """One assertion whose free ``text`` field carries the hostile sample."""
+    return {
+        "key": _HOSTILE_CLAIM_KEY,
+        "id": "asr_0000000000000000000000000A",
+        "text": text,
+        "citation": _HOSTILE_CITATION_PAYLOAD,
+        "support": "direct_quote",
+        "recorded_at": "2026-01-02T12:00:00+00:00",
+        "valid_from": None,
+        "valid_to": None,
+    }
+
+
+def _hostile_index_payload(text: str) -> dict[str, object]:
+    return {"assertions": [_hostile_assertion_payload(text)]}
+
+
+def _hostile_chunk_payload(text: str) -> dict[str, object]:
+    """One chunk whose free ``text`` field carries the hostile sample."""
+    return {
+        "id": f"{test_mcp.SOURCE_ID}#0000",
+        "source_id": test_mcp.SOURCE_ID,
+        "ordinal": 0,
+        "heading_path": [],
+        "text": text,
+        "tokens": 1,
+        "references": [],
+    }
+
+
+def _hostile_bridge_card_payload(text: str) -> dict[str, object]:
+    """One bridge card whose free ``consequence`` field carries the hostile sample."""
+    endpoint = {
+        "project": "gate-inject project",
+        "citation": _HOSTILE_CITATION_PAYLOAD,
+        "quote": "alpha",
+    }
+    return {
+        "card_id": "asr_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+        "cluster_id": "gate-inject-cluster",
+        "left": endpoint,
+        "right": endpoint,
+        "epistemic_class": "derived",
+        "depth": "deep",
+        "non_triviality": "crosses two seeded projects",
+        "consequence": text,
+        "noise_objection": "the shared word may be coincidental",
+        "gates": {
+            "outcomes": {gate.value: "pass" for gate in Gate},
+            "reasons": {},
+            "triviality": None,
+        },
+        "origin_round": 1,
+    }
+
+
 def _arguments(descriptor: core.OperationDescriptor, world: object, text: str) -> dict[str, object]:
-    """Build valid JSON input, adding hostile text to each available text entry."""
+    """Build valid JSON input, adding hostile text to each available text entry.
+
+    ``knowledge.search``, ``candidate.propose``, and ``candidate.adjudicate``
+    put the hostile sample directly into an already free-text parameter.
+    ``graph.project``, the two temporal reads with an assertion body,
+    ``time.supersession``, ``context.compile``, and ``candidate.discover``
+    have no bare text parameter of their own; each is instead handed one
+    caller-supplied record -- an assertion, a chunk, or a bridge card -- whose
+    own free-text field carries the hostile sample, so the transport still
+    genuinely carries it in the request payload rather than merely alongside
+    the request in ``Grant.holder``.
+    """
     arguments = test_mcp._minimal_arguments(descriptor.external_name)
-    if descriptor.external_name == "provenance.span":
+    name = descriptor.external_name
+    if name == "provenance.span":
         arguments["citation"] = world.citation.as_payload()
-    elif descriptor.external_name == "knowledge.search":
+    elif name == "knowledge.search":
         escaped = text.replace('"', '""')
         arguments["query"] = f'alpha OR "{escaped}"'
-    elif descriptor.external_name == "candidate.propose":
+    elif name == "candidate.propose":
         arguments["content"] = text
-    elif descriptor.external_name == "candidate.adjudicate":
+    elif name == "candidate.adjudicate":
         arguments["reason"] = text
+    elif name == "graph.project":
+        arguments["state"] = {
+            "index": _hostile_index_payload(text),
+            "bridges": [],
+            "rejections": [],
+        }
+    elif name in ("time.as_of", "time.conflicts", "time.supersession"):
+        arguments["index"] = _hostile_index_payload(text)
+    elif name == "context.compile":
+        arguments["chunks"] = [_hostile_chunk_payload(text)]
+        arguments["ranking"] = [f"{test_mcp.SOURCE_ID}#0000"]
+    elif name == "candidate.discover":
+        arguments["candidates"] = [_hostile_bridge_card_payload(text)]
     return arguments
 
 

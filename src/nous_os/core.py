@@ -92,11 +92,13 @@ __all__ = (
     "ArgumentTypeError",
     "PromotionNotOffered",
     "WorkspaceNotConfigured",
+    "AliasedWorkspaceLocation",
     "Workspace",
     "ParameterSpec",
     "OperationDescriptor",
     "CATALOGUE",
     "resolve_workspace",
+    "validate_arguments",
     "invoke",
 )
 
@@ -149,6 +151,23 @@ class WorkspaceNotConfigured(Exception):
     """
 
 
+class AliasedWorkspaceLocation(Exception):
+    """Raised when two of the seven workspace locations name one path.
+
+    Deliberately not a subclass of anything a caller is likely to catch by
+    accident, matching :class:`WorkspaceNotConfigured`'s stance: two names for
+    one place is a third answer, distinct from either location being merely
+    unconfigured. Without this, ``--ledger-path X --candidate-store-path X``
+    resolves cleanly and a PROPOSE call appends a proposal record straight
+    into the file configured as the ledger; a store resolving inside the
+    canonical data root is refused for the identical reason, because a write
+    there is a write to canon by another name. Every location is resolved
+    fully -- symlinks followed, ``..`` collapsed -- before any of these are
+    compared, so a caller cannot spell the same file two different ways to
+    defeat this.
+    """
+
+
 #: Resolution order for every non-data-root location, highest first: an
 #: explicit argument, then the named environment variable, then refusal.
 #: The data root itself keeps using ``config.resolve_data_root`` unchanged.
@@ -198,6 +217,45 @@ def _resolve_path(
     return Path(candidate).expanduser().resolve()
 
 
+def _named_workspace_locations(workspace: Workspace) -> tuple[tuple[str, Path], ...]:
+    """Every resolved location, named, in the fixed order the dataclass declares them."""
+    return (
+        ("data_root", workspace.data_root.path),
+        ("snapshot_root", workspace.snapshot_root),
+        ("ledger_path", workspace.ledger_path),
+        ("derived_path", workspace.derived_path),
+        ("candidate_store_path", workspace.candidate_store_path),
+        ("bridge_registry_path", workspace.bridge_registry_path),
+        ("rejection_memory_path", workspace.rejection_memory_path),
+    )
+
+
+def _refuse_aliased_locations(workspace: Workspace) -> None:
+    """Refuse a workspace in which two locations name one path, or a store sits in canon.
+
+    Every location handed to this function already passed through
+    ``Path.expanduser().resolve()``, so a symlink or a ``..`` segment cannot
+    make two differently-spelled arguments compare equal here.
+    """
+    named = _named_workspace_locations(workspace)
+    seen: dict[Path, str] = {}
+    for field, path in named:
+        holder = seen.get(path)
+        if holder is not None:
+            raise AliasedWorkspaceLocation(
+                f"{field} and {holder} both resolve to {path}; NousOS refuses two "
+                "names for one workspace location"
+            )
+        seen[path] = field
+    data_root_path = workspace.data_root.path
+    for field, path in named[1:]:
+        if path == data_root_path or data_root_path in path.parents:
+            raise AliasedWorkspaceLocation(
+                f"{field} resolves to {path}, inside the canonical data root "
+                f"{data_root_path}; a store location may not sit inside canon"
+            )
+
+
 def resolve_workspace(
     *,
     data_root: str | os.PathLike[str] | None = None,
@@ -214,9 +272,15 @@ def resolve_workspace(
     ``environ`` is injectable so resolution order is testable without mutating
     the real process environment, exactly as :func:`~nous_os.config.resolve_data_root`
     already allows.
+
+    No two of the seven resolved locations may name the same path, and no
+    store may resolve inside the canonical data root: see
+    :class:`AliasedWorkspaceLocation`. Without that check, two options naming
+    the same file resolve cleanly and a write meant for one store lands in
+    another.
     """
     env = os.environ if environ is None else environ
-    return Workspace(
+    workspace = Workspace(
         data_root=resolve_data_root(data_root, environ=env),
         snapshot_root=_resolve_path(
             snapshot_root, SNAPSHOT_ROOT_ENV_VAR, "snapshot store root", env
@@ -238,6 +302,8 @@ def resolve_workspace(
             env,
         ),
     )
+    _refuse_aliased_locations(workspace)
+    return workspace
 
 
 # --- the catalogue -----------------------------------------------------------
@@ -270,6 +336,17 @@ class ParameterSpec:
             raise CoreError("a parameter description must be a non-blank string")
 
 
+#: Tiers no external operation may ever be published at. ``ingest_source`` and
+#: ``promote_candidate`` are registered at ``Tier.PROMOTE``; nothing is yet
+#: registered at ``Tier.EXTERNAL_CONSEQUENTIAL_ACTION``, and the refusal below
+#: covers it anyway so a future registration at that tier is unreachable here
+#: too, by construction, on day one. Declared before :class:`OperationDescriptor`
+#: because its own constructor reads this name directly: the refusal is not
+#: solely :func:`_descriptor`'s to make, so a caller building a descriptor by
+#: hand, bypassing that helper entirely, is refused identically.
+_UNOFFERED_TIERS: Final = (Tier.PROMOTE, Tier.EXTERNAL_CONSEQUENTIAL_ACTION)
+
+
 @dataclass(frozen=True, slots=True)
 class OperationDescriptor:
     """One external operation: its name, tier, registered operation, and parameters.
@@ -279,6 +356,11 @@ class OperationDescriptor:
     ``tier`` is read from :func:`~nous_os.capability.required_tier` at
     construction time for every entry that names a registered operation, so it
     cannot silently drift from what the registry actually enforces.
+
+    A tier in :data:`_UNOFFERED_TIERS` is refused here directly, not merely by
+    :func:`_descriptor`: this class is exported in :data:`__all__` and nothing
+    about its own constructor otherwise stops a caller from building a
+    PROMOTE or EXTERNAL_CONSEQUENTIAL_ACTION descriptor by hand.
     """
 
     external_name: str
@@ -294,6 +376,12 @@ class OperationDescriptor:
             raise CoreError("operation must be a registered name or None")
         if not any(self.tier is member for member in Tier):
             raise CoreError("tier must be a declared Tier member")
+        if any(self.tier is forbidden for forbidden in _UNOFFERED_TIERS):
+            raise PromotionNotOffered(
+                f"{self.external_name!r} declares tier {self.tier}; this contract "
+                "offers no PROMOTE or EXTERNAL_CONSEQUENTIAL_ACTION operation, "
+                "through this constructor or any other"
+            )
         if type(self.summary) is not str or not self.summary:
             raise CoreError("a descriptor summary must be a non-blank string")
         if type(self.parameters) is not tuple or any(
@@ -306,14 +394,6 @@ class OperationDescriptor:
 #: operation. Named once so both descriptors read the same value rather than
 #: two literals that could drift apart.
 _CORE_LEVEL_TIER: Final = Tier.READ
-
-
-#: Tiers no external operation may ever be published at. ``ingest_source`` and
-#: ``promote_candidate`` are registered at ``Tier.PROMOTE``; nothing is yet
-#: registered at ``Tier.EXTERNAL_CONSEQUENTIAL_ACTION``, and the refusal below
-#: covers it anyway so a future registration at that tier is unreachable here
-#: too, by construction, on day one.
-_UNOFFERED_TIERS: Final = (Tier.PROMOTE, Tier.EXTERNAL_CONSEQUENTIAL_ACTION)
 
 
 def _descriptor(
@@ -1176,6 +1256,14 @@ def _location_health(path: Path, *, is_directory: bool) -> str:
     node — a file sitting where a directory belongs, or the reverse — is
     unknown as well: it is not healthy, and reporting it as merely absent
     would hide that something real, just not the expected thing, is there.
+
+    ``os.stat`` succeeding is not the same fact as the location being
+    readable: a directory's permission bits can admit ``stat`` while refusing
+    ``readdir``, and a file's can admit ``stat`` while refusing ``read`` --
+    the exact access a real caller would make. So once the node exists and is
+    the right kind, this attempts that access directly: listing the directory
+    or opening the file for reading. A ``PermissionError`` there, exactly
+    like one from ``os.stat`` itself, is unknown rather than healthy.
     """
     try:
         info = os.stat(path)
@@ -1184,7 +1272,18 @@ def _location_health(path: Path, *, is_directory: bool) -> str:
     except OSError:
         return "unknown"
     kind_matches = stat.S_ISDIR(info.st_mode) if is_directory else stat.S_ISREG(info.st_mode)
-    return "healthy" if kind_matches else "unknown"
+    if not kind_matches:
+        return "unknown"
+    try:
+        if is_directory:
+            with os.scandir(path):
+                pass
+        else:
+            with open(path, "rb"):
+                pass
+    except OSError:
+        return "unknown"
+    return "healthy"
 
 
 def _system_health(workspace: Workspace) -> dict[str, object]:
@@ -1221,6 +1320,35 @@ def _resolve_descriptor(external_name: str) -> OperationDescriptor:
     if descriptor is None:
         raise UnknownExternalOperation(f"no operation is published under {external_name!r}")
     return descriptor
+
+
+def validate_arguments(
+    external_name: str, workspace: Workspace, arguments: Mapping[str, object]
+) -> None:
+    """Run every check ``invoke`` runs before it ever reaches ``execute``, without executing.
+
+    Resolves the descriptor, validates ``arguments`` against its declared
+    parameter specification, and runs the identical domain-type conversion
+    the matching binder performs -- the exact two steps :func:`invoke`
+    performs before it calls :func:`nous_os.capability.execute`, reusing that
+    same code so the two cannot drift apart from having been typed twice.
+    Raises the identical typed error :func:`invoke` would raise for a
+    malformed request; returns ``None`` for one that would have proceeded.
+
+    This cannot reach a check a registered operation's own implementation
+    performs only while actually running -- an identifier's exact format
+    inside a domain constructor, for instance -- because that code is never
+    called here. A caller needing to validate several requests before
+    deciding whether to run any of them, such as an all-or-nothing import,
+    can use this instead of writing and then discovering a later one was
+    malformed.
+    """
+    descriptor = _resolve_descriptor(external_name)
+    bound = _bind_json_arguments(descriptor, arguments)
+    if descriptor.operation is None:
+        return
+    binder = _BINDERS[external_name]
+    binder(workspace, bound)
 
 
 def invoke(

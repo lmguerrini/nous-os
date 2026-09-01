@@ -150,6 +150,18 @@ def test_an_unsupported_version_is_refused() -> None:
         artifact.parse_artifact(_valid_document(version=999))
 
 
+def test_a_boolean_version_is_refused_even_though_it_equals_one() -> None:
+    """``True == 1`` in Python; a document naming no real version must still be refused."""
+    with pytest.raises(artifact.UnsupportedArtifactVersion):
+        artifact.parse_artifact(_valid_document(version=True))
+
+
+def test_a_float_version_is_refused_even_though_it_equals_one() -> None:
+    """``1.0 == 1`` in Python; a document naming no real version must still be refused."""
+    with pytest.raises(artifact.UnsupportedArtifactVersion):
+        artifact.parse_artifact(_valid_document(version=1.0))
+
+
 def test_a_non_object_document_is_refused() -> None:
     with pytest.raises(artifact.MalformedArtifact):
         artifact.parse_artifact(["not", "an", "object"])

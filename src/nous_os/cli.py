@@ -18,7 +18,11 @@ it.** The tier set a process runs with comes from ``--tier`` or the
 parsed, and defaults to :attr:`~nous_os.capability.Tier.READ` alone. No
 argument value, no subcommand name, and no holder string changes it: the
 :class:`~nous_os.capability.Grant` built from it is constructed once, from
-process-level input, and handed unchanged to every call ``main`` makes.
+process-level input, and handed unchanged to every call ``main`` makes. The
+process-level ``--holder`` option and ``candidate.propose``'s own declared
+``holder`` parameter are parsed to distinct namespace destinations, so an
+identically-named subcommand option can never be read while building this
+grant.
 
 This module never imports :mod:`nous_os.mcp`, in either direction.
 """
@@ -35,10 +39,16 @@ from typing import Final
 
 from nous_os import __version__
 from nous_os import core
-from nous_os.artifact import load_artifact
+from nous_os.artifact import ProposalPayload, load_artifact
 from nous_os.capability import Grant, Tier
 
-__all__ = ("main", "CliError", "ConflictingProposalSource")
+__all__ = (
+    "main",
+    "CliError",
+    "ConflictingProposalSource",
+    "ExplicitNullArgument",
+    "ArtifactImportPartiallyRecorded",
+)
 
 
 class CliError(Exception):
@@ -47,6 +57,32 @@ class CliError(Exception):
 
 class ConflictingProposalSource(CliError):
     """Raised when ``--from-artifact`` is combined with an explicit proposal field."""
+
+
+class ExplicitNullArgument(CliError):
+    """Raised when a declared parameter is given the literal JSON value ``null``.
+
+    No JSON type this project declares matches ``None``, so a request naming
+    ``null`` explicitly is refused by :func:`nous_os.core.invoke` exactly as a
+    wrong-typed value would be -- the stdio transport refuses it identically,
+    since it never strips a field its caller actually sent. This transport
+    used ``None`` as its own sentinel for "the caller supplied nothing", so a
+    parsed ``null`` and an omitted option were indistinguishable and the
+    first was silently dropped instead of refused; this refuses it instead,
+    so both transports refuse the identical request rather than one quietly
+    stripping what the other rejects.
+    """
+
+
+class ArtifactImportPartiallyRecorded(CliError):
+    """Raised when a write failure during import leaves some payloads recorded.
+
+    Every payload is validated before any of them is written -- see
+    :func:`_run_import` -- so this can fire only for a failure that
+    pre-validation could not have caught without writing. When it does, every
+    proposal already recorded before the failure is named in this message, so
+    a partial import is recoverable rather than silent.
+    """
 
 
 #: Resolution order for the tier set a process declares, highest first: an
@@ -64,11 +100,28 @@ HOLDER_ENV_VAR: Final = "NOUS_OS_CLI_HOLDER"
 
 _DEFAULT_HOLDER: Final = "cli"
 
+#: The namespace destination the process-level ``--holder`` option is parsed
+#: to. Deliberately not ``"holder"``: ``candidate.propose`` declares its own
+#: parameter named ``holder``, and argparse writes every subparser's options
+#: into the identical top-level namespace, so two options sharing one dest
+#: would let whichever parses last silently decide the grant's holder.
+_PROCESS_HOLDER_DEST: Final = "process_holder"
+
 #: The one option ``candidate.propose`` carries that no catalogue descriptor
 #: declares: a local file path to import proposals from. It sources
 #: arguments for the existing operation; it is not a second operation, and
 #: the subcommand name it attaches to is unchanged.
 _IMPORT_OPTION_DEST: Final = "from_artifact"
+
+
+#: The sentinel a declared parameter's namespace attribute holds when the
+#: caller never supplied that option at all. Deliberately not ``None``:
+#: ``--question null`` parses, through :func:`_json_argument`, to the Python
+#: value ``None`` -- the identical value argparse's own unset default would
+#: hold -- so ``None`` cannot serve as both "omitted" and "explicitly null"
+#: without conflating them. A private object identity can serve as neither of
+#: those two answers by accident.
+_UNSET: Final = object()
 
 
 def _option_name(parameter_name: str) -> str:
@@ -92,7 +145,7 @@ def _add_parameter_argument(
             option,
             dest=parameter.name,
             action=argparse.BooleanOptionalAction,
-            default=None,
+            default=_UNSET,
             help=parameter.description,
         )
         return
@@ -108,7 +161,7 @@ def _add_parameter_argument(
         option,
         dest=parameter.name,
         type=value_type,
-        default=None,
+        default=_UNSET,
         required=required,
         help=parameter.description,
     )
@@ -139,7 +192,10 @@ def _add_grant_arguments(parser: argparse.ArgumentParser) -> None:
         help="declare one authority tier for this process; repeatable; defaults to read only",
     )
     parser.add_argument(
-        "--holder", default=None, help="the grant holder identity this process records"
+        "--holder",
+        dest=_PROCESS_HOLDER_DEST,
+        default=None,
+        help="the grant holder identity this process records",
     )
 
 
@@ -209,10 +265,14 @@ def _resolve_grant(namespace: argparse.Namespace, environ: Mapping[str, str]) ->
     Every field this reads comes from process-startup input -- parsed
     arguments and the environment -- never from a subcommand's declared
     parameters. A request cannot widen this grant because nothing about a
-    request is consulted to build it.
+    request is consulted to build it: ``namespace.process_holder`` is the
+    process-level ``--holder`` option's own destination, distinct from
+    ``candidate.propose``'s declared ``holder`` parameter, so a subcommand's
+    value is never read here even when both were spelled identically on the
+    command line.
     """
     tiers = _resolve_tiers(namespace.tier, environ)
-    holder = _resolve_holder(namespace.holder, environ)
+    holder = _resolve_holder(getattr(namespace, _PROCESS_HOLDER_DEST), environ)
     return Grant(holder, tiers)
 
 
@@ -243,41 +303,82 @@ def _collect_arguments(
     A parameter left unset by the caller is omitted from the result rather
     than defaulted here, so an optional parameter's own default -- if it has
     one -- is applied by Core or the domain type it binds to, in exactly one
-    place, not duplicated in this transport.
+    place, not duplicated in this transport. Unset is :data:`_UNSET`, not
+    ``None``: a caller who explicitly named the JSON literal ``null`` for an
+    array- or object-shaped parameter gets a value that parses to ``None``,
+    and that is a real, refused request, not an omission to silently drop.
     """
     arguments: dict[str, object] = {}
     for parameter in descriptor.parameters:
-        value = getattr(namespace, parameter.name, None)
-        if value is not None:
-            arguments[parameter.name] = value
+        value = getattr(namespace, parameter.name, _UNSET)
+        if value is _UNSET:
+            continue
+        if value is None:
+            raise ExplicitNullArgument(
+                f"{descriptor.external_name} was given an explicit null for "
+                f"{parameter.name!r}; NousOS refuses this rather than treating "
+                "it as omitted"
+            )
+        arguments[parameter.name] = value
     return arguments
+
+
+def _proposal_arguments(payload: ProposalPayload) -> dict[str, object]:
+    return {
+        "source_id": payload.source_id,
+        "content": payload.content.as_data(),
+        "proposed_at": payload.proposed_at,
+        "holder": payload.holder,
+    }
 
 
 def _run_import(grant: Grant, workspace: core.Workspace, artifact_path: str) -> list[dict[str, object]]:
     """Read a portable proposal artifact and call ``candidate.propose`` once per payload.
 
-    An argument-sourcing mode, not a second operation: every call this makes
+    An argument-sourcing mode, not a second operation: every write this makes
     is the identical ``core.invoke(grant, "candidate.propose", ...)`` a caller
     supplying the four fields directly would make. Content is unwrapped with
     ``as_data()`` only here, at the one point that must produce the plain
     string :func:`nous_os.core.invoke` requires.
+
+    Every payload is validated with :func:`nous_os.core.validate_arguments`
+    -- the identical shape and domain-type checks a real call performs --
+    before any of them is written, so a payload malformed in the way
+    ``core.invoke`` itself would refuse (an unparsable ``proposed_at``, for
+    instance) cannot leave an earlier payload durably recorded while a later
+    one fails: that is the atomicity this achieves. It cannot reach a check
+    performed only inside the write itself, such as the identifier format
+    ``CandidateStore`` enforces when it actually constructs a record --
+    reaching that would mean changing the candidate store to support a
+    dry run, out of scope here. If a write still fails after every payload
+    already passed validation, this names the proposals already recorded
+    rather than raising silently, so a partial import is recoverable.
     """
     artifact = load_artifact(Path(artifact_path))
+    proposals = [_proposal_arguments(payload) for payload in artifact.proposals]
+
+    for arguments in proposals:
+        core.validate_arguments("candidate.propose", workspace, arguments)
+
     results: list[dict[str, object]] = []
-    for payload in artifact.proposals:
-        arguments = {
-            "source_id": payload.source_id,
-            "content": payload.content.as_data(),
-            "proposed_at": payload.proposed_at,
-            "holder": payload.holder,
-        }
-        result = core.invoke(grant, "candidate.propose", workspace, arguments)
+    landed: list[object] = []
+    for arguments in proposals:
+        try:
+            result = core.invoke(grant, "candidate.propose", workspace, arguments)
+        except Exception as error:
+            if landed:
+                raise ArtifactImportPartiallyRecorded(
+                    f"{type(error).__name__}: {error}; already recorded before this "
+                    f"failure ({len(landed)} of {len(proposals)}): {landed!r}"
+                ) from error
+            raise
         results.append(
             {
                 "provenance": {"provider": artifact.provider, "session": artifact.session},
                 "result": result,
             }
         )
+        landed.append(result)
     return results
 
 
