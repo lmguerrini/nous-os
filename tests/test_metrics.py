@@ -31,6 +31,11 @@ def _artifact() -> dict[str, object]:
         "bridges": {"governed": 7, "cells": 7, "runnable": 5},
         "k_values": [1, 5, 10, 20],
         "k_max": 100,
+        # The denominator the fixture's `seconds` are notionally measured over. A real
+        # artifact records this because timings are taken over the governed cells PLUS
+        # the negative control, and the published projection keeps only the governed
+        # ones -- so the count is not recoverable from what survives.
+        "scored_cells": 7,
         "determinism_payload_digest": "fixture-digest",
         "cells": cells,
         "arms": {

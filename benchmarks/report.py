@@ -9,6 +9,8 @@ from typing import Mapping
 
 try:
     from benchmarks.metrics import (
+        MATERIALITY_THRESHOLD_POINTS,
+        STRATUM_REGRESSION_FLOOR_POINTS,
         ArmDecision,
         ExperimentMetrics,
         MetricsError,
@@ -20,6 +22,8 @@ try:
     )
 except ModuleNotFoundError:  # Supports direct execution from benchmarks/.
     from metrics import (
+        MATERIALITY_THRESHOLD_POINTS,
+        STRATUM_REGRESSION_FLOOR_POINTS,
         ArmDecision,
         ExperimentMetrics,
         MetricsError,
@@ -123,6 +127,57 @@ def _not_run_tables(arm: NotRunArmMetrics, metrics: ExperimentMetrics) -> list[s
     return rows
 
 
+def _cost_table(artifact: Mapping[str, object], scored_cells: int) -> list[str]:
+    """Cost, rendered from the artifact rather than transcribed beside it.
+
+    An audit found this capability's latency and build figures living only in a
+    governance document, under a heading declaring that no measured figure was
+    transcribed there. They had been computed by hand from a SUPERSEDED artifact,
+    so they were also stale: the multiple they quoted was self-inconsistent and
+    the build seconds belonged to a different run.
+
+    Every number here therefore comes out of the artifact, and the denominator is
+    printed beside it so a reader can divide it back. Fields the instrument did not
+    record -- per-query medians exist for the dense arms only -- are rendered
+    NOT_RECORDED rather than derived silently from a total.
+    """
+    arms = _mapping(artifact.get("arms"), "arms")
+    lines = [
+        "",
+        "## Cost",
+        "",
+        f"Totals are over {scored_cells} scored cells (governed plus the negative control), which is",
+        "the denominator to divide by. Index build happens once per corpus; query cost is per call.",
+        "",
+        "| Arm | Total query seconds | Mean ms/query | Recorded median ms | Index build seconds | Vector bytes |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for name in sorted(arms):
+        arm = _mapping(arms[name], f"arms.{name}")
+        if arm.get("status") != "RUN":
+            lines.append(f"| {name} | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN |")
+            continue
+        seconds = arm.get("seconds")
+        mean = f"{1000 * float(seconds) / scored_cells:.2f}" if isinstance(seconds, (int, float)) else "NOT_RECORDED"
+        total = f"{float(seconds):.4f}" if isinstance(seconds, (int, float)) else "NOT_RECORDED"
+        median = arm.get("query_ms_median")
+        build = arm.get("build_seconds")
+        vector_bytes = arm.get("vector_bytes")
+        lines.append(
+            f"| {name} | {total} | {mean} | "
+            f"{median if median is not None else 'NOT_RECORDED'} | "
+            f"{f'{float(build):.2f}' if isinstance(build, (int, float)) else 'NOT_RECORDED'} | "
+            f"{vector_bytes if vector_bytes is not None else 'NOT_RECORDED'} |"
+        )
+    lines.extend((
+        "",
+        "The preregistered five-repetition protocol with a full range was applied to the dense arms",
+        "only, so no range exists for the lexical arms and the rule forbidding a difference smaller",
+        "than the larger arm's own range cannot be applied. Memory was not recorded.",
+    ))
+    return lines
+
+
 def render_report(artifact: Mapping[str, object]) -> str:
     """Render a deterministic report whose measured values all come from ``artifact``."""
     metrics = compute_metrics(artifact)
@@ -173,7 +228,28 @@ def render_report(artifact: Mapping[str, object]) -> str:
         else:
             lines.extend(_not_run_tables(arm, metrics))
 
-    lines.extend(("", "## Frozen decision rule", "", f"- Best lexical arm at recall@10: {metrics.best_lexical_arm}.", "", "| Candidate arm | Materiality gap | Condition A (>= +10.0) | Worst stratum regression | Condition B (>= -2.0) |", "| --- | --- | --- | --- | --- |"))
+    # The cost table appears only when the artifact actually carries timings, and then it
+    # REQUIRES the run's own scored-cell count. Falling back to the surviving RUN cells
+    # would divide a total measured over the governed set PLUS the negative control by the
+    # governed set alone, overstating every per-query figure. An artifact with no timings
+    # has nothing to divide, so it needs no denominator and gets no table -- the demand
+    # fires exactly where a wrong denominator could do damage.
+    arms_raw = _mapping(artifact.get("arms"), "arms")
+    has_timings = any(
+        isinstance(a, Mapping) and a.get("seconds") is not None for a in arms_raw.values()
+    )
+    if has_timings:
+        scored = artifact.get("scored_cells")
+        if not isinstance(scored, int) or scored < 1:
+            raise ReportError(
+                "an artifact carrying timings must record scored_cells: the denominator "
+                "those timings were measured over"
+            )
+        lines.extend(_cost_table(artifact, scored))
+
+    lines.extend(("", "## Frozen decision rule", "", f"- Best lexical arm at recall@10: {metrics.best_lexical_arm}.", "", "| Candidate arm | Materiality gap | "
+        f"Condition A (>= {MATERIALITY_THRESHOLD_POINTS:+.1f}) | Worst stratum regression | "
+        f"Condition B (>= {STRATUM_REGRESSION_FLOOR_POINTS:+.1f}) |", "| --- | --- | --- | --- | --- |"))
     for arm_name in sorted(metrics.decisions):
         decision = metrics.decisions[arm_name]
         if isinstance(decision, ArmDecision):

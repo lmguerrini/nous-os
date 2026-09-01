@@ -15,6 +15,19 @@ BASELINE = "BASELINE"
 CHUNK_BASELINE = "BASELINE-CHUNK-BM25"
 
 
+#: The frozen materiality bar, in percentage points, from PREREGISTRATION.md section 6:
+#: a candidate must beat the BEST lexical arm's chunk-level Recall@10 by this much.
+#: Named rather than inlined so the published report can DERIVE its column heading from
+#: the value it actually applies. An audit found the report printing "+10.0" as a string
+#: literal while the comparison used a mutated constant, and the fixed-point test stayed
+#: green -- a heading and a rule that could disagree without anything noticing.
+MATERIALITY_THRESHOLD_POINTS: float = 10.0
+
+#: The frozen stratum floor, in percentage points: no language stratum may regress by
+#: more than this. G-CHUNK's no-regression clause, generalised.
+STRATUM_REGRESSION_FLOOR_POINTS: float = -2.0
+
+
 class MetricsError(Exception):
     """Raised when an artifact cannot support the preregistered calculation."""
 
@@ -304,9 +317,9 @@ def compute_metrics(artifact: Mapping[str, object]) -> ExperimentMetrics:
         decisions[arm_name] = ArmDecision(
             arm_name,
             materiality,
-            materiality >= 10.0,
+            materiality >= MATERIALITY_THRESHOLD_POINTS,
             worst,
-            worst >= -2.0,
+            worst >= STRATUM_REGRESSION_FLOOR_POINTS,
         )
 
     return ExperimentMetrics(
