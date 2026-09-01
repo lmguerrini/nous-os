@@ -26,6 +26,8 @@ from nous_os.attribution import AttributedKey, KeyOrigin
 from nous_os.capability import Grant, NotAuthorized, Tier, execute
 from nous_os.canonical import Assertion, LifecycleState, SupportClass
 from nous_os.candidates import CandidateStore, Proposal
+from nous_os.chunking import chunk_document
+from nous_os.compile import FlatTopK
 from nous_os.config import DataRoot
 from nous_os.derived import build
 from nous_os.discovery import (
@@ -686,6 +688,10 @@ def _discovery_card(citation: Citation) -> BridgeCard:
 
 def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
     """Supply real arguments for each known read operation, or fail loudly."""
+    context_chunks = chunk_document(
+        SOURCE_ID,
+        "# Fixture context\n\nalpha preserves the fixture boundary.",
+    )
     arguments = {
         "search": {"path": canon.derived_path, "query": "alpha"},
         "sources": {"path": canon.derived_path},
@@ -704,6 +710,12 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
         "conflicts": {"index": canon.temporal, "key": TEMPORAL_KEY},
         "supersession": {"index": canon.temporal, "key": TEMPORAL_KEY},
         "project": {"state": KnowledgeState(canon.temporal), "policy": RELIABILITY},
+        "compile_context": {
+            "chunks": context_chunks,
+            "ranking": tuple(chunk.id for chunk in context_chunks),
+            "strategy": FlatTopK(),
+            "budget_tokens": sum(chunk.tokens for chunk in context_chunks),
+        },
     }
     if name not in arguments:
         pytest.fail(f"read operation {name!r} has no executable test arguments")
@@ -833,14 +845,15 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "conflicts": Tier.READ,
         "supersession": Tier.READ,
         "project": Tier.READ,
+        "compile_context": Tier.READ,
         "record_proposal": Tier.PROPOSE,
         "discover": Tier.PROPOSE,
         "adjudicate": Tier.PROPOSE,
         "ingest_source": Tier.PROMOTE,
         "promote_candidate": Tier.PROMOTE,
     }
-    assert len(expected) == 18
-    assert len(operations) == 18
+    assert len(expected) == 19
+    assert len(operations) == 19
     assert {operation.name: operation.tier for operation in operations} == expected
     assert all(
         operation.tier is not Tier.EXTERNAL_CONSEQUENTIAL_ACTION
@@ -898,7 +911,7 @@ def test_registered_wrapper_annotations_resolve_without_importing_discovery_at_r
     wrappers = tuple(
         authority._REGISTRY[operation.name][1] for operation in _project_operations()
     )
-    assert len(wrappers) == 18
+    assert len(wrappers) == 19
     resolved = {
         wrapper.__name__: get_type_hints(
             wrapper,

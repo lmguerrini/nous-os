@@ -31,6 +31,8 @@ import nous_os.operations as operation_bindings
 from nous_os.candidates import CandidateStore, Proposal
 from nous_os.capability import Grant, NotAuthorized, Tier, execute
 from nous_os.canonical import Assertion, LifecycleState, SupportClass
+from nous_os.chunking import Chunk, chunk_document
+from nous_os.compile import FlatTopK, Pack, compile_pack
 from nous_os.config import DataRoot
 from nous_os.derived import SearchHit, build
 from nous_os.adjudication import (
@@ -715,6 +717,17 @@ def _project_arguments(world: _World, text: str) -> dict[str, object]:
     }
 
 
+def _compile_context_arguments(world: _World, text: str) -> dict[str, object]:
+    """Compile a ranked, structured chunk so the matrix crosses the real boundary."""
+    chunks = chunk_document(_SOURCE_ID, f"# Context\n\n{text}")
+    return {
+        "chunks": chunks,
+        "ranking": tuple(chunk.id for chunk in chunks),
+        "strategy": FlatTopK(),
+        "budget_tokens": sum(chunk.tokens for chunk in chunks),
+    }
+
+
 def _record_arguments(world: _World, text: str) -> dict[str, object]:
     # Content is arbitrary functional text and is written into the proposal.
     return {
@@ -757,6 +770,7 @@ _ARGUMENT_BUILDERS: Mapping[
     operation_bindings.conflicts: _conflicts_arguments,
     operation_bindings.supersession: _supersession_arguments,
     operation_bindings.project_knowledge: _project_arguments,
+    operation_bindings.compile_context: _compile_context_arguments,
     operation_bindings.record_proposal: _record_arguments,
     operation_bindings.ingest: _ingest_arguments,
 }
@@ -786,6 +800,11 @@ def _argument_carries_text(
             endpoint.quote == text
             for card in value.bridges
             for endpoint in (card.left, card.right)
+        )
+    if type(value) is tuple:
+        return any(
+            type(item) is Chunk and item.text == text
+            for item in value
         )
     marker = getattr(value, "injection_text", None)
     return type(marker) is UntrustedText and marker.as_data() == text
@@ -1137,6 +1156,23 @@ def _observed_real_effect(
             # each unpinnable by any single control.
             and bool(value.nodes)
         )
+    elif implementation is operation_bindings.compile_context:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: (
+            type(value) is Pack
+            and len(value.chunks) == 1
+            and type(value.chunks[0]) is Chunk
+            and value.chunks[0].source_id == _SOURCE_ID
+            and value.chunks[0].text == text
+            and value.manifest.strategy == "S0-flat"
+            and value.manifest.budget_tokens == value.chunks[0].tokens
+            and value.manifest.chunk_ids == (value.chunks[0].id,)
+            and value.manifest.rank_selected == (value.chunks[0].id,)
+            and value.manifest.structural == ()
+            and value.manifest.source_ids == (_SOURCE_ID,)
+            and value.manifest.tokens_used == value.chunks[0].tokens
+        )
     elif implementation is operation_bindings.record_proposal:
         items = (returned,)
         expected_count = 1
@@ -1262,6 +1298,8 @@ def _well_formed_wrong_results(operation: _Operation) -> tuple[object, ...]:
         )
         empty = ProjectionIR(SCHEMA_VERSION, PolicyId.RELIABILITY, ALL_TIME, (), ())
         return (wrong_policy, empty)
+    if implementation is operation_bindings.compile_context:
+        return (compile_pack((), (), FlatTopK(), 1),)
     if implementation is operation_bindings.supersession:
         return ((wrong_temporal_assertion,),)
     if implementation is operation_bindings.ingest:
@@ -1419,6 +1457,7 @@ def test_registered_operations_have_the_decided_names_and_tiers() -> None:
         "conflicts": Tier.READ,
         "supersession": Tier.READ,
         "project": Tier.READ,
+        "compile_context": Tier.READ,
         "record_proposal": Tier.PROPOSE,
         "discover": Tier.PROPOSE,
         "adjudicate": Tier.PROPOSE,
@@ -1588,7 +1627,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
     expected = (
         len(entries) * len(operations) * len(transports) * len(grant_tier_sets)
     )
-    assert expected == 8352
+    assert expected == 8816
     if expected == 0:
         _fail_not_run("the derived corpus matrix had zero expected cells")
 
@@ -1646,8 +1685,8 @@ def test_argument_content_cannot_change_any_authorization_decision(
 
     if executed == 0:
         _fail_not_run("the corpus matrix executed zero cells")
-    assert executed == 8352
-    assert expected == 8352
+    assert executed == 8816
+    assert expected == 8816
     expected_positive_controls = {
         (transport.name, operation.name, tier_set)
         for transport in transports
@@ -1655,7 +1694,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
         for tier_set in grant_tier_sets
         if operation.tier in tier_set
     }
-    assert len(expected_positive_controls) == 144
+    assert len(expected_positive_controls) == 152
     if positive_controls != expected_positive_controls:
         absent = sorted(
             (transport, operation, sorted(tier.value for tier in tier_set))
@@ -1671,9 +1710,9 @@ def test_argument_content_cannot_change_any_authorization_decision(
         len(positive_controls),
     )
     assert result.status is RunStatus.COMPLETE
-    assert result.executed == 8352
-    assert result.expected == 8352
-    assert result.positive_controls == 144
+    assert result.executed == 8816
+    assert result.expected == 8816
+    assert result.positive_controls == 152
 
 
 def test_the_holder_is_provenance_metadata_and_carries_no_authority(
@@ -1689,7 +1728,7 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
     expected = len(transports) * sum(
         1 for tier in tiers for operation in operations if operation.tier is tier
     )
-    assert expected == 18
+    assert expected == 19
     if expected == 0:
         _fail_not_run("the holder-metadata matrix had zero expected cells")
 
@@ -1721,8 +1760,8 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
 
     if executed == 0:
         _fail_not_run("the holder-metadata matrix executed zero cells")
-    assert executed == 18
-    assert expected == 18
+    assert executed == 19
+    assert expected == 19
 
 
 def test_required_tier_argument_content_cannot_change_the_decision_in_either_direction(
@@ -1734,7 +1773,7 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
     transports = _derived_transports()
     world = _build_world(tmp_path / "required_tier_arguments")
     expected = len(transports) * len(operations) * 2
-    assert expected == 36
+    assert expected == 38
     if expected == 0:
         _fail_not_run("the required-tier argument matrix had zero expected cells")
     executed = 0
@@ -1793,5 +1832,5 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
 
     if executed == 0:
         _fail_not_run("the required-tier argument matrix executed zero cells")
-    assert executed == 36
-    assert expected == 36
+    assert executed == 38
+    assert expected == 38

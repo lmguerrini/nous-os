@@ -1,0 +1,1270 @@
+"""The one application service boundary. Everything outside this package uses this.
+
+A CLI and an MCP-shaped server are later work built *on top of* this module,
+and neither of them is allowed to read anything about the project's governed
+operations except what this module publishes. That is the whole reason this
+module exists rather than letting each interface grow its own ad hoc mapping
+from a request shape to :func:`nous_os.capability.execute`: two independently
+written mappings drift, and the drift is exactly the kind of thing a security
+boundary cannot afford.
+
+**Core never imports a domain implementation in order to call it.** Every
+governed call goes through :func:`nous_os.capability.execute`, which is the
+package's one door. Core imports domain *types* — dataclasses, enums, stores —
+to build arguments and to render results, because turning a JSON object into a
+:class:`~nous_os.provenance.Citation` or a :class:`~nous_os.discovery.BridgeCard`
+is binding, not bypassing. It never imports a registered operation's
+*implementation* function and never calls a domain method that ``execute``
+exists to guard.
+
+**The catalogue holds no promotion.** ``ingest_source`` and
+``promote_candidate`` are registered at ``Tier.PROMOTE`` and are deliberately
+absent from :data:`CATALOGUE`. That is not an oversight to be filled in later;
+it is the property this module exists to hold. A promotion or an outside
+action can only ever be reached by a human working a step this module does not
+offer, and :func:`invoke` raises before any promotion-tier operation could be
+named, because no descriptor names one.
+
+**Argument content cannot move authority.** :func:`invoke` resolves a
+descriptor from the external name alone, reads that descriptor's tier from the
+governed registry at catalogue-construction time, and only then looks at the
+supplied JSON arguments. Nothing in the JSON a caller supplies is capable of
+choosing a different operation or a different tier: there is no field named
+``operation`` or ``tier`` anywhere in the parameter specifications below, and
+the lookup that resolves both happens before a single argument value is read.
+"""
+
+from __future__ import annotations
+
+import os
+import stat
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Final, Mapping
+
+from nous_os.adjudication import AdjudicationError, Rejection, RejectionMemory
+from nous_os.candidates import CandidateStore
+from nous_os.canonical import Assertion, CanonicalError, LifecycleState, SupportClass
+from nous_os.capability import Grant, NotAuthorized, Tier, execute, required_tier
+from nous_os.chunking import Chunk, ChunkingError
+from nous_os.compile import PREREGISTERED_ARMS, CohesionStrategy, Pack
+from nous_os.config import DataRoot, resolve_data_root
+from nous_os.discovery import (
+    BridgeCard,
+    BridgeRegistry,
+    Depth,
+    DiscoveryError,
+    Endpoint,
+    EpistemicClass,
+    Gate,
+    GateOutcome,
+    GateVector,
+    TrivialityArchetype,
+)
+from nous_os.identity import InvalidIdentifier
+from nous_os.projection import (
+    DISCOVERY,
+    RELIABILITY,
+    KnowledgeState,
+    ProjectionError,
+    ProjectionPolicy,
+    TemporalQuestion,
+)
+from nous_os.provenance import Citation, Locator, ProvenanceError
+from nous_os.snapshots import SnapshotStore
+from nous_os.temporal import ClaimKey, ClaimKeyError, TemporalError, TemporalIndex
+from nous_os.untrusted import UntrustedText
+
+# Importing this module is what populates the governed registry that
+# ``required_tier`` below reads from. Core never calls anything defined in it;
+# the import exists solely for that registration side effect, exactly as any
+# other caller of ``execute`` depends on it having run first.
+import nous_os.operations as _operations  # noqa: F401
+
+
+__all__ = (
+    "CoreError",
+    "UnknownExternalOperation",
+    "ArgumentError",
+    "UnknownArgument",
+    "MissingArgument",
+    "ArgumentTypeError",
+    "PromotionNotOffered",
+    "WorkspaceNotConfigured",
+    "Workspace",
+    "ParameterSpec",
+    "OperationDescriptor",
+    "CATALOGUE",
+    "resolve_workspace",
+    "invoke",
+)
+
+
+class CoreError(Exception):
+    """Base error for a request this service boundary refuses to satisfy."""
+
+
+class UnknownExternalOperation(CoreError):
+    """Raised when no catalogue entry is published under the supplied name."""
+
+
+class ArgumentError(CoreError):
+    """Base error for JSON-shaped arguments that do not match a descriptor."""
+
+
+class UnknownArgument(ArgumentError):
+    """Raised when a supplied argument name is not declared by the descriptor."""
+
+
+class MissingArgument(ArgumentError):
+    """Raised when a required argument is absent."""
+
+
+class ArgumentTypeError(ArgumentError):
+    """Raised when a supplied argument's JSON shape does not validate."""
+
+
+class PromotionNotOffered(CoreError):
+    """Raised when a catalogue entry would be built at PROMOTE or ECA tier.
+
+    This is the capability's central property, enforced at construction rather
+    than left as an absence someone could stop noticing: a promotion or an
+    outside action can only ever be reached by a step this contract does not
+    offer, and building a descriptor for one raises before the catalogue can
+    hold it.
+    """
+
+
+# --- the workspace: every on-disk location this service resolves -----------
+
+
+class WorkspaceNotConfigured(Exception):
+    """Raised when a workspace location was not supplied by any configured source.
+
+    Deliberately not a subclass of anything a caller is likely to catch by
+    accident, matching :class:`~nous_os.config.DataRootNotConfigured`'s stance:
+    not knowing where a store lives is a third answer, distinct from the store
+    being empty.
+    """
+
+
+#: Resolution order for every non-data-root location, highest first: an
+#: explicit argument, then the named environment variable, then refusal.
+#: The data root itself keeps using ``config.resolve_data_root`` unchanged.
+SNAPSHOT_ROOT_ENV_VAR: Final = "NOUS_OS_SNAPSHOT_ROOT"
+LEDGER_PATH_ENV_VAR: Final = "NOUS_OS_LEDGER_PATH"
+DERIVED_PATH_ENV_VAR: Final = "NOUS_OS_DERIVED_PATH"
+CANDIDATE_STORE_PATH_ENV_VAR: Final = "NOUS_OS_CANDIDATE_STORE_PATH"
+BRIDGE_REGISTRY_PATH_ENV_VAR: Final = "NOUS_OS_BRIDGE_REGISTRY_PATH"
+REJECTION_MEMORY_PATH_ENV_VAR: Final = "NOUS_OS_REJECTION_MEMORY_PATH"
+
+
+@dataclass(frozen=True, slots=True)
+class Workspace:
+    """Every on-disk location Core resolves. Nothing here is guessed.
+
+    A caller who supplies nothing — no explicit argument and no environment
+    variable, for any one of these seven locations — gets a refusal, not a
+    default that happens to work on the machine that wrote it.
+    """
+
+    data_root: DataRoot
+    snapshot_root: Path
+    ledger_path: Path
+    derived_path: Path
+    candidate_store_path: Path
+    bridge_registry_path: Path
+    rejection_memory_path: Path
+
+
+def _resolve_path(
+    explicit: str | os.PathLike[str] | None,
+    env_var: str,
+    field: str,
+    environ: dict[str, str],
+) -> Path:
+    """Resolve one workspace location, or refuse. Mirrors ``resolve_data_root``."""
+    candidate: str | os.PathLike[str] | None = explicit
+    if candidate is None:
+        from_env = environ.get(env_var)
+        if from_env is not None and from_env.strip():
+            candidate = from_env
+    if candidate is None:
+        raise WorkspaceNotConfigured(
+            f"no {field} was configured; pass one explicitly or set {env_var}. "
+            "NousOS does not guess a location."
+        )
+    return Path(candidate).expanduser().resolve()
+
+
+def resolve_workspace(
+    *,
+    data_root: str | os.PathLike[str] | None = None,
+    snapshot_root: str | os.PathLike[str] | None = None,
+    ledger_path: str | os.PathLike[str] | None = None,
+    derived_path: str | os.PathLike[str] | None = None,
+    candidate_store_path: str | os.PathLike[str] | None = None,
+    bridge_registry_path: str | os.PathLike[str] | None = None,
+    rejection_memory_path: str | os.PathLike[str] | None = None,
+    environ: dict[str, str] | None = None,
+) -> Workspace:
+    """Resolve every location Core needs, or refuse. Never guesses one.
+
+    ``environ`` is injectable so resolution order is testable without mutating
+    the real process environment, exactly as :func:`~nous_os.config.resolve_data_root`
+    already allows.
+    """
+    env = os.environ if environ is None else environ
+    return Workspace(
+        data_root=resolve_data_root(data_root, environ=env),
+        snapshot_root=_resolve_path(
+            snapshot_root, SNAPSHOT_ROOT_ENV_VAR, "snapshot store root", env
+        ),
+        ledger_path=_resolve_path(ledger_path, LEDGER_PATH_ENV_VAR, "ledger path", env),
+        derived_path=_resolve_path(
+            derived_path, DERIVED_PATH_ENV_VAR, "derived index path", env
+        ),
+        candidate_store_path=_resolve_path(
+            candidate_store_path, CANDIDATE_STORE_PATH_ENV_VAR, "candidate store path", env
+        ),
+        bridge_registry_path=_resolve_path(
+            bridge_registry_path, BRIDGE_REGISTRY_PATH_ENV_VAR, "bridge registry path", env
+        ),
+        rejection_memory_path=_resolve_path(
+            rejection_memory_path,
+            REJECTION_MEMORY_PATH_ENV_VAR,
+            "rejection memory path",
+            env,
+        ),
+    )
+
+
+# --- the catalogue -----------------------------------------------------------
+
+#: The closed JSON shapes a declared parameter may take. Not an ``Enum``: this
+#: project's own vocabulary check requires every module-level Python ``Enum``
+#: under ``src/nous_os`` to be documented in ``docs/VOCABULARY.md``, and a
+#: closed set of JSON Schema-style type names carries no epistemic content for
+#: that document to map — it is a wire-format detail, not a product concept.
+JSON_TYPES: Final = ("string", "integer", "number", "boolean", "array", "object")
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterSpec:
+    """One declared JSON-shaped parameter: its name, type, and whether it is required."""
+
+    name: str
+    json_type: str
+    required: bool
+    description: str
+
+    def __post_init__(self) -> None:
+        if type(self.name) is not str or not self.name:
+            raise CoreError("a parameter name must be a non-blank string")
+        if self.json_type not in JSON_TYPES:
+            raise CoreError(f"unknown JSON parameter type: {self.json_type!r}")
+        if type(self.required) is not bool:
+            raise CoreError("a parameter's required flag must be a bool")
+        if type(self.description) is not str or not self.description:
+            raise CoreError("a parameter description must be a non-blank string")
+
+
+@dataclass(frozen=True, slots=True)
+class OperationDescriptor:
+    """One external operation: its name, tier, registered operation, and parameters.
+
+    ``operation`` is the name registered in :mod:`nous_os.operations`, or
+    ``None`` for a Core-level read that calls nothing through the registry.
+    ``tier`` is read from :func:`~nous_os.capability.required_tier` at
+    construction time for every entry that names a registered operation, so it
+    cannot silently drift from what the registry actually enforces.
+    """
+
+    external_name: str
+    operation: str | None
+    tier: Tier
+    summary: str
+    parameters: tuple[ParameterSpec, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.external_name) is not str or not self.external_name:
+            raise CoreError("an external operation name must be a non-blank string")
+        if self.operation is not None and type(self.operation) is not str:
+            raise CoreError("operation must be a registered name or None")
+        if not any(self.tier is member for member in Tier):
+            raise CoreError("tier must be a declared Tier member")
+        if type(self.summary) is not str or not self.summary:
+            raise CoreError("a descriptor summary must be a non-blank string")
+        if type(self.parameters) is not tuple or any(
+            type(parameter) is not ParameterSpec for parameter in self.parameters
+        ):
+            raise CoreError("parameters must be a tuple of exact ParameterSpec records")
+
+
+#: The tier Core itself declares for the two reads that call no registered
+#: operation. Named once so both descriptors read the same value rather than
+#: two literals that could drift apart.
+_CORE_LEVEL_TIER: Final = Tier.READ
+
+
+#: Tiers no external operation may ever be published at. ``ingest_source`` and
+#: ``promote_candidate`` are registered at ``Tier.PROMOTE``; nothing is yet
+#: registered at ``Tier.EXTERNAL_CONSEQUENTIAL_ACTION``, and the refusal below
+#: covers it anyway so a future registration at that tier is unreachable here
+#: too, by construction, on day one.
+_UNOFFERED_TIERS: Final = (Tier.PROMOTE, Tier.EXTERNAL_CONSEQUENTIAL_ACTION)
+
+
+def _descriptor(
+    external_name: str,
+    operation: str | None,
+    summary: str,
+    parameters: tuple[ParameterSpec, ...],
+) -> OperationDescriptor:
+    tier = _CORE_LEVEL_TIER if operation is None else required_tier(operation)
+    if tier in _UNOFFERED_TIERS:
+        raise PromotionNotOffered(
+            f"{external_name!r} names {operation!r}, registered at {tier}; "
+            "this contract offers no PROMOTE or EXTERNAL_CONSEQUENTIAL_ACTION operation"
+        )
+    return OperationDescriptor(external_name, operation, tier, summary, parameters)
+
+
+#: The catalogue this contract offers. Fixed order, fixed membership: every
+#: entry is built through :func:`_descriptor`, which refuses to return one
+#: whose tier is ``Tier.PROMOTE`` or ``Tier.EXTERNAL_CONSEQUENTIAL_ACTION`` —
+#: so ``ingest_source`` and ``promote_candidate`` are unreachable here by
+#: construction, not merely absent from the list below.
+CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
+    _descriptor(
+        "system.capabilities",
+        None,
+        "List every operation this contract offers, with its tier and parameters.",
+        (),
+    ),
+    _descriptor(
+        "system.health",
+        None,
+        "Report whether each configured store location is readable, absent, or unknown.",
+        (),
+    ),
+    _descriptor(
+        "knowledge.search",
+        "search",
+        "Full-text search over the derived index.",
+        (
+            ParameterSpec("query", "string", True, "the full-text search query"),
+            ParameterSpec(
+                "limit", "integer", False, "maximum number of hits to return; defaults to 10"
+            ),
+        ),
+    ),
+    _descriptor(
+        "canon.documents",
+        "list_documents",
+        "List every canonical document under the configured data root.",
+        (),
+    ),
+    _descriptor(
+        "canon.describe",
+        "describe_corpus",
+        "List every canonical document under the data root with the digest of its bytes.",
+        (),
+    ),
+    _descriptor(
+        "canon.sources",
+        "sources",
+        "List every source the derived index holds.",
+        (),
+    ),
+    _descriptor(
+        "canon.versions",
+        "versions",
+        "List one source's snapshot digests, oldest first.",
+        (ParameterSpec("source_id", "string", True, "the source whose versions are listed"),),
+    ),
+    _descriptor(
+        "provenance.span",
+        "read_span",
+        "Read the exact text a citation names, from the snapshot it cites.",
+        (
+            ParameterSpec(
+                "citation",
+                "object",
+                True,
+                "the citation naming a source, snapshot digest, byte range, and quoted span",
+            ),
+        ),
+    ),
+    _descriptor(
+        "graph.project",
+        "project",
+        "Project a renderer-independent knowledge graph from caller-supplied state.",
+        (
+            ParameterSpec(
+                "state", "object", True, "the temporal index, bridges, and rejections to project"
+            ),
+            ParameterSpec("policy", "string", True, "one of 'reliability' or 'discovery'"),
+            ParameterSpec(
+                "question",
+                "object",
+                False,
+                "the temporal axes to project at; defaults to all time",
+            ),
+        ),
+    ),
+    _descriptor(
+        "time.as_of",
+        "as_of",
+        "Partition a caller-supplied temporal index by validity and recording time.",
+        (
+            ParameterSpec("index", "object", True, "the temporal index to read"),
+            ParameterSpec("valid_at", "string", False, "an instant to filter validity against"),
+            ParameterSpec(
+                "recorded_as_of", "string", False, "an instant to filter recording time against"
+            ),
+        ),
+    ),
+    _descriptor(
+        "time.conflicts",
+        "conflicts",
+        "Report connected disagreements in a caller-supplied temporal index.",
+        (
+            ParameterSpec("index", "object", True, "the temporal index to read"),
+            ParameterSpec(
+                "key", "string", False, "restrict to one explicit claim key; defaults to every key"
+            ),
+        ),
+    ),
+    _descriptor(
+        "time.supersession",
+        "supersession",
+        "Return one subject's recorded assertion history, oldest first.",
+        (
+            ParameterSpec("index", "object", True, "the temporal index to read"),
+            ParameterSpec("key", "string", True, "the explicit claim key to read"),
+        ),
+    ),
+    _descriptor(
+        "context.compile",
+        "compile_context",
+        "Fill a token budget from a caller-supplied ranking. Performs no retrieval.",
+        (
+            ParameterSpec("chunks", "array", True, "every candidate chunk the ranking may name"),
+            ParameterSpec(
+                "ranking",
+                "array",
+                True,
+                "chunk ids in relevance order; this operation does not produce the order",
+            ),
+            ParameterSpec(
+                "strategy", "string", True, "the name of a preregistered cohesion strategy"
+            ),
+            ParameterSpec("budget_tokens", "integer", True, "the token budget to fill"),
+        ),
+    ),
+    _descriptor(
+        "candidate.proposals",
+        "proposals",
+        "List every recorded proposal, in file order.",
+        (),
+    ),
+    _descriptor(
+        "candidate.rejections",
+        "rejections",
+        "List every recorded rejection, in file order.",
+        (),
+    ),
+    _descriptor(
+        "candidate.bridges",
+        "bridges",
+        "List every recorded bridge card, in file order.",
+        (),
+    ),
+    _descriptor(
+        "candidate.propose",
+        "record_proposal",
+        "Record one untrusted proposal, apart from canon.",
+        (
+            ParameterSpec("source_id", "string", True, "the source the proposal came from"),
+            ParameterSpec("content", "string", True, "the proposed content, as untrusted text"),
+            ParameterSpec("proposed_at", "string", True, "the instant the proposal was made"),
+            ParameterSpec("holder", "string", True, "who or what put the proposal forward"),
+        ),
+    ),
+    _descriptor(
+        "candidate.discover",
+        "discover",
+        "Classify a deterministic round of candidate bridge cards.",
+        (
+            ParameterSpec("round_number", "integer", True, "the round being run"),
+            ParameterSpec("candidates", "array", True, "the bridge cards proposed this round"),
+            ParameterSpec("at", "string", True, "the instant this round is recorded at"),
+            ParameterSpec(
+                "consult_memory",
+                "boolean",
+                False,
+                "whether to skip clusters already rejected; defaults to true",
+            ),
+        ),
+    ),
+    _descriptor(
+        "candidate.adjudicate",
+        "adjudicate",
+        "Record one durable failed-gate rejection trace.",
+        (
+            ParameterSpec("cluster_id", "string", True, "the cluster that failed a gate"),
+            ParameterSpec("failed_gate", "string", True, "which gate failed"),
+            ParameterSpec("reason", "string", True, "why the gate failed"),
+            ParameterSpec("round_number", "integer", True, "the round the failure was found in"),
+            ParameterSpec("rejected_at", "string", True, "the instant the rejection is recorded at"),
+        ),
+    ),
+)
+
+assert len({descriptor.external_name for descriptor in CATALOGUE}) == len(CATALOGUE), (
+    "two catalogue entries share an external name"
+)
+
+
+# --- JSON argument validation -------------------------------------------------
+
+
+def _matches_json_type(value: object, json_type: str) -> bool:
+    if json_type == "string":
+        return type(value) is str
+    if json_type == "integer":
+        return type(value) is int and not isinstance(value, bool)
+    if json_type == "number":
+        return type(value) in (int, float) and not isinstance(value, bool)
+    if json_type == "boolean":
+        return type(value) is bool
+    if json_type == "array":
+        return type(value) is list
+    if json_type == "object":
+        return type(value) is dict
+    raise CoreError(f"unknown JSON parameter type: {json_type!r}")  # pragma: no cover
+
+
+def _bind_json_arguments(
+    descriptor: OperationDescriptor, arguments: Mapping[str, object]
+) -> dict[str, object]:
+    """Validate supplied JSON-shaped arguments against one descriptor's spec.
+
+    An unknown argument name is refused, not ignored. A missing required
+    argument is refused. A present argument whose JSON type disagrees with its
+    declared type is refused. This is purely structural: it reads names and
+    types from ``descriptor.parameters``, never from the supplied values.
+    """
+    if type(arguments) is not dict:
+        raise ArgumentTypeError("arguments must be a JSON object")
+    declared = {parameter.name: parameter for parameter in descriptor.parameters}
+    unknown = sorted(set(arguments) - set(declared))
+    if unknown:
+        raise UnknownArgument(
+            f"{descriptor.external_name} does not declare argument(s): {unknown}"
+        )
+    missing = sorted(
+        parameter.name
+        for parameter in descriptor.parameters
+        if parameter.required and parameter.name not in arguments
+    )
+    if missing:
+        raise MissingArgument(
+            f"{descriptor.external_name} is missing required argument(s): {missing}"
+        )
+    for name, value in arguments.items():
+        spec = declared[name]
+        if not _matches_json_type(value, spec.json_type):
+            raise ArgumentTypeError(
+                f"{descriptor.external_name} argument {name!r} must be a JSON {spec.json_type}"
+            )
+    return dict(arguments)
+
+
+# --- JSON to domain-type conversion ------------------------------------------
+
+
+def _instant(value: object, field: str) -> datetime:
+    if type(value) is not str:
+        raise ArgumentTypeError(f"{field} must be a string instant")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ArgumentTypeError(f"{field} is not an ISO 8601 instant: {value!r}") from error
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        raise ArgumentTypeError(f"{field} must carry a timezone")
+    return parsed
+
+
+def _optional_instant(value: object, field: str) -> datetime | None:
+    return None if value is None else _instant(value, field)
+
+
+def _object(payload: object, keys: frozenset[str], name: str) -> dict[str, object]:
+    if type(payload) is not dict or set(payload) != keys:
+        raise ArgumentTypeError(f"{name} must be an object with exactly {sorted(keys)}")
+    return payload
+
+
+def _string_array(value: object, field: str) -> tuple[str, ...]:
+    if type(value) is not list or any(type(item) is not str for item in value):
+        raise ArgumentTypeError(f"{field} must be an array of strings")
+    return tuple(value)
+
+
+def _claim_key(value: object) -> ClaimKey:
+    if type(value) is not str:
+        raise ArgumentTypeError("a claim key must be a string")
+    try:
+        return ClaimKey(value)
+    except ClaimKeyError as error:
+        raise ArgumentTypeError(str(error)) from error
+
+
+def _citation(payload: object, field: str = "citation") -> Citation:
+    value = _object(
+        payload, frozenset({"source_id", "snapshot_digest", "start_byte", "end_byte", "span"}), field
+    )
+    try:
+        return Citation(
+            value["source_id"],
+            value["snapshot_digest"],
+            Locator(value["start_byte"], value["end_byte"]),
+            value["span"],
+        )
+    except (ProvenanceError, InvalidIdentifier, TypeError) as error:
+        raise ArgumentTypeError(f"{field} is not a valid citation: {error}") from error
+
+
+def _assertion_from_payload(payload: object) -> tuple[ClaimKey, Assertion]:
+    value = _object(
+        payload,
+        frozenset(
+            {"key", "id", "text", "citation", "support", "recorded_at", "valid_from", "valid_to"}
+        ),
+        "an assertion entry",
+    )
+    try:
+        support = SupportClass(value["support"])
+    except ValueError as error:
+        raise ArgumentTypeError(f"unknown support class: {value['support']!r}") from error
+    try:
+        assertion = Assertion(
+            id=value["id"],
+            text=value["text"],
+            citation=_citation(value["citation"], "assertion citation"),
+            support=support,
+            recorded_at=_instant(value["recorded_at"], "recorded_at"),
+            state=LifecycleState.CANONICAL,
+            valid_from=_optional_instant(value["valid_from"], "valid_from"),
+            valid_to=_optional_instant(value["valid_to"], "valid_to"),
+        )
+    except CanonicalError as error:
+        raise ArgumentTypeError(f"assertion entry is not valid: {error}") from error
+    return _claim_key(value["key"]), assertion
+
+
+def _temporal_index_from_payload(payload: object) -> TemporalIndex:
+    value = _object(payload, frozenset({"assertions"}), "index")
+    assertions = value["assertions"]
+    if type(assertions) is not list:
+        raise ArgumentTypeError("index.assertions must be an array")
+    index = TemporalIndex()
+    for entry in assertions:
+        key, assertion = _assertion_from_payload(entry)
+        try:
+            index.add(key, assertion)
+        except TemporalError as error:
+            raise ArgumentTypeError(f"index could not hold an assertion: {error}") from error
+    return index
+
+
+def _temporal_question_from_payload(payload: object) -> TemporalQuestion:
+    value = _object(payload, frozenset({"valid_at", "recorded_as_of"}), "question")
+    try:
+        return TemporalQuestion(
+            valid_at=_optional_instant(value["valid_at"], "valid_at"),
+            recorded_as_of=_optional_instant(value["recorded_as_of"], "recorded_as_of"),
+        )
+    except ProjectionError as error:
+        raise ArgumentTypeError(f"question is not valid: {error}") from error
+
+
+_PROJECTION_POLICIES_BY_NAME: Final = {"reliability": RELIABILITY, "discovery": DISCOVERY}
+
+
+def _projection_policy(value: object) -> ProjectionPolicy:
+    if type(value) is not str:
+        raise ArgumentTypeError("policy must be a string")
+    policy = _PROJECTION_POLICIES_BY_NAME.get(value)
+    if policy is None:
+        raise ArgumentTypeError(
+            f"unknown policy {value!r}; expected one of "
+            f"{sorted(_PROJECTION_POLICIES_BY_NAME)}"
+        )
+    return policy
+
+
+def _endpoint_from_payload(payload: object) -> Endpoint:
+    value = _object(payload, frozenset({"project", "citation", "quote"}), "an endpoint")
+    try:
+        return Endpoint(
+            project=value["project"],
+            citation=_citation(value["citation"], "endpoint citation"),
+            quote=value["quote"],
+        )
+    except DiscoveryError as error:
+        raise ArgumentTypeError(f"endpoint is not valid: {error}") from error
+
+
+def _gate_vector_from_payload(payload: object) -> GateVector:
+    value = _object(payload, frozenset({"outcomes", "reasons", "triviality"}), "gates")
+    outcomes_payload = value["outcomes"]
+    reasons_payload = value["reasons"]
+    if type(outcomes_payload) is not dict or type(reasons_payload) is not dict:
+        raise ArgumentTypeError("gates.outcomes and gates.reasons must be objects")
+    try:
+        outcomes = {Gate(gate): GateOutcome(outcome) for gate, outcome in outcomes_payload.items()}
+        reasons = {Gate(gate): reason for gate, reason in reasons_payload.items()}
+        triviality = value["triviality"]
+        return GateVector(
+            outcomes=outcomes,
+            reasons=reasons,
+            triviality=None if triviality is None else TrivialityArchetype(triviality),
+        )
+    except (ValueError, DiscoveryError) as error:
+        raise ArgumentTypeError(f"gates are not valid: {error}") from error
+
+
+def _bridge_card_from_payload(payload: object) -> BridgeCard:
+    value = _object(
+        payload,
+        frozenset(
+            {
+                "card_id",
+                "cluster_id",
+                "left",
+                "right",
+                "epistemic_class",
+                "depth",
+                "non_triviality",
+                "consequence",
+                "noise_objection",
+                "gates",
+                "origin_round",
+            }
+        ),
+        "a bridge card",
+    )
+    try:
+        return BridgeCard(
+            card_id=value["card_id"],
+            cluster_id=value["cluster_id"],
+            left=_endpoint_from_payload(value["left"]),
+            right=_endpoint_from_payload(value["right"]),
+            epistemic_class=EpistemicClass(value["epistemic_class"]),
+            depth=Depth(value["depth"]),
+            non_triviality=value["non_triviality"],
+            consequence=value["consequence"],
+            noise_objection=value["noise_objection"],
+            gates=_gate_vector_from_payload(value["gates"]),
+            origin_round=value["origin_round"],
+        )
+    except (ValueError, DiscoveryError) as error:
+        raise ArgumentTypeError(f"bridge card is not valid: {error}") from error
+
+
+def _rejection_from_payload(payload: object) -> Rejection:
+    value = _object(
+        payload,
+        frozenset({"cluster_id", "failed_gate", "reason", "round_number", "rejected_at"}),
+        "a rejection entry",
+    )
+    try:
+        return Rejection(
+            cluster_id=value["cluster_id"],
+            failed_gate=value["failed_gate"],
+            reason=value["reason"],
+            round_number=value["round_number"],
+            rejected_at=_instant(value["rejected_at"], "rejected_at"),
+        )
+    except AdjudicationError as error:
+        raise ArgumentTypeError(f"rejection entry is not valid: {error}") from error
+
+
+def _knowledge_state_from_payload(payload: object) -> KnowledgeState:
+    value = _object(payload, frozenset({"index", "bridges", "rejections"}), "state")
+    bridges_payload = value["bridges"]
+    rejections_payload = value["rejections"]
+    if type(bridges_payload) is not list or type(rejections_payload) is not list:
+        raise ArgumentTypeError("state.bridges and state.rejections must be arrays")
+    try:
+        return KnowledgeState(
+            index=_temporal_index_from_payload(value["index"]),
+            bridges=tuple(_bridge_card_from_payload(item) for item in bridges_payload),
+            rejections=tuple(_rejection_from_payload(item) for item in rejections_payload),
+        )
+    except ProjectionError as error:
+        raise ArgumentTypeError(f"state is not valid: {error}") from error
+
+
+def _chunk_from_payload(payload: object) -> Chunk:
+    value = _object(
+        payload,
+        frozenset({"id", "source_id", "ordinal", "heading_path", "text", "tokens", "references"}),
+        "a chunk",
+    )
+    heading_path = value["heading_path"]
+    references = value["references"]
+    if type(heading_path) is not list or any(type(item) is not str for item in heading_path):
+        raise ArgumentTypeError("chunk.heading_path must be an array of strings")
+    if type(references) is not list or any(type(item) is not str for item in references):
+        raise ArgumentTypeError("chunk.references must be an array of strings")
+    try:
+        return Chunk(
+            id=value["id"],
+            source_id=value["source_id"],
+            ordinal=value["ordinal"],
+            heading_path=tuple(heading_path),
+            text=value["text"],
+            tokens=value["tokens"],
+            references=tuple(references),
+        )
+    except ChunkingError as error:
+        raise ArgumentTypeError(f"chunk is not valid: {error}") from error
+
+
+#: Every preregistered cohesion strategy, keyed by its own stable label. A
+#: caller names a strategy; this operation does not invent one, and it never
+#: runs retrieval to produce the ranking it is handed.
+_COMPILE_STRATEGIES_BY_NAME: Final[dict[str, CohesionStrategy]] = {
+    strategy.name: strategy for strategy in PREREGISTERED_ARMS
+}
+
+
+def _compile_strategy(value: object) -> CohesionStrategy:
+    if type(value) is not str:
+        raise ArgumentTypeError("strategy must be a string")
+    strategy = _COMPILE_STRATEGIES_BY_NAME.get(value)
+    if strategy is None:
+        raise ArgumentTypeError(
+            f"unknown compilation strategy {value!r}; expected one of "
+            f"{sorted(_COMPILE_STRATEGIES_BY_NAME)}"
+        )
+    return strategy
+
+
+# --- binding: JSON-shaped arguments to domain keyword arguments --------------
+
+
+def _bind_search(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    kwargs: dict[str, object] = {"path": workspace.derived_path, "query": arguments["query"]}
+    if "limit" in arguments:
+        kwargs["limit"] = arguments["limit"]
+    return kwargs
+
+
+def _bind_root_only(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {"root": workspace.data_root}
+
+
+def _bind_path_only(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {"path": workspace.derived_path}
+
+
+def _bind_versions(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {"path": workspace.derived_path, "source_id": arguments["source_id"]}
+
+
+def _bind_read_span(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        "store": SnapshotStore(workspace.snapshot_root),
+        "citation": _citation(arguments["citation"]),
+    }
+
+
+def _bind_project(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "state": _knowledge_state_from_payload(arguments["state"]),
+        "policy": _projection_policy(arguments["policy"]),
+    }
+    if "question" in arguments:
+        kwargs["question"] = _temporal_question_from_payload(arguments["question"])
+    return kwargs
+
+
+def _bind_as_of(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    kwargs: dict[str, object] = {"index": _temporal_index_from_payload(arguments["index"])}
+    if "valid_at" in arguments:
+        kwargs["valid_at"] = _instant(arguments["valid_at"], "valid_at")
+    if "recorded_as_of" in arguments:
+        kwargs["recorded_as_of"] = _instant(arguments["recorded_as_of"], "recorded_as_of")
+    return kwargs
+
+
+def _bind_conflicts(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    kwargs: dict[str, object] = {"index": _temporal_index_from_payload(arguments["index"])}
+    if "key" in arguments:
+        kwargs["key"] = _claim_key(arguments["key"])
+    return kwargs
+
+
+def _bind_supersession(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        "index": _temporal_index_from_payload(arguments["index"]),
+        "key": _claim_key(arguments["key"]),
+    }
+
+
+def _bind_compile_context(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    chunks = arguments["chunks"]
+    if type(chunks) is not list:
+        raise ArgumentTypeError("chunks must be an array")
+    return {
+        "chunks": tuple(_chunk_from_payload(item) for item in chunks),
+        "ranking": _string_array(arguments["ranking"], "ranking"),
+        "strategy": _compile_strategy(arguments["strategy"]),
+        "budget_tokens": arguments["budget_tokens"],
+    }
+
+
+def _bind_proposals(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {"store": CandidateStore(workspace.candidate_store_path)}
+
+
+def _bind_rejections(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {"memory": RejectionMemory(workspace.rejection_memory_path)}
+
+
+def _bind_bridges(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {"registry": BridgeRegistry(workspace.bridge_registry_path)}
+
+
+def _bind_record_proposal(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        "store": CandidateStore(workspace.candidate_store_path),
+        "source_id": arguments["source_id"],
+        "content": UntrustedText(arguments["content"]),
+        "proposed_at": _instant(arguments["proposed_at"], "proposed_at"),
+        "holder": arguments["holder"],
+    }
+
+
+def _bind_discover(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    candidates = arguments["candidates"]
+    if type(candidates) is not list:
+        raise ArgumentTypeError("candidates must be an array")
+    kwargs: dict[str, object] = {
+        "round_number": arguments["round_number"],
+        "candidates": tuple(_bridge_card_from_payload(item) for item in candidates),
+        "registry": BridgeRegistry(workspace.bridge_registry_path),
+        "memory": RejectionMemory(workspace.rejection_memory_path),
+        "at": _instant(arguments["at"], "at"),
+    }
+    if "consult_memory" in arguments:
+        kwargs["consult_memory"] = arguments["consult_memory"]
+    return kwargs
+
+
+def _bind_adjudicate(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        "memory": RejectionMemory(workspace.rejection_memory_path),
+        "cluster_id": arguments["cluster_id"],
+        "failed_gate": arguments["failed_gate"],
+        "reason": arguments["reason"],
+        "round_number": arguments["round_number"],
+        "rejected_at": _instant(arguments["rejected_at"], "rejected_at"),
+    }
+
+
+_BINDERS: Final = {
+    "knowledge.search": _bind_search,
+    "canon.documents": _bind_root_only,
+    "canon.describe": _bind_root_only,
+    "canon.sources": _bind_path_only,
+    "canon.versions": _bind_versions,
+    "provenance.span": _bind_read_span,
+    "graph.project": _bind_project,
+    "time.as_of": _bind_as_of,
+    "time.conflicts": _bind_conflicts,
+    "time.supersession": _bind_supersession,
+    "context.compile": _bind_compile_context,
+    "candidate.proposals": _bind_proposals,
+    "candidate.rejections": _bind_rejections,
+    "candidate.bridges": _bind_bridges,
+    "candidate.propose": _bind_record_proposal,
+    "candidate.discover": _bind_discover,
+    "candidate.adjudicate": _bind_adjudicate,
+}
+
+
+# --- rendering: domain results to JSON-shaped data ---------------------------
+
+
+def _render_citation(citation: Citation) -> dict[str, object]:
+    return {
+        "source_id": citation.source_id,
+        "snapshot_digest": citation.snapshot_digest,
+        "start_byte": citation.locator.start_byte,
+        "end_byte": citation.locator.end_byte,
+        "span": citation.span,
+    }
+
+
+def _render_instant(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _render_optional_instant(value: datetime | None) -> str | None:
+    return None if value is None else _render_instant(value)
+
+
+def _render_assertion(assertion: Assertion) -> dict[str, object]:
+    return {
+        "id": assertion.id,
+        "text": assertion.text,
+        "citation": _render_citation(assertion.citation),
+        "support": assertion.support.value,
+        "recorded_at": _render_instant(assertion.recorded_at),
+        "state": assertion.state.value,
+        "valid_from": _render_optional_instant(assertion.valid_from),
+        "valid_to": _render_optional_instant(assertion.valid_to),
+    }
+
+
+def _render_search(hits) -> list[dict[str, object]]:
+    return [
+        {"snapshot_digest": hit.snapshot_digest, "source_id": hit.source_id, "excerpt": hit.excerpt}
+        for hit in hits
+    ]
+
+
+def _render_describe_corpus(described) -> list[dict[str, object]]:
+    return [{"path": path, "digest": digest} for path, digest in described]
+
+
+def _render_as_of(answer) -> dict[str, object]:
+    return {
+        "established": [_render_assertion(a) for a in answer.established],
+        "excluded": [_render_assertion(a) for a in answer.excluded],
+        "undetermined": [_render_assertion(a) for a in answer.undetermined],
+    }
+
+
+def _render_conflicts(conflicts) -> list[dict[str, object]]:
+    return [
+        {
+            "key": conflict.key.value,
+            "members": [_render_assertion(a) for a in conflict.members],
+            "overlap": conflict.overlap.value,
+        }
+        for conflict in conflicts
+    ]
+
+
+def _render_chunk(chunk: Chunk) -> dict[str, object]:
+    return {
+        "id": chunk.id,
+        "source_id": chunk.source_id,
+        "ordinal": chunk.ordinal,
+        "heading_path": list(chunk.heading_path),
+        "text": chunk.text,
+        "tokens": chunk.tokens,
+        "references": list(chunk.references),
+    }
+
+
+def _render_pack(pack: Pack) -> dict[str, object]:
+    return {
+        "chunks": [_render_chunk(chunk) for chunk in pack.chunks],
+        "manifest": pack.manifest.as_payload(),
+    }
+
+
+def _render_round_result(result) -> dict[str, object]:
+    return {
+        "round_number": result.round_number,
+        "status": result.status.value,
+        "proposed": [card.as_payload() for card in result.proposed],
+        "accepted": [card.as_payload() for card in result.accepted],
+        "rejected": [card.as_payload() for card in result.rejected],
+        "undetermined": [card.as_payload() for card in result.undetermined],
+        "skipped": list(result.skipped),
+    }
+
+
+_RENDERERS: Final = {
+    "knowledge.search": _render_search,
+    "canon.documents": lambda documents: list(documents),
+    "canon.describe": _render_describe_corpus,
+    "canon.sources": lambda sources: list(sources),
+    "canon.versions": lambda versions: list(versions),
+    "provenance.span": lambda text: text,
+    "graph.project": lambda ir: ir.as_payload(),
+    "time.as_of": _render_as_of,
+    "time.conflicts": _render_conflicts,
+    "time.supersession": lambda assertions: [_render_assertion(a) for a in assertions],
+    "context.compile": _render_pack,
+    "candidate.proposals": lambda proposals: [p.as_payload() for p in proposals],
+    "candidate.rejections": lambda rejections: [r.as_payload() for r in rejections],
+    "candidate.bridges": lambda cards: [c.as_payload() for c in cards],
+    "candidate.propose": lambda proposal: proposal.as_payload(),
+    "candidate.discover": _render_round_result,
+    "candidate.adjudicate": lambda rejection: rejection.as_payload(),
+}
+
+
+# --- the two Core-level reads --------------------------------------------------
+
+
+def _authorize_core_level(grant: Grant, tier: Tier) -> None:
+    """Refuse exactly as ``execute`` would, for a read that calls no registered operation.
+
+    ``system.capabilities`` and ``system.health`` read no canonical content and
+    call nothing through the governed registry, so there is no ``execute``
+    invocation to perform the tier check inside. This reproduces the identical
+    check ``execute`` performs — grant type, tier-set type, then membership —
+    so a grant lacking READ is refused by the same logic, not a parallel one
+    that could quietly drift from it.
+    """
+    refusal = "the grant does not hold the operation's required tier"
+    if type(grant) is not Grant:
+        raise NotAuthorized(refusal)
+    if type(getattr(grant, "tiers", None)) is not frozenset:
+        raise NotAuthorized(refusal)
+    try:
+        authorized = grant.holds(tier)
+    except Exception:
+        authorized = False
+    if not authorized:
+        raise NotAuthorized(refusal)
+
+
+def _render_descriptor(descriptor: OperationDescriptor) -> dict[str, object]:
+    return {
+        "name": descriptor.external_name,
+        "tier": descriptor.tier.value,
+        "summary": descriptor.summary,
+        "parameters": [
+            {
+                "name": parameter.name,
+                "type": parameter.json_type,
+                "required": parameter.required,
+                "description": parameter.description,
+            }
+            for parameter in descriptor.parameters
+        ],
+    }
+
+
+def _system_capabilities() -> dict[str, object]:
+    return {"operations": [_render_descriptor(descriptor) for descriptor in CATALOGUE]}
+
+
+def _location_health(path: Path, *, is_directory: bool) -> str:
+    """healthy / absent / unknown for one location, never conflating them.
+
+    Calls :func:`os.stat` directly rather than ``Path.is_dir``/``Path.is_file``:
+    those methods report *every* ``OSError`` — a permission failure exactly
+    like a missing file — as a plain ``False``, which is precisely the
+    conflation this function exists to refuse. ``FileNotFoundError`` is the
+    one outcome this treats as genuinely absent; any other failure to stat the
+    location, most often a permission failure, is unknown rather than assumed
+    healthy or assumed absent. A location that exists but is the wrong kind of
+    node — a file sitting where a directory belongs, or the reverse — is
+    unknown as well: it is not healthy, and reporting it as merely absent
+    would hide that something real, just not the expected thing, is there.
+    """
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "unknown"
+    kind_matches = stat.S_ISDIR(info.st_mode) if is_directory else stat.S_ISREG(info.st_mode)
+    return "healthy" if kind_matches else "unknown"
+
+
+def _system_health(workspace: Workspace) -> dict[str, object]:
+    return {
+        "data_root": _location_health(workspace.data_root.path, is_directory=True),
+        "snapshot_root": _location_health(workspace.snapshot_root, is_directory=True),
+        "ledger_path": _location_health(workspace.ledger_path, is_directory=False),
+        "derived_path": _location_health(workspace.derived_path, is_directory=False),
+        "candidate_store_path": _location_health(
+            workspace.candidate_store_path, is_directory=False
+        ),
+        "bridge_registry_path": _location_health(
+            workspace.bridge_registry_path, is_directory=False
+        ),
+        "rejection_memory_path": _location_health(
+            workspace.rejection_memory_path, is_directory=False
+        ),
+    }
+
+
+# --- the one entry point -------------------------------------------------------
+
+
+def _resolve_descriptor(external_name: str) -> OperationDescriptor:
+    """Resolve one descriptor from its external name alone.
+
+    The signature is the property: it takes no ``arguments`` parameter at all,
+    so nothing supplied by a caller can be consulted while choosing which
+    operation, and therefore which tier, a request will run against.
+    """
+    descriptor = next(
+        (candidate for candidate in CATALOGUE if candidate.external_name == external_name), None
+    )
+    if descriptor is None:
+        raise UnknownExternalOperation(f"no operation is published under {external_name!r}")
+    return descriptor
+
+
+def invoke(
+    grant: Grant,
+    external_name: str,
+    workspace: Workspace,
+    arguments: Mapping[str, object],
+) -> object:
+    """Resolve, authorize, and run one external operation. The one entry point.
+
+    The steps run in this fixed order, and the order is the property:
+
+    1. Resolve a descriptor from ``external_name`` alone. An unknown name is
+       refused before anything about ``arguments`` is examined.
+    2. Validate ``arguments`` against the descriptor's declared parameter
+       specification: an undeclared name or a wrong JSON type is refused.
+    3. Build domain-typed keyword arguments from the validated JSON, through
+       each domain type's own validating constructor.
+    4. Call :func:`nous_os.capability.execute` — the only call path a
+       registered operation is reached through — or, for the two Core-level
+       reads that name no registered operation, perform the identical
+       authorization check directly.
+    5. Render the domain result back into JSON-shaped data.
+
+    Because resolution depends only on ``external_name`` and a descriptor's
+    tier is fixed at catalogue-construction time from the governed registry, no
+    content inside ``arguments`` can change which operation is resolved or which
+    tier ``execute`` will require. Validation and binding read and transform
+    ``arguments``, but they cannot feed back into the resolution above them or
+    into the tier ``execute`` checks, because that resolution has already
+    completed by the time either of them runs.
+    """
+    descriptor = _resolve_descriptor(external_name)
+
+    bound = _bind_json_arguments(descriptor, arguments)
+
+    if descriptor.operation is None:
+        _authorize_core_level(grant, descriptor.tier)
+        if external_name == "system.capabilities":
+            return _system_capabilities()
+        return _system_health(workspace)
+
+    binder = _BINDERS[external_name]
+    domain_kwargs = binder(workspace, bound)
+    result = execute(grant, descriptor.operation, **domain_kwargs)
+    renderer = _RENDERERS[external_name]
+    return renderer(result)

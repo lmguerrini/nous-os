@@ -168,7 +168,8 @@ src/
     ├── adjudication.py   the human-gated boundary between a proposal and canon
     ├── discovery.py      bridge candidates, gates, and append-only rounds
     ├── projection.py     renderer-independent knowledge graph projections
-    └── operations.py     registration of the project's governed operations
+    ├── operations.py     registration of the project's governed operations
+    └── core.py           the one application service boundary
 ui/
 └── src/
     ├── adapter/          projections read into the visual model, meaning kept sealed

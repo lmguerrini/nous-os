@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 
 from nous_os.capability import Tier, register
 from nous_os.candidates import CandidateStore, Proposal
+from nous_os.chunking import Chunk
+from nous_os.compile import CohesionStrategy, Pack
 from nous_os.config import describe_corpus, list_documents
 from nous_os.derived import search, sources, versions
 from nous_os.ledger import ingest
@@ -48,6 +50,24 @@ def conflicts(*, index, key=None):
 def supersession(*, index, key):
     """Register a temporal-history read at the governed boundary."""
     return index.supersession(key)
+
+
+def compile_context(
+    *,
+    chunks: tuple[Chunk, ...],
+    ranking: tuple[str, ...],
+    strategy: CohesionStrategy,
+    budget_tokens: int,
+) -> Pack:
+    """Keep context compilation behind the registry's single door.
+
+    Wraps ``compile_pack`` unchanged: it is handed a ranking and performs no
+    retrieval of its own, so this registration adds no semantics beyond making
+    the already-fixed behaviour reachable through the governed boundary.
+    """
+    from nous_os.compile import compile_pack
+
+    return compile_pack(chunks, ranking, strategy, budget_tokens)
 
 
 def project_knowledge(
@@ -156,6 +176,7 @@ register("as_of", Tier.READ, as_of)
 register("conflicts", Tier.READ, conflicts)
 register("supersession", Tier.READ, supersession)
 register("project", Tier.READ, project_knowledge)
+register("compile_context", Tier.READ, compile_context)
 register("record_proposal", Tier.PROPOSE, record_proposal)
 register("ingest_source", Tier.PROMOTE, ingest)
 register("rejections", Tier.READ, rejections)
