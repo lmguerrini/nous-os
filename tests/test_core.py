@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+import nous_os.capability as authority
 import nous_os.core as core
 from nous_os.capability import Grant, NotAuthorized, Tier
 from nous_os.config import DataRoot, DataRootNotConfigured
@@ -259,6 +260,22 @@ def test_catalogue_descriptors_are_frozen_and_reject_field_assignment() -> None:
     descriptor = core.CATALOGUE[0]
     with pytest.raises(Exception):
         descriptor.external_name = "changed"  # type: ignore[misc]
+
+
+def _assert_core_binds_no_registered_implementation() -> None:
+    implementations = tuple(entry[1] for entry in authority._REGISTRY.values())
+    bound = tuple(vars(core).values())
+    offending = [value for value in bound for implementation in implementations if value is implementation]
+    assert offending == []
+
+
+def test_core_module_binds_no_registered_implementation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Core may import domain types and registration side effects, never an implementation."""
+    _assert_core_binds_no_registered_implementation()
+    implementation = next(iter(authority._REGISTRY.values()))[1]
+    monkeypatch.setattr(core, "_test_registered_implementation", implementation, raising=False)
+    with pytest.raises(AssertionError):
+        _assert_core_binds_no_registered_implementation()
 
 
 # --- tiers are read from the registry, never retyped --------------------------
@@ -903,19 +920,40 @@ def test_a_store_hard_linked_beneath_an_untraversable_canonical_directory_is_ref
         os.chmod(locked, original_mode)
 
 
-def test_a_broken_symlink_beneath_the_data_root_refuses_the_workspace(tmp_path: Path) -> None:
-    """A5 spelling 2: a file ``os.walk`` names but cannot then ``stat`` also fails closed.
-
-    Not merely a directory-listing failure: naming a path and then failing to
-    stat it is a distinct failure mode the old silent ``except OSError:
-    continue`` also hid.
-    """
+def test_a_dangling_symlink_beneath_the_data_root_does_not_refuse_the_workspace(
+    tmp_path: Path,
+) -> None:
+    """A target that is absent contributes no file identity and stays queryable."""
     kwargs = _workspace_kwargs(tmp_path)
     data_root = kwargs["data_root"]
     ghost = data_root / "ghost.md"
     ghost.symlink_to(data_root / "does-not-exist.md")
-    with pytest.raises(core.AliasedWorkspaceLocation):
-        core.resolve_workspace(**_workspace_kwargs(tmp_path))
+    workspace = core.resolve_workspace(**_workspace_kwargs(tmp_path))
+    health = core.invoke(Grant("holder", frozenset({Tier.READ})), "system.health", workspace, {})
+    assert health["data_root"] == "healthy"
+
+
+def test_canonical_enumeration_refuses_an_unreadable_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _workspace_kwargs(tmp_path)["data_root"]
+    original_stat = core.os.stat
+
+    def unreadable(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if Path(path) == root:
+            raise PermissionError("simulated unreadable canonical root")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(core.os, "stat", unreadable)
+    with pytest.raises(core.AliasedWorkspaceLocation, match="simulated unreadable canonical root"):
+        core._canonical_file_identities(root)
+
+
+def test_canonical_enumeration_refuses_an_existing_nondirectory_root(tmp_path: Path) -> None:
+    root = tmp_path / "not-a-directory"
+    root.write_text("not a canonical directory", encoding="utf-8")
+    with pytest.raises(core.AliasedWorkspaceLocation, match="not a directory"):
+        core._canonical_file_identities(root)
 
 
 def test_a_symlinked_canonical_subdirectory_is_not_enumerated_as_canon(tmp_path: Path) -> None:

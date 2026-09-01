@@ -496,8 +496,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         result = _run(namespace)
+        encoded = json.dumps(result, sort_keys=True, allow_nan=False)
     except Exception as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         return 1
-    print(json.dumps(result, sort_keys=True))
+    print(encoded)
     return 0

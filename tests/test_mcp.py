@@ -58,14 +58,11 @@ def _minimal_arguments(external_name: str) -> dict[str, object]:
     """A structurally valid request body for one catalogue entry.
 
     Not "minimal" in the sense of "required fields only": every declared
-    optional parameter is supplied too, with a value that genuinely differs
-    from the domain default it would otherwise fall back to -- ``limit``,
-    ``question``, ``valid_at``, ``recorded_as_of``, ``key``, and
-    ``consult_memory`` below. A transport that silently drops one of these,
-    or invents its own default instead of forwarding what was actually
-    supplied, must produce a request or a result different from the other
-    transport's for the identical call; omitting an optional field here would
-    let exactly that drift pass unnoticed.
+    optional parameter is supplied. This shared table provides valid shapes;
+    G-PARITY replaces the sparse search and temporal inputs with a fixture
+    where all six optional fields -- ``limit``, ``question``, ``valid_at``,
+    ``recorded_as_of``, ``key``, and ``consult_memory`` -- change a delivered
+    value when one transport drops it.
     """
     citation = {
         "source_id": SOURCE_ID, "snapshot_digest": "0" * 64, "start_byte": 0, "end_byte": 5, "span": "a",
@@ -346,6 +343,27 @@ def test_serve_refuses_a_request_carrying_a_non_standard_json_constant(tmp_path:
     assert len(lines) == 1
     response = _assert_strict_json(lines[0])
     assert response["error"]["code"] == mcp._PARSE_ERROR
+
+
+@pytest.mark.parametrize("request_id", ("1e400", "-1e400"))
+def test_real_server_refuses_a_nonfinite_exponent_id_with_strict_json_output(
+    tmp_path: Path, request_id: str
+) -> None:
+    """A finite-looking exponent must not reach the response id unchanged."""
+    result = _drive_subprocess(
+        tmp_path,
+        [
+            '{"jsonrpc":"2.0","id":'
+            + request_id
+            + ',"method":"initialize","params":{}}'
+        ],
+    )
+    assert result.returncode == 0, result.stderr
+    lines = [line for line in result.stdout.splitlines() if line]
+    assert len(lines) == 1
+    response = _assert_strict_json(lines[0])
+    assert response["error"]["code"] == mcp._PARSE_ERROR
+    assert response["id"] is None
 
 
 def test_serve_never_writes_a_non_standard_constant_that_reaches_the_final_encode(

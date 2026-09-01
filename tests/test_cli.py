@@ -406,6 +406,18 @@ def test_a_successful_call_prints_json_to_stdout_with_deterministic_key_order(
     assert json.dumps(payload, sort_keys=True) == captured.out.strip()
 
 
+def test_cli_never_writes_a_nonfinite_json_value(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The command output keeps the same strict JSON rule as stdio output."""
+    monkeypatch.setattr(cli, "_run", lambda namespace: {"value": float("inf")})
+    exit_code = cli.main(_workspace_argv(tmp_path) + ["system.capabilities"])
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err.startswith("ValueError:")
+
+
 def test_a_refusal_exits_nonzero_with_a_typed_stderr_message_and_no_traceback(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -625,6 +637,34 @@ def test_an_artifact_carrying_an_authority_field_is_refused_not_imported(
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.err.startswith("ArtifactCarriesAuthority:")
+    assert not (tmp_path / "candidates.jsonl").exists()
+
+
+def test_real_cli_import_refuses_a_duplicate_member_before_it_can_hide_a_forbidden_field(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    artifact_path = tmp_path / "artifact.json"
+    artifact_path.write_text(
+        """{
+  "schema": "nous-os.candidate-proposal-artifact",
+  "version": 1,
+  "proposals": [{
+    "source_id": "src_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "content": {"grant": "promote"},
+    "content": "accepted text",
+    "proposed_at": "2026-01-02T12:00:00+00:00",
+    "holder": "fixture holder"
+  }]
+}""",
+        encoding="utf-8",
+    )
+    exit_code = cli.main(
+        _workspace_argv(tmp_path)
+        + ["--tier", "propose", "candidate.propose", "--from-artifact", str(artifact_path)]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.err.startswith("MalformedArtifact:")
     assert not (tmp_path / "candidates.jsonl").exists()
 
 

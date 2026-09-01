@@ -31,6 +31,9 @@ import nous_os.cli as cli
 import nous_os.core as core
 import nous_os.mcp as mcp
 from nous_os.capability import Grant, Tier
+from nous_os.derived import rebuild
+from nous_os.ledger import ingest
+from nous_os.untrusted import UntrustedText
 
 import test_injection as injection
 import test_mcp
@@ -38,6 +41,14 @@ import test_mcp
 
 _FIXED_PROPOSAL_ID = "asr_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_OPTIONAL_PARAMETER_CASES = (
+    ("knowledge.search", "limit"),
+    ("graph.project", "question"),
+    ("time.as_of", "valid_at"),
+    ("time.as_of", "recorded_as_of"),
+    ("time.conflicts", "key"),
+    ("candidate.discover", "consult_memory"),
+)
 
 
 class _ParityFailure(AssertionError):
@@ -83,6 +94,15 @@ def _workspace_argv(workspace: core.Workspace) -> list[str]:
 def _workspace(root: Path) -> tuple[object, core.Workspace]:
     """Reuse the checked injection fixture so every read has real stored data."""
     world = injection._build_world(root)
+    for number in range(1, 7):
+        ingest(
+            world.snapshots,
+            world.ledger,
+            test_mcp.SOURCE_ID,
+            UntrustedText(f"alpha parity search result {number}"),
+            injection._RECORDED_AT,
+        )
+    rebuild(world.snapshots, world.ledger, world.derived_path)
     workspace = core.Workspace(
         data_root=world.data_root,
         snapshot_root=world.root / "snapshots",
@@ -95,6 +115,94 @@ def _workspace(root: Path) -> tuple[object, core.Workspace]:
     return world, workspace
 
 
+def _assertion_payload(
+    identifier: str,
+    key: str,
+    text: str,
+    recorded_at: str,
+    valid_from: str,
+) -> dict[str, object]:
+    return {
+        "key": key,
+        "id": identifier,
+        "text": text,
+        "citation": {
+            "source_id": test_mcp.SOURCE_ID,
+            "snapshot_digest": "0" * 64,
+            "start_byte": 0,
+            "end_byte": 1,
+            "span": "a",
+        },
+        "support": "direct_quote",
+        "recorded_at": recorded_at,
+        "valid_from": valid_from,
+        "valid_to": "2026-01-04T12:00:00+00:00",
+    }
+
+
+def _time_filter_index() -> dict[str, object]:
+    return {
+        "assertions": [
+            _assertion_payload(
+                "asr_0000000000000000000000000A",
+                "fixture-key",
+                "established at the fixture instant",
+                "2026-01-01T12:00:00+00:00",
+                "2026-01-01T12:00:00+00:00",
+            ),
+            _assertion_payload(
+                "asr_0000000000000000000000000B",
+                "fixture-key",
+                "valid only after the fixture instant",
+                "2026-01-01T12:00:00+00:00",
+                "2026-01-03T12:00:00+00:00",
+            ),
+            _assertion_payload(
+                "asr_0000000000000000000000000C",
+                "fixture-key",
+                "recorded only after the fixture instant",
+                "2026-01-03T12:00:00+00:00",
+                "2026-01-01T12:00:00+00:00",
+            ),
+        ]
+    }
+
+
+def _conflict_filter_index() -> dict[str, object]:
+    return {
+        "assertions": [
+            _assertion_payload(
+                "asr_0000000000000000000000000D",
+                "fixture-key",
+                "first disputed fixture claim",
+                "2026-01-01T12:00:00+00:00",
+                "2026-01-01T12:00:00+00:00",
+            ),
+            _assertion_payload(
+                "asr_0000000000000000000000000E",
+                "fixture-key",
+                "second disputed fixture claim",
+                "2026-01-01T12:00:00+00:00",
+                "2026-01-01T12:00:00+00:00",
+            ),
+            _assertion_payload(
+                "asr_0000000000000000000000000F",
+                "other-key",
+                "first disputed other claim",
+                "2026-01-01T12:00:00+00:00",
+                "2026-01-01T12:00:00+00:00",
+            ),
+            _assertion_payload(
+                "asr_0000000000000000000000000G",
+                "other-key",
+                "second disputed other claim",
+                "2026-01-01T12:00:00+00:00",
+                "2026-01-01T12:00:00+00:00",
+            ),
+        ]
+    }
+
+
 def _child_env() -> dict[str, str]:
     """Give the child process this checkout's source tree without global installation."""
     env = dict(os.environ)
@@ -104,6 +212,11 @@ def _child_env() -> dict[str, str]:
 
 def _arguments(descriptor: core.OperationDescriptor, world: object) -> dict[str, object]:
     """Use the already-checked JSON argument shapes, replacing the live citation.
+
+    The rebuilt search fixture has seven matching rows, so its explicit limit
+    of five differs from the operation default. The populated temporal inputs
+    make ``question``, both time filters, and the conflict key independently
+    observable when omitted from one route.
 
     ``candidate.discover`` additionally replaces the shared fixture's empty
     ``candidates`` with one real card naming the world's own already-rejected
@@ -118,6 +231,12 @@ def _arguments(descriptor: core.OperationDescriptor, world: object) -> dict[str,
     arguments = test_mcp._minimal_arguments(descriptor.external_name)
     if descriptor.external_name == "provenance.span":
         arguments["citation"] = world.citation.as_payload()
+    if descriptor.external_name == "graph.project":
+        arguments["state"] = {"index": _time_filter_index(), "bridges": [], "rejections": []}
+    if descriptor.external_name == "time.as_of":
+        arguments["index"] = _time_filter_index()
+    if descriptor.external_name == "time.conflicts":
+        arguments["index"] = _conflict_filter_index()
     if descriptor.external_name == "candidate.discover":
         already_rejected_cluster_card = injection._bridge_card(
             card_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAD",
@@ -426,4 +545,41 @@ def test_g_parity_n2_different_result_is_detected(
     with monkeypatch.context() as patch:
         patch.setattr(mcp, "dispatch", changed)
         with pytest.raises(_ParityFailure, match="result differs"):
+            _assert_parity(workspace, world, capsys)
+
+
+@pytest.mark.parametrize(("operation", "parameter"), _OPTIONAL_PARAMETER_CASES)
+def test_g_parity_detects_each_claimed_optional_parameter(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    parameter: str,
+) -> None:
+    """Dropping any claimed optional field on one route must break parity."""
+    monkeypatch.setattr(candidates, "new_assertion_id", lambda: _FIXED_PROPOSAL_ID)
+    world, workspace = _workspace(tmp_path / operation.replace(".", "-"))
+    original = mcp.dispatch
+
+    def drops_one_optional_field(
+        message: object, grant: Grant, bound_workspace: core.Workspace
+    ) -> dict[str, object] | None:
+        if (
+            type(message) is dict
+            and message.get("method") == "tools/call"
+            and type(message.get("params")) is dict
+            and message["params"].get("name") == operation
+            and type(message["params"].get("arguments")) is dict
+        ):
+            message = dict(message)
+            params = dict(message["params"])
+            arguments = dict(params["arguments"])
+            arguments.pop(parameter, None)
+            params["arguments"] = arguments
+            message["params"] = params
+        return original(message, grant, bound_workspace)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(mcp, "dispatch", drops_one_optional_field)
+        with pytest.raises(_ParityFailure, match=f"result differs for {operation!r}"):
             _assert_parity(workspace, world, capsys)

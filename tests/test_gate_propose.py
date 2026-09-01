@@ -63,15 +63,40 @@ def _iter_canonical_files(root: Path) -> tuple[Path, ...]:
     actually holds: a directory this process cannot list, or a file it names
     but cannot then stat, raises instead of being skipped.
     """
-    if not root.is_dir():
+    try:
+        root_info = os.stat(root)
+    except (FileNotFoundError, NotADirectoryError):
         return ()
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise OSError(f"canonical root is not a directory: {root}")
     paths: list[Path] = []
     for dirpath, _dirnames, filenames in os.walk(root, onerror=_reraise_walk_error):
         for filename in filenames:
             candidate = Path(dirpath) / filename
-            if stat.S_ISREG(os.stat(candidate).st_mode):
+            try:
+                info = os.stat(candidate)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            if stat.S_ISREG(info.st_mode):
                 paths.append(candidate)
     return tuple(sorted(paths))
+
+
+def _digest_part(digest: "hashlib._Hash", value: bytes) -> None:
+    """Append one unambiguously framed byte string to a canonical digest."""
+    digest.update(len(value).to_bytes(8, "big"))
+    digest.update(value)
+
+
+def _ledger_bytes(path: Path) -> bytes:
+    """Read one canonical ledger, distinguishing absence from an unreadable node."""
+    try:
+        info = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return b""
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError(f"canonical ledger is not a regular file: {path}")
+    return path.read_bytes()
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,23 +137,20 @@ def _canonical_bytes(workspace: core.Workspace) -> _CanonBytes:
     for path in _iter_canonical_files(workspace.data_root.path):
         payload = path.read_bytes()
         canon_bytes += len(payload)
-        digest.update(b"canon\0")
-        digest.update(path.relative_to(workspace.data_root.path).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(payload)
-        digest.update(b"\0")
+        _digest_part(digest, b"canon")
+        _digest_part(digest, path.relative_to(workspace.data_root.path).as_posix().encode("utf-8"))
+        _digest_part(digest, payload)
     snapshot_bytes = 0
     for path in _iter_canonical_files(workspace.snapshot_root):
         payload = path.read_bytes()
         snapshot_bytes += len(payload)
-        digest.update(b"snapshot\0")
-        digest.update(path.relative_to(workspace.snapshot_root).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(payload)
-        digest.update(b"\0")
-    ledger = workspace.ledger_path.read_bytes() if workspace.ledger_path.is_file() else b""
-    digest.update(b"ledger\0")
-    digest.update(ledger)
+        _digest_part(digest, b"snapshot")
+        _digest_part(digest, path.relative_to(workspace.snapshot_root).as_posix().encode("utf-8"))
+        _digest_part(digest, payload)
+    ledger = _ledger_bytes(workspace.ledger_path)
+    _digest_part(digest, b"ledger")
+    _digest_part(digest, b"")
+    _digest_part(digest, ledger)
     return _CanonBytes(digest.hexdigest(), canon_bytes, snapshot_bytes, len(ledger))
 
 
@@ -288,6 +310,55 @@ def test_g_propose_digest_detects_a_single_canonical_byte(tmp_path: Path) -> Non
     after = _canonical_bytes(workspace)
     assert before != after
     assert after.ledger_bytes == 1
+
+
+def test_g_propose_digest_distinguishes_record_boundaries(tmp_path: Path) -> None:
+    """A NUL in a path or payload cannot make two file collections hash alike."""
+    first = _workspace(tmp_path / "first")
+    second = _workspace(tmp_path / "second")
+    (first.data_root.path / "a").write_bytes(b"X")
+    (first.data_root.path / "b").write_bytes(b"Y\0canon\0c\0Z")
+    (second.data_root.path / "a").write_bytes(b"X\0canon\0b\0Y")
+    (second.data_root.path / "c").write_bytes(b"Z")
+    assert _canonical_bytes(first).value != _canonical_bytes(second).value
+
+
+def test_g_propose_digest_allows_a_dangling_canonical_symlink(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path / "dangling")
+    (workspace.data_root.path / "missing.md").symlink_to(workspace.data_root.path / "gone.md")
+    assert _canonical_bytes(workspace).canon_bytes == 0
+
+
+def test_g_propose_digest_refuses_an_unreadable_canonical_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace(tmp_path / "unreadable-root")
+    original_stat = os.stat
+
+    def unreadable(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if Path(path) == workspace.data_root.path:
+            raise PermissionError("simulated unreadable canonical root")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", unreadable)
+    with pytest.raises(PermissionError, match="simulated unreadable canonical root"):
+        _canonical_bytes(workspace)
+
+
+def test_g_propose_digest_refuses_an_unreadable_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace(tmp_path / "unreadable-ledger")
+    original_stat = os.stat
+
+    def unreadable(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if Path(path) == workspace.ledger_path:
+            raise PermissionError("simulated unreadable canonical ledger")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", unreadable)
+    with pytest.raises(PermissionError, match="simulated unreadable canonical ledger"):
+        _canonical_bytes(workspace)
 
 
 def test_g_propose_digest_fails_closed_on_an_untraversable_canonical_directory(

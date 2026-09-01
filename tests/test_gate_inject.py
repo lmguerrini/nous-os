@@ -38,6 +38,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -320,15 +321,40 @@ def _iter_canonical_files(root: Path) -> tuple[Path, ...]:
     actually holds: a directory this process cannot list, or a file it names
     but cannot then stat, raises instead of being skipped.
     """
-    if not root.is_dir():
+    try:
+        root_info = os.stat(root)
+    except (FileNotFoundError, NotADirectoryError):
         return ()
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise OSError(f"canonical root is not a directory: {root}")
     paths: list[Path] = []
     for dirpath, _dirnames, filenames in os.walk(root, onerror=_reraise_walk_error):
         for filename in filenames:
             candidate = Path(dirpath) / filename
-            if stat.S_ISREG(os.stat(candidate).st_mode):
+            try:
+                info = os.stat(candidate)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            if stat.S_ISREG(info.st_mode):
                 paths.append(candidate)
     return tuple(sorted(paths))
+
+
+def _digest_part(digest: "hashlib._Hash", value: bytes) -> None:
+    """Append one unambiguously framed byte string to a canonical digest."""
+    digest.update(len(value).to_bytes(8, "big"))
+    digest.update(value)
+
+
+def _ledger_bytes(path: Path) -> bytes:
+    """Read the canonical ledger while preserving absence as a distinct result."""
+    try:
+        info = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return b""
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError(f"canonical ledger is not a regular file: {path}")
+    return path.read_bytes()
 
 
 def _canon_bytes(world: object) -> bytes:
@@ -345,14 +371,13 @@ def _canon_bytes(world: object) -> bytes:
     digest = hashlib.sha256()
     for root, label in ((world.data_root.path, b"canon"), (world.root / "snapshots", b"snapshot")):
         for path in _iter_canonical_files(root):
-            digest.update(label + b"\0")
-            digest.update(path.relative_to(root).as_posix().encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(path.read_bytes())
-            digest.update(b"\0")
-    ledger_payload = world.ledger.path.read_bytes() if world.ledger.path.is_file() else b""
-    digest.update(b"ledger\0")
-    digest.update(ledger_payload)
+            _digest_part(digest, label)
+            _digest_part(digest, path.relative_to(root).as_posix().encode("utf-8"))
+            _digest_part(digest, path.read_bytes())
+    ledger_payload = _ledger_bytes(world.ledger.path)
+    _digest_part(digest, b"ledger")
+    _digest_part(digest, b"")
+    _digest_part(digest, ledger_payload)
     return digest.digest()
 
 
@@ -827,7 +852,7 @@ def _assert_governed_execution_counts(
 def _wrap_registered_implementations(
     monkeypatch: pytest.MonkeyPatch, active: dict[str, int]
 ) -> None:
-    """Require every registered implementation call to be attributable to an active ``execute``.
+    """Require registry-reached implementation calls to occur during an active ``execute``.
 
     ``_assert_governed_execution_counts`` proves only that the number of
     crossings through ``core.execute`` matches expectation per cell -- a
@@ -839,9 +864,13 @@ def _wrap_registered_implementations(
     nothing to a count keyed on ``execute`` invocations, and every advertised
     control stays green. Wrapping every registry entry so a call while
     ``active["depth"]`` is not positive raises closes that gap by attributing
-    each implementation call to an active ``execute`` invocation rather than
-    merely counting crossings. ``monkeypatch.setitem`` restores every entry
-    automatically at the end of the test that installs this.
+    each call reached through the current ``capability._REGISTRY`` chain to an
+    active ``execute`` invocation rather than merely counting crossings.
+    ``monkeypatch.setitem`` restores every entry automatically at the end of
+    the test that installs this. It cannot observe an implementation alias
+    saved before wrapping, held in a default or closure, or reached through a
+    later local import; closing those routes needs call-level tracing, which
+    is outside this test's scope.
     """
     for name, (tier, implementation) in tuple(capability._REGISTRY.items()):
 
@@ -1014,6 +1043,67 @@ def test_g_inject_canon_bytes_fails_closed_on_an_untraversable_directory(
             _canon_bytes(world)
     finally:
         os.chmod(locked, original_mode)
+
+
+def _digest_world(root: Path, entries: dict[str, bytes]) -> object:
+    data_root = root / "documents"
+    data_root.mkdir(parents=True)
+    for name, payload in entries.items():
+        (data_root / name).write_bytes(payload)
+    return SimpleNamespace(
+        data_root=SimpleNamespace(path=data_root),
+        root=root,
+        ledger=SimpleNamespace(path=root / "ledger.jsonl"),
+    )
+
+
+def test_g_inject_canon_bytes_distinguishes_record_boundaries(tmp_path: Path) -> None:
+    """The byte witness does not permit one record to absorb the next one."""
+    first = _digest_world(
+        tmp_path / "first", {"a": b"X", "b": b"Y\0canon\0c\0Z"}
+    )
+    second = _digest_world(
+        tmp_path / "second", {"a": b"X\0canon\0b\0Y", "c": b"Z"}
+    )
+    assert _canon_bytes(first) != _canon_bytes(second)
+
+
+def test_g_inject_canon_bytes_allows_a_dangling_canonical_symlink(tmp_path: Path) -> None:
+    world = _digest_world(tmp_path / "dangling", {})
+    (world.data_root.path / "missing.md").symlink_to(world.data_root.path / "gone.md")
+    assert _canon_bytes(world)
+
+
+def test_g_inject_canon_bytes_refuses_an_unreadable_canonical_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = _digest_world(tmp_path / "unreadable-root", {})
+    original_stat = os.stat
+
+    def unreadable(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if Path(path) == world.data_root.path:
+            raise PermissionError("simulated unreadable canonical root")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", unreadable)
+    with pytest.raises(PermissionError, match="simulated unreadable canonical root"):
+        _canon_bytes(world)
+
+
+def test_g_inject_canon_bytes_refuses_an_unreadable_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = _digest_world(tmp_path / "unreadable-ledger", {})
+    original_stat = os.stat
+
+    def unreadable(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if Path(path) == world.ledger.path:
+            raise PermissionError("simulated unreadable canonical ledger")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", unreadable)
+    with pytest.raises(PermissionError, match="simulated unreadable canonical ledger"):
+        _canon_bytes(world)
 
 
 def test_g_inject_n9_execution_outside_execute_is_detected(

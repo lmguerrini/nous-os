@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from collections.abc import Mapping
@@ -172,6 +173,28 @@ def _refuse_nonstandard_constant(constant: str) -> None:
     raise ValueError(f"{constant} is not a valid strict JSON value")
 
 
+def _refuse_nonfinite_float(number: str) -> float:
+    """Decode one JSON floating-point token only when it has a finite value."""
+    value = float(number)
+    if not math.isfinite(value):
+        raise ValueError(f"{number} is not a finite JSON number")
+    return value
+
+
+def _decode_integer(number: str) -> int:
+    """Decode one JSON integer token through an explicit strict-decoding hook."""
+    return int(number)
+
+
+def _encodable_response_id(request_id: object) -> object | None:
+    """Return an id safe to echo in strict JSON, or ``null`` when it is not."""
+    try:
+        json.dumps(request_id, allow_nan=False)
+    except (TypeError, ValueError):
+        return None
+    return request_id
+
+
 def _error_response(request_id: object, code: int, message: str) -> dict[str, object]:
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
@@ -191,7 +214,7 @@ def dispatch(message: object, grant: Grant, workspace: core.Workspace) -> dict[s
     if type(message) is not dict:
         return _error_response(None, _INVALID_REQUEST, "a request must be a JSON object")
     is_notification = "id" not in message
-    request_id = message.get("id")
+    request_id = _encodable_response_id(message.get("id"))
     if message.get("jsonrpc") != "2.0":
         return None if is_notification else _error_response(
             request_id, _INVALID_REQUEST, 'jsonrpc must be "2.0"'
@@ -246,20 +269,24 @@ def serve(
     ships.
 
     ``json.loads`` accepts the bare tokens ``Infinity``, ``-Infinity``, and
-    ``NaN`` as a non-standard extension, and would otherwise hand a
-    non-compliant client's own choice of one straight back out again --
-    ``request_id`` is echoed into every response unchanged, so a ``NaN`` sent
-    as ``id`` would otherwise reappear as a literal, unquoted ``NaN`` token in
-    a line no strict JSON parser accepts. ``parse_constant`` below refuses the
-    whole message instead. ``allow_nan=False`` on encode is the matching
-    belt-and-braces check for a value that reaches this far some other way.
+    ``NaN`` as a non-standard extension, and its normal floating-point parser
+    also turns an exponent outside its finite range into an infinity. Either
+    would otherwise let an echoed request id corrupt a response line. The
+    three decoding hooks below refuse both forms before dispatch, and the
+    strict encoder plus response-id sanitiser cover a value that reaches this
+    far some other way.
     """
     for line in stdin:
         stripped = line.strip()
         if not stripped:
             continue
         try:
-            message = json.loads(stripped, parse_constant=_refuse_nonstandard_constant)
+            message = json.loads(
+                stripped,
+                parse_constant=_refuse_nonstandard_constant,
+                parse_float=_refuse_nonfinite_float,
+                parse_int=_decode_integer,
+            )
         except (ValueError, RecursionError) as error:
             response: dict[str, object] | None = _error_response(
                 None, _PARSE_ERROR, f"invalid JSON: {error}"
@@ -277,11 +304,12 @@ def serve(
                 # here and end the whole session over one response.
                 encoded = json.dumps(
                     _error_response(
-                        response.get("id"),
+                        _encodable_response_id(response.get("id")),
                         _SERVER_ERROR,
                         f"result is not representable as strict JSON: {error}",
                     ),
                     sort_keys=True,
+                    allow_nan=False,
                 )
             stdout.write(encoded)
             stdout.write("\n")

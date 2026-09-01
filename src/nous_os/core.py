@@ -178,10 +178,9 @@ class AliasedWorkspaceLocation(Exception):
     directory this process cannot list, or a file it names but cannot then
     stat, refuses the whole workspace instead of silently reporting fewer
     identities than canon actually holds -- see
-    :func:`_canonical_file_identities`. Both routes to that refusal already
-    need write access to canon and its parent to set up, so neither is
-    reachable from a transport request; that precondition does not excuse a
-    guard that would otherwise fail open. What this cannot cover, honestly: a
+    :func:`_canonical_file_identities`. A dangling canonical symlink has no
+    target identity to contribute, so it does not make the workspace
+    unavailable. What this cannot cover, honestly: a
     canonical file reachable only beneath a *symlinked* subdirectory is not
     enumerated as canon at all, because neither ``rglob`` nor ``os.walk``
     descends a symlinked directory on this runtime, so a store hard-linked to
@@ -397,33 +396,44 @@ def _reraise_walk_error(error: OSError) -> None:
 def _canonical_file_identities(root: Path) -> frozenset[tuple[int, int]]:
     """Every regular file's identity beneath ``root``, or a refusal.
 
-    A missing root has no files to contribute, so an empty result is correct.
-    A root that is not a directory also produces an empty result through
-    ``Path.is_dir``, which is a real answer -- there is nothing beneath a
-    non-directory to enumerate -- not a failure being hidden. Used to catch a
-    store hard-linked to a canonical document or snapshot blob that is not
-    itself one of the seven configured locations, and so is otherwise
-    invisible to the pairwise comparison above.
+    A missing root, including a path below a non-directory ancestor, has no
+    files to contribute. Any other failure to stat the root, or a root that
+    exists but is not a directory, refuses: those cases do not establish an
+    empty directory. Used to catch a store hard-linked to a canonical document
+    or snapshot blob that is not itself one of the seven configured locations,
+    and so is otherwise invisible to the pairwise comparison above.
 
     Everything past that point is fail-closed rather than best-effort: an
     incomplete identity set looks identical to a complete one to every caller
     of this function, which is exactly the defect. A directory ``os.walk``
     cannot list, or a file it names but this process cannot then stat --
-    ``rglob``'s own default behaviour before this function used, which
-    silently reports fewer identities than canon actually holds instead of
-    raising anything -- refuses the whole workspace instead. The only route
-    that reaches this refusal already needs write access to canon and its
-    parent to set up an unreadable subtree there in the first place; that
-    precondition does not make a guard that would otherwise fail open here
-    excusable.
+    unlike ``rglob``'s default behaviour, which silently reports fewer
+    identities than canon actually holds -- refuses the whole workspace
+    instead. A named entry that is absent, including a dangling symlink,
+    contributes no identity and is skipped.
     """
-    if not root.is_dir():
+    try:
+        root_info = os.stat(root)
+    except (FileNotFoundError, NotADirectoryError):
         return frozenset()
+    except OSError as error:
+        raise AliasedWorkspaceLocation(
+            f"cannot enumerate canonical file identities beneath {root}: {error}; "
+            "NousOS refuses the workspace rather than checking a possibly "
+            "incomplete set"
+        ) from error
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise AliasedWorkspaceLocation(
+            f"cannot enumerate canonical file identities beneath {root}: root is not a directory"
+        )
     identities: set[tuple[int, int]] = set()
     try:
         for dirpath, _dirnames, filenames in os.walk(root, onerror=_reraise_walk_error):
             for filename in filenames:
-                info = os.stat(os.path.join(dirpath, filename))
+                try:
+                    info = os.stat(os.path.join(dirpath, filename))
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
                 if stat.S_ISREG(info.st_mode) and info.st_ino != 0:
                     identities.add((info.st_dev, info.st_ino))
     except OSError as error:

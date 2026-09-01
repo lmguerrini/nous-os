@@ -173,6 +173,16 @@ def _scan_for_forbidden_fields(value: object) -> str | None:
     return None
 
 
+def _reject_duplicate_json_members(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build one JSON object only when every member name is unique."""
+    names: set[str] = set()
+    for name, _value in pairs:
+        if name in names:
+            raise MalformedArtifact(f"duplicate JSON member {name!r}")
+        names.add(name)
+    return dict(pairs)
+
+
 def _optional_string(value: object, field: str) -> str | None:
     if value is None:
         return None
@@ -270,7 +280,7 @@ def load_artifact(path: Path) -> Artifact:
     except OSError as error:
         raise MalformedArtifact(f"could not read the artifact file at {path}: {error}") from error
     try:
-        document = json.loads(raw)
+        document = json.loads(raw, object_pairs_hook=_reject_duplicate_json_members)
     except json.JSONDecodeError as error:
         raise MalformedArtifact(
             f"the artifact file at {path} is not valid JSON: {error}"

@@ -234,3 +234,44 @@ def test_load_artifact_refuses_invalid_json(tmp_path: Path) -> None:
     path.write_text("{not valid json", encoding="utf-8")
     with pytest.raises(artifact.MalformedArtifact):
         artifact.load_artifact(path)
+
+
+@pytest.mark.parametrize(
+    "raw_document",
+    (
+        """{
+  "schema": "nous-os.candidate-proposal-artifact",
+  "schema": "other",
+  "version": 1,
+  "proposals": []
+}""",
+        """{
+  "schema": "nous-os.candidate-proposal-artifact",
+  "version": 1,
+  "proposals": [{
+    "source_id": "src_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "content": {"grant": "promote"},
+    "content": "accepted text",
+    "proposed_at": "2026-01-02T12:00:00+00:00",
+    "holder": "fixture holder"
+  }]
+}""",
+        """{
+  "schema": "nous-os.candidate-proposal-artifact",
+  "version": 1,
+  "proposals": [{
+    "source_id": "src_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "content": {"nested": {"grant": "promote"}, "nested": "accepted text"},
+    "proposed_at": "2026-01-02T12:00:00+00:00",
+    "holder": "fixture holder"
+  }]
+}""",
+    ),
+)
+def test_load_artifact_refuses_duplicate_members_at_every_object_depth(
+    tmp_path: Path, raw_document: str
+) -> None:
+    path = tmp_path / "artifact.json"
+    path.write_text(raw_document, encoding="utf-8")
+    with pytest.raises(artifact.MalformedArtifact, match="duplicate JSON member"):
+        artifact.load_artifact(path)
