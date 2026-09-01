@@ -87,7 +87,7 @@ def _pooled_table(arm: RunArmMetrics) -> list[str]:
         rows.append(f"| Recall@{k} | {_format_rate(arm.recall_at[k])} |")
     rows.extend(
         [
-            f"| MRR (reciprocal-rank total / cells) | {_format_rate(arm.mrr)} |",
+            f"| MRR@20 (reciprocal-rank total over ranks <= 20 / cells) | {_format_rate(arm.mrr)} |",
             f"| Unique recall@10 vs BASELINE | {_format_rate(arm.unique_recall_at[10])} |",
             f"| Lost recall@10 vs BASELINE | {_format_rate(arm.lost_recall_at[10])} |",
         ]
