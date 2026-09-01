@@ -1554,10 +1554,24 @@ def test_the_injection_canon_digest_is_stable_and_sensitive_to_every_input(
     assert ledger_changed != snapshot_changed
 
 
-def test_the_command_line_has_no_binding_that_can_reach_a_governed_operation(
+def test_the_command_line_reaches_a_governed_operation_only_through_core(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The current command path inherits the boundary because it cannot call it."""
+    """The command line now has a real surface; the boundary must hold anyway.
+
+    The premise the earlier version of this test relied on -- that the
+    command line was inert, because ``nous_os.__main__`` printed a version and
+    nothing else -- is gone by design: the command line now genuinely reaches
+    a governed operation and produces a real, durable effect. What must still
+    hold is asserted directly here rather than inferred from that former
+    inertness: the command line reaches a governed operation only through
+    :func:`nous_os.core.invoke`. It holds no binding to any domain
+    implementation, to :mod:`nous_os.operations`, or to
+    :func:`nous_os.capability.execute` itself -- checked below against the
+    same live registry entries the rest of this suite derives its transports
+    from, not against a hand-written list of names.
+    """
     operations = _registered_operations()
     targets = (
         authority,
@@ -1570,6 +1584,34 @@ def test_the_command_line_has_no_binding_that_can_reach_a_governed_operation(
     assert command_line.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out
+
+    # The stronger conclusion: run a real proposal through the command line's
+    # own entry point, against a real workspace, and see the governed effect
+    # actually land -- while the structural absence above still holds.
+    data_root = tmp_path / "documents"
+    data_root.mkdir()
+    argv = [
+        "--data-root", str(data_root),
+        "--snapshot-root", str(tmp_path / "snapshots"),
+        "--ledger-path", str(tmp_path / "ledger.jsonl"),
+        "--derived-path", str(tmp_path / "derived.sqlite"),
+        "--candidate-store-path", str(tmp_path / "candidates.jsonl"),
+        "--bridge-registry-path", str(tmp_path / "bridges.jsonl"),
+        "--rejection-memory-path", str(tmp_path / "rejections.jsonl"),
+        "--tier", "propose",
+        "candidate.propose",
+        "--source-id", "src_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "--content", "a real proposal reached through the command line",
+        "--proposed-at", "2026-01-02T12:00:00+00:00",
+        "--holder", "cli test",
+    ]
+    exit_code = command_line.main(argv)
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert (tmp_path / "candidates.jsonl").is_file()
+    recorded_line = (tmp_path / "candidates.jsonl").read_text(encoding="utf-8").strip().splitlines()[0]
+    recorded = json.loads(recorded_line)
+    assert recorded["content"] == "a real proposal reached through the command line"
 
 
 def test_propose_cannot_reach_promotion_and_promote_changes_authorization_record(

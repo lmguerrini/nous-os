@@ -146,7 +146,7 @@ private corpus stays outside this repository and is never committed.
 src/
 └── nous_os/
     ├── __init__.py       the version surface
-    ├── __main__.py       the command surface
+    ├── __main__.py       the process entry point, delegating to cli.py
     ├── config.py         data-root resolution
     ├── identity.py       stable ids and content hashing
     ├── snapshots.py      immutable, content-addressed source snapshots
@@ -169,7 +169,10 @@ src/
     ├── discovery.py      bridge candidates, gates, and append-only rounds
     ├── projection.py     renderer-independent knowledge graph projections
     ├── operations.py     registration of the project's governed operations
-    └── core.py           the one application service boundary
+    ├── core.py           the one application service boundary
+    ├── cli.py            the command-line transport, generated from the catalogue
+    ├── mcp.py            the stdio JSON-RPC transport, generated from the catalogue
+    └── artifact.py       the portable proposal artifact; refused if it carries authority
 ui/
 └── src/
     ├── adapter/          projections read into the visual model, meaning kept sealed

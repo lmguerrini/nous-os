@@ -59,11 +59,16 @@ def test_version_flag_prints_the_same_version() -> None:
     assert result.stdout.strip() == nous_os.__version__
 
 
-def test_the_command_surface_is_still_only_version() -> None:
-    """Scope guard: this repository does not yet have a command surface.
+def test_the_command_surface_is_generated_from_the_published_catalogue() -> None:
+    """Scope guard, updated deliberately: the command surface now exists.
 
-    If an operation is added, it arrives with the work that tests it, and this
-    test is updated deliberately rather than discovered to be stale.
+    The earlier version of this test asserted the surface was still only
+    ``--version``, on the premise that adding an operation would arrive with
+    the work that tests it. That work has now arrived: ``nous_os.cli`` builds
+    one subcommand per entry in ``nous_os.core.CATALOGUE``, generated rather
+    than hand-written. This test reads the catalogue itself, rather than
+    retyping a list of names that could drift from it, and checks that every
+    published name actually reaches the real ``--help`` output.
     """
     result = subprocess.run(
         [sys.executable, "-m", "nous_os", "--help"],
@@ -73,4 +78,8 @@ def test_the_command_surface_is_still_only_version() -> None:
         env=_child_env(),
     )
     assert "--version" in result.stdout
-    assert "{" not in result.stdout, "a subcommand parser appeared without a test"
+
+    import nous_os.core as core
+
+    for descriptor in core.CATALOGUE:
+        assert descriptor.external_name in result.stdout

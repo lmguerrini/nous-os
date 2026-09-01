@@ -1,24 +1,14 @@
-"""Entry point. Reports the version and nothing else.
+"""Entry point. Delegates the whole command line to :mod:`nous_os.cli`.
 
-The command surface is deliberately this small. Operations arrive with the
-capabilities that define them, so that nothing here claims a behaviour the
-test suite does not yet cover.
+This module keeps no argument-parsing logic of its own -- :mod:`nous_os.cli`
+is the one place that walks :data:`nous_os.core.CATALOGUE` to build the real
+command surface, including ``--version``, so there is exactly one parser to
+keep in step with the catalogue rather than two.
 """
 
 from __future__ import annotations
 
-import argparse
-
-from nous_os import __version__
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="nous-os", description="NousOS")
-    parser.add_argument("--version", action="version", version=__version__)
-    parser.parse_args(argv)
-    parser.print_help()
-    return 0
-
+from nous_os.cli import main
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
