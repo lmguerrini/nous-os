@@ -11,6 +11,7 @@ docstrings.
 from __future__ import annotations
 
 import ast
+import argparse
 import json
 import subprocess
 import sys
@@ -324,6 +325,21 @@ def test_catalogue_parameter_colliding_with_import_destination_is_refused(
         cli._build_parser()
 
 
+def test_catalogue_parameter_colliding_with_help_destination_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    colliding = core.OperationDescriptor(
+        "synthetic.help-collision",
+        None,
+        Tier.READ,
+        "synthetic help collision",
+        (core.ParameterSpec("help", "string", False, "would replace parser help"),),
+    )
+    monkeypatch.setattr(core, "CATALOGUE", (*core.CATALOGUE, colliding))
+    with pytest.raises(cli.CliError, match="reserved startup destination"):
+        cli._build_parser()
+
+
 def test_argparse_abbreviation_cannot_smuggle_a_subcommand_option_into_the_startup_tier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -569,6 +585,13 @@ def test_conflicting_proposal_source_is_refused(tmp_path: Path, capsys: pytest.C
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.err.startswith("ConflictingProposalSource:")
+
+
+def test_import_mode_is_refused_for_a_descriptor_other_than_candidate_propose() -> None:
+    """The import branch validates its target even if a caller supplies a namespace directly."""
+    namespace = argparse.Namespace(operation="system.capabilities", from_artifact="input.json")
+    with pytest.raises(cli.CliError, match="only valid for candidate.propose"):
+        cli._run(namespace)
 
 
 def test_an_artifact_carrying_an_authority_field_is_refused_not_imported(

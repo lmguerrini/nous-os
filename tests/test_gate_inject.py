@@ -520,6 +520,7 @@ def _run_matrix(
     operations: tuple[core.OperationDescriptor, ...],
     tier_sets: tuple[frozenset[Tier], ...],
     attempts: tuple[_Attempt, ...],
+    execution_context: list[tuple[str, tuple[str, ...], str, str]] | None = None,
 ) -> _MatrixResult:
     """Run each selected cell twice: benign reference then hostile sample."""
     if not transports or not operations or not tier_sets or not attempts:
@@ -548,26 +549,50 @@ def _run_matrix(
                 ]
                 for tiers in tier_sets:
                     realised += 1
+
+                    def drive(
+                        side: str,
+                        arguments: dict[str, object],
+                        grant: Grant,
+                        workspace: core.Workspace,
+                    ) -> _Call:
+                        if execution_context is not None:
+                            execution_context.append(
+                                (
+                                    transport.name,
+                                    tuple(sorted(tier.value for tier in tiers)),
+                                    attempt.identifier,
+                                    side,
+                                )
+                            )
+                        try:
+                            return transport.driver(
+                                transport.entry,
+                                descriptor,
+                                arguments,
+                                grant,
+                                workspace,
+                                capsys,
+                                monkeypatch,
+                            )
+                        finally:
+                            if execution_context is not None:
+                                execution_context.pop()
+
                     reference_before = _file_bytes(reference_world.root.parent)
-                    reference = transport.driver(
-                        transport.entry,
-                        descriptor,
+                    reference = drive(
+                        "reference",
                         _arguments(descriptor, reference_world, _BENIGN),
                         Grant(_BENIGN, tiers),
                         reference_workspace,
-                        capsys,
-                        monkeypatch,
                     )
                     reference_after = _file_bytes(reference_world.root.parent)
                     sample_before = _file_bytes(sample_world.root.parent)
-                    sample = transport.driver(
-                        transport.entry,
-                        descriptor,
+                    sample = drive(
+                        "sample",
                         _arguments(descriptor, sample_world, attempt.text),
                         Grant(attempt.text, tiers),
                         sample_workspace,
-                        capsys,
-                        monkeypatch,
                     )
                     sample_after = _file_bytes(sample_world.root.parent)
                     if reference.kind == "failed":
@@ -691,7 +716,7 @@ def _assert_complete(result: _MatrixResult, transports: tuple[_Transport, ...]) 
 
 
 def _assert_governed_execution_counts(
-    observed: list[tuple[str, str]],
+    observed: list[tuple[str, str, tuple[str, ...], str, str]],
     transports: tuple[_Transport, ...],
     operations: tuple[core.OperationDescriptor, ...],
     tier_sets: tuple[frozenset[Tier], ...],
@@ -702,52 +727,33 @@ def _assert_governed_execution_counts(
     Each selected cell runs both reference and hostile values. Core-level reads
     have no registered operation and therefore correctly contribute no call.
 
-    ``observed`` is keyed by ``(transport, operation)``, not merely
-    ``operation``: an operation-only aggregate collapses every transport into
-    one total, so one route bypassing ``execute`` while another double-counts
-    the identical operation can leave the grand total matching anyway. Keying
-    by transport as well as operation is what actually catches that.
+    ``observed`` is keyed by ``(transport, operation, tiers, attempt, side)``.
+    A coarser key can hide a missing execution in one cell if another cell of
+    the same transport and operation is counted twice; retaining every axis
+    makes each missing or repeated execution visible on its own.
     """
-    expected: Counter[tuple[str, str]] = Counter()
-    executions_per_cell = 2 * len(tier_sets) * len(attempts)
+    expected: Counter[tuple[str, str, tuple[str, ...], str, str]] = Counter()
     for transport in transports:
         for descriptor in operations:
             if descriptor.operation is not None:
-                expected[(transport.name, descriptor.operation)] += executions_per_cell
+                for tiers in tier_sets:
+                    tier_names = tuple(sorted(tier.value for tier in tiers))
+                    for attempt in attempts:
+                        for side in ("reference", "sample"):
+                            expected[
+                                (
+                                    transport.name,
+                                    descriptor.operation,
+                                    tier_names,
+                                    attempt.identifier,
+                                    side,
+                                )
+                            ] += 1
     actual = Counter(observed)
     if actual != expected:
         raise _MatrixFailure(
             f"governed executions through execute={actual!r}, expected={expected!r}"
         )
-
-
-def _transport_tagging_execute_calls(
-    transport: _Transport, current_transport: list[str]
-) -> _Transport:
-    """Wrap one transport's driver so an execute-call observer can name its caller.
-
-    ``core.execute`` itself carries no transport identity -- it is one
-    function shared by every route -- so the only place that identity is
-    available is here, immediately around the one driver call that reaches
-    it for this transport, for this cell.
-    """
-
-    def tagged_driver(
-        entry: Callable[..., object],
-        descriptor: core.OperationDescriptor,
-        arguments: dict[str, object],
-        grant: Grant,
-        workspace: core.Workspace,
-        capsys: pytest.CaptureFixture[str],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> _Call:
-        current_transport.append(transport.name)
-        try:
-            return transport.driver(entry, descriptor, arguments, grant, workspace, capsys, monkeypatch)
-        finally:
-            current_transport.pop()
-
-    return _Transport(transport.name, transport.entry, tagged_driver)
 
 
 def test_g_inject_real_transports_cover_the_declared_live_matrix(
@@ -761,15 +767,16 @@ def test_g_inject_real_transports_cover_the_declared_live_matrix(
     _assert_live_operation_axis(operations)
     tier_sets = _tier_sets()
     attempts, scope_not_run = _attempts()
-    current_transport: list[str] = []
-    transports = tuple(
-        _transport_tagging_execute_calls(transport, current_transport) for transport in live
-    )
-    observed_execute_calls: list[tuple[str, str]] = []
+    transports = live
+    execution_context: list[tuple[str, tuple[str, ...], str, str]] = []
+    observed_execute_calls: list[tuple[str, str, tuple[str, ...], str, str]] = []
     original_execute = core.execute
 
     def count_execute(grant: Grant, operation: str, **kwargs: object) -> object:
-        observed_execute_calls.append((current_transport[-1], operation))
+        if not execution_context:
+            raise _MatrixFailure("execute ran outside a selected matrix cell")
+        transport, tiers, attempt, side = execution_context[-1]
+        observed_execute_calls.append((transport, operation, tiers, attempt, side))
         return original_execute(grant, operation, **kwargs)
 
     monkeypatch.setattr(core, "execute", count_execute)
@@ -781,6 +788,7 @@ def test_g_inject_real_transports_cover_the_declared_live_matrix(
         operations=operations,
         tier_sets=tier_sets,
         attempts=attempts,
+        execution_context=execution_context,
     )
     expected = len(transports) * len(operations) * len(tier_sets) * len(attempts)
     _assert_cell_count(result.expected, expected)
@@ -885,11 +893,15 @@ def test_g_inject_n9_execution_outside_execute_is_detected(
     descriptor = next(
         item for item in core.CATALOGUE if item.external_name == "candidate.propose"
     )
-    observed_execute_calls: list[tuple[str, str]] = []
+    execution_context: list[tuple[str, tuple[str, ...], str, str]] = []
+    observed_execute_calls: list[tuple[str, str, tuple[str, ...], str, str]] = []
     original_execute = core.execute
 
     def count_execute(grant: Grant, operation: str, **kwargs: object) -> object:
-        observed_execute_calls.append(("mcp.dispatch", operation))
+        if not execution_context:
+            raise _MatrixFailure("execute ran outside a selected matrix cell")
+        transport, tiers, attempt, side = execution_context[-1]
+        observed_execute_calls.append((transport, operation, tiers, attempt, side))
         return original_execute(grant, operation, **kwargs)
 
     def unchecked(message: object, grant: Grant, workspace: core.Workspace) -> dict[str, object]:
@@ -930,6 +942,7 @@ def test_g_inject_n9_execution_outside_execute_is_detected(
             operations=(descriptor,),
             tier_sets=tier_sets,
             attempts=attempts,
+            execution_context=execution_context,
         )
         with pytest.raises(_MatrixFailure, match="governed executions through execute"):
             _assert_governed_execution_counts(
@@ -987,29 +1000,23 @@ def test_g_inject_n10_hostile_only_canonical_write_under_authorization_is_detect
         _assert_complete(result, transports)
 
 
-def test_g_inject_n11_compensating_transport_miscounts_are_detected() -> None:
-    """N11 proves one route under-counting while another over-counts cannot cancel out.
+def test_g_inject_n11_compensating_miscounts_within_one_route_are_detected() -> None:
+    """N11 proves a repeated reference execution cannot mask a missing sample execution.
 
-    Before A4, ``observed_execute_calls`` was a plain ``Counter[str]`` keyed
-    by operation name alone, summed across every transport -- so one route
-    silently bypassing ``execute`` for a cell while another route
-    double-counted the identical operation could leave the grand total
-    exactly matching ``expected`` even though neither transport's own count
-    was right. Handing ``_assert_governed_execution_counts`` an ``observed``
-    list built that way directly proves the ``(transport, operation)`` keying
-    catches what a bare operation total could not.
+    Both observations belong to one transport-operation pair and preserve that
+    pair's total of two. A counter keyed only by that pair would accept them;
+    the full cell key must instead raise because the reference side appears
+    twice and the sample side does not appear.
     """
-    transports = _live_transports()
+    transports = (_live_transports()[0],)
     descriptor = next(item for item in core.CATALOGUE if item.external_name == "candidate.propose")
     tier_sets = (frozenset({Tier.PROPOSE}),)
     attempts = (_Attempt("benign_reference", _BENIGN),)
-    executions_per_cell = 2 * len(tier_sets) * len(attempts)
-    observed: list[tuple[str, str]] = []
-    for index, transport in enumerate(transports):
-        count = executions_per_cell + (1 if index == 0 else -1)
-        observed.extend((transport.name, descriptor.operation) for _ in range(count))
-    # The grand total across transports is unchanged from what a correct run
-    # would produce -- an operation-only aggregate would not see this at all.
-    assert len(observed) == executions_per_cell * len(transports)
+    assert descriptor.operation is not None
+    tiers = (Tier.PROPOSE.value,)
+    observed = [
+        (transports[0].name, descriptor.operation, tiers, "benign_reference", "reference"),
+        (transports[0].name, descriptor.operation, tiers, "benign_reference", "reference"),
+    ]
     with pytest.raises(_MatrixFailure, match="governed executions through execute"):
         _assert_governed_execution_counts(observed, transports, (descriptor,), tier_sets, attempts)

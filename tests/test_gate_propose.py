@@ -279,15 +279,14 @@ def test_g_propose_n5_an_aliased_workspace_is_refused_and_the_widened_digest_wou
 ) -> None:
     """N5 proves both halves of the aliasing defence: the refusal, and the digest behind it.
 
-    ``resolve_workspace`` refuses a candidate store path that resolves inside
-    the canonical data root before a ``Workspace`` is ever built from it.
-    Bypassing that refusal by constructing a ``Workspace`` directly --
-    standing in for what a caller would see if the refusal did not exist,
-    since the dataclass itself performs no aliasing check -- and then
-    actually recording a proposal into it shows the widened digest (the data
-    root included, not merely the snapshot store and the ledger) catches the
-    write: it lands inside the data root, a location the pre-widen digest
-    never read at all.
+    ``resolve_workspace`` refuses a candidate store path inside the canonical
+    data root here; ``test_the_exported_workspace_constructor_refuses_a_store_inside_canon``
+    covers the ordinary direct constructor. This control deliberately bypasses
+    ``Workspace.__post_init__`` with ``object.__new__`` solely to create the
+    counterfactual bad value, then actually records a proposal into it. That
+    proves the widened digest (the data root included, not merely the snapshot
+    store and the ledger) catches the write: it lands inside the data root, a
+    location the pre-widen digest never read at all.
     """
     monkeypatch.setattr(candidates, "new_assertion_id", lambda: _FIXED_PROPOSAL_ID)
     root = tmp_path / "aliased"
@@ -306,15 +305,17 @@ def test_g_propose_n5_an_aliased_workspace_is_refused_and_the_widened_digest_wou
             rejection_memory_path=root / "rejections.jsonl",
         )
 
-    bypassed_workspace = core.Workspace(
-        data_root=DataRoot(data_root),
-        snapshot_root=root / "snapshots",
-        ledger_path=root / "ledger.jsonl",
-        derived_path=root / "derived.sqlite",
-        candidate_store_path=aliased_candidate_store,
-        bridge_registry_path=root / "bridges.jsonl",
-        rejection_memory_path=root / "rejections.jsonl",
-    )
+    bypassed_workspace = object.__new__(core.Workspace)
+    for field, value in {
+        "data_root": DataRoot(data_root),
+        "snapshot_root": root / "snapshots",
+        "ledger_path": root / "ledger.jsonl",
+        "derived_path": root / "derived.sqlite",
+        "candidate_store_path": aliased_candidate_store,
+        "bridge_registry_path": root / "bridges.jsonl",
+        "rejection_memory_path": root / "rejections.jsonl",
+    }.items():
+        object.__setattr__(bypassed_workspace, field, value)
     before = _canonical_bytes(bypassed_workspace)
     core.invoke(
         Grant("aliasing control", frozenset({Tier.PROPOSE})),

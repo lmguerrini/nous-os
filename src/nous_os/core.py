@@ -1,16 +1,15 @@
-"""The one application service boundary. Everything outside this package uses this.
+"""The application service boundary used by the CLI and stdio transports.
 
-A CLI and an MCP-shaped server are later work built *on top of* this module,
-and neither of them is allowed to read anything about the project's governed
-operations except what this module publishes. That is the whole reason this
-module exists rather than letting each interface grow its own ad hoc mapping
-from a request shape to :func:`nous_os.capability.execute`: two independently
-written mappings drift, and the drift is exactly the kind of thing a security
-boundary cannot afford.
+A CLI and an MCP-shaped server are built *on top of* this module. Neither
+derives an operation name, tier, or parameter specification from a domain
+module; it reads the published catalogue instead. That avoids separate
+transport mappings from a request shape to :func:`nous_os.capability.execute`,
+which could drift apart.
 
-**Core never imports a domain implementation in order to call it.** Every
-governed call goes through :func:`nous_os.capability.execute`, which is the
-package's one door. Core imports domain *types* — dataclasses, enums, stores —
+**Core never imports a domain implementation in order to call it.** Every Core
+call that names a registered operation goes through
+:func:`nous_os.capability.execute`, which is this module's one registered-call
+door. Core imports domain *types* — dataclasses, enums, stores —
 to build arguments and to render results, because turning a JSON object into a
 :class:`~nous_os.provenance.Citation` or a :class:`~nous_os.discovery.BridgeCard`
 is binding, not bypassing. It never imports a registered operation's
@@ -20,16 +19,16 @@ exists to guard.
 **The catalogue holds no promotion.** ``ingest_source`` and
 ``promote_candidate`` are registered at ``Tier.PROMOTE`` and are deliberately
 absent from :data:`CATALOGUE`. That is not an oversight to be filled in later;
-it is the property this module exists to hold. A promotion or an outside
-action can only ever be reached by a human working a step this module does not
-offer, and :func:`invoke` raises before any promotion-tier operation could be
-named, because no descriptor names one.
+it is the property this module exists to hold. Through this module's
+catalogue, :func:`invoke` cannot name a promotion-tier operation because no
+descriptor names one. Other package APIs are outside this contract.
 
 **Argument content cannot move authority.** :func:`invoke` resolves a
-descriptor from the external name alone, reads that descriptor's tier from the
-governed registry at catalogue-construction time, and only then looks at the
-supplied JSON arguments. Nothing in the JSON a caller supplies is capable of
-choosing a different operation or a different tier: there is no field named
+descriptor from the external name alone and only then looks at the supplied
+JSON arguments. A registered operation's descriptor tier is read from the
+governed registry at catalogue construction; the two Core-level reads share a
+fixed READ tier. Nothing in the JSON a caller supplies is capable of choosing
+a different operation or a different tier: there is no field named
 ``operation`` or ``tier`` anywhere in the parameter specifications below, and
 the lookup that resolves both happens before a single argument value is read.
 """
@@ -131,11 +130,10 @@ class ArgumentTypeError(ArgumentError):
 class PromotionNotOffered(CoreError):
     """Raised when a catalogue entry would be built at PROMOTE or ECA tier.
 
-    This is the capability's central property, enforced at construction rather
-    than left as an absence someone could stop noticing: a promotion or an
-    outside action can only ever be reached by a step this contract does not
-    offer, and building a descriptor for one raises before the catalogue can
-    hold it.
+    This contract's refusal is enforced at construction rather than left as an
+    absence someone could stop noticing: it offers neither a promotion nor an
+    outside action, and building a descriptor for one raises before the
+    catalogue can hold it.
     """
 
 
@@ -162,26 +160,32 @@ class AliasedWorkspaceLocation(Exception):
     resolves cleanly and a PROPOSE call appends a proposal record straight
     into the file configured as the ledger; a store resolving inside the
     canonical data root is refused for the identical reason, because a write
-    there is a write to canon by another name. The same refusal protects
-    every canonical location -- data root, snapshot root, and ledger --
-    in both directions against every noncanonical store, whether or not that
-    location has been created on disk yet, and against a store that is
-    hard-linked to a document already sitting beneath the data root or the
-    snapshot root, not merely against the other six configured names.
+    there is a write to canon by another name. The same refusal compares every
+    canonical location -- data root, snapshot root, and ledger -- against
+    every noncanonical store in both directions, whether or not that location
+    has been created on disk yet. It additionally catches a store hard-linked
+    to a traversable document beneath the data root or snapshot root, not
+    merely one of the other six configured names.
 
     Every location is resolved fully -- symlinks followed, ``..`` collapsed --
     before any of these are compared, and every comparison below prefers
     filesystem truth (device and inode) to string truth wherever that truth
-    is available, so a hard link, a not-yet-created ledger directory, a
+    is available. That catches direct location aliases, a hard link to a
+    traversable canonical file, a not-yet-created ledger directory, a
     case-only variant on this platform's own case-insensitive volume, and a
-    Unicode NFC/NFD variant of an existing directory's name can none of them
-    spell the same file or directory two different ways to defeat this. What
-    this cannot cover, honestly: an ``OSError`` other than a missing file
+    Unicode NFC/NFD variant of an existing directory name. What this cannot
+    cover, honestly: an ``OSError`` other than a missing file
     while comparing two paths that do exist refuses the whole workspace
     rather than guessing, and a not-yet-existing path is compared by a
     normalised spelling rather than filesystem truth, which is inherently
     unable to observe a filesystem-specific aliasing rule this project has
-    not been shown a reproduction of.
+    not been shown a reproduction of. It also cannot make a later pathname
+    write race-safe: an adversary who can already write the workspace
+    directory can replace a not-yet-existing store path, or one of its
+    ancestors, with a symlink into canon after this check and before the store
+    opens that pathname. A race-safe candidate-store write requires the
+    candidate store to use descriptor-relative, no-follow filesystem calls;
+    that belongs in the candidate store and is outside this Core check.
     """
 
 
@@ -198,11 +202,12 @@ REJECTION_MEMORY_PATH_ENV_VAR: Final = "NOUS_OS_REJECTION_MEMORY_PATH"
 
 @dataclass(frozen=True, slots=True)
 class Workspace:
-    """Every on-disk location Core resolves. Nothing here is guessed.
+    """Every on-disk location Core resolves, validated when it is constructed.
 
-    A caller who supplies nothing — no explicit argument and no environment
-    variable, for any one of these seven locations — gets a refusal, not a
-    default that happens to work on the machine that wrote it.
+    ``resolve_workspace`` refuses a caller that leaves any location
+    unconfigured rather than selecting a machine-specific default. Direct
+    construction requires all seven values, resolves their spellings, and
+    applies the same overlap refusal.
     """
 
     data_root: DataRoot
@@ -212,6 +217,29 @@ class Workspace:
     candidate_store_path: Path
     bridge_registry_path: Path
     rejection_memory_path: Path
+
+    def __post_init__(self) -> None:
+        """Resolve direct inputs before applying the shared overlap refusal."""
+        if type(self.data_root) is not DataRoot:
+            raise CoreError("workspace data_root must be a DataRoot")
+        object.__setattr__(
+            self, "data_root", DataRoot(self.data_root.path.expanduser().resolve())
+        )
+        for field in (
+            "snapshot_root",
+            "ledger_path",
+            "derived_path",
+            "candidate_store_path",
+            "bridge_registry_path",
+            "rejection_memory_path",
+        ):
+            value = getattr(self, field)
+            try:
+                resolved = Path(value).expanduser().resolve()
+            except (TypeError, ValueError) as error:
+                raise CoreError(f"workspace {field} must be path-like") from error
+            object.__setattr__(self, field, resolved)
+        _refuse_aliased_locations(self)
 
 
 def _resolve_path(
@@ -270,19 +298,17 @@ def _normalized_spelling(path: Path) -> str:
     so two arguments that look different can still name what a filesystem
     would treat as one location once something is actually written there,
     and ``os.stat`` cannot settle that for a path that is not there yet to
-    stat. ``unicodedata.normalize("NFC", ...)`` folds a decomposed and a
-    precomposed spelling of one name together without ever merging two
-    genuinely different names, because NFC is a canonical, meaning-preserving
-    transform -- that part of this key is exact, not a guess. Case is not
-    exact the same way: ``os.path.normcase`` case-folds only on Windows, and
-    this project also has to run correctly on this platform's own
+    stat. ``unicodedata.normalize("NFC", ...)`` merges decomposed and
+    precomposed spellings; a filesystem can distinguish those names, so that
+    merge is conservative rather than a proof of aliasing. Case is
+    conservative in the same way: ``os.path.normcase`` case-folds only on
+    Windows, and this project also has to run correctly on this platform's own
     case-insensitive-by-default volume, where it does not. ``casefold()`` is
-    therefore applied unconditionally in addition to it. That is deliberately
-    conservative rather than platform-exact: on a genuinely case-sensitive
-    filesystem this can refuse two not-yet-created locations that would not
-    actually have collided, and that direction of error -- an over-cautious
-    refusal, never an unproven claim that two spellings are safe -- is the
-    one this project accepts.
+    therefore applied unconditionally in addition to it. On a genuinely
+    case-sensitive or Unicode-sensitive filesystem this can refuse two
+    not-yet-created locations that would not actually have collided, and that
+    direction of error -- an over-cautious refusal, never an unproven claim
+    that two spellings are safe -- is the one this project accepts.
     """
     return unicodedata.normalize("NFC", os.path.normcase(str(path))).casefold()
 
@@ -336,14 +362,14 @@ def _is_inside(path: Path, container: Path) -> bool:
 
 
 def _canonical_file_identities(root: Path) -> frozenset[tuple[int, int]]:
-    """Every ``(device, inode)`` pair for a real file currently beneath ``root``.
+    """File identities the process can traverse and stat beneath ``root``.
 
-    ``root`` not existing yet is not an error here: there is nothing beneath
-    a directory that has not been created, so an empty result is the correct
-    answer, not a refusal. Used to catch a store hard-linked to a canonical
-    document or snapshot blob that is not itself one of the seven configured
-    locations, and so is otherwise invisible to the pairwise comparison
-    above.
+    A missing root has no files to contribute, so an empty result is correct.
+    A root that is inaccessible or not a directory also produces an empty
+    result through ``Path.is_dir``; in that excluded case this scan makes no
+    hard-link claim. Used to catch a store hard-linked to a canonical document
+    or snapshot blob that is not itself one of the seven configured locations,
+    and so is otherwise invisible to the pairwise comparison above.
     """
     if not root.is_dir():
         return frozenset()
@@ -369,10 +395,11 @@ def _refuse_aliased_locations(workspace: Workspace) -> None:
     store nested beneath a ledger path that has not been created yet is just
     as real a collision as one nested beneath an existing directory. A
     store's own filesystem identity is additionally checked against every
-    real file already sitting beneath the data root or the snapshot root, not
+    traversable regular file beneath the data root or the snapshot root, not
     only against the other six configured names, because a hard link makes a
-    store and a canonical document one file without either of their
-    configured paths ever equalling or containing the other.
+    store and a canonical document one file without either configured path
+    ever equalling or containing the other. Inaccessible files are excluded
+    from this scan, as described by :func:`_canonical_file_identities`.
     """
     locations = _workspace_locations(workspace)
     for index, first in enumerate(locations):
@@ -446,14 +473,14 @@ def resolve_workspace(
     the real process environment, exactly as :func:`~nous_os.config.resolve_data_root`
     already allows.
 
-    No two of the seven resolved locations may name the same filesystem object,
-    and no noncanonical store may overlap either canonical directory: see
-    :class:`AliasedWorkspaceLocation`. Without that check, two options naming
-    the same file resolve cleanly and a write meant for one store lands in
-    another.
+    The returned ``Workspace`` applies :class:`AliasedWorkspaceLocation` to
+    all seven locations: noncanonical stores may not overlap any canonical
+    location, and no pair may name one filesystem object. Without that check,
+    two options naming the same file resolve cleanly and a write meant for one
+    store lands in another.
     """
     env = os.environ if environ is None else environ
-    workspace = Workspace(
+    return Workspace(
         data_root=resolve_data_root(data_root, environ=env),
         snapshot_root=_resolve_path(
             snapshot_root, SNAPSHOT_ROOT_ENV_VAR, "snapshot store root", env
@@ -475,8 +502,6 @@ def resolve_workspace(
             env,
         ),
     )
-    _refuse_aliased_locations(workspace)
-    return workspace
 
 
 # --- the catalogue -----------------------------------------------------------
@@ -1386,10 +1411,11 @@ def _authorize_core_level(grant: Grant, tier: Tier) -> None:
 
     ``system.capabilities`` and ``system.health`` read no canonical content and
     call nothing through the governed registry, so there is no ``execute``
-    invocation to perform the tier check inside. This reproduces the identical
-    check ``execute`` performs — grant type, tier-set type, then membership —
-    so a grant lacking READ is refused by the same logic, not a parallel one
-    that could quietly drift from it.
+    invocation to perform the tier check inside. This is a hand-maintained
+    copy of ``execute``'s grant type, tier-set type, and membership checks;
+    ``test_core_level_authorization_matches_execute_for_valid_and_malformed_grants``
+    compares their accepted/refused outcomes for valid, missing, and malformed
+    grants. It is not mechanically bound to ``execute``.
     """
     refusal = "the grant does not hold the operation's required tier"
     if type(grant) is not Grant:
@@ -1513,9 +1539,10 @@ def validate_arguments(
     parameter specification, and runs the identical domain-type conversion
     the matching binder performs -- the exact two steps :func:`invoke`
     performs before it calls :func:`nous_os.capability.execute`, reusing that
-    same code so the two cannot drift apart from having been typed twice.
-    Raises the identical typed error :func:`invoke` would raise for a
-    malformed request; returns ``None`` for one that would have proceeded.
+    same code so those two checks cannot drift apart from having been typed
+    twice. Raises the identical typed error :func:`invoke` would raise for a
+    structural or binder-detected malformed request; returns ``None`` for a
+    request that would proceed through binding.
 
     This cannot reach a check a registered operation's own implementation
     performs only while actually running -- an identifier's exact format
@@ -1549,19 +1576,19 @@ def invoke(
        specification: an undeclared name or a wrong JSON type is refused.
     3. Build domain-typed keyword arguments from the validated JSON, through
        each domain type's own validating constructor.
-    4. Call :func:`nous_os.capability.execute` — the only call path a
-       registered operation is reached through — or, for the two Core-level
-       reads that name no registered operation, perform the identical
-       authorization check directly.
+    4. Call :func:`nous_os.capability.execute` — this module's only path to a
+       registered operation — or, for the two Core-level reads that name no
+       registered operation, perform the copied authorization check directly.
     5. Render the domain result back into JSON-shaped data.
 
     Because resolution depends only on ``external_name`` and a descriptor's
-    tier is fixed at catalogue-construction time from the governed registry, no
-    content inside ``arguments`` can change which operation is resolved or which
-    tier ``execute`` will require. Validation and binding read and transform
-    ``arguments``, but they cannot feed back into the resolution above them or
-    into the tier ``execute`` checks, because that resolution has already
-    completed by the time either of them runs.
+    tier is fixed at catalogue construction (from the governed registry for a
+    registered operation and from the shared READ constant for a Core-level
+    read), no content inside ``arguments`` can change which operation is
+    resolved or which tier is checked. Validation and binding read and
+    transform ``arguments``, but they cannot feed back into the resolution
+    above them or into the later tier check, because resolution has already
+    completed by the time either runs.
     """
     descriptor = _resolve_descriptor(external_name)
 

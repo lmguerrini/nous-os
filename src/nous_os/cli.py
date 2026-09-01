@@ -1,10 +1,11 @@
-"""The command-line transport. One subcommand per catalogue descriptor, generated.
+"""The command-line transport. One generated subcommand per current descriptor.
 
 This module reads exactly one thing about the project's governed operations:
 :data:`nous_os.core.CATALOGUE`. Every subcommand, every option, and every
 declared parameter comes from walking that tuple, never from a hand-written
-list living beside it -- so the surface this module exposes and the surface
-:mod:`nous_os.core` publishes cannot drift apart from having been typed twice.
+list living beside it. A future descriptor that collides with a parser
+destination is refused during parser construction; otherwise this surface and
+the one :mod:`nous_os.core` publishes are generated from the same tuple.
 
 **This module never imports a domain module and never calls
 :func:`nous_os.capability.execute`.** Every governed decision is made by
@@ -14,15 +15,14 @@ that function requires, and turning its JSON-shaped result back into stdout.
 
 **Authority is declared once, at startup, and nothing in a request can widen
 it.** The tier set a process runs with comes from ``--tier`` or the
-``NOUS_OS_CLI_TIERS`` environment variable, read before any subcommand is
-parsed, and defaults to :attr:`~nous_os.capability.Tier.READ` alone. No
-argument value, no subcommand name, and no holder string changes it: the
-:class:`~nous_os.capability.Grant` built from it is constructed once, from
-process-level input, and handed unchanged to every call ``main`` makes. The
-process-level ``--holder`` option and ``candidate.propose``'s own declared
-``holder`` parameter are parsed to distinct namespace destinations, so an
-identically-named subcommand option can never be read while building this
-grant.
+``NOUS_OS_CLI_TIERS`` environment variable and defaults to
+:attr:`~nous_os.capability.Tier.READ` alone. After parsing, the
+:class:`~nous_os.capability.Grant` is built once from process-level input and
+handed unchanged to the call ``main`` makes; no argument value, subcommand
+name, or holder string changes it. The process-level ``--holder`` option and
+``candidate.propose``'s declared ``holder`` parameter use distinct namespace
+destinations, so an identically-named subcommand option is not read while
+building this grant.
 
 This module never imports :mod:`nous_os.mcp`, in either direction.
 """
@@ -112,6 +112,7 @@ _PROCESS_HOLDER_DEST: Final = "process_holder"
 #: arguments for the existing operation; it is not a second operation, and
 #: the subcommand name it attaches to is unchanged.
 _IMPORT_OPTION_DEST: Final = "from_artifact"
+_IMPORT_OPERATION: Final = "candidate.propose"
 
 
 #: The sentinel a declared parameter's namespace attribute holds when the
@@ -212,11 +213,11 @@ def _add_grant_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _parser_destinations(actions: object) -> set[str]:
-    """Return real namespace destinations from parser actions, excluding parser internals."""
+    """Return parser destinations that a descriptor parameter may not replace."""
     return {
         action.dest
         for action in actions
-        if type(action.dest) is str and action.dest not in {argparse.SUPPRESS, "help"}
+        if type(action.dest) is str and action.dest != argparse.SUPPRESS
     }
 
 
@@ -243,10 +244,12 @@ def _assert_parameter_destinations_are_unreserved(
 def _build_parser() -> argparse.ArgumentParser:
     """Build the whole command line, generated from :data:`nous_os.core.CATALOGUE`.
 
-    One subparser per descriptor, named with the descriptor's external name
-    exactly, holding one option per declared parameter. Nothing here is a
-    hand-written operation list: removing an entry from the catalogue removes
-    its subcommand, and adding one adds a subcommand with no further edit.
+    Each descriptor that does not collide with a parser destination gets one
+    subparser named with its external name exactly and one option per declared
+    parameter. Nothing here is a hand-written operation list: removing an
+    entry from the catalogue removes its subcommand, and adding a
+    non-colliding entry adds one with no further edit. A descriptor naming a
+    reserved destination, including ``help``, is refused instead.
 
     ``allow_abbrev=False`` on the parent parser and every generated subparser:
     argparse's default long-option abbreviation resolves an unambiguous
@@ -268,7 +271,7 @@ def _build_parser() -> argparse.ArgumentParser:
         sub = subparsers.add_parser(
             descriptor.external_name, help=descriptor.summary, allow_abbrev=False
         )
-        if descriptor.external_name == "candidate.propose":
+        if descriptor.external_name == _IMPORT_OPERATION:
             sub.add_argument(
                 "--from-artifact",
                 dest=_IMPORT_OPTION_DEST,
@@ -284,7 +287,7 @@ def _build_parser() -> argparse.ArgumentParser:
             # parser level: --from-artifact is an alternative source for them,
             # and Core's own MissingArgument refusal still fires when neither
             # source supplies a required field.
-            required = parameter.required and descriptor.external_name != "candidate.propose"
+            required = parameter.required and descriptor.external_name != _IMPORT_OPERATION
             _add_parameter_argument(sub, parameter, required=required)
     return parser
 
@@ -398,16 +401,15 @@ def _run_import(grant: Grant, workspace: core.Workspace, artifact_path: str) -> 
 
     Every payload is validated with :func:`nous_os.core.validate_arguments`
     -- the identical shape and domain-type checks a real call performs --
-    before any of them is written, so a payload malformed in the way
-    ``core.invoke`` itself would refuse (an unparsable ``proposed_at``, for
-    instance) cannot leave an earlier payload durably recorded while a later
-    one fails: that is the atomicity this achieves. It cannot reach a check
-    performed only inside the write itself, such as the identifier format
-    ``CandidateStore`` enforces when it actually constructs a record --
-    reaching that would mean changing the candidate store to support a
-    dry run, out of scope here. If a write still fails after every payload
-    already passed validation, this names the proposals already recorded
-    rather than raising silently, so a partial import is recoverable.
+    before any write. A payload malformed in one of those checks (an
+    unparsable ``proposed_at``, for instance) therefore cannot leave an
+    earlier payload durably recorded while a later one fails. Validation
+    cannot reach a check performed only inside the write itself, such as the
+    identifier format ``CandidateStore`` enforces when it constructs a record;
+    reaching that would require candidate-store dry-run support, which is out
+    of scope here. If a write still fails after every payload passed
+    validation, this names the proposals already recorded rather than raising
+    silently, so a partial import is recoverable.
     """
     artifact = load_artifact(Path(artifact_path))
     proposals = [_proposal_arguments(payload) for payload in artifact.proposals]
@@ -439,10 +441,12 @@ def _run_import(grant: Grant, workspace: core.Workspace, artifact_path: str) -> 
 
 def _run(namespace: argparse.Namespace) -> object:
     descriptor = _descriptor_for(namespace.operation)
+    artifact_path = getattr(namespace, _IMPORT_OPTION_DEST, None)
+    if artifact_path is not None and descriptor.external_name != _IMPORT_OPERATION:
+        raise CliError("--from-artifact is only valid for candidate.propose")
     workspace = _resolve_workspace(namespace)
     grant = _resolve_grant(namespace, os.environ)
 
-    artifact_path = getattr(namespace, _IMPORT_OPTION_DEST, None)
     if artifact_path is not None:
         arguments = _collect_arguments(descriptor, namespace)
         if arguments:
@@ -459,24 +463,25 @@ def _run(namespace: argparse.Namespace) -> object:
 def main(argv: list[str] | None = None) -> int:
     """Parse one command line and run it, or refuse without ever printing a traceback.
 
-    This never prints a raw interpreter traceback, but its exit contract has
-    two parts, not one. Once ``parser.parse_args`` has returned a namespace,
-    every path through this function either writes exactly one JSON value to
-    stdout and returns 0, or writes a typed, readable message to stderr and
-    returns 1: the ``except Exception`` below is deliberate and total, and
-    every failure reachable from there -- a refused authorization, a
-    malformed argument, an unreadable artifact, an unconfigured workspace --
-    is equally a reason to stop cleanly rather than to keep going or to print
-    Python's own stack.
+    This never prints a raw interpreter traceback. Once
+    ``parser.parse_args`` has returned a namespace with a subcommand, every
+    path through this function either writes exactly one JSON value to stdout
+    and returns 0, or writes a typed, readable message to stderr and returns
+    1: the ``except Exception`` below is deliberate and total, and every
+    failure reachable from there -- a refused authorization, a malformed
+    argument, an unreadable artifact, an unconfigured workspace -- is equally
+    a reason to stop cleanly rather than to keep going or to print Python's
+    own stack. A parsed namespace without a subcommand is a third case: it
+    writes argparse's usage text to stdout and returns 0.
 
     Parsing itself is deliberately left outside that contract, not folded
     into it: ``parse_args`` runs before the ``try`` below and keeps
     argparse's own convention for a request this transport never gets to
     see as a value -- an unrecognized option, ``--help``, or ``--version``
-    -- printing its own usage message and raising ``SystemExit`` with
-    argparse's own code, 0 for ``--help``/``--version`` and 2 for a parsing
-    error, neither of which is 0 or 1 from this function's own two-part
-    contract above. That is a deliberate, narrower claim, not the omission
+    -- and raises ``SystemExit`` with argparse's own code: 0 after usage for
+    ``--help``, 0 after the version string for ``--version``, and 2 for a
+    parsing error. None belongs to the subcommand or no-subcommand cases
+    above. That is a deliberate, narrower claim, not the omission
     it once was: replacing argparse's own well-understood parsing-error
     convention was never asked for, and :func:`_json_argument` above already
     keeps a value a ``type=`` callable would otherwise choke on -- JSON

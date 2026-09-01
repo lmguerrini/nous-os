@@ -17,11 +17,12 @@ against that catalogue by the test suite rather than trusted to have kept pace w
 
 `nous_os.core` is the one application service boundary. It publishes a fixed catalogue of
 external operations — nineteen of them — each with a stable external name, a required
-authorization tier, and a declared parameter specification. Every governed decision this package
+authorization tier, and a declared parameter specification. Every governed decision a transport
 makes is made inside `core.invoke`: resolving which operation a name refers to, validating the
 supplied JSON-shaped arguments against that operation's declared parameters, and checking the
-caller's grant against the tier the operation actually requires — read from
-`nous_os.capability`'s live registry at catalogue-construction time, never retyped.
+caller's grant against the required tier. Registered-operation tiers are read from
+`nous_os.capability`'s live registry at catalogue construction; the two Core-level reads share a
+fixed `read` tier.
 
 Two transports are built on top of that one contract, and both are **generated** from it rather
 than hand-written:
@@ -35,12 +36,12 @@ than hand-written:
 Neither transport imports the other, in either direction — enforced structurally and checked by
 the test suite, not merely a convention. Neither imports a domain module in order to call an
 operation, and neither calls `nous_os.capability.execute` directly: both call `core.invoke`, and
-`core.invoke` is the only thing that calls `execute`. Every semantic decision — which operation a
-name resolves to, whether a grant holds the required tier, how an argument is validated — is made
-once, inside Core, and is therefore identical on both transports by construction rather than by
-having been kept in step by hand. It also means every one of those decisions is reachable and
-correct with the stdio server's module, `nous_os.mcp`, never imported at all: nothing about it is
-the internal authority for anything.
+`core.invoke` is the only thing that calls `execute` for a registered operation. Operation
+resolution and argument validation are made once inside Core, so those decisions do not have to be
+kept in step by hand. The two Core-level reads have no registered operation and use a copied
+authorization check; its accepted/refused result is compared with `execute` in the test suite.
+Every decision the CLI makes is reachable with `nous_os.mcp` never imported: that module is not an
+internal authority for the CLI.
 
 ## Authority: declared once, at process startup, and never widened by a request
 
@@ -93,11 +94,9 @@ This table matches `core.CATALOGUE` and is checked against it by
 `Tier.EXTERNAL_CONSEQUENTIAL_ACTION`. Neither tier has a single entry in the table above, and that
 absence is not an oversight waiting to be filled in: `core.py`'s catalogue-construction helper
 refuses outright to build a descriptor at either tier, so attempting to add one raises before it
-could ever be held. A promotion, or any action with an effect outside this package, can only be
-reached by a human working a step this contract does not offer to either transport — which is the
-entire reason a portable artifact and a remote client can be trusted with authority no stronger
-than `read` or `propose` at all: there is nothing stronger for either of them to reach, by
-construction, regardless of what tier a misconfigured process declares for itself at startup.
+could ever be held. Neither transport can reach a promotion or an action outside this package
+through this contract, regardless of what tier a misconfigured process declares at startup. Other
+package APIs are outside this transport contract.
 
 ## The portable proposal artifact
 
@@ -136,19 +135,21 @@ Three properties hold the whole design:
 2. **Its content arrives untrusted.** Every proposal's `content` becomes
    `nous_os.untrusted.UntrustedText` the moment the artifact is parsed, and is unwrapped only at
    the one point that must produce the plain string `core.invoke` requires.
-3. **Provider and session identity are provenance, never authority.** Both are carried through
-   unexamined, recorded alongside each imported result for whatever audit trail the caller keeps,
-   and are proven incapable of changing the authorization decision: the tier the command line
-   checks against is fixed at process startup, before the artifact is ever read.
+3. **Provider and session identity are provenance, never authority.** Their fields are checked only
+   to be optional strings, then recorded alongside each imported result for whatever audit trail the
+   caller keeps. Their values do not affect authorization: the tier the command line checks against
+   is fixed at process startup, before the artifact is read.
 
 An unknown schema identifier, an unsupported version, a malformed document, and a document whose
 payload is not text are each refused with their own distinct, typed error.
 
 ## Wiring a local client to the stdio transport
 
-`nous_os.mcp` speaks newline-delimited JSON-RPC 2.0 on stdin and stdout: one message in, one
-message out, handling `initialize`, `tools/list`, and `tools/call` at minimum, with a tool
-published per catalogue entry above. Nothing but a JSON-RPC message is ever written to stdout.
+`nous_os.mcp` speaks newline-delimited JSON-RPC 2.0 on stdin and stdout, handling `initialize`,
+`tools/list`, and `tools/call` at minimum, with a tool published per catalogue entry above. Once
+serving begins, each non-notification input that is parsed yields one JSON-RPC response; blank lines
+and notifications yield none. In that serving interval, stdout contains only JSON-RPC responses.
+`python -m nous_os.mcp --help` is excluded: argparse writes its pre-serving usage text to stdout.
 
 A local client that launches a server over stdio — a local coding agent is the common example —
 generally needs three things from its own configuration, described here rather than performed:
@@ -160,11 +161,17 @@ reads), and, if authority beyond `read` is genuinely wanted for that specific la
 any client's configuration file and does not read this machine's existing one; wiring a specific
 client is the operator's own step, taken with the operator's own credentials for that client.
 
-**`ChatGPT`'s own client speaks SSE and streaming HTTP, not stdio**, so it cannot itself open a
-connection to a local process the way a stdio-based client can. A first-party `OpenAI` tunnel can
-relay such a connection to a local server, at the cost of a Platform organization and a runtime
-API key — and that path is **not taken here**. The portable artifact plus the command line's
-import mode is the path that needs neither: a document produced anywhere reaches
-`candidate.propose` through nothing but a local file read and a locally declared grant. That is
-*a* real production path for getting proposed material from a client that cannot reach stdio into
-this package, not a claim that it is the only one a future client integration might use.
+**This document makes no standing claim about what any third-party client supports**, because that
+is dated vendor behaviour rather than a property of this package. What it records instead is the
+dated check that produced the fallback below.
+
+**Verified 2026-09-01 against official `OpenAI` documentation, and true as of that date only:**
+`ChatGPT`'s own client speaks SSE and streaming HTTP, not stdio, so it cannot itself open a
+connection to a local process the way a stdio client can; a first-party `OpenAI` tunnel documents
+relaying to a local stdio server, at the cost of a Platform organization and a runtime API key, and
+**that path is not taken here.** Re-check it before relying on it.
+
+For any client that cannot use this local stdio server, the portable artifact plus the command
+line's import mode needs only a local file read and a locally declared grant: a document produced
+elsewhere reaches `candidate.propose` through that path. **It is one real production path, not a
+claim that it is the only one a future integration might use.**

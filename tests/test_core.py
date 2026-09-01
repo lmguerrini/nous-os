@@ -21,7 +21,7 @@ import pytest
 
 import nous_os.core as core
 from nous_os.capability import Grant, NotAuthorized, Tier
-from nous_os.config import DataRootNotConfigured
+from nous_os.config import DataRoot, DataRootNotConfigured
 from nous_os.derived import build
 from nous_os.ledger import Ledger, ingest
 from nous_os.snapshots import SnapshotStore
@@ -652,6 +652,37 @@ def test_a_store_resolving_inside_the_data_root_is_refused(tmp_path: Path) -> No
         core.resolve_workspace(**_workspace_kwargs(tmp_path, candidate_store_path=inside))
 
 
+def test_the_exported_workspace_constructor_refuses_a_store_inside_canon(tmp_path: Path) -> None:
+    """A directly constructed workspace has the same alias refusal as resolution."""
+    kwargs = _workspace_kwargs(tmp_path)
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.Workspace(
+            data_root=DataRoot(kwargs["data_root"]),
+            snapshot_root=kwargs["snapshot_root"],
+            ledger_path=kwargs["ledger_path"],
+            derived_path=kwargs["derived_path"],
+            candidate_store_path=kwargs["data_root"] / "candidates.jsonl",
+            bridge_registry_path=kwargs["bridge_registry_path"],
+            rejection_memory_path=kwargs["rejection_memory_path"],
+        )
+
+
+def test_the_exported_workspace_constructor_resolves_direct_path_spellings(tmp_path: Path) -> None:
+    """Direct construction normalizes paths before retaining the workspace."""
+    kwargs = _workspace_kwargs(tmp_path)
+    workspace = core.Workspace(
+        data_root=DataRoot(kwargs["data_root"] / "."),
+        snapshot_root=kwargs["snapshot_root"].parent / "other" / ".." / "snapshots",
+        ledger_path=kwargs["ledger_path"].parent / "other" / ".." / "ledger.jsonl",
+        derived_path=kwargs["derived_path"].parent / "other" / ".." / "derived.sqlite",
+        candidate_store_path=kwargs["candidate_store_path"].parent / "other" / ".." / "candidates.jsonl",
+        bridge_registry_path=kwargs["bridge_registry_path"].parent / "other" / ".." / "bridges.jsonl",
+        rejection_memory_path=kwargs["rejection_memory_path"].parent / "other" / ".." / "rejections.jsonl",
+    )
+    assert workspace.data_root.path == kwargs["data_root"].resolve()
+    assert workspace.candidate_store_path == kwargs["candidate_store_path"].resolve()
+
+
 def test_a_store_resolving_inside_the_snapshot_root_is_refused(tmp_path: Path) -> None:
     kwargs = _workspace_kwargs(tmp_path)
     inside = kwargs["snapshot_root"] / "candidates.jsonl"
@@ -1050,18 +1081,18 @@ def test_system_health_reports_unknown_when_a_location_is_unreadable(tmp_path: P
     locked = tmp_path / "locked"
     locked.mkdir()
     unreadable_snapshot_root = locked / "snapshots"
+    blocked_workspace = core.Workspace(
+        data_root=workspace.data_root,
+        snapshot_root=unreadable_snapshot_root,
+        ledger_path=workspace.ledger_path,
+        derived_path=workspace.derived_path,
+        candidate_store_path=workspace.candidate_store_path,
+        bridge_registry_path=workspace.bridge_registry_path,
+        rejection_memory_path=workspace.rejection_memory_path,
+    )
     original_mode = locked.stat().st_mode
     try:
         os.chmod(locked, 0)
-        blocked_workspace = core.Workspace(
-            data_root=workspace.data_root,
-            snapshot_root=unreadable_snapshot_root,
-            ledger_path=workspace.ledger_path,
-            derived_path=workspace.derived_path,
-            candidate_store_path=workspace.candidate_store_path,
-            bridge_registry_path=workspace.bridge_registry_path,
-            rejection_memory_path=workspace.rejection_memory_path,
-        )
         grant = Grant("holder", frozenset({Tier.READ}))
         health = core.invoke(grant, "system.health", blocked_workspace, {})
         assert health["snapshot_root"] == "unknown"
@@ -1151,6 +1182,32 @@ def test_a_malformed_grant_is_refused_for_a_core_level_read(tmp_path: Path) -> N
 
     with pytest.raises(NotAuthorized):
         core.invoke(_NotAGrant(), "system.capabilities", workspace, {})  # type: ignore[arg-type]
+
+
+def test_core_level_authorization_matches_execute_for_valid_and_malformed_grants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep Core's copied authorization check aligned with ``execute``'s result."""
+    import nous_os.capability as authority
+
+    monkeypatch.setattr(authority, "_REGISTRY", dict(authority._REGISTRY))
+    operation = "test_core_authorization_parity"
+    authority.register(operation, Tier.READ, lambda: None)
+    malformed = object.__new__(Grant)
+    object.__setattr__(malformed, "holder", "malformed")
+    object.__setattr__(malformed, "tiers", (Tier.READ,))
+
+    def outcome(call: object) -> str:
+        try:
+            call()  # type: ignore[operator]
+        except NotAuthorized:
+            return "refused"
+        return "accepted"
+
+    for grant in (Grant("reader", frozenset({Tier.READ})), Grant("proposer", frozenset({Tier.PROPOSE})), malformed, object()):
+        assert outcome(lambda: core._authorize_core_level(grant, Tier.READ)) == outcome(
+            lambda: authority.execute(grant, operation)  # type: ignore[arg-type]
+        )
 
 
 # --- context.compile takes a supplied ranking and performs no retrieval -------

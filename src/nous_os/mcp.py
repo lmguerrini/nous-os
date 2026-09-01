@@ -24,19 +24,14 @@ changes it: the :class:`~nous_os.capability.Grant` built at startup is passed
 unchanged to every ``tools/call`` this process ever serves.
 
 **Once serving begins, nothing but a JSON-RPC message is ever written to
-stdout.** Every other message :func:`serve` has to produce -- there is
-exactly one, a start-up refusal -- is written to stderr. A stray ``print``
-anywhere in this module's own source would corrupt the one stream a client
-reads as protocol; that is what the static guard in this project's tests
-checks, and only that: it inspects bare ``print(`` calls in this module's
-source, not every way a process can put a byte on stdout. It is deliberately
-narrower than "stdout carries only JSON-RPC" as a blanket claim about this
-whole module: reaching this module through ``python3 -m nous_os.mcp --help``
-or ``--version`` never reaches :func:`serve` at all, and prints argparse's own
-usage text to stdout on argparse's own well-understood convention, before a
-grant or a workspace has even been resolved. That is standard, expected
-behaviour for a command-line tool's own help output, not a leak of protocol
-framing, and this module does not attempt to suppress it.
+stdout.** The one bare ``print`` call in this module is the pre-serving
+startup-refusal path, and it writes to stderr. The static guard checks only
+that narrow source fact -- bare ``print(`` calls in this module point to
+stderr -- rather than every mechanism that could put a byte on stdout. The
+claim deliberately excludes ``python3 -m nous_os.mcp --help``: argparse
+writes that pre-serving usage text to stdout before a grant or workspace is
+resolved. This parser has no ``--version`` option; argparse refuses that
+unrecognized option on its usual parsing-error path.
 
 This module never imports :mod:`nous_os.cli`, in either direction.
 """
@@ -298,10 +293,10 @@ def _build_start_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Resolve this process's one grant and workspace, then serve stdin until it closes.
 
-    Everything that can go wrong before the first message is read -- an
-    unconfigured workspace, an unknown declared tier -- is refused here, on
-    stderr, with a non-zero exit and no traceback, for the identical reason
-    :func:`nous_os.cli.main` refuses the same way.
+    Resolution failures after argument parsing -- an unconfigured workspace
+    or an unknown declared tier -- are refused here on stderr with a non-zero
+    exit and no traceback. Parsing failures remain argparse's own behavior,
+    as in :func:`nous_os.cli.main`.
     """
     parser = _build_start_parser()
     namespace = parser.parse_args(argv)
