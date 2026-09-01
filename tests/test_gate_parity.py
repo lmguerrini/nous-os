@@ -1,0 +1,269 @@
+"""G-PARITY compares every live operation's delivered JSON value.
+
+The existing surface checks catch a missing name but not two named routes that
+return different values.  This gate drives all current catalogue entries on
+one fixture world.  It has no sampled operation set: a new descriptor either
+gets a usable argument builder and a comparison, or becomes a named NOT_RUN
+failure.  The two write entries share a fixed record id to remove
+identity minting from a transport-result comparison.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+import pytest
+
+import nous_os.candidates as candidates
+import nous_os.cli as cli
+import nous_os.core as core
+import nous_os.mcp as mcp
+from nous_os.capability import Grant, Tier
+
+import test_injection as injection
+import test_mcp
+
+
+_FIXED_PROPOSAL_ID = "asr_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+
+class _ParityFailure(AssertionError):
+    """Raised when a live transport pair cannot make one claimed comparison."""
+
+
+@dataclass(frozen=True, slots=True)
+class _NotRun:
+    """One catalogue entry that did not produce a comparison, with its cause."""
+
+    operation: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Call:
+    """The unwrapped delivered value from one transport."""
+
+    value: object
+    error: str | None
+
+
+def _workspace_argv(workspace: core.Workspace) -> list[str]:
+    """Build the CLI's process-start arguments from the configured workspace."""
+    return [
+        "--data-root",
+        str(workspace.data_root.path),
+        "--snapshot-root",
+        str(workspace.snapshot_root),
+        "--ledger-path",
+        str(workspace.ledger_path),
+        "--derived-path",
+        str(workspace.derived_path),
+        "--candidate-store-path",
+        str(workspace.candidate_store_path),
+        "--bridge-registry-path",
+        str(workspace.bridge_registry_path),
+        "--rejection-memory-path",
+        str(workspace.rejection_memory_path),
+    ]
+
+
+def _workspace(root: Path) -> tuple[object, core.Workspace]:
+    """Reuse the checked injection fixture so every read has real stored data."""
+    world = injection._build_world(root)
+    workspace = core.Workspace(
+        data_root=world.data_root,
+        snapshot_root=world.root / "snapshots",
+        ledger_path=world.ledger.path,
+        derived_path=world.derived_path,
+        candidate_store_path=world.candidates._path,
+        bridge_registry_path=world.bridges._path,
+        rejection_memory_path=world.rejections._path,
+    )
+    return world, workspace
+
+
+def _arguments(descriptor: core.OperationDescriptor, world: object) -> dict[str, object]:
+    """Use the already-checked JSON argument shapes, replacing the live citation."""
+    arguments = test_mcp._minimal_arguments(descriptor.external_name)
+    if descriptor.external_name == "provenance.span":
+        arguments["citation"] = world.citation.as_payload()
+    return arguments
+
+
+def _cli_value(
+    descriptor: core.OperationDescriptor,
+    arguments: dict[str, object],
+    workspace: core.Workspace,
+    capsys: pytest.CaptureFixture[str],
+) -> _Call:
+    """Run the actual CLI and remove exit-code and stream details from its value."""
+    argv = _workspace_argv(workspace)
+    for tier in (Tier.READ, Tier.PROPOSE):
+        argv.extend(("--tier", tier.value))
+    argv.append(descriptor.external_name)
+    for parameter in descriptor.parameters:
+        if parameter.name not in arguments:
+            continue
+        value = arguments[parameter.name]
+        option = "--" + parameter.name.replace("_", "-")
+        if type(value) is bool:
+            argv.append(option if value else "--no-" + parameter.name.replace("_", "-"))
+        elif type(value) in (dict, list):
+            argv.extend((option, json.dumps(value)))
+        else:
+            argv.extend((option, str(value)))
+    capsys.readouterr()
+    code = cli.main(argv)
+    captured = capsys.readouterr()
+    if code == 0:
+        if captured.err:
+            raise _ParityFailure(f"CLI wrote stderr for {descriptor.external_name!r}")
+        return _Call(json.loads(captured.out), None)
+    return _Call(None, captured.err.strip())
+
+
+def _mcp_value(
+    descriptor: core.OperationDescriptor,
+    arguments: dict[str, object],
+    workspace: core.Workspace,
+) -> _Call:
+    """Run actual dispatch and remove JSON-RPC fields from its delivered value."""
+    message = {
+        "jsonrpc": "2.0",
+        "id": descriptor.external_name,
+        "method": "tools/call",
+        "params": {"name": descriptor.external_name, "arguments": arguments},
+    }
+    response = mcp.dispatch(message, Grant("parity", frozenset({Tier.READ, Tier.PROPOSE})), workspace)
+    if type(response) is not dict:
+        raise _ParityFailure(f"MCP gave no response for {descriptor.external_name!r}")
+    if "error" in response:
+        error = response["error"]
+        if type(error) is not dict or type(error.get("message")) is not str:
+            raise _ParityFailure(f"MCP gave a malformed error for {descriptor.external_name!r}")
+        return _Call(None, error["message"])
+    result = response.get("result")
+    if type(result) is not dict:
+        raise _ParityFailure(f"MCP gave no result for {descriptor.external_name!r}")
+    content = result.get("content")
+    if type(content) is not list or len(content) != 1 or type(content[0]) is not dict:
+        raise _ParityFailure(f"MCP gave malformed content for {descriptor.external_name!r}")
+    text = content[0].get("text")
+    if type(text) is not str:
+        raise _ParityFailure(f"MCP gave non-text content for {descriptor.external_name!r}")
+    return _Call(json.loads(text), None)
+
+
+def _ordered_json(value: object) -> str:
+    """Keep object member order in the equality operand instead of discarding it."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _cli_names() -> tuple[str, ...]:
+    """Read subcommands from the parser instance that CLI users receive."""
+    parser = cli._build_parser()
+    action = next(item for item in parser._actions if item.dest == "operation")
+    return tuple(action.choices)
+
+
+def _assert_parity(
+    workspace: core.Workspace,
+    world: object,
+    capsys: pytest.CaptureFixture[str],
+) -> int:
+    """Compare every descriptor or fail with a denominator and every NOT_RUN cause."""
+    expected = tuple(descriptor.external_name for descriptor in core.CATALOGUE)
+    cli_names = _cli_names()
+    mcp_names = mcp.tools_list()
+    if cli_names != expected:
+        raise _ParityFailure("CLI published set or order differs from the core catalogue")
+    if mcp_names != expected:
+        raise _ParityFailure("MCP published set or order differs from the core catalogue")
+
+    compared = 0
+    not_run: list[_NotRun] = []
+    for descriptor in core.CATALOGUE:
+        try:
+            arguments = _arguments(descriptor, world)
+            cli_call = _cli_value(descriptor, arguments, workspace, capsys)
+            mcp_call = _mcp_value(descriptor, arguments, workspace)
+            if cli_call.error is not None or mcp_call.error is not None:
+                raise _ParityFailure(
+                    f"{descriptor.external_name!r} returned errors: "
+                    f"CLI={cli_call.error!r}, MCP={mcp_call.error!r}"
+                )
+            if _ordered_json(cli_call.value) != _ordered_json(mcp_call.value):
+                raise _ParityFailure(
+                    f"result differs for {descriptor.external_name!r}"
+                )
+            compared += 1
+        except _ParityFailure:
+            raise
+        except Exception as error:
+            not_run.append(_NotRun(descriptor.external_name, f"{type(error).__name__}: {error}"))
+    if not_run:
+        details = "; ".join(f"{item.operation}: {item.reason}" for item in not_run)
+        raise _ParityFailure(f"NOT_RUN cells: {details}")
+    if compared != len(core.CATALOGUE):
+        raise _ParityFailure(f"compared {compared}, expected {len(core.CATALOGUE)}")
+    return compared
+
+
+def test_g_parity_compares_all_live_catalogue_results(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same published names are insufficient unless their delivered values match too."""
+    monkeypatch.setattr(candidates, "new_assertion_id", lambda: _FIXED_PROPOSAL_ID)
+    world, workspace = _workspace(tmp_path / "world")
+    compared = _assert_parity(workspace, world, capsys)
+    assert compared == len(core.CATALOGUE)
+
+
+def test_g_parity_n1_missing_published_operation_is_detected(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N1 proves that a name-set break makes the parity gate fail."""
+    monkeypatch.setattr(candidates, "new_assertion_id", lambda: _FIXED_PROPOSAL_ID)
+    world, workspace = _workspace(tmp_path / "n1")
+    original: Callable[[], tuple[str, ...]] = mcp.tools_list
+    with monkeypatch.context() as patch:
+        patch.setattr(mcp, "tools_list", lambda: original()[1:])
+        with pytest.raises(_ParityFailure, match="published"):
+            _assert_parity(workspace, world, capsys)
+
+
+def test_g_parity_n2_different_result_is_detected(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N2 proves that a value break on one real route makes the gate fail."""
+    monkeypatch.setattr(candidates, "new_assertion_id", lambda: _FIXED_PROPOSAL_ID)
+    world, workspace = _workspace(tmp_path / "n2")
+    original = mcp.dispatch
+
+    def changed(message: object, grant: Grant, bound_workspace: core.Workspace) -> dict[str, object] | None:
+        response = original(message, grant, bound_workspace)
+        if (
+            type(message) is dict
+            and message.get("method") == "tools/call"
+            and type(message.get("params")) is dict
+            and message["params"].get("name") == "system.health"
+            and type(response) is dict
+            and type(response.get("result")) is dict
+        ):
+            response = dict(response)
+            response["result"] = {"content": [{"type": "text", "text": "{\"changed\":true}"}]}
+        return response
+
+    with monkeypatch.context() as patch:
+        patch.setattr(mcp, "dispatch", changed)
+        with pytest.raises(_ParityFailure, match="result differs"):
+            _assert_parity(workspace, world, capsys)
