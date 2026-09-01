@@ -129,11 +129,23 @@ def _option_name(parameter_name: str) -> str:
 
 
 def _json_argument(raw: str) -> object:
-    """Parse one CLI option's raw text as JSON, for an array- or object-shaped parameter."""
+    """Parse one CLI option's raw text as JSON, for an array- or object-shaped parameter.
+
+    ``json.loads`` recurses once per nesting level, so a value nested deeply
+    enough raises ``RecursionError`` rather than ``json.JSONDecodeError``.
+    Refusing it the identical way -- through ``argparse.ArgumentTypeError``,
+    which ``parse_args`` turns into its own usage message and a clean exit --
+    keeps a hostile command-line value from reaching :func:`main`'s own
+    ``except Exception`` as an interpreter traceback, matching what
+    :func:`nous_os.mcp.serve` refuses the same content-driven way on its
+    transport.
+    """
     try:
         return json.loads(raw)
     except json.JSONDecodeError as error:
         raise argparse.ArgumentTypeError(f"not valid JSON: {error}") from error
+    except RecursionError as error:
+        raise argparse.ArgumentTypeError("JSON value is nested too deeply to parse") from error
 
 
 def _add_parameter_argument(
@@ -235,14 +247,27 @@ def _build_parser() -> argparse.ArgumentParser:
     exactly, holding one option per declared parameter. Nothing here is a
     hand-written operation list: removing an entry from the catalogue removes
     its subcommand, and adding one adds a subcommand with no further edit.
+
+    ``allow_abbrev=False`` on the parent parser and every generated subparser:
+    argparse's default long-option abbreviation resolves an unambiguous
+    prefix to whichever declared option it is a prefix of, and that
+    resolution runs before :func:`_assert_parameter_destinations_are_unreserved`
+    ever gets a chance to compare destination names -- a descriptor parameter
+    named ``ti``, for instance, is not itself a reserved destination, but
+    ``--ti`` typed on the command line would abbreviate to the process-level
+    ``--tier`` and be read as that instead. Disabling abbreviation removes the
+    resolution the guard cannot see, rather than trying to make the guard
+    predict it.
     """
-    parser = argparse.ArgumentParser(prog="nous-os", description="NousOS")
+    parser = argparse.ArgumentParser(prog="nous-os", description="NousOS", allow_abbrev=False)
     parser.add_argument("--version", action="version", version=__version__)
     _add_workspace_arguments(parser)
     _add_grant_arguments(parser)
     subparsers = parser.add_subparsers(dest="operation")
     for descriptor in core.CATALOGUE:
-        sub = subparsers.add_parser(descriptor.external_name, help=descriptor.summary)
+        sub = subparsers.add_parser(
+            descriptor.external_name, help=descriptor.summary, allow_abbrev=False
+        )
         if descriptor.external_name == "candidate.propose":
             sub.add_argument(
                 "--from-artifact",
@@ -434,14 +459,30 @@ def _run(namespace: argparse.Namespace) -> object:
 def main(argv: list[str] | None = None) -> int:
     """Parse one command line and run it, or refuse without ever printing a traceback.
 
-    Every path through this function either writes exactly one JSON value to
+    This never prints a raw interpreter traceback, but its exit contract has
+    two parts, not one. Once ``parser.parse_args`` has returned a namespace,
+    every path through this function either writes exactly one JSON value to
     stdout and returns 0, or writes a typed, readable message to stderr and
-    returns 1. The ``except Exception`` below is deliberate and total: this is
-    the one place a caller-facing message must replace an interpreter
-    traceback, and every failure reachable from here -- a refused
-    authorization, a malformed argument, an unreadable artifact, an
-    unconfigured workspace -- is equally a reason to stop cleanly rather than
-    to keep going or to print Python's own stack.
+    returns 1: the ``except Exception`` below is deliberate and total, and
+    every failure reachable from there -- a refused authorization, a
+    malformed argument, an unreadable artifact, an unconfigured workspace --
+    is equally a reason to stop cleanly rather than to keep going or to print
+    Python's own stack.
+
+    Parsing itself is deliberately left outside that contract, not folded
+    into it: ``parse_args`` runs before the ``try`` below and keeps
+    argparse's own convention for a request this transport never gets to
+    see as a value -- an unrecognized option, ``--help``, or ``--version``
+    -- printing its own usage message and raising ``SystemExit`` with
+    argparse's own code, 0 for ``--help``/``--version`` and 2 for a parsing
+    error, neither of which is 0 or 1 from this function's own two-part
+    contract above. That is a deliberate, narrower claim, not the omission
+    it once was: replacing argparse's own well-understood parsing-error
+    convention was never asked for, and :func:`_json_argument` above already
+    keeps a value a ``type=`` callable would otherwise choke on -- JSON
+    nested far enough to raise ``RecursionError`` rather than a decode error
+    -- inside that same argparse convention instead of letting it surface as
+    a traceback here.
     """
     parser = _build_parser()
     namespace = parser.parse_args(argv)

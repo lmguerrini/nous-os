@@ -324,6 +324,34 @@ def test_catalogue_parameter_colliding_with_import_destination_is_refused(
         cli._build_parser()
 
 
+def test_argparse_abbreviation_cannot_smuggle_a_subcommand_option_into_the_startup_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A6: a descriptor parameter named ``ti`` passes the exact-equality guard.
+
+    ``_assert_parameter_destinations_are_unreserved`` compares ``"ti"`` to the
+    reserved destination ``"tier"`` and finds no exact match, so it never
+    raises here -- exactly the gap the destination guard alone could not
+    close. Typed before the subcommand, ``--ti`` is not yet inside that
+    descriptor's own subparser at all; with abbreviation left enabled it
+    would resolve, at the top level, to the only startup option it is an
+    unambiguous prefix of, ``--tier``, and silently declare an authority
+    tier nobody asked for. With abbreviation disabled, ``--ti`` matches
+    nothing at the top level and the whole command line is refused instead.
+    """
+    colliding = core.OperationDescriptor(
+        "synthetic.ti-collision",
+        None,
+        Tier.READ,
+        "synthetic prefix collision",
+        (core.ParameterSpec("ti", "string", False, "would collide with --tier if abbreviated"),),
+    )
+    monkeypatch.setattr(core, "CATALOGUE", (*core.CATALOGUE, colliding))
+    parser = cli._build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--ti", "propose", "synthetic.ti-collision"])
+
+
 def test_import_mode_adds_no_operation_name() -> None:
     """The artifact-import mode is an option on an existing subcommand, not a new one."""
     names = set(_cli_operation_names())
@@ -381,6 +409,43 @@ def test_no_operation_named_prints_help_to_stdout_and_exits_zero(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.out
+
+
+# --- A8: parsing keeps argparse's own convention, not this module's 0/1 contract
+
+
+def test_a_bogus_option_exits_with_argparses_own_convention_not_the_zero_or_one_contract(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``parse_args`` runs before ``main``'s own ``try``, and that is documented, not hidden."""
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["--bogus"])
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+
+
+def test_a_deeply_nested_json_argument_is_refused_without_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A JSON value nested past the recursion limit must not crash the CLI.
+
+    ``json.loads`` raises ``RecursionError``, not ``json.JSONDecodeError``,
+    once nesting is deep enough; :func:`nous_os.cli._json_argument` refuses
+    it through the identical ``argparse.ArgumentTypeError`` path an
+    ordinarily malformed value takes, so this still exits through argparse's
+    own convention rather than an interpreter traceback.
+    """
+    deeply_nested = "[" * 20000 + "]" * 20000
+    argv = _workspace_argv(tmp_path) + ["time.as_of", "--index", deeply_nested]
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(argv)
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+    assert "nested too deeply" in captured.err
 
 
 # --- grants: declared at startup, defaulting to read, never widened by a request

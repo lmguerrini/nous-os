@@ -23,10 +23,20 @@ name, no argument value, no ``initialize`` client identity, and no session
 changes it: the :class:`~nous_os.capability.Grant` built at startup is passed
 unchanged to every ``tools/call`` this process ever serves.
 
-**Nothing but a JSON-RPC message is ever written to stdout.** Every other
-message this module has to produce -- a start-up refusal, anything else -- is
-written to stderr. A stray ``print`` anywhere in this module would corrupt the
-one stream a client reads as protocol.
+**Once serving begins, nothing but a JSON-RPC message is ever written to
+stdout.** Every other message :func:`serve` has to produce -- there is
+exactly one, a start-up refusal -- is written to stderr. A stray ``print``
+anywhere in this module's own source would corrupt the one stream a client
+reads as protocol; that is what the static guard in this project's tests
+checks, and only that: it inspects bare ``print(`` calls in this module's
+source, not every way a process can put a byte on stdout. It is deliberately
+narrower than "stdout carries only JSON-RPC" as a blanket claim about this
+whole module: reaching this module through ``python3 -m nous_os.mcp --help``
+or ``--version`` never reaches :func:`serve` at all, and prints argparse's own
+usage text to stdout on argparse's own well-understood convention, before a
+grant or a workspace has even been resolved. That is standard, expected
+behaviour for a command-line tool's own help output, not a leak of protocol
+framing, and this module does not attempt to suppress it.
 
 This module never imports :mod:`nous_os.cli`, in either direction.
 """
@@ -203,6 +213,18 @@ def serve(
     ``tools/call`` this loop serves reuses the identical authority and the
     identical resolved locations, because per-request re-resolution is
     exactly the widening path this transport must not offer.
+
+    Decoding one line also catches ``RecursionError``, not only
+    ``json.JSONDecodeError``: a JSON array nested deeply enough makes
+    ``json.loads`` itself exhaust the interpreter's recursion limit before it
+    ever raises a decode error. That happens right here, in this loop, before
+    a message ever exists to hand to ``dispatch``, so ``dispatch``'s own
+    ``except Exception`` is never in a position to help -- there is nothing
+    for it to be called with. Refusing it as the identical kind of parse
+    failure a malformed line already is keeps one hostile line from
+    terminating the process outright, which would otherwise be content-driven
+    denial of service against the one long-lived transport this project
+    ships.
     """
     for line in stdin:
         stripped = line.strip()
@@ -210,7 +232,7 @@ def serve(
             continue
         try:
             message = json.loads(stripped)
-        except json.JSONDecodeError as error:
+        except (json.JSONDecodeError, RecursionError) as error:
             response: dict[str, object] | None = _error_response(
                 None, _PARSE_ERROR, f"invalid JSON: {error}"
             )

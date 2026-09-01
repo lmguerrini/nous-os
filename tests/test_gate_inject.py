@@ -29,6 +29,7 @@ resolution is covered separately in its transport tests.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from collections.abc import Callable
@@ -55,6 +56,34 @@ _BENIGN = "beta"
 #: while this value makes a dropped production route a failure instead of a
 #: smaller denominator that happens to agree with itself.
 _EXPECTED_TRANSPORT_NAMES = frozenset({"cli.main", "mcp.dispatch"})
+
+#: An independently pinned public set, the way the transport axis already is:
+#: typed here rather than derived from ``core.CATALOGUE``, so a catalogue
+#: entry silently dropped from the axis a test run is handed cannot also
+#: shrink the one set that is supposed to catch that.
+_EXPECTED_OPERATION_NAMES = frozenset(
+    {
+        "system.capabilities",
+        "system.health",
+        "knowledge.search",
+        "canon.documents",
+        "canon.describe",
+        "canon.sources",
+        "canon.versions",
+        "provenance.span",
+        "graph.project",
+        "time.as_of",
+        "time.conflicts",
+        "time.supersession",
+        "context.compile",
+        "candidate.proposals",
+        "candidate.rejections",
+        "candidate.bridges",
+        "candidate.propose",
+        "candidate.discover",
+        "candidate.adjudicate",
+    }
+)
 
 
 class _MatrixFailure(AssertionError):
@@ -270,6 +299,32 @@ def _file_bytes(root: Path) -> tuple[tuple[str, bytes], ...]:
     )
 
 
+def _canon_bytes(world: object) -> bytes:
+    """Hash canon precisely: the data root's own files, every snapshot, and the ledger.
+
+    Narrower than :func:`_file_bytes` on purpose, and reused for a different
+    comparison: a route can legitimately leave a *store* -- the candidate
+    file this catalogue's own PROPOSE-tier writes are supposed to reach --
+    different between a reference and a hostile call, since the two bodies
+    genuinely differ; canon is not supposed to move at all, from any of the
+    operations this catalogue offers, so an equal digest is the property
+    worth comparing directly rather than merely "something changed".
+    """
+    digest = hashlib.sha256()
+    for root, label in ((world.data_root.path, b"canon"), (world.root / "snapshots", b"snapshot")):
+        if root.is_dir():
+            for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+                digest.update(label + b"\0")
+                digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+                digest.update(b"\0")
+                digest.update(path.read_bytes())
+                digest.update(b"\0")
+    ledger_payload = world.ledger.path.read_bytes() if world.ledger.path.is_file() else b""
+    digest.update(b"ledger\0")
+    digest.update(ledger_payload)
+    return digest.digest()
+
+
 def _cli_call(
     entry: Callable[..., object],
     descriptor: core.OperationDescriptor,
@@ -372,6 +427,23 @@ def _assert_live_transport_axis(transports: tuple[_Transport, ...]) -> None:
     if len(names) != len(set(names)) or frozenset(names) != _EXPECTED_TRANSPORT_NAMES:
         raise _MatrixFailure(
             f"transport axis={names!r}, expected exactly {_EXPECTED_TRANSPORT_NAMES!r}"
+        )
+
+
+def _assert_live_operation_axis(operations: tuple[core.OperationDescriptor, ...]) -> None:
+    """Keep a catalogue entry silently dropped from the operation axis from passing anyway.
+
+    ``_run_matrix`` derives its own ``expected`` count from the ``operations``
+    argument it is handed, and the calling test's own counts derive from that
+    identical value, so a caller passing ``core.CATALOGUE[:-1]`` shrinks every
+    dependent denominator consistently and the arithmetic alone could never
+    catch it. Comparing against a set typed here, independent of
+    ``core.CATALOGUE``, is what actually can.
+    """
+    names = tuple(descriptor.external_name for descriptor in operations)
+    if len(names) != len(set(names)) or frozenset(names) != _EXPECTED_OPERATION_NAMES:
+        raise _MatrixFailure(
+            f"operation axis={names!r}, expected exactly {_EXPECTED_OPERATION_NAMES!r}"
         )
 
 
@@ -536,6 +608,28 @@ def _run_matrix(
                                 )
                             )
                             continue
+                        # A success on both bodies is not by itself the property
+                        # worth holding: a route that returns the ordinary
+                        # result and *additionally* writes canon only for the
+                        # hostile body would pass that check every time, and
+                        # that is the dangerous case -- hostile content gaining
+                        # consequential power after legitimate authorization.
+                        # Both worlds started from one identical fresh seed, so
+                        # comparing their canon digests after the call directly
+                        # states the property: canonical state must be equal
+                        # between the reference and the hostile call.
+                        if _canon_bytes(reference_world) != _canon_bytes(sample_world):
+                            unauthorized_effects.append(
+                                _not_run(
+                                    transport,
+                                    descriptor,
+                                    tiers,
+                                    attempt,
+                                    "decision",
+                                    "an authorized hostile call left canon different from "
+                                    "the authorized reference call",
+                                )
+                            )
                         if reference_before != reference_after or sample_before != sample_after:
                             authorized_effects.add(transport.name)
                     else:
@@ -597,7 +691,7 @@ def _assert_complete(result: _MatrixResult, transports: tuple[_Transport, ...]) 
 
 
 def _assert_governed_execution_counts(
-    observed: list[str],
+    observed: list[tuple[str, str]],
     transports: tuple[_Transport, ...],
     operations: tuple[core.OperationDescriptor, ...],
     tier_sets: tuple[frozenset[Tier], ...],
@@ -607,17 +701,53 @@ def _assert_governed_execution_counts(
 
     Each selected cell runs both reference and hostile values. Core-level reads
     have no registered operation and therefore correctly contribute no call.
+
+    ``observed`` is keyed by ``(transport, operation)``, not merely
+    ``operation``: an operation-only aggregate collapses every transport into
+    one total, so one route bypassing ``execute`` while another double-counts
+    the identical operation can leave the grand total matching anyway. Keying
+    by transport as well as operation is what actually catches that.
     """
-    expected: Counter[str] = Counter()
-    executions_per_operation = 2 * len(transports) * len(tier_sets) * len(attempts)
-    for descriptor in operations:
-        if descriptor.operation is not None:
-            expected[descriptor.operation] += executions_per_operation
+    expected: Counter[tuple[str, str]] = Counter()
+    executions_per_cell = 2 * len(tier_sets) * len(attempts)
+    for transport in transports:
+        for descriptor in operations:
+            if descriptor.operation is not None:
+                expected[(transport.name, descriptor.operation)] += executions_per_cell
     actual = Counter(observed)
     if actual != expected:
         raise _MatrixFailure(
             f"governed executions through execute={actual!r}, expected={expected!r}"
         )
+
+
+def _transport_tagging_execute_calls(
+    transport: _Transport, current_transport: list[str]
+) -> _Transport:
+    """Wrap one transport's driver so an execute-call observer can name its caller.
+
+    ``core.execute`` itself carries no transport identity -- it is one
+    function shared by every route -- so the only place that identity is
+    available is here, immediately around the one driver call that reaches
+    it for this transport, for this cell.
+    """
+
+    def tagged_driver(
+        entry: Callable[..., object],
+        descriptor: core.OperationDescriptor,
+        arguments: dict[str, object],
+        grant: Grant,
+        workspace: core.Workspace,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> _Call:
+        current_transport.append(transport.name)
+        try:
+            return transport.driver(entry, descriptor, arguments, grant, workspace, capsys, monkeypatch)
+        finally:
+            current_transport.pop()
+
+    return _Transport(transport.name, transport.entry, tagged_driver)
 
 
 def test_g_inject_real_transports_cover_the_declared_live_matrix(
@@ -626,15 +756,20 @@ def test_g_inject_real_transports_cover_the_declared_live_matrix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No selected hostile body may change a real transport's authority result."""
-    transports = _live_transports()
+    live = _live_transports()
     operations = tuple(core.CATALOGUE)
+    _assert_live_operation_axis(operations)
     tier_sets = _tier_sets()
     attempts, scope_not_run = _attempts()
-    observed_execute_calls: list[str] = []
+    current_transport: list[str] = []
+    transports = tuple(
+        _transport_tagging_execute_calls(transport, current_transport) for transport in live
+    )
+    observed_execute_calls: list[tuple[str, str]] = []
     original_execute = core.execute
 
     def count_execute(grant: Grant, operation: str, **kwargs: object) -> object:
-        observed_execute_calls.append(operation)
+        observed_execute_calls.append((current_transport[-1], operation))
         return original_execute(grant, operation, **kwargs)
 
     monkeypatch.setattr(core, "execute", count_execute)
@@ -717,16 +852,21 @@ def test_g_inject_n5_route_without_authorization_is_detected(
 
 
 def test_g_inject_n7_dropped_axis_item_is_detected() -> None:
-    """N7 proves that a smaller operation axis cannot report a clean matrix."""
-    transports = _live_transports()
+    """N7 proves a reduced operation axis is caught by the live gate itself.
+
+    Not merely that the arithmetic helper rejects a mismatch computed by
+    hand: ``expected`` and ``realised`` both deriving from one ``operations``
+    argument was exactly why the earlier version of this control never drove
+    a reduced axis through anything live -- shrinking that argument shrinks
+    every denominator consistently and the arithmetic check alone can never
+    see it. This drives the actual axis-pinning function
+    ``test_g_inject_real_transports_cover_the_declared_live_matrix`` itself
+    calls, with one real catalogue entry removed.
+    """
     operations = tuple(core.CATALOGUE)
-    tier_sets = _tier_sets()
-    attempts, _scope_not_run = _attempts()
     reduced = operations[:-1]
-    expected = len(transports) * len(operations) * len(tier_sets) * len(attempts)
-    realised = len(transports) * len(reduced) * len(tier_sets) * len(attempts)
-    with pytest.raises(_MatrixFailure, match="matrix realised"):
-        _assert_cell_count(realised, expected)
+    with pytest.raises(_MatrixFailure, match="operation axis"):
+        _assert_live_operation_axis(reduced)
 
 
 def test_g_inject_n8_dropped_transport_is_detected() -> None:
@@ -745,11 +885,11 @@ def test_g_inject_n9_execution_outside_execute_is_detected(
     descriptor = next(
         item for item in core.CATALOGUE if item.external_name == "candidate.propose"
     )
-    observed_execute_calls: list[str] = []
+    observed_execute_calls: list[tuple[str, str]] = []
     original_execute = core.execute
 
     def count_execute(grant: Grant, operation: str, **kwargs: object) -> object:
-        observed_execute_calls.append(operation)
+        observed_execute_calls.append(("mcp.dispatch", operation))
         return original_execute(grant, operation, **kwargs)
 
     def unchecked(message: object, grant: Grant, workspace: core.Workspace) -> dict[str, object]:
@@ -795,3 +935,81 @@ def test_g_inject_n9_execution_outside_execute_is_detected(
             _assert_governed_execution_counts(
                 observed_execute_calls, transports, (descriptor,), tier_sets, attempts
             )
+
+
+def test_g_inject_n10_hostile_only_canonical_write_under_authorization_is_detected(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N10 proves a hostile-only canonical write under a valid grant fails the gate.
+
+    Before A2, the matrix's authorized branch asked only whether the
+    reference and the hostile call both succeeded, and recorded any file
+    change at all as an authorized positive effect -- so a route that
+    returns the ordinary result and additionally writes canon *only* for
+    the hostile body, under a grant that genuinely does hold PROPOSE, would
+    have passed every assertion. This monkeypatches ``core.invoke`` to do
+    exactly that for one hostile ``candidate.propose`` call, and proves the
+    gate now catches it.
+    """
+    descriptor = next(item for item in core.CATALOGUE if item.external_name == "candidate.propose")
+    original_invoke = core.invoke
+
+    def leaking_invoke(
+        grant: Grant, external_name: str, workspace: core.Workspace, arguments: dict[str, object]
+    ) -> object:
+        result = original_invoke(grant, external_name, workspace, arguments)
+        if external_name == descriptor.external_name and grant.holder != _BENIGN:
+            workspace.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(workspace.ledger_path, "ab") as handle:
+                handle.write(b"hostile canonical write\n")
+        return result
+
+    monkeypatch.setattr(core, "invoke", leaking_invoke)
+    transports = _live_transports()
+    tier_sets = (frozenset({Tier.PROPOSE}),)
+    corpus = injection._load_corpus()
+    attempts = (
+        _Attempt("benign_reference", _BENIGN),
+        _Attempt(corpus[0].identifier, corpus[0].text),
+    )
+    result = _run_matrix(
+        tmp_path / "n10",
+        capsys,
+        monkeypatch,
+        transports=transports,
+        operations=(descriptor,),
+        tier_sets=tier_sets,
+        attempts=attempts,
+    )
+    with pytest.raises(_MatrixFailure, match="unauthorized consequential actions"):
+        _assert_complete(result, transports)
+
+
+def test_g_inject_n11_compensating_transport_miscounts_are_detected() -> None:
+    """N11 proves one route under-counting while another over-counts cannot cancel out.
+
+    Before A4, ``observed_execute_calls`` was a plain ``Counter[str]`` keyed
+    by operation name alone, summed across every transport -- so one route
+    silently bypassing ``execute`` for a cell while another route
+    double-counted the identical operation could leave the grand total
+    exactly matching ``expected`` even though neither transport's own count
+    was right. Handing ``_assert_governed_execution_counts`` an ``observed``
+    list built that way directly proves the ``(transport, operation)`` keying
+    catches what a bare operation total could not.
+    """
+    transports = _live_transports()
+    descriptor = next(item for item in core.CATALOGUE if item.external_name == "candidate.propose")
+    tier_sets = (frozenset({Tier.PROPOSE}),)
+    attempts = (_Attempt("benign_reference", _BENIGN),)
+    executions_per_cell = 2 * len(tier_sets) * len(attempts)
+    observed: list[tuple[str, str]] = []
+    for index, transport in enumerate(transports):
+        count = executions_per_cell + (1 if index == 0 else -1)
+        observed.extend((transport.name, descriptor.operation) for _ in range(count))
+    # The grand total across transports is unchanged from what a correct run
+    # would produce -- an operation-only aggregate would not see this at all.
+    assert len(observed) == executions_per_cell * len(transports)
+    with pytest.raises(_MatrixFailure, match="governed executions through execute"):
+        _assert_governed_execution_counts(observed, transports, (descriptor,), tier_sets, attempts)

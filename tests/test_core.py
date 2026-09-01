@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import stat
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -290,6 +291,23 @@ def test_descriptor_tier_actually_tracks_the_live_registry_rather_than_a_literal
     _capability.register(name, _capability.Tier.PROPOSE, lambda: None)
     built = core._descriptor("throwaway.op", name, "a throwaway operation", ())
     assert built.tier is _capability.Tier.PROPOSE
+
+
+def test_operation_descriptor_itself_refuses_a_tier_disagreeing_with_the_registry() -> None:
+    """A7: the class's own constructor performs this check, not merely ``_descriptor``.
+
+    ``"search"`` is registered at ``Tier.READ``; building a descriptor by
+    hand that names it at a different tier is exactly the shape
+    ``OperationDescriptor``'s own docstring already claimed to refuse, and
+    before A7 only ``_descriptor`` -- a private helper this class's own
+    constructor never called -- actually performed the check.
+    """
+    from nous_os.capability import Tier as _Tier
+    from nous_os.capability import required_tier
+
+    assert required_tier("search") is _Tier.READ
+    with pytest.raises(core.CoreError):
+        core.OperationDescriptor("fake.search", "search", _Tier.PROPOSE, "mismatched tier", ())
 
 
 # --- no PROMOTE or EXTERNAL_CONSEQUENTIAL_ACTION descriptor -------------------
@@ -738,6 +756,83 @@ def test_a_workspace_with_no_aliasing_resolves_cleanly(tmp_path: Path) -> None:
     assert isinstance(workspace, core.Workspace)
 
 
+# --- four spellings string-equality-and-containment alone could not catch -----
+
+
+def test_a_store_hard_linked_to_a_canonical_document_is_refused(tmp_path: Path) -> None:
+    """A1 spelling 1: a store outside canon, hard-linked to a document inside it.
+
+    Neither of the seven configured locations names the document directly, so
+    a check that only compares the seven to each other never sees this: the
+    store's own filesystem identity must be checked against canon's contents.
+    """
+    kwargs = _workspace_kwargs(tmp_path)
+    document = kwargs["data_root"] / "doc.md"
+    document.write_text("canonical content", encoding="utf-8")
+    outside_store = tmp_path / "outside-store.jsonl"
+    os.link(document, outside_store)
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(**_workspace_kwargs(tmp_path, candidate_store_path=outside_store))
+
+
+def test_a_store_nested_beneath_a_not_yet_existing_ledger_path_is_refused(tmp_path: Path) -> None:
+    """A1 spelling 2: a store nested beneath a ledger location that has not been created.
+
+    The ledger is canonical but is not a directory-shaped location, so a
+    containment check limited to directory-shaped canon never sees this.
+    """
+    ledger_path = tmp_path / "ledger.jsonl"
+    nested_store = ledger_path / "nested-store.jsonl"
+    assert not ledger_path.exists()
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(
+                tmp_path, ledger_path=ledger_path, candidate_store_path=nested_store
+            )
+        )
+
+
+def test_a_case_only_variant_of_a_not_yet_existing_pair_is_refused(tmp_path: Path) -> None:
+    """A1 spelling 3: a case-only difference between two not-yet-existing locations.
+
+    ``Path.resolve()`` does not case-fold on this platform's own
+    case-insensitive volume, and neither spelling exists yet for ``os.stat``
+    to settle by device and inode, so only a normalised-spelling fallback
+    catches this.
+    """
+    ledger_path = tmp_path / "Ledger.jsonl"
+    candidate_store_path = tmp_path / "ledger.jsonl"
+    assert not ledger_path.exists() and not candidate_store_path.exists()
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(
+                tmp_path, ledger_path=ledger_path, candidate_store_path=candidate_store_path
+            )
+        )
+
+
+def test_a_unicode_normalisation_variant_of_the_data_root_is_refused(tmp_path: Path) -> None:
+    """A1 spelling 4: an NFD-spelled ancestor resolving inside the NFC-spelled data root.
+
+    Not case-dependent: the data root exists under one Unicode normal form,
+    and the store's parent is spelled under the other, so a pure string
+    containment check never sees they are one real directory.
+    """
+    import unicodedata
+
+    nfc_name = unicodedata.normalize("NFC", "café")
+    nfd_name = unicodedata.normalize("NFD", nfc_name)
+    assert nfc_name != nfd_name
+    data_root = tmp_path / nfc_name
+    data_root.mkdir()
+    (data_root / "doc.md").write_text("alpha signal in a source document", encoding="utf-8")
+    store_inside = tmp_path / nfd_name / "store.jsonl"
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(tmp_path, data_root=data_root, candidate_store_path=store_inside)
+        )
+
+
 # --- provider neutrality -------------------------------------------------------
 
 
@@ -818,6 +913,49 @@ def _every_dataclass_field_name() -> set[str]:
     return names
 
 
+def _every_public_type_name_from(classes: Iterable[type]) -> set[str]:
+    """Every class's own name, plus every member name of an ``Enum`` among them.
+
+    Extracted from :func:`_every_public_type_name` so the extraction logic
+    itself -- not merely its result over the shipped package -- can be
+    exercised directly by a control that proves it actually inspects a
+    type's own name, not merely the field names declared on it.
+    """
+    import enum
+
+    names: set[str] = set()
+    for attribute in classes:
+        names.add(attribute.__name__)
+        if issubclass(attribute, enum.Enum):
+            names.update(member.name for member in attribute)
+    return names
+
+
+def _every_public_type_name() -> set[str]:
+    """Every class and ``Enum`` member name this package defines, across every module.
+
+    A type's own name is exactly as much a public identifier as a rendered
+    field name: a semantic dataclass or enum named after a provider, with
+    neutral fields and no rendered occurrence, would otherwise never appear
+    in the identifier set the scan below builds. Restricted to types this
+    package itself defines -- ``__module__`` starting with ``nous_os`` --
+    rather than every imported standard-library type reachable from one of
+    its modules, which is not this package's own vocabulary to police.
+    """
+    import importlib
+    import pkgutil
+
+    import nous_os
+
+    classes: list[type] = []
+    for module_info in pkgutil.walk_packages(nous_os.__path__, prefix=f"{nous_os.__name__}."):
+        module = importlib.import_module(module_info.name)
+        for attribute in vars(module).values():
+            if isinstance(attribute, type) and attribute.__module__.startswith(nous_os.__name__):
+                classes.append(attribute)
+    return _every_public_type_name_from(classes)
+
+
 def test_no_provider_name_appears_in_any_public_identifier_or_rendered_key(
     tmp_path: Path,
 ) -> None:
@@ -829,12 +967,31 @@ def test_no_provider_name_appears_in_any_public_identifier_or_rendered_key(
         for parameter in descriptor.parameters:
             identifiers.add(parameter.name)
     identifiers.update(_every_dataclass_field_name())
+    identifiers.update(_every_public_type_name())
     for result in _every_rendered_result(tmp_path):
         identifiers.update(_iter_dict_keys(result))
     lowered = {identifier.lower() for identifier in identifiers if type(identifier) is str}
     for fragment in _FORBIDDEN_PROVIDER_FRAGMENTS:
         offending = [identifier for identifier in lowered if fragment in identifier]
         assert offending == [], f"{fragment!r} appears in: {offending}"
+
+
+def test_a_provider_fragment_in_a_type_name_is_actually_detected() -> None:
+    """A5 control: the widened scan must inspect a type's own name, not merely its fields.
+
+    Built on a throwaway class that is never part of the shipped package, so
+    this proves :func:`_every_public_type_name_from` actually inspects a
+    class's own ``__name__`` -- without adding a forbidden spelling to the
+    repository the real scan above walks. Before A5's fix, this project's
+    identifier scan collected only field names, ``__all__``, operation
+    names, parameter names, and rendered keys; a class named after a
+    provider with neutral fields and no rendered occurrence was invisible to
+    it, which is exactly the gap this exercises directly.
+    """
+    fragment = _FORBIDDEN_PROVIDER_FRAGMENTS[0]
+    synthetic = type(fragment.capitalize() + "Marker", (), {})
+    names = {name.lower() for name in _every_public_type_name_from((synthetic,))}
+    assert any(fragment in name for name in names)
 
 
 # --- system.health's tri-state answer -----------------------------------------

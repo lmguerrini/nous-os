@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import os
 import stat
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -161,12 +162,26 @@ class AliasedWorkspaceLocation(Exception):
     resolves cleanly and a PROPOSE call appends a proposal record straight
     into the file configured as the ledger; a store resolving inside the
     canonical data root is refused for the identical reason, because a write
-    there is a write to canon by another name. The same refusal protects each
-    canonical directory -- data root and snapshot root -- in both directions
-    against every noncanonical store. Every location is resolved
-    fully -- symlinks followed, ``..`` collapsed -- before any of these are
-    compared, so a caller cannot spell the same file two different ways to
-    defeat this.
+    there is a write to canon by another name. The same refusal protects
+    every canonical location -- data root, snapshot root, and ledger --
+    in both directions against every noncanonical store, whether or not that
+    location has been created on disk yet, and against a store that is
+    hard-linked to a document already sitting beneath the data root or the
+    snapshot root, not merely against the other six configured names.
+
+    Every location is resolved fully -- symlinks followed, ``..`` collapsed --
+    before any of these are compared, and every comparison below prefers
+    filesystem truth (device and inode) to string truth wherever that truth
+    is available, so a hard link, a not-yet-created ledger directory, a
+    case-only variant on this platform's own case-insensitive volume, and a
+    Unicode NFC/NFD variant of an existing directory's name can none of them
+    spell the same file or directory two different ways to defeat this. What
+    this cannot cover, honestly: an ``OSError`` other than a missing file
+    while comparing two paths that do exist refuses the whole workspace
+    rather than guessing, and a not-yet-existing path is compared by a
+    normalised spelling rather than filesystem truth, which is inherently
+    unable to observe a filesystem-specific aliasing rule this project has
+    not been shown a reproduction of.
     """
 
 
@@ -248,85 +263,170 @@ def _workspace_locations(workspace: Workspace) -> tuple[_WorkspaceLocation, ...]
     )
 
 
-def _same_existing_file_identity(first: _WorkspaceLocation, second: _WorkspaceLocation) -> bool:
-    """Tell whether two existing paths denote one filesystem object by device and inode.
+def _normalized_spelling(path: Path) -> str:
+    """A comparison key for a path this process cannot yet prove exists.
 
-    A path that does not yet exist cannot be a hard link today, so it has no
-    identity to compare. If an existing path cannot be statted, or the
-    filesystem exposes no inode, identity comparison is unavailable; refusing
-    the workspace is safer than claiming that spelling resolution covered that
-    platform case.
+    ``Path.resolve()`` neither case-folds nor Unicode-normalises a spelling,
+    so two arguments that look different can still name what a filesystem
+    would treat as one location once something is actually written there,
+    and ``os.stat`` cannot settle that for a path that is not there yet to
+    stat. ``unicodedata.normalize("NFC", ...)`` folds a decomposed and a
+    precomposed spelling of one name together without ever merging two
+    genuinely different names, because NFC is a canonical, meaning-preserving
+    transform -- that part of this key is exact, not a guess. Case is not
+    exact the same way: ``os.path.normcase`` case-folds only on Windows, and
+    this project also has to run correctly on this platform's own
+    case-insensitive-by-default volume, where it does not. ``casefold()`` is
+    therefore applied unconditionally in addition to it. That is deliberately
+    conservative rather than platform-exact: on a genuinely case-sensitive
+    filesystem this can refuse two not-yet-created locations that would not
+    actually have collided, and that direction of error -- an over-cautious
+    refusal, never an unproven claim that two spellings are safe -- is the
+    one this project accepts.
     """
+    return unicodedata.normalize("NFC", os.path.normcase(str(path))).casefold()
+
+
+def _same_location(first: Path, second: Path) -> bool:
+    """Tell whether two resolved paths denote one filesystem location.
+
+    Both paths have already passed through ``Path.expanduser().resolve()``,
+    so a symlink or a ``..`` segment cannot make two differently-spelled
+    arguments compare equal here. When both sides can be statted, identity is
+    settled by device and inode -- filesystem truth, not string truth -- which
+    is what actually catches a hard link, and what a case-insensitive or a
+    Unicode-normalising filesystem does on its own for a name that already
+    exists, since ``os.stat`` performs that folding itself rather than this
+    function guessing at it. When either side cannot be statted because it
+    does not exist yet, there is no filesystem truth available to consult, so
+    this falls back to :func:`_normalized_spelling`.
+    """
+    if first == second:
+        return True
     try:
-        first_info = os.stat(first.path)
-        second_info = os.stat(second.path)
+        first_info = os.stat(first)
+        second_info = os.stat(second)
     except FileNotFoundError:
-        return False
+        return _normalized_spelling(first) == _normalized_spelling(second)
     except OSError as error:
         raise AliasedWorkspaceLocation(
-            f"cannot compare filesystem identity for {first.field} and {second.field}; "
+            f"cannot compare filesystem identity for {first} and {second}; "
             "the platform did not make the hard-link check available"
         ) from error
     if first_info.st_ino == 0 or second_info.st_ino == 0:
         raise AliasedWorkspaceLocation(
-            f"cannot compare filesystem identity for {first.field} and {second.field}; "
+            f"cannot compare filesystem identity for {first} and {second}; "
             "the platform did not expose stable inode values"
         )
     return (first_info.st_dev, first_info.st_ino) == (second_info.st_dev, second_info.st_ino)
 
 
 def _is_inside(path: Path, container: Path) -> bool:
-    """Return whether unequal resolved ``path`` is a descendant of ``container``."""
-    return container in path.parents
+    """Tell whether resolved ``path`` denotes a location inside ``container``.
+
+    Walks every ancestor of ``path`` and asks whether it is the same location
+    as ``container`` by :func:`_same_location`, rather than comparing ancestor
+    strings to ``container`` directly: a container that already exists is
+    reached by ``os.stat`` regardless of the case or Unicode-normalisation
+    form an ancestor of ``path`` happens to have been spelled in, exactly as
+    two configured locations are. ``path.parents`` never contains ``path``
+    itself, so equal paths are not "inside" each other here.
+    """
+    return any(_same_location(ancestor, container) for ancestor in path.parents)
+
+
+def _canonical_file_identities(root: Path) -> frozenset[tuple[int, int]]:
+    """Every ``(device, inode)`` pair for a real file currently beneath ``root``.
+
+    ``root`` not existing yet is not an error here: there is nothing beneath
+    a directory that has not been created, so an empty result is the correct
+    answer, not a refusal. Used to catch a store hard-linked to a canonical
+    document or snapshot blob that is not itself one of the seven configured
+    locations, and so is otherwise invisible to the pairwise comparison
+    above.
+    """
+    if not root.is_dir():
+        return frozenset()
+    identities: set[tuple[int, int]] = set()
+    for path in root.rglob("*"):
+        try:
+            info = path.stat()
+        except OSError:
+            continue
+        if stat.S_ISREG(info.st_mode) and info.st_ino != 0:
+            identities.add((info.st_dev, info.st_ino))
+    return frozenset(identities)
 
 
 def _refuse_aliased_locations(workspace: Workspace) -> None:
-    """Refuse aliases and either-direction containment around canonical directories.
+    """Refuse aliases, either-direction containment, and hard links into canon.
 
-    Every location handed to this function already passed through
-    ``Path.expanduser().resolve()``, so a symlink or a ``..`` segment cannot
-    make two differently-spelled arguments compare equal here. Existing paths
-    additionally receive a device-and-inode comparison, which catches hard
-    links that remain distinct after resolution.
+    Every comparison below goes through :func:`_same_location` or
+    :func:`_is_inside`, both of which prefer filesystem truth over string
+    truth wherever a comparison can be settled that way. Containment is
+    checked against every canonical location -- the data root, the snapshot
+    root, and the ledger -- not only the two canonical directories, because a
+    store nested beneath a ledger path that has not been created yet is just
+    as real a collision as one nested beneath an existing directory. A
+    store's own filesystem identity is additionally checked against every
+    real file already sitting beneath the data root or the snapshot root, not
+    only against the other six configured names, because a hard link makes a
+    store and a canonical document one file without either of their
+    configured paths ever equalling or containing the other.
     """
     locations = _workspace_locations(workspace)
     for index, first in enumerate(locations):
         for second in locations[index + 1 :]:
-            if first.path == second.path:
+            if _same_location(first.path, second.path):
                 raise AliasedWorkspaceLocation(
-                    f"{first.field} and {second.field} both resolve to {first.path}; NousOS "
-                    "refuses two names for one workspace location"
-                )
-            if _same_existing_file_identity(first, second):
-                raise AliasedWorkspaceLocation(
-                    f"{first.field} and {second.field} have one filesystem identity; NousOS "
+                    f"{first.field} and {second.field} both denote {first.path}; NousOS "
                     "refuses two names for one workspace location"
                 )
 
-    canonical_containers = tuple(
+    canonical_directories = tuple(
         location for location in locations if location.is_canonical and location.is_directory
     )
+    canonical_locations = tuple(location for location in locations if location.is_canonical)
     stores = tuple(location for location in locations if not location.is_canonical)
-    for index, first in enumerate(canonical_containers):
-        for second in canonical_containers[index + 1 :]:
+
+    for index, first in enumerate(canonical_directories):
+        for second in canonical_directories[index + 1 :]:
             if _is_inside(first.path, second.path) or _is_inside(second.path, first.path):
                 raise AliasedWorkspaceLocation(
                     f"canonical directories {first.field}={first.path} and "
                     f"{second.field}={second.path} overlap; NousOS refuses nested canon"
                 )
 
-    for canonical in canonical_containers:
+    for canonical in canonical_locations:
         for store in stores:
             if _is_inside(store.path, canonical.path):
                 raise AliasedWorkspaceLocation(
-                    f"{store.field} resolves to {store.path}, inside canonical directory "
-                    f"{canonical.field}={canonical.path}; a store location may not sit inside canon"
+                    f"{store.field} resolves to {store.path}, inside canonical location "
+                    f"{canonical.field}={canonical.path}; a store may not sit inside canon, "
+                    "including a canonical location that does not exist yet"
                 )
             if _is_inside(canonical.path, store.path):
                 raise AliasedWorkspaceLocation(
-                    f"canonical directory {canonical.field}={canonical.path} sits inside "
-                    f"store {store.field}={store.path}; a canonical directory may not sit in a store"
+                    f"canonical location {canonical.field}={canonical.path} sits inside "
+                    f"store {store.field}={store.path}; a canonical location may not sit in a store"
                 )
+
+    canonical_file_identities = _canonical_file_identities(
+        workspace.data_root.path
+    ) | _canonical_file_identities(workspace.snapshot_root)
+    for store in stores:
+        try:
+            store_info = os.stat(store.path)
+        except OSError:
+            continue
+        if store_info.st_ino == 0:
+            continue
+        if (store_info.st_dev, store_info.st_ino) in canonical_file_identities:
+            raise AliasedWorkspaceLocation(
+                f"{store.field} resolves to {store.path}, which shares a filesystem identity "
+                "with a file beneath the data root or the snapshot root; a store may not be "
+                "hard-linked to canon"
+            )
 
 
 def resolve_workspace(
@@ -426,9 +526,13 @@ class OperationDescriptor:
 
     ``operation`` is the name registered in :mod:`nous_os.operations`, or
     ``None`` for a Core-level read that calls nothing through the registry.
-    ``tier`` is read from :func:`~nous_os.capability.required_tier` at
-    construction time for every entry that names a registered operation, so it
-    cannot silently drift from what the registry actually enforces.
+    ``tier`` is checked against :func:`~nous_os.capability.required_tier` in
+    this class's own ``__post_init__``, for every entry that names a
+    registered operation, not merely by :func:`_descriptor`: a caller
+    building a descriptor by hand with a ``tier`` that disagrees with what
+    ``operation`` is actually registered at is refused here directly, so a
+    declared tier cannot silently drift from what the registry enforces
+    regardless of which constructor was used to reach this class.
 
     A tier in :data:`_UNOFFERED_TIERS` is refused here directly, not merely by
     :func:`_descriptor`: this class is exported in :data:`__all__` and nothing
@@ -449,6 +553,11 @@ class OperationDescriptor:
             raise CoreError("operation must be a registered name or None")
         if not any(self.tier is member for member in Tier):
             raise CoreError("tier must be a declared Tier member")
+        if self.operation is not None and self.tier is not required_tier(self.operation):
+            raise CoreError(
+                f"{self.external_name!r} declares tier {self.tier}, but "
+                f"{self.operation!r} is registered at {required_tier(self.operation)}"
+            )
         if any(self.tier is forbidden for forbidden in _UNOFFERED_TIERS):
             raise PromotionNotOffered(
                 f"{self.external_name!r} declares tier {self.tier}; this contract "

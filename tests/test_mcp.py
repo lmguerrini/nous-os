@@ -178,11 +178,21 @@ def test_tools_list_method_reports_the_same_set_and_a_json_schema_per_declared_p
         assert set(schema["required"]) == {p.name for p in descriptor.parameters if p.required}
 
 
-# --- nothing but a JSON-RPC message is ever written to stdout --------------
+# --- once serving begins, nothing but a JSON-RPC message reaches stdout ----
 
 
 def _assert_startup_refusal_prints_to_stderr(source: str) -> None:
-    """Reject a startup-refusal writer unless its target is exactly ``sys.stderr``."""
+    """Reject a startup-refusal writer unless its target is exactly ``sys.stderr``.
+
+    A static, syntactic guard, and a deliberately narrow one: it walks this
+    module's own source for a bare ``print(`` call and checks where the one
+    it finds is directed. It does not, and cannot, inspect every way a byte
+    could reach stdout -- argparse's own ``--help``/``--version`` handling
+    writes there directly, through machinery this walk never visits, and
+    that is expected, unrelated behaviour this guard makes no claim about.
+    What it actually proves is narrower and real: no bare ``print(`` call
+    this module's own source contains writes anywhere but stderr.
+    """
     tree = ast.parse(source)
     calls = [
         node for node in ast.walk(tree)
@@ -247,6 +257,68 @@ def test_a_startup_refusal_writes_zero_bytes_to_stdout() -> None:
     assert result.returncode == 1
     assert result.stdout == ""
     assert result.stderr.startswith("DataRootNotConfigured:")
+
+
+def test_help_writes_to_stdout_on_argparses_own_convention(tmp_path: Path) -> None:
+    """A10: pins the narrowed claim -- ``--help`` is outside the serving path.
+
+    Never reaches ``serve``, so the module docstring's "once serving begins"
+    claim makes no promise about it at all; this is argparse's own ordinary
+    behaviour, not a leak of protocol framing onto the one stream a client
+    reads as JSON-RPC.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "nous_os.mcp", "--help"],
+        input="",
+        capture_output=True,
+        text=True,
+        env=_child_env(),
+        timeout=10,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip()
+    for line in result.stdout.split("\n"):
+        if line:
+            with pytest.raises(json.JSONDecodeError):
+                json.loads(line)
+
+
+# --- A9: serve's own decode step, exercised directly ------------------------
+
+
+def test_serve_returns_a_parse_error_for_a_malformed_line_directly(tmp_path: Path) -> None:
+    """``serve``'s decode step, not only the subprocess-level session above."""
+    workspace = _workspace(tmp_path)
+    grant = Grant("holder", frozenset({Tier.READ}))
+    stdin = io.StringIO("not even json\n")
+    stdout = io.StringIO()
+    mcp.serve(grant, workspace, stdin=stdin, stdout=stdout)
+    lines = [line for line in stdout.getvalue().split("\n") if line]
+    assert len(lines) == 1
+    response = json.loads(lines[0])
+    assert response["error"]["code"] == mcp._PARSE_ERROR
+
+
+def test_serve_survives_a_json_array_nested_past_the_recursion_limit(tmp_path: Path) -> None:
+    """A9: a hostile line deep enough to overflow ``json.loads`` must not kill the process.
+
+    ``json.JSONDecodeError`` alone does not cover this: deep enough nesting
+    exhausts the interpreter's recursion limit before the decoder ever
+    raises a decode error, and an uncaught ``RecursionError`` here would
+    escape ``serve`` (there is no enclosing ``try`` in ``main`` either) and
+    terminate the whole process -- content-driven denial of service against
+    the one long-lived transport this project ships.
+    """
+    workspace = _workspace(tmp_path)
+    grant = Grant("holder", frozenset({Tier.READ}))
+    deeply_nested = "[" * 20000 + "]" * 20000
+    stdin = io.StringIO(deeply_nested + "\n")
+    stdout = io.StringIO()
+    mcp.serve(grant, workspace, stdin=stdin, stdout=stdout)
+    lines = [line for line in stdout.getvalue().split("\n") if line]
+    assert len(lines) == 1
+    response = json.loads(lines[0])
+    assert response["error"]["code"] == mcp._PARSE_ERROR
 
 
 # --- a request cannot widen a grant; a PROMOTE-only transport reaches nothing
