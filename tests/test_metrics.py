@@ -204,3 +204,44 @@ def test_one_population_is_not_refused() -> None:
         "k_values": [1, 5, 10, 20],
     }
     assert compute_metrics(artifact).denominator == 2
+
+
+def test_a_third_lexical_arm_becomes_the_reference_not_a_candidate() -> None:
+    """The frozen rule takes the maximum over EVERY lexical arm, not over two names.
+
+    `PREREGISTRATION-AMENDMENT-1` freezes the comparison as "whichever lexical arm
+    scores higher on chunk-level Recall@10". An earlier implementation read two
+    hardcoded names, which is the same behaviour only while exactly two lexical arms
+    exist. An audit injected a third at a higher rate and watched it be IGNORED as a
+    reference and then scored as a CANDIDATE against its own sibling -- a lexical
+    baseline reported as qualifying.
+
+    Nothing published was affected, because the third arm never ran. It is pinned here
+    because a governance record had already cited the two-arm behaviour as a proof, and
+    the proof was false because of it.
+    """
+    cells = [
+        {"bridge": f"b{i}", "direction": "A->B", "lang_pair": "en->it",
+         "status": "RUN", "not_run_reason": None}
+        for i in range(4)
+    ]
+    def ranks(hits: int) -> dict[str, int | None]:
+        return {f"b{i}|A->B": (1 if i < hits else None) for i in range(4)}
+    artifact = {
+        "cells": cells,
+        "k_values": [1, 5, 10, 20],
+        "arms": {
+            "BASELINE": {"status": "RUN", "description": "d", "ranks": ranks(1)},
+            "BASELINE-CHUNK-BM25": {"status": "RUN", "description": "d", "ranks": ranks(2)},
+            "BASELINE-ALIAS": {"status": "RUN", "description": "d", "ranks": ranks(4)},
+            "DENSE-ML": {"status": "RUN", "description": "d", "ranks": ranks(1)},
+        },
+    }
+    metrics = compute_metrics(artifact)
+
+    assert metrics.best_lexical_arm == "BASELINE-ALIAS", (
+        "the highest-scoring lexical arm must be the reference"
+    )
+    assert set(metrics.decisions) == {"DENSE-ML"}, (
+        "no lexical arm may be scored as a candidate against another lexical arm"
+    )

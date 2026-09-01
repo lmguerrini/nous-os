@@ -21,6 +21,12 @@ CHUNK_BASELINE = "BASELINE-CHUNK-BM25"
 #: the value it actually applies. An audit found the report printing "+10.0" as a string
 #: literal while the comparison used a mutated constant, and the fixed-point test stayed
 #: green -- a heading and a rule that could disagree without anything noticing.
+#: Every arm the frozen rule treats as LEXICAL. The decision rule compares each candidate
+#: against the maximum over this set, and members are never scored as candidates. Declared
+#: as a set rather than as two names so that adding a lexical arm changes the comparison
+#: instead of being silently scored as a candidate against itself.
+LEXICAL_ARMS: frozenset[str] = frozenset({"BASELINE", "BASELINE-CHUNK-BM25", "BASELINE-ALIAS"})
+
 MATERIALITY_THRESHOLD_POINTS: float = 10.0
 
 #: The frozen stratum floor, in percentage points: no language stratum may regress by
@@ -223,15 +229,34 @@ def _metrics_for_cells(
 
 
 def _best_lexical_arm(arms: Mapping[str, ArmMetrics]) -> str:
-    baseline = arms.get(BASELINE)
-    chunk = arms.get(CHUNK_BASELINE)
-    if not isinstance(baseline, RunArmMetrics) or not isinstance(chunk, RunArmMetrics):
-        raise MetricsError("both lexical arms must have RUN status for the decision rule")
-    baseline_rate = baseline.recall_at[10].value
-    chunk_rate = chunk.recall_at[10].value
-    if baseline_rate == chunk_rate:
+    """The highest-scoring lexical arm at recall@10, over EVERY declared lexical arm.
+
+    Amendment 1 freezes the comparison as "whichever lexical arm scores higher on
+    chunk-level Recall@10". An earlier version read exactly two hardcoded names and
+    returned one of them, which is the same thing only while exactly two lexical arms
+    exist. An audit built the counterfactual: injecting a third lexical arm with a
+    higher recall@10 left this function returning one of the two original arms, and the
+    injected arm was then scored as a CANDIDATE with condition A True -- a lexical baseline
+    reported as a qualifying candidate.
+
+    The arm never ran, so nothing published was wrong. But a governance record had
+    already cited the two-arm behaviour as a proof that a third arm could not disturb
+    the result, and that proof was false BECAUSE of this implementation (F20). The rule
+    now takes the maximum the frozen text describes, so the code and the record agree.
+    """
+    lexical = {
+        name: arm
+        for name, arm in arms.items()
+        if name in LEXICAL_ARMS and isinstance(arm, RunArmMetrics)
+    }
+    for required in (BASELINE, CHUNK_BASELINE):
+        if required not in lexical:
+            raise MetricsError(f"{required} must have RUN status for the decision rule")
+    ranked = sorted(lexical.items(), key=lambda pair: (-pair[1].recall_at[10].value, pair[0]))
+    best, runner_up = ranked[0], ranked[1]
+    if best[1].recall_at[10].value == runner_up[1].recall_at[10].value:
         raise MetricsError("the lexical arms tie at recall@10; the frozen rule has no higher arm")
-    return BASELINE if baseline_rate > chunk_rate else CHUNK_BASELINE
+    return best[0]
 
 
 def compute_metrics(artifact: Mapping[str, object]) -> ExperimentMetrics:
@@ -302,7 +327,11 @@ def compute_metrics(artifact: Mapping[str, object]) -> ExperimentMetrics:
     assert isinstance(reference, RunArmMetrics)
     decisions: dict[str, Decision] = {}
     for arm_name, arm in parsed_arms.items():
-        if arm_name in {BASELINE, CHUNK_BASELINE}:
+        # Every lexical arm is excluded from the candidate set, not just the two the
+        # rule used to name. A lexical arm scored as a candidate is scored against
+        # itself or against its sibling, which an audit reproduced as a baseline
+        # reporting a qualifying gain and condition A True.
+        if arm_name in LEXICAL_ARMS:
             continue
         if isinstance(arm, NotRunArmMetrics):
             decisions[arm_name] = NotRunDecision(arm_name, arm.reason)
