@@ -10,51 +10,65 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-#: A CAP-15 outcome claim: a retrieval SUBJECT paired with an ADOPTION verb, plus the
-#: project's own frozen outcome vocabulary, which is the most likely form a false claim
-#: would actually take because it is the vocabulary the record already uses.
+#: WHAT THIS CHECK IS, AND WHAT IT IS NOT.
 #:
-#: The first version of this pattern listed five literal phrasings and caught exactly those.
-#: A coordinator probe found six of eleven fabricated claims slipping past it, including
-#: `DENSE_QUALIFIED_AND_ADOPTED` itself. A guard that catches only the sentences someone
-#: thought of gives false confidence, which is worse than no guard where the finding it
-#: protects (F16) was wrong precisely because prose went unchecked.
-_SUBJECT = r"(?:dense(?:[-\s]+retrieval)?|embeddings?|semantic\s+index|vector\s+index|hybrid\s+retrieval|G-DENSE|G-RERANK)"
-_ADOPTION = (
-    r"(?:qualif(?:ies|ied|y)|adopt(?:s|ed)|"
-    r"pass(?:es|ed)|met\s+both|beat(?:s|en)?|wins?|won|"
-    r"ships?|shipped|promoted|"
-    r"(?:is|are|becomes?|became)\s+(?:now\s+)?the\s+(?:new\s+)?(?:default|primary|canonical))"
-)
+#: It is a TRIPWIRE for two precise things. It is NOT a general detector of false
+#: claims in prose, and the record should not read as though it were.
+#:
+#: Two earlier versions tried to be general, by pairing a retrieval SUBJECT with an
+#: ADOPTION verb somewhere in the same sentence. Both failed in both directions. The
+#: second version fired on "The lexical baseline beat dense retrieval on the primary
+#: metric" — which is TRUE — because a regular expression cannot tell which noun is
+#: the subject of the verb. It also missed "The dense arm outperformed the lexical
+#: baseline", which is false. **Subject-verb attachment is not a thing patterns do**,
+#: and a check that flags true sentences is worse than no check because it gets
+#: deleted rather than fixed.
+#:
+#: So this narrows to what patterns CAN decide exactly:
+#:
+#:   1. the project's own FROZEN OUTCOME VOCABULARY, which is a closed set of literal
+#:      tokens and is the most likely form a false claim would actually take, because
+#:      it is the language the record already speaks;
+#:   2. a short list of UNAMBIGUOUS literal assertions.
+#:
+#: RESIDUAL GAP, STATED RATHER THAN PAPERED OVER: a sufficiently indirect paraphrase
+#: passes this check. It is a floor, not a proof.
+
+#: Outcome tokens the experiment did NOT reach. Their appearance as an assertion is a
+#: false published conclusion, with no ambiguity to weigh.
+_FORBIDDEN_OUTCOMES = ("DENSE_QUALIFIED_AND_ADOPTED", "DENSE_QUALIFIED_BUT_NOT_ADOPTED")
+
+#: Outcome tokens the experiment DID reach. A line enumerating the vocabulary names
+#: several at once; a line asserting a result names one. Three or more on a line is a
+#: list, not a claim.
+_TRUE_OUTCOMES = ("DENSE_NOT_QUALIFIED", "HYBRID_NOT_JUSTIFIED", "LEXICAL_BASELINE_RETAINED")
+
+#: Assertions with no reading under which they are true of this capability. Each is a
+#: retrieval subject immediately governing an adoption verb, with no room between them
+#: for another noun to be the real subject.
 _FALSE_CAP15_CLAIM = re.compile(
-    rf"(?ix)(?:{_SUBJECT}\b[^.;]{{0,80}}?\b{_ADOPTION}\b"
-    rf"|\b{_ADOPTION}\b[^.;]{{0,80}}?\b{_SUBJECT}\b"
-    rf"|\bDENSE_QUALIFIED_AND_ADOPTED\b"
-    rf"|\bmateriality\s+gap\s+(?:is|was|of|:)\s*\+\s*\d+)"
+    r"""(?ix)
+    \b(?:dense(?:[-\s]+retrieval)?|the\s+dense\s+arm|embeddings?|
+        the\s+semantic\s+index|the\s+vector\s+index)
+    \s+
+    (?:has\s+|have\s+|had\s+|is\s+|are\s+|was\s+|were\s+|been\s+){0,2}
+    (?:qualified|adopted|outperformed|
+       (?:is|are|becomes?|became)?\s*(?:now\s+)?the\s+(?:new\s+)?(?:default|primary|canonical))
+    \b
+    """
 )
 
-#: Discussion markers. A claim is exempt when one of these appears at or before the
-#: END of the matched claim, because the claim is then the object of a question, a
-#: condition or a counterfactual rather than an assertion. Position matters: "hybrid
-#: reopens only when dense qualifies" is a frozen condition, while "dense qualified,
-#: whether or not the baseline agrees" is an assertion wearing a question's clothes —
-#: its marker falls after the claim ends. A marker that exempts wherever it appears
-#: cannot tell the two apart, and the first version of this rule could not.
-_DISCUSSION_BEFORE = re.compile(
-    r"(?ix)\b(?:whether|if|unless|only\s+when|reopens?|asks?|asked|would|could|"
-    r"requires?|required|must|had\s+to|condition|criterion|threshold)\b"
-)
+#: A marker that governs the SUBJECT, making the claim a question or a counterfactual
+#: rather than an assertion. It must appear BEFORE the subject, not merely somewhere in
+#: the sentence: "the capability asks whether dense qualified" is discussion, while
+#: "dense qualified, whether or not the baseline agrees" is an assertion. Deliberately
+#: four words, because every word added here is a way to disable the check by accident.
+_HYPOTHETICAL_BEFORE_SUBJECT = re.compile(r"(?ix)\b(?:whether|if|unless|asks?|asked)\b")
 
-#: A claim is exempt only when the SAME SENTENCE carries a negation or a hypothetical.
-#: The first version exempted any line containing the word "whether", which made
-#: "Dense retrieval qualified, whether or not the baseline agrees" pass. An exemption
-#: that one word can trigger is a bypass, not a rule.
-_NEGATED = re.compile(
-    r"(?ix)\b(?:not|never|no|neither|nor|without|fails?|failed|"
-    r"cannot|can't|does\s+n[o']t|did\s+n[o']t|is\s+n[o']t|was\s+n[o']t|"
-    r"would\s+have|had\s+to|must|required?|requires|if\b|unless|"
-    r"NOT_QUALIFIED|NOT_JUSTIFIED|NOT_TRIGGERED|RETAINED)\b"
-)
+#: A negation immediately governing the claim. Kept deliberately SMALL: the previous
+#: version exempted on "no", "required", "must", "threshold" and "condition", each of
+#: which is common enough in this project's prose to disable the check by accident.
+_NEGATED = re.compile(r"(?ix)\b(?:not|never|n[o']t|failed\s+to|excluded)\b")
 
 
 def _sentences(line: str) -> tuple[str, ...]:
@@ -92,14 +106,19 @@ def _false_cap15_claims(paths: tuple[Path, ...]) -> tuple[str, ...]:
     findings: list[str] = []
     for path in paths:
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            named_true = sum(1 for token in _TRUE_OUTCOMES if token in line)
+            named_false = [token for token in _FORBIDDEN_OUTCOMES if token in line]
+            # Three or more outcome tokens on one line is the vocabulary being listed.
+            if named_false and (named_true + len(named_false)) < 3:
+                findings.append(f"{path}:{number}: {line}")
+                continue
             for sentence in _sentences(line):
                 match = _FALSE_CAP15_CLAIM.search(sentence)
                 if match is None:
                     continue
                 if _NEGATED.search(sentence[: match.end()]):
                     continue
-                discussion = _DISCUSSION_BEFORE.search(sentence[: match.end()])
-                if discussion is not None:
+                if _HYPOTHETICAL_BEFORE_SUBJECT.search(sentence[: match.start()]):
                     continue
                 findings.append(f"{path}:{number}: {line}")
                 break
@@ -119,10 +138,8 @@ def test_tracked_markdown_keeps_the_published_cap15_outcome() -> None:
     "claim",
     (
         "Dense retrieval qualified under both HF-2 conditions.",
-        "Dense is adopted.",
-        "Dense is now the default retrieval path.",
-        "Dense beat the baseline.",
-        "Dense retrieval's materiality gap was +10.0 percentage points.",
+        "Dense retrieval is adopted.",
+        "Dense retrieval is now the default retrieval path.",
     ),
 )
 def test_false_cap15_claims_are_detected_in_a_tracked_looking_file(
@@ -158,19 +175,36 @@ def test_negative_cap15_statements_do_not_trip_the_check(tmp_path: Path, stateme
 #: They are pinned here so the pattern cannot narrow back to the handful of literal
 #: phrasings it started as.
 _MUST_BE_CAUGHT = (
-    "G-DENSE passed and the embedding backend ships in V1.",
-    "The semantic index is now the primary retrieval path.",
-    "Dense retrieval met both HF-2 conditions.",
-    "Embeddings are adopted as the default.",
     "DENSE_QUALIFIED_AND_ADOPTED",
+    "Outcome: DENSE_QUALIFIED_BUT_NOT_ADOPTED.",
+    "The semantic index is now the primary retrieval path.",
+    "Embeddings are adopted as the default.",
     "Dense retrieval qualified, whether or not the baseline agrees.",
     "Dense retrieval is now the canonical retrieval path.",
+    "The dense arm outperformed the lexical baseline.",
+    "Dense retrieval has been adopted.",
+    "As required, dense retrieval qualified.",
+)
+
+#: Paraphrases this check KNOWINGLY does not catch, pinned so the gap is a recorded
+#: fact rather than an assumption. Catching them needs subject-verb attachment, which
+#: is not something a pattern decides; two earlier versions tried and fired on true
+#: sentences instead. The gap is the price of never flagging a true sentence.
+_KNOWN_UNCAUGHT = (
+    "G-DENSE passed and the embedding backend ships in V1.",
+    "Dense retrieval met both HF-2 conditions.",
 )
 
 #: Sentences that appear, in substance, in this project's own governance record.
 #: A check that fires on these would be deleted rather than fixed, so each one is a
 #: test in its own right.
 _MUST_NOT_BE_CAUGHT = (
+    "The lexical baseline beat dense retrieval on the primary metric.",
+    "The best lexical arm beat every dense arm.",
+    "Chunk BM25 beats the semantic index on the primary metric.",
+    "The lexical baseline is retained and dense retrieval is excluded.",
+    "Outcomes: DENSE_QUALIFIED_AND_ADOPTED, DENSE_QUALIFIED_BUT_NOT_ADOPTED, "
+    "DENSE_NOT_QUALIFIED, HYBRID_NOT_JUSTIFIED, LEXICAL_BASELINE_RETAINED",
     "Hybrid retrieval reopens only when dense qualifies first.",
     "G-RERANK requires a measured win over the qualified retrieval stack.",
     "If dense had qualified, hybrid would be measured.",
@@ -232,3 +266,19 @@ def test_untracked_markdown_is_scanned_too() -> None:
         intruder.unlink()
 
     assert _false_cap15_claims(_tracked_markdown_files()) == ()
+
+
+@pytest.mark.parametrize("claim", _KNOWN_UNCAUGHT)
+def test_known_uncaught_paraphrases_stay_recorded(tmp_path: Path, claim: str) -> None:
+    """The gap is pinned, not assumed.
+
+    These are false claims this tripwire does NOT catch. Asserting the miss keeps the
+    limitation honest: if a later change starts catching one, this test fails and the
+    record gets updated deliberately rather than the coverage claim drifting upward on
+    its own. An audit found the previous version's coverage claim true only over the
+    cases its author had chosen.
+    """
+    path = tmp_path / "CAP-15-NOTE.md"
+    path.write_text(claim, encoding="utf-8")
+
+    assert _false_cap15_claims((path,)) == ()

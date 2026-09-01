@@ -315,7 +315,16 @@ def test_cosine_score_ranges_overlap_between_answered_and_unanswered_queries(
 
 
 def test_bm25_returns_nothing_for_the_same_unanswerable_queries() -> None:
-    """The asymmetry N5 names: lexical retrieval has a real "no answer"."""
+    """On THIS four-document fixture the lexical arm returns nothing.
+
+    Scope matters and is stated in the docstring rather than left to a reader.
+    An earlier version of this line called the result "the asymmetry N5 names:
+    lexical retrieval has a real 'no answer'" -- generalising four documents into
+    a property of lexical retrieval. A private corpus showed that claim to be
+    false: there, BM25 does return results for queries that have no answer.
+    `F16` records the error; this docstring is the same claim
+    in the product repository, and it is narrowed to the fixture it measures.
+    """
     index = ChunkBM25(_bilingual_chunks())
     for query in NO_ANSWER_QUERIES:
         assert index.search(query, limit=4) == (), f"{query!r} unexpectedly matched a term"

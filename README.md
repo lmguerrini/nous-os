@@ -91,7 +91,10 @@ because a scalar invites arithmetic over evidence.
 
 ## Requirements
 
-Python 3.11 or newer. No third-party runtime dependencies.
+Python 3.11 or newer. The package itself has **no third-party runtime dependencies**:
+`import nous_os` works with nothing else installed. `nous_os.semantic` is the one
+exception and is opt-in behind the `semantic` extra, so a clean install stays
+dependency-free unless a caller asks for dense retrieval.
 
 ## Run
 
