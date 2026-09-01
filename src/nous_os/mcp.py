@@ -111,6 +111,16 @@ def tools_list() -> tuple[str, ...]:
 # --- method handlers -----------------------------------------------------------
 
 
+#: ``initialize`` and ``tools/list`` publish the identical catalogue content
+#: ``tools/call``'s own ``system.capabilities`` renders, but neither runs a
+#: tier check first: they are MCP's own handshake methods, not entries in
+#: :data:`nous_os.core.CATALOGUE`, so there is no descriptor tier here to
+#: check against the grant. This is not a security defect -- the catalogue is
+#: public content, symmetric with what ``--help`` already prints with no
+#: authority check of its own -- but a grant lacking READ still gets the
+#: catalogue through these two methods while ``system.capabilities`` refuses
+#: it, and a reader comparing the two paths should recognise the asymmetry
+#: rather than mistake it for an oversight.
 def _handle_initialize(params: object) -> dict[str, object]:
     return {
         "protocolVersion": _PROTOCOL_VERSION,
@@ -136,7 +146,9 @@ def _handle_tools_call(params: object, grant: Grant, workspace: core.Workspace) 
         result = core.invoke(grant, name, workspace, arguments)
     except Exception as error:
         raise _RequestError(_SERVER_ERROR, f"{type(error).__name__}: {error}") from error
-    return {"content": [{"type": "text", "text": json.dumps(result, sort_keys=True)}]}
+    return {
+        "content": [{"type": "text", "text": json.dumps(result, sort_keys=True, allow_nan=False)}]
+    }
 
 
 _METHODS: Final = {
@@ -146,6 +158,18 @@ _METHODS: Final = {
 
 
 # --- one request in, one response out -------------------------------------------
+
+
+def _refuse_nonstandard_constant(constant: str) -> None:
+    """``json.loads``'s ``parse_constant`` hook: refuse ``Infinity``/``-Infinity``/``NaN``.
+
+    These three bare tokens are a non-standard extension ``json.loads``
+    accepts by default; a strict JSON-RPC client cannot send them. Refusing
+    the whole message here, rather than accepting one of them as a value, is
+    what lets :func:`serve`'s own ``allow_nan=False`` encode keep its promise
+    that a client-supplied value is never echoed back as one of these tokens.
+    """
+    raise ValueError(f"{constant} is not a valid strict JSON value")
 
 
 def _error_response(request_id: object, code: int, message: str) -> dict[str, object]:
@@ -220,21 +244,46 @@ def serve(
     terminating the process outright, which would otherwise be content-driven
     denial of service against the one long-lived transport this project
     ships.
+
+    ``json.loads`` accepts the bare tokens ``Infinity``, ``-Infinity``, and
+    ``NaN`` as a non-standard extension, and would otherwise hand a
+    non-compliant client's own choice of one straight back out again --
+    ``request_id`` is echoed into every response unchanged, so a ``NaN`` sent
+    as ``id`` would otherwise reappear as a literal, unquoted ``NaN`` token in
+    a line no strict JSON parser accepts. ``parse_constant`` below refuses the
+    whole message instead. ``allow_nan=False`` on encode is the matching
+    belt-and-braces check for a value that reaches this far some other way.
     """
     for line in stdin:
         stripped = line.strip()
         if not stripped:
             continue
         try:
-            message = json.loads(stripped)
-        except (json.JSONDecodeError, RecursionError) as error:
+            message = json.loads(stripped, parse_constant=_refuse_nonstandard_constant)
+        except (ValueError, RecursionError) as error:
             response: dict[str, object] | None = _error_response(
                 None, _PARSE_ERROR, f"invalid JSON: {error}"
             )
         else:
             response = dispatch(message, grant, workspace)
         if response is not None:
-            stdout.write(json.dumps(response, sort_keys=True))
+            try:
+                encoded = json.dumps(response, sort_keys=True, allow_nan=False)
+            except ValueError as error:
+                # Belt-and-braces: nothing a client can send should reach this,
+                # since ``parse_constant`` above already refuses a non-standard
+                # constant on the way in. A domain value that is itself not
+                # strict-JSON-representable would otherwise raise unhandled
+                # here and end the whole session over one response.
+                encoded = json.dumps(
+                    _error_response(
+                        response.get("id"),
+                        _SERVER_ERROR,
+                        f"result is not representable as strict JSON: {error}",
+                    ),
+                    sort_keys=True,
+                )
+            stdout.write(encoded)
             stdout.write("\n")
             stdout.flush()
 

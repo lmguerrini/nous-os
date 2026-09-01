@@ -1,20 +1,23 @@
 """G-PROPOSE proves that proposal arrival does not write canonical bytes.
 
-Arm A uses the stdio call path.  Arm B never imports the stdio server module
-at all -- ``test_cli_module_does_not_import_the_mcp_module`` in
-``test_cli.py`` is the static guarantee of that, so this gate does not need
-its own runtime guard against it -- and instead writes a portable proposal
-document and imports it through the CLI's existing ``candidate.propose``
-call.  Both arms compare the complete canonical-layer byte view -- the data
-root's own files, every snapshot, and the ledger -- before and after.  This
-gate covers proposal arrival only; it does not claim to test a later human
-promotion decision.
+Arm A calls ``mcp.dispatch`` directly, in process -- the same request
+handler a real stdio session's ``tools/call`` reaches, without a live
+transport around it.  Arm B never imports the stdio server module at all --
+``test_cli_module_does_not_import_the_mcp_module`` in ``test_cli.py`` is the
+static guarantee of that, so this gate does not need its own runtime guard
+against it -- and instead writes a portable proposal document and imports it
+through the CLI's existing ``candidate.propose`` call.  Both arms compare the
+complete canonical-layer byte view -- the data root's own files, every
+snapshot, and the ledger -- before and after.  This gate covers proposal
+arrival only; it does not claim to test a later human promotion decision.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +42,36 @@ _FIXED_PROPOSAL_ID = "asr_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 class _CanonChanged(AssertionError):
     """Raised when a proposal arm changes a byte in the canonical locations."""
+
+
+def _reraise_walk_error(error: OSError) -> None:
+    """``os.walk``'s ``onerror`` hook: make a listing failure propagate.
+
+    Left to its default, ``os.walk`` silently omits a directory it cannot
+    list from what it yields, with no exception at all -- exactly the gap
+    that let a canonical file beneath an unreadable subtree go unhashed and
+    the digest below report "unchanged" for a tree it could not actually
+    read.
+    """
+    raise error
+
+
+def _iter_canonical_files(root: Path) -> tuple[Path, ...]:
+    """Every regular file beneath ``root``, sorted, or a raised ``OSError``.
+
+    Fails closed rather than silently enumerating fewer files than ``root``
+    actually holds: a directory this process cannot list, or a file it names
+    but cannot then stat, raises instead of being skipped.
+    """
+    if not root.is_dir():
+        return ()
+    paths: list[Path] = []
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=_reraise_walk_error):
+        for filename in filenames:
+            candidate = Path(dirpath) / filename
+            if stat.S_ISREG(os.stat(candidate).st_mode):
+                paths.append(candidate)
+    return tuple(sorted(paths))
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,29 +109,23 @@ def _canonical_bytes(workspace: core.Workspace) -> _CanonBytes:
     """
     digest = hashlib.sha256()
     canon_bytes = 0
-    if workspace.data_root.path.is_dir():
-        paths = tuple(
-            sorted(path for path in workspace.data_root.path.rglob("*") if path.is_file())
-        )
-        for path in paths:
-            payload = path.read_bytes()
-            canon_bytes += len(payload)
-            digest.update(b"canon\0")
-            digest.update(path.relative_to(workspace.data_root.path).as_posix().encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(payload)
-            digest.update(b"\0")
+    for path in _iter_canonical_files(workspace.data_root.path):
+        payload = path.read_bytes()
+        canon_bytes += len(payload)
+        digest.update(b"canon\0")
+        digest.update(path.relative_to(workspace.data_root.path).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(payload)
+        digest.update(b"\0")
     snapshot_bytes = 0
-    if workspace.snapshot_root.is_dir():
-        paths = tuple(sorted(path for path in workspace.snapshot_root.rglob("*") if path.is_file()))
-        for path in paths:
-            payload = path.read_bytes()
-            snapshot_bytes += len(payload)
-            digest.update(b"snapshot\0")
-            digest.update(path.relative_to(workspace.snapshot_root).as_posix().encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(payload)
-            digest.update(b"\0")
+    for path in _iter_canonical_files(workspace.snapshot_root):
+        payload = path.read_bytes()
+        snapshot_bytes += len(payload)
+        digest.update(b"snapshot\0")
+        digest.update(path.relative_to(workspace.snapshot_root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(payload)
+        digest.update(b"\0")
     ledger = workspace.ledger_path.read_bytes() if workspace.ledger_path.is_file() else b""
     digest.update(b"ledger\0")
     digest.update(ledger)
@@ -223,7 +250,7 @@ def test_g_propose_keeps_canon_unchanged_and_records_equivalent_candidates(
     # narrower and real: the identical write, reached through the CLI's own
     # ``candidate.propose`` call with an artifact-sourced payload, produces
     # the same recorded candidate and no canonical byte, exactly as arm A's
-    # stdio call did.
+    # in-process ``mcp.dispatch`` call did.
     before_b = _canonical_bytes(workspace)
     capsys.readouterr()
     code = cli.main(
@@ -261,6 +288,30 @@ def test_g_propose_digest_detects_a_single_canonical_byte(tmp_path: Path) -> Non
     after = _canonical_bytes(workspace)
     assert before != after
     assert after.ledger_bytes == 1
+
+
+def test_g_propose_digest_fails_closed_on_an_untraversable_canonical_directory(
+    tmp_path: Path,
+) -> None:
+    """The digest must not silently omit a canonical file it could not read.
+
+    Before this fix, ``_canonical_bytes`` walked the data root with
+    ``rglob``, which quietly skips a directory it cannot list -- an arm that
+    left a canonical byte beneath an unreadable subdirectory unchanged would
+    have gone undetected. The digest must fail instead of reporting a
+    tree it could not actually read as unchanged.
+    """
+    workspace = _workspace(tmp_path / "untraversable")
+    locked = workspace.data_root.path / "locked"
+    locked.mkdir()
+    (locked / "doc.md").write_text("canonical content", encoding="utf-8")
+    original_mode = locked.stat().st_mode
+    try:
+        os.chmod(locked, 0)
+        with pytest.raises(OSError):
+            _canonical_bytes(workspace)
+    finally:
+        os.chmod(locked, original_mode)
 
 
 def test_g_propose_n4_canonical_write_is_detected(tmp_path: Path) -> None:

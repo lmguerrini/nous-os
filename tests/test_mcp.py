@@ -55,14 +55,27 @@ def _child_env() -> dict[str, str]:
 
 
 def _minimal_arguments(external_name: str) -> dict[str, object]:
+    """A structurally valid request body for one catalogue entry.
+
+    Not "minimal" in the sense of "required fields only": every declared
+    optional parameter is supplied too, with a value that genuinely differs
+    from the domain default it would otherwise fall back to -- ``limit``,
+    ``question``, ``valid_at``, ``recorded_as_of``, ``key``, and
+    ``consult_memory`` below. A transport that silently drops one of these,
+    or invents its own default instead of forwarding what was actually
+    supplied, must produce a request or a result different from the other
+    transport's for the identical call; omitting an optional field here would
+    let exactly that drift pass unnoticed.
+    """
     citation = {
         "source_id": SOURCE_ID, "snapshot_digest": "0" * 64, "start_byte": 0, "end_byte": 5, "span": "a",
     }
     empty_index = {"assertions": []}
+    instant = "2026-01-02T12:00:00+00:00"
     table: dict[str, dict[str, object]] = {
         "system.capabilities": {},
         "system.health": {},
-        "knowledge.search": {"query": "alpha"},
+        "knowledge.search": {"query": "alpha", "limit": 5},
         "canon.documents": {},
         "canon.describe": {},
         "canon.sources": {},
@@ -71,9 +84,10 @@ def _minimal_arguments(external_name: str) -> dict[str, object]:
         "graph.project": {
             "state": {"index": {"assertions": []}, "bridges": [], "rejections": []},
             "policy": "reliability",
+            "question": {"valid_at": instant, "recorded_as_of": instant},
         },
-        "time.as_of": {"index": empty_index},
-        "time.conflicts": {"index": empty_index},
+        "time.as_of": {"index": empty_index, "valid_at": instant, "recorded_as_of": instant},
+        "time.conflicts": {"index": empty_index, "key": "fixture-key"},
         "time.supersession": {"index": empty_index, "key": "fixture-key"},
         "context.compile": {
             "chunks": [], "ranking": [], "strategy": "S0-flat", "budget_tokens": 10,
@@ -89,6 +103,7 @@ def _minimal_arguments(external_name: str) -> dict[str, object]:
         },
         "candidate.discover": {
             "round_number": 1, "candidates": [], "at": "2026-01-02T12:00:00+00:00",
+            "consult_memory": False,
         },
         "candidate.adjudicate": {
             "cluster_id": "fixture-cluster",
@@ -299,6 +314,62 @@ def test_serve_returns_a_parse_error_for_a_malformed_line_directly(tmp_path: Pat
     assert response["error"]["code"] == mcp._PARSE_ERROR
 
 
+def _refuse_non_standard_constant(constant: str) -> None:
+    raise ValueError(f"non-standard constant {constant!r} in a supposedly strict JSON line")
+
+
+def _assert_strict_json(text: str) -> object:
+    """Parse ``text`` the way a strict client would: no bare constant tokens accepted.
+
+    Plain ``json.loads`` accepts ``NaN``/``Infinity``/``-Infinity`` itself, so
+    it cannot be used to prove a line is free of them; only a decoder that
+    refuses those tokens can.
+    """
+    return json.loads(text, parse_constant=_refuse_non_standard_constant)
+
+
+def test_serve_refuses_a_request_carrying_a_non_standard_json_constant(tmp_path: Path) -> None:
+    """F1: a bare ``NaN``/``Infinity``/``-Infinity`` token must not be echoed back.
+
+    ``json.loads`` accepts these three bare tokens by default; a client
+    sending ``"id": NaN`` would otherwise get that exact value echoed back
+    into the response's own ``id`` field, producing a response line no
+    strict JSON parser accepts -- against this transport's own claim that
+    only JSON-RPC responses are ever written to stdout.
+    """
+    workspace = _workspace(tmp_path)
+    grant = Grant("holder", frozenset({Tier.READ}))
+    stdin = io.StringIO('{"jsonrpc": "2.0", "id": NaN, "method": "initialize", "params": {}}\n')
+    stdout = io.StringIO()
+    mcp.serve(grant, workspace, stdin=stdin, stdout=stdout)
+    lines = [line for line in stdout.getvalue().split("\n") if line]
+    assert len(lines) == 1
+    response = _assert_strict_json(lines[0])
+    assert response["error"]["code"] == mcp._PARSE_ERROR
+
+
+def test_serve_never_writes_a_non_standard_constant_that_reaches_the_final_encode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Belt-and-braces: a value that reaches the final encode some other way is refused,
+    not written as a bare token, and does not end the whole session.
+    """
+    workspace = _workspace(tmp_path)
+    grant = Grant("holder", frozenset({Tier.READ}))
+
+    def poisoned_dispatch(message: object, grant: Grant, workspace: core.Workspace) -> dict[str, object]:
+        return {"jsonrpc": "2.0", "id": 1, "result": {"score": float("nan")}}
+
+    monkeypatch.setattr(mcp, "dispatch", poisoned_dispatch)
+    stdin = io.StringIO('{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}\n')
+    stdout = io.StringIO()
+    mcp.serve(grant, workspace, stdin=stdin, stdout=stdout)
+    lines = [line for line in stdout.getvalue().split("\n") if line]
+    assert len(lines) == 1
+    response = _assert_strict_json(lines[0])
+    assert response["error"]["code"] == mcp._SERVER_ERROR
+
+
 def test_serve_survives_a_json_array_nested_past_the_recursion_limit(tmp_path: Path) -> None:
     """A9: a hostile line deep enough to overflow ``json.loads`` must not kill the process.
 
@@ -445,6 +516,38 @@ def test_a_transport_started_with_only_promote_reaches_nothing_over_a_real_sessi
     assert len(lines) == 1
     assert "error" in lines[0]
     assert lines[0]["error"]["message"].startswith("NotAuthorized:")
+
+
+def test_initialize_and_tools_list_are_served_with_no_tier_the_catalogue_read_still_refuses(
+    tmp_path: Path,
+) -> None:
+    """The documented asymmetry, driven for real: a grant with no declared tier at all
+    still gets ``initialize`` and ``tools/list`` served, while the identical
+    catalogue content requested through ``tools/call``'s ``system.capabilities``
+    is refused for lacking READ. Not a security defect -- see the comment
+    above ``_handle_initialize`` -- but the two paths genuinely report
+    differently for the same underlying content.
+    """
+    result = _drive_subprocess(
+        tmp_path,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            {
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "system.capabilities", "arguments": {}},
+            },
+        ],
+        extra_args=["--tier", "promote"],
+    )
+    lines = [json.loads(line) for line in result.stdout.split("\n") if line]
+    assert len(lines) == 3
+    assert "result" in lines[0]
+    assert lines[0]["result"]["serverInfo"]["name"] == "nous-os"
+    assert "result" in lines[1]
+    assert [tool["name"] for tool in lines[1]["result"]["tools"]] == list(mcp.tools_list())
+    assert "error" in lines[2]
+    assert lines[2]["error"]["message"].startswith("NotAuthorized:")
 
 
 def test_a_real_session_initializes_lists_tools_reads_and_is_refused(tmp_path: Path) -> None:

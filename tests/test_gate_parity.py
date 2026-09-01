@@ -4,7 +4,9 @@ The existing surface checks catch a missing name but not two named routes that
 return different values.  This gate drives all current catalogue entries on
 one fixture world.  It has no sampled operation set: a new descriptor either
 gets a usable argument builder and a comparison, or becomes a named NOT_RUN
-failure.  The two write entries share a fixed record id to remove
+failure.  Three catalogue entries write -- ``candidate.propose``,
+``candidate.discover``, and ``candidate.adjudicate`` -- and only the first
+mints its own identifier; that identifier is held fixed here to remove
 identity minting from a transport-result comparison.
 
 One bounded session below drives the real stdio loop: initialize, the complete
@@ -101,10 +103,28 @@ def _child_env() -> dict[str, str]:
 
 
 def _arguments(descriptor: core.OperationDescriptor, world: object) -> dict[str, object]:
-    """Use the already-checked JSON argument shapes, replacing the live citation."""
+    """Use the already-checked JSON argument shapes, replacing the live citation.
+
+    ``candidate.discover`` additionally replaces the shared fixture's empty
+    ``candidates`` with one real card naming the world's own already-rejected
+    cluster: with ``consult_memory`` honoured as the shared fixture declares
+    it (``False``), this card is evaluated and accepted; with a transport
+    that silently coerces ``consult_memory`` back to its own default
+    (``True``), the identical card is instead skipped. Nothing about the
+    other declared parameters can make those two outcomes render the same
+    JSON value, so this is what actually lets G-PARITY see a transport that
+    stops forwarding a caller's own ``consult_memory``.
+    """
     arguments = test_mcp._minimal_arguments(descriptor.external_name)
     if descriptor.external_name == "provenance.span":
         arguments["citation"] = world.citation.as_payload()
+    if descriptor.external_name == "candidate.discover":
+        already_rejected_cluster_card = injection._bridge_card(
+            card_id="asr_01ARZ3NDEKTSV4RRFFQ69G5FAD",
+            cluster_id=world.rejected_card.cluster_id,
+            failed=None,
+        )
+        arguments["candidates"] = [already_rejected_cluster_card.as_payload()]
     return arguments
 
 

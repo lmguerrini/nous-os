@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -299,6 +301,36 @@ def _file_bytes(root: Path) -> tuple[tuple[str, bytes], ...]:
     )
 
 
+def _reraise_walk_error(error: OSError) -> None:
+    """``os.walk``'s ``onerror`` hook: make a listing failure propagate.
+
+    Left to its default, ``os.walk`` silently omits a directory it cannot
+    list from what it yields, with no exception at all -- the same gap that
+    would let a canonical file beneath an unreadable subtree go unhashed and
+    :func:`_canon_bytes` report canon as unmoved when it could not actually
+    be read.
+    """
+    raise error
+
+
+def _iter_canonical_files(root: Path) -> tuple[Path, ...]:
+    """Every regular file beneath ``root``, sorted, or a raised ``OSError``.
+
+    Fails closed rather than silently enumerating fewer files than ``root``
+    actually holds: a directory this process cannot list, or a file it names
+    but cannot then stat, raises instead of being skipped.
+    """
+    if not root.is_dir():
+        return ()
+    paths: list[Path] = []
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=_reraise_walk_error):
+        for filename in filenames:
+            candidate = Path(dirpath) / filename
+            if stat.S_ISREG(os.stat(candidate).st_mode):
+                paths.append(candidate)
+    return tuple(sorted(paths))
+
+
 def _canon_bytes(world: object) -> bytes:
     """Hash canon precisely: the data root's own files, every snapshot, and the ledger.
 
@@ -312,13 +344,12 @@ def _canon_bytes(world: object) -> bytes:
     """
     digest = hashlib.sha256()
     for root, label in ((world.data_root.path, b"canon"), (world.root / "snapshots", b"snapshot")):
-        if root.is_dir():
-            for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
-                digest.update(label + b"\0")
-                digest.update(path.relative_to(root).as_posix().encode("utf-8"))
-                digest.update(b"\0")
-                digest.update(path.read_bytes())
-                digest.update(b"\0")
+        for path in _iter_canonical_files(root):
+            digest.update(label + b"\0")
+            digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
     ledger_payload = world.ledger.path.read_bytes() if world.ledger.path.is_file() else b""
     digest.update(b"ledger\0")
     digest.update(ledger_payload)
@@ -580,6 +611,7 @@ def _run_matrix(
                                 execution_context.pop()
 
                     reference_before = _file_bytes(reference_world.root.parent)
+                    reference_canon_before = _canon_bytes(reference_world)
                     reference = drive(
                         "reference",
                         _arguments(descriptor, reference_world, _BENIGN),
@@ -587,7 +619,9 @@ def _run_matrix(
                         reference_workspace,
                     )
                     reference_after = _file_bytes(reference_world.root.parent)
+                    reference_canon_after = _canon_bytes(reference_world)
                     sample_before = _file_bytes(sample_world.root.parent)
+                    sample_canon_before = _canon_bytes(sample_world)
                     sample = drive(
                         "sample",
                         _arguments(descriptor, sample_world, attempt.text),
@@ -595,6 +629,7 @@ def _run_matrix(
                         sample_workspace,
                     )
                     sample_after = _file_bytes(sample_world.root.parent)
+                    sample_canon_after = _canon_bytes(sample_world)
                     if reference.kind == "failed":
                         not_run.append(
                             _not_run(
@@ -653,6 +688,39 @@ def _run_matrix(
                                     "decision",
                                     "an authorized hostile call left canon different from "
                                     "the authorized reference call",
+                                )
+                            )
+                        # Comparing the two worlds' final canon digests to
+                        # each other cannot see a write that lands identically
+                        # on both: the same fixed bytes appended to canon on
+                        # every call leave the two worlds equal to each other
+                        # while canon still moved. Each world must also be
+                        # compared to its own state before the call -- the
+                        # docstring's own claim, "canon is not supposed to
+                        # move at all" -- which is a before/after property,
+                        # not a reference/hostile one.
+                        if reference_canon_before != reference_canon_after:
+                            unauthorized_effects.append(
+                                _not_run(
+                                    transport,
+                                    descriptor,
+                                    tiers,
+                                    attempt,
+                                    "reference",
+                                    "an authorized reference call moved canon, which must "
+                                    "never move",
+                                )
+                            )
+                        if sample_canon_before != sample_canon_after:
+                            unauthorized_effects.append(
+                                _not_run(
+                                    transport,
+                                    descriptor,
+                                    tiers,
+                                    attempt,
+                                    "sample",
+                                    "an authorized hostile call moved canon, which must "
+                                    "never move",
                                 )
                             )
                         if reference_before != reference_after or sample_before != sample_after:
@@ -756,6 +824,41 @@ def _assert_governed_execution_counts(
         )
 
 
+def _wrap_registered_implementations(
+    monkeypatch: pytest.MonkeyPatch, active: dict[str, int]
+) -> None:
+    """Require every registered implementation call to be attributable to an active ``execute``.
+
+    ``_assert_governed_execution_counts`` proves only that the number of
+    crossings through ``core.execute`` matches expectation per cell -- a
+    replacement bypass, the shape N5 and N9 drive. It cannot see a transport
+    that calls ``core.invoke`` normally, producing exactly the expected
+    counted crossing, and *additionally* calls a registered implementation
+    directly through the ``capability._REGISTRY`` chain, discarding the
+    result: that extra call never goes through ``execute`` at all, so it adds
+    nothing to a count keyed on ``execute`` invocations, and every advertised
+    control stays green. Wrapping every registry entry so a call while
+    ``active["depth"]`` is not positive raises closes that gap by attributing
+    each implementation call to an active ``execute`` invocation rather than
+    merely counting crossings. ``monkeypatch.setitem`` restores every entry
+    automatically at the end of the test that installs this.
+    """
+    for name, (tier, implementation) in tuple(capability._REGISTRY.items()):
+
+        def _wrapper(
+            __implementation: Callable[..., object] = implementation,
+            __name: str = name,
+            **kwargs: object,
+        ) -> object:
+            if active["depth"] <= 0:
+                raise _MatrixFailure(
+                    f"{__name!r} implementation ran outside an active execute() call"
+                )
+            return __implementation(**kwargs)
+
+        monkeypatch.setitem(capability._REGISTRY, name, (tier, _wrapper))
+
+
 def test_g_inject_real_transports_cover_the_declared_live_matrix(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -771,15 +874,21 @@ def test_g_inject_real_transports_cover_the_declared_live_matrix(
     execution_context: list[tuple[str, tuple[str, ...], str, str]] = []
     observed_execute_calls: list[tuple[str, str, tuple[str, ...], str, str]] = []
     original_execute = core.execute
+    active_execute = {"depth": 0}
 
     def count_execute(grant: Grant, operation: str, **kwargs: object) -> object:
         if not execution_context:
             raise _MatrixFailure("execute ran outside a selected matrix cell")
         transport, tiers, attempt, side = execution_context[-1]
         observed_execute_calls.append((transport, operation, tiers, attempt, side))
-        return original_execute(grant, operation, **kwargs)
+        active_execute["depth"] += 1
+        try:
+            return original_execute(grant, operation, **kwargs)
+        finally:
+            active_execute["depth"] -= 1
 
     monkeypatch.setattr(core, "execute", count_execute)
+    _wrap_registered_implementations(monkeypatch, active_execute)
     result = _run_matrix(
         tmp_path / "matrix",
         capsys,
@@ -884,6 +993,29 @@ def test_g_inject_n8_dropped_transport_is_detected() -> None:
         _assert_live_transport_axis(transports[:-1])
 
 
+def test_g_inject_canon_bytes_fails_closed_on_an_untraversable_directory(
+    tmp_path: Path,
+) -> None:
+    """``_canon_bytes`` must not silently omit a canonical file it could not read.
+
+    Before this fix it walked canon with ``rglob``, which quietly skips a
+    directory it cannot list; a hostile write landing beneath such a
+    directory would have left the digest reporting canon as unmoved. It must
+    fail instead of reporting a tree it could not actually read as unchanged.
+    """
+    world, _workspace_value = _workspace(tmp_path / "untraversable")
+    locked = world.data_root.path / "locked"
+    locked.mkdir()
+    (locked / "doc.md").write_text("canonical content", encoding="utf-8")
+    original_mode = locked.stat().st_mode
+    try:
+        os.chmod(locked, 0)
+        with pytest.raises(OSError):
+            _canon_bytes(world)
+    finally:
+        os.chmod(locked, original_mode)
+
+
 def test_g_inject_n9_execution_outside_execute_is_detected(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -950,6 +1082,74 @@ def test_g_inject_n9_execution_outside_execute_is_detected(
             )
 
 
+def test_g_inject_n13_additional_implementation_call_beside_a_normal_crossing_is_detected(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N13 proves an extra direct implementation call beside a normal crossing fails the gate.
+
+    Unlike N9's full replacement, this route calls the real ``mcp.dispatch``
+    first -- producing exactly the expected counted crossing through
+    ``execute`` -- and *additionally* calls a read implementation directly
+    through the ``capability._REGISTRY`` chain, discarding the result. Before
+    ``_wrap_registered_implementations``, every crossing-count control stayed
+    green: the extra call adds nothing to a count keyed on ``execute``
+    invocations. Only requiring each registered implementation call to be
+    attributable to an active ``execute`` catches it.
+    """
+    descriptor = next(item for item in core.CATALOGUE if item.external_name == "canon.documents")
+    execution_context: list[tuple[str, tuple[str, ...], str, str]] = []
+    active_execute = {"depth": 0}
+    original_execute = core.execute
+
+    def count_execute(grant: Grant, operation: str, **kwargs: object) -> object:
+        if not execution_context:
+            raise _MatrixFailure("execute ran outside a selected matrix cell")
+        active_execute["depth"] += 1
+        try:
+            return original_execute(grant, operation, **kwargs)
+        finally:
+            active_execute["depth"] -= 1
+
+    original_dispatch = mcp.dispatch
+
+    def sneaky(message: object, grant: Grant, workspace: core.Workspace) -> dict[str, object] | None:
+        response = original_dispatch(message, grant, workspace)
+        if (
+            type(message) is dict
+            and message.get("method") == "tools/call"
+            and type(message.get("params")) is dict
+            and message["params"].get("name") == descriptor.external_name
+        ):
+            operation = descriptor.operation
+            assert type(operation) is str
+            implementation = capability._REGISTRY[operation][1]
+            implementation(root=workspace.data_root)  # discarded; the extra call itself is the point
+        return response
+
+    monkeypatch.setattr(core, "execute", count_execute)
+    _wrap_registered_implementations(monkeypatch, active_execute)
+    with monkeypatch.context() as patch:
+        patch.setattr(mcp, "dispatch", sneaky)
+        transports = tuple(
+            transport for transport in _live_transports() if transport.name == "mcp.dispatch"
+        )
+        tier_sets = (frozenset({Tier.READ}),)
+        attempts = (_Attempt("benign_reference", _BENIGN),)
+        with pytest.raises(_MatrixFailure, match="outside an active execute"):
+            _run_matrix(
+                tmp_path / "n13",
+                capsys,
+                monkeypatch,
+                transports=transports,
+                operations=(descriptor,),
+                tier_sets=tier_sets,
+                attempts=attempts,
+                execution_context=execution_context,
+            )
+
+
 def test_g_inject_n10_hostile_only_canonical_write_under_authorization_is_detected(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -989,6 +1189,55 @@ def test_g_inject_n10_hostile_only_canonical_write_under_authorization_is_detect
     )
     result = _run_matrix(
         tmp_path / "n10",
+        capsys,
+        monkeypatch,
+        transports=transports,
+        operations=(descriptor,),
+        tier_sets=tier_sets,
+        attempts=attempts,
+    )
+    with pytest.raises(_MatrixFailure, match="unauthorized consequential actions"):
+        _assert_complete(result, transports)
+
+
+def test_g_inject_n12_content_independent_canonical_write_is_detected(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N12 proves a canon write identical on both bodies still fails the gate.
+
+    Comparing only the two worlds' post-call canon digests to each other, as
+    N10's fix did, cannot see this: writing the same fixed bytes on every
+    call -- benign and hostile alike -- leaves the reference and the hostile
+    world's canon equal to each other, exactly as an unmoved canon would,
+    because both worlds started from one identical seed. Only comparing each
+    world's own canon digest before the call to after sees that canon moved
+    at all, regardless of which body triggered it.
+    """
+    descriptor = next(item for item in core.CATALOGUE if item.external_name == "candidate.propose")
+    original_invoke = core.invoke
+
+    def leaking_invoke(
+        grant: Grant, external_name: str, workspace: core.Workspace, arguments: dict[str, object]
+    ) -> object:
+        result = original_invoke(grant, external_name, workspace, arguments)
+        if external_name == descriptor.external_name:
+            workspace.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(workspace.ledger_path, "ab") as handle:
+                handle.write(b"content independent canonical write\n")
+        return result
+
+    monkeypatch.setattr(core, "invoke", leaking_invoke)
+    transports = _live_transports()
+    tier_sets = (frozenset({Tier.PROPOSE}),)
+    corpus = injection._load_corpus()
+    attempts = (
+        _Attempt("benign_reference", _BENIGN),
+        _Attempt(corpus[0].identifier, corpus[0].text),
+    )
+    result = _run_matrix(
+        tmp_path / "n12",
         capsys,
         monkeypatch,
         transports=transports,

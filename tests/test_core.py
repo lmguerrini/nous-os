@@ -243,11 +243,16 @@ def test_catalogue_has_exactly_the_fixed_external_names_in_the_fixed_order() -> 
 
 
 def test_catalogue_is_the_same_tuple_object_across_reads() -> None:
-    """The catalogue is a frozen module-level constant, not rebuilt per call."""
+    """The catalogue is a frozen module-level constant, not rebuilt per call.
+
+    ``tuple(core.CATALOGUE) == tuple(core.CATALOGUE)`` was previously asserted
+    alongside this: comparing two freshly wrapped copies of the identical
+    underlying object by equality can never fail, since it holds even if
+    ``CATALOGUE`` were rebuilt from scratch on every read, and so measured
+    nothing this docstring claims. Object identity is the actual property.
+    """
     assert core.CATALOGUE is core.CATALOGUE
-    first = tuple(core.CATALOGUE)
-    second = tuple(core.CATALOGUE)
-    assert first == second
+    assert type(core.CATALOGUE) is tuple
 
 
 def test_catalogue_descriptors_are_frozen_and_reject_field_assignment() -> None:
@@ -864,6 +869,110 @@ def test_a_unicode_normalisation_variant_of_the_data_root_is_refused(tmp_path: P
         )
 
 
+# --- canon enumeration fails closed, not open, on a traversal or stat error ---
+
+
+def test_a_store_hard_linked_beneath_an_untraversable_canonical_directory_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A5 spelling 1: ``rglob`` cannot descend an unreadable directory, so the old scan
+    silently omitted the document hard-linked beneath it and accepted the aliased store.
+
+    Setting this up needs write access to canon and its parent -- creating the
+    hard link before locking the directory down -- so this is not itself
+    reachable from a transport request. That precondition does not excuse a
+    guard that fails open: the fix must refuse the whole workspace rather
+    than quietly enumerate fewer canonical identities than actually exist.
+    """
+    kwargs = _workspace_kwargs(tmp_path)
+    data_root = kwargs["data_root"]
+    locked = data_root / "locked"
+    locked.mkdir()
+    document = locked / "doc.md"
+    document.write_text("canonical content beneath an untraversable directory", encoding="utf-8")
+    outside_store = tmp_path / "outside-store.jsonl"
+    os.link(document, outside_store)
+    original_mode = locked.stat().st_mode
+    try:
+        os.chmod(locked, 0)
+        with pytest.raises(core.AliasedWorkspaceLocation):
+            core.resolve_workspace(
+                **_workspace_kwargs(tmp_path, candidate_store_path=outside_store)
+            )
+    finally:
+        os.chmod(locked, original_mode)
+
+
+def test_a_broken_symlink_beneath_the_data_root_refuses_the_workspace(tmp_path: Path) -> None:
+    """A5 spelling 2: a file ``os.walk`` names but cannot then ``stat`` also fails closed.
+
+    Not merely a directory-listing failure: naming a path and then failing to
+    stat it is a distinct failure mode the old silent ``except OSError:
+    continue`` also hid.
+    """
+    kwargs = _workspace_kwargs(tmp_path)
+    data_root = kwargs["data_root"]
+    ghost = data_root / "ghost.md"
+    ghost.symlink_to(data_root / "does-not-exist.md")
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(**_workspace_kwargs(tmp_path))
+
+
+def test_a_symlinked_canonical_subdirectory_is_not_enumerated_as_canon(tmp_path: Path) -> None:
+    """The honest limit A5 documents rather than closes: ``rglob``/``os.walk`` do not
+    descend a symlinked directory on this runtime, so a file reachable only that
+    way is invisible to :func:`core._canonical_file_identities`, and a store
+    hard-linked to it resolves cleanly instead of being refused.
+    """
+    kwargs = _workspace_kwargs(tmp_path)
+    data_root = kwargs["data_root"]
+    real = tmp_path / "real-canon-subdir"
+    real.mkdir()
+    document = real / "doc.md"
+    document.write_text("canonical content reachable only through a symlink", encoding="utf-8")
+    (data_root / "linked").symlink_to(real, target_is_directory=True)
+    outside_store = tmp_path / "outside-store.jsonl"
+    os.link(document, outside_store)
+    # Not refused: this is the documented gap, not a defect this round closes.
+    workspace = core.resolve_workspace(
+        **_workspace_kwargs(tmp_path, candidate_store_path=outside_store)
+    )
+    assert workspace.candidate_store_path == outside_store.resolve()
+
+
+def test_an_ancestor_that_is_a_regular_file_does_not_blame_an_unavailable_platform_capability(
+    tmp_path: Path,
+) -> None:
+    """D2: a store path beneath a regular-file ancestor cannot exist at all --
+    ``os.stat`` raises ``NotADirectoryError``, not a sign of a missing platform
+    capability -- so it falls back to a spelling comparison instead of raising
+    the old, false disclosure.
+    """
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("this is a file, not a directory", encoding="utf-8")
+    candidate_store_path = blocker / "candidates.jsonl"
+    workspace = core.resolve_workspace(
+        **_workspace_kwargs(tmp_path, candidate_store_path=candidate_store_path)
+    )
+    assert workspace.candidate_store_path == candidate_store_path.resolve()
+
+
+def test_same_location_reports_the_actual_error_instead_of_blaming_the_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2: a genuine, unexpected ``OSError`` still refuses the workspace, but the
+    message now names what was actually observed rather than fabricating a claim
+    about an unavailable platform capability.
+    """
+
+    def _raise_permission_denied(path: object, *args: object, **kwargs: object) -> None:
+        raise PermissionError("simulated permission failure")
+
+    monkeypatch.setattr(core.os, "stat", _raise_permission_denied)
+    with pytest.raises(core.AliasedWorkspaceLocation, match="simulated permission failure"):
+        core._same_location(Path("/a"), Path("/b"))
+
+
 # --- provider neutrality -------------------------------------------------------
 
 
@@ -1141,19 +1250,23 @@ def test_system_health_reports_unknown_for_a_statable_but_unreadable_directory(
     workspace, _digest = _seeded_workspace(tmp_path)
     locked_dir = tmp_path / "locked-snapshots"
     locked_dir.mkdir()
+    # Built while ``locked_dir`` is still an ordinary, listable directory:
+    # construction itself now enumerates canon fail-closed (see A5), so
+    # locking it down first would refuse the workspace here for the very
+    # property this test means to observe afterward through system.health.
+    blocked_workspace = core.Workspace(
+        data_root=workspace.data_root,
+        snapshot_root=locked_dir,
+        ledger_path=workspace.ledger_path,
+        derived_path=workspace.derived_path,
+        candidate_store_path=workspace.candidate_store_path,
+        bridge_registry_path=workspace.bridge_registry_path,
+        rejection_memory_path=workspace.rejection_memory_path,
+    )
     original_mode = locked_dir.stat().st_mode
     try:
         os.chmod(locked_dir, 0)
         assert core._location_health(locked_dir, is_directory=True) == "unknown"
-        blocked_workspace = core.Workspace(
-            data_root=workspace.data_root,
-            snapshot_root=locked_dir,
-            ledger_path=workspace.ledger_path,
-            derived_path=workspace.derived_path,
-            candidate_store_path=workspace.candidate_store_path,
-            bridge_registry_path=workspace.bridge_registry_path,
-            rejection_memory_path=workspace.rejection_memory_path,
-        )
         grant = Grant("holder", frozenset({Tier.READ}))
         health = core.invoke(grant, "system.health", blocked_workspace, {})
         assert health["snapshot_root"] == "unknown"

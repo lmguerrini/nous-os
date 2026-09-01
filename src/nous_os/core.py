@@ -173,19 +173,33 @@ class AliasedWorkspaceLocation(Exception):
     is available. That catches direct location aliases, a hard link to a
     traversable canonical file, a not-yet-created ledger directory, a
     case-only variant on this platform's own case-insensitive volume, and a
-    Unicode NFC/NFD variant of an existing directory name. What this cannot
-    cover, honestly: an ``OSError`` other than a missing file
-    while comparing two paths that do exist refuses the whole workspace
-    rather than guessing, and a not-yet-existing path is compared by a
-    normalised spelling rather than filesystem truth, which is inherently
-    unable to observe a filesystem-specific aliasing rule this project has
-    not been shown a reproduction of. It also cannot make a later pathname
-    write race-safe: an adversary who can already write the workspace
-    directory can replace a not-yet-existing store path, or one of its
-    ancestors, with a symlink into canon after this check and before the store
-    opens that pathname. A race-safe candidate-store write requires the
-    candidate store to use descriptor-relative, no-follow filesystem calls;
-    that belongs in the candidate store and is outside this Core check.
+    Unicode NFC/NFD variant of an existing directory name. Enumerating
+    canon's own file identities is fail-closed rather than best-effort too: a
+    directory this process cannot list, or a file it names but cannot then
+    stat, refuses the whole workspace instead of silently reporting fewer
+    identities than canon actually holds -- see
+    :func:`_canonical_file_identities`. Both routes to that refusal already
+    need write access to canon and its parent to set up, so neither is
+    reachable from a transport request; that precondition does not excuse a
+    guard that would otherwise fail open. What this cannot cover, honestly: a
+    canonical file reachable only beneath a *symlinked* subdirectory is not
+    enumerated as canon at all, because neither ``rglob`` nor ``os.walk``
+    descends a symlinked directory on this runtime, so a store hard-linked to
+    a file found only that way is invisible to this check; a not-yet-existing
+    path, or one whose ancestor is not a directory at all -- both
+    ``FileNotFoundError`` and ``NotADirectoryError`` mean there is nothing
+    there yet for ``os.stat`` to settle -- is compared by a normalised
+    spelling rather than filesystem truth, which is inherently unable to
+    observe a filesystem-specific aliasing rule this project has not been
+    shown a reproduction of; and any other ``OSError`` while comparing two
+    paths refuses the whole workspace rather than guessing whether they are
+    the same location. It also cannot make a later pathname write race-safe:
+    an adversary who can already write the workspace directory can replace a
+    not-yet-existing store path, or one of its ancestors, with a symlink into
+    canon after this check and before the store opens that pathname. A
+    race-safe candidate-store write requires the candidate store to use
+    descriptor-relative, no-follow filesystem calls; that belongs in the
+    candidate store and is outside this Core check.
     """
 
 
@@ -332,12 +346,20 @@ def _same_location(first: Path, second: Path) -> bool:
     try:
         first_info = os.stat(first)
         second_info = os.stat(second)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
+        # Either genuinely does not exist yet, or an ancestor component is a
+        # regular file rather than a directory -- ``os.stat`` raises
+        # ``NotADirectoryError`` for the latter, and a path sitting beneath a
+        # file cannot exist either, for exactly the same reason a path with
+        # no such ancestor problem at all does not exist before it is
+        # created. Both are the identical "nothing there yet to stat" case,
+        # so both fall back to the same normalised-spelling comparison.
         return _normalized_spelling(first) == _normalized_spelling(second)
     except OSError as error:
         raise AliasedWorkspaceLocation(
-            f"cannot compare filesystem identity for {first} and {second}; "
-            "the platform did not make the hard-link check available"
+            f"cannot compare filesystem identity for {first} and {second}: {error}; "
+            "NousOS refuses the workspace rather than guessing whether they are "
+            "the same location"
         ) from error
     if first_info.st_ino == 0 or second_info.st_ino == 0:
         raise AliasedWorkspaceLocation(
@@ -361,26 +383,55 @@ def _is_inside(path: Path, container: Path) -> bool:
     return any(_same_location(ancestor, container) for ancestor in path.parents)
 
 
+def _reraise_walk_error(error: OSError) -> None:
+    """``os.walk``'s ``onerror`` hook: make a listing failure propagate.
+
+    ``os.walk`` otherwise swallows a directory it cannot list -- the exact
+    silent shrinkage :func:`_canonical_file_identities` below refuses to
+    tolerate -- and simply omits that subtree from what it yields, with no
+    exception and no other signal that anything was skipped.
+    """
+    raise error
+
+
 def _canonical_file_identities(root: Path) -> frozenset[tuple[int, int]]:
-    """File identities the process can traverse and stat beneath ``root``.
+    """Every regular file's identity beneath ``root``, or a refusal.
 
     A missing root has no files to contribute, so an empty result is correct.
-    A root that is inaccessible or not a directory also produces an empty
-    result through ``Path.is_dir``; in that excluded case this scan makes no
-    hard-link claim. Used to catch a store hard-linked to a canonical document
-    or snapshot blob that is not itself one of the seven configured locations,
-    and so is otherwise invisible to the pairwise comparison above.
+    A root that is not a directory also produces an empty result through
+    ``Path.is_dir``, which is a real answer -- there is nothing beneath a
+    non-directory to enumerate -- not a failure being hidden. Used to catch a
+    store hard-linked to a canonical document or snapshot blob that is not
+    itself one of the seven configured locations, and so is otherwise
+    invisible to the pairwise comparison above.
+
+    Everything past that point is fail-closed rather than best-effort: an
+    incomplete identity set looks identical to a complete one to every caller
+    of this function, which is exactly the defect. A directory ``os.walk``
+    cannot list, or a file it names but this process cannot then stat --
+    ``rglob``'s own default behaviour before this function used, which
+    silently reports fewer identities than canon actually holds instead of
+    raising anything -- refuses the whole workspace instead. The only route
+    that reaches this refusal already needs write access to canon and its
+    parent to set up an unreadable subtree there in the first place; that
+    precondition does not make a guard that would otherwise fail open here
+    excusable.
     """
     if not root.is_dir():
         return frozenset()
     identities: set[tuple[int, int]] = set()
-    for path in root.rglob("*"):
-        try:
-            info = path.stat()
-        except OSError:
-            continue
-        if stat.S_ISREG(info.st_mode) and info.st_ino != 0:
-            identities.add((info.st_dev, info.st_ino))
+    try:
+        for dirpath, _dirnames, filenames in os.walk(root, onerror=_reraise_walk_error):
+            for filename in filenames:
+                info = os.stat(os.path.join(dirpath, filename))
+                if stat.S_ISREG(info.st_mode) and info.st_ino != 0:
+                    identities.add((info.st_dev, info.st_ino))
+    except OSError as error:
+        raise AliasedWorkspaceLocation(
+            f"cannot enumerate canonical file identities beneath {root}: {error}; "
+            "NousOS refuses the workspace rather than checking a possibly "
+            "incomplete set"
+        ) from error
     return frozenset(identities)
 
 
@@ -398,8 +449,9 @@ def _refuse_aliased_locations(workspace: Workspace) -> None:
     traversable regular file beneath the data root or the snapshot root, not
     only against the other six configured names, because a hard link makes a
     store and a canonical document one file without either configured path
-    ever equalling or containing the other. Inaccessible files are excluded
-    from this scan, as described by :func:`_canonical_file_identities`.
+    ever equalling or containing the other. A file this scan cannot list or
+    stat refuses the whole workspace rather than being silently excluded, as
+    described by :func:`_canonical_file_identities`.
     """
     locations = _workspace_locations(workspace)
     for index, first in enumerate(locations):
