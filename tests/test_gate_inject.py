@@ -22,12 +22,15 @@ a citation whose quoted span is checked byte-for-byte against a real
 snapshot, so substituting hostile text into either would not exercise a text
 field -- it would build a different, differently invalid request. This
 checks content-independent authority decisions through the actual
-transports, not arbitrary typed carrier values.
+transports, not arbitrary typed carrier values. The CLI arm injects a grant
+because the empty tier subset has no CLI spelling; the CLI's own startup grant
+resolution is covered separately in its transport tests.
 """
 
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import combinations
@@ -47,6 +50,11 @@ import test_mcp
 
 
 _BENIGN = "beta"
+
+#: An independently pinned public set. The matrix binds entries live below,
+#: while this value makes a dropped production route a failure instead of a
+#: smaller denominator that happens to agree with itself.
+_EXPECTED_TRANSPORT_NAMES = frozenset({"cli.main", "mcp.dispatch"})
 
 
 class _MatrixFailure(AssertionError):
@@ -287,7 +295,7 @@ def _cli_call(
             argv.append(option + "=" + str(value))
     capsys.readouterr()
     with monkeypatch.context() as patch:
-        patch.setattr(cli, "_re" + "s" + "olve_grant", lambda namespace, environ: grant)
+        patch.setattr(cli, "_resolve_grant", lambda namespace, environ: grant)
         code = entry(argv)
     captured = capsys.readouterr()
     if code == 0:
@@ -349,14 +357,22 @@ def _mcp_call(
 
 
 def _live_transports() -> tuple[_Transport, ...]:
-    """Bind the two required public entries at the time the matrix begins."""
+    """Bind the production entries live, then check their independently pinned set."""
     transports = (
         _Transport("cli.main", cli.main, _cli_call),
         _Transport("mcp.dispatch", mcp.dispatch, _mcp_call),
     )
-    if not transports:
-        raise _MatrixFailure("NOT_RUN: real transport axis was empty")
+    _assert_live_transport_axis(transports)
     return transports
+
+
+def _assert_live_transport_axis(transports: tuple[_Transport, ...]) -> None:
+    """Keep a production transport deletion from shrinking every dependent check."""
+    names = tuple(transport.name for transport in transports)
+    if len(names) != len(set(names)) or frozenset(names) != _EXPECTED_TRANSPORT_NAMES:
+        raise _MatrixFailure(
+            f"transport axis={names!r}, expected exactly {_EXPECTED_TRANSPORT_NAMES!r}"
+        )
 
 
 def _tier_sets() -> tuple[frozenset[Tier], ...]:
@@ -580,6 +596,30 @@ def _assert_complete(result: _MatrixResult, transports: tuple[_Transport, ...]) 
         )
 
 
+def _assert_governed_execution_counts(
+    observed: list[str],
+    transports: tuple[_Transport, ...],
+    operations: tuple[core.OperationDescriptor, ...],
+    tier_sets: tuple[frozenset[Tier], ...],
+    attempts: tuple[_Attempt, ...],
+) -> None:
+    """Prove every selected registered execution crossed Core's ``execute`` binding.
+
+    Each selected cell runs both reference and hostile values. Core-level reads
+    have no registered operation and therefore correctly contribute no call.
+    """
+    expected: Counter[str] = Counter()
+    executions_per_operation = 2 * len(transports) * len(tier_sets) * len(attempts)
+    for descriptor in operations:
+        if descriptor.operation is not None:
+            expected[descriptor.operation] += executions_per_operation
+    actual = Counter(observed)
+    if actual != expected:
+        raise _MatrixFailure(
+            f"governed executions through execute={actual!r}, expected={expected!r}"
+        )
+
+
 def test_g_inject_real_transports_cover_the_declared_live_matrix(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -590,6 +630,14 @@ def test_g_inject_real_transports_cover_the_declared_live_matrix(
     operations = tuple(core.CATALOGUE)
     tier_sets = _tier_sets()
     attempts, scope_not_run = _attempts()
+    observed_execute_calls: list[str] = []
+    original_execute = core.execute
+
+    def count_execute(grant: Grant, operation: str, **kwargs: object) -> object:
+        observed_execute_calls.append(operation)
+        return original_execute(grant, operation, **kwargs)
+
+    monkeypatch.setattr(core, "execute", count_execute)
     result = _run_matrix(
         tmp_path / "matrix",
         capsys,
@@ -602,12 +650,19 @@ def test_g_inject_real_transports_cover_the_declared_live_matrix(
     expected = len(transports) * len(operations) * len(tier_sets) * len(attempts)
     _assert_cell_count(result.expected, expected)
     _assert_complete(result, transports)
-    corpus = injection._load_corpus()
-    omitted_cells = len(transports) * len(operations) * len(tier_sets) * len(scope_not_run)
-    assert len(scope_not_run) + len(attempts) - 1 == len(corpus)
-    assert omitted_cells == len(transports) * len(operations) * len(tier_sets) * (
-        len(corpus) - (len(attempts) - 1)
+    _assert_governed_execution_counts(
+        observed_execute_calls, transports, operations, tier_sets, attempts
     )
+    corpus = injection._load_corpus()
+    corpus_families = {entry.family for entry in corpus}
+    selected_attempts = tuple(item for item in attempts if item.identifier != "benign_reference")
+    selected_ids = {item.identifier for item in selected_attempts}
+    by_identifier = {entry.identifier: entry for entry in corpus}
+    assert {by_identifier[identifier].family for identifier in selected_ids} == corpus_families
+    assert len(selected_ids) == len(corpus_families)
+    assert {item.attempt for item in scope_not_run} == {
+        entry.identifier for entry in corpus if entry.identifier not in selected_ids
+    }
     assert all(item.reason for item in scope_not_run)
 
 
@@ -672,3 +727,71 @@ def test_g_inject_n7_dropped_axis_item_is_detected() -> None:
     realised = len(transports) * len(reduced) * len(tier_sets) * len(attempts)
     with pytest.raises(_MatrixFailure, match="matrix realised"):
         _assert_cell_count(realised, expected)
+
+
+def test_g_inject_n8_dropped_transport_is_detected() -> None:
+    """The pinned public transport set makes a shorter production axis fail."""
+    transports = _live_transports()
+    with pytest.raises(_MatrixFailure, match="transport axis"):
+        _assert_live_transport_axis(transports[:-1])
+
+
+def test_g_inject_n9_execution_outside_execute_is_detected(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A route returning real values without Core's execution call fails the count guard."""
+    descriptor = next(
+        item for item in core.CATALOGUE if item.external_name == "candidate.propose"
+    )
+    observed_execute_calls: list[str] = []
+    original_execute = core.execute
+
+    def count_execute(grant: Grant, operation: str, **kwargs: object) -> object:
+        observed_execute_calls.append(operation)
+        return original_execute(grant, operation, **kwargs)
+
+    def unchecked(message: object, grant: Grant, workspace: core.Workspace) -> dict[str, object]:
+        if type(message) is not dict:
+            raise _MatrixFailure("unchecked route received a non-object message")
+        params = message.get("params")
+        if type(params) is not dict or params.get("name") != descriptor.external_name:
+            raise _MatrixFailure("unchecked route received another operation")
+        arguments = params.get("arguments")
+        if type(arguments) is not dict:
+            raise _MatrixFailure("unchecked route received non-object arguments")
+        bound = core._bind_json_arguments(descriptor, arguments)
+        kwargs = core._BINDERS[descriptor.external_name](workspace, bound)
+        operation = descriptor.operation
+        if type(operation) is not str:
+            raise _MatrixFailure("unchecked route has no governed operation")
+        implementation = capability._REGISTRY[operation][1]
+        rendered = core._RENDERERS[descriptor.external_name](implementation(**kwargs))
+        return {
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {"content": [{"type": "text", "text": json.dumps(rendered, sort_keys=True)}]},
+        }
+
+    monkeypatch.setattr(core, "execute", count_execute)
+    with monkeypatch.context() as patch:
+        patch.setattr(mcp, "dispatch", unchecked)
+        transports = tuple(
+            transport for transport in _live_transports() if transport.name == "mcp.dispatch"
+        )
+        tier_sets = (frozenset({Tier.PROPOSE}),)
+        attempts = (_Attempt("benign_reference", _BENIGN),)
+        _run_matrix(
+            tmp_path / "n9",
+            capsys,
+            monkeypatch,
+            transports=transports,
+            operations=(descriptor,),
+            tier_sets=tier_sets,
+            attempts=attempts,
+        )
+        with pytest.raises(_MatrixFailure, match="governed executions through execute"):
+            _assert_governed_execution_counts(
+                observed_execute_calls, transports, (descriptor,), tier_sets, attempts
+            )

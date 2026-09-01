@@ -199,6 +199,35 @@ def _add_grant_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _parser_destinations(actions: object) -> set[str]:
+    """Return real namespace destinations from parser actions, excluding parser internals."""
+    return {
+        action.dest
+        for action in actions
+        if type(action.dest) is str and action.dest not in {argparse.SUPPRESS, "help"}
+    }
+
+
+def _assert_parameter_destinations_are_unreserved(
+    parser: argparse.ArgumentParser,
+    subparser: argparse.ArgumentParser,
+    descriptor: core.OperationDescriptor,
+) -> None:
+    """Refuse a descriptor parameter that would replace an already-parsed value.
+
+    ``argparse`` merges a subparser's attributes into the process namespace.
+    Both destination sets are read from the parser actions already built above,
+    rather than maintained as a second handwritten catalogue of startup names.
+    """
+    reserved = _parser_destinations(parser._actions) | _parser_destinations(subparser._actions)
+    collisions = sorted(parameter.name for parameter in descriptor.parameters if parameter.name in reserved)
+    if collisions:
+        raise CliError(
+            f"{descriptor.external_name!r} declares reserved startup destination(s): "
+            f"{', '.join(collisions)}"
+        )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build the whole command line, generated from :data:`nous_os.core.CATALOGUE`.
 
@@ -214,13 +243,6 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="operation")
     for descriptor in core.CATALOGUE:
         sub = subparsers.add_parser(descriptor.external_name, help=descriptor.summary)
-        for parameter in descriptor.parameters:
-            # candidate.propose's own parameters are never required at the
-            # parser level: --from-artifact is an alternative source for them,
-            # and Core's own MissingArgument refusal still fires when neither
-            # source supplies a required field.
-            required = parameter.required and descriptor.external_name != "candidate.propose"
-            _add_parameter_argument(sub, parameter, required=required)
         if descriptor.external_name == "candidate.propose":
             sub.add_argument(
                 "--from-artifact",
@@ -231,6 +253,14 @@ def _build_parser() -> argparse.ArgumentParser:
                     "instead of the explicit proposal options above"
                 ),
             )
+        _assert_parameter_destinations_are_unreserved(parser, sub, descriptor)
+        for parameter in descriptor.parameters:
+            # candidate.propose's own parameters are never required at the
+            # parser level: --from-artifact is an alternative source for them,
+            # and Core's own MissingArgument refusal still fires when neither
+            # source supplies a required field.
+            required = parameter.required and descriptor.external_name != "candidate.propose"
+            _add_parameter_argument(sub, parameter, required=required)
     return parser
 
 

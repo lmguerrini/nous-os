@@ -181,9 +181,9 @@ def test_tools_list_method_reports_the_same_set_and_a_json_schema_per_declared_p
 # --- nothing but a JSON-RPC message is ever written to stdout --------------
 
 
-def test_no_bare_print_call_exists_outside_the_designated_writer() -> None:
-    """Static guard: a stray ``print(`` anywhere else would corrupt the stream."""
-    tree = ast.parse(Path(mcp.__file__).read_text(encoding="utf-8"))
+def _assert_startup_refusal_prints_to_stderr(source: str) -> None:
+    """Reject a startup-refusal writer unless its target is exactly ``sys.stderr``."""
+    tree = ast.parse(source)
     calls = [
         node for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print"
@@ -193,6 +193,24 @@ def test_no_bare_print_call_exists_outside_the_designated_writer() -> None:
     assert len(calls) == 1
     keyword_files = {keyword.arg: keyword.value for keyword in calls[0].keywords}
     assert "file" in keyword_files
+    target = keyword_files["file"]
+    assert isinstance(target, ast.Attribute)
+    assert isinstance(target.value, ast.Name)
+    assert target.value.id == "sys"
+    assert target.attr == "stderr"
+
+
+def test_no_bare_print_call_exists_outside_the_designated_writer() -> None:
+    """Static guard: a stray ``print(`` anywhere else would corrupt the stream."""
+    _assert_startup_refusal_prints_to_stderr(Path(mcp.__file__).read_text(encoding="utf-8"))
+
+
+def test_stdout_static_guard_rejects_a_startup_refusal_directed_to_stdout() -> None:
+    source = Path(mcp.__file__).read_text(encoding="utf-8")
+    changed = source.replace("file=sys.stderr", "file=sys.stdout")
+    assert changed != source
+    with pytest.raises(AssertionError):
+        _assert_startup_refusal_prints_to_stderr(changed)
 
 
 def test_a_live_session_writes_only_newline_delimited_json_to_stdout(tmp_path: Path) -> None:
@@ -215,6 +233,20 @@ def test_a_live_session_writes_only_newline_delimited_json_to_stdout(tmp_path: P
         message = json.loads(line)  # raises if a line is not valid JSON on its own
         assert message["jsonrpc"] == "2.0"
         assert "result" in message or "error" in message
+
+
+def test_a_startup_refusal_writes_zero_bytes_to_stdout() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "nous_os.mcp"],
+        input="",
+        capture_output=True,
+        text=True,
+        env=_child_env(),
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr.startswith("DataRootNotConfigured:")
 
 
 # --- a request cannot widen a grant; a PROMOTE-only transport reaches nothing

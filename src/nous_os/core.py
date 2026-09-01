@@ -152,7 +152,7 @@ class WorkspaceNotConfigured(Exception):
 
 
 class AliasedWorkspaceLocation(Exception):
-    """Raised when two of the seven workspace locations name one path.
+    """Raised when workspace locations name one on-disk object or overlap unsafely.
 
     Deliberately not a subclass of anything a caller is likely to catch by
     accident, matching :class:`WorkspaceNotConfigured`'s stance: two names for
@@ -161,7 +161,9 @@ class AliasedWorkspaceLocation(Exception):
     resolves cleanly and a PROPOSE call appends a proposal record straight
     into the file configured as the ledger; a store resolving inside the
     canonical data root is refused for the identical reason, because a write
-    there is a write to canon by another name. Every location is resolved
+    there is a write to canon by another name. The same refusal protects each
+    canonical directory -- data root and snapshot root -- in both directions
+    against every noncanonical store. Every location is resolved
     fully -- symlinks followed, ``..`` collapsed -- before any of these are
     compared, so a caller cannot spell the same file two different ways to
     defeat this.
@@ -217,43 +219,114 @@ def _resolve_path(
     return Path(candidate).expanduser().resolve()
 
 
-def _named_workspace_locations(workspace: Workspace) -> tuple[tuple[str, Path], ...]:
-    """Every resolved location, named, in the fixed order the dataclass declares them."""
+@dataclass(frozen=True, slots=True)
+class _WorkspaceLocation:
+    """One resolved workspace path and its relation to the canonical layer.
+
+    Canonical membership is recorded here once: the data root, snapshot root,
+    and ledger are canon on disk. The containing subset is derived from that
+    membership and ``is_directory`` below, so the alias refusal does not
+    quietly protect one canonical root while forgetting another.
+    """
+
+    field: str
+    path: Path
+    is_canonical: bool
+    is_directory: bool
+
+
+def _workspace_locations(workspace: Workspace) -> tuple[_WorkspaceLocation, ...]:
+    """Every resolved location with its canonical-layer role, in dataclass order."""
     return (
-        ("data_root", workspace.data_root.path),
-        ("snapshot_root", workspace.snapshot_root),
-        ("ledger_path", workspace.ledger_path),
-        ("derived_path", workspace.derived_path),
-        ("candidate_store_path", workspace.candidate_store_path),
-        ("bridge_registry_path", workspace.bridge_registry_path),
-        ("rejection_memory_path", workspace.rejection_memory_path),
+        _WorkspaceLocation("data_root", workspace.data_root.path, True, True),
+        _WorkspaceLocation("snapshot_root", workspace.snapshot_root, True, True),
+        _WorkspaceLocation("ledger_path", workspace.ledger_path, True, False),
+        _WorkspaceLocation("derived_path", workspace.derived_path, False, False),
+        _WorkspaceLocation("candidate_store_path", workspace.candidate_store_path, False, False),
+        _WorkspaceLocation("bridge_registry_path", workspace.bridge_registry_path, False, False),
+        _WorkspaceLocation("rejection_memory_path", workspace.rejection_memory_path, False, False),
     )
 
 
+def _same_existing_file_identity(first: _WorkspaceLocation, second: _WorkspaceLocation) -> bool:
+    """Tell whether two existing paths denote one filesystem object by device and inode.
+
+    A path that does not yet exist cannot be a hard link today, so it has no
+    identity to compare. If an existing path cannot be statted, or the
+    filesystem exposes no inode, identity comparison is unavailable; refusing
+    the workspace is safer than claiming that spelling resolution covered that
+    platform case.
+    """
+    try:
+        first_info = os.stat(first.path)
+        second_info = os.stat(second.path)
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise AliasedWorkspaceLocation(
+            f"cannot compare filesystem identity for {first.field} and {second.field}; "
+            "the platform did not make the hard-link check available"
+        ) from error
+    if first_info.st_ino == 0 or second_info.st_ino == 0:
+        raise AliasedWorkspaceLocation(
+            f"cannot compare filesystem identity for {first.field} and {second.field}; "
+            "the platform did not expose stable inode values"
+        )
+    return (first_info.st_dev, first_info.st_ino) == (second_info.st_dev, second_info.st_ino)
+
+
+def _is_inside(path: Path, container: Path) -> bool:
+    """Return whether unequal resolved ``path`` is a descendant of ``container``."""
+    return container in path.parents
+
+
 def _refuse_aliased_locations(workspace: Workspace) -> None:
-    """Refuse a workspace in which two locations name one path, or a store sits in canon.
+    """Refuse aliases and either-direction containment around canonical directories.
 
     Every location handed to this function already passed through
     ``Path.expanduser().resolve()``, so a symlink or a ``..`` segment cannot
-    make two differently-spelled arguments compare equal here.
+    make two differently-spelled arguments compare equal here. Existing paths
+    additionally receive a device-and-inode comparison, which catches hard
+    links that remain distinct after resolution.
     """
-    named = _named_workspace_locations(workspace)
-    seen: dict[Path, str] = {}
-    for field, path in named:
-        holder = seen.get(path)
-        if holder is not None:
-            raise AliasedWorkspaceLocation(
-                f"{field} and {holder} both resolve to {path}; NousOS refuses two "
-                "names for one workspace location"
-            )
-        seen[path] = field
-    data_root_path = workspace.data_root.path
-    for field, path in named[1:]:
-        if path == data_root_path or data_root_path in path.parents:
-            raise AliasedWorkspaceLocation(
-                f"{field} resolves to {path}, inside the canonical data root "
-                f"{data_root_path}; a store location may not sit inside canon"
-            )
+    locations = _workspace_locations(workspace)
+    for index, first in enumerate(locations):
+        for second in locations[index + 1 :]:
+            if first.path == second.path:
+                raise AliasedWorkspaceLocation(
+                    f"{first.field} and {second.field} both resolve to {first.path}; NousOS "
+                    "refuses two names for one workspace location"
+                )
+            if _same_existing_file_identity(first, second):
+                raise AliasedWorkspaceLocation(
+                    f"{first.field} and {second.field} have one filesystem identity; NousOS "
+                    "refuses two names for one workspace location"
+                )
+
+    canonical_containers = tuple(
+        location for location in locations if location.is_canonical and location.is_directory
+    )
+    stores = tuple(location for location in locations if not location.is_canonical)
+    for index, first in enumerate(canonical_containers):
+        for second in canonical_containers[index + 1 :]:
+            if _is_inside(first.path, second.path) or _is_inside(second.path, first.path):
+                raise AliasedWorkspaceLocation(
+                    f"canonical directories {first.field}={first.path} and "
+                    f"{second.field}={second.path} overlap; NousOS refuses nested canon"
+                )
+
+    for canonical in canonical_containers:
+        for store in stores:
+            if _is_inside(store.path, canonical.path):
+                raise AliasedWorkspaceLocation(
+                    f"{store.field} resolves to {store.path}, inside canonical directory "
+                    f"{canonical.field}={canonical.path}; a store location may not sit inside canon"
+                )
+            if _is_inside(canonical.path, store.path):
+                raise AliasedWorkspaceLocation(
+                    f"canonical directory {canonical.field}={canonical.path} sits inside "
+                    f"store {store.field}={store.path}; a canonical directory may not sit in a store"
+                )
 
 
 def resolve_workspace(
@@ -273,8 +346,8 @@ def resolve_workspace(
     the real process environment, exactly as :func:`~nous_os.config.resolve_data_root`
     already allows.
 
-    No two of the seven resolved locations may name the same path, and no
-    store may resolve inside the canonical data root: see
+    No two of the seven resolved locations may name the same filesystem object,
+    and no noncanonical store may overlap either canonical directory: see
     :class:`AliasedWorkspaceLocation`. Without that check, two options naming
     the same file resolve cleanly and a write meant for one store lands in
     another.

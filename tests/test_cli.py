@@ -287,6 +287,43 @@ def test_cli_operation_set_equals_the_catalogue_names_in_order() -> None:
     assert _cli_operation_names() == tuple(d.external_name for d in core.CATALOGUE)
 
 
+def test_catalogue_parameter_colliding_with_a_startup_destination_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    colliding = core.OperationDescriptor(
+        "synthetic.data-root",
+        None,
+        Tier.READ,
+        "synthetic collision",
+        (core.ParameterSpec("data_root", "string", False, "would replace startup input"),),
+    )
+    monkeypatch.setattr(core, "CATALOGUE", (*core.CATALOGUE, colliding))
+    with pytest.raises(cli.CliError, match="reserved startup destination"):
+        cli._build_parser()
+
+
+def test_catalogue_parameter_colliding_with_import_destination_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = next(
+        descriptor for descriptor in core.CATALOGUE if descriptor.external_name == "candidate.propose"
+    )
+    colliding = core.OperationDescriptor(
+        original.external_name,
+        original.operation,
+        original.tier,
+        original.summary,
+        (*original.parameters, core.ParameterSpec("from_artifact", "string", False, "collision")),
+    )
+    monkeypatch.setattr(
+        core,
+        "CATALOGUE",
+        tuple(colliding if descriptor is original else descriptor for descriptor in core.CATALOGUE),
+    )
+    with pytest.raises(cli.CliError, match="reserved startup destination"):
+        cli._build_parser()
+
+
 def test_import_mode_adds_no_operation_name() -> None:
     """The artifact-import mode is an option on an existing subcommand, not a new one."""
     names = set(_cli_operation_names())

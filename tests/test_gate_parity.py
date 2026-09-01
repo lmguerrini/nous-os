@@ -6,11 +6,19 @@ one fixture world.  It has no sampled operation set: a new descriptor either
 gets a usable argument builder and a comparison, or becomes a named NOT_RUN
 failure.  The two write entries share a fixed record id to remove
 identity minting from a transport-result comparison.
+
+One bounded session below drives the real stdio loop: initialize, the complete
+published list, a successful read, a refused request, and a successful
+proposal. The full operation-by-operation value comparisons remain in process;
+this file makes no broader real-loop coverage claim.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +35,7 @@ import test_mcp
 
 
 _FIXED_PROPOSAL_ID = "asr_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class _ParityFailure(AssertionError):
@@ -82,6 +91,13 @@ def _workspace(root: Path) -> tuple[object, core.Workspace]:
         rejection_memory_path=world.rejections._path,
     )
     return world, workspace
+
+
+def _child_env() -> dict[str, str]:
+    """Give the child process this checkout's source tree without global installation."""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(_REPO_ROOT / "src")
+    return env
 
 
 def _arguments(descriptor: core.OperationDescriptor, world: object) -> dict[str, object]:
@@ -188,6 +204,13 @@ def _mcp_names(workspace: core.Workspace) -> tuple[str, ...]:
     return tuple(tool.get("name") for tool in result["tools"])
 
 
+def _assert_published_tool_names(names: tuple[object, ...]) -> None:
+    """Keep the real-loop list assertion sensitive to a missing published operation."""
+    expected = tuple(descriptor.external_name for descriptor in core.CATALOGUE)
+    if names != expected:
+        raise _ParityFailure("real stdio loop published set or order differs from the core catalogue")
+
+
 def _assert_parity(
     workspace: core.Workspace,
     world: object,
@@ -241,6 +264,81 @@ def test_g_parity_compares_all_live_catalogue_results(
     world, workspace = _workspace(tmp_path / "world")
     compared = _assert_parity(workspace, world, capsys)
     assert compared == len(core.CATALOGUE)
+
+
+def test_g_parity_real_stdio_loop_covers_a_declared_session(tmp_path: Path) -> None:
+    """The bounded real-loop subset is explicit in this test and its module docstring."""
+    world, workspace = _workspace(tmp_path / "stdio")
+    proposal = _arguments(
+        next(item for item in core.CATALOGUE if item.external_name == "candidate.propose"), world
+    )
+    requests = (
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "system.capabilities", "arguments": {}},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {"name": "candidate.propose", "arguments": {"unexpected": True}},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {"name": "candidate.propose", "arguments": proposal},
+        },
+    )
+    args = [
+        sys.executable,
+        "-m",
+        "nous_os.mcp",
+        "--data-root",
+        str(workspace.data_root.path),
+        "--snapshot-root",
+        str(workspace.snapshot_root),
+        "--ledger-path",
+        str(workspace.ledger_path),
+        "--derived-path",
+        str(workspace.derived_path),
+        "--candidate-store-path",
+        str(workspace.candidate_store_path),
+        "--bridge-registry-path",
+        str(workspace.bridge_registry_path),
+        "--rejection-memory-path",
+        str(workspace.rejection_memory_path),
+        "--tier",
+        Tier.READ.value,
+        "--tier",
+        Tier.PROPOSE.value,
+    ]
+    result = subprocess.run(
+        args,
+        input="\n".join(json.dumps(request) for request in requests) + "\n",
+        capture_output=True,
+        text=True,
+        env=_child_env(),
+        timeout=10,
+    )
+    lines = [json.loads(line) for line in result.stdout.splitlines()]
+    assert result.returncode == 0, result.stderr
+    assert len(lines) == len(requests)
+    assert lines[0]["result"]["serverInfo"]["name"] == "nous-os"
+    _assert_published_tool_names(tuple(tool["name"] for tool in lines[1]["result"]["tools"]))
+    with pytest.raises(_ParityFailure, match="real stdio loop published"):
+        _assert_published_tool_names(
+            tuple(tool["name"] for tool in lines[1]["result"]["tools"][1:])
+        )
+    assert "result" in lines[2]
+    assert lines[3]["error"]["message"].startswith("UnknownArgument:")
+    delivered = lines[4]["result"]["content"]
+    assert type(delivered) is list and len(delivered) == 1
+    assert json.loads(delivered[0]["text"])["content"] == proposal["content"]
 
 
 def test_g_parity_n1_missing_published_operation_is_detected(

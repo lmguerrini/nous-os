@@ -634,6 +634,72 @@ def test_a_store_resolving_inside_the_data_root_is_refused(tmp_path: Path) -> No
         core.resolve_workspace(**_workspace_kwargs(tmp_path, candidate_store_path=inside))
 
 
+def test_a_store_resolving_inside_the_snapshot_root_is_refused(tmp_path: Path) -> None:
+    kwargs = _workspace_kwargs(tmp_path)
+    inside = kwargs["snapshot_root"] / "candidates.jsonl"
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(**_workspace_kwargs(tmp_path, candidate_store_path=inside))
+
+
+def test_a_data_root_resolving_inside_the_snapshot_root_is_refused(tmp_path: Path) -> None:
+    snapshot_root = tmp_path / "snapshots"
+    data_root = snapshot_root / "documents"
+    data_root.mkdir(parents=True)
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(tmp_path, data_root=data_root, snapshot_root=snapshot_root)
+        )
+
+
+def test_a_snapshot_root_resolving_inside_the_data_root_is_refused(tmp_path: Path) -> None:
+    data_root = tmp_path / "documents"
+    snapshot_root = data_root / "snapshots"
+    snapshot_root.mkdir(parents=True)
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(tmp_path, data_root=data_root, snapshot_root=snapshot_root)
+        )
+
+
+def test_a_canonical_directory_resolving_inside_a_store_is_refused(tmp_path: Path) -> None:
+    candidate_store = tmp_path / "candidate-store"
+    snapshot_root = candidate_store / "snapshots"
+    candidate_store.mkdir()
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(
+                tmp_path,
+                candidate_store_path=candidate_store,
+                snapshot_root=snapshot_root,
+            )
+        )
+
+
+def test_a_data_root_resolving_inside_a_store_is_refused(tmp_path: Path) -> None:
+    candidate_store = tmp_path / "candidate-store"
+    data_root = candidate_store / "documents"
+    data_root.mkdir(parents=True)
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(
+                tmp_path,
+                candidate_store_path=candidate_store,
+                data_root=data_root,
+            )
+        )
+
+
+def test_two_hard_linked_store_paths_are_refused(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    candidates = tmp_path / "candidates.jsonl"
+    ledger.write_text("", encoding="utf-8")
+    os.link(ledger, candidates)
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(tmp_path, ledger_path=ledger, candidate_store_path=candidates)
+        )
+
+
 def test_a_symlink_cannot_defeat_the_alias_refusal(tmp_path: Path) -> None:
     """Paths are resolved fully before comparison, so a symlink cannot spell one file two ways."""
     real = tmp_path / "real-ledger.jsonl"
