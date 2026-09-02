@@ -26,6 +26,47 @@ These are constraints the code is tested against, not aspirations.
 - **No complexity without evidence.** A new mechanism needs a named failure
   mode, a reproducible test, and an observed win before it earns a place.
 
+## What NousOS is, and what it is not
+
+**It is** a library and two local transports over a canonical layer of plain
+files: identity, provenance, versioning, a rebuildable index, temporal reasoning,
+a human-gated candidate layer, and renderer-independent projections of the
+resulting graph, with three renderers that draw them.
+
+**It is not** any of the following, and no part of this repository claims to be:
+
+- Not a hosted service, a daemon, or anything that opens a network socket. Both
+  transports are local: a command line and a stdio JSON-RPC server.
+- Not a chat product, and not an agent. It publishes operations; it does not
+  decide when to call them.
+- Not a system that writes to your canon. Nineteen operations ship. Sixteen are
+  read-only and three record proposals apart from canon. **None of them can
+  promote anything into canon** — promotion is a separate human act.
+- Not a retrieval breakthrough. `docs/CAP-15-RETRIEVAL.md` reports what was
+  actually measured, including where the numbers are poor and where a planned
+  comparison could not be run at all.
+- Not a general-purpose graph visualisation library. The visual layer draws this
+  project's own projections.
+
+## Your data stays outside this repository
+
+**NousOS never stores your knowledge inside its own source tree, and this
+repository has never contained any.** The separation is physical, not merely a
+matter of `.gitignore`:
+
+- Every store location is **configuration you supply**. NousOS resolves seven of
+  them and **refuses to start if one is missing** rather than guessing a
+  default — see the quickstart below for the whole list.
+- `fixtures/synthetic/` holds small, wholly invented documents used by the tests.
+  They contain no personal material and are safe to read, copy and publish.
+- The derived index is rebuildable from the canonical files and is never
+  committed; `.gitignore` refuses `*.db`, `*.sqlite` and `*.sqlite3`.
+- A test in the suite refuses any absolute machine path, personal identifier or
+  credential in tracked file content or names, and it runs on every commit.
+
+If you point NousOS at a private corpus, that corpus stays where you put it. The
+only thing this repository holds is the software that reads it.
+
 ## Status
 
 | Area | State |
@@ -41,9 +82,13 @@ These are constraints the code is tested against, not aspirations.
 | Context compilation, with a measured default | present |
 | Authority boundary for governed operations | present |
 | Renderer-independent projections of the graph | present |
-| Visual engine and a 2D renderer over those projections | present |
+| Visual engine over those projections | present |
+| 2D renderer (Sigma, WebGL) | present |
+| 3D renderer (Three.js / React Three Fiber), orthographic and perspective | present |
+| Controlled comparison of the three renderers | present, `docs/RENDERER-COMPARISON.md` |
+| Semantic retrieval, measured against a frozen fixture set | present, opt-in, `docs/CAP-15-RETRIEVAL.md` |
 | Vocabulary: the two registers of names, and the map between them | present |
-| Command-line and stdio JSON-RPC interfaces | present |
+| Command-line and stdio JSON-RPC interfaces | present, `docs/INTEROPERABILITY.md` |
 
 Every operation `core.py` publishes is reachable through two transports: the
 `cli.py` command line and the `mcp.py` stdio JSON-RPC server, shaped like the
@@ -95,10 +140,16 @@ because a scalar invites arithmetic over evidence.
 
 ## Requirements
 
-Python 3.11 or newer. The package itself has **no third-party runtime dependencies**:
-`import nous_os` works with nothing else installed. `nous_os.semantic` is the one
-exception and is opt-in behind the `semantic` extra, so a clean install stays
-dependency-free unless a caller asks for dense retrieval.
+**Python 3.11 or newer** for the package. It has **no third-party runtime
+dependencies**: `import nous_os` works with nothing else installed.
+`nous_os.semantic` is the one exception and is opt-in behind the `semantic`
+extra, so a clean install stays dependency-free unless a caller asks for dense
+retrieval.
+
+**Node.js 24 or newer, with npm**, for `ui/` — the visual engine and the three
+renderers, which are about half this repository by file count. The suites there
+are developed against Node 24.11 and npm 11.6. The Python package does not
+import any of it, and you can ignore `ui/` entirely if you only want the library.
 
 ## Run
 
@@ -114,14 +165,89 @@ Installing the package works too and nothing here depends on it:
 python3 -m pip install .
 ```
 
+## Quickstart
+
+**NousOS resolves seven store locations and refuses to start if any is missing.**
+It never guesses one, and that refusal is deliberate: a knowledge system that
+invents a location writes your data somewhere you did not choose. The shortest
+way to a working instance is to point the data root at the public synthetic
+corpus and give the other six locations a scratch directory:
+
+```bash
+WORKSPACE="$(mktemp -d)"                       # any directory you choose
+mkdir -p "$WORKSPACE/snapshots"
+
+export PYTHONPATH=src
+export NOUS_OS_DATA_ROOT=fixtures/synthetic/corpus
+export NOUS_OS_SNAPSHOT_ROOT="$WORKSPACE/snapshots"
+export NOUS_OS_LEDGER_PATH="$WORKSPACE/ledger.jsonl"
+export NOUS_OS_DERIVED_PATH="$WORKSPACE/derived.sqlite3"
+export NOUS_OS_CANDIDATE_STORE_PATH="$WORKSPACE/candidates.jsonl"
+export NOUS_OS_BRIDGE_REGISTRY_PATH="$WORKSPACE/bridges.jsonl"
+export NOUS_OS_REJECTION_MEMORY_PATH="$WORKSPACE/rejections.jsonl"
+
+python3 -m nous_os system.capabilities
+python3 -m nous_os system.health
+```
+
+Every location also has a command-line option (`--data-root`, `--snapshot-root`,
+and so on) if you would rather not use the environment. `system.health` reports
+each location as `healthy`, `absent` or `unknown` — never as a silent zero.
+
+### The stdio JSON-RPC transport
+
+The same catalogue, over the Model Context Protocol's message shape. A client
+launches the module and speaks JSON-RPC on stdin and stdout:
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"system.health","arguments":{}}}' \
+  | python3 -m nous_os.mcp
+```
+
+**Once serving begins, stdout carries nothing but JSON-RPC messages.** Every
+other message the server produces goes to stderr.
+
+**Authority is fixed when the process starts and never widens.** The default
+grant is read-only, so a `tools/call` naming one of the three proposal
+operations is refused with `NotAuthorized` rather than served. Raising it is an
+explicit argument (`--tier`) at launch, and no message, argument value or client
+identity can change it afterwards. `docs/INTEROPERABILITY.md` describes the
+whole contract, including how a client should be configured.
+
+### Portable proposals
+
+`artifact.py` reads and writes a portable proposal artifact: a file a separate
+process — including one with no access to your canon — can produce, and which
+this system will accept as a *proposal* and never as authority. An artifact that
+arrives carrying a claim to authority is refused rather than downgraded.
+
 ## Tests
 
-Installing this package is not required to run the suite; `pytest` is. The
-suite runs from a clean clone with no machine-specific setup:
+The Python suite runs from a clean clone. `pytest` is required; installing this
+package is not.
 
 ```bash
 python3 -m pip install pytest
+npm --prefix ui ci
 python3 -m pytest tests/ -q
+```
+
+**The `npm --prefix ui ci` step is not optional, and this document used to say it
+was.** Five tests in `tests/test_vocabulary.py` check a published document
+against the renderer's own resolved values by bundling the TypeScript that
+produces them, rather than by reimplementing the arithmetic in Python. Without
+`ui/node_modules`, those five **fail** with a stated reason — they do not skip
+and they do not pass. Measured from a clean clone: **1243 passed and 5 failed**
+without the npm step, **1248 passed** with it.
+
+The TypeScript half has its own checks, run from `ui/`:
+
+```bash
+npm --prefix ui run typecheck
+npm --prefix ui run test:unit
 ```
 
 Some tests exist to keep the repository honest rather than to check behaviour:
@@ -130,19 +256,37 @@ tracked file content or names, one proves the data root really is
 configuration by running the same operation against two different roots, and
 one proves the package imports and works with no external tree present.
 
-`tests/test_semantic.py` is the one exception to "no machine-specific setup":
-it needs the `semantic` extra (`pip install .[semantic]`) and the two ONNX
-checkpoints `semantic.py` names already present in the local Hugging Face
-cache. Resolution passes `local_files_only`, so it never contacts the network
-and never downloads: a checkpoint that is not already cached is reported as
-not-run, with the reason, rather than fetched. Obtaining weights is a separate,
-deliberate human act.
+### What does not run from a public clone
 
-## Fixtures
+Some checks depend on things a clone cannot carry. Each of them fails with a
+stated reason rather than reporting a pass.
 
-`fixtures/synthetic/` holds small, wholly invented documents used by the tests.
-They contain no personal material and are safe to read, copy and publish. Any
-private corpus stays outside this repository and is never committed.
+**`npm --prefix ui run test:unit` does not pass from a fresh clone, and this is
+expected.** Measured from one: **461 of 477 pass and 16 fail.** All sixteen read
+generated evidence under `ui/dist/` — comparison and performance artifacts,
+capture manifests — which is run output, is deliberately not committed, and is
+produced by the browser suites below. A document generated from an artifact is
+checked against that artifact rather than against a copy of its numbers, so
+without the artifact the check refuses instead of passing vacuously.
+
+Once that evidence exists, a second dependency applies that a clone still cannot
+satisfy: six of the acceptance criteria resolve against human judgement records
+held outside this repository, discharged by a person looking at rendered images.
+No public substitute for that judgement exists, and inventing one would make six
+criteria pass against something nobody judged. **That dependency is recorded
+rather than re-measured here** — from a clean clone it cannot be observed at
+all, because the missing `ui/dist/` evidence fails the same checks first.
+
+**The browser suites** under `ui/test/browser/` need Playwright browsers
+installed and a real GPU adapter, and they are what produce `ui/dist/`. They are
+not part of either default run.
+
+**`tests/test_semantic.py`** needs the `semantic` extra
+(`pip install .[semantic]`) and the two ONNX checkpoints `semantic.py` names
+already present in the local Hugging Face cache. Resolution passes
+`local_files_only`, so it never contacts the network and never downloads: a
+checkpoint that is not already cached is reported as not-run, with the reason,
+rather than fetched. Obtaining weights is a separate, deliberate human act.
 
 ## Layout
 
@@ -178,26 +322,39 @@ src/
     ├── mcp.py            the stdio JSON-RPC transport, generated from the catalogue
     └── artifact.py       the portable proposal artifact; refused if it carries authority
 ui/
-└── src/
-    ├── adapter/          projections read into the visual model, meaning kept sealed
-    ├── engine/           renderer-independent visual model, layout, and the axes
-    │                     of presentation: morphology, organization, detail, colour
-    └── render2d/         the 2D renderer that ships today, and only it knows WebGL
-tests/                    the suite described above
+├── src/
+│   ├── adapter/          projections read into the visual model, meaning kept sealed
+│   ├── engine/           renderer-independent visual model, layout, and the axes
+│   │                     of presentation: morphology, organization, detail, colour
+│   ├── scene/            every material, geometry, label and interaction value,
+│   │                     resolved once and handed to whichever renderer draws it
+│   ├── render2d/         the Sigma renderer, over WebGL; resolves its own model
+│   ├── render3f/         the Three.js / React Three Fiber renderer, orthographic
+│   │                     and perspective, over the shared scene model
+│   └── comparison/       the controlled analysis across the three renderers
+└── test/                 unit, scene, renderer and browser-evidence suites
+tests/                    the Python suite described above
+benchmarks/               the measuring instrument's own reporting scripts
 docs/
-└── VOCABULARY.md         the technical and epistemic registers, and the map between
-                          them; checked against the code by the suite
+├── VOCABULARY.md              the technical and epistemic registers, and the map
+│                              between them; checked against the code by the suite
+├── INTEROPERABILITY.md        the Core contract and its two transports
+├── RENDERER-COMPARISON.md     three renderers over one semantic state
+├── CAP-14-COMPARISON.md       the 2D/3D controlled comparison, generated from evidence
+└── CAP-15-RETRIEVAL.md        the retrieval measurement, including what did not run
 fixtures/
 └── synthetic/
     ├── MANIFEST.jsonl    path and content digest per document
     ├── GOLDEN.md         what a correct search must return, and why
     ├── DISCOVERY.md      published candidate-lifecycle and discovery expectations
     ├── corpus/           public, invented test documents
-    └── bilingual/        the same subjects in two languages
+    ├── bilingual/        the same subjects in two languages
+    ├── injection/        text that reads as an instruction, for the boundary tests
+    └── projection/       fixed graphs the visual layer is measured against
 ```
 
 The visual layer is deliberately split so that meaning and drawing cannot leak into
-each other: `engine/` holds nothing specific to a rendering technology, and the
+each other: `engine/` holds nothing specific to a rendering technology, and a
 renderer is handed a much smaller view of the graph than the one it is given —
 with what it reads recorded, so that reading too much is detectable rather than
 merely discouraged.
