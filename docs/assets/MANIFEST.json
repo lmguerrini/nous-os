@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Documentation images published by docs/ and README.md. Produced on purpose from the public synthetic fixtures named below, never from a private corpus and never borrowed from the evidence suites.",
+  "command": "node --experimental-strip-types tools/capture-docs-assets.ts",
+  "viewport": {
+    "width": 1200,
+    "height": 800,
+    "deviceScaleFactor": 1,
+    "colorScheme": "dark"
+  },
+  "determinism": "Date.now, performance.now and Math.random are pinned before the page module loads, so regenerating produces the same bytes.",
+  "images": [
+    {
+      "file": "projection-2d.png",
+      "caption": "The 2D renderer (Sigma, over WebGL) drawing the projection.",
+      "fixture": "fixtures/synthetic/projection/discovery-at-question.json",
+      "fixtureSha256": "9b475129642572c9b30acd0fa479dbbcd17deecb98313573454d764fa41444f8",
+      "source": {
+        "renderer": "sigma-2d",
+        "view": "macro"
+      },
+      "sha256": "c3d4b5de11d4c5f8cc6edf3e7fdf2ce524be2f2854247b2ef9465427a6a1c9cb",
+      "width": 1200,
+      "height": 800
+    },
+    {
+      "file": "projection-3d-orthographic.png",
+      "caption": "The same projection, orthographic, through the Three.js renderer.",
+      "fixture": "fixtures/synthetic/projection/discovery-at-question.json",
+      "fixtureSha256": "9b475129642572c9b30acd0fa479dbbcd17deecb98313573454d764fa41444f8",
+      "source": {
+        "renderer": "r3f-2d",
+        "view": "macro"
+      },
+      "sha256": "58ccc60f21af0e34a32f9ed7a61368a9328346e859ba6cd5babef37a56234910",
+      "width": 1200,
+      "height": 800
+    },
+    {
+      "file": "projection-3d-perspective.png",
+      "caption": "The same projection again, perspective, through the same renderer.",
+      "fixture": "fixtures/synthetic/projection/discovery-at-question.json",
+      "fixtureSha256": "9b475129642572c9b30acd0fa479dbbcd17deecb98313573454d764fa41444f8",
+      "source": {
+        "renderer": "r3f-3d",
+        "view": "macro"
+      },
+      "sha256": "2d76ca6e69e5d1716e3102f17fd71659b8a239f157ca4747d0ca32f54da6350b",
+      "width": 1200,
+      "height": 800
+    },
+    {
+      "file": "projection-3d-focused.png",
+      "caption": "One element focused: the camera moves, the knowledge state does not.",
+      "fixture": "fixtures/synthetic/projection/discovery-at-question.json",
+      "fixtureSha256": "9b475129642572c9b30acd0fa479dbbcd17deecb98313573454d764fa41444f8",
+      "source": {
+        "renderer": "r3f-3d",
+        "view": "focused"
+      },
+      "sha256": "92bb1478783ac3bd7f66a98e615a90f7969dfb55843ffcb20583df894f06c8b8",
+      "width": 1200,
+      "height": 800
+    },
+    {
+      "file": "morphology-stellar.png",
+      "caption": "Stellar morphology.",
+      "fixture": "fixtures/synthetic/projection/discovery-at-question.json",
+      "fixtureSha256": "9b475129642572c9b30acd0fa479dbbcd17deecb98313573454d764fa41444f8",
+      "source": {
+        "morphology": "stellar",
+        "organization": "flat",
+        "projection": "3d"
+      },
+      "sha256": "1c0561c6ddf89e20d2415176df2c77b293e33cee9f9b71c264e6eeb41dba650e",
+      "width": 1200,
+      "height": 800
+    },
+    {
+      "file": "morphology-neural.png",
+      "caption": "Neural morphology, same graph.",
+      "fixture": "fixtures/synthetic/projection/discovery-at-question.json",
+      "fixtureSha256": "9b475129642572c9b30acd0fa479dbbcd17deecb98313573454d764fa41444f8",
+      "source": {
+        "morphology": "neural",
+        "organization": "flat",
+        "projection": "3d"
+      },
+      "sha256": "d79992a3a24aa63d939e2fcae1e68e6b2a34593bfaf97da5218c4504fee54da9",
+      "width": 1200,
+      "height": 800
+    },
+    {
+      "file": "morphology-mycelium.png",
+      "caption": "Mycelium morphology, same graph.",
+      "fixture": "fixtures/synthetic/projection/discovery-at-question.json",
+      "fixtureSha256": "9b475129642572c9b30acd0fa479dbbcd17deecb98313573454d764fa41444f8",
+      "source": {
+        "morphology": "mycelium",
+        "organization": "flat",
+        "projection": "3d"
+      },
+      "sha256": "234d7829ed145a581d15e5e9404b9cf8e0b85be7895bc85f555a0b28cda79727",
+      "width": 1200,
+      "height": 800
+    },
+    {
+      "file": "organization-flat.png",
+      "caption": "Flat organization over the aggregate-window fixture.",
+      "fixture": "fixtures/synthetic/projection/indra/indra-community-windows.json",
+      "fixtureSha256": "911fb3f96242728bfc8a7fc0add84765a21eca9071400119d45f127629337ac4",
+      "source": {
+        "morphology": "stellar",
+        "organization": "flat",
+        "projection": "3d"
+      },
+      "sha256": "12110406f534ebfe1a26dd05f44fffc6a99f835ea6646d74c1c8b4516f6e605c",
+      "width": 1200,
+      "height": 800
+    },
+    {
+      "file": "organization-indra.png",
+      "caption": "Indra organization over the same fixture: aggregates, not a different graph.",
+      "fixture": "fixtures/synthetic/projection/indra/indra-community-windows.json",
+      "fixtureSha256": "911fb3f96242728bfc8a7fc0add84765a21eca9071400119d45f127629337ac4",
+      "source": {
+        "morphology": "stellar",
+        "organization": "indra",
+        "projection": "3d"
+      },
+      "sha256": "27f639016f8aff8e294dc7e5e51bad1a8c1305239f3baf126c423a8c009d17c7",
+      "width": 1200,
+      "height": 800
+    }
+  ]
+}
