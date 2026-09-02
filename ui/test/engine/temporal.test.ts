@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
-import { readSemantic, semanticDigest } from "#engine/contract.ts";
+import { createSemantic, readSemantic, semanticDigest } from "#engine/contract.ts";
 import type { VisualGraph } from "#engine/contract.ts";
 import {
   allTimeMembership,
@@ -38,14 +38,22 @@ const RECORDED_AT: Readonly<Record<string, string>> = {
   a8: "2026-03-01T00:00:00+00:00",
 };
 
-// F83 (open, routed to the human): PREREGISTERED_CLASS_B/C below, and the {explicit: 8, derived:
-// 13, unknown: 1} counts asserted further down, rest on one reading of the human ruling on
+// F83 (open, routed to the human): PREREGISTERED_CLASS_B/C below, and the {explicit: 9, derived:
+// 12, unknown: 1} counts asserted further down, rest on one reading of the human ruling on
 // ambiguous fixture elements. That reading is contested -- the ruling's own clarification implies
-// counts of 8/7/7, not 8/13/1 -- and no decision has landed. These constants pin shipped behaviour
-// so this suite keeps catching regressions; they are not a claim that this reading is settled.
+// smaller counts still -- and no decision has landed. These constants pin shipped behaviour so
+// this suite keeps catching regressions; they are not a claim that this reading is settled.
+// (D-072 separately and bindingly moved `rejection:rejection-1` out of class B into class A --
+// it carries its own governed instant, `rejected_at` -- which is why the base counts above moved
+// from the previously pinned {8, 13, 1} to {9, 12, 1}; that move is not itself part of the open
+// F83 question.)
+// D-072: a rejection carries its own governed instant, `rejected_at`, so it
+// is read explicitly like an assertion's `valid_from` -- it is class A, not
+// class B, and it is never reached by the derivation rule below.
 const PREREGISTERED_CLASS_A = [
   "assertion:a1", "assertion:a2", "assertion:a3", "assertion:a4",
   "assertion:a5", "assertion:a6", "assertion:a7", "assertion:a8",
+  "rejection:rejection-1",
 ];
 
 const PREREGISTERED_CLASS_B = [
@@ -54,7 +62,6 @@ const PREREGISTERED_CLASS_B = [
   "conflict:conflict-1",
   "bridge:bridge-a", "bridge:bridge-b", "bridge:bridge-cross",
   "cluster:cluster-alpha", "cluster:cluster-beta",
-  "rejection:rejection-1",
 ];
 
 const PREREGISTERED_CLASS_C = ["source:src-orphan"];
@@ -65,12 +72,12 @@ const PREREGISTERED_CLASS_C = ["source:src-orphan"];
 const EXPECTED_MEMBERSHIP_STEPS: readonly (readonly string[])[] = [
   ["assertion:a1", "subject:subj-alpha", "source:src-a1", "bridge:bridge-a", "cluster:cluster-alpha"],
   ["assertion:a2", "source:src-a2", "conflict:conflict-1", "bridge:bridge-cross"],
-  ["assertion:a3", "subject:subj-beta", "source:src-b1", "bridge:bridge-b", "cluster:cluster-beta", "rejection:rejection-1"],
+  ["assertion:a3", "subject:subj-beta", "source:src-b1", "bridge:bridge-b", "cluster:cluster-beta"],
   ["assertion:a4", "source:src-b2"],
   ["assertion:a5"],
   ["assertion:a6"],
   ["assertion:a7"],
-  ["assertion:a8"],
+  ["assertion:a8", "rejection:rejection-1"],
 ];
 
 function fixture(): unknown {
@@ -157,7 +164,7 @@ test("measured class assignment matches the preregistered A/B/C partition exactl
   assert.deepEqual(actualC, sorted(PREREGISTERED_CLASS_C));
 
   const counts = temporalClassCounts(placements);
-  assert.deepEqual(counts, { explicit: 8, derived: 13, unknown: 1 });
+  assert.deepEqual(counts, { explicit: 9, derived: 12, unknown: 1 });
 });
 
 test("every class-B placement names the governed elements that caused it", () => {
@@ -176,7 +183,6 @@ test("every class-B placement names the governed elements that caused it", () =>
     "bridge:bridge-cross": { through: "bridge_side", causes: ["source:src-a2"] },
     "cluster:cluster-alpha": { through: "in_cluster", causes: ["bridge:bridge-a"] },
     "cluster:cluster-beta": { through: "in_cluster", causes: ["bridge:bridge-b"] },
-    "rejection:rejection-1": { through: "rejects", causes: ["cluster:cluster-beta"] },
   };
   assert.equal(Object.keys(expectedCauses).length, PREREGISTERED_CLASS_B.length);
   for (const id of PREREGISTERED_CLASS_B) {
@@ -216,7 +222,17 @@ test("cluster placement resolves through exactly the preregistered two-hop chain
   assert.ok(assertion !== undefined && assertion.class === "explicit");
 });
 
-test("no class-B or class-C node ever reports a governed valid_from", () => {
+// D-072: the guard below used to key on one field name, `valid_from`, so a
+// second field carrying the same kind of governed evidence -- `rejected_at`
+// -- was structurally invisible to it; the guard could not have failed on
+// that defect however wrong the derivation got. It now checks for the
+// presence of any governed instant, and its class assertion is written so
+// that a still-undated kind wrongly resolving explicit fails it exactly as
+// before, while the one kind D-072 makes legitimately explicit is required
+// to resolve that way rather than merely tolerated.
+const GOVERNED_INSTANT_FIELDS = ["valid_from", "rejected_at"];
+
+test("no undated kind carries a governed instant under any name, and only assertion and rejection legitimately resolve explicit", () => {
   const visualGraph = graph();
   const placements = resolveTemporalPlacements(visualGraph);
   for (const node of visualGraph.nodes) {
@@ -225,10 +241,103 @@ test("no class-B or class-C node ever reports a governed valid_from", () => {
     }
     const placement = placements.get(node.id);
     assert.ok(placement !== undefined);
-    assert.notEqual(placement.class, "explicit", node.id);
+    const legitimatelyExplicit = node.kind === "rejection";
+    assert.equal(placement.class === "explicit", legitimatelyExplicit, node.id);
+    if (legitimatelyExplicit) {
+      continue;
+    }
     const attributes = readSemantic(node.semantic) as Record<string, unknown>;
-    assert.ok(!("valid_from" in attributes), `${node.id} attributes must not carry valid_from`);
+    for (const field of GOVERNED_INSTANT_FIELDS) {
+      assert.ok(!(field in attributes), `${node.id} attributes must not carry a governed instant (${field})`);
+    }
   }
+});
+
+// Negative control, in the file's own idiom: proves the OLD guard's exact
+// condition would have passed straight through the D-072 defect, and that
+// the repaired condition does not.
+test("negative control: the prior valid_from-only guard would have missed a rejected_at leak that the repaired guard catches", () => {
+  const visualGraph = graph();
+  const subject = visualGraph.nodes.find((node) => node.id === "subject:subj-alpha");
+  assert.ok(subject !== undefined);
+  const attributes = readSemantic(subject.semantic) as Record<string, unknown>;
+  const leaked = { ...attributes, rejected_at: GROUND_TRUTH.T0 };
+  const oldGuardPassed = !("valid_from" in leaked);
+  const newGuardPasses = GOVERNED_INSTANT_FIELDS.every((field) => !(field in leaked));
+  assert.equal(oldGuardPassed, true, "the old guard's own condition is satisfied even on the leaked attributes");
+  assert.equal(newGuardPasses, false, "the repaired guard's condition is not satisfied on the same leaked attributes");
+});
+
+// D-072: rejection-1's own governed instant is 2025-06-18T00:00:00+00:00 (T7).
+// The four tests below pin the ruling directly, independently of the
+// class/count bookkeeping above.
+
+test("D-072: rejection-1 is absent from temporal membership at every instant strictly before its rejected_at", () => {
+  const visualGraph = graph();
+  const placements = resolveTemporalPlacements(visualGraph);
+  const oneDayBeforeRejection = new Date(Date.parse(GROUND_TRUTH.T7) - 86400000).toISOString();
+  const beforeInstants = [
+    "1999-01-01T00:00:00+00:00",
+    GROUND_TRUTH.T0, GROUND_TRUTH.T1, GROUND_TRUTH.T2, GROUND_TRUTH.T3,
+    GROUND_TRUTH.T4, GROUND_TRUTH.T5, GROUND_TRUTH.T6,
+    oneDayBeforeRejection,
+  ];
+  for (const instant of beforeInstants) {
+    const membership = resolveTemporalMembership(visualGraph, placements, instant);
+    assert.equal(membership.nodeIds.has("rejection:rejection-1"), false, instant);
+  }
+});
+
+test("D-072: rejection-1's placement is explicit, pinned exactly at rejected_at with no invented expiry, and it is present from there on", () => {
+  const visualGraph = graph();
+  const placements = resolveTemporalPlacements(visualGraph);
+  assert.deepEqual(placements.get("rejection:rejection-1"), { class: "explicit", at: GROUND_TRUTH.T7, until: null });
+
+  const atRejection = resolveTemporalMembership(visualGraph, placements, GROUND_TRUTH.T7);
+  assert.equal(atRejection.nodeIds.has("rejection:rejection-1"), true);
+  const farFuture = resolveTemporalMembership(visualGraph, placements, "2999-01-01T00:00:00+00:00");
+  assert.equal(farFuture.nodeIds.has("rejection:rejection-1"), true);
+});
+
+test("D-072: a rejection constructed without a usable rejected_at resolves unknown, never derived and never dated", () => {
+  const visualGraph = graph();
+  const original = visualGraph.nodes.find((node) => node.id === "rejection:rejection-1");
+  assert.ok(original !== undefined);
+  const baseAttributes = readSemantic(original.semantic) as Record<string, unknown>;
+
+  function withRejectedAt(value: unknown): VisualGraph {
+    const attributes = { ...baseAttributes };
+    if (value === undefined) {
+      delete attributes.rejected_at;
+    } else {
+      attributes.rejected_at = value;
+    }
+    return {
+      ...visualGraph,
+      nodes: visualGraph.nodes.map((node) =>
+        node.id === "rejection:rejection-1" ? { ...node, semantic: createSemantic(attributes) } : node),
+    };
+  }
+
+  for (const constructed of [withRejectedAt(undefined), withRejectedAt(null), withRejectedAt(20250618)]) {
+    const constructedPlacements = resolveTemporalPlacements(constructed);
+    assert.deepEqual(constructedPlacements.get("rejection:rejection-1"), { class: "unknown" });
+    for (const instant of [...Object.values(GROUND_TRUTH), "2999-01-01T00:00:00+00:00"]) {
+      const membership = resolveTemporalMembership(constructed, constructedPlacements, instant);
+      assert.equal(membership.nodeIds.has("rejection:rejection-1"), false, instant);
+    }
+  }
+});
+
+test("D-072: the five other undated kinds still resolve derived through their own edge kind and causes, unaffected by the rejection repair", () => {
+  const visualGraph = graph();
+  const placements = resolveTemporalPlacements(visualGraph);
+  for (const id of PREREGISTERED_CLASS_B) {
+    const placement = placements.get(id);
+    assert.ok(placement !== undefined, id);
+    assert.equal(placement.class, "derived", id);
+  }
+  assert.equal(placements.get("rejection:rejection-1")?.class, "explicit");
 });
 
 test("negative control: mislabelling a derived element as explicit is caught by the class check", () => {
@@ -236,9 +345,14 @@ test("negative control: mislabelling a derived element as explicit is caught by 
   const placements = new Map(resolveTemporalPlacements(visualGraph));
   const corrupted = new Map(placements);
   corrupted.set("subject:subj-alpha", { class: "explicit", at: GROUND_TRUTH.T0, until: null });
-  const nonAssertionIds = visualGraph.nodes.filter((node) => node.kind !== "assertion").map((node) => node.id);
-  const realFailures = nonAssertionIds.filter((id) => placements.get(id)?.class === "explicit");
-  const corruptedFailures = nonAssertionIds.filter((id) => corrupted.get(id)?.class === "explicit");
+  // Rejection is excluded here on purpose: D-072 makes it the one non-assertion
+  // kind that legitimately resolves explicit, so it is not a "failure" this
+  // check is looking for.
+  const derivedKindIds = visualGraph.nodes
+    .filter((node) => node.kind !== "assertion" && node.kind !== "rejection")
+    .map((node) => node.id);
+  const realFailures = derivedKindIds.filter((id) => placements.get(id)?.class === "explicit");
+  const corruptedFailures = derivedKindIds.filter((id) => corrupted.get(id)?.class === "explicit");
   assert.deepEqual(realFailures, []);
   assert.deepEqual(corruptedFailures, ["subject:subj-alpha"]);
 });
@@ -270,11 +384,14 @@ test("negative control: an orphan that was wrongly given a borrowed date would b
   assert.equal(wrong.nodeIds.has("source:src-orphan"), true);
 });
 
-test("membership grows monotonically across T0..T5, a2 expires exactly at T6, and T7 adds a8", () => {
+test("membership grows monotonically across T0..T5, a2 expires exactly at T6, and T7 adds a8 and rejection-1", () => {
   const visualGraph = graph();
   const placements = resolveTemporalPlacements(visualGraph);
   const order: (keyof typeof GROUND_TRUTH)[] = ["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7"];
-  const expectedCounts = [5, 9, 15, 17, 18, 19, 19, 20];
+  // D-072 moved rejection-1's appearance from T2 (borrowed from cluster-beta's
+  // chain) to T7 (its own rejected_at), which is why T2..T6 read one lower
+  // than before the repair and T7 gains a second new member instead of one.
+  const expectedCounts = [5, 9, 14, 16, 17, 18, 18, 20];
   for (const [index, key] of order.entries()) {
     const membership = resolveTemporalMembership(visualGraph, placements, GROUND_TRUTH[key]);
     const expected = expectedNodeIdsAtTemporal(key);
@@ -283,9 +400,12 @@ test("membership grows monotonically across T0..T5, a2 expires exactly at T6, an
   }
   const atT5 = resolveTemporalMembership(visualGraph, placements, GROUND_TRUTH.T5);
   const atT6 = resolveTemporalMembership(visualGraph, placements, GROUND_TRUTH.T6);
+  const atT7 = resolveTemporalMembership(visualGraph, placements, GROUND_TRUTH.T7);
   assert.equal(atT5.nodeIds.has("assertion:a2"), true);
   assert.equal(atT6.nodeIds.has("assertion:a2"), false);
   assert.equal(atT6.nodeIds.has("assertion:a7"), true);
+  assert.equal(atT6.nodeIds.has("rejection:rejection-1"), false);
+  assert.equal(atT7.nodeIds.has("rejection:rejection-1"), true);
 });
 
 test("membership before T0 is empty and membership far past T7 still excludes a2 and src-orphan forever", () => {

@@ -2,13 +2,16 @@ import { readSemantic } from "#engine/contract.ts";
 import type { VisualGraph, VisualNode } from "#engine/contract.ts";
 
 /**
- * This is one element's resolved valid-time placement and does not carry a
- * governed `valid_from` for any element besides an assertion.
+ * This is one element's resolved valid-time placement. An assertion carries a
+ * governed `valid_from`, and a rejection carries its own governed instant,
+ * `rejected_at` — the moment the rejection itself came to exist, not a date
+ * borrowed from whatever it rejects — so both are read explicitly, and only
+ * the remaining, genuinely undated kinds ever reach the derivation rule below.
  *
- * `explicit` is read directly from governed assertion evidence. `derived` is
- * computed from governed incidence and always names the governed elements
- * that caused it, so it is traceable rather than asserted. `unknown` means no
- * defensible placement exists and is never silently dated.
+ * `explicit` is read directly from governed evidence. `derived` is computed
+ * from governed incidence and always names the governed elements that caused
+ * it, so it is traceable rather than asserted. `unknown` means no defensible
+ * placement exists and is never silently dated.
  */
 export type TemporalPlacement =
   | { readonly class: "explicit"; readonly at: string; readonly until: string | null }
@@ -44,7 +47,6 @@ const DERIVATION_RULES: Readonly<Record<string, DerivationRule>> = {
   conflict: { edgeKind: "conflict_member", selfRole: "source" },
   bridge: { edgeKind: "bridge_side", selfRole: "source" },
   cluster: { edgeKind: "in_cluster", selfRole: "target" },
-  rejection: { edgeKind: "rejects", selfRole: "source" },
 };
 
 /** This resolves every canonical node's temporal placement and does not mutate the supplied graph. */
@@ -66,7 +68,12 @@ export function resolveTemporalPlacements(graph: VisualGraph): ReadonlyMap<strin
       throw new TypeError(`temporal derivation requires a canonical node for ${nodeId}`);
     }
     resolving.add(nodeId);
-    const placement = node.kind === "assertion" ? explicitPlacement(node) : derivedPlacement(node, graph.edges, resolve);
+    const placement =
+      node.kind === "assertion"
+        ? explicitPlacement(node)
+        : node.kind === "rejection"
+          ? rejectionPlacement(node)
+          : derivedPlacement(node, graph.edges, resolve);
     resolving.delete(nodeId);
     resolved.set(nodeId, placement);
     return placement;
@@ -93,6 +100,22 @@ function explicitPlacement(node: VisualNode): TemporalPlacement {
     throw new TypeError(`assertion ${node.id} valid_to must be a string or null`);
   }
   return { class: "explicit", at: validFrom, until: validTo };
+}
+
+/**
+ * This reads one governed rejection's own valid time and never back-propagates
+ * it through the derivation rule used for genuinely undated kinds — the
+ * rejection did not exist before `rejected_at`, so an earlier instant is never
+ * invented for it. `until` is left `null` because `rejected_at` is governed
+ * evidence for when the rejected state begins, not for when it ends.
+ */
+function rejectionPlacement(node: VisualNode): TemporalPlacement {
+  const attributes = readSemantic(node.semantic) as Record<string, unknown>;
+  const rejectedAt = attributes.rejected_at;
+  if (typeof rejectedAt !== "string") {
+    return { class: "unknown" };
+  }
+  return { class: "explicit", at: rejectedAt, until: null };
 }
 
 /** This derives one undated kind's placement from its one governed incidence rule and does not extend the chain past it. */
