@@ -13,9 +13,11 @@ from nous_os.provenance import (
     Locator,
     LocatorOutOfRange,
     LocatorSplitsCharacter,
+    SnapshotNotText,
     SpanMismatch,
     quote_lint,
     read_span,
+    resolves,
 )
 from nous_os.snapshots import SnapshotNotFound, SnapshotStore
 
@@ -167,3 +169,35 @@ def test_p8_a_quote_valid_for_one_snapshot_fails_for_changed_later_bytes(
     assert quote_lint(store, old_citation) is None
     with pytest.raises(SpanMismatch):
         quote_lint(store, later_citation)
+
+
+def test_a_valid_cited_range_over_an_invalid_tail_raises_snapshotnottext(
+    tmp_path: Path,
+) -> None:
+    """A byte the citation never claims must not surface as an undeclared crash."""
+    store = SnapshotStore(tmp_path)
+    span = "the claim holds"
+    data = span.encode("utf-8") + b"\xff\xfe tail"
+    snapshot = store.put("src_01ARZ3NDEKTSV4RRFFQ69G5FAV", data)
+    citation = _citation(snapshot.digest, 0, len(span.encode("utf-8")), span)
+
+    with pytest.raises(SnapshotNotText):
+        read_span(store, citation)
+
+
+def test_resolves_over_a_mixed_batch_counts_instead_of_aborting(tmp_path: Path) -> None:
+    """One non-text snapshot in a batch must not abort the count over the rest."""
+    store = SnapshotStore(tmp_path)
+    good_snapshot = store.put("src_01ARZ3NDEKTSV4RRFFQ69G5FAV", b"marker: blue")
+    good_citation = _citation(good_snapshot.digest, 8, 12, "blue")
+
+    span = "the claim holds"
+    bad_source_id = "src_01BRZ3NDEKTSV4RRFFQ69G5FAV"
+    bad_data = span.encode("utf-8") + b"\xff\xfe tail"
+    bad_snapshot = store.put(bad_source_id, bad_data)
+    bad_citation = _citation(
+        bad_snapshot.digest, 0, len(span.encode("utf-8")), span, bad_source_id
+    )
+
+    assert resolves(store, good_citation) is True
+    assert resolves(store, bad_citation) is False

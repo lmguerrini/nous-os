@@ -20,9 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from nous_os.identity import (
-    ASSERTION_PREFIX,
-    SOURCE_PREFIX,
+    ASSERTION_PREFIX, SOURCE_PREFIX,
     canonical_bytes,
+    file_is_present,
     new_assertion_id,
     require_id,
 )
@@ -131,7 +131,7 @@ class CandidateStore:
 
     def proposals(self) -> tuple[Proposal, ...]:
         """Every recorded proposal, in file order."""
-        if not self._path.is_file():
+        if not file_is_present(self._path):
             return ()
         found = []
         for number, line in enumerate(

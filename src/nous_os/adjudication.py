@@ -32,7 +32,7 @@ from pathlib import Path
 
 from nous_os.attribution import AttributedKey, KeyOrigin, is_promotable
 from nous_os.candidates import Proposal
-from nous_os.identity import canonical_bytes
+from nous_os.identity import canonical_bytes, file_is_present
 
 
 class AdjudicationError(Exception):
@@ -276,7 +276,7 @@ class RejectionMemory:
 
     def rejections(self) -> tuple[Rejection, ...]:
         """Return every rejection in the file's append order, without sorting."""
-        if not self._path.is_file():
+        if not file_is_present(self._path):
             return ()
         found: list[Rejection] = []
         for number, line in enumerate(self._path.read_text(encoding="utf-8").splitlines(), 1):
@@ -333,7 +333,7 @@ class AgentMemory:
 
     def notes(self) -> tuple[tuple[str, str, str], ...]:
         """Return only plain session, note, and instant strings in file order."""
-        if not self._path.is_file():
+        if not file_is_present(self._path):
             return ()
         found: list[tuple[str, str, str]] = []
         for number, line in enumerate(self._path.read_text(encoding="utf-8").splitlines(), 1):

@@ -82,6 +82,19 @@ def resolve_data_root(
     return DataRoot(Path(candidate).expanduser().resolve())
 
 
+def _reraise_walk_error(error: OSError) -> None:
+    """``os.walk``'s ``onerror`` hook: make a listing failure propagate.
+
+    ``os.walk`` otherwise swallows a subdirectory it cannot list and simply
+    omits it from what it yields, with no exception and no other signal that a
+    document underneath it was never considered. ``Path.rglob``, which this
+    used to call, swallows the same failure one layer further down -- a
+    canonical document under an unreadable subdirectory silently stops
+    existing rather than being reported as unreadable.
+    """
+    raise error
+
+
 def list_documents(root: DataRoot) -> tuple[str, ...]:
     """Every canonical document under ``root``, as sorted root-relative paths.
 
@@ -89,11 +102,14 @@ def list_documents(root: DataRoot) -> tuple[str, ...]:
     it happens to sit on, so the same corpus under two different roots produces
     the same answer.
     """
-    found = [
-        path.relative_to(root.path).as_posix()
-        for path in root.path.rglob("*")
-        if path.is_file() and path.suffix.lower() in CANONICAL_SUFFIXES
-    ]
+    found = []
+    for directory, _subdirectories, filenames in os.walk(
+        root.path, onerror=_reraise_walk_error
+    ):
+        for filename in filenames:
+            path = Path(directory) / filename
+            if path.is_file() and path.suffix.lower() in CANONICAL_SUFFIXES:
+                found.append(path.relative_to(root.path).as_posix())
     return tuple(sorted(found))
 
 

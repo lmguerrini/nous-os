@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
+import stat
+from pathlib import Path
 from typing import Any, Callable, Final
 
 #: Identifier prefixes. Short, readable, and distinct so a misplaced id is
@@ -98,3 +101,40 @@ def canonical_bytes(payload: Any) -> bytes:
 def digest_payload(payload: Any) -> str:
     """The sha256 of ``payload``'s canonical serialisation."""
     return digest_bytes(canonical_bytes(payload))
+
+
+def file_is_present(path: Path) -> bool:
+    """Whether ``path`` names an existing regular file -- or raise.
+
+    Lives here, in the package's dependency root, rather than beside any one
+    reader: every append-only store below already imports this module for its
+    identifiers, so adding the one check they all need here creates no new
+    edge in the dependency graph.
+
+    ``Path.is_file()`` reports *every* ``OSError`` as a plain ``False`` --
+    a permission failure on a containing directory exactly like a file that
+    was never written. That conflates "this history is empty" with "this
+    history cannot currently be read", and a caller cannot tell them apart
+    afterwards. ``FileNotFoundError`` and ``NotADirectoryError`` are the only
+    two outcomes treated as genuine absence, because a path below a missing
+    ancestor or a non-directory ancestor names nothing; any other failure to
+    stat the path -- most often a permission failure -- propagates instead.
+    """
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
+def directory_is_present(path: Path) -> bool:
+    """The directory counterpart of :func:`file_is_present`; see its docstring.
+
+    ``os.stat`` succeeding here says only that ``path`` exists and is a
+    directory, not that its contents can be listed: a directory can admit
+    ``stat`` while refusing ``readdir``. A caller that goes on to list it
+    still sees that failure, unwrapped, on its own listing call.
+    """
+    try:
+        return stat.S_ISDIR(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False

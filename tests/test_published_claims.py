@@ -5,11 +5,33 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+#: A genuinely untracked, not-ignored probe for `test_untracked_markdown_is_scanned_too`
+#: below. It lives beside the tests, never in `docs/`: a false CAP-15 conclusion sitting
+#: in the published documentation directory would itself be the exact defect this suite
+#: exists to catch, for however briefly it exists on disk. The name is deliberately
+#: shouted so a crashed run's leftover is unmistakable to whoever finds it.
+_UNTRACKED_PROBE_PATH = REPO_ROOT / "tests" / "DELETE-ME-CAP15-SCANNER-PROBE.md"
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _no_leftover_probe_from_a_crashed_run() -> None:
+    """Heal a probe a previous run's crash left behind, before any test here sees it.
+
+    A ``finally`` cannot survive a hard kill between the probe's write and its own
+    cleanup, so the failure mode this check exists to close is a *future* run
+    inheriting a stale probe, not the run that dropped it. Removing any leftover
+    here, before the first test in this module executes, means
+    `test_tracked_markdown_keeps_the_published_cap15_outcome` can never be broken
+    by a crash that happened in some earlier session.
+    """
+    _UNTRACKED_PROBE_PATH.unlink(missing_ok=True)
 #: WHAT THIS CHECK IS, AND WHAT IT IS NOT.
 #:
 #: It is a TRIPWIRE for two precise things. It is NOT a general detector of false
@@ -319,7 +341,7 @@ def test_negative_cap15_statements_do_not_trip_the_check(tmp_path: Path, stateme
     assert _false_cap15_claims((path,)) == ()
 
 
-#: Fabrications a coordinator probe found slipping past the first version of this
+#: Fabrications a review probe found slipping past the first version of this
 #: check. Six of eleven passed it, including the project's own frozen outcome token.
 #: They are pinned here so the pattern cannot narrow back to the handful of literal
 #: phrasings it started as.
@@ -431,7 +453,29 @@ def test_legitimate_governance_prose_is_not_flagged(tmp_path: Path, statement: s
     assert _false_cap15_claims((path,)) == ()
 
 
-def test_untracked_markdown_is_scanned_too() -> None:
+@pytest.fixture
+def _untracked_probe() -> Iterator[Path]:
+    """Write the untracked probe, yield it, and remove it no matter what follows.
+
+    Its own first line says what it is, so a crash between this write and the
+    ``finally`` below leaves something a person can identify and delete on sight
+    rather than an unexplained false conclusion sitting in the tree.
+    """
+    _UNTRACKED_PROBE_PATH.write_text(
+        "TEST PROBE -- delete this file if you find it. It is written and removed by "
+        "test_published_claims.py::test_untracked_markdown_is_scanned_too and is not "
+        "a claim about this project.\n"
+        "\n"
+        "Dense retrieval qualified and is now the default retrieval path.\n",
+        encoding="utf-8",
+    )
+    try:
+        yield _UNTRACKED_PROBE_PATH
+    finally:
+        _UNTRACKED_PROBE_PATH.unlink(missing_ok=True)
+
+
+def test_untracked_markdown_is_scanned_too(_untracked_probe: Path) -> None:
     """An unadded file is still about to be published.
 
     Enumerating only tracked files left a real gap, and it was found honestly by
@@ -441,21 +485,16 @@ def test_untracked_markdown_is_scanned_too() -> None:
 
     This writes a genuinely untracked file into the repository and asserts the
     scanner reaches it, rather than asserting that the command line contains a flag.
-    A test that checks its own arguments proves nothing.
+    A test that checks its own arguments proves nothing. The probe itself lives
+    beside the tests, not in `docs/`, so it is never a moment's worth of the false
+    published claim it exists only to exercise.
     """
-    intruder = REPO_ROOT / "docs" / "CAP-15-UNTRACKED-PROBE.md"
-    intruder.write_text(
-        "Dense retrieval qualified and is now the default retrieval path.\n",
-        encoding="utf-8",
+    findings = _false_cap15_claims(_tracked_markdown_files())
+    assert any(_untracked_probe.name in finding for finding in findings), (
+        "an untracked markdown file carrying a false conclusion was not scanned"
     )
-    try:
-        findings = _false_cap15_claims(_tracked_markdown_files())
-        assert any("CAP-15-UNTRACKED-PROBE.md" in finding for finding in findings), (
-            "an untracked markdown file carrying a false conclusion was not scanned"
-        )
-    finally:
-        intruder.unlink()
 
+    _untracked_probe.unlink()
     assert _false_cap15_claims(_tracked_markdown_files()) == ()
 
 

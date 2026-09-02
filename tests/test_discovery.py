@@ -721,6 +721,17 @@ def test_registry_partitions_mixed_history_and_rotation_is_stable(tmp_path: Path
     assert ordered == (unseen_one, unseen_two, rejected, accepted)
 
 
+def test_an_unreadable_bridge_line_is_reported_not_skipped(tmp_path: Path) -> None:
+    """A line nobody can parse is not an absent line."""
+    path = tmp_path / "bridges.jsonl"
+    registry = BridgeRegistry(path)
+    registry.record(_card("A", cluster="cluster-a"))
+    with path.open("ab") as handle:
+        handle.write(b"{not json\n")
+    with pytest.raises(DiscoveryError, match="bridge line 2 is not readable"):
+        registry.cards()
+
+
 def test_grounded_passes_when_resolved_span_is_exact(tmp_path: Path) -> None:
     store = SnapshotStore(tmp_path / "snapshots")
     snapshot = store.put(SOURCE_A, b"quoted words")
@@ -780,6 +791,13 @@ def test_grounded_missing_snapshot_is_unknown_not_fail(tmp_path: Path) -> None:
         ("splits_character", "é".encode(), Locator(0, 1), "é", GateOutcome.FAIL),
         ("splits_grapheme", "e\u0301".encode(), Locator(0, 1), "e", GateOutcome.FAIL),
         ("not_text", b"\xff", Locator(0, 1), "x", GateOutcome.UNKNOWN),
+        (
+            "not_text_only_in_tail",
+            "quoted words".encode("utf-8") + b"\xff\xfe tail",
+            Locator(0, 12),
+            "quoted words",
+            GateOutcome.UNKNOWN,
+        ),
     ),
 )
 def test_grounded_maps_each_read_failure_to_its_evidence_outcome(

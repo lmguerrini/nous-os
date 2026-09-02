@@ -38,10 +38,10 @@ from enum import Enum
 from pathlib import Path
 
 from nous_os.identity import (
-    ASSERTION_PREFIX,
-    SOURCE_PREFIX,
+    ASSERTION_PREFIX, SOURCE_PREFIX,
     canonical_bytes,
     digest_bytes,
+    file_is_present,
     require_id,
 )
 from nous_os.snapshots import SnapshotStore
@@ -174,7 +174,7 @@ class Ledger:
         Order comes from the file, not from the filesystem: the ledger is the
         authority on sequence, and a directory listing is not a sequence.
         """
-        if not self._path.is_file():
+        if not file_is_present(self._path):
             return ()
         found = []
         for number, line in enumerate(

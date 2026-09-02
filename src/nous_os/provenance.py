@@ -171,10 +171,22 @@ def read_span(store: SnapshotStore, citation: Citation) -> str:
             f"range [{start}, {end}) does not begin and end on character boundaries"
         ) from error
 
+    # The cited range decoded, but a byte anywhere else in the snapshot can
+    # still be invalid UTF-8 -- a text document with a corrupted or binary
+    # tail is not text, even where this one citation happens to land cleanly.
+    # Decoded here purely as a check: the result is not the range this
+    # function returns, so nothing keeps it.
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SnapshotNotText(
+            f"snapshot {citation.snapshot_digest} is not UTF-8 text, so no "
+            "byte range in it names a span"
+        ) from error
+
     # Codepoint boundaries are not character boundaries. A range may decode
     # cleanly and still cut a written character in half, when what follows is a
     # combining mark that belongs to the last codepoint inside the range.
-    whole = data.decode("utf-8")
     if text and unicodedata.combining(text[0]):
         raise LocatorSplitsGrapheme(
             f"range [{start}, {end}) begins on a combining mark, part-way "
@@ -191,7 +203,6 @@ def read_span(store: SnapshotStore, citation: Citation) -> str:
                 f"range [{start}, {end}) ends immediately before a combining "
                 "mark, cutting a written character in half"
             )
-    del whole
     return text
 
 

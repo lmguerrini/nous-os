@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from nous_os.identity import SOURCE_PREFIX, digest_bytes, require_id
+from nous_os.identity import SOURCE_PREFIX, digest_bytes, directory_is_present, file_is_present, require_id
 
 #: Extension for stored snapshot bodies. The stem is the digest.
 SNAPSHOT_SUFFIX = ".snapshot"
@@ -97,7 +97,7 @@ class SnapshotStore:
     def get(self, source_id: str, digest: str) -> Snapshot:
         """Resolve one snapshot, verifying its bytes still hash to its name."""
         path = self._path(source_id, digest)
-        if not path.is_file():
+        if not file_is_present(path):
             raise SnapshotNotFound(f"no snapshot {digest} for {source_id}")
         data = path.read_bytes()
         actual = digest_bytes(data)
@@ -115,7 +115,7 @@ class SnapshotStore:
         presented as a fact.
         """
         directory = self._dir(source_id)
-        if not directory.is_dir():
+        if not directory_is_present(directory):
             return ()
         return tuple(
             sorted(
@@ -126,4 +126,4 @@ class SnapshotStore:
         )
 
     def has(self, source_id: str, digest: str) -> bool:
-        return self._path(source_id, digest).is_file()
+        return file_is_present(self._path(source_id, digest))

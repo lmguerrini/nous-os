@@ -32,7 +32,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from nous_os.identity import SOURCE_PREFIX, digest_bytes, require_id
+from nous_os.identity import SOURCE_PREFIX, digest_bytes, file_is_present, require_id
 from nous_os.ledger import Ledger
 from nous_os.snapshots import SnapshotNotFound, SnapshotStore
 
@@ -108,7 +108,7 @@ def _open_for_reading(path: Path) -> sqlite3.Connection:
     documented recovery path into a permanent failure after one stray read.
     """
     path = Path(path)
-    if not path.is_file():
+    if not file_is_present(path):
         raise DerivedStoreError(f"no derived store at {path.name}; build it first")
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 

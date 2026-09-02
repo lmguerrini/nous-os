@@ -26,7 +26,7 @@ from types import MappingProxyType
 from typing import Mapping, Sequence
 
 from nous_os.adjudication import RejectionMemory
-from nous_os.identity import ASSERTION_PREFIX, canonical_bytes, require_id
+from nous_os.identity import ASSERTION_PREFIX, canonical_bytes, file_is_present, require_id
 from nous_os.operations import read_span, search
 from nous_os.provenance import (
     Citation,
@@ -365,7 +365,7 @@ class BridgeRegistry:
 
     def cards(self) -> tuple[BridgeCard, ...]:
         """Return every card in file order, without compacting or filtering history."""
-        if not self._path.is_file():
+        if not file_is_present(self._path):
             return ()
         found: list[BridgeCard] = []
         for number, line in enumerate(self._path.read_text(encoding="utf-8").splitlines(), 1):

@@ -468,10 +468,10 @@ def test_static_allowlist_and_runtime_counter_are_independent(
             pass
         return calls > before
 
-    # Two direct assertions, not a clause-necessity harness. These are not the
+    # Two direct assertions, not a clause-necessity rig. These are not the
     # clauses of any one guard: they are two SEPARATE oracles, and the property
     # worth stating is that each sees what the other cannot. Dressing that as a
-    # clause harness would claim a structure this check does not have.
+    # per-clause rig would claim a structure this check does not have.
     assert _constructs_decision(decision_probes.PartialDecisionMint.make) is False
     assert runtime_construction(decision_probes.PartialDecisionMint.make) is True
     assert _constructs_decision(decision_probes.direct_constructor) is True
@@ -872,6 +872,23 @@ def test_rejection_memory_is_append_only_and_non_vacuous(tmp_path: Path) -> None
         memory.is_rejected(1)  # type: ignore[arg-type]
 
 
+def test_an_unreadable_rejection_line_is_reported_not_skipped(tmp_path: Path) -> None:
+    """A line nobody can parse is not an absent line."""
+    path = tmp_path / "rejections.jsonl"
+    memory = RejectionMemory(path)
+    memory.record(
+        cluster_id="cluster-a",
+        failed_gate="citation",
+        reason="the cited bytes changed",
+        round_number=1,
+        rejected_at=_WHEN,
+    )
+    with path.open("ab") as handle:
+        handle.write(b"{not json\n")
+    with pytest.raises(AdjudicationError, match="rejection line 2 is not readable"):
+        memory.rejections()
+
+
 def _contains_promotion_value(value: object) -> bool:
     """Find a promotion-shaped value through the plain containers memory may return."""
     forbidden = (HumanDecision, AttributedKey, Proposal, Assertion)
@@ -903,6 +920,17 @@ def test_agent_memory_returns_only_plain_strings_and_no_promotion_value(tmp_path
             return _decision()
 
     assert _contains_promotion_value(ProbeMemory().notes())
+
+
+def test_an_unreadable_agent_memory_line_is_reported_not_skipped(tmp_path: Path) -> None:
+    """A line nobody can parse is not an absent line."""
+    path = tmp_path / "agent-memory.jsonl"
+    memory = AgentMemory(path)
+    memory.remember(session="session-1", note="follow up later", at=_WHEN)
+    with path.open("ab") as handle:
+        handle.write(b"{not json\n")
+    with pytest.raises(AdjudicationError, match="agent-memory line 2 is not readable"):
+        memory.notes()
 
 
 def _allows_round_number(
