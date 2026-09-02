@@ -146,7 +146,7 @@ test("temporal playback evidence: seven falsification tests, each with a negativ
       derivations[id] = { through: placement.through, causes: placement.causes, at: placement.at };
     }
   }
-  expect(classCounts).toEqual({ explicit: 8, derived: 13, unknown: 1 });
+  expect(classCounts).toEqual({ explicit: 9, derived: 12, unknown: 1 });
 
   const pageModule = await bundlePageModule();
   await installPage(page, pageModule);

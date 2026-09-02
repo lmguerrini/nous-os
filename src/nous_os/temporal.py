@@ -326,15 +326,29 @@ class TemporalIndex:
                         key=lambda assertion: (_content_digest(assertion), assertion.id),
                     )
                 )
-                member_positions = set(positions)
-                relations = [
-                    relation
-                    for left_index, right_index, relation in edges
-                    if left_index in member_positions and right_index in member_positions
+                # `edges` answers "are these positions connected?" and, for that
+                # question alone, correctly omits DISJOINT pairs -- a disjoint pair
+                # cannot connect two positions. The group's reported overlap answers
+                # a different question, "what do the bounds establish about every
+                # pair in this group?", and that quantifier's domain must be every
+                # member pair, DISJOINT ones included, or a disjoint counter-example
+                # is deleted before `all(...)` ever sees it. So this is computed
+                # fresh over `positions`, not filtered from `edges`.
+                sorted_positions = sorted(positions)
+                pair_relations = [
+                    _interval_overlap(assertions[left_index], assertions[right_index])
+                    for index, left_index in enumerate(sorted_positions)
+                    for right_index in sorted_positions[index + 1 :]
+                    if _content_digest(assertions[left_index])
+                    != _content_digest(assertions[right_index])
                 ]
+                # An empty domain here means every pair in the group shared a
+                # content digest; that was never a disagreement, so, exactly as
+                # before, it falls to UNDETERMINED rather than a vacuous OVERLAPS.
                 group_overlap = (
                     Overlap.OVERLAPS
-                    if relations and all(relation is Overlap.OVERLAPS for relation in relations)
+                    if pair_relations
+                    and all(relation is Overlap.OVERLAPS for relation in pair_relations)
                     else Overlap.UNDETERMINED
                 )
                 found.append(Conflict(subject, members, group_overlap))

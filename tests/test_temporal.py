@@ -422,7 +422,10 @@ def test_conflicts_keep_both_distinct_cited_sides_and_report_undetermined_overla
 
 def test_conflict_count_and_maximal_group_are_pinned_by_the_hand_built_edges() -> None:
     # Reading this set gives edges 90--91 and 91--92; 93 is disjoint from all,
-    # so transitive closure yields exactly one group of three.
+    # so transitive closure yields exactly one group of three. 90 and 92 only
+    # abut (90 ends exactly where 92 starts) and so are themselves disjoint,
+    # which is why the group's reported overlap is UNDETERMINED even though
+    # every one of its three members is connected into the same group.
     first = _assertion(
         90,
         recorded_at=BASE + timedelta(days=2),
@@ -465,6 +468,49 @@ def test_conflict_count_and_maximal_group_are_pinned_by_the_hand_built_edges() -
         "32ad6d1725ae54ff53d0ddcb13234e7398ff2caf4214ff531ec393004c9dd306",
         "d982677fda1350f84966a0cc103f977f7b7a630d69fa47c8cbbe794631e6b7a7",
     )
+    assert conflicts[0].overlap is Overlap.UNDETERMINED
+
+
+def test_conflicts_report_undetermined_when_a_connected_group_holds_a_disjoint_pair() -> None:
+    # A valid [2020, 2022), B valid [2021, 2024), C valid [2023, 2025). A--B
+    # overlaps and B--C overlaps, so B connects all three into one group; A--C
+    # is the disjoint pair, and the group's bounds do not establish OVERLAPS
+    # for it. Before the fix, A--C was deleted from the quantifier's domain
+    # because `edges` only carries connectivity, not disagreement content.
+    claim_a = _assertion(
+        150, valid_from=datetime(2020, 1, 1, tzinfo=timezone.utc), valid_to=datetime(2022, 1, 1, tzinfo=timezone.utc)
+    )
+    claim_b = _assertion(
+        151, valid_from=datetime(2021, 1, 1, tzinfo=timezone.utc), valid_to=datetime(2024, 1, 1, tzinfo=timezone.utc)
+    )
+    claim_c = _assertion(
+        152, valid_from=datetime(2023, 1, 1, tzinfo=timezone.utc), valid_to=datetime(2025, 1, 1, tzinfo=timezone.utc)
+    )
+    index = _index(ClaimKey("chain"), (claim_a, claim_b, claim_c))
+    conflicts = index.conflicts()
+    assert len(conflicts) == 1
+    assert {member.id for member in conflicts[0].members} == {claim_a.id, claim_b.id, claim_c.id}
+    assert conflicts[0].overlap is Overlap.UNDETERMINED
+
+
+def test_conflicts_report_overlaps_only_when_every_member_pair_overlaps() -> None:
+    # The control for the fix above: a group where A--B, B--C, and A--C are
+    # each genuinely OVERLAPS must still report OVERLAPS. The repair widens
+    # the quantifier's domain to every member pair; it must not turn every
+    # group UNDETERMINED regardless of what the bounds establish.
+    claim_a = _assertion(
+        153, valid_from=datetime(2020, 1, 1, tzinfo=timezone.utc), valid_to=datetime(2025, 1, 1, tzinfo=timezone.utc)
+    )
+    claim_b = _assertion(
+        154, valid_from=datetime(2021, 1, 1, tzinfo=timezone.utc), valid_to=datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
+    claim_c = _assertion(
+        155, valid_from=datetime(2022, 1, 1, tzinfo=timezone.utc), valid_to=datetime(2027, 1, 1, tzinfo=timezone.utc)
+    )
+    index = _index(ClaimKey("clique"), (claim_a, claim_b, claim_c))
+    conflicts = index.conflicts()
+    assert len(conflicts) == 1
+    assert {member.id for member in conflicts[0].members} == {claim_a.id, claim_b.id, claim_c.id}
     assert conflicts[0].overlap is Overlap.OVERLAPS
 
 
