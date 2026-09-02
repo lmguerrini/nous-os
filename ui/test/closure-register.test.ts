@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { currentTrackedTreeState } from "#test/tracked-tree.ts";
@@ -74,7 +75,13 @@ const ARTIFACT_PATHS = {
 //
 // Unset is a THIRD ANSWER, not a pass and not a silent skip: a criterion whose discharge lives in
 // the governance store reports NOT_RESOLVABLE, which the register counts as undischarged.
-const GOVERNANCE_ROOT = process.env["NOUS_GOVERNANCE_ROOT"] ?? null;
+// Read at every use, never captured once at module load. A module-level constant cannot be
+// overridden by a test, and the negative control below MUST be able to point this at a directory it
+// controls -- otherwise the control silently stops exercising the property it exists to prove and
+// reports the unset-root refusal instead. That is exactly the defect an independent audit found here.
+function governanceRoot(): string | null {
+  return process.env["NOUS_GOVERNANCE_ROOT"] ?? null;
+}
 
 // One neutral filename at the root the caller supplies. It maps each opaque record id in the
 // register to the real file that holds that judgement, so the record NAMES stay private too — the
@@ -295,6 +302,11 @@ test("the closure register refuses an incomplete governance declaration", async 
 });
 
 test("the closure register refuses a governance record that does not exist", async () => {
+  // The control supplies its OWN root, so it exercises the absent-record path rather than the
+  // unset-root path. Without this the control passes from a clean clone while proving nothing --
+  // the refusal it matched would be "no governance root is configured", not "the record is absent".
+  const previous = process.env["NOUS_GOVERNANCE_ROOT"];
+  process.env["NOUS_GOVERNANCE_ROOT"] = await mkdtemp(join(tmpdir(), "nous-governance-control-"));
   const output = await failingOutput(async () => {
     await resolveOrThrow({
       id: "control",
@@ -308,6 +320,11 @@ test("the closure register refuses a governance record that does not exist", asy
       },
     });
   });
+  if (previous === undefined) {
+    delete process.env["NOUS_GOVERNANCE_ROOT"];
+  } else {
+    process.env["NOUS_GOVERNANCE_ROOT"] = previous;
+  }
   assert.match(output, /governance record .* is absent or empty at the governance root/);
   console.info(`closure-register missing-governance-record control: ${output}`);
 });
@@ -424,10 +441,11 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
   // No root configured is NOT_RESOLVABLE — reported, never counted as discharged. This is the one
   // dependency this suite cannot satisfy from a public clone, and it says so in its own words
   // rather than resolving against something nobody wrote.
-  if (GOVERNANCE_ROOT === null) {
+  const root = governanceRoot();
+  if (root === null) {
     throw new Error(`${criterion.id} governance record ${source.record} is NOT_RESOLVABLE: no governance root is configured (set NOUS_GOVERNANCE_ROOT)`);
   }
-  const mapped = await readFile(join(GOVERNANCE_ROOT, GOVERNANCE_RECORD_MAP), "utf8")
+  const mapped = await readFile(join(root, GOVERNANCE_RECORD_MAP), "utf8")
     .then((text) => {
       const parsed: unknown = JSON.parse(text);
       const value = isRecord(parsed) ? parsed[source.record] : undefined;
@@ -439,7 +457,7 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
   const present =
     mapped === null
       ? false
-      : await readFile(join(GOVERNANCE_ROOT, mapped), "utf8")
+      : await readFile(join(root, mapped), "utf8")
           .then((text) => text.trim().length > 0)
           .catch(() => false);
   if (!present) {

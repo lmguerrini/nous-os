@@ -44,7 +44,10 @@ resulting graph, with three renderers that draw them.
   promote anything into canon** — promotion is a separate human act.
 - Not a retrieval breakthrough. `docs/CAP-15-RETRIEVAL.md` reports what was
   actually measured, including where the numbers are poor and where a planned
-  comparison could not be run at all.
+  comparison could not be run at all. That measurement was taken over a private
+  corpus that is **not** in this repository: what ships is the aggregate result
+  and opaque cell identifiers, never a document, a title, a path or a quotation
+  from it.
 - Not a general-purpose graph visualisation library. The visual layer draws this
   project's own projections.
 
@@ -62,7 +65,9 @@ matter of `.gitignore`:
 - The derived index is rebuildable from the canonical files and is never
   committed; `.gitignore` refuses `*.db`, `*.sqlite` and `*.sqlite3`.
 - A test in the suite refuses any absolute machine path, personal identifier or
-  credential in tracked file content or names, and it runs on every commit.
+  credential in tracked file content or names. It runs with `pytest`, like every
+  other test here — this repository ships no commit hook and no CI configuration,
+  so nothing runs it for you.
 
 If you point NousOS at a private corpus, that corpus stays where you put it. The
 only thing this repository holds is the software that reads it.
@@ -86,7 +91,7 @@ only thing this repository holds is the software that reads it.
 | 2D renderer (Sigma, WebGL) | present |
 | 3D renderer (Three.js / React Three Fiber), orthographic and perspective | present |
 | Controlled comparison of the three renderers | present, `docs/RENDERER-COMPARISON.md` |
-| Semantic retrieval, measured against a frozen fixture set | present, opt-in, `docs/CAP-15-RETRIEVAL.md` |
+| Semantic retrieval, measured and reported honestly | present, opt-in, `docs/CAP-15-RETRIEVAL.md` |
 | Vocabulary: the two registers of names, and the map between them | present |
 | Command-line and stdio JSON-RPC interfaces | present, `docs/INTEROPERABILITY.md` |
 
@@ -341,7 +346,10 @@ docs/
 ├── INTEROPERABILITY.md        the Core contract and its two transports
 ├── RENDERER-COMPARISON.md     three renderers over one semantic state
 ├── CAP-14-COMPARISON.md       the 2D/3D controlled comparison, generated from evidence
-└── CAP-15-RETRIEVAL.md        the retrieval measurement, including what did not run
+├── CAP-15-RETRIEVAL.md        the retrieval measurement, including what did not run
+└── cap15-retrieval-artifact.json
+                               the artifact that measurement is generated from, so the
+                               document can be checked against it rather than trusted
 fixtures/
 └── synthetic/
     ├── MANIFEST.jsonl    path and content digest per document
