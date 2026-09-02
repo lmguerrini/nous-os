@@ -1,0 +1,90 @@
+# What a clean clone can prove, and nothing more.
+#
+# This workflow deliberately does not run the browser suites, the GPU evidence,
+# or the semantic-retrieval tests. Each of those needs something a public clone
+# cannot carry — a real GPU adapter, generated evidence under `ui/dist/`, human
+# judgement records held outside this repository, or ONNX checkpoints that must
+# not be downloaded by a machine. Running them here in order to display a skip
+# would make a green badge mean less than it does.
+#
+# README.md states exactly what this proves and what it does not.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clean-clone:
+    name: clean clone, Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The declared floor and a current release. The floor is the one that
+        # matters: `requires-python = ">=3.11"` is a claim, and this is what
+        # makes it a measured one.
+        python: ["3.11", "3.13"]
+    steps:
+      # The full history, and the real head rather than the synthetic merge
+      # commit a pull request would otherwise be checked out at. The commit
+      # contract is asserted over every commit, so a shallow clone cannot answer
+      # the question and an invented merge commit is not one of the answers.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install the package with no extras, and import it
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+          cd "$(mktemp -d)" && python -c "import nous_os; print(nous_os.__name__, 'imports with no third-party runtime dependency')"
+
+      # The optional extra, installed from the pins in pyproject.toml rather
+      # than from a second copy of them here. Three tests walk every module in
+      # the package, and `nous_os.semantic` imports NumPy at module level, so
+      # without the extra those three fail for a reason unrelated to the change.
+      - name: Install the test tools and the optional semantic extra
+        run: python -m pip install pytest ".[semantic]"
+
+      - name: Install the TypeScript toolchain
+        run: npm --prefix ui ci
+
+      # The two excluded modules need the two ONNX checkpoints `semantic.py`
+      # names to be already present in a local Hugging Face cache. Resolution
+      # passes `local_files_only`, so nothing is downloaded and nothing can be:
+      # obtaining weights is a deliberate human act, not a CI step. They are
+      # excluded by name, with the reason stated, rather than made to look green.
+      - name: Python suite
+        run: |
+          python -m pytest tests/ -q \
+            --ignore=tests/test_semantic.py \
+            --ignore=tests/test_semantic_controls.py
+
+      - name: TypeScript typecheck
+        run: npm --prefix ui run typecheck
+
+      # Also asserted by the Python suite, and repeated here so a failure names
+      # itself in the job list rather than inside a test report.
+      - name: Commit-message contract, over the whole history
+        run: python tools/commit_msg_contract.py --range HEAD
