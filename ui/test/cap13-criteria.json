@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "capability": "CAP-13",
-  "rule": "Every criterion resolves to a machine-readable status. A criterion whose status cannot be resolved from an artifact must declare a human record instead, and that declaration is itself required \u2014 silence is not a status.",
+  "rule": "Every criterion resolves to a machine-readable status. A criterion whose status cannot be resolved from an artifact must declare a human record instead, and that declaration is itself required — silence is not a status.",
   "criteria": [
     {
       "id": "B1",
@@ -144,7 +144,7 @@
       "source": {
         "kind": "unitTest",
         "record": "docs/RENDERER-COMPARISON.md",
-        "why": "The row previously claimed the document's figures were 'bound by the artifact-derivability check'. No such check existed \u2014 nothing in the tree read the document at all, which a closure auditor found and which is why three drafts went stale unnoticed. The consumer now exists: it refuses any transcribed timing figure, checks the scale-wall claim against performance.json, checks the attribution of that wall to shared layout against layout-scale.json, and re-runs the document's own published command to confirm the engine size it states. Each obligation has a demonstrated negative control.",
+        "why": "The row previously claimed the document's figures were 'bound by the artifact-derivability check'. No such check existed — nothing in the tree read the document at all, which a reviewer found and which is why three drafts went stale unnoticed. The consumer now exists: it refuses any transcribed timing figure, checks the scale-wall claim against performance.json, checks the attribution of that wall to shared layout against layout-scale.json, and re-runs the document's own published command to confirm the engine size it states. Each obligation has a demonstrated negative control.",
         "file": "test/comparison-document.test.ts",
         "name": "the comparison document transcribes no timing figure"
       }
@@ -160,13 +160,13 @@
     },
     {
       "id": "B17",
-      "claim": "coordinator aesthetic judgement against the governed references",
+      "claim": "human aesthetic judgement against the governed references",
       "source": {
         "kind": "humanRecord",
         "location": "governance",
         "record": "GR-1",
         "why": "judgement against generated images is the one criterion this capability proved a machine cannot stand in for: a metric improved fourteenfold while the picture regressed to the identity the engine exists to replace",
-        "outsideRepository": "deliberately, under this project's public/private boundary. What this repository must not name in a tracked byte -- and does not -- is the resolved location: no absolute path, no home directory, and no username appear anywhere tracked, because the default governance root is computed from homedir() at runtime in test/closure-register.test.ts rather than written as a literal. What IS present in a tracked byte, in that same default, is the governance store's relative layout (.local/share/governance-store/projects/<project-id>) and this project's id (project); that is a structural convention name, not a location or any private content, so naming it does not cross the boundary. The DECLARATION verified here is therefore narrower than 'this path is never named': it is that no machine-specific location is named, and the record itself is verified by the governance gate"
+        "outsideRepository": "deliberately, under this project's public/private boundary. This repository names NOTHING about the governance store -- not its location, not its layout, and not the record's own filename. The register carries an opaque record id; the caller supplies the store's root through the NOUS_GOVERNANCE_ROOT environment variable, and the store itself holds the map from id to file. With no root configured the criterion reports NOT_RESOLVABLE, which the register counts as undischarged rather than as a pass. The DECLARATION verified here is therefore that a named human judgement exists and was discharged, without publishing what it is called or where it lives."
       }
     },
     {
@@ -228,12 +228,12 @@
     },
     {
       "id": "WS-E",
-      "claim": "closure bar E: coordinator art-direction judgement is recorded against the governed references",
+      "claim": "closure bar E: human art-direction judgement is recorded against the governed references",
       "source": {
         "kind": "humanRecord",
         "location": "governance",
         "record": "GR-2",
-        "why": "bar E is explicitly a coordinator art-direction judgement over the completed visual evidence, so replacing it with a repository-authored metric would change the criterion",
+        "why": "bar E is explicitly a human art-direction judgement over the completed visual evidence, so replacing it with a repository-authored metric would change the criterion",
         "outsideRepository": "the judgement belongs to the governance record under the project's public/private boundary; this declaration names the record and the governance gate verifies it"
       }
     },
@@ -245,7 +245,7 @@
         "location": "governance",
         "record": "GR-3",
         "why": "the transfer evidence separates MEASURED findings from HYPOTHESIS and judges what does and does not generalize to a neighbouring system, which is a judgement call this capability's own tests cannot make",
-        "outsideRepository": "the cross-project transfer evidence is governance-held under the project's public/private boundary alongside this capability's other judgement records; the governance gate verifies the named record exists"
+        "outsideRepository": "the transfer evidence is governance-held under the project's public/private boundary alongside this capability's other judgement records; the governance gate verifies the named record exists"
       }
     },
     {
@@ -263,7 +263,10 @@
       "source": {
         "kind": "artifactFlag",
         "artifact": "scaleTopology",
-        "path": ["summary", "passing"],
+        "path": [
+          "summary",
+          "passing"
+        ],
         "note": "scale-topology-manifest.json and static-controlled-manifest.json are both written by one `npm run test:scale-topology` command, only after every enumerated assertion above -- the four policies' containment and neighbourhood subset invariants, the three refusal controls, the holographic context bundle, the frame-containment invariant, and the negative control -- has thrown or resolved true. summary.passing is the only boolean either manifest exposes, and it is reached exclusively by that path; a failure anywhere upstream aborts the test before either file is written."
       }
     },
@@ -273,7 +276,10 @@
       "source": {
         "kind": "artifactFlag",
         "artifact": "motionGrammar",
-        "path": ["summary", "passing"],
+        "path": [
+          "summary",
+          "passing"
+        ],
         "note": "motion-m3-manifest.json and motion-ablation-manifest.json are both written by one `npm run test:motion` command. m3's own sections construct governedIdentity, frameContainmentInvariant, allByteIdentical, reducedMotionCollapsesToOmittedPhase and both restored negative controls (pixel-mismatch, resting-completeness) before summary.passing is set; a failure anywhere upstream throws and the file is never written."
       }
     },
@@ -283,7 +289,10 @@
       "source": {
         "kind": "artifactFlag",
         "artifact": "motionBlind",
-        "path": ["summary", "passing"],
+        "path": [
+          "summary",
+          "passing"
+        ],
         "note": "motion-m1-manifest.json (noPolicyTokenInPaths) and motion-m2-manifest.json (noLabelInPaths) each name their own leakage control, but summary.passing is the one field name common to both files this single artifactFlag path can require; it is reached only after those named flags, and M1's framesGenuinelyDiffer control, have already asserted true. Both are written by the same `npm run test:motion` command as B24."
       }
     },
@@ -304,7 +313,10 @@
       "source": {
         "kind": "artifactFlag",
         "artifact": "temporal",
-        "path": ["summary", "passing"],
+        "path": [
+          "summary",
+          "passing"
+        ],
         "note": "temporal-manifest.json carries no per-test passed flag: all seven falsification tests (wrong clock, derived-as-fact, unknown silently dated, invented elements, motion changing membership, resting state wrong for its instant, exit not restoring the union), their seven negative controls, and the class-partition check are asserted inline and throw before the manifest is written, so summary.passing is the artifact's only boolean surface and is reached only once every one of them holds."
       }
     },
@@ -314,7 +326,10 @@
       "source": {
         "kind": "artifactFlag",
         "artifact": "opening",
-        "path": ["off", "matchesFoundation"],
+        "path": [
+          "off",
+          "matchesFoundation"
+        ],
         "note": "opening-manifest.json's off.matchesFoundation compares the off capture's own decoded-pixel hash against the foundation capture's, both produced in the same run."
       }
     },
@@ -324,7 +339,10 @@
       "source": {
         "kind": "artifactFlag",
         "artifact": "opening",
-        "path": ["reducedMotion", "matchesFoundation"],
+        "path": [
+          "reducedMotion",
+          "matchesFoundation"
+        ],
         "note": "reducedMotion.resolvedPolicy records the configured opening policy collapsing to off under reducedMotion, and matchesFoundation compares that capture's decoded-pixel hash against the foundation's."
       }
     },
@@ -334,7 +352,10 @@
       "source": {
         "kind": "artifactFlag",
         "artifact": "opening",
-        "path": ["arrival", "matchesFoundation"],
+        "path": [
+          "arrival",
+          "matchesFoundation"
+        ],
         "note": "opening.seed and opening.timeline record the deterministic basis (real history, never hardcoded) the played frames were derived from; arrival.matchesFoundation compares the final played frame's decoded-pixel hash against the accepted static foundation's."
       }
     },
@@ -344,7 +365,10 @@
       "source": {
         "kind": "artifactFlag",
         "artifact": "opening",
-        "path": ["determinism", "repeatedFrameListIdentical"],
+        "path": [
+          "determinism",
+          "repeatedFrameListIdentical"
+        ],
         "note": "determinism.repeatedFrameListIdentical is computed by generating the timeline twice from the same recorded seed and comparing the resulting frame lists, not merely asserting the seed value is present."
       }
     },
@@ -410,8 +434,8 @@
         "kind": "humanRecord",
         "location": "governance",
         "record": "GR-5",
-        "why": "human aesthetic acceptance of rendered motion is a judgement no machine check in this tree can make or fake. The record itself is explicit machine-side coordinator judgement, distinct from the human gate, and states in its own words that HUMAN_VISUAL_GATE for motion remains PENDING.",
-        "outsideRepository": "the coordinator's motion judgement, and the human gate status it names, are governance-held under the project's public/private boundary alongside this capability's other judgement records; the governance gate verifies the named record exists"
+        "why": "human aesthetic acceptance of rendered motion is a judgement no machine check in this tree can make or fake. The record itself is explicit machine-side reviewer judgement, distinct from the human gate, and states in its own words that HUMAN_VISUAL_GATE for motion remains PENDING.",
+        "outsideRepository": "the reviewer's motion judgement, and the human gate status it names, are governance-held under the project's public/private boundary alongside this capability's other judgement records; the governance gate verifies the named record exists"
       },
       "note": "RESOLVED here means the PENDING declaration is verifiably present and named, not that the gate has been granted. Nothing in this repository may report human sign-off on motion, and this criterion is part of what keeps that true."
     },

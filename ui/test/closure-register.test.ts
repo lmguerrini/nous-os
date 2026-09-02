@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { currentTrackedTreeState } from "#test/tracked-tree.ts";
@@ -12,7 +11,7 @@ import type { TrackedTreeState } from "#test/tracked-tree.ts";
  *
  * The capability's own criterion B16 requires that every criterion map to a named runnable command and
  * a machine-readable status, and that a green summary cannot hide an undischarged one. That was
- * recorded in a prose register, which a closure auditor correctly reported as unmet: prose has no
+ * recorded in a prose register, which a reviewer correctly reported as unmet: prose has no
  * status a machine can read, so nothing could tell discharged from undischarged.
  *
  * Two criteria genuinely cannot be resolved by a machine, and they say so rather than being quietly
@@ -63,13 +62,24 @@ const ARTIFACT_PATHS = {
   opening: "dist/opening/opening-manifest.json",
 } as const;
 
-// The governance store lives OUTSIDE this repository and its location is machine-specific, so it
-// cannot be assembled from repository-relative segments the way the fixture paths above are. It is
-// named through an environment variable with a documented default; the default is computed from
-// `homedir()` rather than written as a literal, so no absolute home-directory path is a tracked byte.
-const GOVERNANCE_ROOT =
-  process.env["NOUS_GOVERNANCE_ROOT"] ??
-  join(homedir(), ".local", "share", "governance-store", "projects", "project");
+// The governance store lives OUTSIDE this repository, and NOTHING about it is tracked here: not its
+// location, not its layout, and not the names of the records it holds. It is supplied entirely by
+// the caller through one environment variable, and there is NO default.
+//
+// An earlier version composed a default from `homedir()` and named the store's relative layout and
+// this project's id in a tracked byte, on the reasoning that a structural convention name is not a
+// location. That reasoning held under the older standard — no absolute path was ever tracked — and
+// it does not hold under this one: the repository and its whole history must be public-safe by
+// construction, and a store's layout is private whether or not it resolves to a machine.
+//
+// Unset is a THIRD ANSWER, not a pass and not a silent skip: a criterion whose discharge lives in
+// the governance store reports NOT_RESOLVABLE, which the register counts as undischarged.
+const GOVERNANCE_ROOT = process.env["NOUS_GOVERNANCE_ROOT"] ?? null;
+
+// One neutral filename at the root the caller supplies. It maps each opaque record id in the
+// register to the real file that holds that judgement, so the record NAMES stay private too — the
+// register can say a human judgement exists and is discharged without publishing what it is called.
+const GOVERNANCE_RECORD_MAP = "closure-record-map.json";
 
 const MATRIX_VALIDATION_TARGETS = [
   {
@@ -278,7 +288,7 @@ test("the closure register refuses a repository record that does not exist", asy
 
 test("the closure register refuses an incomplete governance declaration", async () => {
   const output = await failingOutput(async () => {
-    await resolveOrThrow({ id: "control", claim: "control", source: { kind: "humanRecord", location: "governance", record: "GR-X", why: "control", outsideRepository: "" } });
+    await resolveOrThrow({ id: "control", claim: "control", source: { kind: "humanRecord", location: "governance", record: "GR-CONTROL", why: "control", outsideRepository: "" } });
   });
   assert.match(output, /without naming it, its reason, and why it is not in this repository/);
   console.info(`closure-register incomplete-declaration control: ${output}`);
@@ -292,7 +302,7 @@ test("the closure register refuses a governance record that does not exist", asy
       source: {
         kind: "humanRecord",
         location: "governance",
-        record: "GR-X",
+        record: "GR-NOT-A-REAL-RECORD",
         why: "control",
         outsideRepository: "control",
       },
@@ -402,19 +412,36 @@ async function resolveOrThrow(criterion: Criterion): Promise<void> {
     return;
   }
   // A governed record kept OUTSIDE this repository, deliberately, under the project's public/private
-  // boundary. No absolute path, home directory or username is tracked — the root is composed at
-  // runtime from homedir() — but the store's relative layout and project id ARE named above, which is
-  // the price of checking that a record exists rather than only that one was declared. What is
-  // verified here has two independent parts: that the DECLARATION is complete — the record, the reason
-  // a machine cannot resolve it, and the statement of why it lives elsewhere — and that the named
-  // record actually EXISTS at the governance root. A complete declaration naming a file nobody wrote
-  // used to resolve here; a criterion may not reach RESOLVED that way any longer.
+  // boundary. Nothing about that store is tracked here — not its location, not its layout, not the
+  // record's real name — so this resolves an OPAQUE id through a map the caller's own store holds.
+  // What is verified has two independent parts: that the DECLARATION is complete — the record, the
+  // reason a machine cannot resolve it, and the statement of why it lives elsewhere — and that the
+  // record actually EXISTS. A complete declaration naming a file nobody wrote used to resolve here;
+  // a criterion may not reach RESOLVED that way any longer.
   if (source.record.trim() === "" || source.why.trim() === "" || (source.outsideRepository ?? "").trim() === "") {
     throw new Error(`${criterion.id} declares a governance record without naming it, its reason, and why it is not in this repository`);
   }
-  const present = await readFile(join(GOVERNANCE_ROOT, source.record), "utf8")
-    .then((text) => text.trim().length > 0)
-    .catch(() => false);
+  // No root configured is NOT_RESOLVABLE — reported, never counted as discharged. This is the one
+  // dependency this suite cannot satisfy from a public clone, and it says so in its own words
+  // rather than resolving against something nobody wrote.
+  if (GOVERNANCE_ROOT === null) {
+    throw new Error(`${criterion.id} governance record ${source.record} is NOT_RESOLVABLE: no governance root is configured (set NOUS_GOVERNANCE_ROOT)`);
+  }
+  const mapped = await readFile(join(GOVERNANCE_ROOT, GOVERNANCE_RECORD_MAP), "utf8")
+    .then((text) => {
+      const parsed: unknown = JSON.parse(text);
+      const value = isRecord(parsed) ? parsed[source.record] : undefined;
+      return typeof value === "string" && value.trim() !== "" ? value : null;
+    })
+    .catch(() => null);
+  // An id the map does not carry is exactly as undischarged as a file nobody wrote, and reports the
+  // same way: the register may not reach RESOLVED because a lookup quietly returned nothing.
+  const present =
+    mapped === null
+      ? false
+      : await readFile(join(GOVERNANCE_ROOT, mapped), "utf8")
+          .then((text) => text.trim().length > 0)
+          .catch(() => false);
   if (!present) {
     throw new Error(`${criterion.id} governance record ${source.record} is absent or empty at the governance root`);
   }

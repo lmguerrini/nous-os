@@ -76,8 +76,13 @@ export type ScaleProvenanceRecord = {
 
 /**
  * This is the fixed, named list of context Holographic cannot supply because NousOS does not
- * possess it. It is reported, never simulated: no lens semantics, no symbolic
- * correspondence, and no cross-domain facet alignment exist in the governed graph to preserve.
+ * possess it. It is reported, never simulated: no lens semantics, no symbolic correspondence, and
+ * no cross-domain facet alignment exist in the governed graph to preserve.
+ *
+ * These name KINDS of context, not the systems that might provide them. A NOT-CLAIMED register
+ * has to survive being read by someone who has never heard of any particular neighbouring system,
+ * and naming one here would make the disclaimer narrower than the absence it reports: the graph
+ * holds no lens semantics from any source, not merely none from a named one.
  */
 export const HOLOGRAPHIC_UNAVAILABLE_CONTEXT = [
   "lens semantics",
