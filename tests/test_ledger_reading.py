@@ -392,3 +392,71 @@ def test_another_writer_appending_inside_the_write_window_is_not_hidden(tmp_path
     a.append(LedgerEntry(SOURCES[2], "c" * 64, None, T0 + timedelta(hours=2)))
     assert [e.source_id for e in a.entries()] == [SOURCES[0], SOURCES[1], SOURCES[2]]
     assert _spelled(a.entries()) == _spelled(Ledger(a.path).entries())
+
+
+# --- findings of the targeted re-audit of the first repair ------------------------------
+
+
+def test_a_reader_is_answered_not_refused_while_another_process_ingests(tmp_path: Path) -> None:
+    """A reader without the lock, concurrent with a writer that holds it for every ingest,
+    is waited for and answered: the parse takes the same lock. Before this, a sustained
+    writer made every unlocked read fail after three attempts."""
+    import subprocess
+    import sys
+
+    store, ledger = _fresh(tmp_path)
+    for index in range(50):
+        ingest(store, ledger, SOURCES[index % 8], UntrustedText(f"seed {index}"), T0 + timedelta(minutes=index))
+    writer = tmp_path / "writer.py"
+    writer.write_text(
+        "import sys\n"
+        "from datetime import datetime, timedelta, timezone\n"
+        "from pathlib import Path\n"
+        "from nous_os.ledger import Ledger, ingest\n"
+        "from nous_os.snapshots import SnapshotStore\n"
+        "from nous_os.untrusted import UntrustedText\n"
+        "root = Path(sys.argv[1]); store = SnapshotStore(root / 'snapshots'); ledger = Ledger(root / 'ledger.jsonl')\n"
+        "t0 = datetime(2026, 6, 1, tzinfo=timezone.utc)\n"
+        "for i in range(400):\n"
+        "    ingest(store, ledger, 'src_' + 'W' * 25 + 'ABCDEFGH'[i % 8], UntrustedText(f'w {i}'), t0 + timedelta(seconds=i))\n"
+    )
+    env = {"PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")}
+    process = subprocess.Popen([sys.executable, str(writer), str(tmp_path)], env=env)
+    try:
+        reader = Ledger(ledger.path)
+        answered = 0
+        while process.poll() is None:
+            reader.entries()  # would raise LedgerError under a sustained writer without the lock on parse
+            answered += 1
+    finally:
+        process.wait(timeout=120)
+    assert process.returncode == 0
+    assert answered > 0
+    assert _spelled(reader.entries()) == _spelled(Ledger(ledger.path).entries())
+
+
+def test_a_truncation_between_the_check_and_the_write_is_not_hidden(tmp_path: Path) -> None:
+    """The size guard is an equality: a file that lost lines between the pre-write check and
+    the write is not one line longer afterwards, and the reading is dropped."""
+    store, warm = _fresh(tmp_path)
+    for hour in range(3):
+        ingest(store, warm, SOURCES[hour], UntrustedText(f"v{hour}"), T0 + timedelta(hours=hour))
+    assert len(warm.entries()) == 3
+
+    class _TruncateAfterCheck(Ledger):
+        armed = False
+
+        def _identity_of(self, status):
+            result = Ledger._identity_of(status)
+            if self.armed:
+                self.armed = False
+                lines = self.path.read_bytes().split(b"\n")
+                self.path.write_bytes(b"\n".join(lines[:1]) + b"\n")
+            return result
+
+    shrinking = _TruncateAfterCheck(warm.path)
+    assert len(shrinking.entries()) == 3
+    shrinking.armed = True
+    shrinking.append(LedgerEntry(SOURCES[3], "d" * 64, None, T0 + timedelta(hours=3)))
+    assert [e.source_id for e in shrinking.entries()] == [SOURCES[0], SOURCES[3]]
+    assert _spelled(shrinking.entries()) == _spelled(Ledger(warm.path).entries())

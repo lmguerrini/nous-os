@@ -195,6 +195,10 @@ class _Reading:
             self._tuple = tuple(self._entries)
         return self._tuple
 
+    @property
+    def count(self) -> int:
+        return len(self._entries)
+
     def verified_chain(self, source_id: str) -> list[LedgerEntry]:
         """This source's entries, their links verified -- once, then remembered.
 
@@ -258,6 +262,7 @@ class Ledger:
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
         self._reading: _Reading | None = None
+        self._lock_depth = 0
 
     @property
     def path(self) -> Path:
@@ -291,24 +296,36 @@ class Ledger:
         """The reading for the file as it is now: the kept one, or a fresh parse.
 
         A parse is only ever answered from if the file's identity was the same
-        before and after it. A file that changed under the parse is read again;
-        a file that keeps changing is refused rather than answered from a read
-        that mixes two states -- an earlier form returned that mixed read once,
-        which an audit caught.
+        before and after it, and it is taken under the ledger's lock, so a
+        writer that holds that lock is waited for rather than raced. A file
+        that still changed under the parse -- a writer outside the lock -- is
+        read again; one that keeps changing is refused rather than answered
+        from a read that mixes two states. An earlier form returned that mixed
+        read once, which an audit caught; the form after it refused a reader
+        under any sustained writer, cooperating or not, which the next audit
+        caught.
         """
-        for _ in range(self._REREADS):
-            before = self._identity()
-            if before is None:
-                self._reading = None
-                return None
-            reading = self._reading
-            if reading is not None and reading.identity == before:
-                return reading
-            self._reading = None  # nothing kept while the file is being re-read
-            parsed = _Reading(before, self._parse())
-            if self._identity() == before:
-                self._reading = parsed
-                return parsed
+        before = self._identity()
+        if before is None:
+            self._reading = None
+            return None
+        reading = self._reading
+        if reading is not None and reading.identity == before:
+            return reading
+        with self._locked():
+            for _ in range(self._REREADS):
+                before = self._identity()
+                if before is None:
+                    self._reading = None
+                    return None
+                reading = self._reading
+                if reading is not None and reading.identity == before:
+                    return reading
+                self._reading = None  # nothing kept while the file is being re-read
+                parsed = _Reading(before, self._parse())
+                if self._identity() == before:
+                    self._reading = parsed
+                    return parsed
         raise LedgerError("the ledger changed under every attempt to read it; refusing to answer from a mixed read")
 
     def entries(self) -> tuple[LedgerEntry, ...]:
@@ -316,6 +333,11 @@ class Ledger:
 
         Order comes from the file, not from the filesystem: the ledger is the
         authority on sequence, and a directory listing is not a sequence.
+
+        Raises ``LedgerError`` for a line that cannot be read, as always, and
+        for a file that a writer outside the lock keeps changing under the
+        read (``chain`` and ``current_digest`` read through here and raise the
+        same). A writer holding the lock is waited for, not raced.
         """
         reading = self._current()
         return () if reading is None else reading.entries
@@ -379,12 +401,35 @@ class Ledger:
         and it is not a substitute for stating that this is a single-writer
         design.
         """
+        with self._locked():
+            yield
+
+    @contextlib.contextmanager
+    def _locked(self):
+        """The advisory lock itself, re-entrant within one instance.
+
+        Held by ``exclusive`` for an ingest, and by a read that has to parse the
+        file: a parse under the lock waits for a cooperating writer instead of
+        racing it, so a reader concurrent with ingests in another process is
+        answered rather than refused. Re-entrant because an ingest holds it and
+        then asks for a tip, which may parse; a second descriptor would wait on
+        the first forever.
+        """
+        if self._lock_depth:
+            self._lock_depth += 1
+            try:
+                yield
+            finally:
+                self._lock_depth -= 1
+            return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         handle = os.open(str(self._path) + ".lock", os.O_CREAT | os.O_RDWR, 0o644)
         try:
             fcntl.flock(handle, fcntl.LOCK_EX)
+            self._lock_depth = 1
             yield
         finally:
+            self._lock_depth = 0
             fcntl.flock(handle, fcntl.LOCK_UN)
             os.close(handle)
 
@@ -400,9 +445,9 @@ class Ledger:
         exactly one line longer after it, and is still the file the path names;
         otherwise it is dropped and the next question re-reads the file. Stated
         rather than hidden: a writer that rewrites this same file in place, at
-        the same size, inside the window between that check and the write,
-        without the lock ``ingest`` holds, is not seen by this instance until
-        the file's identity next changes. The ledger is a single-writer design
+        the same size, inside the window between that check and the check after
+        the write, without the lock ``ingest`` holds, is not seen by this
+        instance until the file's identity next changes. The ledger is a single-writer design
         (see ``exclusive``), and that writer is outside it.
         """
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -421,7 +466,10 @@ class Ledger:
             and after[1] == before[1] + len(line)
             and self._identity() == after
         ):
-            written = self._entry_from_line(line.decode("utf-8").rstrip("\n"), len(reading.entries) + 1)
+            # The ordinal names the entry in an error message; it is the file's
+            # line number exactly when the file has no blank lines, which a file
+            # this class wrote never has.
+            written = self._entry_from_line(line.decode("utf-8").rstrip("\n"), reading.count + 1)
             reading.extend(written, after)
         else:
             self._reading = None
