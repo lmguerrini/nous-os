@@ -853,20 +853,27 @@ def verify_source_memory(
     registry: IdentityRegistry,
     ledger: Ledger,
     store: SnapshotStore,
-    sightings: SightingLog | None = None,
+    sightings: SightingLog,
 ) -> tuple[tuple[str, str], ...]:
-    """Every way the canonical files can disagree, named. Empty means none.
+    """Every way the four canonical files can disagree, named. Empty means none.
 
     ``IDENTITY_WITHOUT_HISTORY`` -- an identity was minted and its record was
     never ingested (the process stopped in between). ``HISTORY_WITHOUT_IDENTITY``
     -- the ledger holds a source no identity names, so a re-import cannot find
     it. ``SNAPSHOT_MISSING`` -- the ledger names bytes the store does not hold.
-    ``HISTORY_WITHOUT_SIGHTING`` -- when the sighting log is given, a version
-    the ledger holds that no export is recorded as having carried (the process
-    stopped between the ledger append and the sighting append; the next run of
-    the same export records the sighting, which is the one write that run makes).
-    Each is reported with the source id; nothing here repairs anything.
+    ``HISTORY_WITHOUT_SIGHTING`` -- a version the ledger holds that no export
+    is recorded as having carried (the process stopped between the ledger
+    append and the sighting append; the next run of the same export records
+    the sighting, which is the one write that run makes). Each is reported
+    with the source id; nothing here repairs anything.
+
+    All four stores are required. An earlier form took the sighting log as an
+    option and skipped its check when the log was not given, so a three-store
+    call returned an empty answer over a question it had not asked -- the
+    reading of a blank this project refuses everywhere else.
     """
+    if type(sightings) is not SightingLog:
+        raise SourceMemoryError("verification takes the sighting log; a check nobody ran is not empty")
     problems: list[tuple[str, str]] = []
     identities = registry.held()
     known = {identity.source_id for identity in identities.values()}
@@ -877,11 +884,11 @@ def verify_source_memory(
         problems.append(("IDENTITY_WITHOUT_HISTORY", source_id))
     for source_id in sorted(with_history - known):
         problems.append(("HISTORY_WITHOUT_IDENTITY", source_id))
-    sighted = None if sightings is None else {(s.source_id, s.snapshot_digest) for s in sightings.entries()}
+    sighted = {(s.source_id, s.snapshot_digest) for s in sightings.entries()}
     for source_id in sorted(with_history):
         for entry in ledger.chain(source_id):
             if not store.has(source_id, entry.snapshot_digest):
                 problems.append(("SNAPSHOT_MISSING", f"{source_id}:{entry.snapshot_digest}"))
-            if sighted is not None and (source_id, entry.snapshot_digest) not in sighted:
+            if (source_id, entry.snapshot_digest) not in sighted:
                 problems.append(("HISTORY_WITHOUT_SIGHTING", f"{source_id}:{entry.snapshot_digest}"))
     return tuple(problems)

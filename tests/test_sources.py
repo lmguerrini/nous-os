@@ -165,7 +165,7 @@ def test_the_same_export_twice_writes_nothing(memory: _Memory) -> None:
     assert second.sightings_recorded == 0
     assert second.not_sighted == ()
     assert memory.digest() == before
-    assert verify_source_memory(memory.registry, memory.ledger, memory.store) == ()
+    assert verify_source_memory(memory.registry, memory.ledger, memory.store, memory.sightings) == ()
 
 
 def test_record_bytes_are_deterministic_across_key_order_and_processes() -> None:
@@ -350,13 +350,13 @@ def test_a_record_from_another_provider_is_refused_for_this_export(memory: _Memo
 def test_an_identity_without_history_is_reported_and_reused(memory: _Memory) -> None:
     record = _corpus()[0]
     minted = memory.registry.mint(record, T0)  # a process that died before ingesting
-    assert verify_source_memory(memory.registry, memory.ledger, memory.store) == (
+    assert verify_source_memory(memory.registry, memory.ledger, memory.store, memory.sightings) == (
         ("IDENTITY_WITHOUT_HISTORY", minted.source_id),
     )
     report = memory.ingest([record])
     assert report.identities_minted == 0 and report.ingested == 1
     assert report.results[0].source_id == minted.source_id
-    assert verify_source_memory(memory.registry, memory.ledger, memory.store) == ()
+    assert verify_source_memory(memory.registry, memory.ledger, memory.store, memory.sightings) == ()
 
 
 def test_verification_names_history_without_identity_and_missing_snapshots(memory: _Memory) -> None:
@@ -376,7 +376,7 @@ def test_verification_names_history_without_identity_and_missing_snapshots(memor
     # A snapshot removed from under the ledger.
     for path in (memory.root / "snapshots" / held.source_id).iterdir():
         path.unlink()
-    problems = verify_source_memory(memory.registry, memory.ledger, memory.store)
+    problems = verify_source_memory(memory.registry, memory.ledger, memory.store, memory.sightings)
     assert ("HISTORY_WITHOUT_IDENTITY", "src_01ARZ3NDEKTSV4RRFFQ69G5FAV") in problems
     assert any(kind == "SNAPSHOT_MISSING" and value.startswith(held.source_id) for kind, value in problems)
 
@@ -583,3 +583,11 @@ def test_verification_names_a_version_no_export_is_recorded_as_carrying(memory: 
     report = memory.ingest(_corpus(), at=T1)
     assert report.unchanged == 4 and report.sightings_recorded == 1 and report.identities_minted == 0
     assert verify_source_memory(memory.registry, memory.ledger, memory.store, memory.sightings) == ()
+
+
+def test_verification_refuses_to_answer_without_the_sighting_log(memory: _Memory) -> None:
+    """Skipping a store's check and returning an empty answer would read as "nothing
+    wrong" over a question nobody asked. The log is required, not optional."""
+    memory.ingest(_corpus())
+    with pytest.raises(SourceMemoryError):
+        verify_source_memory(memory.registry, memory.ledger, memory.store, None)  # type: ignore[arg-type]

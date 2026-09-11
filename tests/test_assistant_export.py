@@ -379,7 +379,7 @@ def test_the_whole_fixture_ingests_and_ingests_again_unchanged(tmp_path: Path) -
     assert second.unchanged == 18 and second.ingested == 0 and second.superseded == 0
     assert second.identities_minted == 0 and second.sightings_recorded == 0
     assert second.not_sighted == ()
-    assert verify_source_memory(memory.registry, memory.ledger, memory.store) == ()
+    assert verify_source_memory(memory.registry, memory.ledger, memory.store, memory.sightings) == ()
 
 
 def test_a_title_rename_is_a_revision_of_the_same_conversation(tmp_path: Path) -> None:
