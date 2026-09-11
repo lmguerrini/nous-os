@@ -520,9 +520,8 @@ current Python, with only public dependencies installed:
   generated from an artifact is checked against that artifact rather than
   against a copy of its numbers, so without the artifact the check refuses
   instead of passing vacuously.
-- **six visual acceptance criteria** that resolve against human judgement
-  records held outside this repository, discharged by a person looking at
-  rendered images. No public substitute for that judgement exists, and inventing
+- **six visual acceptance criteria** that a person discharges
+  by looking at rendered images. No public substitute for that judgement exists, and inventing
   one would make six criteria pass against something nobody judged.
 - **semantic retrieval.** See below.
 
@@ -567,6 +566,7 @@ src/
     ├── canonical.py      the assertion record
     ├── untrusted.py      the boundary around content from outside
     ├── ledger.py         append-only ingest record and version chains
+    ├── sources.py        source memory: provider records, the identity each keeps, where it was seen
     ├── derived.py        the rebuildable index over everything above
     ├── aliases.py        interchangeable ways of relating terms across languages
     ├── measure.py        the measuring instrument, and its third answer
