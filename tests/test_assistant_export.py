@@ -433,3 +433,57 @@ def test_an_appended_message_touches_exactly_two_records(tmp_path: Path) -> None
     _, report = memory.ingest(grown, at=T0 + timedelta(days=2))
     assert report.ingested == 1 and report.superseded == 1 and report.unchanged == 17
     assert report.identities_minted == 1
+
+
+# --- findings of the first independent review, each with its own oracle ------------
+
+
+def test_a_parseable_file_under_a_residue_name_is_classified_by_shape(tmp_path: Path) -> None:
+    """A name pattern set aside as archiver noise must not hide content: a second manifest
+    saved as a resource-fork name is still a second manifest, and a conversations file so
+    named still yields its records."""
+    root = _copy(tmp_path)
+    shutil.copy(root / "manifest.json", root / "._manifest.json")
+    with pytest.raises(ExportFormatError, match="2 manifest"):
+        inventory(root)
+    (root / "._manifest.json").unlink()
+    (root / "__MACOSX").mkdir()
+    (root / "talks.json").rename(root / "__MACOSX" / "._talks.json")
+    normalized = normalize(inventory(root))
+    assert {r.kind for r in normalized.records} >= {SourceKind.CONVERSATION, SourceKind.MESSAGE}
+    assert inventory(root).paths(FileClass.FILESYSTEM_NOISE) == ()
+
+
+def test_only_the_observed_sentinel_is_no_parent(tmp_path: Path) -> None:
+    """Anything but the exact observed value is a real parent and is kept verbatim: a
+    differently-versioned all-zero identifier, an ordinary identifier, and the sentinel
+    with a stray newline."""
+    exact = "-".join(["0" * 8, "0" * 4, "4" + "0" * 3, "8" + "0" * 3, "0" * 12])
+    version_one = "-".join(["0" * 8, "0" * 4, "1" + "0" * 3, "a" + "0" * 3, "0" * 12])
+    ordinary = "-".join(["7d3f1c2a", "9b4e", "4a6d", "8c1f", "0e5b2a7c9d31"])
+    cases = ((exact, None), (version_one, version_one), (ordinary, ordinary), (exact + "\n", exact + "\n"))
+    for index, (parent, expected) in enumerate(cases):
+        root = _copy(tmp_path, f"case-{index}")
+        _edit(root / "talks.json", lambda talks, parent=parent: talks[0]["chat_messages"][0].__setitem__("parent_message_uuid", parent))
+        first = next(
+            r for r in normalize(inventory(root)).records
+            if r.kind is SourceKind.MESSAGE and r.external_id == "message-01"
+        )
+        assert first.parent_external_id == expected, parent
+        assert first.parentage is Parentage.REPRESENTED
+
+
+def test_malformed_elements_are_refused_with_locators_not_raised(tmp_path: Path) -> None:
+    """Classification tolerates a malformed element so one bad row does not unclassify a
+    file; the inventory's own reads must tolerate it too, or the caller gets a raw
+    exception instead of an inventory."""
+    root = _copy(tmp_path)
+    _edit(root / "talks.json", lambda talks: talks.append("not an object"))
+    _edit(root / "sketches" / "one.json", lambda design: design.__setitem__("messages", 5))
+    _edit(root / "who" / "login_history.json", lambda history: history.__setitem__("login_events", 7))
+    _edit(root / "who" / "users.json", lambda users: users.append("a string"))
+    normalized = normalize(inventory(root))
+    rejected = {(item.locator, item.refusal) for item in normalized.rejected}
+    assert ("talks.json#/3", NormalizationRefusal.NOT_AN_OBJECT) in rejected
+    assert ("sketches/one.json#/messages", NormalizationRefusal.NOT_AN_OBJECT) in rejected
+    assert any(r.kind is SourceKind.CONVERSATION for r in normalized.records)

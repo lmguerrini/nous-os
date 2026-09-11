@@ -9,7 +9,9 @@ part of the format this module recognises. One export named its conversations
 file with a numeric suffix and its feedback category ``reflections``; the next
 may do otherwise. So every file is classified by the **shape of what it
 parses to**, and a file that fits no shape is reported as unclassified rather
-than skipped.
+than skipped. Archiver residue (``.DS_Store``, ``._*`` resource forks,
+``__MACOSX/``) is set aside as noise only when its bytes parse to nothing;
+content under such a name is classified by its shape like any other file.
 
 **The provider is read, not written.** Nothing here names a vendor. The
 provider is the host of the manifest's export URLs, and the export's identity
@@ -64,13 +66,19 @@ from nous_os.sources import (
 #: another is refused as a different format, not adapted by guesswork.
 FORMAT_VERSION: Final = "1.0"
 
-#: The provider's "no parent" value on a conversation message, as observed: an
-#: identifier-shaped string whose digits are all zero apart from the version
-#: and variant positions. A parent of that shape is normalized to none; any
-#: other parent is kept verbatim, present in the export or not.
-_NO_PARENT_SENTINEL: Final = re.compile(r"^0{8}-0{4}-[0-9a-f]0{3}-[0-9a-f]0{3}-0{12}$")
+#: The provider's "no parent" value on a conversation message, exactly as
+#: observed: an identifier-shaped string whose digits are all zero apart from a
+#: version digit of 4 and a variant digit of 8. Only that value is normalized
+#: to none. Any other parent -- a real identifier, a differently-versioned
+#: all-zero one, the value with a stray newline -- is kept verbatim, present in
+#: the export or not: a shape wider than the observation once swallowed a valid
+#: identifier that merely happened to be mostly zeros.
+_NO_PARENT_SENTINEL: Final = re.compile(r"0{8}-0{4}-40{3}-80{3}-0{12}")
 
-#: Filesystem residue an archiving tool adds; never content.
+#: Filesystem residue an archiving tool adds. A name alone does not make a
+#: file noise: a file so named is still parsed, and is noise only when its
+#: bytes parse to nothing. Content under a residue name is classified by its
+#: shape like any other file.
 _NOISE_BASENAMES: Final = frozenset({".DS_Store"})
 _NOISE_DIRECTORIES: Final = frozenset({"__MACOSX"})
 _NOISE_PREFIX: Final = "._"
@@ -105,7 +113,8 @@ class FileClass(Enum):
     REFLECTIONS = "reflections"
     #: The account record or the login history. Accounted for, never normalized.
     ACCOUNT_METADATA = "account_metadata"
-    #: Residue of the archiving tool, not of the provider.
+    #: Residue of the archiving tool, not of the provider: a residue-shaped name
+    #: whose bytes parse to nothing. A parseable file is never noise.
     FILESYSTEM_NOISE = "filesystem_noise"
     #: A file that fits no known shape. Reported, never silently dropped.
     UNCLASSIFIED = "unclassified"
@@ -279,30 +288,45 @@ def _export_identity(
     )
 
 
+def _objects(value: object) -> list[dict]:
+    """The dict elements of a list, and nothing for anything that is not a list.
+
+    Classification tolerates a malformed element so that one bad row does not
+    unclassify a file; every later read of the same file has to tolerate it
+    too, or the inventory raises where the normalizer would have refused with
+    a locator. Measured: a string element in a conversations list, or an
+    integer where a list of messages was expected, once escaped as a raw
+    ``AttributeError`` from the inventory step.
+    """
+    if type(value) is not list:
+        return []
+    return [item for item in value if type(item) is dict]
+
+
 def _account_ids(file_class: FileClass, parsed: object) -> set[str]:
     """Every account identifier a classified file asserts, so they can be compared."""
     found: set[str] = set()
     if file_class is FileClass.ACCOUNT_METADATA and type(parsed) is list:
-        found.update(item["uuid"] for item in parsed if type(item.get("uuid")) is str)
+        found.update(item["uuid"] for item in _objects(parsed) if type(item.get("uuid")) is str)
     elif file_class is FileClass.ACCOUNT_METADATA and type(parsed) is dict:
-        for event in parsed.get("login_events") or ():
-            if type(event) is dict and type(event.get("account_uuid")) is str:
+        for event in _objects(parsed.get("login_events")):
+            if type(event.get("account_uuid")) is str:
                 found.add(event["account_uuid"])
     elif file_class is FileClass.CONVERSATIONS:
-        for conversation in parsed:
+        for conversation in _objects(parsed):
             account = conversation.get("account")
             if type(account) is dict and type(account.get("uuid")) is str:
                 found.add(account["uuid"])
     elif file_class in (FileClass.MEMORIES, FileClass.REFLECTIONS):
-        if type(parsed.get("account_uuid")) is str:
+        if type(parsed) is dict and type(parsed.get("account_uuid")) is str:
             found.add(parsed["account_uuid"])
     elif file_class is FileClass.PROJECT:
-        creator = parsed.get("creator")
+        creator = parsed.get("creator") if type(parsed) is dict else None
         if type(creator) is dict and type(creator.get("uuid")) is str:
             found.add(creator["uuid"])
     elif file_class is FileClass.DESIGN_CONVERSATION:
-        for message in parsed.get("messages") or ():
-            content = message.get("content") if type(message) is dict else None
+        for message in _objects(parsed.get("messages") if type(parsed) is dict else None):
+            content = message.get("content")
             if type(content) is dict and type(content.get("authorAccountUuid")) is str:
                 found.add(content["authorAccountUuid"])
     return found
@@ -328,11 +352,11 @@ def inventory(root: Path, *, provider: str | None = None) -> Inventory:
         relative = path.relative_to(root)
         data = path.read_bytes()
         digest = digest_bytes(data)
-        if _is_noise(relative):
-            file_class = FileClass.FILESYSTEM_NOISE
+        parsed = _parse(data)
+        if parsed is None:
+            file_class = FileClass.FILESYSTEM_NOISE if _is_noise(relative) else FileClass.UNCLASSIFIED
         else:
-            parsed = _parse(data)
-            file_class = FileClass.UNCLASSIFIED if parsed is None else _classify(parsed)
+            file_class = _classify(parsed)
             if file_class is FileClass.EXPORT_MANIFEST:
                 manifests.append((parsed, digest))
             elif file_class is not FileClass.UNCLASSIFIED:
@@ -453,7 +477,7 @@ class _Normalizer:
                 children.append(message["uuid"])
                 parent = message.get("parent_message_uuid")
                 represented = "parent_message_uuid" in message
-                if not represented or (type(parent) is str and _NO_PARENT_SENTINEL.match(parent)):
+                if not represented or (type(parent) is str and _NO_PARENT_SENTINEL.fullmatch(parent)):
                     parent = None
                 self._record(
                     SourceKind.MESSAGE,
