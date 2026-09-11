@@ -1,0 +1,60 @@
+{
+  "uuid": "design-signage",
+  "title": "Harbour office signage",
+  "project": {
+    "uuid": "design-project-signage",
+    "name": "Signage"
+  },
+  "created_at": "2026-02-23T10:00:00.000000+00:00",
+  "updated_at": "2026-02-23T12:00:00.000000+00:00",
+  "messages": [
+    {
+      "uuid": "design-message-01",
+      "role": "user",
+      "created_at": "2026-02-23T10:00:00.000000+00:00",
+      "content": {
+        "id": "design-message-01",
+        "role": "user",
+        "content": "A sign for the tide table board.",
+        "timestamp": "2026-02-23T10:00:00.000Z",
+        "pill": false,
+        "authorAccountUuid": "account-keeper",
+        "attachments": [
+          {
+            "id": "attachment-board",
+            "name": "board.png",
+            "type": "image",
+            "path": "uploads/board.png"
+          }
+        ]
+      }
+    },
+    {
+      "uuid": "design-message-02",
+      "role": "assistant",
+      "created_at": "2026-02-23T10:02:00.000000+00:00",
+      "content": {
+        "id": "design-message-02",
+        "role": "assistant",
+        "content": "",
+        "timestamp": "2026-02-23T10:02:00.000Z",
+        "pill": false,
+        "contentBlocks": [
+          {
+            "type": "text",
+            "text": "Drafted a two-line sign."
+          },
+          {
+            "type": "tool_call",
+            "toolCall": {
+              "name": "write_file",
+              "input": {
+                "path": "sign.svg"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

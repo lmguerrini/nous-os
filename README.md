@@ -338,6 +338,7 @@ only thing this repository holds is the software that reads it.
 | Canonical record: identity, content hashing, provenance | present |
 | Immutable source snapshots | present |
 | Ingestion: append-only ledger, versioning, invalidation | present |
+| Source memory: provider export ingest, identity kept across re-import, per-export sightings | present |
 | Derived index, rebuildable from the files alone | present |
 | Measuring instrument and cross-language baseline | present |
 | Context compilation, with a measured default | present |
@@ -359,6 +360,19 @@ history of a source is a plain append-only file, so recovering it means reading
 it. Content that arrives from a source is held in its own type that cannot stand
 in for text this project wrote — text that reads as an instruction is labelled
 and still stored, because refusing it would quietly lose part of your corpus.
+
+**What source memory adds.** An export from an assistant service is taken in as
+*evidence that the provider exported it*, one source per provider record — a
+conversation, each of its messages, a project, a memory file — and each keeps
+the same identity the next time the same export, or a later one, is taken in.
+A title change is one new version of one record; an unchanged message is
+recorded as unchanged; a record missing from a later export is not deleted;
+the same export twice writes nothing the second time. Which export carried
+which version is written down separately from the content, so a re-export is
+not a revision. The adapter recognises a format by the shape of its files,
+never by their names, and the provider is a string read from the export
+rather than a word in the code. Nothing in it is canonical, and no shipped
+operation reaches it.
 
 **How context is assembled.** A pack is built from a ranking, and every pack
 records what went into it — reproducibly, so the same inputs always yield the
@@ -567,6 +581,8 @@ src/
     ├── untrusted.py      the boundary around content from outside
     ├── ledger.py         append-only ingest record and version chains
     ├── sources.py        source memory: provider records, the identity each keeps, where it was seen
+    ├── assistant_export.py
+    │                     one export format, classified by shape; the provider is read, not named
     ├── derived.py        the rebuildable index over everything above
     ├── aliases.py        interchangeable ways of relating terms across languages
     ├── measure.py        the measuring instrument, and its third answer
@@ -621,6 +637,7 @@ fixtures/
     ├── corpus/           public, invented test documents
     ├── bilingual/        the same subjects in two languages
     ├── injection/        text that reads as an instruction, for the boundary tests
+    ├── export/           an invented assistant export, its files deliberately misnamed
     └── projection/       fixed graphs the visual layer is measured against
 ```
 

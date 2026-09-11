@@ -1,0 +1,186 @@
+[
+  {
+    "uuid": "conversation-tides",
+    "name": "Tides at the harbour",
+    "summary": "",
+    "created_at": "2026-02-10T09:00:00.000000Z",
+    "updated_at": "2026-02-11T18:30:00.000000Z",
+    "account": {
+      "uuid": "account-keeper"
+    },
+    "chat_messages": [
+      {
+        "uuid": "message-01",
+        "text": "When is high water at the harbour office?",
+        "content": [
+          {
+            "start_timestamp": "2026-02-10T09:00:01.000000Z",
+            "stop_timestamp": "2026-02-10T09:00:01.000000Z",
+            "type": "text",
+            "text": "When is high water at the harbour office?",
+            "citations": []
+          }
+        ],
+        "sender": "human",
+        "created_at": "2026-02-10T09:00:01.000000Z",
+        "updated_at": "2026-02-10T09:00:01.000000Z",
+        "attachments": [
+          {
+            "file_name": "tide-table.txt",
+            "file_size": 42,
+            "file_type": "text/plain",
+            "extracted_content": "HW 06:40, 19:05"
+          }
+        ],
+        "files": [],
+        "parent_message_uuid": null
+      },
+      {
+        "uuid": "message-02",
+        "text": "Twice a day, about twelve hours apart; see the posted table.",
+        "content": [
+          {
+            "start_timestamp": "2026-02-10T09:00:20.000000Z",
+            "stop_timestamp": "2026-02-10T09:00:20.000000Z",
+            "type": "text",
+            "text": "Twice a day, about twelve hours apart; see the posted table.",
+            "citations": []
+          }
+        ],
+        "sender": "assistant",
+        "created_at": "2026-02-10T09:00:20.000000Z",
+        "updated_at": "2026-02-10T09:00:20.000000Z",
+        "attachments": [],
+        "files": [],
+        "parent_message_uuid": "message-01"
+      },
+      {
+        "uuid": "message-03",
+        "text": "About 06:40 and 19:05 today, from the table you attached.",
+        "content": [
+          {
+            "start_timestamp": "2026-02-10T09:00:50.000000Z",
+            "stop_timestamp": "2026-02-10T09:00:55.000000Z",
+            "type": "tool_use",
+            "name": "read_table",
+            "input": {
+              "file": "tide-table.txt"
+            },
+            "id": "tool-call-01"
+          },
+          {
+            "start_timestamp": "2026-02-10T09:00:56.000000Z",
+            "stop_timestamp": "2026-02-10T09:00:57.000000Z",
+            "type": "tool_result",
+            "tool_use_id": "tool-call-01",
+            "content": [
+              {
+                "type": "text",
+                "text": "HW 06:40, 19:05"
+              }
+            ],
+            "is_error": false
+          },
+          {
+            "start_timestamp": "2026-02-10T09:01:00.000000Z",
+            "stop_timestamp": "2026-02-10T09:01:05.000000Z",
+            "type": "text",
+            "text": "About 06:40 and 19:05 today, from the table you attached.",
+            "citations": []
+          }
+        ],
+        "sender": "assistant",
+        "created_at": "2026-02-10T09:01:05.000000Z",
+        "updated_at": "2026-02-10T09:01:05.000000Z",
+        "attachments": [],
+        "files": [],
+        "parent_message_uuid": "message-01"
+      },
+      {
+        "uuid": "message-04",
+        "text": "Thanks — keep the evening one.",
+        "content": [
+          {
+            "start_timestamp": "2026-02-11T18:30:00.000000Z",
+            "stop_timestamp": "2026-02-11T18:30:00.000000Z",
+            "type": "text",
+            "text": "Thanks — keep the evening one.",
+            "citations": []
+          }
+        ],
+        "sender": "human",
+        "created_at": "2026-02-11T18:30:00.000000Z",
+        "updated_at": "2026-02-11T18:30:00.000000Z",
+        "attachments": [],
+        "files": [
+          {
+            "file_uuid": "file-lamp",
+            "file_name": "lamp.png"
+          }
+        ],
+        "parent_message_uuid": "message-03"
+      }
+    ]
+  },
+  {
+    "uuid": "conversation-lamp",
+    "name": "Lighthouse lamp schedule",
+    "summary": "",
+    "created_at": "2026-02-20T21:00:00.000000Z",
+    "updated_at": "2026-02-20T21:05:00.000000Z",
+    "account": {
+      "uuid": "account-keeper"
+    },
+    "chat_messages": [
+      {
+        "uuid": "message-05",
+        "text": "Remind me when the lamp is lit in winter.",
+        "content": [
+          {
+            "start_timestamp": "2026-02-20T21:00:01.000000Z",
+            "stop_timestamp": "2026-02-20T21:00:01.000000Z",
+            "type": "text",
+            "text": "Remind me when the lamp is lit in winter.",
+            "citations": []
+          }
+        ],
+        "sender": "human",
+        "created_at": "2026-02-20T21:00:01.000000Z",
+        "updated_at": "2026-02-20T21:00:01.000000Z",
+        "attachments": [],
+        "files": [],
+        "parent_message_uuid": "message-not-exported"
+      },
+      {
+        "uuid": "message-06",
+        "text": "Sunset to sunrise; the keeper's log has the exact times.",
+        "content": [
+          {
+            "start_timestamp": "2026-02-20T21:00:30.000000Z",
+            "stop_timestamp": "2026-02-20T21:00:30.000000Z",
+            "type": "text",
+            "text": "Sunset to sunrise; the keeper's log has the exact times.",
+            "citations": []
+          }
+        ],
+        "sender": "assistant",
+        "created_at": "2026-02-20T21:00:30.000000Z",
+        "updated_at": "2026-02-20T21:00:30.000000Z",
+        "attachments": [],
+        "files": [],
+        "parent_message_uuid": "message-05"
+      }
+    ]
+  },
+  {
+    "uuid": "conversation-empty",
+    "name": "",
+    "summary": "",
+    "created_at": "2026-02-21T07:00:00.000000Z",
+    "updated_at": "2026-02-21T07:00:00.000000Z",
+    "account": {
+      "uuid": "account-keeper"
+    },
+    "chat_messages": []
+  }
+]

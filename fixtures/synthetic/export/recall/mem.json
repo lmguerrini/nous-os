@@ -1,0 +1,16 @@
+{
+  "conversations_memory": "The person keeps a harbour office and prefers the morning tide.",
+  "memory_files": [
+    {
+      "path": "areas/harbour.md",
+      "content": "Runs the harbour office; asks about tides.",
+      "updated_at": "2026-02-19T14:00:00.000000+00:00"
+    },
+    {
+      "path": "topics/lighthouse.md",
+      "content": "Interested in the lamp schedule.",
+      "updated_at": "2026-02-20T14:00:00.000000+00:00"
+    }
+  ],
+  "account_uuid": "account-keeper"
+}

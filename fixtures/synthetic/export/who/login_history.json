@@ -1,0 +1,15 @@
+{
+  "login_events": [
+    {
+      "account_uuid": "account-keeper",
+      "timestamp": "2026-02-10T08:59:00.000000+00:00",
+      "ip_address": "203.0.113.5",
+      "user_agent": "a browser",
+      "method": "password",
+      "location_info": {
+        "city": "Harbour",
+        "country": "Example"
+      }
+    }
+  ]
+}

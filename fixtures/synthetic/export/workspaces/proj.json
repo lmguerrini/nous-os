@@ -1,0 +1,22 @@
+{
+  "uuid": "project-harbour",
+  "name": "Harbour notes",
+  "description": "Working notes for the harbour office.",
+  "is_private": true,
+  "is_starter_project": false,
+  "prompt_template": "",
+  "created_at": "2026-01-15T12:00:00.000000+00:00",
+  "updated_at": "2026-01-15T12:00:00.000000+00:00",
+  "creator": {
+    "uuid": "account-keeper",
+    "full_name": "Keeper"
+  },
+  "docs": [
+    {
+      "uuid": "document-glossary",
+      "filename": "glossary.md",
+      "content": "# Glossary\n\nHigh water: the tide's highest level.\n",
+      "created_at": "2026-01-15T12:01:00.000000+00:00"
+    }
+  ]
+}
