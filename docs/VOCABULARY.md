@@ -207,23 +207,23 @@ left for a reader to discover by being wrong.
 | `SemanticHit` | `src/nous_os/semantic.py:225` | — | One ranked result from the dense index. Rank 1 is the best match. |
 | `SemanticIndex` | `src/nous_os/semantic.py:235` | — | Chunk ids and the vectors that encode them, derived and reconstructible from chunks and a backend alone. |
 | `IndexStatus` | `src/nous_os/semantic.py:50` | `COMPLETE` · `NOT_RUN` | Whether the index actually holds vectors. Mirrors `RunStatus`: weights that could not be loaded are never read as an empty, completed search. |
-
-| `SourceKind` | `src/nous_os/sources.py:78` | `CONVERSATION` · `MESSAGE` · `DESIGN_CONVERSATION` · `DESIGN_MESSAGE` · `PROJECT` · `PROJECT_DOCUMENT` · `MEMORY_SUMMARY` · `MEMORY_FILE` · `REFLECTION` · `FEEDBACK` | What a provider record is: the classes of evidence a provider itself keeps apart, kept apart here. None is more canonical than another, because none is canonical at all. |
-| `IdentityBasis` | `src/nous_os/sources.py:113` | `PROVIDER_IDENTIFIER` · `PROVIDER_PATH` · `PROVIDER_LABEL` · `CONTENT` | Where a record's external identity came from. A content-based identity is visibly weaker than a provider-minted one, and the difference is recorded rather than inferred later. |
-| `Parentage` | `src/nous_os/sources.py:132` | `REPRESENTED` · `UNSUPPORTED_BY_PROVIDER_EXPORT` | Whether an export can say what a record's parent is. Represented with no parent is a root; unsupported is a different answer, never read as one. |
-| `Role` | `src/nous_os/sources.py:144` | `USER` · `ASSISTANT` · `SYSTEM` · `TOOL` · `UNKNOWN` | Who a message is from, in one vocabulary across providers. The provider's own spelling stays verbatim in the payload; an unseen spelling is unknown, not guessed. |
-| `RecordOutcome` | `src/nous_os/sources.py:159` | `ACCEPTED` · `CONFLICTING_DUPLICATE` | What became of one record offered to source memory. Two records claiming one identity with different bytes are neither ingested, because an order nobody chose is not a history. |
+| `SourceKind` | `src/nous_os/sources.py:81` | `CONVERSATION` · `MESSAGE` · `DESIGN_CONVERSATION` · `DESIGN_MESSAGE` · `PROJECT` · `PROJECT_DOCUMENT` · `MEMORY_SUMMARY` · `MEMORY_FILE` · `REFLECTION` · `FEEDBACK` | What a provider record is: the classes of evidence a provider itself keeps apart, kept apart here. None is more canonical than another, because none is canonical at all. |
+| `IdentityBasis` | `src/nous_os/sources.py:116` | `PROVIDER_IDENTIFIER` · `PROVIDER_PATH` · `PROVIDER_LABEL` · `CONTENT` | Where a record's external identity came from. A content-based identity is visibly weaker than a provider-minted one, and the difference is recorded rather than inferred later. |
+| `Parentage` | `src/nous_os/sources.py:135` | `REPRESENTED` · `UNSUPPORTED_BY_PROVIDER_EXPORT` | Whether an export can say what a record's parent is. Represented with no parent is a root; unsupported is a different answer, never read as one. |
+| `Role` | `src/nous_os/sources.py:147` | `USER` · `ASSISTANT` · `SYSTEM` · `TOOL` · `UNKNOWN` | Who a message is from, in one vocabulary across providers. The provider's own spelling stays verbatim in the payload; an unseen spelling is unknown, not guessed. |
+| `RecordOutcome` | `src/nous_os/sources.py:162` | `ACCEPTED` · `CONFLICTING_DUPLICATE` | What became of one record offered to source memory. Two records claiming one identity with different bytes are neither ingested, because an order nobody chose is not a history. |
 | `FileClass` | `src/nous_os/assistant_export.py:91` | `EXPORT_MANIFEST` · `CONVERSATIONS` · `DESIGN_CONVERSATION` · `PROJECT` · `MEMORIES` · `REFLECTIONS` · `ACCOUNT_METADATA` · `FILESYSTEM_NOISE` · `UNCLASSIFIED` | What one file in an export root is, decided by the shape of what it parses to and never by its name. Unclassified is reported, not dropped. |
 | `NormalizationRefusal` | `src/nous_os/assistant_export.py:114` | `UNCLASSIFIED_FILE` · `NOT_AN_OBJECT` · `MISSING_IDENTITY` | Why a provider object could not become a record. Counted with its locator, never hidden. |
-| `ExportIdentity` | `src/nous_os/sources.py:201` | — | Which export a set of records came from: the provider, the provider's own identifier for the export, its timestamp, its format version. |
-| `SourceRecord` | `src/nous_os/sources.py:226` | — | One provider record, normalized, with the provider's payload kept verbatim beneath the neutral fields. Its canonical JSON is the snapshot; where it was read from is not part of it. |
-| `Identity` | `src/nous_os/sources.py:312` | — | One line of the identity registry: an external identity and the source id it was given, once. |
-| `IdentityRegistry` | `src/nous_os/sources.py:353` | — | External identity to source id, written once per identity and never rewritten, so a record keeps its id across exports. |
-| `Sighting` | `src/nous_os/sources.py:437` | — | This export carried these bytes of this source, read from here. A fact about an export, kept apart from the content it saw. |
-| `SightingLog` | `src/nous_os/sources.py:470` | — | Append-only record of which export carried which version of which source. First seen and last seen are derived from it, never stored. |
-| `IngestReport` | `src/nous_os/sources.py:566` | — | Everything one export did to source memory, countable. A second run of the same export reports every record unchanged and nothing written. |
+| `ExportIdentity` | `src/nous_os/sources.py:204` | — | Which export a set of records came from: the provider, the provider's own identifier for the export, its timestamp, its format version. |
+| `SourceRecord` | `src/nous_os/sources.py:229` | — | One provider record, normalized, with the provider's payload kept verbatim beneath the neutral fields. Its canonical JSON is the snapshot; where it was read from is not part of it. |
+| `Identity` | `src/nous_os/sources.py:315` | — | One line of the identity registry: an external identity and the source id it was given, once. |
+| `IdentityRegistry` | `src/nous_os/sources.py:356` | — | External identity to source id, written once per identity and never rewritten, so a record keeps its id across exports. |
+| `Sighting` | `src/nous_os/sources.py:479` | — | This export carried these bytes of this source, read from here. A fact about an export, kept apart from the content it saw. |
+| `SightingLog` | `src/nous_os/sources.py:512` | — | Append-only record of which export carried which version of which source. First seen and last seen are derived from it, never stored. |
+| `IngestReport` | `src/nous_os/sources.py:619` | — | Everything one export did to source memory, countable. A second run of the same export reports every record unchanged and nothing written. |
 | `Inventory` | `src/nous_os/assistant_export.py:136` | — | Everything an export root holds, classified, and the identity it establishes. |
 | `Normalization` | `src/nous_os/assistant_export.py:164` | — | What an export root normalized to: the records, and everything that did not, with its reason. |
+
 <!-- /vocabulary:technical -->
 
 **Deliberately not in this table.** Exception types (they name refusals, and the refusal is the
@@ -446,10 +446,10 @@ mapping above; a term is in one register or the other, and the build refuses a t
 | `ControlStateValidationRule` | Names nine ways a control-state preference record can be malformed, following `VisualStateValidationRule`'s own reason: a validation vocabulary, about well-formedness rather than about knowledge. |
 | `VisibilityMode` | Names where a bookmark annotation may be offered, not what it says about the graph. A presentation axis for an annotation layer, never a knowledge relation. |
 | `BookmarkValidationRule` | Names eight ways a bookmark annotation can be malformed. A validation vocabulary, about well-formedness rather than about knowledge, matching `VisualStateValidationRule`'s own reason. |
-
 | `SourceKind` · `IdentityBasis` · `Parentage` · `Role` · `RecordOutcome` | Facts about provider evidence: what class of record it is, how it is identified, whether its parent can be known, who wrote it, whether it was taken in. Every one is a statement about an export, and giving any of them an epistemic name would suggest the record says something about the world rather than about what a provider handed back. |
 | `FileClass` · `NormalizationRefusal` | Classification of an export's files and the reasons a file or object could not be normalized. Operational, and better for it. |
 | `ExportIdentity` · `SourceRecord` · `Identity` · `IdentityRegistry` · `Sighting` · `SightingLog` · `IngestReport` · `Inventory` · `Normalization` | Source-memory mechanics: which export, which record, which id it keeps, which export saw it, what a run did. Substrate, like `Ledger` and `Snapshot`, and deliberately as mundane. |
+
 <!-- /vocabulary:left-technical -->
 
 ---

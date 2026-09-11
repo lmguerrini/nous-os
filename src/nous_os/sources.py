@@ -8,7 +8,7 @@ records from an adapter, gives each one a source identity that survives the
 next export, ingests its bytes through the same governed door every other
 ingest uses, and writes down which export carried which version.
 
-Three files beside the ledger, all append-only, all canon:
+Four canonical stores, all append-only, two of them new here:
 
 **The identity registry.** One line per provider record ever seen, minted once.
 An identity is not a function of content (`identity.py` says why), so the only
@@ -43,7 +43,10 @@ display belongs to a layer that does not exist yet.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -356,6 +359,17 @@ class IdentityRegistry:
     A registry that could reassign an identity would make every earlier citation
     of the old id silently wrong. So :meth:`resolve` returns what is held, and
     :meth:`mint` refuses a key that is already held rather than replacing it.
+
+    **Single writer, enforced by :meth:`exclusive`.** Minting is a read of the
+    file followed by an append, and two processes doing that at once both read
+    the same absence and both mint -- after which the file names one key twice
+    and every read of it refuses, forever, because the file is append-only.
+    The ledger documents the identical race for itself and holds an advisory
+    lock around its read-tip/append pair; this registry holds one around the
+    whole of an export's run, and :func:`ingest_export` is the writer that
+    takes it. :meth:`mint` and :meth:`record` do not lock on their own: a
+    caller using them directly is a caller writing canon by hand, and is
+    single-writer by the same statement the ledger makes.
     """
 
     def __init__(self, path: Path) -> None:
@@ -364,6 +378,23 @@ class IdentityRegistry:
     @property
     def path(self) -> Path:
         return self._path
+
+    @contextlib.contextmanager
+    def exclusive(self):
+        """Hold the advisory lock that makes source memory single-writer.
+
+        Advisory and POSIX-only, exactly as the ledger's. The lock file sits
+        beside the registry; nothing reads it, and an interrupted holder leaves
+        no state behind because ``flock`` releases with the descriptor.
+        """
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.open(str(self._path) + ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
 
     def entries(self) -> tuple[Identity, ...]:
         """Every identity, in the order minted. Unreadable is reported, not skipped."""
@@ -410,10 +441,20 @@ class IdentityRegistry:
         return self.held().get(record.identity_key)
 
     def mint(
-        self, record: SourceRecord, minted_at: datetime, minter: Minter | None = None
+        self,
+        record: SourceRecord,
+        minted_at: datetime,
+        minter: Minter | None = None,
+        *,
+        held: dict[tuple[str, str, str, str], Identity] | None = None,
     ) -> Identity:
-        """Give ``record`` a source id it will keep. Refuses an identity already held."""
-        if record.identity_key in self.held():
+        """Give ``record`` a source id it will keep. Refuses an identity already held.
+
+        ``held`` is the registry's :meth:`held` mapping, read once by a caller
+        minting many identities under :meth:`exclusive` and kept current here.
+        """
+        known = self.held() if held is None else held
+        if record.identity_key in known:
             raise SourceMemoryError(
                 f"{record.identity_key!r} already holds an identity; resolve it instead"
             )
@@ -430,6 +471,7 @@ class IdentityRegistry:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._path.open("ab") as handle:
             handle.write(canonical_bytes(identity.as_payload()) + b"\n")
+        known[identity.key] = identity
         return identity
 
 
@@ -509,17 +551,28 @@ class SightingLog:
                 ) from error
         return tuple(found)
 
-    def record(self, sighting: Sighting) -> bool:
+    def keys(self) -> set[tuple[str, str, str]]:
+        """Every (source, export, version) the log holds, read once."""
+        return {entry.key for entry in self.entries()}
+
+    def record(self, sighting: Sighting, *, held: set[tuple[str, str, str]] | None = None) -> bool:
         """Append ``sighting`` unless the same (source, export, version) is already held.
 
         Returns whether a line was written, so a caller can count what an
-        export actually added.
+        export actually added. ``held`` is the log's :meth:`keys`, read once by
+        a caller recording many sightings in one run and kept current here;
+        without it the file is re-read for every call, which is correct and
+        quadratic.
         """
-        if any(existing.key == sighting.key for existing in self.entries()):
+        if type(sighting) is not Sighting:
+            raise SourceMemoryError("record takes a Sighting")
+        known = self.keys() if held is None else held
+        if sighting.key in known:
             return False
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._path.open("ab") as handle:
             handle.write(canonical_bytes(sighting.as_payload()) + b"\n")
+        known.add(sighting.key)
         return True
 
     def exports_for(self, source_id: str) -> tuple[str, ...]:
@@ -714,13 +767,25 @@ def ingest_export(
                 f"this export is from {export.provider!r}"
             )
 
+    with registry.exclusive():
+        return _ingest_locked(
+            grant, store, ledger, registry, sightings, export, accepted, conflicting, recorded_at, minter
+        )
+
+
+def _ingest_locked(grant, store, ledger, registry, sightings, export, accepted, conflicting, recorded_at, minter):
+    # Each index is read once for the run and kept current in memory; the lock
+    # held by the caller is what makes that reading true for the run's length.
+    held = registry.held()
+    seen_sightings = sightings.keys()
     results: list[RecordResult] = []
-    sighted: set[tuple[str, str, str, str]] = set()
+    offered: set[tuple[str, str, str, str]] = {record.identity_key for record in accepted}
+    offered |= {record.identity_key for record in conflicting}
     for record in accepted:
-        identity = registry.resolve(record)
+        identity = held.get(record.identity_key)
         minted = identity is None
         if identity is None:
-            identity = registry.mint(record, recorded_at, minter)
+            identity = registry.mint(record, recorded_at, minter, held=held)
         data = record.snapshot_bytes()
         result = execute(
             grant,
@@ -740,9 +805,9 @@ def ingest_export(
                 snapshot_digest=digest,
                 locator=record.locator,
                 observed_at=recorded_at,
-            )
+            ),
+            held=seen_sightings,
         )
-        sighted.add(record.identity_key)
         results.append(
             RecordResult(
                 kind=record.kind,
@@ -769,28 +834,37 @@ def ingest_export(
             )
         )
 
+    # A source the export carried and this run refused is not absent from the
+    # export, so it is not "not sighted": ``offered`` covers both outcomes.
     accounts = {record.account for record in accepted + conflicting}
     not_sighted = tuple(
         sorted(
             identity.source_id
-            for identity in registry.entries()
+            for key, identity in held.items()
             if identity.provider == export.provider
             and identity.account in accounts
-            and identity.key not in sighted
+            and key not in offered
         )
     )
     return IngestReport(export=export, results=tuple(results), not_sighted=not_sighted)
 
 
 def verify_source_memory(
-    registry: IdentityRegistry, ledger: Ledger, store: SnapshotStore
+    registry: IdentityRegistry,
+    ledger: Ledger,
+    store: SnapshotStore,
+    sightings: SightingLog | None = None,
 ) -> tuple[tuple[str, str], ...]:
-    """Every way the three canonical files can disagree, named. Empty means none.
+    """Every way the canonical files can disagree, named. Empty means none.
 
     ``IDENTITY_WITHOUT_HISTORY`` -- an identity was minted and its record was
     never ingested (the process stopped in between). ``HISTORY_WITHOUT_IDENTITY``
     -- the ledger holds a source no identity names, so a re-import cannot find
     it. ``SNAPSHOT_MISSING`` -- the ledger names bytes the store does not hold.
+    ``HISTORY_WITHOUT_SIGHTING`` -- when the sighting log is given, a version
+    the ledger holds that no export is recorded as having carried (the process
+    stopped between the ledger append and the sighting append; the next run of
+    the same export records the sighting, which is the one write that run makes).
     Each is reported with the source id; nothing here repairs anything.
     """
     problems: list[tuple[str, str]] = []
@@ -803,8 +877,11 @@ def verify_source_memory(
         problems.append(("IDENTITY_WITHOUT_HISTORY", source_id))
     for source_id in sorted(with_history - known):
         problems.append(("HISTORY_WITHOUT_IDENTITY", source_id))
+    sighted = None if sightings is None else {(s.source_id, s.snapshot_digest) for s in sightings.entries()}
     for source_id in sorted(with_history):
         for entry in ledger.chain(source_id):
             if not store.has(source_id, entry.snapshot_digest):
                 problems.append(("SNAPSHOT_MISSING", f"{source_id}:{entry.snapshot_digest}"))
+            if sighted is not None and (source_id, entry.snapshot_digest) not in sighted:
+                problems.append(("HISTORY_WITHOUT_SIGHTING", f"{source_id}:{entry.snapshot_digest}"))
     return tuple(problems)

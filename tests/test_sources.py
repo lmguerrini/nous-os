@@ -471,3 +471,115 @@ def test_the_report_payload_carries_counts_by_kind_and_is_json_shaped(memory: _M
     import json
 
     json.dumps(payload)  # every value is plain data
+
+
+# --- findings of the first independent review, each with its own oracle ------------
+
+
+def test_two_processes_ingesting_at_once_mint_one_identity_per_record(tmp_path: Path) -> None:
+    """Minting is read-then-append; without a lock two runs both mint and the registry
+    names one key twice, after which every read of it refuses forever. Two processes,
+    one export, one memory root: every identity is minted exactly once."""
+    import subprocess
+    import sys
+
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        "import sys\n"
+        "from datetime import datetime, timezone\n"
+        "from pathlib import Path\n"
+        "from nous_os.capability import Grant, Tier\n"
+        "from nous_os.ledger import Ledger\n"
+        "from nous_os.snapshots import SnapshotStore\n"
+        "from nous_os.sources import *\n"
+        "root = Path(sys.argv[1])\n"
+        "records = [SourceRecord(provider='p', account='a', kind=SourceKind.MESSAGE, external_id=f'm-{i:04d}',\n"
+        "    identity_basis=IdentityBasis.PROVIDER_IDENTIFIER, payload={'i': i}, locator=f'x#/{i}') for i in range(120)]\n"
+        "report = ingest_export(grant=Grant('o', frozenset({Tier.PROMOTE})), store=SnapshotStore(root / 'snapshots'),\n"
+        "    ledger=Ledger(root / 'ledger.jsonl'), registry=IdentityRegistry(root / 'identities.jsonl'),\n"
+        "    sightings=SightingLog(root / 'sightings.jsonl'),\n"
+        "    export=ExportIdentity(provider='p', export_id='e', created_at='t', format_version='1'),\n"
+        "    records=records, recorded_at=datetime(2026, 3, 1, tzinfo=timezone.utc))\n"
+        "print(report.ingested, report.unchanged, report.identities_minted)\n"
+    )
+    env = {"PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")}
+    memory = tmp_path / "memory"
+    runs = [
+        subprocess.Popen([sys.executable, str(worker), str(memory)], env=env, stdout=subprocess.PIPE, text=True)
+        for _ in range(2)
+    ]
+    outputs = [run.communicate()[0].split() for run in runs]
+    assert all(run.returncode == 0 for run in runs), outputs
+    counts = [tuple(int(value) for value in output) for output in outputs]
+    assert sum(ingested for ingested, _, _ in counts) == 120
+    assert sum(unchanged for _, unchanged, _ in counts) == 120
+    assert sum(minted for _, _, minted in counts) == 120
+    registry = IdentityRegistry(memory / "identities.jsonl")
+    assert len(registry.held()) == 120  # refuses if any key were named twice
+    assert (
+        verify_source_memory(
+            registry, Ledger(memory / "ledger.jsonl"), SnapshotStore(memory / "snapshots"),
+            SightingLog(memory / "sightings.jsonl"),
+        )
+        == ()
+    )
+
+
+def test_a_run_reads_each_index_once_however_many_records_it_takes(memory: _Memory, monkeypatch) -> None:
+    """Re-reading the registry and the sighting log per record made ingest quadratic in
+    memory size. One run reads each file once and keeps the index current itself."""
+    reads = {"registry": 0, "sightings": 0}
+    original_registry = IdentityRegistry.entries
+    original_sightings = SightingLog.entries
+
+    def counted_registry(self):
+        reads["registry"] += 1
+        return original_registry(self)
+
+    def counted_sightings(self):
+        reads["sightings"] += 1
+        return original_sightings(self)
+
+    monkeypatch.setattr(IdentityRegistry, "entries", counted_registry)
+    monkeypatch.setattr(SightingLog, "entries", counted_sightings)
+    many = [
+        _record(SourceKind.MESSAGE, f"m-{i}", {"i": i}, container="c", parentage=Parentage.REPRESENTED)
+        for i in range(40)
+    ]
+    memory.ingest(many)
+    assert reads == {"registry": 1, "sightings": 1}
+    reads.update(registry=0, sightings=0)
+    memory.ingest(many, at=T1)
+    assert reads == {"registry": 1, "sightings": 1}
+
+
+def test_identities_are_keyed_on_kind_as_well_as_external_id(memory: _Memory) -> None:
+    same_id = [
+        _record(SourceKind.PROJECT, "shared", {"a": 1}),
+        _record(SourceKind.PROJECT_DOCUMENT, "shared", {"b": 2}, container="shared"),
+    ]
+    report = memory.ingest(same_id)
+    assert report.ingested == 2 and report.identities_minted == 2
+    assert len({result.source_id for result in report.results}) == 2
+
+
+def test_a_rejected_duplicate_is_not_reported_as_absent(memory: _Memory) -> None:
+    memory.ingest(_corpus())
+    conflicting = _corpus() + [_record(SourceKind.CONVERSATION, "conv-1", {"title": "Other"})]
+    report = memory.ingest(conflicting, export=_export("export-b"), at=T1)
+    assert report.rejected == 1
+    assert report.not_sighted == ()  # it was in the export, twice; refused is not absent
+
+
+def test_verification_names_a_version_no_export_is_recorded_as_carrying(memory: _Memory) -> None:
+    """A process that dies between the ledger append and the sighting append leaves a
+    version nobody is recorded as having carried; the next run of the same export writes
+    that one sighting and nothing else, and verification names the gap until it does."""
+    memory.ingest(_corpus())
+    lines = memory.sightings.path.read_text(encoding="utf-8").splitlines()
+    memory.sightings.path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+    problems = verify_source_memory(memory.registry, memory.ledger, memory.store, memory.sightings)
+    assert len(problems) == 1 and problems[0][0] == "HISTORY_WITHOUT_SIGHTING"
+    report = memory.ingest(_corpus(), at=T1)
+    assert report.unchanged == 4 and report.sightings_recorded == 1 and report.identities_minted == 0
+    assert verify_source_memory(memory.registry, memory.ledger, memory.store, memory.sightings) == ()
