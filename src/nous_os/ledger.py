@@ -32,6 +32,7 @@ import fcntl
 import json
 import os
 import re
+import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -158,15 +159,107 @@ class IngestResult:
         return self.invalidated_digest is not None
 
 
+#: What the kernel reports about the file at one instant: inode, size, modification
+#: time and change time, all in nanoseconds. A reading is served only while a fresh
+#: ``stat`` returns the identical four; the change time is in the set because it is
+#: the one field no user tool can set back after a write.
+_FileIdentity = tuple[int, int, int, int]
+
+
+class _Reading:
+    """One parse of the ledger file, kept by a ``Ledger`` for as long as the file is unchanged.
+
+    Not an authority and not a store: it is the result of the read the ledger
+    would otherwise repeat, held with the identity of the bytes it came from.
+    It is extended in place by the one entry this instance appends, and dropped
+    the moment the file's identity is not the one it recorded.
+    """
+
+    __slots__ = ("identity", "_entries", "_by_source", "_tuple")
+
+    def __init__(self, identity: _FileIdentity, entries: list[LedgerEntry]) -> None:
+        self.identity = identity
+        self._entries = entries
+        self._by_source: dict[str, list[LedgerEntry]] = {}
+        for entry in entries:
+            self._by_source.setdefault(entry.source_id, []).append(entry)
+        self._tuple: tuple[LedgerEntry, ...] | None = None
+
+    @property
+    def entries(self) -> tuple[LedgerEntry, ...]:
+        if self._tuple is None:
+            self._tuple = tuple(self._entries)
+        return self._tuple
+
+    def of(self, source_id: str) -> tuple[LedgerEntry, ...]:
+        return tuple(self._by_source.get(source_id, ()))
+
+    def extend(self, entry: LedgerEntry, identity: _FileIdentity) -> None:
+        self._entries.append(entry)
+        self._by_source.setdefault(entry.source_id, []).append(entry)
+        self._tuple = None
+        self.identity = identity
+
+
 class Ledger:
-    """An append-only record of ingests, backed by one file."""
+    """An append-only record of ingests, backed by one file.
+
+    **The file is read once per change, not once per question.** An instance
+    keeps its last reading together with the file's identity as the kernel
+    reports it, and answers from that reading while the identity is unchanged.
+    Its own ``append`` extends the reading by the entry it wrote. Anything else
+    that touches the file -- another writer's append, an edit in place, a
+    truncation, an edit whose modification time is put back afterwards -- gives
+    the inode a new change time, and the next question re-reads the file through
+    the same parser and the same verification as before. Nothing about what the
+    ledger *is* changes: sequence still comes from the file, every read still
+    verifies the chains, the bytes written are the same bytes, and reading the
+    file back is still the whole of recovery.
+
+    Measured before this: every ``ingest`` re-parsed the whole file to find one
+    source's tip, so a run of n ingests cost n parses of a growing file --
+    2,000 records took 11 s to take in and 21 s to take in again unchanged.
+    """
 
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
+        self._reading: _Reading | None = None
 
     @property
     def path(self) -> Path:
         return self._path
+
+    def _identity(self) -> _FileIdentity | None:
+        """The file's identity now, or None where :func:`file_is_present` says absent.
+
+        The same two outcomes count as absence, for the same reason: a path below
+        a missing ancestor names nothing, while any other failure to stat the
+        file -- a permission failure above all -- propagates rather than reading
+        as an empty history.
+        """
+        try:
+            status = os.stat(self._path)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        if not stat.S_ISREG(status.st_mode):
+            return None
+        return (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
+
+    def _current(self) -> _Reading | None:
+        """The reading for the file as it is now: the kept one, or a fresh parse."""
+        before = self._identity()
+        if before is None:
+            self._reading = None
+            return None
+        reading = self._reading
+        if reading is not None and reading.identity == before:
+            return reading
+        parsed = _Reading(before, self._parse())
+        # Kept only if the file was the same thing before and after the parse;
+        # a file that changed under the parse is answered from but not kept, so
+        # the next question reads it again.
+        self._reading = parsed if self._identity() == before else None
+        return parsed
 
     def entries(self) -> tuple[LedgerEntry, ...]:
         """Every entry, in the order recorded.
@@ -174,8 +267,11 @@ class Ledger:
         Order comes from the file, not from the filesystem: the ledger is the
         authority on sequence, and a directory listing is not a sequence.
         """
-        if not file_is_present(self._path):
-            return ()
+        reading = self._current()
+        return () if reading is None else reading.entries
+
+    def _parse(self) -> list[LedgerEntry]:
+        """Read the whole file. Unchanged: this is the only way a line becomes an entry."""
         found = []
         for number, line in enumerate(
             self._path.read_text(encoding="utf-8").splitlines(), start=1
@@ -207,7 +303,7 @@ class Ledger:
                 raise LedgerError(
                     f"ledger line {number} is not readable: {error}"
                 ) from error
-        return tuple(found)
+        return found
 
     @contextlib.contextmanager
     def exclusive(self):
@@ -235,11 +331,29 @@ class Ledger:
             os.close(handle)
 
     def append(self, entry: LedgerEntry) -> None:
-        """Append one entry. The only way the ledger grows."""
+        """Append one entry. The only way the ledger grows.
+
+        The kept reading is extended by this entry only if the file was exactly
+        the reading's file before the write and is exactly one line longer after
+        it; otherwise it is dropped and the next question re-reads the file.
+        """
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        line = canonical_bytes(entry.as_payload())
+        line = canonical_bytes(entry.as_payload()) + b"\n"
+        before = self._identity()
         with self._path.open("ab") as handle:
-            handle.write(line + b"\n")
+            handle.write(line)
+        reading = self._reading
+        after = self._identity()
+        if (
+            reading is not None
+            and before is not None
+            and reading.identity == before
+            and after is not None
+            and after[1] == before[1] + len(line)
+        ):
+            reading.extend(entry, after)
+        else:
+            self._reading = None
 
     def chain(self, source_id: str) -> tuple[LedgerEntry, ...]:
         """This source's versions, oldest first.
@@ -257,7 +371,8 @@ class Ledger:
         history was fine and the reconstruction was wrong.
         """
         require_id(source_id, SOURCE_PREFIX)
-        mine = tuple(entry for entry in self.entries() if entry.source_id == source_id)
+        reading = self._current()
+        mine = () if reading is None else reading.of(source_id)
         if not mine:
             return ()
         if mine[0].previous_digest is not None:

@@ -119,7 +119,7 @@ left for a reader to discover by being wrong.
 | `KeyOrigin` | `src/nous_os/attribution.py:33` | `OPERATOR` · `DERIVED` · `CONTENT` · `UNKNOWN` | How an explicit key reached this boundary. Only two origins may approach promotion. |
 | `Verdict` | `src/nous_os/adjudication.py:42` | `PROMOTE` · `REJECT` · `DEFER` | What a person decided. Deferral is an outcome, never latent permission. |
 | `Tier` | `src/nous_os/capability.py:75` | `READ` · `PROPOSE` · `PROMOTE` · `EXTERNAL_CONSEQUENTIAL_ACTION` | Four kinds of authority, deliberately without rank. A tier is not a level. |
-| `IngestStatus` | `src/nous_os/ledger.py:74` | `INGESTED` · `UNCHANGED` · `SUPERSEDED` | What one ingest actually did to the record. |
+| `IngestStatus` | `src/nous_os/ledger.py:75` | `INGESTED` · `UNCHANGED` · `SUPERSEDED` | What one ingest actually did to the record. |
 | `Gate` | `src/nous_os/discovery.py:47` | `G1` · `G2` · `G3` · `G4` · `G5` · `G6` | The six rubric criteria a proposed link is judged against. Every one is recorded, including when unknown. |
 | `GateOutcome` | `src/nous_os/discovery.py:58` | `PASS` · `FAIL` · `UNKNOWN` | What one criterion returned. Unknown is not permission to pass. |
 | `Depth` | `src/nous_os/discovery.py:66` | `OBVIOUS` · `MODERATE` · `DEEP` | How a link is described, as a label. Not a rank and not a score. |
@@ -154,8 +154,8 @@ left for a reader to discover by being wrong.
 | `Locator` | `src/nous_os/provenance.py:71` | — | A byte range in a specific snapshot. Not a page number and not a guess. |
 | `Snapshot` | `src/nous_os/snapshots.py:43` | — | The bytes of a source as they were when read, addressed by their own content. |
 | `SnapshotStore` | `src/nous_os/snapshots.py:67` | — | Where snapshots live. Nothing overwrites one. |
-| `Ledger` | `src/nous_os/ledger.py:161` | — | The append-only record of every ingest. A file, not an index — reading it back is the whole of recovery. |
-| `LedgerEntry` | `src/nous_os/ledger.py:97` | — | One ingest, recorded once. |
+| `Ledger` | `src/nous_os/ledger.py:204` | — | The append-only record of every ingest. A file, not an index — reading it back is the whole of recovery. |
+| `LedgerEntry` | `src/nous_os/ledger.py:98` | — | One ingest, recorded once. |
 | `Proposal` | `src/nous_os/candidates.py:49` | — | Something put forward. Its holder has no authority whatsoever. |
 | `CandidateStore` | `src/nous_os/candidates.py:91` | — | Append-only proposals with no route to canon. |
 | `HumanDecision` | `src/nous_os/adjudication.py:108` | — | A person's act. The only thing that moves a proposal into canon. |
@@ -334,7 +334,7 @@ judgement sits on top of those facts and is offered as a judgement.
 
 ### Candidate — `Mneme`
 
-- **Proposed boundary:** proposed for the append-only durable-trace family: `Ledger` at `src/nous_os/ledger.py:161`, `SnapshotStore` at `src/nous_os/snapshots.py:67`, `CandidateStore` at `src/nous_os/candidates.py:91`, `RejectionMemory` at `src/nous_os/adjudication.py:249`, `AgentMemory` at `src/nous_os/adjudication.py:313`, and `BridgeRegistry` at `src/nous_os/discovery.py:347`.
+- **Proposed boundary:** proposed for the append-only durable-trace family: `Ledger` at `src/nous_os/ledger.py:204`, `SnapshotStore` at `src/nous_os/snapshots.py:67`, `CandidateStore` at `src/nous_os/candidates.py:91`, `RejectionMemory` at `src/nous_os/adjudication.py:249`, `AgentMemory` at `src/nous_os/adjudication.py:313`, and `BridgeRegistry` at `src/nous_os/discovery.py:347`.
 - **Evidence the boundary exists:** the shape is real and is the best-evidenced of the candidates. All six are append-only and each is explicit in its own docstring about what authority it does and does not have. **One earlier claim is withdrawn:** they are not all read back in file order. The snapshot store returns its contents *sorted*, and says why — it records no time, so an order taken from the filesystem would be an accident presented as a fact. That is the same discipline this document argues for everywhere else, and it makes the family less uniform than the draft claimed.
 - **Intended meaning:** Greek *mneme*, memory as retention — a state, the persisting trace of something past, classically distinguished from the active search that recovers it. The variant spelling sometimes floated is not a Greek noun at all but a back-formation from an adjectival stem.
 - **Why the mapping is accurate or inaccurate:** inaccurate, on the one distinction the system cannot afford to blur. The six stores are **not the same kind of thing**: two hold the files canon is made of, two others explicitly hold material with no route to canon at all, and the rest are records *about* those boundaries. **An earlier draft put the first pair more strongly — that those files simply *are* canon — which is the very claim the `canon` record above disowns as an overreach.** It is withdrawn here too: a store neutral about standing is not a standing. What remains, and is sufficient, is that the six differ in their relation to authority. A single word across all six says they share a standing they do not share, and what has authority versus what does not is the load-bearing distinction in the whole design. Two further objections stand on their own: the code already uses "memory" as a narrower technical name, so elevating a memory-word gives it two scopes at once; and "memory" currently connotes machine memory that shapes future behaviour, which is exactly the connotation one of these classes was built to refuse.
@@ -516,7 +516,7 @@ to rediscover them.
 | # | The defect | Where |
 |---|---|---|
 | 1 | `Verdict` names two unrelated things: a person's promotion decision, and whether a measured strategy beat its baseline. Both are importable under the bare name. | `src/nous_os/adjudication.py:42` and `src/nous_os/ablation.py:220` |
-| 2 | One refusal rule — *an identifier names one thing* — is implemented three times under three names, two of them carrying the identical message string. | `src/nous_os/ledger.py:64`, `src/nous_os/temporal.py:43`, `src/nous_os/projection.py:35` |
+| 2 | One refusal rule — *an identifier names one thing* — is implemented three times under three names, two of them carrying the identical message string. | `src/nous_os/ledger.py:65`, `src/nous_os/temporal.py:43`, `src/nous_os/projection.py:35` |
 | 3 | `RunStatus` and `RoundStatus` are the same two-member vocabulary with the same wire values under two names. | `src/nous_os/measure.py:55` and `src/nous_os/discovery.py:96` |
 | 4 | "Bridge" covers two unrelated objects: a judged candidate link with citations and a rubric, and a bare measurement fixture with neither. | `src/nous_os/discovery.py:216` and `src/nous_os/ablation.py:40` |
 | 5 | "Endpoint" has three meanings: a cited end of a proposed link, a document/anchor pair in a measurement, and a graph edge's source or target. Only the first is an importable symbol; the other two are the word used in prose and in an error message, which is part of why the collision is easy to miss. | `src/nous_os/discovery.py:197`, `src/nous_os/ablation.py:40`, `src/nous_os/projection.py:397` |
