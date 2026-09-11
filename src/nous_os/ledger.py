@@ -175,7 +175,7 @@ class _Reading:
     the moment the file's identity is not the one it recorded.
     """
 
-    __slots__ = ("identity", "_entries", "_by_source", "_tuple")
+    __slots__ = ("identity", "_entries", "_by_source", "_tuple", "_verified")
 
     def __init__(self, identity: _FileIdentity, entries: list[LedgerEntry]) -> None:
         self.identity = identity
@@ -184,6 +184,10 @@ class _Reading:
         for entry in entries:
             self._by_source.setdefault(entry.source_id, []).append(entry)
         self._tuple: tuple[LedgerEntry, ...] | None = None
+        # Sources whose chain has been verified against this exact reading. A
+        # chain is verified once per reading, not once per question: the links
+        # cannot change while the bytes they were read from have not.
+        self._verified: set[str] = set()
 
     @property
     def entries(self) -> tuple[LedgerEntry, ...]:
@@ -191,12 +195,42 @@ class _Reading:
             self._tuple = tuple(self._entries)
         return self._tuple
 
-    def of(self, source_id: str) -> tuple[LedgerEntry, ...]:
-        return tuple(self._by_source.get(source_id, ()))
+    def verified_chain(self, source_id: str) -> list[LedgerEntry]:
+        """This source's entries, their links verified -- once, then remembered.
+
+        The checks are exactly the ones ``Ledger.chain`` always made; they run
+        the first time a source is asked about in this reading and again only
+        after an extension that did not link to the tip.
+        """
+        mine = self._by_source.get(source_id)
+        if not mine:
+            return []
+        if source_id not in self._verified:
+            if mine[0].previous_digest is not None:
+                raise LedgerError(
+                    f"the first recorded entry for {source_id} claims a predecessor, so "
+                    "this ledger does not contain the start of its history"
+                )
+            for earlier, later in zip(mine, mine[1:]):
+                if later.previous_digest != earlier.snapshot_digest:
+                    raise LedgerError(
+                        f"the version chain for {source_id} is broken: an entry claims "
+                        f"predecessor {later.previous_digest} where the preceding entry "
+                        f"recorded {earlier.snapshot_digest}"
+                    )
+            self._verified.add(source_id)
+        return mine
 
     def extend(self, entry: LedgerEntry, identity: _FileIdentity) -> None:
+        mine = self._by_source.setdefault(entry.source_id, [])
+        # A verified chain stays verified only if the new entry links to its tip;
+        # otherwise the next question re-runs the checks and raises as before.
+        if entry.source_id in self._verified:
+            tip = mine[-1].snapshot_digest if mine else None
+            if entry.previous_digest != tip:
+                self._verified.discard(entry.source_id)
         self._entries.append(entry)
-        self._by_source.setdefault(entry.source_id, []).append(entry)
+        mine.append(entry)
         self._tuple = None
         self.identity = identity
 
@@ -216,9 +250,9 @@ class Ledger:
     verifies the chains, the bytes written are the same bytes, and reading the
     file back is still the whole of recovery.
 
-    Measured before this: every ``ingest`` re-parsed the whole file to find one
-    source's tip, so a run of n ingests cost n parses of a growing file --
-    2,000 records took 11 s to take in and 21 s to take in again unchanged.
+    Measured before this, on one machine: every ``ingest`` re-parsed the whole
+    file to find one source's tip, so a run of n ingests cost n parses of a
+    growing file, and doubling n multiplied the time by about four.
     """
 
     def __init__(self, path: Path) -> None:
@@ -228,6 +262,12 @@ class Ledger:
     @property
     def path(self) -> Path:
         return self._path
+
+    @staticmethod
+    def _identity_of(status: os.stat_result) -> _FileIdentity | None:
+        if not stat.S_ISREG(status.st_mode):
+            return None
+        return (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
 
     def _identity(self) -> _FileIdentity | None:
         """The file's identity now, or None where :func:`file_is_present` says absent.
@@ -241,25 +281,35 @@ class Ledger:
             status = os.stat(self._path)
         except (FileNotFoundError, NotADirectoryError):
             return None
-        if not stat.S_ISREG(status.st_mode):
-            return None
-        return (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
+        return self._identity_of(status)
+
+    #: How many times a read is retried when the file changes under the parse
+    #: before the ledger refuses to answer from a read it knows is mixed.
+    _REREADS = 3
 
     def _current(self) -> _Reading | None:
-        """The reading for the file as it is now: the kept one, or a fresh parse."""
-        before = self._identity()
-        if before is None:
-            self._reading = None
-            return None
-        reading = self._reading
-        if reading is not None and reading.identity == before:
-            return reading
-        parsed = _Reading(before, self._parse())
-        # Kept only if the file was the same thing before and after the parse;
-        # a file that changed under the parse is answered from but not kept, so
-        # the next question reads it again.
-        self._reading = parsed if self._identity() == before else None
-        return parsed
+        """The reading for the file as it is now: the kept one, or a fresh parse.
+
+        A parse is only ever answered from if the file's identity was the same
+        before and after it. A file that changed under the parse is read again;
+        a file that keeps changing is refused rather than answered from a read
+        that mixes two states -- an earlier form returned that mixed read once,
+        which an audit caught.
+        """
+        for _ in range(self._REREADS):
+            before = self._identity()
+            if before is None:
+                self._reading = None
+                return None
+            reading = self._reading
+            if reading is not None and reading.identity == before:
+                return reading
+            self._reading = None  # nothing kept while the file is being re-read
+            parsed = _Reading(before, self._parse())
+            if self._identity() == before:
+                self._reading = parsed
+                return parsed
+        raise LedgerError("the ledger changed under every attempt to read it; refusing to answer from a mixed read")
 
     def entries(self) -> tuple[LedgerEntry, ...]:
         """Every entry, in the order recorded.
@@ -270,8 +320,37 @@ class Ledger:
         reading = self._current()
         return () if reading is None else reading.entries
 
+    @staticmethod
+    def _entry_from_line(line: str, number: int) -> LedgerEntry:
+        """One line of the file, as the entry it says. The only way a line becomes an entry.
+
+        Used for every line of a parse and for the line an ``append`` has just
+        written, so a reading holds exactly what a parse of the file would hold
+        -- never the caller's object, whose ``recorded_at`` may carry a
+        timezone the file's UTC form does not. That difference was invisible to
+        ``==`` (instants compare equal) and visible to the derived store, which
+        writes the instant's text; a build from the instance that ingested and
+        a build from a fresh instance came out byte-different.
+        """
+        try:
+            payload = json.loads(line)
+            return LedgerEntry(
+                source_id=payload["source_id"],
+                snapshot_digest=payload["snapshot_digest"],
+                previous_digest=payload["previous_digest"],
+                recorded_at=datetime.fromisoformat(payload["recorded_at"]),
+                quarantine=tuple(QuarantineReason(value) for value in payload["quarantine"]),
+            )
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+            # One wrap for the whole construction, not only for the JSON
+            # parse. A caller that catches LedgerError to report a corrupt
+            # ledger should not crash on a raw KeyError instead -- and the
+            # line number is the useful part, which an unwrapped exception
+            # does not carry.
+            raise LedgerError(f"ledger line {number} is not readable: {error}") from error
+
     def _parse(self) -> list[LedgerEntry]:
-        """Read the whole file. Unchanged: this is the only way a line becomes an entry."""
+        """Read the whole file."""
         found = []
         for number, line in enumerate(
             self._path.read_text(encoding="utf-8").splitlines(), start=1
@@ -281,28 +360,7 @@ class Ledger:
                 # Whitespace is content that failed to parse, and "a line nobody
                 # can parse is not an absent line".
                 continue
-            try:
-                payload = json.loads(line)
-                found.append(
-                    LedgerEntry(
-                        source_id=payload["source_id"],
-                        snapshot_digest=payload["snapshot_digest"],
-                        previous_digest=payload["previous_digest"],
-                        recorded_at=datetime.fromisoformat(payload["recorded_at"]),
-                        quarantine=tuple(
-                            QuarantineReason(value) for value in payload["quarantine"]
-                        ),
-                    )
-                )
-            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
-                # One wrap for the whole construction, not only for the JSON
-                # parse. A caller that catches LedgerError to report a corrupt
-                # ledger should not crash on a raw KeyError instead -- and the
-                # line number is the useful part, which an unwrapped exception
-                # does not carry.
-                raise LedgerError(
-                    f"ledger line {number} is not readable: {error}"
-                ) from error
+            found.append(self._entry_from_line(line, number))
         return found
 
     @contextlib.contextmanager
@@ -333,25 +391,38 @@ class Ledger:
     def append(self, entry: LedgerEntry) -> None:
         """Append one entry. The only way the ledger grows.
 
-        The kept reading is extended by this entry only if the file was exactly
-        the reading's file before the write and is exactly one line longer after
-        it; otherwise it is dropped and the next question re-reads the file.
+        The identity the kept reading is compared against is taken from the
+        descriptor the line is written to, after the open, so a file replaced
+        under the path between a stat and the open cannot be mistaken for the
+        one the reading came from -- an audit reproduced exactly that with a
+        same-size replacement. The reading is extended by this entry only if
+        the descriptor's file was the reading's file before the write, is
+        exactly one line longer after it, and is still the file the path names;
+        otherwise it is dropped and the next question re-reads the file. Stated
+        rather than hidden: a writer that rewrites this same file in place, at
+        the same size, inside the window between that check and the write,
+        without the lock ``ingest`` holds, is not seen by this instance until
+        the file's identity next changes. The ledger is a single-writer design
+        (see ``exclusive``), and that writer is outside it.
         """
         self._path.parent.mkdir(parents=True, exist_ok=True)
         line = canonical_bytes(entry.as_payload()) + b"\n"
-        before = self._identity()
         with self._path.open("ab") as handle:
+            before = self._identity_of(os.fstat(handle.fileno()))
             handle.write(line)
+            handle.flush()
+            after = self._identity_of(os.fstat(handle.fileno()))
         reading = self._reading
-        after = self._identity()
         if (
             reading is not None
             and before is not None
             and reading.identity == before
             and after is not None
             and after[1] == before[1] + len(line)
+            and self._identity() == after
         ):
-            reading.extend(entry, after)
+            written = self._entry_from_line(line.decode("utf-8").rstrip("\n"), len(reading.entries) + 1)
+            reading.extend(written, after)
         else:
             self._reading = None
 
@@ -372,27 +443,18 @@ class Ledger:
         """
         require_id(source_id, SOURCE_PREFIX)
         reading = self._current()
-        mine = () if reading is None else reading.of(source_id)
-        if not mine:
-            return ()
-        if mine[0].previous_digest is not None:
-            raise LedgerError(
-                f"the first recorded entry for {source_id} claims a predecessor, so "
-                "this ledger does not contain the start of its history"
-            )
-        for earlier, later in zip(mine, mine[1:]):
-            if later.previous_digest != earlier.snapshot_digest:
-                raise LedgerError(
-                    f"the version chain for {source_id} is broken: an entry claims "
-                    f"predecessor {later.previous_digest} where the preceding entry "
-                    f"recorded {earlier.snapshot_digest}"
-                )
-        return mine
+        return () if reading is None else tuple(reading.verified_chain(source_id))
 
     def current_digest(self, source_id: str) -> str | None:
-        """The digest currently held for this source, or None if never ingested."""
-        chain = self.chain(source_id)
-        return chain[-1].snapshot_digest if chain else None
+        """The digest currently held for this source, or None if never ingested.
+
+        The chain is verified exactly as :meth:`chain` verifies it -- once per
+        reading, so asking for a tip does not re-walk a long history each time.
+        """
+        require_id(source_id, SOURCE_PREFIX)
+        reading = self._current()
+        mine = [] if reading is None else reading.verified_chain(source_id)
+        return mine[-1].snapshot_digest if mine else None
 
 
 def ingest(

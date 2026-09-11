@@ -44,19 +44,26 @@ def test_a_long_lived_reading_answers_like_a_fresh_one_after_every_step(tmp_path
     store, warm = _fresh(tmp_path)
     rng = random.Random(20260912)
     texts = ["tide table", "lamp schedule", "tide table", "keeper's log", "lamp schedule"]
+    zones = [timezone.utc, timezone(timedelta(hours=2)), timezone(timedelta(hours=-5, minutes=-30))]
     at = T0
     for step in range(200):
         source = rng.choice(SOURCES)
         text = rng.choice(texts)
         at += timedelta(minutes=1)
-        warm_result = ingest(store, warm, source, UntrustedText(text), at)
+        warm_result = ingest(store, warm, source, UntrustedText(text), at.astimezone(rng.choice(zones)))
         fresh = Ledger(warm.path)
-        assert warm.entries() == fresh.entries(), step
+        assert _spelled(warm.entries()) == _spelled(fresh.entries()), step
         for candidate in SOURCES:
-            assert warm.chain(candidate) == fresh.chain(candidate), (step, candidate)
+            assert _spelled(warm.chain(candidate)) == _spelled(fresh.chain(candidate)), (step, candidate)
             assert warm.current_digest(candidate) == fresh.current_digest(candidate), (step, candidate)
         assert warm_result.status in (IngestStatus.INGESTED, IngestStatus.UNCHANGED, IngestStatus.SUPERSEDED)
     assert len(warm.entries()) == len(Ledger(warm.path).entries()) > 8
+
+
+def _spelled(entries) -> list[tuple]:
+    """Entries with their instants as text: ``==`` on datetimes compares instants and
+    would hide a timezone the file does not carry."""
+    return [(e.source_id, e.snapshot_digest, e.previous_digest, e.recorded_at.isoformat(), e.quarantine) for e in entries]
 
 
 # --- O2: the file format and the written bytes are unchanged -----------------------------
@@ -211,10 +218,177 @@ def test_a_run_of_ingests_parses_the_file_once(tmp_path: Path, monkeypatch) -> N
     store, ledger = _fresh(tmp_path)
     for index, source in enumerate(SOURCES * 5):
         ingest(store, ledger, source, UntrustedText(f"text {index}"), T0 + timedelta(minutes=index))
-    assert parses["count"] <= 1
+    assert parses["count"] == 1
     parses["count"] = 0
     for index, source in enumerate(SOURCES * 5):
         ingest(store, ledger, source, UntrustedText(f"text {index}"), T0 + timedelta(minutes=index))
     assert parses["count"] == 0  # the warm reading answered every question
     assert Ledger(ledger.path).entries() == ledger.entries()
     assert parses["count"] == 1  # the fresh instance read the file exactly once
+
+
+# --- findings of the first independent review of this change ------------------------------
+
+
+class _ReplaceAfterStat(Ledger):
+    """A scheduler point: replace the file under its path (same size, new inode)
+    right after the pre-write identity is sampled and before the write. Reproduces
+    an audit's race, in which an earlier form extended its reading with the
+    replacement's identity and answered from a history the file no longer held."""
+
+    def __init__(self, path: Path, replacement: Path) -> None:
+        super().__init__(path)
+        self._replacement = replacement
+        self.armed = False
+
+    def _identity_of(self, status):
+        result = Ledger._identity_of(status)
+        if self.armed:
+            self.armed = False
+            os.replace(self._replacement, self.path)
+        return result
+
+
+class _ReplaceAfterParse(Ledger):
+    """A scheduler point: replace the file after it was parsed, before the identity is re-read."""
+
+    def __init__(self, path: Path, replacement: Path, times: int = 1) -> None:
+        super().__init__(path)
+        self._replacement = replacement
+        self._times = times
+
+    def _parse(self):
+        parsed = super()._parse()
+        if self._times:
+            self._times -= 1
+            data = self.path.read_bytes()
+            self.path.write_bytes(self._replacement.read_bytes())
+            self._replacement.write_bytes(data)
+        return parsed
+
+
+def _same_size_pair(tmp_path: Path) -> tuple[Path, Path, LedgerEntry, LedgerEntry]:
+    old = LedgerEntry(SOURCES[0], "a" * 64, None, T0)
+    new = LedgerEntry(SOURCES[1], "b" * 64, None, T0)
+    path = tmp_path / "ledger.jsonl"
+    replacement = tmp_path / "replacement.jsonl"
+    path.write_bytes(canonical_bytes(old.as_payload()) + b"\n")
+    replacement.write_bytes(canonical_bytes(new.as_payload()) + b"\n")
+    assert path.stat().st_size == replacement.stat().st_size
+    return path, replacement, old, new
+
+
+def test_a_file_replaced_between_the_stat_and_the_write_is_not_mistaken_for_the_reading(tmp_path: Path) -> None:
+    """Whatever the file now holds, the warm instance answers what a fresh one answers.
+    (The line went to the file that was replaced away -- that is the replacer's doing,
+    and the ledger's job is not to pretend otherwise.)"""
+    path, replacement, old, new = _same_size_pair(tmp_path)
+    tail = LedgerEntry(SOURCES[2], "c" * 64, None, T0)
+    warm = _ReplaceAfterStat(path, replacement)
+    assert warm.entries() == (old,)
+    warm.armed = True
+    warm.append(tail)
+    assert warm.entries() == Ledger(path).entries()
+    assert warm.entries()[0] == new
+    assert old not in warm.entries()
+
+
+def test_a_file_replaced_under_the_parse_is_read_again_not_answered_from(tmp_path: Path) -> None:
+    path, replacement, old, new = _same_size_pair(tmp_path)
+    warm = _ReplaceAfterParse(path, replacement)
+    assert warm.entries() == (new,)  # the file the parse ended on, not the one it started on
+    assert warm.entries() == Ledger(path).entries()
+
+
+def test_a_file_that_keeps_changing_under_the_read_is_refused(tmp_path: Path) -> None:
+    path, replacement, _, _ = _same_size_pair(tmp_path)
+    restless = _ReplaceAfterParse(path, replacement, times=10)
+    with pytest.raises(LedgerError, match="changed under every attempt"):
+        restless.entries()
+
+
+def test_a_long_history_of_one_source_is_verified_once_per_reading(tmp_path: Path, monkeypatch) -> None:
+    """Asking a source's tip must not re-walk its whole history each time: the links
+    were verified when the reading was made, and an append that links to the tip
+    keeps them verified. 300 versions of one source: one full verification."""
+    from nous_os import ledger as module
+
+    full_verifications = {"count": 0}
+    original = module._Reading.verified_chain
+
+    def counted(self, source_id):
+        if source_id not in self._verified and self._by_source.get(source_id):
+            full_verifications["count"] += 1
+        return original(self, source_id)
+
+    monkeypatch.setattr(module._Reading, "verified_chain", counted)
+    store, ledger = _fresh(tmp_path)
+    for version in range(300):
+        ingest(store, ledger, SOURCES[0], UntrustedText(f"version {version}"), T0 + timedelta(minutes=version))
+    assert len(ledger.chain(SOURCES[0])) == 300
+    assert full_verifications["count"] == 1
+    # And a link that does not match the tip is still refused on the next question.
+    ledger.append(LedgerEntry(SOURCES[0], "d" * 64, "e" * 64, T0 + timedelta(days=1)))
+    with pytest.raises(LedgerError, match="broken"):
+        ledger.current_digest(SOURCES[0])
+
+
+def test_the_reading_holds_what_the_file_says_not_what_the_caller_passed(tmp_path: Path) -> None:
+    """A caller's instant may carry a timezone; the file holds UTC. The derived store writes
+    the instant's text, so a build from the instance that ingested must equal a build from
+    a fresh instance byte for byte -- rebuildability is the ledger's promise, not only equality."""
+    from nous_os import derived
+
+    store, warm = _fresh(tmp_path)
+    plus_two = timezone(timedelta(hours=2))
+    ingest(store, warm, SOURCES[0], UntrustedText("one"), T0.astimezone(plus_two))
+    ingest(store, warm, SOURCES[1], UntrustedText("two"), (T0 + timedelta(hours=1)).astimezone(plus_two))
+    assert [e.recorded_at.isoformat() for e in warm.entries()] == [e.recorded_at.isoformat() for e in Ledger(warm.path).entries()]
+    assert all(e.recorded_at.utcoffset() == timedelta(0) for e in warm.entries())
+    from_warm = derived.build(store, warm, tmp_path / "warm.sqlite3")
+    from_fresh = derived.build(store, Ledger(warm.path), tmp_path / "fresh.sqlite3")
+    assert derived.state_digest(from_warm) == derived.state_digest(from_fresh)
+
+
+def test_an_append_without_a_prior_read_does_not_hide_another_writer(tmp_path: Path) -> None:
+    """Warm A; B appends; A appends without asking first. A must not extend its reading over
+    B's line: the pre-write identity is not the reading's, so the reading is dropped."""
+    store, a = _fresh(tmp_path)
+    b = Ledger(a.path)
+    ingest(store, a, SOURCES[0], UntrustedText("one"), T0)
+    assert len(a.entries()) == 1  # a's reading is warm
+    ingest(store, b, SOURCES[1], UntrustedText("two"), T0 + timedelta(hours=1))
+    a.append(LedgerEntry(SOURCES[2], "c" * 64, None, T0 + timedelta(hours=2)))
+    assert [e.source_id for e in a.entries()] == [SOURCES[0], SOURCES[1], SOURCES[2]]
+    assert _spelled(a.entries()) == _spelled(Ledger(a.path).entries())
+
+
+class _OtherWriterAfterStat(Ledger):
+    """A scheduler point: another instance appends right after this one's pre-write check."""
+
+    def __init__(self, path: Path, other: Ledger, entry: LedgerEntry) -> None:
+        super().__init__(path)
+        self._other, self._entry, self.armed = other, entry, False
+
+    def _identity_of(self, status):
+        result = Ledger._identity_of(status)
+        if self.armed:
+            self.armed = False
+            self._other.append(self._entry)
+        return result
+
+
+def test_another_writer_appending_inside_the_write_window_is_not_hidden(tmp_path: Path) -> None:
+    """Another writer lands a line between this instance's pre-write check and its write. The
+    file is then two lines longer, not one; the reading is dropped, and the next question
+    shows both lines."""
+    store = SnapshotStore(tmp_path / "snapshots")
+    other = Ledger(tmp_path / "ledger.jsonl")
+    theirs = LedgerEntry(SOURCES[1], "b" * 64, None, T0 + timedelta(hours=1))
+    a = _OtherWriterAfterStat(tmp_path / "ledger.jsonl", other, theirs)
+    ingest(store, a, SOURCES[0], UntrustedText("one"), T0)
+    assert len(a.entries()) == 1
+    a.armed = True
+    a.append(LedgerEntry(SOURCES[2], "c" * 64, None, T0 + timedelta(hours=2)))
+    assert [e.source_id for e in a.entries()] == [SOURCES[0], SOURCES[1], SOURCES[2]]
+    assert _spelled(a.entries()) == _spelled(Ledger(a.path).entries())
