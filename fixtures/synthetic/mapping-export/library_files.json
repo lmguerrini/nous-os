@@ -1,0 +1,47 @@
+[
+ {
+  "file_id": "file_chart01",
+  "file_name": "harbour-chart.png",
+  "mime_type": "image/png",
+  "file_size_bytes": 71,
+  "library_artifact_type": "image",
+  "library_file_category": null,
+  "origination_message_id": "msg-lamp-01",
+  "origination_thread_id": "conversation-lamp",
+  "image_gen_generation_id": null,
+  "created_at": "2026-09-01T10:00:00+00:00",
+  "file_upload_time": null,
+  "is_project": false,
+  "id": "libf-chart"
+ },
+ {
+  "file_id": "file_recipe",
+  "file_name": "recipe.json",
+  "mime_type": "application/json",
+  "file_size_bytes": 39,
+  "library_artifact_type": null,
+  "library_file_category": "upload",
+  "origination_message_id": null,
+  "origination_thread_id": null,
+  "image_gen_generation_id": null,
+  "created_at": "2026-09-02T10:00:00+00:00",
+  "file_upload_time": "2026-09-02T10:00:00+00:00",
+  "is_project": false,
+  "id": "libf-recipe"
+ },
+ {
+  "file_id": "file_expired",
+  "file_name": "expired.png",
+  "mime_type": "image/png",
+  "file_size_bytes": 1,
+  "library_artifact_type": "image",
+  "library_file_category": null,
+  "origination_message_id": null,
+  "origination_thread_id": null,
+  "image_gen_generation_id": null,
+  "created_at": "2026-09-03T10:00:00+00:00",
+  "file_upload_time": null,
+  "is_project": false,
+  "id": "libf-expired"
+ }
+]

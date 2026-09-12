@@ -1,0 +1,124 @@
+{
+ "version": 1,
+ "manifest_file": "export_manifest.json",
+ "export_files": [
+  {
+   "path": "ads.json",
+   "size_bytes": 3
+  },
+  {
+   "path": "chat.html",
+   "size_bytes": 88
+  },
+  {
+   "path": "conversation_asset_file_names.json",
+   "size_bytes": 86
+  },
+  {
+   "path": "conversations-000.json",
+   "size_bytes": 5975
+  },
+  {
+   "path": "conversations-001.json",
+   "size_bytes": 1014
+  },
+  {
+   "path": "file_chart01.dat",
+   "size_bytes": 78
+  },
+  {
+   "path": "file-oil-ledger.dat",
+   "size_bytes": 38
+  },
+  {
+   "path": "file_recipe.dat",
+   "size_bytes": 38
+  },
+  {
+   "path": "library_files.json",
+   "size_bytes": 1286
+  },
+  {
+   "path": "sites/export_manifest.json",
+   "size_bytes": 158
+  },
+  {
+   "path": "user.json",
+   "size_bytes": 102
+  },
+  {
+   "path": "user_settings.json",
+   "size_bytes": 51
+  }
+ ],
+ "logical_files": {
+  "ads.json": {
+   "files": [
+    "ads.json"
+   ],
+   "sharded": false
+  },
+  "chat.html": {
+   "files": [
+    "chat.html"
+   ],
+   "sharded": false
+  },
+  "conversation_asset_file_names.json": {
+   "files": [
+    "conversation_asset_file_names.json"
+   ],
+   "sharded": false
+  },
+  "file_chart01.dat": {
+   "files": [
+    "file_chart01.dat"
+   ],
+   "sharded": false
+  },
+  "file-oil-ledger.dat": {
+   "files": [
+    "file-oil-ledger.dat"
+   ],
+   "sharded": false
+  },
+  "file_recipe.dat": {
+   "files": [
+    "file_recipe.dat"
+   ],
+   "sharded": false
+  },
+  "library_files.json": {
+   "files": [
+    "library_files.json"
+   ],
+   "sharded": false
+  },
+  "sites/export_manifest.json": {
+   "files": [
+    "sites/export_manifest.json"
+   ],
+   "sharded": false
+  },
+  "user.json": {
+   "files": [
+    "user.json"
+   ],
+   "sharded": false
+  },
+  "user_settings.json": {
+   "files": [
+    "user_settings.json"
+   ],
+   "sharded": false
+  },
+  "conversations.json": {
+   "files": [
+    "conversations-000.json",
+    "conversations-001.json"
+   ],
+   "sharded": true,
+   "shard_count": 2
+  }
+ }
+}

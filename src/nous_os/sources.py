@@ -111,6 +111,11 @@ class SourceKind(Enum):
     REFLECTION = "reflection"
     #: A feedback record in the provider's own shape, kept opaque.
     FEEDBACK = "feedback"
+    #: A file the provider exported beside the conversations -- an upload, a
+    #: generated image, a document -- identified by the provider's file
+    #: identifier. The record holds the file's identity, digest and provenance;
+    #: its bytes stay in the immutable archive and are never a snapshot.
+    ASSET = "asset"
 
 
 class IdentityBasis(Enum):

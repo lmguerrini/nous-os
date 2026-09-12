@@ -339,6 +339,7 @@ only thing this repository holds is the software that reads it.
 | Immutable source snapshots | present |
 | Ingestion: append-only ledger, versioning, invalidation | present |
 | Source memory: provider export ingest, identity kept across re-import, per-export sightings | present |
+| Source memory: a second export format (sharded conversation mappings) with asset records — identity, digest and provenance of exported files, their bytes left in the archive | present |
 | Derived index, rebuildable from the files alone | present |
 | Measuring instrument and cross-language baseline | present |
 | Context compilation, with a measured default | present |
@@ -371,7 +372,11 @@ the same export twice writes nothing the second time. Which export carried
 which version is written down separately from the content, so a re-export is
 not a revision. The adapter recognises a format by the shape of its files,
 never by their names, and the provider is a string read from the export
-rather than a word in the code. Nothing in it is canonical, and no shipped
+rather than a word in the code. A second adapter reads exports that split a
+conversation list into shards of node mappings and point at exported files:
+each file becomes an asset record — its identifier, digest, detected type,
+given name and the messages that point at it — while its bytes stay in the
+archive, never in a snapshot. Nothing in it is canonical, and no shipped
 operation reaches it.
 
 **How context is assembled.** A pack is built from a ranking, and every pack
@@ -583,6 +588,8 @@ src/
     ├── sources.py        source memory: provider records, the identity each keeps, where it was seen
     ├── assistant_export.py
     │                     one export format, classified by shape; the provider is read, not named
+    ├── mapping_export.py
+    │                     a second format: sharded conversation mappings and the assets they point at
     ├── derived.py        the rebuildable index over everything above
     ├── aliases.py        interchangeable ways of relating terms across languages
     ├── measure.py        the measuring instrument, and its third answer
@@ -638,6 +645,7 @@ fixtures/
     ├── bilingual/        the same subjects in two languages
     ├── injection/        text that reads as an instruction, for the boundary tests
     ├── export/           an invented assistant export, its files deliberately misnamed
+    ├── mapping-export/   an invented sharded conversation-mapping export, text files standing in for assets
     └── projection/       fixed graphs the visual layer is measured against
 ```
 

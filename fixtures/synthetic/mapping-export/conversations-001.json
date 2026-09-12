@@ -1,0 +1,49 @@
+[
+ {
+  "title": "Fog bell schedule",
+  "create_time": 1789002000.0,
+  "update_time": 1789002100.0,
+  "mapping": {
+   "node-root-bell": {
+    "id": "node-root-bell",
+    "parent": null,
+    "children": [
+     "msg-bell-01"
+    ],
+    "message": null
+   },
+   "msg-bell-01": {
+    "id": "msg-bell-01",
+    "parent": "node-root-bell",
+    "children": [],
+    "message": {
+     "id": "msg-bell-01",
+     "author": {
+      "role": "user",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1789002001.0,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "Ring the bell every two minutes in fog."
+      ]
+     },
+     "metadata": {
+      "model_slug": "lantern-7",
+      "parent_id": null
+     }
+    }
+   }
+  },
+  "moderation_results": [],
+  "current_node": "msg-bell-01",
+  "conversation_id": "conversation-bell",
+  "id": "conversation-bell",
+  "conversation_template_id": null,
+  "is_archived": true,
+  "memory_scope": "global_enabled",
+  "default_model_slug": "lantern-7"
+ }
+]

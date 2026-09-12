@@ -1,0 +1,283 @@
+[
+ {
+  "title": "Tide tables for the north pier",
+  "create_time": 1789000000.25,
+  "update_time": 1789000600.5,
+  "mapping": {
+   "node-root-tides": {
+    "id": "node-root-tides",
+    "parent": null,
+    "children": [
+     "msg-tide-01"
+    ],
+    "message": null
+   },
+   "msg-tide-01": {
+    "id": "msg-tide-01",
+    "parent": "node-root-tides",
+    "children": [
+     "msg-tide-02"
+    ],
+    "message": {
+     "id": "msg-tide-01",
+     "author": {
+      "role": "user",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1789000001.5,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "When is the next spring tide at the north pier?"
+      ]
+     },
+     "metadata": {
+      "model_slug": "lantern-7",
+      "parent_id": null
+     }
+    }
+   },
+   "msg-tide-02": {
+    "id": "msg-tide-02",
+    "parent": "msg-tide-01",
+    "children": [
+     "msg-tide-03"
+    ],
+    "message": {
+     "id": "msg-tide-02",
+     "author": {
+      "role": "assistant",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1789000002.0,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "The lamp log says the fourteenth, at first light."
+      ]
+     },
+     "metadata": {
+      "model_slug": "lantern-7",
+      "parent_id": "msg-tide-01"
+     }
+    }
+   },
+   "msg-tide-03": {
+    "id": "msg-tide-03",
+    "parent": "msg-tide-02",
+    "children": [
+     "msg-tide-04"
+    ],
+    "message": {
+     "id": "msg-tide-03",
+     "author": {
+      "role": "assistant",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1789000002.5,
+     "content": {
+      "content_type": "thoughts",
+      "thoughts": [
+       {
+        "summary": "weighing the tide",
+        "content": "checking the almanac against the lamp log"
+       }
+      ],
+      "source_analysis_msg_id": "msg-tide-03"
+     },
+     "metadata": {
+      "model_slug": "lantern-7",
+      "parent_id": null
+     }
+    }
+   },
+   "msg-tide-04": {
+    "id": "msg-tide-04",
+    "parent": "msg-tide-03",
+    "children": [],
+    "message": {
+     "id": "msg-tide-04",
+     "author": {
+      "role": "assistant",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1789000002.75,
+     "content": {
+      "content_type": "reasoning_recap",
+      "content": "Reasoned over the almanac."
+     },
+     "metadata": {
+      "model_slug": "lantern-7",
+      "parent_id": null
+     }
+    }
+   },
+   "msg-tide-02b": {
+    "id": "msg-tide-02b",
+    "parent": "msg-tide-01",
+    "children": [],
+    "message": {
+     "id": "msg-tide-02b",
+     "author": {
+      "role": "assistant",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1789000003.0,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "The fourteenth, and the water will be high at dawn."
+      ]
+     },
+     "metadata": {
+      "model_slug": "lantern-7",
+      "parent_id": null
+     }
+    }
+   }
+  },
+  "moderation_results": [],
+  "current_node": "msg-tide-04",
+  "conversation_id": "conversation-tides",
+  "id": "conversation-tides",
+  "conversation_template_id": null,
+  "is_archived": false,
+  "memory_scope": "global_enabled",
+  "default_model_slug": "lantern-7"
+ },
+ {
+  "title": "Lamp oil and the harbour chart",
+  "create_time": 1789001000.0,
+  "update_time": 1789001300.0,
+  "mapping": {
+   "node-root-lamp": {
+    "id": "node-root-lamp",
+    "parent": null,
+    "children": [
+     "msg-lamp-01"
+    ],
+    "message": null
+   },
+   "msg-lamp-01": {
+    "id": "msg-lamp-01",
+    "parent": "node-root-lamp",
+    "children": [
+     "msg-lamp-02"
+    ],
+    "message": {
+     "id": "msg-lamp-01",
+     "author": {
+      "role": "user",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1789001001.0,
+     "content": {
+      "content_type": "multimodal_text",
+      "parts": [
+       "Here is the harbour chart.",
+       {
+        "content_type": "image_asset_pointer",
+        "asset_pointer": "store://file_chart01",
+        "size_bytes": 71,
+        "width": 4,
+        "height": 4,
+        "fovea": null,
+        "metadata": null
+       }
+      ]
+     },
+     "metadata": {
+      "model_slug": "lantern-7",
+      "parent_id": null,
+      "attachments": [
+       {
+        "id": "file_chart01",
+        "name": "harbour-chart.png",
+        "mime_type": "image/png",
+        "size": 71
+       }
+      ]
+     }
+    }
+   },
+   "msg-lamp-02": {
+    "id": "msg-lamp-02",
+    "parent": "msg-lamp-01",
+    "children": [
+     "msg-lamp-03"
+    ],
+    "message": {
+     "id": "msg-lamp-02",
+     "author": {
+      "role": "assistant",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1789001002.0,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "The chart shows the shoal east of the beacon."
+      ]
+     },
+     "metadata": {
+      "model_slug": "lantern-7",
+      "parent_id": null
+     }
+    }
+   },
+   "msg-lamp-03": {
+    "id": "msg-lamp-03",
+    "parent": "msg-lamp-02",
+    "children": [],
+    "message": {
+     "id": "msg-lamp-03",
+     "author": {
+      "role": "user",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1789001003.0,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "And the oil ledger, as a file."
+      ]
+     },
+     "metadata": {
+      "model_slug": "lantern-7",
+      "parent_id": null,
+      "attachments": [
+       {
+        "id": "file-oil-ledger",
+        "name": "oil-ledger.md",
+        "mime_type": "text/markdown",
+        "size": 40
+       },
+       {
+        "id": "file_gone",
+        "name": "missing.txt",
+        "mime_type": "text/plain",
+        "size": 1
+       }
+      ]
+     }
+    }
+   }
+  },
+  "moderation_results": [],
+  "current_node": "msg-lamp-03",
+  "conversation_id": "conversation-lamp",
+  "id": "conversation-lamp",
+  "conversation_template_id": "g-p-harbour-project",
+  "is_archived": false,
+  "memory_scope": "global_enabled",
+  "default_model_slug": "lantern-7"
+ }
+]
