@@ -41,6 +41,13 @@ so that they are accounted for and produce no record; the one thing read from
 the account object is its identifier, which scopes every identity here. The
 rendered transcript duplicates the conversations and produces no record.
 
+**What this adapter cannot tell apart is said as such.** An asset index none of
+whose elements carries an identifier, or a name map none of whose keys names a
+declared file, has no shape of its own here: such a file is opaque and its
+entries are not counted as index or name-map entries. A file that is a copy of
+the manifest, declaring the manifest as the manifest declares it, makes the
+export ambiguous and is refused rather than guessed at.
+
 **What the export cannot say is said as such.** A node's parent is a node; the
 message record names the parent node's message, or none at the root, as
 represented parentage. A node that names a parent the mapping does not hold
