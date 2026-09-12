@@ -20,7 +20,7 @@
   },
   {
    "path": "conversations-001.json",
-   "size_bytes": 1014
+   "size_bytes": 2664
   },
   {
    "path": "file_chart01.dat",
@@ -48,7 +48,11 @@
   },
   {
    "path": "user_settings.json",
-   "size_bytes": 51
+   "size_bytes": 95
+  },
+  {
+   "path": "file_sketch.dat",
+   "size_bytes": 45
   }
  ],
  "logical_files": {
@@ -119,6 +123,12 @@
    ],
    "sharded": true,
    "shard_count": 2
+  },
+  "file_sketch.dat": {
+   "files": [
+    "file_sketch.dat"
+   ],
+   "sharded": false
   }
  }
 }

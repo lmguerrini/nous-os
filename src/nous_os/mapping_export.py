@@ -13,13 +13,18 @@ account object, a settings object and a rendered transcript, and every asset
 file the indexes point at.
 
 **Classification is by the export's own declarations and shapes, never by a
-vendor's name and never by a filename convention.** The manifest declares what
-files exist; a declared file whose name the asset map, the asset index or a
-message points at is an asset and is not parsed; every other declared file is
-classified by the shape of what it parses to; a file on disk the manifest does
-not declare, or a declared file missing on disk, is refused and counted. The
-provider is named by the caller, because nothing in this format names a host;
-the export's identity is the digest of its manifest, visibly a content basis.
+vendor's name.** The manifest declares what files exist and which of them are
+the shards of its one sharded logical file: those are conversation shards
+whatever they parse to, and a shard that is not a list is refused. A declared
+file that the asset name map, the asset index or a message points at is an
+asset and is not parsed; every other declared file is classified by the shape
+of what it parses to; a file on disk the manifest does not declare, or a
+declared file missing on disk, is refused and counted. One naming relation is
+read, because the export writes it nowhere else: a pointer names a file whose
+name, or whose name without its last extension, equals the pointer's
+identifier -- any extension, never a particular one. The provider is named by
+the caller, because nothing in this format names a host; the export's identity
+is the digest of its manifest, visibly a content basis.
 
 **What becomes a record.** One conversation record without its messages (the
 ordered node identifiers and each node's parent and children stand in for the
@@ -47,6 +52,7 @@ assumes it, and a node with two children yields two records naming one parent.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -66,7 +72,6 @@ from nous_os.sources import (
 #: The manifest version this adapter reads. Any other is refused, never guessed at.
 FORMAT_VERSION: Final = 1
 
-_ASSET_SUFFIX: Final = ".dat"
 _MANIFEST_KEYS: Final = frozenset({"version", "manifest_file", "export_files", "logical_files"})
 _SITE_MANIFEST_KEYS: Final = frozenset({"requested_at", "artifacts", "omissions", "redactions"})
 
@@ -121,8 +126,10 @@ class MappingRefusal(Enum):
     MALFORMED_MAPPING = "malformed_mapping"
     #: A message whose author role is a spelling this adapter has never seen.
     UNKNOWN_ROLE = "unknown_role"
-    #: A creation time that is not a number.
+    #: A time field that is not a finite number.
     MALFORMED_TIME = "malformed_time"
+    #: A file the manifest declares as a conversation shard whose bytes are not a list.
+    SHAPE_MISMATCH = "shape_mismatch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +151,8 @@ class MappingInventory:
     export: ExportIdentity
     export_id_basis: IdentityBasis
     account: str
+    #: Paths the manifest declared more than once; read once, and counted here.
+    duplicate_declarations: int = 0
 
     def paths(self, file_class: MappingFileClass) -> tuple[str, ...]:
         return tuple(entry.path for entry in self.entries if entry.file_class is file_class)
@@ -163,8 +172,10 @@ class MappingNormalization:
 
     ``dangling_asset_references`` counts message references to assets the
     export does not hold; ``dangling_parents`` counts nodes naming a parent the
-    mapping does not hold. Both are kept verbatim in the records and counted
-    here, never repaired.
+    mapping does not hold; ``index_entries_without_file`` and
+    ``name_map_entries_without_file`` count pointers of the two indexes with no
+    file behind them. All are kept verbatim in the records and counted here,
+    never repaired.
     """
 
     inventory: MappingInventory
@@ -173,6 +184,7 @@ class MappingNormalization:
     dangling_asset_references: int
     dangling_parents: int
     index_entries_without_file: int
+    name_map_entries_without_file: int
 
 
 def _reraise(error: OSError) -> None:
@@ -202,10 +214,17 @@ def _looks_like_html(data: bytes) -> bool:
     return head.startswith(b"<!doctype html") or head.startswith(b"<html")
 
 
+def _names_of(relative: str) -> frozenset[str]:
+    """The identifiers a declared file's name can stand for: the name itself and the
+    name without its last extension. Any extension; no particular one is known here."""
+    base = relative.rsplit("/", 1)[-1]
+    stem, dot, _ = base.rpartition(".")
+    return frozenset({base, stem}) if dot and stem else frozenset({base})
+
+
 def _asset_id(name: str) -> str:
-    """The identifier an asset file name carries: the name without the asset suffix."""
-    base = name.rsplit("/", 1)[-1]
-    return base[: -len(_ASSET_SUFFIX)] if base.endswith(_ASSET_SUFFIX) else base
+    """The identifier a name-map key stands for: the key's name without its last extension."""
+    return min(_names_of(name), key=len)
 
 
 def _any_object_with(value: object, *keys: str) -> bool:
@@ -220,8 +239,16 @@ def _any_object_with(value: object, *keys: str) -> bool:
     )
 
 
-def _classify_parsed(parsed: object) -> MappingFileClass:
-    """What a declared, non-asset file is, by the shape of what it parsed to."""
+def _classify_parsed(parsed: object, declared_names: frozenset[str] = frozenset()) -> MappingFileClass:
+    """What a declared, non-asset file is, by the shape of what it parsed to.
+
+    The asset name map is an object of strings at least one of whose keys names a
+    declared file; an object of strings whose keys name nothing the manifest
+    declares is opaque (a settings object, say). Where several such objects
+    exist, the one whose keys name declared files most often is the map and the
+    others are opaque, so a settings value reaches a record only if a settings
+    object names more declared files than the map itself does.
+    """
     if type(parsed) is dict:
         if _MANIFEST_KEYS <= parsed.keys():
             return MappingFileClass.EXPORT_MANIFEST
@@ -229,7 +256,11 @@ def _classify_parsed(parsed: object) -> MappingFileClass:
             return MappingFileClass.SITE_MANIFEST
         if "id" in parsed and "email" in parsed:
             return MappingFileClass.ACCOUNT_METADATA
-        if parsed and all(type(k) is str and type(v) is str for k, v in parsed.items()):
+        if (
+            parsed
+            and all(type(k) is str and type(v) is str for k, v in parsed.items())
+            and any(_names_of(k) & declared_names for k in parsed)
+        ):
             return MappingFileClass.ASSET_NAME_MAP
         return MappingFileClass.OPAQUE_METADATA
     if type(parsed) is list:
@@ -241,22 +272,43 @@ def _classify_parsed(parsed: object) -> MappingFileClass:
     return MappingFileClass.UNCLASSIFIED
 
 
-def _manifest_paths(manifest: dict) -> list[str]:
-    """Every path the manifest declares, in declaration order, once each."""
+def _manifest_paths(manifest: dict) -> tuple[list[str], int]:
+    """Every path the manifest declares, in declaration order, once each, and how many were repeated."""
     seen: list[str] = []
+    repeated = 0
     for entry in manifest["export_files"]:
         if type(entry) is not dict or type(entry.get("path")) is not str:
             raise ExportFormatError("the manifest's export_files hold an entry without a path")
-        if entry["path"] not in seen:
+        if entry["path"] in seen:
+            repeated += 1
+        else:
             seen.append(entry["path"])
-    return seen
+    return seen, repeated
+
+
+def _shard_paths(manifest: dict) -> frozenset[str]:
+    """The files the manifest declares as shards of its sharded logical file(s)."""
+    logical = manifest.get("logical_files")
+    shards: set[str] = set()
+    for entry in logical.values() if type(logical) is dict else ():
+        if type(entry) is dict and entry.get("sharded") is True:
+            shards.update(path for path in (entry.get("files") or ()) if type(path) is str)
+    return frozenset(shards)
 
 
 def _instant(value: object) -> str | None:
-    """An epoch-seconds number rendered once, as ISO-8601 UTC; None when it is not a number."""
-    if type(value) is bool or type(value) not in (int, float):
+    """An epoch-seconds number rendered once, as ISO-8601 UTC; None when it is not a finite number."""
+    if type(value) is bool or type(value) not in (int, float) or not math.isfinite(value):
         return None
-    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat(timespec="microseconds")
+    try:
+        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat(timespec="microseconds")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _time_fields_are_sound(obj: dict, *fields: str) -> bool:
+    """Every named time field is absent, None, or renders; a present value that does not is malformed."""
+    return all(obj.get(field) is None or _instant(obj.get(field)) is not None for field in fields)
 
 
 def _role(spelling: object) -> Role:
@@ -363,20 +415,41 @@ def inventory(root: Path, *, provider: str) -> MappingInventory:
         parsed = _parse(data)
         if type(parsed) is dict and _MANIFEST_KEYS <= parsed.keys():
             manifests.append((relative, parsed, data))
+    candidates = len(manifests)
+    if len(manifests) > 1:
+        # An uploaded file may be shaped like a manifest. The manifest is the one that
+        # declares every other candidate; if none does, the export is ambiguous.
+        def declares(candidate: dict, others: list[str]) -> bool:
+            files = candidate.get("export_files")
+            paths = {e.get("path") for e in files if type(e) is dict} if type(files) is list else set()
+            return all(other in paths for other in others)
+
+        manifests = [
+            (relative, parsed, data)
+            for relative, parsed, data in manifests
+            if declares(parsed, [other for other, _, _ in manifests if other != relative])
+        ]
     if len(manifests) != 1:
-        raise ExportFormatError(f"{len(manifests)} manifest(s) found; exactly one is expected")
-    manifest_path, manifest, manifest_bytes = manifests[0]
-    if manifest["version"] != FORMAT_VERSION:
         raise ExportFormatError(
-            f"manifest declares version {manifest['version']!r}; this adapter reads {FORMAT_VERSION!r}"
+            f"{candidates} manifest-shaped file(s) found and {len(manifests)} of them declare(s) the others; exactly one manifest is expected"
         )
-    declared = _manifest_paths(manifest)
+    manifest_path, manifest, manifest_bytes = manifests[0]
+    version = manifest["version"]
+    if type(version) is not int or version != FORMAT_VERSION:
+        raise ExportFormatError(f"manifest declares version {version!r}; this adapter reads {FORMAT_VERSION!r}")
+    if type(manifest["export_files"]) is not list:
+        raise ExportFormatError("the manifest's export_files is not a list")
+    declared, repeated = _manifest_paths(manifest)
     if manifest_path not in declared:
         declared.insert(0, manifest_path)
+    shard_paths = _shard_paths(manifest)
 
     # Tentative classes by shape, and the pointers each structured file carries.
     # Shards are parsed once here and again in normalize(); only their pointer
-    # sets are kept, never their bodies.
+    # sets are kept, never their bodies. A file that parses is parsed to learn
+    # its shape and its pointers; its parse is never used as a record unless the
+    # file's class says so.
+    declared_names = frozenset().union(*(_names_of(relative) for relative in declared))
     tentative: dict[str, MappingFileClass] = {}
     pointers: dict[str, set[str]] = {}
     accounts: dict[str, str] = {}
@@ -387,6 +460,13 @@ def inventory(root: Path, *, provider: str) -> MappingInventory:
             tentative[relative] = MappingFileClass.MISSING
             continue
         head = _peek(path)
+        if relative in shard_paths:
+            # Declared as a shard: a shard whatever it holds. Its pointers are read if it
+            # is a list; a shard that is not a list is refused in normalize().
+            tentative[relative] = MappingFileClass.CONVERSATION_SHARD
+            parsed = _parse(path.read_bytes()) if head.lstrip()[:1] == b"[" else None
+            pointers[relative] = _pointers_in_shard(parsed) if type(parsed) is list else set()
+            continue
         if _looks_like_html(head):
             tentative[relative] = MappingFileClass.RENDERED_TRANSCRIPT
             continue
@@ -397,12 +477,14 @@ def inventory(root: Path, *, provider: str) -> MappingInventory:
         if parsed is None:
             tentative[relative] = MappingFileClass.UNCLASSIFIED
             continue
-        file_class = _classify_parsed(parsed)
+        file_class = _classify_parsed(parsed, declared_names)
         tentative[relative] = file_class
         if file_class is MappingFileClass.ASSET_NAME_MAP:
             pointers[relative] = {_asset_id(key) for key in parsed}
         elif file_class is MappingFileClass.ASSET_INDEX:
-            pointers[relative] = {item["file_id"] for item in parsed if type(item.get("file_id")) is str}
+            pointers[relative] = {
+                item["file_id"] for item in parsed if type(item) is dict and type(item.get("file_id")) is str
+            }
         elif file_class is MappingFileClass.CONVERSATION_SHARD:
             pointers[relative] = _pointers_in_shard(parsed)
         elif file_class is MappingFileClass.ACCOUNT_METADATA:
@@ -411,12 +493,44 @@ def inventory(root: Path, *, provider: str) -> MappingInventory:
         elif file_class is MappingFileClass.SITE_MANIFEST:
             site_manifests[relative] = parsed
 
-    # A file the pointers name is an asset whatever it parsed to; pointers are
-    # then taken only from files that are not themselves assets.
-    asset_ids: set[str] = set().union(*pointers.values()) if pointers else set()
-    settled = {relative for relative in declared if _asset_id(relative) in asset_ids}
-    asset_ids = set().union(*(ids for relative, ids in pointers.items() if relative not in settled)) if pointers else set()
-    asset_ids |= {_asset_id(relative) for relative in settled}
+    name_maps = [relative for relative, file_class in tentative.items() if file_class is MappingFileClass.ASSET_NAME_MAP]
+    if len(name_maps) > 1:
+        def naming_ratio(relative: str) -> float:
+            parsed = _parse((on_disk[relative]).read_bytes())
+            return sum(1 for key in parsed if _names_of(key) & declared_names) / len(parsed)
+
+        best = max(name_maps, key=naming_ratio)
+        for relative in name_maps:
+            if relative != best:
+                tentative[relative] = MappingFileClass.OPAQUE_METADATA
+                pointers.pop(relative, None)
+
+    # Pointer sources, in order, so that an uploaded file can never make another file
+    # vanish: the shards the manifest declares come first; a file they point at is an
+    # asset whatever it holds and contributes no pointers. Then the index- and
+    # name-map-shaped files nobody points at; then shard-shaped files nobody points
+    # at (a conversation list the manifest did not mark as sharded). Nothing else.
+    def named_by(ids: set[str]) -> set[str]:
+        return {relative for relative in declared if _names_of(relative) & ids}
+
+    def pointers_of(sources) -> set[str]:
+        return set().union(*(pointers.get(relative, set()) for relative in sources)) if sources else set()
+
+    manifest_shards = [relative for relative in declared if relative in shard_paths]
+    asset_ids = pointers_of(manifest_shards)
+    settled = named_by(asset_ids)
+    index_like = [
+        relative for relative, file_class in tentative.items()
+        if relative not in settled and file_class in (MappingFileClass.ASSET_INDEX, MappingFileClass.ASSET_NAME_MAP)
+    ]
+    asset_ids |= pointers_of(index_like)
+    settled = named_by(asset_ids)
+    shard_like = [
+        relative for relative, file_class in tentative.items()
+        if relative not in settled and relative not in shard_paths and file_class is MappingFileClass.CONVERSATION_SHARD
+    ]
+    asset_ids |= pointers_of(shard_like)
+    settled = named_by(asset_ids)
 
     entries: list[MappingInventoryEntry] = []
     for relative in declared:
@@ -425,7 +539,7 @@ def inventory(root: Path, *, provider: str) -> MappingInventory:
             entries.append(MappingInventoryEntry(relative, MappingFileClass.MISSING, 0, ""))
             continue
         data = path.read_bytes()
-        file_class = MappingFileClass.ASSET if _asset_id(relative) in asset_ids else tentative[relative]
+        file_class = MappingFileClass.ASSET if relative in settled else tentative[relative]
         entries.append(MappingInventoryEntry(relative, file_class, len(data), digest_bytes(data)))
     declared_set = set(declared)
     for relative, path in on_disk.items():
@@ -455,6 +569,7 @@ def inventory(root: Path, *, provider: str) -> MappingInventory:
         export=export,
         export_id_basis=IdentityBasis.CONTENT,
         account=account_ids.pop(),
+        duplicate_declarations=repeated,
     )
 
 
@@ -466,6 +581,7 @@ class _Normalizer:
         self.dangling_asset_references = 0
         self.dangling_parents = 0
         self.index_entries_without_file = 0
+        self.name_map_entries_without_file = 0
         self._asset_paths: dict[str, str] = {}
         self._asset_names: dict[str, str] = {}
         self._asset_index: dict[str, dict] = {}
@@ -486,18 +602,27 @@ class _Normalizer:
         for key, value in parsed.items():
             self._asset_names[_asset_id(key)] = value
 
-    def asset_index(self, parsed: list) -> None:
-        for item in parsed:
+    def asset_index(self, path: str, parsed: list) -> None:
+        for index, item in enumerate(parsed):
+            if type(item) is not dict:
+                self._reject(f"{path}#/{index}", MappingRefusal.NOT_AN_OBJECT)
+                continue
             file_id = item.get("file_id")
-            if type(file_id) is str and file_id:
-                self._asset_index[file_id] = item
+            if type(file_id) is not str or not file_id:
+                self._reject(f"{path}#/{index}", MappingRefusal.MISSING_IDENTITY)
+                continue
+            self._asset_index[file_id] = item
 
     def asset_file(self, path: str) -> None:
-        self._asset_paths[_asset_id(path)] = path
+        for name in _names_of(path):
+            self._asset_paths[name] = path
 
     # -- conversations -----------------------------------------------------------------------
 
-    def conversation_shard(self, path: str, parsed: list) -> None:
+    def conversation_shard(self, path: str, parsed: object) -> None:
+        if type(parsed) is not list:
+            self._reject(path, MappingRefusal.SHAPE_MISMATCH)
+            return
         for index, conversation in enumerate(parsed):
             locator = f"{path}#/{index}"
             if type(conversation) is not dict:
@@ -518,23 +643,27 @@ class _Normalizer:
         # order and each node's parent and children as the export wrote them. The
         # children lists of an export need not agree with its parent pointers; both
         # are kept, and the message records' parentage follows the parent pointers.
-        payload = {key: value for key, value in conversation.items() if key != "mapping"}
-        payload["node_ids"] = list(mapping.keys())
-        payload["nodes"] = {
-            node_id: {"parent": node.get("parent"), "children": node.get("children")}
-            for node_id, node in mapping.items()
-        }
-        container = conversation.get("conversation_template_id")
-        self._record(
-            kind=SourceKind.CONVERSATION,
-            external_id=conversation_id,
-            identity_basis=IdentityBasis.PROVIDER_IDENTIFIER,
-            payload=payload,
-            locator=locator,
-            container_external_id=container if type(container) is str and container else None,
-            created_at=_instant(conversation.get("create_time")),
-            updated_at=_instant(conversation.get("update_time")),
-        )
+        if _time_fields_are_sound(conversation, "create_time", "update_time"):
+            payload = {key: value for key, value in conversation.items() if key != "mapping"}
+            payload["node_ids"] = list(mapping.keys())
+            payload["nodes"] = {
+                node_id: {"parent": node.get("parent"), "children": node.get("children")}
+                for node_id, node in mapping.items()
+            }
+            container = conversation.get("conversation_template_id")
+            self._record(
+                kind=SourceKind.CONVERSATION,
+                external_id=conversation_id,
+                identity_basis=IdentityBasis.PROVIDER_IDENTIFIER,
+                payload=payload,
+                locator=locator,
+                container_external_id=container if type(container) is str and container else None,
+                created_at=_instant(conversation.get("create_time")),
+                updated_at=_instant(conversation.get("update_time")),
+            )
+        else:
+            # The conversation record is refused; its messages still carry its identifier.
+            self._reject(locator, MappingRefusal.MALFORMED_TIME)
         for node_id, node in mapping.items():
             self._node(f"{locator}/mapping/{node_id}", conversation_id, mapping, node_id, node)
 
@@ -554,21 +683,28 @@ class _Normalizer:
         if role is Role.UNKNOWN:
             self._reject(locator, MappingRefusal.UNKNOWN_ROLE)
             return
-        created_at = _instant(message.get("create_time"))
-        if created_at is None and message.get("create_time") is not None:
+        if not _time_fields_are_sound(message, "create_time"):
             self._reject(locator, MappingRefusal.MALFORMED_TIME)
             return
+        created_at = _instant(message.get("create_time"))
         parent_id = node.get("parent")
         parent_external_id: str | None = None
-        if type(parent_id) is str and parent_id:
+        if parent_id is not None and (type(parent_id) is not str or not parent_id):
+            self.dangling_parents += 1  # a parent that is not an identifier: kept in the skeleton, counted here
+        elif type(parent_id) is str and parent_id:
             parent_node = mapping.get(parent_id)
             if parent_node is None:
                 parent_external_id = parent_id  # verbatim, and counted
                 self.dangling_parents += 1
             else:
                 parent_message = parent_node.get("message")
-                if type(parent_message) is dict and type(parent_message.get("id")) is str:
+                if parent_message is None:
+                    parent_external_id = None  # the parent node carries no message: this is a root
+                elif type(parent_message) is dict and type(parent_message.get("id")) is str and parent_message["id"]:
                     parent_external_id = parent_message["id"]
+                else:
+                    parent_external_id = parent_id  # the parent node's message is malformed: its node id, verbatim, counted
+                    self.dangling_parents += 1
         references = _references_in(message)
         for ref in references:
             self._asset_referrers.setdefault(ref["asset_id"], []).append(message_id)
@@ -598,6 +734,8 @@ class _Normalizer:
                 self.dangling_asset_references += len(self._asset_referrers.get(asset_id, ()))
                 if asset_id in self._asset_index:
                     self.index_entries_without_file += 1
+                if asset_id in self._asset_names:
+                    self.name_map_entries_without_file += 1
                 continue
             data = (self._inv.root / path).read_bytes()
             index = self._asset_index.get(asset_id, {})
@@ -666,7 +804,7 @@ def normalize(inv: MappingInventory) -> MappingNormalization:
         elif entry.file_class is MappingFileClass.ASSET_NAME_MAP:
             normalizer.asset_name_map(_parse(stable_bytes(entry)))
         elif entry.file_class is MappingFileClass.ASSET_INDEX:
-            normalizer.asset_index(_parse(stable_bytes(entry)))
+            normalizer.asset_index(entry.path, _parse(stable_bytes(entry)))
         elif entry.file_class is MappingFileClass.ASSET:
             normalizer.asset_file(entry.path)
     for entry in inv.entries:
@@ -680,5 +818,6 @@ def normalize(inv: MappingInventory) -> MappingNormalization:
         dangling_asset_references=normalizer.dangling_asset_references,
         dangling_parents=normalizer.dangling_parents,
         index_entries_without_file=normalizer.index_entries_without_file,
+        name_map_entries_without_file=normalizer.name_map_entries_without_file,
     )
 

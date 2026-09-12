@@ -45,5 +45,87 @@
   "is_archived": true,
   "memory_scope": "global_enabled",
   "default_model_slug": "lantern-7"
+ },
+ {
+  "title": "Buoy paint and the sketch",
+  "create_time": 1789003000.0,
+  "update_time": 1789003100.0,
+  "mapping": {
+   "n0": {
+    "id": "n0",
+    "parent": null,
+    "children": [
+     "n1"
+    ],
+    "message": null
+   },
+   "n1": {
+    "id": "n1",
+    "parent": "n0",
+    "children": [
+     "n2"
+    ],
+    "message": {
+     "id": "msg-buoy-01",
+     "author": {
+      "role": "user",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1789003001.0,
+     "content": {
+      "content_type": "multimodal_text",
+      "parts": [
+       "A sketch of the buoy.",
+       {
+        "content_type": "image_asset_pointer",
+        "asset_pointer": "store://file_sketch",
+        "size_bytes": 30,
+        "width": 2,
+        "height": 2,
+        "fovea": null,
+        "metadata": null
+       }
+      ]
+     },
+     "metadata": {
+      "model_slug": "lantern-7",
+      "parent_id": null
+     }
+    }
+   },
+   "n2": {
+    "id": "n2",
+    "parent": "n1",
+    "children": [],
+    "message": {
+     "id": "msg-buoy-02",
+     "author": {
+      "role": "assistant",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1789003002.0,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "Red and white, as the chart says."
+      ]
+     },
+     "metadata": {
+      "model_slug": "lantern-7",
+      "parent_id": "msg-buoy-01"
+     }
+    }
+   }
+  },
+  "moderation_results": [],
+  "current_node": "n2",
+  "conversation_id": "conversation-buoy",
+  "id": "conversation-buoy",
+  "conversation_template_id": null,
+  "is_archived": false,
+  "memory_scope": "global_enabled",
+  "default_model_slug": "lantern-7"
  }
 ]

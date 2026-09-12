@@ -41,7 +41,7 @@ PROVIDER = "lighthouse.example"
 ACCOUNT = "account-keeper"
 T0 = datetime(2026, 9, 6, 9, 0, tzinfo=timezone.utc)
 PROMOTE = Grant("operator", frozenset({Tier.PROMOTE}))
-RECORDS_IN_FIXTURE = 15  # 3 conversations, 9 messages, 3 assets
+RECORDS_IN_FIXTURE = 19  # 4 conversations, 11 messages, 4 assets
 
 
 def _copy(tmp_path: Path, name: str = "export") -> Path:
@@ -127,6 +127,7 @@ def test_the_inventory_classifies_every_declared_file_and_anchors_the_export() -
         "file_chart01.dat": MappingFileClass.ASSET,
         "file-oil-ledger.dat": MappingFileClass.ASSET,
         "file_recipe.dat": MappingFileClass.ASSET,
+        "file_sketch.dat": MappingFileClass.ASSET,
         "chat.html": MappingFileClass.RENDERED_TRANSCRIPT,
         "user.json": MappingFileClass.ACCOUNT_METADATA,
         "user_settings.json": MappingFileClass.OPAQUE_METADATA,
@@ -181,7 +182,7 @@ def test_another_manifest_version_two_manifests_or_no_request_time_are_refused(t
 
     root = _copy(tmp_path, "two")
     shutil.copy(root / "export_manifest.json", root / "export_manifest_copy.json")
-    with pytest.raises(ExportFormatError, match="2 manifest"):
+    with pytest.raises(ExportFormatError, match="2 manifest-shaped"):
         inventory(root, provider=PROVIDER)
 
     root = _copy(tmp_path, "unanchored")
@@ -214,12 +215,12 @@ def test_identities_parentage_and_times() -> None:
     conversations = _by_kind(normalized.records, SourceKind.CONVERSATION)
     messages = _by_kind(normalized.records, SourceKind.MESSAGE)
     assets = _by_kind(normalized.records, SourceKind.ASSET)
-    assert set(conversations) == {"conversation-tides", "conversation-lamp", "conversation-bell"}
+    assert set(conversations) == {"conversation-tides", "conversation-lamp", "conversation-bell", "conversation-buoy"}
     assert set(messages) == {
         "msg-tide-01", "msg-tide-02", "msg-tide-03", "msg-tide-04", "msg-tide-02b",
-        "msg-lamp-01", "msg-lamp-02", "msg-lamp-03", "msg-bell-01",
+        "msg-lamp-01", "msg-lamp-02", "msg-lamp-03", "msg-bell-01", "msg-buoy-01", "msg-buoy-02",
     }
-    assert set(assets) == {"file_chart01", "file-oil-ledger", "file_recipe"}
+    assert set(assets) == {"file_chart01", "file-oil-ledger", "file_recipe", "file_sketch"}
     for record in normalized.records:
         assert record.identity_basis is IdentityBasis.PROVIDER_IDENTIFIER
         assert record.account == ACCOUNT and record.provider == PROVIDER
@@ -428,3 +429,200 @@ def test_an_appended_message_touches_exactly_two_records(tmp_path: Path) -> None
     _, report = memory.ingest(grown, at=T0 + timedelta(days=2))
     assert report.ingested == 1 and report.superseded == 1 and report.unchanged == RECORDS_IN_FIXTURE - 1
     assert report.identities_minted == 1
+
+
+# --- findings of the independent review, each with its own oracle ---------------------------
+
+
+def test_a_declared_shard_that_is_not_a_list_is_refused_not_opaque(tmp_path: Path) -> None:
+    """The manifest declares which files are shards; a shard holding a bare number is refused, and the
+    conversations it should have held are visibly missing rather than silently dropped."""
+    root = _copy(tmp_path)
+    (root / "conversations-001.json").write_text("[17]\n")
+    _redeclare(root)
+    inv = inventory(root, provider=PROVIDER)
+    assert dict((e.path, e.file_class) for e in inv.entries)["conversations-001.json"] is MappingFileClass.CONVERSATION_SHARD
+    normalized = normalize(inv)
+    assert ("conversations-001.json#/0", MappingRefusal.NOT_AN_OBJECT) in {(r.locator, r.refusal) for r in normalized.rejected}
+    (root / "conversations-001.json").write_text('{"not": "a list"}\n')
+    _redeclare(root)
+    normalized = normalize(inventory(root, provider=PROVIDER))
+    assert ("conversations-001.json", MappingRefusal.SHAPE_MISMATCH) in {(r.locator, r.refusal) for r in normalized.rejected}
+    # bell and buoy gone (two conversations, three messages); the sketch, pointed at only by a buoy message,
+    # is then a declared file nothing points at: classified by its own shape and refused, never dropped
+    assert len(normalized.records) == RECORDS_IN_FIXTURE - 6
+    assert ("file_sketch.dat", MappingRefusal.UNCLASSIFIED_FILE) in {(r.locator, r.refusal) for r in normalized.rejected}
+    (root / "conversations-001.json").write_text("[]\n")
+    _redeclare(root)
+    normalized = normalize(inventory(root, provider=PROVIDER))
+    assert [r.refusal for r in normalized.rejected] == [MappingRefusal.UNCLASSIFIED_FILE]  # an empty shard is a shard
+    assert len(normalized.records) == RECORDS_IN_FIXTURE - 6
+
+
+def test_malformed_asset_index_elements_are_refused_and_the_rest_still_read(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+
+    def transform(index: list) -> None:
+        index.append(17)
+        index.append({"mime_type": "image/png"})  # no identity
+
+    _edit(root / "library_files.json", transform)
+    _redeclare(root)
+    normalized = normalize(inventory(root, provider=PROVIDER))
+    refusals = {(r.locator, r.refusal) for r in normalized.rejected}
+    assert ("library_files.json#/3", MappingRefusal.NOT_AN_OBJECT) in refusals
+    assert ("library_files.json#/4", MappingRefusal.MISSING_IDENTITY) in refusals
+    assert len(normalized.records) == RECORDS_IN_FIXTURE
+    assert _by_kind(normalized.records, SourceKind.ASSET)["file_recipe"].payload["index"]["library_file_category"] == "upload"
+
+
+def test_an_asset_is_matched_by_name_or_stem_whatever_its_extension(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+    (root / "file_recipe.dat").rename(root / "file_recipe.bin")
+    _edit(root / "export_manifest.json", lambda m: [e.__setitem__("path", "file_recipe.bin") for e in m["export_files"] if e["path"] == "file_recipe.dat"])
+    _edit(root / "export_manifest.json", lambda m: m["logical_files"].__setitem__("file_recipe.bin", m["logical_files"].pop("file_recipe.dat")))
+    _redeclare(root)
+    inv = inventory(root, provider=PROVIDER)
+    assert dict((e.path, e.file_class) for e in inv.entries)["file_recipe.bin"] is MappingFileClass.ASSET
+    assets = _by_kind(normalize(inv).records, SourceKind.ASSET)
+    assert assets["file_recipe"].locator == "file_recipe.bin"
+    # A name-map key without any extension still names its file.
+    root = _copy(tmp_path, "bare")
+    (root / "file_chart01.dat").rename(root / "file_chart01")
+    _edit(root / "export_manifest.json", lambda m: [e.__setitem__("path", "file_chart01") for e in m["export_files"] if e["path"] == "file_chart01.dat"])
+    _edit(root / "export_manifest.json", lambda m: m["logical_files"].__setitem__("file_chart01", m["logical_files"].pop("file_chart01.dat")))
+    _redeclare(root)
+    assert dict((e.path, e.file_class) for e in inventory(root, provider=PROVIDER).entries)["file_chart01"] is MappingFileClass.ASSET
+
+
+def test_a_conversation_with_a_malformed_time_is_refused_but_its_messages_are_kept(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+    _edit(root / "conversations-001.json", lambda shard: shard[0].__setitem__("create_time", "not-an-epoch"))
+    _redeclare(root)
+    normalized = normalize(inventory(root, provider=PROVIDER))
+    assert ("conversations-001.json#/0", MappingRefusal.MALFORMED_TIME) in {(r.locator, r.refusal) for r in normalized.rejected}
+    assert "conversation-bell" not in _by_kind(normalized.records, SourceKind.CONVERSATION)
+    assert _by_kind(normalized.records, SourceKind.MESSAGE)["msg-bell-01"].container_external_id == "conversation-bell"
+    # A non-finite number is malformed too, and never raises.
+    (root / "conversations-001.json").write_text((root / "conversations-001.json").read_text().replace('"create_time": "not-an-epoch"', '"create_time": NaN'))
+    _redeclare(root)
+    normalized = normalize(inventory(root, provider=PROVIDER))
+    assert ("conversations-001.json#/0", MappingRefusal.MALFORMED_TIME) in {(r.locator, r.refusal) for r in normalized.rejected}
+
+
+def test_a_name_map_entry_without_a_file_is_counted(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+    _edit(root / "conversation_asset_file_names.json", lambda names: names.__setitem__("file_missing.dat", "missing.png"))
+    _redeclare(root)
+    normalized = normalize(inventory(root, provider=PROVIDER))
+    assert normalized.name_map_entries_without_file == 1
+    assert "file_missing" not in _by_kind(normalized.records, SourceKind.ASSET)
+
+
+def test_a_path_declared_twice_is_read_once_and_counted(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+    _edit(root / "export_manifest.json", lambda m: m["export_files"].append(dict(m["export_files"][0])))
+    inv = inventory(root, provider=PROVIDER)
+    assert inv.duplicate_declarations == 1
+    assert len([e for e in inv.entries if e.path == inv.entries[0].path]) == 1
+
+
+def test_node_ids_need_not_equal_message_ids_and_parents_name_messages() -> None:
+    """The buoy conversation's nodes are n0..n2; its message records name each other, never the nodes."""
+    normalized = normalize(inventory(FIXTURE, provider=PROVIDER))
+    messages = _by_kind(normalized.records, SourceKind.MESSAGE)
+    assert messages["msg-buoy-01"].parent_external_id is None  # child of the root node n0
+    assert messages["msg-buoy-02"].parent_external_id == "msg-buoy-01"  # n1's message, not "n1"
+    buoy = _by_kind(normalized.records, SourceKind.CONVERSATION)["conversation-buoy"]
+    assert buoy.payload["node_ids"] == ["n0", "n1", "n2"]
+    assert buoy.payload["nodes"]["n2"] == {"parent": "n1", "children": []}
+
+
+def test_a_file_only_a_message_points_at_is_an_asset() -> None:
+    normalized = normalize(inventory(FIXTURE, provider=PROVIDER))
+    sketch = _by_kind(normalized.records, SourceKind.ASSET)["file_sketch"]
+    assert sketch.payload["referenced_by"] == ["msg-buoy-01"]
+    assert sketch.payload["given_name"] is None and sketch.payload["index"] == {}
+
+
+def test_a_pointer_carrying_upload_settles_no_other_file(tmp_path: Path) -> None:
+    """An uploaded JSON shaped like a shard that points at another file: it is an asset, its pointers are
+    not believed, and the other file is classified by its own shape and refused rather than vanishing."""
+    root = _copy(tmp_path)
+    (root / "file_recipe.dat").write_text(json.dumps([{"conversation_id": "smuggled", "mapping": {"n": {"id": "n", "parent": None, "children": [], "message": {"id": "smuggled-msg", "author": {"role": "user"}, "create_time": 1.0, "content": {"content_type": "multimodal_text", "parts": [{"content_type": "image_asset_pointer", "asset_pointer": "store://file_hidden"}]}, "metadata": {}}}}}]))
+    (root / "file_hidden.dat").write_bytes(b"\x00\x01\x02\x03")
+
+    def declare(manifest: dict) -> None:
+        manifest["export_files"].append({"path": "file_hidden.dat", "size_bytes": 4})
+        manifest["logical_files"]["file_hidden.dat"] = {"files": ["file_hidden.dat"], "sharded": False}
+
+    _edit(root / "export_manifest.json", declare)
+    _redeclare(root)
+    inv = inventory(root, provider=PROVIDER)
+    classes = {e.path: e.file_class for e in inv.entries}
+    assert classes["file_recipe.dat"] is MappingFileClass.ASSET
+    assert classes["file_hidden.dat"] is MappingFileClass.UNCLASSIFIED
+    normalized = normalize(inv)
+    assert ("file_hidden.dat", MappingRefusal.UNCLASSIFIED_FILE) in {(r.locator, r.refusal) for r in normalized.rejected}
+    assert "smuggled" not in _by_kind(normalized.records, SourceKind.CONVERSATION)
+    assert "file_hidden" not in _by_kind(normalized.records, SourceKind.ASSET)
+
+
+def test_a_manifest_shaped_upload_does_not_make_the_export_ambiguous(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+    (root / "file_recipe.dat").write_text(json.dumps({"version": 1, "manifest_file": "x", "export_files": [], "logical_files": {}}))
+    _redeclare(root)
+    inv = inventory(root, provider=PROVIDER)
+    classes = {e.path: e.file_class for e in inv.entries}
+    assert classes["export_manifest.json"] is MappingFileClass.EXPORT_MANIFEST
+    assert classes["file_recipe.dat"] is MappingFileClass.ASSET
+
+
+def test_a_settings_object_of_strings_is_opaque_and_its_values_reach_no_record() -> None:
+    inv = inventory(FIXTURE, provider=PROVIDER)
+    classes = {e.path: e.file_class for e in inv.entries}
+    assert classes["user_settings.json"] is MappingFileClass.OPAQUE_METADATA
+    assert classes["conversation_asset_file_names.json"] is MappingFileClass.ASSET_NAME_MAP
+    normalized = normalize(inv)
+    for record in normalized.records:
+        assert b"a-setting-that-names-an-asset" not in record.snapshot_bytes()
+    assert _by_kind(normalized.records, SourceKind.ASSET)["file_chart01"].payload["given_name"] == "harbour-chart.png"
+
+
+def test_parent_pointers_that_are_not_identifiers_or_name_malformed_nodes_are_counted(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+
+    def transform(shard: list) -> None:
+        buoy = shard[1]["mapping"]
+        buoy["n2"]["parent"] = 7  # not an identifier
+        buoy["n3"] = {"id": "n3", "parent": "n1", "children": [], "message": {"id": "", "author": {"role": "user"}, "create_time": 1.0, "content": {"content_type": "text", "parts": ["x"]}, "metadata": {}}}
+        buoy["n4"] = {"id": "n4", "parent": "n3", "children": [], "message": {"id": "msg-buoy-04", "author": {"role": "assistant"}, "create_time": 2.0, "content": {"content_type": "text", "parts": ["y"]}, "metadata": {}}}
+
+    _edit(root / "conversations-001.json", transform)
+    _redeclare(root)
+    normalized = normalize(inventory(root, provider=PROVIDER))
+    messages = _by_kind(normalized.records, SourceKind.MESSAGE)
+    assert messages["msg-buoy-02"].parent_external_id is None
+    assert messages["msg-buoy-04"].parent_external_id == "n3"  # the malformed parent's node id, verbatim
+    assert normalized.dangling_parents == 2
+    assert ("conversations-001.json#/1/mapping/n3", MappingRefusal.MISSING_IDENTITY) in {(r.locator, r.refusal) for r in normalized.rejected}
+
+
+def test_a_boolean_version_and_a_non_list_export_files_are_refused(tmp_path: Path) -> None:
+    root = _copy(tmp_path, "bool")
+    _edit(root / "export_manifest.json", lambda m: m.__setitem__("version", True))
+    with pytest.raises(ExportFormatError, match="version"):
+        inventory(root, provider=PROVIDER)
+    root = _copy(tmp_path, "files")
+    _edit(root / "export_manifest.json", lambda m: m.__setitem__("export_files", 5))
+    with pytest.raises(ExportFormatError, match="export_files"):
+        inventory(root, provider=PROVIDER)
+
+
+def test_an_unrepresentable_time_is_refused_not_raised(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+    _edit(root / "conversations-001.json", lambda shard: shard[0]["mapping"]["msg-bell-01"]["message"].__setitem__("create_time", 1e300))
+    _redeclare(root)
+    normalized = normalize(inventory(root, provider=PROVIDER))
+    assert ("conversations-001.json#/0/mapping/msg-bell-01", MappingRefusal.MALFORMED_TIME) in {(r.locator, r.refusal) for r in normalized.rejected}
+    assert len(normalized.records) == RECORDS_IN_FIXTURE - 1

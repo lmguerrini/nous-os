@@ -1,1 +1,5 @@
-[{"announcements": {"seen/harbour-tour": "true"}}]
+{
+ "theme": "dark",
+ "locale": "en-GB",
+ "file_chart01.dat": "a-setting-that-names-an-asset"
+}
