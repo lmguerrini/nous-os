@@ -101,6 +101,9 @@ class MappingFileClass(Enum):
     ACCOUNT_METADATA = "account_metadata"
     #: A declared object or list this adapter reads nothing from (settings, empty objects).
     OPAQUE_METADATA = "opaque_metadata"
+    #: A file shaped like the asset index or the asset name map when the export already
+    #: has one that names more of its declared files. Refused and counted; never believed.
+    SHADOWED = "shadowed"
     #: A file on disk the manifest does not declare. Refused, counted, never read.
     UNDECLARED = "undeclared"
     #: A declared file absent from disk. Refused and counted.
@@ -130,6 +133,8 @@ class MappingRefusal(Enum):
     MALFORMED_TIME = "malformed_time"
     #: A file the manifest declares as a conversation shard whose bytes are not a list.
     SHAPE_MISMATCH = "shape_mismatch"
+    #: A second index- or name-map-shaped file, naming fewer declared files than the one read.
+    SHADOWED_INDEX = "shadowed_index"
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,10 +249,11 @@ def _classify_parsed(parsed: object, declared_names: frozenset[str] = frozenset(
 
     The asset name map is an object of strings at least one of whose keys names a
     declared file; an object of strings whose keys name nothing the manifest
-    declares is opaque (a settings object, say). Where several such objects
-    exist, the one whose keys name declared files most often is the map and the
-    others are opaque, so a settings value reaches a record only if a settings
-    object names more declared files than the map itself does.
+    declares is opaque (a settings object, say). The export has one name map and
+    one asset index: where several files fit either shape, the one that names
+    the most declared files is read, one naming exactly as many makes the export
+    ambiguous and is refused, and the rest are counted as shadowed -- so no
+    settings value and no uploaded index is ever believed over the export's own.
     """
     if type(parsed) is dict:
         if _MANIFEST_KEYS <= parsed.keys():
@@ -291,8 +297,8 @@ def _shard_paths(manifest: dict) -> frozenset[str]:
     logical = manifest.get("logical_files")
     shards: set[str] = set()
     for entry in logical.values() if type(logical) is dict else ():
-        if type(entry) is dict and entry.get("sharded") is True:
-            shards.update(path for path in (entry.get("files") or ()) if type(path) is str)
+        if type(entry) is dict and entry.get("sharded") is True and type(entry.get("files")) is list:
+            shards.update(path for path in entry["files"] if type(path) is str)
     return frozenset(shards)
 
 
@@ -493,43 +499,49 @@ def inventory(root: Path, *, provider: str) -> MappingInventory:
         elif file_class is MappingFileClass.SITE_MANIFEST:
             site_manifests[relative] = parsed
 
-    name_maps = [relative for relative, file_class in tentative.items() if file_class is MappingFileClass.ASSET_NAME_MAP]
-    if len(name_maps) > 1:
-        def naming_ratio(relative: str) -> float:
-            parsed = _parse((on_disk[relative]).read_bytes())
-            return sum(1 for key in parsed if _names_of(key) & declared_names) / len(parsed)
+    # One index and one name map. Among the files of either shape, the one that
+    # names the most declared files is the export's own; a tie is ambiguity and is
+    # refused; the rest are shadowed -- counted, never read, never a pointer source.
+    def named_declared(relative: str) -> int:
+        return len({name for name in pointers.get(relative, set()) if name in declared_names})
 
-        best = max(name_maps, key=naming_ratio)
-        for relative in name_maps:
-            if relative != best:
-                tentative[relative] = MappingFileClass.OPAQUE_METADATA
-                pointers.pop(relative, None)
+    singletons: dict[MappingFileClass, str | None] = {}
+    for shape in (MappingFileClass.ASSET_INDEX, MappingFileClass.ASSET_NAME_MAP):
+        candidates = [relative for relative, file_class in tentative.items() if file_class is shape]
+        if not candidates:
+            singletons[shape] = None
+            continue
+        ranked = sorted(candidates, key=named_declared, reverse=True)
+        if len(ranked) > 1 and named_declared(ranked[0]) == named_declared(ranked[1]):
+            raise ExportFormatError(
+                f"{len(ranked)} files are shaped like the {shape.value} and two name as many declared files; the export is ambiguous"
+            )
+        singletons[shape] = ranked[0]
+        for relative in ranked[1:]:
+            tentative[relative] = MappingFileClass.SHADOWED
 
-    # Pointer sources, in order, so that an uploaded file can never make another file
-    # vanish: the shards the manifest declares come first; a file they point at is an
-    # asset whatever it holds and contributes no pointers. Then the index- and
-    # name-map-shaped files nobody points at; then shard-shaped files nobody points
-    # at (a conversation list the manifest did not mark as sharded). Nothing else.
+    # Pointer sources: the shards the manifest declares, the export's one index and its
+    # one name map. Nothing else is believed -- not an uploaded file that parses like a
+    # shard or an index, not a conversation list the manifest did not declare as
+    # sharded (its assets are then refused and counted, visibly). A pointer can
+    # only make an asset of a file the export's structure does not already account
+    # for: never the manifest, a declared shard, the index or the name map, and never
+    # the one companion manifest, account object or rendered transcript when the
+    # export has exactly one -- a second of those is a pointed-at upload or a refusal.
+    structural: set[str] = set(shard_paths) | {manifest_path} | {relative for relative in singletons.values() if relative}
+    for shape in (MappingFileClass.SITE_MANIFEST, MappingFileClass.ACCOUNT_METADATA, MappingFileClass.RENDERED_TRANSCRIPT):
+        of_shape = [relative for relative, file_class in tentative.items() if file_class is shape]
+        if len(of_shape) == 1:
+            structural.add(of_shape[0])
+
     def named_by(ids: set[str]) -> set[str]:
-        return {relative for relative in declared if _names_of(relative) & ids}
+        return {relative for relative in declared if relative not in structural and _names_of(relative) & ids}
 
     def pointers_of(sources) -> set[str]:
         return set().union(*(pointers.get(relative, set()) for relative in sources)) if sources else set()
 
     manifest_shards = [relative for relative in declared if relative in shard_paths]
-    asset_ids = pointers_of(manifest_shards)
-    settled = named_by(asset_ids)
-    index_like = [
-        relative for relative, file_class in tentative.items()
-        if relative not in settled and file_class in (MappingFileClass.ASSET_INDEX, MappingFileClass.ASSET_NAME_MAP)
-    ]
-    asset_ids |= pointers_of(index_like)
-    settled = named_by(asset_ids)
-    shard_like = [
-        relative for relative, file_class in tentative.items()
-        if relative not in settled and relative not in shard_paths and file_class is MappingFileClass.CONVERSATION_SHARD
-    ]
-    asset_ids |= pointers_of(shard_like)
+    asset_ids = pointers_of(manifest_shards) | pointers_of([relative for relative in singletons.values() if relative])
     settled = named_by(asset_ids)
 
     entries: list[MappingInventoryEntry] = []
@@ -801,6 +813,8 @@ def normalize(inv: MappingInventory) -> MappingNormalization:
             normalizer._reject(entry.path, MappingRefusal.MISSING_DECLARED_FILE)
         elif entry.file_class is MappingFileClass.UNCLASSIFIED:
             normalizer._reject(entry.path, MappingRefusal.UNCLASSIFIED_FILE)
+        elif entry.file_class is MappingFileClass.SHADOWED:
+            normalizer._reject(entry.path, MappingRefusal.SHADOWED_INDEX)
         elif entry.file_class is MappingFileClass.ASSET_NAME_MAP:
             normalizer.asset_name_map(_parse(stable_bytes(entry)))
         elif entry.file_class is MappingFileClass.ASSET_INDEX:

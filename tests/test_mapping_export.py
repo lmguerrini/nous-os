@@ -578,15 +578,79 @@ def test_a_manifest_shaped_upload_does_not_make_the_export_ambiguous(tmp_path: P
     assert classes["file_recipe.dat"] is MappingFileClass.ASSET
 
 
-def test_a_settings_object_of_strings_is_opaque_and_its_values_reach_no_record() -> None:
+def test_a_settings_object_of_strings_is_opaque_and_its_values_reach_no_record(tmp_path: Path) -> None:
+    """An object of strings naming nothing the manifest declares is opaque; one that names a declared file
+    is a second name-map-shaped file and is refused as shadowed, never believed over the export's own map."""
     inv = inventory(FIXTURE, provider=PROVIDER)
     classes = {e.path: e.file_class for e in inv.entries}
     assert classes["user_settings.json"] is MappingFileClass.OPAQUE_METADATA
     assert classes["conversation_asset_file_names.json"] is MappingFileClass.ASSET_NAME_MAP
+    assert normalize(inv).name_map_entries_without_file == 0
+
+    root = _copy(tmp_path)
+    (root / "user_settings.json").write_text(json.dumps({"file_chart01.dat": "a-setting-that-names-an-asset"}))
+    # the real map keeps a dangling entry too, as a map in the wild may: it still names more declared files
+    _edit(root / "conversation_asset_file_names.json", lambda names: names.__setitem__("file_expired.dat", "expired.png"))
+    _redeclare(root)
+    inv = inventory(root, provider=PROVIDER)
+    classes = {e.path: e.file_class for e in inv.entries}
+    assert classes["conversation_asset_file_names.json"] is MappingFileClass.ASSET_NAME_MAP
+    assert classes["user_settings.json"] is MappingFileClass.SHADOWED
     normalized = normalize(inv)
+    assert ("user_settings.json", MappingRefusal.SHADOWED_INDEX) in {(r.locator, r.refusal) for r in normalized.rejected}
+    assert normalized.name_map_entries_without_file == 1
     for record in normalized.records:
         assert b"a-setting-that-names-an-asset" not in record.snapshot_bytes()
     assert _by_kind(normalized.records, SourceKind.ASSET)["file_chart01"].payload["given_name"] == "harbour-chart.png"
+
+
+def test_two_name_maps_naming_as_many_files_are_ambiguous_not_ordered(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+    (root / "user_settings.json").write_text(json.dumps({"file_chart01.dat": "one", "file-oil-ledger.dat": "two"}))
+    _redeclare(root)
+    with pytest.raises(ExportFormatError, match="ambiguous"):
+        inventory(root, provider=PROVIDER)
+
+
+def test_an_index_shaped_upload_settles_nothing_and_never_hides_a_shard_or_the_index(tmp_path: Path) -> None:
+    """The recipe is registered only in the library index. Made to look like an index itself, it is refused as a
+    shadowed index (it names fewer declared files than the real one) or is an asset when pointed at; its pointers
+    are never believed: a file only it names is refused, a declared shard stays a shard, the real index is read."""
+    root = _copy(tmp_path)
+    (root / "file_recipe.dat").write_text(json.dumps([{"file_id": "file_hidden", "mime_type": "x"}]))
+    (root / "file_hidden.dat").write_bytes(b"\x00\x01\x02\x03")
+    _edit(root / "export_manifest.json", lambda m: m["export_files"].append({"path": "file_hidden.dat", "size_bytes": 4}))
+    _edit(root / "export_manifest.json", lambda m: m["logical_files"].__setitem__("file_hidden.dat", {"files": ["file_hidden.dat"], "sharded": False}))
+    _redeclare(root)
+    inv = inventory(root, provider=PROVIDER)
+    classes = {e.path: e.file_class for e in inv.entries}
+    assert classes["file_recipe.dat"] is MappingFileClass.ASSET  # the real index points at it
+    assert classes["file_hidden.dat"] is MappingFileClass.UNCLASSIFIED
+    refusals = {(r.locator, r.refusal) for r in normalize(inv).rejected}
+    assert ("file_hidden.dat", MappingRefusal.UNCLASSIFIED_FILE) in refusals
+
+    for target in ("conversations-000", "library_files", "export_manifest"):
+        root = _copy(tmp_path, target)
+        (root / "file_recipe.dat").write_text(json.dumps([{"file_id": target, "mime_type": "x"}]))
+        _redeclare(root)
+        inv = inventory(root, provider=PROVIDER)
+        classes = {e.path: e.file_class for e in inv.entries}
+        assert classes["conversations-000.json"] is MappingFileClass.CONVERSATION_SHARD
+        assert classes["library_files.json"] is MappingFileClass.ASSET_INDEX
+        assert classes["export_manifest.json"] is MappingFileClass.EXPORT_MANIFEST
+        normalized = normalize(inv)
+        assert len(normalized.records) == RECORDS_IN_FIXTURE
+        assert _by_kind(normalized.records, SourceKind.ASSET)["file_chart01"].payload["index"]["origination_message_id"] == "msg-lamp-01"
+
+    # An index-shaped file nothing points at, naming fewer declared files than the real index: shadowed, refused.
+    root = _copy(tmp_path, "shadow")
+    (root / "second_index.json").write_text(json.dumps([{"file_id": "file_chart01", "mime_type": "image/png"}]))
+    _edit(root / "export_manifest.json", lambda m: m["export_files"].append({"path": "second_index.json", "size_bytes": 1}))
+    _edit(root / "export_manifest.json", lambda m: m["logical_files"].__setitem__("second_index.json", {"files": ["second_index.json"], "sharded": False}))
+    _redeclare(root)
+    inv = inventory(root, provider=PROVIDER)
+    assert {e.path: e.file_class for e in inv.entries}["second_index.json"] is MappingFileClass.SHADOWED
+    assert ("second_index.json", MappingRefusal.SHADOWED_INDEX) in {(r.locator, r.refusal) for r in normalize(inv).rejected}
 
 
 def test_parent_pointers_that_are_not_identifiers_or_name_malformed_nodes_are_counted(tmp_path: Path) -> None:
@@ -626,3 +690,32 @@ def test_an_unrepresentable_time_is_refused_not_raised(tmp_path: Path) -> None:
     normalized = normalize(inventory(root, provider=PROVIDER))
     assert ("conversations-001.json#/0/mapping/msg-bell-01", MappingRefusal.MALFORMED_TIME) in {(r.locator, r.refusal) for r in normalized.rejected}
     assert len(normalized.records) == RECORDS_IN_FIXTURE - 1
+
+
+def test_a_message_pointer_never_reclassifies_a_structural_file(tmp_path: Path) -> None:
+    """A message attachment whose id names a shard, the manifest or the index: the file keeps its class and
+    the reference is counted as dangling, because there is no asset behind it."""
+    root = _copy(tmp_path)
+
+    def transform(shard: list) -> None:
+        shard[0]["mapping"]["msg-bell-01"]["message"]["metadata"]["attachments"] = [
+            {"id": "conversations-000", "name": "x", "mime_type": "text/plain", "size": 1},
+            {"id": "export_manifest", "name": "y", "mime_type": "text/plain", "size": 1},
+            {"id": "library_files", "name": "z", "mime_type": "text/plain", "size": 1},
+            {"id": "user", "name": "w", "mime_type": "text/plain", "size": 1},
+            {"id": "chat", "name": "v", "mime_type": "text/plain", "size": 1},
+        ]
+
+    _edit(root / "conversations-001.json", transform)
+    _redeclare(root)
+    inv = inventory(root, provider=PROVIDER)
+    classes = {e.path: e.file_class for e in inv.entries}
+    assert classes["conversations-000.json"] is MappingFileClass.CONVERSATION_SHARD
+    assert classes["export_manifest.json"] is MappingFileClass.EXPORT_MANIFEST
+    assert classes["library_files.json"] is MappingFileClass.ASSET_INDEX
+    assert classes["sites/export_manifest.json"] is MappingFileClass.SITE_MANIFEST
+    assert classes["user.json"] is MappingFileClass.ACCOUNT_METADATA
+    assert classes["chat.html"] is MappingFileClass.RENDERED_TRANSCRIPT
+    normalized = normalize(inv)
+    assert len(normalized.records) == RECORDS_IN_FIXTURE
+    assert normalized.dangling_asset_references == 1 + 5  # file_gone, and the five structural names
