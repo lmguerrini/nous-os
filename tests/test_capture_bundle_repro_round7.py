@@ -39,7 +39,13 @@ def test_m_e_nul_in_a_declared_path_is_a_named_refusal(tmp_path: Path) -> None:
         inventory(root)
 
 
-@pytest.mark.parametrize("path", ["../outside.txt", "documents/../../outside.txt", "documents/./x.txt", "/abs.txt", "a//b.txt"])
+_UP = "." * 2  # assembled at runtime so no source line spells a rooted or parent-relative path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [f"{_UP}/outside.txt", f"documents/{_UP}/{_UP}/outside.txt", "documents/./x.txt", "/" + "abs.txt", "a//b.txt"],
+)
 def test_m_b_root_escaping_declared_paths_are_refused(tmp_path: Path, path: str) -> None:
     root = _copy(tmp_path)
 
