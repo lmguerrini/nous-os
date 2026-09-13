@@ -10,8 +10,10 @@ native message records.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import stat
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
@@ -250,6 +252,52 @@ def _reraise(error: OSError) -> None:
     raise error
 
 
+class _NotARegularFile(Exception):
+    """The path did not open as a regular file: a link, a directory, or gone."""
+
+
+def _read_bounded(path: Path) -> tuple[bytes | None, BundleRefusal | None]:
+    """Read a regular file without following a link and without reading past the bound.
+
+    The link check and the read are one system call: ``O_NOFOLLOW`` makes the
+    open itself fail on a symlink, so a link swapped in between a check and a
+    read is refused rather than followed. The size is taken from the open
+    descriptor and the read stops at ``MAX_FILE_BYTES + 1`` bytes, so a file
+    that grows after being sized is refused instead of read whole.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return None, BundleRefusal.MISSING_DECLARED_FILE
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.EMLINK):
+            return None, BundleRefusal.SYMLINK_REFUSED
+        raise
+    try:
+        status = os.fstat(descriptor)
+        if stat.S_ISLNK(status.st_mode):
+            return None, BundleRefusal.SYMLINK_REFUSED
+        if not stat.S_ISREG(status.st_mode):
+            raise _NotARegularFile(path)
+        if status.st_size > MAX_FILE_BYTES:
+            return None, BundleRefusal.TOO_LARGE
+        chunks: list[bytes] = []
+        remaining = MAX_FILE_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(remaining, 1 << 20))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(descriptor)
+    data = b"".join(chunks)
+    if len(data) > MAX_FILE_BYTES:
+        return None, BundleRefusal.TOO_LARGE
+    return data, None
+
+
 def _files(root: Path) -> Iterator[Path]:
     """Every regular file and symlink below ``root`` in a fixed order."""
     found: list[Path] = []
@@ -303,7 +351,7 @@ def _declared_file(entry: object, index: int) -> tuple[str, dict[str, object]]:
 def _has_attribution(declaration: dict[str, object] | None) -> bool:
     """Whether a declaration identifies the supplied material's stated class."""
     return declaration is not None and all(
-        type(declaration.get(field)) is str and declaration[field]
+        type(declaration.get(field)) is str and declaration[field].strip()
         for field in ("source_kind", "sensitivity")
     )
 
@@ -454,7 +502,23 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
                 )
             )
             continue
-        data = path.read_bytes()
+        data, refusal = _read_bounded(path)
+        if data is None:
+            entries.append(
+                BundleInventoryEntry(
+                    path=relative,
+                    file_class=BundleFileClass.UNKNOWN,
+                    present=refusal is not BundleRefusal.MISSING_DECLARED_FILE,
+                    is_symlink=refusal is BundleRefusal.SYMLINK_REFUSED,
+                    too_large=refusal is BundleRefusal.TOO_LARGE,
+                    byte_length=None,
+                    digest=None,
+                    declared_byte_length=expected_bytes,
+                    declared_digest=expected_digest,
+                    declaration=declaration,
+                )
+            )
+            continue
         parsed = _parse(data)
         entries.append(
             BundleInventoryEntry(
@@ -488,15 +552,16 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
                 )
             )
             continue
+        data, refusal = _read_bounded(path)
         entries.append(
             BundleInventoryEntry(
                 path=relative,
                 file_class=BundleFileClass.UNKNOWN,
-                present=True,
-                is_symlink=False,
-                too_large=False,
-                byte_length=path.stat().st_size,
-                digest=digest_bytes(path.read_bytes()),
+                present=refusal is not BundleRefusal.MISSING_DECLARED_FILE,
+                is_symlink=refusal is BundleRefusal.SYMLINK_REFUSED,
+                too_large=refusal is BundleRefusal.TOO_LARGE,
+                byte_length=None if data is None else len(data),
+                digest=None if data is None else digest_bytes(data),
                 declared_byte_length=None,
                 declared_digest=None,
             )
@@ -512,22 +577,19 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
 def _stable_bytes(
     inv: BundleInventory, entry: BundleInventoryEntry
 ) -> tuple[bytes | None, BundleRefusal | None]:
-    """Read one unchanged declared file without following a newly added link."""
+    """Read one unchanged declared file without following a newly added link.
+
+    One bounded, link-refusing read; a link swapped in after the inventory is
+    refused by the open itself, and growth past the bound is refused by the
+    read, whatever a stat said a moment earlier.
+    """
     path = inv.root / entry.path
-    if path.is_symlink():
-        return None, BundleRefusal.SYMLINK_REFUSED
     try:
-        byte_length = path.stat().st_size
-    except FileNotFoundError:
+        data, refusal = _read_bounded(path)
+    except _NotARegularFile:
         return None, BundleRefusal.MISSING_DECLARED_FILE
-    if byte_length > MAX_FILE_BYTES:
-        return None, BundleRefusal.TOO_LARGE
-    if path.is_symlink():
-        return None, BundleRefusal.SYMLINK_REFUSED
-    try:
-        data = path.read_bytes()
-    except FileNotFoundError:
-        return None, BundleRefusal.MISSING_DECLARED_FILE
+    if data is None:
+        return None, refusal
     if len(data) != entry.byte_length or digest_bytes(data) != entry.digest:
         raise BundleFormatError(f"{entry.path} changed since it was inventoried; the bundle is not stable")
     return data, None

@@ -562,3 +562,55 @@ def test_declared_file_larger_than_bound_is_not_read_whole(tmp_path: Path, monke
     assert "documents/large.txt" not in _by_kind(records, SourceKind.DOCUMENT)
     assert [item.refusal for item in normalized.refusals].count(BundleRefusal.TOO_LARGE) == 1
     assert normalized.counters["too_large"] == 1
+
+
+def test_whitespace_only_attribution_is_refused(tmp_path: Path) -> None:
+    """A visually blank source_kind is no attribution: the declaration is refused and counted."""
+    root = _copy(tmp_path)
+
+    def blank_attribution(manifest: dict) -> None:
+        for entry in manifest["files"]:
+            if entry["path"] == "documents/watch.txt":
+                entry["source_kind"] = " \t "
+
+    _edit_json(root / "INPUT_MANIFEST.json", blank_attribution)
+    normalized = normalize(inventory(root), provider=PROVIDER, account=ACCOUNT, account_basis=ACCOUNT_BASIS)
+    records = tuple(normalized.records)
+    assert "documents/watch.txt" not in _by_kind(records, SourceKind.DOCUMENT)
+    assert [item.refusal for item in normalized.refusals].count(BundleRefusal.MALFORMED_DECLARATION) == 1
+
+
+def test_an_undeclared_oversize_file_is_never_read_whole(tmp_path: Path) -> None:
+    """The inventory sizes and bounds every read, declared or not, before holding bytes."""
+    root = _copy(tmp_path)
+    huge = root / "documents" / "undeclared-huge.bin"
+    with huge.open("wb") as stream:
+        stream.truncate(capture_bundle.MAX_FILE_BYTES + 1)
+    inv = inventory(root)
+    entry = next(item for item in inv.entries if item.path == "documents/undeclared-huge.bin")
+    assert entry.too_large and entry.byte_length is None and entry.digest is None
+    normalized = normalize(inv, provider=PROVIDER, account=ACCOUNT, account_basis=ACCOUNT_BASIS)
+    tuple(normalized.records)
+    refusals = [item.refusal for item in normalized.refusals if item.locator == "documents/undeclared-huge.bin"]
+    assert refusals and all(r in (BundleRefusal.TOO_LARGE, BundleRefusal.UNDECLARED_FILE) for r in refusals)
+
+
+def test_the_bounded_reader_refuses_links_at_open_and_growth_at_read(tmp_path: Path) -> None:
+    """One system call decides the link question, and the read stops at the bound.
+
+    A link that appears between a check and a read is the race the earlier
+    check-then-read could lose; opening with O_NOFOLLOW cannot lose it.
+    """
+    target = tmp_path / "outside.txt"
+    target.write_bytes(b"outside the bundle")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+    assert capture_bundle._read_bounded(link) == (None, BundleRefusal.SYMLINK_REFUSED)
+    grown = tmp_path / "grown.bin"
+    with grown.open("wb") as stream:
+        stream.truncate(capture_bundle.MAX_FILE_BYTES + 1)
+    assert capture_bundle._read_bounded(grown) == (None, BundleRefusal.TOO_LARGE)
+    small = tmp_path / "small.txt"
+    small.write_bytes(b"fog watch")
+    assert capture_bundle._read_bounded(small) == (b"fog watch", None)
+    assert capture_bundle._read_bounded(tmp_path / "absent.txt") == (None, BundleRefusal.MISSING_DECLARED_FILE)
