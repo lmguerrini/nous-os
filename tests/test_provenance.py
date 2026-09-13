@@ -13,6 +13,7 @@ from nous_os.provenance import (
     Locator,
     LocatorOutOfRange,
     LocatorSplitsCharacter,
+    LocatorSplitsGrapheme,
     SnapshotNotText,
     SpanMismatch,
     quote_lint,
@@ -155,6 +156,35 @@ def test_p7_offsets_inside_a_multibyte_character_are_refused_as_a_split_characte
 
     with pytest.raises(LocatorSplitsCharacter):
         quote_lint(store, _citation(snapshot.digest, 0, 4, "Caf"))
+
+
+@pytest.mark.parametrize(
+    ("shape", "text"),
+    (
+        ("zwj", "A👩‍💻B"),
+        ("variation_selector", "A✈️B"),
+        ("combining_nonspacing_mark", "Ae\u0301B"),
+        ("combining_spacing_mark", "Aक\u093eB"),
+        ("combining_enclosing_mark", "Ae\u20ddB"),
+        ("regional_indicator_pair", "A🇮🇹B"),
+        ("emoji_modifier", "A👍🏽B"),
+    ),
+)
+def test_p7_snapshot_lint_refuses_each_extended_grapheme_boundary(
+    tmp_path: Path, shape: str, text: str
+) -> None:
+    """Both sides of every listed extended-grapheme split are invalid."""
+    store = SnapshotStore(tmp_path)
+    snapshot = store.put("src_01ARZ3NDEKTSV4RRFFQ69G5FAV", text.encode("utf-8"))
+    split_char = 2
+    for start_char, end_char in ((1, split_char), (split_char, len(text) - 1)):
+        start_byte = len(text[:start_char].encode("utf-8"))
+        end_byte = len(text[:end_char].encode("utf-8"))
+        with pytest.raises(LocatorSplitsGrapheme):
+            read_span(
+                store,
+                _citation(snapshot.digest, start_byte, end_byte, text[start_char:end_char]),
+            )
 
 
 def test_p8_a_quote_valid_for_one_snapshot_fails_for_changed_later_bytes(

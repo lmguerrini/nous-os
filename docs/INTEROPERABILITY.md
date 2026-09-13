@@ -16,7 +16,7 @@ against that catalogue by the test suite rather than trusted to have kept pace w
 ```
 
 `nous_os.core` is the one application service boundary. It publishes a fixed catalogue of
-external operations — nineteen of them — each with a stable external name, a required
+external operations — twenty-three of them — each with a stable external name, a required
 authorization tier, and a declared parameter specification. Every governed decision a transport
 makes is made inside `core.invoke`: resolving which operation a name refers to, validating the
 supplied JSON-shaped arguments against that operation's declared parameters, and checking the
@@ -72,6 +72,7 @@ way:
 | `canon.sources` | read | List every source the derived index holds. | (none) |
 | `canon.versions` | read | List one source's snapshot digests, oldest first. | source_id |
 | `provenance.span` | read | Read the exact text a citation names, from the snapshot it cites. | citation |
+| `provenance.verify_derived` | read | Lint a quote from preserved extraction evidence and optionally report reproducibility. | citation, full? |
 | `graph.project` | read | Project a renderer-independent knowledge graph from caller-supplied state. | state, policy, question? |
 | `time.as_of` | read | Partition a caller-supplied temporal index by validity and recording time. | index, valid_at?, recorded_as_of? |
 | `time.conflicts` | read | Report connected disagreements in a caller-supplied temporal index. | index, key? |

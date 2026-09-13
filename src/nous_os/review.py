@@ -25,12 +25,22 @@ import nous_os.operations  # noqa: F401 -- registers the fixed promotion operati
 from nous_os import cli
 from nous_os.adjudication import AdjudicationError, HumanDecision, PromotionRecord, Verdict
 from nous_os.attribution import AttributedKey, KeyOrigin
-from nous_os.candidates import CandidateStore, Proposal
+from nous_os.candidates import CandidateError, CandidateStore, Proposal, read_derived_citations
 from nous_os.canonical import Assertion, CanonicalError, LifecycleState, SupportClass
 from nous_os.capability import Grant, NotAuthorized, Tier, execute, required_tier
 from nous_os.derived import CanonDivergence
 from nous_os.identity import ASSERTION_PREFIX, canonical_bytes, digest_bytes, require_id
-from nous_os.provenance import Citation, Locator, ProvenanceError, quote_lint
+from nous_os.extraction import ExtractionStore
+from nous_os.ledger import Ledger
+from nous_os.provenance import (
+    Citation,
+    DerivedCitation,
+    DerivedAssetMismatch,
+    Locator,
+    ProvenanceError,
+    quote_lint,
+    quote_lint_derived,
+)
 from nous_os.snapshots import SnapshotCorrupt, SnapshotNotFound, SnapshotStore
 from nous_os.temporal import ClaimKey, ClaimKeyError
 
@@ -80,6 +90,8 @@ _CANDIDATE_FIELDS: Final[frozenset[str]] = frozenset(
         "producer",
         "batch",
         "supersedes",
+        "derived_citations",
+        "derived_counter_citations",
     }
 )
 _CITATION_FIELDS: Final[frozenset[str]] = frozenset(
@@ -100,6 +112,8 @@ _CANON_FILE_FIELDS: Final[frozenset[str]] = frozenset(
         "promotion_record_digest",
         "previous_digest",
         "version_digest",
+        "derived_citations",
+        "derived_counter_citations",
     }
 )
 _CANON_INDEX_FIELDS: Final[frozenset[str]] = frozenset(
@@ -146,6 +160,7 @@ _OUTCOMES: Final[frozenset[str]] = frozenset(
         "EVIDENCE_UNRESOLVED",
         "SUPERSEDED_NOT_TAIL",
         "DECIDED_IN_FUTURE",
+        "DERIVED_CITATION_FAILED",
     }
 )
 _REFUSED_DECIDER_WORDS: Final[frozenset[str]] = frozenset(
@@ -236,6 +251,8 @@ class ReviewCandidate:
     support: SupportClass
     citations: tuple[Citation, ...]
     counter_citations: tuple[Citation, ...]
+    derived_citations: tuple[DerivedCitation, ...]
+    derived_counter_citations: tuple[DerivedCitation, ...]
     valid_from: datetime | None
     valid_to: datetime | None
     why: str
@@ -252,7 +269,12 @@ class ReviewCandidate:
             payload = json.loads(proposal.content.as_data())
         except json.JSONDecodeError as error:
             raise CandidateRefused("CONTENT_NOT_JSON") from error
-        if type(payload) is not dict or set(payload) != _CANDIDATE_FIELDS:
+        required_fields = _CANDIDATE_FIELDS - {"derived_citations", "derived_counter_citations"}
+        if (
+            type(payload) is not dict
+            or not required_fields <= set(payload)
+            or not set(payload) <= _CANDIDATE_FIELDS
+        ):
             raise CandidateRefused("CANDIDATE_SHAPE")
 
         statement = _non_blank(payload["statement"], "MISSING_STATEMENT", CandidateRefused)
@@ -278,6 +300,10 @@ class ReviewCandidate:
             _citation_from_payload(citation, "MALFORMED_COUNTER_CITATION")
             for citation in counters_payload
         )
+        try:
+            derived_citations, derived_counter_citations = read_derived_citations(proposal)
+        except CandidateError as error:
+            raise CandidateRefused("MALFORMED_DERIVED_CITATION") from error
         valid_from = _optional_instant(payload["valid_from"], "MALFORMED_VALID_FROM")
         valid_to = _optional_instant(payload["valid_to"], "MALFORMED_VALID_TO")
         if valid_from is not None and valid_to is not None:
@@ -313,6 +339,8 @@ class ReviewCandidate:
             support=support,
             citations=citations,
             counter_citations=counter_citations,
+            derived_citations=derived_citations,
+            derived_counter_citations=derived_counter_citations,
             valid_from=valid_from,
             valid_to=valid_to,
             why=why,
@@ -483,6 +511,8 @@ class CanonVersion:
     promotion_record_digest: str
     previous_digest: str | None
     version_digest: str
+    derived_citations: tuple[DerivedCitation, ...]
+    derived_counter_citations: tuple[DerivedCitation, ...]
 
     @property
     def content_digest(self) -> str:
@@ -497,7 +527,7 @@ class CanonVersion:
             "candidate_version": self.candidate_version,
             "promotion_record_digest": self.promotion_record_digest,
             "version_digest": self.version_digest,
-            "decided_at": _instant_text(self.assertion.recorded_at),
+        "decided_at": _instant_text(self.assertion.recorded_at),
         }
 
 
@@ -623,6 +653,8 @@ def _canonical_assertion_payload(
     candidate_version: str,
     promotion_record_digest: str,
     previous_digest: str | None,
+    derived_citations: tuple[DerivedCitation, ...],
+    derived_counter_citations: tuple[DerivedCitation, ...],
 ) -> dict[str, object]:
     payload = {
         "id": assertion.id,
@@ -637,6 +669,10 @@ def _canonical_assertion_payload(
         "candidate_version": candidate_version,
         "promotion_record_digest": promotion_record_digest,
         "previous_digest": previous_digest,
+        "derived_citations": [citation.as_payload() for citation in derived_citations],
+        "derived_counter_citations": [
+            citation.as_payload() for citation in derived_counter_citations
+        ],
     }
     return {**payload, "version_digest": _digest(payload)}
 
@@ -777,6 +813,8 @@ def _write_assertion(
         candidate_version=candidate.version,
         promotion_record_digest=promotion_record_digest,
         previous_digest=previous_digest,
+        derived_citations=candidate.derived_citations,
+        derived_counter_citations=candidate.derived_counter_citations,
     )
     root = Path(canon_root)
     version_path = root / "assertions" / assertion.id / f"{digest}.json"
@@ -943,11 +981,34 @@ def _all_citations(candidate: ReviewCandidate) -> tuple[Citation, ...]:
     return candidate.citations + candidate.counter_citations
 
 
+def _all_derived_citations(candidate: ReviewCandidate) -> tuple[DerivedCitation, ...]:
+    return candidate.derived_citations + candidate.derived_counter_citations
+
+
 def _evidence_is_resolved(candidate: ReviewCandidate, snapshots: SnapshotStore) -> str | None:
     try:
         for citation in _all_citations(candidate):
             quote_lint(snapshots, citation)
     except (ProvenanceError, SnapshotNotFound, SnapshotCorrupt) as error:
+        return type(error).__name__
+    return None
+
+
+def _derived_evidence_is_resolved(
+    candidate: ReviewCandidate,
+    extraction_store: ExtractionStore,
+    snapshots: SnapshotStore,
+    ledger: Ledger | None,
+) -> str | None:
+    """Lint every derived citation without changing any store or canonical file."""
+    if not _all_derived_citations(candidate):
+        return None
+    if ledger is None:
+        return DerivedAssetMismatch.__name__
+    try:
+        for citation in _all_derived_citations(candidate):
+            quote_lint_derived(extraction_store, snapshots, ledger, citation)
+    except Exception as error:
         return type(error).__name__
     return None
 
@@ -958,6 +1019,8 @@ def apply(
     data_root: Path,
     candidate_store_path: Path,
     snapshot_root: Path,
+    extraction_store_path: Path | None = None,
+    ledger_path: Path | None = None,
     authorizations_path: Path,
     canon_root: Path,
     audit_log: Path,
@@ -984,6 +1047,8 @@ def apply(
         store = CandidateStore(Path(candidate_store_path))
         proposals = {proposal.proposal_id: proposal for proposal in store.proposals()}
         snapshots = SnapshotStore(Path(snapshot_root))
+        extraction_store = ExtractionStore(extraction_store_path)
+        ledger = None if ledger_path is None else Ledger(Path(ledger_path))
         prior_audit = _audit_entries(Path(audit_log))
         known_digests = {entry.decision_digest for entry in prior_audit}
         applied_pairs = {
@@ -1080,6 +1145,18 @@ def apply(
                     )
                 )
                 continue
+            derived_evidence_error = _derived_evidence_is_resolved(
+                candidate, extraction_store, snapshots, ledger
+            )
+            if derived_evidence_error is not None:
+                record(
+                    _audit_for(
+                        decision,
+                        "DERIVED_CITATION_FAILED",
+                        refusal_reason=derived_evidence_error,
+                    )
+                )
+                continue
             previous = _previous_version(candidate, Path(canon_root))
             if candidate.supersedes is not None and (
                 previous is None or not _is_tail(previous, Path(canon_root))
@@ -1145,6 +1222,18 @@ def _canon_version_from_file(path: Path) -> CanonVersion:
             locator=Locator(citation_payload["start_byte"], citation_payload["end_byte"]),
             span=citation_payload["span"],
         )
+        derived_payload = payload["derived_citations"]
+        derived_counter_payload = payload["derived_counter_citations"]
+        if type(derived_payload) is not list or type(derived_counter_payload) is not list:
+            raise ReviewError("CANON_DERIVED_CITATIONS")
+        from nous_os.provenance import derived_citation_from_payload
+
+        derived_citations = tuple(
+            derived_citation_from_payload(item) for item in derived_payload
+        )
+        derived_counter_citations = tuple(
+            derived_citation_from_payload(item) for item in derived_counter_payload
+        )
         assertion = Assertion(
             id=payload["id"],
             text=payload["text"],
@@ -1186,6 +1275,8 @@ def _canon_version_from_file(path: Path) -> CanonVersion:
         promotion_record_digest=record_digest,
         previous_digest=previous_digest,
         version_digest=version_digest,
+        derived_citations=derived_citations,
+        derived_counter_citations=derived_counter_citations,
     )
 
 
@@ -1378,6 +1469,8 @@ def _parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--data-root", required=True)
     apply_parser.add_argument("--candidate-store-path", required=True)
     apply_parser.add_argument("--snapshot-root", required=True)
+    apply_parser.add_argument("--extraction-store-path", default=None)
+    apply_parser.add_argument("--ledger-path", default=None)
     apply_parser.add_argument("--authorizations-path", required=True)
     apply_parser.add_argument("--canon-root", required=True)
     apply_parser.add_argument("--audit-log", required=True)
@@ -1419,6 +1512,12 @@ def main(argv: list[str] | None = None) -> int:
                 data_root=Path(namespace.data_root),
                 candidate_store_path=Path(namespace.candidate_store_path),
                 snapshot_root=Path(namespace.snapshot_root),
+                extraction_store_path=(
+                    None
+                    if namespace.extraction_store_path is None
+                    else Path(namespace.extraction_store_path)
+                ),
+                ledger_path=None if namespace.ledger_path is None else Path(namespace.ledger_path),
                 authorizations_path=Path(namespace.authorizations_path),
                 canon_root=Path(namespace.canon_root),
                 audit_log=Path(namespace.audit_log),

@@ -109,6 +109,18 @@ def _minimal_argv(external_name: str) -> list[str]:
     citation = json.dumps(
         {"source_id": SOURCE_ID, "snapshot_digest": "0" * 64, "start_byte": 0, "end_byte": 5, "span": "a"}
     )
+    derived_citation = json.dumps(
+        {
+            "asset_source_id": SOURCE_ID,
+            "asset_digest": "0" * 64,
+            "extractor": "plain_text",
+            "extractor_version": "1",
+            "record_digest": "0" * 64,
+            "start_char": 0,
+            "end_char": 1,
+            "span": "a",
+        }
+    )
     empty_index = json.dumps({"assertions": []})
     relation = json.dumps(
         {
@@ -130,6 +142,7 @@ def _minimal_argv(external_name: str) -> list[str]:
         "canon.sources": [],
         "canon.versions": ["--source-id", SOURCE_ID],
         "provenance.span": ["--citation", citation],
+        "provenance.verify_derived": ["--citation", derived_citation],
         "graph.project": [
             "--state",
             json.dumps({"index": {"assertions": []}, "bridges": [], "rejections": []}),
@@ -186,6 +199,18 @@ def _reachable_argv(external_name: str, digest: str) -> list[str]:
             "span": "alpha",
         }
     )
+    derived_citation = json.dumps(
+        {
+            "asset_source_id": SOURCE_ID,
+            "asset_digest": digest,
+            "extractor": "plain_text",
+            "extractor_version": "1",
+            "record_digest": "0" * 64,
+            "start_char": 0,
+            "end_char": 1,
+            "span": "a",
+        }
+    )
     empty_index = json.dumps({"assertions": []})
     relation = json.dumps(
         {
@@ -207,6 +232,7 @@ def _reachable_argv(external_name: str, digest: str) -> list[str]:
         "canon.sources": [],
         "canon.versions": ["--source-id", SOURCE_ID],
         "provenance.span": ["--citation", citation],
+        "provenance.verify_derived": ["--citation", derived_citation],
         "graph.project": [
             "--state",
             json.dumps({"index": {"assertions": []}, "bridges": [], "rejections": []}),

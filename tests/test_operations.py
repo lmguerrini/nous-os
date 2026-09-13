@@ -30,6 +30,7 @@ from nous_os.chunking import chunk_document
 from nous_os.compile import FlatTopK
 from nous_os.config import DataRoot
 from nous_os.derived import build
+from nous_os.extraction import ExtractionStore, Extractor
 from nous_os.discovery import (
     BridgeCard,
     BridgeRegistry,
@@ -42,7 +43,7 @@ from nous_os.discovery import (
     RoundResult,
 )
 from nous_os.ledger import IngestResult, IngestStatus, Ledger, ingest
-from nous_os.provenance import Citation, Locator
+from nous_os.provenance import CharLocator, Citation, DerivedCitation, Locator
 from nous_os.projection import KnowledgeState, RELIABILITY
 from nous_os.reconciliation import (
     EvidenceBasis,
@@ -718,6 +719,20 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
         "sources": {"path": canon.derived_path},
         "versions": {"path": canon.derived_path, "source_id": SOURCE_ID},
         "read_span": {"store": canon.snapshots, "citation": canon.citation},
+        "verify_derived": {
+            "extraction_store": ExtractionStore(canon.root / "extraction-store"),
+            "snapshot_store": canon.snapshots,
+            "ledger": canon.ledger,
+            "citation": DerivedCitation(
+                asset_source_id=SOURCE_ID,
+                asset_digest="0" * 64,
+                extractor=Extractor.PLAIN_TEXT,
+                extractor_version="1",
+                record_digest="0" * 64,
+                locator=CharLocator(0, 1),
+                span="a",
+            ),
+        },
         "list_documents": {"root": canon.data_root},
         "describe_corpus": {"root": canon.data_root},
         "proposals": {"store": canon.candidates},
@@ -874,6 +889,7 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "sources": Tier.READ,
         "versions": Tier.READ,
         "read_span": Tier.READ,
+        "verify_derived": Tier.READ,
         "list_documents": Tier.READ,
         "describe_corpus": Tier.READ,
         "proposals": Tier.READ,
@@ -893,8 +909,8 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "ingest_source": Tier.PROMOTE,
         "promote_candidate": Tier.PROMOTE,
     }
-    assert len(expected) == 22
-    assert len(operations) == 22
+    assert len(expected) == 23
+    assert len(operations) == 23
     assert {operation.name: operation.tier for operation in operations} == expected
     assert all(
         operation.tier is not Tier.EXTERNAL_CONSEQUENTIAL_ACTION
@@ -952,7 +968,7 @@ def test_registered_wrapper_annotations_resolve_without_importing_discovery_at_r
     wrappers = tuple(
         authority._REGISTRY[operation.name][1] for operation in _project_operations()
     )
-    assert len(wrappers) == 22
+    assert len(wrappers) == 23
     resolved = {
         wrapper.__name__: get_type_hints(
             wrapper,

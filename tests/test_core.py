@@ -43,6 +43,7 @@ EXPECTED_EXTERNAL_NAMES = (
     "canon.sources",
     "canon.versions",
     "provenance.span",
+    "provenance.verify_derived",
     "graph.project",
     "time.as_of",
     "time.conflicts",
@@ -151,6 +152,19 @@ def _minimal_arguments(external_name: str, digest: str) -> dict[str, object]:
         return {"source_id": SOURCE_ID}
     if external_name == "provenance.span":
         return {"citation": citation}
+    if external_name == "provenance.verify_derived":
+        return {
+            "citation": {
+                "asset_source_id": SOURCE_ID,
+                "asset_digest": digest,
+                "extractor": "plain_text",
+                "extractor_version": "1",
+                "record_digest": "0" * 64,
+                "start_char": 0,
+                "end_char": 1,
+                "span": "a",
+            }
+        }
     if external_name == "graph.project":
         return {
             "state": {
@@ -268,7 +282,7 @@ def test_catalogue_has_exactly_the_fixed_external_names_in_the_fixed_order() -> 
     assert tuple(descriptor.external_name for descriptor in core.CATALOGUE) == (
         EXPECTED_EXTERNAL_NAMES
     )
-    assert len(core.CATALOGUE) == 22
+    assert len(core.CATALOGUE) == 23
 
 
 def test_catalogue_is_the_same_tuple_object_across_reads() -> None:
@@ -669,6 +683,28 @@ def test_an_explicit_argument_outranks_the_environment_variable(tmp_path: Path) 
         environ={core.SNAPSHOT_ROOT_ENV_VAR: str(other)},
     )
     assert workspace.snapshot_root == chosen.resolve()
+
+
+def test_the_optional_extraction_store_resolves_from_an_argument_or_environment(
+    tmp_path: Path,
+) -> None:
+    absent = core.resolve_workspace(**_workspace_kwargs(tmp_path))
+    assert absent.extraction_store_path is None
+    configured = core.resolve_workspace(
+        **_workspace_kwargs(
+            tmp_path,
+            extraction_store_path=None,
+            environ={core.EXTRACTION_STORE_PATH_ENV_VAR: str(tmp_path / "extractions")},
+        )
+    )
+    assert configured.extraction_store_path == (tmp_path / "extractions").resolve()
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(
+                tmp_path,
+                extraction_store_path=(tmp_path / "documents" / "extractions"),
+            )
+        )
 
 
 # --- no two workspace locations may name one path --------------------------
@@ -1227,6 +1263,7 @@ def test_system_health_reports_healthy_for_a_seeded_store_and_absent_for_an_unwr
     assert health["bridge_registry_path"] == "absent"
     assert health["rejection_memory_path"] == "absent"
     assert health["relation_store_path"] == "absent"
+    assert health["extraction_store_path"] == "unconfigured"
 
 
 def test_absent_is_never_reported_as_healthy_and_unknown_is_never_reported_as_healthy(

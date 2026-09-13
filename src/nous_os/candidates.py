@@ -26,11 +26,42 @@ from nous_os.identity import (
     new_assertion_id,
     require_id,
 )
+from nous_os.provenance import DerivedCitation, ProvenanceError, derived_citation_from_payload
 from nous_os.untrusted import UntrustedText
 
 
 class CandidateError(Exception):
     """Raised when a proposal record cannot truthfully be stored or read."""
+
+
+def read_derived_citations(
+    proposal: "Proposal",
+) -> tuple[tuple[DerivedCitation, ...], tuple[DerivedCitation, ...]]:
+    """Read optional direct and counter extraction citations as typed evidence.
+
+    Proposal content remains untrusted text.  This reader is intentionally
+    narrow: it understands only the two optional derived-citation fields and
+    does not make candidate validity or promotion decisions.
+    """
+    if type(proposal) is not Proposal:
+        raise CandidateError("derived citations require an exact Proposal")
+    try:
+        payload = json.loads(proposal.content.as_data())
+    except json.JSONDecodeError as error:
+        raise CandidateError("proposal content is not JSON") from error
+    if type(payload) is not dict:
+        raise CandidateError("proposal content is not an object")
+
+    def read(field: str) -> tuple[DerivedCitation, ...]:
+        raw = payload.get(field, [])
+        if type(raw) is not list:
+            raise CandidateError(f"{field} must be a list")
+        try:
+            return tuple(derived_citation_from_payload(item) for item in raw)
+        except ProvenanceError as error:
+            raise CandidateError(f"{field} contains a malformed derived citation") from error
+
+    return read("derived_citations"), read("derived_counter_citations")
 
 
 def _instant(value: datetime, field: str) -> str:

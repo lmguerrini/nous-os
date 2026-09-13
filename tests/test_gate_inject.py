@@ -74,6 +74,7 @@ _EXPECTED_OPERATION_NAMES = frozenset(
         "canon.sources",
         "canon.versions",
         "provenance.span",
+        "provenance.verify_derived",
         "graph.project",
         "time.as_of",
         "time.conflicts",

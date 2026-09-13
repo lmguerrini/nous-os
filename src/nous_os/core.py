@@ -62,7 +62,9 @@ from nous_os.discovery import (
     GateVector,
     TrivialityArchetype,
 )
+from nous_os.extraction import ExtractionStore
 from nous_os.identity import InvalidIdentifier
+from nous_os.ledger import Ledger
 from nous_os.projection import (
     DISCOVERY,
     RELIABILITY,
@@ -71,7 +73,7 @@ from nous_os.projection import (
     ProjectionPolicy,
     TemporalQuestion,
 )
-from nous_os.provenance import Citation, Locator, ProvenanceError
+from nous_os.provenance import Citation, Locator, ProvenanceError, derived_citation_from_payload
 from nous_os.reconciliation import RelationClass, RelationError, RelationProposal, RelationStore
 from nous_os.snapshots import SnapshotStore
 from nous_os.temporal import ClaimKey, ClaimKeyError, TemporalError, TemporalIndex
@@ -213,6 +215,7 @@ CANDIDATE_STORE_PATH_ENV_VAR: Final = "NOUS_OS_CANDIDATE_STORE_PATH"
 BRIDGE_REGISTRY_PATH_ENV_VAR: Final = "NOUS_OS_BRIDGE_REGISTRY_PATH"
 REJECTION_MEMORY_PATH_ENV_VAR: Final = "NOUS_OS_REJECTION_MEMORY_PATH"
 RELATION_STORE_PATH_ENV_VAR: Final = "NOUS_OS_RELATION_STORE_PATH"
+EXTRACTION_STORE_PATH_ENV_VAR: Final = "NOUS_OS_EXTRACTION_STORE_PATH"
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +236,7 @@ class Workspace:
     bridge_registry_path: Path
     rejection_memory_path: Path
     relation_store_path: Path
+    extraction_store_path: Path | None = None
 
     def __post_init__(self) -> None:
         """Resolve direct inputs before applying the shared overlap refusal."""
@@ -256,6 +260,12 @@ class Workspace:
             except (TypeError, ValueError) as error:
                 raise CoreError(f"workspace {field} must be path-like") from error
             object.__setattr__(self, field, resolved)
+        if self.extraction_store_path is not None:
+            try:
+                extraction_store_path = Path(self.extraction_store_path).expanduser().resolve()
+            except (TypeError, ValueError) as error:
+                raise CoreError("workspace extraction_store_path must be path-like or None") from error
+            object.__setattr__(self, "extraction_store_path", extraction_store_path)
         _refuse_aliased_locations(self)
 
 
@@ -306,6 +316,11 @@ def _workspace_locations(workspace: Workspace) -> tuple[_WorkspaceLocation, ...]
         _WorkspaceLocation("bridge_registry_path", workspace.bridge_registry_path, False, False),
         _WorkspaceLocation("rejection_memory_path", workspace.rejection_memory_path, False, False),
         _WorkspaceLocation("relation_store_path", workspace.relation_store_path, False, False),
+        *(() if workspace.extraction_store_path is None else (
+            _WorkspaceLocation(
+                "extraction_store_path", workspace.extraction_store_path, False, True
+            ),
+        )),
     )
 
 
@@ -533,6 +548,7 @@ def resolve_workspace(
     bridge_registry_path: str | os.PathLike[str] | None = None,
     rejection_memory_path: str | os.PathLike[str] | None = None,
     relation_store_path: str | os.PathLike[str] | None = None,
+    extraction_store_path: str | os.PathLike[str] | None = None,
     environ: dict[str, str] | None = None,
 ) -> Workspace:
     """Resolve every location Core needs, or refuse. Never guesses one.
@@ -574,6 +590,17 @@ def resolve_workspace(
             RELATION_STORE_PATH_ENV_VAR,
             "relation store path",
             env,
+        ),
+        extraction_store_path=(
+            _resolve_path(
+                extraction_store_path,
+                EXTRACTION_STORE_PATH_ENV_VAR,
+                "extraction store path",
+                env,
+            )
+            if extraction_store_path is not None
+            or bool(env.get(EXTRACTION_STORE_PATH_ENV_VAR, "").strip())
+            else None
         ),
     )
 
@@ -755,6 +782,25 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
                 "object",
                 True,
                 "the citation naming a source, snapshot digest, byte range, and quoted span",
+            ),
+        ),
+    ),
+    _descriptor(
+        "provenance.verify_derived",
+        "verify_derived",
+        "Lint a quote from preserved extraction evidence and optionally report reproducibility.",
+        (
+            ParameterSpec(
+                "citation",
+                "object",
+                True,
+                "the derived citation naming an asset, extraction record, character range, and span",
+            ),
+            ParameterSpec(
+                "full",
+                "boolean",
+                False,
+                "whether to include a fresh-derivation verdict when bytes are available",
             ),
         ),
     ),
@@ -1020,6 +1066,13 @@ def _citation(payload: object, field: str = "citation") -> Citation:
         raise ArgumentTypeError(f"{field} is not a valid citation: {error}") from error
 
 
+def _derived_citation(payload: object, field: str = "citation"):
+    try:
+        return derived_citation_from_payload(payload)
+    except (ProvenanceError, InvalidIdentifier, TypeError) as error:
+        raise ArgumentTypeError(f"{field} is not a valid derived citation: {error}") from error
+
+
 def _assertion_from_payload(payload: object) -> tuple[ClaimKey, Assertion]:
     value = _object(
         payload,
@@ -1274,6 +1327,18 @@ def _bind_read_span(workspace: Workspace, arguments: dict[str, object]) -> dict[
     }
 
 
+def _bind_verify_derived(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "extraction_store": ExtractionStore(workspace.extraction_store_path),
+        "snapshot_store": SnapshotStore(workspace.snapshot_root),
+        "ledger": Ledger(workspace.ledger_path),
+        "citation": _derived_citation(arguments["citation"]),
+    }
+    if "full" in arguments:
+        kwargs["full"] = arguments["full"]
+    return kwargs
+
+
 def _bind_project(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
     kwargs: dict[str, object] = {
         "state": _knowledge_state_from_payload(arguments["state"]),
@@ -1404,6 +1469,7 @@ _BINDERS: Final = {
     "canon.sources": _bind_path_only,
     "canon.versions": _bind_versions,
     "provenance.span": _bind_read_span,
+    "provenance.verify_derived": _bind_verify_derived,
     "graph.project": _bind_project,
     "time.as_of": _bind_as_of,
     "time.conflicts": _bind_conflicts,
@@ -1523,6 +1589,7 @@ _RENDERERS: Final = {
     "canon.sources": lambda sources: list(sources),
     "canon.versions": lambda versions: list(versions),
     "provenance.span": lambda text: text,
+    "provenance.verify_derived": lambda result: result,
     "graph.project": lambda ir: ir.as_payload(),
     "time.as_of": _render_as_of,
     "time.conflicts": _render_conflicts,
@@ -1647,6 +1714,11 @@ def _system_health(workspace: Workspace) -> dict[str, object]:
             workspace.rejection_memory_path, is_directory=False
         ),
         "relation_store_path": _location_health(workspace.relation_store_path, is_directory=False),
+        "extraction_store_path": (
+            "unconfigured"
+            if workspace.extraction_store_path is None
+            else _location_health(workspace.extraction_store_path, is_directory=True)
+        ),
     }
 
 

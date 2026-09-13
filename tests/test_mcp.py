@@ -69,6 +69,16 @@ def _minimal_arguments(external_name: str) -> dict[str, object]:
     citation = {
         "source_id": SOURCE_ID, "snapshot_digest": "0" * 64, "start_byte": 0, "end_byte": 5, "span": "a",
     }
+    derived_citation = {
+        "asset_source_id": SOURCE_ID,
+        "asset_digest": "0" * 64,
+        "extractor": "plain_text",
+        "extractor_version": "1",
+        "record_digest": "0" * 64,
+        "start_char": 0,
+        "end_char": 1,
+        "span": "a",
+    }
     empty_index = {"assertions": []}
     instant = "2026-01-02T12:00:00+00:00"
     relation = {
@@ -88,6 +98,7 @@ def _minimal_arguments(external_name: str) -> dict[str, object]:
         "canon.sources": {},
         "canon.versions": {"source_id": SOURCE_ID},
         "provenance.span": {"citation": citation},
+        "provenance.verify_derived": {"citation": derived_citation, "full": True},
         "graph.project": {
             "state": {"index": {"assertions": []}, "bridges": [], "rejections": []},
             "policy": "reliability",

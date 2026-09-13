@@ -155,14 +155,18 @@ left for a reader to discover by being wrong.
 | `Temperature` | `ui/src/engine/tokens.ts:10` | `cold` · `balanced` · `warm` | A colour-temperature axis, independent of palette. |
 | `Theme` | `ui/src/engine/tokens.ts:11` | `system` · `dark` · `light` | Which ground the drawing sits on. |
 | `Assertion` | `src/nous_os/canonical.py:130` | — | One claim, with its citation and its validity bounds. The unit canon is made of. |
-| `Citation` | `src/nous_os/provenance.py:101` | — | Where a claim came from, exactly: a source, a snapshot digest and a byte range. |
-| `Locator` | `src/nous_os/provenance.py:71` | — | A byte range in a specific snapshot. Not a page number and not a guess. |
+| `Citation` | `src/nous_os/provenance.py:142` | — | Where a claim came from, exactly: a source, a snapshot digest and a byte range. |
+| `Locator` | `src/nous_os/provenance.py:93` | — | A byte range in a specific snapshot. Not a page number and not a guess. |
+| `CharLocator` | `src/nous_os/provenance.py:123` | — | A character range into one preserved extraction text, with no empty or inverted span. |
+| `DerivedCitation` | `src/nous_os/provenance.py:186` | — | A quote from extracted attachment text, bound to the asset, extractor version, shared record, owner, and character range that produced it. |
+| `DerivationState` | `src/nous_os/provenance.py:473` | `REPRODUCED` · `DIVERGED` · `NOT_EXECUTABLE` | Whether supplied asset bytes reproduce the stored extraction, differ from it, or cannot be re-executed. |
+| `DerivationVerdict` | `src/nous_os/provenance.py:482` | — | The reproducibility finding with its reason and observed asset and text digests. |
 | `Snapshot` | `src/nous_os/snapshots.py:43` | — | The bytes of a source as they were when read, addressed by their own content. |
 | `SnapshotStore` | `src/nous_os/snapshots.py:67` | — | Where snapshots live. Nothing overwrites one. |
 | `Ledger` | `src/nous_os/ledger.py:242` | — | The append-only record of every ingest. A file, not an index — reading it back is the whole of recovery. |
 | `LedgerEntry` | `src/nous_os/ledger.py:98` | — | One ingest, recorded once. |
-| `Proposal` | `src/nous_os/candidates.py:49` | — | Something put forward. Its holder has no authority whatsoever. |
-| `CandidateStore` | `src/nous_os/candidates.py:91` | — | Append-only proposals with no route to canon. |
+| `Proposal` | `src/nous_os/candidates.py:80` | — | Something put forward. Its holder has no authority whatsoever. |
+| `CandidateStore` | `src/nous_os/candidates.py:122` | — | Append-only proposals with no route to canon. |
 | `HumanDecision` | `src/nous_os/adjudication.py:108` | — | A person's act. The only thing that moves a proposal into canon. |
 | `PromotionRecord` | `src/nous_os/adjudication.py:147` | — | That act, filed. It records authorization and never writes canonical content. |
 | `Rejection` | `src/nous_os/adjudication.py:221` | — | A refusal, kept. Rejecting something is information, so it is not thrown away. |
@@ -236,8 +240,9 @@ left for a reader to discover by being wrong.
 | `BundleRefusal` | `src/nous_os/capture_bundle.py:48` | `DIGEST_MISMATCH` · `BYTE_COUNT_MISMATCH` · `UNDECLARED_FILE` · `MISSING_DECLARED_FILE` · `SYMLINK_REFUSED` · `NOT_A_REGULAR_FILE` · `HARD_LINK_REFUSED` · `TOO_LARGE` · `MALFORMED_DECLARATION` · `MULTIPLE_CAPTURES` · `NOT_TEXT` · `MALFORMED_CAPTURE` · `MESSAGE_WITHOUT_ID` · `INCONSISTENT_OCCURRENCES` · `UNKNOWN_ROLE` | Why a supplied file or rendered capture element could not become a record. A refusal retains its locator and is counted rather than hidden. |
 | `BundleInventory` | `src/nous_os/capture_bundle.py:127` | — | Everything a manifest-declared supplied bundle holds: actual and declared bytes, file classes, the manifest name and its digest. |
 | `BundleNormalization` | `src/nous_os/capture_bundle.py:221` | — | Materialized supplied-document, window and deduplicated captured-message records, plus counted refusals. |
-| `Extractor` | `src/nous_os/extraction.py:55` | `PLAIN_TEXT` · `JSON_TEXT` · `NOTEBOOK_CELLS` · `PDF_TEXT_TOOL` · `OFFICE_XML` · `ARCHIVE_MEMBERS` · `NONE` | The bounded mechanism that produced separately attributed attachment evidence. PDF text comes only from the tool found on PATH, with the observed version recorded. |
-| `ExtractionOutcome` | `src/nous_os/extraction.py:67` | `EXTRACTED` · `EMPTY` · `UNSUPPORTED_IMAGE` · `UNSUPPORTED_VIDEO` · `UNSUPPORTED_BINARY` · `UNREADABLE` · `TOOL_UNAVAILABLE` · `ABSENT` · `TOO_LARGE` · `ENCRYPTED` | What the byte reader established without turning unsupported, missing, unavailable-tool, encrypted, oversized, empty, or malformed material into the same answer. |
+| `Extractor` | `src/nous_os/extraction.py:68` | `PLAIN_TEXT` · `JSON_TEXT` · `NOTEBOOK_CELLS` · `PDF_TEXT_TOOL` · `OFFICE_XML` · `ARCHIVE_MEMBERS` · `NONE` | The bounded mechanism that produced separately attributed attachment evidence. PDF text comes only from the tool found on PATH, with the observed version recorded. |
+| `ExtractionOutcome` | `src/nous_os/extraction.py:80` | `EXTRACTED` · `EMPTY` · `UNSUPPORTED_IMAGE` · `UNSUPPORTED_VIDEO` · `UNSUPPORTED_BINARY` · `UNREADABLE` · `TOOL_UNAVAILABLE` · `ABSENT` · `TOO_LARGE` · `ENCRYPTED` | What the byte reader established without turning unsupported, missing, unavailable-tool, encrypted, oversized, empty, or malformed material into the same answer. |
+| `StoredExtraction` | `src/nous_os/extraction.py:383` | — | One authenticated extraction payload with its sorted owners, text, version, and record digest as read from the shared store. |
 
 <!-- /vocabulary:technical -->
 
@@ -355,7 +360,7 @@ judgement sits on top of those facts and is offered as a judgement.
 
 ### Candidate — `Mneme`
 
-- **Proposed boundary:** proposed for the append-only durable-trace family: `Ledger` at `src/nous_os/ledger.py:242`, `SnapshotStore` at `src/nous_os/snapshots.py:67`, `CandidateStore` at `src/nous_os/candidates.py:91`, `RejectionMemory` at `src/nous_os/adjudication.py:249`, `AgentMemory` at `src/nous_os/adjudication.py:313`, and `BridgeRegistry` at `src/nous_os/discovery.py:347`.
+- **Proposed boundary:** proposed for the append-only durable-trace family: `Ledger` at `src/nous_os/ledger.py:242`, `SnapshotStore` at `src/nous_os/snapshots.py:67`, `CandidateStore` at `src/nous_os/candidates.py:122`, `RejectionMemory` at `src/nous_os/adjudication.py:249`, `AgentMemory` at `src/nous_os/adjudication.py:313`, and `BridgeRegistry` at `src/nous_os/discovery.py:347`.
 - **Evidence the boundary exists:** the shape is real and is the best-evidenced of the candidates. All six are append-only and each is explicit in its own docstring about what authority it does and does not have. **One earlier claim is withdrawn:** they are not all read back in file order. The snapshot store returns its contents *sorted*, and says why — it records no time, so an order taken from the filesystem would be an accident presented as a fact. That is the same discipline this document argues for everywhere else, and it makes the family less uniform than the draft claimed.
 - **Intended meaning:** Greek *mneme*, memory as retention — a state, the persisting trace of something past, classically distinguished from the active search that recovers it. The variant spelling sometimes floated is not a Greek noun at all but a back-formation from an adjectival stem.
 - **Why the mapping is accurate or inaccurate:** inaccurate, on the one distinction the system cannot afford to blur. The six stores are **not the same kind of thing**: two hold the files canon is made of, two others explicitly hold material with no route to canon at all, and the rest are records *about* those boundaries. **An earlier draft put the first pair more strongly — that those files simply *are* canon — which is the very claim the `canon` record above disowns as an overreach.** It is withdrawn here too: a store neutral about standing is not a standing. What remains, and is sufficient, is that the six differ in their relation to authority. A single word across all six says they share a standing they do not share, and what has authority versus what does not is the load-bearing distinction in the whole design. Two further objections stand on their own: the code already uses "memory" as a narrower technical name, so elevating a memory-word gives it two scopes at once; and "memory" currently connotes machine memory that shapes future behaviour, which is exactly the connotation one of these classes was built to refuse.
@@ -441,9 +446,11 @@ mapping above; a term is in one register or the other, and the build refuses a t
 | `NodeKind` · `EdgeKind` · `Side` | The graph vocabulary. Node and edge are exact, universal, and carry no meaning they should not. |
 | `BridgeDisposition` | What a whole rubric vector amounts to. Naming it epistemically would invite reading it as a confidence. |
 | `PolicyId` · `ProjectionPolicy` | An omission policy. See the note below on what its two members are called. |
-| `Citation` · `Locator` | Already the standard words, in law, scholarship and software alike. `Assertion` sat here in an earlier draft while also being mapped by `canon`; a term cannot be both, and being mapped is the stronger statement. |
+| `Citation` · `Locator` · `DerivedCitation` · `CharLocator` | Already the standard words, in law, scholarship and software alike. `Assertion` sat here in an earlier draft while also being mapped by `canon`; a term cannot be both, and being mapped is the stronger statement. |
+| `DerivationState` · `DerivationVerdict` | Reproducibility outcomes and their observed digests are operational reports, not claims about what the extracted words mean. |
 | `Snapshot` · `SnapshotStore` · `Ledger` · `LedgerEntry` | Storage facts. Deliberately mundane, because they are the substrate rather than the meaning. |
 | `Proposal` · `CandidateStore` | "Candidate" and "proposal" already say the thing has no standing. |
+| `StoredExtraction` | A checked storage representation for extracted evidence, deliberately kept as a storage fact rather than an epistemic category. |
 | `HumanDecision` · `PromotionRecord` | The plainest available words for the most important act in the system. |
 | `Rejection` · `RejectionMemory` | Says exactly what it holds. |
 | `AgentMemory` | Named narrowly on purpose; a wider word would suggest a wider power. |
@@ -545,7 +552,7 @@ to rediscover them.
 | 5 | "Endpoint" has three meanings: a cited end of a proposed link, a document/anchor pair in a measurement, and a graph edge's source or target. Only the first is an importable symbol; the other two are the word used in prose and in an error message, which is part of why the collision is easy to miss. | `src/nous_os/discovery.py:197`, `src/nous_os/ablation.py:40`, `src/nous_os/projection.py:397` |
 | 6 | The third answer is spelled two ways with no rule distinguishing them — `UNKNOWN` in three enumerations, `UNDETERMINED` in three others. No module carries both, so nothing forces a reader to notice the split. | `src/nous_os/canonical.py:73` and `src/nous_os/temporal.py:86` |
 | 7 | "Derived" covers four things: the rebuildable index, a key origin, an epistemic class, and an alias derivation. | `src/nous_os/derived.py:117`, `src/nous_os/attribution.py:33`, `src/nous_os/discovery.py:79` |
-| 8 | `holder` names two different roles: the party that holds authority, and the party that put material forward and has none. | `src/nous_os/capability.py:171` and `src/nous_os/candidates.py:56` |
+| 8 | `holder` names two different roles: the party that holds authority, and the party that put material forward and has none. | `src/nous_os/capability.py:171` and `src/nous_os/candidates.py:87` |
 | 9 | The same version string is declared twice under two names, on two sides of the language boundary, and nothing checks that they agree. | `src/nous_os/projection.py:28` and `ui/src/engine/version.ts:12` |
 | 10 | `MorphologyMaterial` is exported twice with disjoint structure — one a tuning record, one a binding of ids and materials — and one function takes the first and returns the second, so both names meet in a single body. | `ui/src/engine/calibration.ts:3` and `ui/src/engine/morphology.ts:99` |
 | 11 | `Coordinates` is documented as implying no screen coordinate system and is then used for three distinct spaces, with nothing in the type distinguishing them. | `ui/src/engine/contract.ts:32` |

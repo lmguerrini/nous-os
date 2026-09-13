@@ -24,7 +24,7 @@ from typing import Iterable
 from xml.etree import ElementTree
 from xml.parsers import expat
 
-from nous_os.identity import SOURCE_PREFIX, canonical_bytes, digest_bytes, digest_payload, require_id
+from nous_os.identity import SOURCE_PREFIX, canonical_bytes, digest_bytes, file_is_present, require_id
 
 
 #: The bounded archive member count, checked from the central directory before
@@ -50,6 +50,19 @@ _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 class ExtractionError(Exception):
     """Raised when an extraction record would not describe its bytes faithfully."""
+
+
+def extraction_record_digest(payload: dict) -> str:
+    """Return the digest of an extraction's content payload.
+
+    The record wrapper used by :class:`ExtractionStore` keeps this digest
+    outside the payload it authenticates.  This is deliberately the same
+    calculation as :attr:`Extraction.record_digest`, rather than a second
+    near-identical serialisation rule.
+    """
+    if type(payload) is not dict:
+        raise ExtractionError("extraction record payload must be a dict")
+    return digest_bytes(canonical_bytes(payload))
 
 
 class Extractor(Enum):
@@ -408,7 +421,7 @@ class Extraction:
     @property
     def record_digest(self) -> str:
         """The sha256 of the canonical content payload."""
-        return digest_payload(self.content_payload())
+        return extraction_record_digest(self.content_payload())
 
     def as_payload(self) -> dict[str, object]:
         """The serialisable record including the digest it has just established."""
@@ -461,6 +474,147 @@ class SharedExtraction:
     def asset_source_ids(self) -> tuple[str, ...]:
         """The compatibility view of the source identifiers in ``owners``."""
         return tuple(owner.asset_source_id for owner in self.owners)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredExtraction:
+    """One checked extraction record as held by :class:`ExtractionStore`."""
+
+    payload: dict[str, object]
+    owners: tuple[tuple[str, str | None], ...]
+    record_digest: str
+    text: str
+    extractor_version: str
+
+
+class ExtractionStore:
+    """Content-addressed, read-mostly storage for shared extraction evidence."""
+
+    def __init__(self, root: Path | None) -> None:
+        self._root = None if root is None else Path(root)
+
+    @staticmethod
+    def _extractor(value: Extractor | str) -> Extractor:
+        if _is_extractor(value):
+            return value
+        if type(value) is not str:
+            raise ExtractionError("extractor must be a declared Extractor or its value")
+        try:
+            return Extractor(value)
+        except ValueError as error:
+            raise ExtractionError("extractor must be a declared Extractor or its value") from error
+
+    @staticmethod
+    def _record_path(root: Path, extractor: Extractor, asset_digest: str) -> Path:
+        return root / extractor.value / f"{asset_digest}.json"
+
+    @staticmethod
+    def _not_found(extractor: Extractor, asset_digest: str):
+        # Provenance owns the observable derived-citation failure vocabulary.
+        # Importing lazily prevents extraction evidence from depending on a
+        # citation module during its own initialisation.
+        from nous_os.provenance import DerivedRecordNotFound
+
+        return DerivedRecordNotFound(
+            f"no extraction record for {extractor.value} and asset {asset_digest}"
+        )
+
+    @staticmethod
+    def _corrupt(detail: str):
+        from nous_os.provenance import DerivedRecordCorrupt
+
+        return DerivedRecordCorrupt(detail)
+
+    def get(self, extractor: Extractor | str, asset_digest: str) -> StoredExtraction:
+        """Read one shared record, refusing absent and corrupt records separately."""
+        selected = self._extractor(extractor)
+        if type(asset_digest) is not str or _HEX64.fullmatch(asset_digest) is None:
+            raise ExtractionError("asset_digest must be a lowercase sha256 digest")
+        if self._root is None:
+            raise self._not_found(selected, asset_digest)
+        path = self._record_path(self._root, selected, asset_digest)
+        if not file_is_present(path):
+            raise self._not_found(selected, asset_digest)
+        try:
+            wrapper = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise self._corrupt(f"extraction record is unreadable: {path.name}") from error
+        if type(wrapper) is not dict or set(wrapper) != {"record", "record_digest", "owners"}:
+            raise self._corrupt("extraction record has the wrong wrapper shape")
+        payload = wrapper["record"]
+        record_digest = wrapper["record_digest"]
+        owners_payload = wrapper["owners"]
+        if type(payload) is not dict:
+            raise self._corrupt("extraction record payload is not an object")
+        if type(record_digest) is not str or _HEX64.fullmatch(record_digest) is None:
+            raise self._corrupt("extraction record digest is not a lowercase sha256 digest")
+        if extraction_record_digest(payload) != record_digest:
+            raise self._corrupt("extraction record digest does not match its payload")
+        if payload.get("asset_digest") != asset_digest:
+            raise self._corrupt("extraction record asset digest does not match its address")
+        if payload.get("extractor") != selected.value:
+            raise self._corrupt("extraction record extractor does not match its address")
+        text = payload.get("text")
+        extractor_version = payload.get("extractor_version")
+        if type(text) is not str or type(extractor_version) is not str or not extractor_version.strip():
+            raise self._corrupt("extraction record text or extractor version is malformed")
+        if type(owners_payload) is not list:
+            raise self._corrupt("extraction record owners are not an array")
+        owners: list[tuple[str, str | None]] = []
+        for owner in owners_payload:
+            if type(owner) is not dict or set(owner) != {"asset_source_id", "given_name"}:
+                raise self._corrupt("extraction record owner has the wrong shape")
+            source_id = owner["asset_source_id"]
+            given_name = owner["given_name"]
+            if type(source_id) is not str or (given_name is not None and type(given_name) is not str):
+                raise self._corrupt("extraction record owner has malformed values")
+            try:
+                require_id(source_id, SOURCE_PREFIX)
+            except Exception as error:
+                raise self._corrupt("extraction record owner source id is malformed") from error
+            owners.append((source_id, given_name))
+        if tuple(sorted(owners, key=lambda owner: owner[0])) != tuple(owners):
+            raise self._corrupt("extraction record owners are not sorted")
+        if len({owner[0] for owner in owners}) != len(owners):
+            raise self._corrupt("extraction record owners are not unique")
+        return StoredExtraction(
+            payload=payload,
+            owners=tuple(owners),
+            record_digest=record_digest,
+            text=text,
+            extractor_version=extractor_version,
+        )
+
+    def write(self, shared: SharedExtraction) -> None:
+        """Write one shared extraction once; an identical record is a no-op."""
+        if type(shared) is not SharedExtraction:
+            raise ExtractionError("extraction store requires an exact SharedExtraction")
+        extraction = shared.extraction
+        if extraction.asset_digest is None:
+            raise ExtractionError("a stored shared extraction must name its asset digest")
+        if self._root is None:
+            raise ExtractionError("an extraction store without a root cannot write")
+        path = self._record_path(self._root, extraction.extractor, extraction.asset_digest)
+        if file_is_present(path):
+            try:
+                existing = self.get(extraction.extractor, extraction.asset_digest)
+            except Exception as error:
+                raise ExtractionError("an existing extraction record is not readable") from error
+            if existing.record_digest == extraction.record_digest:
+                return
+            raise ExtractionError("an extraction record already exists with a different digest")
+        wrapper = {
+            "record": extraction.content_payload(),
+            "record_digest": extraction.record_digest,
+            "owners": [
+                {"asset_source_id": owner.asset_source_id, "given_name": owner.given_name}
+                for owner in shared.owners
+            ],
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".partial")
+        temporary.write_bytes(canonical_bytes(wrapper) + b"\n")
+        temporary.replace(path)
 
 
 def _normalise_newlines(text: str) -> str:

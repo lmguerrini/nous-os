@@ -35,6 +35,7 @@ from nous_os.chunking import Chunk, chunk_document
 from nous_os.compile import FlatTopK, Pack, compile_pack
 from nous_os.config import DataRoot
 from nous_os.derived import SearchHit, build
+from nous_os.extraction import ExtractionStore, Extractor
 from nous_os.adjudication import (
     HumanDecision,
     PromotionRecord,
@@ -58,7 +59,7 @@ from nous_os.discovery import (
 from nous_os.identity import canonical_bytes
 from nous_os.ledger import IngestResult, IngestStatus, Ledger
 from nous_os.measure import RunStatus, not_run
-from nous_os.provenance import Citation, Locator
+from nous_os.provenance import CharLocator, Citation, DerivedCitation, Locator
 from nous_os.reconciliation import (
     EvidenceBasis,
     Origin,
@@ -850,6 +851,24 @@ def _ingest_arguments(world: _World, text: str) -> dict[str, object]:
     }
 
 
+def _verify_derived_arguments(world: _World, text: str) -> dict[str, object]:
+    """Carry hostile text in the quote this read-only evidence check lints."""
+    return {
+        "extraction_store": ExtractionStore(world.root / "extraction-store"),
+        "snapshot_store": world.snapshots,
+        "ledger": world.ledger,
+        "citation": DerivedCitation(
+            asset_source_id=_SOURCE_ID,
+            asset_digest="0" * 64,
+            extractor=Extractor.PLAIN_TEXT,
+            extractor_version="1",
+            record_digest="0" * 64,
+            locator=CharLocator(0, len(text)),
+            span=text,
+        ),
+    }
+
+
 _ARGUMENT_BUILDERS: Mapping[
     Callable[..., object], Callable[[_World, str], dict[str, object]]
 ] = {
@@ -857,6 +876,7 @@ _ARGUMENT_BUILDERS: Mapping[
     operation_bindings.sources: _sources_arguments,
     operation_bindings.versions: _versions_arguments,
     operation_bindings.read_span: _span_arguments,
+    operation_bindings.verify_derived: _verify_derived_arguments,
     operation_bindings.list_documents: _documents_arguments,
     operation_bindings.describe_corpus: _documents_arguments,
     operation_bindings.proposals: _proposals_arguments,
@@ -897,6 +917,8 @@ def _argument_carries_text(
             revision = data[len(prefix) :]
             return revision.isascii() and revision.isdecimal()
         return data == text
+    if type(value) is DerivedCitation:
+        return value.span == text
     if type(value) is KnowledgeState:
         return any(
             endpoint.quote == text
@@ -1193,6 +1215,14 @@ def _observed_real_effect(
         items = (returned,)
         expected_count = 1
         condition = lambda value: type(value) is str and value == "alpha"
+    elif implementation is operation_bindings.verify_derived:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: (
+            type(value) is dict
+            and value.get("ok") is False
+            and value.get("error") == "DerivedRecordNotFound"
+        )
     elif implementation is operation_bindings.list_documents:
         items = returned
         expected_count = 1
@@ -1334,6 +1364,8 @@ def _well_formed_wrong_results(operation: _Operation) -> tuple[object, ...]:
         return (("0" * 64,),)
     if implementation is operation_bindings.read_span:
         return ("beta",)
+    if implementation is operation_bindings.verify_derived:
+        return ({"ok": True},)
     if implementation is operation_bindings.list_documents:
         return (("other.md",),)
     if implementation is operation_bindings.describe_corpus:
@@ -1583,6 +1615,7 @@ def test_registered_operations_have_the_decided_names_and_tiers() -> None:
         "sources": Tier.READ,
         "versions": Tier.READ,
         "read_span": Tier.READ,
+        "verify_derived": Tier.READ,
         "list_documents": Tier.READ,
         "describe_corpus": Tier.READ,
         "proposals": Tier.READ,
@@ -1808,7 +1841,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
     expected = (
         len(entries) * len(operations) * len(transports) * len(grant_tier_sets)
     )
-    assert expected == 10208
+    assert expected == 10672
     if expected == 0:
         _fail_not_run("the derived corpus matrix had zero expected cells")
 
@@ -1866,8 +1899,8 @@ def test_argument_content_cannot_change_any_authorization_decision(
 
     if executed == 0:
         _fail_not_run("the corpus matrix executed zero cells")
-    assert executed == 10208
-    assert expected == 10208
+    assert executed == 10672
+    assert expected == 10672
     expected_positive_controls = {
         (transport.name, operation.name, tier_set)
         for transport in transports
@@ -1875,7 +1908,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
         for tier_set in grant_tier_sets
         if operation.tier in tier_set
     }
-    assert len(expected_positive_controls) == 176
+    assert len(expected_positive_controls) == 184
     if positive_controls != expected_positive_controls:
         absent = sorted(
             (transport, operation, sorted(tier.value for tier in tier_set))
@@ -1891,9 +1924,9 @@ def test_argument_content_cannot_change_any_authorization_decision(
         len(positive_controls),
     )
     assert result.status is RunStatus.COMPLETE
-    assert result.executed == 10208
-    assert result.expected == 10208
-    assert result.positive_controls == 176
+    assert result.executed == 10672
+    assert result.expected == 10672
+    assert result.positive_controls == 184
 
 
 def test_the_holder_is_provenance_metadata_and_carries_no_authority(
@@ -1909,7 +1942,7 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
     expected = len(transports) * sum(
         1 for tier in tiers for operation in operations if operation.tier is tier
     )
-    assert expected == 22
+    assert expected == 23
     if expected == 0:
         _fail_not_run("the holder-metadata matrix had zero expected cells")
 
@@ -1941,8 +1974,8 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
 
     if executed == 0:
         _fail_not_run("the holder-metadata matrix executed zero cells")
-    assert executed == 22
-    assert expected == 22
+    assert executed == 23
+    assert expected == 23
 
 
 def test_required_tier_argument_content_cannot_change_the_decision_in_either_direction(
@@ -1954,7 +1987,7 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
     transports = _derived_transports()
     world = _build_world(tmp_path / "required_tier_arguments")
     expected = len(transports) * len(operations) * 2
-    assert expected == 44
+    assert expected == 46
     if expected == 0:
         _fail_not_run("the required-tier argument matrix had zero expected cells")
     executed = 0
@@ -2013,5 +2046,5 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
 
     if executed == 0:
         _fail_not_run("the required-tier argument matrix executed zero cells")
-    assert executed == 44
-    assert expected == 44
+    assert executed == 46
+    assert expected == 46

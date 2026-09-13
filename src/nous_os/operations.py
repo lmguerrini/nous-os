@@ -24,7 +24,7 @@ from nous_os.compile import CohesionStrategy, Pack
 from nous_os.config import describe_corpus, list_documents
 from nous_os.derived import search, sources, versions
 from nous_os.ledger import ingest
-from nous_os.provenance import read_span
+from nous_os.provenance import quote_lint_derived, read_span, verify_derivation
 from nous_os.reconciliation import Relation, RelationClass, RelationProposal, RelationStore, RelationVerification
 from nous_os.snapshots import SnapshotStore
 from nous_os.untrusted import UntrustedText
@@ -132,6 +132,23 @@ def verify_relations(*, store: RelationStore, snapshots: SnapshotStore) -> Relat
     return store.verify(snapshots)
 
 
+def verify_derived(*, extraction_store, snapshot_store: SnapshotStore, ledger, citation, full: bool = False) -> dict[str, object]:
+    """Lint one derived citation and report a non-mutating verification result."""
+    try:
+        quote_lint_derived(extraction_store, snapshot_store, ledger, citation)
+        result: dict[str, object] = {"ok": True}
+    except Exception as error:
+        result = {"ok": False, "error": type(error).__name__, "message": str(error)}
+    if full:
+        # The Core workspace has no archive-byte location.  The operation can
+        # still report that fact through the frozen non-executable verdict;
+        # callers that possess archive bytes use verify_derivation directly.
+        result["verdict"] = verify_derivation(
+            lambda _asset_source_id: None, extraction_store, citation
+        ).as_payload()
+    return result
+
+
 def discover(
     *,
     round_number: int,
@@ -211,3 +228,4 @@ register("promote_candidate", Tier.PROMOTE, promote_candidate)
 register("relations", Tier.READ, relations)
 register("propose_relation", Tier.PROPOSE, propose_relation)
 register("verify_relations", Tier.READ, verify_relations)
+register("verify_derived", Tier.READ, verify_derived)

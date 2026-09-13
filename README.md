@@ -47,7 +47,7 @@ of the resulting graph, with three renderers that draw them.
   Both transports are local: a command line and a stdio JSON-RPC server.
 - **Not a chat product, and not an agent.** It publishes operations; it does not
   decide when to call them.
-- **Not a system that writes to your canon.** Twenty-two operations ship. Eighteen
+- **Not a system that writes to your canon.** Twenty-three operations ship. Nineteen
   are read-only and four record proposals apart from canon. **None of them can
   promote anything into canon** — promotion is a separate human act.
 - **Not a retrieval breakthrough.** [`docs/CAP-15-RETRIEVAL.md`](docs/CAP-15-RETRIEVAL.md)
