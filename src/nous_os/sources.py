@@ -116,6 +116,12 @@ class SourceKind(Enum):
     #: identifier. The record holds the file's identity, digest and provenance;
     #: its bytes stay in the immutable archive and are never a snapshot.
     ASSET = "asset"
+    #: A supplied text document, identified by its bundle-relative path.
+    DOCUMENT = "document"
+    #: One rendered-interface window, identified by its capture-local index.
+    CAPTURE_WINDOW = "capture_window"
+    #: One provider message identifier read from one or more rendered windows.
+    CAPTURED_MESSAGE = "captured_message"
 
 
 class IdentityBasis(Enum):

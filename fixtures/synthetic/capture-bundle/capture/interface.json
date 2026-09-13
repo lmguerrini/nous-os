@@ -1,0 +1,76 @@
+{
+  "conversation_id": "conv-1",
+  "captured_at": "2026-09-12T07:32:00+00:00",
+  "url": "https://bundle.invalid/conversations/conv-1",
+  "branches": [
+    {
+      "captured_at": "2026-09-12T07:32:00+00:00",
+      "url": "https://bundle.invalid/conversations/conv-1?window=0",
+      "buttons": [
+        {"label": "Copy", "disabled": false},
+        {"label": "Retry", "disabled": true}
+      ],
+      "messages": [
+        {
+          "id": "msg-a1",
+          "role": "user",
+          "text": "When does the fog watch begin?",
+          "text_content": "When does the fog watch begin?"
+        },
+        {
+          "id": "msg-b2",
+          "role": "assistant",
+          "text": "",
+          "text_content": "",
+          "html": "<img alt=\"signal chart\">",
+          "links": [{"href": "https://bundle.invalid/chart", "label": "chart"}]
+        }
+      ],
+      "text": "Fog watch question and a signal chart."
+    },
+    {
+      "captured_at": "2026-09-12T07:34:00+00:00",
+      "url": "https://bundle.invalid/conversations/conv-1?window=1",
+      "buttons": [
+        {"label": "Copy", "disabled": false}
+      ],
+      "messages": [
+        {
+          "id": "msg-a1",
+          "role": "user",
+          "text": "When does the fog watch begin?",
+          "text_content": "When does the fog watch begin?"
+        },
+        {
+          "id": "msg-c3",
+          "role": "system",
+          "text": "The harbour bell is checked at dusk.",
+          "text_content": "The harbour bell is checked at dusk."
+        }
+      ],
+      "text": "Fog watch question and bell note."
+    },
+    {
+      "captured_at": "2026-09-12T07:36:00+00:00",
+      "url": "https://bundle.invalid/conversations/conv-1?window=2",
+      "buttons": [
+        {"label": "Copy", "disabled": false}
+      ],
+      "messages": [
+        {
+          "id": "msg-c3",
+          "role": "system",
+          "text": "The harbour bell is checked at dusk.",
+          "text_content": "The harbour bell is checked at dusk."
+        },
+        {
+          "id": "msg-d4",
+          "role": "tool",
+          "text": "Lamp inventory: two spare wicks.",
+          "text_content": "Lamp inventory: two spare wicks."
+        }
+      ],
+      "text": "Bell note and lamp inventory."
+    }
+  ]
+}

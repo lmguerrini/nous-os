@@ -1,0 +1,33 @@
+{
+  "bundle_created_at": "2026-09-12T07:30:00+00:00",
+  "files": [
+    {
+      "path": "capture/interface.json",
+      "bytes": 2262,
+      "sha256": "fc2e5bbcac2ee70d06c3850c2823cb2b89122faf91844d17ea68c7e6f9c1cfd8",
+      "source_kind": "rendered_window_capture",
+      "sensitivity": "synthetic"
+    },
+    {
+      "path": "documents/harbour-notes.md",
+      "bytes": 77,
+      "sha256": "5de23b3dce7343e35b9f641261a7c1eae683f55611a3f40c54d6305ddd606d4c",
+      "source_kind": "keeper_note",
+      "sensitivity": "synthetic"
+    },
+    {
+      "path": "documents/supply.json",
+      "bytes": 26,
+      "sha256": "814495c074df8dcf101078c9a980de14cf4a6176ec169093477a595b07d007af",
+      "source_kind": "supply_note",
+      "sensitivity": "synthetic"
+    },
+    {
+      "path": "documents/watch.txt",
+      "bytes": 41,
+      "sha256": "7a3eaf7d4ac6d241bdd186edc180a0eef7e56bb7376984cf9a7ee44d2d43c8e9",
+      "source_kind": "watch_note",
+      "sensitivity": "synthetic"
+    }
+  ]
+}

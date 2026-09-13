@@ -340,6 +340,7 @@ only thing this repository holds is the software that reads it.
 | Ingestion: append-only ledger, versioning, invalidation | present |
 | Source memory: provider export ingest, identity kept across re-import, per-export sightings | present |
 | Source memory: a second export format (sharded conversation mappings) with asset records — identity, digest and provenance of exported files, their bytes left in the archive | present |
+| Source memory: manifest-declared supplied documents and rendered-interface captures, with window provenance and deduplicated captured messages | present |
 | Derived index, rebuildable from the files alone | present |
 | Measuring instrument and cross-language baseline | present |
 | Context compilation, with a measured default | present |
@@ -377,7 +378,12 @@ conversation list into shards of node mappings and point at exported files:
 each file becomes an asset record — its identifier, digest, detected type,
 given name and the messages that point at it — while its bytes stay in the
 archive, never in a snapshot. Nothing in it is canonical, and no shipped
-operation reaches it.
+operation reaches it. A third adapter reads a supplied bundle only through its
+manifest: every declared document is checked against its byte count and digest,
+and a rendered-interface capture is recognized by object shape rather than by
+its filename. Its windows and their deduplicated message identifiers become
+distinct evidence classes, so rendered text never becomes a native message;
+empty text, disagreement between windows and every refusal remain visible.
 
 **How context is assembled.** A pack is built from a ranking, and every pack
 records what went into it — reproducibly, so the same inputs always yield the
@@ -590,6 +596,8 @@ src/
     │                     one export format, classified by shape; the provider is read, not named
     ├── mapping_export.py
     │                     a second format: sharded conversation mappings and the assets they point at
+    ├── capture_bundle.py
+    │                     manifest-declared supplied documents and rendered-interface capture windows
     ├── derived.py        the rebuildable index over everything above
     ├── aliases.py        interchangeable ways of relating terms across languages
     ├── measure.py        the measuring instrument, and its third answer
@@ -646,6 +654,7 @@ fixtures/
     ├── injection/        text that reads as an instruction, for the boundary tests
     ├── export/           an invented assistant export, its files deliberately misnamed
     ├── mapping-export/   an invented sharded conversation-mapping export, text files standing in for assets
+    ├── capture-bundle/   an invented manifest bundle with supplied documents and overlapping capture windows
     └── projection/       fixed graphs the visual layer is measured against
 ```
 
