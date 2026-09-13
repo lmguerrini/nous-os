@@ -1,13 +1,14 @@
 """Every offset and size checked against the file before a seek, and refusal notes that separate completed, failed and not-executable checks."""
 from __future__ import annotations
 
+import io
 import struct
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from nous_os.extraction import ExtractionOutcome, extract_file
+from nous_os.extraction import ExtractionOutcome, _archive_member_layout_errors, extract_file
 
 
 def _zip(path: Path, entries: dict[str, bytes], *, compression: int = zipfile.ZIP_STORED) -> Path:
@@ -108,3 +109,64 @@ def test_a_refused_member_note_separates_completed_failed_and_not_executable_che
     lowered = note.lower()
     assert "failed" in lowered and "crc" in lowered and "size" in lowered, note
     assert "not executable" not in lowered and "not checked" not in lowered, note
+
+
+def _single_member_layout(data: bytes, *, directory_start: int | None = None) -> tuple[zipfile.ZipInfo, tuple[str, ...]]:
+    """Run the file-layout gate directly, before any member reader can mask a bound."""
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        info = archive.infolist()[0]
+        reasons = _archive_member_layout_errors(
+            archive,
+            len(data),
+            archive.start_dir if directory_start is None else directory_start,
+        )
+        return info, reasons[0]
+
+
+def test_file_bound_local_header_offset_is_checked_directly(tmp_path: Path) -> None:
+    archive_path = _zip(tmp_path / "header-bound.zip", {"a.txt": b"checked words"})
+    data = archive_path.read_bytes()
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        archive.infolist()[0].header_offset = len(data) + 1
+        reasons = _archive_member_layout_errors(archive, len(data), archive.start_dir)[0]
+
+    note = " ".join(reasons)
+    assert "failed: local header offset" in note
+    assert str(len(data) + 1) in note and str(len(data)) in note
+
+
+def test_file_bound_data_start_is_checked_directly(tmp_path: Path) -> None:
+    archive_path = _zip(tmp_path / "start-bound.zip", {"a.txt": b"checked words"})
+    data = bytearray(archive_path.read_bytes())
+    data[26:28] = (0xFFFF).to_bytes(2, "little")
+
+    _info, reasons = _single_member_layout(bytes(data))
+
+    note = " ".join(reasons)
+    assert "failed: data start" in note
+    assert "beyond the file" in note
+
+
+def test_file_bound_data_end_is_checked_directly(tmp_path: Path) -> None:
+    archive_path = _zip(tmp_path / "end-bound.zip", {"a.txt": b"checked words"})
+    data = archive_path.read_bytes()
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        info = archive.infolist()[0]
+        data_start = info.header_offset + zipfile.sizeFileHeader + len(info.filename)
+        info.compress_size = len(data) - data_start + 1
+        reasons = _archive_member_layout_errors(archive, len(data), archive.start_dir)[0]
+
+    note = " ".join(reasons)
+    assert "failed: data end" in note
+    assert str(len(data) + 1) in note and str(len(data)) in note
+
+
+def test_file_bound_central_directory_start_is_checked_directly(tmp_path: Path) -> None:
+    archive_path = _zip(tmp_path / "directory-bound.zip", {"a.txt": b"checked words"})
+    data = archive_path.read_bytes()
+
+    _info, reasons = _single_member_layout(data, directory_start=len(data) + 1)
+
+    note = " ".join(reasons)
+    assert "failed: central directory start" in note
+    assert str(len(data) + 1) in note and str(len(data)) in note
