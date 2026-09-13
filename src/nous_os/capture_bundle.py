@@ -264,32 +264,35 @@ class BundleNormalization:
         return self._counter("inconsistent_ids")
 
 
-def _reraise(error: OSError) -> None:
-    raise error
+_LINK_ERRNOS: Final = frozenset((errno.ELOOP, errno.EMLINK))
+_NOT_REGULAR_OPEN_ERRNOS: Final = frozenset(
+    error
+    for error in (errno.ENXIO, errno.EOPNOTSUPP, errno.ENODEV, errno.EISDIR)
+    if error is not None
+)
 
 
-def _read_bounded(
-    path: Path, *, maximum_bytes: int = MAX_FILE_BYTES
-) -> tuple[bytes | None, BundleRefusal | None]:
-    """Read a regular file without following a link and without reading past the bound.
-
-    The link check and the read are one system call: ``O_NOFOLLOW`` makes the
-    open itself fail on a symlink, so a link swapped in between a check and a
-    read is refused rather than followed. The size is taken from the open
-    descriptor and the read stops at the supplied bound plus one byte, so a file
-    that grows after being sized is refused instead of read whole.
-    """
+def _require_no_follow() -> None:
+    """Require the kernel facility that makes each lookup race-safe."""
     if not hasattr(os, "O_NOFOLLOW"):
         raise BundleFormatError("O_NOFOLLOW is required to read supplied bundle files")
-    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
-    try:
-        descriptor = os.open(path, flags)
-    except FileNotFoundError:
-        return None, BundleRefusal.MISSING_DECLARED_FILE
-    except OSError as error:
-        if error.errno in (errno.ELOOP, errno.EMLINK):
-            return None, BundleRefusal.SYMLINK_REFUSED
-        raise
+
+
+def _open_refusal(error: OSError, *, declared: bool) -> BundleRefusal | None:
+    """Classify an open failure that is an expected bundle observation."""
+    if error.errno in _LINK_ERRNOS:
+        return BundleRefusal.SYMLINK_REFUSED
+    if error.errno in _NOT_REGULAR_OPEN_ERRNOS:
+        return BundleRefusal.NOT_A_REGULAR_FILE
+    if error.errno == errno.ENOENT or (declared and error.errno == errno.ENOTDIR):
+        return BundleRefusal.MISSING_DECLARED_FILE
+    return None
+
+
+def _read_open_descriptor(
+    descriptor: int, *, maximum_bytes: int
+) -> tuple[bytes | None, BundleRefusal | None]:
+    """Read a just-opened regular descriptor, bounded even when it grows."""
     try:
         status = os.fstat(descriptor)
         if stat.S_ISLNK(status.st_mode):
@@ -316,20 +319,123 @@ def _read_bounded(
     return data, None
 
 
-def _files(root: Path) -> Iterator[Path]:
-    """Every non-directory entry below ``root`` in a fixed order.
+def _read_bounded(
+    path: Path, *, maximum_bytes: int = MAX_FILE_BYTES
+) -> tuple[bytes | None, BundleRefusal | None]:
+    """Read one path's final component without following a final-component link.
 
-    Special files and links are listed too: what each entry is gets decided by
-    the open that reads it, so nothing below the root can go unmentioned.
+    This compatibility helper has no declared bundle root. Bundle inventory and
+    normalization instead use ``_read_bounded_at``, which resolves every
+    component relative to an already-opened root descriptor.
     """
-    found: list[Path] = []
-    for directory, dirnames, filenames in os.walk(root, onerror=_reraise, followlinks=False):
-        dirnames.sort()
-        linked_directories = [name for name in dirnames if (Path(directory) / name).is_symlink()]
-        found.extend(Path(directory) / name for name in linked_directories)
-        dirnames[:] = [name for name in dirnames if name not in linked_directories]
-        found.extend(Path(directory) / filename for filename in sorted(filenames))
-    return iter(sorted(found, key=lambda candidate: candidate.relative_to(root).as_posix()))
+    _require_no_follow()
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        refusal = _open_refusal(error, declared=True)
+        if refusal is not None:
+            return None, refusal
+        raise
+    return _read_open_descriptor(descriptor, maximum_bytes=maximum_bytes)
+
+
+def _open_root(root: Path) -> int:
+    """Open a bundle root as a real directory, never through a symbolic link."""
+    _require_no_follow()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(root, flags)
+    except OSError as error:
+        if error.errno in _LINK_ERRNOS:
+            raise BundleFormatError(
+                f"the bundle root {root!s} was refused: {BundleRefusal.SYMLINK_REFUSED.value}"
+            ) from None
+        if error.errno in (errno.ENOTDIR, errno.ENOENT):
+            raise BundleFormatError(f"not a directory: {root}") from None
+        raise
+    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise BundleFormatError(f"not a directory: {root}")
+    return descriptor
+
+
+def _read_bounded_at(
+    root_descriptor: int,
+    relative: str,
+    *,
+    maximum_bytes: int = MAX_FILE_BYTES,
+    declared: bool,
+) -> tuple[bytes | None, BundleRefusal | None]:
+    """Read ``relative`` through a no-follow descriptor walk below one root."""
+    _require_no_follow()
+    parts = PurePosixPath(relative).parts
+    if not parts:
+        raise BundleFormatError("a supplied bundle file path must name a file")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK | os.O_NOFOLLOW
+    parent = root_descriptor
+    opened_parent = False
+    try:
+        for component in parts[:-1]:
+            try:
+                child = os.open(component, directory_flags, dir_fd=parent)
+            except OSError as error:
+                refusal = _open_refusal(error, declared=declared)
+                if refusal is not None:
+                    return None, refusal
+                raise
+            if opened_parent:
+                os.close(parent)
+            parent = child
+            opened_parent = True
+        try:
+            descriptor = os.open(
+                parts[-1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent
+            )
+        except OSError as error:
+            refusal = _open_refusal(error, declared=declared)
+            if refusal is not None:
+                return None, refusal
+            raise
+    finally:
+        if opened_parent:
+            os.close(parent)
+    return _read_open_descriptor(descriptor, maximum_bytes=maximum_bytes)
+
+
+def _files(root_descriptor: int, implied_directories: set[str]) -> Iterator[str]:
+    """Every non-directory entry and undeclared empty directory below a root.
+
+    The walk opens each possible child directory from its parent descriptor
+    with ``O_NOFOLLOW``. A link is therefore listed as an entry but never used
+    as a traversal step; ordinary non-empty directories are represented by
+    their listed children instead.
+    """
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK | os.O_NOFOLLOW
+    found: list[str] = []
+
+    def walk(directory: int, prefix: str) -> None:
+        for name in sorted(os.listdir(directory)):
+            relative = f"{prefix}/{name}" if prefix else name
+            try:
+                child = os.open(name, directory_flags, dir_fd=directory)
+            except OSError as error:
+                if error.errno in _LINK_ERRNOS or error.errno in _NOT_REGULAR_OPEN_ERRNOS | {errno.ENOTDIR}:
+                    found.append(relative)
+                    continue
+                if error.errno == errno.ENOENT:
+                    continue
+                raise
+            try:
+                if os.listdir(child):
+                    walk(child, relative)
+                elif relative not in implied_directories:
+                    found.append(relative)
+            finally:
+                os.close(child)
+
+    walk(root_descriptor, "")
+    return iter(sorted(found))
 
 
 def _parse(data: bytes) -> object | None:
@@ -401,124 +507,134 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
     document as bundle control data.
     """
     root = Path(root)
-    if not root.is_dir():
-        raise BundleFormatError(f"not a directory: {root}")
     manifest_name = _relative(manifest_name, "manifest_name")
-    manifest_path = root / manifest_name
-    manifest_bytes, manifest_refusal = _read_bounded(
-        manifest_path, maximum_bytes=MAX_MANIFEST_BYTES
-    )
-    if manifest_bytes is None:
-        reason = "unreadable" if manifest_refusal is None else manifest_refusal.value
-        raise BundleFormatError(f"the bundle manifest {manifest_name!r} was refused: {reason}")
-    manifest = _parse(manifest_bytes)
-    if type(manifest) is not dict or type(manifest.get("files")) is not list:
-        raise BundleFormatError("the bundle manifest must be an object with a files list")
-
-    declarations: dict[str, dict[str, object]] = {}
-    for index, value in enumerate(manifest["files"]):
-        relative, declaration = _declared_file(value, index)
-        if relative == manifest_name:
-            raise BundleFormatError("the bundle manifest cannot declare its own changing bytes")
-        if relative in declarations:
-            raise BundleFormatError(f"the manifest declares {relative!r} more than once")
-        declarations[relative] = declaration
-
-    def refused_entry(
-        relative: str,
-        refusal: BundleRefusal | None,
-        *,
-        declared_byte_length: int | None,
-        declared_digest: str | None,
-        declaration: dict[str, object] | None,
-    ) -> BundleInventoryEntry:
-        return BundleInventoryEntry(
-            path=relative,
-            file_class=BundleFileClass.UNKNOWN,
-            present=refusal is not BundleRefusal.MISSING_DECLARED_FILE,
-            is_symlink=refusal is BundleRefusal.SYMLINK_REFUSED,
-            too_large=refusal is BundleRefusal.TOO_LARGE,
-            byte_length=None,
-            digest=None,
-            declared_byte_length=declared_byte_length,
-            declared_digest=declared_digest,
-            declaration=declaration,
-            not_regular=refusal is BundleRefusal.NOT_A_REGULAR_FILE,
-            hard_link=refusal is BundleRefusal.HARD_LINK_REFUSED,
+    root_descriptor = _open_root(root)
+    try:
+        manifest_bytes, manifest_refusal = _read_bounded_at(
+            root_descriptor,
+            manifest_name,
+            maximum_bytes=MAX_MANIFEST_BYTES,
+            declared=True,
         )
+        if manifest_bytes is None:
+            reason = "unreadable" if manifest_refusal is None else manifest_refusal.value
+            raise BundleFormatError(f"the bundle manifest {manifest_name!r} was refused: {reason}")
+        manifest = _parse(manifest_bytes)
+        if type(manifest) is not dict or type(manifest.get("files")) is not list:
+            raise BundleFormatError("the bundle manifest must be an object with a files list")
 
-    entries: list[BundleInventoryEntry] = [
-        BundleInventoryEntry(
-            path=manifest_name,
-            file_class=BundleFileClass.MANIFEST,
-            present=True,
-            is_symlink=False,
-            too_large=False,
-            byte_length=len(manifest_bytes),
-            digest=digest_bytes(manifest_bytes),
-            declared_byte_length=None,
-            declared_digest=None,
-        )
-    ]
-    for relative, declaration in declarations.items():
-        expected_bytes = declaration["bytes"]
-        expected_digest = declaration["sha256"]
-        data, refusal = _read_bounded(root / relative)
-        if data is None:
+        declarations: dict[str, dict[str, object]] = {}
+        for index, value in enumerate(manifest["files"]):
+            relative, declaration = _declared_file(value, index)
+            if relative == manifest_name:
+                raise BundleFormatError("the bundle manifest cannot declare its own changing bytes")
+            if relative in declarations:
+                raise BundleFormatError(f"the manifest declares {relative!r} more than once")
+            declarations[relative] = declaration
+
+        def refused_entry(
+            relative: str,
+            refusal: BundleRefusal | None,
+            *,
+            declared_byte_length: int | None,
+            declared_digest: str | None,
+            declaration: dict[str, object] | None,
+        ) -> BundleInventoryEntry:
+            return BundleInventoryEntry(
+                path=relative,
+                file_class=BundleFileClass.UNKNOWN,
+                present=refusal is not BundleRefusal.MISSING_DECLARED_FILE,
+                is_symlink=refusal is BundleRefusal.SYMLINK_REFUSED,
+                too_large=refusal is BundleRefusal.TOO_LARGE,
+                byte_length=None,
+                digest=None,
+                declared_byte_length=declared_byte_length,
+                declared_digest=declared_digest,
+                declaration=declaration,
+                not_regular=refusal is BundleRefusal.NOT_A_REGULAR_FILE,
+                hard_link=refusal is BundleRefusal.HARD_LINK_REFUSED,
+            )
+
+        entries: list[BundleInventoryEntry] = [
+            BundleInventoryEntry(
+                path=manifest_name,
+                file_class=BundleFileClass.MANIFEST,
+                present=True,
+                is_symlink=False,
+                too_large=False,
+                byte_length=len(manifest_bytes),
+                digest=digest_bytes(manifest_bytes),
+                declared_byte_length=None,
+                declared_digest=None,
+            )
+        ]
+        for relative, declaration in declarations.items():
+            expected_bytes = declaration["bytes"]
+            expected_digest = declaration["sha256"]
+            data, refusal = _read_bounded_at(root_descriptor, relative, declared=True)
+            if data is None:
+                entries.append(
+                    refused_entry(
+                        relative,
+                        refusal,
+                        declared_byte_length=expected_bytes,
+                        declared_digest=expected_digest,
+                        declaration=declaration,
+                    )
+                )
+                continue
+            parsed = _parse(data)
             entries.append(
-                refused_entry(
-                    relative,
-                    refusal,
+                BundleInventoryEntry(
+                    path=relative,
+                    file_class=(BundleFileClass.CAPTURE if _capture_candidate(parsed) else BundleFileClass.DOCUMENT),
+                    present=True,
+                    is_symlink=False,
+                    too_large=False,
+                    byte_length=len(data),
+                    digest=digest_bytes(data),
                     declared_byte_length=expected_bytes,
                     declared_digest=expected_digest,
                     declaration=declaration,
                 )
             )
-            continue
-        parsed = _parse(data)
-        entries.append(
-            BundleInventoryEntry(
-                path=relative,
-                file_class=(BundleFileClass.CAPTURE if _capture_candidate(parsed) else BundleFileClass.DOCUMENT),
-                present=True,
-                is_symlink=False,
-                too_large=False,
-                byte_length=len(data),
-                digest=digest_bytes(data),
-                declared_byte_length=expected_bytes,
-                declared_digest=expected_digest,
-                declaration=declaration,
-            )
-        )
-    on_disk = {candidate.relative_to(root).as_posix(): candidate for candidate in _files(root)}
-    for relative, path in on_disk.items():
-        if relative == manifest_name or relative in declarations:
-            continue
-        data, refusal = _read_bounded(path)
-        if data is None:
+
+        implied_directories = {
+            "/".join(parts[:depth])
+            for relative in (*declarations, manifest_name)
+            for parts in (PurePosixPath(relative).parts,)
+            for depth in range(1, len(parts))
+        }
+        for relative in _files(root_descriptor, implied_directories):
+            if relative == manifest_name or relative in declarations:
+                continue
+            data, refusal = _read_bounded_at(root_descriptor, relative, declared=False)
+            if data is None:
+                entries.append(
+                    refused_entry(
+                        relative,
+                        refusal,
+                        declared_byte_length=None,
+                        declared_digest=None,
+                        declaration=None,
+                    )
+                )
+                continue
             entries.append(
-                refused_entry(
-                    relative,
-                    refusal,
+                BundleInventoryEntry(
+                    path=relative,
+                    file_class=BundleFileClass.UNKNOWN,
+                    present=True,
+                    is_symlink=False,
+                    too_large=False,
+                    byte_length=len(data),
+                    digest=digest_bytes(data),
                     declared_byte_length=None,
                     declared_digest=None,
-                    declaration=None,
                 )
             )
-            continue
-        entries.append(
-            BundleInventoryEntry(
-                path=relative,
-                file_class=BundleFileClass.UNKNOWN,
-                present=True,
-                is_symlink=False,
-                too_large=False,
-                byte_length=len(data),
-                digest=digest_bytes(data),
-                declared_byte_length=None,
-                declared_digest=None,
-            )
-        )
+    finally:
+        os.close(root_descriptor)
     return BundleInventory(
         root=root,
         manifest_name=manifest_name,
@@ -536,8 +652,11 @@ def _stable_bytes(
     refused by the open itself, and growth past the bound is refused by the
     read, whatever a stat said a moment earlier.
     """
-    path = inv.root / entry.path
-    data, refusal = _read_bounded(path)
+    root_descriptor = _open_root(inv.root)
+    try:
+        data, refusal = _read_bounded_at(root_descriptor, entry.path, declared=True)
+    finally:
+        os.close(root_descriptor)
     if data is None:
         return None, refusal
     if len(data) != entry.byte_length or digest_bytes(data) != entry.digest:
