@@ -16,10 +16,12 @@ information a person needs to fix it.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Callable
 
 from nous_os.extraction import ExtractionOutcome, Extractor
@@ -87,6 +89,10 @@ class DerivedOwnerMismatch(ProvenanceError):
 
 class DerivedAssetMismatch(ProvenanceError):
     """The latest source metadata does not name the extracted asset bytes."""
+
+
+class DerivedLedgerUnreadable(ProvenanceError):
+    """The asset ledger cannot provide a validated source history."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +201,11 @@ class DerivedCitation:
     span: str
 
     def __post_init__(self) -> None:
+        if type(self.asset_source_id) is not str:
+            raise ProvenanceError(
+                "asset_source_id must be a str, "
+                f"not {type(self.asset_source_id).__name__}"
+            )
         require_id(self.asset_source_id, SOURCE_PREFIX)
         if type(self.asset_digest) is not str or _HEX64.fullmatch(self.asset_digest) is None:
             raise ProvenanceError("asset_digest must be 64 lowercase hex characters")
@@ -407,6 +418,43 @@ def _derived_span(text: str, locator: CharLocator) -> str:
     return text[locator.start_char:locator.end_char]
 
 
+def _latest_validated_ledger_snapshot(ledger: object, source_id: str) -> str | None:
+    """Return a source's validated ledger tip without changing the ledger store."""
+    from nous_os.ledger import Ledger, LedgerError
+
+    # Ledger.chain takes the locking read path, which creates a ``.lock`` file.
+    # Lint must leave every store byte-identical, so it instead uses Ledger's
+    # own line-to-LedgerEntry parser and the same per-source link checks without
+    # acquiring a lock or writing any file.
+    try:
+        ledger_path = getattr(ledger, "path")
+        if not isinstance(ledger_path, Path):
+            raise LedgerError("the asset ledger has no readable path")
+        entries = tuple(
+            Ledger._entry_from_line(line, number)
+            for number, line in enumerate(
+                ledger_path.read_text(encoding="utf-8").splitlines(), start=1
+            )
+            if line
+        )
+        chain = tuple(entry for entry in entries if entry.source_id == source_id)
+        if chain and chain[0].previous_digest is not None:
+            raise LedgerError(
+                f"the first recorded entry for {source_id} claims a predecessor, so "
+                "this ledger does not contain the start of its history"
+            )
+        for earlier, later in zip(chain, chain[1:]):
+            if later.previous_digest != earlier.snapshot_digest:
+                raise LedgerError(
+                    f"the version chain for {source_id} is broken: an entry claims "
+                    f"predecessor {later.previous_digest} where the preceding entry "
+                    f"recorded {earlier.snapshot_digest}"
+                )
+    except Exception as error:
+        raise DerivedLedgerUnreadable("the asset ledger cannot be read as a valid history") from error
+    return None if not chain else chain[-1].snapshot_digest
+
+
 def quote_lint_derived(extraction_store, snapshot_store: SnapshotStore, ledger, citation: DerivedCitation) -> None:
     """Verify a quote against preserved extraction evidence and current asset metadata."""
     from nous_os.extraction import extraction_record_digest
@@ -422,33 +470,9 @@ def quote_lint_derived(extraction_store, snapshot_store: SnapshotStore, ledger, 
         )
     if citation.asset_source_id not in {source_id for source_id, _name in stored.owners}:
         raise DerivedOwnerMismatch("citation asset source is not an owner of the extraction record")
-    # Ledger's normal query path takes an advisory lock, whose lock-file
-    # creation would make an otherwise read-only lint change a store.  The
-    # lint needs only the append order and snapshot digest, so read that
-    # immutable ledger representation directly when it is exposed.
-    latest_snapshot_digest: str | None = None
-    ledger_path = getattr(ledger, "path", None)
-    try:
-        import json
-
-        if ledger_path is None:
-            chain = ledger.chain(citation.asset_source_id)
-            latest_snapshot_digest = None if not chain else chain[-1].snapshot_digest
-        else:
-            for line in ledger_path.read_text(encoding="utf-8").splitlines():
-                if not line:
-                    continue
-                entry = json.loads(line)
-                if type(entry) is dict and entry.get("source_id") == citation.asset_source_id:
-                    snapshot_digest = entry.get("snapshot_digest")
-                    if type(snapshot_digest) is str and _HEX64.fullmatch(snapshot_digest):
-                        latest_snapshot_digest = snapshot_digest
-                    else:
-                        raise DerivedAssetMismatch("latest ledger entry has no valid snapshot digest")
-    except DerivedAssetMismatch:
-        raise
-    except Exception as error:
-        raise DerivedAssetMismatch("the asset ledger cannot establish a latest snapshot") from error
+    latest_snapshot_digest = _latest_validated_ledger_snapshot(
+        ledger, citation.asset_source_id
+    )
     if latest_snapshot_digest is None:
         raise DerivedAssetMismatch("the asset source has no latest ledger snapshot")
     try:

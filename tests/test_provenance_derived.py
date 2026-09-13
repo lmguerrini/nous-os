@@ -34,6 +34,7 @@ from nous_os.provenance import (
     DerivedVersionMismatch,
     LocatorOutOfRange,
     LocatorSplitsGrapheme,
+    ProvenanceError,
     SpanMismatch,
     quote_lint_derived,
     verify_derivation,
@@ -92,6 +93,45 @@ def _write_latest_metadata(
     snapshot = snapshots.put(source_id, canonical_bytes({"payload": {"digest": asset_digest}}))
     previous = ledger.current_digest(source_id)
     ledger.append(LedgerEntry(source_id, snapshot.digest, previous, _WHEN))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("asset_source_id", _PLAIN_SOURCE),
+        ("asset_digest", _PLAIN_DIGEST),
+        ("extractor_version", "extraction/1"),
+        ("record_digest", "964163f80959d234933526f2b87cd4b01993584d13bdc20ab371377936122115"),
+        ("span", "Quay"),
+    ),
+)
+def test_o1_derived_citation_refuses_string_subclasses(field: str, value: str) -> None:
+    class ForgedString(str):
+        def __str__(self) -> str:
+            return "not-a-source-id"
+
+    with pytest.raises(ProvenanceError):
+        replace(_plain_citation(), **{field: ForgedString(value)})
+
+
+def test_o2_derived_lint_refuses_unreadable_ledger_without_a_lock_file(tmp_path: Path) -> None:
+    store, snapshots, ledger = _copy_fixture(tmp_path)
+    ledger.path.write_text(
+        json.dumps(
+            {
+                "source_id": _PLAIN_SOURCE,
+                "snapshot_digest": "6dabd49c082dc2b9ee52c02d69366108118d5978470e4aef44a2f832436c88cd",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProvenanceError) as raised:
+        quote_lint_derived(store, snapshots, ledger, _plain_citation())
+
+    assert type(raised.value).__name__ == "DerivedLedgerUnreadable"
+    assert not ledger.path.with_name(ledger.path.name + ".lock").exists()
 
 
 def test_o1_derived_round_trip_and_reference_writer_fixture(tmp_path: Path) -> None:
