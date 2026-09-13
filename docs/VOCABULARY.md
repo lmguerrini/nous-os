@@ -239,6 +239,11 @@ left for a reader to discover by being wrong.
 
 <!-- /vocabulary:technical -->
 
+The human review console is a separate boundary: it reads fixed-shape candidate
+content and a decision file, records authorization under the existing promotion
+grant, then preserves canonical assertion versions as append-only files. It is
+not a catalogue or stdio vocabulary, so it adds no closed enum here.
+
 **Deliberately not in this table.** Exception types (they name refusals, and the refusal is the
 rule, not the concept); strategy implementations of `CohesionStrategy` and `AliasTable`; internal
 helpers; the drawing-layer machinery under `ui/src/render2d/`, which is specific to the renderer that

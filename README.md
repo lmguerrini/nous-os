@@ -155,10 +155,12 @@ Authority is a **tier fixed when the process starts**, and it never widens.
   proposal operations is refused with `NotAuthorized` rather than served.
 - Raising it is an explicit argument (`--tier`) at launch. No message, argument
   value or client identity can change it afterwards.
-- **No tier promotes anything.** `candidate.propose`, `candidate.discover` and
-  `candidate.adjudicate` record proposals, judgements and rejections in the
-  candidate store; the promotion itself is a human act outside the operation
-  catalogue.
+- **No catalogue or stdio operation promotes anything.** `candidate.propose`,
+  `candidate.discover` and `candidate.adjudicate` record proposals, judgements
+  and rejections in the candidate store. A separate decision-file review
+  console requires an explicit promotion grant and records both authorization
+  and canonical assertion versions; it is not reachable through either
+  transport.
 - A rejection is **remembered**. Rejecting a proposal is a recorded fact with
   its own valid time, not a deletion, so the same suggestion cannot quietly
   return as new.
@@ -346,6 +348,7 @@ only thing this repository holds is the software that reads it.
 | Context compilation, with a measured default | present |
 | Authority boundary for governed operations | present |
 | Candidate lifecycle, discovery rounds, human adjudication | present |
+| Human review decision files, authorization records, and content-addressed assertion versions | present |
 | Cross-source reconciliation proposals, evidence checks, and non-mutating verification | present |
 | Two time axes, supersession, visible disagreement | present |
 | Renderer-independent projections of the graph | present |
@@ -613,6 +616,7 @@ src/
     ├── temporal.py       two time axes, supersession, and disagreement kept visible
     ├── attribution.py    a claim key that carries where it came from
     ├── adjudication.py   the human-gated boundary between a proposal and canon
+    ├── review.py         decision-file review console and append-only assertion versions
     ├── discovery.py      bridge candidates, gates, and append-only rounds
     ├── projection.py     renderer-independent knowledge graph projections
     ├── operations.py     registration of the project's governed operations
