@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
+import threading
 import zipfile
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -23,11 +25,13 @@ from xml.etree import ElementTree
 from nous_os.identity import SOURCE_PREFIX, canonical_bytes, digest_bytes, digest_payload, require_id
 
 
-#: The bounded archive member count.  It includes entries whose data are not
-#: read because a preceding entry has exhausted the byte allowance.
+#: The bounded archive member count, checked from the central directory before
+#: this module reads a member or parses an office XML part.
 MAX_ARCHIVE_MEMBERS = 200
-#: The total uncompressed member data this module may read from one archive.
+#: The maximum declared uncompressed bytes for every archive and office package.
 MAX_ARCHIVE_TEXT_BYTES = 20 * 1024 * 1024
+#: The maximum UTF-8 text evidence retained from one direct text source or tool.
+MAX_EXTRACTED_TEXT_BYTES = 32 * 1024 * 1024
 #: Version recorded for extraction paths implemented only with the standard library.
 EXTRACTION_VERSION = "1"
 #: The PDF text tool is found on the caller's PATH, never at a machine path:
@@ -41,6 +45,7 @@ def _pdftext_path() -> str | None:
 
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+_XML_DECLARATION = re.compile(br"<!\s*(DOCTYPE|ENTITY)\b", re.IGNORECASE)
 
 
 class ExtractionError(Exception):
@@ -223,27 +228,47 @@ class Extraction:
 
 
 @dataclass(frozen=True, slots=True)
+class ExtractionOwner:
+    """One ASSET owner and its supplied name, kept outside shared content evidence."""
+
+    asset_source_id: str
+    given_name: str | None
+
+    def __post_init__(self) -> None:
+        if type(self.asset_source_id) is not str:
+            raise ExtractionError("owner asset source id must be a string")
+        require_id(self.asset_source_id, SOURCE_PREFIX)
+        if self.given_name is not None and type(self.given_name) is not str:
+            raise ExtractionError("owner given_name must be a string or None")
+
+
+@dataclass(frozen=True, slots=True)
 class SharedExtraction:
-    """One content-keyed record and every distinct ASSET source that owns its bytes."""
+    """One name-free content record and every distinct ASSET owner of its bytes."""
 
     extraction: Extraction
-    asset_source_ids: tuple[str, ...]
+    owners: tuple[ExtractionOwner, ...]
 
     def __post_init__(self) -> None:
         if type(self.extraction) is not Extraction:
             raise ExtractionError("extraction must be an exact Extraction")
-        if type(self.asset_source_ids) is not tuple:
-            raise ExtractionError("asset_source_ids must be a tuple")
-        for source_id in self.asset_source_ids:
-            if type(source_id) is not str:
-                raise ExtractionError("every asset source id must be a string")
-            require_id(source_id, SOURCE_PREFIX)
-        if tuple(sorted(set(self.asset_source_ids))) != self.asset_source_ids:
-            raise ExtractionError("asset_source_ids must be sorted and unique")
+        if self.extraction.asset_source_id is not None or self.extraction.given_name is not None:
+            raise ExtractionError("shared extraction must not carry an owner or given_name")
+        if type(self.owners) is not tuple or any(type(owner) is not ExtractionOwner for owner in self.owners):
+            raise ExtractionError("owners must be a tuple of exact ExtractionOwner records")
+        if tuple(sorted(self.owners, key=lambda owner: owner.asset_source_id)) != self.owners:
+            raise ExtractionError("owners must be sorted by asset source id")
+        if len({owner.asset_source_id for owner in self.owners}) != len(self.owners):
+            raise ExtractionError("owners must have unique asset source ids")
 
     @property
     def asset_digest(self) -> str | None:
         return self.extraction.asset_digest
+
+    @property
+    def asset_source_ids(self) -> tuple[str, ...]:
+        """The compatibility view of the source identifiers in ``owners``."""
+        return tuple(owner.asset_source_id for owner in self.owners)
 
 
 def _normalise_newlines(text: str) -> str:
@@ -306,6 +331,17 @@ def _joined_segments(segments: Iterable[tuple[str, str]]) -> tuple[str, tuple[Ex
     return "".join(parts), tuple(locations)
 
 
+def _decode_text(data: bytes) -> tuple[str, str]:
+    """Decode the supported BOM forms while removing their non-content marker."""
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data[3:].decode("utf-8"), "utf-8-sig"
+    if data.startswith(b"\xff\xfe"):
+        return data[2:].decode("utf-16-le"), "utf-16-le"
+    if data.startswith(b"\xfe\xff"):
+        return data[2:].decode("utf-16-be"), "utf-16-be"
+    return data.decode("utf-8"), "utf-8"
+
+
 def _content_kind(data: bytes, *, given_name: str | None = None) -> str:
     """Classify only supplied bytes; names are deliberately absent from this decision."""
     if data.startswith(b"%PDF-"):
@@ -314,10 +350,10 @@ def _content_kind(data: bytes, *, given_name: str | None = None) -> str:
         return "image"
     if len(data) >= 8 and data[4:8] == b"ftyp":
         return "video"
-    if data.startswith(b"PK\x03\x04"):
+    if data.startswith((b"PK\x03\x04", b"PK\x05\x06")):
         return "zip"
     try:
-        text = data.decode("utf-8")
+        text, _encoding = _decode_text(data)
     except UnicodeDecodeError:
         return "binary"
     if not text:
@@ -327,8 +363,9 @@ def _content_kind(data: bytes, *, given_name: str | None = None) -> str:
     except json.JSONDecodeError:
         decoded = None
     else:
-        if type(decoded) is dict and type(decoded.get("cells")) is list:
-            return "notebook"
+        if type(decoded) is dict:
+            if type(decoded.get("cells")) is list or "nbformat" in decoded:
+                return "notebook"
         return "json"
     lines = [line for line in text.splitlines() if line.strip()]
     if lines:
@@ -349,7 +386,18 @@ def _text_record(
     given_name: str | None,
     extractor: Extractor,
 ) -> Extraction:
-    text = _normalise_newlines(data.decode("utf-8"))
+    text, encoding = _decode_text(data)
+    text = _normalise_newlines(text)
+    if len(text.encode("utf-8")) > MAX_EXTRACTED_TEXT_BYTES:
+        return _record(
+            data,
+            asset_source_id=asset_source_id,
+            given_name=given_name,
+            extractor=extractor,
+            extractor_version=_stdlib_version(),
+            outcome=ExtractionOutcome.TOO_LARGE,
+            notes=(f"extracted text exceeds {MAX_EXTRACTED_TEXT_BYTES} bytes",),
+        )
     outcome = ExtractionOutcome.EMPTY if not text else ExtractionOutcome.EXTRACTED
     locations = () if not text else (ExtractionLocation("text", 0, len(text)),)
     return _record(
@@ -361,12 +409,14 @@ def _text_record(
         outcome=outcome,
         text=text,
         locations=locations,
+        notes=() if encoding == "utf-8" else (f"encoding:{encoding}",),
     )
 
 
 def _notebook_record(data: bytes, *, asset_source_id: str | None, given_name: str | None) -> Extraction:
     try:
-        document = json.loads(data.decode("utf-8"))
+        text, _encoding = _decode_text(data)
+        document = json.loads(text)
         cells = document["cells"]
         if type(cells) is not list:
             raise TypeError("cells is not a list")
@@ -417,8 +467,55 @@ def _pdftotext_version(tool: str) -> str:
         )
     except (OSError, subprocess.SubprocessError):
         return "unreported"
-    observed = completed.stderr.decode("utf-8", errors="replace").strip()
-    return observed or "unreported"
+    observed = completed.stdout or completed.stderr
+    lines = observed.decode("utf-8", errors="replace").splitlines()
+    return lines[0] if lines and lines[0] else "unreported"
+
+
+def _bounded_pdf_stdout(tool: str, data: bytes) -> tuple[subprocess.CompletedProcess[bytes], bytes, bool]:
+    """Run the PDF tool with stdin bytes while retaining no more than the text cap."""
+    read_fd, write_fd = os.pipe()
+    reader = os.fdopen(read_fd, "rb")
+    writer = os.fdopen(write_fd, "wb")
+    chunks: list[bytes] = []
+    size = 0
+    too_large = False
+
+    def drain_stdout() -> None:
+        nonlocal size, too_large
+        with reader:
+            while chunk := reader.read(64 * 1024):
+                size += len(chunk)
+                if too_large:
+                    continue
+                if size > MAX_EXTRACTED_TEXT_BYTES:
+                    too_large = True
+                    chunks.clear()
+                    continue
+                chunks.append(chunk)
+
+    drain_thread = threading.Thread(target=drain_stdout)
+    drain_thread.start()
+    try:
+        completed = subprocess.run(
+            [tool, "-layout", "-", "-"],
+            input=data,
+            stdout=writer,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=30,
+        )
+    finally:
+        writer.close()
+        drain_thread.join()
+    if completed.stdout is not None:
+        returned_stdout = completed.stdout
+        return (
+            completed,
+            b"" if len(returned_stdout) > MAX_EXTRACTED_TEXT_BYTES else returned_stdout,
+            len(returned_stdout) > MAX_EXTRACTED_TEXT_BYTES,
+        )
+    return completed, b"".join(chunks), too_large
 
 
 def _pdf_tool_record(
@@ -440,13 +537,7 @@ def _pdf_tool_record(
         )
     version = _pdftotext_version(tool)
     try:
-        completed = subprocess.run(
-            [tool, "-layout", "-", "-"],
-            input=data,
-            capture_output=True,
-            check=False,
-            timeout=30,
-        )
+        completed, stdout, stdout_too_large = _bounded_pdf_stdout(tool, data)
     except (OSError, subprocess.SubprocessError) as error:
         return _record(
             data,
@@ -456,6 +547,16 @@ def _pdf_tool_record(
             extractor_version=version,
             outcome=ExtractionOutcome.UNREADABLE,
             notes=(f"{_PDFTEXT_TOOL}: {_note(error)}",),
+        )
+    if stdout_too_large:
+        return _record(
+            data,
+            asset_source_id=asset_source_id,
+            given_name=given_name,
+            extractor=Extractor.PDF_TEXT_TOOL,
+            extractor_version=version,
+            outcome=ExtractionOutcome.TOO_LARGE,
+            notes=(f"{_PDFTEXT_TOOL} stdout exceeds {MAX_EXTRACTED_TEXT_BYTES} bytes",),
         )
     if completed.returncode != 0:
         detail = completed.stderr.decode("utf-8", errors="replace").strip()
@@ -479,7 +580,7 @@ def _pdf_tool_record(
             notes=(note,),
         )
     try:
-        text = _normalise_newlines(completed.stdout.decode("utf-8"))
+        text = _normalise_newlines(stdout.decode("utf-8")).rstrip()
     except UnicodeDecodeError as error:
         return _record(
             data,
@@ -505,14 +606,42 @@ def _pdf_tool_record(
         given_name=given_name,
         extractor=Extractor.PDF_TEXT_TOOL,
         extractor_version=version,
-        outcome=ExtractionOutcome.EMPTY if not text.strip("\n\f") else ExtractionOutcome.EXTRACTED,
+        outcome=ExtractionOutcome.EMPTY if not text else ExtractionOutcome.EXTRACTED,
         text=text,
         locations=tuple(locations),
     )
 
 
-def _zip_names(archive: zipfile.ZipFile) -> tuple[str, ...]:
-    return tuple(info.filename for info in archive.infolist())
+def _zip_names(infos: Iterable[zipfile.ZipInfo]) -> tuple[str, ...]:
+    return tuple(info.filename for info in infos)
+
+
+def _archive_exceeds_bounds(infos: tuple[zipfile.ZipInfo, ...]) -> bool:
+    """Check all central-directory sizes before reading any archive member."""
+    if len(infos) > MAX_ARCHIVE_MEMBERS:
+        return True
+    total = 0
+    for info in infos:
+        if info.file_size > MAX_ARCHIVE_TEXT_BYTES:
+            return True
+        total += info.file_size
+        if total > MAX_ARCHIVE_TEXT_BYTES:
+            return True
+    return False
+
+
+def _too_large_archive_members(infos: tuple[zipfile.ZipInfo, ...]) -> tuple[ExtractionMember, ...]:
+    """Retain bounded central-directory inventory without claiming unread data parsed."""
+    return tuple(
+        ExtractionMember(
+            path=info.filename,
+            size=info.file_size,
+            crc=info.CRC,
+            digest=None,
+            outcome=ExtractionOutcome.TOO_LARGE,
+        )
+        for info in infos[:MAX_ARCHIVE_MEMBERS]
+    )
 
 
 def _office_kind(names: tuple[str, ...]) -> str | None:
@@ -538,10 +667,22 @@ def _element_text(element: ElementTree.Element) -> str:
     return "".join(child.text or "" for child in element.iter() if child.tag.rsplit("}", 1)[-1] == "t")
 
 
-def _office_segments(archive: zipfile.ZipFile, kind: str) -> list[tuple[str, str]]:
-    names = _zip_names(archive)
+def _office_xml(data: bytes) -> ElementTree.Element:
+    """Reject declarations that could define text before parsing an XML part."""
+    declaration = _XML_DECLARATION.search(data)
+    if declaration is not None:
+        kind = declaration.group(1).decode("ascii").upper()
+        raise ValueError(f"XML contains a {kind} declaration")
+    return ElementTree.fromstring(data)
+
+
+def _office_segments(
+    archive: zipfile.ZipFile,
+    names: tuple[str, ...],
+    kind: str,
+) -> list[tuple[str, str]]:
     if kind == "word":
-        root = ElementTree.fromstring(archive.read("word/document.xml"))
+        root = _office_xml(archive.read("word/document.xml"))
         return [
             (f"paragraph:{index}", _element_text(element))
             for index, element in enumerate(root.iter())
@@ -550,13 +691,13 @@ def _office_segments(archive: zipfile.ZipFile, kind: str) -> list[tuple[str, str
     if kind == "sheet":
         shared: list[str] = []
         if "xl/sharedStrings.xml" in names:
-            shared_root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+            shared_root = _office_xml(archive.read("xl/sharedStrings.xml"))
             shared = [_element_text(element) for element in shared_root.iter() if element.tag.rsplit("}", 1)[-1] == "si"]
         segments = []
         cell_index = 0
         for name in sorted((item for item in names if item.startswith("xl/worksheets/sheet") and item.endswith(".xml")), key=_part_order):
             sheet_number = _part_order(name)[0]
-            root = ElementTree.fromstring(archive.read(name))
+            root = _office_xml(archive.read(name))
             for cell in (element for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "c"):
                 cell_type = cell.attrib.get("t")
                 if cell_type == "inlineStr":
@@ -572,19 +713,27 @@ def _office_segments(archive: zipfile.ZipFile, kind: str) -> list[tuple[str, str
     if kind == "slides":
         segments = []
         for name in sorted((item for item in names if item.startswith("ppt/slides/slide") and item.endswith(".xml")), key=_part_order):
-            root = ElementTree.fromstring(archive.read(name))
+            root = _office_xml(archive.read(name))
             segments.append((f"slide:{_part_order(name)[0]}", _element_text(root)))
         return segments
     segments = []
     for name in sorted((item for item in names if item.startswith("Index/") and item.endswith(".xml")), key=_part_order):
-        root = ElementTree.fromstring(archive.read(name))
+        root = _office_xml(archive.read(name))
         segments.append((f"index:{name}", _element_text(root)))
     return segments
 
 
-def _office_record(data: bytes, archive: zipfile.ZipFile, kind: str, *, asset_source_id: str | None, given_name: str | None) -> Extraction:
+def _office_record(
+    data: bytes,
+    archive: zipfile.ZipFile,
+    names: tuple[str, ...],
+    kind: str,
+    *,
+    asset_source_id: str | None,
+    given_name: str | None,
+) -> Extraction:
     try:
-        text, locations = _joined_segments(_office_segments(archive, kind))
+        text, locations = _joined_segments(_office_segments(archive, names, kind))
         return _record(
             data,
             asset_source_id=asset_source_id,
@@ -596,7 +745,16 @@ def _office_record(data: bytes, archive: zipfile.ZipFile, kind: str, *, asset_so
             locations=locations,
             notes=(f"office:{kind}",),
         )
-    except (ElementTree.ParseError, KeyError, ValueError, zipfile.BadZipFile, OSError) as error:
+    except (
+        ElementTree.ParseError,
+        IndexError,
+        KeyError,
+        ValueError,
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        OSError,
+        RuntimeError,
+    ) as error:
         return _record(
             data,
             asset_source_id=asset_source_id,
@@ -702,11 +860,26 @@ def _archive_record(data: bytes, archive: zipfile.ZipFile, *, asset_source_id: s
 def _zip_record(data: bytes, *, asset_source_id: str | None, given_name: str | None) -> Extraction:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            kind = _office_kind(_zip_names(archive))
+            infos = tuple(archive.infolist())
+            names = _zip_names(infos)
+            kind = _office_kind(names)
+            if _archive_exceeds_bounds(infos):
+                return _record(
+                    data,
+                    asset_source_id=asset_source_id,
+                    given_name=given_name,
+                    extractor=Extractor.OFFICE_XML if kind is not None else Extractor.ARCHIVE_MEMBERS,
+                    extractor_version=_stdlib_version(),
+                    outcome=ExtractionOutcome.TOO_LARGE,
+                    members=_too_large_archive_members(infos),
+                    notes=((f"office:{kind}",) if kind is not None else ())
+                    + ("archive central directory exceeds extraction bounds",),
+                )
             if kind is not None:
                 return _office_record(
                     data,
                     archive,
+                    names,
                     kind,
                     asset_source_id=asset_source_id,
                     given_name=given_name,
@@ -826,24 +999,40 @@ def extract_file(
 
 
 def deduplicate_extractions(records: Iterable[Extraction]) -> tuple[SharedExtraction, ...]:
-    """Share one content record per asset digest while retaining every owner id."""
-    grouped: dict[str, tuple[Extraction, set[str]]] = {}
+    """Share deterministic name-free evidence while retaining each owner's supplied name."""
+    grouped: dict[
+        tuple[str, Extractor, str],
+        tuple[list[Extraction], dict[str, set[str | None]]],
+    ] = {}
     for record in records:
         if type(record) is not Extraction:
             raise ExtractionError("deduplication requires exact Extraction records")
         if record.asset_digest is None:
             continue
-        if record.asset_digest not in grouped:
-            grouped[record.asset_digest] = (record, set())
-        grouped[record.asset_digest][1].update(
-            () if record.asset_source_id is None else (record.asset_source_id,)
-        )
+        key = (record.asset_digest, record.extractor, record.extractor_version)
+        if key not in grouped:
+            grouped[key] = ([], {})
+        grouped[key][0].append(record)
+        if record.asset_source_id is not None:
+            grouped[key][1].setdefault(record.asset_source_id, set()).add(record.given_name)
     return tuple(
         SharedExtraction(
-            extraction=replace(record, asset_source_id=None),
-            asset_source_ids=tuple(sorted(source_ids)),
+            extraction=min(
+                (replace(record, asset_source_id=None, given_name=None) for record in grouped_records),
+                key=lambda record: record.record_bytes(),
+            ),
+            owners=tuple(
+                ExtractionOwner(
+                    asset_source_id=source_id,
+                    given_name=min(names, key=lambda name: (name is not None, name or "")),
+                )
+                for source_id, names in sorted(owner_names.items())
+            ),
         )
-        for _digest, (record, source_ids) in sorted(grouped.items())
+        for _key, (grouped_records, owner_names) in sorted(
+            grouped.items(),
+            key=lambda item: (item[0][0], item[0][1].value, item[0][2]),
+        )
     )
 
 

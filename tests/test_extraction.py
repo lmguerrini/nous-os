@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import io
+import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from nous_os.extraction import (
     MAX_ARCHIVE_MEMBERS,
+    MAX_EXTRACTED_TEXT_BYTES,
     ExtractionOutcome,
     Extractor,
+    deduplicate_extractions,
     extract_assets,
+    extract_bytes,
     extract_file,
 )
 
@@ -61,6 +69,26 @@ def _zip(path: Path, entries: dict[str, bytes]) -> Path:
         for name, value in entries.items():
             archive.writestr(name, value)
     return path
+
+
+def _declare_member_size(path: Path, member_name: str, size: int) -> Path:
+    """Change only a normal ZIP central-directory size field for a bounded-read test."""
+    data = bytearray(path.read_bytes())
+    offset = 0
+    encoded_name = member_name.encode("utf-8")
+    while True:
+        offset = data.find(b"PK\x01\x02", offset)
+        if offset < 0:
+            raise AssertionError(f"central-directory entry for {member_name!r} is absent")
+        name_size = int.from_bytes(data[offset + 28 : offset + 30], "little")
+        extra_size = int.from_bytes(data[offset + 30 : offset + 32], "little")
+        comment_size = int.from_bytes(data[offset + 32 : offset + 34], "little")
+        name_start = offset + 46
+        if data[name_start : name_start + name_size] == encoded_name:
+            data[offset + 24 : offset + 28] = size.to_bytes(4, "little")
+            path.write_bytes(data)
+            return path
+        offset = name_start + name_size + extra_size + comment_size
 
 
 def _docx(path: Path) -> Path:
@@ -209,14 +237,228 @@ def test_archives_are_bounded_and_nothing_executes(tmp_path: Path) -> None:
     assert len(bounded.members) == MAX_ARCHIVE_MEMBERS
 
 
-def test_identical_bytes_share_one_record_with_all_owners(tmp_path: Path) -> None:
+def test_office_archive_bounds_precede_xml_parsing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    document = _declare_member_size(
+        _docx(tmp_path / "oversized.docx"),
+        "word/document.xml",
+        21 * 1024 * 1024,
+    )
+
+    def xml_must_not_be_read(self: zipfile.ZipFile, name: object, *args: object) -> bytes:
+        raise AssertionError(f"oversized office member was read: {name!r}")
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", xml_must_not_be_read)
+    record = extract_file(document)
+
+    assert record.extractor is Extractor.OFFICE_XML
+    assert record.outcome is ExtractionOutcome.TOO_LARGE
+    assert record.members[-1].path == "word/document.xml"
+
+
+def test_office_entity_declarations_are_refused_before_parsing(tmp_path: Path) -> None:
+    document = _zip(
+        tmp_path / "entity.docx",
+        {
+            "[Content_Types].xml": b"<Types/>",
+            "word/document.xml": (
+                b'<!DOCTYPE document [<!ENTITY hidden "must-not-expand">]>'
+                b'<w:document xmlns:w="urn:word"><w:body><w:p><w:r><w:t>&hidden;</w:t>'
+                b"</w:r></w:p></w:body></w:document>"
+            ),
+        },
+    )
+
+    record = extract_file(document)
+
+    assert record.outcome is ExtractionOutcome.UNREADABLE
+    assert any("DOCTYPE declaration" in note for note in record.notes)
+    assert "must-not-expand" not in record.text
+
+
+def test_office_parse_errors_are_named_unreadable(tmp_path: Path) -> None:
+    sheet = _zip(
+        tmp_path / "broken.xlsx",
+        {
+            "[Content_Types].xml": b"<Types/>",
+            "xl/sharedStrings.xml": b'<sst xmlns="urn:sheet"><si><t>only entry</t></si></sst>',
+            "xl/worksheets/sheet1.xml": (
+                b'<worksheet xmlns="urn:sheet"><sheetData><row>'
+                b'<c r="A1" t="s"><v>9</v></c>'
+                b"</row></sheetData></worksheet>"
+            ),
+        },
+    )
+
+    record = extract_file(sheet)
+
+    assert record.extractor is Extractor.OFFICE_XML
+    assert record.outcome is ExtractionOutcome.UNREADABLE
+    assert any("IndexError" in note for note in record.notes)
+
+
+def test_archive_declared_member_bound_prevents_member_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive = _declare_member_size(
+        _zip(tmp_path / "oversized.zip", {"claimed-large.txt": b"small"}),
+        "claimed-large.txt",
+        25 * 1024 * 1024,
+    )
+
+    def member_must_not_be_read(self: zipfile.ZipFile, name: object, *args: object) -> bytes:
+        raise AssertionError(f"oversized archive member was read: {name!r}")
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", member_must_not_be_read)
+    record = extract_file(archive)
+
+    assert record.extractor is Extractor.ARCHIVE_MEMBERS
+    assert record.outcome is ExtractionOutcome.TOO_LARGE
+    assert record.members[0].size == 25 * 1024 * 1024
+
+
+def test_empty_zip_is_an_empty_archive_record(tmp_path: Path) -> None:
+    archive = _write(tmp_path / "empty.zip", b"PK\x05\x06" + b"\0" * 18)
+
+    record = extract_file(archive)
+
+    assert record.extractor is Extractor.ARCHIVE_MEMBERS
+    assert record.outcome is ExtractionOutcome.EMPTY
+    assert record.members == ()
+
+
+@pytest.mark.parametrize(
+    ("data", "encoding"),
+    (
+        (b"\xef\xbb\xbfutf8 bom", "utf-8-sig"),
+        (b"\xff\xfe" + "little endian".encode("utf-16-le"), "utf-16-le"),
+        (b"\xfe\xff" + "big endian".encode("utf-16-be"), "utf-16-be"),
+    ),
+)
+def test_bom_text_is_decoded_and_named(data: bytes, encoding: str) -> None:
+    record = extract_bytes(data)
+
+    assert record.extractor is Extractor.PLAIN_TEXT
+    assert record.outcome is ExtractionOutcome.EXTRACTED
+    assert record.text.endswith("bom") or record.text.endswith("endian")
+    assert record.notes == (f"encoding:{encoding}",)
+
+
+def test_notebook_marker_without_cells_is_named_unreadable() -> None:
+    record = extract_bytes(b'{"nbformat":4,"metadata":{}}')
+
+    assert record.extractor is Extractor.NOTEBOOK_CELLS
+    assert record.outcome is ExtractionOutcome.UNREADABLE
+    assert any("KeyError" in note for note in record.notes)
+
+
+def test_pdf_tool_receives_the_digested_input_on_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    pdf = _minimal_pdf("stdin evidence")
+    observed: list[bytes] = []
+    monkeypatch.setattr("nous_os.extraction._pdftext_path", lambda: "text-tool")
+    monkeypatch.setattr("nous_os.extraction._pdftotext_version", lambda tool: "test version")
+
+    def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        assert args == ["text-tool", "-layout", "-", "-"]
+        assert kwargs["input"] == pdf
+        observed.append(kwargs["input"])
+        stdout = kwargs["stdout"]
+        assert hasattr(stdout, "write")
+        stdout.write(b"stdin evidence\n")
+        return subprocess.CompletedProcess(args, 0, stderr=b"")
+
+    monkeypatch.setattr("nous_os.extraction.subprocess.run", run)
+    record = extract_bytes(pdf)
+
+    assert observed == [pdf]
+    assert hashlib.sha256(observed[0]).hexdigest() == record.asset_digest
+    assert record.text == "stdin evidence"
+
+
+def test_pdf_tool_version_is_the_first_real_version_line() -> None:
+    tool = shutil.which("pdftotext")
+    if tool is None:
+        pytest.skip("pdftotext is absent")
+    completed = subprocess.run([tool, "-v"], capture_output=True, check=False, timeout=10)
+    output = completed.stdout or completed.stderr
+    expected = output.decode("utf-8", errors="replace").splitlines()[0]
+
+    record = extract_bytes(_minimal_pdf("version evidence"))
+
+    assert record.extractor is Extractor.PDF_TEXT_TOOL
+    assert record.extractor_version == expected
+
+
+def test_pdf_form_feed_and_whitespace_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("nous_os.extraction._pdftext_path", lambda: "text-tool")
+    monkeypatch.setattr("nous_os.extraction._pdftotext_version", lambda tool: "test version")
+
+    def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        kwargs["stdout"].write(b"\f \n\t")
+        return subprocess.CompletedProcess(args, 0, stderr=b"")
+
+    monkeypatch.setattr("nous_os.extraction.subprocess.run", run)
+    record = extract_bytes(_minimal_pdf("ignored"))
+
+    assert record.outcome is ExtractionOutcome.EMPTY
+    assert record.text == ""
+    assert record.locations == ()
+
+
+def test_extracted_text_is_capped_for_plain_and_pdf_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    oversized = tmp_path / "oversized.txt"
+    with oversized.open("wb") as output:
+        output.seek(MAX_EXTRACTED_TEXT_BYTES)
+        output.write(b"x")
+
+    plain_record = extract_file(oversized)
+
+    assert plain_record.extractor is Extractor.PLAIN_TEXT
+    assert plain_record.outcome is ExtractionOutcome.TOO_LARGE
+    assert plain_record.text == ""
+
+    monkeypatch.setattr("nous_os.extraction._pdftext_path", lambda: "text-tool")
+    monkeypatch.setattr("nous_os.extraction._pdftotext_version", lambda tool: "test version")
+
+    def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        kwargs["stdout"].write(b"x" * (MAX_EXTRACTED_TEXT_BYTES + 1))
+        return subprocess.CompletedProcess(args, 0, stderr=b"")
+
+    monkeypatch.setattr("nous_os.extraction.subprocess.run", run)
+    pdf_record = extract_bytes(_minimal_pdf("ignored"))
+
+    assert pdf_record.extractor is Extractor.PDF_TEXT_TOOL
+    assert pdf_record.outcome is ExtractionOutcome.TOO_LARGE
+    assert pdf_record.text == ""
+
+
+def test_identical_bytes_share_name_free_record_and_named_owners(tmp_path: Path) -> None:
     first = _write(tmp_path / "first", b"same owned bytes")
     second = _write(tmp_path / "second", b"same owned bytes")
-    shared = extract_assets(((first, "src_A"), (second, "src_B")))
-    assert len(shared) == 1
-    assert shared[0].asset_source_ids == ("src_A", "src_B")
-    assert shared[0].extraction.asset_source_id is None
-    assert shared[0].asset_digest == hashlib.sha256(b"same owned bytes").hexdigest()
+    forward = extract_assets(((first, "src_A"), (second, "src_B")))
+    reversed_order = extract_assets(((second, "src_B"), (first, "src_A")))
+
+    assert len(forward) == 1
+    assert forward[0].asset_source_ids == ("src_A", "src_B")
+    assert tuple((owner.asset_source_id, owner.given_name) for owner in forward[0].owners) == (
+        ("src_A", "first"),
+        ("src_B", "second"),
+    )
+    assert forward[0].extraction.asset_source_id is None
+    assert forward[0].extraction.given_name is None
+    assert forward[0].asset_digest == hashlib.sha256(b"same owned bytes").hexdigest()
+    assert forward[0].extraction.record_bytes() == reversed_order[0].extraction.record_bytes()
+    assert forward[0].owners == reversed_order[0].owners
+
+    first_record = extract_bytes(b"same key bytes", "src_A", given_name="first name")
+    other_extractor = replace(
+        first_record,
+        asset_source_id="src_B",
+        given_name="second name",
+        extractor=Extractor.JSON_TEXT,
+        extractor_version="another version",
+    )
+    assert len(deduplicate_extractions((first_record, other_extractor))) == 2
 
 
 def test_source_bytes_unchanged(tmp_path: Path) -> None:
