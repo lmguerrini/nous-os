@@ -36,9 +36,10 @@ EXTRACTION_VERSION = "1"
 _PDFTEXT_TOOL = "pdftotext"
 
 
-def _pdftext_path() -> Path | None:
-    found = shutil.which(_PDFTEXT_TOOL)
-    return Path(found) if found else None
+def _pdftext_path() -> str | None:
+    return shutil.which(_PDFTEXT_TOOL)
+
+
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -53,7 +54,6 @@ class Extractor(Enum):
     JSON_TEXT = "json_text"
     NOTEBOOK_CELLS = "notebook_cells"
     PDF_TEXT_TOOL = "pdf_text_tool"
-    PDF_TEXT_LIBRARY = "pdf_text_library"
     OFFICE_XML = "office_xml"
     ARCHIVE_MEMBERS = "archive_members"
     NONE = "none"
@@ -68,6 +68,7 @@ class ExtractionOutcome(Enum):
     UNSUPPORTED_VIDEO = "unsupported_video"
     UNSUPPORTED_BINARY = "unsupported_binary"
     UNREADABLE = "unreadable"
+    TOOL_UNAVAILABLE = "tool_unavailable"
     ABSENT = "absent"
     TOO_LARGE = "too_large"
     ENCRYPTED = "encrypted"
@@ -406,112 +407,88 @@ def _notebook_record(data: bytes, *, asset_source_id: str | None, given_name: st
         )
 
 
-def _pypdf_version() -> str:
-    import pypdf
-
-    version = str(pypdf.__version__).strip()
-    return version or "unreported"
-
-
-def _pdf_library_record(data: bytes, *, asset_source_id: str | None, given_name: str | None, notes: tuple[str, ...] = ()) -> Extraction:
-    try:
-        from pypdf import PdfReader
-
-        version = _pypdf_version()
-        reader = PdfReader(io.BytesIO(data))
-        if reader.is_encrypted:
-            return _record(
-                data,
-                asset_source_id=asset_source_id,
-                given_name=given_name,
-                extractor=Extractor.PDF_TEXT_LIBRARY,
-                extractor_version=version,
-                outcome=ExtractionOutcome.ENCRYPTED,
-                notes=notes,
-            )
-        segments = [(f"page:{index}", page.extract_text() or "") for index, page in enumerate(reader.pages, start=1)]
-        text, locations = _joined_segments(segments)
-        return _record(
-            data,
-            asset_source_id=asset_source_id,
-            given_name=given_name,
-            extractor=Extractor.PDF_TEXT_LIBRARY,
-            extractor_version=version,
-            outcome=ExtractionOutcome.EMPTY if not text else ExtractionOutcome.EXTRACTED,
-            text=text,
-            locations=locations,
-            notes=notes,
-        )
-    except Exception as error:
-        return _record(
-            data,
-            asset_source_id=asset_source_id,
-            given_name=given_name,
-            extractor=Extractor.PDF_TEXT_LIBRARY,
-            extractor_version=_pypdf_version(),
-            outcome=ExtractionOutcome.UNREADABLE,
-            notes=notes + (_note(error),),
-        )
-
-
-def _pdftotext_version() -> str | None:
-    tool = _pdftext_path()
-    if tool is None or not tool.is_file():
-        return None
+def _pdftotext_version(tool: str) -> str:
     try:
         completed = subprocess.run(
-            [str(tool), "-v"],
+            [tool, "-v"],
             capture_output=True,
             check=False,
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
+        return "unreported"
     observed = completed.stderr.decode("utf-8", errors="replace").strip()
-    return observed or None
+    return observed or "unreported"
 
 
 def _pdf_tool_record(
     data: bytes,
-    path: Path,
     *,
     asset_source_id: str | None,
     given_name: str | None,
-) -> Extraction | None:
-    version = _pdftotext_version()
-    if version is None:
-        return None
+) -> Extraction:
+    tool = _pdftext_path()
+    if tool is None:
+        return _record(
+            data,
+            asset_source_id=asset_source_id,
+            given_name=given_name,
+            extractor=Extractor.PDF_TEXT_TOOL,
+            extractor_version="unavailable",
+            outcome=ExtractionOutcome.TOOL_UNAVAILABLE,
+            notes=(f"{_PDFTEXT_TOOL} is unavailable on PATH",),
+        )
+    version = _pdftotext_version(tool)
     try:
         completed = subprocess.run(
-            [str(_pdftext_path()), "-layout", str(path), "-"],
+            [tool, "-layout", "-", "-"],
+            input=data,
             capture_output=True,
             check=False,
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as error:
-        return _pdf_library_record(
+        return _record(
             data,
             asset_source_id=asset_source_id,
             given_name=given_name,
-            notes=(f"pdftotext: {_note(error)}",),
+            extractor=Extractor.PDF_TEXT_TOOL,
+            extractor_version=version,
+            outcome=ExtractionOutcome.UNREADABLE,
+            notes=(f"{_PDFTEXT_TOOL}: {_note(error)}",),
         )
     if completed.returncode != 0:
         detail = completed.stderr.decode("utf-8", errors="replace").strip()
-        note = f"pdftotext exited {completed.returncode}" if not detail else f"pdftotext exited {completed.returncode}: {detail}"
-        return _pdf_library_record(
+        note = (
+            f"{_PDFTEXT_TOOL} exited {completed.returncode}"
+            if not detail
+            else f"{_PDFTEXT_TOOL} exited {completed.returncode}: {detail}"
+        )
+        outcome = (
+            ExtractionOutcome.ENCRYPTED
+            if "password" in detail.lower()
+            else ExtractionOutcome.UNREADABLE
+        )
+        return _record(
             data,
             asset_source_id=asset_source_id,
             given_name=given_name,
+            extractor=Extractor.PDF_TEXT_TOOL,
+            extractor_version=version,
+            outcome=outcome,
             notes=(note,),
         )
     try:
         text = _normalise_newlines(completed.stdout.decode("utf-8"))
     except UnicodeDecodeError as error:
-        return _pdf_library_record(
+        return _record(
             data,
             asset_source_id=asset_source_id,
             given_name=given_name,
-            notes=(f"pdftotext: {_note(error)}",),
+            extractor=Extractor.PDF_TEXT_TOOL,
+            extractor_version=version,
+            outcome=ExtractionOutcome.UNREADABLE,
+            notes=(f"{_PDFTEXT_TOOL}: {_note(error)}",),
         )
     page_parts = text.split("\f")
     locations: list[ExtractionLocation] = []
@@ -753,7 +730,6 @@ def _extract_from_bytes(
     asset_source_id: str | None,
     given_name: str | None,
     allow_archive: bool,
-    pdf_backend: Extractor | None = None,
 ) -> Extraction:
     kind = _content_kind(data, given_name=given_name)
     if kind == "plain":
@@ -763,7 +739,7 @@ def _extract_from_bytes(
     if kind == "notebook":
         return _notebook_record(data, asset_source_id=asset_source_id, given_name=given_name)
     if kind == "pdf":
-        return _pdf_library_record(data, asset_source_id=asset_source_id, given_name=given_name)
+        return _pdf_tool_record(data, asset_source_id=asset_source_id, given_name=given_name)
     if kind == "zip" and allow_archive:
         return _zip_record(data, asset_source_id=asset_source_id, given_name=given_name)
     if kind == "image":
@@ -791,20 +767,18 @@ def extract_bytes(
 ) -> Extraction:
     """Extract evidence from supplied bytes without writing them or trusting a name.
 
-    Bytes have no stable pathname, so PDFs use the recorded library path here.
-    ``pdf_backend`` may only select that library path; it exists for a caller
-    that needs to state its choice explicitly rather than depending on a tool.
+    PDFs are passed as input to the configured tool, so their evidence comes
+    from the same bytes this function was given.
     """
     if type(data) is not bytes:
         raise ExtractionError("data must be bytes")
-    if pdf_backend not in (None, Extractor.PDF_TEXT_LIBRARY):
-        raise ExtractionError("extract_bytes can only use PDF_TEXT_LIBRARY for PDFs")
+    if pdf_backend not in (None, Extractor.PDF_TEXT_TOOL):
+        raise ExtractionError("pdf_backend must be PDF_TEXT_TOOL or None")
     return _extract_from_bytes(
         data,
         asset_source_id=asset_source_id,
         given_name=given_name,
         allow_archive=True,
-        pdf_backend=pdf_backend,
     )
 
 
@@ -841,24 +815,13 @@ def extract_file(
             outcome=ExtractionOutcome.UNREADABLE,
             notes=(_note(error),),
         )
-    kind = _content_kind(data, given_name=recorded_name)
-    if kind == "pdf" and pdf_backend is not Extractor.PDF_TEXT_LIBRARY:
-        tool_record = _pdf_tool_record(
-            data,
-            resolved,
-            asset_source_id=asset_source_id,
-            given_name=recorded_name,
-        )
-        if tool_record is not None:
-            return tool_record
-    if pdf_backend not in (None, Extractor.PDF_TEXT_TOOL, Extractor.PDF_TEXT_LIBRARY):
-        raise ExtractionError("pdf_backend must be a declared PDF extractor or None")
+    if pdf_backend not in (None, Extractor.PDF_TEXT_TOOL):
+        raise ExtractionError("pdf_backend must be PDF_TEXT_TOOL or None")
     return _extract_from_bytes(
         data,
         asset_source_id=asset_source_id,
         given_name=recorded_name,
         allow_archive=True,
-        pdf_backend=pdf_backend,
     )
 
 

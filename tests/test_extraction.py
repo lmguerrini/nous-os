@@ -7,8 +7,6 @@ import io
 import zipfile
 from pathlib import Path
 
-from pypdf import PdfWriter
-
 from nous_os.extraction import (
     MAX_ARCHIVE_MEMBERS,
     ExtractionOutcome,
@@ -23,15 +21,22 @@ def _write(path: Path, data: bytes) -> Path:
     return path
 
 
-def _minimal_pdf(text: str) -> bytes:
+def _minimal_pdf(text: str, *, encrypted: bool = False) -> bytes:
     """Build a one-page PDF without a document-generation dependency."""
-    objects = (
+    stream = f"BT /F1 18 Tf 72 72 Td ({text}) Tj ET".encode("ascii")
+    objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        f"<< /Length {len(f'BT /F1 18 Tf 72 72 Td ({text}) Tj ET'.encode('ascii'))} >>\nstream\nBT /F1 18 Tf 72 72 Td ({text}) Tj ET\nendstream".encode("ascii"),
-    )
+        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream",
+    ]
+    if encrypted:
+        objects.append(
+            b"<< /Filter /Standard /V 1 /R 2 /Length 40 "
+            b"/O <0000000000000000000000000000000000000000000000000000000000000000> "
+            b"/U <0000000000000000000000000000000000000000000000000000000000000000> /P -4 >>"
+        )
     output = bytearray(b"%PDF-1.4\n")
     offsets = [0]
     for number, body in enumerate(objects, start=1):
@@ -44,9 +49,10 @@ def _minimal_pdf(text: str) -> bytes:
     output.extend(b"0000000000 65535 f \n")
     for offset in offsets[1:]:
         output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
-    output.extend(
-        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii")
-    )
+    trailer = f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R".encode("ascii")
+    if encrypted:
+        trailer += b" /Encrypt 6 0 R"
+    output.extend(trailer + f" >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii"))
     return bytes(output)
 
 
@@ -97,16 +103,6 @@ def _pptx(path: Path) -> Path:
     )
 
 
-def _encrypted_pdf(path: Path) -> Path:
-    writer = PdfWriter()
-    writer.add_blank_page(width=72, height=72)
-    writer.encrypt("fixture-password")
-    with path.open("wb") as handle:
-        writer.write(handle)
-    assert b"/Encrypt" in path.read_bytes()
-    return path
-
-
 def test_supported_formats_extract_deterministically(tmp_path: Path) -> None:
     plain = _write(tmp_path / "plain.md", b"plain\r\ntext\r")
     json_text = _write(tmp_path / "data.json", b'{"shape":"json"}\n')
@@ -139,11 +135,7 @@ def test_supported_formats_extract_deterministically(tmp_path: Path) -> None:
         for path, record in zip((plain, json_text, notebook, pdf, docx, xlsx, pptx, archive), records)
     )
 
-    tool = extract_file(pdf)
-    library = extract_file(pdf, pdf_backend=Extractor.PDF_TEXT_LIBRARY)
-    assert tool.extractor is Extractor.PDF_TEXT_TOOL
-    assert library.extractor is Extractor.PDF_TEXT_LIBRARY
-    assert "pdf words" in tool.text and "pdf words" in library.text
+    assert records[3].extractor is Extractor.PDF_TEXT_TOOL
 
 
 def test_unsupported_and_failed_inputs_are_named(tmp_path: Path) -> None:
@@ -153,7 +145,7 @@ def test_unsupported_and_failed_inputs_are_named(tmp_path: Path) -> None:
     random = _write(tmp_path / "random", b"\xff\x00\x80")
     truncated = _write(tmp_path / "truncated", b"%PDF-1.7\nnot a document")
     empty = _write(tmp_path / "empty.txt", b"")
-    encrypted = _encrypted_pdf(tmp_path / "encrypted")
+    encrypted = _write(tmp_path / "encrypted", _minimal_pdf("hidden", encrypted=True))
 
     assert extract_file(png).outcome is ExtractionOutcome.UNSUPPORTED_IMAGE
     assert extract_file(jpeg).outcome is ExtractionOutcome.UNSUPPORTED_IMAGE
@@ -164,7 +156,23 @@ def test_unsupported_and_failed_inputs_are_named(tmp_path: Path) -> None:
     assert broken.notes and "Error" in broken.notes[-1]
     assert extract_file(empty).outcome is ExtractionOutcome.EMPTY
     assert extract_file(tmp_path / "missing").outcome is ExtractionOutcome.ABSENT
-    assert extract_file(encrypted).outcome is ExtractionOutcome.ENCRYPTED
+    encrypted_record = extract_file(encrypted)
+    assert encrypted_record.outcome is ExtractionOutcome.ENCRYPTED
+    assert encrypted_record.text == ""
+    assert encrypted_record.notes and "pdftotext exited" in encrypted_record.notes[-1]
+
+
+def test_missing_pdf_tool_is_explicit(tmp_path: Path, monkeypatch: object) -> None:
+    pdf = _write(tmp_path / "page.pdf", _minimal_pdf("pdf words"))
+    monkeypatch.setattr("nous_os.extraction.shutil.which", lambda name: None)
+
+    record = extract_file(pdf)
+
+    assert record.extractor is Extractor.PDF_TEXT_TOOL
+    assert record.extractor_version == "unavailable"
+    assert record.outcome is ExtractionOutcome.TOOL_UNAVAILABLE
+    assert record.text == ""
+    assert record.notes == ("pdftotext is unavailable on PATH",)
 
 
 def test_classification_is_by_content_not_name(tmp_path: Path) -> None:
