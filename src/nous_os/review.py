@@ -9,12 +9,15 @@ existing authorization, and only then writes a canonical assertion version.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
 import sys
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final, Iterable, Mapping
 
@@ -27,7 +30,8 @@ from nous_os.canonical import Assertion, CanonicalError, LifecycleState, Support
 from nous_os.capability import Grant, NotAuthorized, Tier, execute, required_tier
 from nous_os.derived import CanonDivergence
 from nous_os.identity import ASSERTION_PREFIX, canonical_bytes, digest_bytes, require_id
-from nous_os.provenance import Citation, Locator, ProvenanceError
+from nous_os.provenance import Citation, Locator, ProvenanceError, quote_lint
+from nous_os.snapshots import SnapshotCorrupt, SnapshotNotFound, SnapshotStore
 from nous_os.temporal import ClaimKey, ClaimKeyError
 
 
@@ -95,6 +99,19 @@ _CANON_FILE_FIELDS: Final[frozenset[str]] = frozenset(
         "candidate_version",
         "promotion_record_digest",
         "previous_digest",
+        "version_digest",
+    }
+)
+_CANON_INDEX_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "assertion_id",
+        "content_digest",
+        "previous_digest",
+        "candidate_id",
+        "candidate_version",
+        "promotion_record_digest",
+        "version_digest",
+        "decided_at",
     }
 )
 _AUDIT_FIELDS: Final[frozenset[str]] = frozenset(
@@ -110,6 +127,7 @@ _AUDIT_FIELDS: Final[frozenset[str]] = frozenset(
         "applied_at",
         "assertion_id",
         "content_digest",
+        "refusal_reason",
     }
 )
 _OUTCOMES: Final[frozenset[str]] = frozenset(
@@ -122,6 +140,12 @@ _OUTCOMES: Final[frozenset[str]] = frozenset(
         "DECIDER_NOT_HUMAN",
         "ORIGIN_NEEDS_REASON",
         "NOT_PROMOTABLE",
+        "RESERVED",
+        "ALREADY_DECIDED",
+        "CANDIDATE_MALFORMED",
+        "EVIDENCE_UNRESOLVED",
+        "SUPERSEDED_NOT_TAIL",
+        "DECIDED_IN_FUTURE",
     }
 )
 _REFUSED_DECIDER_WORDS: Final[frozenset[str]] = frozenset(
@@ -380,6 +404,7 @@ class AuditEntry:
     applied_at: str
     assertion_id: str | None = None
     content_digest: str | None = None
+    refusal_reason: str | None = None
 
     def as_payload(self) -> dict[str, str | None]:
         return {
@@ -394,6 +419,7 @@ class AuditEntry:
             "applied_at": self.applied_at,
             "assertion_id": self.assertion_id,
             "content_digest": self.content_digest,
+            "refusal_reason": self.refusal_reason,
         }
 
     @classmethod
@@ -413,6 +439,7 @@ class AuditEntry:
                 applied_at=payload["applied_at"],
                 assertion_id=payload["assertion_id"],
                 content_digest=payload["content_digest"],
+                refusal_reason=payload["refusal_reason"],
             )
         except KeyError as error:
             raise ReviewError("AUDIT_SHAPE") from error
@@ -431,6 +458,10 @@ class AuditEntry:
                 raise ReviewError("AUDIT_VALUE")
         if (entry.assertion_id is None) != (entry.content_digest is None):
             raise ReviewError("AUDIT_ASSERTION_LINK")
+        if entry.refusal_reason is not None and (
+            type(entry.refusal_reason) is not str or not entry.refusal_reason
+        ):
+            raise ReviewError("AUDIT_REFUSAL_REASON")
         if entry.assertion_id is not None:
             try:
                 require_id(entry.assertion_id, ASSERTION_PREFIX)
@@ -451,6 +482,7 @@ class CanonVersion:
     candidate_version: str
     promotion_record_digest: str
     previous_digest: str | None
+    version_digest: str
 
     @property
     def content_digest(self) -> str:
@@ -464,6 +496,7 @@ class CanonVersion:
             "candidate_id": self.candidate_id,
             "candidate_version": self.candidate_version,
             "promotion_record_digest": self.promotion_record_digest,
+            "version_digest": self.version_digest,
             "decided_at": _instant_text(self.assertion.recorded_at),
         }
 
@@ -498,7 +531,7 @@ class CanonWrite:
 
 def _read_decisions(path: Path) -> tuple[ReviewDecision, ...]:
     found: list[ReviewDecision] = []
-    for number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), start=1):
+    for number, line in enumerate(Path(path).read_text(encoding="utf-8-sig").splitlines(), start=1):
         if not line:
             raise DecisionRefused(f"DECISION_LINE_{number}_EMPTY")
         try:
@@ -528,13 +561,43 @@ def _append_audit(path: Path, entry: AuditEntry) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("ab") as handle:
         handle.write(canonical_bytes(entry.as_payload()) + b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _append_json_line(path: Path, payload: Mapping[str, object]) -> None:
+    """Append one durable canonical JSON line."""
+    with Path(path).open("ab") as handle:
+        handle.write(canonical_bytes(payload) + b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+@contextmanager
+def _application_lock(audit_log: Path) -> Iterable[None]:
+    """Serialize every mutable step for one audit log."""
+    path = Path(f"{Path(audit_log)}.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
 
 
 def _role_word_refused(decider: str) -> bool:
     return any(word in _REFUSED_DECIDER_WORDS for word in _WORD.findall(decider.casefold()))
 
 
-def _audit_for(decision: ReviewDecision, outcome: str, *, assertion: CanonWrite | None = None) -> AuditEntry:
+def _audit_for(
+    decision: ReviewDecision,
+    outcome: str,
+    *,
+    assertion: CanonWrite | None = None,
+    refusal_reason: str | None = None,
+) -> AuditEntry:
     if outcome not in _OUTCOMES:
         raise ReviewError("AUDIT_OUTCOME")
     return AuditEntry(
@@ -549,6 +612,7 @@ def _audit_for(decision: ReviewDecision, outcome: str, *, assertion: CanonWrite 
         applied_at=datetime.now(timezone.utc).isoformat(),
         assertion_id=None if assertion is None else assertion.assertion_id,
         content_digest=None if assertion is None else assertion.content_digest,
+        refusal_reason=refusal_reason,
     )
 
 
@@ -560,7 +624,7 @@ def _canonical_assertion_payload(
     promotion_record_digest: str,
     previous_digest: str | None,
 ) -> dict[str, object]:
-    return {
+    payload = {
         "id": assertion.id,
         "text": assertion.text,
         "citation": _citation_payload(assertion.citation),
@@ -574,6 +638,7 @@ def _canonical_assertion_payload(
         "promotion_record_digest": promotion_record_digest,
         "previous_digest": previous_digest,
     }
+    return {**payload, "version_digest": _digest(payload)}
 
 
 def _canon_versions(canon_root: Path) -> tuple[CanonVersion, ...]:
@@ -593,6 +658,84 @@ def _previous_version(candidate: ReviewCandidate, canon_root: Path) -> CanonVers
     return None
 
 
+def _is_tail(version: CanonVersion, canon_root: Path) -> bool:
+    """Whether no later version already follows this assertion version."""
+    return not any(
+        other.previous_digest == version.content_digest
+        for other in _canon_versions(canon_root)
+    )
+
+
+def _written_candidate_version(
+    candidate: ReviewCandidate, canon_root: Path
+) -> CanonVersion | None:
+    matches = [
+        version
+        for version in _canon_versions(canon_root)
+        if (
+            version.candidate_id == candidate.proposal.proposal_id
+            and version.candidate_version == candidate.version
+        )
+    ]
+    if len(matches) > 1:
+        raise CanonDivergence("candidate has more than one canonical assertion version")
+    return None if not matches else matches[0]
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _ensure_index_entry(root: Path, payload: dict[str, object]) -> None:
+    """Record one version record once, refusing an incompatible duplicate."""
+    path = root / "assertions.jsonl"
+    if path.exists():
+        if not path.is_file():
+            raise CanonDivergence(f"canonical assertion index is not a file: {path}")
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line:
+                raise CanonDivergence(f"canonical assertion index has an empty line: {path}:{number}")
+            try:
+                existing = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise CanonDivergence(
+                    f"canonical assertion index is unreadable: {path}:{number}"
+                ) from error
+            if (
+                type(existing) is dict
+                and existing.get("assertion_id") == payload["assertion_id"]
+                and existing.get("content_digest") == payload["content_digest"]
+            ):
+                if canonical_bytes(existing) != canonical_bytes(payload):
+                    raise CanonDivergence(f"canonical assertion index diverges: {path}:{number}")
+                return
+    _append_json_line(path, payload)
+
+
+def _index_payload(
+    *,
+    assertion: Assertion,
+    candidate: ReviewCandidate,
+    promotion_record_digest: str,
+    previous_digest: str | None,
+    version_digest: str,
+) -> dict[str, object]:
+    return {
+        "assertion_id": assertion.id,
+        "content_digest": assertion.content_digest,
+        "previous_digest": previous_digest,
+        "candidate_id": candidate.proposal.proposal_id,
+        "candidate_version": candidate.version,
+        "promotion_record_digest": promotion_record_digest,
+        "version_digest": version_digest,
+        "decided_at": _instant_text(assertion.recorded_at),
+    }
+
+
 def _write_assertion(
     *,
     candidate: ReviewCandidate,
@@ -600,6 +743,16 @@ def _write_assertion(
     promotion_record_digest: str,
     canon_root: Path,
 ) -> CanonWrite:
+    existing_version = _written_candidate_version(candidate, canon_root)
+    if existing_version is not None:
+        if existing_version.promotion_record_digest != promotion_record_digest:
+            raise CanonDivergence("candidate promotion record diverges")
+        return CanonWrite(
+            existing_version.assertion.id,
+            existing_version.content_digest,
+            existing_version.previous_digest,
+            False,
+        )
     previous = _previous_version(candidate, canon_root)
     assertion_id = previous.assertion.id if previous is not None else None
     if assertion_id is None:
@@ -627,6 +780,13 @@ def _write_assertion(
     )
     root = Path(canon_root)
     version_path = root / "assertions" / assertion.id / f"{digest}.json"
+    index_payload = _index_payload(
+        assertion=assertion,
+        candidate=candidate,
+        promotion_record_digest=promotion_record_digest,
+        previous_digest=previous_digest,
+        version_digest=payload["version_digest"],
+    )
     if version_path.exists():
         try:
             existing = json.loads(version_path.read_text(encoding="utf-8"))
@@ -634,32 +794,26 @@ def _write_assertion(
             raise CanonDivergence(f"canonical assertion file is unreadable: {version_path}") from error
         if canonical_bytes(existing) != canonical_bytes(payload):
             raise CanonDivergence(f"canonical assertion file diverges: {version_path}")
+        _ensure_index_entry(root, index_payload)
         return CanonWrite(assertion.id, digest, previous_digest, False)
 
     version_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{digest}.", suffix=".partial", dir=version_path.parent
+    )
+    temporary = Path(temporary_name)
     try:
-        with version_path.open("xb") as handle:
+        with os.fdopen(descriptor, "wb") as handle:
             handle.write(canonical_bytes(payload) + b"\n")
-    except FileExistsError:
-        # A concurrent writer is equivalent only when it wrote these exact bytes.
-        return _write_assertion(
-            candidate=candidate,
-            decision=decision,
-            promotion_record_digest=promotion_record_digest,
-            canon_root=canon_root,
-        )
-    index_path = root / "assertions.jsonl"
-    index_payload = {
-        "assertion_id": assertion.id,
-        "content_digest": digest,
-        "previous_digest": previous_digest,
-        "candidate_id": candidate.proposal.proposal_id,
-        "candidate_version": candidate.version,
-        "promotion_record_digest": promotion_record_digest,
-        "decided_at": _instant_text(decision.decided_at),
-    }
-    with index_path.open("ab") as handle:
-        handle.write(canonical_bytes(index_payload) + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, version_path)
+        _fsync_directory(version_path.parent)
+    except Exception:
+        if temporary.exists():
+            temporary.unlink()
+        raise
+    _ensure_index_entry(root, index_payload)
     return CanonWrite(assertion.id, digest, previous_digest, True)
 
 
@@ -690,11 +844,76 @@ def _require_promote_grant(grant: Grant) -> None:
         raise NotAuthorized("the grant does not hold the operation's required tier")
 
 
+def _validate_canon_root(canon_root: Path) -> None:
+    """Reject impossible canonical paths before any mutable side effect."""
+    root = Path(canon_root)
+    if root.exists() and not root.is_dir():
+        raise ReviewError("CANON_ROOT_NOT_DIRECTORY")
+    assertions = root / "assertions"
+    if assertions.exists() and not assertions.is_dir():
+        raise ReviewError("CANON_ASSERTIONS_NOT_DIRECTORY")
+    index = root / "assertions.jsonl"
+    if index.exists() and not index.is_file():
+        raise ReviewError("CANON_INDEX_NOT_FILE")
+    if root.exists():
+        # A regular file at the index path is viable only if it is the index
+        # it claims to be.  Verify all existing bytes before an authorization
+        # can be appended for a later write that would fail.
+        canon_index(root)
+
+
+def _authorization_payload(
+    path: Path, *, candidate: ReviewCandidate, decision: ReviewDecision
+) -> dict[str, object] | None:
+    """Find the durable promotion record that makes a reserved run resumable."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise ReviewError("AUTHORIZATIONS_NOT_FILE")
+    decided_at = _instant_text(decision.decided_at)
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line:
+            raise ReviewError(f"AUTHORIZATION_LINE_{number}_EMPTY")
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ReviewError(f"AUTHORIZATION_LINE_{number}_MALFORMED") from error
+        if type(payload) is not dict:
+            raise ReviewError(f"AUTHORIZATION_LINE_{number}_MALFORMED")
+        if (
+            payload.get("proposal_id") == candidate.proposal.proposal_id
+            and payload.get("decided_at") == decided_at
+            and payload.get("verdict") == Verdict.PROMOTE.value
+        ):
+            return payload
+    return None
+
+
+def _sync_authorizations(path: Path) -> None:
+    with Path(path).open("rb") as handle:
+        os.fsync(handle.fileno())
+
+
+def _all_citations(candidate: ReviewCandidate) -> tuple[Citation, ...]:
+    return candidate.citations + candidate.counter_citations
+
+
+def _evidence_is_resolved(candidate: ReviewCandidate, snapshots: SnapshotStore) -> str | None:
+    try:
+        for citation in _all_citations(candidate):
+            quote_lint(snapshots, citation)
+    except (ProvenanceError, SnapshotNotFound, SnapshotCorrupt) as error:
+        return type(error).__name__
+    return None
+
+
 def apply(
     *,
     decisions_path: Path,
     data_root: Path,
     candidate_store_path: Path,
+    snapshot_root: Path,
     authorizations_path: Path,
     canon_root: Path,
     audit_log: Path,
@@ -702,90 +921,143 @@ def apply(
 ) -> tuple[AuditEntry, ...]:
     """Apply a decision file in order under a promotion grant.
 
-    ``data_root`` is deliberately an explicit argument even though this writer
-    does not open it: its presence prevents a process from selecting a real
-    root by an omitted default.
+    ``data_root`` and ``snapshot_root`` are explicit so no mutable or evidence
+    store can be silently selected by an omitted default.
     """
     _require_promote_grant(grant)
     # Resolve the explicit root without opening or creating it.
     Path(data_root).expanduser().resolve()
-    decisions = _read_decisions(Path(decisions_path))
-    store = CandidateStore(Path(candidate_store_path))
-    proposals = {proposal.proposal_id: proposal for proposal in store.proposals()}
-    prior_audit = _audit_entries(Path(audit_log))
-    known_digests = {entry.decision_digest for entry in prior_audit}
-    applied: list[AuditEntry] = []
+    Path(snapshot_root).expanduser().resolve()
+    _validate_canon_root(Path(canon_root))
 
-    for decision in decisions:
-        if decision.digest in known_digests:
-            # A duplicate produces no new audit line: replay must leave every
-            # store byte-identical, including the audit log that detects it.
-            applied.append(_audit_for(decision, "DUPLICATE"))
-            continue
-        proposal = proposals.get(decision.candidate_id)
-        candidate: ReviewCandidate | None = None
-        outcome: str | None = None
-        if proposal is None:
-            outcome = "UNKNOWN_CANDIDATE"
-        else:
-            candidate = ReviewCandidate.from_proposal(proposal)
-            if decision.version != candidate.version:
-                outcome = "STALE"
-            elif decision.scope != candidate.scope:
-                outcome = "SCOPE_MISMATCH"
-            elif _role_word_refused(decision.decider):
-                outcome = "DECIDER_NOT_HUMAN"
-            elif (
-                decision.verdict == "approve"
-                and candidate.origin in {"QUOTED", "ASSISTANT_SUGGESTED"}
-                and (not decision.reason.strip() or candidate.support is SupportClass.UNKNOWN)
+    with _application_lock(Path(audit_log)):
+        decisions = _read_decisions(Path(decisions_path))
+        store = CandidateStore(Path(candidate_store_path))
+        proposals = {proposal.proposal_id: proposal for proposal in store.proposals()}
+        snapshots = SnapshotStore(Path(snapshot_root))
+        prior_audit = _audit_entries(Path(audit_log))
+        known_digests = {entry.decision_digest for entry in prior_audit}
+        applied_pairs = {
+            (entry.candidate_id, entry.candidate_version)
+            for entry in prior_audit
+            if entry.outcome == "APPLIED"
+        }
+        reserved_digests = {
+            entry.decision_digest for entry in prior_audit if entry.outcome == "RESERVED"
+        }
+        completed_digests = {
+            entry.decision_digest for entry in prior_audit if entry.outcome == "APPLIED"
+        }
+        applied: list[AuditEntry] = []
+
+        def record(entry: AuditEntry) -> None:
+            _append_audit(Path(audit_log), entry)
+            known_digests.add(entry.decision_digest)
+            if entry.outcome == "RESERVED":
+                reserved_digests.add(entry.decision_digest)
+            if entry.outcome == "APPLIED":
+                applied_pairs.add((entry.candidate_id, entry.candidate_version))
+                completed_digests.add(entry.decision_digest)
+            applied.append(entry)
+
+        for decision in decisions:
+            pair = (decision.candidate_id, decision.version)
+            if pair in applied_pairs:
+                record(_audit_for(decision, "ALREADY_DECIDED"))
+                continue
+            resuming = decision.digest in reserved_digests and decision.digest not in completed_digests
+            if decision.digest in known_digests and not resuming:
+                record(_audit_for(decision, "DUPLICATE"))
+                continue
+            if decision.decided_at > datetime.now(timezone.utc) + timedelta(minutes=5):
+                record(_audit_for(decision, "DECIDED_IN_FUTURE"))
+                continue
+
+            proposal = proposals.get(decision.candidate_id)
+            candidate: ReviewCandidate | None = None
+            outcome: str | None = None
+            refusal_reason: str | None = None
+            if proposal is None:
+                outcome = "UNKNOWN_CANDIDATE"
+            else:
+                try:
+                    candidate = ReviewCandidate.from_proposal(proposal)
+                except CandidateRefused as error:
+                    outcome = "CANDIDATE_MALFORMED"
+                    refusal_reason = str(error)
+                if candidate is not None:
+                    if decision.version != candidate.version:
+                        outcome = "STALE"
+                    elif decision.scope != candidate.scope:
+                        outcome = "SCOPE_MISMATCH"
+                    elif _role_word_refused(decision.decider):
+                        outcome = "DECIDER_NOT_HUMAN"
+                    elif (
+                        decision.verdict == "approve"
+                        and candidate.origin in {"QUOTED", "ASSISTANT_SUGGESTED"}
+                        and (not decision.reason.strip() or candidate.support is SupportClass.UNKNOWN)
+                    ):
+                        outcome = "ORIGIN_NEEDS_REASON"
+
+            if outcome is not None:
+                record(_audit_for(decision, outcome, refusal_reason=refusal_reason))
+                continue
+
+            if candidate is None:  # pragma: no cover - guarded by the candidate lookup above
+                raise ReviewError("candidate resolution diverged")
+            if decision.verdict != "approve":
+                record(_audit_for(decision, "APPLIED"))
+                continue
+
+            evidence_error = _evidence_is_resolved(candidate, snapshots)
+            if evidence_error is not None:
+                record(
+                    _audit_for(
+                        decision,
+                        "EVIDENCE_UNRESOLVED",
+                        refusal_reason=evidence_error,
+                    )
+                )
+                continue
+            previous = _previous_version(candidate, Path(canon_root))
+            if candidate.supersedes is not None and (
+                previous is None or not _is_tail(previous, Path(canon_root))
             ):
-                outcome = "ORIGIN_NEEDS_REASON"
+                record(_audit_for(decision, "SUPERSEDED_NOT_TAIL"))
+                continue
 
-        if outcome is not None:
-            entry = _audit_for(decision, outcome)
-            _append_audit(Path(audit_log), entry)
-            known_digests.add(decision.digest)
-            applied.append(entry)
-            continue
-
-        if candidate is None:  # pragma: no cover - guarded by the candidate lookup above
-            raise ReviewError("candidate resolution diverged")
-        if decision.verdict != "approve":
-            entry = _audit_for(decision, "APPLIED")
-            _append_audit(Path(audit_log), entry)
-            known_digests.add(decision.digest)
-            applied.append(entry)
-            continue
-
-        try:
-            human_decision = _promotion_decision(candidate, decision)
-            record = execute(
-                grant,
-                "promote_candidate",
-                decision=human_decision,
-                candidate=candidate.proposal,
-                authorizations=Path(authorizations_path),
-            )
-        except (AdjudicationError, ReviewError, ClaimKeyError) as error:
-            entry = _audit_for(decision, "NOT_PROMOTABLE")
-            _append_audit(Path(audit_log), entry)
-            known_digests.add(decision.digest)
-            applied.append(entry)
-            continue
-        if type(record) is not PromotionRecord:
-            raise ReviewError("promotion registry returned an invalid record")
-        write = _write_assertion(
-            candidate=candidate,
-            decision=decision,
-            promotion_record_digest=_digest(record.as_payload()),
-            canon_root=Path(canon_root),
-        )
-        entry = _audit_for(decision, "APPLIED", assertion=write)
-        _append_audit(Path(audit_log), entry)
-        known_digests.add(decision.digest)
-        applied.append(entry)
-    return tuple(applied)
+            if not resuming:
+                record(_audit_for(decision, "RESERVED"))
+            try:
+                authorization = _authorization_payload(
+                    Path(authorizations_path), candidate=candidate, decision=decision
+                )
+                if authorization is None:
+                    human_decision = _promotion_decision(candidate, decision)
+                    promotion = execute(
+                        grant,
+                        "promote_candidate",
+                        decision=human_decision,
+                        candidate=candidate.proposal,
+                        authorizations=Path(authorizations_path),
+                    )
+                    if type(promotion) is not PromotionRecord:
+                        raise ReviewError("promotion registry returned an invalid record")
+                    _sync_authorizations(Path(authorizations_path))
+                    promotion_record_digest = _digest(promotion.as_payload())
+                else:
+                    promotion_record_digest = _digest(authorization)
+                write = _write_assertion(
+                    candidate=candidate,
+                    decision=decision,
+                    promotion_record_digest=promotion_record_digest,
+                    canon_root=Path(canon_root),
+                )
+            except (AdjudicationError, ReviewError, ClaimKeyError):
+                record(_audit_for(decision, "NOT_PROMOTABLE"))
+                continue
+            record(_audit_for(decision, "APPLIED", assertion=write))
+        return tuple(applied)
 
 
 def _canon_version_from_file(path: Path) -> CanonVersion:
@@ -796,6 +1068,12 @@ def _canon_version_from_file(path: Path) -> CanonVersion:
     if type(payload) is not dict or set(payload) != _CANON_FILE_FIELDS:
         raise CanonDivergence(f"canonical assertion file has the wrong shape: {path}")
     try:
+        version_digest = _digest_text(
+            payload["version_digest"], "CANON_VERSION_DIGEST", ReviewError
+        )
+        wrapper = {key: value for key, value in payload.items() if key != "version_digest"}
+        if _digest(wrapper) != version_digest:
+            raise ReviewError("CANON_VERSION_DIGEST")
         citation_payload = payload["citation"]
         if type(citation_payload) is not dict or set(citation_payload) != _CITATION_FIELDS:
             raise CanonDivergence(f"canonical citation shape diverges: {path}")
@@ -845,6 +1123,7 @@ def _canon_version_from_file(path: Path) -> CanonVersion:
         candidate_version=candidate_version,
         promotion_record_digest=record_digest,
         previous_digest=previous_digest,
+        version_digest=version_digest,
     )
 
 
@@ -881,16 +1160,70 @@ def _verify_chain(versions: Iterable[CanonVersion]) -> None:
             raise CanonDivergence(f"canonical chain is cyclic or disconnected for {assertion_id}")
 
 
+def _canon_index_payloads(root: Path) -> tuple[dict[str, object], ...]:
+    path = root / "assertions.jsonl"
+    if not path.exists():
+        return ()
+    if not path.is_file():
+        raise CanonDivergence(f"canonical assertion index is not a file: {path}")
+    found: list[dict[str, object]] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line:
+            raise CanonDivergence(f"canonical assertion index has an empty line: {path}:{number}")
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise CanonDivergence(
+                f"canonical assertion index is unreadable: {path}:{number}"
+            ) from error
+        if type(payload) is not dict or set(payload) != _CANON_INDEX_FIELDS:
+            raise CanonDivergence(f"canonical assertion index has the wrong shape: {path}:{number}")
+        try:
+            require_id(payload["assertion_id"], ASSERTION_PREFIX)
+            _digest_text(payload["content_digest"], "CANON_INDEX_CONTENT_DIGEST", ReviewError)
+            _digest_text(payload["candidate_version"], "CANON_INDEX_VERSION", ReviewError)
+            _digest_text(
+                payload["promotion_record_digest"], "CANON_INDEX_PROMOTION_DIGEST", ReviewError
+            )
+            _digest_text(payload["version_digest"], "CANON_INDEX_VERSION_RECORD_DIGEST", ReviewError)
+            if payload["previous_digest"] is not None:
+                _digest_text(payload["previous_digest"], "CANON_INDEX_PREVIOUS_DIGEST", ReviewError)
+            _instant(payload["decided_at"], "CANON_INDEX_DECIDED_AT", ReviewError)
+            if type(payload["candidate_id"]) is not str:
+                raise ReviewError("CANON_INDEX_CANDIDATE")
+        except (KeyError, ReviewError, ValueError) as error:
+            raise CanonDivergence(f"canonical assertion index diverges: {path}:{number}") from error
+        found.append(payload)
+    return tuple(found)
+
+
 def canon_index(canon_root: Path) -> tuple[CanonVersion, ...]:
-    """Rebuild a deterministic verified assertion listing from version files alone."""
-    root = Path(canon_root) / "assertions"
+    """Rebuild a deterministic verified assertion listing from durable version records."""
+    base = Path(canon_root)
+    root = base / "assertions"
+    index_payloads = _canon_index_payloads(base)
     if not root.exists():
+        if index_payloads:
+            raise CanonDivergence(f"canonical assertion files are absent for index: {base}")
         return ()
     if not root.is_dir():
         raise CanonDivergence(f"canonical assertion root is not a directory: {root}")
     paths = sorted(path for path in root.rglob("*.json") if path.is_file())
     versions = tuple(_canon_version_from_file(path) for path in paths)
     _verify_chain(versions)
+    expected = {
+        (version.assertion.id, version.content_digest): version.as_payload() for version in versions
+    }
+    indexed: dict[tuple[str, str], dict[str, object]] = {}
+    for payload in index_payloads:
+        key = (payload["assertion_id"], payload["content_digest"])
+        if key in indexed or key not in expected:
+            raise CanonDivergence(f"canonical assertion index diverges: {base / 'assertions.jsonl'}")
+        if canonical_bytes(payload) != canonical_bytes(expected[key]):
+            raise CanonDivergence(f"canonical assertion index diverges: {base / 'assertions.jsonl'}")
+        indexed[key] = payload
+    if set(indexed) != set(expected):
+        raise CanonDivergence(f"canonical assertion index diverges: {base / 'assertions.jsonl'}")
     return tuple(sorted(versions, key=lambda version: (version.assertion.id, version.content_digest)))
 
 
@@ -900,7 +1233,12 @@ def queue(store: CandidateStore, log: Path) -> tuple[QueueEntry, ...]:
         raise ReviewError("QUEUE_REQUIRES_CANDIDATE_STORE")
     latest: dict[tuple[str, str], AuditEntry] = {}
     for entry in _audit_entries(Path(log)):
-        latest[(entry.candidate_id, entry.candidate_version)] = entry
+        key = (entry.candidate_id, entry.candidate_version)
+        # Replay and idempotency outcomes are durable observations, but they
+        # do not replace the prior applied decision the queue is reporting.
+        if entry.outcome in {"DUPLICATE", "ALREADY_DECIDED", "RESERVED"} and key in latest:
+            continue
+        latest[key] = entry
     status = {
         "approve": "approved",
         "reject": "rejected",
@@ -931,6 +1269,7 @@ def _parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("decision_file")
     apply_parser.add_argument("--data-root", required=True)
     apply_parser.add_argument("--candidate-store-path", required=True)
+    apply_parser.add_argument("--snapshot-root", required=True)
     apply_parser.add_argument("--authorizations-path", required=True)
     apply_parser.add_argument("--canon-root", required=True)
     apply_parser.add_argument("--audit-log", required=True)
@@ -971,6 +1310,7 @@ def main(argv: list[str] | None = None) -> int:
                 decisions_path=Path(namespace.decision_file),
                 data_root=Path(namespace.data_root),
                 candidate_store_path=Path(namespace.candidate_store_path),
+                snapshot_root=Path(namespace.snapshot_root),
                 authorizations_path=Path(namespace.authorizations_path),
                 canon_root=Path(namespace.canon_root),
                 audit_log=Path(namespace.audit_log),
