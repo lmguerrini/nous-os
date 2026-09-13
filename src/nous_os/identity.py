@@ -30,6 +30,7 @@ from typing import Any, Callable, Final
 #: obvious at a glance rather than a silent type error.
 SOURCE_PREFIX: Final = "src"
 ASSERTION_PREFIX: Final = "asr"
+RELATION_PREFIX: Final = "rel"
 
 #: Crockford base32 without I, L, O and U — no character pair a person can
 #: confuse when copying an id out of a file by hand.
@@ -58,6 +59,11 @@ def new_source_id(minter: Minter | None = None) -> str:
 def new_assertion_id(minter: Minter | None = None) -> str:
     """Mint an assertion id. Content-independent by construction."""
     return f"{ASSERTION_PREFIX}_{(minter or _random_body)()}"
+
+
+def new_relation_id(minter: Minter | None = None) -> str:
+    """Mint a relation id without deriving it from the relation's content."""
+    return f"{RELATION_PREFIX}_{(minter or _random_body)()}"
 
 
 def is_valid_id(value: str, prefix: str) -> bool:

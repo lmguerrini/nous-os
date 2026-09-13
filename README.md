@@ -47,8 +47,8 @@ of the resulting graph, with three renderers that draw them.
   Both transports are local: a command line and a stdio JSON-RPC server.
 - **Not a chat product, and not an agent.** It publishes operations; it does not
   decide when to call them.
-- **Not a system that writes to your canon.** Nineteen operations ship. Sixteen
-  are read-only and three record proposals apart from canon. **None of them can
+- **Not a system that writes to your canon.** Twenty-two operations ship. Eighteen
+  are read-only and four record proposals apart from canon. **None of them can
   promote anything into canon** — promotion is a separate human act.
 - **Not a retrieval breakthrough.** [`docs/CAP-15-RETRIEVAL.md`](docs/CAP-15-RETRIEVAL.md)
   reports what was measured, including where the numbers are poor and where a
@@ -346,6 +346,7 @@ only thing this repository holds is the software that reads it.
 | Context compilation, with a measured default | present |
 | Authority boundary for governed operations | present |
 | Candidate lifecycle, discovery rounds, human adjudication | present |
+| Cross-source reconciliation proposals, evidence checks, and non-mutating verification | present |
 | Two time axes, supersession, visible disagreement | present |
 | Renderer-independent projections of the graph | present |
 | Visual engine over those projections | present |
@@ -436,9 +437,9 @@ python3 -m pip install .
 
 ## Quickstart
 
-**NousOS resolves seven store locations and refuses to start if any is missing.**
+**NousOS resolves eight store locations and refuses to start if any is missing.**
 The shortest way to a working instance is to point the data root at the public
-synthetic corpus and give the other six a scratch directory:
+synthetic corpus and give the other seven a scratch directory:
 
 ```bash
 WORKSPACE="$(mktemp -d)"                       # any directory you choose
@@ -452,6 +453,7 @@ export NOUS_OS_DERIVED_PATH="$WORKSPACE/derived.sqlite3"
 export NOUS_OS_CANDIDATE_STORE_PATH="$WORKSPACE/candidates.jsonl"
 export NOUS_OS_BRIDGE_REGISTRY_PATH="$WORKSPACE/bridges.jsonl"
 export NOUS_OS_REJECTION_MEMORY_PATH="$WORKSPACE/rejections.jsonl"
+export NOUS_OS_RELATION_STORE_PATH="$WORKSPACE/relations.jsonl"
 
 python3 -m nous_os system.capabilities
 python3 -m nous_os system.health
@@ -607,6 +609,7 @@ src/
     ├── ablation.py       comparing assembly strategies without combining the numbers
     ├── capability.py     four kinds of authority, and the one door they are checked at
     ├── candidates.py     append-only proposals that are explicitly not canon
+    ├── reconciliation.py typed relations between source versions, proposed but never merged
     ├── temporal.py       two time axes, supersession, and disagreement kept visible
     ├── attribution.py    a claim key that carries where it came from
     ├── adjudication.py   the human-gated boundary between a proposal and canon

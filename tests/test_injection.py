@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
-from itertools import combinations
+from itertools import combinations, count
 from pathlib import Path
 from typing import NoReturn
 
@@ -59,6 +59,16 @@ from nous_os.identity import canonical_bytes
 from nous_os.ledger import IngestResult, IngestStatus, Ledger
 from nous_os.measure import RunStatus, not_run
 from nous_os.provenance import Citation, Locator
+from nous_os.reconciliation import (
+    EvidenceBasis,
+    Origin,
+    Relation,
+    RelationClass,
+    RelationEnd,
+    RelationProposal,
+    RelationStore,
+    RelationVerification,
+)
 from nous_os.projection import (
     ALL_TIME,
     KnowledgeState,
@@ -98,6 +108,7 @@ _REQUIRED_FAMILIES = frozenset(
     }
 )
 _SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+_RELATION_SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAW"
 _RECORDED_AT = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
 _TEMPORAL_KEY = ClaimKey("seeded-claim")
 _BENIGN_TEXT = "beta"
@@ -106,6 +117,7 @@ _SEEDED_DIGEST = hashlib.sha256(_SEEDED_CONTENT.encode("utf-8")).hexdigest()
 _SEEDED_PROPOSAL_CONTENT = "alpha proposal"
 _SEEDED_PROPOSAL_HOLDER = "fixture holder"
 _DERIVATION = "injection_defence"
+_RELATION_PROPOSAL_SEQUENCE = count()
 _ACCOUNTED_TEST_REGISTRATION_MODULES = frozenset(
     {"test_capability", "tests.test_capability"}
 )
@@ -156,6 +168,7 @@ class _World:
     data_root: DataRoot
     citation: Citation
     candidates: CandidateStore
+    relations: RelationStore
     temporal: TemporalIndex
     bridges: BridgeRegistry
     rejections: RejectionMemory
@@ -249,6 +262,15 @@ class _SnapshotCarrier:
         return self._store.get(source_id, digest)
 
 
+class _ExactSnapshotCarrier:
+    """Attach data to an exact snapshot store required by strict relation checks."""
+
+    def __new__(cls, store: SnapshotStore, text: str) -> SnapshotStore:
+        del cls
+        store.injection_text = UntrustedText(text)
+        return store
+
+
 class _CandidateCarrier:
     """A candidate-store argument carrying text while delegating real reads."""
 
@@ -260,6 +282,15 @@ class _CandidateCarrier:
 
     def proposals(self) -> tuple[Proposal, ...]:
         return self._store.proposals()
+
+
+class _RelationStoreCarrier:
+    """Attach data to the exact append-only relation store without proxying it."""
+
+    def __new__(cls, store: RelationStore, text: str) -> RelationStore:
+        del cls
+        store.injection_text = UntrustedText(text)
+        return store
 
 
 class _RejectionMemoryCarrier:
@@ -507,6 +538,30 @@ def _build_world(root: Path) -> _World:
         Locator(0, 5),
         "alpha",
     )
+    related_snapshot = snapshots.put(
+        _RELATION_SOURCE_ID, _SEEDED_CONTENT.encode("utf-8")
+    )
+    relation_citation = Citation(
+        _RELATION_SOURCE_ID,
+        related_snapshot.digest,
+        Locator(0, 5),
+        "alpha",
+    )
+    relations = RelationStore(root / "relations.jsonl")
+    relations.record(
+        RelationProposal(
+            relation_class=RelationClass.RELATED,
+            left=RelationEnd(_SOURCE_ID, seeded.entry.snapshot_digest),
+            right=RelationEnd(_RELATION_SOURCE_ID, related_snapshot.digest),
+            bases=(EvidenceBasis.TEXT_EQUALITY,),
+            citations=(citation, relation_citation),
+            origin=Origin.MECHANICAL,
+            producer="injection-matrix/1",
+            proposed_at=_RECORDED_AT,
+            notes="seeded relation for boundary coverage",
+        ),
+        snapshots,
+    )
     temporal = TemporalIndex()
     for number in (1, 2):
         temporal.add(
@@ -565,6 +620,7 @@ def _build_world(root: Path) -> _World:
         data_root=DataRoot(documents),
         citation=citation,
         candidates=candidates,
+        relations=relations,
         temporal=temporal,
         bridges=bridges,
         rejections=rejections,
@@ -644,6 +700,49 @@ def _documents_arguments(world: _World, text: str) -> dict[str, object]:
 def _proposals_arguments(world: _World, text: str) -> dict[str, object]:
     # Its only argument is the store itself, so text travels in the carrier.
     return {"store": _CandidateCarrier(world.candidates, text)}
+
+
+def _relations_arguments(world: _World, text: str) -> dict[str, object]:
+    """Carry untrusted data on the exact store while reading seeded relations."""
+    return {"store": _RelationStoreCarrier(world.relations, text)}
+
+
+def _propose_relation_arguments(world: _World, text: str) -> dict[str, object]:
+    """Record a valid relation while keeping input text out of its authority fields."""
+    related_digest = world.snapshots.digests(_RELATION_SOURCE_ID)[0]
+    sequence = next(_RELATION_PROPOSAL_SEQUENCE)
+    store = RelationStore(world.root.parent / f"matrix-relations-{sequence}.jsonl")
+    return {
+        "store": _RelationStoreCarrier(store, text),
+        "snapshots": _ExactSnapshotCarrier(world.snapshots, text),
+        "proposal": RelationProposal(
+            relation_class=RelationClass.RELATED,
+            left=RelationEnd(_SOURCE_ID, world.citation.snapshot_digest),
+            right=RelationEnd(_RELATION_SOURCE_ID, related_digest),
+            bases=(EvidenceBasis.TEXT_EQUALITY,),
+            citations=(
+                world.citation,
+                Citation(
+                    _RELATION_SOURCE_ID,
+                    related_digest,
+                    Locator(0, 5),
+                    "alpha",
+                ),
+            ),
+            origin=Origin.MECHANICAL,
+            producer="injection-matrix/1",
+            proposed_at=_RECORDED_AT,
+            notes=f"matrix invocation {sequence}",
+        ),
+    }
+
+
+def _verify_relations_arguments(world: _World, text: str) -> dict[str, object]:
+    """Carry untrusted data only as data while verification reads exact stores."""
+    return {
+        "store": _RelationStoreCarrier(world.relations, text),
+        "snapshots": _ExactSnapshotCarrier(world.snapshots, text),
+    }
 
 
 def _rejections_arguments(world: _World, text: str) -> dict[str, object]:
@@ -761,6 +860,9 @@ _ARGUMENT_BUILDERS: Mapping[
     operation_bindings.list_documents: _documents_arguments,
     operation_bindings.describe_corpus: _documents_arguments,
     operation_bindings.proposals: _proposals_arguments,
+    operation_bindings.relations: _relations_arguments,
+    operation_bindings.propose_relation: _propose_relation_arguments,
+    operation_bindings.verify_relations: _verify_relations_arguments,
     operation_bindings.rejections: _rejections_arguments,
     operation_bindings.bridges: _bridges_arguments,
     operation_bindings.discover: _discover_arguments,
@@ -1110,6 +1212,33 @@ def _observed_real_effect(
         items = returned
         expected_count = 1
         condition = _matches_seeded_proposal
+    elif implementation is operation_bindings.relations:
+        items = returned
+        expected_count = None
+        condition = lambda value: (
+            type(value) is Relation
+            and value.relation_class is RelationClass.RELATED
+            and value.left.source_id == _SOURCE_ID
+            and value.right.source_id == _RELATION_SOURCE_ID
+        )
+    elif implementation is operation_bindings.propose_relation:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: (
+            type(value) is Relation
+            and value.relation_class is RelationClass.RELATED
+            and value.left.source_id == _SOURCE_ID
+            and value.right.source_id == _RELATION_SOURCE_ID
+        )
+    elif implementation is operation_bindings.verify_relations:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: (
+            type(value) is RelationVerification
+            and value.total > 0
+            and value.resolvable == value.total
+            and value.unresolvable == 0
+        )
     elif implementation is operation_bindings.rejections:
         items = returned
         expected_count = 1
@@ -1261,6 +1390,12 @@ def _well_formed_wrong_results(operation: _Operation) -> tuple[object, ...]:
         if implementation is operation_bindings.proposals:
             return ((proposal,),)
         return (proposal,)
+    if implementation is operation_bindings.relations:
+        return ((RelationVerification(0, 0, 0, ()),),)
+    if implementation is operation_bindings.propose_relation:
+        return (RelationVerification(1, 1, 0, ()),)
+    if implementation is operation_bindings.verify_relations:
+        return (RelationVerification(0, 0, 0, ()),)
     wrong_temporal_assertion = Assertion(
         id=f"asr_{3:026X}",
         text="temporal assertion 3",
@@ -1451,6 +1586,8 @@ def test_registered_operations_have_the_decided_names_and_tiers() -> None:
         "list_documents": Tier.READ,
         "describe_corpus": Tier.READ,
         "proposals": Tier.READ,
+        "relations": Tier.READ,
+        "verify_relations": Tier.READ,
         "rejections": Tier.READ,
         "bridges": Tier.READ,
         "as_of": Tier.READ,
@@ -1459,6 +1596,7 @@ def test_registered_operations_have_the_decided_names_and_tiers() -> None:
         "project": Tier.READ,
         "compile_context": Tier.READ,
         "record_proposal": Tier.PROPOSE,
+        "propose_relation": Tier.PROPOSE,
         "discover": Tier.PROPOSE,
         "adjudicate": Tier.PROPOSE,
         "ingest_source": Tier.PROMOTE,
@@ -1598,6 +1736,7 @@ def test_the_command_line_reaches_a_governed_operation_only_through_core(
         "--candidate-store-path", str(tmp_path / "candidates.jsonl"),
         "--bridge-registry-path", str(tmp_path / "bridges.jsonl"),
         "--rejection-memory-path", str(tmp_path / "rejections.jsonl"),
+        "--relation-store-path", str(tmp_path / "relations.jsonl"),
         "--tier", "propose",
         "candidate.propose",
         "--source-id", "src_01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -1669,7 +1808,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
     expected = (
         len(entries) * len(operations) * len(transports) * len(grant_tier_sets)
     )
-    assert expected == 8816
+    assert expected == 10208
     if expected == 0:
         _fail_not_run("the derived corpus matrix had zero expected cells")
 
@@ -1727,8 +1866,8 @@ def test_argument_content_cannot_change_any_authorization_decision(
 
     if executed == 0:
         _fail_not_run("the corpus matrix executed zero cells")
-    assert executed == 8816
-    assert expected == 8816
+    assert executed == 10208
+    assert expected == 10208
     expected_positive_controls = {
         (transport.name, operation.name, tier_set)
         for transport in transports
@@ -1736,7 +1875,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
         for tier_set in grant_tier_sets
         if operation.tier in tier_set
     }
-    assert len(expected_positive_controls) == 152
+    assert len(expected_positive_controls) == 176
     if positive_controls != expected_positive_controls:
         absent = sorted(
             (transport, operation, sorted(tier.value for tier in tier_set))
@@ -1752,9 +1891,9 @@ def test_argument_content_cannot_change_any_authorization_decision(
         len(positive_controls),
     )
     assert result.status is RunStatus.COMPLETE
-    assert result.executed == 8816
-    assert result.expected == 8816
-    assert result.positive_controls == 152
+    assert result.executed == 10208
+    assert result.expected == 10208
+    assert result.positive_controls == 176
 
 
 def test_the_holder_is_provenance_metadata_and_carries_no_authority(
@@ -1770,7 +1909,7 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
     expected = len(transports) * sum(
         1 for tier in tiers for operation in operations if operation.tier is tier
     )
-    assert expected == 19
+    assert expected == 22
     if expected == 0:
         _fail_not_run("the holder-metadata matrix had zero expected cells")
 
@@ -1802,8 +1941,8 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
 
     if executed == 0:
         _fail_not_run("the holder-metadata matrix executed zero cells")
-    assert executed == 19
-    assert expected == 19
+    assert executed == 22
+    assert expected == 22
 
 
 def test_required_tier_argument_content_cannot_change_the_decision_in_either_direction(
@@ -1815,7 +1954,7 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
     transports = _derived_transports()
     world = _build_world(tmp_path / "required_tier_arguments")
     expected = len(transports) * len(operations) * 2
-    assert expected == 38
+    assert expected == 44
     if expected == 0:
         _fail_not_run("the required-tier argument matrix had zero expected cells")
     executed = 0
@@ -1874,5 +2013,5 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
 
     if executed == 0:
         _fail_not_run("the required-tier argument matrix executed zero cells")
-    assert executed == 38
-    assert expected == 38
+    assert executed == 44
+    assert expected == 44

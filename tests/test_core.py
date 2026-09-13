@@ -30,6 +30,7 @@ from nous_os.untrusted import UntrustedText
 
 
 SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+SECOND_SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAA"
 RECORDED_AT = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
 
 #: Every external name the brief fixes, in the fixed order it fixes them.
@@ -53,6 +54,9 @@ EXPECTED_EXTERNAL_NAMES = (
     "candidate.propose",
     "candidate.discover",
     "candidate.adjudicate",
+    "reconcile.relations",
+    "reconcile.propose",
+    "reconcile.verify",
 )
 
 
@@ -72,6 +76,7 @@ def _temporary_workspace(tmp_path: Path) -> core.Workspace:
         candidate_store_path=tmp_path / "candidates.jsonl",
         bridge_registry_path=tmp_path / "bridges.jsonl",
         rejection_memory_path=tmp_path / "rejections.jsonl",
+        relation_store_path=tmp_path / "relations.jsonl",
     )
 
 
@@ -87,6 +92,7 @@ def _seeded_workspace(tmp_path: Path) -> tuple[core.Workspace, str]:
         UntrustedText("alpha signal in a source document"),
         RECORDED_AT,
     )
+    snapshots.put(SECOND_SOURCE_ID, b"alpha signal in a source document")
     build(snapshots, ledger, workspace.derived_path)
     assert result.entry is not None
     return workspace, result.entry.snapshot_digest
@@ -204,6 +210,28 @@ def _minimal_arguments(external_name: str, digest: str) -> dict[str, object]:
             "round_number": 1,
             "rejected_at": "2026-01-02T12:00:00+00:00",
         }
+    if external_name == "reconcile.relations":
+        return {}
+    if external_name == "reconcile.propose":
+        return {
+            "relation": {
+                "relation_class": "unknown",
+                "left": {"source_id": SOURCE_ID, "snapshot_digest": digest, "provider": None},
+                "right": {"source_id": SECOND_SOURCE_ID, "snapshot_digest": digest, "provider": None},
+                "bases": [],
+                "citations": [],
+                "origin": "operator",
+                "producer": "fixture/1",
+                "proposed_at": "2026-01-02T12:00:00+00:00",
+                "scope": None,
+                "exclusions": [],
+                "lineage": None,
+                "claims": None,
+                "notes": "the relation is not established",
+            }
+        }
+    if external_name == "reconcile.verify":
+        return {}
     raise AssertionError(f"no minimal arguments recorded for {external_name!r}")
 
 
@@ -240,7 +268,7 @@ def test_catalogue_has_exactly_the_fixed_external_names_in_the_fixed_order() -> 
     assert tuple(descriptor.external_name for descriptor in core.CATALOGUE) == (
         EXPECTED_EXTERNAL_NAMES
     )
-    assert len(core.CATALOGUE) == 19
+    assert len(core.CATALOGUE) == 22
 
 
 def test_catalogue_is_the_same_tuple_object_across_reads() -> None:
@@ -569,6 +597,7 @@ def test_an_unconfigured_workspace_location_is_refused(tmp_path: Path) -> None:
             candidate_store_path=tmp_path / "candidates.jsonl",
             bridge_registry_path=tmp_path / "bridges.jsonl",
             rejection_memory_path=tmp_path / "rejections.jsonl",
+            relation_store_path=tmp_path / "relations.jsonl",
             environ={},
         )
 
@@ -582,6 +611,7 @@ def test_an_unconfigured_workspace_location_is_refused(tmp_path: Path) -> None:
         "candidate_store_path",
         "bridge_registry_path",
         "rejection_memory_path",
+        "relation_store_path",
     ),
 )
 def test_each_non_data_root_location_is_refused_when_unconfigured(
@@ -597,6 +627,7 @@ def test_each_non_data_root_location_is_refused_when_unconfigured(
         "candidate_store_path": tmp_path / "candidates.jsonl",
         "bridge_registry_path": tmp_path / "bridges.jsonl",
         "rejection_memory_path": tmp_path / "rejections.jsonl",
+        "relation_store_path": tmp_path / "relations.jsonl",
         "environ": {},
     }
     del kwargs[field]
@@ -615,6 +646,7 @@ def test_an_environment_variable_supplies_a_non_data_root_location(tmp_path: Pat
         candidate_store_path=tmp_path / "candidates.jsonl",
         bridge_registry_path=tmp_path / "bridges.jsonl",
         rejection_memory_path=tmp_path / "rejections.jsonl",
+        relation_store_path=tmp_path / "relations.jsonl",
         environ={core.SNAPSHOT_ROOT_ENV_VAR: str(tmp_path / "snapshots")},
     )
     assert workspace.snapshot_root == (tmp_path / "snapshots").resolve()
@@ -633,6 +665,7 @@ def test_an_explicit_argument_outranks_the_environment_variable(tmp_path: Path) 
         candidate_store_path=tmp_path / "candidates.jsonl",
         bridge_registry_path=tmp_path / "bridges.jsonl",
         rejection_memory_path=tmp_path / "rejections.jsonl",
+        relation_store_path=tmp_path / "relations.jsonl",
         environ={core.SNAPSHOT_ROOT_ENV_VAR: str(other)},
     )
     assert workspace.snapshot_root == chosen.resolve()
@@ -652,6 +685,7 @@ def _workspace_kwargs(tmp_path: Path, **overrides: object) -> dict[str, object]:
         "candidate_store_path": tmp_path / "candidates.jsonl",
         "bridge_registry_path": tmp_path / "bridges.jsonl",
         "rejection_memory_path": tmp_path / "rejections.jsonl",
+        "relation_store_path": tmp_path / "relations.jsonl",
         "environ": {},
     }
     kwargs.update(overrides)
@@ -686,6 +720,7 @@ def test_the_exported_workspace_constructor_refuses_a_store_inside_canon(tmp_pat
             candidate_store_path=kwargs["data_root"] / "candidates.jsonl",
             bridge_registry_path=kwargs["bridge_registry_path"],
             rejection_memory_path=kwargs["rejection_memory_path"],
+            relation_store_path=kwargs["relation_store_path"],
         )
 
 
@@ -700,6 +735,7 @@ def test_the_exported_workspace_constructor_resolves_direct_path_spellings(tmp_p
         candidate_store_path=kwargs["candidate_store_path"].parent / "other" / ".." / "candidates.jsonl",
         bridge_registry_path=kwargs["bridge_registry_path"].parent / "other" / ".." / "bridges.jsonl",
         rejection_memory_path=kwargs["rejection_memory_path"].parent / "other" / ".." / "rejections.jsonl",
+        relation_store_path=kwargs["relation_store_path"].parent / "other" / ".." / "relations.jsonl",
     )
     assert workspace.data_root.path == kwargs["data_root"].resolve()
     assert workspace.candidate_store_path == kwargs["candidate_store_path"].resolve()
@@ -794,6 +830,7 @@ def test_every_pair_of_the_six_store_locations_is_checked_for_aliasing(tmp_path:
         "candidate_store_path",
         "bridge_registry_path",
         "rejection_memory_path",
+        "relation_store_path",
     )
     for first, second in itertools.combinations(fields, 2):
         aliased = tmp_path / f"{first}-{second}-shared.jsonl"
@@ -1189,6 +1226,7 @@ def test_system_health_reports_healthy_for_a_seeded_store_and_absent_for_an_unwr
     assert health["candidate_store_path"] == "absent"
     assert health["bridge_registry_path"] == "absent"
     assert health["rejection_memory_path"] == "absent"
+    assert health["relation_store_path"] == "absent"
 
 
 def test_absent_is_never_reported_as_healthy_and_unknown_is_never_reported_as_healthy(
@@ -1236,6 +1274,7 @@ def test_system_health_reports_unknown_when_a_location_is_unreadable(tmp_path: P
         candidate_store_path=workspace.candidate_store_path,
         bridge_registry_path=workspace.bridge_registry_path,
         rejection_memory_path=workspace.rejection_memory_path,
+        relation_store_path=workspace.relation_store_path,
     )
     original_mode = locked.stat().st_mode
     try:
@@ -1273,6 +1312,7 @@ def test_system_health_reports_unknown_for_a_statable_but_unreadable_file(
             candidate_store_path=workspace.candidate_store_path,
             bridge_registry_path=workspace.bridge_registry_path,
             rejection_memory_path=workspace.rejection_memory_path,
+            relation_store_path=workspace.relation_store_path,
         )
         grant = Grant("holder", frozenset({Tier.READ}))
         health = core.invoke(grant, "system.health", blocked_workspace, {})
@@ -1300,6 +1340,7 @@ def test_system_health_reports_unknown_for_a_statable_but_unreadable_directory(
         candidate_store_path=workspace.candidate_store_path,
         bridge_registry_path=workspace.bridge_registry_path,
         rejection_memory_path=workspace.rejection_memory_path,
+        relation_store_path=workspace.relation_store_path,
     )
     original_mode = locked_dir.stat().st_mode
     try:

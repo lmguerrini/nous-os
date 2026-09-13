@@ -35,7 +35,7 @@ import os
 import stat
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import combinations
 from pathlib import Path
 from types import SimpleNamespace
@@ -85,6 +85,9 @@ _EXPECTED_OPERATION_NAMES = frozenset(
         "candidate.propose",
         "candidate.discover",
         "candidate.adjudicate",
+        "reconcile.relations",
+        "reconcile.propose",
+        "reconcile.verify",
     }
 )
 
@@ -144,6 +147,10 @@ class _MatrixResult:
 def _workspace(root: Path) -> tuple[object, core.Workspace]:
     """Reuse the checked fixture world so every read route has real data."""
     world = injection._build_world(root)
+    world.snapshots.put(
+        test_mcp.SECOND_SOURCE_ID,
+        world.snapshots.get(test_mcp.SOURCE_ID, world.citation.snapshot_digest).data,
+    )
     workspace = core.Workspace(
         data_root=world.data_root,
         snapshot_root=world.root / "snapshots",
@@ -152,6 +159,7 @@ def _workspace(root: Path) -> tuple[object, core.Workspace]:
         candidate_store_path=world.candidates._path,
         bridge_registry_path=world.bridges._path,
         rejection_memory_path=world.rejections._path,
+        relation_store_path=world.root / "relations.jsonl",
     )
     return world, workspace
 
@@ -173,6 +181,8 @@ def _workspace_argv(workspace: core.Workspace, holder: str) -> list[str]:
         str(workspace.bridge_registry_path),
         "--rejection-memory-path",
         str(workspace.rejection_memory_path),
+        "--relation-store-path",
+        str(workspace.relation_store_path),
         "--holder=" + holder,
     ]
 
@@ -276,6 +286,11 @@ def _arguments(descriptor: core.OperationDescriptor, world: object, text: str) -
         arguments["content"] = text
     elif name == "candidate.adjudicate":
         arguments["reason"] = text
+    elif name == "reconcile.propose":
+        relation = arguments["relation"]
+        relation["left"]["snapshot_digest"] = world.citation.snapshot_digest
+        relation["right"]["snapshot_digest"] = world.citation.snapshot_digest
+        relation["notes"] = text
     elif name == "graph.project":
         arguments["state"] = {
             "index": _hostile_index_payload(text),
@@ -612,6 +627,13 @@ def _run_matrix(
                         grant: Grant,
                         workspace: core.Workspace,
                     ) -> _Call:
+                        if descriptor.external_name == "reconcile.propose":
+                            workspace = replace(
+                                workspace,
+                                relation_store_path=workspace.relation_store_path.with_name(
+                                    f"relations-{realised}-{side}.jsonl"
+                                ),
+                            )
                         if execution_context is not None:
                             execution_context.append(
                                 (

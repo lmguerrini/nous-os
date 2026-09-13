@@ -30,6 +30,7 @@ import nous_os.candidates as candidates
 import nous_os.cli as cli
 import nous_os.core as core
 import nous_os.mcp as mcp
+import nous_os.reconciliation as reconciliation
 from nous_os.capability import Grant, Tier
 from nous_os.derived import rebuild
 from nous_os.ledger import ingest
@@ -40,6 +41,7 @@ import test_mcp
 
 
 _FIXED_PROPOSAL_ID = "asr_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+_FIXED_RELATION_ID = "rel_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _OPTIONAL_PARAMETER_CASES = (
     ("knowledge.search", "limit"),
@@ -88,6 +90,8 @@ def _workspace_argv(workspace: core.Workspace) -> list[str]:
         str(workspace.bridge_registry_path),
         "--rejection-memory-path",
         str(workspace.rejection_memory_path),
+        "--relation-store-path",
+        str(workspace.relation_store_path),
     ]
 
 
@@ -103,6 +107,10 @@ def _workspace(root: Path) -> tuple[object, core.Workspace]:
             injection._RECORDED_AT,
         )
     rebuild(world.snapshots, world.ledger, world.derived_path)
+    world.snapshots.put(
+        test_mcp.SECOND_SOURCE_ID,
+        world.snapshots.get(test_mcp.SOURCE_ID, world.citation.snapshot_digest).data,
+    )
     workspace = core.Workspace(
         data_root=world.data_root,
         snapshot_root=world.root / "snapshots",
@@ -111,6 +119,7 @@ def _workspace(root: Path) -> tuple[object, core.Workspace]:
         candidate_store_path=world.candidates._path,
         bridge_registry_path=world.bridges._path,
         rejection_memory_path=world.rejections._path,
+        relation_store_path=world.root / "relations.jsonl",
     )
     return world, workspace
 
@@ -244,6 +253,10 @@ def _arguments(descriptor: core.OperationDescriptor, world: object) -> dict[str,
             failed=None,
         )
         arguments["candidates"] = [already_rejected_cluster_card.as_payload()]
+    if descriptor.external_name == "reconcile.propose":
+        relation = arguments["relation"]
+        relation["left"]["snapshot_digest"] = world.citation.snapshot_digest
+        relation["right"]["snapshot_digest"] = world.citation.snapshot_digest
     return arguments
 
 
@@ -285,6 +298,17 @@ def _mcp_value(
     workspace: core.Workspace,
 ) -> _Call:
     """Run actual dispatch and remove JSON-RPC fields from its delivered value."""
+    if descriptor.external_name == "reconcile.propose":
+        workspace = core.Workspace(
+            data_root=workspace.data_root,
+            snapshot_root=workspace.snapshot_root,
+            ledger_path=workspace.ledger_path,
+            derived_path=workspace.derived_path,
+            candidate_store_path=workspace.candidate_store_path,
+            bridge_registry_path=workspace.bridge_registry_path,
+            rejection_memory_path=workspace.rejection_memory_path,
+            relation_store_path=workspace.relation_store_path.with_name("relations-mcp.jsonl"),
+        )
     message = {
         "jsonrpc": "2.0",
         "id": descriptor.external_name,
@@ -314,6 +338,12 @@ def _mcp_value(
 def _ordered_json(value: object) -> str:
     """Keep object member order in the equality operand instead of discarding it."""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _pin_proposal_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hold freshly-recorded ids fixed while comparing independent transports."""
+    monkeypatch.setattr(candidates, "new_assertion_id", lambda: _FIXED_PROPOSAL_ID)
+    monkeypatch.setattr(reconciliation, "new_relation_id", lambda: _FIXED_RELATION_ID)
 
 
 def _cli_names() -> tuple[str, ...]:
@@ -399,7 +429,7 @@ def test_g_parity_compares_all_live_catalogue_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Same published names are insufficient unless their delivered values match too."""
-    monkeypatch.setattr(candidates, "new_assertion_id", lambda: _FIXED_PROPOSAL_ID)
+    _pin_proposal_ids(monkeypatch)
     world, workspace = _workspace(tmp_path / "world")
     compared = _assert_parity(workspace, world, capsys)
     assert compared == len(core.CATALOGUE)
@@ -451,6 +481,8 @@ def test_g_parity_real_stdio_loop_covers_a_declared_session(tmp_path: Path) -> N
         str(workspace.bridge_registry_path),
         "--rejection-memory-path",
         str(workspace.rejection_memory_path),
+        "--relation-store-path",
+        str(workspace.relation_store_path),
         "--tier",
         Tier.READ.value,
         "--tier",
@@ -492,7 +524,7 @@ def test_g_parity_n1_missing_published_operation_is_detected(
     call ``_mcp_names`` makes, and the one every real client makes -- so the
     control breaks the surface a client actually receives.
     """
-    monkeypatch.setattr(candidates, "new_assertion_id", lambda: _FIXED_PROPOSAL_ID)
+    _pin_proposal_ids(monkeypatch)
     world, workspace = _workspace(tmp_path / "n1")
     original = mcp.dispatch
 
@@ -524,7 +556,7 @@ def test_g_parity_n2_different_result_is_detected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """N2 proves that a value break on one real route makes the gate fail."""
-    monkeypatch.setattr(candidates, "new_assertion_id", lambda: _FIXED_PROPOSAL_ID)
+    _pin_proposal_ids(monkeypatch)
     world, workspace = _workspace(tmp_path / "n2")
     original = mcp.dispatch
 
@@ -557,7 +589,7 @@ def test_g_parity_detects_each_claimed_optional_parameter(
     parameter: str,
 ) -> None:
     """Dropping any claimed optional field on one route must break parity."""
-    monkeypatch.setattr(candidates, "new_assertion_id", lambda: _FIXED_PROPOSAL_ID)
+    _pin_proposal_ids(monkeypatch)
     world, workspace = _workspace(tmp_path / operation.replace(".", "-"))
     original = mcp.dispatch
 

@@ -121,6 +121,7 @@ def _workspace(root: Path) -> core.Workspace:
         candidate_store_path=root / "candidates.jsonl",
         bridge_registry_path=root / "bridges.jsonl",
         rejection_memory_path=root / "rejections.jsonl",
+        relation_store_path=root / "relations.jsonl",
     )
 
 
@@ -177,6 +178,8 @@ def _workspace_argv(workspace: core.Workspace) -> list[str]:
         str(workspace.bridge_registry_path),
         "--rejection-memory-path",
         str(workspace.rejection_memory_path),
+        "--relation-store-path",
+        str(workspace.relation_store_path),
     ]
 
 
@@ -422,10 +425,11 @@ def test_g_propose_n5_an_aliased_workspace_is_refused_and_the_widened_digest_wou
             snapshot_root=root / "snapshots",
             ledger_path=root / "ledger.jsonl",
             derived_path=root / "derived.sqlite",
-            candidate_store_path=aliased_candidate_store,
-            bridge_registry_path=root / "bridges.jsonl",
-            rejection_memory_path=root / "rejections.jsonl",
-        )
+                candidate_store_path=aliased_candidate_store,
+                bridge_registry_path=root / "bridges.jsonl",
+                rejection_memory_path=root / "rejections.jsonl",
+                relation_store_path=root / "relations.jsonl",
+            )
 
     bypassed_workspace = object.__new__(core.Workspace)
     for field, value in {

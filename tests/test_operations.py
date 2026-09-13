@@ -44,6 +44,14 @@ from nous_os.discovery import (
 from nous_os.ledger import IngestResult, IngestStatus, Ledger, ingest
 from nous_os.provenance import Citation, Locator
 from nous_os.projection import KnowledgeState, RELIABILITY
+from nous_os.reconciliation import (
+    EvidenceBasis,
+    Origin,
+    RelationClass,
+    RelationEnd,
+    RelationProposal,
+    RelationStore,
+)
 from nous_os.snapshots import SnapshotStore
 from nous_os.temporal import ClaimKey, TemporalIndex
 from nous_os.untrusted import UntrustedText
@@ -559,7 +567,9 @@ class _TemporaryCanon:
     derived_path: Path
     data_root: DataRoot
     citation: Citation
+    relation_citation: Citation
     candidates: CandidateStore
+    relations: RelationStore
     temporal: TemporalIndex
     bridges: BridgeRegistry
     rejections: RejectionMemory
@@ -638,6 +648,15 @@ def _temporary_canon(tmp_path: Path) -> _TemporaryCanon:
         Locator(0, 5),
         "alpha",
     )
+    relation_snapshot = snapshots.put(
+        SOURCE_ID, b"beta signal in a source document"
+    )
+    relation_citation = Citation(
+        SOURCE_ID,
+        relation_snapshot.digest,
+        Locator(0, 4),
+        "beta",
+    )
     candidate = Proposal(
         "asr_01ARZ3NDEKTSV4RRFFQ69G5FAB",
         SOURCE_ID,
@@ -652,7 +671,9 @@ def _temporary_canon(tmp_path: Path) -> _TemporaryCanon:
         derived_path=derived_path,
         data_root=DataRoot(documents),
         citation=citation,
+        relation_citation=relation_citation,
         candidates=CandidateStore(tmp_path / "candidates.jsonl"),
+        relations=RelationStore(tmp_path / "relations.jsonl"),
         temporal=_temporal_index(citation),
         bridges=BridgeRegistry(tmp_path / "bridges.jsonl"),
         rejections=RejectionMemory(tmp_path / "rejections.jsonl"),
@@ -700,6 +721,8 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
         "list_documents": {"root": canon.data_root},
         "describe_corpus": {"root": canon.data_root},
         "proposals": {"store": canon.candidates},
+        "relations": {"store": canon.relations},
+        "verify_relations": {"store": canon.relations, "snapshots": canon.snapshots},
         "rejections": {"memory": canon.rejections},
         "bridges": {"registry": canon.bridges},
         "as_of": {
@@ -747,6 +770,21 @@ def _propose_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
             "reason": "the fixture records a durable failed gate",
             "round_number": 1,
             "rejected_at": RECORDED_AT,
+        },
+        "propose_relation": {
+            "store": canon.relations,
+            "snapshots": canon.snapshots,
+            "proposal": RelationProposal(
+                relation_class=RelationClass.RELATED,
+                left=RelationEnd(SOURCE_ID, canon.citation.snapshot_digest),
+                right=RelationEnd(SOURCE_ID, canon.relation_citation.snapshot_digest),
+                bases=(EvidenceBasis.MODEL_JUDGEMENT,),
+                citations=(canon.citation, canon.relation_citation),
+                origin=Origin.OPERATOR,
+                producer="operation-fixture/1",
+                proposed_at=RECORDED_AT,
+                notes="The fixture only establishes a relation between two versions.",
+            ),
         },
     }
     if name not in arguments:
@@ -847,13 +885,16 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "project": Tier.READ,
         "compile_context": Tier.READ,
         "record_proposal": Tier.PROPOSE,
+        "relations": Tier.READ,
+        "propose_relation": Tier.PROPOSE,
+        "verify_relations": Tier.READ,
         "discover": Tier.PROPOSE,
         "adjudicate": Tier.PROPOSE,
         "ingest_source": Tier.PROMOTE,
         "promote_candidate": Tier.PROMOTE,
     }
-    assert len(expected) == 19
-    assert len(operations) == 19
+    assert len(expected) == 22
+    assert len(operations) == 22
     assert {operation.name: operation.tier for operation in operations} == expected
     assert all(
         operation.tier is not Tier.EXTERNAL_CONSEQUENTIAL_ACTION
@@ -911,7 +952,7 @@ def test_registered_wrapper_annotations_resolve_without_importing_discovery_at_r
     wrappers = tuple(
         authority._REGISTRY[operation.name][1] for operation in _project_operations()
     )
-    assert len(wrappers) == 19
+    assert len(wrappers) == 22
     resolved = {
         wrapper.__name__: get_type_hints(
             wrapper,

@@ -83,6 +83,9 @@ way:
 | `candidate.propose` | propose | Record one untrusted proposal, apart from canon. | source_id, content, proposed_at, holder |
 | `candidate.discover` | propose | Classify a deterministic round of candidate bridge cards. | round_number, candidates, at, consult_memory? |
 | `candidate.adjudicate` | propose | Record one durable failed-gate rejection trace. | cluster_id, failed_gate, reason, round_number, rejected_at |
+| `reconcile.relations` | read | List recorded relations, optionally restricted to one source or class. | source_id?, relation_class? |
+| `reconcile.propose` | propose | Record one evidence-linked relation proposal, apart from source memory. | relation |
+| `reconcile.verify` | read | Re-resolve every stored relation end and citation without changing the record. | (none) |
 
 This table matches `core.CATALOGUE` and is checked against it by
 `tests/test_interoperability_doc.py`.

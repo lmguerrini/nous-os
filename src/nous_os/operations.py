@@ -25,6 +25,8 @@ from nous_os.config import describe_corpus, list_documents
 from nous_os.derived import search, sources, versions
 from nous_os.ledger import ingest
 from nous_os.provenance import read_span
+from nous_os.reconciliation import Relation, RelationClass, RelationProposal, RelationStore, RelationVerification
+from nous_os.snapshots import SnapshotStore
 from nous_os.untrusted import UntrustedText
 
 if TYPE_CHECKING:
@@ -108,6 +110,28 @@ def bridges(*, registry: BridgeRegistry) -> tuple[BridgeCard, ...]:
     return registry.cards()
 
 
+def relations(
+    *,
+    store: RelationStore,
+    source_id: str | None = None,
+    relation_class: RelationClass | None = None,
+) -> tuple[Relation, ...]:
+    """Keep relation-record reads behind the registry's single door."""
+    return store.relations(source_id=source_id, relation_class=relation_class)
+
+
+def propose_relation(
+    *, store: RelationStore, snapshots: SnapshotStore, proposal: RelationProposal
+) -> Relation:
+    """Keep relation-proposal recording at PROPOSE tier, never at READ."""
+    return store.record(proposal, snapshots)
+
+
+def verify_relations(*, store: RelationStore, snapshots: SnapshotStore) -> RelationVerification:
+    """Keep non-mutating relation verification behind the registry's read door."""
+    return store.verify(snapshots)
+
+
 def discover(
     *,
     round_number: int,
@@ -184,3 +208,6 @@ register("bridges", Tier.READ, bridges)
 register("discover", Tier.PROPOSE, discover)
 register("adjudicate", Tier.PROPOSE, adjudicate)
 register("promote_candidate", Tier.PROMOTE, promote_candidate)
+register("relations", Tier.READ, relations)
+register("propose_relation", Tier.PROPOSE, propose_relation)
+register("verify_relations", Tier.READ, verify_relations)

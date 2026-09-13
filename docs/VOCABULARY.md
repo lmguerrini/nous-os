@@ -119,6 +119,11 @@ left for a reader to discover by being wrong.
 | `KeyOrigin` | `src/nous_os/attribution.py:33` | `OPERATOR` · `DERIVED` · `CONTENT` · `UNKNOWN` | How an explicit key reached this boundary. Only two origins may approach promotion. |
 | `Verdict` | `src/nous_os/adjudication.py:42` | `PROMOTE` · `REJECT` · `DEFER` | What a person decided. Deferral is an outcome, never latent permission. |
 | `Tier` | `src/nous_os/capability.py:75` | `READ` · `PROPOSE` · `PROMOTE` · `EXTERNAL_CONSEQUENTIAL_ACTION` | Four kinds of authority, deliberately without rank. A tier is not a level. |
+| `RelationClass` | `src/nous_os/reconciliation.py:52` | `SAME_SOURCE` · `REVISION` · `RESTATEMENT` · `RELATED` · `CONTRADICTION` · `UNKNOWN` | What a proposal says about two immutable source versions. Each member has constructor-enforced evidence conditions; none merges identities or selects a winner. |
+| `EvidenceBasis` | `src/nous_os/reconciliation.py:63` | `PROVIDER_IDENTITY` · `PROVIDER_ASSIGNED_ID` · `TEXT_EQUALITY` · `BYTE_EQUALITY` · `MODEL_JUDGEMENT` · `LEDGER_LINEAGE` · `COMPARABLE_CLAIMS` | The declared evidence a relation rests on. Bases are named, not scored. |
+| `Origin` | `src/nous_os/reconciliation.py:75` | `MECHANICAL` · `MODEL` · `OPERATOR` | How a relation proposal was produced. Origin does not change what the relation establishes. |
+| `Exclusion` | `src/nous_os/reconciliation.py:83` | `QUOTATION` · `HYPOTHETICAL` · `CHANGED_REQUIREMENT` · `PROVIDER_ROLE` · `BRANCH_ALTERNATIVE` | Context that makes a contradiction claim inadmissible and requires a weaker class. |
+| `TemporalBasis` | `src/nous_os/reconciliation.py:93` | `STATED_TIME` · `RECORD_TIME` | Which declared clock qualifies a claim in a contradiction proposal. |
 | `IngestStatus` | `src/nous_os/ledger.py:75` | `INGESTED` · `UNCHANGED` · `SUPERSEDED` | What one ingest actually did to the record. |
 | `Gate` | `src/nous_os/discovery.py:47` | `G1` · `G2` · `G3` · `G4` · `G5` · `G6` | The six rubric criteria a proposed link is judged against. Every one is recorded, including when unknown. |
 | `GateOutcome` | `src/nous_os/discovery.py:58` | `PASS` · `FAIL` · `UNKNOWN` | What one criterion returned. Unknown is not permission to pass. |
@@ -414,6 +419,7 @@ mapping above; a term is in one register or the other, and the build refuses a t
 | `KeyOrigin` | Names a provenance fact about a key, not a knowledge relation. |
 | `Verdict` | Already names a person's decision in the plainest possible word. |
 | `Tier` | Four kinds of authority without rank. Every candidate word for authority implies a ladder. |
+| `RelationClass` · `EvidenceBasis` · `Origin` · `Exclusion` · `TemporalBasis` | A closed reconciliation vocabulary. It says what two source versions may be related by and what evidence or context was declared, without claiming an epistemic standing for either source. |
 | `IngestStatus` | An operational fact about a file read, with no epistemic content. |
 | `Gate` · `GateOutcome` · `GateVector` | A rubric and its results. The word "rubric" is already the accurate one and is not epistemic. |
 | `Depth` | Explicitly a description, not a rank. An epistemic term would reintroduce the ordering the label refuses. |

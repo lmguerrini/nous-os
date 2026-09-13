@@ -26,6 +26,7 @@ from nous_os.capability import Grant, Tier
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+SECOND_SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAA"
 
 
 # --- fixtures ------------------------------------------------------------------
@@ -43,6 +44,7 @@ def _workspace_argv(tmp_path: Path) -> list[str]:
         "--candidate-store-path", str(tmp_path / "candidates.jsonl"),
         "--bridge-registry-path", str(tmp_path / "bridges.jsonl"),
         "--rejection-memory-path", str(tmp_path / "rejections.jsonl"),
+        "--relation-store-path", str(tmp_path / "relations.jsonl"),
     ]
 
 
@@ -79,6 +81,7 @@ def _seeded_workspace_argv(tmp_path: Path) -> tuple[list[str], str]:
         datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc),
     )
     assert result.entry is not None
+    snapshots.put(SECOND_SOURCE_ID, content.encode("utf-8"))
     build(snapshots, ledger, derived_path)
     argv = [
         "--data-root", str(data_root),
@@ -88,6 +91,7 @@ def _seeded_workspace_argv(tmp_path: Path) -> tuple[list[str], str]:
         "--candidate-store-path", str(tmp_path / "candidates.jsonl"),
         "--bridge-registry-path", str(tmp_path / "bridges.jsonl"),
         "--rejection-memory-path", str(tmp_path / "rejections.jsonl"),
+        "--relation-store-path", str(tmp_path / "relations.jsonl"),
         "--tier", "read",
         "--tier", "propose",
     ]
@@ -106,6 +110,17 @@ def _minimal_argv(external_name: str) -> list[str]:
         {"source_id": SOURCE_ID, "snapshot_digest": "0" * 64, "start_byte": 0, "end_byte": 5, "span": "a"}
     )
     empty_index = json.dumps({"assertions": []})
+    relation = json.dumps(
+        {
+            "relation_class": "unknown",
+            "left": {"source_id": SOURCE_ID, "snapshot_digest": "0" * 64, "provider": None},
+            "right": {"source_id": SECOND_SOURCE_ID, "snapshot_digest": "1" * 64, "provider": None},
+            "bases": [], "citations": [], "origin": "operator", "producer": "fixture/1",
+            "proposed_at": "2026-01-02T12:00:00+00:00", "scope": None,
+            "exclusions": [], "lineage": None, "claims": None,
+            "notes": "the relation is not established",
+        }
+    )
     table = {
         "system.capabilities": [],
         "system.health": [],
@@ -146,6 +161,9 @@ def _minimal_argv(external_name: str) -> list[str]:
             "--round-number", "1",
             "--rejected-at", "2026-01-02T12:00:00+00:00",
         ],
+        "reconcile.relations": [],
+        "reconcile.propose": ["--relation", relation],
+        "reconcile.verify": [],
     }
     if external_name not in table:
         raise AssertionError(f"no minimal argv recorded for {external_name!r}")
@@ -169,6 +187,17 @@ def _reachable_argv(external_name: str, digest: str) -> list[str]:
         }
     )
     empty_index = json.dumps({"assertions": []})
+    relation = json.dumps(
+        {
+            "relation_class": "unknown",
+            "left": {"source_id": SOURCE_ID, "snapshot_digest": digest, "provider": None},
+            "right": {"source_id": SECOND_SOURCE_ID, "snapshot_digest": digest, "provider": None},
+            "bases": [], "citations": [], "origin": "operator", "producer": "fixture/1",
+            "proposed_at": "2026-01-02T12:00:00+00:00", "scope": None,
+            "exclusions": [], "lineage": None, "claims": None,
+            "notes": "the relation is not established",
+        }
+    )
     table = {
         "system.capabilities": [],
         "system.health": [],
@@ -209,6 +238,9 @@ def _reachable_argv(external_name: str, digest: str) -> list[str]:
             "--round-number", "1",
             "--rejected-at", "2026-01-02T12:00:00+00:00",
         ],
+        "reconcile.relations": [],
+        "reconcile.propose": ["--relation", relation],
+        "reconcile.verify": [],
     }
     if external_name not in table:
         raise AssertionError(f"no reachable argv recorded for {external_name!r}")

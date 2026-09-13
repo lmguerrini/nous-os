@@ -26,6 +26,7 @@ from nous_os.capability import Grant, Tier
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+SECOND_SOURCE_ID = "src_01ARZ3NDEKTSV4RRFFQ69G5FAA"
 
 
 # --- fixtures --------------------------------------------------------------
@@ -43,6 +44,7 @@ def _workspace(tmp_path: Path) -> core.Workspace:
         candidate_store_path=tmp_path / "candidates.jsonl",
         bridge_registry_path=tmp_path / "bridges.jsonl",
         rejection_memory_path=tmp_path / "rejections.jsonl",
+        relation_store_path=tmp_path / "relations.jsonl",
     )
 
 
@@ -69,6 +71,14 @@ def _minimal_arguments(external_name: str) -> dict[str, object]:
     }
     empty_index = {"assertions": []}
     instant = "2026-01-02T12:00:00+00:00"
+    relation = {
+        "relation_class": "unknown",
+        "left": {"source_id": SOURCE_ID, "snapshot_digest": "0" * 64, "provider": None},
+        "right": {"source_id": SECOND_SOURCE_ID, "snapshot_digest": "1" * 64, "provider": None},
+        "bases": [], "citations": [], "origin": "operator", "producer": "fixture/1",
+        "proposed_at": instant, "scope": None, "exclusions": [], "lineage": None,
+        "claims": None, "notes": "the relation is not established",
+    }
     table: dict[str, dict[str, object]] = {
         "system.capabilities": {},
         "system.health": {},
@@ -109,6 +119,9 @@ def _minimal_arguments(external_name: str) -> dict[str, object]:
             "round_number": 1,
             "rejected_at": "2026-01-02T12:00:00+00:00",
         },
+        "reconcile.relations": {},
+        "reconcile.propose": {"relation": relation},
+        "reconcile.verify": {},
     }
     if external_name not in table:
         raise AssertionError(f"no minimal arguments recorded for {external_name!r}")
@@ -500,6 +513,7 @@ def _drive_subprocess(
         "--candidate-store-path", str(workspace.candidate_store_path),
         "--bridge-registry-path", str(workspace.bridge_registry_path),
         "--rejection-memory-path", str(workspace.rejection_memory_path),
+        "--relation-store-path", str(workspace.relation_store_path),
         *(extra_args or ()),
     ]
     stdin_text = "\n".join(

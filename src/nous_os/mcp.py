@@ -356,6 +356,7 @@ def _build_start_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-store-path", default=None)
     parser.add_argument("--bridge-registry-path", default=None)
     parser.add_argument("--rejection-memory-path", default=None)
+    parser.add_argument("--relation-store-path", default=None)
     parser.add_argument(
         "--tier",
         action="append",
@@ -386,6 +387,7 @@ def main(argv: list[str] | None = None) -> int:
             candidate_store_path=namespace.candidate_store_path,
             bridge_registry_path=namespace.bridge_registry_path,
             rejection_memory_path=namespace.rejection_memory_path,
+            relation_store_path=namespace.relation_store_path,
         )
         grant = _resolve_grant(namespace, os.environ)
     except Exception as error:

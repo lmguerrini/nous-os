@@ -72,6 +72,7 @@ from nous_os.projection import (
     TemporalQuestion,
 )
 from nous_os.provenance import Citation, Locator, ProvenanceError
+from nous_os.reconciliation import RelationClass, RelationError, RelationProposal, RelationStore
 from nous_os.snapshots import SnapshotStore
 from nous_os.temporal import ClaimKey, ClaimKeyError, TemporalError, TemporalIndex
 from nous_os.untrusted import UntrustedText
@@ -211,6 +212,7 @@ DERIVED_PATH_ENV_VAR: Final = "NOUS_OS_DERIVED_PATH"
 CANDIDATE_STORE_PATH_ENV_VAR: Final = "NOUS_OS_CANDIDATE_STORE_PATH"
 BRIDGE_REGISTRY_PATH_ENV_VAR: Final = "NOUS_OS_BRIDGE_REGISTRY_PATH"
 REJECTION_MEMORY_PATH_ENV_VAR: Final = "NOUS_OS_REJECTION_MEMORY_PATH"
+RELATION_STORE_PATH_ENV_VAR: Final = "NOUS_OS_RELATION_STORE_PATH"
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,7 +221,7 @@ class Workspace:
 
     ``resolve_workspace`` refuses a caller that leaves any location
     unconfigured rather than selecting a machine-specific default. Direct
-    construction requires all seven values, resolves their spellings, and
+    construction requires all eight values, resolves their spellings, and
     applies the same overlap refusal.
     """
 
@@ -230,6 +232,7 @@ class Workspace:
     candidate_store_path: Path
     bridge_registry_path: Path
     rejection_memory_path: Path
+    relation_store_path: Path
 
     def __post_init__(self) -> None:
         """Resolve direct inputs before applying the shared overlap refusal."""
@@ -245,6 +248,7 @@ class Workspace:
             "candidate_store_path",
             "bridge_registry_path",
             "rejection_memory_path",
+            "relation_store_path",
         ):
             value = getattr(self, field)
             try:
@@ -301,6 +305,7 @@ def _workspace_locations(workspace: Workspace) -> tuple[_WorkspaceLocation, ...]
         _WorkspaceLocation("candidate_store_path", workspace.candidate_store_path, False, False),
         _WorkspaceLocation("bridge_registry_path", workspace.bridge_registry_path, False, False),
         _WorkspaceLocation("rejection_memory_path", workspace.rejection_memory_path, False, False),
+        _WorkspaceLocation("relation_store_path", workspace.relation_store_path, False, False),
     )
 
 
@@ -527,6 +532,7 @@ def resolve_workspace(
     candidate_store_path: str | os.PathLike[str] | None = None,
     bridge_registry_path: str | os.PathLike[str] | None = None,
     rejection_memory_path: str | os.PathLike[str] | None = None,
+    relation_store_path: str | os.PathLike[str] | None = None,
     environ: dict[str, str] | None = None,
 ) -> Workspace:
     """Resolve every location Core needs, or refuse. Never guesses one.
@@ -536,7 +542,7 @@ def resolve_workspace(
     already allows.
 
     The returned ``Workspace`` applies :class:`AliasedWorkspaceLocation` to
-    all seven locations: noncanonical stores may not overlap any canonical
+    all eight locations: noncanonical stores may not overlap any canonical
     location, and no pair may name one filesystem object. Without that check,
     two options naming the same file resolve cleanly and a write meant for one
     store lands in another.
@@ -561,6 +567,12 @@ def resolve_workspace(
             rejection_memory_path,
             REJECTION_MEMORY_PATH_ENV_VAR,
             "rejection memory path",
+            env,
+        ),
+        relation_store_path=_resolve_path(
+            relation_store_path,
+            RELATION_STORE_PATH_ENV_VAR,
+            "relation store path",
             env,
         ),
     )
@@ -869,6 +881,27 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
             ParameterSpec("round_number", "integer", True, "the round the failure was found in"),
             ParameterSpec("rejected_at", "string", True, "the instant the rejection is recorded at"),
         ),
+    ),
+    _descriptor(
+        "reconcile.relations",
+        "relations",
+        "List recorded relations, optionally restricted to one source or class.",
+        (
+            ParameterSpec("source_id", "string", False, "an end source id to restrict results to"),
+            ParameterSpec("relation_class", "string", False, "one declared relation class to restrict results to"),
+        ),
+    ),
+    _descriptor(
+        "reconcile.propose",
+        "propose_relation",
+        "Record one evidence-linked relation proposal, apart from source memory.",
+        (ParameterSpec("relation", "object", True, "the complete explicit relation proposal"),),
+    ),
+    _descriptor(
+        "reconcile.verify",
+        "verify_relations",
+        "Re-resolve every stored relation end and citation without changing the record.",
+        (),
     ),
 )
 
@@ -1185,6 +1218,13 @@ def _chunk_from_payload(payload: object) -> Chunk:
         raise ArgumentTypeError(f"chunk is not valid: {error}") from error
 
 
+def _relation_proposal_from_payload(payload: object) -> RelationProposal:
+    try:
+        return RelationProposal.from_payload(payload)
+    except RelationError as error:
+        raise ArgumentTypeError(f"relation proposal is not valid: {error}") from error
+
+
 #: Every preregistered cohesion strategy, keyed by its own stable label. A
 #: caller names a strategy; this operation does not invent one, and it never
 #: runs retrieval to produce the ranking it is handed.
@@ -1328,6 +1368,35 @@ def _bind_adjudicate(workspace: Workspace, arguments: dict[str, object]) -> dict
     }
 
 
+def _bind_relations(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    kwargs: dict[str, object] = {"store": RelationStore(workspace.relation_store_path)}
+    if "source_id" in arguments:
+        kwargs["source_id"] = arguments["source_id"]
+    if "relation_class" in arguments:
+        try:
+            kwargs["relation_class"] = RelationClass(arguments["relation_class"])
+        except ValueError as error:
+            raise ArgumentTypeError(
+                f"relation_class is not a declared relation class: {arguments['relation_class']!r}"
+            ) from error
+    return kwargs
+
+
+def _bind_propose_relation(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        "store": RelationStore(workspace.relation_store_path),
+        "snapshots": SnapshotStore(workspace.snapshot_root),
+        "proposal": _relation_proposal_from_payload(arguments["relation"]),
+    }
+
+
+def _bind_verify_relations(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        "store": RelationStore(workspace.relation_store_path),
+        "snapshots": SnapshotStore(workspace.snapshot_root),
+    }
+
+
 _BINDERS: Final = {
     "knowledge.search": _bind_search,
     "canon.documents": _bind_root_only,
@@ -1346,6 +1415,9 @@ _BINDERS: Final = {
     "candidate.propose": _bind_record_proposal,
     "candidate.discover": _bind_discover,
     "candidate.adjudicate": _bind_adjudicate,
+    "reconcile.relations": _bind_relations,
+    "reconcile.propose": _bind_propose_relation,
+    "reconcile.verify": _bind_verify_relations,
 }
 
 
@@ -1462,6 +1534,9 @@ _RENDERERS: Final = {
     "candidate.propose": lambda proposal: proposal.as_payload(),
     "candidate.discover": _render_round_result,
     "candidate.adjudicate": lambda rejection: rejection.as_payload(),
+    "reconcile.relations": lambda relations: [relation.as_payload() for relation in relations],
+    "reconcile.propose": lambda relation: relation.as_payload(),
+    "reconcile.verify": lambda verification: verification.as_payload(),
 }
 
 
@@ -1571,6 +1646,7 @@ def _system_health(workspace: Workspace) -> dict[str, object]:
         "rejection_memory_path": _location_health(
             workspace.rejection_memory_path, is_directory=False
         ),
+        "relation_store_path": _location_health(workspace.relation_store_path, is_directory=False),
     }
 
 
