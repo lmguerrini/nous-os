@@ -337,3 +337,18 @@ def test_an_unreadable_proposal_line_raises_instead_of_being_skipped(
 
     with pytest.raises(CandidateError, match="proposal line 2 is not readable"):
         store.proposals()
+
+
+def test_a_proposal_quoting_a_line_separator_is_read_back_whole(tmp_path: Path) -> None:
+    """A JSON string may carry U+2028 or a form feed; only the newline ends a record."""
+    store = CandidateStore(tmp_path / "candidates.jsonl")
+    text = "first part second part\x0cthird part"
+    recorded = store.record(
+        source_id="src_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        content=UntrustedText(text),
+        proposed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        holder="fixture",
+    )
+    (proposal,) = store.proposals()
+    assert proposal.proposal_id == recorded.proposal_id
+    assert proposal.content == UntrustedText(text)

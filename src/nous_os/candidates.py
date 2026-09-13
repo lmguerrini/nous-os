@@ -134,8 +134,12 @@ class CandidateStore:
         if not file_is_present(self._path):
             return ()
         found = []
+        # Records end at the newline this store writes. ``str.splitlines`` would
+        # also split on U+2028, U+2029 and a form feed, which a proposal quoting
+        # a source may legitimately carry inside its JSON string -- the same reader
+        # idiom as the relation store.
         for number, line in enumerate(
-            self._path.read_text(encoding="utf-8").splitlines(), start=1
+            self._path.read_text(encoding="utf-8").split("\n"), start=1
         ):
             if not line:
                 continue
