@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import ast
+import fcntl
+import gc
 import hashlib
+import inspect
 import json
+import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -136,13 +141,15 @@ def _proposal(world: _World, relation_class: RelationClass) -> RelationProposal:
 
 
 def test_each_class_is_constructible_and_round_trips(tmp_path: Path) -> None:
-    """O1: each class has one stable canonical representation."""
+    """O1: each class and both provider labels have one stable representation."""
     world = _World(tmp_path)
     for number, relation_class in enumerate(RelationClass):
         proposal = _proposal(world, relation_class)
         relation = proposal.recorded(f"rel_01ARZ3NDEKTSV4RRFFQ69G5FA{number}")
         restored = Relation.from_payload(relation.as_payload())
         assert restored.as_payload() == relation.as_payload()
+        assert restored.left.provider == "fixture-source"
+        assert restored.right.provider == "fixture-source"
         assert reconciliation.canonical_bytes(restored.as_payload()) == reconciliation.canonical_bytes(
             relation.as_payload()
         )
@@ -152,7 +159,12 @@ def test_inadmissible_relations_are_refused_by_class(tmp_path: Path) -> None:
     """O2: class names are enforced at construction, before any store can write."""
     world = _World(tmp_path)
     same = _proposal(world, RelationClass.SAME_SOURCE)
-    for basis in (EvidenceBasis.TEXT_EQUALITY, EvidenceBasis.BYTE_EQUALITY, EvidenceBasis.MODEL_JUDGEMENT):
+    for basis in (
+        EvidenceBasis.PROVIDER_ASSIGNED_ID,
+        EvidenceBasis.TEXT_EQUALITY,
+        EvidenceBasis.BYTE_EQUALITY,
+        EvidenceBasis.MODEL_JUDGEMENT,
+    ):
         with pytest.raises(RelationError, match="SAME_SOURCE"):
             replace(same, bases=(basis,))
 
@@ -213,15 +225,153 @@ def test_unresolvable_evidence_is_refused_at_record_time(tmp_path: Path) -> None
         assert after == before
 
 
-def test_replay_writes_nothing(tmp_path: Path) -> None:
-    """O4, partially: duplicate content is refused before another JSON line is appended."""
+def test_contradiction_claim_citations_must_resolve_at_record_and_verify(tmp_path: Path) -> None:
+    """O3: claim citations are evidence, not unchecked decorative fields."""
     world = _World(tmp_path)
-    relation = world.store.record(_proposal(world, RelationClass.RELATED), world.snapshots)
+    contradiction = _proposal(world, RelationClass.CONTRADICTION)
+    assert contradiction.claims is not None
+    bad_claims = Claims(
+        Claim(
+            Citation(LEFT_SOURCE, world.left.digest, Locator(0, 1), "x"),
+            AT,
+            TemporalBasis.STATED_TIME,
+        ),
+        contradiction.claims.right,
+    )
+    unresolved = replace(contradiction, claims=bad_claims)
+    with pytest.raises(UnresolvableRelationEvidence, match="citation"):
+        world.store.record(unresolved, world.snapshots)
+    assert not world.store.path.exists()
+
+    relation = unresolved.recorded("rel_01ARZ3NDEKTSV4RRFFQ69G5FAV")
+    world.store.path.write_bytes(reconciliation.canonical_bytes(relation.as_payload()) + b"\n")
     before = world.store.path.read_bytes()
-    with pytest.raises(DuplicateRelation):
-        world.store.record(_proposal(world, RelationClass.RELATED), world.snapshots)
+    verification = world.store.verify(world.snapshots)
+    assert verification.unresolvable == 1
+    assert verification.unresolvable_ids == (relation.relation_id,)
     assert world.store.path.read_bytes() == before
-    assert relation.content_digest == world.store.relations()[0].content_digest
+
+
+def test_replay_of_mechanical_producers_refuses_every_duplicate(tmp_path: Path) -> None:
+    """O4: replaying either producer leaves every already-recorded byte untouched."""
+    world = _World(tmp_path)
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ingest(world.snapshots, ledger, LEFT_SOURCE, UntrustedText("first"), AT)
+    ingest(world.snapshots, ledger, LEFT_SOURCE, UntrustedText("second"), AT)
+
+    shared = "a text long enough to be mechanically checked across two source versions"
+    left = world.snapshots.put(LEFT_SOURCE, json.dumps({"text": shared}).encode("utf-8"))
+    right = world.snapshots.put(RIGHT_SOURCE, json.dumps({"text": shared}).encode("utf-8"))
+    text_relations = text_equality_relations(
+        (
+            TextView(LEFT_SOURCE, left.digest, "fixture-a", shared),
+            TextView(RIGHT_SOURCE, right.digest, "fixture-b", shared),
+        ),
+        store=world.snapshots,
+        proposed_at=AT,
+    ).proposals
+    proposals = lineage_relations(ledger) + text_relations
+    assert proposals
+    for proposal in proposals:
+        world.store.record(proposal, world.snapshots)
+    before = world.store.path.read_bytes()
+    replayed = lineage_relations(ledger) + text_equality_relations(
+        (
+            TextView(LEFT_SOURCE, left.digest, "fixture-a", shared),
+            TextView(RIGHT_SOURCE, right.digest, "fixture-b", shared),
+        ),
+        store=world.snapshots,
+        proposed_at=AT,
+    ).proposals
+    assert replayed == proposals
+    for proposal in replayed:
+        with pytest.raises(DuplicateRelation):
+            world.store.record(proposal, world.snapshots)
+    assert world.store.path.read_bytes() == before
+
+
+def test_record_locks_duplicate_check_and_append_across_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F1: two simultaneous records of one proposal leave exactly one JSONL line."""
+    world = _World(tmp_path)
+    proposal = _proposal(world, RelationClass.UNKNOWN)
+    rendezvous = threading.Barrier(2)
+    identifiers = iter(
+        (
+            "rel_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "rel_01ARZ3NDEKTSV4RRFFQ69G5FAA",
+        )
+    )
+
+    def coordinated_relation_id() -> str:
+        # Without the store lock, both calls clear duplicate detection and
+        # rendezvous here before either append. With it, the first times out,
+        # appends, and the second sees the duplicate while holding the lock.
+        try:
+            rendezvous.wait(timeout=0.2)
+        except threading.BrokenBarrierError:
+            pass
+        return next(identifiers)
+
+    monkeypatch.setattr(reconciliation, "new_relation_id", coordinated_relation_id)
+    outcomes: list[object] = []
+
+    def record_once() -> None:
+        try:
+            outcomes.append(world.store.record(proposal, world.snapshots))
+        except DuplicateRelation as error:
+            outcomes.append(error)
+
+    threads = (threading.Thread(target=record_once), threading.Thread(target=record_once))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+    assert sum(isinstance(outcome, Relation) for outcome in outcomes) == 1
+    assert sum(isinstance(outcome, DuplicateRelation) for outcome in outcomes) == 1
+    assert len(world.store.path.read_bytes().splitlines()) == 1
+
+    lock_path = Path(str(world.store.path) + ".lock")
+    assert lock_path.is_file()
+    with lock_path.open("rb") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def test_corrupt_relation_end_is_refused_at_record_and_counted_at_verify(tmp_path: Path) -> None:
+    """F2: end resolution verifies bytes rather than trusting a present path."""
+    world = _World(tmp_path)
+    recorded = world.store.record(_proposal(world, RelationClass.UNKNOWN), world.snapshots)
+    before = world.store.path.read_bytes()
+    world.snapshots._path(RIGHT_SOURCE, world.right.digest).write_bytes(b"corrupted")
+
+    verification = world.store.verify(world.snapshots)
+    assert verification.unresolvable == 1
+    assert verification.unresolvable_ids == (recorded.relation_id,)
+    with pytest.raises(UnresolvableRelationEvidence, match="end cannot be resolved"):
+        world.store.record(_proposal(world, RelationClass.UNKNOWN), world.snapshots)
+    assert world.store.path.read_bytes() == before
+
+
+def test_relation_store_constructor_refuses_non_relation_jsonl_and_reopens_valid_store(
+    tmp_path: Path,
+) -> None:
+    """F3: only an existing, non-empty relation JSONL file can reopen as this store."""
+    world = _World(tmp_path)
+    snapshot_path = world.snapshots._path(LEFT_SOURCE, world.left.digest)
+    with pytest.raises(RelationError, match="relation line 1"):
+        RelationStore(snapshot_path)
+
+    empty_path = tmp_path / "empty-relations.jsonl"
+    empty_path.touch()
+    with pytest.raises(RelationError, match="zero-byte"):
+        RelationStore(empty_path)
+
+    recorded = world.store.record(_proposal(world, RelationClass.UNKNOWN), world.snapshots)
+    reopened = RelationStore(world.store.path)
+    assert reopened.relations() == (recorded,)
 
 
 def _tree_digest(root: Path) -> str:
@@ -316,12 +466,22 @@ def test_no_authority_moves_through_the_boundary(tmp_path: Path) -> None:
         )
     assert all(descriptor.tier is not Tier.PROMOTE for descriptor in core.CATALOGUE)
     source = Path(reconciliation.__file__).read_text(encoding="utf-8")
-    for forbidden in ("nous_os.canonical", "nous_os.adjudication", "Ledger.append", "IdentityRegistry.mint"):
+    tree = ast.parse(source)
+    forbidden_modules = {"nous_os.canonical", "nous_os.adjudication"}
+    forbidden_from_nous_os = {"canonical", "adjudication"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            assert all(alias.name not in forbidden_modules for alias in node.names)
+        if isinstance(node, ast.ImportFrom):
+            assert node.module not in forbidden_modules
+            if node.module == "nous_os":
+                assert all(alias.name not in forbidden_from_nous_os for alias in node.names)
+    for forbidden in ("Ledger.append", "IdentityRegistry.mint"):
         assert forbidden not in source
 
 
 def test_mechanical_producers_emit_evidence_linked_proposals(tmp_path: Path) -> None:
-    """O7: lineage from the ledger; restatement from equal text, cited from each snapshot; bounded."""
+    """O7: lineage and text equality produce cited, bounded mechanical proposals."""
     world = _World(tmp_path)
     ledger = Ledger(tmp_path / "ledger.jsonl")
     ingest(world.snapshots, ledger, LEFT_SOURCE, UntrustedText("first"), AT)
@@ -354,13 +514,112 @@ def test_mechanical_producers_emit_evidence_linked_proposals(tmp_path: Path) -> 
     wrong = (TextView(LEFT_SOURCE, left.digest, "fixture-a", other), TextView(THIRD_SOURCE, third.digest, "fixture-a", other))
     result = text_equality_relations(wrong, store=world.snapshots, proposed_at=AT)
     assert result.proposals == () and result.unlocatable == 1
-    # a group beyond the bound is counted, never expanded
-    many = tuple(TextView(LEFT_SOURCE, left.digest, "fixture-a", shared) for _ in range(3)) + tuple(
-        TextView(RIGHT_SOURCE, right.digest, "fixture-b", shared) for _ in range(3)
-    )
-    assert text_equality_relations(many, store=world.snapshots, max_group=1, proposed_at=AT).oversized_groups == 1
     with pytest.raises(RelationError):
-        text_equality_relations(views, store=None)  # type: ignore[arg-type]
+        text_equality_relations(views, store=None, proposed_at=AT)  # type: ignore[arg-type]
+
+
+def test_text_equality_requires_an_explicit_time_and_fixed_bounds(tmp_path: Path) -> None:
+    """F4: the producer is reproducible and its resource bounds are not caller policy."""
+    world = _World(tmp_path)
+    signature = inspect.signature(text_equality_relations)
+    assert signature.parameters["proposed_at"].default is inspect.Parameter.empty
+    assert "min_chars" not in signature.parameters
+    assert "max_group" not in signature.parameters
+    assert reconciliation.MIN_TEXT_CHARS == 40
+    assert reconciliation.MAX_GROUP_SOURCES == 12
+    with pytest.raises(TypeError, match="proposed_at"):
+        text_equality_relations((), store=world.snapshots)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="min_chars"):
+        text_equality_relations((), store=world.snapshots, proposed_at=AT, min_chars=1)  # type: ignore[call-arg]
+
+
+def test_text_equality_pairs_every_version_across_sources_deterministically(
+    tmp_path: Path,
+) -> None:
+    """F4: equal text joins versions across sources, never versions of one source."""
+    world = _World(tmp_path)
+    text = "equal text preserved in every source version for this exact test case"
+    left_first = world.snapshots.put(
+        LEFT_SOURCE, json.dumps({"text": text, "version": 1}).encode("utf-8")
+    )
+    left_second = world.snapshots.put(
+        LEFT_SOURCE, json.dumps({"text": text, "version": 2}).encode("utf-8")
+    )
+    right = world.snapshots.put(
+        RIGHT_SOURCE, json.dumps({"text": text}).encode("utf-8")
+    )
+    views = (
+        TextView(LEFT_SOURCE, left_first.digest, "fixture-a", text),
+        TextView(LEFT_SOURCE, left_second.digest, "fixture-a", text),
+        TextView(RIGHT_SOURCE, right.digest, "fixture-b", text),
+    )
+    forward = text_equality_relations(views, store=world.snapshots, proposed_at=AT)
+    backward = text_equality_relations(reversed(views), store=world.snapshots, proposed_at=AT)
+    assert forward.proposals == backward.proposals
+    assert len(forward.proposals) == 2
+    assert all(
+        proposal.left.source_id != proposal.right.source_id
+        for proposal in forward.proposals
+    )
+    paired_digests = {
+        frozenset((proposal.left.snapshot_digest, proposal.right.snapshot_digest))
+        for proposal in forward.proposals
+    }
+    assert paired_digests == {
+        frozenset((left_first.digest, right.digest)),
+        frozenset((left_second.digest, right.digest)),
+    }
+
+
+def test_text_equality_admits_forty_characters_and_bounds_streamed_groups(
+    tmp_path: Path,
+) -> None:
+    """F4: exactly forty characters are eligible; an oversized stream drops views."""
+    world = _World(tmp_path)
+    admitted = "x" * reconciliation.MIN_TEXT_CHARS
+    skipped = "y" * (reconciliation.MIN_TEXT_CHARS - 1)
+    left = world.snapshots.put(LEFT_SOURCE, json.dumps({"text": admitted}).encode("utf-8"))
+    right = world.snapshots.put(RIGHT_SOURCE, json.dumps({"text": admitted}).encode("utf-8"))
+    result = text_equality_relations(
+        (
+            TextView(LEFT_SOURCE, left.digest, "fixture-a", admitted),
+            TextView(RIGHT_SOURCE, right.digest, "fixture-b", admitted),
+            TextView(THIRD_SOURCE, world.third.digest, "fixture-c", skipped),
+        ),
+        store=world.snapshots,
+        proposed_at=AT,
+    )
+    assert len(result.proposals) == 1
+    assert result.short_texts_skipped == 1
+
+    source_ids = tuple(f"{LEFT_SOURCE[:-1]}{suffix}" for suffix in "0123456789ABC")
+    streamed_text = "z" * reconciliation.MIN_TEXT_CHARS
+    snapshots = tuple(
+        world.snapshots.put(source_id, json.dumps({"text": streamed_text}).encode("utf-8"))
+        for source_id in source_ids
+    )
+    seen_view_ids: set[int] = set()
+    retained_counts: list[int] = []
+
+    def streamed_views():
+        for source_id, snapshot in zip(source_ids, snapshots):
+            view = TextView(source_id, snapshot.digest, "fixture-stream", streamed_text)
+            seen_view_ids.add(id(view))
+            yield view
+        for _ in range(100):
+            view = TextView(source_ids[-1], snapshots[-1].digest, "fixture-stream", streamed_text)
+            seen_view_ids.add(id(view))
+            yield view
+        gc.collect()
+        retained_counts.append(
+            sum(id(candidate) in seen_view_ids for candidate in gc.get_objects())
+        )
+
+    streamed = text_equality_relations(
+        streamed_views(), store=world.snapshots, proposed_at=AT
+    )
+    assert streamed.oversized_groups == 1
+    assert retained_counts and retained_counts[0] <= 13
 
 
 def test_verify_reports_and_never_deletes(tmp_path: Path) -> None:

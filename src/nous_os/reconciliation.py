@@ -9,7 +9,10 @@ than its evidence can establish.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -35,6 +38,11 @@ if TYPE_CHECKING:
 
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+
+#: Text shorter than this is too slight to mechanically propose a restatement.
+MIN_TEXT_CHARS = 40
+#: Equal-text groups beyond this many source identities are counted, not expanded.
+MAX_GROUP_SOURCES = 12
 
 
 class RelationError(Exception):
@@ -585,10 +593,36 @@ class RelationStore:
 
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
+        if self._path.exists():
+            if not file_is_present(self._path):
+                raise RelationError("relation store path exists but is not a regular file")
+            if self._path.stat().st_size == 0:
+                raise RelationError(
+                    "relation store path is zero-byte and contains no relation JSONL records"
+                )
+            self.relations()
 
     @property
     def path(self) -> Path:
         return self._path
+
+    @contextlib.contextmanager
+    def exclusive(self):
+        """Hold the relation-store lock across duplicate detection and append.
+
+        A duplicate check is meaningful only while no other cooperating writer
+        can append.  The sibling lock file deliberately follows the ledger's
+        POSIX advisory-lock convention; it is released even when validation or
+        writing raises.
+        """
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.open(str(self._path) + ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
 
     def record(self, proposal: RelationProposal, snapshots: SnapshotStore) -> Relation:
         """Verify both ends and every quote before appending one new relation.
@@ -608,13 +642,13 @@ class RelationStore:
         proposal_content = proposal.as_payload()
         del proposal_content["proposed_at"]
         content_digest = digest_payload(proposal_content)
-        if any(record.content_digest == content_digest for record in self.relations()):
-            raise DuplicateRelation("a content-identical relation is already recorded")
-        relation = proposal.recorded(new_relation_id())
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("ab") as handle:
-            handle.write(canonical_bytes(relation.as_payload()) + b"\n")
-        return relation
+        with self.exclusive():
+            if any(record.content_digest == content_digest for record in self.relations()):
+                raise DuplicateRelation("a content-identical relation is already recorded")
+            relation = proposal.recorded(new_relation_id())
+            with self._path.open("ab") as handle:
+                handle.write(canonical_bytes(relation.as_payload()) + b"\n")
+            return relation
 
     def relations(
         self,
@@ -634,10 +668,12 @@ class RelationStore:
             raise RelationError("relation_class filter must be a RelationClass or None")
         if not file_is_present(self._path):
             return ()
+        try:
+            lines = self._path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError) as error:
+            raise RelationError(f"relation store is not readable: {error}") from error
         found: list[Relation] = []
-        for number, line in enumerate(self._path.read_text(encoding="utf-8").splitlines(), start=1):
-            if not line:
-                continue
+        for number, line in enumerate(lines, start=1):
             try:
                 relation = Relation.from_payload(json.loads(line))
             except (RelationError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
@@ -651,10 +687,12 @@ class RelationStore:
 
     def _verify_proposal_evidence(self, proposal: RelationProposal, snapshots: SnapshotStore) -> None:
         for end in (proposal.left, proposal.right):
-            if not snapshots.has(end.source_id, end.snapshot_digest):
+            try:
+                snapshots.get(end.source_id, end.snapshot_digest)
+            except (SnapshotNotFound, SnapshotCorrupt) as error:
                 raise UnresolvableRelationEvidence(
-                    f"relation end {end.source_id}:{end.snapshot_digest} is not in the snapshot store"
-                )
+                    f"relation end cannot be resolved: {error}"
+                ) from error
         for citation in proposal.all_citations():
             try:
                 quote_lint(snapshots, citation)
@@ -780,10 +818,8 @@ def text_equality_relations(
     records: Iterable[TextView],
     *,
     store: SnapshotStore,
-    min_chars: int = 40,
-    max_group: int = 12,
+    proposed_at: datetime,
     producer: str = "reconciliation.text-equality/2",
-    proposed_at: datetime | None = None,
 ) -> TextEqualityResult:
     """Hash-join equal texts into ``RESTATEMENT`` proposals, each end cited from its own snapshot.
 
@@ -791,36 +827,55 @@ def text_equality_relations(
     more than one source id yield anything, and a pair inside a group is
     proposed only when the text is found verbatim, once, in both snapshots'
     canonical bytes — the citation is the encoded occurrence, so it
-    quote-lints.  Texts shorter than ``min_chars`` are skipped (a two-word
+    quote-lints.  Texts shorter than ``MIN_TEXT_CHARS`` are skipped (a two-word
     reply shared by hundreds of messages is not a restatement of anything)
-    and a group larger than ``max_group`` is counted, not expanded: the bound
+    and a group larger than ``MAX_GROUP_SOURCES`` is counted, not expanded: the bound
     is what keeps this a join and not a matrix.  Two versions of one source id
     are never paired: that is lineage, not restatement.
     """
     if type(store) is not SnapshotStore:
         raise RelationError("text_equality_relations needs the snapshot store to cite from")
-    when = proposed_at or datetime.now(timezone.utc)
-    by_digest: dict[str, list[TextView]] = {}
+    _instant(proposed_at, "proposed_at")
+    by_digest: dict[str, dict[tuple[str, str], TextView] | None] = {}
     short = 0
+    oversized = 0
     for record in records:
         if type(record) is not TextView:
             raise RelationError("text_equality_relations takes TextView values")
-        if len(record.text) < min_chars:
+        if len(record.text) < MIN_TEXT_CHARS:
             short += 1
             continue
-        by_digest.setdefault(digest_bytes(record.text.encode("utf-8")), []).append(record)
-    proposals: list[RelationProposal] = []
-    unlocatable = 0
-    oversized = 0
-    for views in by_digest.values():
-        distinct = {view.source_id: view for view in views}
-        if len(distinct) < 2:
+        text_digest = digest_bytes(record.text.encode("utf-8"))
+        views = by_digest.get(text_digest)
+        if views is None and text_digest in by_digest:
             continue
-        if len(distinct) > max_group:
+        if views is None:
+            views = {}
+            by_digest[text_digest] = views
+        source_ids = {source_id for source_id, _ in views}
+        if record.source_id not in source_ids and len(source_ids) == MAX_GROUP_SOURCES:
+            # Do not retain later views for an oversized group: its single
+            # count is the answer, and retaining it would defeat the bound.
+            views.clear()
+            by_digest[text_digest] = None
             oversized += 1
             continue
-        ordered = sorted(distinct.values(), key=lambda view: view.source_id)
-        cited: dict[str, Citation] = {}
+        key = (record.source_id, record.snapshot_digest)
+        present = views.get(key)
+        if present is None or record.provider < present.provider:
+            views[key] = record
+    proposals: list[RelationProposal] = []
+    unlocatable = 0
+    for text_digest in sorted(by_digest):
+        views = by_digest[text_digest]
+        if views is None:
+            continue
+        if len({source_id for source_id, _ in views}) < 2:
+            continue
+        ordered = sorted(
+            views.values(), key=lambda view: (view.source_id, view.snapshot_digest)
+        )
+        cited: dict[tuple[str, str], Citation] = {}
         for view in ordered:
             try:
                 data = store.get(view.source_id, view.snapshot_digest).data
@@ -831,25 +886,34 @@ def text_equality_relations(
             if locator is None:
                 unlocatable += 1
                 continue
-            cited[view.source_id] = Citation(
+            cited[(view.source_id, view.snapshot_digest)] = Citation(
                 source_id=view.source_id,
                 snapshot_digest=view.snapshot_digest,
                 locator=locator,
                 span=data[locator.start_byte:locator.end_byte].decode("utf-8"),
             )
-        with_citation = [view for view in ordered if view.source_id in cited]
+        with_citation = [
+            view
+            for view in ordered
+            if (view.source_id, view.snapshot_digest) in cited
+        ]
         for index, left in enumerate(with_citation):
             for right in with_citation[index + 1:]:
+                if left.source_id == right.source_id:
+                    continue
                 proposals.append(
                     RelationProposal(
                         relation_class=RelationClass.RESTATEMENT,
                         left=RelationEnd(left.source_id, left.snapshot_digest, left.provider),
                         right=RelationEnd(right.source_id, right.snapshot_digest, right.provider),
                         bases=(EvidenceBasis.TEXT_EQUALITY,),
-                        citations=(cited[left.source_id], cited[right.source_id]),
+                        citations=(
+                            cited[(left.source_id, left.snapshot_digest)],
+                            cited[(right.source_id, right.snapshot_digest)],
+                        ),
                         origin=Origin.MECHANICAL,
                         producer=producer,
-                        proposed_at=when,
+                        proposed_at=proposed_at,
                         notes="equal normalised text in two source versions; restatement asserts nothing about identity",
                     )
                 )
