@@ -697,3 +697,25 @@ def test_transport_parity_for_reconcile_operations(tmp_path: Path, capsys: pytes
             rejection_memory_path=world.root / "rejections-alias.jsonl",
             relation_store_path=world.root / "aliased.jsonl",
         )
+
+
+def test_a_cited_span_holding_a_line_separator_does_not_split_the_store(tmp_path: Path) -> None:
+    """A JSON string may carry U+2028 or a form feed; only the newline this store writes ends a record.
+
+    A single cited text holding a line separator would otherwise make
+    ``str.splitlines`` call the whole store unreadable.
+    """
+    world = _World(tmp_path)
+    text = "before the line separator after it, and a form feed\x0cas well, long enough to cite"
+    left = world.snapshots.put(LEFT_SOURCE, json.dumps({"text": text}, ensure_ascii=False).encode("utf-8"))
+    right = world.snapshots.put(RIGHT_SOURCE, json.dumps({"text": text}, ensure_ascii=False).encode("utf-8"))
+    result = text_equality_relations(
+        (TextView(LEFT_SOURCE, left.digest, "fixture-a", text), TextView(RIGHT_SOURCE, right.digest, "fixture-b", text)),
+        store=world.snapshots,
+        proposed_at=AT,
+    )
+    assert len(result.proposals) == 1
+    world.store.record(result.proposals[0], world.snapshots)
+    assert len(world.store.relations()) == 1
+    assert RelationStore(world.store.path).relations()[0].citations[0].span == json.dumps(text, ensure_ascii=False)[1:-1]
+    assert world.store.verify(world.snapshots).unresolvable == 0

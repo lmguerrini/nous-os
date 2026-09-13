@@ -669,7 +669,12 @@ class RelationStore:
         if not file_is_present(self._path):
             return ()
         try:
-            lines = self._path.read_text(encoding="utf-8").splitlines()
+            # Split on the newline this store writes, never on ``str.splitlines``'s
+            # wider set: a cited span may carry U+2028 or a form feed inside its
+            # JSON string, and a reader that treated those as record boundaries
+            # would call a whole store unreadable when one cited text holds a
+            # line separator.
+            lines = [line for line in self._path.read_text(encoding="utf-8").split("\n") if line != ""]
         except (OSError, UnicodeDecodeError) as error:
             raise RelationError(f"relation store is not readable: {error}") from error
         found: list[Relation] = []
