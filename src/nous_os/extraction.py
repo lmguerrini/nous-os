@@ -112,6 +112,66 @@ def _member_error_note(error: _ArchiveMemberUnreadable) -> str:
     return f"member {error.info.filename!r}: {type(error).__name__}: {'; '.join(error.reasons)}"
 
 
+def _archive_member_layout_errors(archive: zipfile.ZipFile) -> tuple[tuple[str, ...], ...]:
+    """Validate every central entry's compressed-data region before member reads."""
+    infos = tuple(archive.infolist())
+    errors: list[list[str]] = [[] for _ in infos]
+    header_references: dict[int, list[int]] = {}
+    for index, info in enumerate(infos):
+        header_references.setdefault(info.header_offset, []).append(index)
+    for offset, indices in header_references.items():
+        if len(indices) > 1:
+            reason = f"local header at offset {offset} is referenced by {len(indices)} central entries"
+            for index in indices:
+                errors[index].append(reason)
+
+    header_offsets = sorted(header_references)
+    regions: list[tuple[int, int] | None] = [None] * len(infos)
+    raw = archive.fp
+    for index, info in enumerate(infos):
+        try:
+            raw.seek(info.header_offset)
+            header = raw.read(zipfile.sizeFileHeader)
+        except (AttributeError, OSError, ValueError) as error:
+            errors[index].append(f"cannot read local header at offset {info.header_offset}: {_note(error)}")
+            continue
+        if len(header) != zipfile.sizeFileHeader or header[:4] != zipfile.stringFileHeader:
+            errors[index].append(f"bad local file header at offset {info.header_offset}")
+            continue
+        name_length = int.from_bytes(header[26:28], "little")
+        extra_length = int.from_bytes(header[28:30], "little")
+        data_start = info.header_offset + zipfile.sizeFileHeader + name_length + extra_length
+        data_end = data_start + info.compress_size
+        next_header = next(
+            (offset for offset in header_offsets if offset > info.header_offset),
+            archive.start_dir,
+        )
+        if data_start > next_header or data_end > next_header:
+            errors[index].append(
+                f"data region {data_start}:{data_end} exceeds archive boundary {next_header}"
+            )
+        regions[index] = (data_start, data_end)
+
+    furthest_region: tuple[int, int, int] | None = None
+    for start, end, index in sorted(
+        (start, end, index)
+        for index, region in enumerate(regions)
+        if region is not None
+        for start, end in (region,)
+    ):
+        if furthest_region is not None and start < furthest_region[1]:
+            other_start, other_end, other_index = furthest_region
+            errors[index].append(
+                f"data region {start}:{end} overlaps member {infos[other_index].filename!r}"
+            )
+            errors[other_index].append(
+                f"data region {other_start}:{other_end} overlaps member {infos[index].filename!r}"
+            )
+        if furthest_region is None or end > furthest_region[1]:
+            furthest_region = (start, end, index)
+    return tuple(tuple(reasons) for reasons in errors)
+
+
 
 _EXTRACTOR_MEMBERS = tuple(Extractor)
 _OUTCOME_MEMBERS = tuple(ExtractionOutcome)
@@ -758,7 +818,11 @@ def _read_deflated_member(raw: object, info: zipfile.ZipInfo, maximum_output: in
         compressed = inflater.unconsumed_tail
         if inflater.eof:
             if inflater.unused_data or compressed or compressed_remaining:
-                raise zipfile.BadZipFile(f"deflated member {info.filename!r} has trailing data")
+                consumed = info.compress_size - compressed_remaining - len(compressed) - len(inflater.unused_data)
+                raise zipfile.BadZipFile(
+                    f"deflated member {info.filename!r}: declared compressed size {info.compress_size}, "
+                    f"stream ended after {consumed} bytes"
+                )
             return bytes(output)
         if len(output) == maximum_output:
             raise _ArchiveMemberTooLarge(info, len(output), maximum_output)
@@ -990,7 +1054,14 @@ def _archive_member_outcome(data: bytes) -> ExtractionOutcome:
     return ExtractionOutcome.UNSUPPORTED_BINARY
 
 
-def _archive_record(data: bytes, archive: zipfile.ZipFile, *, asset_source_id: str | None, given_name: str | None) -> Extraction:
+def _archive_record(
+    data: bytes,
+    archive: zipfile.ZipFile,
+    layout_errors: tuple[tuple[str, ...], ...],
+    *,
+    asset_source_id: str | None,
+    given_name: str | None,
+) -> Extraction:
     members: list[ExtractionMember] = []
     text_segments: list[tuple[str, str]] = []
     unreadable_notes: list[str] = []
@@ -1000,6 +1071,19 @@ def _archive_record(data: bytes, archive: zipfile.ZipFile, *, asset_source_id: s
         if index >= MAX_ARCHIVE_MEMBERS:
             bounded = True
             break
+        if layout_errors[index]:
+            error = _ArchiveMemberUnreadable(info, layout_errors[index])
+            members.append(
+                ExtractionMember(
+                    path=info.filename,
+                    size=info.file_size,
+                    crc=info.CRC,
+                    digest=None,
+                    outcome=ExtractionOutcome.UNREADABLE,
+                )
+            )
+            unreadable_notes.append(_member_error_note(error))
+            continue
         if info.file_size > MAX_ARCHIVE_TEXT_BYTES - consumed:
             members.append(
                 ExtractionMember(
@@ -1119,7 +1203,34 @@ def _zip_record(data: bytes, *, asset_source_id: str | None, given_name: str | N
                     notes=((f"office:{kind}",) if kind is not None else ())
                     + ("archive central directory exceeds extraction bounds",),
                 )
+            layout_errors = _archive_member_layout_errors(archive)
             if kind is not None:
+                layout_notes = tuple(
+                    _member_error_note(_ArchiveMemberUnreadable(info, reasons))
+                    for info, reasons in zip(infos, layout_errors)
+                    if reasons
+                )
+                if layout_notes:
+                    return _record(
+                        data,
+                        asset_source_id=asset_source_id,
+                        given_name=given_name,
+                        extractor=Extractor.OFFICE_XML,
+                        extractor_version=_stdlib_version(),
+                        outcome=ExtractionOutcome.UNREADABLE,
+                        members=tuple(
+                            ExtractionMember(
+                                path=info.filename,
+                                size=info.file_size,
+                                crc=info.CRC,
+                                digest=None,
+                                outcome=ExtractionOutcome.UNREADABLE,
+                            )
+                            for info, reasons in zip(infos, layout_errors)
+                            if reasons
+                        ),
+                        notes=(f"office:{kind}",) + layout_notes,
+                    )
                 return _office_record(
                     data,
                     archive,
@@ -1128,7 +1239,13 @@ def _zip_record(data: bytes, *, asset_source_id: str | None, given_name: str | N
                     asset_source_id=asset_source_id,
                     given_name=given_name,
                 )
-            return _archive_record(data, archive, asset_source_id=asset_source_id, given_name=given_name)
+            return _archive_record(
+                data,
+                archive,
+                layout_errors,
+                asset_source_id=asset_source_id,
+                given_name=given_name,
+            )
     except (OSError, zipfile.BadZipFile) as error:
         return _record(
             data,
