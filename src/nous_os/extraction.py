@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import threading
 import zipfile
+import zlib
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -47,7 +48,6 @@ def _pdftext_path() -> str | None:
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _XML_DECLARATION = re.compile(br"<!\s*(DOCTYPE|ENTITY)\b", re.IGNORECASE)
 
-
 class ExtractionError(Exception):
     """Raised when an extraction record would not describe its bytes faithfully."""
 
@@ -77,6 +77,28 @@ class ExtractionOutcome(Enum):
     ABSENT = "absent"
     TOO_LARGE = "too_large"
     ENCRYPTED = "encrypted"
+
+
+_ARCHIVE_READ_STEP = 1 << 20
+_CDATA_OR_COMMENT = re.compile(br"<!\[CDATA\[.*?\]\]>|<!--.*?-->", re.DOTALL)
+
+
+class _ArchiveMemberTooLarge(Exception):
+    """Raised when observed member output reaches its available archive budget."""
+
+    def __init__(self, info: zipfile.ZipInfo, observed_size: int, budget: int) -> None:
+        self.info = info
+        self.observed_size = observed_size
+        self.budget = budget
+
+
+class _ArchiveMemberSizeMismatch(Exception):
+    """Raised when observed member output disagrees with its directory size."""
+
+    def __init__(self, info: zipfile.ZipInfo, observed_size: int) -> None:
+        self.info = info
+        self.observed_size = observed_size
+
 
 
 _EXTRACTOR_MEMBERS = tuple(Extractor)
@@ -669,11 +691,90 @@ def _element_text(element: ElementTree.Element) -> str:
 
 def _office_xml(data: bytes) -> ElementTree.Element:
     """Reject declarations that could define text before parsing an XML part."""
-    declaration = _XML_DECLARATION.search(data)
+    declaration = _XML_DECLARATION.search(_CDATA_OR_COMMENT.sub(b"", data))
     if declaration is not None:
         kind = declaration.group(1).decode("ascii").upper()
         raise ValueError(f"XML contains a {kind} declaration")
     return ElementTree.fromstring(data)
+
+
+def _read_stored_member(raw: object, info: zipfile.ZipInfo, maximum_output: int) -> bytes:
+    """Read a stored member without accepting more output than its caller permits."""
+    output = bytearray()
+    compressed_remaining = info.compress_size
+    while compressed_remaining:
+        output_remaining = maximum_output - len(output)
+        if output_remaining <= 0:
+            raise _ArchiveMemberTooLarge(info, len(output), maximum_output)
+        chunk = raw.read(min(_ARCHIVE_READ_STEP, compressed_remaining, output_remaining))
+        if not chunk:
+            raise zipfile.BadZipFile(f"truncated stored member {info.filename!r}")
+        output.extend(chunk)
+        compressed_remaining -= len(chunk)
+    return bytes(output)
+
+
+def _read_deflated_member(raw: object, info: zipfile.ZipInfo, maximum_output: int) -> bytes:
+    """Inflate one raw deflate stream in bounded output steps."""
+    inflater = zlib.decompressobj(-15)
+    output = bytearray()
+    compressed_remaining = info.compress_size
+    compressed = b""
+    while True:
+        if not compressed:
+            if compressed_remaining == 0:
+                if inflater.eof:
+                    return bytes(output)
+                raise zipfile.BadZipFile(f"truncated deflated member {info.filename!r}")
+            compressed = raw.read(min(_ARCHIVE_READ_STEP, compressed_remaining))
+            if not compressed:
+                raise zipfile.BadZipFile(f"truncated deflated member {info.filename!r}")
+            compressed_remaining -= len(compressed)
+        output_remaining = maximum_output - len(output)
+        if output_remaining <= 0:
+            raise _ArchiveMemberTooLarge(info, len(output), maximum_output)
+        output.extend(inflater.decompress(compressed, min(_ARCHIVE_READ_STEP, output_remaining)))
+        compressed = inflater.unconsumed_tail
+        if inflater.eof:
+            if compressed or compressed_remaining:
+                raise zipfile.BadZipFile(f"deflated member {info.filename!r} has trailing data")
+            return bytes(output)
+        if len(output) == maximum_output:
+            raise _ArchiveMemberTooLarge(info, len(output), maximum_output)
+
+
+def _read_archive_member(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    maximum_output: int,
+) -> bytes:
+    """Observe one ZIP member without trusting its declared uncompressed size.
+
+    The member's bytes are located through its local file header, so the reader
+    depends on the ZIP format rather than on the standard library's internals.
+    """
+    if info.flag_bits & 0x1:
+        raise zipfile.BadZipFile(f"encrypted member {info.filename!r}")
+    raw = archive.fp
+    raw.seek(info.header_offset)
+    header = raw.read(zipfile.sizeFileHeader)
+    if len(header) != zipfile.sizeFileHeader or header[:4] != zipfile.stringFileHeader:
+        raise zipfile.BadZipFile(f"bad local file header for member {info.filename!r}")
+    name_length = int.from_bytes(header[26:28], "little")
+    extra_length = int.from_bytes(header[28:30], "little")
+    raw.seek(info.header_offset + zipfile.sizeFileHeader + name_length + extra_length)
+    if info.compress_type == zipfile.ZIP_STORED:
+        member_data = _read_stored_member(raw, info, maximum_output)
+    elif info.compress_type == zipfile.ZIP_DEFLATED:
+        member_data = _read_deflated_member(raw, info, maximum_output)
+    else:
+        raise NotImplementedError(f"unsupported ZIP compression for member {info.filename!r}")
+    if zlib.crc32(member_data) & 0xFFFFFFFF != info.CRC:
+        raise zipfile.BadZipFile(f"bad CRC for member {info.filename!r}")
+    if len(member_data) != info.file_size:
+        raise _ArchiveMemberSizeMismatch(info, len(member_data))
+    return member_data
 
 
 def _office_segments(
@@ -681,8 +782,20 @@ def _office_segments(
     names: tuple[str, ...],
     kind: str,
 ) -> list[tuple[str, str]]:
+    consumed = 0
+
+    def read_part(name: str) -> bytes:
+        nonlocal consumed
+        member_data = _read_archive_member(
+            archive,
+            archive.getinfo(name),
+            maximum_output=MAX_ARCHIVE_TEXT_BYTES - consumed,
+        )
+        consumed += len(member_data)
+        return member_data
+
     if kind == "word":
-        root = _office_xml(archive.read("word/document.xml"))
+        root = _office_xml(read_part("word/document.xml"))
         return [
             (f"paragraph:{index}", _element_text(element))
             for index, element in enumerate(root.iter())
@@ -691,13 +804,13 @@ def _office_segments(
     if kind == "sheet":
         shared: list[str] = []
         if "xl/sharedStrings.xml" in names:
-            shared_root = _office_xml(archive.read("xl/sharedStrings.xml"))
+            shared_root = _office_xml(read_part("xl/sharedStrings.xml"))
             shared = [_element_text(element) for element in shared_root.iter() if element.tag.rsplit("}", 1)[-1] == "si"]
         segments = []
         cell_index = 0
         for name in sorted((item for item in names if item.startswith("xl/worksheets/sheet") and item.endswith(".xml")), key=_part_order):
             sheet_number = _part_order(name)[0]
-            root = _office_xml(archive.read(name))
+            root = _office_xml(read_part(name))
             for cell in (element for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "c"):
                 cell_type = cell.attrib.get("t")
                 if cell_type == "inlineStr":
@@ -713,12 +826,12 @@ def _office_segments(
     if kind == "slides":
         segments = []
         for name in sorted((item for item in names if item.startswith("ppt/slides/slide") and item.endswith(".xml")), key=_part_order):
-            root = _office_xml(archive.read(name))
+            root = _office_xml(read_part(name))
             segments.append((f"slide:{_part_order(name)[0]}", _element_text(root)))
         return segments
     segments = []
     for name in sorted((item for item in names if item.startswith("Index/") and item.endswith(".xml")), key=_part_order):
-        root = _office_xml(archive.read(name))
+        root = _office_xml(read_part(name))
         segments.append((f"index:{name}", _element_text(root)))
     return segments
 
@@ -745,11 +858,48 @@ def _office_record(
             locations=locations,
             notes=(f"office:{kind}",),
         )
+    except _ArchiveMemberTooLarge as error:
+        return _record(
+            data,
+            asset_source_id=asset_source_id,
+            given_name=given_name,
+            extractor=Extractor.OFFICE_XML,
+            extractor_version=_stdlib_version(),
+            outcome=ExtractionOutcome.TOO_LARGE,
+            members=(
+                ExtractionMember(
+                    path=error.info.filename,
+                    size=error.info.file_size,
+                    crc=error.info.CRC,
+                    digest=None,
+                    outcome=ExtractionOutcome.TOO_LARGE,
+                ),
+            ),
+            notes=(
+                f"office:{kind}",
+                f"member {error.info.filename!r}: archive budget {error.budget} reached after {error.observed_size} bytes",
+            ),
+        )
+    except _ArchiveMemberSizeMismatch as error:
+        return _record(
+            data,
+            asset_source_id=asset_source_id,
+            given_name=given_name,
+            extractor=Extractor.OFFICE_XML,
+            extractor_version=_stdlib_version(),
+            outcome=ExtractionOutcome.UNREADABLE,
+            notes=(
+                f"office:{kind}",
+                f"member {error.info.filename!r}: observed size {error.observed_size} differs from declared size {error.info.file_size}",
+            ),
+        )
     except (
         ElementTree.ParseError,
         IndexError,
         KeyError,
+        LookupError,
         ValueError,
+        NotImplementedError,
         zipfile.BadZipFile,
         zipfile.LargeZipFile,
         OSError,
@@ -800,8 +950,41 @@ def _archive_record(data: bytes, archive: zipfile.ZipFile, *, asset_source_id: s
             bounded = True
             break
         try:
-            member_data = archive.read(info)
-        except (OSError, RuntimeError, zipfile.BadZipFile) as error:
+            member_data = _read_archive_member(
+                archive,
+                info,
+                maximum_output=MAX_ARCHIVE_TEXT_BYTES - consumed,
+            )
+        except _ArchiveMemberTooLarge as error:
+            members.append(
+                ExtractionMember(
+                    path=info.filename,
+                    size=info.file_size,
+                    crc=info.CRC,
+                    digest=None,
+                    outcome=ExtractionOutcome.TOO_LARGE,
+                )
+            )
+            unreadable_notes.append(
+                f"member {error.info.filename!r}: archive budget {error.budget} reached after {error.observed_size} bytes"
+            )
+            bounded = True
+            break
+        except _ArchiveMemberSizeMismatch as error:
+            members.append(
+                ExtractionMember(
+                    path=info.filename,
+                    size=info.file_size,
+                    crc=info.CRC,
+                    digest=None,
+                    outcome=ExtractionOutcome.UNREADABLE,
+                )
+            )
+            unreadable_notes.append(
+                f"member {error.info.filename!r}: observed size {error.observed_size} differs from declared size {error.info.file_size}"
+            )
+            continue
+        except (NotImplementedError, OSError, RuntimeError, zipfile.BadZipFile) as error:
             members.append(
                 ExtractionMember(
                     path=info.filename,
