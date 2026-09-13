@@ -17,6 +17,7 @@ import errno
 import json
 import os
 import stat
+from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
@@ -89,6 +90,7 @@ _ROLES: Final = {
 
 MAX_FILE_BYTES: Final = 64 * 1024 * 1024
 MAX_MANIFEST_BYTES: Final = 1024 * 1024
+MAX_BUNDLE_DEPTH: Final = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,24 +291,88 @@ def _open_refusal(error: OSError, *, declared: bool) -> BundleRefusal | None:
     return None
 
 
-def _component_open_refusal(
-    error: OSError, component: str, parent: int, *, declared: bool
-) -> BundleRefusal | None:
-    """Classify a failed directory component without trusting its link target."""
-    if error.errno not in (errno.ENOTDIR, errno.ELOOP):
-        return _open_refusal(error, declared=declared)
+def _not_stable(relative: str) -> None:
+    """Refuse a name whose observations cannot describe one bundle state."""
+    raise BundleFormatError(f"{relative} changed while it was being read; the bundle is not stable")
+
+
+def _node_signature(status: os.stat_result) -> tuple[int, int, int]:
+    """The identity and type which an lstat/open pair must agree on."""
+    return status.st_dev, status.st_ino, stat.S_IFMT(status.st_mode)
+
+
+def _lstat_component(
+    component: str, parent: int, relative: str, *, listed: bool
+) -> os.stat_result | None:
+    """Observe one name, preserving absence before a lookup as an ordinary refusal."""
     try:
-        status = os.lstat(component, dir_fd=parent)
-    except OSError as lstat_error:
-        refusal = _open_refusal(lstat_error, declared=declared)
-        if refusal is not None:
-            return refusal
-        return _open_refusal(error, declared=declared)
+        return os.lstat(component, dir_fd=parent)
+    except OSError as error:
+        if error.errno == errno.ENOENT:
+            if listed:
+                _not_stable(relative)
+            return None
+        raise
+
+
+def _failed_component_refusal(
+    error: OSError, status: os.stat_result, *, declared: bool, relative: str
+) -> BundleRefusal | None:
+    """Classify a failed directory open only when its post-open type agrees."""
     if stat.S_ISLNK(status.st_mode):
         return BundleRefusal.SYMLINK_REFUSED
+    if error.errno in _LINK_ERRNOS:
+        _not_stable(relative)
     if declared:
         return BundleRefusal.MISSING_DECLARED_FILE
     return _open_refusal(error, declared=False)
+
+
+def _failed_final_refusal(
+    error: OSError, status: os.stat_result, *, declared: bool, relative: str
+) -> BundleRefusal | None:
+    """Classify a failed final open only when its post-open type agrees."""
+    if stat.S_ISLNK(status.st_mode):
+        return BundleRefusal.SYMLINK_REFUSED
+    if error.errno in _LINK_ERRNOS:
+        _not_stable(relative)
+    return _open_refusal(error, declared=declared)
+
+
+def _checked_open(
+    component: str,
+    flags: int,
+    parent: int,
+    relative: str,
+    *,
+    declared: bool,
+    listed: bool,
+    directory_component: bool,
+) -> tuple[int | None, BundleRefusal | None]:
+    """Open one no-follow component and reject a changed classification loudly."""
+    before = _lstat_component(component, parent, relative, listed=listed)
+    if before is None:
+        return None, BundleRefusal.MISSING_DECLARED_FILE
+    try:
+        descriptor = os.open(component, flags, dir_fd=parent)
+    except OSError as error:
+        after = _lstat_component(component, parent, relative, listed=False)
+        if after is None or _node_signature(before) != _node_signature(after):
+            _not_stable(relative)
+        if directory_component:
+            return None, _failed_component_refusal(
+                error, after, declared=declared, relative=relative
+            )
+        return None, _failed_final_refusal(error, after, declared=declared, relative=relative)
+    try:
+        opened = os.fstat(descriptor)
+    except OSError:
+        os.close(descriptor)
+        raise
+    if _node_signature(before) != _node_signature(opened):
+        os.close(descriptor)
+        _not_stable(relative)
+    return descriptor, None
 
 
 def _read_open_descriptor(
@@ -389,92 +455,124 @@ def _open_root(root: Path) -> int:
     return descriptor
 
 
+def _open_at(
+    root_descriptor: int,
+    relative: str,
+    *,
+    declared: bool,
+    listed: bool = False,
+    final_directory: bool = False,
+) -> tuple[int | None, BundleRefusal | None]:
+    """Open ``relative`` through one-at-a-time no-follow directory components."""
+    _require_no_follow()
+    parts = PurePosixPath(relative).parts
+    if not parts:
+        raise BundleFormatError("a supplied bundle file path must name a file")
+    if len(parts) > MAX_BUNDLE_DEPTH:
+        return None, BundleRefusal.NOT_A_REGULAR_FILE
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK | os.O_NOFOLLOW
+    parent = root_descriptor
+    opened_parent = False
+    try:
+        prefix: list[str] = []
+        for component in parts[:-1]:
+            prefix.append(component)
+            child, refusal = _checked_open(
+                component,
+                directory_flags,
+                parent,
+                "/".join(prefix),
+                declared=declared,
+                listed=listed,
+                directory_component=True,
+            )
+            if child is None:
+                return None, refusal
+            if opened_parent:
+                os.close(parent)
+            parent = child
+            opened_parent = True
+        flags = directory_flags if final_directory else os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+        descriptor, refusal = _checked_open(
+            parts[-1],
+            flags,
+            parent,
+            relative,
+            declared=declared,
+            listed=listed,
+            directory_component=False,
+        )
+        if descriptor is None:
+            return None, refusal
+    finally:
+        if opened_parent:
+            os.close(parent)
+    return descriptor, None
+
+
+def _open_directory_at(
+    root_descriptor: int, relative: str, *, listed: bool
+) -> tuple[int | None, BundleRefusal | None]:
+    """Re-resolve one queued directory from the root before listing it."""
+    if not relative:
+        return os.dup(root_descriptor), None
+    return _open_at(
+        root_descriptor,
+        relative,
+        declared=False,
+        listed=listed,
+        final_directory=True,
+    )
+
+
 def _read_bounded_at(
     root_descriptor: int,
     relative: str,
     *,
     maximum_bytes: int = MAX_FILE_BYTES,
     declared: bool,
+    listed: bool = False,
 ) -> tuple[bytes | None, BundleRefusal | None]:
     """Read ``relative`` through a no-follow descriptor walk below one root."""
-    _require_no_follow()
-    parts = PurePosixPath(relative).parts
-    if not parts:
-        raise BundleFormatError("a supplied bundle file path must name a file")
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK | os.O_NOFOLLOW
-    parent = root_descriptor
-    opened_parent = False
-    try:
-        for component in parts[:-1]:
-            try:
-                child = os.open(component, directory_flags, dir_fd=parent)
-            except OSError as error:
-                refusal = _component_open_refusal(
-                    error, component, parent, declared=declared
-                )
-                if refusal is not None:
-                    return None, refusal
-                raise
-            if opened_parent:
-                os.close(parent)
-            parent = child
-            opened_parent = True
-        try:
-            descriptor = os.open(
-                parts[-1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent
-            )
-        except OSError as error:
-            refusal = _open_refusal(error, declared=declared)
-            if refusal is not None:
-                return None, refusal
-            raise
-    finally:
-        if opened_parent:
-            os.close(parent)
+    descriptor, refusal = _open_at(
+        root_descriptor, relative, declared=declared, listed=listed
+    )
+    if descriptor is None:
+        return None, refusal
     return _read_open_descriptor(descriptor, maximum_bytes=maximum_bytes)
 
 
 def _files(root_descriptor: int, implied_directories: set[str]) -> Iterator[str]:
     """Every non-directory entry and undeclared empty directory below a root.
 
-    The walk opens each possible child directory from its parent descriptor
-    with ``O_NOFOLLOW``. A link is therefore listed as an entry but never used
-    as a traversal step; ordinary non-empty directories are represented by
-    their listed children instead.
+    Each queued directory is re-resolved from the root through no-follow
+    components, listed, and closed before the next queue item. A link is
+    therefore listed as an entry but never used as a traversal step; ordinary
+    non-empty directories are represented by their listed children instead.
     """
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK | os.O_NOFOLLOW
     found: list[str] = []
-
-    def walk(directory: int, prefix: str) -> None:
-        for name in sorted(os.listdir(directory)):
+    pending: deque[str] = deque(("",))
+    while pending:
+        prefix = pending.popleft()
+        directory, refusal = _open_directory_at(root_descriptor, prefix, listed=bool(prefix))
+        if directory is None:
+            _not_stable(prefix)
+        try:
+            names = sorted(os.listdir(directory))
+        finally:
+            os.close(directory)
+        if not names:
+            if prefix and prefix not in implied_directories:
+                found.append(prefix)
+            continue
+        for name in names:
             relative = f"{prefix}/{name}" if prefix else name
-            try:
-                child = os.open(name, directory_flags, dir_fd=directory)
-            except OSError as error:
-                if error.errno in (errno.ENOTDIR, errno.ELOOP):
-                    try:
-                        os.lstat(name, dir_fd=directory)
-                    except OSError as lstat_error:
-                        if lstat_error.errno == errno.ENOENT:
-                            continue
-                        raise
-                    found.append(relative)
-                    continue
-                if error.errno in _LINK_ERRNOS or error.errno in _NOT_REGULAR_OPEN_ERRNOS:
-                    found.append(relative)
-                    continue
-                if error.errno == errno.ENOENT:
-                    continue
-                raise
-            try:
-                if os.listdir(child):
-                    walk(child, relative)
-                elif relative not in implied_directories:
-                    found.append(relative)
-            finally:
-                os.close(child)
-
-    walk(root_descriptor, "")
+            child, refusal = _open_directory_at(root_descriptor, relative, listed=True)
+            if child is None:
+                found.append(relative)
+                continue
+            os.close(child)
+            pending.append(relative)
     return iter(sorted(found))
 
 
@@ -652,7 +750,9 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
         for relative in _files(root_descriptor, implied_directories):
             if relative == manifest_name or relative in declarations:
                 continue
-            data, refusal = _read_bounded_at(root_descriptor, relative, declared=False)
+            data, refusal = _read_bounded_at(
+                root_descriptor, relative, declared=False, listed=True
+            )
             if data is None:
                 entries.append(
                     refused_entry(
@@ -708,6 +808,28 @@ def _stable_bytes(
     return data, None
 
 
+def _resolved_refusal(inv: BundleInventory, entry: BundleInventoryEntry) -> BundleRefusal | None:
+    """Re-resolve a declared path at normalization without reading its bytes."""
+    root_descriptor = _open_root(inv.root)
+    try:
+        descriptor, refusal = _open_at(root_descriptor, entry.path, declared=True)
+    finally:
+        os.close(root_descriptor)
+    if descriptor is None:
+        return refusal
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            return BundleRefusal.NOT_A_REGULAR_FILE
+        if status.st_nlink > 1:
+            return BundleRefusal.HARD_LINK_REFUSED
+        if status.st_size > MAX_FILE_BYTES:
+            return BundleRefusal.TOO_LARGE
+    finally:
+        os.close(descriptor)
+    return None
+
+
 def _json_is_canonical(value: object) -> bool:
     try:
         canonical_bytes(value)
@@ -757,8 +879,8 @@ def _window_parts(value: object) -> tuple[str, str, list, list, str] | None:
         return None
     if not all(
         type(button) is dict
-        and type(button.get("label")) is str
-        and type(button.get("disabled")) is bool
+        and ("label" not in button or type(button["label"]) in (str, type(None)))
+        and ("disabled" not in button or type(button["disabled"]) in (bool, type(None)))
         for button in buttons
     ):
         return None
@@ -826,6 +948,7 @@ def normalize(
         raise BundleFormatError("document_account must be a non-empty string")
 
     state = _NormalizationState()
+    resolved_refusals: dict[str, BundleRefusal | None] = {}
 
     def reject(locator: str, refusal: BundleRefusal, related: tuple[str, ...] = ()) -> None:
         state.refusals.append(BundleUnnormalized(locator, refusal, related))
@@ -871,6 +994,8 @@ def normalize(
             reject(entry.path, BundleRefusal.BYTE_COUNT_MISMATCH)
         if not entry.digest_matches:
             reject(entry.path, BundleRefusal.DIGEST_MISMATCH)
+        if resolved_refusals[entry.path] is not None:
+            return None
         if not entry.byte_count_matches or not entry.digest_matches:
             return None
         data, refusal = _stable_bytes(inv, entry)
@@ -880,6 +1005,13 @@ def normalize(
         return data
 
     def records() -> Iterator[SourceRecord]:
+        resolved_refusals.update(
+            {
+                entry.path: _resolved_refusal(inv, entry)
+                for entry in inv.entries
+                if entry.declaration is not None
+            }
+        )
         documents = sorted(
             (entry for entry in inv.entries if entry.file_class is BundleFileClass.DOCUMENT),
             key=lambda entry: entry.path,
@@ -891,18 +1023,24 @@ def normalize(
         for entry in inv.entries:
             if entry.path == inv.manifest_name:
                 continue
+            inventory_refusal: BundleRefusal | None = None
             if entry.is_symlink:
-                reject(entry.path, BundleRefusal.SYMLINK_REFUSED)
+                inventory_refusal = BundleRefusal.SYMLINK_REFUSED
             elif entry.not_regular:
-                reject(entry.path, BundleRefusal.NOT_A_REGULAR_FILE)
+                inventory_refusal = BundleRefusal.NOT_A_REGULAR_FILE
             elif entry.hard_link:
-                reject(entry.path, BundleRefusal.HARD_LINK_REFUSED)
+                inventory_refusal = BundleRefusal.HARD_LINK_REFUSED
             elif entry.declaration is None:
-                reject(entry.path, BundleRefusal.UNDECLARED_FILE)
+                inventory_refusal = BundleRefusal.UNDECLARED_FILE
             elif not entry.present:
-                reject(entry.path, BundleRefusal.MISSING_DECLARED_FILE)
+                inventory_refusal = BundleRefusal.MISSING_DECLARED_FILE
             elif entry.too_large:
-                reject(entry.path, BundleRefusal.TOO_LARGE)
+                inventory_refusal = BundleRefusal.TOO_LARGE
+            if inventory_refusal is not None:
+                reject(entry.path, inventory_refusal)
+            resolved_refusal = resolved_refusals.get(entry.path)
+            if resolved_refusal is not None and resolved_refusal is not inventory_refusal:
+                reject(entry.path, resolved_refusal)
 
         for entry in documents:
             data = verified(entry)
