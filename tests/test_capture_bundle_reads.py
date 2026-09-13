@@ -49,26 +49,32 @@ def test_a_manifest_swapped_for_a_link_between_check_and_read_is_refused(tmp_pat
 
 
 def test_a_manifest_over_the_manifest_bound_is_refused_without_being_read_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """a manifest has its own bound (MAX_MANIFEST_BYTES ≤ 1 MiB); over it → refusal, never a whole read."""
+    """A manifest that grows during a read stops at its declared reader bound."""
     root = _copy(tmp_path)
     manifest = root / "INPUT_MANIFEST.json"
     bound = getattr(capture_bundle, "MAX_MANIFEST_BYTES", 1024 * 1024)
     with open(manifest, "ab") as handle:
-        handle.write(b" " * (bound + 1))  # trailing whitespace keeps it valid JSON if it were parsed
+        handle.write(b" " * (bound - manifest.stat().st_size))
+    assert manifest.stat().st_size == bound
     read_sizes: list[int] = []
     real_read = os.read
+    grew = False
 
     def counting_read(fd: int, size: int) -> bytes:
+        nonlocal grew
+        if not grew:
+            grew = True
+            with open(manifest, "ab") as handle:
+                handle.write(b" " * 4096)
         data = real_read(fd, size)
         read_sizes.append(len(data))
         return data
 
     monkeypatch.setattr(os, "read", counting_read)
-    monkeypatch.setattr(Path, "read_bytes", lambda self: pytest.fail("the manifest was read whole through Path.read_bytes"))
 
     with pytest.raises(BundleFormatError):
         inventory(root)
-    assert sum(read_sizes) <= bound + 1
+    assert read_sizes == [bound, 1]
 
 
 # --- a platform without O_NOFOLLOW follows links -------------------------------------------------------
@@ -175,6 +181,31 @@ def test_a_hard_link_created_after_inventory_is_refused_at_read(tmp_path: Path) 
     hard_link = getattr(BundleRefusal, "HARD_LINK_REFUSED", None)
     assert hard_link is not None
     assert [item.refusal for item in normalized.refusals].count(hard_link) == 1
+
+
+def test_a_hard_link_created_between_resolution_and_read_is_refused_by_the_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The read descriptor's own link-count check closes the late-link race."""
+    root = _copy(tmp_path)
+    declared = root / "documents" / "watch.txt"
+    inv = inventory(root)
+    real_open = os.open
+    opens = 0
+
+    def linking_open(path, flags, *args, **kwargs):
+        nonlocal opens
+        if os.fspath(path) == "watch.txt":
+            opens += 1
+            if opens == 2:
+                os.link(declared, tmp_path / "late-second-name.txt")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", linking_open)
+    normalized = _normalize(inv)
+    records = tuple(normalized.records)
+
+    assert opens >= 2
+    assert all(record.external_id != "documents/watch.txt" for record in records)
+    assert [item.refusal for item in normalized.refusals].count(BundleRefusal.HARD_LINK_REFUSED) == 1
 
 
 def test_an_undeclared_special_file_is_refused_and_counted_not_omitted(tmp_path: Path) -> None:

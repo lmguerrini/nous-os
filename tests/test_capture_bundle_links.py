@@ -112,3 +112,32 @@ def test_a_declared_path_with_an_empty_component_is_refused_as_malformed(
 
     with pytest.raises(BundleFormatError):
         inventory(root)
+
+
+@pytest.mark.parametrize("forbidden", ["\x01", "\x1f", "\u2028"])
+def test_declared_path_controls_are_refused_before_a_filesystem_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, forbidden: str
+) -> None:
+    root = _copy(tmp_path)
+    manifest = root / "INPUT_MANIFEST.json"
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    value["files"].append(
+        {
+            "path": f"documents/control{forbidden}name.txt",
+            "bytes": 1,
+            "sha256": "0" * 64,
+            "source_kind": "keeper_note",
+            "sensitivity": "synthetic",
+        }
+    )
+    manifest.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    real_lstat = os.lstat
+
+    def no_control_lookup(path, *args, **kwargs):
+        if type(path) is str and forbidden in path:
+            pytest.fail("a forbidden declared path reached lstat")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", no_control_lookup)
+    with pytest.raises(BundleFormatError, match="control characters|Unicode line separator"):
+        inventory(root)

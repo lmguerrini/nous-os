@@ -159,6 +159,44 @@ def test_an_entry_that_vanishes_during_the_walk_is_an_unstable_bundle(tmp_path: 
     assert "not stable" in str(refusal.value)
 
 
+def test_a_size_change_after_inventory_is_named_as_an_unstable_bundle(tmp_path: Path) -> None:
+    """The inventory digest/length comparison refuses bytes changed after inventory."""
+    root = _copy(tmp_path)
+    inv = inventory(root)
+    declared = root / "documents" / "watch.txt"
+    entry = next(item for item in inv.entries if item.path == "documents/watch.txt")
+    declared.write_bytes(declared.read_bytes() + b"later bytes\n")
+    assert declared.stat().st_size != entry.byte_length
+
+    with pytest.raises(BundleFormatError, match="changed since it was inventoried; the bundle is not stable"):
+        _normalize(inv)
+
+
+def test_a_node_replaced_between_lstat_and_open_is_named_as_not_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_checked_open compares its pre-open name signature with the open descriptor."""
+    root = _copy(tmp_path)
+    inv = inventory(root)
+    declared = root / "documents" / "watch.txt"
+    replacement = tmp_path / "replacement.txt"
+    replacement.write_bytes(declared.read_bytes())
+    real_open = os.open
+    replaced = False
+
+    def replacing_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if os.fspath(path) == "watch.txt" and not replaced:
+            replaced = True
+            os.replace(replacement, declared)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replacing_open)
+    with pytest.raises(BundleFormatError, match="not stable"):
+        _normalize(inv)
+    assert replaced
+
+
 # ------------------------------------------------------------
 
 def test_a_late_link_is_named_even_for_a_file_that_mismatched_at_inventory(tmp_path: Path) -> None:

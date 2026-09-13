@@ -528,40 +528,57 @@ def test_declared_file_deleted_after_inventory_is_refused(tmp_path: Path) -> Non
     assert normalized.counters["missing_declared_files"] == 1
 
 
-def test_declared_file_larger_than_bound_is_not_read_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_declared_file_that_grows_past_the_bound_is_read_only_to_the_bound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A descriptor that grows after fstat contributes only bound + 1 bytes.
+
+    This observes the bounded descriptor reader itself. An unbounded read loop
+    would consume all of the bytes appended by ``counting_read``.
+    """
     root = _copy(tmp_path)
     large = root / "documents" / "large.txt"
-    with large.open("wb") as stream:
-        stream.truncate(capture_bundle.MAX_FILE_BYTES + 1)
+    bound = 64
+    large.write_bytes(b"x" * bound)
 
     def declare_large_file(manifest: dict) -> None:
         manifest["files"].append(
             {
                 "path": "documents/large.txt",
-                "bytes": capture_bundle.MAX_FILE_BYTES + 1,
-                "sha256": "0" * 64,
+                "bytes": bound,
+                "sha256": digest_bytes(b"x" * bound),
                 "source_kind": "keeper_note",
                 "sensitivity": "synthetic",
             }
         )
 
     _edit_json(root / "INPUT_MANIFEST.json", declare_large_file)
-    original_read_bytes = Path.read_bytes
+    read_sizes: list[int] = []
+    grew = False
+    real_read = capture_bundle.os.read
 
-    def reject_large_read(path: Path) -> bytes:
-        if path == large:
-            raise AssertionError("the large declared file was read")
-        return original_read_bytes(path)
+    def counting_read(descriptor: int, size: int) -> bytes:
+        nonlocal grew
+        if not grew:
+            grew = True
+            with large.open("ab") as stream:
+                stream.write(b"y" * 4096)
+        data = real_read(descriptor, size)
+        read_sizes.append(len(data))
+        return data
 
-    monkeypatch.setattr(Path, "read_bytes", reject_large_read)
-    normalized = normalize(
-        inventory(root), provider=PROVIDER, account=ACCOUNT, account_basis=ACCOUNT_BASIS
-    )
-    records = tuple(normalized.records)
+    monkeypatch.setattr(capture_bundle.os, "read", counting_read)
+    root_descriptor = capture_bundle._open_root(root)
+    try:
+        data, refusal = capture_bundle._read_bounded_at(
+            root_descriptor,
+            "documents/large.txt",
+            maximum_bytes=bound,
+            declared=True,
+        )
+    finally:
+        capture_bundle.os.close(root_descriptor)
 
-    assert "documents/large.txt" not in _by_kind(records, SourceKind.DOCUMENT)
-    assert [item.refusal for item in normalized.refusals].count(BundleRefusal.TOO_LARGE) == 1
-    assert normalized.counters["too_large"] == 1
+    assert data is None and refusal is BundleRefusal.TOO_LARGE
+    assert read_sizes == [bound + 1]
 
 
 def test_whitespace_only_attribution_is_refused(tmp_path: Path) -> None:

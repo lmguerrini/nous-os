@@ -587,6 +587,14 @@ def _relative(value: object, name: str) -> str:
     """Accept only a non-empty bundle-relative path, preventing root escape."""
     if type(value) is not str or not value:
         raise BundleFormatError(f"{name} must be a non-empty relative path")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise BundleFormatError(f"{name} must be valid UTF-8 text") from error
+    if any(ord(character) < 0x20 or character == "\u2028" for character in value):
+        raise BundleFormatError(
+            f"{name} must not contain C0 control characters or a Unicode line separator"
+        )
     path = PurePosixPath(value)
     if (
         path.is_absolute()
@@ -833,25 +841,33 @@ def _resolved_refusal(inv: BundleInventory, entry: BundleInventoryEntry) -> Bund
 def _json_is_canonical(value: object) -> bool:
     try:
         canonical_bytes(value)
-    except (TypeError, ValueError):
+    except (TypeError, UnicodeEncodeError, ValueError):
         return False
     return True
+
+
+def _utf8_text(value: object, *, non_empty: bool = False) -> str | None:
+    """Return a JSON string whose bytes are safe to retain in a record."""
+    if type(value) is not str or (non_empty and not value):
+        return None
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return value
 
 
 def _capture_headers(capture: object) -> tuple[str, str, str, list] | None:
     if type(capture) is not dict:
         return None
-    conversation_id = capture.get("conversation_id")
-    captured_at = capture.get("captured_at")
-    url = capture.get("url")
+    conversation_id = _utf8_text(capture.get("conversation_id"), non_empty=True)
+    captured_at = _utf8_text(capture.get("captured_at"), non_empty=True)
+    url = _utf8_text(capture.get("url"), non_empty=True)
     branches = capture.get("branches")
     if (
-        type(conversation_id) is not str
-        or not conversation_id
-        or type(captured_at) is not str
-        or not captured_at
-        or type(url) is not str
-        or not url
+        conversation_id is None
+        or captured_at is None
+        or url is None
         or type(branches) is not list
     ):
         return None
@@ -861,49 +877,56 @@ def _capture_headers(capture: object) -> tuple[str, str, str, list] | None:
 def _window_parts(value: object) -> tuple[str, str, list, list, str] | None:
     if type(value) is not dict:
         return None
-    captured_at = value.get("captured_at")
-    url = value.get("url")
-    buttons = value.get("buttons")
+    captured_at = _utf8_text(value.get("captured_at"), non_empty=True)
+    url = _utf8_text(value.get("url"), non_empty=True)
+    buttons = value.get("buttons", [])
     messages = value.get("messages")
-    text = value.get("text")
+    text = _utf8_text(value.get("text"))
     if (
-        type(captured_at) is not str
-        or not captured_at
-        or type(url) is not str
-        or not url
+        captured_at is None
+        or url is None
         or type(buttons) is not list
         or type(messages) is not list
-        or type(text) is not str
+        or text is None
         or not _json_is_canonical(buttons)
     ):
         return None
-    if not all(
-        type(button) is dict
-        and ("label" not in button or type(button["label"]) in (str, type(None)))
-        and ("disabled" not in button or type(button["disabled"]) in (bool, type(None)))
-        for button in buttons
-    ):
-        return None
+    for button in buttons:
+        if type(button) is not dict:
+            return None
+        if "label" in button and button["label"] is not None:
+            if _utf8_text(button["label"]) is None:
+                return None
+        if "disabled" in button and type(button["disabled"]) not in (bool, type(None)):
+            return None
+        if not _json_is_canonical(button):
+            return None
     return captured_at, url, buttons, messages, text
 
 
 def _message_parts(value: object) -> tuple[str, Role, str, str, dict[str, object]] | None:
     if type(value) is not dict:
         return None
-    message_id = value.get("id")
-    if type(message_id) is not str or not message_id:
+    message_id = _utf8_text(value.get("id"), non_empty=True)
+    if message_id is None:
         return None
-    role = _ROLES.get(value.get("role"))
+    role_name = _utf8_text(value.get("role"))
+    if role_name is None:
+        return message_id, Role.UNKNOWN, "", "", {}
+    role = _ROLES.get(role_name)
     if role is None:
         return message_id, Role.UNKNOWN, "", "", {}
-    text = value.get("text")
-    text_content = value.get("text_content")
-    if type(text) is not str or type(text_content) is not str:
+    text = _utf8_text(value.get("text"))
+    text_content = _utf8_text(value.get("text_content"))
+    if text is None or text_content is None:
         return message_id, role, "", "", {}
     payload: dict[str, object] = {"text": text, "text_content": text_content}
     for optional in ("html", "links"):
         if optional in value:
-            payload[optional] = value[optional]
+            optional_value = value[optional]
+            if not _json_is_canonical(optional_value):
+                return message_id, role, "", "", {}
+            payload[optional] = optional_value
     if not _json_is_canonical(payload):
         return message_id, role, "", "", {}
     return message_id, role, text, text_content, payload
