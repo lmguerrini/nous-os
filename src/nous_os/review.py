@@ -844,9 +844,16 @@ def _require_promote_grant(grant: Grant) -> None:
         raise NotAuthorized("the grant does not hold the operation's required tier")
 
 
-def _validate_canon_root(canon_root: Path) -> None:
+def _validate_canon_root(
+    canon_root: Path, *, resumable_pairs: frozenset[tuple[str, str]] = frozenset()
+) -> None:
     """Reject impossible canonical paths before any mutable side effect."""
     root = Path(canon_root)
+    ancestor = root
+    while ancestor != ancestor.parent:
+        if ancestor.exists() and not ancestor.is_dir():
+            raise ReviewError("CANON_ROOT_NOT_DIRECTORY")
+        ancestor = ancestor.parent
     if root.exists() and not root.is_dir():
         raise ReviewError("CANON_ROOT_NOT_DIRECTORY")
     assertions = root / "assertions"
@@ -859,7 +866,44 @@ def _validate_canon_root(canon_root: Path) -> None:
         # A regular file at the index path is viable only if it is the index
         # it claims to be.  Verify all existing bytes before an authorization
         # can be appended for a later write that would fail.
-        canon_index(root)
+        try:
+            canon_index(root)
+        except CanonDivergence:
+            missing = _unindexed_versions(root)
+            missing_pairs = {
+                (version.candidate_id, version.candidate_version)
+                for version in missing.values()
+            }
+            if not missing_pairs or not missing_pairs <= resumable_pairs:
+                raise
+
+
+def _prepare_canon_root(canon_root: Path) -> None:
+    """Create the canonical directories before reserving a decision."""
+    root = Path(canon_root)
+    assertions = root / "assertions"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        assertions.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise ReviewError("CANON_ROOT_UNAVAILABLE") from error
+    if not root.is_dir():
+        raise ReviewError("CANON_ROOT_NOT_DIRECTORY")
+    if not assertions.is_dir():
+        raise ReviewError("CANON_ASSERTIONS_NOT_DIRECTORY")
+
+
+def _resumable_pairs(
+    decisions: Iterable[ReviewDecision], entries: Iterable[AuditEntry]
+) -> frozenset[tuple[str, str]]:
+    entries = tuple(entries)
+    reserved = {entry.decision_digest for entry in entries if entry.outcome == "RESERVED"}
+    completed = {entry.decision_digest for entry in entries if entry.outcome == "APPLIED"}
+    return frozenset(
+        (decision.candidate_id, decision.version)
+        for decision in decisions
+        if decision.digest in reserved and decision.digest not in completed
+    )
 
 
 def _authorization_payload(
@@ -928,7 +972,12 @@ def apply(
     # Resolve the explicit root without opening or creating it.
     Path(data_root).expanduser().resolve()
     Path(snapshot_root).expanduser().resolve()
-    _validate_canon_root(Path(canon_root))
+    preflight_decisions = _read_decisions(Path(decisions_path))
+    preflight_audit = _audit_entries(Path(audit_log))
+    _validate_canon_root(
+        Path(canon_root),
+        resumable_pairs=_resumable_pairs(preflight_decisions, preflight_audit),
+    )
 
     with _application_lock(Path(audit_log)):
         decisions = _read_decisions(Path(decisions_path))
@@ -948,6 +997,14 @@ def apply(
         completed_digests = {
             entry.decision_digest for entry in prior_audit if entry.outcome == "APPLIED"
         }
+        reserved_pairs = {
+            (entry.candidate_id, entry.candidate_version)
+            for entry in prior_audit
+            if entry.outcome == "RESERVED"
+        }
+        resumable_pairs = _resumable_pairs(decisions, prior_audit)
+        _validate_canon_root(Path(canon_root), resumable_pairs=resumable_pairs)
+        _repair_reserved_index_entries(Path(canon_root), resumable_pairs)
         applied: list[AuditEntry] = []
 
         def record(entry: AuditEntry) -> None:
@@ -955,6 +1012,7 @@ def apply(
             known_digests.add(entry.decision_digest)
             if entry.outcome == "RESERVED":
                 reserved_digests.add(entry.decision_digest)
+                reserved_pairs.add((entry.candidate_id, entry.candidate_version))
             if entry.outcome == "APPLIED":
                 applied_pairs.add((entry.candidate_id, entry.candidate_version))
                 completed_digests.add(entry.decision_digest)
@@ -966,6 +1024,9 @@ def apply(
                 record(_audit_for(decision, "ALREADY_DECIDED"))
                 continue
             resuming = decision.digest in reserved_digests and decision.digest not in completed_digests
+            if pair in reserved_pairs and not resuming:
+                record(_audit_for(decision, "ALREADY_DECIDED"))
+                continue
             if decision.digest in known_digests and not resuming:
                 record(_audit_for(decision, "DUPLICATE"))
                 continue
@@ -1026,6 +1087,7 @@ def apply(
                 record(_audit_for(decision, "SUPERSEDED_NOT_TAIL"))
                 continue
 
+            _prepare_canon_root(Path(canon_root))
             if not resuming:
                 record(_audit_for(decision, "RESERVED"))
             try:
@@ -1225,6 +1287,52 @@ def canon_index(canon_root: Path) -> tuple[CanonVersion, ...]:
     if set(indexed) != set(expected):
         raise CanonDivergence(f"canonical assertion index diverges: {base / 'assertions.jsonl'}")
     return tuple(sorted(versions, key=lambda version: (version.assertion.id, version.content_digest)))
+
+
+def _unindexed_versions(canon_root: Path) -> dict[tuple[str, str], CanonVersion]:
+    """Return verified versions whose only missing record is their index line."""
+    base = Path(canon_root)
+    root = base / "assertions"
+    index_payloads = _canon_index_payloads(base)
+    if not root.exists():
+        if index_payloads:
+            raise CanonDivergence(f"canonical assertion files are absent for index: {base}")
+        return {}
+    if not root.is_dir():
+        raise CanonDivergence(f"canonical assertion root is not a directory: {root}")
+    versions = tuple(_canon_version_from_file(path) for path in sorted(root.rglob("*.json")) if path.is_file())
+    _verify_chain(versions)
+    expected = {
+        (version.assertion.id, version.content_digest): version for version in versions
+    }
+    indexed: set[tuple[str, str]] = set()
+    for payload in index_payloads:
+        key = (payload["assertion_id"], payload["content_digest"])
+        version = expected.get(key)
+        if key in indexed or version is None:
+            raise CanonDivergence(f"canonical assertion index diverges: {base / 'assertions.jsonl'}")
+        if canonical_bytes(payload) != canonical_bytes(version.as_payload()):
+            raise CanonDivergence(f"canonical assertion index diverges: {base / 'assertions.jsonl'}")
+        indexed.add(key)
+    return {key: version for key, version in expected.items() if key not in indexed}
+
+
+def _repair_reserved_index_entries(
+    canon_root: Path, resumable_pairs: frozenset[tuple[str, str]]
+) -> None:
+    """Finish index appends left behind by exact unfinished reservations."""
+    if not resumable_pairs:
+        return
+    missing = _unindexed_versions(canon_root)
+    missing_pairs = {
+        (version.candidate_id, version.candidate_version) for version in missing.values()
+    }
+    if not missing_pairs:
+        return
+    if not missing_pairs <= resumable_pairs:
+        raise CanonDivergence(f"canonical assertion index diverges: {Path(canon_root) / 'assertions.jsonl'}")
+    for version in missing.values():
+        _ensure_index_entry(Path(canon_root), version.as_payload())
 
 
 def queue(store: CandidateStore, log: Path) -> tuple[QueueEntry, ...]:

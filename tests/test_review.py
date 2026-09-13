@@ -539,6 +539,85 @@ def test_reserved_run_finishes_after_canon_interruption(
     assert [entry["outcome"] for entry in _audit(world)].count("APPLIED") == 1
 
 
+def test_reserved_run_repairs_missing_index_after_index_append_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = _world(tmp_path)
+    candidate = ReviewCandidate.from_proposal(_record(world, _content(world)))
+    decisions = _write_decisions(world.root / "index-interrupted.jsonl", _decision(candidate))
+    original = review._append_json_line
+    interrupted = False
+
+    def interrupt_index_append(path: Path, payload: dict[str, object]) -> None:
+        nonlocal interrupted
+        if path == world.canon_root / "assertions.jsonl" and not interrupted:
+            interrupted = True
+            raise OSError("interrupted after version rename")
+        original(path, payload)
+
+    monkeypatch.setattr(review, "_append_json_line", interrupt_index_append)
+    assert main(_apply_argv(world, decisions)) == 1
+    assert [entry["outcome"] for entry in _audit(world)] == ["RESERVED"]
+    assert len(list((world.canon_root / "assertions").rglob("*.json"))) == 1
+    assert not (world.canon_root / "assertions.jsonl").exists()
+    monkeypatch.setattr(review, "_append_json_line", original)
+
+    assert main(_apply_argv(world, decisions)) == 0
+    assert len(list((world.canon_root / "assertions").rglob("*.json"))) == 1
+    assert len((world.canon_root / "assertions.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+    assert [entry["outcome"] for entry in _audit(world)].count("APPLIED") == 1
+
+
+def test_reserved_pair_refuses_changed_decision_and_resumes_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = _world(tmp_path)
+    candidate = ReviewCandidate.from_proposal(_record(world, _content(world)))
+    first = _write_decisions(world.root / "first.jsonl", _decision(candidate))
+    changed = _write_decisions(
+        world.root / "changed.jsonl",
+        _decision(candidate, reason="A different decision must not take over the reservation."),
+    )
+    original = review.execute
+
+    def interrupt(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise RuntimeError("interrupted after reservation")
+
+    monkeypatch.setattr(review, "execute", interrupt)
+    assert main(_apply_argv(world, first)) == 1
+    assert [entry["outcome"] for entry in _audit(world)] == ["RESERVED"]
+
+    assert main(_apply_argv(world, changed)) == 0
+    assert _audit(world)[-1]["outcome"] == "ALREADY_DECIDED"
+    monkeypatch.setattr(review, "execute", original)
+
+    assert main(_apply_argv(world, first)) == 0
+    assert len(world.authorizations.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(list((world.canon_root / "assertions").rglob("*.json"))) == 1
+    assert len((world.canon_root / "assertions.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+    assert [entry["outcome"] for entry in _audit(world)].count("APPLIED") == 1
+
+
+def test_canon_root_below_regular_file_fails_before_reservation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = _world(tmp_path)
+    candidate = ReviewCandidate.from_proposal(_record(world, _content(world)))
+    obstruction = world.root / "not-a-directory"
+    obstruction.write_text("regular file", encoding="utf-8")
+    argv = _apply_argv(world, _write_decisions(world.root / "blocked.jsonl", _decision(candidate)))
+    index = argv.index("--canon-root")
+    argv[index + 1] = str(obstruction / "canon")
+
+    before = _all_files(world.root)
+    assert main(argv) == 1
+    assert "ReviewError: CANON_ROOT_NOT_DIRECTORY" in capsys.readouterr().err
+    assert _all_files(world.root) == before
+    assert _audit(world) == []
+    assert not world.authorizations.exists()
+
+
 def test_superseding_a_non_tail_is_refused(tmp_path: Path) -> None:
     world = _world(tmp_path)
     original = ReviewCandidate.from_proposal(_record(world, _content(world)))
