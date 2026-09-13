@@ -289,6 +289,26 @@ def _open_refusal(error: OSError, *, declared: bool) -> BundleRefusal | None:
     return None
 
 
+def _component_open_refusal(
+    error: OSError, component: str, parent: int, *, declared: bool
+) -> BundleRefusal | None:
+    """Classify a failed directory component without trusting its link target."""
+    if error.errno not in (errno.ENOTDIR, errno.ELOOP):
+        return _open_refusal(error, declared=declared)
+    try:
+        status = os.lstat(component, dir_fd=parent)
+    except OSError as lstat_error:
+        refusal = _open_refusal(lstat_error, declared=declared)
+        if refusal is not None:
+            return refusal
+        return _open_refusal(error, declared=declared)
+    if stat.S_ISLNK(status.st_mode):
+        return BundleRefusal.SYMLINK_REFUSED
+    if declared:
+        return BundleRefusal.MISSING_DECLARED_FILE
+    return _open_refusal(error, declared=False)
+
+
 def _read_open_descriptor(
     descriptor: int, *, maximum_bytes: int
 ) -> tuple[bytes | None, BundleRefusal | None]:
@@ -347,7 +367,16 @@ def _open_root(root: Path) -> int:
     try:
         descriptor = os.open(root, flags)
     except OSError as error:
-        if error.errno in _LINK_ERRNOS:
+        if error.errno in (errno.ENOTDIR, errno.ELOOP):
+            try:
+                status = os.lstat(root)
+            except OSError:
+                status = None
+            if status is not None and stat.S_ISLNK(status.st_mode):
+                raise BundleFormatError(
+                    f"the bundle root {root!s} was refused: {BundleRefusal.SYMLINK_REFUSED.value}"
+                ) from None
+        if error.errno == errno.EMLINK:
             raise BundleFormatError(
                 f"the bundle root {root!s} was refused: {BundleRefusal.SYMLINK_REFUSED.value}"
             ) from None
@@ -380,7 +409,9 @@ def _read_bounded_at(
             try:
                 child = os.open(component, directory_flags, dir_fd=parent)
             except OSError as error:
-                refusal = _open_refusal(error, declared=declared)
+                refusal = _component_open_refusal(
+                    error, component, parent, declared=declared
+                )
                 if refusal is not None:
                     return None, refusal
                 raise
@@ -420,7 +451,16 @@ def _files(root_descriptor: int, implied_directories: set[str]) -> Iterator[str]
             try:
                 child = os.open(name, directory_flags, dir_fd=directory)
             except OSError as error:
-                if error.errno in _LINK_ERRNOS or error.errno in _NOT_REGULAR_OPEN_ERRNOS | {errno.ENOTDIR}:
+                if error.errno in (errno.ENOTDIR, errno.ELOOP):
+                    try:
+                        os.lstat(name, dir_fd=directory)
+                    except OSError as lstat_error:
+                        if lstat_error.errno == errno.ENOENT:
+                            continue
+                        raise
+                    found.append(relative)
+                    continue
+                if error.errno in _LINK_ERRNOS or error.errno in _NOT_REGULAR_OPEN_ERRNOS:
                     found.append(relative)
                     continue
                 if error.errno == errno.ENOENT:
@@ -450,9 +490,13 @@ def _relative(value: object, name: str) -> str:
     if type(value) is not str or not value:
         raise BundleFormatError(f"{name} must be a non-empty relative path")
     path = PurePosixPath(value)
-    if path.is_absolute() or ".." in path.parts or value.startswith("/"):
+    if (
+        path.is_absolute()
+        or value.startswith("/")
+        or any(component in {"", ".", ".."} for component in value.split("/"))
+    ):
         raise BundleFormatError(f"{name} must stay under the bundle root")
-    return path.as_posix()
+    return value
 
 
 def _declared_file(entry: object, index: int) -> tuple[str, dict[str, object]]:
