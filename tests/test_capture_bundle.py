@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from nous_os import capture_bundle
 from nous_os.capability import Grant, Tier
 from nous_os.capture_bundle import (
     BundleFileClass,
@@ -277,22 +278,16 @@ def test_every_deviation_is_refused_and_counted(tmp_path: Path) -> None:
     (root / "stray.txt").write_text("A file without a declaration.\n", encoding="utf-8")
     (root / "documents" / "non-text.txt").write_bytes(b"\xff\xfe")
     _declare(root, "documents/non-text.txt")
-    (root / "capture" / "incomplete.json").write_text(
-        json.dumps(
-            {
-                "conversation_id": "conv-2",
-                "captured_at": "2026-09-12T07:40:00+00:00",
-                "url": "https://bundle.invalid/conversations/conv-2",
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    _declare(root, "capture/incomplete.json", "rendered_window_capture")
-
     def add_missing_id(capture: dict) -> None:
         capture["branches"][2]["messages"].append(
             {"role": "user", "text": "No identifier.", "text_content": "No identifier."}
+        )
+        capture["branches"][2]["messages"].append(
+            {
+                "id": "msg-malformed",
+                "role": "user",
+                "text_content": "Missing rendered text.",
+            }
         )
         capture["branches"][2]["messages"].append(
             {
@@ -382,3 +377,188 @@ def test_documents_use_manifest_attribution_and_extension_types() -> None:
     classes = {entry.path: entry.file_class for entry in normalized.inventory.entries}
     assert classes["INPUT_MANIFEST.json"] is BundleFileClass.MANIFEST
     assert classes["capture/interface.json"] is BundleFileClass.CAPTURE
+
+
+def test_undeclared_symlink_is_refused_and_counted(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+    (root / "documents" / "link.txt").symlink_to("watch.txt")
+
+    normalized, records = _records(root)
+
+    assert all(record.external_id != "documents/link.txt" for record in records)
+    assert [item.refusal for item in normalized.refusals].count(BundleRefusal.SYMLINK_REFUSED) == 1
+    assert normalized.counters["symlinks_refused"] == 1
+
+
+def test_declared_file_replaced_by_symlink_after_inventory_is_refused(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+    declared = root / "documents" / "watch.txt"
+    inv = inventory(root)
+    equal_bytes_outside_root = tmp_path / "equal-bytes.txt"
+    equal_bytes_outside_root.write_bytes(declared.read_bytes())
+    declared.unlink()
+    declared.symlink_to(equal_bytes_outside_root)
+
+    normalized = normalize(inv, provider=PROVIDER, account=ACCOUNT, account_basis=ACCOUNT_BASIS)
+    records = tuple(normalized.records)
+
+    assert all(record.external_id != "documents/watch.txt" for record in records)
+    assert [item.refusal for item in normalized.refusals].count(BundleRefusal.SYMLINK_REFUSED) == 1
+    assert normalized.counters["symlinks_refused"] == 1
+
+
+def test_equal_text_messages_keep_every_rendering(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+
+    def add_distinct_renderings(capture: dict) -> None:
+        first = capture["branches"][0]["messages"][0]
+        second = capture["branches"][1]["messages"][0]
+        first["html"] = "<p>first rendering</p>"
+        first["links"] = [{"href": "https://bundle.invalid/first", "label": "first"}]
+        second["html"] = "<p>second rendering</p>"
+        second["links"] = [{"href": "https://bundle.invalid/second", "label": "second"}]
+
+    _edit_json(root / "capture" / "interface.json", add_distinct_renderings)
+    _update_declaration(root, "capture/interface.json")
+    normalized, records = _records(root)
+    messages = _by_kind(records, SourceKind.CAPTURED_MESSAGE)
+
+    assert len(messages) == 4
+    assert messages["msg-a1"].payload["renderings"] == [
+        {
+            "window_index": 0,
+            "html": "<p>first rendering</p>",
+            "links": [{"href": "https://bundle.invalid/first", "label": "first"}],
+        },
+        {
+            "window_index": 1,
+            "html": "<p>second rendering</p>",
+            "links": [{"href": "https://bundle.invalid/second", "label": "second"}],
+        },
+    ]
+    assert BundleRefusal.INCONSISTENT_OCCURRENCES not in {item.refusal for item in normalized.refusals}
+
+
+def test_uppercase_declared_sha256_matches(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+
+    def uppercase_digest(manifest: dict) -> None:
+        entry = next(entry for entry in manifest["files"] if entry["path"] == "documents/watch.txt")
+        entry["sha256"] = entry["sha256"].upper()
+
+    _edit_json(root / "INPUT_MANIFEST.json", uppercase_digest)
+    normalized, records = _records(root)
+
+    assert "documents/watch.txt" in _by_kind(records, SourceKind.DOCUMENT)
+    assert BundleRefusal.DIGEST_MISMATCH not in {item.refusal for item in normalized.refusals}
+    assert normalized.counters["digest_mismatches"] == 0
+
+
+@pytest.mark.parametrize(("field", "value"), [("source_kind", None), ("sensitivity", "")])
+def test_document_declaration_requires_non_empty_attribution(
+    tmp_path: Path, field: str, value: str | None
+) -> None:
+    root = _copy(tmp_path)
+
+    def remove_attribution(manifest: dict) -> None:
+        entry = next(entry for entry in manifest["files"] if entry["path"] == "documents/watch.txt")
+        if value is None:
+            entry.pop(field)
+        else:
+            entry[field] = value
+
+    _edit_json(root / "INPUT_MANIFEST.json", remove_attribution)
+    normalized, records = _records(root)
+
+    assert "documents/watch.txt" not in _by_kind(records, SourceKind.DOCUMENT)
+    assert [item.refusal for item in normalized.refusals].count(BundleRefusal.MALFORMED_DECLARATION) == 1
+    assert normalized.counters["malformed_declarations"] == 1
+
+
+def test_multiple_declared_captures_refuse_all_capture_records(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+    additional_capture = root / "capture" / "additional.json"
+    additional_capture.write_bytes((root / "capture" / "interface.json").read_bytes())
+    _declare(root, "capture/additional.json", "rendered_window_capture")
+
+    normalized, records = _records(root)
+
+    assert len(_by_kind(records, SourceKind.DOCUMENT)) == 3
+    assert not [
+        record
+        for record in records
+        if record.kind in (SourceKind.CAPTURE_WINDOW, SourceKind.CAPTURED_MESSAGE)
+    ]
+    assert [item.refusal for item in normalized.refusals].count(BundleRefusal.MULTIPLE_CAPTURES) == 1
+    assert normalized.counters["multiple_captures"] == 1
+
+
+def test_normalization_materializes_records_before_returning(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+    normalized = normalize(
+        inventory(root), provider=PROVIDER, account=ACCOUNT, account_basis=ACCOUNT_BASIS
+    )
+
+    assert isinstance(normalized.records, tuple)
+    assert normalized.refusals == ()
+    partial = iter(normalized.records)
+    first = next(partial)
+    counters = normalized.counters
+    remaining = tuple(partial)
+    fresh_count = len(
+        normalize(
+            inventory(root), provider=PROVIDER, account=ACCOUNT, account_basis=ACCOUNT_BASIS
+        ).records
+    )
+
+    assert counters["documents"] == 3
+    assert len((first, *remaining)) == fresh_count
+
+
+def test_declared_file_deleted_after_inventory_is_refused(tmp_path: Path) -> None:
+    root = _copy(tmp_path)
+    inv = inventory(root)
+    (root / "documents" / "watch.txt").unlink()
+
+    normalized = normalize(inv, provider=PROVIDER, account=ACCOUNT, account_basis=ACCOUNT_BASIS)
+    records = tuple(normalized.records)
+
+    assert "documents/watch.txt" not in _by_kind(records, SourceKind.DOCUMENT)
+    assert [item.refusal for item in normalized.refusals].count(BundleRefusal.MISSING_DECLARED_FILE) == 1
+    assert normalized.counters["missing_declared_files"] == 1
+
+
+def test_declared_file_larger_than_bound_is_not_read_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _copy(tmp_path)
+    large = root / "documents" / "large.txt"
+    with large.open("wb") as stream:
+        stream.truncate(capture_bundle.MAX_FILE_BYTES + 1)
+
+    def declare_large_file(manifest: dict) -> None:
+        manifest["files"].append(
+            {
+                "path": "documents/large.txt",
+                "bytes": capture_bundle.MAX_FILE_BYTES + 1,
+                "sha256": "0" * 64,
+                "source_kind": "keeper_note",
+                "sensitivity": "synthetic",
+            }
+        )
+
+    _edit_json(root / "INPUT_MANIFEST.json", declare_large_file)
+    original_read_bytes = Path.read_bytes
+
+    def reject_large_read(path: Path) -> bytes:
+        if path == large:
+            raise AssertionError("the large declared file was read")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_large_read)
+    normalized = normalize(
+        inventory(root), provider=PROVIDER, account=ACCOUNT, account_basis=ACCOUNT_BASIS
+    )
+    records = tuple(normalized.records)
+
+    assert "documents/large.txt" not in _by_kind(records, SourceKind.DOCUMENT)
+    assert [item.refusal for item in normalized.refusals].count(BundleRefusal.TOO_LARGE) == 1
+    assert normalized.counters["too_large"] == 1

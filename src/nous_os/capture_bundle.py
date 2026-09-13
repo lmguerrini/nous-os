@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -50,6 +50,14 @@ class BundleRefusal(Enum):
     UNDECLARED_FILE = "undeclared_file"
     #: The manifest declares a file that is not present below the bundle root.
     MISSING_DECLARED_FILE = "missing_declared_file"
+    #: A symbolic link appears anywhere under the supplied bundle root.
+    SYMLINK_REFUSED = "symlink_refused"
+    #: A declared file exceeds the adapter's bounded-read limit.
+    TOO_LARGE = "too_large"
+    #: A declaration omits the non-empty attribution fields a document needs.
+    MALFORMED_DECLARATION = "malformed_declaration"
+    #: More than one declaration is shaped as a rendered-interface capture.
+    MULTIPLE_CAPTURES = "multiple_captures"
     #: A file offered as supplied text is not valid UTF-8.
     NOT_TEXT = "not_text"
     #: A capture-shaped object lacks the fields needed to preserve its evidence.
@@ -70,6 +78,9 @@ _ROLES: Final = {
 }
 
 
+MAX_FILE_BYTES: Final = 64 * 1024 * 1024
+
+
 @dataclass(frozen=True, slots=True)
 class BundleInventoryEntry:
     """One manifest-declared or found file, with actual and declared bytes kept apart.
@@ -81,6 +92,8 @@ class BundleInventoryEntry:
     path: str
     file_class: BundleFileClass
     present: bool
+    is_symlink: bool
+    too_large: bool
     byte_length: int | None
     digest: str | None
     declared_byte_length: int | None
@@ -93,7 +106,7 @@ class BundleInventoryEntry:
 
     @property
     def digest_matches(self) -> bool:
-        return self.present and self.digest == self.declared_digest
+        return self.present and self.digest == (self.declared_digest or "").lower()
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +135,13 @@ class BundleInventory:
         return sum(
             1
             for entry in self.entries
-            if entry.declaration is not None and entry.present and not entry.digest_matches
+            if (
+                entry.declaration is not None
+                and entry.present
+                and not entry.is_symlink
+                and not entry.too_large
+                and not entry.digest_matches
+            )
         )
 
     @property
@@ -130,7 +149,13 @@ class BundleInventory:
         return sum(
             1
             for entry in self.entries
-            if entry.declaration is not None and entry.present and not entry.byte_count_matches
+            if (
+                entry.declaration is not None
+                and entry.present
+                and not entry.is_symlink
+                and not entry.too_large
+                and not entry.byte_count_matches
+            )
         )
 
 
@@ -145,7 +170,7 @@ class BundleUnnormalized:
 
 @dataclass(slots=True)
 class _NormalizationState:
-    """The mutable accounting behind a lazily yielded normalization result."""
+    """The accounting collected while a normalization result is materialized."""
 
     refusals: list[BundleUnnormalized] = field(default_factory=list)
     counters: dict[str, int] = field(
@@ -160,6 +185,10 @@ class _NormalizationState:
             "byte_count_mismatches": 0,
             "undeclared_files": 0,
             "missing_declared_files": 0,
+            "symlinks_refused": 0,
+            "too_large": 0,
+            "malformed_declarations": 0,
+            "multiple_captures": 0,
             "not_text": 0,
             "malformed_captures": 0,
             "messages_without_id": 0,
@@ -168,48 +197,16 @@ class _NormalizationState:
     )
 
 
-class _LazyRecords(Iterable[SourceRecord]):
-    """Replay records while delaying body reads until a caller asks for them.
-
-    A replay cache prevents a second inspection from rereading a mutable root
-    and silently producing a different normalization.
-    """
-
-    def __init__(self, iterator: Iterator[SourceRecord]) -> None:
-        self._iterator = iterator
-        self._cache: list[SourceRecord] = []
-        self._complete = False
-
-    def __iter__(self) -> Iterator[SourceRecord]:
-        yield from self._cache
-        if self._complete:
-            return
-        for record in self._iterator:
-            self._cache.append(record)
-            yield record
-        self._complete = True
-
-    def __len__(self) -> int:
-        self.exhaust()
-        return len(self._cache)
-
-    def exhaust(self) -> tuple[SourceRecord, ...]:
-        """Read the remainder once before exposing final refusals or counters."""
-        tuple(self)
-        return tuple(self._cache)
-
-
 @dataclass(frozen=True, slots=True)
 class BundleNormalization:
-    """Lazily yielded records, refusals, and counters for one supplied bundle."""
+    """Materialized records, refusals, and counters for one supplied bundle."""
 
     inventory: BundleInventory
-    records: _LazyRecords
+    records: tuple[SourceRecord, ...]
     _state: _NormalizationState
 
     @property
     def refusals(self) -> tuple[BundleUnnormalized, ...]:
-        self.records.exhaust()
         return tuple(self._state.refusals)
 
     @property
@@ -219,11 +216,9 @@ class BundleNormalization:
 
     @property
     def counters(self) -> dict[str, int]:
-        self.records.exhaust()
         return dict(self._state.counters)
 
     def _counter(self, name: str) -> int:
-        self.records.exhaust()
         return self._state.counters[name]
 
     @property
@@ -256,15 +251,18 @@ def _reraise(error: OSError) -> None:
 
 
 def _files(root: Path) -> Iterator[Path]:
-    """Every regular, non-symlinked file below ``root`` in a fixed order."""
+    """Every regular file and symlink below ``root`` in a fixed order."""
     found: list[Path] = []
     for directory, dirnames, filenames in os.walk(root, onerror=_reraise, followlinks=False):
         dirnames.sort()
+        linked_directories = [name for name in dirnames if (Path(directory) / name).is_symlink()]
+        found.extend(Path(directory) / name for name in linked_directories)
+        dirnames[:] = [name for name in dirnames if name not in linked_directories]
         for filename in sorted(filenames):
             candidate = Path(directory) / filename
-            if not candidate.is_symlink() and candidate.is_file():
+            if candidate.is_symlink() or candidate.is_file():
                 found.append(candidate)
-    return iter(found)
+    return iter(sorted(found, key=lambda candidate: candidate.relative_to(root).as_posix()))
 
 
 def _parse(data: bytes) -> object | None:
@@ -300,6 +298,14 @@ def _declared_file(entry: object, index: int) -> tuple[str, dict[str, object]]:
     except ValueError as error:
         raise BundleFormatError(f"files[{index}].sha256 must be a sha256 hex string") from error
     return path, dict(entry)
+
+
+def _has_attribution(declaration: dict[str, object] | None) -> bool:
+    """Whether a declaration identifies the supplied material's stated class."""
+    return declaration is not None and all(
+        type(declaration.get(field)) is str and declaration[field]
+        for field in ("source_kind", "sensitivity")
+    )
 
 
 def _capture_candidate(value: object) -> bool:
@@ -354,6 +360,8 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
             path=manifest_name,
             file_class=BundleFileClass.MANIFEST,
             present=True,
+            is_symlink=False,
+            too_large=False,
             byte_length=len(manifest_bytes),
             digest=digest_bytes(manifest_bytes),
             declared_byte_length=None,
@@ -370,6 +378,74 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
                     path=relative,
                     file_class=BundleFileClass.UNKNOWN,
                     present=False,
+                    is_symlink=False,
+                    too_large=False,
+                    byte_length=None,
+                    digest=None,
+                    declared_byte_length=expected_bytes,
+                    declared_digest=expected_digest,
+                    declaration=declaration,
+                )
+            )
+            continue
+        if path.is_symlink():
+            entries.append(
+                BundleInventoryEntry(
+                    path=relative,
+                    file_class=BundleFileClass.UNKNOWN,
+                    present=True,
+                    is_symlink=True,
+                    too_large=False,
+                    byte_length=None,
+                    digest=None,
+                    declared_byte_length=expected_bytes,
+                    declared_digest=expected_digest,
+                    declaration=declaration,
+                )
+            )
+            continue
+        try:
+            byte_length = path.stat().st_size
+        except FileNotFoundError:
+            entries.append(
+                BundleInventoryEntry(
+                    path=relative,
+                    file_class=BundleFileClass.UNKNOWN,
+                    present=False,
+                    is_symlink=False,
+                    too_large=False,
+                    byte_length=None,
+                    digest=None,
+                    declared_byte_length=expected_bytes,
+                    declared_digest=expected_digest,
+                    declaration=declaration,
+                )
+            )
+            continue
+        if byte_length > MAX_FILE_BYTES:
+            entries.append(
+                BundleInventoryEntry(
+                    path=relative,
+                    file_class=BundleFileClass.UNKNOWN,
+                    present=True,
+                    is_symlink=False,
+                    too_large=True,
+                    byte_length=byte_length,
+                    digest=None,
+                    declared_byte_length=expected_bytes,
+                    declared_digest=expected_digest,
+                    declaration=declaration,
+                )
+            )
+            continue
+        if path.is_symlink():
+            entries.append(
+                BundleInventoryEntry(
+                    path=relative,
+                    file_class=BundleFileClass.UNKNOWN,
+                    present=True,
+                    is_symlink=True,
+                    too_large=False,
                     byte_length=None,
                     digest=None,
                     declared_byte_length=expected_bytes,
@@ -385,6 +461,8 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
                 path=relative,
                 file_class=(BundleFileClass.CAPTURE if _capture_candidate(parsed) else BundleFileClass.DOCUMENT),
                 present=True,
+                is_symlink=False,
+                too_large=False,
                 byte_length=len(data),
                 digest=digest_bytes(data),
                 declared_byte_length=expected_bytes,
@@ -395,11 +473,28 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
     for relative, path in on_disk.items():
         if relative == manifest_name or relative in declarations:
             continue
+        if path.is_symlink():
+            entries.append(
+                BundleInventoryEntry(
+                    path=relative,
+                    file_class=BundleFileClass.UNKNOWN,
+                    present=True,
+                    is_symlink=True,
+                    too_large=False,
+                    byte_length=None,
+                    digest=None,
+                    declared_byte_length=None,
+                    declared_digest=None,
+                )
+            )
+            continue
         entries.append(
             BundleInventoryEntry(
                 path=relative,
                 file_class=BundleFileClass.UNKNOWN,
                 present=True,
+                is_symlink=False,
+                too_large=False,
                 byte_length=path.stat().st_size,
                 digest=digest_bytes(path.read_bytes()),
                 declared_byte_length=None,
@@ -414,12 +509,28 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
     )
 
 
-def _stable_bytes(inv: BundleInventory, entry: BundleInventoryEntry) -> bytes:
-    """Read an inventory entry again, refusing a root that changed mid-normalization."""
-    data = (inv.root / entry.path).read_bytes()
+def _stable_bytes(
+    inv: BundleInventory, entry: BundleInventoryEntry
+) -> tuple[bytes | None, BundleRefusal | None]:
+    """Read one unchanged declared file without following a newly added link."""
+    path = inv.root / entry.path
+    if path.is_symlink():
+        return None, BundleRefusal.SYMLINK_REFUSED
+    try:
+        byte_length = path.stat().st_size
+    except FileNotFoundError:
+        return None, BundleRefusal.MISSING_DECLARED_FILE
+    if byte_length > MAX_FILE_BYTES:
+        return None, BundleRefusal.TOO_LARGE
+    if path.is_symlink():
+        return None, BundleRefusal.SYMLINK_REFUSED
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return None, BundleRefusal.MISSING_DECLARED_FILE
     if len(data) != entry.byte_length or digest_bytes(data) != entry.digest:
         raise BundleFormatError(f"{entry.path} changed since it was inventoried; the bundle is not stable")
-    return data
+    return data, None
 
 
 def _json_is_canonical(value: object) -> bool:
@@ -510,7 +621,7 @@ def normalize(
     document_provider: str | None = None,
     document_account: str | None = None,
 ) -> BundleNormalization:
-    """Yield supplied-document, window, and deduplicated capture-message records lazily.
+    """Materialize supplied-document, window, and deduplicated capture-message records.
 
     The explicit account and basis prevent a rendered page from inventing an
     account identifier it does not contain.  Documents sort by path, windows
@@ -548,6 +659,10 @@ def normalize(
             BundleRefusal.BYTE_COUNT_MISMATCH: "byte_count_mismatches",
             BundleRefusal.UNDECLARED_FILE: "undeclared_files",
             BundleRefusal.MISSING_DECLARED_FILE: "missing_declared_files",
+            BundleRefusal.SYMLINK_REFUSED: "symlinks_refused",
+            BundleRefusal.TOO_LARGE: "too_large",
+            BundleRefusal.MALFORMED_DECLARATION: "malformed_declarations",
+            BundleRefusal.MULTIPLE_CAPTURES: "multiple_captures",
             BundleRefusal.NOT_TEXT: "not_text",
             BundleRefusal.MALFORMED_CAPTURE: "malformed_captures",
             BundleRefusal.MESSAGE_WITHOUT_ID: "messages_without_id",
@@ -557,8 +672,17 @@ def normalize(
             state.counters[counters[refusal]] += 1
 
     def verified(entry: BundleInventoryEntry) -> bytes | None:
+        if entry.is_symlink:
+            reject(entry.path, BundleRefusal.SYMLINK_REFUSED)
+            return None
+        if entry.too_large:
+            reject(entry.path, BundleRefusal.TOO_LARGE)
+            return None
         if not entry.present:
             reject(entry.path, BundleRefusal.MISSING_DECLARED_FILE)
+            return None
+        if not _has_attribution(entry.declaration):
+            reject(entry.path, BundleRefusal.MALFORMED_DECLARATION)
             return None
         if not entry.byte_count_matches:
             reject(entry.path, BundleRefusal.BYTE_COUNT_MISMATCH)
@@ -566,7 +690,11 @@ def normalize(
             reject(entry.path, BundleRefusal.DIGEST_MISMATCH)
         if not entry.byte_count_matches or not entry.digest_matches:
             return None
-        return _stable_bytes(inv, entry)
+        data, refusal = _stable_bytes(inv, entry)
+        if refusal is not None:
+            reject(entry.path, refusal)
+            return None
+        return data
 
     def records() -> Iterator[SourceRecord]:
         documents = sorted(
@@ -580,10 +708,14 @@ def normalize(
         for entry in inv.entries:
             if entry.path == inv.manifest_name:
                 continue
-            if entry.declaration is None:
+            if entry.is_symlink:
+                reject(entry.path, BundleRefusal.SYMLINK_REFUSED)
+            elif entry.declaration is None:
                 reject(entry.path, BundleRefusal.UNDECLARED_FILE)
             elif not entry.present:
                 reject(entry.path, BundleRefusal.MISSING_DECLARED_FILE)
+            elif entry.too_large:
+                reject(entry.path, BundleRefusal.TOO_LARGE)
 
         for entry in documents:
             data = verified(entry)
@@ -616,6 +748,10 @@ def normalize(
 
         seen: dict[str, dict[str, object]] = {}
         order: list[str] = []
+        if len(captures) > 1:
+            related = tuple(entry.path for entry in captures)
+            reject(" | ".join(related), BundleRefusal.MULTIPLE_CAPTURES, related)
+            return
         for entry in captures:
             data = verified(entry)
             if data is None:
@@ -656,7 +792,6 @@ def normalize(
                     container_external_id=conversation_id,
                 )
                 state.counters["windows"] += 1
-                seen_in_window: set[str] = set()
                 for position, message in enumerate(messages):
                     message_locator = f"{window_locator}/messages/{position}"
                     if type(message) is not dict:
@@ -682,6 +817,10 @@ def normalize(
                         "position": position,
                         "captured_at": captured_at,
                     }
+                    rendering: dict[str, object] = {"window_index": window_index}
+                    for field in ("html", "links"):
+                        if field in payload:
+                            rendering[field] = payload[field]
                     previous = seen.get(message_id)
                     if previous is None:
                         seen[message_id] = {
@@ -691,12 +830,11 @@ def normalize(
                             "payload": payload,
                             "locator": message_locator,
                             "occurrences": [occurrence],
-                            "window_indices": {window_index},
+                            "renderings": [rendering],
                             "inconsistent": False,
                         }
                         order.append(message_id)
                         state.counters["occurrences"] += 1
-                        seen_in_window.add(message_id)
                         continue
                     if previous["text"] != text:
                         related = tuple([previous["locator"], message_locator])
@@ -705,11 +843,9 @@ def normalize(
                             state.counters["inconsistent_ids"] += 1
                             previous["inconsistent"] = True
                         continue
-                    if window_index not in previous["window_indices"]:
-                        previous["occurrences"].append(occurrence)
-                        previous["window_indices"].add(window_index)
-                        state.counters["occurrences"] += 1
-                    seen_in_window.add(message_id)
+                    previous["occurrences"].append(occurrence)
+                    previous["renderings"].append(rendering)
+                    state.counters["occurrences"] += 1
 
         for message_id in order:
             message = seen[message_id]
@@ -717,6 +853,7 @@ def normalize(
                 continue
             payload = dict(message["payload"])
             payload["occurrences"] = message["occurrences"]
+            payload["renderings"] = message["renderings"]
             payload["account_basis"] = account_basis
             yield SourceRecord(
                 provider=provider,
@@ -735,4 +872,4 @@ def normalize(
             if message["text"] == "":
                 state.counters["empty_text_messages"] += 1
 
-    return BundleNormalization(inventory=inv, records=_LazyRecords(records()), _state=state)
+    return BundleNormalization(inventory=inv, records=tuple(records()), _state=state)
