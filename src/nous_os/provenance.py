@@ -24,7 +24,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from nous_os.extraction import ExtractionOutcome, Extractor
+from nous_os.extraction import ExtractionError, ExtractionOutcome, Extractor
 from nous_os.identity import SOURCE_PREFIX, digest_bytes, require_id
 from nous_os.snapshots import SnapshotCorrupt, SnapshotNotFound, SnapshotStore
 
@@ -75,7 +75,7 @@ class DerivedRecordNotFound(ProvenanceError):
     """The extraction record named by a derived citation is absent."""
 
 
-class DerivedRecordCorrupt(ProvenanceError):
+class DerivedRecordCorrupt(ProvenanceError, ExtractionError):
     """The extraction record does not authenticate its stored payload."""
 
 
@@ -371,21 +371,32 @@ def _is_regional_indicator(character: str) -> bool:
 
 
 def _grapheme_boundaries(text: str) -> frozenset[int]:
-    """Return conservative extended-grapheme boundaries for citation ranges."""
+    """Return citation boundaries excluding Extend, ZWJ, and RI-pair breaks.
+
+    This is a subset of UAX #29: it refuses boundaries before grapheme-extend
+    codepoints, on either side of ZWJ, and inside regional-indicator pairs.
+    """
     boundaries = {0}
+    regional_indicator_run = 1 if text and _is_regional_indicator(text[0]) else 0
     for index in range(1, len(text)):
         previous, current = text[index - 1], text[index]
-        if current == "\u200d" or previous == "\u200d" or _is_grapheme_extend(current):
-            continue
-        if _is_regional_indicator(previous) and _is_regional_indicator(current):
-            preceding_indicators = 0
-            for character in reversed(text[:index]):
-                if not _is_regional_indicator(character):
-                    break
-                preceding_indicators += 1
-            if preceding_indicators % 2:
-                continue
-        boundaries.add(index)
+        refuses_boundary = (
+            current == "\u200d" or previous == "\u200d" or _is_grapheme_extend(current)
+        )
+        if (
+            not refuses_boundary
+            and _is_regional_indicator(previous)
+            and _is_regional_indicator(current)
+            and regional_indicator_run % 2
+        ):
+            refuses_boundary = True
+        if not refuses_boundary:
+            boundaries.add(index)
+        regional_indicator_run = (
+            regional_indicator_run + 1
+            if _is_regional_indicator(previous) and _is_regional_indicator(current)
+            else int(_is_regional_indicator(current))
+        )
     boundaries.add(len(text))
     return frozenset(boundaries)
 
@@ -556,6 +567,21 @@ def verify_derivation(
         from nous_os.extraction import extract_bytes
 
         stored = extraction_store.get(citation.extractor, citation.asset_digest)
+        if citation.record_digest != stored.record_digest:
+            return DerivationVerdict(
+                DerivationState.NOT_EXECUTABLE,
+                f"citation names record digest {citation.record_digest}, store holds {stored.record_digest}",
+                observed_asset_digest,
+                None,
+            )
+        if citation.extractor_version != stored.extractor_version:
+            return DerivationVerdict(
+                DerivationState.NOT_EXECUTABLE,
+                "citation names extractor version "
+                f"{citation.extractor_version}, store holds {stored.extractor_version}",
+                observed_asset_digest,
+                None,
+            )
         stored_outcome_value = stored.payload.get("outcome")
         try:
             stored_outcome = ExtractionOutcome(stored_outcome_value)
@@ -611,8 +637,8 @@ def verify_derivation(
                 observed_asset_digest,
                 extracted.text_digest,
             )
-        recorded_text_digest = stored.payload.get("text_digest")
-        if extracted.text_digest == recorded_text_digest:
+        stored_text_digest = digest_bytes(stored.text.encode("utf-8"))
+        if extracted.text_digest == stored_text_digest:
             return DerivationVerdict(
                 DerivationState.REPRODUCED,
                 "text digest reproduced",
@@ -622,7 +648,7 @@ def verify_derivation(
         return DerivationVerdict(
             DerivationState.DIVERGED,
             "text digest differs: "
-            f"recorded {recorded_text_digest}, observed {extracted.text_digest}",
+            f"recorded {stored_text_digest}, observed {extracted.text_digest}",
             observed_asset_digest,
             extracted.text_digest,
         )

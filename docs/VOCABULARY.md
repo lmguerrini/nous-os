@@ -159,8 +159,8 @@ left for a reader to discover by being wrong.
 | `Locator` | `src/nous_os/provenance.py:99` | — | A byte range in a specific snapshot. Not a page number and not a guess. |
 | `CharLocator` | `src/nous_os/provenance.py:129` | — | A character range into one preserved extraction text, with no empty or inverted span. |
 | `DerivedCitation` | `src/nous_os/provenance.py:192` | — | A quote from extracted attachment text, bound to the asset, extractor version, shared record, owner, and character range that produced it. |
-| `DerivationState` | `src/nous_os/provenance.py:497` | `REPRODUCED` · `DIVERGED` · `NOT_EXECUTABLE` | Whether supplied asset bytes reproduce the stored extraction, differ from it, or cannot be re-executed. |
-| `DerivationVerdict` | `src/nous_os/provenance.py:506` | — | The reproducibility finding with its reason and observed asset and text digests. |
+| `DerivationState` | `src/nous_os/provenance.py:508` | `REPRODUCED` · `DIVERGED` · `NOT_EXECUTABLE` | Whether supplied asset bytes reproduce the stored extraction, differ from it, or cannot be re-executed. |
+| `DerivationVerdict` | `src/nous_os/provenance.py:517` | — | The reproducibility finding with its reason and observed asset and text digests. |
 | `Snapshot` | `src/nous_os/snapshots.py:43` | — | The bytes of a source as they were when read, addressed by their own content. |
 | `SnapshotStore` | `src/nous_os/snapshots.py:67` | — | Where snapshots live. Nothing overwrites one. |
 | `Ledger` | `src/nous_os/ledger.py:242` | — | The append-only record of every ingest. A file, not an index — reading it back is the whole of recovery. |

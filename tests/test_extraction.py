@@ -15,8 +15,11 @@ import pytest
 from nous_os.extraction import (
     MAX_ARCHIVE_MEMBERS,
     MAX_EXTRACTED_TEXT_BYTES,
+    ExtractionOwner,
     ExtractionOutcome,
+    ExtractionStore,
     Extractor,
+    SharedExtraction,
     deduplicate_extractions,
     extract_assets,
     extract_bytes,
@@ -459,6 +462,34 @@ def test_identical_bytes_share_name_free_record_and_named_owners(tmp_path: Path)
         extractor_version="another version",
     )
     assert len(deduplicate_extractions((first_record, other_extractor))) == 2
+
+
+def test_store_appends_new_owners_and_preserves_identical_writes(tmp_path: Path) -> None:
+    first_source = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    second_source = "src_01ARZ3NDEKTSV4RRFFQ69G5FAA"
+    shared = deduplicate_extractions(
+        (extract_bytes(b"shared stored bytes", first_source, given_name="first"),)
+    )[0]
+    store = ExtractionStore(tmp_path / "store")
+    store.write(shared)
+    assert shared.asset_digest is not None
+    path = tmp_path / "store" / shared.extraction.extractor.value / f"{shared.asset_digest}.json"
+    first_bytes = path.read_bytes()
+
+    second_owner = SharedExtraction(
+        shared.extraction,
+        (ExtractionOwner(second_source, "second"),),
+    )
+    store.write(second_owner)
+    appended_bytes = path.read_bytes()
+    assert appended_bytes != first_bytes
+    assert store.get(shared.extraction.extractor, shared.asset_digest).owners == (
+        (second_source, "second"),
+        (first_source, "first"),
+    )
+
+    store.write(second_owner)
+    assert path.read_bytes() == appended_bytes
 
 
 def test_source_bytes_unchanged(tmp_path: Path) -> None:

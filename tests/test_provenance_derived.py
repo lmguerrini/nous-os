@@ -17,6 +17,7 @@ from nous_os.extraction import (
     ExtractionOutcome,
     ExtractionStore,
     Extractor,
+    StoredExtraction,
     deduplicate_extractions,
     extract_bytes,
     extraction_record_digest,
@@ -284,6 +285,71 @@ def test_o3_derivation_reproduces_diverges_and_reports_nonexecution(
     version = verify_derivation(supplied.get, store, _plain_citation())
     assert version.state is DerivationState.NOT_EXECUTABLE
     assert "extractor version differs" in version.reason
+
+
+def test_o3_derivation_refuses_citation_binding_mismatches(tmp_path: Path) -> None:
+    store, _snapshots, _ledger = _copy_fixture(tmp_path)
+    data = (_FIXTURE / "extraction-source.txt").read_bytes()
+    citation = _plain_citation()
+
+    wrong_digest = replace(citation, record_digest="0" * 64)
+    digest_verdict = verify_derivation(lambda _source: data, store, wrong_digest)
+    assert digest_verdict.state is DerivationState.NOT_EXECUTABLE
+    assert digest_verdict.reason == (
+        f"citation names record digest {wrong_digest.record_digest}, "
+        f"store holds {citation.record_digest}"
+    )
+
+    wrong_version = replace(citation, extractor_version="extraction/9")
+    version_verdict = verify_derivation(lambda _source: data, store, wrong_version)
+    assert version_verdict.state is DerivationState.NOT_EXECUTABLE
+    assert version_verdict.reason == (
+        f"citation names extractor version {wrong_version.extractor_version}, "
+        f"store holds {citation.extractor_version}"
+    )
+
+
+def test_o3_derivation_calculates_the_stored_text_digest_from_stored_text() -> None:
+    data = (_FIXTURE / "extraction-source.txt").read_bytes()
+    extracted = extract_bytes(data)
+    citation = _plain_citation()
+    stored = StoredExtraction(
+        payload={"outcome": ExtractionOutcome.EXTRACTED.value, "text_digest": "0" * 64},
+        owners=(),
+        record_digest=citation.record_digest,
+        text=extracted.text,
+        extractor_version=citation.extractor_version,
+    )
+
+    class Store:
+        def get(self, extractor: Extractor, asset_digest: str) -> StoredExtraction:
+            assert extractor is citation.extractor
+            assert asset_digest == citation.asset_digest
+            return stored
+
+    verdict = verify_derivation(lambda _source: data, Store(), citation)
+
+    assert verdict.state is DerivationState.REPRODUCED
+
+
+def test_o3_derivation_reports_asset_divergence_before_reextraction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _snapshots, _ledger = _copy_fixture(tmp_path)
+    changed = b"bytes that do not match the cited asset"
+
+    import nous_os.extraction as extraction_module
+
+    def must_not_extract(*_arguments: object, **_keywords: object):
+        raise AssertionError("asset mismatch reached extraction")
+
+    monkeypatch.setattr(extraction_module, "extract_bytes", must_not_extract)
+    verdict = verify_derivation(lambda _source: changed, store, _plain_citation())
+
+    assert verdict.state is DerivationState.DIVERGED
+    assert verdict.reason == (
+        f"asset digest differs: expected {_PLAIN_DIGEST}, observed {digest_bytes(changed)}"
+    )
 
 
 def test_o3_derivation_does_not_reproduce_a_still_unavailable_tool(

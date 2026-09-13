@@ -788,6 +788,8 @@ class ExtractionStore:
         extractor_version = payload.get("extractor_version")
         if type(text) is not str or type(extractor_version) is not str or not extractor_version.strip():
             raise self._corrupt("extraction record text or extractor version is malformed")
+        if payload.get("text_digest") != digest_bytes(text.encode("utf-8")):
+            raise self._corrupt("extraction record text digest does not match its text")
         if type(owners_payload) is not list:
             raise self._corrupt("extraction record owners are not an array")
         owners: list[tuple[str, str | None]] = []
@@ -830,17 +832,38 @@ class ExtractionStore:
                 existing = self.get(extraction.extractor, extraction.asset_digest)
             except Exception as error:
                 raise ExtractionError("an existing extraction record is not readable") from error
-            if existing.record_digest == extraction.record_digest:
+            if existing.record_digest != extraction.record_digest:
+                raise ExtractionError("an extraction record already exists with a different digest")
+            owners = list(existing.owners)
+            owners_by_source = {source_id: given_name for source_id, given_name in owners}
+            for owner in shared.owners:
+                existing_given_name = owners_by_source.get(owner.asset_source_id)
+                if owner.asset_source_id in owners_by_source:
+                    if existing_given_name != owner.given_name:
+                        raise ExtractionError("an extraction record owner already exists with a different name")
+                    continue
+                owners_by_source[owner.asset_source_id] = owner.given_name
+                owners.append((owner.asset_source_id, owner.given_name))
+            owners.sort(key=lambda owner: owner[0])
+            if tuple(owners) == existing.owners:
                 return
-            raise ExtractionError("an extraction record already exists with a different digest")
-        wrapper = {
-            "record": extraction.content_payload(),
-            "record_digest": extraction.record_digest,
-            "owners": [
-                {"asset_source_id": owner.asset_source_id, "given_name": owner.given_name}
-                for owner in shared.owners
-            ],
-        }
+            wrapper = {
+                "record": existing.payload,
+                "record_digest": existing.record_digest,
+                "owners": [
+                    {"asset_source_id": source_id, "given_name": given_name}
+                    for source_id, given_name in owners
+                ],
+            }
+        else:
+            wrapper = {
+                "record": extraction.content_payload(),
+                "record_digest": extraction.record_digest,
+                "owners": [
+                    {"asset_source_id": owner.asset_source_id, "given_name": owner.given_name}
+                    for owner in shared.owners
+                ],
+            }
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".partial")
         temporary.write_bytes(canonical_bytes(wrapper) + b"\n")
