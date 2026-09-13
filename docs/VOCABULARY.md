@@ -252,6 +252,10 @@ grant, then preserves canonical assertion versions with matching append-only
 index records. An interrupted index append resumes from the durable version
 file. It is not a catalogue or stdio vocabulary, so it adds no closed enum here.
 
+| Outcome | Defined at | What it records |
+|---|---|---|
+| `SUPERSEDES_UNCHANGED` | `src/nous_os/review.py:162` | A superseding candidate would recreate its predecessor's assertion content, so it is refused before reservation or authorization. |
+
 **Deliberately not in this table.** Exception types (they name refusals, and the refusal is the
 rule, not the concept); strategy implementations of `CohesionStrategy` and `AliasTable`; internal
 helpers; the drawing-layer machinery under `ui/src/render2d/`, which is specific to the renderer that

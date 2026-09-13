@@ -159,6 +159,7 @@ _OUTCOMES: Final[frozenset[str]] = frozenset(
         "CANDIDATE_MALFORMED",
         "EVIDENCE_UNRESOLVED",
         "SUPERSEDED_NOT_TAIL",
+        "SUPERSEDES_UNCHANGED",
         "DECIDED_IN_FUTURE",
         "DERIVED_CITATION_FAILED",
     }
@@ -559,9 +560,24 @@ class CanonWrite:
     written: bool
 
 
+def _json_lines(path: Path, *, encoding: str) -> tuple[str, ...]:
+    """Read JSON Lines using its one record separator, LF.
+
+    JSON strings may contain Unicode line separators.  They are data, rather
+    than record boundaries, because every writer in this module terminates a
+    record with exactly ``b"\\n"``.
+    """
+    text = Path(path).read_text(encoding=encoding)
+    if not text:
+        return ()
+    if text.endswith("\n"):
+        text = text[:-1]
+    return tuple(text.split("\n"))
+
+
 def _read_decisions(path: Path) -> tuple[ReviewDecision, ...]:
     found: list[ReviewDecision] = []
-    for number, line in enumerate(Path(path).read_text(encoding="utf-8-sig").splitlines(), start=1):
+    for number, line in enumerate(_json_lines(path, encoding="utf-8-sig"), start=1):
         if not line:
             raise DecisionRefused(f"DECISION_LINE_{number}_EMPTY")
         try:
@@ -576,7 +592,7 @@ def _audit_entries(path: Path) -> tuple[AuditEntry, ...]:
     if not path.is_file():
         return ()
     found: list[AuditEntry] = []
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for number, line in enumerate(_json_lines(path, encoding="utf-8"), start=1):
         if not line:
             raise ReviewError(f"AUDIT_LINE_{number}_EMPTY")
         try:
@@ -677,6 +693,29 @@ def _canonical_assertion_payload(
     return {**payload, "version_digest": _digest(payload)}
 
 
+def _assertion_for(
+    candidate: ReviewCandidate,
+    decision: ReviewDecision,
+    previous: CanonVersion | None,
+) -> Assertion:
+    """Build exactly the assertion a candidate would write to canon."""
+    assertion_id = None if previous is None else previous.assertion.id
+    if assertion_id is None:
+        from nous_os.identity import new_assertion_id
+
+        assertion_id = new_assertion_id()
+    return Assertion(
+        id=assertion_id,
+        text=candidate.statement,
+        citation=candidate.anchor,
+        support=candidate.support,
+        recorded_at=decision.decided_at,
+        state=LifecycleState.CANONICAL,
+        valid_from=candidate.valid_from,
+        valid_to=candidate.valid_to,
+    )
+
+
 def _canon_versions(canon_root: Path) -> tuple[CanonVersion, ...]:
     return canon_index(canon_root)
 
@@ -732,7 +771,7 @@ def _ensure_index_entry(root: Path, payload: dict[str, object]) -> None:
     if path.exists():
         if not path.is_file():
             raise CanonDivergence(f"canonical assertion index is not a file: {path}")
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        for number, line in enumerate(_json_lines(path, encoding="utf-8"), start=1):
             if not line:
                 raise CanonDivergence(f"canonical assertion index has an empty line: {path}:{number}")
             try:
@@ -790,22 +829,8 @@ def _write_assertion(
             False,
         )
     previous = _previous_version(candidate, canon_root)
-    assertion_id = previous.assertion.id if previous is not None else None
-    if assertion_id is None:
-        from nous_os.identity import new_assertion_id
-
-        assertion_id = new_assertion_id()
+    assertion = _assertion_for(candidate, decision, previous)
     previous_digest = None if previous is None else previous.content_digest
-    assertion = Assertion(
-        id=assertion_id,
-        text=candidate.statement,
-        citation=candidate.anchor,
-        support=candidate.support,
-        recorded_at=decision.decided_at,
-        state=LifecycleState.CANONICAL,
-        valid_from=candidate.valid_from,
-        valid_to=candidate.valid_to,
-    )
     digest = assertion.content_digest
     payload = _canonical_assertion_payload(
         assertion,
@@ -954,7 +979,7 @@ def _authorization_payload(
     if not path.is_file():
         raise ReviewError("AUTHORIZATIONS_NOT_FILE")
     decided_at = _instant_text(decision.decided_at)
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for number, line in enumerate(_json_lines(path, encoding="utf-8"), start=1):
         if not line:
             raise ReviewError(f"AUTHORIZATION_LINE_{number}_EMPTY")
         try:
@@ -1163,6 +1188,13 @@ def apply(
             ):
                 record(_audit_for(decision, "SUPERSEDED_NOT_TAIL"))
                 continue
+            if (
+                previous is not None
+                and _assertion_for(candidate, decision, previous).content_digest
+                == previous.content_digest
+            ):
+                record(_audit_for(decision, "SUPERSEDES_UNCHANGED"))
+                continue
 
             _prepare_canon_root(Path(canon_root))
             if not resuming:
@@ -1320,7 +1352,7 @@ def _canon_index_payloads(root: Path) -> tuple[dict[str, object], ...]:
     if not path.is_file():
         raise CanonDivergence(f"canonical assertion index is not a file: {path}")
     found: list[dict[str, object]] = []
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for number, line in enumerate(_json_lines(path, encoding="utf-8"), start=1):
         if not line:
             raise CanonDivergence(f"canonical assertion index has an empty line: {path}:{number}")
         try:

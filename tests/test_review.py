@@ -161,7 +161,42 @@ def _apply_argv(world: _World, decision_path: Path, tier: str = "promote") -> li
 def _audit(world: _World) -> list[dict[str, object]]:
     if not world.audit_log.exists():
         return []
-    return [json.loads(line) for line in world.audit_log.read_text(encoding="utf-8").splitlines()]
+    return [json.loads(line) for line in review._json_lines(world.audit_log, encoding="utf-8")]
+
+
+def _inject_canon_version(
+    world: _World,
+    candidate: ReviewCandidate,
+    *,
+    previous_digest: str | None,
+    decided_at: str,
+) -> None:
+    """Add a deliberately malformed canon version with a matching index line."""
+    root = canon_index(world.canon_root)[0]
+    decision = review.ReviewDecision.from_payload(_decision(candidate, decided_at=decided_at))
+    assertion = review._assertion_for(candidate, decision, root)
+    promotion_record_digest = "0" * 64
+    payload = review._canonical_assertion_payload(
+        assertion,
+        candidate_id=candidate.proposal.proposal_id,
+        candidate_version=candidate.version,
+        promotion_record_digest=promotion_record_digest,
+        previous_digest=previous_digest,
+        derived_citations=candidate.derived_citations,
+        derived_counter_citations=candidate.derived_counter_citations,
+    )
+    version_path = world.canon_root / "assertions" / assertion.id / f"{assertion.content_digest}.json"
+    version_path.write_bytes(canonical_bytes(payload) + b"\n")
+    review._append_json_line(
+        world.canon_root / "assertions.jsonl",
+        review._index_payload(
+            assertion=assertion,
+            candidate=candidate,
+            promotion_record_digest=promotion_record_digest,
+            previous_digest=previous_digest,
+            version_digest=payload["version_digest"],
+        ),
+    )
 
 
 def _all_files(root: Path) -> tuple[tuple[str, bytes], ...]:
@@ -319,6 +354,25 @@ def test_no_substitute_for_the_human_act(tmp_path: Path) -> None:
     assert _all_files(world.root) == before
     assert all("review" not in descriptor.external_name for descriptor in core.CATALOGUE)
     assert all("review" not in name for name in mcp.tools_list())
+
+
+def test_unknown_support_requires_reason_even_when_one_is_stated(tmp_path: Path) -> None:
+    world = _world(tmp_path)
+    candidate = ReviewCandidate.from_proposal(
+        _record(
+            world,
+            _content(
+                world,
+                scope="harbor.unknown-support",
+                origin="ASSISTANT_SUGGESTED",
+                support="unknown",
+            ),
+        )
+    )
+    assert main(_apply_argv(world, _write_decisions(world.root / "unknown.jsonl", _decision(candidate)))) == 0
+    assert [entry["outcome"] for entry in _audit(world)] == ["ORIGIN_NEEDS_REASON"]
+    assert not world.authorizations.exists()
+    assert not world.canon_root.exists()
 
 
 def test_replay_is_logged_as_already_decided(tmp_path: Path) -> None:
@@ -670,6 +724,81 @@ def test_canon_index_detects_tampered_version_record_fields(tmp_path: Path, fiel
     assert index_payload["version_digest"] == payload["version_digest"]
     payload[field] = "0" * 64 if field == "promotion_record_digest" else "asr_01ARZ3NDEKTSV4RRFFQ69G5FAA"
     version_file.write_bytes(canonical_bytes(payload) + b"\n")
+    with pytest.raises(CanonDivergence):
+        canon_index(world.canon_root)
+
+
+def test_canon_version_file_verifies_its_version_digest(tmp_path: Path) -> None:
+    world = _world(tmp_path)
+    candidate = ReviewCandidate.from_proposal(_record(world, _content(world)))
+    assert main(_apply_argv(world, _write_decisions(world.root / "canon.jsonl", _decision(candidate)))) == 0
+    version_file = next((world.canon_root / "assertions").rglob("*.json"))
+    payload = json.loads(version_file.read_text(encoding="utf-8"))
+    payload["candidate_id"] = "asr_01ARZ3NDEKTSV4RRFFQ69G5FAA"
+    version_file.write_bytes(canonical_bytes(payload) + b"\n")
+
+    with pytest.raises(CanonDivergence):
+        review._canon_version_from_file(version_file)
+
+
+def test_canon_index_refuses_a_file_named_for_the_wrong_content_digest(tmp_path: Path) -> None:
+    world = _world(tmp_path)
+    candidate = ReviewCandidate.from_proposal(_record(world, _content(world)))
+    assert main(_apply_argv(world, _write_decisions(world.root / "canon.jsonl", _decision(candidate)))) == 0
+    version_file = next((world.canon_root / "assertions").rglob("*.json"))
+    wrong_name = version_file.with_name(f"{'0' * 64}.json")
+    assert wrong_name != version_file
+    version_file.rename(wrong_name)
+
+    with pytest.raises(CanonDivergence):
+        canon_index(world.canon_root)
+
+
+def test_broken_superseded_candidate_version_is_refused_before_reservation(tmp_path: Path) -> None:
+    world = _world(tmp_path)
+    original = ReviewCandidate.from_proposal(_record(world, _content(world)))
+    assert main(_apply_argv(world, _write_decisions(world.root / "root.jsonl", _decision(original)))) == 0
+    broken = ReviewCandidate.from_proposal(
+        _record(
+            world,
+            _content(
+                world,
+                statement="Harbor access begins before dawn.",
+                scope="harbor.broken-predecessor",
+                supersedes=f"{original.proposal.proposal_id}@{'0' * 64}",
+            ),
+        )
+    )
+    before_audit = len(_audit(world))
+    before_authorizations = world.authorizations.read_bytes()
+    assert main(_apply_argv(world, _write_decisions(world.root / "broken.jsonl", _decision(broken)))) == 0
+    assert [entry["outcome"] for entry in _audit(world)[before_audit:]] == ["SUPERSEDED_NOT_TAIL"]
+    assert world.authorizations.read_bytes() == before_authorizations
+    assert len(canon_index(world.canon_root)) == 1
+
+
+def test_canon_index_refuses_two_candidates_claiming_the_same_root(tmp_path: Path) -> None:
+    world = _world(tmp_path)
+    original = ReviewCandidate.from_proposal(_record(world, _content(world)))
+    assert main(_apply_argv(world, _write_decisions(world.root / "root.jsonl", _decision(original)))) == 0
+    competing_root = ReviewCandidate.from_proposal(
+        _record(
+            world,
+            _content(
+                world,
+                statement="Harbor access begins after dawn.",
+                scope="harbor.competing-root",
+                supersedes=f"{original.proposal.proposal_id}@{original.version}",
+            ),
+        )
+    )
+    _inject_canon_version(
+        world,
+        competing_root,
+        previous_digest=None,
+        decided_at="2026-01-04T12:00:00+00:00",
+    )
+
     with pytest.raises(CanonDivergence):
         canon_index(world.canon_root)
 
