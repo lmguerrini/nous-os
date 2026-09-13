@@ -17,7 +17,7 @@ import subprocess
 import threading
 import zipfile
 import zlib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Iterable
@@ -91,13 +91,45 @@ class _ArchiveMemberTooLarge(Exception):
         self.budget = budget
 
 
+@dataclass(slots=True)
+class _MemberCheckLedger:
+    """The checks made for one member, grouped by what their result establishes."""
+
+    checks: dict[str, tuple[str, str]] = field(default_factory=dict)
+
+    def completed(self, name: str, figures: str = "") -> None:
+        self.checks[name] = ("completed", figures)
+
+    def failed(self, name: str, figures: str) -> None:
+        self.checks[name] = ("failed", figures)
+
+    def not_executable(self, name: str, reason: str) -> None:
+        self.checks[name] = ("not executable", reason)
+
+    def has_failed_checks(self) -> bool:
+        return any(outcome == "failed" for outcome, _ in self.checks.values())
+
+    def refusal_reasons(self) -> tuple[str, ...]:
+        groups: list[str] = []
+        for outcome in ("completed", "failed", "not executable"):
+            checks = tuple(
+                f"{name} ({figures})" if figures else name
+                for name, (recorded_outcome, figures) in self.checks.items()
+                if recorded_outcome == outcome
+            )
+            if checks:
+                groups.append(f"{outcome}: {', '.join(checks)}")
+        return tuple(groups)
+
+
 class _ArchiveMemberUnreadable(zipfile.BadZipFile):
     """Raised with every observed disagreement while reading one member."""
 
-    def __init__(self, info: zipfile.ZipInfo, reasons: tuple[str, ...]) -> None:
+    def __init__(self, info: zipfile.ZipInfo, ledger: _MemberCheckLedger) -> None:
         self.info = info
-        self.reasons = reasons
-        super().__init__("; ".join(reasons))
+        self.ledger = ledger
+        self.reasons = ledger.refusal_reasons()
+        super().__init__("; ".join(self.reasons))
 
 
 def _reject_doctype(*_arguments: object) -> None:
@@ -109,48 +141,106 @@ def _reject_entity(*_arguments: object) -> None:
 
 
 def _member_error_note(error: _ArchiveMemberUnreadable) -> str:
-    return f"member {error.info.filename!r}: {type(error).__name__}: {'; '.join(error.reasons)}"
+    return f"member {error.info.filename!r}: {'; '.join(error.reasons)}"
 
 
-def _archive_member_layout_errors(archive: zipfile.ZipFile) -> tuple[tuple[str, ...], ...]:
+def _member_reasons_note(info: zipfile.ZipInfo, reasons: tuple[str, ...]) -> str:
+    return f"member {info.filename!r}: {'; '.join(reasons)}"
+
+
+def _block_member_checks(ledger: _MemberCheckLedger, reason: str) -> None:
+    """Record all content checks that a previous member-layout failure prevented."""
+    for name in ("compressed stream", "crc", "size"):
+        ledger.not_executable(name, reason)
+
+
+def _archive_member_layout_errors(
+    archive: zipfile.ZipFile,
+    file_size: int,
+) -> tuple[tuple[str, ...], ...]:
     """Validate every central entry's compressed-data region before member reads."""
     infos = tuple(archive.infolist())
-    errors: list[list[str]] = [[] for _ in infos]
+    ledgers = [_MemberCheckLedger() for _ in infos]
+    directory_start = archive.start_dir
+    if 0 <= directory_start <= file_size:
+        for ledger in ledgers:
+            ledger.completed(
+                "central directory start",
+                f"{directory_start} within file of {file_size} bytes",
+            )
+    else:
+        for ledger in ledgers:
+            ledger.failed(
+                "central directory start",
+                f"{directory_start} beyond the file of {file_size} bytes",
+            )
+            _block_member_checks(ledger, "central directory start is outside the file")
+
     header_references: dict[int, list[int]] = {}
     for index, info in enumerate(infos):
         header_references.setdefault(info.header_offset, []).append(index)
     for offset, indices in header_references.items():
         if len(indices) > 1:
-            reason = f"local header at offset {offset} is referenced by {len(indices)} central entries"
             for index in indices:
-                errors[index].append(reason)
+                ledgers[index].failed(
+                    "local header uniqueness",
+                    f"offset {offset} is referenced by {len(indices)} central entries",
+                )
+                _block_member_checks(ledgers[index], "local header is shared by central entries")
 
-    header_offsets = sorted(header_references)
+    header_offsets = sorted(offset for offset in header_references if 0 <= offset <= file_size)
     next_headers = {
-        offset: header_offsets[index + 1] if index + 1 < len(header_offsets) else archive.start_dir
+        offset: header_offsets[index + 1] if index + 1 < len(header_offsets) else directory_start
         for index, offset in enumerate(header_offsets)
     }
     regions: list[tuple[int, int] | None] = [None] * len(infos)
     raw = archive.fp
     for index, info in enumerate(infos):
+        ledger = ledgers[index]
+        if not 0 <= info.header_offset <= file_size:
+            ledger.failed(
+                "local header offset",
+                f"{info.header_offset} beyond the file of {file_size} bytes",
+            )
+            _block_member_checks(ledger, "local header offset is outside the file")
+            continue
+        ledger.completed(
+            "local header offset",
+            f"{info.header_offset} within file of {file_size} bytes",
+        )
+        if not 0 <= directory_start <= file_size:
+            continue
         try:
             raw.seek(info.header_offset)
             header = raw.read(zipfile.sizeFileHeader)
-        except (AttributeError, OSError, ValueError) as error:
-            errors[index].append(f"cannot read local header at offset {info.header_offset}: {_note(error)}")
+        except (AttributeError, OverflowError, OSError, ValueError) as error:
+            ledger.failed("local header", _note(error))
+            _block_member_checks(ledger, "local header could not be read")
             continue
         if len(header) != zipfile.sizeFileHeader or header[:4] != zipfile.stringFileHeader:
-            errors[index].append(f"bad local file header at offset {info.header_offset}")
+            ledger.failed("local header", f"bad local file header at offset {info.header_offset}")
+            _block_member_checks(ledger, "local header is invalid")
             continue
+        ledger.completed("local header")
         name_length = int.from_bytes(header[26:28], "little")
         extra_length = int.from_bytes(header[28:30], "little")
         data_start = info.header_offset + zipfile.sizeFileHeader + name_length + extra_length
         data_end = data_start + info.compress_size
+        if data_start > file_size or data_end > file_size:
+            ledger.failed(
+                "data region",
+                f"{data_start}:{data_end} beyond the file of {file_size} bytes",
+            )
+            _block_member_checks(ledger, "data region is outside the file")
+            continue
+        ledger.completed("data region", f"{data_start}:{data_end} within file of {file_size} bytes")
         next_header = next_headers[info.header_offset]
         if data_start > next_header or data_end > next_header:
-            errors[index].append(
-                f"data region {data_start}:{data_end} exceeds archive boundary {next_header}"
+            ledger.failed(
+                "archive boundary",
+                f"data region {data_start}:{data_end} exceeds archive boundary {next_header}",
             )
+            _block_member_checks(ledger, "data region exceeds its archive boundary")
         regions[index] = (data_start, data_end)
 
     furthest_region: tuple[int, int, int] | None = None
@@ -162,15 +252,22 @@ def _archive_member_layout_errors(archive: zipfile.ZipFile) -> tuple[tuple[str, 
     ):
         if furthest_region is not None and start < furthest_region[1]:
             other_start, other_end, other_index = furthest_region
-            errors[index].append(
-                f"data region {start}:{end} overlaps member {infos[other_index].filename!r}"
+            ledgers[index].failed(
+                "data region overlap",
+                f"{start}:{end} overlaps member {infos[other_index].filename!r}",
             )
-            errors[other_index].append(
-                f"data region {other_start}:{other_end} overlaps member {infos[index].filename!r}"
+            _block_member_checks(ledgers[index], "data region overlaps another member")
+            ledgers[other_index].failed(
+                "data region overlap",
+                f"{other_start}:{other_end} overlaps member {infos[index].filename!r}",
             )
+            _block_member_checks(ledgers[other_index], "data region overlaps another member")
         if furthest_region is None or end > furthest_region[1]:
             furthest_region = (start, end, index)
-    return tuple(tuple(reasons) for reasons in errors)
+    return tuple(
+        ledger.refusal_reasons() if ledger.has_failed_checks() else ()
+        for ledger in ledgers
+    )
 
 
 
@@ -747,7 +844,7 @@ def _layout_error_notes(
     layout_errors: tuple[tuple[str, ...], ...],
 ) -> tuple[str, ...]:
     return tuple(
-        _member_error_note(_ArchiveMemberUnreadable(info, reasons))
+        _member_reasons_note(info, reasons)
         for info, reasons in zip(infos[:MAX_ARCHIVE_MEMBERS], layout_errors)
         if reasons
     )
@@ -856,82 +953,160 @@ def _read_archive_member(
     info: zipfile.ZipInfo,
     *,
     maximum_output: int,
+    file_size: int,
 ) -> bytes:
     """Observe one ZIP member without trusting its declared uncompressed size.
 
     The member's bytes are located through its local file header, so the reader
     depends on the ZIP format rather than on the standard library's internals.
     """
+    ledger = _MemberCheckLedger()
     try:
-        if info.flag_bits & 0x1:
-            raise zipfile.BadZipFile("encrypted")
+        directory_start = archive.start_dir
+        if not 0 <= directory_start <= file_size:
+            ledger.failed(
+                "central directory start",
+                f"{directory_start} beyond the file of {file_size} bytes",
+            )
+            _block_member_checks(ledger, "central directory start is outside the file")
+            raise _ArchiveMemberUnreadable(info, ledger)
+        ledger.completed(
+            "central directory start",
+            f"{directory_start} within file of {file_size} bytes",
+        )
+        if not 0 <= info.header_offset <= file_size:
+            ledger.failed(
+                "local header offset",
+                f"{info.header_offset} beyond the file of {file_size} bytes",
+            )
+            _block_member_checks(ledger, "local header offset is outside the file")
+            raise _ArchiveMemberUnreadable(info, ledger)
+        ledger.completed(
+            "local header offset",
+            f"{info.header_offset} within file of {file_size} bytes",
+        )
         raw = archive.fp
-        raw.seek(info.header_offset)
-        header = raw.read(zipfile.sizeFileHeader)
+        try:
+            raw.seek(info.header_offset)
+            header = raw.read(zipfile.sizeFileHeader)
+        except (AttributeError, OverflowError, OSError, ValueError) as error:
+            ledger.failed("local header", _note(error))
+            _block_member_checks(ledger, "local header could not be read")
+            raise _ArchiveMemberUnreadable(info, ledger) from error
         if len(header) != zipfile.sizeFileHeader or header[:4] != zipfile.stringFileHeader:
-            raise zipfile.BadZipFile("bad local file header")
+            ledger.failed("local header", f"bad local file header at offset {info.header_offset}")
+            _block_member_checks(ledger, "local header is invalid")
+            raise _ArchiveMemberUnreadable(info, ledger)
+        ledger.completed("local header")
         local_flags = int.from_bytes(header[6:8], "little")
         local_method = int.from_bytes(header[8:10], "little")
         name_length = int.from_bytes(header[26:28], "little")
         extra_length = int.from_bytes(header[28:30], "little")
         data_start = info.header_offset + zipfile.sizeFileHeader + name_length + extra_length
-        boundaries = [archive.start_dir]
+        data_end = data_start + info.compress_size
+        if data_start > file_size or data_end > file_size:
+            ledger.failed(
+                "data region",
+                f"{data_start}:{data_end} beyond the file of {file_size} bytes",
+            )
+            _block_member_checks(ledger, "data region is outside the file")
+            raise _ArchiveMemberUnreadable(info, ledger)
+        ledger.completed("data region", f"{data_start}:{data_end} within file of {file_size} bytes")
+        boundaries = [directory_start]
         boundaries.extend(
             candidate.header_offset
             for candidate in archive.infolist()
-            if candidate.header_offset > info.header_offset
+            if info.header_offset < candidate.header_offset <= file_size
         )
         next_header = min(boundaries)
-        reasons: list[str] = []
-        if local_flags != info.flag_bits:
-            reasons.append(f"local flags {local_flags:#x} differ from central flags {info.flag_bits:#x}")
-        if local_method != info.compress_type:
-            reasons.append(f"local method {local_method} differs from central method {info.compress_type}")
-        local_name_bytes = raw.read(name_length)
-        name_encoding = "utf-8" if info.flag_bits & 0x800 else "cp437"
-        try:
-            local_name = local_name_bytes.decode(name_encoding)
-        except UnicodeDecodeError as error:
-            reasons.append(f"local name cannot decode as {name_encoding}: {error}")
-        else:
-            if local_name != info.orig_filename:
-                reasons.append(f"local name {local_name!r} differs from central name {info.orig_filename!r}")
-        if data_start > next_header or data_start + info.compress_size > next_header:
-            reasons.append(
-                f"data region {data_start}:{data_start + info.compress_size} exceeds archive boundary {next_header}"
+        if data_start > next_header or data_end > next_header:
+            ledger.failed(
+                "archive boundary",
+                f"data region {data_start}:{data_end} exceeds archive boundary {next_header}",
             )
-        if reasons:
-            raise _ArchiveMemberUnreadable(info, tuple(reasons))
-        raw.seek(data_start)
-        if info.compress_type == zipfile.ZIP_STORED:
-            member_data = _read_stored_member(raw, info, maximum_output)
-        elif info.compress_type == zipfile.ZIP_DEFLATED:
-            member_data = _read_deflated_member(raw, info, maximum_output)
+            _block_member_checks(ledger, "data region exceeds its archive boundary")
+            raise _ArchiveMemberUnreadable(info, ledger)
+        ledger.completed("archive boundary", f"data region ends before {next_header}")
+        if local_flags != info.flag_bits:
+            ledger.failed("local flags", f"{local_flags:#x} differs from central flags {info.flag_bits:#x}")
         else:
-            raise NotImplementedError(f"unsupported ZIP compression for member {info.filename!r}")
-        disagreements: list[str] = []
+            ledger.completed("local flags", f"{local_flags:#x}")
+        if local_method != info.compress_type:
+            ledger.failed("local method", f"{local_method} differs from central method {info.compress_type}")
+        else:
+            ledger.completed("local method", str(local_method))
+        try:
+            local_name_bytes = raw.read(name_length)
+        except (AttributeError, OverflowError, OSError, ValueError) as error:
+            ledger.failed("local name", _note(error))
+            _block_member_checks(ledger, "local name could not be read")
+            raise _ArchiveMemberUnreadable(info, ledger) from error
+        if len(local_name_bytes) != name_length:
+            ledger.failed("local name", f"expected {name_length} bytes, observed {len(local_name_bytes)}")
+        else:
+            name_encoding = "utf-8" if info.flag_bits & 0x800 else "cp437"
+            try:
+                local_name = local_name_bytes.decode(name_encoding)
+            except UnicodeDecodeError as error:
+                ledger.failed("local name", f"cannot decode as {name_encoding}: {error}")
+            else:
+                if local_name != info.orig_filename:
+                    ledger.failed(
+                        "local name",
+                        f"{local_name!r} differs from central name {info.orig_filename!r}",
+                    )
+                else:
+                    ledger.completed("local name", repr(local_name))
+        if info.flag_bits & 0x1:
+            _block_member_checks(ledger, "encrypted member")
+            raise _ArchiveMemberUnreadable(info, ledger)
+        if ledger.has_failed_checks():
+            _block_member_checks(ledger, "local header disagrees with the central directory")
+            raise _ArchiveMemberUnreadable(info, ledger)
+        if info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+            _block_member_checks(ledger, f"unsupported compression method {info.compress_type}")
+            raise _ArchiveMemberUnreadable(info, ledger)
+        try:
+            raw.seek(data_start)
+            if info.compress_type == zipfile.ZIP_STORED:
+                member_data = _read_stored_member(raw, info, maximum_output)
+            else:
+                member_data = _read_deflated_member(raw, info, maximum_output)
+        except _ArchiveMemberTooLarge:
+            raise
+        except (AttributeError, NotImplementedError, OverflowError, OSError, RuntimeError, ValueError, zlib.error, zipfile.BadZipFile) as error:
+            ledger.failed("compressed stream", _note(error))
+            ledger.not_executable("crc", "compressed stream did not complete")
+            ledger.not_executable("size", "compressed stream did not complete")
+            raise _ArchiveMemberUnreadable(info, ledger) from error
+        ledger.completed("compressed stream", f"observed {len(member_data)} bytes")
         observed_crc = zlib.crc32(member_data) & 0xFFFFFFFF
         if observed_crc != info.CRC:
-            disagreements.append(f"CRC mismatch: declared {info.CRC:#010x}, observed {observed_crc:#010x}")
+            ledger.failed("crc", f"declared {info.CRC:#010x}, observed {observed_crc:#010x}")
+        else:
+            ledger.completed("crc", f"{observed_crc:#010x}")
         if len(member_data) != info.file_size:
-            disagreements.append(
-                f"declared size {info.file_size} differs from observed size {len(member_data)}"
-            )
-        if disagreements:
-            raise _ArchiveMemberUnreadable(info, tuple(disagreements))
+            ledger.failed("size", f"declared {info.file_size}, observed {len(member_data)}")
+        else:
+            ledger.completed("size", str(len(member_data)))
+        if ledger.has_failed_checks():
+            raise _ArchiveMemberUnreadable(info, ledger)
         return member_data
     except _ArchiveMemberTooLarge:
         raise
     except _ArchiveMemberUnreadable:
         raise
-    except (NotImplementedError, OSError, RuntimeError, ValueError, zlib.error, zipfile.BadZipFile) as error:
-        raise _ArchiveMemberUnreadable(info, (_note(error),)) from error
+    except (AttributeError, NotImplementedError, OverflowError, OSError, RuntimeError, ValueError, zlib.error, zipfile.BadZipFile) as error:
+        ledger.failed("member read", _note(error))
+        _block_member_checks(ledger, "member could not be read")
+        raise _ArchiveMemberUnreadable(info, ledger) from error
 
 
 def _office_segments(
     archive: zipfile.ZipFile,
     names: tuple[str, ...],
     kind: str,
+    file_size: int,
 ) -> list[tuple[str, str]]:
     consumed = 0
 
@@ -941,6 +1116,7 @@ def _office_segments(
             archive,
             archive.getinfo(name),
             maximum_output=MAX_ARCHIVE_TEXT_BYTES - consumed,
+            file_size=file_size,
         )
         consumed += len(member_data)
         return member_data
@@ -997,7 +1173,7 @@ def _office_record(
     given_name: str | None,
 ) -> Extraction:
     try:
-        text, locations = _joined_segments(_office_segments(archive, names, kind))
+        text, locations = _joined_segments(_office_segments(archive, names, kind, len(data)))
         return _record(
             data,
             asset_source_id=asset_source_id,
@@ -1095,7 +1271,6 @@ def _archive_record(
             bounded = True
             break
         if layout_errors[index]:
-            error = _ArchiveMemberUnreadable(info, layout_errors[index])
             members.append(
                 ExtractionMember(
                     path=info.filename,
@@ -1105,7 +1280,7 @@ def _archive_record(
                     outcome=ExtractionOutcome.UNREADABLE,
                 )
             )
-            unreadable_notes.append(_member_error_note(error))
+            unreadable_notes.append(_member_reasons_note(info, layout_errors[index]))
             continue
         if info.file_size > MAX_ARCHIVE_TEXT_BYTES - consumed:
             members.append(
@@ -1124,6 +1299,7 @@ def _archive_record(
                 archive,
                 info,
                 maximum_output=MAX_ARCHIVE_TEXT_BYTES - consumed,
+                file_size=len(data),
             )
         except _ArchiveMemberTooLarge as error:
             members.append(
@@ -1214,7 +1390,7 @@ def _zip_record(data: bytes, *, asset_source_id: str | None, given_name: str | N
             infos = tuple(archive.infolist())
             names = _zip_names(infos)
             kind = _office_kind(names)
-            layout_errors = _archive_member_layout_errors(archive)
+            layout_errors = _archive_member_layout_errors(archive, len(data))
             if _archive_exceeds_bounds(infos):
                 return _record(
                     data,
@@ -1266,7 +1442,7 @@ def _zip_record(data: bytes, *, asset_source_id: str | None, given_name: str | N
                 asset_source_id=asset_source_id,
                 given_name=given_name,
             )
-    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:
+    except (AttributeError, OverflowError, OSError, RuntimeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:
         return _record(
             data,
             asset_source_id=asset_source_id,
