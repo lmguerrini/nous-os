@@ -6,6 +6,9 @@ claims with disk before turning text into records.  A capture is recognised by
 its object shape, not by a filename.  Its windows are evidence of rendered
 content, so their messages are deliberately a distinct source kind rather than
 native message records.
+
+Hard-linked bytes are refused because bytes reachable under another name are
+not bundle evidence.
 """
 
 from __future__ import annotations
@@ -54,6 +57,10 @@ class BundleRefusal(Enum):
     MISSING_DECLARED_FILE = "missing_declared_file"
     #: A symbolic link appears anywhere under the supplied bundle root.
     SYMLINK_REFUSED = "symlink_refused"
+    #: A declared path opened as something other than a regular file.
+    NOT_A_REGULAR_FILE = "not_a_regular_file"
+    #: A declared file's bytes are reachable under another name.
+    HARD_LINK_REFUSED = "hard_link_refused"
     #: A declared file exceeds the adapter's bounded-read limit.
     TOO_LARGE = "too_large"
     #: A declaration omits the non-empty attribution fields a document needs.
@@ -81,6 +88,7 @@ _ROLES: Final = {
 
 
 MAX_FILE_BYTES: Final = 64 * 1024 * 1024
+MAX_MANIFEST_BYTES: Final = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +109,8 @@ class BundleInventoryEntry:
     declared_byte_length: int | None
     declared_digest: str | None
     declaration: dict[str, object] | None = None
+    not_regular: bool = False
+    hard_link: bool = False
 
     @property
     def byte_count_matches(self) -> bool:
@@ -141,6 +151,8 @@ class BundleInventory:
                 entry.declaration is not None
                 and entry.present
                 and not entry.is_symlink
+                and not entry.not_regular
+                and not entry.hard_link
                 and not entry.too_large
                 and not entry.digest_matches
             )
@@ -155,6 +167,8 @@ class BundleInventory:
                 entry.declaration is not None
                 and entry.present
                 and not entry.is_symlink
+                and not entry.not_regular
+                and not entry.hard_link
                 and not entry.too_large
                 and not entry.byte_count_matches
             )
@@ -188,6 +202,8 @@ class _NormalizationState:
             "undeclared_files": 0,
             "missing_declared_files": 0,
             "symlinks_refused": 0,
+            "not_regular_files": 0,
+            "hard_links_refused": 0,
             "too_large": 0,
             "malformed_declarations": 0,
             "multiple_captures": 0,
@@ -252,20 +268,20 @@ def _reraise(error: OSError) -> None:
     raise error
 
 
-class _NotARegularFile(Exception):
-    """The path did not open as a regular file: a link, a directory, or gone."""
-
-
-def _read_bounded(path: Path) -> tuple[bytes | None, BundleRefusal | None]:
+def _read_bounded(
+    path: Path, *, maximum_bytes: int = MAX_FILE_BYTES
+) -> tuple[bytes | None, BundleRefusal | None]:
     """Read a regular file without following a link and without reading past the bound.
 
     The link check and the read are one system call: ``O_NOFOLLOW`` makes the
     open itself fail on a symlink, so a link swapped in between a check and a
     read is refused rather than followed. The size is taken from the open
-    descriptor and the read stops at ``MAX_FILE_BYTES + 1`` bytes, so a file
+    descriptor and the read stops at the supplied bound plus one byte, so a file
     that grows after being sized is refused instead of read whole.
     """
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise BundleFormatError("O_NOFOLLOW is required to read supplied bundle files")
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
     try:
         descriptor = os.open(path, flags)
     except FileNotFoundError:
@@ -279,11 +295,13 @@ def _read_bounded(path: Path) -> tuple[bytes | None, BundleRefusal | None]:
         if stat.S_ISLNK(status.st_mode):
             return None, BundleRefusal.SYMLINK_REFUSED
         if not stat.S_ISREG(status.st_mode):
-            raise _NotARegularFile(path)
-        if status.st_size > MAX_FILE_BYTES:
+            return None, BundleRefusal.NOT_A_REGULAR_FILE
+        if status.st_nlink > 1:
+            return None, BundleRefusal.HARD_LINK_REFUSED
+        if status.st_size > maximum_bytes:
             return None, BundleRefusal.TOO_LARGE
         chunks: list[bytes] = []
-        remaining = MAX_FILE_BYTES + 1
+        remaining = maximum_bytes + 1
         while remaining > 0:
             chunk = os.read(descriptor, min(remaining, 1 << 20))
             if not chunk:
@@ -293,23 +311,24 @@ def _read_bounded(path: Path) -> tuple[bytes | None, BundleRefusal | None]:
     finally:
         os.close(descriptor)
     data = b"".join(chunks)
-    if len(data) > MAX_FILE_BYTES:
+    if len(data) > maximum_bytes:
         return None, BundleRefusal.TOO_LARGE
     return data, None
 
 
 def _files(root: Path) -> Iterator[Path]:
-    """Every regular file and symlink below ``root`` in a fixed order."""
+    """Every non-directory entry below ``root`` in a fixed order.
+
+    Special files and links are listed too: what each entry is gets decided by
+    the open that reads it, so nothing below the root can go unmentioned.
+    """
     found: list[Path] = []
     for directory, dirnames, filenames in os.walk(root, onerror=_reraise, followlinks=False):
         dirnames.sort()
         linked_directories = [name for name in dirnames if (Path(directory) / name).is_symlink()]
         found.extend(Path(directory) / name for name in linked_directories)
         dirnames[:] = [name for name in dirnames if name not in linked_directories]
-        for filename in sorted(filenames):
-            candidate = Path(directory) / filename
-            if candidate.is_symlink() or candidate.is_file():
-                found.append(candidate)
+        found.extend(Path(directory) / filename for filename in sorted(filenames))
     return iter(sorted(found, key=lambda candidate: candidate.relative_to(root).as_posix()))
 
 
@@ -386,9 +405,12 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
         raise BundleFormatError(f"not a directory: {root}")
     manifest_name = _relative(manifest_name, "manifest_name")
     manifest_path = root / manifest_name
-    if manifest_path.is_symlink() or not manifest_path.is_file():
-        raise BundleFormatError(f"the bundle manifest is not a regular file: {manifest_name}")
-    manifest_bytes = manifest_path.read_bytes()
+    manifest_bytes, manifest_refusal = _read_bounded(
+        manifest_path, maximum_bytes=MAX_MANIFEST_BYTES
+    )
+    if manifest_bytes is None:
+        reason = "unreadable" if manifest_refusal is None else manifest_refusal.value
+        raise BundleFormatError(f"the bundle manifest {manifest_name!r} was refused: {reason}")
     manifest = _parse(manifest_bytes)
     if type(manifest) is not dict or type(manifest.get("files")) is not list:
         raise BundleFormatError("the bundle manifest must be an object with a files list")
@@ -402,7 +424,29 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
             raise BundleFormatError(f"the manifest declares {relative!r} more than once")
         declarations[relative] = declaration
 
-    on_disk = {candidate.relative_to(root).as_posix(): candidate for candidate in _files(root)}
+    def refused_entry(
+        relative: str,
+        refusal: BundleRefusal | None,
+        *,
+        declared_byte_length: int | None,
+        declared_digest: str | None,
+        declaration: dict[str, object] | None,
+    ) -> BundleInventoryEntry:
+        return BundleInventoryEntry(
+            path=relative,
+            file_class=BundleFileClass.UNKNOWN,
+            present=refusal is not BundleRefusal.MISSING_DECLARED_FILE,
+            is_symlink=refusal is BundleRefusal.SYMLINK_REFUSED,
+            too_large=refusal is BundleRefusal.TOO_LARGE,
+            byte_length=None,
+            digest=None,
+            declared_byte_length=declared_byte_length,
+            declared_digest=declared_digest,
+            declaration=declaration,
+            not_regular=refusal is BundleRefusal.NOT_A_REGULAR_FILE,
+            hard_link=refusal is BundleRefusal.HARD_LINK_REFUSED,
+        )
+
     entries: list[BundleInventoryEntry] = [
         BundleInventoryEntry(
             path=manifest_name,
@@ -417,102 +461,14 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
         )
     ]
     for relative, declaration in declarations.items():
-        path = on_disk.get(relative)
         expected_bytes = declaration["bytes"]
         expected_digest = declaration["sha256"]
-        if path is None:
-            entries.append(
-                BundleInventoryEntry(
-                    path=relative,
-                    file_class=BundleFileClass.UNKNOWN,
-                    present=False,
-                    is_symlink=False,
-                    too_large=False,
-                    byte_length=None,
-                    digest=None,
-                    declared_byte_length=expected_bytes,
-                    declared_digest=expected_digest,
-                    declaration=declaration,
-                )
-            )
-            continue
-        if path.is_symlink():
-            entries.append(
-                BundleInventoryEntry(
-                    path=relative,
-                    file_class=BundleFileClass.UNKNOWN,
-                    present=True,
-                    is_symlink=True,
-                    too_large=False,
-                    byte_length=None,
-                    digest=None,
-                    declared_byte_length=expected_bytes,
-                    declared_digest=expected_digest,
-                    declaration=declaration,
-                )
-            )
-            continue
-        try:
-            byte_length = path.stat().st_size
-        except FileNotFoundError:
-            entries.append(
-                BundleInventoryEntry(
-                    path=relative,
-                    file_class=BundleFileClass.UNKNOWN,
-                    present=False,
-                    is_symlink=False,
-                    too_large=False,
-                    byte_length=None,
-                    digest=None,
-                    declared_byte_length=expected_bytes,
-                    declared_digest=expected_digest,
-                    declaration=declaration,
-                )
-            )
-            continue
-        if byte_length > MAX_FILE_BYTES:
-            entries.append(
-                BundleInventoryEntry(
-                    path=relative,
-                    file_class=BundleFileClass.UNKNOWN,
-                    present=True,
-                    is_symlink=False,
-                    too_large=True,
-                    byte_length=byte_length,
-                    digest=None,
-                    declared_byte_length=expected_bytes,
-                    declared_digest=expected_digest,
-                    declaration=declaration,
-                )
-            )
-            continue
-        if path.is_symlink():
-            entries.append(
-                BundleInventoryEntry(
-                    path=relative,
-                    file_class=BundleFileClass.UNKNOWN,
-                    present=True,
-                    is_symlink=True,
-                    too_large=False,
-                    byte_length=None,
-                    digest=None,
-                    declared_byte_length=expected_bytes,
-                    declared_digest=expected_digest,
-                    declaration=declaration,
-                )
-            )
-            continue
-        data, refusal = _read_bounded(path)
+        data, refusal = _read_bounded(root / relative)
         if data is None:
             entries.append(
-                BundleInventoryEntry(
-                    path=relative,
-                    file_class=BundleFileClass.UNKNOWN,
-                    present=refusal is not BundleRefusal.MISSING_DECLARED_FILE,
-                    is_symlink=refusal is BundleRefusal.SYMLINK_REFUSED,
-                    too_large=refusal is BundleRefusal.TOO_LARGE,
-                    byte_length=None,
-                    digest=None,
+                refused_entry(
+                    relative,
+                    refusal,
                     declared_byte_length=expected_bytes,
                     declared_digest=expected_digest,
                     declaration=declaration,
@@ -534,34 +490,31 @@ def inventory(root: Path, *, manifest_name: str = "INPUT_MANIFEST.json") -> Bund
                 declaration=declaration,
             )
         )
+    on_disk = {candidate.relative_to(root).as_posix(): candidate for candidate in _files(root)}
     for relative, path in on_disk.items():
         if relative == manifest_name or relative in declarations:
             continue
-        if path.is_symlink():
+        data, refusal = _read_bounded(path)
+        if data is None:
             entries.append(
-                BundleInventoryEntry(
-                    path=relative,
-                    file_class=BundleFileClass.UNKNOWN,
-                    present=True,
-                    is_symlink=True,
-                    too_large=False,
-                    byte_length=None,
-                    digest=None,
+                refused_entry(
+                    relative,
+                    refusal,
                     declared_byte_length=None,
                     declared_digest=None,
+                    declaration=None,
                 )
             )
             continue
-        data, refusal = _read_bounded(path)
         entries.append(
             BundleInventoryEntry(
                 path=relative,
                 file_class=BundleFileClass.UNKNOWN,
-                present=refusal is not BundleRefusal.MISSING_DECLARED_FILE,
-                is_symlink=refusal is BundleRefusal.SYMLINK_REFUSED,
-                too_large=refusal is BundleRefusal.TOO_LARGE,
-                byte_length=None if data is None else len(data),
-                digest=None if data is None else digest_bytes(data),
+                present=True,
+                is_symlink=False,
+                too_large=False,
+                byte_length=len(data),
+                digest=digest_bytes(data),
                 declared_byte_length=None,
                 declared_digest=None,
             )
@@ -584,10 +537,7 @@ def _stable_bytes(
     read, whatever a stat said a moment earlier.
     """
     path = inv.root / entry.path
-    try:
-        data, refusal = _read_bounded(path)
-    except _NotARegularFile:
-        return None, BundleRefusal.MISSING_DECLARED_FILE
+    data, refusal = _read_bounded(path)
     if data is None:
         return None, refusal
     if len(data) != entry.byte_length or digest_bytes(data) != entry.digest:
@@ -722,6 +672,8 @@ def normalize(
             BundleRefusal.UNDECLARED_FILE: "undeclared_files",
             BundleRefusal.MISSING_DECLARED_FILE: "missing_declared_files",
             BundleRefusal.SYMLINK_REFUSED: "symlinks_refused",
+            BundleRefusal.NOT_A_REGULAR_FILE: "not_regular_files",
+            BundleRefusal.HARD_LINK_REFUSED: "hard_links_refused",
             BundleRefusal.TOO_LARGE: "too_large",
             BundleRefusal.MALFORMED_DECLARATION: "malformed_declarations",
             BundleRefusal.MULTIPLE_CAPTURES: "multiple_captures",
@@ -736,6 +688,12 @@ def normalize(
     def verified(entry: BundleInventoryEntry) -> bytes | None:
         if entry.is_symlink:
             reject(entry.path, BundleRefusal.SYMLINK_REFUSED)
+            return None
+        if entry.not_regular:
+            reject(entry.path, BundleRefusal.NOT_A_REGULAR_FILE)
+            return None
+        if entry.hard_link:
+            reject(entry.path, BundleRefusal.HARD_LINK_REFUSED)
             return None
         if entry.too_large:
             reject(entry.path, BundleRefusal.TOO_LARGE)
@@ -772,6 +730,10 @@ def normalize(
                 continue
             if entry.is_symlink:
                 reject(entry.path, BundleRefusal.SYMLINK_REFUSED)
+            elif entry.not_regular:
+                reject(entry.path, BundleRefusal.NOT_A_REGULAR_FILE)
+            elif entry.hard_link:
+                reject(entry.path, BundleRefusal.HARD_LINK_REFUSED)
             elif entry.declaration is None:
                 reject(entry.path, BundleRefusal.UNDECLARED_FILE)
             elif not entry.present:
