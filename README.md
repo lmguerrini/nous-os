@@ -343,6 +343,7 @@ only thing this repository holds is the software that reads it.
 | Source memory: provider export ingest, identity kept across re-import, per-export sightings | present |
 | Source memory: a second export format (sharded conversation mappings) with asset records — identity, digest and provenance of exported files, their bytes left in the archive | present |
 | Source memory: manifest-declared supplied documents and rendered-interface captures, with window provenance and deduplicated captured messages | present |
+| Attachment text extraction: byte-classified, bounded evidence with recorded mechanism versions and structural locations | present |
 | Derived index, rebuildable from the files alone | present |
 | Measuring instrument and cross-language baseline | present |
 | Context compilation, with a measured default | present |
@@ -603,6 +604,7 @@ src/
     │                     a second format: sharded conversation mappings and the assets they point at
     ├── capture_bundle.py
     │                     manifest-declared supplied documents and rendered-interface capture windows
+    ├── extraction.py     bounded attachment text evidence, separately attributed from source records
     ├── derived.py        the rebuildable index over everything above
     ├── aliases.py        interchangeable ways of relating terms across languages
     ├── measure.py        the measuring instrument, and its third answer
