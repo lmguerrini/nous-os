@@ -95,3 +95,35 @@ def test_m3_lint_refuses_a_citation_whose_record_digest_differs_from_the_consist
     )
     with pytest.raises(DerivedRecordCorrupt):
         quote_lint_derived(store, snapshots, ledger, other)
+
+
+def test_m3_lint_refuses_a_stored_record_whose_own_digest_is_stale(tmp_path: Path) -> None:
+    """The lint's whole-side comparison stands on its own: a store that hands back a record whose digest field does not describe its payload is refused even when the citation names that same stale digest."""
+    from nous_os.extraction import ExtractionStore, StoredExtraction
+    from nous_os.provenance import DerivedRecordCorrupt
+
+    store, snapshots, ledger = _copy_fixture(tmp_path)
+    genuine = store.get(Extractor.PLAIN_TEXT, _PLAIN_DIGEST)
+    stale_digest = "1" * 64
+
+    class _StaleStore(ExtractionStore):
+        def get(self, extractor, asset_digest):  # type: ignore[override]
+            return StoredExtraction(
+                payload=genuine.payload, owners=genuine.owners, record_digest=stale_digest,
+                text=genuine.text, extractor_version=genuine.extractor_version,
+            )
+
+    # the citation names the GENUINE digest, so only the store-side comparison can refuse this
+    with pytest.raises(DerivedRecordCorrupt):
+        quote_lint_derived(_StaleStore(tmp_path / "extraction-store"), snapshots, ledger, _plain_citation())
+
+
+def test_m3_get_refuses_a_wrapper_whose_record_digest_is_a_wrong_hex_string(tmp_path: Path) -> None:
+    """The store's own digest-vs-payload check stands on its own: a well-formed but wrong record digest is refused on read."""
+    store, _snapshots, _ledger = _copy_fixture(tmp_path)
+    path = next(p for p in (tmp_path / "extraction-store" / Extractor.PLAIN_TEXT.value).glob("*.json"))
+    wrapper = json.loads(path.read_text(encoding="utf-8"))
+    wrapper["record_digest"] = "2" * 64
+    path.write_text(json.dumps(wrapper, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(ExtractionError):
+        store.get(Extractor.PLAIN_TEXT, _PLAIN_DIGEST)
