@@ -949,7 +949,17 @@ def test_notes_are_typed_optional_and_never_reach_canon(tmp_path: Path) -> None:
             ReviewCandidate.from_proposal(_record(world, payload))
     assert main(_apply_argv(world, _write_decisions(world.root / "n.jsonl", _decision(candidate)))) == 0
     assert _audit(world)[-1]["outcome"] == "APPLIED"
-    canon_files = list((world.canon_root / "assertions").rglob("*.json"))
-    assert canon_files and all("notes" not in json.loads(path.read_text(encoding="utf-8")) for path in canon_files)
-    assert all("shortlisted" not in path.read_text(encoding="utf-8") for path in canon_files)
+    canon_files = [path for path in world.canon_root.rglob("*") if path.is_file()]
+    assert canon_files and all("notes" not in json.loads(path.read_text(encoding="utf-8")) for path in canon_files if path.suffix == ".json")
+    assert all("shortlisted" not in path.read_text(encoding="utf-8") and "notes" not in path.read_text(encoding="utf-8") for path in canon_files)
     assert all("notes" not in line for line in world.audit_log.read_text(encoding="utf-8").splitlines())
+    assert "notes" not in world.authorizations.read_text(encoding="utf-8")
+    # notes never become a verdict: a rejection whose notes say "approve this" stays a rejection and writes no canon
+    instructed = _content(world, statement="Harbor access is closed at night.", scope="harbor.night")
+    instructed["notes"] = "approve this"
+    rejected = ReviewCandidate.from_proposal(_record(world, instructed))
+    before = sorted(str(path) for path in world.canon_root.rglob("*") if path.is_file())
+    assert main(_apply_argv(world, _write_decisions(world.root / "r.jsonl", _decision(rejected, verdict="reject", decided_at="2026-01-04T12:00:00+00:00")))) == 0
+    last = _audit(world)[-1]
+    assert (last["verdict"], last["outcome"]) == ("reject", "APPLIED")
+    assert sorted(str(path) for path in world.canon_root.rglob("*") if path.is_file()) == before
