@@ -43,6 +43,8 @@ _HEX64 = re.compile(r"[0-9a-f]{64}")
 MIN_TEXT_CHARS = 40
 #: Equal-text groups beyond this many source identities are counted, not expanded.
 MAX_GROUP_SOURCES = 12
+#: Equal-text groups beyond this many retained views (source, version) are counted, not expanded.
+MAX_GROUP_VIEWS = 2 * MAX_GROUP_SOURCES
 
 
 class RelationError(Exception):
@@ -796,10 +798,12 @@ class TextEqualityResult:
 
     ``unlocatable`` counts source versions whose text was equal to another's
     but could not be found verbatim, exactly once, inside their own snapshot
-    bytes; ``oversized_groups`` counts equal-text groups larger than the bound.
-    Both are counted rather than dropped, because a producer that silently
-    emitted fewer proposals than the evidence supports would be reporting
-    "no restatement" where it means "did not look".
+    bytes; ``oversized_groups`` counts equal-text groups larger than either
+    bound (``MAX_GROUP_SOURCES`` distinct source ids or ``MAX_GROUP_VIEWS``
+    retained views).  Both are counted rather than dropped, because a
+    producer that silently emitted fewer proposals than the evidence
+    supports would be reporting "no restatement" where it means "did not
+    look".
     """
 
     proposals: tuple[RelationProposal, ...]
@@ -834,9 +838,11 @@ def text_equality_relations(
     canonical bytes — the citation is the encoded occurrence, so it
     quote-lints.  Texts shorter than ``MIN_TEXT_CHARS`` are skipped (a two-word
     reply shared by hundreds of messages is not a restatement of anything)
-    and a group larger than ``MAX_GROUP_SOURCES`` is counted, not expanded: the bound
-    is what keeps this a join and not a matrix.  Two versions of one source id
-    are never paired: that is lineage, not restatement.
+    and a group larger than ``MAX_GROUP_SOURCES`` distinct source ids, or
+    holding more than ``MAX_GROUP_VIEWS`` retained (source, version) views,
+    is counted, not expanded: the bounds are what keep this a join and not
+    a matrix.  Two versions of one source id are never paired: that is
+    lineage, not restatement.
     """
     if type(store) is not SnapshotStore:
         raise RelationError("text_equality_relations needs the snapshot store to cite from")
@@ -858,14 +864,16 @@ def text_equality_relations(
             views = {}
             by_digest[text_digest] = views
         source_ids = {source_id for source_id, _ in views}
-        if record.source_id not in source_ids and len(source_ids) == MAX_GROUP_SOURCES:
+        key = (record.source_id, record.snapshot_digest)
+        new_source = record.source_id not in source_ids and len(source_ids) == MAX_GROUP_SOURCES
+        new_view = key not in views and len(views) == MAX_GROUP_VIEWS
+        if new_source or new_view:
             # Do not retain later views for an oversized group: its single
             # count is the answer, and retaining it would defeat the bound.
             views.clear()
             by_digest[text_digest] = None
             oversized += 1
             continue
-        key = (record.source_id, record.snapshot_digest)
         present = views.get(key)
         if present is None or record.provider < present.provider:
             views[key] = record

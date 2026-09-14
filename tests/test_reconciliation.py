@@ -203,6 +203,56 @@ def test_inadmissible_relations_are_refused_by_class(tmp_path: Path) -> None:
             replace(proposal, right=proposal.left)
 
 
+def test_remaining_admissibility_rules_are_refused_by_class(tmp_path: Path) -> None:
+    """O2: each admissibility rule not already exercised above is independently load-bearing."""
+    world = _World(tmp_path)
+
+    same = _proposal(world, RelationClass.SAME_SOURCE)
+    with pytest.raises(RelationError, match="different providers"):
+        replace(same, right=RelationEnd(RIGHT_SOURCE, world.right.digest, "other-source"))
+    with pytest.raises(RelationError, match="neither lineage nor claims"):
+        replace(same, claims=_claims(world))
+
+    revision = _proposal(world, RelationClass.REVISION)
+    with pytest.raises(RelationError, match="LEDGER_LINEAGE or PROVIDER_IDENTITY"):
+        replace(revision, bases=(EvidenceBasis.TEXT_EQUALITY,))
+
+    restatement = _proposal(world, RelationClass.RESTATEMENT)
+    with pytest.raises(RelationError, match="different source ids"):
+        replace(restatement, right=RelationEnd(LEFT_SOURCE, world.later.digest, "fixture-source"))
+
+    related = _proposal(world, RelationClass.RELATED)
+    with pytest.raises(RelationError, match="at least one evidence basis"):
+        replace(related, bases=())
+    with pytest.raises(RelationError, match="citation on each end"):
+        replace(related, citations=(_citation(world.left),))
+
+    contradiction = _proposal(world, RelationClass.CONTRADICTION)
+    with pytest.raises(RelationError, match="requires COMPARABLE_CLAIMS"):
+        replace(contradiction, bases=())
+    assert contradiction.claims is not None
+    with pytest.raises(RelationError, match="left claim citation must name the left end"):
+        replace(
+            contradiction,
+            claims=Claims(
+                Claim(_citation(world.third), AT, TemporalBasis.STATED_TIME),
+                contradiction.claims.right,
+            ),
+        )
+    with pytest.raises(RelationError, match="right claim citation must name the right end"):
+        replace(
+            contradiction,
+            claims=Claims(
+                contradiction.claims.left,
+                Claim(_citation(world.third), AT, TemporalBasis.RECORD_TIME),
+            ),
+        )
+
+    unknown = _proposal(world, RelationClass.UNKNOWN)
+    with pytest.raises(RelationError, match="UNKNOWN carries neither lineage nor claims"):
+        replace(unknown, lineage=Lineage(world.left.digest))
+
+
 def test_unresolvable_evidence_is_refused_at_record_time(tmp_path: Path) -> None:
     """O3: an invalid quote or absent end leaves the append-only file untouched."""
     world = _World(tmp_path)
@@ -382,6 +432,39 @@ def _tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
+def test_producers_mutate_no_snapshot_store_or_ledger(tmp_path: Path) -> None:
+    """C2: each mechanical producer reads its evidence but writes no snapshot or ledger entry."""
+    snapshots = SnapshotStore(tmp_path / "snapshots")
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ingest(snapshots, ledger, LEFT_SOURCE, UntrustedText("first"), AT)
+    ingest(snapshots, ledger, LEFT_SOURCE, UntrustedText("second"), AT)
+    shared = "a text long enough to be mechanically checked across two source versions"
+    left = snapshots.put(LEFT_SOURCE, json.dumps({"text": shared}).encode("utf-8"))
+    right = snapshots.put(RIGHT_SOURCE, json.dumps({"text": shared}).encode("utf-8"))
+    views = (
+        TextView(LEFT_SOURCE, left.digest, "fixture-a", shared),
+        TextView(RIGHT_SOURCE, right.digest, "fixture-b", shared),
+    )
+
+    def state() -> tuple[str, bytes]:
+        return (
+            _tree_digest(tmp_path / "snapshots"),
+            ledger.path.read_bytes() if ledger.path.exists() else b"",
+        )
+
+    before = state()
+    lineage_proposals = lineage_relations(ledger)
+    after = state()
+    assert after == before
+    assert lineage_proposals
+
+    before = state()
+    text_result = text_equality_relations(views, store=snapshots, proposed_at=AT)
+    after = state()
+    assert after == before
+    assert text_result.proposals
+
+
 def test_recording_relations_mutates_no_source_store(tmp_path: Path) -> None:
     """O5: relation recording touches only its dedicated noncanonical JSONL store."""
     snapshots = SnapshotStore(tmp_path / "snapshots")
@@ -516,6 +599,24 @@ def test_mechanical_producers_emit_evidence_linked_proposals(tmp_path: Path) -> 
     assert result.proposals == () and result.unlocatable == 1
     with pytest.raises(RelationError):
         text_equality_relations(views, store=None, proposed_at=AT)  # type: ignore[arg-type]
+
+
+def test_text_equality_counts_a_twice_occurring_span_as_unlocatable(tmp_path: Path) -> None:
+    """OBS: a span present twice in one snapshot's canonical bytes is counted, never cited."""
+    world = _World(tmp_path)
+    shared = "the harbour keeper logs the fog watch at dawn and again at dusk, every day"
+    twice = world.snapshots.put(LEFT_SOURCE, json.dumps({"text": shared, "echo": shared}).encode("utf-8"))
+    once = world.snapshots.put(RIGHT_SOURCE, json.dumps({"text": shared}).encode("utf-8"))
+    result = text_equality_relations(
+        (
+            TextView(LEFT_SOURCE, twice.digest, "fixture-a", shared),
+            TextView(RIGHT_SOURCE, once.digest, "fixture-b", shared),
+        ),
+        store=world.snapshots,
+        proposed_at=AT,
+    )
+    assert result.proposals == ()
+    assert result.unlocatable == 1
 
 
 def test_text_equality_requires_an_explicit_time_and_fixed_bounds(tmp_path: Path) -> None:
