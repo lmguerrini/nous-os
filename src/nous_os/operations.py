@@ -22,7 +22,7 @@ from nous_os.candidates import CandidateStore, Proposal
 from nous_os.chunking import Chunk
 from nous_os.compile import CohesionStrategy, Pack
 from nous_os.config import describe_corpus, list_documents
-from nous_os.derived import search, sources, versions
+from nous_os.derived import context, search, sources, versions
 from nous_os.ledger import ingest
 from nous_os.provenance import quote_lint_derived, read_span, verify_derivation
 from nous_os.reconciliation import Relation, RelationClass, RelationProposal, RelationStore, RelationVerification
@@ -207,6 +207,7 @@ def promote_candidate(
 
 
 register("search", Tier.READ, search)
+register("context", Tier.READ, context)
 register("sources", Tier.READ, sources)
 register("versions", Tier.READ, versions)
 register("read_span", Tier.READ, read_span)

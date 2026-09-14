@@ -70,7 +70,8 @@ _CANON = (
 )
 
 PINNED_SQLITE = "3.50.4"
-PINNED_DIGEST = "90550481b2657025f78982f62016dae61eb9c26a8e45fad74241e80a4af32fec"
+# SM-12 added the record table, so this layout pin moved with that schema change.
+PINNED_DIGEST = "f0bc30296d0036df86dcdd6dfddbef3cb2a184f06c2a180def4605aa973a8438"
 
 
 def _canon(root: Path | None = None) -> tuple[SnapshotStore, Ledger, Path]:

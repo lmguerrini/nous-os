@@ -38,6 +38,7 @@ EXPECTED_EXTERNAL_NAMES = (
     "system.capabilities",
     "system.health",
     "knowledge.search",
+    "knowledge.context",
     "canon.documents",
     "canon.describe",
     "canon.sources",
@@ -142,6 +143,8 @@ def _minimal_arguments(external_name: str, digest: str) -> dict[str, object]:
         return {}
     if external_name == "knowledge.search":
         return {"query": "alpha"}
+    if external_name == "knowledge.context":
+        return {"source_id": SOURCE_ID}
     if external_name == "canon.documents":
         return {}
     if external_name == "canon.describe":
@@ -282,7 +285,7 @@ def test_catalogue_has_exactly_the_fixed_external_names_in_the_fixed_order() -> 
     assert tuple(descriptor.external_name for descriptor in core.CATALOGUE) == (
         EXPECTED_EXTERNAL_NAMES
     )
-    assert len(core.CATALOGUE) == 23
+    assert len(core.CATALOGUE) == 24
 
 
 def test_catalogue_is_the_same_tuple_object_across_reads() -> None:

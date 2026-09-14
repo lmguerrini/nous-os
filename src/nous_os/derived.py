@@ -29,6 +29,7 @@ failing: the failure is visible and the silence is not.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -67,6 +68,19 @@ SCHEMA = (
     " body TEXT NOT NULL,"
     " PRIMARY KEY (snapshot_digest, source_id)"
     ")",
+    "CREATE TABLE record ("
+    " snapshot_digest TEXT NOT NULL,"
+    " source_id TEXT NOT NULL,"
+    " kind TEXT,"
+    " provider TEXT,"
+    " external_id TEXT,"
+    " container_external_id TEXT,"
+    " parent_external_id TEXT,"
+    " role TEXT,"
+    " created_at TEXT,"
+    " PRIMARY KEY (snapshot_digest, source_id)"
+    ")",
+    "CREATE INDEX record_container ON record(container_external_id, created_at, source_id)",
     "CREATE VIRTUAL TABLE search USING fts5("
     " body, snapshot_digest UNINDEXED, source_id UNINDEXED, tokenize='unicode61'"
     ")",
@@ -124,7 +138,38 @@ class SearchHit:
     excerpt: str
 
 
-def _canonical_rows(store: SnapshotStore, ledger: Ledger) -> tuple[list, list, list]:
+_RECORD_FIELDS = (
+    "kind",
+    "provider",
+    "external_id",
+    "container_external_id",
+    "parent_external_id",
+    "role",
+    "created_at",
+)
+
+
+def _record_values(body: str) -> tuple[str | None, ...]:
+    """Return the record header fields canon explicitly carries in one body.
+
+    A content snapshot remains the complete stored fact.  The record table is
+    only a typed, rebuildable index over seven top-level JSON fields, so a
+    malformed body, an array, or a non-string field contributes no invented
+    metadata.
+    """
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return (None,) * len(_RECORD_FIELDS)
+    if type(payload) is not dict:
+        return (None,) * len(_RECORD_FIELDS)
+    return tuple(
+        value if type(value) is str else None
+        for value in (payload.get(field) for field in _RECORD_FIELDS)
+    )
+
+
+def _canonical_rows(store: SnapshotStore, ledger: Ledger) -> tuple[list, list, list, list]:
     """Everything the store will hold, in the one order it will hold it.
 
     Ordering is derived from content — source id, then position in that source's
@@ -183,7 +228,11 @@ def _canonical_rows(store: SnapshotStore, ledger: Ledger) -> tuple[list, list, l
     # Sorted by the same pair the table is keyed on, so the insertion order is a
     # fact about canon rather than about how the ledger happened to be walked.
     contents.sort(key=lambda row: (row[0], row[1]))
-    return [(source_id,) for source_id in sources], versions, contents
+    records = [
+        (snapshot_digest, source_id, *_record_values(body))
+        for snapshot_digest, source_id, _byte_length, body in contents
+    ]
+    return [(source_id,) for source_id in sources], versions, contents, records
 
 
 def build(store: SnapshotStore, ledger: Ledger, path: Path) -> Path:
@@ -198,7 +247,7 @@ def build(store: SnapshotStore, ledger: Ledger, path: Path) -> Path:
             f"{path.name} already exists; build refuses to overwrite it; a rebuild "
             "publishes a separately verified sibling instead"
         )
-    sources, versions, contents = _canonical_rows(store, ledger)
+    sources, versions, contents, records = _canonical_rows(store, ledger)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)
@@ -210,6 +259,8 @@ def build(store: SnapshotStore, ledger: Ledger, path: Path) -> Path:
         connection.executemany("INSERT INTO source VALUES (?)", sources)
         connection.executemany("INSERT INTO version VALUES (?,?,?,?,?,?)", versions)
         connection.executemany("INSERT INTO content VALUES (?,?,?,?)", contents)
+        if any(statement.startswith("CREATE TABLE record ") for statement in SCHEMA):
+            connection.executemany("INSERT INTO record VALUES (?,?,?,?,?,?,?,?,?)", records)
         connection.executemany(
             "INSERT INTO search (body, snapshot_digest, source_id) VALUES (?,?,?)",
             [(row[3], row[0], row[1]) for row in contents],
@@ -326,7 +377,7 @@ def search(path: Path, query: str, limit: int = 10) -> tuple[SearchHit, ...]:
 #: The tables a usable store must have. Checked rather than assumed: SQLite
 #: accepts a zero-byte file as a valid empty database, so "the file is there"
 #: says nothing about whether anything can be read out of it.
-_REQUIRED_TABLES = ("source", "version", "content", "search")
+_REQUIRED_TABLES = ("source", "version", "content", "record", "search")
 
 
 def verify(path: Path) -> None:
@@ -354,6 +405,138 @@ def verify(path: Path) -> None:
         raise StoreUnusable(
             f"{Path(path).name} is not a derived store; it is missing {', '.join(absent)}"
         )
+
+
+def _validate_context_window(before: int, after: int, limit: int) -> None:
+    """Refuse window values that would change a bounded context query's meaning."""
+    for name, value, minimum in (
+        ("before", before, 0),
+        ("after", after, 0),
+        ("limit", limit, 1),
+    ):
+        if type(value) is not int or isinstance(value, bool) or value < minimum:
+            qualifier = "non-negative" if minimum == 0 else "positive"
+            raise QueryError(f"{name} must be a {qualifier} integer")
+
+
+def _record_answer(row: tuple) -> dict[str, object]:
+    """Render one indexed record without exposing index-only linkage fields."""
+    return {
+        "source_id": row[0],
+        "snapshot_digest": row[1],
+        "kind": row[2],
+        "provider": row[3],
+        "role": row[7],
+        "created_at": row[8],
+        "external_id": row[4],
+        "parent_external_id": row[6],
+        "bytes": row[9],
+        "body": row[10],
+    }
+
+
+_RECORD_SELECT = (
+    "SELECT r.source_id, r.snapshot_digest, r.kind, r.provider, r.external_id,"
+    " r.container_external_id, r.parent_external_id, r.role, r.created_at,"
+    " c.byte_length, c.body"
+    " FROM record r JOIN content c ON c.snapshot_digest = r.snapshot_digest"
+    "  AND c.source_id = r.source_id"
+)
+
+
+_TIP_CONTAINER_RECORDS = (
+    _RECORD_SELECT
+    + " JOIN version v ON v.source_id = r.source_id"
+    "  AND v.snapshot_digest = r.snapshot_digest"
+    " WHERE r.container_external_id = ?"
+    "  AND v.sequence = ("
+    "   SELECT MAX(tip.sequence) FROM version tip WHERE tip.source_id = v.source_id"
+    "  )"
+    " ORDER BY r.created_at IS NULL, r.created_at, r.source_id"
+)
+
+
+def context(
+    path: Path,
+    *,
+    source_id: str | None = None,
+    container: str | None = None,
+    before: int = 2,
+    after: int = 2,
+    limit: int = 200,
+) -> dict[str, object]:
+    """Read a source's conversation neighbourhood or a container's tip records.
+
+    The index stores header fields only for snapshots canon already holds.  A
+    source lookup first selects that source's tip, while a container lookup
+    selects the tip of every source before ordering the resulting records.
+    """
+    if (source_id is None) == (container is None):
+        raise QueryError("context requires exactly one of source_id or container")
+    _validate_context_window(before, after, limit)
+    verify(path)
+    connection = _open_for_reading(path)
+    try:
+        if source_id is not None:
+            tip = connection.execute(
+                "SELECT snapshot_digest FROM version WHERE source_id = ?"
+                " ORDER BY sequence DESC LIMIT 1",
+                (source_id,),
+            ).fetchone()
+            if tip is None:
+                raise DerivedStoreError(f"source {source_id!r} is not in the derived index")
+            target = connection.execute(
+                _RECORD_SELECT + " WHERE r.source_id = ? AND r.snapshot_digest = ?",
+                (source_id, tip[0]),
+            ).fetchone()
+            if target is None:
+                raise StoreUnusable("the derived store is missing the source's tip record")
+            target_answer = _record_answer(target)
+            target_container = target[5]
+            if target_container is None:
+                return {
+                    "source_id": source_id,
+                    "container": None,
+                    "target": target_answer,
+                    "before": [],
+                    "after": [],
+                    "note": "no container recorded",
+                }
+            rows = connection.execute(_TIP_CONTAINER_RECORDS, (target_container,)).fetchall()
+            position = next(
+                (
+                    index
+                    for index, row in enumerate(rows)
+                    if row[0] == target[0] and row[1] == target[1]
+                ),
+                None,
+            )
+            if position is None:
+                raise StoreUnusable(
+                    "the derived store's tip record is absent from its container query"
+                )
+            return {
+                "source_id": source_id,
+                "container": target_container,
+                "position": position,
+                "total": len(rows),
+                "target": target_answer,
+                "before": [_record_answer(row) for row in rows[max(0, position - before) : position]],
+                "after": [_record_answer(row) for row in rows[position + 1 : position + 1 + after]],
+            }
+        rows = connection.execute(_TIP_CONTAINER_RECORDS + " LIMIT ?", (container, limit)).fetchall()
+        total = connection.execute(
+            "SELECT COUNT(*) FROM (" + _TIP_CONTAINER_RECORDS + ")", (container,)
+        ).fetchone()[0]
+        return {
+            "container": container,
+            "total": total,
+            "records": [_record_answer(row) for row in rows],
+        }
+    except sqlite3.DatabaseError as error:
+        raise StoreUnusable(f"the store could not be read: {error}") from error
+    finally:
+        connection.close()
 
 
 def sources(path: Path) -> tuple[str, ...]:

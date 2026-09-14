@@ -16,7 +16,7 @@ against that catalogue by the test suite rather than trusted to have kept pace w
 ```
 
 `nous_os.core` is the one application service boundary. It publishes a fixed catalogue of
-external operations — twenty-three of them — each with a stable external name, a required
+external operations — twenty-four of them — each with a stable external name, a required
 authorization tier, and a declared parameter specification. Every governed decision a transport
 makes is made inside `core.invoke`: resolving which operation a name refers to, validating the
 supplied JSON-shaped arguments against that operation's declared parameters, and checking the
@@ -67,6 +67,7 @@ way:
 | `system.capabilities` | read | List every operation this contract offers, with its tier and parameters. | (none) |
 | `system.health` | read | Report whether each configured store location is readable, absent, or unknown. | (none) |
 | `knowledge.search` | read | Full-text search over the derived index. | query, limit? |
+| `knowledge.context` | read | Read a source's conversation neighbourhood, or a conversation's ordered records, from the derived index. | source_id?, container?, before?, after?, limit? |
 | `canon.documents` | read | List every canonical document under the configured data root. | (none) |
 | `canon.describe` | read | List every canonical document under the data root with the digest of its bytes. | (none) |
 | `canon.sources` | read | List every source the derived index holds. | (none) |

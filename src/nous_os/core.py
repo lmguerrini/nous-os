@@ -749,6 +749,18 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
         ),
     ),
     _descriptor(
+        "knowledge.context",
+        "context",
+        "Read a source's conversation neighbourhood, or a conversation's ordered records, from the derived index.",
+        (
+            ParameterSpec("source_id", "string", False, "a source whose conversation neighbourhood is read"),
+            ParameterSpec("container", "string", False, "a conversation identifier whose records are read"),
+            ParameterSpec("before", "integer", False, "records before a source target; defaults to 2"),
+            ParameterSpec("after", "integer", False, "records after a source target; defaults to 2"),
+            ParameterSpec("limit", "integer", False, "maximum container records to return; defaults to 200"),
+        ),
+    ),
+    _descriptor(
         "canon.documents",
         "list_documents",
         "List every canonical document under the configured data root.",
@@ -1308,6 +1320,14 @@ def _bind_search(workspace: Workspace, arguments: dict[str, object]) -> dict[str
     return kwargs
 
 
+def _bind_context(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    kwargs: dict[str, object] = {"path": workspace.derived_path}
+    for name in ("source_id", "container", "before", "after", "limit"):
+        if name in arguments:
+            kwargs[name] = arguments[name]
+    return kwargs
+
+
 def _bind_root_only(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
     return {"root": workspace.data_root}
 
@@ -1464,6 +1484,7 @@ def _bind_verify_relations(workspace: Workspace, arguments: dict[str, object]) -
 
 _BINDERS: Final = {
     "knowledge.search": _bind_search,
+    "knowledge.context": _bind_context,
     "canon.documents": _bind_root_only,
     "canon.describe": _bind_root_only,
     "canon.sources": _bind_path_only,
@@ -1584,6 +1605,7 @@ def _render_round_result(result) -> dict[str, object]:
 
 _RENDERERS: Final = {
     "knowledge.search": _render_search,
+    "knowledge.context": lambda result: result,
     "canon.documents": lambda documents: list(documents),
     "canon.describe": _render_describe_corpus,
     "canon.sources": lambda sources: list(sources),

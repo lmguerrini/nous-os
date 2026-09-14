@@ -716,6 +716,7 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
     )
     arguments = {
         "search": {"path": canon.derived_path, "query": "alpha"},
+        "context": {"path": canon.derived_path, "source_id": SOURCE_ID},
         "sources": {"path": canon.derived_path},
         "versions": {"path": canon.derived_path, "source_id": SOURCE_ID},
         "read_span": {"store": canon.snapshots, "citation": canon.citation},
@@ -886,6 +887,7 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
     assert operations, "the registered entry-point enumeration is empty"
     expected = {
         "search": Tier.READ,
+        "context": Tier.READ,
         "sources": Tier.READ,
         "versions": Tier.READ,
         "read_span": Tier.READ,
@@ -909,8 +911,8 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "ingest_source": Tier.PROMOTE,
         "promote_candidate": Tier.PROMOTE,
     }
-    assert len(expected) == 23
-    assert len(operations) == 23
+    assert len(expected) == 24
+    assert len(operations) == 24
     assert {operation.name: operation.tier for operation in operations} == expected
     assert all(
         operation.tier is not Tier.EXTERNAL_CONSEQUENTIAL_ACTION
@@ -968,7 +970,7 @@ def test_registered_wrapper_annotations_resolve_without_importing_discovery_at_r
     wrappers = tuple(
         authority._REGISTRY[operation.name][1] for operation in _project_operations()
     )
-    assert len(wrappers) == 23
+    assert len(wrappers) == 24
     resolved = {
         wrapper.__name__: get_type_hints(
             wrapper,
