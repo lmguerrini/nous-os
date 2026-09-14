@@ -242,7 +242,7 @@ left for a reader to discover by being wrong.
 | `BundleNormalization` | `src/nous_os/capture_bundle.py:221` | — | Materialized supplied-document, window and deduplicated captured-message records, plus counted refusals. |
 | `Extractor` | `src/nous_os/extraction.py:68` | `PLAIN_TEXT` · `JSON_TEXT` · `NOTEBOOK_CELLS` · `PDF_TEXT_TOOL` · `OFFICE_XML` · `ARCHIVE_MEMBERS` · `NONE` | The bounded mechanism that produced separately attributed attachment evidence. PDF text comes only from the tool found on PATH, with the observed version recorded. |
 | `ExtractionOutcome` | `src/nous_os/extraction.py:80` | `EXTRACTED` · `EMPTY` · `UNSUPPORTED_IMAGE` · `UNSUPPORTED_VIDEO` · `UNSUPPORTED_BINARY` · `UNREADABLE` · `TOOL_UNAVAILABLE` · `ABSENT` · `TOO_LARGE` · `ENCRYPTED` | What the byte reader established without turning unsupported, missing, unavailable-tool, encrypted, oversized, empty, or malformed material into the same answer. |
-| `StoredExtraction` | `src/nous_os/extraction.py:710` | — | One authenticated extraction payload with its sorted owners, text, version, and record digest as read from the shared store. |
+| `StoredExtraction` | `src/nous_os/extraction.py:738` | — | One authenticated extraction payload with its sorted owners, text, version, and record digest as read from the shared store. |
 
 <!-- /vocabulary:technical -->
 

@@ -196,6 +196,7 @@ class _ArchiveDirectoryDeclaration:
     central_directory_size: int
     entries_this_disk: int
     entries_total: int
+    end_record_offset: int
 
 
 def _unsigned(data: bytes, offset: int, width: int) -> int:
@@ -212,6 +213,12 @@ def _end_of_central_directory(data: bytes) -> tuple[int, int]:
         comment_length = _unsigned(data, offset + 20, 2)
         comment_end = offset + _EOCD_SIZE + comment_length
         if comment_end == len(data):
+            comment = data[offset + _EOCD_SIZE : comment_end]
+            if _EOCD_SIGNATURE in comment:
+                raise zipfile.BadZipFile(
+                    "end of central directory comment at offset "
+                    f"{offset} contains another end of central directory signature"
+                )
             return offset, comment_length
         if comment_end > len(data) and malformed_comment is None:
             malformed_comment = comment_length
@@ -282,6 +289,7 @@ def _zip64_directory_declaration(
         central_directory_size=central_directory_size,
         entries_this_disk=entries_this_disk,
         entries_total=entries_total,
+        end_record_offset=record_offset,
     )
 
 
@@ -342,6 +350,7 @@ def _archive_directory_declaration(data: bytes) -> _ArchiveDirectoryDeclaration:
         central_directory_size=classic_size,
         entries_this_disk=classic_entries_this_disk,
         entries_total=classic_entries_total,
+        end_record_offset=eocd_offset,
     )
     directory_end = declaration.central_directory_offset + declaration.central_directory_size
     if declaration.central_directory_offset > len(data):
@@ -349,11 +358,9 @@ def _archive_directory_declaration(data: bytes) -> _ArchiveDirectoryDeclaration:
             "central directory offset "
             f"{declaration.central_directory_offset} beyond the file of {len(data)} bytes"
         )
-    if directory_end > len(data):
+    if directory_end != declaration.end_record_offset:
         raise zipfile.BadZipFile(
-            "central directory offset + size "
-            f"{directory_end} beyond the file of {len(data)} bytes "
-            f"(offset {declaration.central_directory_offset}, size {declaration.central_directory_size})"
+            f"declared directory end {directory_end}; end record at {declaration.end_record_offset}"
         )
     found_entries, found_size = _central_directory_span(data, declaration.central_directory_offset)
     if declaration.central_directory_size != found_size:
@@ -381,10 +388,23 @@ def _archive_directory_declaration(data: bytes) -> _ArchiveDirectoryDeclaration:
     return declaration
 
 
+def _confirm_parsed_directory(archive: zipfile.ZipFile, declaration: _ArchiveDirectoryDeclaration) -> None:
+    """Refuse the archive if the standard library opened a different directory than the one declared and validated."""
+    entry_count = len(archive.infolist())
+    if archive.start_dir != declaration.central_directory_offset or entry_count != declaration.entries_total:
+        raise zipfile.BadZipFile(
+            f"parser opened a central directory at {archive.start_dir} with {entry_count} entries; "
+            f"the declared record names offset {declaration.central_directory_offset} "
+            f"with {declaration.entries_total} entries"
+        )
+
+
 def _archive_member_layout_errors(
     archive: zipfile.ZipFile,
     file_size: int,
     directory_start: int,
+    *,
+    directory_end: int | None = None,
 ) -> tuple[tuple[str, ...], ...]:
     """Validate every central entry's compressed-data region before member reads."""
     infos = tuple(archive.infolist())
@@ -438,6 +458,14 @@ def _archive_member_layout_errors(
                 f"{info.header_offset} beyond the file of {file_size} bytes",
             )
             _block_member_checks(ledger, "local header offset is outside the file")
+            continue
+        if directory_end is not None and directory_start <= info.header_offset < directory_end:
+            ledger.failed(
+                "local header offset",
+                f"{info.header_offset} is inside the central directory "
+                f"(offset {info.header_offset} within {directory_start}..{directory_end})",
+            )
+            _block_member_checks(ledger, "local header offset is inside the central directory")
             continue
         ledger.completed(
             "local header offset",
@@ -1834,6 +1862,7 @@ def _zip_record(data: bytes, *, asset_source_id: str | None, given_name: str | N
     try:
         directory = _archive_directory_declaration(data)
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            _confirm_parsed_directory(archive, directory)
             infos = tuple(archive.infolist())
             names = _zip_names(infos)
             kind = _office_kind(names)
@@ -1841,6 +1870,7 @@ def _zip_record(data: bytes, *, asset_source_id: str | None, given_name: str | N
                 archive,
                 len(data),
                 directory.central_directory_offset,
+                directory_end=directory.central_directory_offset + directory.central_directory_size,
             )
             if _archive_exceeds_bounds(infos):
                 return _record(
