@@ -183,7 +183,7 @@ left for a reader to discover by being wrong.
 | `Endpoint` | `src/nous_os/discovery.py:197` | — | One end of a proposed link, with an exact citation and a short quote. |
 | `BridgeRegistry` | `src/nous_os/discovery.py:347` | — | Every card ever judged, never emptied. |
 | `Chunk` | `src/nous_os/chunking.py:34` | — | A piece of a document that remembers where it came from. |
-| `SearchHit` | `src/nous_os/derived.py:117` | — | One result from the rebuildable index. |
+| `SearchHit` | `src/nous_os/derived.py:118` | — | One result from the rebuildable index. |
 | `CohesionStrategy` | `src/nous_os/compile.py:42` | — | A pluggable way of deciding what belongs together in a pack. |
 | `InclusionManifest` | `src/nous_os/compile.py:244` | — | What actually went into a pack, recoverable afterwards. |
 | `Pack` | `src/nous_os/compile.py:275` | — | Assembled context, with its manifest attached. |

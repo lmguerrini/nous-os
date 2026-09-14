@@ -28,6 +28,7 @@ failing: the failure is visible and the silence is not.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -187,15 +188,14 @@ def _canonical_rows(store: SnapshotStore, ledger: Ledger) -> tuple[list, list, l
 def build(store: SnapshotStore, ledger: Ledger, path: Path) -> Path:
     """Build the derived store at ``path`` from canon alone.
 
-    Refuses to overwrite. A rebuild deletes first, deliberately: writing over a
-    live database would leave whatever the previous build put there and call the
-    result a rebuild.
+    Refuses to overwrite. A rebuild builds a separate sibling and atomically
+    replaces the live database only after that separate build verifies.
     """
     path = Path(path)
     if path.exists():
         raise DerivedStoreError(
-            f"{path.name} already exists; a rebuild removes the store first, so "
-            "that nothing from the previous build can survive into this one"
+            f"{path.name} already exists; build refuses to overwrite it; a rebuild "
+            "publishes a separately verified sibling instead"
         )
     sources, versions, contents = _canonical_rows(store, ledger)
 
@@ -222,11 +222,34 @@ def build(store: SnapshotStore, ledger: Ledger, path: Path) -> Path:
 
 
 def rebuild(store: SnapshotStore, ledger: Ledger, path: Path) -> Path:
-    """Delete the store and build it again. The whole of recovery."""
+    """Build and verify a sibling, then atomically publish it over ``path``.
+
+    On POSIX, ``os.replace`` leaves a reader connection opened before the
+    replacement on the generation it opened; a later ``_open_for_reading``
+    opens the published generation. The published path is never opened for
+    writing or removed during the rebuild.
+    """
     path = Path(path)
-    if path.exists():
-        path.unlink()
-    return build(store, ledger, path)
+    sibling = path.with_name(path.name + ".rebuild")
+    journal = sibling.with_name(sibling.name + "-journal")
+
+    # A sibling is only unfinished work, never a published generation.
+    sibling.unlink(missing_ok=True)
+    journal.unlink(missing_ok=True)
+    try:
+        build(store, ledger, sibling)
+        verify(sibling)
+        os.replace(sibling, path)
+    except BaseException:
+        # Keep the failure that interrupted the build or publication. Cleanup
+        # must not replace it with a secondary failure.
+        for artifact in (sibling, journal):
+            try:
+                artifact.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+    return path
 
 
 def state_digest(path: Path) -> str:
