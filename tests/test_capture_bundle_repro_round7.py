@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from nous_os.capture_bundle import BundleFormatError, BundleRefusal, inventory
+from nous_os.sources import SourceKind
 from tests.test_capture_bundle import _copy, _edit_json, _records, _update_declaration
 
 
@@ -23,15 +24,17 @@ def test_b1_non_string_role_is_refused_unknown_role_not_a_crash(tmp_path: Path, 
     normalized, records = _records(root)
     assert records, "the bundle still yields its well-formed records"
     assert normalized.counters["unknown_roles"] == 1
-    assert any(item.refusal is BundleRefusal.UNKNOWN_ROLE for item in normalized.refusals)
+    refused = [item for item in normalized.refusals if item.refusal is BundleRefusal.UNKNOWN_ROLE]
+    assert [item.locator for item in refused] == ["capture/interface.json#/branches/2/messages/2"]
 
 
-def test_m_e_nul_in_a_declared_path_is_a_named_refusal(tmp_path: Path) -> None:
+@pytest.mark.parametrize("character", ["\x00", "\x1f", "\x7f", "\x85", "\x9f", "\u2028", "\u2029"])
+def test_m_e_control_and_line_separator_characters_in_a_declared_path_are_named_refusals(tmp_path: Path, character: str) -> None:
     root = _copy(tmp_path)
 
     def declare(manifest: dict) -> None:
         manifest["files"].append(
-            {"path": "documents/nul\x00name.txt", "bytes": 1, "sha256": "0" * 64, "source_kind": "keeper_note", "sensitivity": "synthetic"}
+            {"path": f"documents/odd{character}name.txt", "bytes": 1, "sha256": "0" * 64, "source_kind": "keeper_note", "sensitivity": "synthetic"}
         )
 
     _edit_json(root / "INPUT_MANIFEST.json", declare)
@@ -70,3 +73,6 @@ def test_m_d_a_window_without_button_metadata_keeps_its_messages(tmp_path: Path)
     normalized, records = _records(root)
     assert normalized.counters["malformed_captures"] == 0
     assert len(records) == 10
+    windows = {record.external_id: record for record in records if record.kind is SourceKind.CAPTURE_WINDOW}
+    assert windows["conv-1#0"].payload["buttons"] == []
+    assert windows["conv-1#0"].payload["message_ids"] == ["msg-a1", "msg-b2"]

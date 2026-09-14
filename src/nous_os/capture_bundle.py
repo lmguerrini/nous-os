@@ -591,9 +591,12 @@ def _relative(value: object, name: str) -> str:
         value.encode("utf-8")
     except UnicodeEncodeError as error:
         raise BundleFormatError(f"{name} must be valid UTF-8 text") from error
-    if any(ord(character) < 0x20 or character == "\u2028" for character in value):
+    if any(
+        ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F or character in "\u2028\u2029"
+        for character in value
+    ):
         raise BundleFormatError(
-            f"{name} must not contain C0 control characters or a Unicode line separator"
+            f"{name} must not contain control characters or a Unicode line separator"
         )
     path = PurePosixPath(value)
     if (
