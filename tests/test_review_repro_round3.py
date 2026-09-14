@@ -23,6 +23,11 @@ def test_c1_audit_trail_survives_a_line_separator_in_the_decider(tmp_path: Path,
     # the audit trail must be readable again: a replay is logged, not a crash
     assert main(_apply_argv(world, first)) == 0
     assert _audit(world)[-1]["outcome"] == "ALREADY_DECIDED"
+    # the authorisation registry now carries the separator too: a later, unrelated approval on the same root must still be applied
+    later = ReviewCandidate.from_proposal(_record(world, _content(world, statement="Harbor access ends at dusk.", scope="harbor.later")))
+    second = _write_decisions(world.root / "second.jsonl", _decision(later, decided_at="2026-01-04T12:00:00+00:00"))
+    assert main(_apply_argv(world, second)) == 0
+    assert _audit(world)[-1]["outcome"] == "APPLIED", _audit(world)[-1]
 
 
 def test_c2_identical_superseding_content_is_refused_before_reservation(tmp_path: Path) -> None:
