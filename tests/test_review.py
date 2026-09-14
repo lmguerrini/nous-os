@@ -931,3 +931,25 @@ def test_candidate_and_decision_refusals_have_exact_reason_codes(tmp_path: Path)
         with pytest.raises(review.DecisionRefused) as error:
             review.ReviewDecision.from_payload(payload)
         assert str(error.value) == expected
+
+
+def test_notes_are_typed_optional_and_never_reach_canon(tmp_path: Path) -> None:
+    """A producer's notes travel on the candidate for the reviewer; they are typed, bounded, never an outcome, never canon."""
+    world = _world(tmp_path)
+    with_notes = _content(world)
+    with_notes["notes"] = "shortlisted from a pasted document; uncertain: the document proposes, the person did not decide"
+    candidate = ReviewCandidate.from_proposal(_record(world, with_notes))
+    assert candidate.notes == with_notes["notes"]
+    without = ReviewCandidate.from_proposal(_record(world, _content(world, statement="Harbor access ends at dusk.", scope="harbor.dusk")))
+    assert without.notes is None
+    for bad in (7, ["a"], {"b": 1}, "x" * 4001):
+        payload = _content(world, statement=f"Harbor access is {type(bad).__name__}.", scope=f"harbor.{type(bad).__name__}")
+        payload["notes"] = bad
+        with pytest.raises(review.CandidateRefused, match="MALFORMED_NOTES"):
+            ReviewCandidate.from_proposal(_record(world, payload))
+    assert main(_apply_argv(world, _write_decisions(world.root / "n.jsonl", _decision(candidate)))) == 0
+    assert _audit(world)[-1]["outcome"] == "APPLIED"
+    canon_files = list((world.canon_root / "assertions").rglob("*.json"))
+    assert canon_files and all("notes" not in json.loads(path.read_text(encoding="utf-8")) for path in canon_files)
+    assert all("shortlisted" not in path.read_text(encoding="utf-8") for path in canon_files)
+    assert all("notes" not in line for line in world.audit_log.read_text(encoding="utf-8").splitlines())

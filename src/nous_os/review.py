@@ -92,8 +92,13 @@ _CANDIDATE_FIELDS: Final[frozenset[str]] = frozenset(
         "supersedes",
         "derived_citations",
         "derived_counter_citations",
+        "notes",
     }
 )
+#: The producer's own working notes on a candidate (why it was shortlisted, what is uncertain, which earlier candidate it
+#: refines). Optional, typed, bounded; carried on the candidate for the reviewer to read and never interpreted by the
+#: console: notes do not change any outcome, are not a decision, and are not written into a canonical version.
+_NOTES_MAX_CHARS: Final = 4000
 _CITATION_FIELDS: Final[frozenset[str]] = frozenset(
     {"source_id", "snapshot_digest", "start_byte", "end_byte", "span"}
 )
@@ -260,6 +265,7 @@ class ReviewCandidate:
     producer: str
     batch: str
     supersedes: str | None
+    notes: str | None
     _content_bytes: bytes
 
     @classmethod
@@ -270,7 +276,7 @@ class ReviewCandidate:
             payload = json.loads(proposal.content.as_data())
         except json.JSONDecodeError as error:
             raise CandidateRefused("CONTENT_NOT_JSON") from error
-        required_fields = _CANDIDATE_FIELDS - {"derived_citations", "derived_counter_citations"}
+        required_fields = _CANDIDATE_FIELDS - {"derived_citations", "derived_counter_citations", "notes"}
         if (
             type(payload) is not dict
             or not required_fields <= set(payload)
@@ -313,6 +319,9 @@ class ReviewCandidate:
         why = payload["why"]
         if type(why) is not str:
             raise CandidateRefused("MALFORMED_WHY")
+        notes = payload.get("notes")
+        if notes is not None and (type(notes) is not str or len(notes) > _NOTES_MAX_CHARS):
+            raise CandidateRefused("MALFORMED_NOTES")
         producer = _non_blank(payload["producer"], "MALFORMED_PRODUCER", CandidateRefused)
         batch = _non_blank(payload["batch"], "MALFORMED_BATCH", CandidateRefused)
         supersedes = payload["supersedes"]
@@ -348,6 +357,7 @@ class ReviewCandidate:
             producer=producer,
             batch=batch,
             supersedes=supersedes,
+            notes=notes,
             _content_bytes=content_bytes,
         )
 
