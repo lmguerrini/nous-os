@@ -81,6 +81,7 @@ def test_an_early_ending_stream_names_the_checks_it_could_not_run(tmp_path: Path
 # ------------------------------------------------------------
 
 def test_a_shared_local_header_is_named_even_when_a_forged_size_trips_the_bound(tmp_path: Path) -> None:
+    """Whole-file accounting changes this former partial/bounded outcome into a whole refusal."""
     import warnings
 
     archive_path = tmp_path / "shared-large.zip"
@@ -100,8 +101,11 @@ def test_a_shared_local_header_is_named_even_when_a_forged_size_trips_the_bound(
 
     record = extract_file(archive_path)
 
-    assert record.outcome in {ExtractionOutcome.UNREADABLE, ExtractionOutcome.TOO_LARGE}
+    assert record.outcome is ExtractionOutcome.UNREADABLE
+    assert not record.text
+    assert not any(member.outcome is ExtractionOutcome.EXTRACTED for member in record.members), record.members
     assert any("local header" in note for note in record.notes), record.notes
+    assert "not accounted for" in " ".join(record.notes), record.notes
 
 
 # ------------------------------------------------------------

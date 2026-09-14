@@ -173,7 +173,8 @@ def test_the_zip64_record_offset_bound_check_is_pinned_with_figures() -> None:
     assert "overruns" not in message
 
 
-def test_a_local_header_offset_inside_the_central_directory_is_named_while_siblings_extract(tmp_path: Path) -> None:
+def test_a_local_header_offset_inside_the_central_directory_is_named_and_gap_refuses_the_archive(tmp_path: Path) -> None:
+    """Whole-file accounting changes this former partial extraction into a whole refusal."""
     archive_path = _zip(tmp_path / "insidecd.zip", {"a.txt": b"alpha words " * 20, "b.txt": b"beta words " * 20})
     data = bytearray(archive_path.read_bytes())
     eocd = data.rfind(b"PK\x05\x06")
@@ -192,10 +193,10 @@ def test_a_local_header_offset_inside_the_central_directory_is_named_while_sibli
 
     record = extract_file(archive_path)
 
-    member_a = next(m for m in record.members if m.path == "a.txt")
-    member_b = next(m for m in record.members if m.path == "b.txt")
-    assert member_a.outcome is ExtractionOutcome.EXTRACTED, record.notes
-    assert member_b.outcome is ExtractionOutcome.UNREADABLE
+    assert record.outcome is ExtractionOutcome.UNREADABLE, record.notes
+    assert not record.text
+    assert not any(member.outcome is ExtractionOutcome.EXTRACTED for member in record.members), record.members
     note = next(n for n in record.notes if "b.txt" in n)
     assert "inside the central directory" in note.lower()
     assert str(forged_header_offset) in note and str(cd_offset) in note, note
+    assert "not accounted for" in " ".join(record.notes), record.notes

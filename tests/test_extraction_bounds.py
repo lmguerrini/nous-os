@@ -39,17 +39,21 @@ def _with_zip64_offset(data: bytearray, offset_value: int) -> bytearray:
 
 @pytest.mark.parametrize("offset_value", [2**64 - 1, 2**63, 10**12])
 def test_an_absurd_zip64_local_offset_is_unreadable_not_an_exception(tmp_path: Path, offset_value: int) -> None:
-    """Offsets are checked against the file size before any seek; nothing raises out of extract_file."""
+    """Whole-file accounting changes the former partial outcome into a whole refusal; offsets are still checked before any seek and nothing raises."""
     archive_path = _zip(tmp_path / "z64.zip", {"a.txt": b"hello words"})
     archive_path.write_bytes(_with_zip64_offset(bytearray(archive_path.read_bytes()), offset_value))
 
     record = extract_file(archive_path)
 
     assert record.outcome is ExtractionOutcome.UNREADABLE
+    assert not record.text
+    assert not any(member.outcome is ExtractionOutcome.EXTRACTED for member in record.members), record.members
     assert any("offset" in note.lower() and "a.txt" in note for note in record.notes), record.notes
+    assert "not accounted for" in " ".join(record.notes), record.notes
 
 
 def test_a_compressed_size_beyond_the_file_is_refused_before_any_read(tmp_path: Path) -> None:
+    """Whole-file accounting changes the former member-only refusal into a whole refusal without reading the forged region."""
     archive_path = _zip(tmp_path / "beyond.zip", {"a.txt": b"hello words"})
     data = bytearray(archive_path.read_bytes())
     c = _central(data)
@@ -58,9 +62,13 @@ def test_a_compressed_size_beyond_the_file_is_refused_before_any_read(tmp_path: 
 
     record = extract_file(archive_path)
 
+    assert record.outcome is ExtractionOutcome.UNREADABLE
+    assert not record.text
+    assert not any(candidate.outcome is ExtractionOutcome.EXTRACTED for candidate in record.members), record.members
     member = next(m for m in record.members if m.path == "a.txt")
     assert member.outcome is ExtractionOutcome.UNREADABLE
     assert any("a.txt" in note and ("size" in note.lower() or "region" in note.lower()) for note in record.notes), record.notes
+    assert "not accounted for" in " ".join(record.notes), record.notes
 
 
 def test_an_encrypted_member_that_also_ends_early_names_the_checks_it_could_not_run(tmp_path: Path) -> None:

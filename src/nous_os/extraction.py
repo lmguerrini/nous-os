@@ -541,6 +541,142 @@ def _archive_member_layout_errors(
     )
 
 
+def _archive_structure_accounting(
+    data: bytes,
+    archive: zipfile.ZipFile,
+    declaration: _ArchiveDirectoryDeclaration,
+    layout_errors: tuple[tuple[str, ...], ...],
+) -> None:
+    """Refuse bytes outside the selected ZIP structure without re-reading member data.
+
+    The layout ledger above remains responsible for reporting invalid and
+    overlapping members by name.  This check instead merges all declared
+    regions and reports only the first uncovered range, so an overlap cannot
+    replace an existing per-member diagnostic with a different archive-wide
+    one.
+    """
+    file_size = len(data)
+
+    def unaccounted_error(offset: int, length: int, next_region: int) -> zipfile.BadZipFile:
+        message = f"{length} bytes at offset {offset} not accounted for by the declared structure"
+        error = zipfile.BadZipFile(message)
+        # An earlier EOCD that reaches EOF is especially useful context for a
+        # terminal-directory disguise: identify the hidden directory region
+        # without treating it as declared coverage.
+        candidate = data.rfind(
+            _EOCD_SIGNATURE,
+            max(offset, next_region - (0xFFFF + _EOCD_SIZE)),
+            next_region,
+        )
+        if candidate >= offset and candidate + _EOCD_SIZE <= file_size:
+            candidate_comment_end = candidate + _EOCD_SIZE + _unsigned(data, candidate + 20, 2)
+            candidate_directory = _unsigned(data, candidate + 16, 4)
+            if candidate_comment_end == file_size and offset <= candidate_directory < next_region:
+                error.structure_context = (
+                    f"unselected directory: {next_region - candidate_directory} bytes at offset "
+                    f"{candidate_directory}"
+                )
+        return error
+
+    regions: list[tuple[int, int]] = []
+    directory_start = declaration.central_directory_offset
+    directory_end = directory_start + declaration.central_directory_size
+    regions.append((directory_start, directory_end))
+
+    eocd_offset, comment_length = _end_of_central_directory(data)
+    regions.append((eocd_offset, eocd_offset + _EOCD_SIZE + comment_length))
+    locator_offset = eocd_offset - _ZIP64_LOCATOR_SIZE
+    if data[locator_offset : locator_offset + 4] == _ZIP64_LOCATOR_SIGNATURE:
+        record_offset = _unsigned(data, locator_offset + 8, 8)
+        record_size = _unsigned(data, record_offset + 4, 8)
+        regions.append((record_offset, record_offset + 12 + record_size))
+        regions.append((locator_offset, eocd_offset))
+
+    central_offset = directory_start
+    for index, info in enumerate(archive.infolist()):
+        if data[central_offset : central_offset + 4] != _CENTRAL_DIRECTORY_SIGNATURE:
+            # Directory validation and the layout ledger have already named
+            # this malformed member.  Do not turn it into a coverage error.
+            break
+        central_name_length = _unsigned(data, central_offset + 28, 2)
+        central_extra_length = _unsigned(data, central_offset + 30, 2)
+        central_comment_length = _unsigned(data, central_offset + 32, 2)
+        central_zip64_sizes = (
+            _unsigned(data, central_offset + 20, 4) == 0xFFFFFFFF
+            or _unsigned(data, central_offset + 24, 4) == 0xFFFFFFFF
+        )
+        central_offset += (
+            _CENTRAL_DIRECTORY_HEADER_SIZE
+            + central_name_length
+            + central_extra_length
+            + central_comment_length
+        )
+
+        if layout_errors[index]:
+            # An invalid member cannot attest to any byte range.  Its named
+            # ledger refusal is retained by the caller while these bytes stay
+            # UNKNOWN until another verified structure covers them.
+            continue
+
+        header_offset = info.header_offset
+        header_end = header_offset + zipfile.sizeFileHeader
+        if (
+            header_offset < 0
+            or header_end > file_size
+            or data[header_offset : header_offset + 4] != zipfile.stringFileHeader
+        ):
+            # The layout ledger reports this by member name.  A missing local
+            # header cannot establish a distinct unaccounted byte range.
+            continue
+        local_name_length = _unsigned(data, header_offset + 26, 2)
+        local_extra_length = _unsigned(data, header_offset + 28, 2)
+        data_start = header_end + local_name_length + local_extra_length
+        data_end = data_start + info.compress_size
+        if data_start > file_size or data_end > file_size:
+            # As above, retain the existing member-boundary refusal.
+            continue
+        regions.append((header_offset, data_start))
+        regions.append((data_start, data_end))
+        if info.flag_bits & 0x8:
+            descriptor_size = 20 if central_zip64_sizes else 12
+            if data[data_end : data_end + 4] == b"PK\x07\x08":
+                descriptor_size += 4
+            regions.append((data_end, data_end + descriptor_size))
+
+    covered_end = 0
+    for start, end in sorted(regions):
+        if end <= 0 or start >= file_size:
+            continue
+        start = max(start, 0)
+        end = min(end, file_size)
+        if end <= start:
+            continue
+        if start > covered_end:
+            raise unaccounted_error(covered_end, start - covered_end, start)
+        covered_end = max(covered_end, end)
+    if covered_end < file_size:
+        raise unaccounted_error(covered_end, file_size - covered_end, file_size)
+
+
+def _zipfile_parse_bytes(data: bytes) -> bytes:
+    """Remove only a ZIP64 tail gap while asking ``zipfile`` to parse its directory.
+
+    The standard-library parser assumes the ZIP64 record is adjacent to its
+    locator.  Keeping the rest of the archive at its original offsets lets us
+    confirm the declared directory first, then report the retained gap through
+    structural accounting rather than masking it as a parser-specific error.
+    """
+    eocd_offset, _comment_length = _end_of_central_directory(data)
+    locator_offset = eocd_offset - _ZIP64_LOCATOR_SIZE
+    if data[locator_offset : locator_offset + 4] != _ZIP64_LOCATOR_SIGNATURE:
+        return data
+    record_offset = _unsigned(data, locator_offset + 8, 8)
+    record_end = record_offset + 12 + _unsigned(data, record_offset + 4, 8)
+    if record_end < locator_offset:
+        return data[:record_end] + data[locator_offset:]
+    return data
+
+
 
 _EXTRACTOR_MEMBERS = tuple(Extractor)
 _OUTCOME_MEMBERS = tuple(ExtractionOutcome)
@@ -1861,7 +1997,7 @@ def _archive_record(
 def _zip_record(data: bytes, *, asset_source_id: str | None, given_name: str | None) -> Extraction:
     try:
         directory = _archive_directory_declaration(data)
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        with zipfile.ZipFile(io.BytesIO(_zipfile_parse_bytes(data))) as archive:
             _confirm_parsed_directory(archive, directory)
             infos = tuple(archive.infolist())
             names = _zip_names(infos)
@@ -1872,6 +2008,33 @@ def _zip_record(data: bytes, *, asset_source_id: str | None, given_name: str | N
                 directory.central_directory_offset,
                 directory_end=directory.central_directory_offset + directory.central_directory_size,
             )
+            try:
+                _archive_structure_accounting(data, archive, directory, layout_errors)
+            except zipfile.BadZipFile as error:
+                structure_context = getattr(error, "structure_context", None)
+                return _record(
+                    data,
+                    asset_source_id=asset_source_id,
+                    given_name=given_name,
+                    extractor=Extractor.OFFICE_XML if kind is not None else Extractor.ARCHIVE_MEMBERS,
+                    extractor_version=_stdlib_version(),
+                    outcome=ExtractionOutcome.UNREADABLE,
+                    members=tuple(
+                        ExtractionMember(
+                            path=info.filename,
+                            size=info.file_size,
+                            crc=info.CRC,
+                            digest=None,
+                            outcome=ExtractionOutcome.UNREADABLE,
+                        )
+                        for info, reasons in zip(infos, layout_errors)
+                        if reasons
+                    ),
+                    notes=((f"office:{kind}",) if kind is not None else ())
+                    + _layout_error_notes(infos, layout_errors)
+                    + (_note(error),)
+                    + ((structure_context,) if structure_context is not None else ()),
+                )
             if _archive_exceeds_bounds(infos):
                 return _record(
                     data,
