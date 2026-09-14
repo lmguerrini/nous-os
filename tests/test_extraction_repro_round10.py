@@ -9,6 +9,8 @@ import struct
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from nous_os import extraction
 from nous_os.extraction import ExtractionOutcome, Extractor, extract_file
 
@@ -74,7 +76,13 @@ def _zip(path: Path, entries: dict[str, bytes]) -> Path:
     return path
 
 
-def _zip64_tail(path: Path, *, junk: bytes = b"") -> Path:
+def _zip64_tail(
+    path: Path,
+    *,
+    junk: bytes = b"",
+    sector: bytes = b"",
+    sector_is_declared: bool = True,
+) -> Path:
     data = bytearray(path.read_bytes())
     eocd = data.rfind(b"PK\x05\x06")
     directory_size = int.from_bytes(data[eocd + 12 : eocd + 16], "little")
@@ -84,7 +92,7 @@ def _zip64_tail(path: Path, *, junk: bytes = b"") -> Path:
     record_offset = len(body)
     record = b"PK\x06\x06" + struct.pack(
         "<QHHIIQQQQ",
-        44,
+        44 + len(sector) if sector_is_declared else 44,
         45,
         45,
         0,
@@ -100,7 +108,7 @@ def _zip64_tail(path: Path, *, junk: bytes = b"") -> Path:
     sentinel_eocd = b"PK\x05\x06" + struct.pack(
         "<HHHHIIH", 0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
     )
-    path.write_bytes(body + record + junk + locator + sentinel_eocd)
+    path.write_bytes(body + record + sector + junk + locator + sentinel_eocd)
     return path
 
 
@@ -247,6 +255,62 @@ def test_bytes_between_a_zip64_end_record_and_its_locator_are_named(tmp_path: Pa
     record_offset = archive_path.read_bytes().find(b"PK\x06\x06")
     assert record.outcome is ExtractionOutcome.UNREADABLE, record.notes
     assert f"56 bytes at offset {record_offset + 56} not accounted for by the declared structure" in " ".join(record.notes)
+
+
+@pytest.mark.parametrize("sector_size", (1, 10))
+def test_a_zip64_extensible_data_sector_is_parsed_without_changing_accounting(
+    tmp_path: Path,
+    sector_size: int,
+) -> None:
+    archive_path = _zip64_tail(
+        _zip(
+            tmp_path / f"zip64-sector-{sector_size}.zip",
+            {"a.txt": b"alpha sector text", "b.txt": b"beta sector text"},
+        ),
+        sector=b"S" * sector_size,
+    )
+
+    record = extract_file(archive_path)
+
+    assert record.outcome is ExtractionOutcome.EXTRACTED, record.notes
+    assert "alpha sector text" in record.text
+    assert "beta sector text" in record.text
+
+
+def test_bytes_after_a_zip64_extensible_data_sector_are_named(tmp_path: Path) -> None:
+    sector = b"S" * 10
+    archive_path = _zip64_tail(
+        _zip(tmp_path / "zip64-sector-junk.zip", {"a.txt": b"zip64 words"}),
+        sector=sector,
+        junk=b"J" * 7,
+    )
+
+    record = extract_file(archive_path)
+
+    record_offset = archive_path.read_bytes().find(b"PK\x06\x06")
+    assert record.outcome is ExtractionOutcome.UNREADABLE, record.notes
+    assert (
+        f"7 bytes at offset {record_offset + 56 + len(sector)} "
+        "not accounted for by the declared structure"
+    ) in " ".join(record.notes)
+
+
+def test_an_undeclared_zip64_extensible_data_sector_is_named_as_a_gap(tmp_path: Path) -> None:
+    sector = b"S" * 10
+    archive_path = _zip64_tail(
+        _zip(tmp_path / "zip64-undeclared-sector.zip", {"a.txt": b"zip64 words"}),
+        sector=sector,
+        sector_is_declared=False,
+    )
+
+    record = extract_file(archive_path)
+
+    record_offset = archive_path.read_bytes().find(b"PK\x06\x06")
+    assert record.outcome is ExtractionOutcome.UNREADABLE, record.notes
+    assert (
+        f"{len(sector)} bytes at offset {record_offset + 56} "
+        "not accounted for by the declared structure"
+    ) in " ".join(record.notes)
 
 
 def _descriptor_archive(path: Path) -> tuple[Path, zipfile.ZipInfo, bytes]:

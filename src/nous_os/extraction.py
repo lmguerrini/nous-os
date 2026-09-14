@@ -659,22 +659,33 @@ def _archive_structure_accounting(
 
 
 def _zipfile_parse_bytes(data: bytes) -> bytes:
-    """Remove only a ZIP64 tail gap while asking ``zipfile`` to parse its directory.
+    """Normalize a ZIP64 tail only while asking ``zipfile`` to parse its directory.
 
-    The standard-library parser assumes the ZIP64 record is adjacent to its
-    locator.  Keeping the rest of the archive at its original offsets lets us
-    confirm the declared directory first, then report the retained gap through
-    structural accounting rather than masking it as a parser-specific error.
+    The standard-library parser assumes both that the ZIP64 record is adjacent
+    to its locator and that the record is exactly its 56-byte minimum.  Keep
+    the real bytes for declaration validation and structural accounting, but
+    remove a tail gap and then an extensible data sector from the parser copy.
+    That leaves all directory and local-header offsets unchanged for the later
+    confirmation against the real declaration.
     """
     eocd_offset, _comment_length = _end_of_central_directory(data)
     locator_offset = eocd_offset - _ZIP64_LOCATOR_SIZE
     if data[locator_offset : locator_offset + 4] != _ZIP64_LOCATOR_SIGNATURE:
         return data
     record_offset = _unsigned(data, locator_offset + 8, 8)
-    record_end = record_offset + 12 + _unsigned(data, record_offset + 4, 8)
+    record_size = _unsigned(data, record_offset + 4, 8)
+    record_end = record_offset + 12 + record_size
+    parse_data = data
+    parse_locator_offset = locator_offset
     if record_end < locator_offset:
-        return data[:record_end] + data[locator_offset:]
-    return data
+        parse_data = data[:record_end] + data[locator_offset:]
+        parse_locator_offset = record_end
+    if record_size > 44:
+        return (
+            parse_data[: record_offset + _ZIP64_EOCD_MINIMUM_SIZE]
+            + parse_data[parse_locator_offset:]
+        )
+    return parse_data
 
 
 
