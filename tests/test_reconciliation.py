@@ -216,20 +216,30 @@ def test_remaining_admissibility_rules_are_refused_by_class(tmp_path: Path) -> N
     revision = _proposal(world, RelationClass.REVISION)
     with pytest.raises(RelationError, match="LEDGER_LINEAGE or PROVIDER_IDENTITY"):
         replace(revision, bases=(EvidenceBasis.TEXT_EQUALITY,))
+    with pytest.raises(RelationError, match="lineage, not claims"):
+        replace(revision, claims=_claims(world))
 
     restatement = _proposal(world, RelationClass.RESTATEMENT)
     with pytest.raises(RelationError, match="different source ids"):
         replace(restatement, right=RelationEnd(LEFT_SOURCE, world.later.digest, "fixture-source"))
+    with pytest.raises(RelationError, match="BYTE_EQUALITY, TEXT_EQUALITY, or MODEL_JUDGEMENT"):
+        replace(restatement, bases=(EvidenceBasis.LEDGER_LINEAGE,))
+    with pytest.raises(RelationError, match="neither lineage nor claims"):
+        replace(restatement, lineage=Lineage(world.left.digest))
 
     related = _proposal(world, RelationClass.RELATED)
     with pytest.raises(RelationError, match="at least one evidence basis"):
         replace(related, bases=())
     with pytest.raises(RelationError, match="citation on each end"):
         replace(related, citations=(_citation(world.left),))
+    with pytest.raises(RelationError, match="neither lineage nor claims"):
+        replace(related, claims=_claims(world))
 
     contradiction = _proposal(world, RelationClass.CONTRADICTION)
     with pytest.raises(RelationError, match="requires COMPARABLE_CLAIMS"):
         replace(contradiction, bases=())
+    with pytest.raises(RelationError, match="claims, not lineage"):
+        replace(contradiction, lineage=Lineage(world.left.digest))
     assert contradiction.claims is not None
     with pytest.raises(RelationError, match="left claim citation must name the left end"):
         replace(
@@ -628,6 +638,7 @@ def test_text_equality_requires_an_explicit_time_and_fixed_bounds(tmp_path: Path
     assert "max_group" not in signature.parameters
     assert reconciliation.MIN_TEXT_CHARS == 40
     assert reconciliation.MAX_GROUP_SOURCES == 12
+    assert reconciliation.MAX_GROUP_VIEWS == 24
     with pytest.raises(TypeError, match="proposed_at"):
         text_equality_relations((), store=world.snapshots)  # type: ignore[call-arg]
     with pytest.raises(TypeError, match="min_chars"):
@@ -820,3 +831,23 @@ def test_a_cited_span_holding_a_line_separator_does_not_split_the_store(tmp_path
     assert len(world.store.relations()) == 1
     assert RelationStore(world.store.path).relations()[0].citations[0].span == json.dumps(text, ensure_ascii=False)[1:-1]
     assert world.store.verify(world.snapshots).unresolvable == 0
+
+
+def test_the_view_bound_is_exact(tmp_path: Path) -> None:
+    """Twenty-four retained views of two sources pair fully; the twenty-fifth view makes the group oversized, not larger."""
+    world = _World(tmp_path)
+    text = "equal text kept across exactly the bounded number of source versions here"
+
+    def views(per_source: int) -> tuple[TextView, ...]:
+        found = []
+        for source in (LEFT_SOURCE, RIGHT_SOURCE):
+            for version in range(per_source):
+                snapshot = world.snapshots.put(source, json.dumps({"text": text, "v": version, "s": source}).encode("utf-8"))
+                found.append(TextView(source, snapshot.digest, "fixture", text))
+        return tuple(found)
+
+    at_bound = text_equality_relations(views(12), store=world.snapshots, proposed_at=AT)
+    assert at_bound.oversized_groups == 0 and len(at_bound.proposals) == 12 * 12
+    extra = world.snapshots.put(LEFT_SOURCE, json.dumps({"text": text, "v": "extra", "s": LEFT_SOURCE}).encode("utf-8"))
+    beyond = text_equality_relations(views(12) + (TextView(LEFT_SOURCE, extra.digest, "fixture", text),), store=world.snapshots, proposed_at=AT)
+    assert beyond.oversized_groups == 1 and beyond.proposals == ()
