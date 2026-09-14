@@ -27,10 +27,14 @@ M2B = "src_01CRZ3NDEKTSV4RRFFQ69G5FAF"
 NO_CONTAINER = "src_01CRZ3NDEKTSV4RRFFQ69G5FAG"
 NON_JSON = "src_01CRZ3NDEKTSV4RRFFQ69G5FAH"
 UNKNOWN = "src_01CRZ3NDEKTSV4RRFFQ69G5FAJ"
+MISSING_CREATED_AT = "src_01CRZ3NDEKTSV4RRFFQ69G5FAK"
+NUMERIC_CREATED_AT = "src_01CRZ3NDEKTSV4RRFFQ69G5FAM"
+TIE_LOW = "src_01CRZ3NDEKTSV4RRFFQ69G5FAN"
+TIE_HIGH = "src_01CRZ3NDEKTSV4RRFFQ69G5FAP"
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def _header(**fields: str) -> str:
+def _header(**fields: object) -> str:
     return json.dumps(fields, separators=(",", ":"), sort_keys=True)
 
 
@@ -51,6 +55,15 @@ def _context_canon(tmp_path: Path) -> tuple[SnapshotStore, Ledger, Path]:
             M2,
             _header(kind="message", provider="adapter", external_id="m2", container_external_id="C1", parent_external_id="m1", role="assistant", created_at="2026-01-01T02:00:00Z"),
         ),
+        # Ingest the higher source id first: the timestamp tie must still use source_id.
+        (
+            TIE_HIGH,
+            _header(kind="message", provider="adapter", external_id="tie-high", container_external_id="C1", parent_external_id="m2", role="assistant", created_at="2026-01-01T02:30:00Z"),
+        ),
+        (
+            TIE_LOW,
+            _header(kind="message", provider="adapter", external_id="tie-low", container_external_id="C1", parent_external_id="m2", role="assistant", created_at="2026-01-01T02:30:00Z"),
+        ),
         (
             M3,
             _header(kind="message", provider="adapter", external_id="m3", container_external_id="C1", parent_external_id="m2", role="assistant", created_at="2026-01-01T03:00:00Z"),
@@ -58,6 +71,14 @@ def _context_canon(tmp_path: Path) -> tuple[SnapshotStore, Ledger, Path]:
         (
             M2B,
             _header(kind="message", provider="adapter", external_id="m2b", container_external_id="C1", parent_external_id="m1", role="assistant", created_at="2026-01-01T04:00:00Z"),
+        ),
+        (
+            MISSING_CREATED_AT,
+            _header(kind="message", provider="adapter", external_id="missing-created-at", container_external_id="C1", role="assistant"),
+        ),
+        (
+            NUMERIC_CREATED_AT,
+            _header(kind="message", provider="adapter", external_id="numeric-created-at", container_external_id="C1", role="assistant", created_at=1),
         ),
         (
             NO_CONTAINER,
@@ -87,6 +108,19 @@ def _context_canon(tmp_path: Path) -> tuple[SnapshotStore, Ledger, Path]:
     return store, ledger, tmp_path
 
 
+def _reverse_tie_scan_order(path: Path) -> None:
+    """Ensure a missing ORDER BY source_id cannot inherit the build's row order."""
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "CREATE INDEX test_reverse_tie_scan ON record("
+            "container_external_id, created_at IS NULL, created_at, source_id DESC)"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def test_record_rows_keep_rebuild_byte_identical_to_a_direct_build(tmp_path: Path) -> None:
     """O1: the pre-existing canon fixture now populates the record index too."""
     store, ledger, base = _canon(tmp_path)
@@ -105,29 +139,43 @@ def test_record_rows_keep_rebuild_byte_identical_to_a_direct_build(tmp_path: Pat
 
 
 def test_context_by_source_and_container_uses_tip_records_in_created_order(tmp_path: Path) -> None:
-    """O2: a narrow path window, a wider fork window, and a limited container read."""
+    """O2: source windows and container reads use the documented total order."""
     store, ledger, base = _context_canon(tmp_path)
     path = base / "derived.sqlite"
     derived.build(store, ledger, path)
+    _reverse_tie_scan_order(path)
 
     answer = derived.context(path, source_id=M2, before=1, after=1)
     assert answer["container"] == "C1"
     assert answer["position"] == 1
-    assert answer["total"] == 4
+    assert answer["total"] == 8
     assert [record["external_id"] for record in answer["before"]] == ["m1"]
-    assert [record["external_id"] for record in answer["after"]] == ["m3"]
+    assert [record["external_id"] for record in answer["after"]] == ["tie-low"]
 
     wider = derived.context(path, source_id=M2, before=1, after=2)
-    assert [record["external_id"] for record in wider["after"]] == ["m3", "m2b"]
-    assert wider["after"][1]["parent_external_id"] == "m1"
+    assert [record["external_id"] for record in wider["after"]] == ["tie-low", "tie-high"]
+    assert [record["source_id"] for record in wider["after"]] == [TIE_LOW, TIE_HIGH]
 
     tip = derived.context(path, source_id=M3)
     assert tip["target"]["role"] == "assistant-tip"
     assert tip["target"]["body"].endswith('"role":"assistant-tip"}')
 
-    container = derived.context(path, container="C1", limit=2)
-    assert container["total"] == 4
-    assert [record["external_id"] for record in container["records"]] == ["m1", "m2"]
+    container = derived.context(path, container="C1", limit=8)
+    assert container["total"] == 8
+    assert [record["external_id"] for record in container["records"]] == [
+        "m1",
+        "m2",
+        "tie-low",
+        "tie-high",
+        "m3",
+        "m2b",
+        "missing-created-at",
+        "numeric-created-at",
+    ]
+    assert [record["source_id"] for record in container["records"][-2:]] == [
+        MISSING_CREATED_AT,
+        NUMERIC_CREATED_AT,
+    ]
 
 
 def test_context_refusals_missing_headers_and_legacy_index_are_named(
