@@ -28,6 +28,7 @@ failing: the failure is visible and the silence is not.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -227,28 +228,42 @@ def rebuild(store: SnapshotStore, ledger: Ledger, path: Path) -> Path:
     On POSIX, ``os.replace`` leaves a reader connection opened before the
     replacement on the generation it opened; a later ``_open_for_reading``
     opens the published generation. The published path is never opened for
-    writing or removed during the rebuild.
+    writing or removed during the rebuild. A non-blocking sibling lock covers
+    every mutable step, so a concurrent rebuild cannot disturb this one.
     """
     path = Path(path)
     sibling = path.with_name(path.name + ".rebuild")
     journal = sibling.with_name(sibling.name + "-journal")
+    lock_path = path.with_name(path.name + ".rebuild.lock")
 
-    # A sibling is only unfinished work, never a published generation.
-    sibling.unlink(missing_ok=True)
-    journal.unlink(missing_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
-        build(store, ledger, sibling)
-        verify(sibling)
-        os.replace(sibling, path)
-    except BaseException:
-        # Keep the failure that interrupted the build or publication. Cleanup
-        # must not replace it with a secondary failure.
-        for artifact in (sibling, journal):
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise DerivedStoreError(f"rebuild in progress for {path.name}") from error
+        try:
+            # A sibling is only unfinished work, never a published generation.
+            sibling.unlink(missing_ok=True)
+            journal.unlink(missing_ok=True)
             try:
-                artifact.unlink(missing_ok=True)
-            except OSError:
-                pass
-        raise
+                build(store, ledger, sibling)
+                verify(sibling)
+                os.replace(sibling, path)
+            except BaseException:
+                # Keep the failure that interrupted the build or publication. Cleanup
+                # must not replace it with a secondary failure.
+                for artifact in (sibling, journal):
+                    try:
+                        artifact.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+    finally:
+        os.close(handle)
     return path
 
 

@@ -183,7 +183,7 @@ left for a reader to discover by being wrong.
 | `Endpoint` | `src/nous_os/discovery.py:197` | — | One end of a proposed link, with an exact citation and a short quote. |
 | `BridgeRegistry` | `src/nous_os/discovery.py:347` | — | Every card ever judged, never emptied. |
 | `Chunk` | `src/nous_os/chunking.py:34` | — | A piece of a document that remembers where it came from. |
-| `SearchHit` | `src/nous_os/derived.py:118` | — | One result from the rebuildable index. |
+| `SearchHit` | `src/nous_os/derived.py:119` | — | One result from the rebuildable index. |
 | `CohesionStrategy` | `src/nous_os/compile.py:42` | — | A pluggable way of deciding what belongs together in a pack. |
 | `InclusionManifest` | `src/nous_os/compile.py:244` | — | What actually went into a pack, recoverable afterwards. |
 | `Pack` | `src/nous_os/compile.py:275` | — | Assembled context, with its manifest attached. |
@@ -392,7 +392,7 @@ judgement sits on top of those facts and is offered as a judgement.
 
 ### Candidate — `Anamnesis`
 
-- **Proposed boundary:** proposed for the retrieval stage, kept separate from compilation — search at `src/nous_os/derived.py:117` feeding a pack assembled at `src/nous_os/compile.py:275`.
+- **Proposed boundary:** proposed for the retrieval stage, kept separate from compilation — search at `src/nous_os/derived.py:118` feeding a pack assembled at `src/nous_os/compile.py:275`.
 - **Evidence the boundary exists:** the separation is real and is enforced by the signature rather than by convention: compilation is handed a ranking and has no way to reach a store, so it cannot perform retrieval even by accident.
 - **Intended meaning:** two established senses that differ sharply. In Plato, recollection of knowledge the soul possessed before birth, with a full metaphysics attached. In Aristotle, the active search that recovers a retained impression, by contrast with passive retention. A third, liturgical sense is unrelated to both.
 - **Why the mapping is accurate or inaccurate:** inaccurate on the first sense and redundant on the second. NousOS retrieves documents the user actually ingested, whose bytes are stored under their own hash; nothing is innate, and the Platonic claim is flatly false of the system. On the Aristotelian sense the mapping is fair — but "retrieval" and "search" are already exact, already universally understood, and already the words the code and the README use. Adopting a term that needs a footnote disambiguating three senses in order to say "search" is a strict loss. It is also worth recording *why* this candidate arose: only as the natural pair to `Mneme`. A term whose support is symmetry with a rejected term has no support.
@@ -572,7 +572,7 @@ to rediscover them.
 | 4 | "Bridge" covers two unrelated objects: a judged candidate link with citations and a rubric, and a bare measurement fixture with neither. | `src/nous_os/discovery.py:216` and `src/nous_os/ablation.py:40` |
 | 5 | "Endpoint" has three meanings: a cited end of a proposed link, a document/anchor pair in a measurement, and a graph edge's source or target. Only the first is an importable symbol; the other two are the word used in prose and in an error message, which is part of why the collision is easy to miss. | `src/nous_os/discovery.py:197`, `src/nous_os/ablation.py:40`, `src/nous_os/projection.py:397` |
 | 6 | The third answer is spelled two ways with no rule distinguishing them — `UNKNOWN` in three enumerations, `UNDETERMINED` in three others. No module carries both, so nothing forces a reader to notice the split. | `src/nous_os/canonical.py:73` and `src/nous_os/temporal.py:86` |
-| 7 | "Derived" covers four things: the rebuildable index, a key origin, an epistemic class, and an alias derivation. | `src/nous_os/derived.py:117`, `src/nous_os/attribution.py:33`, `src/nous_os/discovery.py:79` |
+| 7 | "Derived" covers four things: the rebuildable index, a key origin, an epistemic class, and an alias derivation. | `src/nous_os/derived.py:118`, `src/nous_os/attribution.py:33`, `src/nous_os/discovery.py:79` |
 | 8 | `holder` names two different roles: the party that holds authority, and the party that put material forward and has none. | `src/nous_os/capability.py:171` and `src/nous_os/candidates.py:87` |
 | 9 | The same version string is declared twice under two names, on two sides of the language boundary, and nothing checks that they agree. | `src/nous_os/projection.py:28` and `ui/src/engine/version.ts:12` |
 | 10 | `MorphologyMaterial` is exported twice with disjoint structure — one a tuning record, one a binding of ids and materials — and one function takes the first and returns the second, so both names meet in a single body. | `ui/src/engine/calibration.ts:3` and `ui/src/engine/morphology.ts:99` |
