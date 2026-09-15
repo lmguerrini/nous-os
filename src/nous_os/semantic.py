@@ -6,9 +6,9 @@ already say, and nothing downstream may cite a vector as a fact. Deleting an
 index and rebuilding it from the same chunks and the same weights must
 reproduce it exactly, or the "derived" claim is false.
 
-**No default weights.** Following ``aliases.py``: two backends are named here
-— DENSE-ML, multilingual, and DENSE-EN, English-only — and neither is chosen
-for a caller who forgot to. A module-level "the encoder" would be exactly the
+**No default weights.** Following ``aliases.py``: three backends are named
+here — DENSE-ML, multilingual, DENSE-EN, English-only, and DENSE-E5, a
+prefixed retrieval encoder — and none is chosen for a caller who forgot to. A module-level "the encoder" would be exactly the
 unproven promotion the alias layer already refused to make for term expansion,
 made again for embeddings.
 
@@ -68,18 +68,33 @@ class ModelSpec:
     repo_id: str
     onnx_filename: str = "onnx/model.onnx"
     tokenizer_filename: str = "tokenizer.json"
+    #: Text an asymmetric retrieval encoder expects in front of a query and in
+    #: front of a passage. Empty for a symmetric encoder. `OnnxBackend.encode`
+    #: never applies them: the persistent index does, so that the stored chunk
+    #: text stays the raw span and the prefix stays part of the recorded meta.
+    query_prefix: str = ""
+    passage_prefix: str = ""
 
     def __post_init__(self) -> None:
         for field_name in ("name", "repo_id", "onnx_filename", "tokenizer_filename"):
             value = getattr(self, field_name)
             if type(value) is not str or not value.strip():
                 raise SemanticError(f"a model spec needs a {field_name}")
+        for field_name in ("query_prefix", "passage_prefix"):
+            if type(getattr(self, field_name)) is not str:
+                raise SemanticError(f"a model spec {field_name} is a string, possibly empty")
 
 
 #: The two backends this capability was preregistered against. Naming them is
 #: not choosing one: a caller still has to pass one to `build` or `OnnxBackend`.
 DENSE_ML = ModelSpec("DENSE-ML", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 DENSE_EN = ModelSpec("DENSE-EN", "sentence-transformers/all-MiniLM-L6-v2")
+#: A retrieval-trained, asymmetric encoder: a query and a passage are encoded
+#: under different prefixes, and the prefixes are part of the contract -- the
+#: same checkpoint without them is a different, weaker retriever.
+DENSE_E5 = ModelSpec(
+    "DENSE-E5", "intfloat/multilingual-e5-small", query_prefix="query: ", passage_prefix="passage: "
+)
 
 
 @runtime_checkable
@@ -302,6 +317,10 @@ class SemanticIndex:
         Ties are broken by chunk id, ascending. Never by whatever order the
         vector matrix happens to hold rows in -- that order is an accident of
         how `build` sorted its input, not a fact about relevance.
+
+        The query is encoded raw: this in-memory index applies no
+        `ModelSpec.query_prefix`, just as `build` applies no passage prefix.
+        The persistent index in `semantic_index` is where the prefixes apply.
         """
         if self.status is not IndexStatus.COMPLETE:
             raise SemanticError(f"the index did not run: {self.reason}")
@@ -361,6 +380,9 @@ def build(chunks: tuple[Chunk, ...], spec: ModelSpec) -> SemanticIndex:
     A model that cannot be resolved is the other refusal this module makes
     explicit: `NOT_RUN`, not a crash and not an index that silently has
     nothing in it.
+
+    Chunk text is encoded raw, without ``spec.passage_prefix``; the prefixes
+    are applied by the persistent index in `semantic_index`, not here.
     """
     if type(chunks) is not tuple or not chunks:
         raise SemanticError("an index needs at least one chunk; an empty index scores everything zero")

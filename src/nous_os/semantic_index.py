@@ -14,6 +14,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -22,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from nous_os.chunking import Chunk, chunk_document
+from nous_os.chunking import Chunk, estimate_tokens
 from nous_os.derived import state_digest as derived_state_digest
 from nous_os.derived import verify as verify_derived
 from nous_os.identity import digest_bytes
@@ -31,15 +32,21 @@ from nous_os.snapshots import Snapshot, SnapshotNotFound
 
 
 FORMAT: Final = "1"
-PROJECTION: Final = "v1"
-CHUNK_MAX_TOKENS: Final = 120
+PROJECTION: Final = "v2"
+CHUNK_MAX_WORDS: Final = 40
 MAX_TOKENS: Final = 256
 BATCH_SIZE: Final = 32
 _CITATION_STATES: Final = frozenset({"located", "absent", "ambiguous", "unlintable"})
+#: Keys a projection v1 generation predates. Absent there, they read as empty
+#: prefixes; absent from a v2 generation, they make it unusable.
+_V2_META_KEYS: Final = ("chunk_max_words", "query_prefix", "passage_prefix")
 _META_KEYS: Final = (
     "format",
     "projection",
     "chunk_max_tokens",
+    "chunk_max_words",
+    "query_prefix",
+    "passage_prefix",
     "backend",
     "repo_id",
     "onnx_filename",
@@ -175,7 +182,7 @@ class _OneSnapshotStore:
 
 
 def record_text(body: str) -> str:
-    """Project one derived record body into text projection v1.
+    """Select one derived record body's text; projections v1 and v2 share this step.
 
     Projection intentionally recognizes only the stable payload/message/content
     shapes named here. Invalid JSON and any body that cannot establish text are
@@ -206,6 +213,68 @@ def record_text(body: str) -> str:
         return message_text
     top_text = top.get("text")
     return top_text if type(top_text) is str else ""
+
+
+_BLANK_LINE: Final = re.compile(r"\n[ \t]*\n")
+_SENTENCE_END: Final = re.compile(r"[.?!…:;](?=\s)|\n")
+
+
+def _stripped_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """Move ``start`` and ``end`` inward past whitespace without copying the text."""
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    return start, end
+
+
+def _sentence_spans(text: str, start: int, end: int) -> tuple[tuple[int, int], ...]:
+    """Split one block into stripped, non-empty sentence spans in document order."""
+    spans: list[tuple[int, int]] = []
+    cursor = start
+    for match in _SENTENCE_END.finditer(text, start, end):
+        spans.append((cursor, match.end()))
+        cursor = match.end()
+    spans.append((cursor, end))
+    stripped = (_stripped_span(text, span_start, span_end) for span_start, span_end in spans)
+    return tuple(span for span in stripped if span[0] < span[1])
+
+
+def pack_sentences(text: str, max_words: int) -> tuple[tuple[int, int, str], ...]:
+    """Text projection v2: verbatim, contiguous sentence-packed spans of ``text``.
+
+    Every chunk is exactly ``text[start:end]`` with its edges stripped of
+    whitespace. Blank lines bound blocks a chunk never crosses; inside a block
+    a sentence ends at ``.``, ``?``, ``!``, ``…``, ``:`` or ``;`` followed by
+    whitespace, or at a newline, so a heading line is an ordinary sentence.
+    Consecutive sentences are packed while the whitespace-word count stays at
+    or below ``max_words``; one sentence longer than that is emitted alone.
+    """
+    if type(text) is not str:
+        raise SemanticIndexError("a projected record is text")
+    if type(max_words) is not int or isinstance(max_words, bool) or max_words < 1:
+        raise SemanticIndexError(f"max_words must be a positive integer, not {max_words!r}")
+    chunks: list[tuple[int, int, str]] = []
+    block_start = 0
+    boundaries = [match.start() for match in _BLANK_LINE.finditer(text)]
+    for block_end in boundaries + [len(text)]:
+        pending_start: int | None = None
+        pending_end = block_start
+        pending_words = 0
+        for sentence_start, sentence_end in _sentence_spans(text, block_start, block_end):
+            words = estimate_tokens(text[sentence_start:sentence_end])
+            if pending_start is not None and pending_words + words > max_words:
+                chunks.append((pending_start, pending_end, text[pending_start:pending_end]))
+                pending_start = None
+                pending_words = 0
+            if pending_start is None:
+                pending_start = sentence_start
+            pending_end = sentence_end
+            pending_words += words
+        if pending_start is not None:
+            chunks.append((pending_start, pending_end, text[pending_start:pending_end]))
+        block_start = block_end
+    return tuple(chunks)
 
 
 def _needle(text: str) -> bytes:
@@ -270,8 +339,16 @@ def _collect_chunks(derived_path: Path) -> tuple[tuple[_IndexedChunk, ...], int,
             records_empty += 1
             continue
         records_indexed += 1
-        for chunk in chunk_document(source_id, text, max_tokens=CHUNK_MAX_TOKENS):
-            start, end, state = _citation_location(source_id, snapshot_digest, body, chunk.text)
+        for ordinal, (_start, _end, chunk_text) in enumerate(pack_sentences(text, CHUNK_MAX_WORDS)):
+            chunk = Chunk(
+                id=f"{source_id}#{ordinal:04d}",
+                source_id=source_id,
+                ordinal=ordinal,
+                heading_path=(),
+                text=chunk_text,
+                tokens=estimate_tokens(chunk_text),
+            )
+            start, end, state = _citation_location(source_id, snapshot_digest, body, chunk_text)
             indexed.append(_IndexedChunk(chunk, snapshot_digest, start, end, state))
     indexed.sort(key=lambda item: item.chunk.id)
     return tuple(indexed), records_indexed, records_empty
@@ -298,12 +375,17 @@ def _worker_encode(texts: tuple[str, ...]):
 def _encode(
     items: tuple[_IndexedChunk, ...], spec: object, workers: int, backend: object
 ):
-    """Encode deterministic token-length batches and return chunk-id-order vectors."""
+    """Encode deterministic token-length batches and return chunk-id-order vectors.
+
+    The passage prefix is applied here, for encoding only; the stored text stays
+    the raw chunk.
+    """
     import numpy as np
 
+    passage_prefix = spec.passage_prefix  # type: ignore[attr-defined]
     encoding_order = tuple(sorted(items, key=lambda item: (item.chunk.tokens, item.chunk.id)))
     batches = tuple(
-        tuple(item.chunk.text for item in encoding_order[start : start + BATCH_SIZE])
+        tuple(passage_prefix + item.chunk.text for item in encoding_order[start : start + BATCH_SIZE])
         for start in range(0, len(encoding_order), BATCH_SIZE)
     )
     if workers == 1:
@@ -398,10 +480,16 @@ def _write_generation(
             for item in items
         ]
         connection.executemany("INSERT INTO chunk VALUES (?,?,?,?,?,?,?,?,?)", rows)
+        # The chunk budget has always been counted in whitespace words (the
+        # estimate `chunking.estimate_tokens` makes), so the legacy key records
+        # the same budget the v2 key does.
         metadata = {
             "format": FORMAT,
             "projection": PROJECTION,
-            "chunk_max_tokens": str(CHUNK_MAX_TOKENS),
+            "chunk_max_tokens": str(CHUNK_MAX_WORDS),
+            "chunk_max_words": str(CHUNK_MAX_WORDS),
+            "query_prefix": spec.query_prefix,  # type: ignore[union-attr]
+            "passage_prefix": spec.passage_prefix,  # type: ignore[union-attr]
             "backend": backend.name,  # type: ignore[union-attr]
             "repo_id": spec.repo_id,  # type: ignore[union-attr]
             "onnx_filename": spec.onnx_filename,  # type: ignore[union-attr]
@@ -464,12 +552,12 @@ def _integer_meta(meta: dict[str, str], key: str, *, minimum: int = 0) -> int:
     return value
 
 
-def verify(index_path: Path) -> dict[str, str]:
-    """Verify a published generation before it is ever allowed to answer.
+def _check_generation(index_path: Path) -> tuple[str, Path, dict[str, str]]:
+    """The structural check every read makes: files, tables, meta, counts, vector length.
 
-    Refuses every missing, truncated, mismatched, or malformed component with
-    the failed check named. It does not treat a broken index as a zero-hit one.
-    An empty index would otherwise read as searched and found nothing.
+    No digest is recomputed and no chunk row is scanned; that is `verify`. A
+    projection v1 generation predates the prefix and word-budget keys and is
+    accepted without them, as empty prefixes.
     """
     name, generation = _required_generation(Path(index_path))
     database_path = generation / "index.sqlite3"
@@ -491,14 +579,47 @@ def verify(index_path: Path) -> dict[str, str]:
             if missing:
                 raise SemanticIndexUnusable(f"tables: missing {', '.join(missing)}")
             meta = dict(connection.execute("SELECT key, value FROM meta ORDER BY key").fetchall())
-            absent_meta = [key for key in _META_KEYS if key not in meta]
+            optional = _V2_META_KEYS if meta.get("projection") == "v1" else ()
+            absent_meta = [key for key in _META_KEYS if key not in meta and key not in optional]
             if absent_meta:
                 raise SemanticIndexUnusable(f"meta: missing {', '.join(absent_meta)}")
             row_count = connection.execute("SELECT COUNT(*) FROM chunk").fetchone()[0]
-            chunks = _integer_meta(meta, "chunks", minimum=1)
-            dimension = _integer_meta(meta, "dimension", minimum=1)
-            if chunks != row_count:
-                raise SemanticIndexUnusable("chunks: metadata does not equal chunk row count")
+        finally:
+            connection.close()
+    except SemanticIndexUnusable:
+        raise
+    except sqlite3.DatabaseError as error:
+        raise SemanticIndexUnusable(f"sqlite: {error}") from error
+    chunks = _integer_meta(meta, "chunks", minimum=1)
+    dimension = _integer_meta(meta, "dimension", minimum=1)
+    if chunks != row_count:
+        raise SemanticIndexUnusable("chunks: metadata does not equal chunk row count")
+    try:
+        vector_length = vector_path.stat().st_size
+    except OSError as error:
+        raise SemanticIndexUnusable(f"vectors.f32: could not be read: {error}") from error
+    if vector_length != chunks * dimension * 4:
+        raise SemanticIndexUnusable("vectors.f32: length does not equal chunks × dimension × 4")
+    return name, generation, meta
+
+
+def verify(index_path: Path) -> dict[str, str]:
+    """Verify a published generation in full, digest included.
+
+    Refuses every missing, truncated, mismatched, or malformed component with
+    the failed check named. It does not treat a broken index as a zero-hit one.
+    An empty index would otherwise read as searched and found nothing. This is
+    the only read that recomputes the index digest and scans every chunk row;
+    `search` makes the structural check alone.
+    """
+    name, generation, meta = _check_generation(index_path)
+    database_path = generation / "index.sqlite3"
+    vector_path = generation / "vectors.f32"
+    chunks = _integer_meta(meta, "chunks", minimum=1)
+    dimension = _integer_meta(meta, "dimension", minimum=1)
+    try:
+        connection = sqlite3.connect(f"file:{database_path.resolve()}?mode=ro", uri=True)
+        try:
             for chunk_id, heading_path, start, end, state in connection.execute(
                 "SELECT chunk_id, heading_path, start_byte, end_byte, citation_state"
                 " FROM chunk ORDER BY chunk_id"
@@ -571,7 +692,12 @@ def _backend_for(meta: dict[str, str]):
         return None, f"semantic extra is not importable: {error}"
     try:
         spec = semantic.ModelSpec(
-            meta["backend"], meta["repo_id"], meta["onnx_filename"], meta["tokenizer_filename"]
+            meta["backend"],
+            meta["repo_id"],
+            meta["onnx_filename"],
+            meta["tokenizer_filename"],
+            query_prefix=meta.get("query_prefix", ""),
+            passage_prefix=meta.get("passage_prefix", ""),
         )
         return semantic.OnnxBackend(spec), None
     except semantic.SemanticError as error:
@@ -584,12 +710,18 @@ def search(
     limit: int = 10,
     distinct: bool = False,
 ) -> dict[str, object]:
-    """Search a verified local index, or record why no dense search ran.
+    """Search a structurally checked local index, or record why no dense search ran.
 
     A missing configured location, absent CURRENT, unavailable optional extra,
     or unavailable recorded checkpoint is a not-run answer. A structurally
     broken generation instead raises ``SemanticIndexUnusable`` so callers do
-    not mistake corruption for a completed empty ranking.
+    not mistake corruption for a completed empty ranking. The check is
+    `_check_generation`, not `verify`: a truncated vectors file or a missing
+    table is refused, a flipped vector byte is not detected here, and only the
+    ranked rows are read in full. `verify` is the full check.
+
+    The query is encoded under the generation's recorded ``query_prefix``,
+    empty for a projection v1 generation.
     """
     if type(query) is not str or not query.strip():
         raise SemanticIndexError("a semantic search needs a query")
@@ -608,7 +740,7 @@ def search(
         raise
     if current is None:
         return _not_run(f"no CURRENT generation at {path}")
-    meta = verify(path)
+    _name, generation, meta = _check_generation(path)
     backend, reason = _backend_for(meta)
     if backend is None:
         return _not_run(f"backend {meta['backend']!r} could not be loaded: {reason}")
@@ -619,36 +751,48 @@ def search(
         )
     import numpy as np
 
-    generation = path / current
     chunks = _integer_meta(meta, "chunks")
     dimension = _integer_meta(meta, "dimension", minimum=1)
     vectors = np.fromfile(generation / "vectors.f32", dtype=np.float32).reshape((chunks, dimension))
-    query_vector = backend.encode((query,))[0]
+    query_vector = backend.encode((meta.get("query_prefix", "") + query,))[0]
     scores = vectors @ query_vector
     try:
         connection = sqlite3.connect(f"file:{(generation / 'index.sqlite3').resolve()}?mode=ro", uri=True)
         try:
-            rows = connection.execute(
-                "SELECT chunk_id, source_id, snapshot_digest, ordinal, heading_path, text,"
-                " start_byte, end_byte, citation_state FROM chunk ORDER BY chunk_id"
-            ).fetchall()
+            rows = connection.execute("SELECT chunk_id, source_id FROM chunk ORDER BY chunk_id").fetchall()
+            if len(rows) != chunks:
+                raise SemanticIndexUnusable("chunks: metadata does not equal chunk row count")
+            candidates = sorted(
+                ((float(score), row) for score, row in zip(scores, rows)),
+                key=lambda item: (-item[0], item[1][0]),
+            )
+            if distinct:
+                seen: set[str] = set()
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if not (candidate[1][1] in seen or seen.add(candidate[1][1]))
+                ]
+            selected = candidates[:limit]
+            details: dict[str, tuple[object, ...]] = {}
+            for _score, (chunk_id, _source_id) in selected:
+                detail = connection.execute(
+                    "SELECT snapshot_digest, ordinal, heading_path, text, start_byte, end_byte,"
+                    " citation_state FROM chunk WHERE chunk_id = ?",
+                    (chunk_id,),
+                ).fetchone()
+                if detail is None:
+                    raise SemanticIndexUnusable(f"chunk: {chunk_id} vanished between ranking and reading")
+                details[chunk_id] = detail
         finally:
             connection.close()
+    except SemanticIndexUnusable:
+        raise
     except sqlite3.DatabaseError as error:
         raise SemanticIndexUnusable(f"sqlite: {error}") from error
-    candidates = sorted(
-        ((float(score), row) for score, row in zip(scores, rows)), key=lambda item: (-item[0], item[1][0])
-    )
-    if distinct:
-        seen: set[str] = set()
-        candidates = [
-            candidate
-            for candidate in candidates
-            if not (candidate[1][1] in seen or seen.add(candidate[1][1]))
-        ]
     hits: list[dict[str, object]] = []
-    for rank, (score, row) in enumerate(candidates[:limit], start=1):
-        chunk_id, source_id, snapshot_digest, ordinal, heading_json, text, start, end, state = row
+    for rank, (score, (chunk_id, source_id)) in enumerate(selected, start=1):
+        snapshot_digest, ordinal, heading_json, text, start, end, state = details[chunk_id]
         citation = None
         if state == "located":
             citation = {
@@ -823,7 +967,7 @@ def _parser() -> argparse.ArgumentParser:
     build_parser = commands.add_parser("build")
     build_parser.add_argument("--derived-path", default=None)
     build_parser.add_argument("--semantic-index-path", default=None)
-    build_parser.add_argument("--backend", choices=("DENSE-ML", "DENSE-EN"), default=None)
+    build_parser.add_argument("--backend", choices=("DENSE-ML", "DENSE-EN", "DENSE-E5"), default=None)
     build_parser.add_argument("--workers", type=int, default=1)
     verify_parser = commands.add_parser("verify")
     verify_parser.add_argument("--semantic-index-path", default=None)
@@ -840,7 +984,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if namespace.command == "build" and namespace.backend is None:
             raise SemanticIndexError(
-                "no default backend is offered; pass --backend DENSE-ML or --backend DENSE-EN"
+                "no default backend is offered; pass --backend DENSE-ML, --backend DENSE-EN"
+                " or --backend DENSE-E5"
             )
         index_path = _resolve_path(
             namespace.semantic_index_path, "NOUS_OS_SEMANTIC_INDEX_PATH", "semantic index path"
@@ -849,9 +994,9 @@ def main(argv: list[str] | None = None) -> int:
             derived_path = _resolve_path(
                 namespace.derived_path, "NOUS_OS_DERIVED_PATH", "derived path"
             )
-            from nous_os.semantic import DENSE_EN, DENSE_ML
+            from nous_os.semantic import DENSE_E5, DENSE_EN, DENSE_ML
 
-            spec = {"DENSE-ML": DENSE_ML, "DENSE-EN": DENSE_EN}[namespace.backend]
+            spec = {"DENSE-ML": DENSE_ML, "DENSE-EN": DENSE_EN, "DENSE-E5": DENSE_E5}[namespace.backend]
             result: object = build(derived_path, index_path, spec, workers=namespace.workers).as_payload()
         elif namespace.command == "verify":
             result = verify(index_path)

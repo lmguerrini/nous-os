@@ -318,9 +318,11 @@ matter of `.gitignore`:
 - The derived index is rebuildable and is never committed; `.gitignore` refuses
   `*.db`, `*.sqlite` and `*.sqlite3`.
 - The semantic index is also derived and rebuildable, never committed, and is
-  built only from cached local weights. When that index or its weights are
-  absent, dense search answers `not_run` with the reason rather than treating
-  the absence as an empty result.
+  built only from cached local weights. Its chunks are sentence-packed verbatim
+  spans of the record text, and `verify` is the full check of a generation
+  while a search makes only the structural one. When that index or its weights
+  are absent, dense search answers `not_run` with the reason rather than
+  treating the absence as an empty result.
 - A test in the suite refuses any absolute machine path, personal identifier or
   credential in tracked file content or names, and it runs in continuous
   integration on every push.

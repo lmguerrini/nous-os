@@ -38,6 +38,7 @@ import nous_os
 from nous_os.chunking import Chunk, chunk_document
 from nous_os.identity import new_source_id
 from nous_os.semantic import (
+    DENSE_E5,
     DENSE_EN,
     DENSE_ML,
     MAX_TOKENS,
@@ -201,22 +202,52 @@ def test_the_two_backends_load_different_weights() -> None:
     assert OnnxBackend(DENSE_EN).checkpoint_digest != OnnxBackend(DENSE_ML).checkpoint_digest
 
 
+def test_the_prefixed_retrieval_backend_resolves_and_carries_its_prefixes() -> None:
+    """DENSE-E5 is asymmetric: its prefixes are part of the spec, never applied by `encode`."""
+    assert DENSE_E5.name == "DENSE-E5"
+    assert DENSE_E5.query_prefix == "query: " and DENSE_E5.passage_prefix == "passage: "
+    assert type(DENSE_E5.query_prefix) is str and type(DENSE_E5.passage_prefix) is str
+    assert DENSE_EN.query_prefix == DENSE_EN.passage_prefix == ""
+    assert DENSE_ML.query_prefix == DENSE_ML.passage_prefix == ""
+    for bad_prefix in (None, 1, b"query: "):
+        with pytest.raises(SemanticError):
+            ModelSpec("BAD", DENSE_E5.repo_id, query_prefix=bad_prefix)  # type: ignore[arg-type]
+        with pytest.raises(SemanticError):
+            ModelSpec("BAD", DENSE_E5.repo_id, passage_prefix=bad_prefix)  # type: ignore[arg-type]
+    try:
+        backend = OnnxBackend(DENSE_E5)
+    except SemanticError as error:
+        pytest.skip(str(error))
+    assert backend.name == "DENSE-E5"
+    assert len(backend.checkpoint_digest) == 64
+    assert backend.checkpoint_digest not in {
+        OnnxBackend(DENSE_EN).checkpoint_digest, OnnxBackend(DENSE_ML).checkpoint_digest
+    }
+    raw = backend.encode(("a sentence",))[0]
+    prefixed = backend.encode(("query: a sentence",))[0]
+    assert not np.array_equal(raw, prefixed), "encode applied a prefix on its own"
+
+
 def test_no_module_level_default_backend_is_offered() -> None:
     """Mirrors aliases.py's own guard: nothing here is "the" encoder."""
     import nous_os.semantic as module
 
     for forbidden in ("default", "default_backend", "recommended", "preferred"):
         assert not hasattr(module, forbidden)
+    named_specs = []
     for name in dir(module):
         if name.startswith("_"):
             continue
         value = getattr(module, name)
         if isinstance(value, type):
             continue
+        if isinstance(value, ModelSpec):
+            named_specs.append(value.name)
         assert not isinstance(value, Backend), (
             f"{name} is a ready-made backend at module level, which a caller "
             "would reach for without choosing"
         )
+    assert sorted(named_specs) == ["DENSE-E5", "DENSE-EN", "DENSE-ML"]
 
 
 # --- pooling, normalisation, and the mask that makes both true -------------

@@ -23,7 +23,7 @@ from nous_os.derived import build as build_derived
 from nous_os.derived import rebuild as rebuild_derived
 from nous_os.ledger import Ledger, ingest
 from nous_os.provenance import Citation, Locator, quote_lint, read_span
-from nous_os.semantic import DENSE_EN, ModelSpec, OnnxBackend, SemanticError
+from nous_os.semantic import DENSE_E5, DENSE_EN, ModelSpec, OnnxBackend, SemanticError
 from nous_os.snapshots import SnapshotStore
 from nous_os.untrusted import UntrustedText
 
@@ -42,23 +42,32 @@ TIP = _sid("TNP")
 TIE_FIRST = _sid("TADA")
 TIE_SECOND = _sid("TADB")
 EXTRA = _sid("EXTRA")
+MULTI = _sid("MANY")
 
-_DENSE_BACKEND: OnnxBackend | None = None
-_DENSE_REASON: str | None = None
+MULTI_PARAGRAPHS = (
+    "The garden shed needs a fresh coat of paint before the autumn rain arrives.",
+    "Our telescope mount wobbles whenever the tripod stands on soft lawn, so we moved it onto the patio stones.",
+    "The pancake recipe calls for two eggs, a cup of flour and a pinch of salt.",
+)
+
+_BACKENDS: dict[str, OnnxBackend | str] = {}
+
+
+def _require_backend(spec: ModelSpec) -> OnnxBackend:
+    """Load a cached encoder once, visibly skipping model-dependent pins if absent."""
+    if spec.name not in _BACKENDS:
+        try:
+            _BACKENDS[spec.name] = OnnxBackend(spec)
+        except SemanticError as error:
+            _BACKENDS[spec.name] = str(error)
+    loaded = _BACKENDS[spec.name]
+    if isinstance(loaded, str):
+        pytest.skip(loaded)
+    return loaded
 
 
 def _require_dense_en() -> OnnxBackend:
-    """Load the cached encoder once, visibly skipping model-dependent pins if absent."""
-    global _DENSE_BACKEND, _DENSE_REASON
-    if _DENSE_BACKEND is None and _DENSE_REASON is None:
-        try:
-            _DENSE_BACKEND = OnnxBackend(DENSE_EN)
-        except SemanticError as error:
-            _DENSE_REASON = str(error)
-    if _DENSE_REASON is not None:
-        pytest.skip(_DENSE_REASON)
-    assert _DENSE_BACKEND is not None
-    return _DENSE_BACKEND
+    return _require_backend(DENSE_EN)
 
 
 def _message(parts: list[object]) -> str:
@@ -82,6 +91,7 @@ def _semantic_canon(tmp_path: Path) -> tuple[SnapshotStore, Path]:
         (TIP, _message(["obsolete draft about an old subject"])),
         (TIE_FIRST, _message(["Two sources share precisely this retrieval text."])),
         (TIE_SECOND, _message(["Two sources share precisely this retrieval text."])),
+        (MULTI, _message(["\n\n".join(MULTI_PARAGRAPHS)])),
     )
     for offset, (source_id, body) in enumerate(records):
         ingest(store, ledger, source_id, UntrustedText(body), at + timedelta(minutes=offset))
@@ -103,10 +113,28 @@ def _minimal_generation(
     include_chunk: bool = False,
     backend: str = "NOT-CACHED",
     repo_id: str = "no/such-local-checkpoint",
+    projection: str = "v1",
+    omit: tuple[str, ...] = (),
+    encoder: OnnxBackend | None = None,
 ) -> Path:
-    """Write a structurally valid small generation without needing model weights."""
+    """Write a structurally valid small generation, by default without model weights.
+
+    A ``projection`` of ``"v1"`` writes only the keys that projection recorded;
+    ``"v2"`` writes every key in ``_META_KEYS`` except those in ``omit``. With an
+    ``encoder`` the one chunk's vector is its raw encoding and the meta names
+    that encoder's checkpoint, so a search can complete against the generation.
+    """
     chunk_id = _sid("MINI") + "#0000"
-    vectors = b"\0\0\0\0" if include_chunk else b""
+    if encoder is not None:
+        vector = encoder.encode(("small text",))[0]
+        vectors = vector.tobytes(order="C")
+        dimension = str(vector.shape[0])
+        backend, repo_id = encoder.name, encoder._spec.repo_id
+        checkpoint_digest, tokenizer_digest = encoder.checkpoint_digest, encoder.tokenizer_digest
+    else:
+        vectors = b"\0\0\0\0" if include_chunk else b""
+        dimension = "1"
+        checkpoint_digest = tokenizer_digest = "0" * 64
     ids = (chunk_id,) if include_chunk else ()
     digest = semantic_index._state_digest(ids, vectors)
     generation = index_path / f"gen-{digest}"
@@ -114,23 +142,28 @@ def _minimal_generation(
     (generation / "vectors.f32").write_bytes(vectors)
     metadata = {
         "format": "1",
-        "projection": "v1",
-        "chunk_max_tokens": "120",
+        "projection": projection,
+        "chunk_max_tokens": "120" if projection == "v1" else "40",
+        "chunk_max_words": "40",
+        "query_prefix": "query: ",
+        "passage_prefix": "passage: ",
         "backend": backend,
         "repo_id": repo_id,
         "onnx_filename": "onnx/model.onnx",
         "tokenizer_filename": "tokenizer.json",
-        "checkpoint_digest": "0" * 64,
-        "tokenizer_digest": "0" * 64,
+        "checkpoint_digest": checkpoint_digest,
+        "tokenizer_digest": tokenizer_digest,
         "max_tokens": "256",
         "batch_size": "32",
-        "dimension": "1",
+        "dimension": dimension,
         "chunks": "1" if include_chunk else "0",
         "records_indexed": "1" if include_chunk else "0",
         "records_empty": "0",
         "derived_digest": "0" * 64,
         "state_digest": digest,
     }
+    if projection == "v1":
+        omit = omit + semantic_index._V2_META_KEYS
     connection = sqlite3.connect(generation / "index.sqlite3")
     try:
         connection.execute("PRAGMA page_size=4096")
@@ -143,7 +176,7 @@ def _minimal_generation(
         )
         connection.executemany(
             "INSERT INTO meta VALUES (?, ?)",
-            [(key, metadata[key]) for key in semantic_index._META_KEYS],
+            [(key, metadata[key]) for key in semantic_index._META_KEYS if key not in omit],
         )
         if include_chunk:
             connection.execute(
@@ -187,18 +220,56 @@ def test_record_text_pins_text_projection_v1() -> None:
     assert semantic_index.record_text("[]") == ""
 
 
+def test_pack_sentences_pins_text_projection_v2() -> None:
+    """O1: chunks are verbatim contiguous spans packed by sentence inside blank-line blocks."""
+    pack = semantic_index.pack_sentences
+    heading = "# Field notes"
+    long_paragraph = (
+        "The first sentence names the subject at hand. The second sentence adds a detail: "
+        "the detail is small; the third sentence asks whether it matters? It does! The "
+        "fifth sentence trails off… The sixth sentence closes the paragraph."
+    )
+    text = f"{heading}\n\n{long_paragraph}\n \t\nLine one\nLine two\n\n\n"
+    chunks = pack(text, 14)
+    assert chunks == pack(text, 14)
+    assert all(chunk_text == text[start:end] for start, end, chunk_text in chunks)
+    assert all(chunk_text == chunk_text.strip() for _start, _end, chunk_text in chunks)
+    assert [chunk_text for _start, _end, chunk_text in chunks] == [
+        heading,
+        "The first sentence names the subject at hand. The second sentence adds a detail:",
+        "the detail is small; the third sentence asks whether it matters? It does!",
+        "The fifth sentence trails off… The sixth sentence closes the paragraph.",
+        "Line one\nLine two",
+    ]
+    assert all(len(chunk_text.split()) <= 14 for _start, _end, chunk_text in chunks)
+    assert [start for start, _end, _text in chunks] == sorted(start for start, _end, _text in chunks)
+    single = " ".join(f"word{number}" for number in range(30)) + ". Short tail."
+    assert [chunk_text for _start, _end, chunk_text in pack(single, 14)] == [
+        " ".join(f"word{number}" for number in range(30)) + ".",
+        "Short tail.",
+    ]
+    assert [chunk_text for _start, _end, chunk_text in pack("one two.\n\nthree four.", 100)] == [
+        "one two.",
+        "three four.",
+    ]
+    assert pack("", 14) == () and pack(" \n\t \n ", 14) == ()
+    with pytest.raises(semantic_index.SemanticIndexError):
+        pack("text", 0)
+
+
+@pytest.mark.parametrize("spec", [DENSE_EN, DENSE_E5], ids=["DENSE-EN", "DENSE-E5"])
 def test_build_is_byte_identical_across_rebuilds_and_worker_counts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spec: ModelSpec
 ) -> None:
     """O1: generation bytes, the index digest, idempotence, publication failure, and not-run are pinned."""
-    _require_dense_en()
+    _require_backend(spec)
     _store, derived_path = _semantic_canon(tmp_path)
     first_root = tmp_path / "first"
     second_root = tmp_path / "second"
     parallel_root = tmp_path / "parallel"
-    first = semantic_index.build(derived_path, first_root, DENSE_EN, workers=1)
-    second = semantic_index.build(derived_path, second_root, DENSE_EN, workers=1)
-    parallel = semantic_index.build(derived_path, parallel_root, DENSE_EN, workers=2)
+    first = semantic_index.build(derived_path, first_root, spec, workers=1)
+    second = semantic_index.build(derived_path, second_root, spec, workers=1)
+    parallel = semantic_index.build(derived_path, parallel_root, spec, workers=2)
     first_generation = first_root / first.generation  # type: ignore[operator]
     second_generation = second_root / second.generation  # type: ignore[operator]
     parallel_generation = parallel_root / parallel.generation  # type: ignore[operator]
@@ -207,7 +278,7 @@ def test_build_is_byte_identical_across_rebuilds_and_worker_counts(
         assert (first_generation / name).read_bytes() == (parallel_generation / name).read_bytes()
     verified = semantic_index.verify(first_root)
     assert first.state_digest == verified["state_digest"] == first.generation.removeprefix("gen-")
-    again = semantic_index.build(derived_path, first_root, DENSE_EN)
+    again = semantic_index.build(derived_path, first_root, spec)
     assert again.generation == first.generation
     assert [path.name for path in first_root.glob("gen-*")] == [first.generation]
     old_generation = first.generation
@@ -229,7 +300,7 @@ def test_build_is_byte_identical_across_rebuilds_and_worker_counts(
     with monkeypatch.context() as scoped:
         scoped.setattr(semantic_index, "verify", fail_staged_verify)
         with pytest.raises(RuntimeError, match="injected verify"):
-            semantic_index.build(derived_path, first_root, DENSE_EN)
+            semantic_index.build(derived_path, first_root, spec)
     assert failed_generation and failed_generation[0] != old_generation
     new_generation = failed_generation[0]
     assert (first_root / "CURRENT").read_text(encoding="utf-8").strip() == old_generation
@@ -248,7 +319,7 @@ def test_build_is_byte_identical_across_rebuilds_and_worker_counts(
     with monkeypatch.context() as scoped:
         scoped.setattr(os, "replace", fail_current_replace)
         with pytest.raises(OSError, match="injected CURRENT publish"):
-            semantic_index.build(derived_path, first_root, DENSE_EN)
+            semantic_index.build(derived_path, first_root, spec)
     assert (first_root / "CURRENT").read_text(encoding="utf-8").strip() == old_generation
     assert not (first_root / new_generation).exists()
     assert [path.name for path in first_root.glob("gen-*")] == [old_generation]
@@ -402,7 +473,7 @@ def test_transports_workspace_health_and_module_cli_pin_the_new_read(tmp_path: P
     assert mcp_namespace.semantic_index_path == str(semantic_path)
     assert semantic_index.main(["build"]) == 1
     refusal = capsys.readouterr().err
-    assert "DENSE-ML" in refusal and "DENSE-EN" in refusal
+    assert "DENSE-ML" in refusal and "DENSE-EN" in refusal and "DENSE-E5" in refusal
     program = (
         "import sys; import nous_os, nous_os.core, nous_os.cli, nous_os.mcp, nous_os.semantic_index;"
         "print(sorted(m for m in ('numpy','onnxruntime','tokenizers','huggingface_hub') if m in sys.modules))"
@@ -412,3 +483,92 @@ def test_transports_workspace_health_and_module_cli_pin_the_new_read(tmp_path: P
         env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")}, check=True,
     )
     assert result.stdout.strip() == "[]"
+
+
+def test_dense_e5_v2_build_pins_prefixed_ranking_citations_and_meta(tmp_path: Path) -> None:
+    """O2: v2 chunks are located verbatim spans ranked by the recorded prefixed cosine."""
+    backend = _require_backend(DENSE_E5)
+    _store, derived_path = _semantic_canon(tmp_path)
+    index_path = tmp_path / "semantic"
+    report = semantic_index.build(derived_path, index_path, DENSE_E5)
+    assert report.status == "complete" and report.citations_absent == 0
+    verified = semantic_index.verify(index_path)
+    assert verified["projection"] == "v2"
+    assert verified["chunk_max_words"] == str(semantic_index.CHUNK_MAX_WORDS) == "40"
+    assert verified["query_prefix"] == "query: " and verified["passage_prefix"] == "passage: "
+    assert verified["backend"] == "DENSE-E5"
+    connection = sqlite3.connect(index_path / report.generation / "index.sqlite3")  # type: ignore[operator]
+    try:
+        rows = connection.execute(
+            "SELECT chunk_id, source_id, text, heading_path, citation_state FROM chunk ORDER BY chunk_id"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert {state for _id, source_id, _text, _path, state in rows if source_id != DUPLICATE} == {"located"}
+    assert {state for _id, source_id, _text, _path, state in rows if source_id == DUPLICATE} == {"ambiguous"}
+    assert {path for _id, _source, _text, path, _state in rows} == {"[]"}
+    assert [text for _id, source_id, text, _path, _state in rows if source_id == MULTI] == list(MULTI_PARAGRAPHS)
+    query = "the telescope tripod wobbles when it stands on the lawn"
+    answer = semantic_index.search(index_path, query, limit=100)
+    hits = answer["hits"]
+    assert hits[0]["source_id"] == MULTI and hits[0]["text"] == MULTI_PARAGRAPHS[1]
+    assert [hit["rank"] for hit in hits] == list(range(1, len(rows) + 1))
+    query_vector = backend.encode(("query: " + query,))[0]
+    prefixed = {
+        chunk_id: float(backend.encode(("passage: " + text,))[0] @ query_vector)
+        for chunk_id, _source, text, _path, _state in rows
+    }
+    raw_query = backend.encode((query,))[0]
+    unprefixed = {
+        chunk_id: float(backend.encode((text,))[0] @ raw_query)
+        for chunk_id, _source, text, _path, _state in rows
+    }
+    expected = sorted(prefixed, key=lambda chunk_id: (-prefixed[chunk_id], chunk_id))
+    assert [hit["chunk_id"] for hit in hits] == expected
+    assert all(abs(hit["score"] - prefixed[hit["chunk_id"]]) < 1e-5 for hit in hits)
+    assert not all(abs(hit["score"] - unprefixed[hit["chunk_id"]]) < 1e-5 for hit in hits)
+
+
+def test_projection_v1_generation_is_read_with_empty_prefixes(tmp_path: Path) -> None:
+    """O3: a v1 generation lacks the v2 keys and still verifies and searches; a v2 one may not."""
+    backend = _require_backend(DENSE_EN)
+    v1_root = tmp_path / "v1"
+    _minimal_generation(v1_root, include_chunk=True, encoder=backend)
+    verified = semantic_index.verify(v1_root)
+    assert verified["projection"] == "v1"
+    assert not any(key in verified for key in semantic_index._V2_META_KEYS)
+    answer = semantic_index.search(v1_root, "small text")
+    assert answer["status"] == "complete" and len(answer["hits"]) == 1
+    raw = float(backend.encode(("small text",))[0] @ backend.encode(("small text",))[0])
+    assert abs(answer["hits"][0]["score"] - raw) < 1e-5
+    assert answer["hits"][0]["text"] == "small text"
+    for missing in semantic_index._V2_META_KEYS:
+        root = tmp_path / f"v2-without-{missing}"
+        _minimal_generation(root, include_chunk=True, projection="v2", omit=(missing,))
+        with pytest.raises(semantic_index.SemanticIndexUnusable, match=f"meta: missing {missing}"):
+            semantic_index.verify(root)
+        with pytest.raises(semantic_index.SemanticIndexUnusable, match=f"meta: missing {missing}"):
+            semantic_index.search(root, "anything")
+    v2_root = tmp_path / "v2"
+    _minimal_generation(v2_root, include_chunk=True, projection="v2", encoder=backend)
+    assert semantic_index.verify(v2_root)["chunk_max_words"] == "40"
+    assert semantic_index.search(v2_root, "small text")["status"] == "complete"
+
+
+def test_search_makes_the_structural_check_and_verify_the_full_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """O3: search reads without recomputing the index digest; verify still does."""
+    _require_dense_en()
+    _store, derived_path = _semantic_canon(tmp_path)
+    index_path = tmp_path / "semantic"
+    semantic_index.build(derived_path, index_path, DENSE_EN)
+
+    def refuse_digest(chunk_ids: tuple[str, ...], vector_bytes: bytes) -> str:
+        raise RuntimeError("injected digest")
+
+    monkeypatch.setattr(semantic_index, "_state_digest", refuse_digest)
+    answer = semantic_index.search(index_path, "beacon navigation for ships entering a harbour", limit=3)
+    assert answer["status"] == "complete" and answer["hits"][0]["source_id"] == LIGHTHOUSE
+    with pytest.raises(RuntimeError, match="injected digest"):
+        semantic_index.verify(index_path)
