@@ -39,6 +39,7 @@ EXPECTED_EXTERNAL_NAMES = (
     "system.health",
     "knowledge.search",
     "knowledge.context",
+    "knowledge.semantic",
     "canon.documents",
     "canon.describe",
     "canon.sources",
@@ -145,6 +146,8 @@ def _minimal_arguments(external_name: str, digest: str) -> dict[str, object]:
         return {"query": "alpha"}
     if external_name == "knowledge.context":
         return {"source_id": SOURCE_ID}
+    if external_name == "knowledge.semantic":
+        return {"query": "alpha"}
     if external_name == "canon.documents":
         return {}
     if external_name == "canon.describe":
@@ -285,7 +288,7 @@ def test_catalogue_has_exactly_the_fixed_external_names_in_the_fixed_order() -> 
     assert tuple(descriptor.external_name for descriptor in core.CATALOGUE) == (
         EXPECTED_EXTERNAL_NAMES
     )
-    assert len(core.CATALOGUE) == 24
+    assert len(core.CATALOGUE) == 25
 
 
 def test_catalogue_is_the_same_tuple_object_across_reads() -> None:
@@ -1267,6 +1270,7 @@ def test_system_health_reports_healthy_for_a_seeded_store_and_absent_for_an_unwr
     assert health["rejection_memory_path"] == "absent"
     assert health["relation_store_path"] == "absent"
     assert health["extraction_store_path"] == "unconfigured"
+    assert health["semantic_index_path"] == "unconfigured"
 
 
 def test_absent_is_never_reported_as_healthy_and_unknown_is_never_reported_as_healthy(

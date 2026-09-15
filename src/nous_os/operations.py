@@ -26,6 +26,7 @@ from nous_os.derived import context, search, sources, versions
 from nous_os.ledger import ingest
 from nous_os.provenance import quote_lint_derived, read_span, verify_derivation
 from nous_os.reconciliation import Relation, RelationClass, RelationProposal, RelationStore, RelationVerification
+from nous_os.semantic_index import search as semantic_search
 from nous_os.snapshots import SnapshotStore
 from nous_os.untrusted import UntrustedText
 
@@ -208,6 +209,7 @@ def promote_candidate(
 
 register("search", Tier.READ, search)
 register("context", Tier.READ, context)
+register("semantic", Tier.READ, semantic_search)
 register("sources", Tier.READ, sources)
 register("versions", Tier.READ, versions)
 register("read_span", Tier.READ, read_span)

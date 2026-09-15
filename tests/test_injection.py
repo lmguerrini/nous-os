@@ -833,6 +833,11 @@ def _context_arguments(world: _World, text: str) -> dict[str, object]:
     return {"path": world.derived_path, "container": text}
 
 
+def _semantic_arguments(world: _World, text: str) -> dict[str, object]:
+    """Carry hostile text in an unconfigured semantic query."""
+    return {"index_path": None, "query": text}
+
+
 def _record_arguments(world: _World, text: str) -> dict[str, object]:
     # Content is arbitrary functional text and is written into the proposal.
     return {
@@ -899,6 +904,7 @@ _ARGUMENT_BUILDERS: Mapping[
     operation_bindings.project_knowledge: _project_arguments,
     operation_bindings.compile_context: _compile_context_arguments,
     operation_bindings.context: _context_arguments,
+    operation_bindings.semantic_search: _semantic_arguments,
     operation_bindings.record_proposal: _record_arguments,
     operation_bindings.ingest: _ingest_arguments,
 }
@@ -1215,6 +1221,14 @@ def _observed_real_effect(
         condition = lambda value: value == {
             "container": text, "total": 0, "records": [],
         }
+    elif implementation is operation_bindings.semantic_search:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: value == {
+            "status": "not_run",
+            "reason": "no semantic index location is configured (NOUS_OS_SEMANTIC_INDEX_PATH or --semantic-index-path)",
+            "hits": [],
+        }
     elif implementation is operation_bindings.sources:
         items = returned
         expected_count = 1
@@ -1481,6 +1495,12 @@ def _well_formed_wrong_results(operation: _Operation) -> tuple[object, ...]:
         return (compile_pack((), (), FlatTopK(), 1),)
     if implementation is operation_bindings.context:
         return ({"container": "wrong", "total": 0, "records": []},)
+    if implementation is operation_bindings.semantic_search:
+        return (({
+            "status": "not_run",
+            "reason": "wrong",
+            "hits": [],
+        }),)
     if implementation is operation_bindings.supersession:
         return ((wrong_temporal_assertion,),)
     if implementation is operation_bindings.ingest:
@@ -1627,6 +1647,7 @@ def test_registered_operations_have_the_decided_names_and_tiers() -> None:
     assert {operation.name: operation.tier for operation in _registered_operations()} == {
         "search": Tier.READ,
         "context": Tier.READ,
+        "semantic": Tier.READ,
         "sources": Tier.READ,
         "versions": Tier.READ,
         "read_span": Tier.READ,
@@ -1856,7 +1877,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
     expected = (
         len(entries) * len(operations) * len(transports) * len(grant_tier_sets)
     )
-    assert expected == 11136
+    assert expected == 11600
     if expected == 0:
         _fail_not_run("the derived corpus matrix had zero expected cells")
 
@@ -1914,8 +1935,8 @@ def test_argument_content_cannot_change_any_authorization_decision(
 
     if executed == 0:
         _fail_not_run("the corpus matrix executed zero cells")
-    assert executed == 11136
-    assert expected == 11136
+    assert executed == 11600
+    assert expected == 11600
     expected_positive_controls = {
         (transport.name, operation.name, tier_set)
         for transport in transports
@@ -1923,7 +1944,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
         for tier_set in grant_tier_sets
         if operation.tier in tier_set
     }
-    assert len(expected_positive_controls) == 192
+    assert len(expected_positive_controls) == 200
     if positive_controls != expected_positive_controls:
         absent = sorted(
             (transport, operation, sorted(tier.value for tier in tier_set))
@@ -1939,9 +1960,9 @@ def test_argument_content_cannot_change_any_authorization_decision(
         len(positive_controls),
     )
     assert result.status is RunStatus.COMPLETE
-    assert result.executed == 11136
-    assert result.expected == 11136
-    assert result.positive_controls == 192
+    assert result.executed == 11600
+    assert result.expected == 11600
+    assert result.positive_controls == 200
 
 
 def test_the_holder_is_provenance_metadata_and_carries_no_authority(
@@ -1957,7 +1978,7 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
     expected = len(transports) * sum(
         1 for tier in tiers for operation in operations if operation.tier is tier
     )
-    assert expected == 24
+    assert expected == 25
     if expected == 0:
         _fail_not_run("the holder-metadata matrix had zero expected cells")
 
@@ -1989,8 +2010,8 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
 
     if executed == 0:
         _fail_not_run("the holder-metadata matrix executed zero cells")
-    assert executed == 24
-    assert expected == 24
+    assert executed == 25
+    assert expected == 25
 
 
 def test_required_tier_argument_content_cannot_change_the_decision_in_either_direction(
@@ -2002,7 +2023,7 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
     transports = _derived_transports()
     world = _build_world(tmp_path / "required_tier_arguments")
     expected = len(transports) * len(operations) * 2
-    assert expected == 48
+    assert expected == 50
     if expected == 0:
         _fail_not_run("the required-tier argument matrix had zero expected cells")
     executed = 0
@@ -2061,5 +2082,5 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
 
     if executed == 0:
         _fail_not_run("the required-tier argument matrix executed zero cells")
-    assert executed == 48
-    assert expected == 48
+    assert executed == 50
+    assert expected == 50

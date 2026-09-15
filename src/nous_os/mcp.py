@@ -358,6 +358,7 @@ def _build_start_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rejection-memory-path", default=None)
     parser.add_argument("--relation-store-path", default=None)
     parser.add_argument("--extraction-store-path", default=None)
+    parser.add_argument("--semantic-index-path", default=None)
     parser.add_argument(
         "--tier",
         action="append",
@@ -390,6 +391,7 @@ def main(argv: list[str] | None = None) -> int:
             rejection_memory_path=namespace.rejection_memory_path,
             relation_store_path=namespace.relation_store_path,
             extraction_store_path=namespace.extraction_store_path,
+            semantic_index_path=namespace.semantic_index_path,
         )
         grant = _resolve_grant(namespace, os.environ)
     except Exception as error:

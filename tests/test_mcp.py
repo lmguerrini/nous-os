@@ -96,6 +96,7 @@ def _minimal_arguments(external_name: str) -> dict[str, object]:
         "knowledge.context": {
             "source_id": SOURCE_ID, "before": 2, "after": 2, "limit": 10,
         },
+        "knowledge.semantic": {"query": "alpha", "limit": 5, "distinct": False},
         "canon.documents": {},
         "canon.describe": {},
         "canon.sources": {},

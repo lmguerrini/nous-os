@@ -213,8 +213,8 @@ left for a reader to discover by being wrong.
 | `BookmarkValidationRule` | `ui/src/engine/bookmark.ts:68` | `field-register` · `temporal-position-unparseable` · `governed-target-id-type` · `finite-camera-number` · `positive-camera-ratio` · `title-required` · `note-type` · `closed-vocabulary` | The eight named ways a bookmark annotation can be malformed. None concerns the graph a bookmark may reference, because a bookmark is never canonical knowledge. |
 | `ModelSpec` | `src/nous_os/semantic.py:60` | — | Which weights a backend loads, named rather than defaulted. |
 | `Backend` | `src/nous_os/semantic.py:86` | — | Anything that turns text into fixed-size, L2-normalised vectors. Pluggable like `AliasTable`; nothing here is chosen for a caller who forgot to. |
-| `SemanticHit` | `src/nous_os/semantic.py:225` | — | One ranked result from the dense index. Rank 1 is the best match. |
-| `SemanticIndex` | `src/nous_os/semantic.py:235` | — | Chunk ids and the vectors that encode them, derived and reconstructible from chunks and a backend alone. |
+| `SemanticHit` | `src/nous_os/semantic.py:239` | — | One ranked result from the dense index. Rank 1 is the best match. |
+| `SemanticIndex` | `src/nous_os/semantic.py:249` | — | Chunk ids and the vectors that encode them, derived and reconstructible from chunks and a backend alone. |
 | `IndexStatus` | `src/nous_os/semantic.py:50` | `COMPLETE` · `NOT_RUN` | Whether the index actually holds vectors. Mirrors `RunStatus`: weights that could not be loaded are never read as an empty, completed search. |
 | `SourceKind` | `src/nous_os/sources.py:81` | `CONVERSATION` · `MESSAGE` · `DESIGN_CONVERSATION` · `DESIGN_MESSAGE` · `PROJECT` · `PROJECT_DOCUMENT` · `MEMORY_SUMMARY` · `MEMORY_FILE` · `REFLECTION` · `FEEDBACK` · `ASSET` · `DOCUMENT` · `CAPTURE_WINDOW` · `CAPTURED_MESSAGE` | What a provider record is: the classes of evidence a provider itself keeps apart, kept apart here. A supplied document, a rendered window and a captured message are distinct from provider-native records. None is more canonical than another, because none is canonical at all. |
 | `IdentityBasis` | `src/nous_os/sources.py:127` | `PROVIDER_IDENTIFIER` · `PROVIDER_PATH` · `PROVIDER_LABEL` · `CONTENT` | Where a record's external identity came from. A content-based identity is visibly weaker than a provider-minted one, and the difference is recorded rather than inferred later. |
@@ -251,7 +251,11 @@ left for a reader to discover by being wrong.
 | Term | Defined at | Closed members | What it distinguishes |
 |---|---|---|---|
 | `record` | `src/nous_os/derived.py:71` | — | The rebuildable record-header index: one source-and-snapshot pair, carrying only the top-level record fields that canon names. |
-| `knowledge.context` | `src/nous_os/core.py:752` | — | A read operation for a source's ordered conversation neighbourhood or a container's current records. |
+| `knowledge.context` | `src/nous_os/core.py:777` | — | A read operation for a source's ordered conversation neighbourhood or a container's current records. |
+| `semantic index` | `src/nous_os/core.py:791` | — | A persistent generation directory holding a verified SQLite chunk table, raw float32 vectors, and a CURRENT selector. Its meta keys identify the projection, chunking, checkpoint, tokenizer, source-derived digest, and the byte-level index digest recorded as state_digest. |
+| `text projection v1` | — | — | The deterministic record-body text selection used before semantic chunking. It recognizes only the declared payload/message/content and recovery text fields. |
+| `citation_state` | — | `located` · `absent` · `ambiguous` · `unlintable` | Whether a chunk's escaped JSON text has one quote-lintable byte location in the source body, none, several, or a range provenance refuses. |
+| `knowledge.semantic` | `src/nous_os/core.py:789` | — | A read operation over the local semantic index. It reports `not_run` when no index location or local checkpoint is available. |
 
 The human review console is a separate boundary: it reads fixed-shape candidate
 content and a decision file, records authorization under the existing promotion

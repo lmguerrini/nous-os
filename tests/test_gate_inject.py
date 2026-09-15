@@ -70,6 +70,7 @@ _EXPECTED_OPERATION_NAMES = frozenset(
         "system.health",
         "knowledge.search",
         "knowledge.context",
+        "knowledge.semantic",
         "canon.documents",
         "canon.describe",
         "canon.sources",

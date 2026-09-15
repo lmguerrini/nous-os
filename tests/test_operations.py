@@ -717,6 +717,7 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
     arguments = {
         "search": {"path": canon.derived_path, "query": "alpha"},
         "context": {"path": canon.derived_path, "source_id": SOURCE_ID},
+        "semantic": {"index_path": None, "query": "semantic fixture"},
         "sources": {"path": canon.derived_path},
         "versions": {"path": canon.derived_path, "source_id": SOURCE_ID},
         "read_span": {"store": canon.snapshots, "citation": canon.citation},
@@ -888,6 +889,7 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
     expected = {
         "search": Tier.READ,
         "context": Tier.READ,
+        "semantic": Tier.READ,
         "sources": Tier.READ,
         "versions": Tier.READ,
         "read_span": Tier.READ,
@@ -911,8 +913,8 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "ingest_source": Tier.PROMOTE,
         "promote_candidate": Tier.PROMOTE,
     }
-    assert len(expected) == 24
-    assert len(operations) == 24
+    assert len(expected) == 25
+    assert len(operations) == 25
     assert {operation.name: operation.tier for operation in operations} == expected
     assert all(
         operation.tier is not Tier.EXTERNAL_CONSEQUENTIAL_ACTION
@@ -935,6 +937,7 @@ def test_governed_implementation_bindings_are_limited_to_the_pinned_modules() ->
     }
     expected = {
         "operations.py",  # Registration site: it alone imports implementations to register them.
+        "semantic_index.py",  # semantic search owns its governed implementation.
         "measure.py",  # Existing measurement code imports and calls search; a forward obligation.
         "config.py",  # describe_corpus calls the governed list_documents function.
         "provenance.py",  # quote_lint calls governed read_span while remaining unguided itself.
@@ -970,7 +973,7 @@ def test_registered_wrapper_annotations_resolve_without_importing_discovery_at_r
     wrappers = tuple(
         authority._REGISTRY[operation.name][1] for operation in _project_operations()
     )
-    assert len(wrappers) == 24
+    assert len(wrappers) == 25
     resolved = {
         wrapper.__name__: get_type_hints(
             wrapper,
@@ -1158,7 +1161,13 @@ def test_every_read_operation_executes_without_changing_canon(tmp_path: Path) ->
     before = _canon_digest(canon.root, canon.ledger)
     grant = Grant("reader", frozenset({Tier.READ}))
     for operation in reads:
-        execute(grant, operation.name, **_read_arguments(operation.name, canon))
+        returned = execute(grant, operation.name, **_read_arguments(operation.name, canon))
+        if operation.name == "semantic":
+            assert returned == {
+                "status": "not_run",
+                "reason": "no semantic index location is configured (NOUS_OS_SEMANTIC_INDEX_PATH or --semantic-index-path)",
+                "hits": [],
+            }
     after = _canon_digest(canon.root, canon.ledger)
     assert after == before
 

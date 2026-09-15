@@ -138,6 +138,7 @@ def _minimal_argv(external_name: str) -> list[str]:
         "system.health": [],
         "knowledge.search": ["--query", "alpha"],
         "knowledge.context": ["--source-id", SOURCE_ID],
+        "knowledge.semantic": ["--query", "alpha"],
         "canon.documents": [],
         "canon.describe": [],
         "canon.sources": [],
@@ -229,6 +230,7 @@ def _reachable_argv(external_name: str, digest: str) -> list[str]:
         "system.health": [],
         "knowledge.search": ["--query", "alpha"],
         "knowledge.context": ["--source-id", SOURCE_ID],
+        "knowledge.semantic": ["--query", "alpha"],
         "canon.documents": [],
         "canon.describe": [],
         "canon.sources": [],
@@ -941,7 +943,7 @@ def test_every_catalogue_entry_is_reachable_through_the_cli_without_importing_mc
     Proves ``nous_os.mcp`` was never loaded to serve any of them -- every
     semantic decision the CLI makes is reachable with that module absent from
     ``sys.modules`` for the whole run, not merely unimported at the top --
-    and that each of those 19 calls actually succeeded. A built derived store
+    and that each of those 20 calls actually succeeded. A built derived store
     and a declared PROPOSE tier are what several of them need to reach that
     success rather than stop at a refusal along the way.
     """

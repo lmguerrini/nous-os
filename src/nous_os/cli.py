@@ -196,6 +196,7 @@ def _add_workspace_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rejection-memory-path", default=None)
     parser.add_argument("--relation-store-path", default=None)
     parser.add_argument("--extraction-store-path", default=None)
+    parser.add_argument("--semantic-index-path", default=None)
 
 
 def _add_grant_arguments(parser: argparse.ArgumentParser) -> None:
@@ -347,6 +348,7 @@ def _resolve_workspace(namespace: argparse.Namespace) -> core.Workspace:
         rejection_memory_path=namespace.rejection_memory_path,
         relation_store_path=namespace.relation_store_path,
         extraction_store_path=namespace.extraction_store_path,
+        semantic_index_path=namespace.semantic_index_path,
     )
 
 

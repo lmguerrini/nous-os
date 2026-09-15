@@ -317,6 +317,10 @@ matter of `.gitignore`:
   safe to read, copy and publish.
 - The derived index is rebuildable and is never committed; `.gitignore` refuses
   `*.db`, `*.sqlite` and `*.sqlite3`.
+- The semantic index is also derived and rebuildable, never committed, and is
+  built only from cached local weights. When that index or its weights are
+  absent, dense search answers `not_run` with the reason rather than treating
+  the absence as an empty result.
 - A test in the suite refuses any absolute machine path, personal identifier or
   credential in tracked file content or names, and it runs in continuous
   integration on every push.
@@ -610,6 +614,7 @@ src/
     ├── measure.py        the measuring instrument, and its third answer
     ├── chunking.py       pieces of a document that remember where they came from
     ├── semantic.py       a derived, offline dense index over chunks, and its third answer
+    ├── semantic_index.py persistent rebuildable dense generations over derived record tips
     ├── compile.py        assembling a pack, and recording what went into it
     ├── ablation.py       comparing assembly strategies without combining the numbers
     ├── capability.py     four kinds of authority, and the one door they are checked at

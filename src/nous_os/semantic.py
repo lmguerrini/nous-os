@@ -110,7 +110,14 @@ class OnnxBackend:
     out of whatever was trying to build an index.
     """
 
-    __slots__ = ("_spec", "_session", "_tokenizer", "_input_names", "_checkpoint_digest")
+    __slots__ = (
+        "_spec",
+        "_session",
+        "_tokenizer",
+        "_input_names",
+        "_checkpoint_digest",
+        "_tokenizer_digest",
+    )
 
     def __init__(self, spec: ModelSpec) -> None:
         if not isinstance(spec, ModelSpec):
@@ -145,6 +152,7 @@ class OnnxBackend:
             ) from error
 
         checkpoint_bytes = Path(onnx_path).read_bytes()
+        tokenizer_bytes = Path(tokenizer_path).read_bytes()
         options = ort.SessionOptions()
         options.intra_op_num_threads = 1
         try:
@@ -182,6 +190,7 @@ class OnnxBackend:
         self._tokenizer = tokenizer
         self._input_names = input_names
         self._checkpoint_digest = digest_bytes(checkpoint_bytes)
+        self._tokenizer_digest = digest_bytes(tokenizer_bytes)
 
     @property
     def name(self) -> str:
@@ -191,6 +200,11 @@ class OnnxBackend:
     def checkpoint_digest(self) -> str:
         """sha256 of the ONNX file's bytes, so a result can say which weights produced it."""
         return self._checkpoint_digest
+
+    @property
+    def tokenizer_digest(self) -> str:
+        """sha256 of the tokenizer JSON bytes paired with this checkpoint."""
+        return self._tokenizer_digest
 
     def encode(self, texts: tuple[str, ...]) -> np.ndarray:
         """Mean-pool over the attention mask, then L2-normalise. Float32 throughout.

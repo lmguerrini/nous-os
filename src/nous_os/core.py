@@ -216,6 +216,7 @@ BRIDGE_REGISTRY_PATH_ENV_VAR: Final = "NOUS_OS_BRIDGE_REGISTRY_PATH"
 REJECTION_MEMORY_PATH_ENV_VAR: Final = "NOUS_OS_REJECTION_MEMORY_PATH"
 RELATION_STORE_PATH_ENV_VAR: Final = "NOUS_OS_RELATION_STORE_PATH"
 EXTRACTION_STORE_PATH_ENV_VAR: Final = "NOUS_OS_EXTRACTION_STORE_PATH"
+SEMANTIC_INDEX_PATH_ENV_VAR: Final = "NOUS_OS_SEMANTIC_INDEX_PATH"
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +238,7 @@ class Workspace:
     rejection_memory_path: Path
     relation_store_path: Path
     extraction_store_path: Path | None = None
+    semantic_index_path: Path | None = None
 
     def __post_init__(self) -> None:
         """Resolve direct inputs before applying the shared overlap refusal."""
@@ -266,6 +268,12 @@ class Workspace:
             except (TypeError, ValueError) as error:
                 raise CoreError("workspace extraction_store_path must be path-like or None") from error
             object.__setattr__(self, "extraction_store_path", extraction_store_path)
+        if self.semantic_index_path is not None:
+            try:
+                semantic_index_path = Path(self.semantic_index_path).expanduser().resolve()
+            except (TypeError, ValueError) as error:
+                raise CoreError("workspace semantic_index_path must be path-like or None") from error
+            object.__setattr__(self, "semantic_index_path", semantic_index_path)
         _refuse_aliased_locations(self)
 
 
@@ -319,6 +327,11 @@ def _workspace_locations(workspace: Workspace) -> tuple[_WorkspaceLocation, ...]
         *(() if workspace.extraction_store_path is None else (
             _WorkspaceLocation(
                 "extraction_store_path", workspace.extraction_store_path, False, True
+            ),
+        )),
+        *(() if workspace.semantic_index_path is None else (
+            _WorkspaceLocation(
+                "semantic_index_path", workspace.semantic_index_path, False, True
             ),
         )),
     )
@@ -549,6 +562,7 @@ def resolve_workspace(
     rejection_memory_path: str | os.PathLike[str] | None = None,
     relation_store_path: str | os.PathLike[str] | None = None,
     extraction_store_path: str | os.PathLike[str] | None = None,
+    semantic_index_path: str | os.PathLike[str] | None = None,
     environ: dict[str, str] | None = None,
 ) -> Workspace:
     """Resolve every location Core needs, or refuse. Never guesses one.
@@ -600,6 +614,17 @@ def resolve_workspace(
             )
             if extraction_store_path is not None
             or bool(env.get(EXTRACTION_STORE_PATH_ENV_VAR, "").strip())
+            else None
+        ),
+        semantic_index_path=(
+            _resolve_path(
+                semantic_index_path,
+                SEMANTIC_INDEX_PATH_ENV_VAR,
+                "semantic index path",
+                env,
+            )
+            if semantic_index_path is not None
+            or bool(env.get(SEMANTIC_INDEX_PATH_ENV_VAR, "").strip())
             else None
         ),
     )
@@ -758,6 +783,21 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
             ParameterSpec("before", "integer", False, "records before a source target; defaults to 2"),
             ParameterSpec("after", "integer", False, "records after a source target; defaults to 2"),
             ParameterSpec("limit", "integer", False, "maximum container records to return; defaults to 200"),
+        ),
+    ),
+    _descriptor(
+        "knowledge.semantic",
+        "semantic",
+        "Dense semantic search over the local semantic index; not_run with a reason when the index or the weights are absent.",
+        (
+            ParameterSpec("query", "string", True, "the dense semantic search query"),
+            ParameterSpec("limit", "integer", False, "maximum number of hits to return; defaults to 10"),
+            ParameterSpec(
+                "distinct",
+                "boolean",
+                False,
+                "one hit per source, the best chunk; defaults to false",
+            ),
         ),
     ),
     _descriptor(
@@ -1328,6 +1368,17 @@ def _bind_context(workspace: Workspace, arguments: dict[str, object]) -> dict[st
     return kwargs
 
 
+def _bind_semantic(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "index_path": workspace.semantic_index_path,
+        "query": arguments["query"],
+    }
+    for name in ("limit", "distinct"):
+        if name in arguments:
+            kwargs[name] = arguments[name]
+    return kwargs
+
+
 def _bind_root_only(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
     return {"root": workspace.data_root}
 
@@ -1485,6 +1536,7 @@ def _bind_verify_relations(workspace: Workspace, arguments: dict[str, object]) -
 _BINDERS: Final = {
     "knowledge.search": _bind_search,
     "knowledge.context": _bind_context,
+    "knowledge.semantic": _bind_semantic,
     "canon.documents": _bind_root_only,
     "canon.describe": _bind_root_only,
     "canon.sources": _bind_path_only,
@@ -1606,6 +1658,7 @@ def _render_round_result(result) -> dict[str, object]:
 _RENDERERS: Final = {
     "knowledge.search": _render_search,
     "knowledge.context": lambda result: result,
+    "knowledge.semantic": lambda result: result,
     "canon.documents": lambda documents: list(documents),
     "canon.describe": _render_describe_corpus,
     "canon.sources": lambda sources: list(sources),
@@ -1740,6 +1793,11 @@ def _system_health(workspace: Workspace) -> dict[str, object]:
             "unconfigured"
             if workspace.extraction_store_path is None
             else _location_health(workspace.extraction_store_path, is_directory=True)
+        ),
+        "semantic_index_path": (
+            "unconfigured"
+            if workspace.semantic_index_path is None
+            else _location_health(workspace.semantic_index_path, is_directory=True)
         ),
     }
 
