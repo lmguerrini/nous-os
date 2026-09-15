@@ -20,6 +20,7 @@ import nous_os.mcp as mcp
 import nous_os.semantic_index as semantic_index
 from nous_os.capability import Grant, Tier
 from nous_os.derived import build as build_derived
+from nous_os.derived import rebuild as rebuild_derived
 from nous_os.ledger import Ledger, ingest
 from nous_os.provenance import Citation, Locator, quote_lint, read_span
 from nous_os.semantic import DENSE_EN, ModelSpec, OnnxBackend, SemanticError
@@ -38,6 +39,9 @@ DUPLICATE = _sid("TWNN")
 EMPTY = _sid("ASSET")
 RECOVERY = _sid("RECVR")
 TIP = _sid("TNP")
+TIE_FIRST = _sid("TADA")
+TIE_SECOND = _sid("TADB")
+EXTRA = _sid("EXTRA")
 
 _DENSE_BACKEND: OnnxBackend | None = None
 _DENSE_REASON: str | None = None
@@ -76,6 +80,8 @@ def _semantic_canon(tmp_path: Path) -> tuple[SnapshotStore, Path]:
         (EMPTY, _message([1, {"asset": "image"}])),
         (RECOVERY, json.dumps({"text": "Recovered notes describe an offline archive."})),
         (TIP, _message(["obsolete draft about an old subject"])),
+        (TIE_FIRST, _message(["Two sources share precisely this retrieval text."])),
+        (TIE_SECOND, _message(["Two sources share precisely this retrieval text."])),
     )
     for offset, (source_id, body) in enumerate(records):
         ingest(store, ledger, source_id, UntrustedText(body), at + timedelta(minutes=offset))
@@ -204,14 +210,51 @@ def test_build_is_byte_identical_across_rebuilds_and_worker_counts(
     again = semantic_index.build(derived_path, first_root, DENSE_EN)
     assert again.generation == first.generation
     assert [path.name for path in first_root.glob("gen-*")] == [first.generation]
-    before_current = (first_root / "CURRENT").read_bytes()
-    before_generation = (first_generation / "vectors.f32").read_bytes()
-    monkeypatch.setattr(semantic_index, "verify", lambda _path: (_ for _ in ()).throw(RuntimeError("injected")))
-    with pytest.raises(RuntimeError, match="injected"):
-        semantic_index.build(derived_path, first_root, DENSE_EN)
-    assert (first_root / "CURRENT").read_bytes() == before_current
-    assert (first_generation / "vectors.f32").read_bytes() == before_generation
+    old_generation = first.generation
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ingest(
+        _store,
+        ledger,
+        EXTRA,
+        UntrustedText(_message(["An extra record makes this derived store different."])),
+        datetime(2026, 1, 3, tzinfo=timezone.utc),
+    )
+    rebuild_derived(_store, ledger, derived_path)
+    failed_generation: list[str] = []
+
+    def fail_staged_verify(rebuild_root: Path) -> dict[str, str]:
+        failed_generation.append((rebuild_root / "CURRENT").read_text(encoding="utf-8").strip())
+        raise RuntimeError("injected verify")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(semantic_index, "verify", fail_staged_verify)
+        with pytest.raises(RuntimeError, match="injected verify"):
+            semantic_index.build(derived_path, first_root, DENSE_EN)
+    assert failed_generation and failed_generation[0] != old_generation
+    new_generation = failed_generation[0]
+    assert (first_root / "CURRENT").read_text(encoding="utf-8").strip() == old_generation
+    assert not (first_root / new_generation).exists()
+    assert [path.name for path in first_root.glob("gen-*")] == [old_generation]
     assert not list(first_root.glob(".rebuild-*"))
+    assert not (first_root / "CURRENT.tmp").exists()
+    assert semantic_index.verify(first_root)["current"] == old_generation
+    original_replace = os.replace
+
+    def fail_current_replace(source: os.PathLike[str] | str, destination: os.PathLike[str] | str) -> None:
+        if Path(source).name == "CURRENT.tmp" and Path(destination).name == "CURRENT":
+            raise OSError("injected CURRENT publish")
+        original_replace(source, destination)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, "replace", fail_current_replace)
+        with pytest.raises(OSError, match="injected CURRENT publish"):
+            semantic_index.build(derived_path, first_root, DENSE_EN)
+    assert (first_root / "CURRENT").read_text(encoding="utf-8").strip() == old_generation
+    assert not (first_root / new_generation).exists()
+    assert [path.name for path in first_root.glob("gen-*")] == [old_generation]
+    assert not list(first_root.glob(".rebuild-*"))
+    assert not (first_root / "CURRENT.tmp").exists()
+    assert semantic_index.verify(first_root)["current"] == old_generation
     unavailable_root = tmp_path / "unavailable"
     not_run = semantic_index.build(
         derived_path,
@@ -258,6 +301,11 @@ def test_search_pins_ranking_distinct_tip_selection_and_citations(tmp_path: Path
     assert duplicate_hits and all(hit["citation"] is None for hit in duplicate_hits)
     assert {hit["citation_state"] for hit in duplicate_hits} == {"ambiguous"}
     assert len([hit for hit in hits if hit["source_id"] == LONG]) > 1
+    tie_hits = [hit for hit in hits if hit["source_id"] in {TIE_FIRST, TIE_SECOND}]
+    assert len(tie_hits) == 2
+    assert tie_hits[0]["score"] == tie_hits[1]["score"]
+    assert tie_hits[1]["rank"] == tie_hits[0]["rank"] + 1
+    assert [hit["chunk_id"] for hit in tie_hits] == sorted(hit["chunk_id"] for hit in tie_hits)
     distinct = semantic_index.search(
         index_path, "beacon navigation for ships entering a harbour", limit=100, distinct=True
     )
@@ -281,8 +329,10 @@ def test_not_run_and_unusable_index_outcomes_are_distinct(tmp_path: Path) -> Non
     assert absent["status"] == "not_run" and absent["hits"] == [] and "CURRENT" in absent["reason"]
     fake_root = tmp_path / "fake"
     _minimal_generation(fake_root)
-    unavailable = semantic_index.search(fake_root, "anything")
-    assert unavailable["status"] == "not_run" and unavailable["hits"] == []
+    with pytest.raises(semantic_index.SemanticIndexUnusable, match="chunks"):
+        semantic_index.verify(fake_root)
+    with pytest.raises(semantic_index.SemanticIndexUnusable, match="chunks"):
+        semantic_index.search(fake_root, "anything")
     missing_table_root = tmp_path / "missing-table"
     generation = _minimal_generation(missing_table_root)
     connection = sqlite3.connect(generation / "index.sqlite3")

@@ -469,6 +469,7 @@ def verify(index_path: Path) -> dict[str, str]:
 
     Refuses every missing, truncated, mismatched, or malformed component with
     the failed check named. It does not treat a broken index as a zero-hit one.
+    An empty index would otherwise read as searched and found nothing.
     """
     name, generation = _required_generation(Path(index_path))
     database_path = generation / "index.sqlite3"
@@ -494,7 +495,7 @@ def verify(index_path: Path) -> dict[str, str]:
             if absent_meta:
                 raise SemanticIndexUnusable(f"meta: missing {', '.join(absent_meta)}")
             row_count = connection.execute("SELECT COUNT(*) FROM chunk").fetchone()[0]
-            chunks = _integer_meta(meta, "chunks")
+            chunks = _integer_meta(meta, "chunks", minimum=1)
             dimension = _integer_meta(meta, "dimension", minimum=1)
             if chunks != row_count:
                 raise SemanticIndexUnusable("chunks: metadata does not equal chunk row count")
