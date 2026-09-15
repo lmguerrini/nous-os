@@ -181,21 +181,24 @@ class _OneSnapshotStore:
         raise SnapshotNotFound(f"no snapshot {digest} for {source_id}")
 
 
-def record_text(body: str) -> str:
-    """Select one derived record body's text; projections v1 and v2 share this step.
+def record_parts(body: str) -> tuple[str, ...]:
+    """Select one derived record body's text parts; projections v1 and v2 share this step.
 
     Projection intentionally recognizes only the stable payload/message/content
-    shapes named here. Invalid JSON and any body that cannot establish text are
-    empty rather than guessed from provider-specific structure.
+    shapes named here. The string items of ``content.parts`` are returned one by
+    one so a chunk never crosses a part join; the ``content.text``,
+    ``message.text`` and top-level ``text`` fallbacks are one part. Invalid JSON
+    and any body that cannot establish text are empty rather than guessed from
+    provider-specific structure.
     """
     if type(body) is not str:
-        return ""
+        return ()
     try:
         top = json.loads(body)
     except (json.JSONDecodeError, TypeError):
-        return ""
+        return ()
     if type(top) is not dict:
-        return ""
+        return ()
     payload = top.get("payload")
     payload_object = payload if type(payload) is dict else top
     message = payload_object.get("message")
@@ -204,18 +207,23 @@ def record_text(body: str) -> str:
     if type(content) is dict:
         parts = content.get("parts")
         if type(parts) is list:
-            return "\n".join(part for part in parts if type(part) is str)
+            return tuple(part for part in parts if type(part) is str)
         content_text = content.get("text")
         if type(content_text) is str:
-            return content_text
+            return (content_text,)
     message_text = message_object.get("text")
     if type(message_text) is str:
-        return message_text
+        return (message_text,)
     top_text = top.get("text")
-    return top_text if type(top_text) is str else ""
+    return (top_text,) if type(top_text) is str else ()
 
 
-_BLANK_LINE: Final = re.compile(r"\n[ \t]*\n")
+def record_text(body: str) -> str:
+    """Select one derived record body's text: its parts joined by a newline."""
+    return "\n".join(record_parts(body))
+
+
+_BLANK_LINE: Final = re.compile(r"\n[ \t\r]*\n")
 _SENTENCE_END: Final = re.compile(r"[.?!…:;](?=\s)|\n")
 
 
@@ -334,12 +342,15 @@ def _collect_chunks(derived_path: Path) -> tuple[tuple[_IndexedChunk, ...], int,
     records_indexed = 0
     records_empty = 0
     for source_id, snapshot_digest, body in _tip_records(derived_path):
-        text = record_text(body)
-        if not text:
+        parts = record_parts(body)
+        if not "\n".join(parts):
             records_empty += 1
             continue
         records_indexed += 1
-        for ordinal, (_start, _end, chunk_text) in enumerate(pack_sentences(text, CHUNK_MAX_WORDS)):
+        spans = tuple(
+            chunk_text for part in parts for _start, _end, chunk_text in pack_sentences(part, CHUNK_MAX_WORDS)
+        )
+        for ordinal, chunk_text in enumerate(spans):
             chunk = Chunk(
                 id=f"{source_id}#{ordinal:04d}",
                 source_id=source_id,

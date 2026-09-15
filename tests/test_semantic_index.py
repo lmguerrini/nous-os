@@ -43,11 +43,16 @@ TIE_FIRST = _sid("TADA")
 TIE_SECOND = _sid("TADB")
 EXTRA = _sid("EXTRA")
 MULTI = _sid("MANY")
+PARTS = _sid("PARTS")
 
 MULTI_PARAGRAPHS = (
     "The garden shed needs a fresh coat of paint before the autumn rain arrives.",
     "Our telescope mount wobbles whenever the tripod stands on soft lawn, so we moved it onto the patio stones.",
     "The pancake recipe calls for two eggs, a cup of flour and a pinch of salt.",
+)
+MESSAGE_PARTS = (
+    "The orchard ladder needs a new rung before the apple harvest.",
+    "Cider pressing starts once the barrels are scrubbed.",
 )
 
 _BACKENDS: dict[str, OnnxBackend | str] = {}
@@ -92,6 +97,7 @@ def _semantic_canon(tmp_path: Path) -> tuple[SnapshotStore, Path]:
         (TIE_FIRST, _message(["Two sources share precisely this retrieval text."])),
         (TIE_SECOND, _message(["Two sources share precisely this retrieval text."])),
         (MULTI, _message(["\n\n".join(MULTI_PARAGRAPHS)])),
+        (PARTS, _message([MESSAGE_PARTS[0], {"asset": "image"}, MESSAGE_PARTS[1]])),
     )
     for offset, (source_id, body) in enumerate(records):
         ingest(store, ledger, source_id, UntrustedText(body), at + timedelta(minutes=offset))
@@ -210,14 +216,34 @@ def _workspace(tmp_path: Path, semantic_path: Path | None = None) -> core.Worksp
 
 
 def test_record_text_pins_text_projection_v1() -> None:
-    """O1: only the fixed nested text shapes contribute a projected document."""
+    """O1: only the fixed nested text shapes contribute a projected document, part by part."""
+    bodies = {
+        _message(["one", 2, "two"]): ("one", "two"),
+        json.dumps({"payload": {"message": {"content": {"text": "body"}}}}): ("body",),
+        json.dumps({"payload": {"message": {"text": "message"}}}): ("message",),
+        json.dumps({"text": "recovered"}): ("recovered",),
+        json.dumps({"payload": {"message": {"content": {"thoughts": ["no"]}}}}): (),
+        "not JSON": (),
+        "[]": (),
+    }
+    for body, parts in bodies.items():
+        assert semantic_index.record_parts(body) == parts
+        assert semantic_index.record_text(body) == "\n".join(parts)
     assert semantic_index.record_text(_message(["one", 2, "two"])) == "one\ntwo"
-    assert semantic_index.record_text(json.dumps({"payload": {"message": {"content": {"text": "body"}}}})) == "body"
-    assert semantic_index.record_text(json.dumps({"payload": {"message": {"text": "message"}}})) == "message"
-    assert semantic_index.record_text(json.dumps({"text": "recovered"})) == "recovered"
-    assert semantic_index.record_text(json.dumps({"payload": {"message": {"content": {"thoughts": ["no"]}}}})) == ""
-    assert semantic_index.record_text("not JSON") == ""
-    assert semantic_index.record_text("[]") == ""
+
+
+def test_multi_part_record_chunks_never_cross_a_part_join(tmp_path: Path) -> None:
+    """F1: parts are packed one at a time so every chunk sits inside one part's JSON string."""
+    _store, derived_path = _semantic_canon(tmp_path)
+    items, _indexed, _empty = semantic_index._collect_chunks(derived_path)
+    parts_items = [item for item in items if item.chunk.source_id == PARTS]
+    assert [item.chunk.text for item in parts_items] == list(MESSAGE_PARTS)
+    assert [item.chunk.ordinal for item in parts_items] == [0, 1]
+    assert [item.chunk.id for item in parts_items] == [f"{PARTS}#0000", f"{PARTS}#0001"]
+    assert {item.citation_state for item in parts_items} == {"located"}
+    assert {item.citation_state for item in items if item.chunk.source_id != DUPLICATE} == {"located"}
+    ordinals = [item.chunk.ordinal for item in items if item.chunk.source_id == LONG]
+    assert ordinals == list(range(len(ordinals))) and len(ordinals) > 1
 
 
 def test_pack_sentences_pins_text_projection_v2() -> None:
@@ -251,6 +277,10 @@ def test_pack_sentences_pins_text_projection_v2() -> None:
     assert [chunk_text for _start, _end, chunk_text in pack("one two.\n\nthree four.", 100)] == [
         "one two.",
         "three four.",
+    ]
+    assert [chunk_text for _start, _end, chunk_text in pack("First block one.\r\n\r\nSecond block two.", 100)] == [
+        "First block one.",
+        "Second block two.",
     ]
     assert pack("", 14) == () and pack(" \n\t \n ", 14) == ()
     with pytest.raises(semantic_index.SemanticIndexError):
@@ -508,6 +538,10 @@ def test_dense_e5_v2_build_pins_prefixed_ranking_citations_and_meta(tmp_path: Pa
     assert {state for _id, source_id, _text, _path, state in rows if source_id == DUPLICATE} == {"ambiguous"}
     assert {path for _id, _source, _text, path, _state in rows} == {"[]"}
     assert [text for _id, source_id, text, _path, _state in rows if source_id == MULTI] == list(MULTI_PARAGRAPHS)
+    assert [(text, state) for _id, source_id, text, _path, state in rows if source_id == PARTS] == [
+        (MESSAGE_PARTS[0], "located"),
+        (MESSAGE_PARTS[1], "located"),
+    ]
     query = "the telescope tripod wobbles when it stands on the lawn"
     answer = semantic_index.search(index_path, query, limit=100)
     hits = answer["hits"]
