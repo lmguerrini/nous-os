@@ -796,7 +796,7 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
                 "distinct",
                 "boolean",
                 False,
-                "one hit per source, the best chunk; defaults to false",
+                "one hit per source, the best chunk; defaults to true",
             ),
         ),
     ),
@@ -1371,9 +1371,11 @@ def _bind_context(workspace: Workspace, arguments: dict[str, object]) -> dict[st
 def _bind_semantic(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
     kwargs: dict[str, object] = {
         "index_path": workspace.semantic_index_path,
+        "derived_path": workspace.derived_path,
         "query": arguments["query"],
+        "distinct": arguments.get("distinct", True),
     }
-    for name in ("limit", "distinct"):
+    for name in ("limit",):
         if name in arguments:
             kwargs[name] = arguments[name]
     return kwargs

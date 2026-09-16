@@ -198,20 +198,70 @@ def _minimal_generation(
     return generation
 
 
-def _workspace(tmp_path: Path, semantic_path: Path | None = None) -> core.Workspace:
+def _workspace(
+    tmp_path: Path, semantic_path: Path | None = None, derived_path: Path | None = None
+) -> core.Workspace:
     data_root = tmp_path / "documents"
     data_root.mkdir()
     return core.resolve_workspace(
         data_root=data_root,
         snapshot_root=tmp_path / "snapshots",
         ledger_path=tmp_path / "ledger.jsonl",
-        derived_path=tmp_path / "derived.sqlite",
+        derived_path=tmp_path / "derived.sqlite" if derived_path is None else derived_path,
         candidate_store_path=tmp_path / "candidates.jsonl",
         bridge_registry_path=tmp_path / "bridges.jsonl",
         rejection_memory_path=tmp_path / "rejections.jsonl",
         relation_store_path=tmp_path / "relations.jsonl",
         semantic_index_path=semantic_path,
         environ={},
+    )
+
+
+def _published_turn_sidecar(index_path: Path, query: str) -> None:
+    """Install a tiny compatible sidecar with an assistant-context mapping."""
+    encoder = _require_dense_en()
+    generation_name = (index_path / "CURRENT").read_text(encoding="utf-8").strip()
+    generation = index_path / generation_name
+    connection = sqlite3.connect(generation / "index.sqlite3")
+    try:
+        meta = dict(connection.execute("SELECT key, value FROM meta"))
+    finally:
+        connection.close()
+    vector = encoder.encode((meta.get("query_prefix", "") + query,))[0]
+    sidecar = index_path / "turn-pairs"
+    sidecar.mkdir()
+    database = sqlite3.connect(sidecar / "index.sqlite3")
+    try:
+        database.execute(
+            "CREATE TABLE turn(source_id TEXT PRIMARY KEY NOT NULL, assistant_source_id TEXT NOT NULL, input_chars INTEGER NOT NULL)"
+        )
+        database.execute("CREATE TABLE meta(key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)")
+        database.execute("INSERT INTO turn VALUES (?, ?, ?)", (LIGHTHOUSE, BAKING, 1))
+        database.executemany(
+            "INSERT INTO meta VALUES (?, ?)",
+            sorted({
+                "format": "R117-turn-pair-v1",
+                "base_generation": generation_name,
+                "backend": meta["backend"],
+                "dimension": meta["dimension"],
+                "pairs": "1",
+            }.items()),
+        )
+        database.commit()
+    finally:
+        database.close()
+    vector.tofile(sidecar / "vectors.f32")
+    (sidecar / "COMPLETE.json").write_text(
+        json.dumps({
+            "format": "R117-turn-pair-v1",
+            "base_generation": generation_name,
+            "backend": meta["backend"],
+            "dimension": int(meta["dimension"]),
+            "pairs": 1,
+            "vector_bytes": int(vector.nbytes),
+            "published": True,
+        }) + "\n",
+        encoding="utf-8",
     )
 
 
@@ -417,6 +467,60 @@ def test_search_pins_ranking_distinct_tip_selection_and_citations(tmp_path: Path
             seen.add(hit["source_id"])
             expected.append(hit["chunk_id"])
     assert [hit["chunk_id"] for hit in distinct["hits"]] == expected
+
+
+def test_turn_rrf_sidecar_is_validated_and_keeps_two_citations(tmp_path: Path) -> None:
+    """O1/O3: a compatible published sidecar augments source hits, never CURRENT."""
+    _require_dense_en()
+    store, derived_path = _semantic_canon(tmp_path)
+    index_path = tmp_path / "semantic"
+    semantic_index.build(derived_path, index_path, DENSE_EN)
+    query = "beacon navigation for ships entering a harbour"
+    ordinary = semantic_index.search(index_path, query, limit=3, distinct=True)
+    _published_turn_sidecar(index_path, query)
+    answer = semantic_index.search(
+        index_path, query, limit=3, distinct=True, derived_path=derived_path
+    )
+    assert answer["ranking"] == "turn-rrf-k60"
+    first = answer["hits"][0]
+    assert first["source_id"] == LIGHTHOUSE
+    assert first["context_source_id"] == BAKING
+    for key, expected_source in (("citation", LIGHTHOUSE), ("context_citation", BAKING)):
+        citation = first[key]
+        assert citation is not None and citation["source_id"] == expected_source
+        checked = Citation(
+            citation["source_id"], citation["snapshot_digest"],
+            Locator(citation["start_byte"], citation["end_byte"]), citation["span"],
+        )
+        assert read_span(store, checked) == citation["span"]
+    # The direct chunk-level API and a mismatched companion retain the old
+    # dense response rather than treating optional recall state as CURRENT.
+    assert semantic_index.search(index_path, query, limit=3) == semantic_index.search(
+        index_path, query, limit=3
+    )
+    complete_path = index_path / "turn-pairs" / "COMPLETE.json"
+    complete = json.loads(complete_path.read_text(encoding="utf-8"))
+    complete["base_generation"] = "gen-not-current"
+    complete_path.write_text(json.dumps(complete), encoding="utf-8")
+    assert semantic_index.search(
+        index_path, query, limit=3, distinct=True, derived_path=derived_path
+    ) == ordinary
+
+
+def test_core_semantic_defaults_to_distinct_rrf_when_sidecar_is_published(tmp_path: Path) -> None:
+    """O2: the governed normal user path receives the sidecar and safe default."""
+    _require_dense_en()
+    _store, derived_path = _semantic_canon(tmp_path)
+    index_path = tmp_path / "semantic"
+    semantic_index.build(derived_path, index_path, DENSE_EN)
+    query = "beacon navigation for ships entering a harbour"
+    _published_turn_sidecar(index_path, query)
+    workspace = _workspace(tmp_path, index_path, derived_path)
+    answer = core.invoke(
+        Grant("reader", frozenset({Tier.READ})), "knowledge.semantic", workspace, {"query": query}
+    )
+    assert answer["ranking"] == "turn-rrf-k60"
+    assert answer["hits"][0]["context_source_id"] == BAKING
 
 
 def test_not_run_and_unusable_index_outcomes_are_distinct(tmp_path: Path) -> None:

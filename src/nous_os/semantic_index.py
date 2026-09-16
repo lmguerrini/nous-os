@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Final
 
 from nous_os.chunking import Chunk, estimate_tokens
+from nous_os.derived import DerivedStoreError, QueryError
+from nous_os.derived import search as lexical_search
 from nous_os.derived import state_digest as derived_state_digest
 from nous_os.derived import verify as verify_derived
 from nous_os.identity import digest_bytes
@@ -62,6 +64,15 @@ _META_KEYS: Final = (
     "derived_digest",
     "state_digest",
 )
+_TURN_PAIR_FORMAT: Final = "R117-turn-pair-v1"
+_RRF_K: Final = 60
+_LEXICAL_STOP: Final = frozenset({
+    "il", "lo", "la", "i", "gli", "le", "un", "una", "di", "del", "della", "dei", "delle",
+    "a", "al", "alla", "ai", "alle", "da", "dal", "in", "nel", "nella", "con", "su", "per",
+    "tra", "fra", "e", "o", "che", "non", "come", "cosa", "quale", "quali", "è", "the", "an",
+    "of", "to", "from", "for", "and", "or", "on", "with", "before", "after", "deve", "stare",
+    "va", "più",
+})
 
 
 class SemanticIndexError(Exception):
@@ -715,11 +726,79 @@ def _backend_for(meta: dict[str, str]):
         return None, str(error)
 
 
+def _lexical_prefix_query(query: str) -> str:
+    """Make a bounded FTS prefix query from meaningful user-query terms."""
+    terms = []
+    for term in re.findall(r"[\w'’\-\.]+", query.lower()):
+        term = term.strip("'’.")
+        if term and term not in _LEXICAL_STOP and len(term) >= 3:
+            terms.append(term[:5] if len(term) > 6 else term)
+    return " OR ".join(f'"{term}"*' for term in terms)
+
+
+def _read_turn_pairs(
+    index_path: Path, generation_name: str, meta: dict[str, str]
+) -> tuple[list[tuple[str, str]], object] | None:
+    """Read a compatible published turn sidecar, otherwise decline augmentation.
+
+    A sidecar is optional recall state. Its failure must not make CURRENT's
+    ordinary dense retrieval unavailable.
+    """
+    sidecar = index_path / "turn-pairs"
+    try:
+        complete = json.loads((sidecar / "COMPLETE.json").read_text(encoding="utf-8"))
+        if type(complete) is not dict or complete.get("format") != _TURN_PAIR_FORMAT:
+            return None
+        if complete.get("published") is not True:
+            return None
+        pairs, dimension = complete.get("pairs"), complete.get("dimension")
+        if type(pairs) is not int or pairs < 1 or type(dimension) is not int or dimension < 1:
+            return None
+        if (
+            complete.get("base_generation") != generation_name
+            or complete.get("backend") != meta["backend"]
+            or dimension != _integer_meta(meta, "dimension", minimum=1)
+            or complete.get("vector_bytes") != pairs * dimension * 4
+            or (sidecar / "vectors.f32").stat().st_size != pairs * dimension * 4
+        ):
+            return None
+        connection = sqlite3.connect(f"file:{(sidecar / 'index.sqlite3').resolve()}?mode=ro", uri=True)
+        try:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            if not {"meta", "turn"} <= tables:
+                return None
+            stored = dict(connection.execute("SELECT key, value FROM meta"))
+            if (
+                stored.get("format") != _TURN_PAIR_FORMAT
+                or stored.get("base_generation") != generation_name
+                or stored.get("backend") != meta["backend"]
+                or stored.get("dimension") != str(dimension)
+                or stored.get("pairs") != str(pairs)
+            ):
+                return None
+            turns = connection.execute(
+                "SELECT source_id, assistant_source_id FROM turn ORDER BY source_id"
+            ).fetchall()
+        finally:
+            connection.close()
+        if len(turns) != pairs or any(type(left) is not str or type(right) is not str for left, right in turns):
+            return None
+        import numpy as np
+
+        vectors = np.fromfile(sidecar / "vectors.f32", dtype=np.float32)
+        if vectors.size != pairs * dimension:
+            return None
+        return [(left, right) for left, right in turns], vectors.reshape((pairs, dimension))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, sqlite3.DatabaseError):
+        return None
+
+
 def search(
     index_path: Path | None,
     query: str,
     limit: int = 10,
     distinct: bool = False,
+    derived_path: Path | None = None,
 ) -> dict[str, object]:
     """Search a structurally checked local index, or record why no dense search ran.
 
@@ -785,8 +864,57 @@ def search(
                     if not (candidate[1][1] in seen or seen.add(candidate[1][1]))
                 ]
             selected = candidates[:limit]
+            contexts: dict[str, str] = {}
+            context_chunk_ids: dict[str, str] = {}
+            rrf_scores: dict[str, float] = {}
+            augmented = False
+            # RRF is a source-level ranking. Explicit chunk-level callers keep
+            # the established dense-only result; the governed user route asks
+            # for distinct source hits by default.
+            if distinct and derived_path is not None:
+                sidecar = _read_turn_pairs(path, _name, meta)
+                if sidecar is not None:
+                    turns, turn_vectors = sidecar
+                    raw_sources = [candidate[1][1] for candidate in candidates[:200]]
+                    try:
+                        lexical_query = _lexical_prefix_query(query)
+                        lexical_sources = (
+                            list(dict.fromkeys(hit.source_id for hit in lexical_search(Path(derived_path), lexical_query, limit=50)))
+                            if lexical_query else []
+                        )
+                    except (QueryError, DerivedStoreError):
+                        lexical_sources = []
+                    turn_scores = turn_vectors @ query_vector
+                    turn_sources = [
+                        source_id for _score, source_id in sorted(
+                            ((float(score), source_id) for score, (source_id, _assistant) in zip(turn_scores, turns)),
+                            key=lambda item: (-item[0], item[1]),
+                        )[:200]
+                    ]
+                    for ranked in (lexical_sources, raw_sources, turn_sources):
+                        for position, source_id in enumerate(ranked, start=1):
+                            rrf_scores[source_id] = rrf_scores.get(source_id, 0.0) + 1.0 / (_RRF_K + position)
+                    fused = sorted(rrf_scores, key=lambda source_id: (-rrf_scores[source_id], source_id))
+                    best_by_source: dict[str, tuple[float, tuple[str, str]]] = {}
+                    for candidate in candidates:
+                        best_by_source.setdefault(candidate[1][1], candidate)
+                    selected = [best_by_source[source_id] for source_id in fused[:limit] if source_id in best_by_source]
+                    contexts = dict(turns)
+                    augmented = True
             details: dict[str, tuple[object, ...]] = {}
-            for _score, (chunk_id, _source_id) in selected:
+            detail_ids = {chunk_id for _score, (chunk_id, _source_id) in selected}
+            if augmented:
+                context_sources = {
+                    contexts[source_id] for _score, (_chunk_id, source_id) in selected if source_id in contexts
+                }
+                for _score, (chunk_id, source_id) in candidates:
+                    if source_id in context_sources:
+                        context_chunk_ids[source_id] = chunk_id
+                        detail_ids.add(chunk_id)
+                        context_sources.remove(source_id)
+                    if not context_sources:
+                        break
+            for chunk_id in detail_ids:
                 detail = connection.execute(
                     "SELECT snapshot_digest, ordinal, heading_path, text, start_byte, end_byte,"
                     " citation_state FROM chunk WHERE chunk_id = ?",
@@ -813,8 +941,7 @@ def search(
                 "end_byte": end,
                 "span": _needle(text).decode("utf-8"),
             }
-        hits.append(
-            {
+        hit: dict[str, object] = {
                 "rank": rank,
                 "score": score,
                 "chunk_id": chunk_id,
@@ -826,8 +953,27 @@ def search(
                 "citation": citation,
                 "citation_state": state,
             }
-        )
-    return {
+        if augmented:
+            hit["rrf_score"] = rrf_scores[source_id]
+            context_source = contexts.get(source_id)
+            context_chunk_id = context_chunk_ids.get(context_source) if context_source is not None else None
+            if context_source is not None and context_chunk_id is not None:
+                context_detail = details[context_chunk_id]
+                ctx_digest, _ctx_ordinal, _ctx_heading, ctx_text, ctx_start, ctx_end, ctx_state = context_detail
+                hit["context_source_id"] = context_source
+                hit["context_citation"] = (
+                    {
+                        "source_id": context_source,
+                        "snapshot_digest": ctx_digest,
+                        "start_byte": ctx_start,
+                        "end_byte": ctx_end,
+                        "span": _needle(ctx_text).decode("utf-8"),
+                    }
+                    if ctx_state == "located"
+                    else None
+                )
+        hits.append(hit)
+    result: dict[str, object] = {
         "status": "complete",
         "backend": meta["backend"],
         "checkpoint_digest": meta["checkpoint_digest"],
@@ -835,6 +981,9 @@ def search(
         "chunks": chunks,
         "hits": hits,
     }
+    if augmented:
+        result["ranking"] = "turn-rrf-k60"
+    return result
 
 
 def build(
