@@ -738,7 +738,7 @@ def test_o3_full_derivation_refuses_a_directory_locator(tmp_path: Path) -> None:
 
 
 def test_o3_full_derivation_refuses_two_current_sightings(tmp_path: Path) -> None:
-    """Two current sightings fail closed by design (REC-4), not as a defect."""
+    """Two current sightings of one version are ambiguous: the binding refuses by design, not as a defect."""
     store, snapshots, ledger = _copy_fixture(tmp_path)
     plain = (_FIXTURE / "extraction-source.txt").read_bytes()
     asset_root, sighting_log_path = _configured_asset_root(tmp_path, ledger, data=plain)

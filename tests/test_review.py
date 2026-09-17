@@ -238,20 +238,20 @@ def test_candidate_reading_and_version(tmp_path: Path) -> None:
     ("scope", "expected"),
     (
         (
-            "Résumé of Atlasfield’s rôle as of 2026-08-02.",
-            "resume-of-atlasfield-s-role-as-of-2026-08-02",
+            "Résumé of the harbour’s rôle as of 2031-04-09.",
+            "resume-of-the-harbour-s-role-as-of-2031-04-09",
         ),
         (
-            "Quillmap–Orchardline knowledge boundary",
-            "quillmap-orchardline-knowledge-boundary",
+            "Lighthouse–Harbour knowledge boundary",
+            "lighthouse-harbour-knowledge-boundary",
         ),
         (
-            "Atlasfield architecture (Quillmap / Orchardline) on 2026/08/02",
-            "atlasfield-architecture-quillmap-orchardline-on-2026-08-02",
+            "Harbour architecture (Lighthouse / Pier) on 2031/04/09",
+            "harbour-architecture-lighthouse-pier-on-2031-04-09",
         ),
         (
             "A deliberately long decision scope describing the relationship "
-            "between Atlasfield architecture, systems, operational "
+            "between the harbour architecture, systems, operational "
             "responsibilities, and evidence boundaries",
             "a-deliberately-long-decision-scope-describing-the-relationship",
         ),
@@ -262,19 +262,21 @@ def test_scope_claim_key_derives_stable_keys(scope: str, expected: str) -> None:
     assert key is not None
     assert key.value == expected
     assert review._scope_claim_key("harbor-access") == review.ClaimKey("harbor-access")
+    assert review._scope_claim_key("x" * 60 + "-yyy-zzzz") == review.ClaimKey("x" * 60 + "-yyy")
+    assert review._scope_claim_key("x" * 65) == review.ClaimKey("x" * 64)
     assert review._scope_claim_key("  ") is None
     assert review._scope_claim_key("(((...)))") is None
 
 
 def test_apply_derives_sentence_scope_key_for_promotion(tmp_path: Path) -> None:
     world = _world(tmp_path)
-    scope = "Atlasfield architecture (Quillmap / Orchardline) on 2026/08/02"
+    scope = "Harbour architecture (Lighthouse / Pier) on 2031/04/09"
     candidate = ReviewCandidate.from_proposal(_record(world, _content(world, scope=scope)))
     decisions = _write_decisions(world.root / "decisions.jsonl", _decision(candidate))
 
     assert main(_apply_argv(world, decisions)) == 0
     authorization = json.loads(world.authorizations.read_text(encoding="utf-8"))
-    assert authorization["subject_key"] == "atlasfield-architecture-quillmap-orchardline-on-2026-08-02"
+    assert authorization["subject_key"] == "harbour-architecture-lighthouse-pier-on-2031-04-09"
     assert authorization["subject_origin"] == "derived"
     assert len(list((world.canon_root / "assertions").rglob("*.json"))) == 1
     assert [entry["outcome"] for entry in _audit(world)] == ["RESERVED", "APPLIED"]

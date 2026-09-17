@@ -896,9 +896,17 @@ def _scope_claim_key(scope: str) -> ClaimKey | None:
     NFKD-decompose, drop the combining marks (so ``é`` reads ``e``), lower-case,
     replace every run of characters outside ``[a-z0-9]`` -- dashes of any
     width, quotes, slashes, non-Latin letters -- with one ``-``, and remove
-    edge separators. Keys longer than 64 characters end at the last available
-    ``-`` boundary, or at character 64 when no such boundary exists. The same
-    scope therefore always derives the same claim key.
+    edge separators. Keys longer than 64 characters end at the last ``-``
+    boundary within the first 64 characters, or at character 64 when no such
+    boundary exists. The same scope therefore always derives the same claim
+    key.
+
+    The derivation is lossy and not unique: case, punctuation, diacritics and
+    everything beyond the cut are discarded, so two different scopes can share
+    a key, and a scope made only of non-Latin letters or punctuation derives
+    nothing and is not promotable. A promotion record carries such a key with
+    ``subject_origin`` ``derived``; a consumer must not read it as an operator's
+    identity choice.
     """
     import unicodedata  # local, as the sibling modules do for rarely used helpers
 
@@ -908,9 +916,8 @@ def _scope_claim_key(scope: str) -> ClaimKey | None:
     if not key:
         return None
     if len(key) > 64:
-        prefix = key[:64].rstrip("-")
-        boundary = prefix.rfind("-")
-        key = prefix[:boundary] if boundary >= 0 else prefix
+        boundary = key.rfind("-", 0, 65)
+        key = key[:boundary] if boundary > 0 else key[:64]
     return ClaimKey(key)
 
 
