@@ -15,6 +15,7 @@ would make the tier look exercised when it is not.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from nous_os.capability import Tier, register
@@ -24,7 +25,12 @@ from nous_os.compile import CohesionStrategy, Pack
 from nous_os.config import describe_corpus, list_documents
 from nous_os.derived import context, search, sources, versions
 from nous_os.ledger import ingest
-from nous_os.provenance import quote_lint_derived, read_span, verify_derivation
+from nous_os.provenance import (
+    quote_lint_derived,
+    read_asset_bytes_at_sighting,
+    read_span,
+    verify_derivation,
+)
 from nous_os.reconciliation import Relation, RelationClass, RelationProposal, RelationStore, RelationVerification
 from nous_os.semantic_index import search as semantic_search
 from nous_os.snapshots import SnapshotStore
@@ -133,7 +139,16 @@ def verify_relations(*, store: RelationStore, snapshots: SnapshotStore) -> Relat
     return store.verify(snapshots)
 
 
-def verify_derived(*, extraction_store, snapshot_store: SnapshotStore, ledger, citation, full: bool = False) -> dict[str, object]:
+def verify_derived(
+    *,
+    extraction_store,
+    snapshot_store: SnapshotStore,
+    ledger,
+    citation,
+    full: bool = False,
+    asset_root_path: Path | None = None,
+    sighting_log_path: Path | None = None,
+) -> dict[str, object]:
     """Lint one derived citation and report a non-mutating verification result."""
     try:
         quote_lint_derived(extraction_store, snapshot_store, ledger, citation)
@@ -141,11 +156,27 @@ def verify_derived(*, extraction_store, snapshot_store: SnapshotStore, ledger, c
     except Exception as error:
         result = {"ok": False, "error": type(error).__name__, "message": str(error)}
     if full:
-        # The Core workspace has no archive-byte location.  The operation can
-        # still report that fact through the frozen non-executable verdict;
-        # callers that possess archive bytes use verify_derivation directly.
+        if asset_root_path is not None and sighting_log_path is not None:
+            from nous_os.sources import SightingLog
+
+            sightings = SightingLog(sighting_log_path)
+            def read_asset_bytes(source_id: str) -> bytes | None:
+                # ``verify_derivation`` asks for the citation's source today;
+                # keep that source binding explicit rather than silently
+                # serving bytes for another requested id if that contract ever
+                # changes.
+                if source_id != citation.asset_source_id:
+                    return None
+                return read_asset_bytes_at_sighting(
+                    asset_root_path, sightings, ledger, citation
+                )
+        else:
+            # Full verification needs both a narrowly configured archive root
+            # and the governed sighting log; a directory alone is not a
+            # source-to-byte binding.
+            read_asset_bytes = lambda _source_id: None
         result["verdict"] = verify_derivation(
-            lambda _asset_source_id: None, extraction_store, citation
+            read_asset_bytes, extraction_store, citation
         ).as_payload()
     return result
 

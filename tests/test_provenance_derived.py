@@ -42,6 +42,7 @@ from nous_os.provenance import (
 )
 from nous_os.review import ReviewCandidate, apply
 from nous_os.snapshots import SnapshotStore
+from nous_os.sources import Sighting, SightingLog
 from nous_os.untrusted import UntrustedText
 
 
@@ -94,6 +95,30 @@ def _write_latest_metadata(
     snapshot = snapshots.put(source_id, canonical_bytes({"payload": {"digest": asset_digest}}))
     previous = ledger.current_digest(source_id)
     ledger.append(LedgerEntry(source_id, snapshot.digest, previous, _WHEN))
+
+
+def _configured_asset_root(
+    tmp_path: Path, ledger: Ledger, *, locator: str = "plain.bin", data: bytes | None = None
+) -> tuple[Path, Path]:
+    """Create only synthetic original bytes plus their governed locator."""
+    asset_root = tmp_path / "asset-root"
+    asset_root.mkdir()
+    if data is not None:
+        (asset_root / "plain.bin").write_bytes(data)
+    sightings = SightingLog(tmp_path / "sightings.jsonl")
+    latest = ledger.current_digest(_PLAIN_SOURCE)
+    assert latest is not None
+    assert sightings.record(
+        Sighting(
+            source_id=_PLAIN_SOURCE,
+            provider="fixture",
+            export_id="fixture-export",
+            snapshot_digest=latest,
+            locator=locator,
+            observed_at=_WHEN,
+        )
+    )
+    return asset_root, sightings.path
 
 
 @pytest.mark.parametrize(
@@ -538,12 +563,90 @@ def test_o5_lint_and_verification_leave_stores_byte_identical(tmp_path: Path) ->
     assert after == before
 
 
+def test_o3_full_derivation_reads_only_the_current_sighting_under_its_configured_root(
+    tmp_path: Path,
+) -> None:
+    store, snapshots, ledger = _copy_fixture(tmp_path)
+    plain = (_FIXTURE / "extraction-source.txt").read_bytes()
+    asset_root, sighting_log_path = _configured_asset_root(tmp_path, ledger, data=plain)
+    (tmp_path / "documents").mkdir()
+    workspace = core.resolve_workspace(
+        data_root=tmp_path / "documents",
+        snapshot_root=snapshots._root,
+        ledger_path=ledger.path,
+        derived_path=tmp_path / "derived.sqlite",
+        candidate_store_path=tmp_path / "candidates.jsonl",
+        bridge_registry_path=tmp_path / "bridges.jsonl",
+        rejection_memory_path=tmp_path / "rejections.jsonl",
+        relation_store_path=tmp_path / "relations.jsonl",
+        extraction_store_path=tmp_path / "extraction-store",
+        asset_root_path=asset_root,
+        sighting_log_path=sighting_log_path,
+    )
+    grant = Grant("reader", frozenset({Tier.READ}))
+    result = core.invoke(
+        grant, "provenance.verify_derived", workspace, {"citation": _plain_citation().as_payload(), "full": True}
+    )
+    assert result["ok"] is True
+    assert result["verdict"]["state"] == DerivationState.REPRODUCED.value
+
+    (asset_root / "plain.bin").write_bytes(b"altered bytes")
+    altered = core.invoke(
+        grant, "provenance.verify_derived", workspace, {"citation": _plain_citation().as_payload(), "full": True}
+    )
+    assert altered["verdict"]["state"] == DerivationState.DIVERGED.value
+
+    (asset_root / "plain.bin").unlink()
+    missing = core.invoke(
+        grant, "provenance.verify_derived", workspace, {"citation": _plain_citation().as_payload(), "full": True}
+    )
+    assert missing["verdict"]["state"] == DerivationState.NOT_EXECUTABLE.value
+
+
+@pytest.mark.parametrize("incompatible_locator", ("parent", "absolute"))
+def test_o3_full_derivation_refuses_an_incompatible_locator(
+    tmp_path: Path, incompatible_locator: str
+) -> None:
+    store, snapshots, ledger = _copy_fixture(tmp_path)
+    locator = (
+        Path("..").joinpath("outside.bin").as_posix()
+        if incompatible_locator == "parent"
+        else (tmp_path / "outside.bin").as_posix()
+    )
+    asset_root, sighting_log_path = _configured_asset_root(
+        tmp_path, ledger, locator=locator, data=(_FIXTURE / "extraction-source.txt").read_bytes()
+    )
+    (tmp_path / "documents").mkdir()
+    result = core.invoke(
+        Grant("reader", frozenset({Tier.READ})),
+        "provenance.verify_derived",
+        core.resolve_workspace(
+            data_root=tmp_path / "documents",
+            snapshot_root=snapshots._root,
+            ledger_path=ledger.path,
+            derived_path=tmp_path / "derived.sqlite",
+            candidate_store_path=tmp_path / "candidates.jsonl",
+            bridge_registry_path=tmp_path / "bridges.jsonl",
+            rejection_memory_path=tmp_path / "rejections.jsonl",
+            relation_store_path=tmp_path / "relations.jsonl",
+            extraction_store_path=tmp_path / "extraction-store",
+            asset_root_path=asset_root,
+            sighting_log_path=sighting_log_path,
+        ),
+        {"citation": _plain_citation().as_payload(), "full": True},
+    )
+    assert result["verdict"]["state"] == DerivationState.NOT_EXECUTABLE.value
+
+
 def test_o6_catalogue_cli_and_stdio_agree_for_derived_verification(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _store, snapshots, ledger = _copy_fixture(tmp_path)
     data_root = tmp_path / "documents"
     data_root.mkdir()
+    asset_root, sighting_log_path = _configured_asset_root(
+        tmp_path, ledger, data=(_FIXTURE / "extraction-source.txt").read_bytes()
+    )
     workspace = core.resolve_workspace(
         data_root=data_root,
         snapshot_root=snapshots._root,
@@ -554,6 +657,8 @@ def test_o6_catalogue_cli_and_stdio_agree_for_derived_verification(
         rejection_memory_path=tmp_path / "rejections.jsonl",
         relation_store_path=tmp_path / "relations.jsonl",
         extraction_store_path=tmp_path / "extraction-store",
+        asset_root_path=asset_root,
+        sighting_log_path=sighting_log_path,
     )
     citation = _plain_citation().as_payload()
     arguments = {"citation": citation, "full": True}
@@ -571,6 +676,8 @@ def test_o6_catalogue_cli_and_stdio_agree_for_derived_verification(
         "--rejection-memory-path", str(tmp_path / "rejections.jsonl"),
         "--relation-store-path", str(tmp_path / "relations.jsonl"),
         "--extraction-store-path", str(tmp_path / "extraction-store"),
+        "--asset-root-path", str(asset_root),
+        "--sighting-log-path", str(sighting_log_path),
         "provenance.verify_derived",
         "--citation", json.dumps(citation),
         "--full",

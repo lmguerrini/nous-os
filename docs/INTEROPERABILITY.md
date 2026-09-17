@@ -74,7 +74,7 @@ way:
 | `canon.sources` | read | List every source the derived index holds. | (none) |
 | `canon.versions` | read | List one source's snapshot digests, oldest first. | source_id |
 | `provenance.span` | read | Read the exact text a citation names, from the snapshot it cites. | citation |
-| `provenance.verify_derived` | read | Lint a quote from preserved extraction evidence and optionally report reproducibility. | citation, full? |
+| `provenance.verify_derived` | read | Lint a quote from preserved extraction evidence; `full` also reproduces it from governed original bytes only when both the configured asset root and sighting log bind that source to a current locator. | citation, full? |
 | `graph.project` | read | Project a renderer-independent knowledge graph from caller-supplied state. | state, policy, question? |
 | `time.as_of` | read | Partition a caller-supplied temporal index by validity and recording time. | index, valid_at?, recorded_as_of? |
 | `time.conflicts` | read | Report connected disagreements in a caller-supplied temporal index. | index, key? |

@@ -661,6 +661,58 @@ def verify_derivation(
         )
 
 
+def read_asset_bytes_at_sighting(
+    asset_root: Path, sightings, ledger, citation: DerivedCitation
+) -> bytes | None:
+    """Read exactly one current asset at its recorded locator, or refuse.
+
+    Archive bytes deliberately remain outside snapshots and extraction records.
+    A configured root therefore is insufficient on its own: the append-only
+    sighting log binds a source version to a relative locator, and the ledger
+    says which version is current. This helper makes that binding before a full
+    derivation check. It refuses an absent, stale, ambiguous, absolute,
+    traversing, symlinked or non-regular target rather than selecting a
+    plausible file.
+
+    The function is read-only and returns ``None`` for every configuration or
+    filesystem failure. ``verify_derivation`` converts that answer into its
+    public ``NOT_EXECUTABLE`` verdict without leaking paths.
+    """
+    try:
+        latest = _latest_validated_ledger_snapshot(ledger, citation.asset_source_id)
+        if latest is None:
+            return None
+        matches = tuple(
+            sighting
+            for sighting in sightings.entries()
+            if sighting.source_id == citation.asset_source_id
+            and sighting.snapshot_digest == latest
+        )
+        if len(matches) != 1:
+            return None
+        locator = Path(matches[0].locator)
+        if locator.is_absolute() or not locator.parts or any(
+            part in ("", ".", "..") for part in locator.parts
+        ):
+            return None
+        root = Path(asset_root).resolve(strict=True)
+        if not root.is_dir():
+            return None
+        candidate = root.joinpath(*locator.parts)
+        checked = root
+        for part in locator.parts:
+            checked = checked / part
+            if checked.is_symlink():
+                return None
+        target = candidate.resolve(strict=True)
+        target.relative_to(root)
+        if not target.is_file():
+            return None
+        return target.read_bytes()
+    except Exception:
+        return None
+
+
 def resolves(store: SnapshotStore, citation: Citation) -> bool:
     """Whether ``citation`` passes quote-lint. For reporting over a set.
 

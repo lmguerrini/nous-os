@@ -359,6 +359,8 @@ def _build_start_parser() -> argparse.ArgumentParser:
     parser.add_argument("--relation-store-path", default=None)
     parser.add_argument("--extraction-store-path", default=None)
     parser.add_argument("--semantic-index-path", default=None)
+    parser.add_argument("--asset-root-path", default=None)
+    parser.add_argument("--sighting-log-path", default=None)
     parser.add_argument(
         "--tier",
         action="append",
@@ -392,6 +394,8 @@ def main(argv: list[str] | None = None) -> int:
             relation_store_path=namespace.relation_store_path,
             extraction_store_path=namespace.extraction_store_path,
             semantic_index_path=namespace.semantic_index_path,
+            asset_root_path=namespace.asset_root_path,
+            sighting_log_path=namespace.sighting_log_path,
         )
         grant = _resolve_grant(namespace, os.environ)
     except Exception as error:

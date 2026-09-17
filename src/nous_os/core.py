@@ -217,6 +217,8 @@ REJECTION_MEMORY_PATH_ENV_VAR: Final = "NOUS_OS_REJECTION_MEMORY_PATH"
 RELATION_STORE_PATH_ENV_VAR: Final = "NOUS_OS_RELATION_STORE_PATH"
 EXTRACTION_STORE_PATH_ENV_VAR: Final = "NOUS_OS_EXTRACTION_STORE_PATH"
 SEMANTIC_INDEX_PATH_ENV_VAR: Final = "NOUS_OS_SEMANTIC_INDEX_PATH"
+ASSET_ROOT_PATH_ENV_VAR: Final = "NOUS_OS_ASSET_ROOT_PATH"
+SIGHTING_LOG_PATH_ENV_VAR: Final = "NOUS_OS_SIGHTING_LOG_PATH"
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,8 +227,9 @@ class Workspace:
 
     ``resolve_workspace`` refuses a caller that leaves any location
     unconfigured rather than selecting a machine-specific default. Direct
-    construction requires all eight values, resolves their spellings, and
-    applies the same overlap refusal.
+    construction requires every required store value, resolves their
+    spellings, and applies the same overlap refusal. Optional asset-root and
+    sighting-log locations stay absent unless a caller configures both.
     """
 
     data_root: DataRoot
@@ -239,6 +242,8 @@ class Workspace:
     relation_store_path: Path
     extraction_store_path: Path | None = None
     semantic_index_path: Path | None = None
+    asset_root_path: Path | None = None
+    sighting_log_path: Path | None = None
 
     def __post_init__(self) -> None:
         """Resolve direct inputs before applying the shared overlap refusal."""
@@ -274,6 +279,18 @@ class Workspace:
             except (TypeError, ValueError) as error:
                 raise CoreError("workspace semantic_index_path must be path-like or None") from error
             object.__setattr__(self, "semantic_index_path", semantic_index_path)
+        if self.asset_root_path is not None:
+            try:
+                asset_root_path = Path(self.asset_root_path).expanduser().resolve()
+            except (TypeError, ValueError) as error:
+                raise CoreError("workspace asset_root_path must be path-like or None") from error
+            object.__setattr__(self, "asset_root_path", asset_root_path)
+        if self.sighting_log_path is not None:
+            try:
+                sighting_log_path = Path(self.sighting_log_path).expanduser().resolve()
+            except (TypeError, ValueError) as error:
+                raise CoreError("workspace sighting_log_path must be path-like or None") from error
+            object.__setattr__(self, "sighting_log_path", sighting_log_path)
         _refuse_aliased_locations(self)
 
 
@@ -333,6 +350,12 @@ def _workspace_locations(workspace: Workspace) -> tuple[_WorkspaceLocation, ...]
             _WorkspaceLocation(
                 "semantic_index_path", workspace.semantic_index_path, False, True
             ),
+        )),
+        *(() if workspace.asset_root_path is None else (
+            _WorkspaceLocation("asset_root_path", workspace.asset_root_path, False, True),
+        )),
+        *(() if workspace.sighting_log_path is None else (
+            _WorkspaceLocation("sighting_log_path", workspace.sighting_log_path, False, False),
         )),
     )
 
@@ -563,6 +586,8 @@ def resolve_workspace(
     relation_store_path: str | os.PathLike[str] | None = None,
     extraction_store_path: str | os.PathLike[str] | None = None,
     semantic_index_path: str | os.PathLike[str] | None = None,
+    asset_root_path: str | os.PathLike[str] | None = None,
+    sighting_log_path: str | os.PathLike[str] | None = None,
     environ: dict[str, str] | None = None,
 ) -> Workspace:
     """Resolve every location Core needs, or refuse. Never guesses one.
@@ -572,8 +597,9 @@ def resolve_workspace(
     already allows.
 
     The returned ``Workspace`` applies :class:`AliasedWorkspaceLocation` to
-    all eight locations: noncanonical stores may not overlap any canonical
-    location, and no pair may name one filesystem object. Without that check,
+    every configured location: noncanonical stores may not overlap any
+    canonical location, and no pair may name one filesystem object. Without
+    that check,
     two options naming the same file resolve cleanly and a write meant for one
     store lands in another.
     """
@@ -625,6 +651,16 @@ def resolve_workspace(
             )
             if semantic_index_path is not None
             or bool(env.get(SEMANTIC_INDEX_PATH_ENV_VAR, "").strip())
+            else None
+        ),
+        asset_root_path=(
+            _resolve_path(asset_root_path, ASSET_ROOT_PATH_ENV_VAR, "asset root", env)
+            if asset_root_path is not None or bool(env.get(ASSET_ROOT_PATH_ENV_VAR, "").strip())
+            else None
+        ),
+        sighting_log_path=(
+            _resolve_path(sighting_log_path, SIGHTING_LOG_PATH_ENV_VAR, "sighting log", env)
+            if sighting_log_path is not None or bool(env.get(SIGHTING_LOG_PATH_ENV_VAR, "").strip())
             else None
         ),
     )
@@ -1409,6 +1445,10 @@ def _bind_verify_derived(workspace: Workspace, arguments: dict[str, object]) -> 
     }
     if "full" in arguments:
         kwargs["full"] = arguments["full"]
+    if workspace.asset_root_path is not None:
+        kwargs["asset_root_path"] = workspace.asset_root_path
+    if workspace.sighting_log_path is not None:
+        kwargs["sighting_log_path"] = workspace.sighting_log_path
     return kwargs
 
 
@@ -1800,6 +1840,16 @@ def _system_health(workspace: Workspace) -> dict[str, object]:
             "unconfigured"
             if workspace.semantic_index_path is None
             else _location_health(workspace.semantic_index_path, is_directory=True)
+        ),
+        "asset_root_path": (
+            "unconfigured"
+            if workspace.asset_root_path is None
+            else _location_health(workspace.asset_root_path, is_directory=True)
+        ),
+        "sighting_log_path": (
+            "unconfigured"
+            if workspace.sighting_log_path is None
+            else _location_health(workspace.sighting_log_path, is_directory=False)
         ),
     }
 
