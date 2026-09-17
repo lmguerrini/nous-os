@@ -228,8 +228,8 @@ class Workspace:
     ``resolve_workspace`` refuses a caller that leaves any location
     unconfigured rather than selecting a machine-specific default. Direct
     construction requires every required store value, resolves their
-    spellings, and applies the same overlap refusal. Optional asset-root and
-    sighting-log locations stay absent unless a caller configures both.
+    spellings, and applies the same overlap refusal. Asset-root and sighting-log
+    locations are independently configurable; full verification needs both.
     """
 
     data_root: DataRoot
@@ -876,7 +876,7 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
     _descriptor(
         "provenance.verify_derived",
         "verify_derived",
-        "Lint a quote from preserved extraction evidence and optionally report reproducibility.",
+        "Lint a quote from preserved extraction evidence; `full` also reproduces it from governed original bytes only when both the configured asset root and sighting log bind that source to a current locator.",
         (
             ParameterSpec(
                 "citation",

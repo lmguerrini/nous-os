@@ -671,8 +671,8 @@ def read_asset_bytes_at_sighting(
     sighting log binds a source version to a relative locator, and the ledger
     says which version is current. This helper makes that binding before a full
     derivation check. It refuses an absent, stale, ambiguous, absolute,
-    traversing, symlinked or non-regular target rather than selecting a
-    plausible file.
+    parent-traversing, symlinked or non-regular target rather than selecting
+    a plausible file.
 
     The function is read-only and returns ``None`` for every configuration or
     filesystem failure. ``verify_derivation`` converts that answer into its
@@ -692,7 +692,7 @@ def read_asset_bytes_at_sighting(
             return None
         locator = Path(matches[0].locator)
         if locator.is_absolute() or not locator.parts or any(
-            part in ("", ".", "..") for part in locator.parts
+            part == ".." for part in locator.parts
         ):
             return None
         root = Path(asset_root).resolve(strict=True)

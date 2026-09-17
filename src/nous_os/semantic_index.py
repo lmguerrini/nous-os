@@ -784,7 +784,9 @@ def _read_turn_pairs(
         if (
             len(turns) != pairs
             or any(type(left) is not str or type(right) is not str for left, right in turns)
+            or len({left for left, _right in turns}) != pairs
             or len({right for _left, right in turns}) != pairs
+            or any(left == right for left, right in turns)
             or any(left not in known_source_ids or right not in known_source_ids for left, right in turns)
         ):
             return None
@@ -792,6 +794,8 @@ def _read_turn_pairs(
 
         vectors = np.fromfile(sidecar / "vectors.f32", dtype=np.float32)
         if vectors.size != pairs * dimension:
+            return None
+        if not np.isfinite(vectors).all():
             return None
         return [(left, right) for left, right in turns], vectors.reshape((pairs, dimension))
     except (OSError, ValueError, TypeError, json.JSONDecodeError, sqlite3.DatabaseError):
@@ -905,8 +909,8 @@ def search(
                         )[:200]
                     ]
                     # A retrieved assistant response can generalise to the
-                    # immediately preceding user question.  The sidecar has
-                    # already validated this one-to-one relationship; its
+                    # immediately preceding user question. The sidecar has
+                    # already validated the mapping is one-to-one and non-self; its
                     # source citation remains the user source and the reply
                     # remains separately attributed as context below.
                     for ranked in (lexical_sources, raw_sources, turn_sources, reply_sources):

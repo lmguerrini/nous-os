@@ -609,13 +609,15 @@ def test_o3_full_derivation_refuses_an_incompatible_locator(
     tmp_path: Path, incompatible_locator: str
 ) -> None:
     store, snapshots, ledger = _copy_fixture(tmp_path)
+    plain = (_FIXTURE / "extraction-source.txt").read_bytes()
+    (tmp_path / "outside.bin").write_bytes(plain)
     locator = (
         Path("..").joinpath("outside.bin").as_posix()
         if incompatible_locator == "parent"
         else (tmp_path / "outside.bin").as_posix()
     )
     asset_root, sighting_log_path = _configured_asset_root(
-        tmp_path, ledger, locator=locator, data=(_FIXTURE / "extraction-source.txt").read_bytes()
+        tmp_path, ledger, locator=locator, data=plain
     )
     (tmp_path / "documents").mkdir()
     result = core.invoke(
@@ -636,6 +638,134 @@ def test_o3_full_derivation_refuses_an_incompatible_locator(
         ),
         {"citation": _plain_citation().as_payload(), "full": True},
     )
+    assert result["verdict"]["state"] == DerivationState.NOT_EXECUTABLE.value
+
+
+def test_o3_full_derivation_refuses_a_sighting_for_a_stale_version(tmp_path: Path) -> None:
+    store, snapshots, ledger = _copy_fixture(tmp_path)
+    plain = (_FIXTURE / "extraction-source.txt").read_bytes()
+    asset_root, sighting_log_path = _configured_asset_root(tmp_path, ledger, data=plain)
+    latest = snapshots.put(
+        _PLAIN_SOURCE,
+        canonical_bytes({"payload": {"digest": _PLAIN_DIGEST, "revision": "current"}}),
+    )
+    previous = ledger.current_digest(_PLAIN_SOURCE)
+    assert previous is not None
+    ledger.append(LedgerEntry(_PLAIN_SOURCE, latest.digest, previous, _WHEN))
+
+    result = verify_derived(
+        extraction_store=store,
+        snapshot_store=snapshots,
+        ledger=ledger,
+        citation=_plain_citation(),
+        full=True,
+        asset_root_path=asset_root,
+        sighting_log_path=sighting_log_path,
+    )
+
+    assert result["ok"] is True
+    assert result["verdict"]["state"] == DerivationState.NOT_EXECUTABLE.value
+
+
+def test_o3_full_derivation_refuses_a_symlinked_file_locator(tmp_path: Path) -> None:
+    store, snapshots, ledger = _copy_fixture(tmp_path)
+    plain = (_FIXTURE / "extraction-source.txt").read_bytes()
+    asset_root, sighting_log_path = _configured_asset_root(tmp_path, ledger, data=plain)
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(plain)
+    (asset_root / "plain.bin").unlink()
+    (asset_root / "plain.bin").symlink_to(outside)
+
+    result = verify_derived(
+        extraction_store=store,
+        snapshot_store=snapshots,
+        ledger=ledger,
+        citation=_plain_citation(),
+        full=True,
+        asset_root_path=asset_root,
+        sighting_log_path=sighting_log_path,
+    )
+
+    assert result["ok"] is True
+    assert result["verdict"]["state"] == DerivationState.NOT_EXECUTABLE.value
+
+
+def test_o3_full_derivation_refuses_a_symlinked_directory_locator(tmp_path: Path) -> None:
+    store, snapshots, ledger = _copy_fixture(tmp_path)
+    plain = (_FIXTURE / "extraction-source.txt").read_bytes()
+    asset_root, sighting_log_path = _configured_asset_root(
+        tmp_path, ledger, locator="linked/plain.bin", data=plain
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "plain.bin").write_bytes(plain)
+    (asset_root / "linked").symlink_to(outside, target_is_directory=True)
+
+    result = verify_derived(
+        extraction_store=store,
+        snapshot_store=snapshots,
+        ledger=ledger,
+        citation=_plain_citation(),
+        full=True,
+        asset_root_path=asset_root,
+        sighting_log_path=sighting_log_path,
+    )
+
+    assert result["ok"] is True
+    assert result["verdict"]["state"] == DerivationState.NOT_EXECUTABLE.value
+
+
+def test_o3_full_derivation_refuses_a_directory_locator(tmp_path: Path) -> None:
+    store, snapshots, ledger = _copy_fixture(tmp_path)
+    plain = (_FIXTURE / "extraction-source.txt").read_bytes()
+    asset_root, sighting_log_path = _configured_asset_root(
+        tmp_path, ledger, locator="directory", data=plain
+    )
+    (asset_root / "directory").mkdir()
+
+    result = verify_derived(
+        extraction_store=store,
+        snapshot_store=snapshots,
+        ledger=ledger,
+        citation=_plain_citation(),
+        full=True,
+        asset_root_path=asset_root,
+        sighting_log_path=sighting_log_path,
+    )
+
+    assert result["ok"] is True
+    assert result["verdict"]["state"] == DerivationState.NOT_EXECUTABLE.value
+
+
+def test_o3_full_derivation_refuses_two_current_sightings(tmp_path: Path) -> None:
+    """Two current sightings fail closed by design (REC-4), not as a defect."""
+    store, snapshots, ledger = _copy_fixture(tmp_path)
+    plain = (_FIXTURE / "extraction-source.txt").read_bytes()
+    asset_root, sighting_log_path = _configured_asset_root(tmp_path, ledger, data=plain)
+    latest = ledger.current_digest(_PLAIN_SOURCE)
+    assert latest is not None
+    assert SightingLog(sighting_log_path).record(
+        Sighting(
+            source_id=_PLAIN_SOURCE,
+            provider="fixture",
+            export_id="second-export",
+            snapshot_digest=latest,
+            locator="plain.bin",
+            observed_at=_WHEN,
+        )
+    )
+
+    result = verify_derived(
+        extraction_store=store,
+        snapshot_store=snapshots,
+        ledger=ledger,
+        citation=_plain_citation(),
+        full=True,
+        asset_root_path=asset_root,
+        sighting_log_path=sighting_log_path,
+    )
+
+    assert result["ok"] is True
     assert result["verdict"]["state"] == DerivationState.NOT_EXECUTABLE.value
 
 
