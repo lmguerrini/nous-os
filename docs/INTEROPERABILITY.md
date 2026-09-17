@@ -171,11 +171,17 @@ client is the operator's own step, taken with the operator's own credentials for
 is dated vendor behaviour rather than a property of this package. What it records instead is the
 dated check that produced the fallback below.
 
-**Verified 2026-09-01 against official `OpenAI` documentation, and true as of that date only:**
-`ChatGPT`'s own client speaks SSE and streaming HTTP, not stdio, so it cannot itself open a
-connection to a local process the way a stdio client can; a first-party `OpenAI` tunnel documents
-relaying to a local stdio server, at the cost of a Platform organization and a runtime API key, and
-**that path is not taken here.** Re-check it before relying on it.
+**Re-checked 2026-09-17 against official `OpenAI` documentation, and true as of that date only:**
+`ChatGPT` connects developer-mode apps through a **remote** MCP service; it cannot directly launch
+or read this local stdio process. The documented secure-tunnel route would require external
+Platform configuration and a runtime API key. It is not a fallback for a local-only deployment and
+**is not taken here.** Re-check the vendor contract before relying on it.
+
+The same boundary matters for any cloud-hosted Claude conversation: a custom remote connector is
+reached from the provider's cloud and therefore needs an explicitly approved, publicly reachable
+remote service. A local stdio client such as a coding agent can instead launch this process on the
+Mac. Neither transport opens a listening socket, and a read-only launch must fix its tier at
+startup rather than inheriting a wider one.
 
 For any client that cannot use this local stdio server, the portable artifact plus the command
 line's import mode needs only a local file read and a locally declared grant: a document produced
