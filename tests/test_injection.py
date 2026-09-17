@@ -887,6 +887,7 @@ _ARGUMENT_BUILDERS: Mapping[
     operation_bindings.versions: _versions_arguments,
     operation_bindings.read_span: _span_arguments,
     operation_bindings.verify_derived: _verify_derived_arguments,
+    operation_bindings.list_assertions: _documents_arguments,
     operation_bindings.list_documents: _documents_arguments,
     operation_bindings.describe_corpus: _documents_arguments,
     operation_bindings.proposals: _proposals_arguments,
@@ -1249,6 +1250,10 @@ def _observed_real_effect(
             and value.get("ok") is False
             and value.get("error") == "DerivedRecordNotFound"
         )
+    elif implementation is operation_bindings.list_assertions:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: type(value) is list and value == []
     elif implementation is operation_bindings.list_documents:
         items = returned
         expected_count = 1
@@ -1394,6 +1399,8 @@ def _well_formed_wrong_results(operation: _Operation) -> tuple[object, ...]:
         return ({"ok": True},)
     if implementation is operation_bindings.list_documents:
         return (("other.md",),)
+    if implementation is operation_bindings.list_assertions:
+        return ([{}],)
     if implementation is operation_bindings.describe_corpus:
         return ((("other.md", "0" * 64),),)
     if implementation is operation_bindings.rejections:
@@ -1650,6 +1657,7 @@ def test_registered_operations_have_the_decided_names_and_tiers() -> None:
         "semantic": Tier.READ,
         "sources": Tier.READ,
         "versions": Tier.READ,
+        "list_assertions": Tier.READ,
         "read_span": Tier.READ,
         "verify_derived": Tier.READ,
         "list_documents": Tier.READ,
@@ -1877,7 +1885,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
     expected = (
         len(entries) * len(operations) * len(transports) * len(grant_tier_sets)
     )
-    assert expected == 11600
+    assert expected == 12064
     if expected == 0:
         _fail_not_run("the derived corpus matrix had zero expected cells")
 
@@ -1935,8 +1943,8 @@ def test_argument_content_cannot_change_any_authorization_decision(
 
     if executed == 0:
         _fail_not_run("the corpus matrix executed zero cells")
-    assert executed == 11600
-    assert expected == 11600
+    assert executed == 12064
+    assert expected == 12064
     expected_positive_controls = {
         (transport.name, operation.name, tier_set)
         for transport in transports
@@ -1944,7 +1952,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
         for tier_set in grant_tier_sets
         if operation.tier in tier_set
     }
-    assert len(expected_positive_controls) == 200
+    assert len(expected_positive_controls) == 208
     if positive_controls != expected_positive_controls:
         absent = sorted(
             (transport, operation, sorted(tier.value for tier in tier_set))
@@ -1960,9 +1968,9 @@ def test_argument_content_cannot_change_any_authorization_decision(
         len(positive_controls),
     )
     assert result.status is RunStatus.COMPLETE
-    assert result.executed == 11600
-    assert result.expected == 11600
-    assert result.positive_controls == 200
+    assert result.executed == 12064
+    assert result.expected == 12064
+    assert result.positive_controls == 208
 
 
 def test_the_holder_is_provenance_metadata_and_carries_no_authority(
@@ -1978,7 +1986,7 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
     expected = len(transports) * sum(
         1 for tier in tiers for operation in operations if operation.tier is tier
     )
-    assert expected == 25
+    assert expected == 26
     if expected == 0:
         _fail_not_run("the holder-metadata matrix had zero expected cells")
 
@@ -2010,8 +2018,8 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
 
     if executed == 0:
         _fail_not_run("the holder-metadata matrix executed zero cells")
-    assert executed == 25
-    assert expected == 25
+    assert executed == 26
+    assert expected == 26
 
 
 def test_required_tier_argument_content_cannot_change_the_decision_in_either_direction(
@@ -2023,7 +2031,7 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
     transports = _derived_transports()
     world = _build_world(tmp_path / "required_tier_arguments")
     expected = len(transports) * len(operations) * 2
-    assert expected == 50
+    assert expected == 52
     if expected == 0:
         _fail_not_run("the required-tier argument matrix had zero expected cells")
     executed = 0
@@ -2082,5 +2090,5 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
 
     if executed == 0:
         _fail_not_run("the required-tier argument matrix executed zero cells")
-    assert executed == 50
-    assert expected == 50
+    assert executed == 52
+    assert expected == 52

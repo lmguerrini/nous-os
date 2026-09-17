@@ -15,9 +15,10 @@ identical hostile text in its request payload too, so it genuinely travels
 the transport: see ``_arguments`` for exactly which parameter each entry
 uses and why. ``system.capabilities``, ``system.health``, and every
 no-parameter read carry no field at all and cannot carry request-payload
-text by construction. ``canon.versions`` and ``provenance.span`` decline on
-purpose: ``canon.versions``'s only parameter is a source identifier that must
-match a closed format, and ``provenance.span``'s only string-bearing field is
+text by construction. ``canon.versions``, ``canon.assertions`` and
+``provenance.span`` decline on purpose: the first two carry only an
+identifier that must match a closed format, and ``provenance.span``'s only
+string-bearing field is
 a citation whose quoted span is checked byte-for-byte against a real
 snapshot, so substituting hostile text into either would not exercise a text
 field -- it would build a different, differently invalid request. This
@@ -75,6 +76,7 @@ _EXPECTED_OPERATION_NAMES = frozenset(
         "canon.describe",
         "canon.sources",
         "canon.versions",
+        "canon.assertions",
         "provenance.span",
         "provenance.verify_derived",
         "graph.project",

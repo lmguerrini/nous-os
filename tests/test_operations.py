@@ -736,6 +736,7 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
             ),
         },
         "list_documents": {"root": canon.data_root},
+        "list_assertions": {"root": canon.data_root},
         "describe_corpus": {"root": canon.data_root},
         "proposals": {"store": canon.candidates},
         "relations": {"store": canon.relations},
@@ -892,6 +893,7 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "semantic": Tier.READ,
         "sources": Tier.READ,
         "versions": Tier.READ,
+        "list_assertions": Tier.READ,
         "read_span": Tier.READ,
         "verify_derived": Tier.READ,
         "list_documents": Tier.READ,
@@ -913,8 +915,8 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "ingest_source": Tier.PROMOTE,
         "promote_candidate": Tier.PROMOTE,
     }
-    assert len(expected) == 25
-    assert len(operations) == 25
+    assert len(expected) == 26
+    assert len(operations) == 26
     assert {operation.name: operation.tier for operation in operations} == expected
     assert all(
         operation.tier is not Tier.EXTERNAL_CONSEQUENTIAL_ACTION
@@ -973,7 +975,7 @@ def test_registered_wrapper_annotations_resolve_without_importing_discovery_at_r
     wrappers = tuple(
         authority._REGISTRY[operation.name][1] for operation in _project_operations()
     )
-    assert len(wrappers) == 25
+    assert len(wrappers) == 26
     resolved = {
         wrapper.__name__: get_type_hints(
             wrapper,

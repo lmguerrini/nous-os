@@ -101,6 +101,7 @@ def _minimal_arguments(external_name: str) -> dict[str, object]:
         "canon.describe": {},
         "canon.sources": {},
         "canon.versions": {"source_id": SOURCE_ID},
+        "canon.assertions": {"assertion_id": "asr_01ARZ3NDEKTSV4RRFFQ69G5FAV"},
         "provenance.span": {"citation": citation},
         "provenance.verify_derived": {"citation": derived_citation, "full": True},
         "graph.project": {

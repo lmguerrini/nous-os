@@ -10,10 +10,11 @@ from threading import Barrier, Thread
 
 import pytest
 
+from nous_os import cli
 import nous_os.core as core
 import nous_os.mcp as mcp
 import nous_os.review as review
-from nous_os.capability import NotAuthorized
+from nous_os.capability import Grant, NotAuthorized, Tier
 from nous_os.candidates import CandidateStore, Proposal
 from nous_os.derived import CanonDivergence, rebuild, state_digest
 from nous_os.identity import canonical_bytes, digest_bytes
@@ -203,6 +204,19 @@ def _all_files(root: Path) -> tuple[tuple[str, bytes], ...]:
     return tuple(
         (path.relative_to(root).as_posix(), path.read_bytes())
         for path in sorted(path for path in root.rglob("*") if path.is_file())
+    )
+
+
+def _canon_workspace(world: _World, data_root: Path | None = None) -> core.Workspace:
+    return core.resolve_workspace(
+        data_root=world.canon_root if data_root is None else data_root,
+        snapshot_root=world.root / "snapshots",
+        ledger_path=world.root / "ledger.jsonl",
+        derived_path=world.root / "derived.sqlite",
+        candidate_store_path=world.candidates._path,
+        bridge_registry_path=world.root / "bridges.jsonl",
+        rejection_memory_path=world.root / "rejections.jsonl",
+        relation_store_path=world.root / "relations.jsonl",
     )
 
 
@@ -489,6 +503,152 @@ def test_derived_unchanged_and_canon_index_verifies(tmp_path: Path) -> None:
     version_file.write_text("{}", encoding="utf-8")
     with pytest.raises(CanonDivergence):
         canon_index(world.canon_root)
+
+
+def test_canon_assertions_reads_promoted_versions_and_filters(
+    tmp_path: Path,
+) -> None:
+    world = _world(tmp_path)
+    candidate = ReviewCandidate.from_proposal(_record(world, _content(world)))
+    decisions = _write_decisions(world.root / "decisions.jsonl", _decision(candidate))
+    assert main(_apply_argv(world, decisions)) == 0
+
+    workspace = _canon_workspace(world)
+    reader = Grant("reader", frozenset({Tier.READ}))
+    versions = canon_index(world.canon_root)
+    assert len(versions) == 1
+    version = versions[0]
+    expected = {
+        "assertion_id": version.assertion.id,
+        "state": "canonical",
+        "text": "Harbor access begins at dawn.",
+        "support": "direct_quote",
+        "recorded_at": "2026-01-03T12:00:00+00:00",
+        "valid_from": "2026-01-01T00:00:00+00:00",
+        "valid_to": None,
+        "candidate_id": candidate.proposal.proposal_id,
+        "candidate_version": candidate.version,
+        "citation": world.citation.as_payload(),
+        "derived_citations": [],
+        "derived_counter_citations": [],
+        "previous_digest": None,
+        "content_digest": version.content_digest,
+        "promotion_record_digest": version.promotion_record_digest,
+    }
+
+    result = core.invoke(reader, "canon.assertions", workspace, {})
+    assert set(result[0]) == set(expected)
+    assert result == [expected]
+    assert core.invoke(
+        reader, "canon.assertions", workspace, {"assertion_id": version.assertion.id}
+    ) == [expected]
+    assert core.invoke(
+        reader,
+        "canon.assertions",
+        workspace,
+        {"assertion_id": "asr_01ARZ3NDEKTSV4RRFFQ69G5FAA"},
+    ) == []
+
+    empty_root = world.root / "empty-canon"
+    empty_root.mkdir()
+    assert core.invoke(reader, "canon.assertions", _canon_workspace(world, empty_root), {}) == []
+
+    with pytest.raises(NotAuthorized):
+        core.invoke(
+            Grant("proposer", frozenset({Tier.PROPOSE})),
+            "canon.assertions",
+            workspace,
+            {},
+        )
+
+
+@pytest.mark.parametrize("target", ("index", "version"))
+def test_canon_assertions_fails_closed_for_tampered_canon(
+    tmp_path: Path, target: str
+) -> None:
+    world = _world(tmp_path)
+    first = ReviewCandidate.from_proposal(_record(world, _content(world, scope="harbor.one")))
+    second = ReviewCandidate.from_proposal(_record(world, _content(world, scope="harbor.two")))
+    decisions = _write_decisions(
+        world.root / "decisions.jsonl",
+        _decision(first),
+        _decision(second, decided_at="2026-01-03T12:01:00+00:00"),
+    )
+    assert main(_apply_argv(world, decisions)) == 0
+    assert len(canon_index(world.canon_root)) == 2
+
+    if target == "index":
+        (world.canon_root / "assertions.jsonl").write_text("{}\n", encoding="utf-8")
+    else:
+        next((world.canon_root / "assertions").rglob("*.json")).write_text(
+            "{}", encoding="utf-8"
+        )
+
+    with pytest.raises(CanonDivergence):
+        core.invoke(
+            Grant("reader", frozenset({Tier.READ})),
+            "canon.assertions",
+            _canon_workspace(world),
+            {},
+        )
+
+
+def test_canon_assertions_mcp_and_cli_return_the_same_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = _world(tmp_path)
+    candidate = ReviewCandidate.from_proposal(_record(world, _content(world)))
+    decisions = _write_decisions(world.root / "decisions.jsonl", _decision(candidate))
+    assert main(_apply_argv(world, decisions)) == 0
+    capsys.readouterr()  # the console's own apply report is not the reading under test
+
+    workspace = _canon_workspace(world)
+    assertion_id = canon_index(world.canon_root)[0].assertion.id
+    arguments = {"assertion_id": assertion_id}
+    grant = Grant("reader", frozenset({Tier.READ}))
+    direct = core.invoke(grant, "canon.assertions", workspace, arguments)
+    response = mcp.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "canon.assertions", "arguments": arguments},
+        },
+        grant,
+        workspace,
+    )
+    assert response["jsonrpc"] == "2.0" and response["id"] == 1
+    content = response["result"]["content"]
+    assert len(content) == 1 and content[0]["type"] == "text"
+    assert json.loads(content[0]["text"]) == direct
+
+    argv = [
+        "--data-root",
+        str(world.canon_root),
+        "--snapshot-root",
+        str(world.root / "snapshots"),
+        "--ledger-path",
+        str(world.root / "ledger.jsonl"),
+        "--derived-path",
+        str(world.root / "derived.sqlite"),
+        "--candidate-store-path",
+        str(world.candidates._path),
+        "--bridge-registry-path",
+        str(world.root / "bridges.jsonl"),
+        "--rejection-memory-path",
+        str(world.root / "rejections.jsonl"),
+        "--relation-store-path",
+        str(world.root / "relations.jsonl"),
+        "--tier",
+        "read",
+        "canon.assertions",
+        "--assertion-id",
+        assertion_id,
+    ]
+    assert cli.main(argv) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert json.loads(captured.out) == direct
 
 
 def test_apply_requires_snapshot_root_and_lints_every_citation(tmp_path: Path) -> None:

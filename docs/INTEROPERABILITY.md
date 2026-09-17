@@ -16,7 +16,7 @@ against that catalogue by the test suite rather than trusted to have kept pace w
 ```
 
 `nous_os.core` is the one application service boundary. It publishes a fixed catalogue of
-external operations — twenty-five of them — each with a stable external name, a required
+external operations — twenty-six of them — each with a stable external name, a required
 authorization tier, and a declared parameter specification. Every governed decision a transport
 makes is made inside `core.invoke`: resolving which operation a name refers to, validating the
 supplied JSON-shaped arguments against that operation's declared parameters, and checking the
@@ -73,6 +73,7 @@ way:
 | `canon.describe` | read | List every canonical document under the data root with the digest of its bytes. | (none) |
 | `canon.sources` | read | List every source the derived index holds. | (none) |
 | `canon.versions` | read | List one source's snapshot digests, oldest first. | source_id |
+| `canon.assertions` | read | List verified promoted canonical decisions, distinct from candidates and historical sources. | assertion_id? |
 | `provenance.span` | read | Read the exact text a citation names, from the snapshot it cites. | citation |
 | `provenance.verify_derived` | read | Lint a quote from preserved extraction evidence; `full` also reproduces it from governed original bytes only when both the configured asset root and sighting log bind that source to a current locator. | citation, full? |
 | `graph.project` | read | Project a renderer-independent knowledge graph from caller-supplied state. | state, policy, question? |
@@ -92,6 +93,13 @@ way:
 
 This table matches `core.CATALOGUE` and is checked against it by
 `tests/test_interoperability_doc.py`.
+
+### Reading promoted assertions
+
+`canon.assertions` returns verified canonical decisions (`state: canonical` with a promotion
+record digest), unlike unapproved entries from `candidate.proposals` and historical source material
+from `knowledge.*`. Use `knowledge.context --source-id <citation.source_id>` for source context,
+then `provenance.span --citation <citation>` to resolve the decision’s exact quoted span.
 
 ## No `promote` or externally-consequential operation is published, and why
 

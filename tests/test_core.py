@@ -44,6 +44,7 @@ EXPECTED_EXTERNAL_NAMES = (
     "canon.describe",
     "canon.sources",
     "canon.versions",
+    "canon.assertions",
     "provenance.span",
     "provenance.verify_derived",
     "graph.project",
@@ -156,6 +157,8 @@ def _minimal_arguments(external_name: str, digest: str) -> dict[str, object]:
         return {}
     if external_name == "canon.versions":
         return {"source_id": SOURCE_ID}
+    if external_name == "canon.assertions":
+        return {"assertion_id": "asr_01ARZ3NDEKTSV4RRFFQ69G5FAV"}
     if external_name == "provenance.span":
         return {"citation": citation}
     if external_name == "provenance.verify_derived":
@@ -288,7 +291,7 @@ def test_catalogue_has_exactly_the_fixed_external_names_in_the_fixed_order() -> 
     assert tuple(descriptor.external_name for descriptor in core.CATALOGUE) == (
         EXPECTED_EXTERNAL_NAMES
     )
-    assert len(core.CATALOGUE) == 25
+    assert len(core.CATALOGUE) == 26
 
 
 def test_catalogue_is_the_same_tuple_object_across_reads() -> None:
@@ -453,6 +456,7 @@ def test_missing_required_argument_is_refused(tmp_path: Path) -> None:
         ("knowledge.search", {"query": 5}),
         ("knowledge.search", {"query": "alpha", "limit": "ten"}),
         ("canon.versions", {"source_id": 5}),
+        ("canon.assertions", {"assertion_id": 5}),
         ("provenance.span", {"citation": "not an object"}),
         ("provenance.span", {"citation": {"source_id": "abc"}}),
         ("context.compile", {

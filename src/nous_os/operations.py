@@ -22,7 +22,7 @@ from nous_os.capability import Tier, register
 from nous_os.candidates import CandidateStore, Proposal
 from nous_os.chunking import Chunk
 from nous_os.compile import CohesionStrategy, Pack
-from nous_os.config import describe_corpus, list_documents
+from nous_os.config import DataRoot, describe_corpus, list_documents
 from nous_os.derived import context, search, sources, versions
 from nous_os.ledger import ingest
 from nous_os.provenance import (
@@ -44,6 +44,56 @@ if TYPE_CHECKING:
 
 def proposals(*, store: CandidateStore) -> tuple[Proposal, ...]:
     return store.proposals()
+
+
+def list_assertions(
+    *, root: DataRoot, assertion_id: str | None = None
+) -> list[dict[str, object]]:
+    """Read verified promoted assertions without importing the review console at startup.
+
+    The canon root of a deployment is its data root: the review console writes
+    ``assertions/`` and ``assertions.jsonl`` there. The listing is the verified
+    one (digests, chain and index), so a tampered canon refuses instead of
+    returning a partial answer.
+    """
+    # review imports this registry for promotion registration.  Importing it
+    # only after execute has authorized this READ operation avoids that cycle.
+    from nous_os.review import canon_index
+
+    versions = canon_index(root.path)
+    return [
+        {
+            "assertion_id": version.assertion.id,
+            "state": version.assertion.state.value,
+            "text": version.assertion.text,
+            "support": version.assertion.support.value,
+            "recorded_at": version.assertion.recorded_at.isoformat(),
+            "valid_from": (
+                None
+                if version.assertion.valid_from is None
+                else version.assertion.valid_from.isoformat()
+            ),
+            "valid_to": (
+                None
+                if version.assertion.valid_to is None
+                else version.assertion.valid_to.isoformat()
+            ),
+            "candidate_id": version.candidate_id,
+            "candidate_version": version.candidate_version,
+            "citation": version.assertion.citation.as_payload(),
+            "derived_citations": [
+                citation.as_payload() for citation in version.derived_citations
+            ],
+            "derived_counter_citations": [
+                citation.as_payload() for citation in version.derived_counter_citations
+            ],
+            "previous_digest": version.previous_digest,
+            "content_digest": version.content_digest,
+            "promotion_record_digest": version.promotion_record_digest,
+        }
+        for version in versions
+        if assertion_id is None or version.assertion.id == assertion_id
+    ]
 
 
 def as_of(*, index, valid_at=None, recorded_as_of=None):
@@ -248,6 +298,7 @@ register("context", Tier.READ, context)
 register("semantic", Tier.READ, semantic_search)
 register("sources", Tier.READ, sources)
 register("versions", Tier.READ, versions)
+register("list_assertions", Tier.READ, list_assertions)
 register("read_span", Tier.READ, read_span)
 register("list_documents", Tier.READ, list_documents)
 register("describe_corpus", Tier.READ, describe_corpus)

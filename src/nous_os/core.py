@@ -861,6 +861,19 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
         (ParameterSpec("source_id", "string", True, "the source whose versions are listed"),),
     ),
     _descriptor(
+        "canon.assertions",
+        "list_assertions",
+        "List verified promoted canonical decisions, distinct from candidates and historical sources.",
+        (
+            ParameterSpec(
+                "assertion_id",
+                "string",
+                False,
+                "an exact assertion identifier to restrict the listing",
+            ),
+        ),
+    ),
+    _descriptor(
         "provenance.span",
         "read_span",
         "Read the exact text a citation names, from the snapshot it cites.",
@@ -1429,6 +1442,10 @@ def _bind_versions(workspace: Workspace, arguments: dict[str, object]) -> dict[s
     return {"path": workspace.derived_path, "source_id": arguments["source_id"]}
 
 
+def _bind_assertions(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {"root": workspace.data_root, "assertion_id": arguments.get("assertion_id")}
+
+
 def _bind_read_span(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
     return {
         "store": SnapshotStore(workspace.snapshot_root),
@@ -1583,6 +1600,7 @@ _BINDERS: Final = {
     "canon.describe": _bind_root_only,
     "canon.sources": _bind_path_only,
     "canon.versions": _bind_versions,
+    "canon.assertions": _bind_assertions,
     "provenance.span": _bind_read_span,
     "provenance.verify_derived": _bind_verify_derived,
     "graph.project": _bind_project,
@@ -1705,6 +1723,7 @@ _RENDERERS: Final = {
     "canon.describe": _render_describe_corpus,
     "canon.sources": lambda sources: list(sources),
     "canon.versions": lambda versions: list(versions),
+    "canon.assertions": lambda assertions: assertions,
     "provenance.span": lambda text: text,
     "provenance.verify_derived": lambda result: result,
     "graph.project": lambda ir: ir.as_payload(),

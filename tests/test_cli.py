@@ -143,6 +143,7 @@ def _minimal_argv(external_name: str) -> list[str]:
         "canon.describe": [],
         "canon.sources": [],
         "canon.versions": ["--source-id", SOURCE_ID],
+        "canon.assertions": ["--assertion-id", "asr_01ARZ3NDEKTSV4RRFFQ69G5FAV"],
         "provenance.span": ["--citation", citation],
         "provenance.verify_derived": ["--citation", derived_citation],
         "graph.project": [
@@ -235,6 +236,7 @@ def _reachable_argv(external_name: str, digest: str) -> list[str]:
         "canon.describe": [],
         "canon.sources": [],
         "canon.versions": ["--source-id", SOURCE_ID],
+        "canon.assertions": ["--assertion-id", "asr_01ARZ3NDEKTSV4RRFFQ69G5FAV"],
         "provenance.span": ["--citation", citation],
         "provenance.verify_derived": ["--citation", derived_citation],
         "graph.project": [
