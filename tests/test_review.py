@@ -234,6 +234,59 @@ def test_candidate_reading_and_version(tmp_path: Path) -> None:
         assert str(error.value), label
 
 
+@pytest.mark.parametrize(
+    ("scope", "expected"),
+    (
+        (
+            "Résumé of Atlasfield’s rôle as of 2026-08-02.",
+            "resume-of-atlasfield-s-role-as-of-2026-08-02",
+        ),
+        (
+            "Quillmap–Orchardline knowledge boundary",
+            "quillmap-orchardline-knowledge-boundary",
+        ),
+        (
+            "Atlasfield architecture (Quillmap / Orchardline) on 2026/08/02",
+            "atlasfield-architecture-quillmap-orchardline-on-2026-08-02",
+        ),
+        (
+            "A deliberately long decision scope describing the relationship "
+            "between Atlasfield architecture, systems, operational "
+            "responsibilities, and evidence boundaries",
+            "a-deliberately-long-decision-scope-describing-the-relationship",
+        ),
+    ),
+)
+def test_scope_claim_key_derives_stable_keys(scope: str, expected: str) -> None:
+    key = review._scope_claim_key(scope)
+    assert key is not None
+    assert key.value == expected
+    assert review._scope_claim_key("harbor-access") == review.ClaimKey("harbor-access")
+    assert review._scope_claim_key("  ") is None
+    assert review._scope_claim_key("(((...)))") is None
+
+
+def test_apply_derives_sentence_scope_key_for_promotion(tmp_path: Path) -> None:
+    world = _world(tmp_path)
+    scope = "Atlasfield architecture (Quillmap / Orchardline) on 2026/08/02"
+    candidate = ReviewCandidate.from_proposal(_record(world, _content(world, scope=scope)))
+    decisions = _write_decisions(world.root / "decisions.jsonl", _decision(candidate))
+
+    assert main(_apply_argv(world, decisions)) == 0
+    authorization = json.loads(world.authorizations.read_text(encoding="utf-8"))
+    assert authorization["subject_key"] == "atlasfield-architecture-quillmap-orchardline-on-2026-08-02"
+    assert authorization["subject_origin"] == "derived"
+    assert len(list((world.canon_root / "assertions").rglob("*.json"))) == 1
+    assert [entry["outcome"] for entry in _audit(world)] == ["RESERVED", "APPLIED"]
+
+    before_authorizations = world.authorizations.read_bytes()
+    before_canon = _all_files(world.canon_root)
+    assert main(_apply_argv(world, decisions)) == 0
+    assert world.authorizations.read_bytes() == before_authorizations
+    assert _all_files(world.canon_root) == before_canon
+    assert _audit(world)[-1]["outcome"] == "ALREADY_DECIDED"
+
+
 def test_apply_writes_authorisation_canon_and_audit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -270,6 +323,9 @@ def test_apply_writes_authorisation_canon_and_audit(
 
     assert main(_apply_argv(world, decisions)) == 0
     assert len(world.authorizations.read_text(encoding="utf-8").splitlines()) == 1
+    authorization = json.loads(world.authorizations.read_text(encoding="utf-8"))
+    assert authorization["subject_key"] == "harbor.access"
+    assert authorization["subject_origin"] == "operator"
     files = sorted((world.canon_root / "assertions").rglob("*.json"))
     assert len(files) == 1
     payload = json.loads(files[0].read_text(encoding="utf-8"))

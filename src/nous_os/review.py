@@ -890,12 +890,39 @@ def _write_assertion(
     return CanonWrite(assertion.id, digest, previous_digest, True)
 
 
+def _scope_claim_key(scope: str) -> ClaimKey | None:
+    """Derive a stable claim key from a free-text scope.
+
+    NFKD-decompose, drop the combining marks (so ``é`` reads ``e``), lower-case,
+    replace every run of characters outside ``[a-z0-9]`` -- dashes of any
+    width, quotes, slashes, non-Latin letters -- with one ``-``, and remove
+    edge separators. Keys longer than 64 characters end at the last available
+    ``-`` boundary, or at character 64 when no such boundary exists. The same
+    scope therefore always derives the same claim key.
+    """
+    import unicodedata  # local, as the sibling modules do for rarely used helpers
+
+    decomposed = unicodedata.normalize("NFKD", scope)
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch)).lower()
+    key = re.sub(r"[^a-z0-9]+", "-", stripped).strip("-")
+    if not key:
+        return None
+    if len(key) > 64:
+        prefix = key[:64].rstrip("-")
+        boundary = prefix.rfind("-")
+        key = prefix[:boundary] if boundary >= 0 else prefix
+    return ClaimKey(key)
+
+
 def _subject_for(candidate: ReviewCandidate) -> AttributedKey:
-    """Bind the explicit scope supplied in the human decision to an operator key."""
+    """Bind an explicit key scope or a deterministic derived scope key."""
     try:
         return AttributedKey(key=ClaimKey(candidate.scope), origin=KeyOrigin.OPERATOR)
-    except (ClaimKeyError, ValueError) as error:
-        raise ReviewError("NOT_PROMOTABLE") from error
+    except (ClaimKeyError, ValueError):
+        key = _scope_claim_key(candidate.scope)
+        if key is None:
+            raise ReviewError("NOT_PROMOTABLE")
+        return AttributedKey(key=key, origin=KeyOrigin.DERIVED)
 
 
 def _promotion_decision(candidate: ReviewCandidate, decision: ReviewDecision) -> HumanDecision:
