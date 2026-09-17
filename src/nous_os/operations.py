@@ -155,6 +155,11 @@ def verify_derived(
         result: dict[str, object] = {"ok": True}
     except Exception as error:
         result = {"ok": False, "error": type(error).__name__, "message": str(error)}
+    # A full derivation verdict only has meaning for a citation that already
+    # names a valid preserved span. Do not let an independently reproducible
+    # file make an invalid quote look verified.
+    if not result["ok"]:
+        return result
     if full:
         if asset_root_path is not None and sighting_log_path is not None:
             from nous_os.sources import SightingLog

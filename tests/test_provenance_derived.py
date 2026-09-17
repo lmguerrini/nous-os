@@ -24,6 +24,7 @@ from nous_os.extraction import (
 )
 from nous_os.identity import canonical_bytes, digest_bytes
 from nous_os.ledger import Ledger, LedgerEntry
+from nous_os.operations import verify_derived
 from nous_os.provenance import (
     CharLocator,
     DerivationState,
@@ -636,6 +637,29 @@ def test_o3_full_derivation_refuses_an_incompatible_locator(
         {"citation": _plain_citation().as_payload(), "full": True},
     )
     assert result["verdict"]["state"] == DerivationState.NOT_EXECUTABLE.value
+
+
+def test_full_derivation_does_not_report_reproduced_when_quote_lint_fails(
+    tmp_path: Path,
+) -> None:
+    store, snapshots, ledger = _copy_fixture(tmp_path)
+    asset_root, sighting_log_path = _configured_asset_root(
+        tmp_path, ledger, data=(_FIXTURE / "extraction-source.txt").read_bytes()
+    )
+
+    result = verify_derived(
+        extraction_store=store,
+        snapshot_store=snapshots,
+        ledger=ledger,
+        citation=replace(_plain_citation(), span="not the preserved quote"),
+        full=True,
+        asset_root_path=asset_root,
+        sighting_log_path=sighting_log_path,
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "SpanMismatch"
+    assert "verdict" not in result
 
 
 def test_o6_catalogue_cli_and_stdio_agree_for_derived_verification(
