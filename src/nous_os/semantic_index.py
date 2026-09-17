@@ -781,7 +781,11 @@ def _read_turn_pairs(
             ).fetchall()
         finally:
             connection.close()
-        if len(turns) != pairs or any(type(left) is not str or type(right) is not str for left, right in turns):
+        if (
+            len(turns) != pairs
+            or any(type(left) is not str or type(right) is not str for left, right in turns)
+            or len({right for _left, right in turns}) != pairs
+        ):
             return None
         import numpy as np
 
@@ -876,6 +880,12 @@ def search(
                 if sidecar is not None:
                     turns, turn_vectors = sidecar
                     raw_sources = [candidate[1][1] for candidate in candidates[:200]]
+                    reply_to_user = {assistant_source: user_source for user_source, assistant_source in turns}
+                    reply_sources = list(dict.fromkeys(
+                        reply_to_user[assistant_source]
+                        for assistant_source in raw_sources
+                        if assistant_source in reply_to_user
+                    ))
                     try:
                         lexical_query = _lexical_prefix_query(query)
                         lexical_sources = (
@@ -891,7 +901,12 @@ def search(
                             key=lambda item: (-item[0], item[1]),
                         )[:200]
                     ]
-                    for ranked in (lexical_sources, raw_sources, turn_sources):
+                    # A retrieved assistant response can generalise to the
+                    # immediately preceding user question.  The sidecar has
+                    # already validated this one-to-one relationship; its
+                    # source citation remains the user source and the reply
+                    # remains separately attributed as context below.
+                    for ranked in (lexical_sources, raw_sources, turn_sources, reply_sources):
                         for position, source_id in enumerate(ranked, start=1):
                             rrf_scores[source_id] = rrf_scores.get(source_id, 0.0) + 1.0 / (_RRF_K + position)
                     fused = sorted(rrf_scores, key=lambda source_id: (-rrf_scores[source_id], source_id))
@@ -982,7 +997,7 @@ def search(
         "hits": hits,
     }
     if augmented:
-        result["ranking"] = "turn-rrf-k60"
+        result["ranking"] = "turn-reply-rrf-k60"
     return result
 
 

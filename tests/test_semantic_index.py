@@ -481,7 +481,7 @@ def test_turn_rrf_sidecar_is_validated_and_keeps_two_citations(tmp_path: Path) -
     answer = semantic_index.search(
         index_path, query, limit=3, distinct=True, derived_path=derived_path
     )
-    assert answer["ranking"] == "turn-rrf-k60"
+    assert answer["ranking"] == "turn-reply-rrf-k60"
     first = answer["hits"][0]
     assert first["source_id"] == LIGHTHOUSE
     assert first["context_source_id"] == BAKING
@@ -498,8 +498,26 @@ def test_turn_rrf_sidecar_is_validated_and_keeps_two_citations(tmp_path: Path) -
     assert semantic_index.search(index_path, query, limit=3) == semantic_index.search(
         index_path, query, limit=3
     )
+    # One assistant response must not be allowed to attribute two user sources.
+    # A structurally complete but ambiguous optional sidecar falls back safely.
+    database = sqlite3.connect(index_path / "turn-pairs" / "index.sqlite3")
+    try:
+        database.execute("INSERT INTO turn VALUES (?, ?, ?)", (BAKING, BAKING, 1))
+        database.execute("UPDATE meta SET value = '2' WHERE key = 'pairs'")
+        database.commit()
+    finally:
+        database.close()
+    vectors_path = index_path / "turn-pairs" / "vectors.f32"
+    vectors_path.write_bytes(vectors_path.read_bytes() * 2)
     complete_path = index_path / "turn-pairs" / "COMPLETE.json"
     complete = json.loads(complete_path.read_text(encoding="utf-8"))
+    complete["pairs"] = 2
+    complete["vector_bytes"] *= 2
+    complete_path.write_text(json.dumps(complete), encoding="utf-8")
+    assert semantic_index.search(
+        index_path, query, limit=3, distinct=True, derived_path=derived_path
+    ) == ordinary
+    complete_path = index_path / "turn-pairs" / "COMPLETE.json"
     complete["base_generation"] = "gen-not-current"
     complete_path.write_text(json.dumps(complete), encoding="utf-8")
     assert semantic_index.search(
@@ -519,8 +537,24 @@ def test_core_semantic_defaults_to_distinct_rrf_when_sidecar_is_published(tmp_pa
     answer = core.invoke(
         Grant("reader", frozenset({Tier.READ})), "knowledge.semantic", workspace, {"query": query}
     )
-    assert answer["ranking"] == "turn-rrf-k60"
+    assert answer["ranking"] == "turn-reply-rrf-k60"
     assert answer["hits"][0]["context_source_id"] == BAKING
+
+
+def test_turn_reply_edge_can_return_the_user_source_of_a_retrieved_reply(tmp_path: Path) -> None:
+    """The optional sidecar maps an assistant hit back to its user source safely."""
+    _require_dense_en()
+    _store, derived_path = _semantic_canon(tmp_path)
+    index_path = tmp_path / "semantic"
+    semantic_index.build(derived_path, index_path, DENSE_EN)
+    _published_turn_sidecar(index_path, "beacon navigation for ships entering a harbour")
+    answer = semantic_index.search(
+        index_path, "how do I knead bread dough before baking", limit=3, distinct=True, derived_path=derived_path
+    )
+    assert answer["ranking"] == "turn-reply-rrf-k60"
+    first = answer["hits"][0]
+    assert first["source_id"] == LIGHTHOUSE
+    assert first["context_source_id"] == BAKING
 
 
 def test_not_run_and_unusable_index_outcomes_are_distinct(tmp_path: Path) -> None:
