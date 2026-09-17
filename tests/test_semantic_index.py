@@ -498,6 +498,31 @@ def test_turn_rrf_sidecar_is_validated_and_keeps_two_citations(tmp_path: Path) -
     assert semantic_index.search(index_path, query, limit=3) == semantic_index.search(
         index_path, query, limit=3
     )
+    # A structurally complete sidecar may still name an absent source. Its RRF
+    # score could otherwise win a small result window and then be discarded
+    # after slicing, returning fewer hits than ordinary dense retrieval.
+    database = sqlite3.connect(index_path / "turn-pairs" / "index.sqlite3")
+    try:
+        database.execute("UPDATE turn SET source_id = ?", ("000-dangling-user",))
+        database.commit()
+    finally:
+        database.close()
+    ordinary_dough = semantic_index.search(
+        index_path, "how do I knead bread dough before baking", limit=1, distinct=True
+    )
+    assert semantic_index.search(
+        index_path,
+        "how do I knead bread dough before baking",
+        limit=1,
+        distinct=True,
+        derived_path=derived_path,
+    ) == ordinary_dough
+    database = sqlite3.connect(index_path / "turn-pairs" / "index.sqlite3")
+    try:
+        database.execute("UPDATE turn SET source_id = ?", (LIGHTHOUSE,))
+        database.commit()
+    finally:
+        database.close()
     # One assistant response must not be allowed to attribute two user sources.
     # A structurally complete but ambiguous optional sidecar falls back safely.
     database = sqlite3.connect(index_path / "turn-pairs" / "index.sqlite3")

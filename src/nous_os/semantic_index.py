@@ -737,7 +737,7 @@ def _lexical_prefix_query(query: str) -> str:
 
 
 def _read_turn_pairs(
-    index_path: Path, generation_name: str, meta: dict[str, str]
+    index_path: Path, generation_name: str, meta: dict[str, str], known_source_ids: set[str]
 ) -> tuple[list[tuple[str, str]], object] | None:
     """Read a compatible published turn sidecar, otherwise decline augmentation.
 
@@ -785,6 +785,7 @@ def _read_turn_pairs(
             len(turns) != pairs
             or any(type(left) is not str or type(right) is not str for left, right in turns)
             or len({right for _left, right in turns}) != pairs
+            or any(left not in known_source_ids or right not in known_source_ids for left, right in turns)
         ):
             return None
         import numpy as np
@@ -876,7 +877,9 @@ def search(
             # the established dense-only result; the governed user route asks
             # for distinct source hits by default.
             if distinct and derived_path is not None:
-                sidecar = _read_turn_pairs(path, _name, meta)
+                sidecar = _read_turn_pairs(
+                    path, _name, meta, {source_id for _chunk_id, source_id in rows}
+                )
                 if sidecar is not None:
                     turns, turn_vectors = sidecar
                     raw_sources = [candidate[1][1] for candidate in candidates[:200]]
