@@ -22,7 +22,7 @@ from nous_os.capability import Tier, register
 from nous_os.candidates import CandidateStore, Proposal
 from nous_os.chunking import Chunk
 from nous_os.compile import CohesionStrategy, Pack
-from nous_os.config import DataRoot, describe_corpus, list_documents
+from nous_os.config import describe_corpus, list_documents
 from nous_os.derived import context, search, sources, versions
 from nous_os.ledger import ingest
 from nous_os.provenance import (
@@ -51,9 +51,10 @@ def list_assertions(
 ) -> dict[str, object]:
     """Read verified promoted assertions from the optional configured canon root.
 
-    An absent canon-root configuration returns ``not_run`` rather than claiming an
-    empty canon. A configured root without ``assertions/`` or ``assertions.jsonl``
-    is an empty canon and returns ``complete`` with no assertions. A deployment may
+    An absent canon-root configuration, or a configured root that does not exist
+    as a directory, returns ``not_run`` rather than claiming an empty canon. A
+    configured directory without ``assertions/`` or ``assertions.jsonl`` is an
+    empty canon and returns ``complete`` with no assertions. A deployment may
     intentionally make its canon root equal to its data root, but that equality is
     a deployment choice rather than an invariant. The listing verifies the index and
     every version, so a tampered canon refuses instead of returning a partial answer.
@@ -65,6 +66,12 @@ def list_assertions(
                 "no canon root is configured "
                 "(NOUS_OS_CANON_ROOT_PATH or --canon-root-path)"
             ),
+            "assertions": [],
+        }
+    if not Path(root).is_dir():
+        return {
+            "status": "not_run",
+            "reason": "the configured canon root is absent",
             "assertions": [],
         }
     # review imports this registry for promotion registration.  Importing it

@@ -230,7 +230,8 @@ class Workspace:
     unconfigured rather than selecting a machine-specific default. Direct
     construction requires every required store value, resolves their
     spellings, and applies the same overlap refusal. Asset-root, sighting-log, and
-    canon-root locations are independently configurable; full verification needs both.
+    canon-root locations are independently configurable; full derived verification
+    needs both the asset root and the sighting log.
     """
 
     data_root: DataRoot

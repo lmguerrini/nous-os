@@ -763,6 +763,40 @@ def test_the_optional_canon_root_resolves_reports_health_and_refuses_all_but_dat
             )
         )
 
+    # The exemption names one exact pair: another location equal to the data
+    # root is still two names for one place.
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(**_workspace_kwargs(tmp_path, asset_root_path=data_root))
+
+    # A store hard-linked to a canon file is an alias of canon content.
+    canon_root.joinpath("assertions.jsonl").write_text("", encoding="utf-8")
+    hard_link = tmp_path / "linked-candidates.jsonl"
+    os.link(canon_root / "assertions.jsonl", hard_link)
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(
+                tmp_path, canon_root_path=canon_root, candidate_store_path=hard_link
+            )
+        )
+
+
+def test_a_configured_but_absent_canon_root_answers_not_run(tmp_path: Path) -> None:
+    missing = tmp_path / "no-such-canon"
+    workspace = core.resolve_workspace(**_workspace_kwargs(tmp_path, canon_root_path=missing))
+    reader = Grant("holder", frozenset({Tier.READ}))
+    assert core.invoke(reader, "system.health", workspace, {})["canon_root_path"] == "absent"
+    answer = core.invoke(reader, "canon.assertions", workspace, {})
+    assert answer == {
+        "status": "not_run",
+        "reason": "the configured canon root is absent",
+        "assertions": [],
+    }
+    missing.mkdir()
+    assert core.invoke(reader, "canon.assertions", workspace, {}) == {
+        "status": "complete",
+        "assertions": [],
+    }
+
 
 # --- no two workspace locations may name one path --------------------------
 
