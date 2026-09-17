@@ -73,7 +73,7 @@ way:
 | `canon.describe` | read | List every canonical document under the data root with the digest of its bytes. | (none) |
 | `canon.sources` | read | List every source the derived index holds. | (none) |
 | `canon.versions` | read | List one source's snapshot digests, oldest first. | source_id |
-| `canon.assertions` | read | List verified promoted canonical decisions, distinct from candidates and historical sources. | assertion_id? |
+| `canon.assertions` | read | List verified promoted canonical decisions from the configured canon root. | assertion_id? |
 | `provenance.span` | read | Read the exact text a citation names, from the snapshot it cites. | citation |
 | `provenance.verify_derived` | read | Lint a quote from preserved extraction evidence; `full` also reproduces it from governed original bytes only when both the configured asset root and sighting log bind that source to a current locator. | citation, full? |
 | `graph.project` | read | Project a renderer-independent knowledge graph from caller-supplied state. | state, policy, question? |
@@ -96,10 +96,16 @@ This table matches `core.CATALOGUE` and is checked against it by
 
 ### Reading promoted assertions
 
-`canon.assertions` returns verified canonical decisions (`state: canonical` with a promotion
-record digest), unlike unapproved entries from `candidate.proposals` and historical source material
-from `knowledge.*`. Use `knowledge.context --source-id <citation.source_id>` for source context,
-then `provenance.span --citation <citation>` to resolve the decision’s exact quoted span.
+`canon.assertions` reads verified canonical decisions (`state: canonical` with a promotion record
+digest) from the optional canon root configured by `NOUS_OS_CANON_ROOT_PATH` or
+`--canon-root-path`, unlike unapproved entries from `candidate.proposals` and historical source
+material from `knowledge.*`. Without that configuration it returns
+`{"status": "not_run", "reason": "no canon root is configured (NOUS_OS_CANON_ROOT_PATH or --canon-root-path)", "assertions": []}`;
+a configured root without `assertions/` or `assertions.jsonl` returns
+`{"status": "complete", "assertions": []}`. A deployment may deliberately use the same directory
+for its data root and canon root, but that is a deployment choice, not an invariant. Use
+`knowledge.context --source-id <citation.source_id>` for source context, then
+`provenance.span --citation <citation>` to resolve the decision’s exact quoted span.
 
 ## No `promote` or externally-consequential operation is published, and why
 

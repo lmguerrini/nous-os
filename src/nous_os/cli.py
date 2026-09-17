@@ -199,6 +199,7 @@ def _add_workspace_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--semantic-index-path", default=None)
     parser.add_argument("--asset-root-path", default=None)
     parser.add_argument("--sighting-log-path", default=None)
+    parser.add_argument("--canon-root-path", default=None)
 
 
 def _add_grant_arguments(parser: argparse.ArgumentParser) -> None:
@@ -353,6 +354,7 @@ def _resolve_workspace(namespace: argparse.Namespace) -> core.Workspace:
         semantic_index_path=namespace.semantic_index_path,
         asset_root_path=namespace.asset_root_path,
         sighting_log_path=namespace.sighting_log_path,
+        canon_root_path=namespace.canon_root_path,
     )
 
 

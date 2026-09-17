@@ -717,6 +717,53 @@ def test_the_optional_extraction_store_resolves_from_an_argument_or_environment(
         )
 
 
+def test_the_optional_canon_root_resolves_reports_health_and_refuses_all_but_data_equality(
+    tmp_path: Path,
+) -> None:
+    absent = core.resolve_workspace(**_workspace_kwargs(tmp_path))
+    assert absent.canon_root_path is None
+    assert core.invoke(
+        Grant("holder", frozenset({Tier.READ})), "system.health", absent, {}
+    )["canon_root_path"] == "unconfigured"
+
+    canon_root = tmp_path / "canon"
+    configured = core.resolve_workspace(
+        **_workspace_kwargs(
+            tmp_path,
+            canon_root_path=None,
+            environ={core.CANON_ROOT_PATH_ENV_VAR: str(canon_root)},
+        )
+    )
+    assert configured.canon_root_path == canon_root.resolve()
+    assert core.invoke(
+        Grant("holder", frozenset({Tier.READ})), "system.health", configured, {}
+    )["canon_root_path"] == "absent"
+    canon_root.mkdir()
+    assert core.invoke(
+        Grant("holder", frozenset({Tier.READ})), "system.health", configured, {}
+    )["canon_root_path"] == "healthy"
+
+    data_root = _workspace_kwargs(tmp_path)["data_root"]
+    equal = core.resolve_workspace(
+        **_workspace_kwargs(tmp_path, canon_root_path=data_root)
+    )
+    assert equal.canon_root_path == equal.data_root.path
+
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(tmp_path, canon_root_path=data_root / "canon")
+        )
+
+    with pytest.raises(core.AliasedWorkspaceLocation):
+        core.resolve_workspace(
+            **_workspace_kwargs(
+                tmp_path,
+                canon_root_path=tmp_path / "canon-containing-snapshot",
+                snapshot_root=tmp_path / "canon-containing-snapshot" / "snapshots",
+            )
+        )
+
+
 # --- no two workspace locations may name one path --------------------------
 
 
@@ -1275,6 +1322,7 @@ def test_system_health_reports_healthy_for_a_seeded_store_and_absent_for_an_unwr
     assert health["relation_store_path"] == "absent"
     assert health["extraction_store_path"] == "unconfigured"
     assert health["semantic_index_path"] == "unconfigured"
+    assert health["canon_root_path"] == "unconfigured"
 
 
 def test_absent_is_never_reported_as_healthy_and_unknown_is_never_reported_as_healthy(

@@ -251,39 +251,39 @@ left for a reader to discover by being wrong.
 | Term | Defined at | Closed members | What it distinguishes |
 |---|---|---|---|
 | `record` | `src/nous_os/derived.py:71` | — | The rebuildable record-header index: one source-and-snapshot pair, carrying only the top-level record fields that canon names. |
-| `knowledge.context` | `src/nous_os/core.py:813` | — | A read operation for a source's ordered conversation neighbourhood or a container's current records. |
-| `semantic index` | `src/nous_os/core.py:827` | — | A persistent generation directory holding a verified SQLite chunk table, raw float32 vectors, and a CURRENT selector. Its meta keys identify the projection, the chunk budget (`chunk_max_tokens`, and `chunk_max_words` from projection v2), the `query_prefix` and `passage_prefix` the encoder was given, checkpoint, tokenizer, source-derived digest, and the byte-level index digest recorded as state_digest. `verify` is the full check and recomputes that digest; `search` makes only the structural check, so a flipped vector byte is not detected by a search. |
+| `knowledge.context` | `src/nous_os/core.py:841` | — | A read operation for a source's ordered conversation neighbourhood or a container's current records. |
+| `semantic index` | `src/nous_os/core.py:855` | — | A persistent generation directory holding a verified SQLite chunk table, raw float32 vectors, and a CURRENT selector. Its meta keys identify the projection, the chunk budget (`chunk_max_tokens`, and `chunk_max_words` from projection v2), the `query_prefix` and `passage_prefix` the encoder was given, checkpoint, tokenizer, source-derived digest, and the byte-level index digest recorded as state_digest. `verify` is the full check and recomputes that digest; `search` makes only the structural check, so a flipped vector byte is not detected by a search. |
 | `text projection v1` | — | — | The deterministic record-body text selection used before semantic chunking. It recognizes only the declared payload/message/content and recovery text fields. A v1 generation predates the prefix and `chunk_max_words` keys and is read as having empty prefixes. |
 | `text projection v2` | — | — | The same text selection, chunked by sentence packing one text part at a time: every chunk is a verbatim, contiguous, whitespace-stripped span of one part, sentences are packed inside one blank-line block while the whitespace-word count stays at or below `chunk_max_words`, a chunk never crosses a part join, and a heading line is ordinary text with an empty heading path. A chunk is encoded under the backend's passage prefix and a query under its query prefix; the stored text carries neither. |
 | `citation_state` | — | `located` · `absent` · `ambiguous` · `unlintable` | Whether a chunk's escaped JSON text has one quote-lintable byte location in the source body, none, several, or a range provenance refuses. Under projection v2 a chunk's escaped text lies within its part's JSON string, so it is `located` unless that text occurs more than once in the body; a non-ASCII body written with `ensure_ascii=True` is not produced by this product's stores and is outside that claim. |
-| `knowledge.semantic` | `src/nous_os/core.py:825` | — | A read operation over the local semantic index. It reports `not_run` when no index location or local checkpoint is available. |
+| `knowledge.semantic` | `src/nous_os/core.py:853` | — | A read operation over the local semantic index. It reports `not_run` when no index location or local checkpoint is available. |
 
 The human review console is a separate boundary: it reads fixed-shape candidate
 content and a decision file, records authorization under the existing promotion
 grant, then preserves canonical assertion versions with matching append-only
 index records. An interrupted index append resumes from the durable version
-file. A candidate may carry the producer's own `notes` (`src/nous_os/review.py:95`): optional, a string of at most
+file. A candidate may carry the producer's own `notes` (`src/nous_os/review.py:94`): optional, a string of at most
 four thousand characters, kept for the reviewer to read; the console never interprets notes — they change no outcome, are not a
 decision, and are not written into a canonical version. It is not a catalogue or stdio vocabulary; its audit outcomes form a closed set of their own, listed here in full.
 
 | Outcome | Defined at | What it records |
 |---|---|---|
-| `APPLIED` | `src/nous_os/review.py:154` | The decision was applied: an approval promoted a canonical version; a rejection was recorded. |
-| `RESERVED` | `src/nous_os/review.py:162` | The approval passed every check and the run reserved it before authorization and the canon write; a resumed run finishes it. |
-| `ALREADY_DECIDED` | `src/nous_os/review.py:163` | The same decision was applied earlier; the replay is logged and nothing is rewritten. |
-| `STALE` | `src/nous_os/review.py:155` | The decision names a candidate version that is no longer current. |
-| `SCOPE_MISMATCH` | `src/nous_os/review.py:156` | The decision's scope differs from the candidate's. |
-| `UNKNOWN_CANDIDATE` | `src/nous_os/review.py:157` | No candidate carries the decision's identifier. |
-| `DUPLICATE` | `src/nous_os/review.py:158` | The same decision appears twice in one file. |
-| `DECIDER_NOT_HUMAN` | `src/nous_os/review.py:159` | The decider names an automated actor; only a person decides. |
-| `ORIGIN_NEEDS_REASON` | `src/nous_os/review.py:160` | An assistant-suggested, quoted or unknown-support candidate is approved without a stated reason. |
-| `NOT_PROMOTABLE` | `src/nous_os/review.py:161` | The promotion registry or the canon writer refused the approval after reservation. |
-| `CANDIDATE_MALFORMED` | `src/nous_os/review.py:164` | The stored candidate does not have the fixed shape; processing continues with the next decision. |
-| `EVIDENCE_UNRESOLVED` | `src/nous_os/review.py:165` | A cited snapshot span does not resolve or does not quote-lint. |
-| `DERIVED_CITATION_FAILED` | `src/nous_os/review.py:169` | A derived citation of extracted text fails its lint; nothing is written. |
-| `SUPERSEDED_NOT_TAIL` | `src/nous_os/review.py:166` | The superseded version is not the tail of its chain. |
-| `SUPERSEDES_UNCHANGED` | `src/nous_os/review.py:167` | A superseding candidate would recreate its predecessor's assertion content, so it is refused before reservation or authorization. |
-| `DECIDED_IN_FUTURE` | `src/nous_os/review.py:168` | The decision's instant lies after the run's clock window. |
+| `APPLIED` | `src/nous_os/review.py:153` | The decision was applied: an approval promoted a canonical version; a rejection was recorded. |
+| `RESERVED` | `src/nous_os/review.py:161` | The approval passed every check and the run reserved it before authorization and the canon write; a resumed run finishes it. |
+| `ALREADY_DECIDED` | `src/nous_os/review.py:162` | The same decision was applied earlier; the replay is logged and nothing is rewritten. |
+| `STALE` | `src/nous_os/review.py:154` | The decision names a candidate version that is no longer current. |
+| `SCOPE_MISMATCH` | `src/nous_os/review.py:155` | The decision's scope differs from the candidate's. |
+| `UNKNOWN_CANDIDATE` | `src/nous_os/review.py:156` | No candidate carries the decision's identifier. |
+| `DUPLICATE` | `src/nous_os/review.py:157` | The same decision appears twice in one file. |
+| `DECIDER_NOT_HUMAN` | `src/nous_os/review.py:158` | The decider names an automated actor; only a person decides. |
+| `ORIGIN_NEEDS_REASON` | `src/nous_os/review.py:159` | An assistant-suggested, quoted or unknown-support candidate is approved without a stated reason. |
+| `NOT_PROMOTABLE` | `src/nous_os/review.py:160` | The promotion registry or the canon writer refused the approval after reservation. |
+| `CANDIDATE_MALFORMED` | `src/nous_os/review.py:163` | The stored candidate does not have the fixed shape; processing continues with the next decision. |
+| `EVIDENCE_UNRESOLVED` | `src/nous_os/review.py:164` | A cited snapshot span does not resolve or does not quote-lint. |
+| `DERIVED_CITATION_FAILED` | `src/nous_os/review.py:168` | A derived citation of extracted text fails its lint; nothing is written. |
+| `SUPERSEDED_NOT_TAIL` | `src/nous_os/review.py:165` | The superseded version is not the tail of its chain. |
+| `SUPERSEDES_UNCHANGED` | `src/nous_os/review.py:166` | A superseding candidate would recreate its predecessor's assertion content, so it is refused before reservation or authorization. |
+| `DECIDED_IN_FUTURE` | `src/nous_os/review.py:167` | The decision's instant lies after the run's clock window. |
 
 **Deliberately not in this table.** Exception types (they name refusals, and the refusal is the
 rule, not the concept); strategy implementations of `CohesionStrategy` and `AliasTable`; internal

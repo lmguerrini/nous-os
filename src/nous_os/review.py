@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Final, Iterable, Mapping
 
 import nous_os.operations  # noqa: F401 -- registers the fixed promotion operation
-from nous_os import cli
 from nous_os.adjudication import AdjudicationError, HumanDecision, PromotionRecord, Verdict
 from nous_os.attribution import AttributedKey, KeyOrigin
 from nous_os.candidates import CandidateError, CandidateStore, Proposal, read_derived_citations
@@ -1582,6 +1581,7 @@ def main(argv: list[str] | None = None) -> int:
     namespace = _parser().parse_args(argv)
     try:
         if namespace.command == "apply":
+            from nous_os import cli
             grant = cli._resolve_grant(namespace, os.environ)
             result = apply(
                 decisions_path=Path(namespace.decision_file),

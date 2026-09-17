@@ -63,7 +63,7 @@ from nous_os.discovery import (
     TrivialityArchetype,
 )
 from nous_os.extraction import ExtractionStore
-from nous_os.identity import InvalidIdentifier
+from nous_os.identity import ASSERTION_PREFIX, InvalidIdentifier, require_id
 from nous_os.ledger import Ledger
 from nous_os.projection import (
     DISCOVERY,
@@ -219,6 +219,7 @@ EXTRACTION_STORE_PATH_ENV_VAR: Final = "NOUS_OS_EXTRACTION_STORE_PATH"
 SEMANTIC_INDEX_PATH_ENV_VAR: Final = "NOUS_OS_SEMANTIC_INDEX_PATH"
 ASSET_ROOT_PATH_ENV_VAR: Final = "NOUS_OS_ASSET_ROOT_PATH"
 SIGHTING_LOG_PATH_ENV_VAR: Final = "NOUS_OS_SIGHTING_LOG_PATH"
+CANON_ROOT_PATH_ENV_VAR: Final = "NOUS_OS_CANON_ROOT_PATH"
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,8 +229,8 @@ class Workspace:
     ``resolve_workspace`` refuses a caller that leaves any location
     unconfigured rather than selecting a machine-specific default. Direct
     construction requires every required store value, resolves their
-    spellings, and applies the same overlap refusal. Asset-root and sighting-log
-    locations are independently configurable; full verification needs both.
+    spellings, and applies the same overlap refusal. Asset-root, sighting-log, and
+    canon-root locations are independently configurable; full verification needs both.
     """
 
     data_root: DataRoot
@@ -244,6 +245,7 @@ class Workspace:
     semantic_index_path: Path | None = None
     asset_root_path: Path | None = None
     sighting_log_path: Path | None = None
+    canon_root_path: Path | None = None
 
     def __post_init__(self) -> None:
         """Resolve direct inputs before applying the shared overlap refusal."""
@@ -291,6 +293,12 @@ class Workspace:
             except (TypeError, ValueError) as error:
                 raise CoreError("workspace sighting_log_path must be path-like or None") from error
             object.__setattr__(self, "sighting_log_path", sighting_log_path)
+        if self.canon_root_path is not None:
+            try:
+                canon_root_path = Path(self.canon_root_path).expanduser().resolve()
+            except (TypeError, ValueError) as error:
+                raise CoreError("workspace canon_root_path must be path-like or None") from error
+            object.__setattr__(self, "canon_root_path", canon_root_path)
         _refuse_aliased_locations(self)
 
 
@@ -318,9 +326,9 @@ def _resolve_path(
 class _WorkspaceLocation:
     """One resolved workspace path and its relation to the canonical layer.
 
-    Canonical membership is recorded here once: the data root, snapshot root,
-    and ledger are canon on disk. The containing subset is derived from that
-    membership and ``is_directory`` below, so the alias refusal does not
+    Canonical membership is recorded here once: data root, snapshot root, ledger,
+    and configured canon root are canon on disk. The containing subset is derived
+    from that membership and ``is_directory`` below, so the alias refusal does not
     quietly protect one canonical root while forgetting another.
     """
 
@@ -353,6 +361,11 @@ def _workspace_locations(workspace: Workspace) -> tuple[_WorkspaceLocation, ...]
         )),
         *(() if workspace.asset_root_path is None else (
             _WorkspaceLocation("asset_root_path", workspace.asset_root_path, False, True),
+        )),
+        *(() if workspace.canon_root_path is None else (
+            _WorkspaceLocation(
+                "canon_root_path", workspace.canon_root_path, True, True
+            ),
         )),
         *(() if workspace.sighting_log_path is None else (
             _WorkspaceLocation("sighting_log_path", workspace.sighting_log_path, False, False),
@@ -518,11 +531,18 @@ def _refuse_aliased_locations(workspace: Workspace) -> None:
     ever equalling or containing the other. A file this scan cannot list or
     stat refuses the whole workspace rather than being silently excluded, as
     described by :func:`_canonical_file_identities`.
+
+    The sole exemption permits ``canon_root_path`` and ``data_root`` to name
+    the identical filesystem directory; every other equality or overlap refuses.
     """
     locations = _workspace_locations(workspace)
     for index, first in enumerate(locations):
         for second in locations[index + 1 :]:
             if _same_location(first.path, second.path):
+                if {first.field, second.field} == {"data_root", "canon_root_path"}:
+                    # A canon root may intentionally share the data root; only this
+                    # exact pair is exempt from the general no-alias rule.
+                    continue
                 raise AliasedWorkspaceLocation(
                     f"{first.field} and {second.field} both denote {first.path}; NousOS "
                     "refuses two names for one workspace location"
@@ -556,9 +576,11 @@ def _refuse_aliased_locations(workspace: Workspace) -> None:
                     f"store {store.field}={store.path}; a canonical location may not sit in a store"
                 )
 
-    canonical_file_identities = _canonical_file_identities(
-        workspace.data_root.path
-    ) | _canonical_file_identities(workspace.snapshot_root)
+    canonical_file_identities = frozenset().union(
+        *(
+            _canonical_file_identities(location.path) for location in canonical_directories
+        )
+    )
     for store in stores:
         try:
             store_info = os.stat(store.path)
@@ -588,6 +610,7 @@ def resolve_workspace(
     semantic_index_path: str | os.PathLike[str] | None = None,
     asset_root_path: str | os.PathLike[str] | None = None,
     sighting_log_path: str | os.PathLike[str] | None = None,
+    canon_root_path: str | os.PathLike[str] | None = None,
     environ: dict[str, str] | None = None,
 ) -> Workspace:
     """Resolve every location Core needs, or refuse. Never guesses one.
@@ -661,6 +684,11 @@ def resolve_workspace(
         sighting_log_path=(
             _resolve_path(sighting_log_path, SIGHTING_LOG_PATH_ENV_VAR, "sighting log", env)
             if sighting_log_path is not None or bool(env.get(SIGHTING_LOG_PATH_ENV_VAR, "").strip())
+            else None
+        ),
+        canon_root_path=(
+            _resolve_path(canon_root_path, CANON_ROOT_PATH_ENV_VAR, "canon root", env)
+            if canon_root_path is not None or bool(env.get(CANON_ROOT_PATH_ENV_VAR, "").strip())
             else None
         ),
     )
@@ -863,7 +891,7 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
     _descriptor(
         "canon.assertions",
         "list_assertions",
-        "List verified promoted canonical decisions, distinct from candidates and historical sources.",
+        "List verified promoted canonical decisions from the configured canon root.",
         (
             ParameterSpec(
                 "assertion_id",
@@ -1443,7 +1471,10 @@ def _bind_versions(workspace: Workspace, arguments: dict[str, object]) -> dict[s
 
 
 def _bind_assertions(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
-    return {"root": workspace.data_root, "assertion_id": arguments.get("assertion_id")}
+    assertion_id = arguments.get("assertion_id")
+    if assertion_id is not None:
+        require_id(assertion_id, ASSERTION_PREFIX)
+    return {"root": workspace.canon_root_path, "assertion_id": assertion_id}
 
 
 def _bind_read_span(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
@@ -1864,6 +1895,11 @@ def _system_health(workspace: Workspace) -> dict[str, object]:
             "unconfigured"
             if workspace.asset_root_path is None
             else _location_health(workspace.asset_root_path, is_directory=True)
+        ),
+        "canon_root_path": (
+            "unconfigured"
+            if workspace.canon_root_path is None
+            else _location_health(workspace.canon_root_path, is_directory=True)
         ),
         "sighting_log_path": (
             "unconfigured"

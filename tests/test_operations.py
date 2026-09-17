@@ -567,6 +567,7 @@ class _TemporaryCanon:
     ledger: Ledger
     derived_path: Path
     data_root: DataRoot
+    canon_root_path: Path
     citation: Citation
     relation_citation: Citation
     candidates: CandidateStore
@@ -671,6 +672,7 @@ def _temporary_canon(tmp_path: Path) -> _TemporaryCanon:
         ledger=ledger,
         derived_path=derived_path,
         data_root=DataRoot(documents),
+        canon_root_path=tmp_path / "assertion-canon",
         citation=citation,
         relation_citation=relation_citation,
         candidates=CandidateStore(tmp_path / "candidates.jsonl"),
@@ -736,7 +738,7 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
             ),
         },
         "list_documents": {"root": canon.data_root},
-        "list_assertions": {"root": canon.data_root},
+        "list_assertions": {"root": canon.canon_root_path},
         "describe_corpus": {"root": canon.data_root},
         "proposals": {"store": canon.candidates},
         "relations": {"store": canon.relations},

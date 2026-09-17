@@ -698,6 +698,11 @@ def _documents_arguments(world: _World, text: str) -> dict[str, object]:
     return {"root": _DataRootCarrier(world.data_root, text)}
 
 
+def _assertions_arguments(world: _World, text: str) -> dict[str, object]:
+    """The configured canon root is a path, separate from the document root."""
+    return {"root": _PathCarrier(world.root, text)}
+
+
 def _proposals_arguments(world: _World, text: str) -> dict[str, object]:
     # Its only argument is the store itself, so text travels in the carrier.
     return {"store": _CandidateCarrier(world.candidates, text)}
@@ -887,7 +892,7 @@ _ARGUMENT_BUILDERS: Mapping[
     operation_bindings.versions: _versions_arguments,
     operation_bindings.read_span: _span_arguments,
     operation_bindings.verify_derived: _verify_derived_arguments,
-    operation_bindings.list_assertions: _documents_arguments,
+    operation_bindings.list_assertions: _assertions_arguments,
     operation_bindings.list_documents: _documents_arguments,
     operation_bindings.describe_corpus: _documents_arguments,
     operation_bindings.proposals: _proposals_arguments,
@@ -1253,7 +1258,10 @@ def _observed_real_effect(
     elif implementation is operation_bindings.list_assertions:
         items = (returned,)
         expected_count = 1
-        condition = lambda value: type(value) is list and value == []
+        condition = lambda value: (
+            type(value) is dict
+            and value == {"status": "complete", "assertions": []}
+        )
     elif implementation is operation_bindings.list_documents:
         items = returned
         expected_count = 1
@@ -1400,7 +1408,7 @@ def _well_formed_wrong_results(operation: _Operation) -> tuple[object, ...]:
     if implementation is operation_bindings.list_documents:
         return (("other.md",),)
     if implementation is operation_bindings.list_assertions:
-        return ([{}],)
+        return ({"status": "complete", "assertions": [{}]},)
     if implementation is operation_bindings.describe_corpus:
         return ((("other.md", "0" * 64),),)
     if implementation is operation_bindings.rejections:

@@ -47,21 +47,32 @@ def proposals(*, store: CandidateStore) -> tuple[Proposal, ...]:
 
 
 def list_assertions(
-    *, root: DataRoot, assertion_id: str | None = None
-) -> list[dict[str, object]]:
-    """Read verified promoted assertions without importing the review console at startup.
+    *, root: Path | None, assertion_id: str | None = None
+) -> dict[str, object]:
+    """Read verified promoted assertions from the optional configured canon root.
 
-    The canon root of a deployment is its data root: the review console writes
-    ``assertions/`` and ``assertions.jsonl`` there. The listing is the verified
-    one (digests, chain and index), so a tampered canon refuses instead of
-    returning a partial answer.
+    An absent canon-root configuration returns ``not_run`` rather than claiming an
+    empty canon. A configured root without ``assertions/`` or ``assertions.jsonl``
+    is an empty canon and returns ``complete`` with no assertions. A deployment may
+    intentionally make its canon root equal to its data root, but that equality is
+    a deployment choice rather than an invariant. The listing verifies the index and
+    every version, so a tampered canon refuses instead of returning a partial answer.
     """
+    if root is None:
+        return {
+            "status": "not_run",
+            "reason": (
+                "no canon root is configured "
+                "(NOUS_OS_CANON_ROOT_PATH or --canon-root-path)"
+            ),
+            "assertions": [],
+        }
     # review imports this registry for promotion registration.  Importing it
     # only after execute has authorized this READ operation avoids that cycle.
     from nous_os.review import canon_index
 
-    versions = canon_index(root.path)
-    return [
+    versions = canon_index(root)
+    return {"status": "complete", "assertions": [
         {
             "assertion_id": version.assertion.id,
             "state": version.assertion.state.value,
@@ -93,7 +104,7 @@ def list_assertions(
         }
         for version in versions
         if assertion_id is None or version.assertion.id == assertion_id
-    ]
+    ]}
 
 
 def as_of(*, index, valid_at=None, recorded_as_of=None):

@@ -470,6 +470,10 @@ python3 -m nous_os system.capabilities
 python3 -m nous_os system.health
 ```
 
+To read promoted assertions, configure their optional canon location separately:
+`export NOUS_OS_CANON_ROOT_PATH="$WORKSPACE/canon"`. It may deliberately equal
+`NOUS_OS_DATA_ROOT` for a deployment that stores both there; it is not assumed to.
+
 Every location also has a command-line option (`--data-root`, `--snapshot-root`,
 and so on) if you would rather not use the environment. `system.health` reports
 each location as `healthy`, `absent` or `unknown` — never as a silent zero.

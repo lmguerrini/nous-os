@@ -17,7 +17,7 @@ import nous_os.review as review
 from nous_os.capability import Grant, NotAuthorized, Tier
 from nous_os.candidates import CandidateStore, Proposal
 from nous_os.derived import CanonDivergence, rebuild, state_digest
-from nous_os.identity import canonical_bytes, digest_bytes
+from nous_os.identity import InvalidIdentifier, canonical_bytes, digest_bytes
 from nous_os.ledger import Ledger, ingest
 from nous_os.provenance import Citation, Locator, quote_lint
 from nous_os.review import CandidateRefused, ReviewCandidate, canon_index, main, queue
@@ -207,9 +207,11 @@ def _all_files(root: Path) -> tuple[tuple[str, bytes], ...]:
     )
 
 
-def _canon_workspace(world: _World, data_root: Path | None = None) -> core.Workspace:
+def _canon_workspace(
+    world: _World, canon_root_path: Path | None = None, *, configured: bool = True
+) -> core.Workspace:
     return core.resolve_workspace(
-        data_root=world.canon_root if data_root is None else data_root,
+        data_root=world.data_root,
         snapshot_root=world.root / "snapshots",
         ledger_path=world.root / "ledger.jsonl",
         derived_path=world.root / "derived.sqlite",
@@ -217,6 +219,11 @@ def _canon_workspace(world: _World, data_root: Path | None = None) -> core.Works
         bridge_registry_path=world.root / "bridges.jsonl",
         rejection_memory_path=world.root / "rejections.jsonl",
         relation_store_path=world.root / "relations.jsonl",
+        canon_root_path=(
+            None
+            if not configured
+            else world.canon_root if canon_root_path is None else canon_root_path
+        ),
     )
 
 
@@ -537,21 +544,40 @@ def test_canon_assertions_reads_promoted_versions_and_filters(
     }
 
     result = core.invoke(reader, "canon.assertions", workspace, {})
-    assert set(result[0]) == set(expected)
-    assert result == [expected]
+    assert set(result["assertions"][0]) == set(expected)
+    assert result == {"status": "complete", "assertions": [expected]}
     assert core.invoke(
         reader, "canon.assertions", workspace, {"assertion_id": version.assertion.id}
-    ) == [expected]
+    ) == {"status": "complete", "assertions": [expected]}
     assert core.invoke(
         reader,
         "canon.assertions",
         workspace,
         {"assertion_id": "asr_01ARZ3NDEKTSV4RRFFQ69G5FAA"},
-    ) == []
+    ) == {"status": "complete", "assertions": []}
+    with pytest.raises(InvalidIdentifier):
+        core.invoke(
+            reader,
+            "canon.assertions",
+            workspace,
+            {"assertion_id": "not-an-assertion-id"},
+        )
 
     empty_root = world.root / "empty-canon"
     empty_root.mkdir()
-    assert core.invoke(reader, "canon.assertions", _canon_workspace(world, empty_root), {}) == []
+    assert core.invoke(
+        reader, "canon.assertions", _canon_workspace(world, empty_root), {}
+    ) == {"status": "complete", "assertions": []}
+    assert core.invoke(
+        reader, "canon.assertions", _canon_workspace(world, configured=False), {}
+    ) == {
+        "status": "not_run",
+        "reason": (
+            "no canon root is configured "
+            "(NOUS_OS_CANON_ROOT_PATH or --canon-root-path)"
+        ),
+        "assertions": [],
+    }
 
     with pytest.raises(NotAuthorized):
         core.invoke(
@@ -559,6 +585,36 @@ def test_canon_assertions_reads_promoted_versions_and_filters(
             "canon.assertions",
             workspace,
             {},
+        )
+
+
+def test_canon_assertions_orders_versions_and_refuses_lower_case_identifiers(
+    tmp_path: Path,
+) -> None:
+    world = _world(tmp_path)
+    first = ReviewCandidate.from_proposal(_record(world, _content(world, scope="harbor.one")))
+    second = ReviewCandidate.from_proposal(_record(world, _content(world, scope="harbor.two")))
+    decisions = _write_decisions(
+        world.root / "decisions.jsonl",
+        _decision(first),
+        _decision(second, decided_at="2026-01-03T12:01:00+00:00"),
+    )
+    assert main(_apply_argv(world, decisions)) == 0
+
+    reader = Grant("reader", frozenset({Tier.READ}))
+    versions = canon_index(world.canon_root)
+    result = core.invoke(reader, "canon.assertions", _canon_workspace(world), {})
+    assert result["status"] == "complete"
+    assert [
+        (item["assertion_id"], item["content_digest"])
+        for item in result["assertions"]
+    ] == sorted(
+        (version.assertion.id, version.content_digest) for version in versions
+    )
+    with pytest.raises(InvalidIdentifier):
+        core.invoke(
+            reader, "canon.assertions", _canon_workspace(world),
+            {"assertion_id": versions[0].assertion.id.lower()},
         )
 
 
@@ -624,6 +680,8 @@ def test_canon_assertions_mcp_and_cli_return_the_same_json(
 
     argv = [
         "--data-root",
+        str(world.data_root),
+        "--canon-root-path",
         str(world.canon_root),
         "--snapshot-root",
         str(world.root / "snapshots"),

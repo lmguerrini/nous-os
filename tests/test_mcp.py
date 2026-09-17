@@ -185,6 +185,52 @@ def test_importing_mcp_never_loads_the_cli_module() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_dispatching_canon_assertions_never_loads_cli_in_a_fresh_process(
+    tmp_path: Path,
+) -> None:
+    script = """
+from pathlib import Path
+import sys
+
+import nous_os.core as core
+import nous_os.mcp as mcp
+from nous_os.capability import Grant, Tier
+
+base = Path(sys.argv[1])
+(base / "documents").mkdir()
+(base / "canon").mkdir()
+workspace = core.resolve_workspace(
+    data_root=base / "documents",
+    snapshot_root=base / "snapshots",
+    ledger_path=base / "ledger.jsonl",
+    derived_path=base / "derived.sqlite",
+    candidate_store_path=base / "candidates.jsonl",
+    bridge_registry_path=base / "bridges.jsonl",
+    rejection_memory_path=base / "rejections.jsonl",
+    relation_store_path=base / "relations.jsonl",
+    canon_root_path=base / "canon",
+)
+response = mcp.dispatch(
+    {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "canon.assertions", "arguments": {}},
+    },
+    Grant("reader", frozenset({Tier.READ})),
+    workspace,
+)
+assert response is not None
+assert "nous_os.review" in sys.modules
+assert "nous_os.cli" not in sys.modules, sorted(sys.modules)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True, text=True, env=_child_env(),
+    )
+    assert result.returncode == 0, result.stderr
+
+
 # --- structural: no binding to a domain implementation, operations, or execute
 
 
