@@ -55,7 +55,7 @@ test("synthetic class definitions pin the D-065 meanings", () => {
     A: "dichiarazione esplicita del fondatore",
     B: "conseguenza diretta sostenuta dal canone",
     C: "interpretazione forte non approvata",
-    D: "analogia o ipotesi creativa da sottoporre al fondatore",
+    D: "analogia o ipotesi creativa",
   });
 });
 test("synthetic badges, attestation and short labels distinguish element kinds", () => {

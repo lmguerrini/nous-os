@@ -16,7 +16,7 @@ export const classMeaning: Record<string, string> = {
   A: "dichiarazione esplicita del fondatore",
   B: "conseguenza diretta sostenuta dal canone",
   C: "interpretazione forte non approvata",
-  D: "analogia o ipotesi creativa da sottoporre al fondatore",
+  D: "analogia o ipotesi creativa",
 };
 export const attestationMeaning: Record<string, string> = {
   "d065-review-tagging": "etichetta assegnata dalla revisione D-065, non parole del fondatore",

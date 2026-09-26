@@ -2,7 +2,7 @@
 
 This explorer is a review projection of the D-065 connection cards and their cited NousOS source spans. It is not canon and does not define a final model. A connection card's tags and A/B/C/D class are provisional review conventions. The export marks each citation that fails byte verification and each record whose context cannot be read.
 
-The classes are **una convenzione provvisoria di revisione (D-065), non un modello epistemico**: A = "dichiarazione esplicita del fondatore"; B = "conseguenza diretta sostenuta dal canone"; C = "interpretazione forte non approvata"; D = "analogia o ipotesi creativa da sottoporre al fondatore".
+The classes are **una convenzione provvisoria di revisione (D-065), non un modello epistemico**: A = "dichiarazione esplicita del fondatore"; B = "conseguenza diretta sostenuta dal canone"; C = "interpretazione forte non approvata"; D = "analogia o ipotesi creativa".
 
 ## Model
 
