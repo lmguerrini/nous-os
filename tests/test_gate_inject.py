@@ -85,6 +85,7 @@ _EXPECTED_OPERATION_NAMES = frozenset(
         "time.supersession",
         "context.compile",
         "candidate.proposals",
+        "candidate.search",
         "candidate.rejections",
         "candidate.bridges",
         "candidate.propose",
@@ -162,6 +163,7 @@ def _workspace(root: Path) -> tuple[object, core.Workspace]:
         ledger_path=world.ledger.path,
         derived_path=world.derived_path,
         candidate_store_path=world.candidates._path,
+        candidate_replacements_path=world.candidate_replacements_path,
         bridge_registry_path=world.bridges._path,
         rejection_memory_path=world.rejections._path,
         relation_store_path=world.root / "relations.jsonl",
@@ -182,6 +184,8 @@ def _workspace_argv(workspace: core.Workspace, holder: str) -> list[str]:
         str(workspace.derived_path),
         "--candidate-store-path",
         str(workspace.candidate_store_path),
+        "--candidate-replacements-path",
+        str(workspace.candidate_replacements_path),
         "--bridge-registry-path",
         str(workspace.bridge_registry_path),
         "--rejection-memory-path",
@@ -270,7 +274,7 @@ def _hostile_bridge_card_payload(text: str) -> dict[str, object]:
 def _arguments(descriptor: core.OperationDescriptor, world: object, text: str) -> dict[str, object]:
     """Build valid JSON input, adding hostile text to each available text entry.
 
-    ``knowledge.search``, ``candidate.propose``, and ``candidate.adjudicate``
+    ``knowledge.search``, ``candidate.search``, ``candidate.propose``, and ``candidate.adjudicate``
     put the hostile sample directly into an already free-text parameter.
     ``graph.project``, the two temporal reads with an assertion body,
     ``time.supersession``, ``context.compile``, and ``candidate.discover``
@@ -287,6 +291,8 @@ def _arguments(descriptor: core.OperationDescriptor, world: object, text: str) -
     elif name == "knowledge.search":
         escaped = text.replace('"', '""')
         arguments["query"] = f'alpha OR "{escaped}"'
+    elif name == "candidate.search":
+        arguments["query"] = f"alpha {text}"
     elif name == "candidate.propose":
         arguments["content"] = text
     elif name == "candidate.adjudicate":
@@ -637,6 +643,13 @@ def _run_matrix(
                                 workspace,
                                 relation_store_path=workspace.relation_store_path.with_name(
                                     f"relations-{realised}-{side}.jsonl"
+                                ),
+                            )
+                        if descriptor.external_name == "candidate.search":
+                            workspace = replace(
+                                workspace,
+                                candidate_store_path=workspace.candidate_store_path.with_name(
+                                    "search-candidates.jsonl"
                                 ),
                             )
                         if execution_context is not None:

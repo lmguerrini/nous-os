@@ -21,7 +21,7 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -50,6 +50,7 @@ _OPTIONAL_PARAMETER_CASES = (
     ("time.as_of", "recorded_as_of"),
     ("time.conflicts", "key"),
     ("candidate.discover", "consult_memory"),
+    ("candidate.search", "limit"),
 )
 
 
@@ -86,6 +87,8 @@ def _workspace_argv(workspace: core.Workspace) -> list[str]:
         str(workspace.derived_path),
         "--candidate-store-path",
         str(workspace.candidate_store_path),
+        "--candidate-replacements-path",
+        str(workspace.candidate_replacements_path),
         "--bridge-registry-path",
         str(workspace.bridge_registry_path),
         "--rejection-memory-path",
@@ -117,6 +120,7 @@ def _workspace(root: Path) -> tuple[object, core.Workspace]:
         ledger_path=world.ledger.path,
         derived_path=world.derived_path,
         candidate_store_path=world.candidates._path,
+        candidate_replacements_path=world.candidate_replacements_path,
         bridge_registry_path=world.bridges._path,
         rejection_memory_path=world.rejections._path,
         relation_store_path=world.root / "relations.jsonl",
@@ -253,6 +257,8 @@ def _arguments(descriptor: core.OperationDescriptor, world: object) -> dict[str,
             failed=None,
         )
         arguments["candidates"] = [already_rejected_cluster_card.as_payload()]
+    if descriptor.external_name == "candidate.search":
+        arguments["query"] = "alpha"
     if descriptor.external_name == "reconcile.propose":
         relation = arguments["relation"]
         relation["left"]["snapshot_digest"] = world.citation.snapshot_digest
@@ -267,6 +273,8 @@ def _cli_value(
     capsys: pytest.CaptureFixture[str],
 ) -> _Call:
     """Run the actual CLI and remove exit-code and stream details from its value."""
+    if descriptor.external_name == "candidate.search":
+        workspace = replace(workspace, candidate_store_path=workspace.candidate_store_path.with_name("search-candidates.jsonl"))
     argv = _workspace_argv(workspace)
     for tier in (Tier.READ, Tier.PROPOSE):
         argv.extend(("--tier", tier.value))
@@ -298,6 +306,8 @@ def _mcp_value(
     workspace: core.Workspace,
 ) -> _Call:
     """Run actual dispatch and remove JSON-RPC fields from its delivered value."""
+    if descriptor.external_name == "candidate.search":
+        workspace = replace(workspace, candidate_store_path=workspace.candidate_store_path.with_name("search-candidates.jsonl"))
     if descriptor.external_name == "reconcile.propose":
         workspace = core.Workspace(
             data_root=workspace.data_root,

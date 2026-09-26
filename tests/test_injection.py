@@ -169,6 +169,8 @@ class _World:
     data_root: DataRoot
     citation: Citation
     candidates: CandidateStore
+    candidate_search_path: Path
+    candidate_replacements_path: Path
     relations: RelationStore
     temporal: TemporalIndex
     bridges: BridgeRegistry
@@ -533,6 +535,39 @@ def _build_world(root: Path) -> _World:
         proposed_at=_RECORDED_AT,
         holder=_SEEDED_PROPOSAL_HOLDER,
     )
+    candidate_search_path = root / "search-candidates.jsonl"
+    candidate_replacements_path = root / "search-replacements.jsonl"
+    with candidate_search_path.open("wb") as search_file:
+        for number in range(1, 8):
+            proposal = Proposal(
+                proposal_id=f"asr_{number:026X}",
+                source_id=_SOURCE_ID,
+                content=UntrustedText(json.dumps({
+                    "statement": f"alpha beta synthetic candidate {number}",
+                    "kind": "DECISION",
+                    "scope": "synthetic.scope",
+                    "origin": "USER_AUTHORED",
+                    "support": "direct_quote",
+                    "citations": [{
+                        "source_id": _SOURCE_ID,
+                        "snapshot_digest": seeded.entry.snapshot_digest,
+                        "start_byte": 0,
+                        "end_byte": 5,
+                        "span": "alpha",
+                    }],
+                    "counter_citations": [],
+                    "valid_from": None,
+                    "valid_to": None,
+                    "why": "Synthetic fixture",
+                    "producer": "injection-matrix/1",
+                    "batch": "fixture",
+                    "supersedes": None,
+                })),
+                proposed_at=_RECORDED_AT,
+                holder="synthetic fixture",
+            )
+            search_file.write(canonical_bytes(proposal.as_payload()) + b"\n")
+    candidate_replacements_path.write_text("", encoding="utf-8")
     citation = Citation(
         _SOURCE_ID,
         seeded.entry.snapshot_digest,
@@ -621,6 +656,8 @@ def _build_world(root: Path) -> _World:
         data_root=DataRoot(documents),
         citation=citation,
         candidates=candidates,
+        candidate_search_path=candidate_search_path,
+        candidate_replacements_path=candidate_replacements_path,
         relations=relations,
         temporal=temporal,
         bridges=bridges,
@@ -706,6 +743,19 @@ def _assertions_arguments(world: _World, text: str) -> dict[str, object]:
 def _proposals_arguments(world: _World, text: str) -> dict[str, object]:
     # Its only argument is the store itself, so text travels in the carrier.
     return {"store": _CandidateCarrier(world.candidates, text)}
+
+
+def _candidate_search_arguments(world: _World, text: str) -> dict[str, object]:
+    # Search parses hostile punctuation as data and ORs terms; alpha keeps a
+    # seeded hit observable while the original text travels in the path carrier.
+    return {
+        "store_path": _PathCarrier(world.candidate_search_path, text),
+        "replacement_path": world.candidate_replacements_path,
+        "canon_root": None,
+        "semantic_index_path": None,
+        "derived_path": None,
+        "query": f"alpha {text}",
+    }
 
 
 def _relations_arguments(world: _World, text: str) -> dict[str, object]:
@@ -896,6 +946,7 @@ _ARGUMENT_BUILDERS: Mapping[
     operation_bindings.list_documents: _documents_arguments,
     operation_bindings.describe_corpus: _documents_arguments,
     operation_bindings.proposals: _proposals_arguments,
+    operation_bindings.search_candidates: _candidate_search_arguments,
     operation_bindings.relations: _relations_arguments,
     operation_bindings.propose_relation: _propose_relation_arguments,
     operation_bindings.verify_relations: _verify_relations_arguments,
@@ -1281,6 +1332,22 @@ def _observed_real_effect(
         items = returned
         expected_count = 1
         condition = _matches_seeded_proposal
+    elif implementation is operation_bindings.search_candidates:
+        items = (returned,)
+        expected_count = 1
+        condition = lambda value: (
+            type(value) is dict
+            and value.get("status") == "complete"
+            and value.get("ranking") == "text"
+            and value.get("total_matched") == 7
+            and type(value.get("hits")) is list
+            and len(value["hits"]) == 7
+            and {hit.get("statement") for hit in value["hits"]} == {
+                f"alpha beta synthetic candidate {number}" for number in range(1, 8)
+            }
+            and all(hit.get("source_id") == _SOURCE_ID for hit in value["hits"])
+            and all(hit.get("canonical_status") == "non_canonical" for hit in value["hits"])
+        )
     elif implementation is operation_bindings.relations:
         items = returned
         expected_count = None
@@ -1397,6 +1464,11 @@ def _well_formed_wrong_results(operation: _Operation) -> tuple[object, ...]:
     implementation = operation.implementation
     if implementation is operation_bindings.search:
         return ((SearchHit(_SEEDED_DIGEST, _SOURCE_ID, "unrelated excerpt"),),)
+    if implementation is operation_bindings.search_candidates:
+        return ({
+            "status": "complete", "ranking": "text", "total_matched": 1,
+            "hits": [{"statement": "unrelated candidate", "source_id": _SOURCE_ID}],
+        },)
     if implementation is operation_bindings.sources:
         return (("src_01ARZ3NDEKTSV4RRFFQ69G5FAW",),)
     if implementation is operation_bindings.versions:
@@ -1671,6 +1743,7 @@ def test_registered_operations_have_the_decided_names_and_tiers() -> None:
         "list_documents": Tier.READ,
         "describe_corpus": Tier.READ,
         "proposals": Tier.READ,
+        "candidate_search": Tier.READ,
         "relations": Tier.READ,
         "verify_relations": Tier.READ,
         "rejections": Tier.READ,
@@ -1893,7 +1966,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
     expected = (
         len(entries) * len(operations) * len(transports) * len(grant_tier_sets)
     )
-    assert expected == 12064
+    assert expected == 12528
     if expected == 0:
         _fail_not_run("the derived corpus matrix had zero expected cells")
 
@@ -1951,8 +2024,8 @@ def test_argument_content_cannot_change_any_authorization_decision(
 
     if executed == 0:
         _fail_not_run("the corpus matrix executed zero cells")
-    assert executed == 12064
-    assert expected == 12064
+    assert executed == 12528
+    assert expected == 12528
     expected_positive_controls = {
         (transport.name, operation.name, tier_set)
         for transport in transports
@@ -1960,7 +2033,7 @@ def test_argument_content_cannot_change_any_authorization_decision(
         for tier_set in grant_tier_sets
         if operation.tier in tier_set
     }
-    assert len(expected_positive_controls) == 208
+    assert len(expected_positive_controls) == 216
     if positive_controls != expected_positive_controls:
         absent = sorted(
             (transport, operation, sorted(tier.value for tier in tier_set))
@@ -1976,9 +2049,9 @@ def test_argument_content_cannot_change_any_authorization_decision(
         len(positive_controls),
     )
     assert result.status is RunStatus.COMPLETE
-    assert result.executed == 12064
-    assert result.expected == 12064
-    assert result.positive_controls == 208
+    assert result.executed == 12528
+    assert result.expected == 12528
+    assert result.positive_controls == 216
 
 
 def test_the_holder_is_provenance_metadata_and_carries_no_authority(
@@ -1994,7 +2067,7 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
     expected = len(transports) * sum(
         1 for tier in tiers for operation in operations if operation.tier is tier
     )
-    assert expected == 26
+    assert expected == 27
     if expected == 0:
         _fail_not_run("the holder-metadata matrix had zero expected cells")
 
@@ -2026,8 +2099,8 @@ def test_the_holder_is_provenance_metadata_and_carries_no_authority(
 
     if executed == 0:
         _fail_not_run("the holder-metadata matrix executed zero cells")
-    assert executed == 26
-    assert expected == 26
+    assert executed == 27
+    assert expected == 27
 
 
 def test_required_tier_argument_content_cannot_change_the_decision_in_either_direction(
@@ -2039,7 +2112,7 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
     transports = _derived_transports()
     world = _build_world(tmp_path / "required_tier_arguments")
     expected = len(transports) * len(operations) * 2
-    assert expected == 52
+    assert expected == 54
     if expected == 0:
         _fail_not_run("the required-tier argument matrix had zero expected cells")
     executed = 0
@@ -2098,5 +2171,5 @@ def test_required_tier_argument_content_cannot_change_the_decision_in_either_dir
 
     if executed == 0:
         _fail_not_run("the required-tier argument matrix executed zero cells")
-    assert executed == 52
-    assert expected == 52
+    assert executed == 54
+    assert expected == 54
