@@ -31,6 +31,7 @@ class CandidateSearchError(Exception):
 
 BUILD_SECONDS = 20.0
 SEARCH_SECONDS = 2.0
+SEMANTIC_SECONDS = 60.0
 MAX_FIELD_BYTES = 1_000_000
 # Refuse oversized raw rows before JSON decoding, including replaced versions.
 MAX_RECORD_BYTES = 16_000_000
@@ -337,7 +338,7 @@ def search_candidates(*, store_path: Path, replacement_path: Path | None,
     error_code = None
     try:
         if (type(limit) is not int or not 1 <= limit <= 20 or type(include_replaced) is not bool
-                or type(ranking) is not str or ranking not in {"text", "source_semantic"}):
+                or type(ranking) is not str or ranking not in {"text", "text_relevance", "source_semantic"}):
             _refuse("InvalidQuery")
         if cursor is not None and type(cursor) is not str:
             _refuse("InvalidCursor")
@@ -360,9 +361,10 @@ def search_candidates(*, store_path: Path, replacement_path: Path | None,
                     _refuse("CandidateStoreUnreadable")
             if time.monotonic() > deadline:
                 _refuse("SearchTimeout")
-            request = hashlib.sha256(canonical_bytes({"query": normalized, "ranking": ranking,
+            request_fields = {"query": normalized, "ranking": ranking,
                 "include_replaced": include_replaced, "replacement": replacement_digest,
-                "canon": sorted((key, value) for key, value in canon.items())})).hexdigest()
+                "canon": sorted((key, value) for key, value in canon.items())}
+            request = hashlib.sha256(canonical_bytes(request_fields)).hexdigest()
             offset = _cursor(cursor, generation, request)
             connection.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 1000)
             try:
@@ -381,39 +383,69 @@ def search_candidates(*, store_path: Path, replacement_path: Path | None,
                 _refuse("SearchTimeout")
             source_ranks: dict[str, int] = {}
             if ranking == "source_semantic":
+                semantic_started = time.monotonic()
+                semantic_deadline = semantic_started + SEMANTIC_SECONDS
                 try:
                     semantic = semantic_search(semantic_index_path, normalized, limit=100,
                                                distinct=True, derived_path=derived_path)
                 except Exception:
-                    if time.monotonic() > deadline:
+                    if time.monotonic() > semantic_deadline:
                         _refuse("SearchTimeout")
                     _refuse("SemanticUnavailable")
+                # The dense model may load cold. Its elapsed time does not spend
+                # the remaining two-second text and response budget.
+                deadline += time.monotonic() - semantic_started
+                if time.monotonic() > semantic_deadline:
+                    _refuse("SearchTimeout")
                 if semantic.get("status") != "complete":
                     _refuse("SemanticUnavailable")
                 source_ranks = {hit["source_id"]: rank for rank, hit in enumerate(semantic["hits"], 1)}
                 if time.monotonic() > deadline:
                     _refuse("SearchTimeout")
-            ranked = []
+            text_ranked = []
+            semantic_ranked = []
             replaced_excluded = 0
             for index, candidate in enumerate(candidates):
                 candidate_id = candidate.proposal.proposal_id
-                if ranking == "text":
-                    if index not in text_scores:
-                        continue
-                    key = (text_scores[index], candidate_id, candidate.version)
-                else:
-                    cited = {citation.source_id for citation in (*candidate.citations, *candidate.derived_citations)}
+                text_score = text_scores.get(index)
+                semantic_rank = None
+                if ranking == "source_semantic":
+                    cited = ({citation.source_id for citation in candidate.citations}
+                             | {citation.asset_source_id for citation in candidate.derived_citations})
                     ranks = [source_ranks[source] for source in cited if source in source_ranks]
-                    if not ranks:
-                        continue
-                    key = (min(ranks), text_scores.get(index, 0.0), candidate_id, candidate.version)
+                    if ranks:
+                        semantic_rank = min(ranks)
+                if ((ranking == "source_semantic" and semantic_rank is None)
+                        or (ranking != "source_semantic" and text_score is None)):
+                    continue
                 if candidate_id in replacements and not include_replaced:
                     replaced_excluded += 1
                     continue
-                ranked.append((key, candidate, text_scores.get(index, 0.0)))
-            ranked.sort(key=lambda entry: entry[0])
+                if text_score is not None:
+                    text_ranked.append((text_score, candidate_id, candidate.version, index))
+                if semantic_rank is not None:
+                    semantic_ranked.append((semantic_rank, text_score if text_score is not None else 0.0,
+                                            candidate_id, candidate.version, index))
+            text_ranked.sort()
+            semantic_ranked.sort()
+            if ranking == "source_semantic":
+                order = [entry[-1] for entry in semantic_ranked]
+            elif ranking == "text":
+                order = [entry[-1] for entry in text_ranked]
+                def standing(index: int) -> int:
+                    candidate = candidates[index]
+                    if (candidate.proposal.proposal_id, candidate.version) in canon:
+                        return 0
+                    return 1 if _label(candidate, False)[0] == "DECISION_STATED_BY_PERSON" else 2
+                order[:100] = sorted(order[:100], key=lambda index: (
+                    standing(index), text_scores[index], candidates[index].proposal.proposal_id,
+                    candidates[index].version))
+            else:
+                order = [entry[-1] for entry in text_ranked]
             hits = []
-            for position, (_key, candidate, score) in enumerate(ranked[offset:offset + limit], offset + 1):
+            for position, index in enumerate(order[offset:offset + limit], offset + 1):
+                candidate = candidates[index]
+                score = text_scores.get(index, 0.0)
                 candidate_id = candidate.proposal.proposal_id
                 assertion_id = canon.get((candidate_id, candidate.version))
                 canonical = assertion_id is not None
@@ -439,10 +471,11 @@ def search_candidates(*, store_path: Path, replacement_path: Path | None,
             if time.monotonic() > deadline:
                 _refuse("SearchTimeout")
             end = offset + len(hits)
-            return {"status": "complete", "ranking": ranking, "store_generation": generation,
-                    "total_matched": len(ranked), "replaced_excluded": replaced_excluded,
+            return {"status": "complete", "ranking": ranking,
+                    "store_generation": generation,
+                    "total_matched": len(order), "replaced_excluded": replaced_excluded,
                     "replaced_unreadable": replaced_unreadable, "hits": hits,
-                    "next_cursor": _next_cursor(generation, request, end) if end < len(ranked) else None}
+                    "next_cursor": _next_cursor(generation, request, end) if end < len(order) else None}
     except CandidateSearchError as error:
         error_code = str(error)
         raise

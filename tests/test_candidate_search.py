@@ -240,6 +240,112 @@ def test_source_semantic_is_cited_source_ranking(tmp_path: Path, monkeypatch: py
     assert answer["hits"][0]["score"] == 0
 
 
+def test_dense_asset_hit_reaches_candidate_through_derived_citation_only(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, manifest = _paths(tmp_path)
+    asset_source = "src_01ARZ3NDEKTSV4RRFFQ69G5FAA"
+    candidate = _content("Independent claim")
+    candidate["derived_citations"] = [{
+        "asset_source_id": asset_source, "asset_digest": "0" * 64,
+        "extractor": "plain_text", "extractor_version": "extraction/1",
+        "record_digest": "1" * 64, "start_char": 0, "end_char": 4,
+        "span": "Quay",
+    }]
+    _write(store, [(OLD, candidate)])
+    monkeypatch.setattr(search, "semantic_search", lambda *_args, **_kwargs: {
+        "status": "complete", "hits": [{"source_id": asset_source}],
+    })
+
+    result = _search(store, manifest, "unmatched query", ranking="source_semantic")
+    assert result["total_matched"] == 1
+    assert result["hits"][0]["candidate_id"] == OLD
+    assert result["hits"][0]["semantic_basis"] == "cited_source_rank"
+    assert result["hits"][0]["citations"][0]["source_id"] == SOURCE
+    assert result["hits"][0]["derived_citations"][0]["asset_source_id"] == asset_source
+
+
+def test_dense_call_has_its_own_deadline_and_never_returns_a_partial_page(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, manifest = _paths(tmp_path)
+    clock = [100.0]
+    monkeypatch.setattr(search.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(search, "SEARCH_SECONDS", 2)
+    monkeypatch.setattr(search, "SEMANTIC_SECONDS", 60)
+
+    def slow_backend(*_args, **_kwargs):
+        clock[0] += 8
+        return {"status": "complete", "hits": [{"source_id": SOURCE}]}
+
+    monkeypatch.setattr(search, "semantic_search", slow_backend)
+    answer = _search(store, manifest, "Café", ranking="source_semantic")
+    assert answer["status"] == "complete" and answer["total_matched"] == 1
+
+    def timed_out_backend(*_args, **_kwargs):
+        clock[0] += 61
+        return {"status": "complete", "hits": [{"source_id": SOURCE}]}
+
+    monkeypatch.setattr(search, "semantic_search", timed_out_backend)
+    with pytest.raises(search.CandidateSearchError, match="^SearchTimeout$"):
+        _search(store, manifest, "Café", ranking="source_semantic")
+
+
+def test_text_standing_first_and_text_relevance_is_pure_bm25(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, manifest = _paths(tmp_path)
+    _write(store, [(OLD, _content("alpha alpha alpha proposal", notes="facet: PROPOSAL")),
+                   (NEW, _content("alpha personal decision")),
+                   (THIRD, _content("alpha canonical", notes="facet: PROPOSAL"))])
+    initial = _search(store, manifest, "alpha")
+    canonical_version = next(hit["candidate_version"] for hit in initial["hits"]
+                             if hit["candidate_id"] == THIRD)
+    monkeypatch.setattr(search, "canon_index", lambda _root: (
+        SimpleNamespace(candidate_id=THIRD, candidate_version=canonical_version,
+                        assertion=SimpleNamespace(id="asr_synthetic")),))
+    canon_root = tmp_path / "canon"
+    canon_root.mkdir()
+    result = search.search_candidates(store_path=store, replacement_path=manifest,
+        canon_root=canon_root, semantic_index_path=None, derived_path=None,
+        query="alpha")
+    relevance = search.search_candidates(store_path=store, replacement_path=manifest,
+        canon_root=canon_root, semantic_index_path=None, derived_path=None,
+        query="alpha", ranking="text_relevance")
+    assert result["ranking"] == "text" and relevance["ranking"] == "text_relevance"
+    assert [hit["candidate_id"] for hit in result["hits"]] == [THIRD, NEW, OLD]
+    assert relevance["hits"][0]["candidate_id"] == OLD
+    assert [hit["score"] for hit in relevance["hits"]] == sorted(
+        hit["score"] for hit in relevance["hits"])
+    assert [hit["epistemic_label"] for hit in result["hits"]] == [
+        "CANONICAL", "DECISION_STATED_BY_PERSON", "PROPOSAL_NOT_APPROVED"]
+    assert result["hits"][1]["wording"].startswith("Recorded candidate proposal: ")
+    assert result["hits"][1]["is_asserted"] is False
+
+
+@pytest.mark.parametrize("ranking", ["text", "text_relevance", "source_semantic"])
+def test_public_ranking_values_and_cursor_binding(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ranking: str) -> None:
+    store, manifest = _paths(tmp_path)
+    _write(store, [(OLD, _content("alpha first")), (NEW, _content("alpha second"))])
+    monkeypatch.setattr(search, "semantic_search", lambda *_args, **_kwargs: {
+        "status": "complete", "hits": [{"source_id": SOURCE}],
+    })
+    first = _search(store, manifest, "alpha", ranking=ranking, limit=1)
+    assert first["ranking"] == ranking and first["total_matched"] == 2
+    assert first["next_cursor"] is not None
+    second = _search(store, manifest, "alpha", ranking=ranking, limit=1,
+                     cursor=first["next_cursor"])
+    assert second["hits"][0]["rank"] == 2
+    other = "text_relevance" if ranking == "text" else "text"
+    with pytest.raises(search.CandidateSearchError, match="^StaleCursor$"):
+        _search(store, manifest, "alpha", ranking=other, limit=1,
+                cursor=first["next_cursor"])
+
+
+def test_unknown_ranking_is_refused(tmp_path: Path) -> None:
+    store, manifest = _paths(tmp_path)
+    with pytest.raises(search.CandidateSearchError, match="^InvalidQuery$"):
+        _search(store, manifest, "Café", ranking="unknown")
+
+
 def test_catalogue_read_exposure(tmp_path: Path) -> None:
     store, manifest = _paths(tmp_path)
     documents = tmp_path / "documents"
@@ -251,8 +357,14 @@ def test_catalogue_read_exposure(tmp_path: Path) -> None:
         relation_store_path=tmp_path / "relations.jsonl")
     descriptor = next(item for item in CATALOGUE if item.external_name == "candidate.search")
     assert descriptor.tier is Tier.READ
+    ranking = next(parameter for parameter in descriptor.parameters if parameter.name == "ranking")
+    assert all(value in ranking.description for value in
+               ("text", "text_relevance", "source_semantic"))
     result = invoke(Grant("reader", frozenset({Tier.READ})), "candidate.search", workspace, {"query": "Café"})
     assert result["status"] == "complete" and result["hits"][0]["candidate_id"] == OLD
+    relevance = invoke(Grant("reader", frozenset({Tier.READ})), "candidate.search", workspace,
+                       {"query": "Café", "ranking": "text_relevance"})
+    assert relevance["ranking"] == "text_relevance"
 
 
 def test_cli_and_mcp_expose_the_same_read(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -280,3 +392,12 @@ def test_cli_and_mcp_expose_the_same_read(tmp_path: Path, capsys: pytest.Capture
     assert response is not None and "result" in response
     mcp_result = json.loads(response["result"]["content"][0]["text"])
     assert mcp_result == cli_result
+    assert cli.main([*locations, "candidate.search", "--query", "Café",
+                     "--ranking", "text_relevance"]) == 0
+    assert json.loads(capsys.readouterr().out)["ranking"] == "text_relevance"
+    relevance_response = mcp.dispatch({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "candidate.search", "arguments": {
+            "query": "Café", "ranking": "text_relevance"}}},
+        Grant("reader", frozenset({Tier.READ})), workspace)
+    assert relevance_response is not None and "result" in relevance_response
+    assert json.loads(relevance_response["result"]["content"][0]["text"])["ranking"] == "text_relevance"

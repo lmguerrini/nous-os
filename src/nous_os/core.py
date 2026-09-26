@@ -1034,7 +1034,9 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
             ParameterSpec("limit", "integer", False, "page size, 1 to 20; defaults to 10"),
             ParameterSpec("cursor", "string", False, "opaque next-page cursor"),
             ParameterSpec("include_replaced", "boolean", False, "include superseded proposals; defaults to false"),
-            ParameterSpec("ranking", "string", False, "text or cited-source semantic ranking"),
+            ParameterSpec("ranking", "string", False,
+                          "text (default: standing first among best text matches), "
+                          "text_relevance (plain BM25), or source_semantic (cited-source rank)"),
         ),
     ),
     _descriptor(
