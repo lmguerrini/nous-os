@@ -50,8 +50,8 @@ def project(body: str) -> str:
             # separate prose fields. Tool and web-result metadata stay out.
             parts = _path(payload, "content", "parts")
             if isinstance(parts, list):
-                values.extend(part if isinstance(part, str) else part.get("text")
-                              for part in parts if isinstance(part, (str, dict)))
+                values.append([part if isinstance(part, str) else part.get("text")
+                               for part in parts if isinstance(part, (str, dict))])
             values.append(_path(payload, "content", "content"))
             thoughts = _path(payload, "content", "thoughts")
             if isinstance(thoughts, list):
@@ -60,28 +60,30 @@ def project(body: str) -> str:
                         values.extend((thought.get("content"), thought.get("summary")))
                         chunks = thought.get("chunks")
                         if isinstance(chunks, list):
-                            values.extend(chunk if isinstance(chunk, str) else chunk.get("text")
-                                          for chunk in chunks if isinstance(chunk, (str, dict)))
+                            values.append([chunk if isinstance(chunk, str) else chunk.get("text")
+                                           for chunk in chunks if isinstance(chunk, (str, dict))])
         elif kind == "message" and provider == "claude.ai":
             item = _path(payload, "record")
             values.append(_path(item, "text"))
             blocks = _path(item, "content")
             if isinstance(blocks, list):
+                block_text = []
                 for block in blocks:
                     if not isinstance(block, dict):
                         continue
                     if block.get("type") == "text":
-                        values.append(block.get("text"))
+                        block_text.append(block.get("text"))
                     elif block.get("type") == "thinking":
-                        values.extend((block.get("thinking"), block.get("summaries")))
+                        block_text.extend((block.get("thinking"), block.get("summaries")))
+                values.append(block_text)
         elif kind == "design_message":
             values.append(_path(payload, "record", "content", "content"))
             blocks = _path(payload, "record", "content", "contentBlocks")
             if isinstance(blocks, list):
-                values.extend(block.get("text") for block in blocks if isinstance(block, dict))
+                values.append([block.get("text") for block in blocks if isinstance(block, dict)])
             attachments = _path(payload, "record", "content", "attachments")
             if isinstance(attachments, list):
-                values.extend(a.get("content") for a in attachments if isinstance(a, dict))
+                values.append([a.get("content") for a in attachments if isinstance(a, dict)])
         elif kind in ("conversation", "design_conversation"):
             values.extend((_path(payload, "title"), _path(payload, "record", "name"),
                            _path(payload, "record", "title"), _path(payload, "record", "summary")))
@@ -93,7 +95,7 @@ def project(body: str) -> str:
         elif kind == "capture_window":
             buttons = _path(payload, "buttons")
             if isinstance(buttons, list):
-                values.extend(button.get("label") for button in buttons if isinstance(button, dict))
+                values.append([button.get("label") for button in buttons if isinstance(button, dict)])
         elif kind in ("document", "memory_file", "project_document"):
             values.extend((_path(payload, "text"), _path(payload, "record", "content")))
         elif kind == "memory_summary":
@@ -108,10 +110,16 @@ def project(body: str) -> str:
                 for key in ("hero_title", "hero_body", "about_your_time",
                             "expanding_your_skills", "topics", "worth_thinking_about"):
                     values.append(content.get(key))
-    chunks = []
+    fields = []
+    seen = set()
     for value in values:
+        chunks = []
         for leaf in _strings(value):
             normalized = re.sub(r"\s+", " ", unicodedata.normalize("NFC", leaf)).strip()
-            if normalized and (not chunks or chunks[-1] != normalized):
+            if normalized:
                 chunks.append(normalized)
-    return " ".join(chunks)
+        field = " ".join(chunks)
+        if field and field not in seen:
+            fields.append(field)
+            seen.add(field)
+    return " ".join(fields)

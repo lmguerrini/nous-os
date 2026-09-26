@@ -120,6 +120,44 @@ def test_projection_normalizes_nfc_and_whitespace() -> None:
     assert project("citta\u0300\r\ncon  parole") == "città con parole"
 
 
+def test_repeated_parts_remain_visible() -> None:
+    body = json.dumps({"kind": "message", "provider": "chatgpt.com", "payload": {
+        "content": {"parts": ["echo", "echo"]}}})
+    assert project(body) == "echo echo"
+
+
+def test_claude_text_and_single_block_are_one_field() -> None:
+    body = json.dumps({"kind": "message", "provider": "claude.ai", "payload": {
+        "record": {"text": "città echo", "content": [
+            {"type": "text", "text": "citta\u0300\n echo"}]}}})
+    assert project(body) == "città echo"
+
+
+def test_design_content_and_matching_attachment_are_one_field() -> None:
+    body = json.dumps({"kind": "design_message", "payload": {"record": {
+        "content": {"content": "design prose", "attachments": [
+            {"content": "design\n prose"}]}}}})
+    assert project(body) == "design prose"
+
+
+def test_legacy_json_index_misses_phrase_across_line_break(tmp_path: Path) -> None:
+    body = json.dumps({"kind": "message", "provider": "chatgpt.com", "payload": {
+        "content": {"parts": ["alpha\nbeta"]}}}, sort_keys=True, separators=(",", ":"))
+    with sqlite3.connect(tmp_path / "phrase.sqlite3") as connection:
+        connection.execute("CREATE VIRTUAL TABLE legacy USING fts5(body)")
+        connection.execute("CREATE VIRTUAL TABLE plain USING fts5(body)")
+        connection.execute("INSERT INTO legacy(body) VALUES (?)", (body,))
+        connection.execute("INSERT INTO plain(body) VALUES (?)", (project(body),))
+        legacy_hits = connection.execute(
+            "SELECT count(*) FROM legacy WHERE legacy MATCH ?", ('"alpha beta"',)
+        ).fetchone()[0]
+        plain_hits = connection.execute(
+            "SELECT count(*) FROM plain WHERE plain MATCH ?", ('"alpha beta"',)
+        ).fetchone()[0]
+    assert legacy_hits == 0
+    assert plain_hits == 1
+
+
 def test_older_schema_is_detected_and_rebuilt(tmp_path: Path) -> None:
     store, ledger, _ = _canon(tmp_path)
     path = tmp_path / "derived.sqlite3"
