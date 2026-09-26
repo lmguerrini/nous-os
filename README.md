@@ -317,6 +317,7 @@ matter of `.gitignore`:
   safe to read, copy and publish.
 - The derived index is rebuildable and is never committed; `.gitignore` refuses
   `*.db`, `*.sqlite` and `*.sqlite3`.
+- Full-text search indexes a normalized prose projection; after a schema change, rebuild from canon with `PYTHONPATH=src python3 -m nous_os.derived rebuild --snapshot-root SNAPSHOTS --ledger-path LEDGER --derived-path INDEX`.
 - The semantic index is also derived and rebuildable, never committed, and is
   built only from cached local weights. Its chunks are sentence-packed verbatim
   spans of one text part of a record, each located in the source body unless
@@ -617,6 +618,7 @@ src/
     │                     manifest-declared supplied documents and rendered-interface capture windows
     ├── extraction.py     bounded attachment text evidence, separately attributed from source records
     ├── derived.py        the rebuildable index over everything above
+    ├── text_projection.py deterministic reader-facing text for full-text search
     ├── aliases.py        interchangeable ways of relating terms across languages
     ├── measure.py        the measuring instrument, and its third answer
     ├── chunking.py       pieces of a document that remember where they came from

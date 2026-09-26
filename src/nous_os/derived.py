@@ -20,6 +20,10 @@ Byte-identical rebuilds need every source of incidental variation closed:
   of the output rather than as an optimisation, and the property it promises
   (no free pages) is asserted directly rather than inferred from the layout.
 
+The legacy FTS indexed canonical JSON, including keys and escape artifacts.
+Schema version 2 indexes an NFC text projection while content.body and search
+excerpts remain the canonical JSON. Rebuild an older derived index from canon.
+
 **A divergence is reported, not indexed around.** If the ledger names a snapshot
 the store does not hold, this refuses to build. An index that quietly skipped it
 would answer questions as though a document did not exist, which is worse than
@@ -28,6 +32,7 @@ failing: the failure is visible and the silence is not.
 
 from __future__ import annotations
 
+import argparse
 import fcntl
 import json
 import os
@@ -38,9 +43,11 @@ from pathlib import Path
 from nous_os.identity import SOURCE_PREFIX, digest_bytes, file_is_present, require_id
 from nous_os.ledger import Ledger
 from nous_os.snapshots import SnapshotNotFound, SnapshotStore
+from nous_os.text_projection import project
 
 #: Fixed so the file layout does not depend on a build-time default.
 PAGE_SIZE = 4096
+SCHEMA_VERSION = 2  # Version 1 indexed JSON body directly.
 
 SCHEMA = (
     "CREATE TABLE source ("
@@ -81,7 +88,9 @@ SCHEMA = (
     " PRIMARY KEY (snapshot_digest, source_id)"
     ")",
     "CREATE INDEX record_container ON record(container_external_id, created_at, source_id)",
-    "CREATE VIRTUAL TABLE search USING fts5("
+    # A legacy binary must fail to search this generation, even though it does
+    # not inspect user_version. Its SQL still names the removed `search` table.
+    "CREATE VIRTUAL TABLE search_plain USING fts5("
     " body, snapshot_digest UNINDEXED, source_id UNINDEXED, tokenize='unicode61'"
     ")",
 )
@@ -126,7 +135,20 @@ def _open_for_reading(path: Path) -> sqlite3.Connection:
     path = Path(path)
     if not file_is_present(path):
         raise DerivedStoreError(f"no derived store at {path.name}; build it first")
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+    except sqlite3.DatabaseError as error:
+        connection.close()
+        raise StoreUnusable(f"the store could not be read: {error}") from error
+    if version != SCHEMA_VERSION:
+        connection.close()
+        raise StoreUnusable(
+            f"derived schema version {version}; rebuild from canon with "
+            "PYTHONPATH=src python3 -m nous_os.derived rebuild --snapshot-root SNAPSHOTS "
+            "--ledger-path LEDGER --derived-path INDEX"
+        )
+    return connection
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,14 +278,15 @@ def build(store: SnapshotStore, ledger: Ledger, path: Path) -> Path:
         connection.execute("PRAGMA journal_mode=DELETE")
         for statement in SCHEMA:
             connection.execute(statement)
+        connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         connection.executemany("INSERT INTO source VALUES (?)", sources)
         connection.executemany("INSERT INTO version VALUES (?,?,?,?,?,?)", versions)
         connection.executemany("INSERT INTO content VALUES (?,?,?,?)", contents)
         if any(statement.startswith("CREATE TABLE record ") for statement in SCHEMA):
             connection.executemany("INSERT INTO record VALUES (?,?,?,?,?,?,?,?,?)", records)
         connection.executemany(
-            "INSERT INTO search (body, snapshot_digest, source_id) VALUES (?,?,?)",
-            [(row[3], row[0], row[1]) for row in contents],
+            "INSERT INTO search_plain (body, snapshot_digest, source_id) VALUES (?,?,?)",
+            [(project(row[3]), row[0], row[1]) for row in contents],
         )
         connection.commit()
         connection.execute("VACUUM")
@@ -351,9 +374,9 @@ def search(path: Path, query: str, limit: int = 10) -> tuple[SearchHit, ...]:
         rows = connection.execute(
             "SELECT s.snapshot_digest, s.source_id,"
             " substr(c.body, 1, 120), rank"
-            " FROM search s JOIN content c ON c.snapshot_digest = s.snapshot_digest"
+            " FROM search_plain s JOIN content c ON c.snapshot_digest = s.snapshot_digest"
             "  AND c.source_id = s.source_id"
-            " WHERE search MATCH ?"
+            " WHERE search_plain MATCH ?"
             " ORDER BY rank, s.snapshot_digest, s.source_id"
             " LIMIT ?",
             (query, limit),
@@ -377,7 +400,7 @@ def search(path: Path, query: str, limit: int = 10) -> tuple[SearchHit, ...]:
 #: The tables a usable store must have. Checked rather than assumed: SQLite
 #: accepts a zero-byte file as a valid empty database, so "the file is there"
 #: says nothing about whether anything can be read out of it.
-_REQUIRED_TABLES = ("source", "version", "content", "record", "search")
+_REQUIRED_TABLES = ("source", "version", "content", "record", "search_plain")
 
 
 def verify(path: Path) -> None:
@@ -561,3 +584,18 @@ def versions(path: Path, source_id: str) -> tuple[str, ...]:
     finally:
         connection.close()
     return tuple(row[0] for row in rows)
+
+
+def main() -> None:
+    """Rebuild an index from explicitly named canon paths."""
+    parser = argparse.ArgumentParser(description="Rebuild the derived index from canon")
+    parser.add_argument("command", choices=("rebuild",))
+    parser.add_argument("--snapshot-root", type=Path, required=True)
+    parser.add_argument("--ledger-path", type=Path, required=True)
+    parser.add_argument("--derived-path", type=Path, required=True)
+    args = parser.parse_args()
+    rebuild(SnapshotStore(args.snapshot_root), Ledger(args.ledger_path), args.derived_path)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

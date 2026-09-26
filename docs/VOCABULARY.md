@@ -183,7 +183,7 @@ left for a reader to discover by being wrong.
 | `Endpoint` | `src/nous_os/discovery.py:197` | — | One end of a proposed link, with an exact citation and a short quote. |
 | `BridgeRegistry` | `src/nous_os/discovery.py:347` | — | Every card ever judged, never emptied. |
 | `Chunk` | `src/nous_os/chunking.py:34` | — | A piece of a document that remembers where it came from. |
-| `SearchHit` | `src/nous_os/derived.py:133` | — | One result from the rebuildable index. |
+| `SearchHit` | `src/nous_os/derived.py:155` | — | One result from the rebuildable index. |
 | `CohesionStrategy` | `src/nous_os/compile.py:42` | — | A pluggable way of deciding what belongs together in a pack. |
 | `InclusionManifest` | `src/nous_os/compile.py:244` | — | What actually went into a pack, recoverable afterwards. |
 | `Pack` | `src/nous_os/compile.py:275` | — | Assembled context, with its manifest attached. |
@@ -250,7 +250,7 @@ left for a reader to discover by being wrong.
 
 | Term | Defined at | Closed members | What it distinguishes |
 |---|---|---|---|
-| `record` | `src/nous_os/derived.py:71` | — | The rebuildable record-header index: one source-and-snapshot pair, carrying only the top-level record fields that canon names. |
+| `record` | `src/nous_os/derived.py:78` | — | The rebuildable record-header index: one source-and-snapshot pair, carrying only the top-level record fields that canon names. |
 | `knowledge.context` | `src/nous_os/core.py:842` | — | A read operation for a source's ordered conversation neighbourhood or a container's current records. |
 | `semantic index` | `src/nous_os/core.py:856` | — | A persistent generation directory holding a verified SQLite chunk table, raw float32 vectors, and a CURRENT selector. Its meta keys identify the projection, the chunk budget (`chunk_max_tokens`, and `chunk_max_words` from projection v2), the `query_prefix` and `passage_prefix` the encoder was given, checkpoint, tokenizer, source-derived digest, and the byte-level index digest recorded as state_digest. `verify` is the full check and recomputes that digest; `search` makes only the structural check, so a flipped vector byte is not detected by a search. |
 | `text projection v1` | — | — | The deterministic record-body text selection used before semantic chunking. It recognizes only the declared payload/message/content and recovery text fields. A v1 generation predates the prefix and `chunk_max_words` keys and is read as having empty prefixes. |

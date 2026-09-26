@@ -33,9 +33,9 @@ def _search_on_open_connection(connection, query: str) -> tuple[derived.SearchHi
     rows = connection.execute(
         "SELECT s.snapshot_digest, s.source_id,"
         " substr(c.body, 1, 120), rank"
-        " FROM search s JOIN content c ON c.snapshot_digest = s.snapshot_digest"
+        " FROM search_plain s JOIN content c ON c.snapshot_digest = s.snapshot_digest"
         "  AND c.source_id = s.source_id"
-        " WHERE search MATCH ?"
+        " WHERE search_plain MATCH ?"
         " ORDER BY rank, s.snapshot_digest, s.source_id",
         (query,),
     ).fetchall()

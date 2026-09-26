@@ -822,10 +822,11 @@ def _derived_store(path: Path, rows: tuple[tuple[str, str, str], ...]) -> Path:
     connection = sqlite3.connect(path)
     try:
         connection.execute("CREATE TABLE content (snapshot_digest TEXT, source_id TEXT, body TEXT)")
-        connection.execute("CREATE VIRTUAL TABLE search USING fts5(body, snapshot_digest UNINDEXED, source_id UNINDEXED)")
+        connection.execute("PRAGMA user_version=2")
+        connection.execute("CREATE VIRTUAL TABLE search_plain USING fts5(body, snapshot_digest UNINDEXED, source_id UNINDEXED)")
         for digest, source_id, body in rows:
             connection.execute("INSERT INTO content VALUES (?,?,?)", (digest, source_id, body))
-            connection.execute("INSERT INTO search VALUES (?,?,?)", (body, digest, source_id))
+            connection.execute("INSERT INTO search_plain VALUES (?,?,?)", (body, digest, source_id))
         connection.commit()
     finally:
         connection.close()
