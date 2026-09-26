@@ -7,6 +7,8 @@ from and when it was true, and refuses to make anything canonical without you.
 It compiles context deterministically, and it draws the resulting knowledge
 graph in 2D and 3D from one shared semantic projection.
 
+The [local graph review explorer](docs/GRAPH-REVIEW.md) inspects a private, read-only D-065 export in 2D and true 3D.
+
 **V1 engine complete.** Personal knowledge data is attached separately and never
 lives in this repository.
 
