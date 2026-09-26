@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NousOS graph viewer</title>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, sans-serif; background: #101319; color: #f2f3f5; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    header { display: flex; flex-wrap: wrap; align-items: center; gap: .8rem; padding: .8rem 1rem; border-bottom: 1px solid #353b45; }
+    h1 { font-size: 1.1rem; margin: 0 1rem 0 0; }
+    button, input { font: inherit; color: inherit; background: #222936; border: 1px solid #596474; border-radius: .3rem; padding: .4rem .6rem; }
+    button { cursor: pointer; }
+    button:hover, button:focus-visible { background: #374258; }
+    button[aria-pressed="true"] { border-color: #a8cbff; background: #374b69; }
+    form { display: flex; gap: .4rem; }
+    input { min-width: 12rem; }
+    #search-feedback { color: #ffc98f; min-width: 8rem; }
+    #status-line { flex-basis: 100%; color: #c6d8ec; font-size: .9rem; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(18rem, 23rem); height: calc(100vh - 7rem); min-height: 28rem; }
+    .canvas-wrap { position: relative; min-width: 0; background: #101319; }
+    #viewport { position: absolute; inset: 0; overflow: hidden; }
+    #error { position: absolute; inset: 1rem auto auto 1rem; max-width: 36rem; padding: 1rem; background: #492626; border: 1px solid #d68a8a; z-index: 5; }
+    aside { overflow: auto; border-left: 1px solid #353b45; padding: 1rem; }
+    aside h2 { font-size: 1rem; overflow-wrap: anywhere; }
+    dl { display: grid; grid-template-columns: 7.5rem minmax(0,1fr); gap: .5rem; font-size: .9rem; }
+    dt { color: #aebacb; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    .preview { white-space: pre-wrap; overflow-wrap: anywhere; padding: .7rem; border: 1px solid #353b45; background: #1b2029; }
+    footer { display: flex; flex-wrap: wrap; gap: 1rem; padding: .5rem 1rem; min-height: 3rem; border-top: 1px solid #353b45; font-size: .85rem; }
+    .legend { display: flex; flex-wrap: wrap; gap: .5rem 1rem; }
+    @media (max-width: 750px) { main { grid-template-columns: 1fr; grid-template-rows: minmax(22rem, 55vh) auto; height: auto; } .canvas-wrap { min-height: 22rem; } aside { border-left: 0; border-top: 1px solid #353b45; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>NousOS graph</h1>
+    <button id="view-2d" type="button" aria-pressed="true">2D · Sigma</button>
+    <button id="view-3d" type="button" aria-pressed="false">3D · Three</button>
+    <span id="mode-label">2D — Sigma</span>
+    <button id="reset-view" type="button">Reset view</button>
+    <button id="focus-neighbours" type="button">Focus neighbours</button>
+    <form id="search-form" role="search"><input id="search" type="search" aria-label="Search node label or ID" placeholder="Node label or ID"><button type="submit">Search</button></form>
+    <span id="search-feedback" role="status"></span>
+    <span id="status-line" role="status" aria-live="polite">Caricamento dati…</span>
+  </header>
+  <main>
+    <div class="canvas-wrap"><div id="viewport" aria-label="Graph canvas"></div><div id="error" role="alert" hidden></div></div>
+    <aside id="details" aria-live="polite"></aside>
+  </main>
+  <footer>
+    <div class="legend" aria-label="Node status legend">
+      <span id="legend-canonical"></span><span id="legend-candidate"></span><span id="legend-source"></span><span id="legend-structuralNodes"></span>
+      <span id="legend-shape"></span>
+    </div>
+    <div class="legend" aria-label="Edge origin legend">
+      <span id="legend-structural"></span><span id="legend-explicit"></span><span id="legend-inferred"></span>
+    </div>
+    <span>3D prospettico — layout piano (z = 0)</span>
+  </footer>
+  <script type="module" src="./viewer.js"></script>
+</body>
+</html>

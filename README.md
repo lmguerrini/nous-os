@@ -636,6 +636,7 @@ src/
     ├── review.py         decision-file review console and append-only assertion versions
     ├── discovery.py      bridge candidates, gates, and append-only rounds
     ├── projection.py     renderer-independent knowledge graph projections
+    ├── graph_view.py     read-only sample export and a loopback server for the graph viewer
     ├── operations.py     registration of the project's governed operations
     ├── core.py           the one application service boundary
     ├── cli.py            the command-line transport, generated from the catalogue
