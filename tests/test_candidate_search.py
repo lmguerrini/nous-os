@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -181,6 +183,54 @@ def test_refused_live_version_fails_even_with_replaced_version(tmp_path: Path) -
         _search(store, manifest, "alpha", include_replaced=True)
 
 
+@pytest.mark.parametrize("field,value", [("proposed_at", "not-an-instant"), ("holder", "  ")])
+@pytest.mark.parametrize("replacement", ["manifest", "supersedes"])
+def test_refused_outer_record_is_omitted_only_when_replaced(
+        tmp_path: Path, field: str, value: str, replacement: str) -> None:
+    store, manifest = _paths(tmp_path)
+    old_content = _content("alpha malformed old")
+    old_row = {"proposal_id": OLD, "source_id": SOURCE, "content": json.dumps(old_content),
+               "proposed_at": "2026-01-01T00:00:00+00:00", "holder": "fixture"}
+    old_row[field] = value
+    new_content = _content("alpha live", supersedes=(
+        f"{OLD}@{digest_bytes(canonical_bytes(old_content))}" if replacement == "supersedes" else None))
+    _write(store, [(NEW, new_content)])
+    store.write_text(json.dumps(old_row) + "\n" + store.read_text(encoding="utf-8"), encoding="utf-8")
+    if replacement == "manifest":
+        manifest.write_text(json.dumps({"old": OLD, "new": NEW}) + "\n", encoding="utf-8")
+
+    result = _search(store, manifest, "alpha", include_replaced=True)
+    assert result["replaced_unreadable"] == 1
+    assert [hit["candidate_id"] for hit in result["hits"]] == [NEW]
+
+    manifest.write_text("", encoding="utf-8")
+    if replacement == "manifest":
+        with pytest.raises(search.CandidateSearchError, match="^CandidateStoreUnreadable$"):
+            _search(store, manifest, "alpha")
+
+
+@pytest.mark.parametrize("field,value", [("proposed_at", "not-an-instant"), ("holder", "  ")])
+def test_refused_outer_live_record_fails(tmp_path: Path, field: str, value: str) -> None:
+    store, manifest = _paths(tmp_path)
+    row = json.loads(store.read_text(encoding="utf-8"))
+    row[field] = value
+    store.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    with pytest.raises(search.CandidateSearchError, match="^CandidateStoreUnreadable$"):
+        _search(store, manifest, "Café")
+
+
+@pytest.mark.parametrize("proposal_id", [None, "bad_id"])
+def test_refused_outer_record_requires_usable_id_even_if_manifest_names_it(
+        tmp_path: Path, proposal_id: str | None) -> None:
+    store, manifest = _paths(tmp_path)
+    row = json.loads(store.read_text(encoding="utf-8"))
+    row["proposal_id"] = proposal_id
+    store.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    manifest.write_text(json.dumps({"old": OLD, "new": NEW}) + "\n", encoding="utf-8")
+    with pytest.raises(search.CandidateSearchError, match="^CandidateStoreUnreadable$"):
+        _search(store, manifest, "Café")
+
+
 def test_supersedes_and_store_failures(tmp_path: Path) -> None:
     store, manifest = _paths(tmp_path)
     old = _search(store, manifest, "Café")["hits"][0]
@@ -287,6 +337,38 @@ def test_dense_call_has_its_own_deadline_and_never_returns_a_partial_page(
     monkeypatch.setattr(search, "semantic_search", timed_out_backend)
     with pytest.raises(search.CandidateSearchError, match="^SearchTimeout$"):
         _search(store, manifest, "Café", ranking="source_semantic")
+
+
+def test_blocked_dense_backend_times_out_and_refuses_concurrent_dense_call(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, manifest = _paths(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def blocked_backend(*_args, **_kwargs):
+        calls.append(1)
+        entered.set()
+        release.wait(5)
+        return {"status": "complete", "hits": [{"source_id": SOURCE}]}
+
+    monkeypatch.setattr(search, "SEMANTIC_SECONDS", 0.1)
+    monkeypatch.setattr(search, "semantic_search", blocked_backend)
+    try:
+        started = time.monotonic()
+        with pytest.raises(search.CandidateSearchError, match="^SearchTimeout$"):
+            _search(store, manifest, "Café", ranking="source_semantic")
+        assert entered.is_set()
+        assert time.monotonic() - started < 1
+        with pytest.raises(search.CandidateSearchError, match="^SearchTimeout$"):
+            _search(store, manifest, "Café", ranking="source_semantic")
+        assert len(calls) == 1
+    finally:
+        release.set()
+        deadline = time.monotonic() + 1
+        while search._DENSE_LOCK.locked() and time.monotonic() < deadline:
+            time.sleep(0.001)
+    assert not search._DENSE_LOCK.locked()
 
 
 def test_text_standing_first_and_text_relevance_is_pure_bm25(

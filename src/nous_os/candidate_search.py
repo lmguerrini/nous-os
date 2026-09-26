@@ -20,7 +20,7 @@ import unicodedata
 from pathlib import Path
 
 from nous_os.candidates import CandidateError, Proposal
-from nous_os.identity import canonical_bytes, digest_bytes
+from nous_os.identity import ASSERTION_PREFIX, InvalidIdentifier, canonical_bytes, digest_bytes, require_id
 from nous_os.semantic_index import search as semantic_search
 from nous_os.untrusted import UntrustedContentError, UntrustedText
 
@@ -42,6 +42,9 @@ _LABELS = frozenset({
 _TAG = re.compile(r"(?:^|[;\n])\s*(epistemic|facet|scope):\s*([^;\n]+)", re.I)
 _LOGGER = logging.getLogger(__name__)
 _LOCK = threading.RLock()
+# A timed-out daemon may still be inside the dense backend. Admit another
+# dense call only after that worker actually exits.
+_DENSE_LOCK = threading.Lock()
 _CACHE: tuple[tuple[int, int, int, int], str, sqlite3.Connection, tuple[ReviewCandidate, ...],
               dict[str, str | None], dict[str, str], frozenset[str]] | None = None
 
@@ -169,27 +172,33 @@ def _index(path: Path, deadline: float) -> tuple[str, sqlite3.Connection, tuple[
                 if not line.strip():
                     continue
                 try:
-                    proposal = _proposal(json.loads(line))
+                    payload = json.loads(line)
                 except (UnicodeError, json.JSONDecodeError):
                     _refuse("CandidateStoreUnreadable")
-                proposal_id = proposal.proposal_id
+                if type(payload) is not dict or type(payload.get("proposal_id")) is not str:
+                    _refuse("CandidateStoreUnreadable")
+                try:
+                    proposal_id = require_id(payload["proposal_id"], ASSERTION_PREFIX)
+                except InvalidIdentifier:
+                    _refuse("CandidateStoreUnreadable")
                 if proposal_id in versions:
                     _refuse("CandidateStoreUnreadable")
                 try:
+                    proposal = _proposal(payload)
                     candidate = ReviewCandidate.from_proposal(proposal)
-                except CandidateRefused:
-                    # Keep the identity and any replacement reference from a
-                    # refused review model record. Only a proven old version
-                    # may be skipped, after all store and manifest links exist.
+                except (CandidateSearchError, CandidateRefused):
+                    # Keep a valid identity and recover any content version or
+                    # replacement reference from a refused outer or review row.
+                    # Only a proven old version may be skipped later.
                     unreadable.add(proposal_id)
                     version = None
                     try:
-                        content = json.loads(proposal.content.as_data())
+                        content = json.loads(payload["content"])
                         if type(content) is dict:
                             version = digest_bytes(canonical_bytes(content))
                             if type(content.get("supersedes")) is str:
                                 supersedes[proposal_id] = content["supersedes"]
-                    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+                    except (KeyError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
                         pass
                     versions[proposal_id] = version
                     continue
@@ -385,18 +394,36 @@ def search_candidates(*, store_path: Path, replacement_path: Path | None,
             if ranking == "source_semantic":
                 semantic_started = time.monotonic()
                 semantic_deadline = semantic_started + SEMANTIC_SECONDS
+                if not _DENSE_LOCK.acquire(blocking=False):
+                    _refuse("SearchTimeout")
+                finished = threading.Event()
+                outcome: dict[str, object] = {}
+
+                def run_semantic() -> None:
+                    try:
+                        outcome["value"] = semantic_search(semantic_index_path, normalized, limit=100,
+                                                           distinct=True, derived_path=derived_path)
+                    except Exception as error:
+                        outcome["error"] = error
+                    finally:
+                        _DENSE_LOCK.release()
+                        finished.set()
+
                 try:
-                    semantic = semantic_search(semantic_index_path, normalized, limit=100,
-                                               distinct=True, derived_path=derived_path)
+                    threading.Thread(target=run_semantic, daemon=True).start()
                 except Exception:
-                    if time.monotonic() > semantic_deadline:
-                        _refuse("SearchTimeout")
+                    _DENSE_LOCK.release()
                     _refuse("SemanticUnavailable")
+                if not finished.wait(max(0.0, semantic_deadline - time.monotonic())):
+                    _refuse("SearchTimeout")
+                if time.monotonic() > semantic_deadline:
+                    _refuse("SearchTimeout")
+                if "error" in outcome:
+                    _refuse("SemanticUnavailable")
+                semantic = outcome["value"]
                 # The dense model may load cold. Its elapsed time does not spend
                 # the remaining two-second text and response budget.
                 deadline += time.monotonic() - semantic_started
-                if time.monotonic() > semantic_deadline:
-                    _refuse("SearchTimeout")
                 if semantic.get("status") != "complete":
                     _refuse("SemanticUnavailable")
                 source_ranks = {hit["source_id"]: rank for rank, hit in enumerate(semantic["hits"], 1)}
