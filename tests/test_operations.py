@@ -629,7 +629,10 @@ def _axis_temporal_index(citation: Citation) -> TemporalIndex:
 
 def _temporary_canon(tmp_path: Path) -> _TemporaryCanon:
     """Build one small canonical record and its disposable derived index."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     root = tmp_path / "canon"
+    (tmp_path / "search-candidates.jsonl").write_text("", encoding="utf-8")
+    (tmp_path / "search-replacements.jsonl").write_text("", encoding="utf-8")
     snapshots = SnapshotStore(root / "snapshots")
     ledger = Ledger(root / "ledger.jsonl")
     result = ingest(
@@ -741,6 +744,10 @@ def _read_arguments(name: str, canon: _TemporaryCanon) -> dict[str, object]:
         "list_assertions": {"root": canon.canon_root_path},
         "describe_corpus": {"root": canon.data_root},
         "proposals": {"store": canon.candidates},
+        "candidate_search": {"store_path": canon.root.parent / "search-candidates.jsonl",
+                             "replacement_path": canon.root.parent / "search-replacements.jsonl",
+                             "canon_root": None, "semantic_index_path": None,
+                             "derived_path": canon.derived_path, "query": "alpha"},
         "relations": {"store": canon.relations},
         "verify_relations": {"store": canon.relations, "snapshots": canon.snapshots},
         "rejections": {"memory": canon.rejections},
@@ -901,6 +908,7 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "list_documents": Tier.READ,
         "describe_corpus": Tier.READ,
         "proposals": Tier.READ,
+        "candidate_search": Tier.READ,
         "rejections": Tier.READ,
         "bridges": Tier.READ,
         "as_of": Tier.READ,
@@ -917,8 +925,8 @@ def test_registered_project_operations_have_the_required_names_and_tiers() -> No
         "ingest_source": Tier.PROMOTE,
         "promote_candidate": Tier.PROMOTE,
     }
-    assert len(expected) == 26
-    assert len(operations) == 26
+    assert len(expected) == 27
+    assert len(operations) == 27
     assert {operation.name: operation.tier for operation in operations} == expected
     assert all(
         operation.tier is not Tier.EXTERNAL_CONSEQUENTIAL_ACTION
@@ -946,6 +954,7 @@ def test_governed_implementation_bindings_are_limited_to_the_pinned_modules() ->
         "config.py",  # describe_corpus calls the governed list_documents function.
         "provenance.py",  # quote_lint calls governed read_span while remaining unguided itself.
         "discovery.py",  # Mechanical gates call governed read_span and search while remaining unguided.
+        "candidate_search.py",  # Source ranking calls the existing dense search after READ authorization.
     }
     assert holding == expected, (
         "governed implementation bindings changed: "
@@ -977,7 +986,7 @@ def test_registered_wrapper_annotations_resolve_without_importing_discovery_at_r
     wrappers = tuple(
         authority._REGISTRY[operation.name][1] for operation in _project_operations()
     )
-    assert len(wrappers) == 26
+    assert len(wrappers) == 27
     resolved = {
         wrapper.__name__: get_type_hints(
             wrapper,

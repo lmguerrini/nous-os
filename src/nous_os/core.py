@@ -212,6 +212,7 @@ SNAPSHOT_ROOT_ENV_VAR: Final = "NOUS_OS_SNAPSHOT_ROOT"
 LEDGER_PATH_ENV_VAR: Final = "NOUS_OS_LEDGER_PATH"
 DERIVED_PATH_ENV_VAR: Final = "NOUS_OS_DERIVED_PATH"
 CANDIDATE_STORE_PATH_ENV_VAR: Final = "NOUS_OS_CANDIDATE_STORE_PATH"
+CANDIDATE_REPLACEMENTS_PATH_ENV_VAR: Final = "NOUS_OS_CANDIDATE_REPLACEMENTS_PATH"
 BRIDGE_REGISTRY_PATH_ENV_VAR: Final = "NOUS_OS_BRIDGE_REGISTRY_PATH"
 REJECTION_MEMORY_PATH_ENV_VAR: Final = "NOUS_OS_REJECTION_MEMORY_PATH"
 RELATION_STORE_PATH_ENV_VAR: Final = "NOUS_OS_RELATION_STORE_PATH"
@@ -247,6 +248,7 @@ class Workspace:
     asset_root_path: Path | None = None
     sighting_log_path: Path | None = None
     canon_root_path: Path | None = None
+    candidate_replacements_path: Path | None = None
 
     def __post_init__(self) -> None:
         """Resolve direct inputs before applying the shared overlap refusal."""
@@ -300,6 +302,12 @@ class Workspace:
             except (TypeError, ValueError) as error:
                 raise CoreError("workspace canon_root_path must be path-like or None") from error
             object.__setattr__(self, "canon_root_path", canon_root_path)
+        if self.candidate_replacements_path is not None:
+            try:
+                replacements_path = Path(self.candidate_replacements_path).expanduser().resolve()
+            except (TypeError, ValueError) as error:
+                raise CoreError("workspace candidate_replacements_path must be path-like or None") from error
+            object.__setattr__(self, "candidate_replacements_path", replacements_path)
         _refuse_aliased_locations(self)
 
 
@@ -347,6 +355,9 @@ def _workspace_locations(workspace: Workspace) -> tuple[_WorkspaceLocation, ...]
         _WorkspaceLocation("ledger_path", workspace.ledger_path, True, False),
         _WorkspaceLocation("derived_path", workspace.derived_path, False, False),
         _WorkspaceLocation("candidate_store_path", workspace.candidate_store_path, False, False),
+        *(() if workspace.candidate_replacements_path is None else (
+            _WorkspaceLocation("candidate_replacements_path", workspace.candidate_replacements_path, False, False),
+        )),
         _WorkspaceLocation("bridge_registry_path", workspace.bridge_registry_path, False, False),
         _WorkspaceLocation("rejection_memory_path", workspace.rejection_memory_path, False, False),
         _WorkspaceLocation("relation_store_path", workspace.relation_store_path, False, False),
@@ -612,6 +623,7 @@ def resolve_workspace(
     asset_root_path: str | os.PathLike[str] | None = None,
     sighting_log_path: str | os.PathLike[str] | None = None,
     canon_root_path: str | os.PathLike[str] | None = None,
+    candidate_replacements_path: str | os.PathLike[str] | None = None,
     environ: dict[str, str] | None = None,
 ) -> Workspace:
     """Resolve every location Core needs, or refuse. Never guesses one.
@@ -690,6 +702,12 @@ def resolve_workspace(
         canon_root_path=(
             _resolve_path(canon_root_path, CANON_ROOT_PATH_ENV_VAR, "canon root", env)
             if canon_root_path is not None or bool(env.get(CANON_ROOT_PATH_ENV_VAR, "").strip())
+            else None
+        ),
+        candidate_replacements_path=(
+            _resolve_path(candidate_replacements_path, CANDIDATE_REPLACEMENTS_PATH_ENV_VAR,
+                          "candidate replacements path", env)
+            if candidate_replacements_path is not None or bool(env.get(CANDIDATE_REPLACEMENTS_PATH_ENV_VAR, "").strip())
             else None
         ),
     )
@@ -1006,6 +1024,18 @@ CATALOGUE: Final[tuple[OperationDescriptor, ...]] = (
         "proposals",
         "List every recorded proposal, in file order.",
         (),
+    ),
+    _descriptor(
+        "candidate.search",
+        "candidate_search",
+        "Search recorded proposals; canonical standing requires an exact promoted id and version.",
+        (
+            ParameterSpec("query", "string", True, "plain words and quoted phrases to search"),
+            ParameterSpec("limit", "integer", False, "page size, 1 to 20; defaults to 10"),
+            ParameterSpec("cursor", "string", False, "opaque next-page cursor"),
+            ParameterSpec("include_replaced", "boolean", False, "include superseded proposals; defaults to false"),
+            ParameterSpec("ranking", "string", False, "text or cited-source semantic ranking"),
+        ),
     ),
     _descriptor(
         "candidate.rejections",
@@ -1550,6 +1580,17 @@ def _bind_proposals(workspace: Workspace, arguments: dict[str, object]) -> dict[
     return {"store": CandidateStore(workspace.candidate_store_path)}
 
 
+def _bind_candidate_search(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        "store_path": workspace.candidate_store_path,
+        "replacement_path": workspace.candidate_replacements_path,
+        "canon_root": workspace.canon_root_path,
+        "semantic_index_path": workspace.semantic_index_path,
+        "derived_path": workspace.derived_path,
+        **arguments,
+    }
+
+
 def _bind_rejections(workspace: Workspace, arguments: dict[str, object]) -> dict[str, object]:
     return {"memory": RejectionMemory(workspace.rejection_memory_path)}
 
@@ -1641,6 +1682,7 @@ _BINDERS: Final = {
     "time.supersession": _bind_supersession,
     "context.compile": _bind_compile_context,
     "candidate.proposals": _bind_proposals,
+    "candidate.search": _bind_candidate_search,
     "candidate.rejections": _bind_rejections,
     "candidate.bridges": _bind_bridges,
     "candidate.propose": _bind_record_proposal,
@@ -1764,6 +1806,7 @@ _RENDERERS: Final = {
     "time.supersession": lambda assertions: [_render_assertion(a) for a in assertions],
     "context.compile": _render_pack,
     "candidate.proposals": lambda proposals: [p.as_payload() for p in proposals],
+    "candidate.search": lambda result: result,
     "candidate.rejections": lambda rejections: [r.as_payload() for r in rejections],
     "candidate.bridges": lambda cards: [c.as_payload() for c in cards],
     "candidate.propose": lambda proposal: proposal.as_payload(),

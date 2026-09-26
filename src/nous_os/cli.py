@@ -192,6 +192,7 @@ def _add_workspace_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ledger-path", default=None)
     parser.add_argument("--derived-path", default=None)
     parser.add_argument("--candidate-store-path", default=None)
+    parser.add_argument("--candidate-replacements-path", default=None)
     parser.add_argument("--bridge-registry-path", default=None)
     parser.add_argument("--rejection-memory-path", default=None)
     parser.add_argument("--relation-store-path", default=None)
@@ -347,6 +348,7 @@ def _resolve_workspace(namespace: argparse.Namespace) -> core.Workspace:
         ledger_path=namespace.ledger_path,
         derived_path=namespace.derived_path,
         candidate_store_path=namespace.candidate_store_path,
+        candidate_replacements_path=namespace.candidate_replacements_path,
         bridge_registry_path=namespace.bridge_registry_path,
         rejection_memory_path=namespace.rejection_memory_path,
         relation_store_path=namespace.relation_store_path,

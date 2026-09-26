@@ -628,6 +628,7 @@ src/
     ├── ablation.py       comparing assembly strategies without combining the numbers
     ├── capability.py     four kinds of authority, and the one door they are checked at
     ├── candidates.py     append-only proposals that are explicitly not canon
+    ├── candidate_search.py bounded read-only search of proposals and cited sources
     ├── reconciliation.py typed relations between source versions, proposed but never merged
     ├── temporal.py       two time axes, supersession, and disagreement kept visible
     ├── attribution.py    a claim key that carries where it came from

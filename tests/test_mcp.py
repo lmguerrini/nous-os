@@ -116,6 +116,7 @@ def _minimal_arguments(external_name: str) -> dict[str, object]:
             "chunks": [], "ranking": [], "strategy": "S0-flat", "budget_tokens": 10,
         },
         "candidate.proposals": {},
+        "candidate.search": {"query": "alpha", "limit": 5, "include_replaced": False, "ranking": "text"},
         "candidate.rejections": {},
         "candidate.bridges": {},
         "candidate.propose": {

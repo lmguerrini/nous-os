@@ -42,6 +42,7 @@ def _workspace_argv(tmp_path: Path) -> list[str]:
         "--ledger-path", str(tmp_path / "ledger.jsonl"),
         "--derived-path", str(tmp_path / "derived.sqlite"),
         "--candidate-store-path", str(tmp_path / "candidates.jsonl"),
+        "--candidate-replacements-path", str(tmp_path / "replacements.jsonl"),
         "--bridge-registry-path", str(tmp_path / "bridges.jsonl"),
         "--rejection-memory-path", str(tmp_path / "rejections.jsonl"),
         "--relation-store-path", str(tmp_path / "relations.jsonl"),
@@ -89,12 +90,15 @@ def _seeded_workspace_argv(tmp_path: Path) -> tuple[list[str], str]:
         "--ledger-path", str(ledger_path),
         "--derived-path", str(derived_path),
         "--candidate-store-path", str(tmp_path / "candidates.jsonl"),
+        "--candidate-replacements-path", str(tmp_path / "replacements.jsonl"),
         "--bridge-registry-path", str(tmp_path / "bridges.jsonl"),
         "--rejection-memory-path", str(tmp_path / "rejections.jsonl"),
         "--relation-store-path", str(tmp_path / "relations.jsonl"),
         "--tier", "read",
         "--tier", "propose",
     ]
+    (tmp_path / "candidates.jsonl").write_text("", encoding="utf-8")
+    (tmp_path / "replacements.jsonl").write_text("", encoding="utf-8")
     return argv, result.entry.snapshot_digest
 
 
@@ -159,6 +163,7 @@ def _minimal_argv(external_name: str) -> list[str]:
             "--chunks", "[]", "--ranking", "[]", "--strategy", "S0-flat", "--budget-tokens", "10",
         ],
         "candidate.proposals": [],
+        "candidate.search": ["--query", "alpha"],
         "candidate.rejections": [],
         "candidate.bridges": [],
         "candidate.propose": [
@@ -252,6 +257,7 @@ def _reachable_argv(external_name: str, digest: str) -> list[str]:
             "--chunks", "[]", "--ranking", "[]", "--strategy", "S0-flat", "--budget-tokens", "10",
         ],
         "candidate.proposals": [],
+        "candidate.search": ["--query", "alpha"],
         "candidate.rejections": [],
         "candidate.bridges": [],
         "candidate.propose": [

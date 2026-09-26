@@ -82,6 +82,7 @@ way:
 | `time.supersession` | read | Return one subject's recorded assertion history, oldest first. | index, key |
 | `context.compile` | read | Fill a token budget from a caller-supplied ranking. Performs no retrieval. | chunks, ranking, strategy, budget_tokens |
 | `candidate.proposals` | read | List every recorded proposal, in file order. | (none) |
+| `candidate.search` | read | Search recorded proposals; canonical standing requires an exact promoted id and version. | query, limit?, cursor?, include_replaced?, ranking? |
 | `candidate.rejections` | read | List every recorded rejection, in file order. | (none) |
 | `candidate.bridges` | read | List every recorded bridge card, in file order. | (none) |
 | `candidate.propose` | propose | Record one untrusted proposal, apart from canon. | source_id, content, proposed_at, holder |

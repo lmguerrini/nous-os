@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from nous_os.capability import Tier, register
 from nous_os.candidates import CandidateStore, Proposal
+from nous_os.candidate_search import search_candidates
 from nous_os.chunking import Chunk
 from nous_os.compile import CohesionStrategy, Pack
 from nous_os.config import describe_corpus, list_documents
@@ -321,6 +322,7 @@ register("read_span", Tier.READ, read_span)
 register("list_documents", Tier.READ, list_documents)
 register("describe_corpus", Tier.READ, describe_corpus)
 register("proposals", Tier.READ, proposals)
+register("candidate_search", Tier.READ, search_candidates)
 register("as_of", Tier.READ, as_of)
 register("conflicts", Tier.READ, conflicts)
 register("supersession", Tier.READ, supersession)

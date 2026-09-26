@@ -53,6 +53,7 @@ EXPECTED_EXTERNAL_NAMES = (
     "time.supersession",
     "context.compile",
     "candidate.proposals",
+    "candidate.search",
     "candidate.rejections",
     "candidate.bridges",
     "candidate.propose",
@@ -78,6 +79,7 @@ def _temporary_workspace(tmp_path: Path) -> core.Workspace:
         ledger_path=tmp_path / "ledger.jsonl",
         derived_path=tmp_path / "derived.sqlite",
         candidate_store_path=tmp_path / "candidates.jsonl",
+        candidate_replacements_path=tmp_path / "replacements.jsonl",
         bridge_registry_path=tmp_path / "bridges.jsonl",
         rejection_memory_path=tmp_path / "rejections.jsonl",
         relation_store_path=tmp_path / "relations.jsonl",
@@ -87,6 +89,8 @@ def _temporary_workspace(tmp_path: Path) -> core.Workspace:
 def _seeded_workspace(tmp_path: Path) -> tuple[core.Workspace, str]:
     """A workspace with one real ingested and indexed document. Returns its snapshot digest."""
     workspace = _temporary_workspace(tmp_path)
+    workspace.candidate_store_path.write_text("", encoding="utf-8")
+    workspace.candidate_replacements_path.write_text("", encoding="utf-8")
     snapshots = SnapshotStore(workspace.snapshot_root)
     ledger = Ledger(workspace.ledger_path)
     result = ingest(
@@ -208,6 +212,8 @@ def _minimal_arguments(external_name: str, digest: str) -> dict[str, object]:
         }
     if external_name == "candidate.proposals":
         return {}
+    if external_name == "candidate.search":
+        return {"query": "alpha"}
     if external_name == "candidate.rejections":
         return {}
     if external_name == "candidate.bridges":
@@ -291,7 +297,7 @@ def test_catalogue_has_exactly_the_fixed_external_names_in_the_fixed_order() -> 
     assert tuple(descriptor.external_name for descriptor in core.CATALOGUE) == (
         EXPECTED_EXTERNAL_NAMES
     )
-    assert len(core.CATALOGUE) == 26
+    assert len(core.CATALOGUE) == 27
 
 
 def test_catalogue_is_the_same_tuple_object_across_reads() -> None:
@@ -1349,8 +1355,8 @@ def test_system_health_reports_healthy_for_a_seeded_store_and_absent_for_an_unwr
     assert health["snapshot_root"] == "healthy"
     assert health["ledger_path"] == "healthy"
     assert health["derived_path"] == "healthy"
-    # Nothing has proposed, discovered, or rejected anything in this workspace.
-    assert health["candidate_store_path"] == "absent"
+    # The empty candidate file is present for candidate.search coverage.
+    assert health["candidate_store_path"] == "healthy"
     assert health["bridge_registry_path"] == "absent"
     assert health["rejection_memory_path"] == "absent"
     assert health["relation_store_path"] == "absent"
