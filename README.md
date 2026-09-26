@@ -639,6 +639,7 @@ src/
     ├── discovery.py      bridge candidates, gates, and append-only rounds
     ├── projection.py     renderer-independent knowledge graph projections
     ├── graph_view.py     read-only sample export and a loopback server for the graph viewer
+    ├── graph_review.py   read-only review export of cited cards and a loopback server for the review explorer
     ├── operations.py     registration of the project's governed operations
     ├── core.py           the one application service boundary
     ├── cli.py            the command-line transport, generated from the catalogue
