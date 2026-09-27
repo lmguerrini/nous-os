@@ -29,14 +29,15 @@ test("D-069 Stellar emits only straight, constant-width relations", () => {
   assert(metrics.taperVariance.every((value) => value === 0));
 });
 
-test("D-069 Neural emits one bend, proximal taper and deterministic soma stubs", () => {
+test("D-069 Neural emits one bend, proximal taper and deterministic somata", () => {
   const geometry = buildMorphologyGeometry("neural", nodes, edges, colony);
   const metrics = morphologyMetrics(geometry);
   assert(metrics.edgeStraightness.every((value) => value < 1));
   assert(metrics.bendCount.every((value) => value === 1));
   assert(metrics.inflections.every((value) => value === 0));
   assert(metrics.taperVariance.every((value) => value > 0));
-  assert((geometry.nodes.find((node) => node.id === "hub")?.dendriteAngles.length ?? 0) > 0);
+  assert((geometry.nodes.find((node) => node.id === "hub")?.eccentricity ?? 0) >= 1);
+  assert(geometry.nodes.every((node) => !("dendriteAngles" in node)));
   assert.deepEqual(geometry, buildMorphologyGeometry("neural", nodes, edges, colony));
 });
 

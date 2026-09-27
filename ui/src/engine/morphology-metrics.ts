@@ -8,23 +8,15 @@ export type MorphologyMetrics = {
   readonly taperVariance: readonly number[];
   readonly sharedTrunkLengthShare: number;
   readonly branchingPoints: number;
-  readonly nodeLobes: readonly number[];
+  readonly nodeEccentricities: readonly number[];
   readonly relationCurvatures: readonly string[];
   readonly layout: ReturnType<typeof morphologyLayoutParams>;
 };
 
-const point = (part: MorphologySegment, t: number) => {
-  const s = 1 - t;
-  return {
-    x: s * s * part.source.x + 2 * s * t * part.control.x + t * t * part.target.x,
-    y: s * s * part.source.y + 2 * s * t * part.control.y + t * t * part.target.y,
-    z: s * s * part.source.z + 2 * s * t * part.control.z + t * t * part.target.z,
-  };
-};
 const span = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 const arc = (part: MorphologySegment): number => {
   let total = 0;
-  for (let step = 1; step <= 16; step += 1) total += span(point(part, (step - 1) / 16), point(part, step / 16));
+  for (let step = 1; step < part.samples.length; step += 1) total += span(part.samples[step - 1]!, part.samples[step]!);
   return total;
 };
 const variance = (values: readonly number[]): number => {
@@ -55,8 +47,9 @@ export function morphologyMetrics(geometry: MorphologyGeometry): MorphologyMetri
     taperVariance: geometry.edges.map((edge) => variance(edge.segments.flatMap((part) => [part.widthStart, part.widthEnd]))),
     sharedTrunkLengthShare: totalLength === 0 ? 0 : sharedLength / totalLength,
     branchingPoints: geometry.branchPoints.length,
-    nodeLobes: geometry.nodes.map((node) => node.dendriteAngles.length),
-    relationCurvatures: geometry.edges.map((edge) => edge.segments.map((part) => part.curvature.toFixed(5)).join(",")),
+    nodeEccentricities: geometry.nodes.map((node) => node.eccentricity),
+    relationCurvatures: geometry.edges.map((edge) => edge.segments.map((part) =>
+      (arc(part) / Math.max(1e-9, span(part.source, part.target))).toFixed(5)).join(",")),
     layout: morphologyLayoutParams(geometry.morphology),
   };
 }

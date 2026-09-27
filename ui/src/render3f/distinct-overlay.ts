@@ -28,15 +28,15 @@ export function mountDistinctOverlay(
   if (labelLayer) labelLayer.before(canvas); else container.append(canvas);
   let scene = initialScene;
   let appearance = presentation?.appearance ?? DEFAULT_APPEARANCE;
-  const geometryFor = () => buildMorphologyGeometry(
-    morphology,
-    scene.nodes.map((node) => ({ id: node.id, position: node.position, radius: node.radiusPx })),
-    scene.edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, width: edge.bodyWidthPx })),
-    scene.aggregates.map((aggregate) => ({ id: aggregate.id, members: aggregate.members, center: aggregate.center })),
-    appearance.curvature,
-    presentation?.containers,
-  );
-  let geometry = geometryFor();
+  const geometryFor = () => presentation?.morphologyInput
+    ? buildMorphologyGeometry(morphology, presentation.morphologyInput.nodes, presentation.morphologyInput.edges,
+      presentation.morphologyInput.colonies, appearance.curvature, presentation.morphologyInput.containers)
+    : buildMorphologyGeometry(morphology,
+      scene.nodes.map((node) => ({ id: node.id, position: node.position, radius: node.radiusPx })),
+      scene.edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, width: edge.bodyWidthPx })),
+      scene.aggregates.map((aggregate) => ({ id: aggregate.id, members: aggregate.members, center: aggregate.center })),
+      appearance.curvature, presentation?.containers);
+  let geometry = presentation?.morphologyGeometry ?? geometryFor();
   const nativeTier = scene.nodes.length >= DENSE_SCENE_THRESHOLD;
   const context = canvas.getContext("2d");
   let nodeStyles = new Map<string, { color: string; glyph: NodeGlyph | undefined; radiusPx: number | undefined; opacity: number }>();
@@ -66,13 +66,15 @@ export function mountDistinctOverlay(
     };
     drawMorphologyCanvas(context, geometry, cachedProject, {
       fieldColor: cssColor(scene, scene.field.token),
+      interaction: presentation?.morphologyInteraction,
       nodes: nodeStyles,
       edges: edgeStyles,
     }, appearance, undefined, "3d", nativeTier);
   };
+  (canvas as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw = draw;
   return {
     draw,
-    setScene(next): void { scene = next; updateStyles(); draw(); },
+    setScene(next): void { scene = next; if (!presentation?.morphologyInput) geometry = geometryFor(); updateStyles(); draw(); },
     setAppearance(next): void { const changed = next.curvature !== appearance.curvature; appearance = next; if (changed) geometry = geometryFor(); draw(); },
     destroy(): void { canvas.remove(); },
   };

@@ -15,6 +15,8 @@ import { relaxDepth } from "./depth.ts";
 import { placeLabels } from "./labels.ts";
 import { encodingOf, SEMANTIC_COLOUR, standingOf } from "./presentation.ts";
 import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
+import { buildMorphologyGeometry } from "../engine/morphology-geometry.ts";
+import type { MorphologyInput } from "../engine/morphology-geometry.ts";
 import type { AppearanceOptions } from "../engine/presentation-options.ts";
 import { PALETTES, hexRgb, v2CategoryColour } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
@@ -95,6 +97,9 @@ export const createProductView: CreateProductView = async (input) => {
   let selected: string | null = null;
   let emphasis: ReadonlySet<string> | null = null;
   let hover: { kind: "node" | "edge"; id: string; x: number; y: number } | null = null;
+  const morphologyInteraction = { hoverId: null as string | null, focusIds: null as ReadonlySet<string> | null };
+  const redrawMorphology = () => (container.querySelector("canvas[data-morphology-canvas]") as
+    (HTMLCanvasElement & { __morphRedraw?: () => void }) | null)?.__morphRedraw?.();
   let placed: LabelWitness[] = [];
   let frameId = 0;
   let hoverFrame = 0;
@@ -106,9 +111,7 @@ export const createProductView: CreateProductView = async (input) => {
   const fullAnchor = (current: Axes) =>
     current.organization === "indra"
       ? indraAnchors
-      : current.projection === "3d"
-        ? fullDepth
-        : flatAnchors;
+      : fullDepth;
   const localRect = (): ViewportRect => ({
     left: insets.left,
     top: insets.top,
@@ -354,6 +357,34 @@ export const createProductView: CreateProductView = async (input) => {
           }),
       ),
     };
+    const colonyMembers = new Map<string, string[]>();
+    for (const node of input.data.nodes) if (visible.has(node.id) && anchors.has(node.id)) {
+      const parent = (node.v2 as { parent?: string | null } | undefined)?.parent;
+      const community = parent && visible.has(parent) ? parent : node.id;
+      const members = colonyMembers.get(community) ?? [];
+      members.push(node.id);
+      colonyMembers.set(community, members);
+    }
+    const morphologyInput: MorphologyInput = {
+      nodes: [...presentation.nodes].flatMap(([id, value]) => {
+        const position = anchors.get(id);
+        return position ? [{ id, position, radius: value.radiusPx ?? value.corePermille * 8 / SCENE_PERMILLE_SCALE }] : [];
+      }),
+      edges: subset.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
+        width: Math.max(0.7, (presentation.edges.get(edge.id)?.widthPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE) })),
+      colonies: [...colonyMembers].map(([id, members]) => {
+        const positions = members.map(member => anchors.get(member)!).filter(Boolean);
+        const center = { x: positions.reduce((s, p) => s + p.x, 0) / positions.length,
+          y: positions.reduce((s, p) => s + p.y, 0) / positions.length,
+          z: positions.reduce((s, p) => s + p.z, 0) / positions.length };
+        return { id, members, center };
+      }),
+      containers: presentation.containers ?? [],
+    };
+    morphologyInteraction.focusIds = new Set([...(emphasis ?? []), ...(selected ? [selected] : [])]);
+    const sharedPresentation = { ...presentation, morphologyInput, morphologyInteraction,
+      morphologyGeometry: buildMorphologyGeometry(axes.morphology, morphologyInput.nodes, morphologyInput.edges,
+        morphologyInput.colonies, appearance.curvature, morphologyInput.containers) };
     const renderOptions = {
       ...options,
       ...(axes.organization === 'indra' ? { calibration: { ...DEFAULT_CALIBRATION,
@@ -363,7 +394,7 @@ export const createProductView: CreateProductView = async (input) => {
       // engine's own membership windows stay off in both organizations.
       organization: input.v2Prepared ? "flat" as const : axes.organization,
       reducedMotion: input.reducedMotion,
-      presentation,
+      presentation: sharedPresentation,
     };
     // Each renderer derives its own first camera; framing below then works in whatever convention it uses.
     if (axes.projection === "2d") sigma = mount2d(container, subset, renderOptions, undefined, undefined, anchors);
@@ -441,6 +472,8 @@ export const createProductView: CreateProductView = async (input) => {
     hoverFrame = requestAnimationFrame(() => {
       const target = pick(p);
       hover = target ? { ...target, ...p } : null;
+      morphologyInteraction.hoverId = hover?.id ?? null;
+      redrawMorphology();
       input.events.onHover(hover ? { ...hover, x: event.clientX, y: event.clientY } : null);
       labelPass();
     });
@@ -472,6 +505,8 @@ export const createProductView: CreateProductView = async (input) => {
   };
   const onLeave = () => {
     hover = null;
+    morphologyInteraction.hoverId = null;
+    redrawMorphology();
     input.events.onHover(null);
     labelPass();
   };
@@ -591,6 +626,8 @@ export const createProductView: CreateProductView = async (input) => {
     },
     select(id) {
       selected = id && (visible.has(id) || (axes.organization === 'indra' && input.layoutContainers?.some(item => item.id === id)) || graph().edges.some((e) => e.id === id)) ? id : null;
+      morphologyInteraction.focusIds = new Set([...(emphasis ?? []), ...(selected ? [selected] : [])]);
+      redrawMorphology();
       if (handle) {
         if (selected && visible.has(selected)) handle.setSelection(selected);
         else handle.clearSelection();
@@ -599,6 +636,8 @@ export const createProductView: CreateProductView = async (input) => {
     },
     setEmphasis(ids) {
       emphasis = ids;
+      morphologyInteraction.focusIds = new Set([...(ids ?? []), ...(selected ? [selected] : [])]);
+      redrawMorphology();
       sigma?.setEmphasis(ids);
       three?.setEmphasis(ids);
       labelPass();

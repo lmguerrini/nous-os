@@ -478,7 +478,11 @@ function mountDistinctCanvas(sigma: Sigma, model: RenderModel, options: RenderOp
     curvature,
     options.presentation?.containers,
   );
-  let geometry = buildGeometry(options.presentation?.appearance?.curvature ?? DEFAULT_APPEARANCE.curvature);
+  const shared = options.presentation?.morphologyInput;
+  const sharedGeometry = (curvature: number) => shared
+    ? buildMorphologyGeometry(options.morphology, shared.nodes, shared.edges, shared.colonies, curvature, shared.containers)
+    : buildGeometry(curvature);
+  let geometry = options.presentation?.morphologyGeometry ?? sharedGeometry(options.presentation?.appearance?.curvature ?? DEFAULT_APPEARANCE.curvature);
   const canvas = document.createElement("canvas");
   canvas.dataset.morphologyCanvas = "distinct";
   Object.assign(canvas.style, { position: "absolute", inset: "0", width: "100%", height: "100%", pointerEvents: "none" });
@@ -515,15 +519,17 @@ function mountDistinctCanvas(sigma: Sigma, model: RenderModel, options: RenderOp
       return value;
     }, {
       fieldColor: model.fieldColor,
+      interaction: options.presentation?.morphologyInteraction,
       nodes: nodeStyles,
       edges: edgeStyles,
     }, appearance, undefined, "2d", nativeTier);
   };
+  (canvas as HTMLCanvasElement & { __morphRedraw?: () => void }).__morphRedraw = draw;
   sigma.on("afterRender", draw);
   draw();
   return {
     setAppearance(next): void {
-      if (next.curvature !== appearance.curvature) geometry = buildGeometry(next.curvature);
+      if (next.curvature !== appearance.curvature) geometry = sharedGeometry(next.curvature);
       appearance = next;
       draw();
     },

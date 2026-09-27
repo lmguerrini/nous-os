@@ -1,4 +1,5 @@
 /** Optional review-only appearance channels. Absence is the exact engine baseline. */
+import type { MorphologyGeometry, MorphologyInput } from "#engine/morphology-geometry.ts";
 export type NodePresentation = {
   readonly corePermille: number;
   /** Exact review v2 core radius before camera scaling, in CSS pixels. */
@@ -56,6 +57,10 @@ export const DEFAULT_APPEARANCE: AppearanceOptions = {
 export type PresentationOptions = {
   /** Enables the D-069 geometry vocabulary. Omission preserves the historical renderer. */
   readonly morphologyLanguage?: "distinct";
+  /** One page-owned world-space input and its resolved geometry for both projections. */
+  readonly morphologyInput?: MorphologyInput;
+  readonly morphologyGeometry?: MorphologyGeometry;
+  readonly morphologyInteraction?: { hoverId: string | null; focusIds: ReadonlySet<string> | null };
   /** Hierarchical circles in world coordinates, shared by 2D and 3D projections. */
   readonly containers?: readonly { readonly id: string; readonly level: number; readonly center: { readonly x: number; readonly y: number; readonly z: number }; readonly radius: number }[];
   readonly nodes?: ReadonlyMap<string, NodePresentation & { readonly glyph?: NodeGlyph }>;
