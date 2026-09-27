@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { coMembership, projectRelations } from '../../src/review/v2-relations.ts';
+import { INDRA_ESSENTIAL_ARC_CAP, coMembership, projectRelations } from '../../src/review/v2-relations.ts';
 import type { V2Node } from '../../src/review/v2-core.ts';
 import type { GraphEdge } from '../../src/review/graph-v2.ts';
 
@@ -49,12 +49,45 @@ test('lifting merges underlying evidence and applies readings after aggregation'
   assert.ok(all.edges.some(item => item.underlying.some(source => source.id === 'd')));
 });
 
-test('Indra hides chords until active or all-relations mode', () => {
+test('Indra shows semantic arcs without an active node and never draws containment', () => {
   const visible = new Set(['domain:a', 'domain:b']);
-  assert.equal(projectRelations(nodes, edges, visible, 'exploratory', 'indra').edges.length, 0);
+  const idle = projectRelations(nodes, edges, visible, 'exploratory', 'indra');
+  assert.ok(idle.edges.length > 0);
+  assert.ok(idle.edges.some(item => item.class === 'exploratory'));
   const active = projectRelations(nodes, edges, visible, 'exploratory', 'indra', 'essential', 'domain:a');
   assert.ok(active.edges.some(item => item.class === 'exploratory'));
   const all = projectRelations(nodes, edges, visible, 'combined', 'indra', 'all');
   assert.ok(all.edges.some(item => item.underlying.some(source => source.id === 'd')));
-  assert.ok(active.edges.every(item => item.underlying.every(source => source.id !== 'd')));
+  assert.ok(all.edges.every(item => item.type !== 'contains' && item.type !== 'classified_in'));
+  assert.deepEqual(idle, projectRelations(nodes, edges, visible, 'exploratory', 'indra'));
+  const expanded = new Set(nodes.map(n => n.id));
+  const intra = projectRelations(nodes, edges, expanded, 'combined', 'indra', 'all');
+  assert.ok(intra.edges.some(item => item.source.startsWith('proposal:') && item.target.startsWith('proposal:')));
+  assert.ok(intra.edges.some(item => item.source.startsWith('domain:') && item.target.startsWith('domain:')));
+});
+
+test('Indra essential arc cap is deterministic and all mode is uncapped', () => {
+  const many = Array.from({ length: 210 }, (_, i) => node(`synthetic:${i}`, 3, 'domain:a'));
+  const graph = [...nodes, ...many];
+  const relations = many.map((item, i) => edge(`many:${i}`, item.id, 'domain:b', 'attested'));
+  const visible = new Set(graph.map(item => item.id));
+  const essential = projectRelations(graph, relations, visible, 'attested', 'indra');
+  const all = projectRelations(graph, relations, visible, 'attested', 'indra', 'all');
+  assert.equal(essential.edges.length, INDRA_ESSENTIAL_ARC_CAP);
+  assert.ok(essential.total > essential.edges.length);
+  assert.equal(all.edges.length, all.total);
+  assert.deepEqual(essential, projectRelations(graph, relations, visible, 'attested', 'indra'));
+});
+
+test('Indra keeps intra-pearl and inter-pearl semantics separate from hierarchy', () => {
+  const localNodes = [...nodes, node('proposal:local', 4, 'conversation:1')];
+  const localEdges = [
+    edge('within', 'proposal:1', 'proposal:local', 'attested'),
+    edge('between', 'proposal:local', 'proposal:2', 'attested'),
+    edge('hierarchy', 'conversation:1', 'proposal:local', 'attested', 'contains'),
+  ];
+  const projected = projectRelations(localNodes, localEdges, new Set(localNodes.map(item => item.id)), 'attested', 'indra');
+  assert.ok(projected.edges.some(item => item.underlying.some(edge => edge.id === 'within')));
+  assert.ok(projected.edges.some(item => item.underlying.some(edge => edge.id === 'between')));
+  assert.ok(projected.edges.every(item => item.type !== 'contains'));
 });

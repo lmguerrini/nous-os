@@ -5,6 +5,7 @@ export type AppearancePresets = Record<string, AppearanceOptions>;
 export const APPEARANCE_RANGES: Readonly<Record<keyof AppearanceOptions, readonly [number, number, number]>> = {
   nodeScale: [0.4, 2.5, 0.05], edgeWidth: [0.3, 3, 0.05], labelSizePx: [10, 18, 1],
   labelDensity: [0, 1, 0.05], glow: [0, 1.5, 0.05], edgeOpacity: [0.05, 1, 0.05], curvature: [0, 1, 0.05],
+  depth3d: [0, 2, 0.05],
 };
 export function normalizeAppearance(value: unknown): AppearanceOptions {
   const source = value && typeof value === "object" ? value as Record<string, unknown> : {};

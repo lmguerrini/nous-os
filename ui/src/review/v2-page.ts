@@ -1,7 +1,7 @@
 import { validateIndex } from './graph-v2.ts';
 import type { GraphEdge, GraphManifest } from './graph-v2.ts';
-import { computeLayout } from './layout-v2.ts';
-import type { Point3 } from './layout-v2.ts';
+import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
+import type { LayoutContainer, Point3 } from './layout-v2.ts';
 import { adaptV2 } from './v2-adapter.ts';
 import { projectRelations } from './v2-relations.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
@@ -68,7 +68,8 @@ export class V2Page {
     private previousVisible = new Set<string>();
     private detailCache = new Map<string, Record<string, unknown>>();
     private positions = new Map<string, Point3>();
-    private containers: unknown[] = [];
+    private containers: LayoutContainer[] = [];
+    private arcTotal = 0;
     private layoutSource = 'placeholder';
     private lastArrangement = '';
     private auto = new Set<string>();
@@ -173,14 +174,18 @@ export class V2Page {
                 })),
                 organization: this.axes.organization,
                 morphology: this.axes.morphology,
-                previous: this.positions,
+                ...(this.layoutSource === 'flat-community' && this.axes.organization === 'flat' ? { previous: this.positions } : {}),
+                depth: this.appearance.depth3d,
             });
             const next = new Map<string, Point3>();
             for (const n of disclosed.nodes)
                 next.set(n.id, result.positions.get(n.id) ?? { x: 0, y: 0, z: 0 });
             this.positions = next;
-            this.containers = result.containers.map(c => ({ ...c, title: visibleById.get(c.id)?.title }));
+            this.containers = result.containers.map(c => ({ ...c, ...(visibleById.get(c.id)?.title ? { title: visibleById.get(c.id)!.title } : {}) }));
             this.layoutSource = result.source;
+            const volume = layoutStats(this.positions);
+            const volumeRow = document.getElementById('volume-stats');
+            if (volumeRow) volumeRow.textContent = `Volume 3D: X ${(volume.bbox.x[1] - volume.bbox.x[0]).toFixed(0)} · Y ${(volume.bbox.y[1] - volume.bbox.y[0]).toFixed(0)} · Z ${(volume.bbox.z[1] - volume.bbox.z[0]).toFixed(0)} · profondità ${volume.depthRatio.toFixed(2)}`;
             const active = this.hovered
                 ?? this.renderedRelations.get(this.selected ?? '')?.source
                 ?? this.index.edges.find(edge => edge.id === this.selected)?.source
@@ -190,6 +195,7 @@ export class V2Page {
                 this.axes.organization, this.relationDetail, active,
             );
             this.renderedRelations = new Map(relations.byId);
+            this.arcTotal = relations.total;
             const shown = relations.edges;
             const adapted = adaptV2(disclosed.nodes, shown, next, this.manifest.digest);
             const added = disclosed.nodes.filter(n => !this.previousVisible.has(n.id));
@@ -207,18 +213,15 @@ export class V2Page {
                         void this.expand(target.id); }, onHover: target => {
                         const node = target?.kind === 'node' ? target.id : null;
                         const edge = target?.kind === 'edge' ? target.id : null;
-                        const changed = node !== this.hovered;
                         this.hovered = node;
                         this.hoveredEdge = edge;
                         this.updateEmphasis();
                         this.edgeTooltip(target);
                         if (this.hoverRefreshTimer) clearTimeout(this.hoverRefreshTimer);
-                        if (changed && this.axes.organization === 'indra' && this.relationDetail === 'essential')
-                            this.hoverRefreshTimer = setTimeout(() => { this.hoverRefreshTimer = null; void this.refresh(); }, 220);
                     } }
             });
             const arrangement = `${this.axes.organization}|${this.axes.projection}`;
-            const keep = old && arrangement === this.lastArrangement && this.axes.organization === 'flat';
+            const keep = old && arrangement === this.lastArrangement;
             this.lastArrangement = arrangement;
             if (keep) {
                 try {
@@ -314,8 +317,7 @@ export class V2Page {
         this.selected = id;
         this.view?.select(id);
         this.updateEmphasis();
-        if (this.axes.organization === 'indra' && this.relationDetail === 'essential')
-            await this.refresh();
+        if (id === ABSOLUTE_CONTAINER_ID) { this.renderPanel(); return; }
         element("expand").toggleAttribute("disabled", !this.index.nodes.some(n => n.id === id));
         (element("projection-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.index.nodes.some(n => n.id === id);
         (element("fullscreen-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.index.nodes.some(n => n.id === id);
@@ -366,6 +368,18 @@ export class V2Page {
             return;
         }
         const neighbours = new Set(relation ? [relation.source, relation.target] : [id!]);
+        if (id === ABSOLUTE_CONTAINER_ID) neighbours.delete(id);
+        if (this.axes.organization === 'indra' && id && (id === ABSOLUTE_CONTAINER_ID || this.containers.some(container => container.id === id))) {
+            const byId = new Map(this.index.nodes.map(node => [node.id, node]));
+            for (const visible of this.visible().nodes) {
+                let cursor: V2Node | undefined = visible;
+                while (cursor?.parent) {
+                    if (cursor.parent === id) { neighbours.add(visible.id); break; }
+                    cursor = byId.get(cursor.parent);
+                }
+                if (id === ABSOLUTE_CONTAINER_ID) neighbours.add(visible.id);
+            }
+        }
         for (const edge of this.renderedRelations.values())
             if (edge.source === id || edge.target === id) {
                 neighbours.add(edge.source);
@@ -487,6 +501,8 @@ export class V2Page {
             ...this.view?.witness(),
             layoutSource: this.layoutSource,
             containers: this.containers,
+            layoutStats: layoutStats(this.positions),
+            arcs: { shown: this.renderedRelations.size, total: this.arcTotal },
             dataset: this.dataset(),
             disclosure: this.disclosure(),
             capMessage: this.capMessage,
@@ -518,6 +534,9 @@ export class V2Page {
         const controls = document.createElement('section');
         controls.id = 'v2-controls';
         line(controls, 'Nodi visibili', `${shown.nodes.length}/${this.index.nodes.filter(n => n.level !== 5).length} · limite ${V2_CAP}`);
+        if (this.axes.organization === 'indra') line(controls, 'Archi', `${this.renderedRelations.size} di ${this.arcTotal}`);
+        const stats = layoutStats(this.positions);
+        line(controls, 'Volume 3D', `X ${(stats.bbox.x[1] - stats.bbox.x[0]).toFixed(0)} · Y ${(stats.bbox.y[1] - stats.bbox.y[0]).toFixed(0)} · Z ${(stats.bbox.z[1] - stats.bbox.z[0]).toFixed(0)} · profondità ${stats.depthRatio.toFixed(2)}`);
         for (const [label, action, disabled] of [['Annulla', () => this.undo(), this.history.undoDepth === 0], ['Ripeti', () => this.redo(), this.history.redoDepth === 0]] as const) {
             const button = document.createElement('button');
             button.textContent = label;
@@ -543,6 +562,13 @@ export class V2Page {
             search.append(button);
         }
         host.append(search);
+        if (this.selected === ABSOLUTE_CONTAINER_ID) {
+            const h = document.createElement('h2'); h.textContent = 'NousOS'; host.append(h);
+            line(host, 'Domini', shown.nodes.filter(node => node.level === 1).length);
+            line(host, 'Nodi visibili', shown.nodes.length);
+            line(host, 'Archi', `${this.renderedRelations.size} di ${this.arcTotal}`);
+            return;
+        }
         if (!this.selected) {
             const p = document.createElement('p');
             p.textContent = 'Seleziona un nodo o una relazione.';

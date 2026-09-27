@@ -38,6 +38,21 @@ export type FrameResult = {
 
 type Pixel = { readonly x: number; readonly y: number };
 
+/** Six world-space supports of a containing sphere; fit them with the same camera solver as nodes. */
+export function framingSpherePoints(center: Coordinates, radius: number): Coordinates[] {
+  if (!Number.isFinite(radius) || radius < 0) throw new TypeError('framing sphere radius must be finite and non-negative');
+  return (['x', 'y', 'z'] as const).flatMap(axis => [-1, 1].map(sign =>
+    ({ ...center, [axis]: center[axis] + sign * radius })));
+}
+export function framingVolumePoints(points: readonly Coordinates[]): Coordinates[] {
+  if (!points.length) return [];
+  const bounds = (axis: keyof Coordinates) => [Math.min(...points.map(point => point[axis])), Math.max(...points.map(point => point[axis]))] as const;
+  const x = bounds('x'), y = bounds('y'), z = bounds('z');
+  const center = { x: (x[0] + x[1]) / 2, y: (y[0] + y[1]) / 2, z: (z[0] + z[1]) / 2 };
+  const radius = Math.max(...points.map(point => Math.hypot(point.x - center.x, point.y - center.y, point.z - center.z)));
+  return framingSpherePoints(center, radius);
+}
+
 const MAX_ITERATIONS = 8;
 const CENTRE_TOLERANCE_PX = 1.5;
 
@@ -188,7 +203,12 @@ export function solveFraming(handle: CameraHandle, request: FrameRequest): Frame
     && Number.isFinite(camera.ratio) && camera.ratio > 0
     && projectAll(handle, request.points).every((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
   if (!usable(initial)) {
-    return { camera: initial, fits: false, iterations: 0 };
+    let widened = initial;
+    for (let attempt = 0; attempt < 8 && !usable(widened); attempt++) {
+      widened = withField(widened, 'ratio', widened.ratio * 1.5);
+      handle.restoreCameraState(widened);
+    }
+    if (!usable(widened)) { handle.restoreCameraState(initial); return { camera: initial, fits: false, iterations: 0 }; }
   }
   const target = { x: request.rect.left + (request.rect.width / 2), y: request.rect.top + (request.rect.height / 2) };
   let camera = handle.readCameraState();

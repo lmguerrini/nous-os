@@ -24,6 +24,8 @@ export type LayoutInput = {
     readonly organization: 'flat' | 'indra';
     readonly morphology: 'stellar' | 'neural' | 'mycelium';
     readonly previous?: ReadonlyMap<string, Point3>;
+    /** 0 is planar, 1 is the default volume, 2 doubles its depth. */
+    readonly depth?: number;
 };
 export type LayoutContainer = {
     readonly id: string;
@@ -38,6 +40,16 @@ export type LayoutResult = {
     readonly source: 'flat-community' | 'indra-recursive' | 'placeholder';
 };
 export const LAYOUT_EXTENT = 1000;
+export const DEPTH_RATIO_MIN = 0.4;
+export const ABSOLUTE_CONTAINER_ID = 'nousos:absolute';
+export type LayoutStats = { readonly bbox: { readonly x: readonly [number, number]; readonly y: readonly [number, number]; readonly z: readonly [number, number] }; readonly depthRatio: number };
+export function layoutStats(positions: ReadonlyMap<string, Point3>): LayoutStats {
+    const points = [...positions.values()];
+    const bounds = (key: keyof Point3): readonly [number, number] => points.length
+        ? [Math.min(...points.map(p => p[key])), Math.max(...points.map(p => p[key]))] : [0, 0];
+    const x = bounds('x'), y = bounds('y'), z = bounds('z');
+    return { bbox: { x, y, z }, depthRatio: (z[1] - z[0]) / Math.max(1, x[1] - x[0], y[1] - y[0]) };
+}
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const radiusOf = (node: LayoutNode) => 5 + Math.max(0, Math.min(1, node.size)) * 5;
@@ -160,7 +172,7 @@ function flat(input: LayoutInput): LayoutResult {
             const point = {
                 x: centre.x + (rootSet.has(node.id) ? 0 : offset.x),
                 y: centre.y + (rootSet.has(node.id) ? 0 : offset.y),
-                z: parent ? centre.z + 11 : (index % 5 - 2) * 17,
+                z: 0,
             };
             if (free(node, point)) {
                 placed = point;
@@ -178,6 +190,55 @@ function flat(input: LayoutInput): LayoutResult {
         }
         occupy(node.id, placed ?? { x: centre.x + index * spacing, y: centre.y, z: centre.z });
     }
+    // Root communities receive a stable depth order from attested incidence. Descendants occupy
+    // smaller bands around their parents; relations relax z only, so the 2D/front XY never moves.
+    const rootOf = (id: string): string => {
+        const seen = new Set<string>();
+        let node = byId.get(id);
+        while (node?.parent && byId.has(node.parent) && !seen.has(node.id)) {
+            seen.add(node.id); node = byId.get(node.parent);
+        }
+        return node?.id ?? id;
+    };
+    const incidence = new Map(roots.map(node => [node.id, 0]));
+    for (const edge of input.edges) if (edge.class === 'attested') {
+        const a = rootOf(edge.source), b = rootOf(edge.target);
+        if (a !== b) { incidence.set(a, (incidence.get(a) ?? 0) + 1); incidence.set(b, (incidence.get(b) ?? 0) + 1); }
+    }
+    const ordered = [...roots].sort((a, b) => (incidence.get(b.id) ?? 0) - (incidence.get(a.id) ?? 0) || compare(a.id, b.id));
+    const rootDepth = new Map(ordered.map((node, index) => [node.id, ordered.length <= 1 ? 0 : (index / (ordered.length - 1) - 0.5) * 2]));
+    const raw = new Map<string, number>();
+    const siblings = new Map<string, number>();
+    const depthQueue = [...roots];
+    for (let index = 0; index < depthQueue.length; index++) {
+        const node = depthQueue[index]!;
+        const list = children.get(node.id) ?? [];
+        depthQueue.push(...list);
+        if (!node.parent || !raw.has(node.parent)) raw.set(node.id, rootDepth.get(node.id) ?? 0);
+        else {
+            const group = children.get(node.parent) ?? [];
+            const sibling = siblings.get(node.parent) ?? 0;
+            siblings.set(node.parent, sibling + 1);
+            const band = 0.55 / Math.sqrt(Math.max(1, node.level - 1));
+            raw.set(node.id, raw.get(node.parent)! + (group.length <= 1 ? 0.12 : (sibling / (group.length - 1) - 0.5) * 2 * band));
+        }
+    }
+    for (let pass = 0; pass < 2; pass++) {
+        const sums = new Map<string, { sum: number; count: number }>();
+        for (const edge of input.edges) if (edge.class === 'attested' && raw.has(edge.source) && raw.has(edge.target)) {
+            for (const [id, other] of [[edge.source, edge.target], [edge.target, edge.source]] as const) {
+                const item = sums.get(id) ?? { sum: 0, count: 0 };
+                item.sum += raw.get(other)!; item.count++; sums.set(id, item);
+            }
+        }
+        for (const [id, item] of sums) if (byId.get(id)?.level !== 1)
+            raw.set(id, raw.get(id)! * 0.9 + item.sum / item.count * 0.1);
+    }
+    const values = [...raw.values()];
+    const lo = values.length ? Math.min(...values) : 0, hi = values.length ? Math.max(...values) : 0;
+    const xyExtent = Math.max(layoutStats(positions).bbox.x[1] - layoutStats(positions).bbox.x[0], layoutStats(positions).bbox.y[1] - layoutStats(positions).bbox.y[0]);
+    const scale = (input.depth ?? 1) * xyExtent * 0.58 / Math.max(1e-9, hi - lo);
+    for (const [id, point] of positions) positions.set(id, { ...point, z: scale === 0 ? 0 : (raw.get(id) ?? 0) * scale });
     return { positions, containers: [], source: 'flat-community' };
 }
 /** Bottom-up circle packing; every child circle is inside its visible parent in XY. */
@@ -221,7 +282,7 @@ function indra(input: LayoutInput): LayoutResult {
                 offsets.set(child.id, offset);
                 placed.push({ ...offset, radius: childRadius });
                 // Containment is read in the front view, where every tier's ring lies in its own plane.
-                radius = Math.max(radius, Math.hypot(offset.x, offset.y) + childRadius + gap);
+                radius = Math.max(radius, (Math.hypot(offset.x, offset.y) + childRadius + gap) / 0.94);
             });
         }
         visiting.delete(node.id);
@@ -237,7 +298,7 @@ function indra(input: LayoutInput): LayoutResult {
         const center = { x, y, z: (node.level - 3) * 170 * spacing };
         positions.set(node.id, center);
         const list = children.get(node.id) ?? [];
-        if (list.length)
+        if (list.length || node.level === 1)
             containers.push({ id: node.id, level: node.level, center, radius: radii.get(node.id)! });
         for (const child of list) {
             const offset = offsets.get(child.id)!;
@@ -262,6 +323,18 @@ function indra(input: LayoutInput): LayoutResult {
         placedRoots.push({ ...point, radius });
         place(root, point.x, point.y);
     });
+    const zValues = [...positions.values()].map(point => point.z);
+    const zMid = zValues.length ? (Math.min(...zValues) + Math.max(...zValues)) / 2 : 0;
+    // A sphere encloses the entire XY packing and every tier, including a six percent rim.
+    const rootZ = (1 - 3) * 170 * spacing;
+    const rootExtent = placedRoots.reduce((maximum, root) => Math.max(maximum,
+        Math.hypot(root.x, root.y, rootZ - zMid) + root.radius), 0);
+    const nodeExtent = input.nodes.reduce((maximum, node) => {
+        const point = positions.get(node.id);
+        return point ? Math.max(maximum, Math.hypot(point.x, point.y, point.z - zMid) + radiusOf(node) * spacing) : maximum;
+    }, 0);
+    const radius = Math.max(rootExtent, nodeExtent) / 0.94 + rootGap;
+    containers.unshift({ id: ABSOLUTE_CONTAINER_ID, level: 0, center: { x: 0, y: 0, z: zMid }, radius, title: 'NousOS' });
     return { positions, containers, source: 'indra-recursive' };
 }
 export function computeLayout(input: LayoutInput): LayoutResult {

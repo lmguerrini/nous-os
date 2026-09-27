@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { performance } from "node:perf_hooks";
-import { computeLayout, type LayoutInput, type LayoutNode, type Point3 } from "../../src/review/layout-v2.ts";
+import { ABSOLUTE_CONTAINER_ID, DEPTH_RATIO_MIN, computeLayout, layoutStats, type LayoutInput, type LayoutNode, type Point3 } from "../../src/review/layout-v2.ts";
 import { buildContainerGeometry, buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
 import { drawMorphologyCanvas } from "#render-common/morphology-canvas.ts";
 
@@ -35,7 +35,10 @@ test("layout determinism, incremental stability, depth and morphology membership
       const prefix = fixture(280);
       const previous = computeLayout(prefix);
       const increment = computeLayout({ ...input, previous: previous.positions });
-      for (const [id, position] of previous.positions) assert.deepEqual(increment.positions.get(id), position);
+      for (const [id, position] of previous.positions) {
+        assert.equal(increment.positions.get(id)?.x, position.x);
+        assert.equal(increment.positions.get(id)?.y, position.y);
+      }
       const points = [...increment.positions];
       for (let a = 0; a < points.length; a++) for (let b = a + 1; b < points.length; b++)
         assert.ok(xy(points[a]![1], points[b]![1]) > 20);
@@ -56,18 +59,23 @@ test("Indra packs visible children inside their parents without sibling overlap"
     const parent = containers.get(node.parent);
     assert.ok(parent);
     const point = result.positions.get(node.id)!;
-    const childRadius = containers.get(node.id)?.radius ?? 0;
+    const childRadius = containers.get(node.id)?.radius ?? (5 + Math.max(0, Math.min(1, node.size)) * 5) * 1.45 / Math.sqrt(0.55);
     // containment is read in the front view: every level's ring lies in its own tier plane
-    assert.ok(Math.hypot(point.x - parent.center.x, point.y - parent.center.y) + childRadius < parent.radius);
+    assert.ok(Math.hypot(point.x - parent.center.x, point.y - parent.center.y) + childRadius <= parent.radius * 0.94);
   }
   for (const siblings of byParent.values()) for (let a = 0; a < siblings.length; a++) for (let b = a + 1; b < siblings.length; b++) {
     const left = containers.get(siblings[a]!.id), right = containers.get(siblings[b]!.id);
     if (left && right) assert.ok(xy(left.center, right.center) > left.radius + right.radius);
   }
-  assert.deepEqual([...new Set(result.containers.map(c => c.level))].sort(), [1, 2, 3, 4]);
+  assert.deepEqual([...new Set(result.containers.map(c => c.level))].sort(), [0, 1, 2, 3, 4]);
+  const absolute = containers.get(ABSOLUTE_CONTAINER_ID)!;
+  for (const root of result.containers.filter(container => container.level === 1))
+    assert.ok(Math.hypot(root.center.x, root.center.y, root.center.z - absolute.center.z) + root.radius <= absolute.radius * 0.94);
+  for (const point of result.positions.values())
+    assert.ok(Math.hypot(point.x, point.y, point.z - absolute.center.z) < absolute.radius);
 });
 
-test("Flat leaves a size-scaled separation and bounded neighbourhood depth", () => {
+test("Flat leaves a size-scaled separation and readable volume", () => {
   const input = fixture(500);
   const result = computeLayout(input);
   assert.equal(result.source, "flat-community");
@@ -77,9 +85,31 @@ test("Flat leaves a size-scaled separation and bounded neighbourhood depth", () 
     const minimum = (21 * 1.45 / Math.sqrt(0.55)) * (0.72 + (10 + Math.min(1, left.size) * 5 + Math.min(1, right.size) * 5) / 24);
     assert.ok(xy(result.positions.get(left.id)!, result.positions.get(right.id)!) + 1e-9 >= minimum);
   }
-  const extent = Math.max(...[...result.positions.values()].map(p => p.z)) - Math.min(...[...result.positions.values()].map(p => p.z));
-  assert.ok(extent > 30 && extent < 150);
-  for (const edge of input.edges) assert.ok(Math.abs(result.positions.get(edge.source)!.z - result.positions.get(edge.target)!.z) < 150);
+  assert.ok(layoutStats(result.positions).depthRatio >= DEPTH_RATIO_MIN);
+  const planar = computeLayout({ ...input, depth: 0 });
+  for (const [id, point] of result.positions) {
+    assert.equal(point.x, planar.positions.get(id)?.x);
+    assert.equal(point.y, planar.positions.get(id)?.y);
+    assert.ok(Number.isFinite(point.z));
+    assert.equal(planar.positions.get(id)?.z, 0);
+  }
+  const doubled = computeLayout({ ...input, depth: 2 });
+  assert.ok(Math.abs(layoutStats(doubled.positions).depthRatio - 2 * layoutStats(result.positions).depthRatio) < 1e-6);
+});
+
+test('realistic hierarchy has stable depth and three-dimensional spacing', () => {
+  const nodes: LayoutNode[] = [];
+  for (let i = 0; i < 8; i++) nodes.push({ id: `domain:${i}`, level: 1, parent: null, size: 0.7, domains: [] });
+  for (let i = 0; i < 31; i++) nodes.push({ id: `project:${i}`, level: 2, parent: `domain:${i % 8}`, size: 0.5, domains: [] });
+  for (let i = 0; i < 165; i++) nodes.push({ id: `conversation:${i}`, level: 3, parent: `project:${i % 31}`, size: 0.3, domains: [] });
+  for (let i = 0; i < 220; i++) nodes.push({ id: `proposal:${i}`, level: 4, parent: `conversation:${i % 165}`, size: 0.1, domains: [] });
+  const input: LayoutInput = { nodes, edges: nodes.filter(n => n.parent).map(n => ({ id: `edge:${n.id}`, source: n.parent!, target: n.id, class: 'attested' })), organization: 'flat', morphology: 'stellar' };
+  const first = computeLayout(input), second = computeLayout(input);
+  assert.deepEqual(first, second);
+  assert.ok(layoutStats(first.positions).depthRatio >= DEPTH_RATIO_MIN);
+  const points = nodes.map(n => first.positions.get(n.id)!);
+  for (let a = 0; a < points.length; a++) for (let b = a + 1; b < points.length; b++)
+    assert.ok(Math.hypot(points[a]!.x - points[b]!.x, points[a]!.y - points[b]!.y, points[a]!.z - points[b]!.z) > 20);
 });
 
 test("container paths appear in both projections, and Stellar geometry remains straight", () => {

@@ -540,9 +540,10 @@ function scheduleAppearance(): void {
   appearanceFrame = requestAnimationFrame(() => { appearanceFrame = 0; void enqueue(async () => { if (v2) await v2.setAppearance(appearance); else await view?.setAppearance(appearance); updateInsets(); }); });
 }
 let appearanceFrame = 0;
+let depthSliderTimer: ReturnType<typeof setTimeout> | undefined;
 const sliderNames: Readonly<Record<keyof AppearanceOptions, string>> = {
   nodeScale: "Dimensione nodi", edgeWidth: "Spessore archi", labelSizePx: "Dimensione etichette",
-  labelDensity: "Densità etichette", glow: "Bagliore", edgeOpacity: "Opacità archi", curvature: "Curvatura",
+  labelDensity: "Densità etichette", glow: "Bagliore", edgeOpacity: "Opacità archi", curvature: "Curvatura", depth3d: "Profondità 3D",
 };
 function syncAppearanceControls(): void {
   for (const key of Object.keys(APPEARANCE_RANGES) as (keyof AppearanceOptions)[]) {
@@ -560,9 +561,13 @@ for (const key of Object.keys(APPEARANCE_RANGES) as (keyof AppearanceOptions)[])
   const value = document.createElement("output"); value.id = `value-${key}`;
   const input = document.createElement("input"); input.id = `appearance-${key}`; input.type = "range";
   input.min = String(min); input.max = String(max); input.step = String(step);
-  input.addEventListener("input", () => { appearance = { ...appearance, [key]: Number(input.value) }; syncAppearanceControls(); scheduleAppearance(); });
+  input.addEventListener("input", () => { appearance = { ...appearance, [key]: Number(input.value) }; syncAppearanceControls();
+    if (key === 'depth3d') { if (depthSliderTimer) clearTimeout(depthSliderTimer); depthSliderTimer = setTimeout(() => { depthSliderTimer = undefined; scheduleAppearance(); }, 120); }
+    else scheduleAppearance(); });
   label.append(value, input); get<HTMLElement>("appearance-sliders").append(label);
 }
+const volumeStats = document.createElement('p'); volumeStats.id = 'volume-stats';
+get<HTMLElement>('appearance-sliders').append(volumeStats);
 function syncPresetList(): void {
   const list = get<HTMLSelectElement>("preset-list");
   const selected = list.value;

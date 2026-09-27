@@ -3,7 +3,7 @@ import type { Morphology } from "#engine/morphology.ts";
 import { morphologyHash } from "#engine/stable-hash.ts";
 
 export type MorphologyContainerInput = { readonly id: string; readonly level: number; readonly center: Coordinates; readonly radius: number; readonly title?: string };
-export type MorphologyContainerPath = { readonly id: string; readonly level: number; readonly center: Coordinates; readonly points: readonly Coordinates[]; readonly title?: string };
+export type MorphologyContainerPath = { readonly id: string; readonly level: number; readonly center: Coordinates; readonly points: readonly Coordinates[]; readonly shell?: readonly (readonly Coordinates[])[]; readonly title?: string };
 /** World-space outlines shared by the front and rotated projections. */
 export function buildContainerGeometry(morphology: Morphology, containers: readonly MorphologyContainerInput[]): readonly MorphologyContainerPath[] {
   return containers.map(container => {
@@ -15,6 +15,21 @@ export function buildContainerGeometry(morphology: Morphology, containers: reado
       return { x: container.center.x + Math.cos(angle) * container.radius * ripple,
         y: container.center.y + Math.sin(angle) * container.radius * ripple, z: container.center.z };
     });
-    return { id: container.id, level: container.level, center: container.center, points, ...(container.title ? { title: container.title } : {}) };
+    const shell = container.level === 0 ? [
+      ...[-0.55, 0.55].map(latitude => Array.from({ length: 65 }, (_, index): Coordinates => {
+        const angle = index / 64 * Math.PI * 2;
+        return { x: container.center.x + Math.cos(angle) * container.radius * Math.cos(latitude),
+          y: container.center.y + Math.sin(angle) * container.radius * Math.cos(latitude),
+          z: container.center.z + Math.sin(latitude) * container.radius };
+      })),
+      ...[0, Math.PI / 2].map(meridian => Array.from({ length: 65 }, (_, index): Coordinates => {
+        const angle = index / 64 * Math.PI * 2;
+        return { x: container.center.x + Math.cos(meridian) * Math.cos(angle) * container.radius,
+          y: container.center.y + Math.sin(meridian) * Math.cos(angle) * container.radius,
+          z: container.center.z + Math.sin(angle) * container.radius };
+      })),
+    ] : undefined;
+    return { id: container.id, level: container.level, center: container.center, points,
+      ...(shell ? { shell } : {}), ...(container.title ? { title: container.title } : {}) };
   });
 }

@@ -12,7 +12,9 @@ export type RelationDetail = 'essential' | 'all';
 export type RelationProjection = {
   edges: LiftedRelation[];
   byId: ReadonlyMap<string, LiftedRelation>;
+  total: number;
 };
+export const INDRA_ESSENTIAL_ARC_CAP = 160;
 
 /** Resolve hidden endpoints along the declared primary-parent chain only. */
 export function visibleAncestor(id: string, visible: ReadonlySet<string>, nodes: ReadonlyMap<string, V2Node>): string | null {
@@ -70,11 +72,10 @@ export function projectRelations(
   for (const edge of edges) {
     if (edge.type === 'contains' || edge.type === 'classified_in') continue;
     if (reading === 'attested' && edge.class === 'exploratory') continue;
-    if (edge.type === 'mentions' && detail === 'essential' && active !== edge.source && active !== edge.target) continue;
+    if (organization === 'flat' && edge.type === 'mentions' && detail === 'essential' && active !== edge.source && active !== edge.target) continue;
     const source = visibleAncestor(edge.source, visible, byNode);
     const target = visibleAncestor(edge.target, visible, byNode);
     if (!source || !target || source === target) continue;
-    if (organization === 'indra' && detail === 'essential' && active !== source && active !== target && active !== edge.source && active !== edge.target) continue;
     add(source, target, edge, edge.class === 'exploratory' ? 'exploratory_lift' : 'attested_lift', source !== edge.source || target !== edge.target);
   }
   const projected: LiftedRelation[] = [...buckets].sort(([a], [b]) => a.localeCompare(b)).map(([key, bucket]) => ({
@@ -90,7 +91,7 @@ export function projectRelations(
         underlying: [], lifted: false, width: 0.65 });
     }
   }
-  if (organization === 'flat') {
+  if (organization === 'flat' || organization === 'indra') {
     for (const membership of coMembership(nodes, visible)) {
       const duplicate = projected.findIndex(edge => edge.class === 'attested' &&
         edge.source === membership.source && edge.target === membership.target && edge.type !== 'contains');
@@ -101,6 +102,11 @@ export function projectRelations(
       projected.push(membership);
     }
   }
+  const total = projected.length;
+  if (organization === 'indra' && detail === 'essential' && projected.length > INDRA_ESSENTIAL_ARC_CAP) {
+    projected.sort((a, b) => b.count - a.count || a.id.localeCompare(b.id));
+    projected.length = INDRA_ESSENTIAL_ARC_CAP;
+  }
   const byId = new Map(projected.map(edge => [edge.id, edge]));
-  return { edges: projected, byId };
+  return { edges: projected, byId, total };
 }

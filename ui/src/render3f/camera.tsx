@@ -66,6 +66,16 @@ export function presetOrientation(name: ViewPreset): THREE.Quaternion {
   return desired.multiply(initial.invert()).normalize();
 }
 
+/** Review opening: yaw 30° and elevation 20° around the volume's centre. */
+export function defaultObliqueOrbit(): readonly [number, number, number, number] {
+  const yaw = Math.PI / 6, elevation = Math.PI / 9;
+  const direction = new THREE.Vector3(Math.cos(elevation) * Math.cos(yaw), Math.cos(elevation) * Math.sin(yaw), Math.sin(elevation));
+  const desired = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(direction, new THREE.Vector3(), new THREE.Vector3(0, 0, 1)));
+  const initial = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(new THREE.Vector3(1, 0, 1), new THREE.Vector3(), new THREE.Vector3(0, 0, 1)));
+  const orbit = desired.multiply(initial.invert()).normalize();
+  return [orbit.x, orbit.y, orbit.z, orbit.w];
+}
+
 export function wheelZoomFactor(deltaYCssPx: number, heightCssPx: number, sensitivityPermille: number): number {
   return Math.exp((deltaYCssPx / heightCssPx) * sensitivityPermille / SCENE_PERMILLE_SCALE);
 }

@@ -40,6 +40,8 @@ export type AppearanceOptions = {
   readonly labelSizePx: number;
   /** Share of candidate labels the label layer may place, 0–1. */
   readonly labelDensity: number;
+  /** Flat 3D volume: 0 planar, 1 default, 2 double depth. */
+  readonly depth3d: number;
 };
 export const DEFAULT_APPEARANCE: AppearanceOptions = {
   nodeScale: 1,
@@ -49,6 +51,7 @@ export const DEFAULT_APPEARANCE: AppearanceOptions = {
   curvature: 1,
   labelSizePx: 12,
   labelDensity: 0.6,
+  depth3d: 1,
 };
 export type PresentationOptions = {
   /** Enables the D-069 geometry vocabulary. Omission preserves the historical renderer. */

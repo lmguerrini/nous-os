@@ -8,7 +8,7 @@ import { mount as mount2d } from "../render2d/index.ts";
 import type { RenderHandle } from "../render2d/index.ts";
 import { mount as mount3d } from "../render3f/mount.tsx";
 import type { Render3fRendererHandle } from "../render3f/mount.tsx";
-import { solveFraming } from "./framing.ts";
+import { framingSpherePoints, framingVolumePoints, solveFraming } from "./framing.ts";
 import { adaptReviewExport, restrictAnchors, subgraph } from "./product-adapter.ts";
 import { placeDynamic } from "./live-placement.ts";
 import { relaxDepth } from "./depth.ts";
@@ -21,7 +21,8 @@ import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
 import { v2Encoding } from "./v2-adapter.ts";
 import type { ReviewCameraState } from "../render3f/camera.tsx";
-import { resolvedNodeBounds } from "../render3f/camera.tsx";
+import { defaultObliqueOrbit, resolvedNodeBounds } from "../render3f/camera.tsx";
+import { buildContainerGeometry } from "../engine/container-geometry.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
 
 /** On-screen radius of an Indra container's own marker; the container ring carries the node. */
@@ -350,6 +351,8 @@ export const createProductView: CreateProductView = async (input) => {
     };
     const renderOptions = {
       ...options,
+      ...(axes.organization === 'indra' ? { calibration: { ...DEFAULT_CALIBRATION,
+        selection: { ...DEFAULT_CALIBRATION.selection, focusDimFactorPermille: 600 } } } : {}),
       morphology: axes.morphology,
       // On the v2 dataset the page's layout places every node and its canvas layer draws the Indra containers, so the
       // engine's own membership windows stay off in both organizations.
@@ -376,8 +379,16 @@ export const createProductView: CreateProductView = async (input) => {
     const saved = cameras.get(cameraKey());
     if (saved && validCamera(saved)) handle.restoreCameraState(saved);
     else {
+      if (three && input.v2Prepared) handle.restoreCameraState({ ...handle.readCameraState(), orbit: defaultObliqueOrbit() } as ReviewCameraState);
+      const initialPoints = subset.nodes.map((n) => anchors.get(n.id)!).filter(Boolean);
+      if (axes.projection === '3d' && axes.organization === 'flat')
+        initialPoints.push(...framingVolumePoints(initialPoints));
+      if (axes.organization === 'indra' && input.layoutContainers) {
+        const outer = input.layoutContainers.find(item => item.level === 0);
+        if (outer) initialPoints.push(...framingSpherePoints(outer.center, outer.radius));
+      }
       solveFraming(handle, {
-        points: subset.nodes.map((n) => anchors.get(n.id)!).filter(Boolean),
+        points: initialPoints,
         rect: localRect(),
         marginPx: 24,
         anchorFirst: false,
@@ -400,6 +411,20 @@ export const createProductView: CreateProductView = async (input) => {
     if (!handle) return null;
     const node = handle.pickNodeAtPosition(p);
     if (node) return { kind: "node" as const, id: node };
+    if (axes.organization === 'indra' && input.layoutContainers) {
+      let closest: { id: string; distance: number } | null = null;
+      for (const outline of buildContainerGeometry(axes.morphology, input.layoutContainers)) {
+        const projected = outline.points.map(point => project(point));
+        for (let index = 1; index < projected.length; index++) {
+          const a = projected[index - 1]!, b = projected[index]!;
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / Math.max(1e-9, dx * dx + dy * dy)));
+          const distance = Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy);
+          if (distance < 7 && (!closest || distance < closest.distance)) closest = { id: outline.id, distance };
+        }
+      }
+      if (closest) return { kind: 'node' as const, id: closest.id };
+    }
     const edge = handle.pickEdgeAtPoint(p.x, p.y);
     return edge ? { kind: "edge" as const, id: edge } : null;
   }
@@ -459,6 +484,12 @@ export const createProductView: CreateProductView = async (input) => {
     if (!current) return;
     const byId = new Map(current.readWorldAnchorWitnesses().map((p) => [p.id, p.position]));
     const points = ids.map((id) => byId.get(id)).filter((p): p is Coordinates => p !== undefined && finitePoint(p));
+    if (ids.length === visible.size && axes.projection === '3d' && axes.organization === 'flat')
+      points.push(...framingVolumePoints(points));
+    if (ids.length === visible.size && axes.organization === 'indra' && input.layoutContainers) {
+      const outer = input.layoutContainers.find(item => item.level === 0);
+      if (outer) points.push(...framingSpherePoints(outer.center, outer.radius));
+    }
     if (ids.length === visible.size && three)
       points.push(...three.readRelationGeometryWitnesses().map((relation) => relation.controlPoint).filter(finitePoint));
     if (!points.length) return;
@@ -554,9 +585,9 @@ export const createProductView: CreateProductView = async (input) => {
       mount();
     },
     select(id) {
-      selected = id && (visible.has(id) || graph().edges.some((e) => e.id === id)) ? id : null;
+      selected = id && (visible.has(id) || (axes.organization === 'indra' && input.layoutContainers?.some(item => item.id === id)) || graph().edges.some((e) => e.id === id)) ? id : null;
       if (handle) {
-        if (selected) handle.setSelection(selected);
+        if (selected && visible.has(selected)) handle.setSelection(selected);
         else handle.clearSelection();
       }
       labelPass();
