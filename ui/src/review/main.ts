@@ -1,100 +1,121 @@
-import { attestationMeaning, badgeFor, changeMode, classColors, classMeaning, initialState, labelFor, related, searchNode, shapes, visibleGraph } from "./model.ts";
-import type { ReviewExport, ReviewNode, ReviewEdge, State } from "./model.ts";
+import { humanLabel, initialState, searchNode, shortHumanLabel, visibleGraph } from "./model.ts";
+import type { ReviewExport, ReviewNode } from "./model.ts";
+import { createProductView } from "./product-view.ts";
+import { DEFAULT_AXES } from "./view-contract.ts";
+import type { Axes, ProductView, ViewWitness } from "./view-contract.ts";
+import { FAMILY_OF, standingOf } from "./presentation.ts";
+import { FocusStack } from "./focus-stack.ts";
+import { renderPanel } from "./panel.ts";
+import { renderLegend } from "./legend.ts";
+import { fetchLenses, renderLensPopover } from "./lenses.ts";
+import type { LensRegister } from "./lenses.ts";
 import { mount2d } from "./view2d.ts";
 import { mount3d } from "./view3d.ts";
 
 const get = <T extends HTMLElement>(id: string): T => { const item = document.getElementById(id); if (!item) throw new Error(`#${id} assente`); return item as T; };
-const viewport = get<HTMLElement>("viewport"), details = get<HTMLElement>("details"), status = get<HTMLElement>("status"), error = get<HTMLElement>("error");
-let data: ReviewExport; let state: State = { ...initialState(), mode: location.hash === "#3d" ? "3d" : "2d" }; let view: ReturnType<typeof mount2d> | ReturnType<typeof mount3d> | null = null;
-let shown = { nodes: [] as ReviewNode[], edges: [] as ReviewEdge[] };
-function row(label: string, value: unknown) { if (value === null || value === undefined || value === "") return; const dt = document.createElement("dt"), dd = document.createElement("dd"); dt.textContent = label; dd.textContent = String(value); details.querySelector("dl")!.append(dt, dd); }
-function panel(id: string | null) {
-  details.replaceChildren();
-  if (!id) { details.textContent = "Seleziona un nodo o una relazione."; return; }
-  const node = data.nodes.find((item) => item.id === id), edge = data.edges.find((item) => item.id === id);
-  if (!node && !edge) { details.textContent = "Elemento non trovato."; return; }
-  const title = document.createElement("h2"); title.textContent = node?.label ?? edge?.type ?? id; details.append(title);
-  if (node) { const badge = document.createElement("strong"); badge.className = "badge"; badge.textContent = badgeFor(node, data); details.append(badge); }
-  const list = document.createElement("dl"); details.append(list);
-  if (edge) { row("Relazione", edge.type); row("Da", labelFor(data, edge.source)); row("A", labelFor(data, edge.target)); row("Attestata da", `${edge.attested_by} · ${attestationMeaning[edge.attested_by] ?? edge.attested_by}`); row("Peso (citazioni distinte)", edge.weight); return; }
-  if (!node) return;
-  row("Tipo", node.type); row("ID", node.id); row("Natura epistemica", node.epistemic);
-  if (node.type === "connection") {
-    row("Classe", `${node.epistemic}: ${classMeaning[node.epistemic] ?? "classe di revisione"}`); row("Motivo della classe", node.class_rationale);
-    const evidence = data.edges.filter((edge) => edge.type === "supported_by" && edge.source === node.id).map((edge) => edge.target);
-    const promoted = new Set(data.edges.filter((edge) => edge.type === "promoted_as").map((edge) => edge.source));
-    const canonicalEvidence = evidence.filter((id) => data.edges.some((edge) => edge.type === "distilled_as" && edge.source === id && promoted.has(edge.target))).length;
-    row("Evidenze canoniche collegate", `${canonicalEvidence} di ${evidence.length}`);
-    row("Enunciato", node.statement); row("Perché conta", node.why_it_matters); row("Confidenza", node.confidence);
-    row("Motivo della confidenza", node.confidence_rationale); row("Rischio", node.overinterpretation_risk);
-    row("Contraddizioni o evoluzione", node.contradictions_or_evolution); row("Suggerimento", node.suggested_action);
-  } else if (node.type === "evidence") {
-    const quote = document.createElement("blockquote"); quote.textContent = String(node.span ?? ""); details.append(quote);
-    row("Verifica", node.verified ? "verificata byte per byte" : `NON VERIFICATA: ${node.verification_error ?? "errore"}`);
-    row("Source ID", node.source_id); row("Byte", `${node.start_byte}–${node.end_byte}`);
-    row("Voce", node.role === "user" ? "fondatore" : "assistente"); row("Data", node.date);
-    const dt = document.createElement("dt"), dd = document.createElement("dd"); dt.textContent = "Digest"; dd.textContent = String(node.snapshot_digest ?? "").slice(0, 12); dd.title = String(node.snapshot_digest ?? ""); list.append(dt, dd);
-  } else if (node.type === "record") {
-    row("Voce", node.role === "user" ? "fondatore" : "assistente"); row("Data", node.date); row("Digest", node.snapshot_digest);
-    row("Conversazione", node.conversation_id); if (node.context_error) row("Contesto non disponibile", node.context_error);
-    const context = node.context as { before: {role: string; text: string; truncated: boolean}[]; target: {role: string; text: string; truncated: boolean}; after: {role: string; text: string; truncated: boolean}[] } | null;
-    if (context) for (const [label, values] of [["Prima", context.before], ["Citazione", [context.target]], ["Dopo", context.after]] as const)
-      for (const value of values) row(`${label} · ${value.role}${value.truncated ? " (troncato)" : ""}`, value.text);
-  } else if (node.type === "candidate" || node.type === "canon") {
-    row("Standing", node.standing ?? (node.type === "canon" ? "canonical" : "proposal")); row("Etichetta epistemica", node.epistemic_label);
-    row("ID proposta", node.candidate_id); row("ID asserzione", node.assertion_id); row("Versione", node.candidate_version);
-    const promoted = data.edges.find((edge) => edge.type === "promoted_as" && edge.source === node.id);
-    const assertion = promoted ? data.nodes.find((item) => item.id === promoted.target) : undefined;
-    row("Testo canonico", node.text ?? assertion?.text);
-  } else if (node.type === "conversation") {
-    row("Categoria", node.category); row("Titolo", node.label); row("Progetto (nome inferito)", node.project_name_inferred); row("ID progetto", node.project_id);
-  } else row("Schede collegate", node.link_count);
-  const heading = document.createElement("h3"); heading.textContent = "Relazioni"; details.append(heading);
-  for (const relation of related(data, id)) { const button = document.createElement("button"); button.className = "relation";
-    const direction = relation.source === id ? "→" : "←"; const other = relation.source === id ? relation.target : relation.source;
-    button.textContent = `${direction} ${relation.type} · ${labelFor(data, other)} · ${relation.attested_by}`;
-    button.addEventListener("click", () => select(relation.id)); details.append(button); }
+const viewport = get<HTMLElement>("viewport"), details = get<HTMLElement>("details"), status = get<HTMLElement>("status");
+let data: ReviewExport; let view: ProductView | null = null; let axes: Axes = { ...DEFAULT_AXES };
+let debug = false; let lens: LensRegister | null = null; let visibleIds = new Set<string>(); let stack: FocusStack;
+let filter = { domain: "", family: "", standing: "", evidence: "" }; let operation = Promise.resolve();
+const errors: string[] = [];
+function enqueue(work: () => Promise<void>): Promise<void> { operation = operation.then(work).catch((error: unknown) => { const message = error instanceof Error ? error.message : String(error); errors.push(message); status.textContent = `Errore: ${message}`; get<HTMLElement>("error").hidden = false; get<HTMLElement>("error").textContent = message; }); return operation; }
+function filterGraph() {
+  const base = visibleGraph(data, { ...initialState().filters, domain: filter.domain, epistemicClass: filter.evidence });
+  const nodes = base.nodes.filter((node) => (!filter.family || FAMILY_OF[node.type] === filter.family) && (!filter.standing || standingOf(node, data) === filter.standing));
+  visibleIds = new Set(nodes.map((node) => node.id));
+  return { nodes, edges: base.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)) };
 }
-function select(id: string | null) { id ||= null; state = { ...state, selected: id }; panel(id); view?.highlight(id); view?.focus(id ?? ""); }
-function filters() { state = { ...state, filters: { domain: get<HTMLSelectElement>("filter-domain").value, epistemicClass: get<HTMLSelectElement>("filter-class").value,
-  standing: get<HTMLSelectElement>("filter-standing").value, nodeType: get<HTMLSelectElement>("filter-type").value } }; render(); }
-function render() {
-  view?.destroy(); viewport.replaceChildren(error); shown = visibleGraph(data, state.filters);
-  get<HTMLElement>("counter").textContent = `${shown.nodes.length}/${data.nodes.length} nodi · ${shown.edges.length}/${data.edges.length} relazioni`;
-  if (shown.nodes.length === 0) { view = null; panel(state.selected); status.textContent = "Nessun nodo con questi filtri"; return; }
-  view = state.mode === "2d" ? mount2d(viewport, data, shown.nodes, shown.edges, select) : mount3d(viewport, data, shown.nodes, shown.edges, select);
-  get<HTMLButtonElement>("view-2d").setAttribute("aria-pressed", String(state.mode === "2d"));
-  get<HTMLButtonElement>("view-3d").setAttribute("aria-pressed", String(state.mode === "3d"));
-  panel(state.selected); view.highlight(state.selected);
-  status.textContent = `Grafo pronto · ${state.mode.toUpperCase()}`;
+function updateButtons() {
+  for (const axis of ["projection", "morphology", "organization", "colour"] as const) {
+    document.querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`).forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.value === axes[axis])));
+  }
+  get<HTMLButtonElement>("labels").setAttribute("aria-pressed", String(axes.labels));
+  get<HTMLButtonElement>("projection-focus").disabled = !stack.current;
+  get<HTMLButtonElement>("back").disabled = stack.depth === 0;
+  get<HTMLButtonElement>("expand").disabled = stack.depth === 0;
+  const current = stack.current;
+  get<HTMLElement>("search-feedback").textContent = current?.capped ? "Vicinato limitato a 60 nodi." : "";
 }
-for (const mode of ["2d", "3d"] as const) get<HTMLButtonElement>(`view-${mode}`).addEventListener("click", () => { state = changeMode(state, mode); render(); });
-for (const id of ["filter-domain", "filter-class", "filter-standing", "filter-type"]) get<HTMLSelectElement>(id).addEventListener("change", filters);
-get<HTMLFormElement>("search-form").addEventListener("submit", (event) => { event.preventDefault(); const found = searchNode(data, get<HTMLInputElement>("search").value);
-  get<HTMLElement>("search-feedback").textContent = found ? "" : "Nessun risultato";
-  if (found) { if (!shown.nodes.some((node) => node.id === found.id)) { state = { ...state, filters: initialState().filters };
-      for (const id of ["filter-domain", "filter-class", "filter-standing", "filter-type"]) get<HTMLSelectElement>(id).value = ""; render(); }
-    select(found.id); } });
-const api = { get mode() { return state.mode; }, get selected() { return state.selected; }, visibleCounts: () => ({ nodes: shown.nodes.length, edges: shown.edges.length, totalNodes: data?.nodes.length ?? 0,
-  connectionClasses: Object.fromEntries(["A", "B", "C", "D"].map((name) => [name, shown.nodes.filter((node) => node.type === "connection" && node.epistemic === name).length])) }),
-  renderedFrames: () => view && "renderedFrames" in view ? view.renderedFrames() : 0,
-  cameraPosition: () => view && "cameraPosition" in view ? view.cameraPosition() : null,
-  depthStats: () => { const axes = [0, 1, 2].map((index) => { const values = shown.nodes.map((node) => (data.layouts["3d"][node.id]?.[index] ?? 0) * 1.5);
-    const mean = values.reduce((a, b) => a + b, 0) / Math.max(1, values.length); return { min: Math.min(...values), max: Math.max(...values), std: Math.sqrt(values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / Math.max(1, values.length)) }; });
-    return { x: axes[0], y: axes[1], z: view && "depthStats" in view ? view.depthStats() : axes[2] }; } };
-Object.assign(window, { __review: api });
+function updatePanel() {
+  renderPanel({ host: details, data, id: stack.current?.id ?? null, debug, onSelect: (id) => { void select(id); } });
+  const legendSection = document.createElement("details"); legendSection.id = "legend-section";
+  const summary = document.createElement("summary"); summary.textContent = debug ? "Legenda tecnica" : "Legenda · famiglie e relazioni"; legendSection.append(summary);
+  summary.title = summary.textContent; summary.setAttribute("aria-label", summary.textContent);
+  const legend = document.createElement("div"); legend.className = "legend"; legendSection.append(legend); renderLegend(legend, axes.colour, debug); details.append(legendSection);
+}
+function updateSummary() { const graph = filterGraph(); get<HTMLElement>("counter").textContent = `${graph.nodes.length}/${data.nodes.length} nodi · ${graph.edges.length}/${data.edges.length} relazioni`; updateButtons(); updatePanel(); }
+function debugView(graph: ReturnType<typeof filterGraph>): ProductView {
+  const legacy = axes.projection === "2d" ? mount2d(viewport, data, graph.nodes, graph.edges, (id) => { if (id) void select(id); else void reset(); }) : mount3d(viewport, data, graph.nodes, graph.edges, (id) => { if (id) void select(id); else void reset(); });
+  const witness = (): ViewWitness => {
+    const rect = viewport.getBoundingClientRect();
+    return { axes, cameraKind: axes.projection === "2d" || axes.projection === "3d-orthographic" ? "orthographic" : "perspective",
+      visibleRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height }, nodeViewport: {}, labels: [],
+      selected: stack.current?.id ?? null, emphasised: stack.current?.ids ?? [], windows: [], depth: { zMin: 0, zMax: 0, zStd: 0 },
+      anchorsSource: "engine-flat", palette: "D-066 debug" };
+  };
+  return { setAxes: async () => {}, setVisible: async () => {}, setInsets: () => {}, select: (id) => legacy.highlight(id), setEmphasis: () => {},
+    frame: async (ids) => legacy.focus(ids[0] ?? ""), fit: async () => legacy.focus(""), witness, destroy: () => legacy.destroy() };
+}
+async function mount() {
+  view?.destroy(); viewport.replaceChildren();
+  const graph = filterGraph();
+  if (!graph.nodes.length) { view = null; status.textContent = "Nessun nodo con questi filtri"; updateSummary(); return; }
+  if (debug) view = debugView(graph);
+  else view = await createProductView({ container: viewport, data, visibleNodeIds: visibleIds, axes, insets: { top: 0, right: 0, bottom: 0, left: 0 },
+    text: (id) => { const node = data.nodes.find((item) => item.id === id); const full = node ? humanLabel(node, data) : id; return { short: shortHumanLabel(full), full, family: node ? FAMILY_OF[node.type] : "concept" }; },
+    events: { onPick: (target) => { if (target) void select(target.id); else void reset(); }, onHover: (target) => { const node = target && data.nodes.find((item) => item.id === target.id); viewport.title = node ? humanLabel(node, data) : ""; } },
+    reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches });
+  await stack.restore(); updateSummary(); status.textContent = debug ? "Grafo pronto · vista tecnica" : "Grafo pronto";
+}
+function select(id: string): Promise<void> { return enqueue(async () => { if (!data) return; if (!visibleIds.has(id) && !data.edges.some((edge) => edge.id === id && visibleIds.has(edge.source) && visibleIds.has(edge.target))) {
+    filter = { domain: "", family: "", standing: "", evidence: "" }; syncFilters(); await mount();
+  }
+  await stack.select(id); updateSummary(); }); }
+function expand(): Promise<void> { return enqueue(async () => { if (!stack) return; await stack.expand(); updateSummary(); }); }
+function back(): Promise<void> { return enqueue(async () => { if (!stack) return; await stack.back(); updateSummary(); }); }
+function reset(): Promise<void> { return enqueue(async () => { if (!stack) return; await stack.reset(); updateSummary(); }); }
+function fit(): Promise<void> { return enqueue(async () => { await view?.fit(); }); }
+function setAxes(partial: Partial<Axes>): Promise<void> { return enqueue(async () => {
+  if (partial.projection === "3d-focus" && !stack?.current) return;
+  axes = { ...axes, ...partial };
+  if (!data) return;
+  if (debug) await mount(); else { await view?.setAxes(partial); await stack.restore(); updateSummary(); }
+}); }
+function setDebug(on: boolean): Promise<void> { return enqueue(async () => { if (debug === on) return; debug = on; get<HTMLInputElement>("debug").checked = on; if (data) await mount(); }); }
+function openLens(open: boolean) { get<HTMLElement>("lens-popover").hidden = !open; get<HTMLButtonElement>("lens-button").setAttribute("aria-expanded", String(open)); }
+function syncFilters() { get<HTMLSelectElement>("filter-domain").value = filter.domain; get<HTMLSelectElement>("filter-family").value = filter.family; get<HTMLSelectElement>("filter-standing").value = filter.standing; get<HTMLSelectElement>("filter-class").value = filter.evidence; }
+function readFilters(): Promise<void> { return enqueue(async () => {
+  if (!data) return;
+  filter = { domain: get<HTMLSelectElement>("filter-domain").value, family: get<HTMLSelectElement>("filter-family").value,
+    standing: get<HTMLSelectElement>("filter-standing").value, evidence: get<HTMLSelectElement>("filter-class").value };
+  const graph = filterGraph(); await view?.setVisible(visibleIds); if (debug) await mount(); else { if (stack.current && !visibleIds.has(stack.current.id) && !graph.edges.some((edge) => edge.id === stack.current!.id)) await stack.reset(); else await stack.restore(); updateSummary(); status.textContent = graph.nodes.length ? "Grafo pronto" : "Nessun nodo con questi filtri"; }
+}); }
+for (const axis of ["projection", "morphology", "organization", "colour"] as const) document.querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`).forEach((button) => {
+  if (axis === "projection" && button.dataset.value === "3d-focus") button.id = "projection-focus";
+  button.addEventListener("click", () => { void setAxes({ [axis]: button.dataset.value } as Partial<Axes>); });
+});
+get<HTMLButtonElement>("labels").addEventListener("click", () => { void setAxes({ labels: !axes.labels }); });
+get<HTMLButtonElement>("fit").addEventListener("click", () => { void fit(); });
+get<HTMLButtonElement>("reset").addEventListener("click", () => { void reset(); });
+get<HTMLButtonElement>("back").addEventListener("click", () => { void back(); });
+get<HTMLButtonElement>("expand").addEventListener("click", () => { void expand(); });
+for (const id of ["filter-domain", "filter-family", "filter-standing", "filter-class"]) get<HTMLSelectElement>(id).addEventListener("change", () => { void readFilters(); });
+get<HTMLInputElement>("debug").addEventListener("change", (event) => { void setDebug((event.target as HTMLInputElement).checked); });
+get<HTMLButtonElement>("lens-button").addEventListener("click", () => openLens(get<HTMLElement>("lens-popover").hidden === true));
+get<HTMLFormElement>("search-form").addEventListener("submit", (event) => { event.preventDefault(); if (!data) return; const found = searchNode(data, get<HTMLInputElement>("search").value);
+  if (found) void select(found.id); else get<HTMLElement>("search-feedback").textContent = "Nessun risultato"; });
+const api = { ready: Promise.resolve(), errors, state: () => ({ axes: { ...axes }, selected: stack?.current?.id ?? null, stack: stack?.ids ?? [], stackDepth: stack?.depth ?? 0, filters: { ...filter }, debug }),
+  setAxes, select, expand, back, reset, fit, setDebug, openLens,
+  witness: () => ({ ...(view?.witness() ?? {}), panelRect: details.getBoundingClientRect().toJSON(), page: api.state(), lens: { supplied: !!lens, reading: lens?.reading_mode.label ?? null, open: !get<HTMLElement>("lens-popover").hidden } }) };
+Object.assign(window, { __d067: api });
 async function load() {
   const response = await fetch("/api/export.json"); if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const value: unknown = await response.json(); if (!value || typeof value !== "object" || !("schema" in value) || value.schema !== "nousos-graph-review-1") throw new Error("Formato export non valido");
-  data = value as ReviewExport;
-  get<HTMLElement>("notice").textContent = data.notice.it;
-  const domains = data.nodes.filter((node) => node.type === "domain"); const select = get<HTMLSelectElement>("filter-domain");
-  for (const domain of domains) { const option = document.createElement("option"); option.value = domain.label; option.textContent = domain.label; select.append(option); }
-  const legend = get<HTMLElement>("legend");
-  const convention = document.createElement("span"); convention.textContent = "Classi: una convenzione provvisoria di revisione (D-065), non un modello epistemico"; legend.append(convention);
-  for (const [name, color] of Object.entries(classColors)) { const span = document.createElement("span"); span.textContent = `${name} · ${classMeaning[name]}`; span.style.color = color; legend.append(span); }
-  const shapesText = document.createElement("span"); shapesText.textContent = "Forme 3D · " + Object.entries(shapes).map(([type, shape]) => `${type}: ${shape}`).join(" · "); legend.append(shapesText);
-  const standing = document.createElement("span"); standing.textContent = "Canonico verde · Proposta arancio · Fonte azzurro"; legend.append(standing);
-  render();
+  const payload: unknown = await response.json(); if (!payload || typeof payload !== "object" || !("schema" in payload) || payload.schema !== "nousos-graph-review-1") throw new Error("Formato export non valido");
+  data = payload as ReviewExport; get<HTMLElement>("notice").textContent = data.notice.it;
+  stack = new FocusStack(data, () => visibleIds, () => view);
+  for (const node of data.nodes.filter((item) => item.type === "domain")) { const option = document.createElement("option"); option.value = node.label; option.textContent = node.label; get<HTMLSelectElement>("filter-domain").append(option); }
+  lens = await fetchLenses(); get<HTMLButtonElement>("lens-button").textContent = lens ? `${lens.reading_mode.label} · predefinita` : "Registro non fornito";
+  renderLensPopover(get<HTMLElement>("lens-popover"), lens);
+  await mount();
 }
-load().catch((cause: unknown) => { error.hidden = false; error.textContent = cause instanceof Error ? cause.message : String(cause); status.textContent = "Caricamento fallito"; });
+api.ready = load().catch((error: unknown) => { const message = error instanceof Error ? error.message : String(error); errors.push(message); status.textContent = `Errore: ${message}`; get<HTMLElement>("error").hidden = false; get<HTMLElement>("error").textContent = message; throw error; });

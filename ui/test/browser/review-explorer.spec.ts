@@ -7,6 +7,7 @@ const enabled = process.env.REVIEW_EXPLORER === "1";
 const url = process.env.REVIEW_URL ?? "http://127.0.0.1:8766";
 const shots = process.env.SHOTS_DIR;
 test("read-only review explorer visual states", async ({ page }) => {
+  test.skip(true, "D-067 replaces this interface; use the review-d067 project");
   test.skip(!enabled, "REVIEW_EXPLORER=1 required");
   if (!shots) throw new Error("SHOTS_DIR is required");
   const target = resolve(shots), repo = resolve("..");

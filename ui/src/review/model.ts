@@ -101,3 +101,33 @@ export function selectionNeighbourhood(graph: Pick<ReviewExport, "nodes" | "edge
 }
 export function isCanonical(node: ReviewNode): boolean { return node.type === "canon" || node.epistemic === "canonical"; }
 export function labelFor(data: ReviewExport, id: string): string { return data.nodes.find((node) => node.id === id)?.label ?? id; }
+/** Human-facing text for the product view; source and candidate identifiers stay in Provenance. */
+export function humanLabel(node: ReviewNode, data: Pick<ReviewExport, "nodes" | "edges">): string {
+  if (node.type === "record") return `Messaggio ${node.role === "user" ? "del fondatore" : "dell'assistente"}${node.date ? ` · ${node.date}` : ""}`;
+  if (node.type === "candidate") {
+    const promoted = data.edges.find((edge) => edge.type === "promoted_as" && edge.source === node.id);
+    const canonical = promoted && data.nodes.find((item) => item.id === promoted.target);
+    return canonical ? `Proposta · ${String(canonical.text ?? canonical.label)}` : "Proposta di asserzione";
+  }
+  if (node.type === "evidence") return readableSpan(String(node.span ?? node.label));
+  if (node.type === "canon") return String(node.text ?? node.label);
+  return String(node.title ?? node.label);
+}
+export function shortHumanLabel(value: string, max = 30): string {
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (clean.length <= max) return clean;
+  const prefix = clean.slice(0, max - 1), boundary = prefix.lastIndexOf(" ");
+  return `${(boundary >= 12 ? prefix.slice(0, boundary) : prefix).trimEnd()}…`;
+}
+/**
+ * A cited span is the verbatim bytes of its source file, and some sources are JSON, so a quote can
+ * carry escape sequences such as \n or \". This decodes them for reading; the verbatim bytes stay
+ * available in the advanced panel and are what the citation check verified.
+ */
+export function readableSpan(value: string): string {
+  if (!value.includes("\\")) return value;
+  return value.replace(/\\(u[0-9a-fA-F]{4}|["\\/bfnrt])/g, (_, code: string) => {
+    if (code.startsWith("u")) return String.fromCharCode(Number.parseInt(code.slice(1), 16));
+    return ({ n: "\n", t: "\t", r: "", b: "", f: "", '"': '"', "\\": "\\", "/": "/" } as Record<string, string>)[code] ?? code;
+  });
+}
