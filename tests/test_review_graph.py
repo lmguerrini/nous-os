@@ -103,6 +103,21 @@ def test_domain_keeps_its_name_and_a_namesake_entity_says_what_it_is(tmp_path):
     assert nodes["ent_forge"]["title"] == "FORGE · progetto"
 
 
+def test_exploratory_overlay_sources_are_used_and_verified(tmp_path):
+    args, citation = fixture(tmp_path)
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    link = {"schema": "nousos.exploratory-connection/1", "id": "p2b-x", "a": "asr_one", "b": "conv1", "inference": "analogy",
+            "explanation_it": "Synthetic link", "confidence": "low", "counter_evidence": [], "status": "exploratory/non-canonical",
+            "a_sources": [citation], "b_sources": [citation]}
+    forged = link | {"id": "p2b-y", "b_sources": [citation | {"span": "forged"}]}
+    (overlay / "exploratory.jsonl").write_bytes(encoded(link) + encoded(forged))
+    manifest = build(**args, overlay=overlay, out=tmp_path / "out")
+    edges = [e for e in json.loads((tmp_path / "out/index.json").read_text())["edges"] if e["class"] == "exploratory"]
+    assert [(e["a_sources"], e["b_sources"]) for e in edges] == [([citation], [citation])]
+    assert manifest["audit"]["dropped"]["exploratory invalid overlay source"] == 1
+
+
 def test_duplicate_titles_gain_discriminators(tmp_path):
     args, citation = fixture(tmp_path)
     path = args["stores"] / "candidates/proposals.jsonl"

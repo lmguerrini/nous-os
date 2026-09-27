@@ -530,7 +530,15 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                          for c in details[n["id"]]["citations"]]
                 return found[:8]
             return []
-        a_sources, b_sources = sources(a), sources(b)
+        given_a, given_b = rel.get("a_sources"), rel.get("b_sources")
+        if isinstance(given_a, list) and isinstance(given_b, list) and given_a and given_b:
+            # The overlay states the sources of both sides; every one must match the snapshot bytes.
+            if not all(isinstance(c, dict) and verify(c, stores, cache)[0] for c in [*given_a, *given_b]):
+                reasons["exploratory invalid overlay source"] += 1
+                continue
+            a_sources, b_sources = given_a, given_b
+        else:
+            a_sources, b_sources = sources(a), sources(b)
         ev = [*a_sources, *b_sources]
         if not ev:
             reasons["exploratory invalid citation"] += 1
