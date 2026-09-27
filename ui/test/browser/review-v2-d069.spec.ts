@@ -4,7 +4,7 @@ const ready=async(page:import('@playwright/test').Page)=>{await page.goto(url);a
 test('D-069 v2 disclosure, search, details, readings and provenance',async({page})=>{
   test.setTimeout(120000);await ready(page);
   expect(await page.evaluate(()=>(window as any).__d067.dataset().mode)).toBe('v2');
-  const overview=await page.evaluate(()=>(window as any).__d067.disclosure());expect(overview.counts[1]).toBeGreaterThan(0);expect(overview.cap).toBe(2500);
+  const overview=await page.evaluate(()=>(window as any).__d067.disclosure());expect(overview.counts[1]).toBeGreaterThan(0);expect(overview.cap).toBe(1000);
   let domain=overview.nodes.find((n:any)=>n.level===1).id;
   await page.evaluate(id=>(window as any).__d067.expand(id),domain);
   let state=await page.evaluate(()=>(window as any).__d067.disclosure());
@@ -44,6 +44,6 @@ test('D-069 v2 reports the visible node cap',async({page})=>{
     importance:{value:0.2,components:{}},counts:{children:0,descendants:0,canon:0,passages:0}}));
   await page.route('**/api/graph/manifest',route=>route.fulfill({json:{schema:'nousos.review-graph/2',digest:'synthetic',counts:{level:{1:2501}},limits:{}}}));
   await page.route('**/api/graph/index',route=>route.fulfill({json:{schema:'nousos.review-graph/2',nodes,edges:[]}}));
-  await ready(page);await expect(page.locator('#v2-cap')).toContainText('Limite di 2500 nodi');
-  expect((await page.evaluate(()=>(window as any).__d067.disclosure())).visible).toBe(2500);
+  await ready(page);await expect(page.locator('#v2-cap')).toContainText('Limite di 1000 nodi');
+  expect((await page.evaluate(()=>(window as any).__d067.disclosure())).visible).toBe(1000);
 });

@@ -1,6 +1,8 @@
 import type { GraphEdge, GraphIndex, GraphNode } from './graph-v2.ts';
 import type { Reading } from './view-contract.ts';
-export const V2_CAP = 2500;
+/** Visible-node cap: each disclosure step still rebuilds the renderer, and on the reference M1 Max a step stays under
+ * about 5 s up to this size (measured curve in the D-069 dataset report). */
+export const V2_CAP = 1000;
 export const V2_PAGE = 60;
 export type V2Node = Omit<GraphNode, "level"> & {
     level: 1 | 2 | 3 | 4 | 5;
