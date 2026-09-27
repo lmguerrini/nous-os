@@ -218,6 +218,9 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
         if source not in nodes or target not in nodes:
             return
         eid = f"{klass}:{kind}:{source}:{target}"
+        # Every relation names the record it comes from; a relation derived by a rule (membership, alias mention) names the
+        # rule and its endpoints.
+        extra.setdefault("record_id", f"rule:{kind}:{source}->{target}")
         if eid in edges:
             # Several records for the same relation are one edge whose evidence is the union, in a stable order; the first
             # record stays primary and the others stay listed (the overlays are written sorted by id, so this is stable).
