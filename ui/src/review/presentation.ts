@@ -65,9 +65,9 @@ export type FamilyEncoding = {
 };
 
 export const FAMILY_ENCODING: Readonly<Record<FamilyId, FamilyEncoding>> = {
-  aggregate: { corePermille: 1600, haloPermille: 1700, opacityPermille: 1000 },
-  concept: { corePermille: 1100, haloPermille: 1100, opacityPermille: 1000 },
-  source: { corePermille: 650, haloPermille: 450, opacityPermille: 720 },
+  aggregate: { corePermille: 1150, haloPermille: 1500, opacityPermille: 1000 },
+  concept: { corePermille: 1000, haloPermille: 1000, opacityPermille: 920 },
+  source: { corePermille: 750, haloPermille: 500, opacityPermille: 680 },
 };
 
 export type Standing = "canonical" | "proposal" | "review" | "source" | "structure";
