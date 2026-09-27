@@ -48,13 +48,7 @@ export function drawMorphologyCanvas(
       context.fill();
     }
     context.stroke();
-    const diameter = Math.hypot(points[0]!.x - points[32]!.x, points[0]!.y - points[32]!.y);
-    if (container.title && container.level <= 2 && diameter > 48 && typeof context.fillText === 'function') {
-      const top = points[48]!;
-      context.font = container.level === 1 ? 'bold 12px Arial' : '11px Arial';
-      context.fillStyle = `rgba(${ink}, ${container.level === 1 ? 0.9 : 0.65})`;
-      context.fillText(container.title.slice(0, 42), top.x + 6, top.y - 4);
-    }
+    // The container's title is the node's own label, placed by the page's label layer with collision avoidance.
   }
   context.setLineDash([]);
   const simplified = geometry.nodes.length > 1500;

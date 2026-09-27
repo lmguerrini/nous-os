@@ -220,8 +220,8 @@ function indra(input: LayoutInput): LayoutResult {
                 }
                 offsets.set(child.id, offset);
                 placed.push({ ...offset, radius: childRadius });
-                const tier = Math.abs(child.level - node.level) * 90 * spacing;
-                radius = Math.max(radius, Math.hypot(offset.x, offset.y, tier) + childRadius + gap);
+                // Containment is read in the front view, where every tier's ring lies in its own plane.
+                radius = Math.max(radius, Math.hypot(offset.x, offset.y) + childRadius + gap);
             });
         }
         visiting.delete(node.id);
@@ -243,9 +243,22 @@ function indra(input: LayoutInput): LayoutResult {
             place(child, x + offset.x, y + offset.y);
         }
     };
-    const rootStep = 2.2 * Math.max(0, ...roots.map(node => radii.get(node.id) ?? 0)) + 30 * spacing;
-    roots.forEach((root, index) => {
-        const point = spiral(index, rootStep);
+    // Domains are packed like siblings, each by its own radius, the largest first, so an expanded domain does not push
+    // every other one far away.
+    const rootGap = 12 * spacing;
+    const ordered = [...roots].sort((a, b) => (radii.get(b.id) ?? 0) - (radii.get(a.id) ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const meanRoot = ordered.reduce((sum, node) => sum + (radii.get(node.id) ?? 0), 0) / Math.max(1, ordered.length);
+    const rootStep = 2.1 * meanRoot + rootGap;
+    const placedRoots: { x: number; y: number; radius: number }[] = [];
+    ordered.forEach((root, index) => {
+        const radius = radii.get(root.id) ?? 0;
+        let point = index === 0 ? { x: 0, y: 0 } : spiral(index, rootStep);
+        for (let attempt = 0; attempt < 400; attempt++) {
+            if (placedRoots.every(other => Math.hypot(point.x - other.x, point.y - other.y) >= radius + other.radius + rootGap))
+                break;
+            point = spiral(index + (attempt + 1) * ordered.length, rootStep);
+        }
+        placedRoots.push({ ...point, radius });
         place(root, point.x, point.y);
     });
     return { positions, containers, source: 'indra-recursive' };

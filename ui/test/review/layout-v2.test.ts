@@ -57,7 +57,8 @@ test("Indra packs visible children inside their parents without sibling overlap"
     assert.ok(parent);
     const point = result.positions.get(node.id)!;
     const childRadius = containers.get(node.id)?.radius ?? 0;
-    assert.ok(Math.hypot(point.x - parent.center.x, point.y - parent.center.y, point.z - parent.center.z) + childRadius < parent.radius);
+    // containment is read in the front view: every level's ring lies in its own tier plane
+    assert.ok(Math.hypot(point.x - parent.center.x, point.y - parent.center.y) + childRadius < parent.radius);
   }
   for (const siblings of byParent.values()) for (let a = 0; a < siblings.length; a++) for (let b = a + 1; b < siblings.length; b++) {
     const left = containers.get(siblings[a]!.id), right = containers.get(siblings[b]!.id);

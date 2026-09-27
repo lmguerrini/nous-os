@@ -23,6 +23,9 @@ import { v2Encoding } from "./v2-adapter.ts";
 import type { ReviewCameraState } from "../render3f/camera.tsx";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
 
+/** On-screen radius of an Indra container's own marker; the container ring carries the node. */
+const INDRA_CONTAINER_MARKER_PX = 2.5;
+
 const options = {
   palette: "monochrome" as const,
   temperature: "balanced" as const,
@@ -277,6 +280,8 @@ export const createProductView: CreateProductView = async (input) => {
     }) };
     const anchors = restrictAnchors(fullAnchor(axes), visible);
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
+    const indraContainers = new Set(input.v2Prepared && axes.organization === "indra"
+      ? (input.layoutContainers ?? []).map((container) => container.id) : []);
     const presentation = {
       morphologyLanguage: "distinct" as const,
       nativeLabels: false,
@@ -309,6 +314,9 @@ export const createProductView: CreateProductView = async (input) => {
                 : node.type === "canon" ? "double-ring"
                 : node.type === "record" || node.type === "evidence" ? "hollow" : "filled") as "ring" | "double-ring" | "hollow" | "filled",
               ...(node.origin === "dynamic" ? { haloPermille: Math.round(encoding.haloPermille * 0.55) } : {}),
+              // In Indra a node that holds visible children is drawn by its container ring; its own disc shrinks to a
+              // small hollow marker so it never covers what it contains.
+              ...(indraContainers.has(node.id) ? { radiusPx: INDRA_CONTAINER_MARKER_PX, haloPermille: 0, glyph: "hollow" as const } : {}),
               ...(input.v2Prepared && axes.colour !== "bw" ? {tintSrgb:hexRgb(v2CategoryColour(node.v2 as import("./v2-core.ts").V2Node,palette,axes.colour==='custom'?input.v2Colours:undefined))}
                 : axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] }
                 : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(palette[input.text(node.id).family]) }),
