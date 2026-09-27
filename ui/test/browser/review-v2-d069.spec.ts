@@ -31,7 +31,7 @@ test('D-069 v2 disclosure, search, details, readings and provenance',async({page
   const exploratory=index.edges.find((e:any)=>e.class==='exploratory');expect(exploratory).toBeTruthy();
   await page.evaluate(id=>(window as any).__d067.reveal(id),exploratory.source);
   await page.evaluate(id=>(window as any).__d067.reveal(id),exploratory.target);
-  await page.locator('[data-axis="reading"] [data-value="exploratory"]').click();
+  await page.locator('header [data-axis="reading"] [data-value="exploratory"]').click();
   await expect(page.locator('#focus-chip')).toBeVisible();
   await page.evaluate(id=>(window as any).__d067.select(id),exploratory.id);
   await expect(page.locator('#details')).toContainText('Perché sono collegati?');

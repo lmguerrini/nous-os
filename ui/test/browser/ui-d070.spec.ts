@@ -28,6 +28,7 @@ test("D-070 Custom edits rendered pixels live and persists named presets", async
   await expect.poll(() => page.evaluate(() => (window as any).__d067.palette().values.aggregate)).toBe("#ffd38b");
   await page.reload();
   await page.evaluate(() => (window as any).__d067.ready);
+  await page.locator("#edit-colours").click();
   await expect(page.locator("#custom-editor")).toBeVisible();
   await page.locator("#colour-preset-list").selectOption("Studio");
   await page.locator("#custom-apply").click();

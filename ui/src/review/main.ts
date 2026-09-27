@@ -925,6 +925,8 @@ async function load() {
     v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours);
     get<HTMLElement>("v2-controls-top").hidden = false;
     get<HTMLElement>("v2-relation-control").hidden = false;
+    get<HTMLElement>("gizmo").hidden = axes.projection !== "3d";
+    get<HTMLElement>("view-presets").hidden = axes.projection !== "3d";
     syncCustomColours();
     get<HTMLElement>("notice").textContent = "Grafo distillato D-069";
     updateInsets();
