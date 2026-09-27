@@ -5,11 +5,56 @@ export type NodePresentation = {
   readonly opacityPermille: number;
   readonly tintSrgb?: readonly [number, number, number];
 };
+/**
+ * A marker drawn on top of the morphology's node body so that node families differ by shape as well
+ * as by colour. `filled` is the engine baseline.
+ */
+export type NodeGlyph = "filled" | "ring" | "double-ring" | "hollow";
+/** Line pattern of one relation; attested relations are solid, interpretive ones are never solid. */
+export type EdgeStroke = "solid" | "dashed" | "dotted";
+export type EdgePresentation = {
+  readonly stroke: EdgeStroke;
+  readonly opacityPermille: number;
+  readonly widthPermille: number;
+  readonly tintSrgb?: readonly [number, number, number];
+};
+/**
+ * Live appearance controls of the review page. Every value is a multiplier where 1 is the engine
+ * baseline, except `edgeOpacity` (absolute alpha factor), `labelSizePx` and `labelDensity`, which only
+ * the page's label layer reads.
+ */
+export type AppearanceOptions = {
+  /** Global node size factor, 0.4–2.5. */
+  readonly nodeScale: number;
+  /** Relation width factor, 0.3–3. */
+  readonly edgeWidth: number;
+  /** Relation alpha factor, 0.05–1. */
+  readonly edgeOpacity: number;
+  /** Halo and bloom factor, 0–1.5. */
+  readonly glow: number;
+  /** Bend factor, 0–1; Stellar ignores it because its relations are always straight. */
+  readonly curvature: number;
+  /** Label font size in CSS pixels, 10–18. */
+  readonly labelSizePx: number;
+  /** Share of candidate labels the label layer may place, 0–1. */
+  readonly labelDensity: number;
+};
+export const DEFAULT_APPEARANCE: AppearanceOptions = {
+  nodeScale: 1,
+  edgeWidth: 1,
+  edgeOpacity: 1,
+  glow: 1,
+  curvature: 1,
+  labelSizePx: 12,
+  labelDensity: 0.6,
+};
 export type PresentationOptions = {
-  readonly nodes?: ReadonlyMap<string, NodePresentation>;
+  readonly nodes?: ReadonlyMap<string, NodePresentation & { readonly glyph?: NodeGlyph }>;
+  readonly edges?: ReadonlyMap<string, EdgePresentation>;
   readonly emphasisIds?: ReadonlySet<string> | null;
   readonly nativeLabels?: boolean;
   readonly windowGeometryFromAnchors?: boolean;
+  readonly appearance?: AppearanceOptions;
 };
 /** Convert the review tint into the token colour space used by the 3D renderer. */
 export function tintToken(srgb: readonly [number, number, number]) {
