@@ -18,6 +18,8 @@ export function drawContainers(
   const fieldIsLight = (fieldColor.match(/[\d.]+/g)?.map(Number).slice(0, 3).reduce((a, b) => a + b, 0) ?? 0) > 380;
   // The nested circles are the hierarchy. Their fill and rim stay legible beneath sparse relations.
   const ink = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
+  // Titles never collide: outer levels claim their rectangle first and a later title that would overlap is skipped.
+  const titleRects: { left: number; top: number; right: number; bottom: number }[] = [];
   for (const container of [...containers].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id))) {
     const points = (projection === '3d' ? container.points3d ?? container.points : container.points).map(project);
     if (!points.length) continue;
@@ -43,11 +45,19 @@ export function drawContainers(
     }
     const left = Math.min(...points.map(p => p.x)), right = Math.max(...points.map(p => p.x));
     const top = Math.min(...points.map(p => p.y));
-    if (container.title && right - left >= 85 && top >= 14 && top < bounds.height - 20) {
+    const wideEnough = right - left >= (container.level <= 2 ? 85 : 160);
+    if (container.title && wideEnough && top >= 14 && top < bounds.height - 20) {
       context.setLineDash([]);
-      context.fillStyle = `rgba(${ink}, ${clamp(0.95 - container.level * 0.1, 0.5, 0.9)})`;
       context.font = `${container.level <= 2 ? 600 : 400} 12px Arial`;
-      context.fillText(container.title.slice(0, 32), (left + right) / 2 - Math.min(95, container.title.length * 3), top - 5, 190);
+      const text = container.title.slice(0, 32);
+      const width = Math.min(190, typeof context.measureText === 'function' ? context.measureText(text).width : text.length * 6.5);
+      const x = (left + right) / 2 - width / 2;
+      const rect = { left: x - 3, top: top - 19, right: x + width + 3, bottom: top - 1 };
+      if (!titleRects.some(other => rect.left < other.right && other.left < rect.right && rect.top < other.bottom && other.top < rect.bottom)) {
+        titleRects.push(rect);
+        context.fillStyle = `rgba(${ink}, ${clamp(0.95 - container.level * 0.1, 0.5, 0.9)})`;
+        context.fillText(text, x, top - 5, 190);
+      }
     }
   }
   context.setLineDash([]);

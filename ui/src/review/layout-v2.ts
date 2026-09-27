@@ -326,9 +326,11 @@ function indra(input: LayoutInput): LayoutResult {
         const list = children.get(node.id) ?? [];
         let radius = pearlRadius(node) * spacing;
         if (list.length) {
-            const gap = 7 * spacing;
             list.forEach(measure);
             capCollapsed(list);
+            // Siblings keep a gap that stays visible next to large pearls, not only next to small ones.
+            const meanChild = list.reduce((sum, child) => sum + (radii.get(child.id) ?? 0), 0) / list.length;
+            const gap = Math.max(7, 0.08 * meanChild) * spacing;
             const packed = packDiscs(list.map(child => ({ id: child.id, radius: radii.get(child.id)! })), gap);
             list.forEach(child => {
                 const offset = packed.get(child.id)!;
@@ -361,7 +363,7 @@ function indra(input: LayoutInput): LayoutResult {
     // Domains are packed like siblings, each by its own radius, the largest first, so an expanded domain does not push
     // every other one far away.
     const meanRoot = roots.reduce((sum, root) => sum + (radii.get(root.id) ?? 0), 0) / Math.max(1, roots.length);
-    const rootGap = Math.max(8, 0.06 * meanRoot) * spacing;
+    const rootGap = Math.max(12, 0.1 * meanRoot) * spacing;
     const ordered = [...roots].sort((a, b) => (radii.get(b.id) ?? 0) - (radii.get(a.id) ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     const largestRoot = radii.get(ordered[0]?.id ?? '') ?? 0;
     const coreCount = ordered.length <= 64 ? ordered.filter(root => (radii.get(root.id) ?? 0) >= largestRoot * 0.55).length : 0;
