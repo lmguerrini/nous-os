@@ -412,10 +412,23 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
         if conv_node["parent"].startswith("domain:"):
             conv_node["parent"] = f"domain:{primary}"
         conv_node["parents"] = [f"domain:{primary}", *[f"domain:{d}" for d in conv_node["domains"] if d != primary]]
+    # A project/work parent must belong to the conversation's primary domain: a title match against an entity of another
+    # domain does not stand.
+    for conv_node in [n for n in nodes.values() if n["level"] == 3 and not n.get("level_skip")]:
+        holder = nodes.get(conv_node["parent"], {})
+        primary = conv_node.get("primary_domain")
+        if holder.get("level") == 2 and primary and holder["domains"][0] != primary:
+            conv_node["parent"] = f"domain:{primary}"
+            conv_node["parents"] = [f"domain:{primary}", *[f"domain:{d}" for d in conv_node["domains"] if d != primary]]
+            conv_node["level_skip"] = True
     # For unassigned conversations, use majority of entity alias mentions in
     # their live proposals; an explicit title match above always has priority.
+    # The entity must belong to the conversation's primary domain and be named
+    # in at least three statements and a tenth of them, so one passing mention
+    # never decides the hierarchy.
     for conv_node in [n for n in nodes.values() if n["level"] == 3 and n.get("level_skip")]:
-        candidates = [n for n in nodes.values() if n["level"] == 2 and n["domains"][0] == conv_node["domains"][0]]
+        primary = conv_node.get("primary_domain") or conv_node["domains"][0]
+        candidates = [n for n in nodes.values() if n["level"] == 2 and n["domains"][0] == primary]
         statements = [details[n["id"]]["statement"] for n in nodes.values()
                       if n["level"] == 4 and n["parent"] == conv_node["id"]]
         scores = []
@@ -424,7 +437,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
             aliases = [raw["name"], *raw.get("aliases", [])]
             score = sum(any(re.search(r"(?<!\w)" + re.escape(normalize(a)) + r"(?!\w)", normalize(s))
                             for a in aliases if len(a) > 2) for s in statements)
-            if score:
+            if score >= 3 and score >= 0.1 * len(statements):
                 scores.append((score, entity["id"]))
         if scores:
             chosen = sorted(scores, key=lambda x: (-x[0], x[1]))[0][1]
@@ -664,7 +677,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                 "counts": counts, "limits": {"children_max": 100, "search_max": 50, "response_max_bytes": 1048576},
                 "rules": {"membership": member.get("rules", {}), "proposal_inclusion": "Every live proposal with a verified citation in an eligible conversation; first eligible cited conversation is primary, other eligible cited conversations are parents; domains are their union; keyword anchors are domain_mentions only",
                           "primary_domain": "Most keyword-anchored live proposals citing the conversation; ties: orchardline, quillmap, qrs, forge, dossier, showcase, atlasfield, meridian; no anchor: COV-A primary",
-                          "project_assignment": "Verified gazetteer entity; title alias match, lexical ID tie break; otherwise level_skip",
+                          "project_assignment": "Verified gazetteer entity of the conversation's primary domain: title alias match first (lexical ID tie break), else the entity named in the most live proposal statements if it is named in at least 3 and at least 10 %; otherwise level_skip",
                           "importance": "proposal=3*canon+kind weight (DECISION 2.0, CONCEPT 1.6, REQUIREMENT/RELATIONSHIP 1.4, CHANGE_OVER_TIME 1.2, CONTRADICTION 1.1, OPEN_QUESTION 0.8)+origin (USER_AUTHORED 0.5, QUOTED 0.2, else 0)+0.3*log1p(verified citations)+0.5*log1p(attested degree)+0.3*log1p(exploratory degree); aggregates=log1p(descendant live proposals)+2*log1p(canon descendants)+0.3*log1p(attested degree); size=0.15+0.85*average-tie percentile rank within level",
                           "titles": "overlay title first; first statement clause at word boundary ≤60; canvas title strips leading emoji/status and retains title_full; untitled conversation uses strongest proposal title and month/year; duplicate ID suffix"},
                 "outcomes": outcomes,
