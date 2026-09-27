@@ -146,6 +146,43 @@ def test_server_routes_and_bounds(tmp_path, monkeypatch):
     assert query("index", "gzip")[1]["schema"] == "nousos.review-graph/2"
 
 
+def test_server_health_page_and_passage_search(tmp_path, monkeypatch):
+    args, _ = fixture(tmp_path)
+    build(**args, out=tmp_path / "out")
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("<!doctype html>")
+    (static / "review.js").write_text("export {};")
+    holder = {}
+    class FakeServer:
+        def __init__(self, address, handler):
+            holder["handler"] = handler
+        def serve_forever(self):
+            pass
+        def server_close(self):
+            pass
+    monkeypatch.setattr("nous_os.graph_review.ThreadingHTTPServer", FakeServer)
+    serve_graph(graph=tmp_path / "out", static_root=static)
+    def get(path):
+        handler = holder["handler"].__new__(holder["handler"])
+        handler.path = path
+        handler.wfile = io.BytesIO()
+        handler.headers = {}
+        handler.send_response = lambda code: setattr(handler, "status", code)
+        handler.send_header = lambda key, value: None
+        handler.end_headers = lambda: None
+        handler.do_GET()
+        return handler.status, handler.wfile.getvalue()
+    status, body = get("/api/health")
+    assert status == 200 and json.loads(body)["mode"] == "graph"
+    assert get("/")[0] == 200 and get("/review.js")[0] == 200
+    assert get("/elsewhere.js")[0] == 404
+    # the span is the only text that says "conv1": search reaches it through the proposal's verified passage
+    status, body = get("/api/graph/search?q=conv1")
+    assert status == 200
+    assert [(hit["id"], hit["match_field"]) for hit in json.loads(body)["results"]] == [("asr_one", "passage")]
+
+
 def test_all_live_proposals_multi_conversation_and_primary_domain(tmp_path):
     args, citation = fixture(tmp_path)
     stores = args["stores"]

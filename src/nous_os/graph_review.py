@@ -668,8 +668,8 @@ def serve(*, export_path: Path, static_root: Path = Path("ui/dist/review"), port
             signal.signal(sig, handler)
 
 
-def serve_graph(*, graph: Path, port: int = 8769) -> None:
-    """Serve a verified v2 dataset without accessing the underlying stores."""
+def serve_graph(*, graph: Path, port: int = 8769, static_root: Path | None = None) -> None:
+    """Serve a verified v2 dataset and the built page without accessing the underlying stores."""
     from nous_os.review_graph import encoded, normalize
 
     manifest = json.loads((graph / "manifest.json").read_bytes())
@@ -696,11 +696,19 @@ def serve_graph(*, graph: Path, port: int = 8769) -> None:
     for value in children.values():
         value.sort()
     statements = {}
+    # The verified spans are the only Italian text of a proposal (statements are distilled in English), so search
+    # reads them too.
+    spans: dict[str, list[str]] = {}
     with detail_file.open("rb") as stream:
         for line in stream:
             item = json.loads(line)
             if "statement" in item:
                 statements[item["id"]] = item["statement"]
+            if item.get("kind") == "passage" and item.get("parent"):
+                spans.setdefault(item["parent"], []).append((item.get("citation") or {}).get("span") or "")
+    passage_text = {key: normalize(" ".join(value)) for key, value in spans.items()}
+    root = static_root.resolve() if static_root is not None else None
+    health = encoded({"status": "ok", "mode": "graph", "dataset_digest": manifest["digest"]})
 
     def detail(identifier: str) -> dict | None:
         if identifier not in offsets:
@@ -730,6 +738,24 @@ def serve_graph(*, graph: Path, port: int = 8769) -> None:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            if not (parsed.scheme or parsed.netloc or parsed.fragment or parsed.query) and route in {
+                    "/api/health", "/", "/index.html", "/review.js"}:
+                if route == "/api/health":
+                    body, mime = health, "application/json; charset=utf-8"
+                else:
+                    name = "index.html" if route == "/" else route[1:]
+                    target = (root / name).resolve() if root is not None else None
+                    if target is None or not target.is_relative_to(root) or not target.is_file():
+                        send(404, {"error": "static file not found"})
+                        return
+                    body = target.read_bytes()
+                    mime = "text/html; charset=utf-8" if name == "index.html" else "text/javascript; charset=utf-8"
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if parsed.scheme or parsed.netloc or parsed.fragment or route not in {
                     "/api/graph/manifest", "/api/graph/index", "/api/graph/node",
                     "/api/graph/children", "/api/graph/search"}:
@@ -779,6 +805,8 @@ def serve_graph(*, graph: Path, port: int = 8769) -> None:
                         if node["level"] == 4:
                             fields["statement"] = statements.get(node["id"], "")
                         field = next((name for name, value in fields.items() if all(w in normalize(value) for w in words)), None)
+                        if field is None and node["level"] == 4 and all(w in passage_text.get(node["id"], "") for w in words):
+                            field = "passage"
                         if field:
                             hits.append({"id": node["id"], "level": node["level"], "match_field": field,
                                          "title": node["title"]})
@@ -826,7 +854,7 @@ def main(argv: list[str] | None = None) -> int:
                    workspace=core.resolve_workspace(), context_window=args.context)
         else:
             if args.graph:
-                serve_graph(graph=args.graph, port=args.port)
+                serve_graph(graph=args.graph, port=args.port, static_root=args.static)
             elif args.export:
                 serve(export_path=args.export, static_root=args.static, port=args.port, lenses_path=args.lenses, live=args.live)
             else:
