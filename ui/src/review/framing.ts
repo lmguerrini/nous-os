@@ -182,6 +182,14 @@ export function solveFraming(handle: CameraHandle, request: FrameRequest): Frame
   if (request.points.length === 0) {
     return { camera: handle.readCameraState(), fits: true, iterations: 0 };
   }
+  const initial = handle.readCameraState();
+  // A point behind a perspective camera projects to a non-finite pixel; framing on it would produce a non-finite zoom.
+  const usable = (camera: VisualStateCamera) => Number.isFinite(camera.x) && Number.isFinite(camera.y)
+    && Number.isFinite(camera.ratio) && camera.ratio > 0
+    && projectAll(handle, request.points).every((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+  if (!usable(initial)) {
+    return { camera: initial, fits: false, iterations: 0 };
+  }
   const target = { x: request.rect.left + (request.rect.width / 2), y: request.rect.top + (request.rect.height / 2) };
   let camera = handle.readCameraState();
   let iterations = 0;
@@ -189,6 +197,10 @@ export function solveFraming(handle: CameraHandle, request: FrameRequest): Frame
     camera = pan(handle, camera, request, target);
     camera = zoom(handle, camera, request);
     camera = pan(handle, camera, request, target);
+    if (!usable(camera)) {
+      handle.restoreCameraState(initial);
+      return { camera: initial, fits: false, iterations: iterations + 1 };
+    }
     const pixels = projectAll(handle, request.points);
     const anchor = anchorOf(pixels, request.anchorFirst);
     const centred = Math.hypot(anchor.x - target.x, anchor.y - target.y) <= CENTRE_TOLERANCE_PX * 2;

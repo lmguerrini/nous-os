@@ -11,6 +11,8 @@ import { fetchLenses, renderLensPopover } from "./lenses.ts";
 import type { LensRegister } from "./lenses.ts";
 import { mount2d } from "./view2d.ts";
 import { mount3d } from "./view3d.ts";
+import { LiveGraph } from "./live-graph.ts";
+import type { LiveFragment } from "./live-graph.ts";
 
 const get = <T extends HTMLElement>(id: string): T => {
   const item = document.getElementById(id);
@@ -21,6 +23,10 @@ const viewport = get<HTMLElement>("viewport");
 const details = get<HTMLElement>("details");
 const status = get<HTMLElement>("status");
 let data: ReviewExport;
+let liveGraph: LiveGraph;
+let liveActive = false;
+let liveResults: LiveFragment[] = [];
+let liveMessage = "";
 let view: ProductView | null = null;
 let axes: Axes = { ...DEFAULT_AXES };
 let debug = false;
@@ -77,6 +83,75 @@ function updatePanel() {
       void select(id);
     },
   });
+  const liveSection = document.createElement("section");
+  liveSection.id = "live-section";
+  const title = document.createElement("h3");
+  title.textContent = "Memoria distillata · risultati dinamici";
+  liveSection.append(title);
+  if (!liveActive) {
+    const inactive = document.createElement("p");
+    inactive.textContent = "Modalità dinamica non attiva";
+    liveSection.append(inactive);
+  } else {
+    const form = document.createElement("form");
+    form.id = "live-search-form";
+    const input = document.createElement("input");
+    input.type = "search";
+    input.id = "live-query";
+    input.placeholder = "Cerca nella memoria distillata";
+    input.setAttribute("aria-label", "Cerca nella memoria distillata");
+    input.maxLength = 200;
+    input.value = liveQuery;
+    const button = document.createElement("button");
+    button.textContent = "Cerca";
+    form.append(input, button);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void liveSearch(input.value).catch((error: unknown) => {
+        liveMessage = error instanceof Error ? error.message : String(error);
+        updatePanel();
+      });
+    });
+    liveSection.append(form);
+    const message = document.createElement("p");
+    message.id = "live-message";
+    message.setAttribute("role", "status");
+    message.textContent = liveMessage || `${liveGraph.count}/150 nodi dinamici`;
+    liveSection.append(message);
+    for (const fragment of liveResults) {
+      const node = fragment.nodes[0]!;
+      const row = document.createElement("div");
+      row.className = "live-result";
+      const text = document.createElement("p");
+      text.textContent = `${node.label} · ${node.standing === "canonical" ? "canonico" : "proposta, non canonica"}`;
+      const add = document.createElement("button");
+      add.textContent = "Aggiungi al grafo";
+      add.addEventListener("click", () => { void liveAdd(node.id); });
+      row.append(text, add);
+      liveSection.append(row);
+    }
+    const controls = document.createElement("div");
+    for (const [label, action, disabled] of [
+      ["Annulla", () => liveUndo(), liveGraph.depth === 0],
+      ["Ripeti", () => liveRedo(), liveGraph.redoDepth === 0],
+      ["Rimuovi risultati dinamici", () => liveClear(), liveGraph.count === 0],
+    ] as const) {
+      const control = document.createElement("button");
+      control.textContent = label;
+      control.disabled = disabled;
+      control.addEventListener("click", () => { void action(); });
+      controls.append(control);
+    }
+    liveSection.append(controls);
+    const selected = data.nodes.find((node) => node.id === stack.current?.id);
+    if (selected?.origin === "dynamic") {
+      const expandButton = document.createElement("button");
+      expandButton.textContent = "Espandi dalla memoria";
+      expandButton.addEventListener("click", () => { void liveExpand(selected.id); });
+      liveSection.append(expandButton);
+    }
+  }
+  details.prepend(liveSection);
   const legendSection = document.createElement("details");
   legendSection.id = "legend-section";
   const summary = document.createElement("summary");
@@ -90,6 +165,72 @@ function updatePanel() {
   renderLegend(legend, axes.colour, debug);
   details.append(legendSection);
 }
+let liveQuery = "";
+async function liveSearch(query: string, limit = 10): Promise<LiveFragment[]> {
+  if (!liveActive) return [];
+  if (!query.trim() || query.length > 200 || !Number.isInteger(limit) || limit < 1 || limit > 20)
+    throw new Error("Ricerca non valida");
+  const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+  const body = await response.json();
+  if (!response.ok) throw new Error(String(body.error ?? response.status));
+  liveQuery = query;
+  liveResults = body.results as LiveFragment[];
+  liveMessage = `${liveResults.length} risultati · ${body.total_matched} corrispondenze`;
+  updatePanel();
+  return liveResults;
+}
+async function liveFetch(id: string): Promise<LiveFragment> {
+  const response = await fetch(`/api/expand?id=${encodeURIComponent(id)}&limit=40`);
+  const body = await response.json();
+  if (!response.ok) throw new Error(String(body.error ?? response.status));
+  return body as LiveFragment;
+}
+function syncLive() {
+  const next = liveGraph.data;
+  data.nodes = next.nodes;
+  data.edges = next.edges;
+  liveMessage = `${liveGraph.count}/150 nodi dinamici`;
+}
+function liveAdd(id: string): Promise<void> {
+  return enqueue(async () => {
+    const result = liveResults.find((item) => item.nodes[0]?.id === id);
+    if (!result) throw new Error("Risultato non presente nella ricerca corrente");
+    const expanded = await liveFetch(id);
+    const joined = { nodes: [...expanded.nodes, ...result.nodes], edges: [...expanded.edges, ...result.edges] };
+    if (liveGraph.add(joined)) {
+      syncLive();
+      await mount();
+      await stack.select(id);
+      updateSummary();
+    } else { liveMessage = "Elemento già presente nel grafo"; updatePanel(); }
+  });
+}
+function liveExpand(id: string): Promise<void> {
+  return enqueue(async () => {
+    if (!data.nodes.some((node) => node.id === id)) throw new Error("Nodo non nel grafo");
+    const fragment = await liveFetch(id);
+    if (liveGraph.add(fragment)) {
+      syncLive();
+      await mount();
+      await stack.select(id);
+      updateSummary();
+    } else { liveMessage = "Primo livello già presente; nessuna nuova relazione attestata"; updatePanel(); }
+  });
+}
+function liveUndo(): Promise<void> { return enqueue(async () => {
+  if (liveGraph.undo()) {
+    syncLive();
+    while (stack.current && !data.nodes.some((node) => node.id === stack.current!.id) &&
+      !data.edges.some((edge) => edge.id === stack.current!.id)) await stack.back();
+    await mount();
+  }
+}); }
+function liveRedo(): Promise<void> { return enqueue(async () => {
+  if (liveGraph.redo()) { syncLive(); await mount(); }
+}); }
+function liveClear(): Promise<void> { return enqueue(async () => {
+  if (liveGraph.clear()) { await stack.reset(); syncLive(); await mount(); }
+}); }
 function updateSummary() {
   const graph = filterGraph();
   get<HTMLElement>("counter").textContent =
@@ -374,6 +515,17 @@ const api = {
       open: !get<HTMLElement>("lens-popover").hidden,
     },
   }),
+  live: {
+    search: liveSearch,
+    add: liveAdd,
+    expand: liveExpand,
+    undo: liveUndo,
+    redo: liveRedo,
+    clear: liveClear,
+    state: () => ({ active: liveActive, nodes: liveGraph?.count ?? 0,
+      undoDepth: liveGraph?.depth ?? 0, redoDepth: liveGraph?.redoDepth ?? 0,
+      results: liveResults.map((item) => item.nodes[0]?.id), message: liveMessage }),
+  },
 };
 Object.assign(window, { __d067: api });
 async function load() {
@@ -383,6 +535,9 @@ async function load() {
   if (!payload || typeof payload !== "object" || !("schema" in payload) || payload.schema !== "nousos-graph-review-1")
     throw new Error("Formato export non valido");
   data = payload as ReviewExport;
+  liveGraph = new LiveGraph(data);
+  const health = await fetch("/api/health");
+  if (health.ok) liveActive = Boolean((await health.json()).live);
   get<HTMLElement>("notice").textContent = data.notice.it;
   stack = new FocusStack(
     data,

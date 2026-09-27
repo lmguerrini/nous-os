@@ -52,6 +52,7 @@ export function renderLegend(host: HTMLElement, colour: Colour, debug: boolean):
       row.prepend(glyph);
     }
     add(`${RELATION_TEXT.name}. ${RELATION_TEXT.meaning} ${RELATION_TEXT.why}`);
+    add("Dinamico · stessa famiglia e stato semantico; alone attenuato e anello sottile. Origine e attestazione nel pannello.");
     if (colour === "semantic")
       for (const [standing, label] of Object.entries(STANDING_TEXT)) {
         const item = add(`${label} · colore semantico opzionale`);

@@ -25,12 +25,30 @@ type API = {
   fit(): Promise<void>;
   setDebug(on: boolean): Promise<void>;
   openLens(on: boolean): void;
+  live: {
+    search(q: string, limit?: number): Promise<{ nodes: { id: string }[] }[]>;
+    add(id: string): Promise<void>;
+    expand(id: string): Promise<void>;
+    undo(): Promise<void>;
+    redo(): Promise<void>;
+    clear(): Promise<void>;
+    state(): { active: boolean; nodes: number; undoDepth: number; redoDepth: number };
+  };
 };
 const api = () => (window as typeof window & { __d067: API }).__d067;
 const inside = (x: number, y: number, r: Rect) =>
   x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height;
 const overlap = (a: Rect, b: Rect) =>
   a.left < b.left + b.width && a.left + a.width > b.left && a.top < b.top + b.height && a.top + a.height > b.top;
+
+// Functions passed to page.evaluate run in the page, where the Node-side `api` helper does not exist; define the same
+// accessor there, before the page script loads, for every test in this file.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as typeof window & { api?: () => API | undefined }).api = () =>
+      (window as typeof window & { __d067?: API }).__d067;
+  });
+});
 
 test("D-067 product review matrix", async ({ page }) => {
   test.skip(process.env.D067_VIEWER !== "1", "D067_VIEWER=1 required");
@@ -49,12 +67,6 @@ test("D-067 product review matrix", async ({ page }) => {
   const metrics: Record<string, unknown> = {},
     timings: Record<string, number> = {};
   const start = performance.now();
-  // Functions passed to page.evaluate run in the page, where the Node-side `api` helper does not exist;
-  // define the same accessor there before the page script loads.
-  await page.addInitScript(() => {
-    (window as typeof window & { api?: () => API | undefined }).api = () =>
-      (window as typeof window & { __d067?: API }).__d067;
-  });
   await page.goto(url);
   await page.waitForFunction(() => !!(window as typeof window & { __d067?: API }).__d067);
   await page.evaluate(() => api().ready);
@@ -238,4 +250,44 @@ test("D-067 product review matrix", async ({ page }) => {
   expect(failures).toEqual([]);
   expect(await page.evaluate(() => api().errors)).toEqual([]);
   await writeFile(resolve(target, "metrics.json"), JSON.stringify({ metrics, timings }, null, 2) + "\n");
+});
+
+test("D-068 opt-in live search and reversible expansion", async ({ page }) => {
+  test.skip(process.env.D068_LIVE !== "1", "D068_LIVE=1 required");
+  const shots = process.env.SHOTS_DIR;
+  if (!shots) throw new Error("SHOTS_DIR is required");
+  const target = resolve(shots), repo = resolve("..");
+  if (target === repo || target.startsWith(repo + sep)) throw new Error("SHOTS_DIR must be outside the repository");
+  await mkdir(target, { recursive: true });
+  await page.goto(process.env.REVIEW_URL ?? "http://127.0.0.1:8766");
+  await page.evaluate(() => api().ready);
+  expect(await page.evaluate(() => api().live.state().active)).toBe(true);
+  const results = await page.evaluate((q) => api().live.search(q, 5), process.env.D068_QUERY ?? "Quillmap");
+  expect(results.length).toBeGreaterThan(0);
+  const id = results[0]!.nodes[0]!.id;
+  await page.evaluate((value) => api().live.add(value), id);
+  expect(await page.evaluate(() => api().live.state().nodes)).toBeGreaterThan(0);
+  await page.evaluate((value) => api().live.expand(value), id);
+  const witnesses: Record<string, unknown> = {};
+  for (const organization of ["flat", "indra"])
+    for (const projection of ["2d", "3d-perspective"]) {
+      await page.evaluate((axes) => api().setAxes(axes), { organization, projection });
+      const name = `${organization}-${projection}`;
+      witnesses[name] = await page.evaluate(() => ({ view: api().witness(), live: api().live.state() }));
+      await page.screenshot({ path: resolve(target, `d068-${name}.png`) });
+    }
+  // Add and expand are separate history steps (an expansion that finds nothing new records none), so undo until empty.
+  let undos = 0;
+  while ((await page.evaluate(() => api().live.state().nodes)) > 0 && undos < 5) {
+    await page.evaluate(() => api().live.undo());
+    undos += 1;
+  }
+  expect(await page.evaluate(() => api().live.state().nodes)).toBe(0);
+  expect(undos).toBeGreaterThan(0);
+  expect(undos).toBeLessThanOrEqual(2);
+  await page.evaluate(() => api().live.redo());
+  expect(await page.evaluate(() => api().live.state().nodes)).toBeGreaterThan(0);
+  await page.evaluate(() => api().live.clear());
+  expect(await page.evaluate(() => api().live.state().nodes)).toBe(0);
+  await writeFile(resolve(target, "d068-witness.json"), JSON.stringify(witnesses, null, 2) + "\n");
 });

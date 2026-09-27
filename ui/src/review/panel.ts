@@ -160,15 +160,24 @@ export function renderPanel({ host, data, id, debug, onSelect }: PanelInput): vo
   add(host, "h2", node ? humanLabel(node, data) : (RELATION_NAMES[edge!.type] ?? edge!.type));
   if (node) {
     const standing = standingOf(node, data);
-    add(host, "p", subtitleFor(node, standing)).className = "subtitle";
+    add(host, "p", `${subtitleFor(node, standing)}${node.origin === "dynamic" ? " · dinamico" : ""}`).className = "subtitle";
     const dl = add(host, "dl", "");
     content(dl, node, data);
+    if (node.origin === "dynamic") {
+      detail(dl, "Origine", node.origin_query ? `Ricerca: ${node.origin_query}` : "Passo di espansione");
+      detail(dl, "Attestato da", node.attested_by);
+      for (const key of ["source_id", "snapshot_digest", "start_byte", "end_byte", "span", "candidate_id",
+        "candidate_version", "assertion_id", "kind", "scope", "valid_from", "replaced", "superseded_by", "rank"])
+        detail(dl, key, node[key]);
+    }
   } else if (edge) {
-    add(host, "p", `Relazione · ${RELATION_NAMES[edge.type] ?? edge.type}`).className = "subtitle";
+    add(host, "p", `Relazione · ${RELATION_NAMES[edge.type] ?? edge.type}${edge.origin === "dynamic" ? " · dinamica" : ""}`)
+      .className = "subtitle";
     const dl = add(host, "dl", "");
     detail(dl, "Da", displayLabel(data, edge.source));
     detail(dl, "A", displayLabel(data, edge.target));
     detail(dl, "Attestazione", attestationMeaning[edge.attested_by] ?? edge.attested_by);
+    if (edge.origin === "dynamic") detail(dl, "Origine", edge.origin_query ? `Ricerca: ${edge.origin_query}` : "Espansione");
     for (const endpoint of [edge.source, edge.target]) {
       const button = add(host, "button", displayLabel(data, endpoint)) as HTMLButtonElement;
       button.className = "relation";

@@ -9,6 +9,7 @@ import { mount as mount3d } from "../render3f/mount.tsx";
 import type { Render3fRendererHandle } from "../render3f/mount.tsx";
 import { solveFraming } from "./framing.ts";
 import { adaptReviewExport, restrictAnchors, subgraph } from "./product-adapter.ts";
+import { placeDynamic } from "./live-placement.ts";
 import { relaxDepth } from "./depth.ts";
 import { placeLabels } from "./labels.ts";
 import { encodingOf, SEMANTIC_COLOUR, standingOf } from "./presentation.ts";
@@ -24,13 +25,34 @@ const options = {
 };
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const mean = (values: readonly number[]) => values.reduce((a, b) => a + b, 0) / Math.max(1, values.length);
+const anchorBaseline = new Map<string, {
+  flat: ReadonlyMap<string, Coordinates>; indra: ReadonlyMap<string, Coordinates>;
+  depth: ReadonlyMap<string, Coordinates>;
+}>();
 /** Mount the product renderers while preserving camera and label state across axis changes. */
 /** Pointer travel (CSS px) beyond which a press-and-release is a drag, not a click. */
 const CLICK_DRAG_TOLERANCE_PX = 5;
 
+/** A camera every renderer accepts: finite centre and a finite, positive zoom or dolly. */
+function validCamera(camera: VisualStateCamera | undefined | null): camera is VisualStateCamera {
+  return !!camera && Number.isFinite(camera.x) && Number.isFinite(camera.y) && Number.isFinite(camera.ratio)
+    && camera.ratio > 0;
+}
+
+function finitePoint(point: Coordinates): boolean {
+  return Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z);
+}
+
 export const createProductView: CreateProductView = async (input) => {
   const prepared = adaptReviewExport(input.data);
-  const fullDepth = relaxDepth(prepared.flatGraph, prepared.flatAnchors);
+  const base = anchorBaseline.get(input.data.export_digest) ?? {
+    flat: prepared.flatAnchors, indra: prepared.indraAnchors,
+    depth: relaxDepth(prepared.flatGraph, prepared.flatAnchors),
+  };
+  anchorBaseline.set(input.data.export_digest, base);
+  const flatAnchors = placeDynamic(base.flat, input.data);
+  const indraAnchors = placeDynamic(base.indra, input.data);
+  const fullDepth = placeDynamic(base.depth, input.data);
   const nodesById = new Map(input.data.nodes.map((node) => [node.id, node]));
   const degree = new Map<string, number>();
   for (const edge of input.data.edges) {
@@ -66,10 +88,10 @@ export const createProductView: CreateProductView = async (input) => {
   const fitRatio = new Map<string, number>();
   const fullAnchor = (current: Axes) =>
     current.organization === "indra"
-      ? prepared.indraAnchors
+      ? indraAnchors
       : current.projection === "3d-perspective" || current.projection === "3d-focus"
         ? fullDepth
-        : prepared.flatAnchors;
+        : flatAnchors;
   const localRect = (): ViewportRect => ({
     left: insets.left,
     top: insets.top,
@@ -161,7 +183,6 @@ export const createProductView: CreateProductView = async (input) => {
       ...next.map((label) => {
         const el = document.createElement("div");
         el.dataset.reviewLabelId = label.id;
-        el.textContent = label.text;
         Object.assign(el.style, {
           position: "absolute",
           left: `${label.rect.left}px`,
@@ -169,7 +190,7 @@ export const createProductView: CreateProductView = async (input) => {
           width: `${label.rect.width}px`,
           height: `${label.rect.height}px`,
           boxSizing: "border-box",
-          padding: "3px 6px",
+          padding: "4px 6px",
           font: "12px/16px Arial",
           color: "#f3f4f6",
           background:
@@ -178,9 +199,31 @@ export const createProductView: CreateProductView = async (input) => {
           whiteSpace: "normal",
           overflow: "hidden",
         });
+        // Clamp to the lines the placement measured: a longer text ends with an ellipsis instead of showing part of
+        // a line that did not fit (the full text is in the hover label and the panel). The inner element clips at its
+        // own content edge; the outer box would clip only at its padding edge and let the next line peek through.
+        const lines = Math.max(1, Math.round((label.rect.height - 8) / 16));
+        const text = document.createElement("span");
+        text.textContent = label.text;
+        text.style.setProperty("display", "-webkit-box");
+        text.style.setProperty("-webkit-box-orient", "vertical");
+        text.style.setProperty("-webkit-line-clamp", String(lines));
+        text.style.setProperty("overflow", "hidden");
+        text.style.setProperty("max-height", `${lines * 16}px`);
+        el.append(text);
         return el;
       }),
     );
+    for (const { id, position } of handle.readWorldAnchorWitnesses()) {
+      if (nodesById.get(id)?.origin !== "dynamic") continue;
+      const point = project(position);
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+      const ring = document.createElement("span");
+      ring.dataset.dynamicRingId = id;
+      Object.assign(ring.style, { position: "absolute", left: `${point.x - 8}px`, top: `${point.y - 8}px`,
+        width: "16px", height: "16px", border: "1px solid #b9b9b9", borderRadius: "50%", opacity: "0.68" });
+      layer.append(ring);
+    }
   }
   function followCamera() {
     if (destroyed) return;
@@ -206,13 +249,14 @@ export const createProductView: CreateProductView = async (input) => {
       nodes: new Map(
         input.data.nodes
           .filter((node) => visible.has(node.id))
-          .map((node) => [
-            node.id,
-            {
-              ...encodingOf(node, input.data),
+          .map((node) => {
+            const encoding = encodingOf(node, input.data);
+            return [node.id, {
+              ...encoding,
+              ...(node.origin === "dynamic" ? { haloPermille: Math.round(encoding.haloPermille * 0.55) } : {}),
               ...(axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] } : {}),
-            },
-          ]),
+            }] as const;
+          }),
       ),
     };
     const renderOptions = {
@@ -237,7 +281,7 @@ export const createProductView: CreateProductView = async (input) => {
     if (selected && (subset.nodes.some((n) => n.id === selected) || subset.edges.some((e) => e.id === selected)))
       handle.setSelection(selected);
     const saved = cameras.get(cameraKey());
-    if (saved) handle.restoreCameraState(saved);
+    if (saved && validCamera(saved)) handle.restoreCameraState(saved);
     else {
       solveFraming(handle, {
         points: subset.nodes.map((n) => anchors.get(n.id)!).filter(Boolean),
@@ -252,7 +296,8 @@ export const createProductView: CreateProductView = async (input) => {
     labelPass();
   }
   function saveCamera() {
-    if (handle) cameras.set(cameraKey(), handle.readCameraState());
+    const camera = handle?.readCameraState();
+    if (camera && validCamera(camera)) cameras.set(cameraKey(), camera);
   }
   const pointer = (event: PointerEvent) => {
     const r = container.getBoundingClientRect();
@@ -300,12 +345,15 @@ export const createProductView: CreateProductView = async (input) => {
   mount();
   followCamera();
   async function frameIds(ids: readonly string[], anchorFirst: boolean) {
-    if (!handle) return;
-    const byId = new Map(handle.readWorldAnchorWitnesses().map((p) => [p.id, p.position]));
-    const points = ids.map((id) => byId.get(id)).filter((p): p is Coordinates => p !== undefined);
+    // The framing belongs to the renderer mounted now; a remount during the animation must not receive a camera
+    // interpolated in another renderer's convention.
+    const current = handle;
+    if (!current) return;
+    const byId = new Map(current.readWorldAnchorWitnesses().map((p) => [p.id, p.position]));
+    const points = ids.map((id) => byId.get(id)).filter((p): p is Coordinates => p !== undefined && finitePoint(p));
     if (!points.length) return;
-    const start = handle.readCameraState();
-    const solved = solveFraming(handle, {
+    const start = current.readCameraState();
+    const solved = solveFraming(current, {
       points,
       rect: localRect(),
       marginPx: 32,
@@ -313,23 +361,33 @@ export const createProductView: CreateProductView = async (input) => {
       fill: 0.9,
     });
     const final = solved.camera;
-    if (!input.reducedMotion) {
-      handle.restoreCameraState(start);
+    if (!validCamera(final)) {
+      if (validCamera(start)) current.restoreCameraState(start);
+      labelPass();
+      return;
+    }
+    if (!input.reducedMotion && validCamera(start)) {
+      current.restoreCameraState(start);
       await new Promise<void>((resolve) => {
         const begun = performance.now();
         const tick = (now: number) => {
-          if (destroyed || !handle) {
+          if (destroyed || handle !== current) {
             resolve();
             return;
           }
           const t = Math.min(1, (now - begun) / 400);
           const smooth = t * t * (3 - 2 * t);
-          handle.restoreCameraState({
-            ...final,
-            x: start.x + (final.x - start.x) * smooth,
-            y: start.y + (final.y - start.y) * smooth,
-            ratio: start.ratio + (final.ratio - start.ratio) * smooth,
-          });
+          try {
+            current.restoreCameraState({
+              ...final,
+              x: start.x + (final.x - start.x) * smooth,
+              y: start.y + (final.y - start.y) * smooth,
+              ratio: start.ratio + (final.ratio - start.ratio) * smooth,
+            });
+          } catch {
+            resolve();
+            return;
+          }
           labelPass();
           if (t < 1) requestAnimationFrame(tick);
           else resolve();
@@ -337,7 +395,8 @@ export const createProductView: CreateProductView = async (input) => {
         requestAnimationFrame(tick);
       });
     }
-    handle.restoreCameraState(final);
+    if (handle !== current) return;
+    current.restoreCameraState(final);
     cameras.set(cameraKey(), final);
     labelPass();
   }
