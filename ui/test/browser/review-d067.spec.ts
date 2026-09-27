@@ -60,9 +60,22 @@ test("D-067 product review matrix", async ({ page }) => {
   await page.evaluate(() => api().ready);
   timings.readyMs = Math.round(performance.now() - start);
   const exportResponse = await page.request.get(`${url}/api/export.json`);
-  const graph = (await exportResponse.json()) as { nodes: { id: string; label: string }[] };
-  const card = graph.nodes.find((node) => node.label.replace(/[’‘]/g, "'").startsWith("Atlasfield è l'archivio"));
-  expect(card, "named focus card").toBeDefined();
+  const graph = (await exportResponse.json()) as {
+    nodes: { id: string; label: string; type: string }[];
+    edges: { source: string; target: string }[];
+  };
+  // The focus card is chosen structurally (the most connected review card), or named by D067_FOCUS_ID, so no
+  // dataset label has to live in the repository.
+  const degree = new Map<string, number>();
+  for (const edge of graph.edges) {
+    degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+  }
+  const cards = graph.nodes
+    .filter((node) => node.type === "connection")
+    .sort((left, right) => (degree.get(right.id) ?? 0) - (degree.get(left.id) ?? 0) || left.id.localeCompare(right.id));
+  const card = process.env.D067_FOCUS_ID ? graph.nodes.find((node) => node.id === process.env.D067_FOCUS_ID) : cards[0];
+  expect(card, "focus card").toBeDefined();
   async function setAxes(axes: Record<string, unknown>) {
     await page.evaluate((next) => api().setAxes(next), axes);
   }

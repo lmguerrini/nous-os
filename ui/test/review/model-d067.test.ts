@@ -15,5 +15,5 @@ test("product labels use source words and hide raw proposal and record identifie
   const proposal = { id: "candidate:abc", type: "candidate", label: "asr_abc", epistemic: "proposal" } as ReviewNode;
   assert.equal(humanLabel(record, empty), "Messaggio del fondatore · 2026-01-01");
   assert.equal(humanLabel(proposal, empty), "Proposta di asserzione");
-  assert.equal(shortHumanLabel("Atlasfield è l'archivio, le parti hanno margini"), "Atlasfield è l'archivio, le…");
+  assert.equal(shortHumanLabel("Il giardino è l'archivio, le mappe hanno margini"), "Il giardino è l'archivio, le…");
 });
