@@ -19,7 +19,7 @@ export function drawContainers(
   // The nested circles are the hierarchy. Their fill and rim stay legible beneath sparse relations.
   const ink = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
   for (const container of [...containers].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id))) {
-    const points = container.points.map(project);
+    const points = (projection === '3d' ? container.points3d ?? container.points : container.points).map(project);
     if (!points.length) continue;
     context.strokeStyle = `rgba(${ink}, ${container.level === 0 ? 0.4 : clamp(1.02 - container.level * 0.13, 0.28, 0.88)})`;
     context.lineWidth = (morphology === 'neural' ? 1.7 : 1.35) + Math.max(0, 4 - container.level) * 0.55;

@@ -141,13 +141,16 @@ export const createProductView: CreateProductView = async (input) => {
     const neighbours = emphasis ?? new Set<string>();
     const containerById = new Map((axes.organization === "indra" ? input.layoutContainers ?? [] : [])
       .map(ring => [ring.id, ring]));
+    const ringRadius = (ring: NonNullable<typeof input.layoutContainers>[number]) =>
+      axes.projection === '2d' ? ring.radius2d ?? ring.radius : ring.radius;
     const titleRects = [...containerById.values()].flatMap(ring => {
       if (!ring.title) return [];
+      const radius = ringRadius(ring);
       const ends = [
-        project({ x: ring.center.x + ring.radius, y: ring.center.y, z: ring.center.z }),
-        project({ x: ring.center.x - ring.radius, y: ring.center.y, z: ring.center.z }),
-        project({ x: ring.center.x, y: ring.center.y + ring.radius, z: ring.center.z }),
-        project({ x: ring.center.x, y: ring.center.y - ring.radius, z: ring.center.z }),
+        project({ x: ring.center.x + radius, y: ring.center.y, z: ring.center.z }),
+        project({ x: ring.center.x - radius, y: ring.center.y, z: ring.center.z }),
+        project({ x: ring.center.x, y: ring.center.y + radius, z: ring.center.z }),
+        project({ x: ring.center.x, y: ring.center.y - radius, z: ring.center.z }),
       ];
       const left = Math.min(...ends.map(p => p.x)), right = Math.max(...ends.map(p => p.x));
       const top = Math.min(...ends.map(p => p.y));
@@ -167,11 +170,12 @@ export const createProductView: CreateProductView = async (input) => {
       // A large Indra ring carries its own title at the rim; keep one label per container.
       const ring = containerById.get(id);
       if (ring && !chosen && !hovered) {
+        const radius = ringRadius(ring);
         const ends = [
-          project({ x: ring.center.x + ring.radius, y: ring.center.y, z: ring.center.z }),
-          project({ x: ring.center.x - ring.radius, y: ring.center.y, z: ring.center.z }),
-          project({ x: ring.center.x, y: ring.center.y + ring.radius, z: ring.center.z }),
-          project({ x: ring.center.x, y: ring.center.y - ring.radius, z: ring.center.z }),
+          project({ x: ring.center.x + radius, y: ring.center.y, z: ring.center.z }),
+          project({ x: ring.center.x - radius, y: ring.center.y, z: ring.center.z }),
+          project({ x: ring.center.x, y: ring.center.y + radius, z: ring.center.z }),
+          project({ x: ring.center.x, y: ring.center.y - radius, z: ring.center.z }),
         ];
         const xs = ends.map(point => point.x), ys = ends.map(point => point.y);
         const top = Math.min(...ys);
@@ -440,7 +444,7 @@ export const createProductView: CreateProductView = async (input) => {
         initialPoints.push(...framingVolumePoints(initialPoints));
       if (axes.organization === 'indra' && input.layoutContainers) {
         const outer = input.layoutContainers.find(item => item.level === 0);
-        if (outer) initialPoints.push(...framingSpherePoints(outer.center, outer.radius));
+        if (outer) initialPoints.push(...framingSpherePoints(outer.center, axes.projection === '2d' ? outer.radius2d ?? outer.radius : outer.radius));
       }
       solveFraming(handle, {
         points: initialPoints,
@@ -469,7 +473,7 @@ export const createProductView: CreateProductView = async (input) => {
     if (axes.organization === 'indra' && input.layoutContainers) {
       let closest: { id: string; distance: number } | null = null;
       for (const outline of buildContainerGeometry(axes.morphology, input.layoutContainers)) {
-        const projected = outline.points.map(point => project(point));
+        const projected = (axes.projection === '3d' ? outline.points3d ?? outline.points : outline.points).map(point => project(point));
         for (let index = 1; index < projected.length; index++) {
           const a = projected[index - 1]!, b = projected[index]!;
           const dx = b.x - a.x, dy = b.y - a.y;
@@ -547,7 +551,7 @@ export const createProductView: CreateProductView = async (input) => {
       points.push(...framingVolumePoints(points));
     if (ids.length === visible.size && axes.organization === 'indra' && input.layoutContainers) {
       const outer = input.layoutContainers.find(item => item.level === 0);
-      if (outer) points.push(...framingSpherePoints(outer.center, outer.radius));
+      if (outer) points.push(...framingSpherePoints(outer.center, axes.projection === '2d' ? outer.radius2d ?? outer.radius : outer.radius));
     }
     if (ids.length === visible.size && three)
       points.push(...three.readRelationGeometryWitnesses().map((relation) => relation.controlPoint).filter(finitePoint));

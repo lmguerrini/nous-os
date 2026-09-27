@@ -164,12 +164,18 @@ export class V2Page {
             const disclosed = this.visible();
             const ids = new Set(disclosed.nodes.map(n => n.id));
             const visibleById = new Map(disclosed.nodes.map(node => [node.id, node]));
+            const visibleParents = new Set(disclosed.nodes.map(node => node.parent).filter((id): id is string => id !== null));
+            const hiddenCount = (node: V2Node) => {
+                const hidden = disclosed.hidden.get(node.id) ?? 0;
+                return hidden && !visibleParents.has(node.id) ? Math.max(hidden, node.counts.descendants) : hidden;
+            };
             const layoutEdges = projectRelations(
                 this.index.nodes, this.index.edges, ids, this.axes.reading, 'flat', 'essential',
             ).edges;
             const result = computeLayout({
                 nodes: disclosed.nodes.map(n => ({
                     id: n.id, level: n.level, parent: n.parent, size: n.size, domains: n.domains,
+                    hiddenDescendants: hiddenCount(n),
                 })),
                 edges: layoutEdges.map(e => ({
                     id: e.id, source: e.source, target: e.target, class: e.class,
@@ -183,7 +189,12 @@ export class V2Page {
             for (const n of disclosed.nodes)
                 next.set(n.id, result.positions.get(n.id) ?? { x: 0, y: 0, z: 0 });
             this.positions = next;
-            this.containers = result.containers.map(c => ({ ...c, ...(visibleById.get(c.id)?.title ? { title: visibleById.get(c.id)!.title } : {}) }));
+            this.containers = result.containers.map(c => {
+                const title = visibleById.get(c.id)?.title;
+                const node = visibleById.get(c.id);
+                const hidden = node ? hiddenCount(node) : 0;
+                return { ...c, ...(title ? { title: hidden ? `${title} · +${hidden}` : title } : {}) };
+            });
             this.layoutSource = result.source;
             const volume = layoutStats(this.positions);
             const volumeRow = document.getElementById('volume-stats');
@@ -205,7 +216,7 @@ export class V2Page {
             const old = this.view?.readCamera();
             this.view?.destroy();
             this.view = null;
-            this.view = await createProductView({ container: element('render-root'), data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: this.containers as typeof result.containers, visibleNodeIds: ids, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, text: id => { const n = visibleById.get(id)!; return { short: n.title, full: n.title_full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+            this.view = await createProductView({ container: element('render-root'), data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: this.containers as typeof result.containers, visibleNodeIds: ids, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; return { short: n.title + hint, full: n.title_full + hint, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                         if (target.shiftKey && this.selected && this.selected !== target.id) {
                             this.why(this.selected, target.id);
                         }

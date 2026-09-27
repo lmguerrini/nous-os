@@ -43,7 +43,7 @@ const dilate = (mask: number[]) => {
   return out;
 };
 
-for (const morphology of morphologies) test(`D-070 ${morphology}: 2D/3D-front normalized lit-mask IoU >= 0.15`, async ({ page }, testInfo) => {
+for (const morphology of morphologies) test(`D-070 ${morphology}: 2D/3D-front normalized lit-mask IoU >= 0.6`, async ({ page }, testInfo) => {
   await page.goto(process.env.D070_URL ?? "http://127.0.0.1:8767/");
   await page.waitForFunction(() => Boolean((window as Window & { __d067?: AxisApi }).__d067));
   await page.evaluate(() => (window as Window & { __d067?: AxisApi }).__d067!.ready);
@@ -56,9 +56,9 @@ for (const morphology of morphologies) test(`D-070 ${morphology}: 2D/3D-front no
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   const front = await capture(page);
   const iou = overlap(dilate(flat), dilate(front));
-  await writeFile(testInfo.outputPath(`${morphology}-projection.json`), JSON.stringify({ iou, threshold: 0.15 }, null, 2));
+  await writeFile(testInfo.outputPath(`${morphology}-projection.json`), JSON.stringify({ iou, threshold: 0.6 }, null, 2));
   console.log(`D-070 ${morphology} 2D/3D-front IoU=${iou.toFixed(3)}`);
-  expect(iou).toBeGreaterThanOrEqual(0.15);
+  expect(iou).toBeGreaterThanOrEqual(0.6);
 });
 
 test("D-070 Stellar/Mycelium 2D lit-mask Jaccard distance >= 0.5", async ({ page }, testInfo) => {

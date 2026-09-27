@@ -11,6 +11,7 @@ export type LayoutNode = {
     readonly parent: string | null;
     readonly size: number;
     readonly domains: readonly string[];
+    readonly hiddenDescendants?: number;
 };
 export type LayoutEdge = {
     readonly id: string;
@@ -32,6 +33,8 @@ export type LayoutContainer = {
     readonly level: number;
     readonly center: Point3;
     readonly radius: number;
+    /** Tight XY ring for the absolute container; radius is its XYZ shell. */
+    readonly radius2d?: number;
     readonly title?: string;
 };
 export type LayoutResult = {
@@ -51,8 +54,12 @@ export function layoutStats(positions: ReadonlyMap<string, Point3>): LayoutStats
     return { bbox: { x, y, z }, depthRatio: (z[1] - z[0]) / Math.max(1, x[1] - x[0], y[1] - y[0]) };
 }
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const TANGENT_DIRECTIONS = Array.from({ length: 24 }, (_, index) => ({
+    x: Math.cos(index * 2 * Math.PI / 24), y: Math.sin(index * 2 * Math.PI / 24),
+}));
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const radiusOf = (node: LayoutNode) => 5 + Math.max(0, Math.min(1, node.size)) * 5;
+export const pearlRadius = (node: LayoutNode) => radiusOf(node) + Math.min(80, 3.1 * Math.sqrt(Math.max(0, node.hiddenDescendants ?? 0)));
 const spiral = (index: number, step: number, phase = 0) => {
     const angle = index * GOLDEN_ANGLE + phase;
     const radius = step * Math.sqrt(index + 1);
@@ -241,6 +248,56 @@ function flat(input: LayoutInput): LayoutResult {
     for (const [id, point] of positions) positions.set(id, { ...point, z: scale === 0 ? 0 : (raw.get(id) ?? 0) * scale });
     return { positions, containers: [], source: 'flat-community' };
 }
+type Disc = { x: number; y: number; radius: number };
+/** Largest first. Tangencies nearest the origin keep small siblings beside a large pearl. */
+export function packDiscs(items: readonly { id: string; radius: number }[], gap: number, coreCount = 0): Map<string, Disc> {
+    const ordered = [...items].sort((a, b) => b.radius - a.radius || compare(a.id, b.id));
+    const placed: Disc[] = [];
+    const result = new Map<string, Disc>();
+    let area = 0;
+    const coreRing = coreCount >= 3 && coreCount <= 12
+        ? (2 * (ordered[0]?.radius ?? 0) + gap) / (2 * Math.sin(Math.PI / coreCount)) : 0;
+    for (const [index, item] of ordered.entries()) {
+        let point = { x: 0, y: 0 };
+        if (coreRing && index < coreCount) {
+            const angle = index * 2 * Math.PI / coreCount;
+            point = { x: Math.cos(angle) * coreRing, y: Math.sin(angle) * coreRing };
+        } else if (index && ordered.length <= 64) {
+            let best = { x: Infinity, y: Infinity };
+            let bestDistance2 = Infinity;
+            for (const other of placed) for (const direction of TANGENT_DIRECTIONS) {
+                const distance = item.radius + other.radius + gap;
+                const candidate = { x: other.x + direction.x * distance, y: other.y + direction.y * distance };
+                const radial2 = candidate.x ** 2 + candidate.y ** 2;
+                if (radial2 > bestDistance2 + 1e-9 || !placed.every(previous =>
+                    (candidate.x - previous.x) ** 2 + (candidate.y - previous.y) ** 2 + 1e-7 >= (item.radius + previous.radius + gap) ** 2)) continue;
+                if (radial2 < bestDistance2 - 1e-9 || candidate.x < best.x || (candidate.x === best.x && candidate.y < best.y)) {
+                    best = candidate; bestDistance2 = radial2;
+                }
+            }
+            point = bestDistance2 < Infinity ? best : { x: 0, y: 0 };
+        } else if (index) {
+            area += (item.radius + gap) ** 2;
+            const angle = index * GOLDEN_ANGLE;
+            const ux = Math.cos(angle), uy = Math.sin(angle);
+            let distance = Math.sqrt(area) * 1.5;
+            // Relax the child along its deterministic phyllotaxis ray. The outer intersection of every
+            // forbidden disc gives a single guaranteed non-overlapping distance.
+            for (const other of placed) {
+                const projection = other.x * ux + other.y * uy;
+                const transverse2 = other.x ** 2 + other.y ** 2 - projection ** 2;
+                const minimum = item.radius + other.radius + gap;
+                if (transverse2 < minimum ** 2)
+                    distance = Math.max(distance, projection + Math.sqrt(Math.max(0, minimum ** 2 - transverse2)));
+            }
+            point = { x: ux * distance, y: uy * distance };
+        }
+        const disc = { ...point, radius: item.radius };
+        placed.push(disc);
+        result.set(item.id, disc);
+    }
+    return result;
+}
 /** Bottom-up circle packing; every child circle is inside its visible parent in XY. */
 function indra(input: LayoutInput): LayoutResult {
     const { children } = hierarchy(input.nodes);
@@ -252,6 +309,13 @@ function indra(input: LayoutInput): LayoutResult {
         y: number;
     }>();
     const visiting = new Set<string>();
+    const capCollapsed = (list: readonly LayoutNode[]) => {
+        const expanded = list.filter(child => (children.get(child.id)?.length ?? 0) > 0);
+        if (!expanded.length) return;
+        const maximum = Math.max(...expanded.map(child => radii.get(child.id)!));
+        for (const child of list) if ((child.hiddenDescendants ?? 0) > 0 && !(children.get(child.id)?.length))
+            radii.set(child.id, Math.min(radii.get(child.id)!, maximum));
+    };
     const measure = (node: LayoutNode): number => {
         const cached = radii.get(node.id);
         if (cached !== undefined)
@@ -260,29 +324,17 @@ function indra(input: LayoutInput): LayoutResult {
             throw new TypeError('hierarchy has a cycle');
         visiting.add(node.id);
         const list = children.get(node.id) ?? [];
-        let radius = radiusOf(node) * spacing;
+        let radius = pearlRadius(node) * spacing;
         if (list.length) {
-            const childRadii = list.map(measure);
-            const maxChild = Math.max(...childRadii);
             const gap = 7 * spacing;
-            const step = 2.1 * maxChild + gap;
-            const placed: {
-                x: number;
-                y: number;
-                radius: number;
-            }[] = [];
-            list.forEach((child, index) => {
-                const childRadius = childRadii[index]!;
-                let offset = spiral(index, step);
-                for (let attempt = 0; attempt < 80; attempt++) {
-                    if (placed.every(other => Math.hypot(offset.x - other.x, offset.y - other.y) >= childRadius + other.radius + gap))
-                        break;
-                    offset = spiral(index + (attempt + 1) * list.length, step);
-                }
+            list.forEach(measure);
+            capCollapsed(list);
+            const packed = packDiscs(list.map(child => ({ id: child.id, radius: radii.get(child.id)! })), gap);
+            list.forEach(child => {
+                const offset = packed.get(child.id)!;
                 offsets.set(child.id, offset);
-                placed.push({ ...offset, radius: childRadius });
                 // Containment is read in the front view, where every tier's ring lies in its own plane.
-                radius = Math.max(radius, (Math.hypot(offset.x, offset.y) + childRadius + gap) / 0.94);
+                radius = Math.max(radius, (Math.hypot(offset.x, offset.y) + offset.radius + gap) / 0.94);
             });
         }
         visiting.delete(node.id);
@@ -291,14 +343,15 @@ function indra(input: LayoutInput): LayoutResult {
     };
     const roots = children.get(null) ?? [];
     roots.forEach(measure);
+    capCollapsed(roots);
     const positions = new Map<string, Point3>();
     const containers: LayoutContainer[] = [];
     const place = (node: LayoutNode, x: number, y: number): void => {
         // A side view needs a real vertical interval between the concentric XY tiers.
-        const center = { x, y, z: (node.level - 3) * 40 * spacing };
+        const center = { x, y, z: 0 };
         positions.set(node.id, center);
         const list = children.get(node.id) ?? [];
-        if (list.length || node.level === 1)
+        if (list.length || node.level === 1 || (node.hiddenDescendants ?? 0) > 0)
             containers.push({ id: node.id, level: node.level, center, radius: radii.get(node.id)! });
         for (const child of list) {
             const offset = offsets.get(child.id)!;
@@ -307,43 +360,20 @@ function indra(input: LayoutInput): LayoutResult {
     };
     // Domains are packed like siblings, each by its own radius, the largest first, so an expanded domain does not push
     // every other one far away.
-    const rootGap = 3 * spacing;
+    const meanRoot = roots.reduce((sum, root) => sum + (radii.get(root.id) ?? 0), 0) / Math.max(1, roots.length);
+    const rootGap = Math.max(8, 0.06 * meanRoot) * spacing;
     const ordered = [...roots].sort((a, b) => (radii.get(b.id) ?? 0) - (radii.get(a.id) ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    const meanRoot = ordered.reduce((sum, node) => sum + (radii.get(node.id) ?? 0), 0) / Math.max(1, ordered.length);
-    const rootStep = 2.1 * meanRoot + rootGap;
-    const largest = radii.get(ordered[0]?.id ?? '') ?? 0;
-    const coreCount = ordered.length <= 64 ? ordered.filter(root => (radii.get(root.id) ?? 0) >= largest * 0.55).length : 0;
-    const coreRing = coreCount >= 3 && coreCount <= 12
-        ? (2 * largest + rootGap) / (2 * Math.sin(Math.PI / coreCount)) : 0;
+    const largestRoot = radii.get(ordered[0]?.id ?? '') ?? 0;
+    const coreCount = ordered.length <= 64 ? ordered.filter(root => (radii.get(root.id) ?? 0) >= largestRoot * 0.55).length : 0;
+    const packedRoots = packDiscs(ordered.map(root => ({ id: root.id, radius: radii.get(root.id)! })), rootGap, coreCount);
     const placedRoots: { x: number; y: number; radius: number }[] = [];
-    ordered.forEach((root, index) => {
-        const radius = radii.get(root.id) ?? 0;
-        let point = { x: 0, y: 0 };
-        if (coreRing && index < coreCount) {
-            const angle = index * 2 * Math.PI / coreCount;
-            point = { x: Math.cos(angle) * coreRing, y: Math.sin(angle) * coreRing };
-        } else if (index > 0 && ordered.length <= 64) {
-            const candidates = placedRoots.flatMap(other => Array.from({ length: 48 }, (_, angleIndex) => {
-                const angle = angleIndex * Math.PI * 2 / 48;
-                const distance = radius + other.radius + rootGap;
-                return { x: other.x + Math.cos(angle) * distance, y: other.y + Math.sin(angle) * distance };
-            }));
-            const valid = candidates.filter(candidate => placedRoots.every(other =>
-                Math.hypot(candidate.x - other.x, candidate.y - other.y) + 1e-7 >= radius + other.radius + rootGap));
-            point = valid.sort((a, b) => (Math.hypot(a.x, a.y) - Math.hypot(b.x, b.y)) || a.x - b.x || a.y - b.y)[0]
-                ?? spiral(index, rootStep);
-        } else if (index > 0) {
-            point = spiral(index, rootStep);
-            for (let attempt = 0; attempt < 400; attempt++) {
-                if (placedRoots.every(other => Math.hypot(point.x - other.x, point.y - other.y) >= radius + other.radius + rootGap)) break;
-                point = spiral(index + (attempt + 1) * ordered.length, rootStep);
-            }
-        }
-        placedRoots.push({ ...point, radius });
-        place(root, point.x, point.y);
+    ordered.forEach(root => {
+        const disc = packedRoots.get(root.id)!;
+        placedRoots.push({ ...disc });
+        place(root, disc.x, disc.y);
     });
     // Centre the packed discs in their enclosing ring, including small bare domains.
-    if (placedRoots.length && !coreRing) {
+    if (placedRoots.length && !(coreCount >= 3 && coreCount <= 12)) {
         const left = Math.min(...placedRoots.map(root => root.x - root.radius));
         const right = Math.max(...placedRoots.map(root => root.x + root.radius));
         const top = Math.min(...placedRoots.map(root => root.y - root.radius));
@@ -356,18 +386,31 @@ function indra(input: LayoutInput): LayoutResult {
             containers[index] = { ...item, center: { ...item.center, x: item.center.x - dx, y: item.center.y - dy } };
         }
     }
+    const xyBounds = layoutStats(positions).bbox;
+    const xyExtent = Math.max(xyBounds.x[1] - xyBounds.x[0], xyBounds.y[1] - xyBounds.y[0]);
+    const levels = input.nodes.map(node => node.level);
+    const lowLevel = Math.min(...levels), highLevel = Math.max(...levels);
+    const tierStep = highLevel > lowLevel ? xyExtent * 0.44 * (input.depth ?? 1) / (highLevel - lowLevel) : 0;
+    const tierZ = (level: number) => (level - (lowLevel + highLevel) / 2) * tierStep;
+    const byId = new Map(input.nodes.map(node => [node.id, node]));
+    for (const [id, point] of positions) positions.set(id, { ...point, z: tierZ(byId.get(id)!.level) });
+    for (let index = 0; index < containers.length; index++) {
+        const item = containers[index]!;
+        containers[index] = { ...item, center: { ...item.center, z: tierZ(item.level) } };
+    }
     const zValues = [...positions.values()].map(point => point.z);
     const zMid = zValues.length ? (Math.min(...zValues) + Math.max(...zValues)) / 2 : 0;
     // A sphere encloses the entire XY packing and every tier, including a six percent rim.
-    const rootZ = (1 - 3) * 40 * spacing;
-    const rootExtent = placedRoots.reduce((maximum, root) => Math.max(maximum,
-        Math.hypot(root.x, root.y, rootZ - zMid) + root.radius), 0);
+    const radius2d = placedRoots.reduce((maximum, root) => Math.max(maximum,
+        Math.hypot(root.x, root.y) + root.radius), 0) / 0.94;
+    const ringExtent = containers.reduce((maximum, ring) => Math.max(maximum,
+        Math.hypot(Math.hypot(ring.center.x, ring.center.y) + ring.radius, ring.center.z - zMid)), 0);
     const nodeExtent = input.nodes.reduce((maximum, node) => {
         const point = positions.get(node.id);
-        return point ? Math.max(maximum, Math.hypot(point.x, point.y, point.z - zMid) + radiusOf(node) * spacing) : maximum;
+        return point ? Math.max(maximum, Math.hypot(Math.hypot(point.x, point.y) + (radii.get(node.id) ?? radiusOf(node)) * spacing, point.z - zMid)) : maximum;
     }, 0);
-    const radius = Math.max(rootExtent, nodeExtent) / 0.94;
-    containers.unshift({ id: ABSOLUTE_CONTAINER_ID, level: 0, center: { x: 0, y: 0, z: zMid }, radius, title: 'NousOS' });
+    const radius = Math.max(ringExtent, nodeExtent) / 0.94;
+    containers.unshift({ id: ABSOLUTE_CONTAINER_ID, level: 0, center: { x: 0, y: 0, z: zMid }, radius, radius2d, title: 'NousOS' });
     return { positions, containers, source: 'indra-recursive' };
 }
 export function computeLayout(input: LayoutInput): LayoutResult {

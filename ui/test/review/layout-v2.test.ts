@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { performance } from "node:perf_hooks";
-import { ABSOLUTE_CONTAINER_ID, DEPTH_RATIO_MIN, computeLayout, layoutStats, type LayoutInput, type LayoutNode, type Point3 } from "../../src/review/layout-v2.ts";
+import { ABSOLUTE_CONTAINER_ID, DEPTH_RATIO_MIN, computeLayout, layoutStats, packDiscs, pearlRadius, type LayoutInput, type LayoutNode, type Point3 } from "../../src/review/layout-v2.ts";
 import { buildContainerGeometry, buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
 import { drawMorphologyCanvas } from "#render-common/morphology-canvas.ts";
 
@@ -81,7 +81,7 @@ test("Indra packs visible children inside their parents without sibling overlap 
   for (let a = 0; a < roots.length; a++) for (let b = a + 1; b < roots.length; b++)
     assert.ok(xy(roots[a]!.center, roots[b]!.center) + 1e-7 >= roots[a]!.radius + roots[b]!.radius);
   for (const root of roots)
-    assert.ok(Math.hypot(root.center.x, root.center.y, root.center.z - absolute.center.z) + root.radius <= absolute.radius * 0.94);
+    assert.ok(Math.hypot(Math.hypot(root.center.x, root.center.y) + root.radius, root.center.z - absolute.center.z) <= absolute.radius * 0.94 + 1e-7);
   for (const point of result.positions.values())
     assert.ok(Math.hypot(point.x, point.y, point.z - absolute.center.z) < absolute.radius);
   }
@@ -96,8 +96,84 @@ test("eight Indra domains including three bare pearls fill the absolute disc", (
   const result = computeLayout({ nodes, edges: [], organization: "indra", morphology: "stellar" });
   const absolute = result.containers.find(c => c.id === ABSOLUTE_CONTAINER_ID)!;
   const domains = result.containers.filter(c => c.level === 1);
-  const coverage = domains.reduce((sum, c) => sum + c.radius ** 2, 0) / absolute.radius ** 2;
-  assert.ok(coverage >= 0.55, `root coverage ${coverage.toFixed(3)}`);
+  const coverage = domains.reduce((sum, c) => sum + c.radius ** 2, 0) / absolute.radius2d! ** 2;
+  assert.ok(coverage >= 0.5, `root coverage ${coverage.toFixed(3)}`);
+  const tight = Math.max(...domains.map(c => Math.hypot(c.center.x, c.center.y) + c.radius));
+  assert.ok(Math.abs(absolute.radius2d! * 0.94 - tight) < 1e-7);
+});
+
+test("a large Indra child leaves room for thirty small siblings without growing the parent", () => {
+  const items = [{ id: "large", radius: 100 }, ...Array.from({ length: 30 }, (_, i) => ({ id: `small:${i}`, radius: 5 }))];
+  const packed = packDiscs(items, 7);
+  assert.deepEqual(packed, packDiscs(items, 7));
+  const discs = [...packed.values()];
+  const parentRadius = Math.max(...discs.map(disc => Math.hypot(disc.x, disc.y) + disc.radius + 7)) / 0.94;
+  assert.ok(parentRadius < 160, `parent radius ${parentRadius.toFixed(2)}`);
+  for (let i = 0; i < discs.length; i++) {
+    const a = discs[i]!;
+    assert.ok(Math.hypot(a.x, a.y) + a.radius + 7 <= parentRadius * 0.94 + 1e-7);
+    for (let j = i + 1; j < discs.length; j++) {
+      const b = discs[j]!;
+      assert.ok(Math.hypot(a.x - b.x, a.y - b.y) + 1e-7 >= a.radius + b.radius + 7);
+    }
+  }
+});
+
+test("phyllotaxis keeps eighty varied siblings separated and deterministic", () => {
+  const items = Array.from({ length: 80 }, (_, i) => ({ id: `sibling:${i}`, radius: 4 + i % 9 }));
+  const first = packDiscs(items, 7);
+  assert.deepEqual(first, packDiscs(items, 7));
+  const discs = [...first.values()];
+  for (let i = 0; i < discs.length; i++) for (let j = i + 1; j < discs.length; j++) {
+    const a = discs[i]!, b = discs[j]!;
+    assert.ok(Math.hypot(a.x - b.x, a.y - b.y) + 1e-7 >= a.radius + b.radius + 7);
+  }
+});
+
+test("collapsed domains become bounded pearls with visible gaps and a separate XYZ shell", () => {
+  const nodes: LayoutNode[] = [
+    { id: "collapsed", level: 1, parent: null, size: 0.5, hiddenDescendants: 100, domains: [] },
+    { id: "collapsed-huge", level: 1, parent: null, size: 0.5, hiddenDescendants: 10000, domains: [] },
+    { id: "expanded", level: 1, parent: null, size: 0.5, domains: [] },
+    ...Array.from({ length: 12 }, (_, i): LayoutNode => ({ id: `child:${i}`, level: 2, parent: "expanded", size: 0.5, domains: [] })),
+  ];
+  const result = computeLayout({ nodes, edges: [], organization: "indra", morphology: "stellar" });
+  const collapsed = result.containers.find(c => c.id === "collapsed")!;
+  const expanded = result.containers.find(c => c.id === "expanded")!;
+  const huge = result.containers.find(c => c.id === "collapsed-huge")!;
+  const absolute = result.containers.find(c => c.id === ABSOLUTE_CONTAINER_ID)!;
+  assert.ok(collapsed.radius > 3 * pearlRadius({ ...nodes[0]!, hiddenDescendants: 0 }));
+  assert.ok(collapsed.radius <= expanded.radius);
+  assert.ok(huge.radius <= expanded.radius);
+  assert.ok(xy(collapsed.center, expanded.center) >= collapsed.radius + expanded.radius + 8 - 1e-7);
+  const roots = result.containers.filter(c => c.level === 1);
+  const meanRoot = roots.reduce((sum, root) => sum + root.radius, 0) / roots.length;
+  for (let i = 0; i < roots.length; i++) for (let j = i + 1; j < roots.length; j++)
+    assert.ok(xy(roots[i]!.center, roots[j]!.center) + 1e-7 >= roots[i]!.radius + roots[j]!.radius + Math.max(8, meanRoot * 0.06));
+  assert.ok(layoutStats(result.positions).depthRatio >= DEPTH_RATIO_MIN);
+  assert.ok(absolute.radius > absolute.radius2d!);
+  for (const node of nodes) {
+    const point = result.positions.get(node.id)!;
+    const radius = result.containers.find(c => c.id === node.id)?.radius ?? pearlRadius(node);
+    assert.ok(Math.hypot(Math.hypot(point.x, point.y) + radius, point.z - absolute.center.z) <= absolute.radius * 0.94 + 1e-7);
+  }
+  for (const ring of result.containers.filter(c => c.level > 0))
+    assert.ok(Math.hypot(Math.hypot(ring.center.x, ring.center.y) + ring.radius,
+      ring.center.z - absolute.center.z) <= absolute.radius * 0.94 + 1e-7);
+});
+
+test("Indra depth remains readable after disclosing a large proposal page", () => {
+  const overview: LayoutNode[] = Array.from({ length: 8 }, (_, i) => ({ id: `domain:${i}`, level: 1, parent: null, size: 0.5, domains: [] }));
+  overview.push(...Array.from({ length: 8 }, (_, i) => ({ id: `project:${i}`, level: 2 as const, parent: `domain:${i}`, size: 0.5, domains: [] })));
+  const expanded: LayoutNode[] = [...overview, { id: 'conversation', level: 3, parent: 'project:0', size: 0.5, domains: [] },
+    ...Array.from({ length: 60 }, (_, i): LayoutNode => ({ id: `proposal:${i}`, level: 4, parent: 'conversation', size: 0.2, domains: [] }))];
+  for (const nodes of [overview, expanded]) {
+    const input: LayoutInput = { nodes, edges: [], organization: 'indra', morphology: 'stellar' };
+    const result = computeLayout(input);
+    assert.ok(layoutStats(result.positions).depthRatio >= DEPTH_RATIO_MIN);
+    const shallow = computeLayout({ ...input, depth: 0.5 });
+    assert.ok(Math.abs(layoutStats(shallow.positions).depthRatio - layoutStats(result.positions).depthRatio * 0.5) < 1e-8);
+  }
 });
 
 test("Flat leaves a size-scaled separation and readable volume", () => {

@@ -51,13 +51,17 @@ export function arcballDrag(orientation: THREE.Quaternion, deltaX: number, delta
 
 export type ViewPreset = "fronte" | "retro" | "sinistra" | "destra" | "alto" | "basso";
 export const VIEW_DIRECTIONS: Readonly<Record<ViewPreset, readonly [number, number, number]>> = {
-  fronte: [1, 0, 0], retro: [-1, 0, 0], sinistra: [0, -1, 0],
-  destra: [0, 1, 0], alto: [0, 0, 1], basso: [0, 0, -1],
+  fronte: [0, 0, 1], retro: [0, 0, -1], sinistra: [-1, 0, 0],
+  destra: [1, 0, 0], alto: [0, 1, 0], basso: [0, -1, 0],
+};
+export const VIEW_UP: Readonly<Record<ViewPreset, readonly [number, number, number]>> = {
+  fronte: [0, 1, 0], retro: [0, 1, 0], sinistra: [0, 1, 0],
+  destra: [0, 1, 0], alto: [0, 0, -1], basso: [0, 0, 1],
 };
 
 export function presetOrientation(name: ViewPreset): THREE.Quaternion {
   const direction = new THREE.Vector3(...VIEW_DIRECTIONS[name]).normalize();
-  const up = Math.abs(direction.z) > 0.99 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1);
+  const up = new THREE.Vector3(...VIEW_UP[name]);
   const matrix = new THREE.Matrix4().lookAt(direction, new THREE.Vector3(), up);
   const desired = new THREE.Quaternion().setFromRotationMatrix(matrix);
   const initial = new THREE.Quaternion().setFromRotationMatrix(
@@ -66,11 +70,15 @@ export function presetOrientation(name: ViewPreset): THREE.Quaternion {
   return desired.multiply(initial.invert()).normalize();
 }
 
+function openingDirection(): THREE.Vector3 {
+  const yaw = Math.PI / 6, elevation = Math.PI / 9;
+  return new THREE.Vector3(Math.sin(yaw) * Math.cos(elevation), Math.sin(elevation), Math.cos(yaw) * Math.cos(elevation));
+}
+
 /** Review opening: yaw 30° and elevation 20° around the volume's centre. */
 export function defaultObliqueOrbit(): readonly [number, number, number, number] {
-  const yaw = Math.PI / 6, elevation = Math.PI / 9;
-  const direction = new THREE.Vector3(Math.cos(elevation) * Math.cos(yaw), Math.cos(elevation) * Math.sin(yaw), Math.sin(elevation));
-  const desired = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(direction, new THREE.Vector3(), new THREE.Vector3(0, 0, 1)));
+  const direction = openingDirection();
+  const desired = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(direction, new THREE.Vector3(), new THREE.Vector3(0, 1, 0)));
   const initial = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(new THREE.Vector3(1, 0, 1), new THREE.Vector3(), new THREE.Vector3(0, 0, 1)));
   const orbit = desired.multiply(initial.invert()).normalize();
   return [orbit.x, orbit.y, orbit.z, orbit.w];
@@ -526,12 +534,8 @@ function perspectiveDefaultHalfAngleTangent(
   heightCssPx: number,
 ): number {
   const target = perspectiveBoundsCenter(state, worldCenterZ);
-  const position = new THREE.Vector3(
-    target.x + (Math.cos(state.angle) * span),
-    target.y + (Math.sin(state.angle) * span),
-    target.z + span,
-  );
-  const matrixWorld = new THREE.Matrix4().lookAt(position, target, new THREE.Vector3(0, 0, scalarCount()));
+  const position = target.clone().addScaledVector(openingDirection(), span * Math.SQRT2);
+  const matrixWorld = new THREE.Matrix4().lookAt(position, target, new THREE.Vector3(0, scalarCount(), 0));
   matrixWorld.setPosition(position);
   const matrixWorldInverse = matrixWorld.invert();
   const targetDistance = position.distanceTo(target);

@@ -47,3 +47,23 @@ test('D-070 Flat volume responds to depth and frames from useful views', async (
     expect(collided / Math.max(1, positions.length)).toBeLessThan(0.65);
   }
 });
+
+test('D-070 Indra keeps depth after disclosure and fits its absolute shell', async ({ page }) => {
+  await page.goto(url);
+  await page.evaluate(() => (window as any).__d067.ready);
+  await page.evaluate(() => (window as any).__d067.setAxes({ projection: '3d', organization: 'indra', reading: 'attested' }));
+  const initial = await page.evaluate(() => (window as any).__d067.witness());
+  expect(initial.layoutStats.depthRatio).toBeGreaterThanOrEqual(0.4);
+  const parent = initial.disclosure.nodes.find((node: any) => node.level === 1 && initial.disclosure.hidden[node.id] > 0);
+  expect(parent).toBeDefined();
+  expect(initial.containers.find((item: any) => item.id === parent.id)?.title).toMatch(/\+\d+/);
+  await page.evaluate((id) => (window as any).__d067.expand(id), parent.id);
+  const expanded = await page.evaluate(() => (window as any).__d067.witness());
+  expect(expanded.layoutStats.depthRatio).toBeGreaterThanOrEqual(0.4);
+  expect(expanded.disclosure.hidden[parent.id]).toBeUndefined();
+  expect(expanded.containers.find((item: any) => item.id === parent.id)?.title).not.toMatch(/\+\d+/);
+  const outer = expanded.containers.find((item: any) => item.level === 0);
+  expect(outer.radius).toBeGreaterThan(outer.radius2d);
+  const rect = expanded.visibleRect;
+  expect(Object.values(expanded.nodeViewport).every((point: any) => point.x >= rect.left - 1 && point.x <= rect.left + rect.width + 1 && point.y >= rect.top - 1 && point.y <= rect.top + rect.height + 1)).toBe(true);
+});

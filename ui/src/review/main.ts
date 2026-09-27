@@ -759,7 +759,7 @@ get<HTMLSelectElement>("fullscreen-preset").addEventListener("change", (event) =
 get<HTMLButtonElement>("fullscreen-fit").addEventListener("click", () => { void fit(); });
 get<HTMLButtonElement>("fullscreen-reset").addEventListener("click", () => { void reset(); });
 get<HTMLElement>("gizmo").querySelectorAll<HTMLButtonElement>("button[data-axis-end]").forEach((button) => {
-  button.addEventListener("click", () => { void viewPreset(({ x: "destra", y: "sinistra", z: "alto" } as const)[button.dataset.axisEnd as "x" | "y" | "z"]); });
+  button.addEventListener("click", () => { void viewPreset(({ x: "destra", y: "alto", z: "fronte" } as const)[button.dataset.axisEnd as "x" | "y" | "z"]); });
 });
 get<HTMLInputElement>("semantic-zoom").addEventListener("change", event => v2?.setSemanticZoom((event.target as HTMLInputElement).checked));
 get<HTMLSelectElement>("v2-relation-detail").addEventListener("change", event => { void v2?.setRelationDetail((event.target as HTMLSelectElement).value as "essential" | "all"); });
