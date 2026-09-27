@@ -126,6 +126,8 @@ export type ViewInput = {
   readonly data: ReviewExport;
   readonly v2Prepared?: import("./product-adapter.ts").AdaptedReview;
   readonly v2Colours?: Partial<Record<import("./palette.ts").V2Category,string>>;
+  /** Indra containers of the v2 layout, in the same world coordinates as the supplied anchors. */
+  readonly layoutContainers?: readonly import("./layout-v2.ts").LayoutContainer[];
   /** The page's current filter result; positions never move because of a filter. */
   readonly visibleNodeIds: ReadonlySet<string>;
   readonly axes: Axes;

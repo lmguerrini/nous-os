@@ -58,18 +58,14 @@ export class V2Page {
     const disclosed=this.visible();const ids=new Set(disclosed.nodes.map(n=>n.id));
     const result=computeLayout({nodes:disclosed.nodes.map(n=>({id:n.id,level:n.level,parent:n.parent,size:n.size,domains:n.domains})),
       edges:disclosed.edges.map(e=>({id:e.id,source:e.source,target:e.target,class:e.class})),organization:this.axes.organization,morphology:this.axes.morphology,previous:this.positions});
-    const next=new Map<string,Point3>();for(const n of disclosed.nodes){const proposed=result.positions.get(n.id)??{x:0,y:0,z:0};
-      if(this.positions.has(n.id))next.set(n.id,this.positions.get(n.id)!);
-      else if(n.parent&&next.has(n.parent)){const parent=next.get(n.parent)!, targetParent=result.positions.get(n.parent)??parent;
-        const dx=proposed.x-targetParent.x,dy=proposed.y-targetParent.y,dz=proposed.z-targetParent.z;
-        const length=Math.hypot(dx,dy,dz)||1,scale=Math.min(1,90/length);next.set(n.id,{x:parent.x+dx*scale,y:parent.y+dy*scale,z:parent.z+dz*scale});}
-      else next.set(n.id,proposed);
-    }
+    // The layout owns stability: Flat keeps every previous position and places only new nodes; Indra re-packs the whole
+    // tree so that every container still holds its children.
+    const next=new Map<string,Point3>();for(const n of disclosed.nodes)next.set(n.id,result.positions.get(n.id)??{x:0,y:0,z:0});
     this.positions=next;this.containers=[...result.containers];this.layoutSource=result.source;
     const containment:GraphEdge[]=disclosed.nodes.filter(n=>n.parent&&ids.has(n.parent)).map(n=>({id:`contains:${n.id}`,source:n.parent!,target:n.id,class:'attested',type:'contains',directed:true,evidence:[]}));
     const shown=v2Reading([...disclosed.edges,...containment],this.axes.reading);const adapted=adaptV2(disclosed.nodes,shown,next,this.manifest.digest);
     const old=this.view?.readCamera();this.view?.destroy();this.view=null;
-    this.view=await createProductView({container:element('render-root'),data:adapted.data,v2Prepared:adapted.prepared,v2Colours:this.v2Colours,visibleNodeIds:ids,axes:this.axes,appearance:this.appearance,customPalette:this.palette,
+    this.view=await createProductView({container:element('render-root'),data:adapted.data,v2Prepared:adapted.prepared,v2Colours:this.v2Colours,layoutContainers:result.containers,visibleNodeIds:ids,axes:this.axes,appearance:this.appearance,customPalette:this.palette,
       insets:{top:0,right:0,bottom:0,left:0},reducedMotion:true,
       text:id=>{const n=disclosed.nodes.find(n=>n.id===id)!;return {short:n.title,full:n.title_full,family:n.level<=3?'aggregate':n.level===5?'source':'concept'};},
       events:{onPick:target=>{if(target){if(target.shiftKey && this.selected && this.selected!==target.id){this.why(this.selected,target.id);}else void this.select(target.id);}},onDoublePick:target=>{if(target)void this.expand(target.id);},onHover:()=>{}}});

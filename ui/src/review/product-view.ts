@@ -280,6 +280,7 @@ export const createProductView: CreateProductView = async (input) => {
       morphologyLanguage: "distinct" as const,
       nativeLabels: false,
       windowGeometryFromAnchors: true,
+      ...(input.layoutContainers && axes.organization === "indra" ? { containers: input.layoutContainers } : {}),
       emphasisIds: emphasis,
       appearance,
       edges: new Map(subset.edges.map((edge) => {

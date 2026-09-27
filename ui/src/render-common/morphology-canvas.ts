@@ -24,7 +24,7 @@ export function drawMorphologyCanvas(
   project: (point: Coordinates) => ProjectedPoint,
   style: MorphologyCanvasStyle,
   appearance: AppearanceOptions = DEFAULT_APPEARANCE,
-  containers: readonly MorphologyContainerPath[] = geometry.containers,
+  containers: readonly MorphologyContainerPath[] = geometry.containers ?? [],
   projection: "2d" | "3d" = "2d",
 ): void {
   const canvas = context.canvas;
