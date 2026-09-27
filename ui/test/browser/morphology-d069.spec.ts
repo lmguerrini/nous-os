@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 
 type AxisApi = { ready: Promise<void>; setAxes(axes: Record<string, unknown>): Promise<void> };
 const morphologies = ["stellar", "neural", "mycelium"] as const;
-const projections = ["2d", "3d-orthographic", "3d-perspective"] as const;
+const projections = ["2d", "3d"] as const;
 const organizations = ["flat", "indra"] as const;
 
 test.skip(process.env.D069_CAPTURE !== "1", "Set D069_CAPTURE=1 and serve the review page");

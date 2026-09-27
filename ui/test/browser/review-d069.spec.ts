@@ -1,13 +1,12 @@
 import { test, expect } from "@playwright/test";
 
 const url = process.env.D069_URL ?? "http://127.0.0.1:8767/";
-const hook = () => (window as typeof window & { __d067: any }).__d067;
 const ready = async (page: import("@playwright/test").Page) => {
   await page.goto(url);
-  await page.evaluate(() => hook().ready);
+  await page.evaluate(() => (window as any).__d067.ready);
   await expect(page.locator("#status")).toContainText("Grafo pronto");
 };
-const pose = (page: import("@playwright/test").Page) => page.evaluate(() => hook().camera());
+const pose = (page: import("@playwright/test").Page) => page.evaluate(() => (window as any).__d067.camera());
 const distance = (p: { position: number[]; target: number[] }) =>
   Math.hypot(...p.position.map((value, index) => value - p.target[index]!));
 
@@ -47,40 +46,40 @@ test("D-069 camera, Focus, controls and persistence over the served export", asy
   await page.locator('#gizmo button[data-axis-end="z"]').click();
   expect((await pose(page)).position[2]).toBeGreaterThan((await pose(page)).target[2]);
   const node = await page.evaluate(() => {
-    const w = hook().witness();
+    const w = (window as any).__d067.witness();
     return Object.entries(w.nodeViewport).find(([, point]: any) => point.x > w.visibleRect.left + 50 && point.x < w.visibleRect.left + w.visibleRect.width - 50
       && point.y > w.visibleRect.top + 50 && point.y < w.visibleRect.top + w.visibleRect.height - 50)?.[0];
   });
   expect(node).toBeTruthy();
-  const point = await page.evaluate((id) => hook().witness().nodeViewport[id], node!);
+  const point = await page.evaluate((id) => (window as any).__d067.witness().nodeViewport[id], node!);
   await page.mouse.dblclick(point.x, point.y);
-  await expect.poll(async () => page.evaluate(() => hook().state().selected)).toBe(node);
+  await expect.poll(async () => page.evaluate(() => (window as any).__d067.state().selected)).toBe(node);
   await expect.poll(async () => {
-    const w = await page.evaluate(() => hook().witness());
+    const w = await page.evaluate(() => (window as any).__d067.witness());
     const p = w.nodeViewport[node!];
     return Math.hypot(p.x - (w.visibleRect.left + w.visibleRect.width / 2), p.y - (w.visibleRect.top + w.visibleRect.height / 2));
   }).toBeLessThanOrEqual(2);
   await expect(page.locator("#projection-focus")).toBeEnabled();
   await page.locator("#projection-focus").click();
-  expect(await page.evaluate(() => hook().focusMode)).toBe(true);
-  const focused = await page.evaluate(() => hook().witness());
+  expect(await page.evaluate(() => (window as any).__d067.focusMode)).toBe(true);
+  const focused = await page.evaluate(() => (window as any).__d067.witness());
   for (const id of focused.emphasised) {
     const p = focused.nodeViewport[id];
     if (p) expect(p.x).toBeGreaterThanOrEqual(focused.visibleRect.left - 2);
   }
   await page.locator("#fullscreen").click();
-  await expect.poll(async () => page.evaluate(() => hook().fullscreen())).toBe(true);
+  await expect.poll(async () => page.evaluate(() => (window as any).__d067.fullscreen())).toBe(true);
   await page.locator("#fullscreen-panel").click();
   await expect(page.locator("#details")).toBeVisible();
   await page.locator("#fullscreen-exit").click();
-  await expect.poll(async () => page.evaluate(() => hook().fullscreen())).toBe(false);
+  await expect.poll(async () => page.evaluate(() => (window as any).__d067.fullscreen())).toBe(false);
   const wide = await page.locator("#viewport").boundingBox();
   await page.locator("#panel-toggle").click();
   const changed = await page.locator("#viewport").boundingBox();
   expect(changed!.width).not.toEqual(wide!.width);
   await page.locator("#fit").click();
   await expect(page.locator("#toast")).toContainText("Vista adattata");
-  const fitted = await page.evaluate(() => hook().witness());
+  const fitted = await page.evaluate(() => (window as any).__d067.witness());
   for (const p of Object.values(fitted.nodeViewport) as any[]) {
     expect(p.x).toBeGreaterThanOrEqual(fitted.visibleRect.left - 2);
     expect(p.x).toBeLessThanOrEqual(fitted.visibleRect.left + fitted.visibleRect.width + 2);
@@ -91,14 +90,14 @@ test("D-069 camera, Focus, controls and persistence over the served export", asy
   await page.locator("#preset-save").click();
   await page.locator("#palette").selectOption("warm");
   await page.reload();
-  await page.evaluate(() => hook().ready);
-  expect(await page.evaluate(() => hook().palette().name)).toBe("warm");
-  expect(await page.evaluate(() => hook().appearance().nodeScale)).toBe(1.4);
+  await page.evaluate(() => (window as any).__d067.ready);
+  expect(await page.evaluate(() => (window as any).__d067.palette().name)).toBe("warm");
+  expect(await page.evaluate(() => (window as any).__d067.appearance().nodeScale)).toBe(1.4);
   await page.locator("#appearance-toggle").click();
   await expect(page.locator("#preset-list option")).toContainText(["Preset salvati", "Locale D069"]);
   await page.locator("#reset").click();
   await expect(page.locator("#toast")).toContainText("Reimpostati camera, focus e aspetto");
-  expect(await page.evaluate(() => hook().appearance().nodeScale)).toBe(1);
+  expect(await page.evaluate(() => (window as any).__d067.appearance().nodeScale)).toBe(1);
   await expect(page.locator("body")).not.toContainText(/lente|noetico|Pythagorean|Lullian|Yi Jing|Brunian/i);
 });
 

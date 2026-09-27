@@ -297,7 +297,7 @@ export function mount(
   const syncCameraState = (): void => {
     currentState = createVisualState(visualGraph, {
       ...currentState,
-      camera: rig.readCameraState(),
+      camera: engineCamera(rig.readCameraState()),
       cameraKind: rig.kind,
     });
     if (fiberStore !== undefined) {
@@ -358,7 +358,7 @@ export function mount(
   const applyMaterialState = (selectedId: string | null, focusedId: string | null): void => {
     currentState = createVisualState(visualGraph, {
       ...currentState,
-      camera: rig.readCameraState(),
+      camera: engineCamera(rig.readCameraState()),
       cameraKind: rig.kind,
       selectedId,
       focusedId,
@@ -407,14 +407,14 @@ export function mount(
     readReviewCameraPose() { return rig.readPose(); },
     setReviewViewPreset(name) { rig.viewPreset(name); syncCameraState(); },
     restoreCameraState(state: VisualStateCamera): void {
-      currentState = createVisualState(visualGraph, { ...currentState, camera: state });
+      currentState = createVisualState(visualGraph, { ...currentState, camera: engineCamera(state) });
       rig.restoreCameraState(state);
       syncCameraState();
     },
     readVisualState(): VisualState {
       currentState = createVisualState(visualGraph, {
         ...currentState,
-        camera: rig.readCameraState(),
+        camera: engineCamera(rig.readCameraState()),
         cameraKind: rig.kind,
       });
       return currentState;
@@ -424,7 +424,7 @@ export function mount(
       rig.setCameraKind(kind, live.scene.camera);
       currentState = createVisualState(visualGraph, {
         ...currentState,
-        camera: rig.readCameraState(),
+        camera: engineCamera(rig.readCameraState()),
         cameraKind: kind,
       });
       picker.replaceScene(live.scene);
@@ -683,4 +683,9 @@ function coordinateCount(): number {
 
 function cameraKindCount(): number {
   return [ORTHOGRAPHIC, PERSPECTIVE].length;
+}
+
+/** The engine's pinned camera record; the review rig's orbit and target depth stay inside the rig. */
+function engineCamera(state: VisualStateCamera): VisualStateCamera {
+  return { x: state.x, y: state.y, angle: state.angle, ratio: state.ratio, bounds: state.bounds };
 }

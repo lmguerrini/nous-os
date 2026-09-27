@@ -26,3 +26,8 @@ export function contrast(a: string, b: string): number {
   const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (light! + 0.05) / (dark! + 0.05);
 }
+
+/** A stored or submitted palette name, or black and white when the value is not a known palette. */
+export function paletteName(value: unknown): Colour {
+  return value === "custom" || (typeof value === "string" && Object.hasOwn(PALETTES, value)) ? value as Colour : "bw";
+}

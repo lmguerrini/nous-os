@@ -11,7 +11,7 @@ import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
 import type { AppearanceOptions } from "../engine/presentation-options.ts";
 import { APPEARANCE_RANGES, normalizeAppearance, readLocal, writeLocal } from "./appearance.ts";
 import type { AppearancePresets } from "./appearance.ts";
-import { PALETTES, contrast } from "./palette.ts";
+import { PALETTES, contrast, paletteName } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
 import { fitNotice, focusAvailable, resetAppearance } from "./viewer-state.ts";
@@ -27,6 +27,8 @@ const get = <T extends Element>(id: string): T => {
   return item as unknown as T;
 };
 const viewport = get<HTMLElement>("viewport");
+/** The renderers own this element; the overlays stay its siblings so no remount can remove them. */
+const renderRoot = get<HTMLElement>("render-root");
 const details = get<HTMLElement>("details");
 const status = get<HTMLElement>("status");
 let data: ReviewExport;
@@ -280,11 +282,11 @@ function syncFocusPresentation(): void {
 function debugView(graph: ReturnType<typeof filterGraph>): ProductView {
   const legacy =
     axes.projection === "2d"
-      ? mount2d(viewport, data, graph.nodes, graph.edges, (id) => {
+      ? mount2d(renderRoot, data, graph.nodes, graph.edges, (id) => {
           if (id) void select(id);
           else void clearSelection();
         })
-      : mount3d(viewport, data, graph.nodes, graph.edges, (id) => {
+      : mount3d(renderRoot, data, graph.nodes, graph.edges, (id) => {
           if (id) void select(id);
           else void clearSelection();
         });
@@ -320,12 +322,7 @@ function debugView(graph: ReturnType<typeof filterGraph>): ProductView {
     frame: async (ids) => legacy.focus(ids[0] ?? ""),
     fit: async () => legacy.focus(""),
     witness,
-    destroy: () => {
-      const overlays = [...viewport.children].filter((child) => child.id &&
-        ["fullscreen-bar", "gizmo", "focus-chip", "toast", "appearance-panel", "details"].includes(child.id));
-      legacy.destroy();
-      viewport.append(...overlays);
-    },
+    destroy: () => legacy.destroy(),
   };
 }
 async function mount() {
@@ -340,7 +337,7 @@ async function mount() {
   if (debug) view = debugView(graph);
   else
     view = await createProductView({
-      container: viewport,
+      container: renderRoot,
       data,
       visibleNodeIds: visibleIds,
       axes,
@@ -617,7 +614,7 @@ document.querySelectorAll<HTMLButtonElement>("[data-preset]").forEach((button) =
 get<HTMLButtonElement>("projection-focus").addEventListener("click", () => { void toggleFocus(); });
 get<HTMLButtonElement>("fullscreen-focus").addEventListener("click", () => { void toggleFocus(); });
 get<HTMLSelectElement>("palette").addEventListener("change", (event) => {
-  void setAxes({ colour: (event.target as HTMLSelectElement).value as Axes["colour"] });
+  void setAxes({ colour: paletteName((event.target as HTMLSelectElement).value) });
 });
 get<HTMLButtonElement>("appearance-toggle").addEventListener("click", () => {
   const panel = get<HTMLElement>("appearance-panel"); panel.hidden = !panel.hidden; updateInsets();
@@ -705,7 +702,7 @@ get<HTMLFormElement>("fullscreen-search-form").addEventListener("submit", (event
 syncAppearanceControls();
 syncPresetList();
 syncPanel();
-axes = { ...axes, colour: readLocal(storage, "d069.palette", "bw") as Axes["colour"] };
+axes = { ...axes, colour: paletteName(readLocal(storage, "d069.palette", "bw")) };
 function updateGizmo(): void {
   const pose = view?.camera();
   if (pose && axes.projection === "3d") {
