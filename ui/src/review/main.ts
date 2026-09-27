@@ -837,7 +837,7 @@ syncPresetList();
 syncPanel();
 axes = { ...axes, colour: paletteName(readLocal(storage, "d069.palette", "bw")) };
 function updateGizmo(): void {
-  const pose = view?.camera();
+  const pose = v2 ? v2.camera() : view?.camera();
   if (pose && axes.projection === "3d") {
     const delta = pose.target.map((value, i) => value - pose.position[i]!);
     const length = Math.hypot(...delta) || 1;
