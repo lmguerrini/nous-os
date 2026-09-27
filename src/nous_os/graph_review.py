@@ -374,6 +374,8 @@ def export(*, package: Path, inventory: Path, out: Path, workspace, context_wind
     result["generated_at"] = datetime.now(timezone.utc).isoformat()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    # The sidecar holds the content digest (canonical JSON without generated_at and export_digest), not a hash of the
+    # file bytes: regenerating the same inputs keeps this digest while the bytes change with generated_at.
     Path(str(out) + ".sha256").write_text(result["export_digest"] + "\n", encoding="ascii")
     return result
 
