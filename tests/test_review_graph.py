@@ -90,6 +90,19 @@ def test_overlay_merge_and_invalid_citation(tmp_path):
     assert manifest["audit"]["dropped"]["citation: span byte mismatch"] == 1
 
 
+def test_domain_keeps_its_name_and_a_namesake_entity_says_what_it_is(tmp_path):
+    args, citation = fixture(tmp_path)
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    (overlay / "entities.json").write_bytes(encoded({"schema": "nousos.entities/1", "entities": [
+        {"id": "ent_forge", "name": "FORGE", "type": "project", "aliases": ["conv1"], "domains": ["atlasfield"],
+         "evidence": [citation]}]}))
+    build(**args, overlay=overlay, out=tmp_path / "out")
+    nodes = {n["id"]: n for n in json.loads((tmp_path / "out/index.json").read_text())["nodes"]}
+    assert nodes["domain:forge"]["title"] == "FORGE"
+    assert nodes["ent_forge"]["title"] == "FORGE · progetto"
+
+
 def test_duplicate_titles_gain_discriminators(tmp_path):
     args, citation = fixture(tmp_path)
     path = args["stores"] / "candidates/proposals.jsonl"

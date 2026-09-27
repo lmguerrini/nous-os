@@ -608,10 +608,31 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
         by_title[node["title"]].append(node)
     duplicate_global = sum(len(group) for group in by_title.values() if len(group) > 1)
     duplicate_parent = sum(count for group in by_title.values() for count in Counter(n["parent"] for n in group).values() if count > 1)
+    # Domains keep their names; an entity says what it is, a conversation its month, a proposal its conversation; only
+    # what is still ambiguous after that gets the end of its id.
+    kind_it = {"project": "progetto", "work": "opera", "system": "sistema", "concept": "concetto"}
+    months_it = ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"]
+
+    def discriminator(node: dict) -> str | None:
+        if node["level"] == 2:
+            return kind_it.get(node["kind"], node["kind"])
+        if node["level"] == 3:
+            date = str(node.get("date") or "")
+            return f"{months_it[int(date[5:7]) - 1]} {date[:4]}" if re.fullmatch(r"\d{4}-\d{2}.*", date) else None
+        if node["level"] == 4:
+            return short(nodes.get(node["parent"], {}).get("title", ""), 24) or None
+        return None
+
     for group in by_title.values():
         if len(group) > 1:
             for node in group:
-                node["title"] = f"{short(node['title'], 48)} · {node['id'][-8:]}"
+                extra = discriminator(node)
+                if extra:
+                    node["title"] = f"{short(node['title'], 48)} · {extra}"
+            remaining = Counter(node["title"] for node in group)
+            for node in group:
+                if remaining[node["title"]] > 1 and node["level"] != 1:
+                    node["title"] = f"{node['title']} · {node['id'][-6:]}"
     passage_titles: dict[str, list[dict]] = defaultdict(list)
     for item in details.values():
         if item.get("kind") == "passage":
