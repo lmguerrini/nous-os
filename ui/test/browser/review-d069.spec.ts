@@ -61,7 +61,7 @@ test("D-069 camera, Focus, controls and persistence over the served export", asy
   }).toBeLessThanOrEqual(2);
   await expect(page.locator("#projection-focus")).toBeEnabled();
   await page.locator("#projection-focus").click();
-  expect(await page.evaluate(() => (window as any).__d067.focusMode)).toBe(true);
+  await expect.poll(async () => page.evaluate(() => (window as any).__d067.focusMode)).toBe(true);
   const focused = await page.evaluate(() => (window as any).__d067.witness());
   for (const id of focused.emphasised) {
     const p = focused.nodeViewport[id];

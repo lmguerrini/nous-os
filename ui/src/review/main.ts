@@ -46,6 +46,8 @@ let customPalette = readLocal<PaletteValues>(storage, "d069.customPalette", PALE
 let focusMode = false;
 let focusCamera: unknown = null;
 let panelCollapsed = Boolean(readLocal(storage, "d069.panelCollapsed", innerWidth <= 1100));
+/** In fullscreen the details panel is a drawer of its own, closed on entry so the canvas gets the whole screen. */
+let fullscreenDrawer = false;
 let visibleIds = new Set<string>();
 let stack: FocusStack;
 let filter = { domain: "", family: "", standing: "", evidence: "" };
@@ -497,8 +499,9 @@ function updateInsets(): void {
 }
 function syncPanel(): void {
   get<HTMLElement>("shell").classList.toggle("panel-collapsed", panelCollapsed);
-  details.classList.toggle("drawer", !panelCollapsed && (document.fullscreenElement === viewport || innerWidth <= 1100));
+  details.classList.toggle("drawer", fullscreen() ? fullscreenDrawer : !panelCollapsed && innerWidth <= 1100);
   get<HTMLButtonElement>("panel-toggle").setAttribute("aria-pressed", String(!panelCollapsed));
+  get<HTMLButtonElement>("fullscreen-panel").setAttribute("aria-pressed", String(fullscreenDrawer));
   writeLocal(storage, "d069.panelCollapsed", panelCollapsed);
   requestAnimationFrame(updateInsets);
 }
@@ -509,6 +512,7 @@ async function toggleFullscreen(): Promise<void> {
   else await viewport.requestFullscreen();
 }
 document.addEventListener("fullscreenchange", () => {
+  fullscreenDrawer = false;
   if (fullscreen()) viewport.append(details);
   else get<HTMLElement>("shell").append(details);
   syncPanel();
@@ -638,7 +642,7 @@ get<HTMLButtonElement>("preset-delete").addEventListener("click", () => {
   writeLocal(storage, "d069.presets", presets); syncPresetList(); announce("Preset eliminato");
 });
 get<HTMLButtonElement>("panel-toggle").addEventListener("click", togglePanel);
-get<HTMLButtonElement>("fullscreen-panel").addEventListener("click", togglePanel);
+get<HTMLButtonElement>("fullscreen-panel").addEventListener("click", () => { fullscreenDrawer = !fullscreenDrawer; syncPanel(); });
 get<HTMLButtonElement>("fullscreen").addEventListener("click", () => { void toggleFullscreen(); });
 get<HTMLButtonElement>("fullscreen-exit").addEventListener("click", () => { void document.exitFullscreen(); });
 document.querySelectorAll<HTMLButtonElement>("[data-full-projection]").forEach((button) => button.addEventListener("click", () => {

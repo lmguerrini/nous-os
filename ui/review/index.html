@@ -42,7 +42,7 @@
     #gizmo svg { width:100%;height:100%;position:absolute;inset:0 } #gizmo line { stroke-width:2 }
     #fullscreen-bar { display:none;position:absolute;z-index:26;top:8px;left:8px;right:8px;gap:4px;align-items:center;flex-wrap:wrap;background:#111d;border:1px solid #555;border-radius:6px;padding:5px;max-height:25vh;overflow:auto }
     #viewport:fullscreen { width:100vw;height:100vh } #viewport:fullscreen #fullscreen-bar { display:flex }
-    #viewport:fullscreen #details { display:none } #details.drawer { display:block;position:absolute;z-index:25;right:0;top:0;bottom:0;width:min(360px,90vw);box-shadow:-10px 0 30px #000 }
+    #viewport:fullscreen #details:not(.drawer) { display:none } #details.drawer { display:block;position:absolute;z-index:25;right:0;top:0;bottom:0;width:min(360px,90vw);box-shadow:-10px 0 30px #000 }
     #error { padding:6px;background:#522 } .popover { position:fixed;z-index:30;right:8px;top:95px;width:min(270px,calc(100vw - 16px));background:#111;border:1px solid #555;padding:10px;max-height:50vh;overflow:auto }
     @media(max-width:1100px) { header { max-height:37dvh } main { grid-template-columns:minmax(0,1fr) } #details {display:none;position:absolute;z-index:25;right:0;top:0;bottom:0;width:min(360px,90vw);box-shadow:-10px 0 30px #000} #details.drawer {display:block} }
   </style>
