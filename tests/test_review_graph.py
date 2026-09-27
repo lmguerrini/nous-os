@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import io
 import gzip
+import pytest
 
 from nous_os.review_graph import build, encoded, short
 from nous_os.graph_review import serve_graph
@@ -88,6 +89,108 @@ def test_overlay_merge_and_invalid_citation(tmp_path):
     assert any(e["class"] == "exploratory" and e.get("a_sources") == [citation] and e.get("b_sources") == [citation]
                for e in index["edges"])
     assert manifest["audit"]["dropped"]["citation: span byte mismatch"] == 1
+
+
+def store_layer_fixture(tmp_path):
+    args, citation = fixture(tmp_path)
+    stores = args["stores"]
+    second = encoded({"container_external_id": "outside-membership", "role": "user", "created_at": "2026-01-02",
+                      "message": "synthetic harbor"})
+    digest = hashlib.sha256(second).hexdigest()
+    path = stores / "snapshots/src_b" / f"{digest}.snapshot"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(second)
+    start = second.index(b"synthetic harbor")
+    other_citation = {"source_id": "src_b", "snapshot_digest": digest, "start_byte": start,
+                      "end_byte": start + len(b"synthetic harbor"), "span": "synthetic harbor"}
+    with (stores / "ledger.jsonl").open("ab") as stream:
+        stream.write(encoded({"source_id": "src_b", "snapshot_digest": digest}))
+    content = {"kind": "DECISION", "statement": "A synthetic harbor decision.", "scope": "synthetic",
+               "citations": [other_citation], "counter_citations": [], "valid_to": None,
+               "valid_from": "2026-01-02", "origin": "USER_AUTHORED", "batch": "d069"}
+    with (stores / "candidates/proposals.jsonl").open("ab") as stream:
+        stream.write(encoded({"proposal_id": "asr_integrated", "content": json.dumps(content),
+                              "source_id": "src_b", "proposed_at": "2026-01-02T00:00:00Z"}))
+    integration = stores / "integrations/d069"
+    integration.mkdir(parents=True)
+    (integration / "candidates.jsonl").write_bytes(encoded({"proposal_id": "asr_integrated", "overlay_id": "ovl_synthetic",
+        "batch_id": "d069", "dedup_key": "synthetic", "conversation_id": "conv1", "domains": ["atlasfield"]}))
+    (integration / "mapping.json").write_bytes(encoded({"batch_id": "d069", "overlay_to_store": {
+        "ovl_synthetic": "asr_integrated", "ent_old": "ent_store", "rel_old": "rel_store", "xpl_old": "xpl_store"}}))
+    noncanonical = stores / "noncanonical"
+    noncanonical.mkdir()
+    (noncanonical / "entities.jsonl").write_bytes(encoded({"id": "ent_old", "overlay_id": "ent_old",
+        "store_id": "ent_store", "batch_id": "d069", "epistemic_status": "non-canonical/attested",
+        "name": "conv1", "type": "project", "aliases": [], "domains": ["atlasfield"], "evidence": [citation]}))
+    (noncanonical / "explicit-relations.jsonl").write_bytes(encoded({"id": "rel_old", "overlay_id": "rel_old",
+        "store_id": "rel_store", "batch_id": "d069", "epistemic_status": "non-canonical/attested",
+        "schema": "nousos.relation-explicit/1", "subject": "ent_store", "object": "ent_store",
+        "predicate": "part_of", "rule": "synthetic", "evidence": [{"proposal_id": "asr_one", "citation": citation}]}))
+    interpretations = stores / "interpretations"
+    interpretations.mkdir()
+    (interpretations / "exploratory.jsonl").write_bytes(encoded({"id": "xpl_old", "overlay_id": "xpl_old",
+        "store_id": "xpl_store", "batch_id": "d069", "epistemic_status": "exploratory/non-canonical",
+        "schema": "nousos.exploratory-connection/1", "a": "asr_integrated", "b": "asr_one",
+        "a_sources": [other_citation], "b_sources": [citation], "inference": "analogy",
+        "explanation_it": "Synthetic analogy", "confidence": "low", "counter_evidence": ["synthetic limit"],
+        "status": "exploratory/non-canonical"}))
+    presentation = tmp_path / "presentation"
+    presentation.mkdir()
+    (presentation / "membership.json").write_bytes(args["membership"].read_bytes())
+    (presentation / "titles.jsonl").write_bytes(encoded({"schema": "nousos.title/1", "id": "ovl_synthetic",
+        "title_it": "Porto sintetico"}))
+    (presentation / "outcomes.jsonl").write_bytes(b"".join(encoded({"schema": "nousos.pass-outcome/1",
+        "pass": name, "conversation_id": "conv1", "outcome": "distilled"}) for name in ("p2a", "p2b")))
+    args.update(membership=presentation / "membership.json", presentation=presentation, store_layer=True)
+    return args, other_citation
+
+
+def test_store_layer_placement_titles_marks_and_reconciliation(tmp_path):
+    args, other_citation = store_layer_fixture(tmp_path)
+    first = build(**args, out=tmp_path / "first", require_complete=True)
+    second = build(**args, out=tmp_path / "second", require_complete=True)
+    assert first["digest"] == second["digest"]
+    assert (tmp_path / "first/manifest.json").read_bytes() == (tmp_path / "second/manifest.json").read_bytes()
+    nodes = {n["id"]: n for n in json.loads((tmp_path / "first/index.json").read_text())["nodes"]}
+    edges = json.loads((tmp_path / "first/index.json").read_text())["edges"]
+    assert nodes["asr_integrated"]["parent"] == "conversation:conv1"
+    assert nodes["asr_integrated"]["title"] == "Porto sintetico"
+    assert nodes["asr_integrated"]["status"] == "proposal"
+    assert nodes["asr_integrated"]["epistemic_status"] == "non-canonical/attested"
+    assert nodes["ent_store"]["epistemic_status"] == "non-canonical/attested"
+    detail = next(row for row in map(json.loads, (tmp_path / "first/details.jsonl").read_text().splitlines())
+                  if row["id"] == "asr_integrated")
+    assert detail["provenance_line"] == "integrata nella memoria globale · lotto d069"
+    assert detail["citations"] == [other_citation]
+    assert any(e["record_id"] == "rel_store" and e["epistemic_status"] == "non-canonical/attested" for e in edges)
+    xpl = next(e for e in edges if e.get("record_id") == "xpl_store")
+    assert xpl["status"] == "exploratory/non-canonical" and xpl["a_sources"] == [other_citation]
+    assert xpl["counter_evidence"] == ["synthetic limit"]
+    for layer in first["store_reconciliation"]["layers"].values():
+        assert layer["store_count"] == layer["dataset_count"] == 1
+        assert not layer["missing_from_dataset"] and not layer["missing_from_store"]
+    assert "snapshots/src_b/" + other_citation["snapshot_digest"] + ".snapshot" in first["store_reconciliation"]["store_files_sha256"]
+
+
+def test_store_layer_reconciliation_refuses_missing_record(tmp_path):
+    args, _ = store_layer_fixture(tmp_path)
+    path = args["stores"] / "interpretations/exploratory.jsonl"
+    row = json.loads(path.read_text())
+    row["b"] = "absent_synthetic_endpoint"
+    path.write_bytes(encoded(row))
+    with pytest.raises(ValueError, match="store reconciliation incomplete"):
+        build(**args, out=tmp_path / "refused", require_complete=True)
+    assert not (tmp_path / "refused/manifest.json").exists()
+
+
+def test_store_layer_rejects_forged_exploratory_source(tmp_path):
+    args, _ = store_layer_fixture(tmp_path)
+    path = args["stores"] / "interpretations/exploratory.jsonl"
+    row = json.loads(path.read_text())
+    row["b_sources"][0]["span"] = "forged synthetic text"
+    path.write_bytes(encoded(row))
+    with pytest.raises(ValueError, match="store reconciliation incomplete"):
+        build(**args, out=tmp_path / "refused", require_complete=True)
 
 
 def test_domain_keeps_its_name_and_a_namesake_entity_says_what_it_is(tmp_path):

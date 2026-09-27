@@ -120,12 +120,15 @@ def interim_membership(coverage: Path, inventory: Path, proposals: Path, ledger:
     return result
 
 
-def source_metadata(ledger: list[dict], stores: Path) -> dict[str, dict]:
+def source_metadata(ledger: list[dict], stores: Path, read_hashes: dict[str, str] | None = None) -> dict[str, dict]:
     result = {}
     for row in ledger:
         path = stores / "snapshots" / row["source_id"] / f"{row['snapshot_digest']}.snapshot"
         try:
-            obj = json.loads(path.read_bytes())
+            raw = path.read_bytes()
+            if read_hashes is not None:
+                read_hashes[str(path.relative_to(stores))] = hashlib.sha256(raw).hexdigest()
+            obj = json.loads(raw)
         except (OSError, ValueError):
             continue
         result[row["source_id"]] = {"conversation": obj.get("container_external_id"),
@@ -134,7 +137,7 @@ def source_metadata(ledger: list[dict], stores: Path) -> dict[str, dict]:
     return result
 
 
-def verify(citation: dict, stores: Path, cache: dict) -> tuple[bool, str]:
+def verify(citation: dict, stores: Path, cache: dict, read_hashes: dict[str, str] | None = None) -> tuple[bool, str]:
     try:
         sid, digest = citation["source_id"], citation["snapshot_digest"]
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", sid) or not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -142,6 +145,8 @@ def verify(citation: dict, stores: Path, cache: dict) -> tuple[bool, str]:
         key = (sid, digest)
         if key not in cache:
             raw = (stores / "snapshots" / sid / f"{digest}.snapshot").read_bytes()
+            if read_hashes is not None:
+                read_hashes[f"snapshots/{sid}/{digest}.snapshot"] = hashlib.sha256(raw).hexdigest()
             cache[key] = raw if hashlib.sha256(raw).hexdigest() == digest else None
         raw = cache[key]
         start, end = citation["start_byte"], citation["end_byte"]
@@ -157,11 +162,16 @@ def verify(citation: dict, stores: Path, cache: dict) -> tuple[bool, str]:
 
 
 def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, cards: Path,
-          out: Path, overlay: Path | None = None, require_complete: bool = False) -> dict:
+          out: Path, overlay: Path | None = None, store_layer: bool = False,
+          presentation: Path | None = None, require_complete: bool = False) -> dict:
+    if store_layer and (overlay or presentation is None):
+        raise ValueError("--store-layer requires --presentation and excludes --overlay")
+    if presentation is not None and not store_layer:
+        raise ValueError("--presentation requires --store-layer")
     inv = {r["conversation"]: r for r in rows(inventory)}
     overlay = overlay if overlay and overlay.exists() else None
     membership_error = False
-    overlay_membership = overlay / "membership.json" if overlay else None
+    overlay_membership = (presentation or overlay) / "membership.json" if (presentation or overlay) else None
     if overlay_membership and overlay_membership.exists():
         try:
             candidate = json.loads(overlay_membership.read_text())
@@ -180,8 +190,13 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
     proposal_path = stores / "candidates/proposals.jsonl"
     canon_path = stores / "canon/assertions.jsonl"
     reconcile_path = stores / "reconciliation/relations.jsonl"
-    source_meta = source_metadata(rows(ledger_path), stores)
     proposals = rows(proposal_path)
+    store_hashes: dict[str, str] = {}
+    if store_layer:
+        for path in (ledger_path, proposal_path, canon_path, reconcile_path):
+            if path.is_file():
+                store_hashes[str(path.relative_to(stores))] = sha(path)
+    source_meta = source_metadata(rows(ledger_path), stores, store_hashes if store_layer else None)
     canon = {r["candidate_id"]: r for r in rows(canon_path)}
     excluded = {r["old"] for r in rows(replaced)}
     excluded.update(json.loads(r["content"]).get("supersedes") for r in proposals)
@@ -193,12 +208,50 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
     if membership_error:
         reasons["membership.json: invalid overlay; used explicit membership"] += 1
     input_paths = [inventory, membership, replaced, cards, ledger_path, proposal_path, canon_path, reconcile_path]
+    layer_paths = {
+        "integrated_proposals": stores / "integrations/d069/candidates.jsonl",
+        "entities": stores / "noncanonical/entities.jsonl",
+        "explicit_relations": stores / "noncanonical/explicit-relations.jsonl",
+        "exploratory_connections": stores / "interpretations/exploratory.jsonl",
+    } if store_layer else {}
+    layer_rows: dict[str, list[dict]] = {}
+    mapping: dict[str, str] = {}
+    if store_layer:
+        mapping_path = stores / "integrations/d069/mapping.json"
+        for name, path in {**layer_paths, "mapping": mapping_path}.items():
+            if not path.is_file():
+                raise ValueError(f"required store layer file missing: {path}")
+            store_hashes[str(path.relative_to(stores))] = sha(path)
+            input_paths.append(path)
+            if name != "mapping":
+                layer_rows[name] = rows(path)
+        mapping_data = json.loads(mapping_path.read_text())
+        if mapping_data.get("batch_id") != "d069" or not isinstance(mapping_data.get("overlay_to_store"), dict):
+            raise ValueError("invalid integration mapping")
+        mapping = mapping_data["overlay_to_store"]
+        for row in layer_rows["integrated_proposals"]:
+            if row.get("batch_id") != "d069" or mapping.get(row.get("overlay_id")) != row.get("proposal_id"):
+                raise ValueError("integrated proposal sidecar disagrees with mapping")
+        for name, status in (("entities", "non-canonical/attested"),
+                             ("explicit_relations", "non-canonical/attested"),
+                             ("exploratory_connections", "exploratory/non-canonical")):
+            if any(row.get("epistemic_status") != status or row.get("batch_id") != "d069"
+                   for row in layer_rows[name]):
+                raise ValueError(f"{name} contains a row without its non-canonical store mark")
+        input_paths.extend([presentation / "membership.json", presentation / "outcomes.jsonl", presentation / "titles.jsonl"])
+        for path in input_paths[-3:]:
+            if not path.is_file():
+                raise ValueError(f"required presentation file missing: {path}")
+    integrated = {r.get("proposal_id"): r for r in layer_rows.get("integrated_proposals", [])}
+    if set(integrated) & set(canon):
+        raise ValueError("integrated proposals must remain non-canonical candidates")
     if membership_error:
         input_paths.append(overlay_membership)
     def overlay_rows(name: str) -> list[dict]:
-        if not overlay:
+        root = presentation if name in {"titles.jsonl", "outcomes.jsonl"} and store_layer else overlay
+        if not root:
             return []
-        path = overlay / name
+        path = root / name
         if path.exists():
             input_paths.append(path)
         result = []
@@ -258,16 +311,19 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
             if d != primary:
                 add_edge(f"conversation:{conv}", f"domain:{d}", "classified_in", evidence=["membership.json"])
     entities_path = overlay / "entities.json" if overlay else None
-    if entities_path and entities_path.exists():
-        input_paths.append(entities_path)
-        try:
-            gazetteer = json.loads(entities_path.read_text())
-            if gazetteer.get("schema") != "nousos.entities/1":
-                raise ValueError("invalid schema")
-        except (ValueError, TypeError, AttributeError):
-            gazetteer = {"entities": []}
-            reasons["entities.json: invalid overlay"] += 1
-        entity_rows = gazetteer.get("entities", [])
+    if store_layer or (entities_path and entities_path.exists()):
+        if store_layer:
+            entity_rows = [{**row, "id": row.get("store_id")} for row in layer_rows["entities"]]
+        else:
+            input_paths.append(entities_path)
+            try:
+                gazetteer = json.loads(entities_path.read_text())
+                if gazetteer.get("schema") != "nousos.entities/1":
+                    raise ValueError("invalid schema")
+            except (ValueError, TypeError, AttributeError):
+                gazetteer = {"entities": []}
+                reasons["entities.json: invalid overlay"] += 1
+            entity_rows = gazetteer.get("entities", [])
         if not isinstance(entity_rows, list):
             entity_rows = []
             reasons["entities.json: invalid entities list"] += 1
@@ -278,7 +334,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                     or not isinstance(entity.get("domains", []), list)):
                 reasons["entity invalid row"] += 1
                 continue
-            valid = [c for c in entity.get("evidence", []) if verify(c, stores, cache)[0]]
+            valid = [c for c in entity.get("evidence", []) if verify(c, stores, cache, store_hashes if store_layer else None)[0]]
             reasons["entity invalid citation"] += len(entity.get("evidence", [])) - len(valid)
             if not valid or not any(normalize(alias) in normalize(c["span"]) for alias in [entity.get("name", ""), *entity.get("aliases", [])] for c in valid if alias):
                 reasons["entity invalid citation or name absent"] += 1
@@ -299,7 +355,9 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                 reasons["entity invalid id"] += 1
                 continue
             add_node(eid, 2, kind, short(entity["name"]), f"domain:{domains[0]}",
-                     parents=[f"domain:{d}" for d in domains], domains=domains, status="overlay")
+                     parents=[f"domain:{d}" for d in domains], domains=domains,
+                     status="non-canonical/attested" if store_layer else "overlay",
+                     epistemic_status="non-canonical/attested" if store_layer else None)
             details[eid] = {"id": eid, "entity": entity, "evidence": valid}
             for d in domains[1:]:
                 add_edge(eid, f"domain:{d}", "classified_in", evidence=valid)
@@ -328,7 +386,8 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                 not isinstance(title_row.get("id"), str)):
             reasons["invalid overlay title"] += 1
             continue
-        titles[title_row["id"]] = value
+        title_id = title_row["id"]
+        titles[mapping.get(title_id, title_id)] = value
     for node in nodes.values():
         if node["level"] == 3:
             node["title"] = titles.get(node["id"], titles.get(node["id"].removeprefix("conversation:"), node["title"]))
@@ -342,7 +401,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
         attributed = [d for d in DOMAINS if re.search(ATTRIBUTION[d], attribution_text, re.I)]
         citations = []
         for citation in content.get("citations") or []:
-            ok, why = verify(citation, stores, cache)
+            ok, why = verify(citation, stores, cache, store_hashes if store_layer else None)
             if ok:
                 citations.append(citation)
             else:
@@ -356,11 +415,22 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
             cid = f"conversation:{conv}"
             if cid in nodes and cid not in eligible:
                 eligible.append(cid)
+        sidecar = integrated.get(pid) if store_layer else None
+        if sidecar:
+            placed = f"conversation:{sidecar.get('conversation_id')}"
+            if placed not in nodes or not isinstance(sidecar.get("domains"), list) or not sidecar["domains"]:
+                reasons["integrated proposal invalid sidecar placement"] += 1
+                return
+            if not set(sidecar["domains"]).issubset(nodes[placed]["domains"]):
+                reasons["integrated proposal sidecar domains outside membership"] += 1
+                return
+            eligible = [placed]
         if not eligible:
             reasons["proposal citations outside membership"] += 1
             return
         cid = eligible[0]
-        domains = [d for d in DOMAINS if any(d in nodes[c]["domains"] for c in eligible)]
+        domains = ([d for d in DOMAINS if d in sidecar["domains"]] if sidecar else
+                   [d for d in DOMAINS if any(d in nodes[c]["domains"] for c in eligible)])
         statement = content.get("statement") or ""
         kind = content.get("kind") or "CONCEPT"
         if kind not in KINDS:
@@ -368,16 +438,20 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
         title = titles.get(pid) or short(statement)
         add_node(pid, 4, "proposal", title, cid, parents=eligible, domains=domains,
                  domain_mentions=attributed, status=status,
+                 epistemic_status="non-canonical/attested" if sidecar else None,
                  subkind=kind, date=content.get("valid_from") or row.get("proposed_at"),
                  origin=content.get("origin"), snippet=statement[:40])
-        valid_counter = [c for c in content.get("counter_citations") or [] if verify(c, stores, cache)[0]]
+        valid_counter = [c for c in content.get("counter_citations") or [] if verify(c, stores, cache, store_hashes if store_layer else None)[0]]
         reasons["counter citation invalid"] += len(content.get("counter_citations") or []) - len(valid_counter)
         details[pid] = {"id": pid, "statement": statement, "scope": content.get("scope"), "why": content.get("why"),
                         "origin": content.get("origin"), "producer": content.get("producer"),
                         "valid_from": content.get("valid_from"), "proposed_at": row.get("proposed_at"),
                         "support": content.get("support"), "batch": content.get("batch"), "citations": citations,
                         "counter_citations": valid_counter,
-                        "canon": canon.get(pid), "overlay_status": status if status == "overlay" else None}
+                        "canon": canon.get(pid), "overlay_status": status if status == "overlay" else None,
+                        "provenance_line": "integrata nella memoria globale · lotto d069" if sidecar else None,
+                        "epistemic_status": "non-canonical/attested" if sidecar else None,
+                        "integration": sidecar}
         for i, citation in enumerate(citations):
             passage_id = f"passage:{pid}:{i}"
             meta = source_meta.get(citation["source_id"], {})
@@ -465,7 +539,8 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
             statement = details[proposal["id"]]["statement"]
             if any(re.search(r"(?<!\w)" + re.escape(normalize(a)) + r"(?!\w)", normalize(statement)) for a in aliases if len(a) > 2):
                 add_edge(proposal["id"], entity["id"], "mentions", evidence=details[proposal["id"]]["citations"][:1])
-    for rel in overlay_rows("relations-explicit.jsonl"):
+    for rel in ([{**row, "id": row.get("store_id")} for row in layer_rows["explicit_relations"]]
+                if store_layer else overlay_rows("relations-explicit.jsonl")):
         if rel.get("schema") != "nousos.relation-explicit/1":
             reasons["explicit relation invalid schema"] += 1
             continue
@@ -474,7 +549,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
             reasons["explicit relation invalid evidence"] += 1
             continue
         ev = [e.get("citation", e) for e in evidence_rows]
-        if not ev or not all(verify(c, stores, cache)[0] for c in ev):
+        if not ev or not all(verify(c, stores, cache, store_hashes if store_layer else None)[0] for c in ev):
             reasons["explicit relation invalid citation"] += 1
             continue
         predicate = rel.get("predicate")
@@ -487,7 +562,9 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
             reasons["explicit relation unknown endpoint"] += 1
             continue
         add_edge(rel.get("subject"), rel.get("object"), edge_type, evidence=ev, record_id=rel.get("id"),
-                 predicate=predicate, rule=rel.get("rule"), overlay_status="attested")
+                 predicate=predicate, rule=rel.get("rule"),
+                 epistemic_status="non-canonical/attested" if store_layer else None,
+                 overlay_status=None if store_layer else "attested")
     citation_nodes: dict[tuple, set[str]] = defaultdict(set)
     for pid, info in details.items():
         if "statement" in info:
@@ -511,7 +588,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
             continue
         sides = []
         for c in cited[:2]:
-            if not verify(c, stores, cache)[0]:
+            if not verify(c, stores, cache, store_hashes if store_layer else None)[0]:
                 sides = []
                 break
             sides.append(citation_nodes.get((c["source_id"], c["snapshot_digest"], c["start_byte"], c["end_byte"]), set()))
@@ -520,7 +597,8 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                 for b in sides[1]:
                     if a != b:
                         add_edge(a, b, "same_text", evidence=cited[:2])
-    for rel in overlay_rows("exploratory.jsonl"):
+    for rel in ([{**row, "id": row.get("store_id")} for row in layer_rows["exploratory_connections"]]
+                if store_layer else overlay_rows("exploratory.jsonl")):
         if rel.get("schema") != "nousos.exploratory-connection/1":
             reasons["exploratory invalid schema"] += 1
             continue
@@ -546,7 +624,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
         given_a, given_b = rel.get("a_sources"), rel.get("b_sources")
         if isinstance(given_a, list) and isinstance(given_b, list) and given_a and given_b:
             # The overlay states the sources of both sides; every one must match the snapshot bytes.
-            if not all(isinstance(c, dict) and verify(c, stores, cache)[0] for c in [*given_a, *given_b]):
+            if not all(isinstance(c, dict) and verify(c, stores, cache, store_hashes if store_layer else None)[0] for c in [*given_a, *given_b]):
                 reasons["exploratory invalid overlay source"] += 1
                 continue
             a_sources, b_sources = given_a, given_b
@@ -564,7 +642,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                  a_sources=a_sources, b_sources=b_sources,
                  explanation=rel.get("explanation_it", ""), inference=rel.get("inference"),
                  confidence=rel.get("confidence"), counter_evidence=rel.get("counter_evidence", []),
-                 status="exploratory/non-canonical")
+                 status="exploratory/non-canonical", epistemic_status="exploratory/non-canonical")
     outcome_rows = overlay_rows("outcomes.jsonl")
     outcome_counts: dict[str, Counter] = defaultdict(Counter)
     outcome_seen: dict[str, set[str]] = defaultdict(set)
@@ -594,7 +672,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
             for d in DOMAINS:
                 if d in t or (d == "atlasfield" and "atlasvault" in t):
                     linked.add(f"domain:{d}")
-        valid = [c for c in card.get("evidence", []) if verify(c, stores, cache)[0]]
+        valid = [c for c in card.get("evidence", []) if verify(c, stores, cache, store_hashes if store_layer else None)[0]]
         if card.get("evidence") and not valid:
             reasons["card without verified citation"] += 1
             continue
@@ -733,6 +811,36 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                 node["size"] = round(.15 + .85 * percentile_rank, 6)
     sorted_nodes = sorted(nodes.values(), key=lambda n: (n["level"], n["id"]))
     sorted_edges = sorted(edges.values(), key=lambda e: e["id"])
+    store_reconciliation = None
+    if store_layer:
+        def record_ids(edge: dict) -> set[str]:
+            return {value for value in [edge.get("record_id"),
+                    *(item.get("record_id") for item in edge.get("merged_records", []))]
+                    if isinstance(value, str)}
+        present = {
+            "integrated_proposals": {pid for pid in integrated if pid in nodes},
+            "entities": {n["id"] for n in nodes.values() if n["level"] == 2},
+            "explicit_relations": set().union(*(record_ids(e) for e in edges.values()
+                if e.get("epistemic_status") == "non-canonical/attested")),
+            "exploratory_connections": set().union(*(record_ids(e) for e in edges.values()
+                if e.get("epistemic_status") == "exploratory/non-canonical")),
+        }
+        store_reconciliation = {"layers": {}, "store_files_sha256": dict(sorted(store_hashes.items()))}
+        for name, key in (("integrated_proposals", "proposal_id"), ("entities", "store_id"),
+                          ("explicit_relations", "store_id"), ("exploratory_connections", "store_id")):
+            source_ids = [row.get(key) for row in layer_rows[name]]
+            source_set = set(source_ids)
+            dataset_ids = present[name]
+            store_reconciliation["layers"][name] = {
+                "store_count": len(source_ids), "dataset_count": len(dataset_ids),
+                "missing_from_dataset": sorted(source_set - dataset_ids),
+                "missing_from_store": sorted(dataset_ids - source_set),
+                "duplicate_store_ids": sorted(pid for pid, count in Counter(source_ids).items() if count > 1),
+            }
+        if require_complete and any(v["store_count"] != v["dataset_count"] or v["missing_from_dataset"]
+                                    or v["missing_from_store"] or v["duplicate_store_ids"]
+                                    for v in store_reconciliation["layers"].values()):
+            raise ValueError("store reconciliation incomplete")
     index = {"schema": SCHEMA, "nodes": sorted_nodes, "edges": sorted_edges}
     out.mkdir(parents=True, exist_ok=True)
     (out / "index.json").write_bytes(encoded(index))
@@ -751,12 +859,13 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
               "edges": dict(sorted(Counter(e["class"] for e in edges.values()).items()))}
     manifest = {"schema": SCHEMA, "generated_at": "1970-01-01T00:00:00Z", "inputs": {str(p): sha(p) for p in sorted(set(input_paths)) if p.exists()},
                 "counts": counts, "limits": {"children_max": 100, "search_max": 50, "response_max_bytes": 1048576},
-                "rules": {"membership": member.get("rules", {}), "proposal_inclusion": "Every live proposal with a verified citation in an eligible conversation; first eligible cited conversation is primary, other eligible cited conversations are parents; domains are their union; keyword anchors are domain_mentions only",
+                "rules": {"membership": member.get("rules", {}), "proposal_inclusion": ("Every live proposal with a verified citation in an eligible conversation; integrated d069 proposals use their store sidecar conversation_id and domains; other proposals use the first eligible cited conversation as primary and the remaining eligible cited conversations as parents; keyword anchors are domain_mentions only" if store_layer else "Every live proposal with a verified citation in an eligible conversation; first eligible cited conversation is primary, other eligible cited conversations are parents; domains are their union; keyword anchors are domain_mentions only"),
                           "primary_domain": "Most keyword-anchored live proposals citing the conversation; ties: orchardline, quillmap, qrs, forge, dossier, showcase, atlasfield, meridian; no anchor: COV-A primary",
                           "project_assignment": "Verified gazetteer entity of the conversation's primary domain: title alias match first (lexical ID tie break), else the entity named in the most live proposal statements if it is named in at least 3 and at least 10 %; otherwise level_skip",
                           "importance": "proposal=3*canon+kind weight (DECISION 2.0, CONCEPT 1.6, REQUIREMENT/RELATIONSHIP 1.4, CHANGE_OVER_TIME 1.2, CONTRADICTION 1.1, OPEN_QUESTION 0.8)+origin (USER_AUTHORED 0.5, QUOTED 0.2, else 0)+0.3*log1p(verified citations)+0.5*log1p(attested degree)+0.3*log1p(exploratory degree); aggregates=log1p(descendant live proposals)+2*log1p(canon descendants)+0.3*log1p(attested degree); size=0.15+0.85*average-tie percentile rank within level",
-                          "titles": "overlay title first; first statement clause at word boundary ≤60; canvas title strips leading emoji/status and retains title_full; untitled conversation uses strongest proposal title and month/year; repeated titles: domains unchanged, entities by kind, conversations by month then day, proposals by conversation (when in different conversations), date, time and kind, then a reading-order number; never an id"},
+                          "titles": ("presentation title first, re-keyed through integration mapping; " if store_layer else "overlay title first; ") + "first statement clause at word boundary ≤60; canvas title strips leading emoji/status and retains title_full; untitled conversation uses strongest proposal title and month/year; repeated titles: domains unchanged, entities by kind, conversations by month then day, proposals by conversation (when in different conversations), date, time and kind, then a reading-order number; never an id"},
                 "outcomes": outcomes,
+                "store_reconciliation": store_reconciliation,
                 "audit": {"duplicate_titles_global_before": duplicate_global, "duplicate_titles_within_parent_before": duplicate_parent,
                           "dropped": dict(sorted(reasons.items()))},
                 "files": {name: sha(out / name) for name in ("index.json", "details.jsonl", "details-offsets.json")}}
@@ -772,6 +881,8 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("stores", "inventory", "membership", "replaced", "cards", "out"):
         p.add_argument(f"--{name}", type=Path, required=True)
     p.add_argument("--overlay", type=Path)
+    p.add_argument("--store-layer", action="store_true")
+    p.add_argument("--presentation", type=Path)
     p.add_argument("--require-complete", action="store_true",
                    help="refuse to write a dataset unless both passes record an outcome for every eligible conversation")
     m = sub.add_parser("membership")

@@ -659,6 +659,7 @@ export class V2Page {
             line(dl, 'Produttore', d.producer);
             line(dl, 'Origine', d.origin);
             line(dl, 'Data della proposta', italianDate(String(d.proposed_at ?? '')));
+            line(dl, 'Provenienza', d.provenance_line);
             const citations = d.citations as unknown[] | undefined;
             citations?.forEach((c, i) => citation(dl, `Provenienza ${i + 1}`, c));
             if (n.level === 5) {
