@@ -546,7 +546,9 @@ export const createProductView: CreateProductView = async (input) => {
     const current = handle;
     if (!current) return;
     const byId = new Map(current.readWorldAnchorWitnesses().map((p) => [p.id, p.position]));
-    const points = ids.map((id) => byId.get(id)).filter((p): p is Coordinates => p !== undefined && finitePoint(p));
+    // The layout already knows every visible position; right after a remount the renderer may not report them all yet.
+    const layout = restrictAnchors(fullAnchor(axes), visible);
+    const points = ids.map((id) => layout.get(id) ?? byId.get(id)).filter((p): p is Coordinates => p !== undefined && finitePoint(p));
     if (ids.length === visible.size && axes.projection === '3d' && axes.organization === 'flat')
       points.push(...framingVolumePoints(points));
     if (ids.length === visible.size && axes.organization === 'indra' && input.layoutContainers) {

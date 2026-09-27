@@ -74,6 +74,8 @@ export class V2Page {
     private lastArrangement = '';
     private lastBoundsKey = '';
     private lastFitCamera: ReturnType<ProductView['readCamera']> = null;
+    /** Set by the user's own camera gestures; an automatic refit only happens while it is false. */
+    private userMovedSinceFit = false;
     private auto = new Set<string>();
     private zoomOn = true;
     private overviewRatio: number | null = null;
@@ -92,6 +94,9 @@ export class V2Page {
         this.appearance = appearance;
         this.palette = palette;
         this.v2Colours = colours;
+        const root = document.getElementById('render-root');
+        if (root) for (const type of ['pointerdown', 'wheel'] as const)
+            root.addEventListener(type, () => { this.userMovedSinceFit = true; }, { passive: true });
         for (const n of index.nodes)
             if (n.level === 1 && index.nodes.some(child => child.level === 2 && child.parent === n.id))
                 this.history.state.expanded.add(n.id);
@@ -234,27 +239,32 @@ export class V2Page {
                     } }
             });
             const arrangement = `${this.axes.organization}|${this.axes.projection}`;
-            const boundsKey = `${arrangement}|${this.axes.morphology}|${this.appearance.depth3d}|${[...ids].sort().join('|')}`;
+            // Bounds change with the visible set and also when a pearl resizes as its hidden children load.
+            const box = layoutStats(this.positions).bbox;
+            const extent = [box.x, box.y, box.z].map(range => range.map(value => Math.round(value)).join(':')).join('/');
+            const boundsKey = `${arrangement}|${this.axes.morphology}|${this.appearance.depth3d}|${extent}|${[...ids].sort().join('|')}`;
             const boundsChanged = boundsKey !== this.lastBoundsKey;
             this.lastBoundsKey = boundsKey;
             const keep = old && arrangement === this.lastArrangement;
             this.lastArrangement = arrangement;
-            const userMoved = old && this.lastFitCamera && JSON.stringify(old) !== JSON.stringify(this.lastFitCamera);
+            // Comparing camera states misreads an unfinished fit animation as a user move; the gestures say it directly.
+            const userMoved = !!old && this.userMovedSinceFit;
             if (keep && (!boundsChanged || userMoved)) {
                 try {
-                    this.view.restoreCamera(old);
+                    this.programmaticCamera(); this.view.restoreCamera(old);
                 }
                 catch {
-                    await this.view.fit();
-                    this.lastFitCamera = this.view.readCamera();
+                    this.programmaticCamera(); await this.view.fit(); this.programmaticCamera();
+                    this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
                     this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
                 }
             } else if (boundsChanged && old) {
-                await this.view.fit();
-                this.lastFitCamera = this.view.readCamera();
+                this.programmaticCamera(); await this.view.fit(); this.programmaticCamera();
+                this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
                 this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
+                this.confirmFit(this.view);
             }
-            if (!old) this.lastFitCamera = this.view.readCamera();
+            if (!old) this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
             if (this.overviewRatio === null) {
                 const camera = this.view.readCamera() as {
                     ratio?: number;
@@ -459,13 +469,13 @@ export class V2Page {
     async setAppearance(value: AppearanceOptions) { this.appearance = value; await this.refresh(); }
     async setPalette(value: PaletteValues) { this.palette = value; await this.refresh(); }
     async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
-    async fit() { this.suppressZoomUntil = performance.now() + 900; await this.view?.fit(); this.lastFitCamera = this.view?.readCamera() ?? null; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
-    async reset() { this.selected = null; this.view?.select(null); this.renderPanel(); await this.view?.resetCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
-    async frame(id: string) { this.suppressZoomUntil = performance.now() + 900; await this.view?.frame([id]); }
+    async fit() { this.programmaticCamera(); await this.view?.fit(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
+    async reset() { this.selected = null; this.view?.select(null); this.renderPanel(); this.programmaticCamera(); await this.view?.resetCamera(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
+    async frame(id: string) { this.programmaticCamera(); await this.view?.frame([id]); this.programmaticCamera(); }
     camera() {
         return this.view?.camera() ?? null;
     }
-    viewPreset(name: Parameters<ProductView['viewPreset']>[0]) { this.view?.viewPreset(name); }
+    viewPreset(name: Parameters<ProductView['viewPreset']>[0]) { this.userMovedSinceFit = true; this.view?.viewPreset(name); }
     setInsets(value: Parameters<ProductView['setInsets']>[0]) { this.view?.setInsets(value); }
     setSemanticZoom(on: boolean) {
         this.zoomOn = on;
@@ -475,6 +485,23 @@ export class V2Page {
         }
     }
     get semanticZoomEnabled() { return this.zoomOn; }
+    /** After an automatic refit, check once that every visible node landed in view (the panel and insets can settle
+     * after the fit) and refit a single time if not, unless the user has taken the camera meanwhile. */
+    private confirmFit(view: ProductView): void {
+        window.setTimeout(() => {
+            if (view !== this.view || this.userMovedSinceFit) return;
+            const witness = view.witness();
+            const rect = witness.visibleRect;
+            const outside = Object.values(witness.nodeViewport).some(point => !(point.x >= rect.left - 1 && point.x <= rect.left + rect.width + 1
+                && point.y >= rect.top - 1 && point.y <= rect.top + rect.height + 1));
+            if (outside) void this.fit();
+        }, 700);
+    }
+    /** A camera move the page makes itself is never read as the user zooming in: re-baseline and hold reveals briefly. */
+    private programmaticCamera(): void {
+        this.suppressZoomUntil = performance.now() + 1500;
+        this.lastZoomRatio = null;
+    }
     tickZoom() {
         if (!this.zoomOn || !this.view)
             return;
