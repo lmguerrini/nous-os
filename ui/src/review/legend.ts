@@ -8,12 +8,12 @@ import {
   SPATIAL_NOTICE,
   STANDING_TEXT,
 } from "./presentation.ts";
-import type { FamilyId, Colour } from "./view-contract.ts";
+import type { FamilyId, Colour, Reading } from "./view-contract.ts";
 function rgb(values: readonly number[]) {
   return `rgb(${values.map((n) => Math.round(n * 255)).join(",")})`;
 }
 /** Describe the active family encoding with the same colours the renderer receives. */
-export function renderLegend(host: HTMLElement, colour: Colour, debug: boolean): void {
+export function renderLegend(host: HTMLElement, colour: Colour, debug: boolean, reading: Reading = "attested"): void {
   host.replaceChildren();
   const add = (text: string, title = text) => {
     const item = document.createElement("p");
@@ -51,7 +51,8 @@ export function renderLegend(host: HTMLElement, colour: Colour, debug: boolean):
       glyph.style.background = familyColour;
       row.prepend(glyph);
     }
-    add(`${RELATION_TEXT.name}. ${RELATION_TEXT.meaning} ${RELATION_TEXT.why}`);
+    if (reading !== "exploratory") add(`${RELATION_TEXT.name}. ${RELATION_TEXT.meaning} ${RELATION_TEXT.why}`);
+    if (reading !== "attested") add("Connessioni esplorative · non canoniche. Tratteggiate; sono collegamenti interpretativi della revisione.");
     add("Dinamico · stessa famiglia e stato semantico; alone attenuato e anello sottile. Origine e attestazione nel pannello.");
     if (colour === "semantic")
       for (const [standing, label] of Object.entries(STANDING_TEXT)) {

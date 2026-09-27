@@ -13,6 +13,12 @@ import { placeDynamic } from "./live-placement.ts";
 import { relaxDepth } from "./depth.ts";
 import { placeLabels } from "./labels.ts";
 import { encodingOf, SEMANTIC_COLOUR, standingOf } from "./presentation.ts";
+import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
+import type { AppearanceOptions } from "../engine/presentation-options.ts";
+import { PALETTES, hexRgb } from "./palette.ts";
+import type { PaletteValues } from "./palette.ts";
+import { relationClass, relationVisible } from "./reading.ts";
+import type { ReviewCameraState } from "../render3f/camera.tsx";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
 
 const options = {
@@ -71,6 +77,8 @@ export const createProductView: CreateProductView = async (input) => {
     overflow: "hidden",
   });
   let axes: Axes = { ...input.axes };
+  let appearance: AppearanceOptions = input.appearance ?? DEFAULT_APPEARANCE;
+  let customPalette: PaletteValues = input.customPalette ?? PALETTES.bw;
   let visible = new Set(input.visibleNodeIds);
   let insets = input.insets;
   let handle: GraphRendererHandle | null = null;
@@ -89,7 +97,7 @@ export const createProductView: CreateProductView = async (input) => {
   const fullAnchor = (current: Axes) =>
     current.organization === "indra"
       ? indraAnchors
-      : current.projection === "3d-perspective" || current.projection === "3d-focus"
+      : current.projection === "3d"
         ? fullDepth
         : flatAnchors;
   const localRect = (): ViewportRect => ({
@@ -110,6 +118,7 @@ export const createProductView: CreateProductView = async (input) => {
   }
   function labelPass() {
     if (!handle || destroyed) return;
+    const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
     const bounds = localRect();
     const camera = handle.readCameraState();
     const fitted = fitRatio.get(cameraKey()) ?? camera.ratio;
@@ -150,14 +159,14 @@ export const createProductView: CreateProductView = async (input) => {
     }
     const context = document.createElement("canvas").getContext("2d");
     const measured = (text: string, maxWidth: number, maxLines: number) => {
-      const font = "12px Arial";
+      const font = `${appearance.labelSizePx}px Arial`;
       if (context) context.font = font;
       const words = text.split(/\s+/);
       let lines = 1;
       let width = 0;
       let current = 0;
       for (const word of words) {
-        const w = (context?.measureText(word).width ?? word.length * 7) + 5;
+        const w = (context?.measureText(word).width ?? word.length * appearance.labelSizePx * 0.58) + 5;
         if (current + w > maxWidth && current > 0 && lines < maxLines) {
           width = Math.max(width, current);
           current = 0;
@@ -166,9 +175,12 @@ export const createProductView: CreateProductView = async (input) => {
         current += w;
       }
       width = Math.min(maxWidth, Math.max(width, current));
-      return { width: Math.max(32, width + 12), height: lines * 16 + 8 };
+      return { width: Math.max(32, width + 12), height: lines * (appearance.labelSizePx + 4) + 8 };
     };
-    const next = placeLabels(candidates, bounds, measured);
+    const density = appearance.labelDensity / DEFAULT_APPEARANCE.labelDensity;
+    const limited = density >= 1 ? candidates : candidates.filter((candidate, index) =>
+      candidate.full || candidate.reason === "selected" || index < Math.round(candidates.length * density));
+    const next = placeLabels(limited, bounds, measured);
     const rect = container.getBoundingClientRect();
     placed = next.map((label) => ({
       ...label,
@@ -191,8 +203,8 @@ export const createProductView: CreateProductView = async (input) => {
           height: `${label.rect.height}px`,
           boxSizing: "border-box",
           padding: "4px 6px",
-          font: "12px/16px Arial",
-          color: "#f3f4f6",
+          font: `${appearance.labelSizePx}px/${appearance.labelSizePx + 4}px Arial`,
+          color: label.reason === "selected" ? palette.selection : label.reason === "hover" ? palette.hover : palette.text,
           background:
             label.reason === "hover" || label.reason === "selected" ? "rgba(10,10,10,.94)" : "rgba(10,10,10,.62)",
           borderRadius: "3px",
@@ -202,14 +214,14 @@ export const createProductView: CreateProductView = async (input) => {
         // Clamp to the lines the placement measured: a longer text ends with an ellipsis instead of showing part of
         // a line that did not fit (the full text is in the hover label and the panel). The inner element clips at its
         // own content edge; the outer box would clip only at its padding edge and let the next line peek through.
-        const lines = Math.max(1, Math.round((label.rect.height - 8) / 16));
+        const lines = Math.max(1, Math.round((label.rect.height - 8) / (appearance.labelSizePx + 4)));
         const text = document.createElement("span");
         text.textContent = label.text;
         text.style.setProperty("display", "-webkit-box");
         text.style.setProperty("-webkit-box-orient", "vertical");
         text.style.setProperty("-webkit-line-clamp", String(lines));
         text.style.setProperty("overflow", "hidden");
-        text.style.setProperty("max-height", `${lines * 16}px`);
+        text.style.setProperty("max-height", `${lines * (appearance.labelSizePx + 4)}px`);
         el.append(text);
         return el;
       }),
@@ -223,6 +235,20 @@ export const createProductView: CreateProductView = async (input) => {
       Object.assign(ring.style, { position: "absolute", left: `${point.x - 8}px`, top: `${point.y - 8}px`,
         width: "16px", height: "16px", border: "1px solid #b9b9b9", borderRadius: "50%", opacity: "0.68" });
       layer.append(ring);
+    }
+    if (axes.colour === "custom") {
+      const anchors = new Map(handle.readWorldAnchorWitnesses().map((item) => [item.id, item.position]));
+      for (const [id, colour] of [[selected, palette.selection], [hover?.kind === "node" ? hover.id : null, palette.hover]] as const) {
+        const position = id ? anchors.get(id) : null;
+        if (!position) continue;
+        const point = project(position);
+        if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+        const marker = document.createElement("span");
+        marker.dataset.reviewMarkerId = id!;
+        Object.assign(marker.style, { position: "absolute", left: `${point.x - 12}px`, top: `${point.y - 12}px`,
+          width: "24px", height: "24px", border: `2px solid ${colour}`, borderRadius: "50%" });
+        layer.append(marker);
+      }
     }
   }
   function followCamera() {
@@ -240,12 +266,26 @@ export const createProductView: CreateProductView = async (input) => {
     sigma = null;
     three = null;
     handle = null;
-    const subset = graph();
+    const all = graph();
+    const subset = { ...all, edges: all.edges.filter((edge) => relationVisible(
+      relationClass(input.data.edges.find((item) => item.id === edge.id)!, nodesById), axes.reading,
+    )) };
     const anchors = restrictAnchors(fullAnchor(axes), visible);
+    const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
     const presentation = {
       nativeLabels: false,
       windowGeometryFromAnchors: true,
       emphasisIds: emphasis,
+      appearance,
+      edges: new Map(subset.edges.map((edge) => {
+        const original = input.data.edges.find((item) => item.id === edge.id)!;
+        const exploratory = relationClass(original, nodesById) === "exploratory";
+        return [edge.id, { stroke: exploratory ? "dashed" as const : "solid" as const,
+          opacityPermille: axes.reading === "combined" && !exploratory ? 450 : 1000,
+          widthPermille: exploratory ? 1200 : 1000,
+          ...(axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
+        }] as const;
+      })),
       nodes: new Map(
         input.data.nodes
           .filter((node) => visible.has(node.id))
@@ -254,7 +294,10 @@ export const createProductView: CreateProductView = async (input) => {
             return [node.id, {
               ...encoding,
               ...(node.origin === "dynamic" ? { haloPermille: Math.round(encoding.haloPermille * 0.55) } : {}),
-              ...(axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] } : {}),
+              glyph: node.type === "domain" || node.type === "conversation" ? "double-ring" as const
+                : node.type === "evidence" || node.type === "record" ? "hollow" as const : "filled" as const,
+              ...(axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] }
+                : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(palette[input.text(node.id).family]) }),
             }] as const;
           }),
       ),
@@ -270,7 +313,7 @@ export const createProductView: CreateProductView = async (input) => {
     if (axes.projection === "2d") sigma = mount2d(container, subset, renderOptions, undefined, undefined, anchors);
     else {
       three = mount3d(container, subset, renderOptions, undefined, undefined, anchors);
-      three.setCameraKind(axes.projection === "3d-orthographic" ? "orthographic" : "perspective");
+      three.setCameraKind("perspective");
     }
     handle = (sigma ?? three)!;
     container.append(layer);
@@ -322,16 +365,27 @@ export const createProductView: CreateProductView = async (input) => {
   };
   // A drag that orbits or pans ends with a click on the same canvas; it must not select what happens
   // to lie under the pointer when the drag stops.
+  const overControl = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest(
+    "#fullscreen-bar, #appearance-panel, #gizmo, #toast, #focus-chip, #details",
+  ));
   let pressedAt: { x: number; y: number } | null = null;
   const onPress = (event: PointerEvent) => {
+    if (overControl(event.target)) return;
     pressedAt = { x: event.clientX, y: event.clientY };
   };
   const onClick = (event: MouseEvent) => {
+    if (overControl(event.target)) return;
     const moved = pressedAt === null ? 0 : Math.hypot(event.clientX - pressedAt.x, event.clientY - pressedAt.y);
     pressedAt = null;
     if (moved > CLICK_DRAG_TOLERANCE_PX) return;
     const r = container.getBoundingClientRect();
     input.events.onPick(pick({ x: event.clientX - r.left, y: event.clientY - r.top }));
+  };
+  const onDoubleClick = (event: MouseEvent) => {
+    if (overControl(event.target)) return;
+    const r = container.getBoundingClientRect();
+    const target = pick({ x: event.clientX - r.left, y: event.clientY - r.top });
+    if (target?.kind === "node") input.events.onDoublePick?.(target);
   };
   const onLeave = () => {
     hover = null;
@@ -341,6 +395,7 @@ export const createProductView: CreateProductView = async (input) => {
   container.addEventListener("pointermove", onMove);
   container.addEventListener("pointerdown", onPress);
   container.addEventListener("click", onClick);
+  container.addEventListener("dblclick", onDoubleClick);
   container.addEventListener("pointerleave", onLeave);
   mount();
   followCamera();
@@ -351,8 +406,13 @@ export const createProductView: CreateProductView = async (input) => {
     if (!current) return;
     const byId = new Map(current.readWorldAnchorWitnesses().map((p) => [p.id, p.position]));
     const points = ids.map((id) => byId.get(id)).filter((p): p is Coordinates => p !== undefined && finitePoint(p));
+    if (ids.length === visible.size && three)
+      points.push(...three.readRelationGeometryWitnesses().map((relation) => relation.controlPoint).filter(finitePoint));
     if (!points.length) return;
     const start = current.readCameraState();
+    const startZ = three?.readReviewCameraPose().target[2] ?? 0;
+    const finalZ = mean(points.map((point) => point.z));
+    if (three) current.restoreCameraState({ ...start, targetZ: finalZ } as ReviewCameraState);
     const solved = solveFraming(current, {
       points,
       rect: localRect(),
@@ -383,6 +443,7 @@ export const createProductView: CreateProductView = async (input) => {
               x: start.x + (final.x - start.x) * smooth,
               y: start.y + (final.y - start.y) * smooth,
               ratio: start.ratio + (final.ratio - start.ratio) * smooth,
+              ...(three ? { targetZ: startZ + (finalZ - startZ) * smooth } : {}),
             });
           } catch {
             resolve();
@@ -405,23 +466,16 @@ export const createProductView: CreateProductView = async (input) => {
       const old = axes;
       saveCamera();
       axes = { ...axes, ...next };
-      const oldDepth =
-        old.organization === "flat" && (old.projection === "3d-perspective" || old.projection === "3d-focus");
-      const newDepth =
-        axes.organization === "flat" && (axes.projection === "3d-perspective" || axes.projection === "3d-focus");
+      const oldDepth = old.organization === "flat" && old.projection === "3d";
+      const newDepth = axes.organization === "flat" && axes.projection === "3d";
       if (
-        old.projection !== "2d" &&
-        axes.projection !== "2d" &&
+        old.projection === axes.projection &&
         old.morphology === axes.morphology &&
         old.organization === axes.organization &&
         old.colour === axes.colour &&
+        old.reading === axes.reading &&
         oldDepth === newDepth
       ) {
-        three?.setCameraKind(axes.projection === "3d-orthographic" ? "orthographic" : "perspective");
-        const camera = cameras.get(cameraKey());
-        if (camera) three?.restoreCameraState(camera);
-        if (axes.projection === "3d-focus" && selected)
-          await frameIds([selected, ...[...(emphasis ?? [])].filter((id) => id !== selected)], true);
         labelPass();
       } else mount();
     },
@@ -434,6 +488,18 @@ export const createProductView: CreateProductView = async (input) => {
     setInsets(value) {
       insets = value;
       labelPass();
+    },
+    async setAppearance(value) { appearance = value; saveCamera(); mount(); },
+    async setPalette(value) { customPalette = value; saveCamera(); mount(); },
+    viewPreset(name) { three?.setReviewViewPreset(name); labelPass(); },
+    camera() { return three?.readReviewCameraPose() ?? null; },
+    readCamera() { return handle?.readCameraState() ?? null; },
+    restoreCamera(state) { if (handle && validCamera(state as VisualStateCamera)) {
+      handle.restoreCameraState(state as VisualStateCamera); labelPass();
+    } },
+    async resetCamera() {
+      cameras.delete(cameraKey());
+      mount();
     },
     select(id) {
       selected = id && (visible.has(id) || graph().edges.some((e) => e.id === id)) ? id : null;
@@ -486,7 +552,7 @@ export const createProductView: CreateProductView = async (input) => {
         anchorsSource:
           axes.organization === "indra"
             ? "engine-indra"
-            : axes.projection === "3d-perspective" || axes.projection === "3d-focus"
+            : axes.projection === "3d"
               ? "engine-flat+depth"
               : "engine-flat",
         palette: "monochrome",
@@ -499,6 +565,7 @@ export const createProductView: CreateProductView = async (input) => {
       container.removeEventListener("pointermove", onMove);
       container.removeEventListener("pointerdown", onPress);
       container.removeEventListener("click", onClick);
+      container.removeEventListener("dblclick", onDoubleClick);
       container.removeEventListener("pointerleave", onLeave);
       sigma?.destroy();
       three?.destroy();

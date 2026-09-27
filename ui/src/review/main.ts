@@ -7,17 +7,24 @@ import { FAMILY_OF, standingOf } from "./presentation.ts";
 import { FocusStack } from "./focus-stack.ts";
 import { renderPanel } from "./panel.ts";
 import { renderLegend } from "./legend.ts";
-import { fetchLenses, renderLensPopover } from "./lenses.ts";
-import type { LensRegister } from "./lenses.ts";
+import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
+import type { AppearanceOptions } from "../engine/presentation-options.ts";
+import { APPEARANCE_RANGES, normalizeAppearance, readLocal, writeLocal } from "./appearance.ts";
+import type { AppearancePresets } from "./appearance.ts";
+import { PALETTES, contrast } from "./palette.ts";
+import type { PaletteValues } from "./palette.ts";
+import { relationClass, relationVisible } from "./reading.ts";
+import { fitNotice, focusAvailable, resetAppearance } from "./viewer-state.ts";
+import type { ViewPreset } from "../render3f/camera.tsx";
 import { mount2d } from "./view2d.ts";
 import { mount3d } from "./view3d.ts";
 import { LiveGraph } from "./live-graph.ts";
 import type { LiveFragment } from "./live-graph.ts";
 
-const get = <T extends HTMLElement>(id: string): T => {
+const get = <T extends Element>(id: string): T => {
   const item = document.getElementById(id);
   if (!item) throw new Error(`#${id} assente`);
-  return item as T;
+  return item as unknown as T;
 };
 const viewport = get<HTMLElement>("viewport");
 const details = get<HTMLElement>("details");
@@ -30,7 +37,13 @@ let liveMessage = "";
 let view: ProductView | null = null;
 let axes: Axes = { ...DEFAULT_AXES };
 let debug = false;
-let lens: LensRegister | null = null;
+const storage = (() => { try { return localStorage; } catch { return null; } })();
+let appearance = normalizeAppearance(readLocal(storage, "d069.appearance", DEFAULT_APPEARANCE));
+let presets = readLocal<AppearancePresets>(storage, "d069.presets", {});
+let customPalette = readLocal<PaletteValues>(storage, "d069.customPalette", PALETTES.bw);
+let focusMode = false;
+let focusCamera: unknown = null;
+let panelCollapsed = Boolean(readLocal(storage, "d069.panelCollapsed", innerWidth <= 1100));
 let visibleIds = new Set<string>();
 let stack: FocusStack;
 let filter = { domain: "", family: "", standing: "", evidence: "" };
@@ -58,18 +71,37 @@ function filterGraph() {
       (!filter.standing || standingOf(node, data) === filter.standing),
   );
   visibleIds = new Set(nodes.map((node) => node.id));
-  return { nodes, edges: base.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)) };
+  const nodesById = new Map(data.nodes.map((node) => [node.id, node]));
+  return { nodes, edges: base.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)
+    && relationVisible(relationClass(edge, nodesById), axes.reading)) };
 }
 function updateButtons() {
-  for (const axis of ["projection", "morphology", "organization", "colour"] as const) {
+  const selectedNode = stack.current && data.nodes.some((node) => node.id === stack.current?.id) ? stack.current.id : null;
+  for (const axis of ["projection", "morphology", "organization", "reading"] as const) {
     document
       .querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`)
       .forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.value === axes[axis])));
   }
   get<HTMLButtonElement>("labels").setAttribute("aria-pressed", String(axes.labels));
-  get<HTMLButtonElement>("projection-focus").disabled = !stack.current;
+  get<HTMLSelectElement>("palette").value = axes.colour;
+  get<HTMLButtonElement>("projection-focus").disabled = !focusAvailable(axes.projection, selectedNode);
+  get<HTMLButtonElement>("projection-focus").title = selectedNode ? "Mostra il nodo e i vicini" : "Seleziona prima un nodo";
+  get<HTMLButtonElement>("projection-focus").setAttribute("aria-pressed", String(focusMode));
+  get<HTMLButtonElement>("fullscreen-focus").disabled = !focusAvailable(axes.projection, selectedNode);
+  get<HTMLButtonElement>("fullscreen-focus").title = selectedNode ? "Mostra il nodo e i vicini" : "Seleziona prima un nodo";
+  document.querySelectorAll<HTMLButtonElement>("[data-preset]").forEach((button) => {
+    button.disabled = axes.projection !== "3d";
+    button.title = button.disabled ? "Disponibile nella vista 3D" : button.title;
+  });
+  get<HTMLElement>("gizmo").hidden = axes.projection !== "3d";
+  syncAppearanceControls();
+  syncCustomColours();
   get<HTMLButtonElement>("back").disabled = stack.depth === 0;
+  get<HTMLButtonElement>("back").title = stack.depth === 0 ? "Nessuna selezione precedente" : "Torna alla selezione precedente";
   get<HTMLButtonElement>("expand").disabled = stack.depth === 0;
+  get<HTMLButtonElement>("expand").title = stack.depth === 0 ? "Seleziona prima un nodo" : "Espandi il vicinato";
+  get<HTMLSelectElement>("fullscreen-preset").disabled = axes.projection !== "3d";
+  get<HTMLSelectElement>("fullscreen-preset").title = axes.projection === "3d" ? "Vista 3D" : "Disponibile nella vista 3D";
   const current = stack.current;
   get<HTMLElement>("search-feedback").textContent = current?.capped ? "Vicinato limitato a 60 nodi." : "";
 }
@@ -79,6 +111,7 @@ function updatePanel() {
     data,
     id: stack.current?.id ?? null,
     debug,
+    reading: axes.reading,
     onSelect: (id) => {
       void select(id);
     },
@@ -162,7 +195,7 @@ function updatePanel() {
   const legend = document.createElement("div");
   legend.className = "legend";
   legendSection.append(legend);
-  renderLegend(legend, axes.colour, debug);
+  renderLegend(legend, axes.colour, debug, axes.reading);
   details.append(legendSection);
 }
 let liveQuery = "";
@@ -233,27 +266,33 @@ function liveClear(): Promise<void> { return enqueue(async () => {
 }); }
 function updateSummary() {
   const graph = filterGraph();
+  const byId = new Map(data.nodes.map((node) => [node.id, node]));
+  get<HTMLElement>("focus-chip").hidden = axes.reading === "attested" || !graph.edges.some((edge) => relationClass(edge, byId) === "exploratory");
   get<HTMLElement>("counter").textContent =
     `${graph.nodes.length}/${data.nodes.length} nodi · ${graph.edges.length}/${data.edges.length} relazioni`;
   updateButtons();
   updatePanel();
+}
+function syncFocusPresentation(): void {
+  if (axes.projection === "3d" && !focusMode) view?.setEmphasis(null);
+  else if (stack?.current) view?.setEmphasis(new Set(stack.current.ids));
 }
 function debugView(graph: ReturnType<typeof filterGraph>): ProductView {
   const legacy =
     axes.projection === "2d"
       ? mount2d(viewport, data, graph.nodes, graph.edges, (id) => {
           if (id) void select(id);
-          else void reset();
+          else void clearSelection();
         })
       : mount3d(viewport, data, graph.nodes, graph.edges, (id) => {
           if (id) void select(id);
-          else void reset();
+          else void clearSelection();
         });
   const witness = (): ViewWitness => {
     const rect = viewport.getBoundingClientRect();
     return {
       axes,
-      cameraKind: axes.projection === "2d" || axes.projection === "3d-orthographic" ? "orthographic" : "perspective",
+      cameraKind: axes.projection === "2d" ? "orthographic" : "perspective",
       visibleRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
       nodeViewport: {},
       labels: [],
@@ -269,17 +308,28 @@ function debugView(graph: ReturnType<typeof filterGraph>): ProductView {
     setAxes: async () => {},
     setVisible: async () => {},
     setInsets: () => {},
+    setAppearance: async () => {},
+    setPalette: async () => {},
+    viewPreset: () => {},
+    camera: () => null,
+    readCamera: () => null,
+    restoreCamera: () => {},
+    resetCamera: async () => {},
     select: (id) => legacy.highlight(id),
     setEmphasis: () => {},
     frame: async (ids) => legacy.focus(ids[0] ?? ""),
     fit: async () => legacy.focus(""),
     witness,
-    destroy: () => legacy.destroy(),
+    destroy: () => {
+      const overlays = [...viewport.children].filter((child) => child.id &&
+        ["fullscreen-bar", "gizmo", "focus-chip", "toast", "appearance-panel", "details"].includes(child.id));
+      legacy.destroy();
+      viewport.append(...overlays);
+    },
   };
 }
 async function mount() {
   view?.destroy();
-  viewport.replaceChildren();
   const graph = filterGraph();
   if (!graph.nodes.length) {
     view = null;
@@ -294,6 +344,8 @@ async function mount() {
       data,
       visibleNodeIds: visibleIds,
       axes,
+      appearance,
+      customPalette,
       insets: { top: 0, right: 0, bottom: 0, left: 0 },
       text: (id) => {
         const node = data.nodes.find((item) => item.id === id);
@@ -305,6 +357,13 @@ async function mount() {
           if (target) void select(target.id);
           else void reset();
         },
+        onDoublePick: (target) => {
+          if (target?.kind === "node") void enqueue(async () => {
+            await stack.select(target.id);
+            await view?.frame([target.id]);
+            updateSummary();
+          });
+        },
         onHover: (target) => {
           const node = target && data.nodes.find((item) => item.id === target.id);
           viewport.title = node ? humanLabel(node, data) : "";
@@ -313,7 +372,9 @@ async function mount() {
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
     });
   await stack.restore();
+  syncFocusPresentation();
   updateSummary();
+  updateInsets();
   status.textContent = debug ? "Grafo pronto · vista tecnica" : "Grafo pronto";
 }
 function select(id: string): Promise<void> {
@@ -328,6 +389,7 @@ function select(id: string): Promise<void> {
       await mount();
     }
     await stack.select(id);
+    syncFocusPresentation();
     updateSummary();
   });
 }
@@ -335,6 +397,7 @@ function expand(): Promise<void> {
   return enqueue(async () => {
     if (!stack) return;
     await stack.expand();
+    syncFocusPresentation();
     updateSummary();
   });
 }
@@ -342,34 +405,85 @@ function back(): Promise<void> {
   return enqueue(async () => {
     if (!stack) return;
     await stack.back();
+    syncFocusPresentation();
     updateSummary();
   });
 }
+function announce(message: string): void {
+  const toast = get<HTMLElement>("toast");
+  toast.textContent = message;
+  toast.hidden = false;
+  window.setTimeout(() => { if (toast.textContent === message) toast.hidden = true; }, 2400);
+}
+function clearSelection(): Promise<void> { return enqueue(async () => {
+  if (!stack) return;
+  focusMode = false;
+  focusCamera = null;
+  await stack.reset();
+  updateSummary();
+}); }
 function reset(): Promise<void> {
   return enqueue(async () => {
     if (!stack) return;
+    focusMode = false;
+    focusCamera = null;
     await stack.reset();
+    appearance = resetAppearance();
+    writeLocal(storage, "d069.appearance", appearance);
+    syncAppearanceControls();
+    await view?.setAppearance(appearance);
+    await view?.resetCamera();
     updateSummary();
+    announce("Reimpostati camera, focus e aspetto");
   });
 }
 function fit(): Promise<void> {
   return enqueue(async () => {
     await view?.fit();
+    announce(fitNotice(visibleIds.size));
   });
 }
 function setAxes(partial: Partial<Axes>): Promise<void> {
   return enqueue(async () => {
-    if (partial.projection === "3d-focus" && !stack?.current) return;
+    if (partial.projection && partial.projection !== "3d") { focusMode = false; focusCamera = null; }
     axes = { ...axes, ...partial };
+    if (partial.colour) writeLocal(storage, "d069.palette", partial.colour);
     if (!data) return;
+    if (partial.reading && stack.current) {
+      const selectedEdge = data.edges.find((edge) => edge.id === stack.current?.id);
+      if (selectedEdge && !relationVisible(relationClass(selectedEdge, new Map(data.nodes.map((node) => [node.id, node]))), axes.reading))
+        await stack.reset();
+    }
     if (debug) await mount();
     else {
       await view?.setAxes(partial);
       await stack.restore();
+      syncFocusPresentation();
       updateSummary();
     }
   });
 }
+function toggleFocus(): Promise<void> { return enqueue(async () => {
+  if (!stack?.current || axes.projection !== "3d" || !data.nodes.some((node) => node.id === stack.current?.id)) return;
+  if (focusMode) {
+    focusMode = false;
+    if (focusCamera) view?.restoreCamera(focusCamera);
+    focusCamera = null;
+    syncFocusPresentation();
+  } else {
+    focusCamera = view?.readCamera();
+    focusMode = true;
+    syncFocusPresentation();
+    await view?.frame(stack.current.ids);
+  }
+  updateButtons();
+}); }
+function viewPreset(name: ViewPreset | "reset"): Promise<void> { return enqueue(async () => {
+  if (axes.projection !== "3d") return;
+  if (name === "reset") await view?.resetCamera();
+  else view?.viewPreset(name);
+  announce(name === "reset" ? "Vista reimpostata" : `Vista ${name}`);
+}); }
 function setDebug(on: boolean): Promise<void> {
   return enqueue(async () => {
     if (debug === on) return;
@@ -378,35 +492,86 @@ function setDebug(on: boolean): Promise<void> {
     if (data) await mount();
   });
 }
-/** Keep menu state in sync with its trigger so keyboard and pointer dismissal agree. */
-function setPopover(button: HTMLButtonElement, open: boolean): void {
-  const controls = button.getAttribute("aria-controls");
-  if (!controls) throw new Error("Popover trigger has no aria-controls");
-  get<HTMLElement>(controls).hidden = !open;
-  button.setAttribute("aria-expanded", String(open));
+function updateInsets(): void {
+  const appearanceInset = get<HTMLElement>("appearance-panel").hidden ? 0 : Math.min(280, viewport.clientWidth / 3);
+  const drawerInset = details.classList.contains("drawer") ? Math.min(360, viewport.clientWidth / 2) : 0;
+  view?.setInsets({ top: document.fullscreenElement ? get<HTMLElement>("fullscreen-bar").offsetHeight + 16 : 0,
+    right: Math.max(appearanceInset, drawerInset), bottom: 0, left: 0 });
 }
-
-function popoverButtons(): HTMLButtonElement[] {
-  return [
-    ...document.querySelectorAll<HTMLButtonElement>(".axis-help > button[aria-controls]"),
-    get<HTMLButtonElement>("lens-button"),
-    get<HTMLButtonElement>("advanced-button"),
-  ];
+function syncPanel(): void {
+  get<HTMLElement>("shell").classList.toggle("panel-collapsed", panelCollapsed);
+  details.classList.toggle("drawer", !panelCollapsed && (document.fullscreenElement === viewport || innerWidth <= 1100));
+  get<HTMLButtonElement>("panel-toggle").setAttribute("aria-pressed", String(!panelCollapsed));
+  writeLocal(storage, "d069.panelCollapsed", panelCollapsed);
+  requestAnimationFrame(updateInsets);
 }
-
-function closePopovers(): void {
-  for (const button of popoverButtons()) setPopover(button, false);
+function togglePanel(): void { panelCollapsed = !panelCollapsed; syncPanel(); }
+function fullscreen(): boolean { return document.fullscreenElement === viewport; }
+async function toggleFullscreen(): Promise<void> {
+  if (fullscreen()) await document.exitFullscreen();
+  else await viewport.requestFullscreen();
 }
-
-function togglePopover(button: HTMLButtonElement): void {
-  const open = button.getAttribute("aria-expanded") !== "true";
-  closePopovers();
-  setPopover(button, open);
+document.addEventListener("fullscreenchange", () => {
+  if (fullscreen()) viewport.append(details);
+  else get<HTMLElement>("shell").append(details);
+  syncPanel();
+  updateInsets();
+});
+function scheduleAppearance(): void {
+  writeLocal(storage, "d069.appearance", appearance);
+  if (appearanceFrame) return;
+  appearanceFrame = requestAnimationFrame(() => { appearanceFrame = 0; void enqueue(async () => { await view?.setAppearance(appearance); updateInsets(); }); });
 }
-
-function openLens(open: boolean): void {
-  closePopovers();
-  setPopover(get<HTMLButtonElement>("lens-button"), open);
+let appearanceFrame = 0;
+const sliderNames: Readonly<Record<keyof AppearanceOptions, string>> = {
+  nodeScale: "Dimensione nodi", edgeWidth: "Spessore archi", labelSizePx: "Dimensione etichette",
+  labelDensity: "Densità etichette", glow: "Bagliore", edgeOpacity: "Opacità archi", curvature: "Curvatura",
+};
+function syncAppearanceControls(): void {
+  for (const key of Object.keys(APPEARANCE_RANGES) as (keyof AppearanceOptions)[]) {
+    const input = get<HTMLInputElement>(`appearance-${key}`);
+    input.value = String(appearance[key]);
+    get<HTMLElement>(`value-${key}`).textContent = String(appearance[key]);
+    input.disabled = key === "curvature" && axes.morphology === "stellar";
+    input.title = input.disabled ? "Le relazioni Stellar sono sempre diritte" : sliderNames[key];
+  }
+}
+for (const key of Object.keys(APPEARANCE_RANGES) as (keyof AppearanceOptions)[]) {
+  const [min, max, step] = APPEARANCE_RANGES[key];
+  const label = document.createElement("label");
+  label.textContent = sliderNames[key];
+  const value = document.createElement("output"); value.id = `value-${key}`;
+  const input = document.createElement("input"); input.id = `appearance-${key}`; input.type = "range";
+  input.min = String(min); input.max = String(max); input.step = String(step);
+  input.addEventListener("input", () => { appearance = { ...appearance, [key]: Number(input.value) }; syncAppearanceControls(); scheduleAppearance(); });
+  label.append(value, input); get<HTMLElement>("appearance-sliders").append(label);
+}
+function syncPresetList(): void {
+  const list = get<HTMLSelectElement>("preset-list");
+  const selected = list.value;
+  list.replaceChildren(new Option("Preset salvati", ""), ...Object.keys(presets).sort().map((name) => new Option(name, name)));
+  list.value = selected;
+}
+function syncCustomColours(): void {
+  const host = get<HTMLElement>("custom-colours");
+  host.hidden = axes.colour !== "custom";
+  if (host.childElementCount) return;
+  const names: Readonly<Record<keyof PaletteValues, string>> = { aggregate: "Aggregati", concept: "Concetti", source: "Fonti",
+    attested: "Relazione attestata", exploratory: "Relazione esplorativa", selection: "Selezione", hover: "Passaggio", text: "Testo" };
+  for (const key of Object.keys(names) as (keyof PaletteValues)[]) {
+    const label = document.createElement("label"); label.textContent = names[key];
+    const input = document.createElement("input"); input.type = "color"; input.value = customPalette[key]; input.id = `colour-${key}`;
+    input.addEventListener("input", () => { customPalette = { ...customPalette, [key]: input.value };
+      writeLocal(storage, "d069.customPalette", customPalette); syncContrast();
+      void setAxes({ colour: "custom" }).then(() => view?.setPalette(customPalette)); });
+    label.append(input); host.append(label);
+  }
+  syncContrast();
+}
+function syncContrast(): void {
+  const failed = (Object.keys(customPalette) as (keyof PaletteValues)[]).filter((key) =>
+    contrast(customPalette[key], "#050505") < (key === "text" ? 4.5 : 3));
+  get<HTMLElement>("contrast-warning").textContent = failed.length ? `Contrasto insufficiente: ${failed.join(", ")}` : "Contrasto sufficiente";
 }
 function syncFilters() {
   get<HTMLSelectElement>("filter-domain").value = filter.domain;
@@ -434,18 +599,62 @@ function readFilters(): Promise<void> {
       )
         await stack.reset();
       else await stack.restore();
+      syncFocusPresentation();
       updateSummary();
       status.textContent = graph.nodes.length ? "Grafo pronto" : "Nessun nodo con questi filtri";
     }
   });
 }
-for (const axis of ["projection", "morphology", "organization", "colour"] as const)
+for (const axis of ["projection", "morphology", "organization", "reading"] as const)
   document.querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`).forEach((button) => {
-    if (axis === "projection" && button.dataset.value === "3d-focus") button.id = "projection-focus";
     button.addEventListener("click", () => {
       void setAxes({ [axis]: button.dataset.value } as Partial<Axes>);
     });
   });
+document.querySelectorAll<HTMLButtonElement>("[data-preset]").forEach((button) => button.addEventListener("click", () => {
+  void viewPreset(button.dataset.preset as ViewPreset | "reset");
+}));
+get<HTMLButtonElement>("projection-focus").addEventListener("click", () => { void toggleFocus(); });
+get<HTMLButtonElement>("fullscreen-focus").addEventListener("click", () => { void toggleFocus(); });
+get<HTMLSelectElement>("palette").addEventListener("change", (event) => {
+  void setAxes({ colour: (event.target as HTMLSelectElement).value as Axes["colour"] });
+});
+get<HTMLButtonElement>("appearance-toggle").addEventListener("click", () => {
+  const panel = get<HTMLElement>("appearance-panel"); panel.hidden = !panel.hidden; updateInsets();
+});
+get<HTMLButtonElement>("appearance-default").addEventListener("click", () => {
+  appearance = { ...DEFAULT_APPEARANCE }; syncAppearanceControls(); scheduleAppearance();
+});
+get<HTMLButtonElement>("preset-save").addEventListener("click", () => {
+  const name = get<HTMLInputElement>("preset-name").value.trim().slice(0, 40);
+  if (!name) return;
+  presets = { ...presets, [name]: { ...appearance } }; writeLocal(storage, "d069.presets", presets); syncPresetList();
+  get<HTMLSelectElement>("preset-list").value = name; announce(`Preset salvato · ${name}`);
+});
+get<HTMLButtonElement>("preset-apply").addEventListener("click", () => {
+  const value = presets[get<HTMLSelectElement>("preset-list").value]; if (!value) return;
+  appearance = normalizeAppearance(value); syncAppearanceControls(); scheduleAppearance(); announce("Preset applicato");
+});
+get<HTMLButtonElement>("preset-delete").addEventListener("click", () => {
+  const name = get<HTMLSelectElement>("preset-list").value; if (!name) return;
+  const next = { ...presets }; delete next[name]; presets = next;
+  writeLocal(storage, "d069.presets", presets); syncPresetList(); announce("Preset eliminato");
+});
+get<HTMLButtonElement>("panel-toggle").addEventListener("click", togglePanel);
+get<HTMLButtonElement>("fullscreen-panel").addEventListener("click", togglePanel);
+get<HTMLButtonElement>("fullscreen").addEventListener("click", () => { void toggleFullscreen(); });
+get<HTMLButtonElement>("fullscreen-exit").addEventListener("click", () => { void document.exitFullscreen(); });
+document.querySelectorAll<HTMLButtonElement>("[data-full-projection]").forEach((button) => button.addEventListener("click", () => {
+  void setAxes({ projection: button.dataset.fullProjection as Axes["projection"] });
+}));
+get<HTMLSelectElement>("fullscreen-preset").addEventListener("change", (event) => {
+  const name = (event.target as HTMLSelectElement).value; if (name) void viewPreset(name as ViewPreset);
+});
+get<HTMLButtonElement>("fullscreen-fit").addEventListener("click", () => { void fit(); });
+get<HTMLButtonElement>("fullscreen-reset").addEventListener("click", () => { void reset(); });
+get<HTMLElement>("gizmo").querySelectorAll<HTMLButtonElement>("button[data-axis-end]").forEach((button) => {
+  button.addEventListener("click", () => { void viewPreset(({ x: "destra", y: "sinistra", z: "alto" } as const)[button.dataset.axisEnd as "x" | "y" | "z"]); });
+});
 get<HTMLButtonElement>("labels").addEventListener("click", () => {
   void setAxes({ labels: !axes.labels });
 });
@@ -468,24 +677,58 @@ for (const id of ["filter-domain", "filter-family", "filter-standing", "filter-c
 get<HTMLInputElement>("debug").addEventListener("change", (event) => {
   void setDebug((event.target as HTMLInputElement).checked);
 });
-for (const button of popoverButtons()) {
-  button.addEventListener("click", () => togglePopover(button));
-}
+get<HTMLButtonElement>("advanced-button").addEventListener("click", () => {
+  const popover = get<HTMLElement>("advanced-controls"); popover.hidden = !popover.hidden;
+  get<HTMLButtonElement>("advanced-button").setAttribute("aria-expanded", String(!popover.hidden));
+});
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closePopovers();
+  if (event.key === "Escape") get<HTMLElement>("advanced-controls").hidden = true;
+  if (event.key.toLowerCase() === "p" && !(event.target instanceof HTMLInputElement)) togglePanel();
 });
 document.addEventListener("pointerdown", (event) => {
-  if (!(event.target instanceof Element) || !event.target.closest(".axis-help, .lens-wrap, .advanced-wrap")) {
-    closePopovers();
-  }
+  if (!(event.target instanceof Element) || !event.target.closest("#advanced-button, #advanced-controls"))
+    get<HTMLElement>("advanced-controls").hidden = true;
 });
-get<HTMLFormElement>("search-form").addEventListener("submit", (event) => {
-  event.preventDefault();
+function search(query: string): void {
   if (!data) return;
-  const found = searchNode(data, get<HTMLInputElement>("search").value);
+  const found = searchNode(data, query);
   if (found) void select(found.id);
   else get<HTMLElement>("search-feedback").textContent = "Nessun risultato";
+}
+get<HTMLFormElement>("search-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  search(get<HTMLInputElement>("search").value);
 });
+get<HTMLFormElement>("fullscreen-search-form").addEventListener("submit", (event) => {
+  event.preventDefault(); search(get<HTMLInputElement>("fullscreen-search").value);
+});
+syncAppearanceControls();
+syncPresetList();
+syncPanel();
+axes = { ...axes, colour: readLocal(storage, "d069.palette", "bw") as Axes["colour"] };
+function updateGizmo(): void {
+  const pose = view?.camera();
+  if (pose && axes.projection === "3d") {
+    const delta = pose.target.map((value, i) => value - pose.position[i]!);
+    const length = Math.hypot(...delta) || 1;
+    const forward = delta.map((value) => value / length);
+    const cross = (a: number[], b: number[]) => [a[1]! * b[2]! - a[2]! * b[1]!, a[2]! * b[0]! - a[0]! * b[2]!, a[0]! * b[1]! - a[1]! * b[0]!];
+    const right = cross(forward, pose.up);
+    const rightLength = Math.hypot(...right) || 1;
+    const normalizedRight = right.map((value) => value / rightLength);
+    const up = cross(normalizedRight, forward);
+    for (const [name, axis] of [["x", [1, 0, 0]], ["y", [0, 1, 0]], ["z", [0, 0, 1]]] as const) {
+      const dot = (a: readonly number[], b: readonly number[]) => a.reduce((sum, value, i) => sum + value * b[i]!, 0);
+      const x = 46 + dot(axis, normalizedRight) * 27, y = 46 - dot(axis, up) * 27;
+      const line = get<SVGLineElement>(`axis-${name}`);
+      line.setAttribute("x1", "46"); line.setAttribute("y1", "46"); line.setAttribute("x2", String(x)); line.setAttribute("y2", String(y));
+      const button = get<HTMLElement>("gizmo").querySelector<HTMLButtonElement>(`button[data-axis-end="${name}"]`)!;
+      button.style.left = `${x - 11}px`; button.style.top = `${y - 11}px`;
+    }
+  }
+  requestAnimationFrame(updateGizmo);
+}
+requestAnimationFrame(updateGizmo);
 const api = {
   ready: Promise.resolve(),
   errors,
@@ -504,16 +747,21 @@ const api = {
   reset,
   fit,
   setDebug,
-  openLens,
+  get projection() { return axes.projection; },
+  get focusMode() { return focusMode; },
+  camera: () => view?.camera() ?? null,
+  viewPreset,
+  fullscreen,
+  appearance: () => ({ ...appearance }),
+  palette: () => ({ name: axes.colour, values: axes.colour === "custom" ? customPalette : PALETTES[axes.colour] }),
+  reading: () => axes.reading,
   witness: () => ({
     ...(view?.witness() ?? {}),
     panelRect: details.getBoundingClientRect().toJSON(),
     page: api.state(),
-    lens: {
-      supplied: !!lens,
-      reading: lens?.reading_mode.label ?? null,
-      open: !get<HTMLElement>("lens-popover").hidden,
-    },
+    focusMode,
+    appearance,
+    reading: axes.reading,
   }),
   live: {
     search: liveSearch,
@@ -550,11 +798,6 @@ async function load() {
     option.textContent = node.label;
     get<HTMLSelectElement>("filter-domain").append(option);
   }
-  lens = await fetchLenses();
-  get<HTMLButtonElement>("lens-button").textContent = lens
-    ? `${lens.reading_mode.label} · predefinita`
-    : "Registro non fornito";
-  renderLensPopover(get<HTMLElement>("lens-popover"), lens);
   await mount();
 }
 api.ready = load().catch((error: unknown) => {

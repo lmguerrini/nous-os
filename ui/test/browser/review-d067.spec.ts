@@ -24,7 +24,7 @@ type API = {
   reset(): Promise<void>;
   fit(): Promise<void>;
   setDebug(on: boolean): Promise<void>;
-  openLens(on: boolean): void;
+  focusMode: boolean;
   live: {
     search(q: string, limit?: number): Promise<{ nodes: { id: string }[] }[]>;
     add(id: string): Promise<void>;
@@ -189,7 +189,7 @@ test("D-067 product review matrix", async ({ page }) => {
     return metric;
   }
   const one = await capture("01-bw-stellar-flat-2d");
-  await setAxes({ organization: "indra", projection: "3d-perspective" });
+  await setAxes({ organization: "indra", projection: "3d" });
   const two = await capture("02-bw-stellar-indra-3d");
   await setAxes({ organization: "flat", morphology: "neural" });
   const three = await capture("03-bw-neural-flat-3d");
@@ -202,16 +202,15 @@ test("D-067 product review matrix", async ({ page }) => {
   await page.mouse.click(point!.x, point!.y);
   await expect.poll(() => page.evaluate(() => api().state().selected)).toBe(card!.id);
   await capture("05-focus-2d", true);
-  await setAxes({ projection: "3d-focus" });
+  await setAxes({ projection: "3d" });
+  await page.getByRole("button", { name: "Focus", exact: true }).first().click();
   await capture("06-focus-3d", true);
   await setAxes({ colour: "semantic" });
   const seven = await capture("07-semantic-colour", true);
   await page.evaluate(() => api().setDebug(true));
   await capture("08-provenance-debug");
   await page.evaluate(() => api().setDebug(false));
-  await page.evaluate(() => api().openLens(true));
-  await capture("09-lens-popover");
-  await page.evaluate(() => api().openLens(false));
+  await capture("09-reading-controls");
   const hover = await page.evaluate((id) => api().witness().nodeViewport[id], card!.id);
   if (hover) await page.mouse.move(hover.x, hover.y);
   await capture("10-hover-label");
@@ -270,7 +269,7 @@ test("D-068 opt-in live search and reversible expansion", async ({ page }) => {
   await page.evaluate((value) => api().live.expand(value), id);
   const witnesses: Record<string, unknown> = {};
   for (const organization of ["flat", "indra"])
-    for (const projection of ["2d", "3d-perspective"]) {
+    for (const projection of ["2d", "3d"]) {
       await page.evaluate((axes) => api().setAxes(axes), { organization, projection });
       const name = `${organization}-${projection}`;
       witnesses[name] = await page.evaluate(() => ({ view: api().witness(), live: api().live.state() }));

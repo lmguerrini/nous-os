@@ -100,6 +100,8 @@ export type Render3fOptions = {
 
 /** This exposes renderer-owned framing witnesses without widening the shared renderer handle. */
 export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountingRendererHandle & {
+  readReviewCameraPose(): { position: number[]; target: number[]; up: number[]; fov: number };
+  setReviewViewPreset(name: "fronte" | "retro" | "sinistra" | "destra" | "alto" | "basso"): void;
   /** This copies the picker-held resolved relation geometry and does not rebuild scene geometry. */
   readRelationGeometryWitnesses(): readonly RelationGeometryWitness[];
   readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[];
@@ -387,6 +389,8 @@ export function mount(
     readCameraState(): VisualStateCamera {
       return rig.readCameraState();
     },
+    readReviewCameraPose() { return rig.readPose(); },
+    setReviewViewPreset(name) { rig.viewPreset(name); syncCameraState(); },
     restoreCameraState(state: VisualStateCamera): void {
       currentState = createVisualState(visualGraph, { ...currentState, camera: state });
       rig.restoreCameraState(state);

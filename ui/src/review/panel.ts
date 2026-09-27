@@ -3,6 +3,8 @@ import type { ReviewExport, ReviewNode } from "./model.ts";
 import { EVIDENCE_HELP, EVIDENCE_STATE, evidenceDescription } from "./evidence-state.ts";
 import { STANDING_TEXT, standingOf } from "./presentation.ts";
 import { navigationFor } from "./navigation.ts";
+import { relationClass, relationVisible } from "./reading.ts";
+import type { Reading } from "./view-contract.ts";
 /** The inventory's own origin codes, in words; they are unrelated to the evidence-state letters. */
 const INVENTORY_CATEGORY_TEXT: Readonly<Record<string, string>> = {
   A: "progetto di origine A (nome del progetto dedotto)",
@@ -39,6 +41,7 @@ export type PanelInput = {
   data: ReviewExport;
   id: string | null;
   debug: boolean;
+  reading?: Reading;
   onSelect: (id: string) => void;
 };
 const RELATION_NAMES: Record<string, string> = {
@@ -124,7 +127,7 @@ function content(parent: HTMLElement, node: ReviewNode, data: ReviewExport) {
   } else detail(parent, "Schede collegate", node.link_count);
 }
 /** Keep human-facing content first and reserve raw provenance for the technical section. */
-export function renderPanel({ host, data, id, debug, onSelect }: PanelInput): void {
+export function renderPanel({ host, data, id, debug, reading = "attested", onSelect }: PanelInput): void {
   host.replaceChildren();
   const nav = navigationFor(data, id);
   const breadcrumb = add(host, "nav", "");
@@ -173,12 +176,21 @@ export function renderPanel({ host, data, id, debug, onSelect }: PanelInput): vo
         detail(dl, key, node[key]);
     }
   } else if (edge) {
-    add(host, "p", `Relazione · ${RELATION_NAMES[edge.type] ?? edge.type}${edge.origin === "dynamic" ? " · dinamica" : ""}`)
+    const kind = relationClass(edge, new Map(data.nodes.map((item) => [item.id, item])));
+    add(host, "p", `Relazione · ${RELATION_NAMES[edge.type] ?? edge.type} · ${kind === "exploratory" ? "esplorativa · non canonica" : "attestata"}${edge.origin === "dynamic" ? " · dinamica" : ""}`)
       .className = "subtitle";
     const dl = add(host, "dl", "");
     detail(dl, "Da", displayLabel(data, edge.source));
     detail(dl, "A", displayLabel(data, edge.target));
     detail(dl, "Attestazione", attestationMeaning[edge.attested_by] ?? edge.attested_by);
+    if (kind === "exploratory") {
+      const connection = data.nodes.find((item) => item.type === "connection" && (item.id === edge.source || item.id === edge.target));
+      detail(dl, "Spiegazione", edge.explanation ?? connection?.statement ?? connection?.why_it_matters ?? "Collegamento interpretativo della revisione");
+      detail(dl, "Confidenza", edge.confidence ?? connection?.confidence ?? "Non indicata");
+      detail(dl, "Fonte lato A", displayLabel(data, edge.source));
+      detail(dl, "Fonte lato B", displayLabel(data, edge.target));
+      detail(dl, "Contro evidenza", edge.counter_evidence ?? connection?.contradictions_or_evolution);
+    }
     if (edge.origin === "dynamic") detail(dl, "Origine", edge.origin_query ? `Ricerca: ${edge.origin_query}` : "Espansione");
     for (const endpoint of [edge.source, edge.target]) {
       const button = add(host, "button", displayLabel(data, endpoint)) as HTMLButtonElement;
@@ -188,9 +200,10 @@ export function renderPanel({ host, data, id, debug, onSelect }: PanelInput): vo
   }
   if (node) {
     const groups = new Map<string, typeof data.edges>();
-    for (const relation of related(data, id))
+    const nodesById = new Map(data.nodes.map((item) => [item.id, item]));
+    for (const relation of related(data, id).filter((item) => relationVisible(relationClass(item, nodesById), reading)))
       groups.set(relation.type, [...(groups.get(relation.type) ?? []), relation]);
-    add(host, "h3", "Relazioni attestate");
+    add(host, "h3", "Relazioni registrate");
     for (const [type, edges] of groups) {
       add(host, "h4", RELATION_NAMES[type] ?? type);
       for (const relation of edges) {
@@ -201,7 +214,7 @@ export function renderPanel({ host, data, id, debug, onSelect }: PanelInput): vo
           `${relation.source === id ? "→" : "←"} ${displayLabel(data, other)}`,
         ) as HTMLButtonElement;
         button.className = "relation";
-        button.title = attestationMeaning[relation.attested_by] ?? relation.attested_by;
+        button.title = `${relationClass(relation, new Map(data.nodes.map((item) => [item.id, item])))} · ${attestationMeaning[relation.attested_by] ?? relation.attested_by}`;
         button.addEventListener("click", () => onSelect(relation.id));
         const neighbour = add(host, "button", "Apri vicino") as HTMLButtonElement;
         neighbour.className = "minor";

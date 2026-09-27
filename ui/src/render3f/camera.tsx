@@ -35,12 +35,54 @@ export type CameraProjectionState = {
   readonly referenceViewDepth: number;
 };
 
+export type ReviewCameraState = VisualStateCamera & {
+  readonly orbit?: readonly [number, number, number, number];
+  readonly targetZ?: number;
+};
+
+/** Compose screen-space trackball motion in world space, including travel over either pole. */
+export function arcballDrag(orientation: THREE.Quaternion, deltaX: number, deltaY: number, height: number): THREE.Quaternion {
+  const right = new THREE.Vector3(0, 1, 0).applyQuaternion(orientation);
+  const up = new THREE.Vector3(-1, 0, 1).normalize().applyQuaternion(orientation);
+  const yaw = new THREE.Quaternion().setFromAxisAngle(up, -deltaX * Math.PI / height);
+  const pitch = new THREE.Quaternion().setFromAxisAngle(right, -deltaY * Math.PI / height);
+  return pitch.multiply(yaw).multiply(orientation).normalize();
+}
+
+export type ViewPreset = "fronte" | "retro" | "sinistra" | "destra" | "alto" | "basso";
+export const VIEW_DIRECTIONS: Readonly<Record<ViewPreset, readonly [number, number, number]>> = {
+  fronte: [1, 0, 0], retro: [-1, 0, 0], sinistra: [0, -1, 0],
+  destra: [0, 1, 0], alto: [0, 0, 1], basso: [0, 0, -1],
+};
+
+export function presetOrientation(name: ViewPreset): THREE.Quaternion {
+  const direction = new THREE.Vector3(...VIEW_DIRECTIONS[name]).normalize();
+  const up = Math.abs(direction.z) > 0.99 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1);
+  const matrix = new THREE.Matrix4().lookAt(direction, new THREE.Vector3(), up);
+  const desired = new THREE.Quaternion().setFromRotationMatrix(matrix);
+  const initial = new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().lookAt(new THREE.Vector3(1, 0, 1), new THREE.Vector3(), new THREE.Vector3(0, 0, 1)),
+  );
+  return desired.multiply(initial.invert()).normalize();
+}
+
+export function wheelZoomFactor(deltaYCssPx: number, heightCssPx: number, sensitivityPermille: number): number {
+  return Math.exp((deltaYCssPx / heightCssPx) * sensitivityPermille / SCENE_PERMILLE_SCALE);
+}
+
+export function perspectivePanVector(orientation: THREE.Quaternion, deltaX: number, deltaY: number,
+  width: number, height: number, distance: number, sensitivity: number): THREE.Vector3 {
+  const right = new THREE.Vector3(0, 1, 0).applyQuaternion(orientation);
+  const up = new THREE.Vector3(-1, 0, 1).normalize().applyQuaternion(orientation);
+  return right.multiplyScalar(-deltaX / width).addScaledVector(up, deltaY / height).multiplyScalar(distance * sensitivity);
+}
+
 /** This owns both cameras over one world coordinate system and does not retain graph semantics. */
 export class CameraRig {
   private readonly orthographic = new THREE.OrthographicCamera();
   private readonly perspective = new THREE.PerspectiveCamera();
   private kindValue: CameraKind;
-  private stateValue: VisualStateCamera;
+  private stateValue: ReviewCameraState;
   private requestValue: SceneCameraRequest;
   private widthCssPx: number;
   private heightCssPx: number;
@@ -81,13 +123,24 @@ export class CameraRig {
   }
 
   /** This copies the serialisable camera record and does not expose mutable camera state. */
-  readCameraState(): VisualStateCamera {
+  readCameraState(): ReviewCameraState {
     return copyCameraState(this.stateValue);
   }
 
   /** This restores serialisable camera state and does not move a world anchor. */
   restoreCameraState(state: VisualStateCamera): void {
     this.stateValue = copyCameraState(state);
+    this.updateCameras();
+  }
+
+  readPose() {
+    return { position: this.perspective.position.toArray(), target: perspectiveTarget(this.stateValue, this.worldCenterZ).toArray(),
+      up: this.perspective.up.toArray(), fov: this.perspective.fov };
+  }
+
+  viewPreset(name: ViewPreset): void {
+    const q = presetOrientation(name);
+    this.stateValue = { ...this.stateValue, orbit: [q.x, q.y, q.z, q.w] };
     this.updateCameras();
   }
 
@@ -193,25 +246,29 @@ export class CameraRig {
         y: this.stateValue.y + ((start.y - end.y) * sensitivity),
       };
     } else {
+      const orbit = this.stateValue.orbit ?? [0, 0, 0, 1];
+      const q = new THREE.Quaternion(...orbit);
+      const translation = perspectivePanVector(q, deltaXCssPx, deltaYCssPx,
+        this.widthCssPx, this.heightCssPx, this.stateValue.ratio, sensitivity);
+      const target = perspectiveTarget(this.stateValue, this.worldCenterZ).add(translation);
+      const normalized = createNormalizationFunction(copyMutableBounds(this.stateValue.bounds))(target);
       this.stateValue = {
         ...this.stateValue,
-        x: this.stateValue.x - ((deltaXCssPx / this.widthCssPx) * this.stateValue.ratio * sensitivity),
-        y: this.stateValue.y + ((deltaYCssPx / this.heightCssPx) * this.stateValue.ratio * sensitivity),
+        x: normalized.x, y: normalized.y, targetZ: target.z,
       };
     }
     this.updateCameras();
   }
 
-  /** This orbits the perspective camera from horizontal motion and does not alter layout depth. */
-  orbitBy(deltaXCssPx: number): void {
+  /** Free trackball rotation around the current target. */
+  orbitBy(deltaXCssPx: number, deltaYCssPx = 0): void {
     if (this.requestValue.kind !== "perspective") {
       return;
     }
     const sensitivity = this.requestValue.navigation.orbitSensitivityPermille / SCENE_PERMILLE_SCALE;
-    this.stateValue = {
-      ...this.stateValue,
-      angle: this.stateValue.angle + ((deltaXCssPx / this.widthCssPx) * sensitivity * Math.PI * bisectionDivisor()),
-    };
+    const orbit = this.stateValue.orbit ?? [0, 0, 0, 1];
+    const q = arcballDrag(new THREE.Quaternion(...orbit), deltaXCssPx * sensitivity, deltaYCssPx * sensitivity, this.heightCssPx);
+    this.stateValue = { ...this.stateValue, orbit: [q.x, q.y, q.z, q.w] };
     this.updateCameras();
   }
 
@@ -228,9 +285,7 @@ export class CameraRig {
           this.requestValue.navigation.minimumDollyPermille,
           this.requestValue.navigation.maximumDollyPermille,
         ];
-    const factor = Math.exp(
-      (deltaYCssPx / this.heightCssPx) * sensitivityPermille / SCENE_PERMILLE_SCALE,
-    );
+    const factor = wheelZoomFactor(deltaYCssPx, this.heightCssPx, sensitivityPermille);
     this.stateValue = {
       ...this.stateValue,
       ratio: Math.max(
@@ -275,11 +330,13 @@ export function attachCameraInteractions(
   let lastX = 0;
   let lastY = 0;
   let button = 0;
+  let shift = false;
   const pointerDown = (event: PointerEvent): void => {
     pointerId = event.pointerId;
     lastX = event.clientX;
     lastY = event.clientY;
     button = event.button;
+    shift = event.shiftKey;
     canvas.setPointerCapture(event.pointerId);
   };
   const pointerMove = (event: PointerEvent): void => {
@@ -290,10 +347,10 @@ export function attachCameraInteractions(
     const deltaY = event.clientY - lastY;
     lastX = event.clientX;
     lastY = event.clientY;
-    if (rig.kind === ORTHOGRAPHIC || button !== 0) {
+    if (rig.kind === ORTHOGRAPHIC || button !== 0 || shift) {
       rig.panBy(deltaX, deltaY);
     } else {
-      rig.orbitBy(deltaX);
+      rig.orbitBy(deltaX, deltaY);
     }
     changed();
   };
@@ -437,12 +494,12 @@ function updatePerspectiveCamera(
   ) / Math.PI;
   camera.near = distance / navigationRange;
   camera.far = distance * (navigationRange + scalarCount());
-  camera.up.set(0, 0, scalarCount());
-  camera.position.set(
-    target.x + (Math.cos(state.angle) * distance),
-    target.y + (Math.sin(state.angle) * distance),
-    target.z + distance,
-  );
+  const review = state as ReviewCameraState;
+  const orbit = new THREE.Quaternion(...(review.orbit ?? [0, 0, 0, 1]));
+  camera.up.set(0, 0, scalarCount()).applyQuaternion(orbit);
+  camera.position.copy(target).add(new THREE.Vector3(
+    Math.cos(state.angle) * distance, Math.sin(state.angle) * distance, distance,
+  ).applyQuaternion(orbit));
   camera.lookAt(target);
   camera.updateProjectionMatrix();
   camera.updateMatrixWorld(true);
@@ -487,7 +544,7 @@ function perspectiveDefaultHalfAngleTangent(
 function perspectiveTarget(state: VisualStateCamera, worldCenterZ: number): THREE.Vector3 {
   const normalise = createNormalizationFunction(copyMutableBounds(state.bounds));
   const target = normalise.inverse({ x: state.x, y: state.y });
-  return new THREE.Vector3(target.x, target.y, worldCenterZ);
+  return new THREE.Vector3(target.x, target.y, (state as ReviewCameraState).targetZ ?? worldCenterZ);
 }
 
 function perspectiveBoundsCenter(state: VisualStateCamera, worldCenterZ: number): THREE.Vector3 {
@@ -502,13 +559,16 @@ function panSensitivity(request: SceneCameraRequest): number {
   return request.navigation.panSensitivityPermille;
 }
 
-function copyCameraState(state: VisualStateCamera | SceneCameraRequest): VisualStateCamera {
+function copyCameraState(state: VisualStateCamera | SceneCameraRequest): ReviewCameraState {
+  const review = state as ReviewCameraState;
   return {
     x: state.x,
     y: state.y,
     angle: state.angle,
     ratio: state.ratio,
     bounds: copyBounds(state.bounds),
+    ...(review.orbit ? { orbit: [...review.orbit] as [number, number, number, number] } : {}),
+    ...(review.targetZ === undefined ? {} : { targetZ: review.targetZ }),
   };
 }
 

@@ -1,338 +1,63 @@
 <!doctype html>
 <html lang="it">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>NousOS · grafo di revisione</title>
-    <style>
-      /* Page frame and shared controls. */
-      :root { color-scheme: dark; font: 14px/1.45 system-ui, sans-serif; background: #050505; color: #e8e8e8; }
-      * { box-sizing: border-box; }
-      body { margin: 0; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
-      button, input, select { font: inherit; color: #e8e8e8; background: #111; }
-      button, input, select { border: 1px solid #2a2a2a; border-radius: 3px; padding: .35rem .55rem; }
-      button { cursor: pointer; }
-      button:hover, :is(button, select, input):focus-visible { border-color: #aaa; background: #222; outline: 0; }
-      button[aria-pressed=true] { border-color: #e8e8e8; background: #292929; }
-      button:disabled { opacity: .4; cursor: not-allowed; }
-      h1 { font-size: 1.2rem; margin: 0; white-space: nowrap; }
-      h2 { font-size: 1.15rem; line-height: 1.25; overflow-wrap: anywhere; }
-      h3 { font-size: 1rem; }
-      h4 { font-size: .9rem; margin: .9rem 0 .3rem; color: #c9c9c9; }
-      p { margin: .5rem 0; }
-      .muted, #status, #counter, #notice, .subtitle, small { color: #9a9a9a; }
-
-      /* Three compact header rows keep the canvas height independent of menu content. */
-      header { flex: none; border-bottom: 1px solid #2a2a2a; padding: 6px 12px; display: grid; gap: 4px; font-size: 12px; }
-      .header-top, .axes, .tools { display: flex; align-items: center; gap: 6px; min-width: 0; }
-      .header-top { white-space: nowrap; overflow: hidden; }
-      #notice { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .axes, .tools { flex-wrap: wrap; }
-      header button, header input, header select { padding: 3px 6px; white-space: nowrap; }
-      .axis { display: flex; align-items: center; gap: 3px; border-right: 1px solid #2a2a2a; padding-right: 6px; }
-      .axis > strong { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #9a9a9a; margin-right: 2px; }
-      .tools label { display: flex; align-items: center; gap: 3px; white-space: nowrap; }
-      .tools select { max-width: 110px; }
-      #search-form { display: flex; gap: 3px; }
-      #search { width: 122px; }
-      #search-feedback { font-size: 11px; color: #aaa; }
-
-      /* Popovers are removed from layout and stay within a small part of the canvas. */
-      .axis-help, .lens-wrap, .advanced-wrap { position: relative; }
-      .help { width: 20px; height: 20px; padding: 0; border-radius: 50%; line-height: 1; }
-      .help[aria-expanded=true] { border-color: #e8e8e8; }
-      .popover { position: absolute; z-index: 30; background: #111; border: 1px solid #555; padding: 10px; }
-      .popover { box-shadow: 0 12px 30px #000; max-height: min(300px, 45vh); overflow: auto; }
-      .help-body { top: 24px; left: 0; width: 250px; white-space: normal; line-height: 1.4; }
-      .axis:last-child .help-body { left: auto; right: 0; }
-      .popover h3 { margin: .9rem 0 .25rem; }
-      .popover p { font-size: .85rem; }
-      #lens-popover { top: 27px; right: 0; width: min(420px, 80vw); }
-      #advanced-controls { top: 27px; right: 0; width: 250px; }
-      #advanced-controls label { display: flex; margin: 7px 0; }
-      #advanced-controls label:first-child { flex-direction: column; align-items: start; }
-      #advanced-controls select { max-width: none; width: 100%; }
-      #advanced-controls input { margin: 0 4px 0 0; }
-
-      /* Graph viewport and existing details panel. */
-      main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; flex: 1; min-height: 0; }
-      #viewport { position: relative; min-width: 0; overflow: hidden; background: #050505; }
-      #details { border-left: 1px solid #2a2a2a; padding: 1rem; overflow: auto; background: #090909; }
-      #live-section { border: 1px solid #333; padding: .65rem; margin-bottom: 1rem; }
-      #live-search-form { display: flex; gap: .35rem; }
-      #live-query { width: 100%; min-width: 0; }
-      .live-result { border-top: 1px solid #333; padding: .45rem 0; }
-      #live-section button { margin: .2rem; }
-      .breadcrumbs { display: flex; align-items: center; gap: .3rem; flex-wrap: wrap; }
-      .breadcrumbs button { padding: .2rem .35rem; font-size: .82rem; }
-      .subnav { margin-top: .45rem; font-size: .8rem; }
-      .subtitle { margin-top: -.4rem; }
-      dl { margin: .65rem 0; }
-      dt { color: #9a9a9a; font-size: .8rem; }
-      dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-      .detail-row { padding: .35rem 0; border-bottom: 1px solid #242424; }
-      blockquote { margin: .7rem 0; padding: .7rem; border-left: 2px solid #aaa; background: #121212; }
-      blockquote { white-space: pre-wrap; overflow-wrap: anywhere; }
-      .relation { display: block; text-align: left; width: 100%; margin: .25rem 0; }
-      .minor { font-size: .75rem; padding: .2rem .35rem; margin-bottom: .4rem; }
-      .panel-advanced, #legend-section { border-top: 1px solid #2a2a2a; margin-top: 1rem; padding-top: .5rem; }
-      summary { cursor: pointer; color: #c9c9c9; }
-      .technical { font-family: ui-monospace, monospace; font-size: .78rem; }
-      .legend-glyph { display: inline-block; border-radius: 50%; margin-right: .7rem; vertical-align: middle; }
-      .legend p { font-size: .83rem; color: #bbb; margin: .65rem 0; }
-      #error { padding: .5rem; color: #fff; background: #303030; }
-      [hidden] { display: none !important; }
-      @media (max-width: 1100px) {
-        body { height: auto; overflow: auto; }
-        main { display: flex; flex-direction: column; height: auto; }
-        #viewport { height: 62vh; min-height: 400px; }
-        #details { border-left: 0; border-top: 1px solid #2a2a2a; min-height: 360px; max-height: none; }
-      }
-    </style>
-  </head>
-  <body>
-    <header>
-      <div class="header-top">
-        <h1>NousOS · grafo di revisione</h1>
-        <span id="status" role="status">Caricamento…</span>
-        <span id="counter"></span>
-        <span id="notice"></span>
-      </div>
-      <div class="axes">
-        <div class="axis" data-axis="projection">
-          <strong>Proiezione</strong>
-          <button data-value="2d" aria-pressed="true" title="Vista piana" aria-label="Proiezione 2D">2D</button>
-          <button
-            data-value="3d-orthographic"
-            title="Vista tridimensionale ortografica"
-            aria-label="Proiezione 3D ortografica"
-          >
-            3D ortografico
-          </button>
-          <button
-            data-value="3d-perspective"
-            title="Vista tridimensionale prospettica"
-            aria-label="Proiezione 3D prospettica"
-          >
-            3D prospettico
-          </button>
-          <button
-            data-value="3d-focus"
-            disabled
-            title="Seleziona prima un elemento"
-            aria-label="Focus 3D, seleziona prima un elemento"
-          >
-            Focus 3D
-          </button>
-          <div class="axis-help">
-            <button
-              class="help"
-              type="button"
-              aria-label="Aiuto proiezione"
-              aria-controls="help-projection"
-              aria-expanded="false"
-              title="Aiuto proiezione"
-            >
-              ?
-            </button>
-            <div id="help-projection" class="popover help-body" hidden>
-              La proiezione cambia il punto di vista. Morfologia, organizzazione e lente sono assi indipendenti.
-            </div>
-          </div>
-        </div>
-        <div class="axis" data-axis="morphology">
-          <strong>Morfologia</strong>
-          <button data-value="stellar" aria-pressed="true" title="Morfologia Stellar" aria-label="Morfologia Stellar">
-            Stellar
-          </button>
-          <button data-value="neural" title="Morfologia Neural" aria-label="Morfologia Neural">Neural</button>
-          <button data-value="mycelium" title="Morfologia Mycelium" aria-label="Morfologia Mycelium">Mycelium</button>
-          <div class="axis-help">
-            <button
-              class="help"
-              type="button"
-              aria-label="Aiuto morfologia"
-              aria-controls="help-morphology"
-              aria-expanded="false"
-              title="Aiuto morfologia"
-            >
-              ?
-            </button>
-            <div id="help-morphology" class="popover help-body" hidden>
-              La morfologia cambia come nodi e relazioni sono disegnati; proiezione, organizzazione e lente restano
-              indipendenti.
-            </div>
-          </div>
-        </div>
-        <div class="axis" data-axis="organization">
-          <strong>Organizzazione</strong>
-          <button data-value="flat" aria-pressed="true" title="Disposizione piatta" aria-label="Organizzazione Flat">
-            Flat
-          </button>
-          <button data-value="indra" title="Finestre Indra delle conversazioni" aria-label="Organizzazione Indra">
-            Indra
-          </button>
-          <div class="axis-help">
-            <button
-              class="help"
-              type="button"
-              aria-label="Aiuto organizzazione"
-              aria-controls="help-organization"
-              aria-expanded="false"
-              title="Aiuto organizzazione"
-            >
-              ?
-            </button>
-            <div id="help-organization" class="popover help-body" hidden>
-              L'organizzazione cambia la disposizione e le finestre di appartenenza; gli altri assi sono indipendenti.
-            </div>
-          </div>
-        </div>
-        <div class="axis">
-          <strong>Lente</strong>
-          <div class="lens-wrap">
-            <button
-              id="lens-button"
-              type="button"
-              aria-expanded="false"
-              aria-controls="lens-popover"
-              title="Apri il registro delle lenti"
-              aria-label="Lente, apri il registro"
-            >
-              Registro non fornito
-            </button>
-            <div id="lens-popover" class="popover" hidden></div>
-          </div>
-          <div class="axis-help">
-            <button
-              class="help"
-              type="button"
-              aria-label="Aiuto lente"
-              aria-controls="help-lens"
-              aria-expanded="false"
-              title="Aiuto lente"
-            >
-              ?
-            </button>
-            <div id="help-lens" class="popover help-body" hidden>
-              La lente è una lettura epistemica distinta da proiezione, morfologia e organizzazione. Qui una lente non
-              alimentabile resta indisponibile.
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="tools">
-        <div class="axis" data-axis="colour">
-          <strong>Colore</strong>
-          <button data-value="bw" aria-pressed="true" title="Bianco e nero" aria-label="Colore bianco e nero">
-            B/N
-          </button>
-          <button data-value="semantic" title="Colore semantico opzionale" aria-label="Colore semantico">
-            Semantico
-          </button>
-        </div>
-        <button
-          id="labels"
-          aria-pressed="true"
-          title="Mostra o nascondi le etichette"
-          aria-label="Mostra o nascondi le etichette"
-        >
-          Etichette
-        </button>
-        <button id="fit" title="Adatta il grafo alla vista" aria-label="Adatta il grafo">Adatta</button>
-        <button id="reset" title="Torna alla panoramica" aria-label="Reimposta la selezione">Reimposta</button>
-        <button id="back" disabled title="Torna alla selezione precedente" aria-label="Indietro nella navigazione">
-          Indietro
-        </button>
-        <button
-          id="expand"
-          disabled
-          title="Aggiungi il livello successivo di relazioni"
-          aria-label="Espandi il vicinato"
-        >
-          Espandi
-        </button>
-        <form id="search-form" role="search">
-          <input
-            id="search"
-            type="search"
-            placeholder="Etichetta o ID"
-            aria-label="Cerca etichetta o ID"
-            title="Cerca un nodo per etichetta o ID"
-          />
-          <button title="Cerca un nodo" aria-label="Cerca">Cerca</button>
-        </form>
-        <span id="search-feedback"></span>
-        <label
-          >Dominio
-          <select id="filter-domain" aria-label="Filtra per dominio" title="Filtra per dominio">
-            <option value="">Tutti</option>
-          </select>
-        </label>
-        <label
-          >Famiglia
-          <select id="filter-family" aria-label="Filtra per famiglia" title="Filtra per famiglia">
-            <option value="">Tutte</option>
-            <option value="aggregate">Aggregati</option>
-            <option value="concept">Concetti</option>
-            <option value="source">Fonti</option>
-          </select>
-        </label>
-        <label
-          >Stato
-          <select id="filter-standing" aria-label="Filtra per stato" title="Filtra per stato">
-            <option value="">Tutti</option>
-            <option value="canonical">Canonico</option>
-            <option value="proposal">Proposta</option>
-            <option value="review">Scheda di revisione</option>
-            <option value="source">Fonte</option>
-            <option value="structure">Struttura</option>
-          </select>
-        </label>
-        <div class="advanced-wrap">
-          <button
-            id="advanced-button"
-            type="button"
-            aria-controls="advanced-controls"
-            aria-expanded="false"
-            title="Apri filtri e vista tecnica"
-            aria-label="Avanzate"
-          >
-            Avanzate
-          </button>
-          <div id="advanced-controls" class="popover" hidden>
-            <label
-              >Stato dell'evidenza
-              <select
-                id="filter-class"
-                aria-label="Filtra per stato dell'evidenza"
-                title="Convenzione provvisoria D-065"
-              >
-                <option value="">Tutti</option>
-                <option>A</option>
-                <option>B</option>
-                <option>C</option>
-                <option>D</option>
-              </select>
-            </label>
-            <p class="muted">Convenzione provvisoria D-065 per lo stato dell'evidenza.</p>
-            <label
-              ><input
-                id="debug"
-                type="checkbox"
-                aria-label="Provenienza e Debug"
-                title="Vista tecnica D-066"
-              />Provenienza/Debug · vista tecnica</label
-            >
-          </div>
-        </div>
-      </div>
-    </header>
-    <main>
-      <div id="viewport" aria-label="Canvas del grafo di revisione"></div>
-      <aside id="details" aria-live="polite"></aside>
-    </main>
-    <div id="error" role="alert" hidden></div>
-    <script type="module" src="./review.js"></script>
-  </body>
-</html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NousOS · grafo di revisione</title>
+  <style>
+    :root { color-scheme: dark; font: 13px/1.45 system-ui,sans-serif; background:#050505; color:#e8e8e8 }
+    * { box-sizing:border-box } body { margin:0; height:100dvh; display:flex; flex-direction:column; overflow:hidden }
+    button,input,select { font:inherit; color:inherit; background:#111; border:1px solid #383838; border-radius:4px; padding:4px 7px }
+    button { cursor:pointer } button:hover,button:focus-visible,input:focus-visible,select:focus-visible { border-color:#aaa; outline:0 }
+    button[aria-pressed=true] { border-color:#eee; background:#303030 } button:disabled { opacity:.45; cursor:not-allowed }
+    [hidden] { display:none!important } header { padding:6px 10px; border-bottom:1px solid #333; flex:none; max-height:34dvh; overflow:auto }
+    .header-top,.axes,.tools,.axis { display:flex; gap:5px; align-items:center; flex-wrap:wrap; min-width:0 }
+    .header-top h1 { font-size:15px; margin:0 12px 0 0; white-space:nowrap } #status,#counter,#notice { font-size:11px; color:#aaa }
+    #notice { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:40vw }
+    .axes,.tools { margin-top:5px } .axis { padding:3px 8px 3px 0; border-right:1px solid #333 }
+    .axis strong { color:#aaa; font-size:10px; letter-spacing:.05em; text-transform:uppercase; margin-right:3px }
+    #search-form,#fullscreen-search-form { display:flex; gap:4px } #search,#fullscreen-search { width:clamp(140px,16vw,260px) }
+    .tools label { display:flex; align-items:center; gap:4px } .tools select { max-width:112px }
+    main { position:relative; flex:1; min-height:0; min-width:0; display:grid; grid-template-columns:minmax(0,1fr) minmax(280px,340px) }
+    main.panel-collapsed { grid-template-columns:minmax(0,1fr) } main.panel-collapsed #details { display:none }
+    #viewport { position:relative; overflow:hidden; min-width:0; background:#050505 }
+    #details { min-width:0; overflow:auto; border-left:1px solid #333; background:#090909; padding:12px; overflow-wrap:anywhere }
+    #details h2 { font-size:17px; overflow-wrap:anywhere } #details p,#details dd,#details blockquote { overflow-wrap:anywhere; white-space:pre-wrap }
+    #details dt,#details small,.muted,.subtitle { color:#aaa } #details dd { margin:0 } #details dl { margin:8px 0 }
+    .detail-row { padding:5px 0; border-bottom:1px solid #242424 } .technical { font-family:ui-monospace,monospace;font-size:11px }
+    blockquote { border-left:2px solid #aaa; margin:8px 0; padding:8px; background:#141414 }
+    .relation { display:block; width:100%; text-align:left; margin:4px 0 } .minor { font-size:11px }
+    .breadcrumbs { display:flex;gap:4px;flex-wrap:wrap } .panel-advanced,#legend-section { border-top:1px solid #333; margin-top:14px;padding-top:8px }
+    #live-section { border:1px solid #333;padding:8px;margin-bottom:10px } #live-query { min-width:0;width:100% }
+    #live-search-form { display:flex } .live-result { border-top:1px solid #333;padding:6px 0 }
+    #appearance-panel { position:absolute;z-index:24;top:9px;right:9px;width:min(270px,calc(100% - 18px)); max-height:min(76vh,550px);overflow:auto;background:#121212ee;border:1px solid #555;border-radius:6px;padding:10px;box-shadow:0 10px 25px #000 }
+    #appearance-panel h2 {font-size:14px;margin:0 0 6px} #appearance-panel label { display:grid;grid-template-columns:1fr auto;gap:4px;margin:6px 0 }
+    #appearance-panel input[type=range] { grid-column:1/3; width:100%; padding:0 } #appearance-panel input[type=color] { width:42px;height:26px;padding:1px }
+    #appearance-panel .preset-row { display:flex;gap:4px;flex-wrap:wrap;margin-top:6px } #appearance-panel input[type=text] { min-width:0;width:100% }
+    #appearance-panel select { max-width:100% } #contrast-warning { color:#ffb3a1 }
+    #focus-chip,#toast { position:absolute;z-index:22;left:50%;transform:translateX(-50%);background:#171717dd;border:1px solid #777;padding:5px 9px;border-radius:4px;white-space:nowrap;max-width:95%;overflow:hidden;text-overflow:ellipsis }
+    #focus-chip { bottom:9px } #toast { top:10px } #gizmo { position:absolute;z-index:23;bottom:12px;left:12px;width:92px;height:92px;pointer-events:none;background:#111b;border:1px solid #666;border-radius:50% }
+    #gizmo button { position:absolute;pointer-events:auto;border-radius:50%;padding:0;width:21px;height:21px;font-size:10px;font-weight:bold }
+    #gizmo svg { width:100%;height:100%;position:absolute;inset:0 } #gizmo line { stroke-width:2 }
+    #fullscreen-bar { display:none;position:absolute;z-index:26;top:8px;left:8px;right:8px;gap:4px;align-items:center;flex-wrap:wrap;background:#111d;border:1px solid #555;border-radius:6px;padding:5px;max-height:25vh;overflow:auto }
+    #viewport:fullscreen { width:100vw;height:100vh } #viewport:fullscreen #fullscreen-bar { display:flex }
+    #viewport:fullscreen #details { display:none } #details.drawer { display:block;position:absolute;z-index:25;right:0;top:0;bottom:0;width:min(360px,90vw);box-shadow:-10px 0 30px #000 }
+    #error { padding:6px;background:#522 } .popover { position:fixed;z-index:30;right:8px;top:95px;width:min(270px,calc(100vw - 16px));background:#111;border:1px solid #555;padding:10px;max-height:50vh;overflow:auto }
+    @media(max-width:1100px) { header { max-height:37dvh } main { grid-template-columns:minmax(0,1fr) } #details {display:none;position:absolute;z-index:25;right:0;top:0;bottom:0;width:min(360px,90vw);box-shadow:-10px 0 30px #000} #details.drawer {display:block} }
+  </style>
+</head>
+<body>
+<header>
+  <div class="header-top"><h1>NousOS · grafo di revisione</h1><span id="status" role="status">Caricamento…</span><span id="counter"></span><span id="notice"></span></div>
+  <div class="axes">
+    <div class="axis" data-axis="projection"><strong>Vista</strong><button data-value="2d" aria-pressed="true" title="Vista piana; trascina per spostare">2D</button><button data-value="3d" title="Vista prospettica; trascina per ruotare">3D</button><button id="projection-focus" disabled title="Seleziona prima un nodo">Focus</button><button id="fit" title="Adatta tutti gli elementi visibili">Adatta</button><button id="reset" title="Reimposta camera, focus e aspetto">Reimposta</button><button id="fullscreen" title="Apri il canvas a schermo intero">Fullscreen</button></div>
+    <div class="axis" id="view-presets"><strong>Viste 3D</strong><button data-preset="fronte" title="Vista frontale">Fronte</button><button data-preset="retro" title="Vista posteriore">Retro</button><button data-preset="sinistra" title="Vista da sinistra">Sinistra</button><button data-preset="destra" title="Vista da destra">Destra</button><button data-preset="alto" title="Vista dall'alto">Alto</button><button data-preset="basso" title="Vista dal basso">Basso</button><button data-preset="reset" title="Reimposta la direzione della camera">Reimposta vista</button></div>
+    <div class="axis" data-axis="morphology"><strong>Morfologia</strong><button data-value="stellar" aria-pressed="true" title="Relazioni diritte">Stellar</button><button data-value="neural" title="Morfologia Neural">Neural</button><button data-value="mycelium" title="Morfologia Mycelium">Mycelium</button></div>
+    <div class="axis" data-axis="organization"><strong>Organizzazione</strong><button data-value="flat" aria-pressed="true" title="Disposizione Flat">Flat</button><button data-value="indra" title="Finestre delle conversazioni">Indra</button></div>
+    <div class="axis" data-axis="reading"><strong>Lettura</strong><button data-value="attested" aria-pressed="true" title="Solo relazioni attestate">Attestata</button><button data-value="exploratory" title="Connessioni interpretative non canoniche">Esplorativa</button><button data-value="combined" title="Relazioni attestate e connessioni esplorative">Combinata</button></div>
+    <div class="axis"><strong>Aspetto</strong><button id="appearance-toggle" title="Apri o chiudi i controlli di aspetto">Regola</button><select id="palette" title="Preset colore" aria-label="Preset colore"><option value="bw">Monocromatico</option><option value="warm">Caldo</option><option value="earth">Terra</option><option value="gems">Gemme</option><option value="night">Notturno</option><option value="semantic">Semantico</option><option value="custom">Custom</option></select></div>
+  </div>
+  <div class="tools"><form id="search-form" role="search"><input id="search" type="search" placeholder="Cerca etichetta o ID" aria-label="Cerca etichetta o ID" title="Cerca nel grafo"><button title="Cerca un nodo">Cerca</button></form><span id="search-feedback"></span><div class="axis"><strong>Filtri</strong><label>Dominio <select id="filter-domain" title="Filtra per dominio"><option value="">Tutti</option></select></label><label>Famiglia <select id="filter-family" title="Filtra per famiglia"><option value="">Tutte</option><option value="aggregate">Aggregati</option><option value="concept">Concetti</option><option value="source">Fonti</option></select></label><label>Stato <select id="filter-standing" title="Filtra per stato"><option value="">Tutti</option><option value="canonical">Canonico</option><option value="proposal">Proposta</option><option value="review">Revisione</option><option value="source">Fonte</option><option value="structure">Struttura</option></select></label><button id="labels" aria-pressed="true" title="Mostra o nascondi le etichette">Etichette</button></div><button id="back" disabled title="Torna alla selezione precedente">Indietro</button><button id="expand" disabled title="Espandi il vicinato">Espandi</button><button id="panel-toggle" title="Mostra o nascondi il pannello; scorciatoia P">Pannello</button><button id="advanced-button" aria-controls="advanced-controls" aria-expanded="false" title="Filtri tecnici">Avanzate</button><div id="advanced-controls" class="popover" hidden><label>Classe evidenza <select id="filter-class" title="Classe A/B/C/D per diagnosi"><option value="">Tutte</option><option>A</option><option>B</option><option>C</option><option>D</option></select></label><label><input id="debug" type="checkbox" title="Vista tecnica"> Provenienza/Debug</label></div></div>
+</header>
+<main id="shell"><div id="viewport" aria-label="Canvas del grafo di revisione"><div id="fullscreen-bar"><button data-full-projection="2d" title="Vista 2D">2D</button><button data-full-projection="3d" title="Vista 3D">3D</button><button id="fullscreen-focus" title="Focus sul nodo selezionato">Focus</button><select id="fullscreen-preset" title="Vista 3D"><option value="">Vista 3D</option><option value="fronte">Fronte</option><option value="retro">Retro</option><option value="sinistra">Sinistra</option><option value="destra">Destra</option><option value="alto">Alto</option><option value="basso">Basso</option></select><button id="fullscreen-fit" title="Adatta il grafo">Adatta</button><button id="fullscreen-reset" title="Reimposta camera, focus e aspetto">Reimposta</button><form id="fullscreen-search-form"><input id="fullscreen-search" type="search" placeholder="Cerca" aria-label="Cerca nel grafo"><button title="Cerca un nodo">Cerca</button></form><button id="fullscreen-panel" title="Apri il pannello laterale">Pannello</button><button id="fullscreen-exit" title="Esci dallo schermo intero con Esc">Esci (Esc)</button></div><div id="gizmo" aria-label="Orientamento XYZ" hidden><svg viewBox="0 0 92 92" aria-hidden="true"><line id="axis-x" stroke="#e5a6a6"/><line id="axis-y" stroke="#a6d7b7"/><line id="axis-z" stroke="#b6c8ef"/></svg><button data-axis-end="x" title="Vista da destra">X</button><button data-axis-end="y" title="Vista da sinistra">Y</button><button data-axis-end="z" title="Vista dall'alto">Z</button></div><div id="focus-chip" hidden>Connessioni esplorative · non canoniche</div><div id="toast" role="status" hidden></div><div id="appearance-panel" hidden><h2>Aspetto</h2><div id="appearance-sliders"></div><div class="preset-row"><input id="preset-name" type="text" placeholder="Nome preset" aria-label="Nome preset"><button id="preset-save" title="Salva il preset locale">Salva</button><select id="preset-list" title="Preset salvati" aria-label="Preset salvati"><option value="">Preset salvati</option></select><button id="preset-apply" title="Applica il preset selezionato">Applica</button><button id="preset-delete" title="Elimina il preset selezionato">Elimina</button><button id="appearance-default" title="Ripristina i valori iniziali">Valori iniziali</button></div><div id="custom-colours" hidden></div><p id="contrast-warning" role="status"></p></div></div><aside id="details" aria-live="polite"></aside></main><div id="error" role="alert" hidden></div><script type="module" src="./review.js"></script>
+</body></html>

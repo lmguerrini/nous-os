@@ -1,17 +1,19 @@
 /**
  * The seam between the review page and the product renderers.
  *
- * The page owns meaning: filters, search, the details panel, the focus stack, lenses, navigation
+ * The page owns meaning: filters, search, the details panel, focus and navigation
  * levels and the debug mode. The product view owns pixels: it drives the product's own Sigma and
  * R3F renderers over the real review export, places readable labels and frames what the page asks
  * for inside the part of the canvas a person can actually see. Neither side re-derives the other's
- * state, so every axis below stays separate: a projection is not a morphology, an organization is
- * not a lens, and colour is presentation only.
+ * state, so every axis below stays separate: projection, morphology, organization and colour.
  */
 import type { ReviewExport } from "./model.ts";
+import type { AppearanceOptions } from "../engine/presentation-options.ts";
+import type { ViewPreset } from "../render3f/camera.tsx";
+import type { PaletteValues } from "./palette.ts";
 
-/** How the scene is looked at. `3d-focus` is the perspective camera framed on the focus set. */
-export type Projection = "2d" | "3d-orthographic" | "3d-perspective" | "3d-focus";
+/** How the scene is looked at. */
+export type Projection = "2d" | "3d";
 
 /** How relations and nodes are drawn; the same graph and the same knowledge state in every case. */
 export type Morphology = "stellar" | "neural" | "mycelium";
@@ -20,7 +22,8 @@ export type Morphology = "stellar" | "neural" | "mycelium";
 export type Organization = "flat" | "indra";
 
 /** Black and white is the default; semantic colour is an optional reading aid. */
-export type Colour = "bw" | "semantic";
+export type Colour = "bw" | "warm" | "earth" | "gems" | "night" | "semantic" | "custom";
+export type Reading = "attested" | "exploratory" | "combined";
 
 export type Axes = {
   readonly projection: Projection;
@@ -28,6 +31,7 @@ export type Axes = {
   readonly organization: Organization;
   readonly colour: Colour;
   readonly labels: boolean;
+  readonly reading: Reading;
 };
 
 export const DEFAULT_AXES: Axes = {
@@ -36,6 +40,7 @@ export const DEFAULT_AXES: Axes = {
   organization: "flat",
   colour: "bw",
   labels: true,
+  reading: "attested",
 };
 
 /**
@@ -110,6 +115,7 @@ export type PickTarget = { readonly kind: "node" | "edge"; readonly id: string }
 export type ViewEvents = {
   /** A click on a node or relation, or on empty space (null). */
   onPick(target: PickTarget | null): void;
+  onDoublePick?(target: PickTarget | null): void;
   /** The pointer is over a node or relation (viewport CSS pixels), or over nothing (null). */
   onHover(target: (PickTarget & { readonly x: number; readonly y: number }) | null): void;
 };
@@ -126,6 +132,8 @@ export type ViewInput = {
   readonly events: ViewEvents;
   /** Honour reduced motion: frame without animation. */
   readonly reducedMotion: boolean;
+  readonly appearance?: AppearanceOptions;
+  readonly customPalette?: PaletteValues;
 };
 
 export type ProductView = {
@@ -133,6 +141,13 @@ export type ProductView = {
   setAxes(next: Partial<Axes>): Promise<void>;
   setVisible(nodeIds: ReadonlySet<string>): Promise<void>;
   setInsets(insets: Insets): void;
+  setAppearance(value: AppearanceOptions): Promise<void>;
+  setPalette(value: PaletteValues): Promise<void>;
+  viewPreset(name: ViewPreset): void;
+  camera(): { position: number[]; target: number[]; up: number[]; fov: number } | null;
+  readCamera(): unknown;
+  restoreCamera(state: unknown): void;
+  resetCamera(): Promise<void>;
   /** Selects one node or relation id (null clears); material and labels only, no camera move. */
   select(id: string | null): void;
   /** The focus subgraph, stays bright while everything else dims; null clears. */
