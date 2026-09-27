@@ -385,8 +385,16 @@ def load_export(path: Path) -> dict:
     return result
 
 
-def make_handler(result: dict, static_root: Path):
+def load_lenses(path: Path) -> dict:
+    result = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(result, dict) or result.get("schema") != "nousos-review-lenses-1":
+        raise ValueError("invalid review lenses schema")
+    return result
+
+
+def make_handler(result: dict, static_root: Path, lenses: dict | None = None):
     export_body = json.dumps(result, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    lenses_body = json.dumps(lenses, ensure_ascii=False, sort_keys=True).encode("utf-8") if lenses is not None else None
     health_body = canonical_bytes({"status": "ok", "export_digest": result["export_digest"]})
     root = static_root.resolve()
 
@@ -404,6 +412,16 @@ def make_handler(result: dict, static_root: Path):
                 body, mime = health_body, "application/json; charset=utf-8"
             elif route == "/api/export.json":
                 body, mime = export_body, "application/json; charset=utf-8"
+            elif route == "/api/lenses.json":
+                if lenses_body is None:
+                    body = b'{"error":"review lenses not supplied"}'
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                body, mime = lenses_body, "application/json; charset=utf-8"
             elif route in {"/", "/index.html", "/review.js"}:
                 name = "index.html" if route == "/" else route[1:]
                 target = (root / name).resolve()
@@ -426,9 +444,10 @@ def make_handler(result: dict, static_root: Path):
     return Handler
 
 
-def serve(*, export_path: Path, static_root: Path = Path("ui/dist/review"), port: int = 8766) -> None:
+def serve(*, export_path: Path, static_root: Path = Path("ui/dist/review"), port: int = 8766, lenses_path: Path | None = None) -> None:
     result = load_export(export_path)
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(result, static_root))
+    lenses = load_lenses(lenses_path) if lenses_path is not None else None
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(result, static_root, lenses))
     def stop(_signum, _frame):
         threading.Thread(target=server.shutdown, daemon=True).start()
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
@@ -452,6 +471,7 @@ def main(argv: list[str] | None = None) -> int:
     srv.add_argument("--export", required=True, type=Path)
     srv.add_argument("--port", type=int, default=8766)
     srv.add_argument("--static", type=Path, default=Path("ui/dist/review"))
+    srv.add_argument("--lenses", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "export":
@@ -461,7 +481,7 @@ def main(argv: list[str] | None = None) -> int:
             export(package=args.package, inventory=args.inventory, out=args.out,
                    workspace=core.resolve_workspace(), context_window=args.context)
         else:
-            serve(export_path=args.export, static_root=args.static, port=args.port)
+            serve(export_path=args.export, static_root=args.static, port=args.port, lenses_path=args.lenses)
     except (ValueError, OSError, KeyError) as error:
         parser.exit(2, f"graph-review: {error}\n")
     return 0

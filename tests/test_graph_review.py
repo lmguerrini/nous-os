@@ -128,3 +128,34 @@ def test_synthetic_server_routes_and_digest(tmp_path, monkeypatch):
         graph_review.load_export(output)
     with pytest.raises(ValueError, match="digest mismatch"):
         graph_review.serve(export_path=output, static_root=static, port=0)
+
+
+def test_lens_sidecar_route_is_optional_and_read_once(tmp_path):
+    result = {"export_digest": "synthetic"}
+    static = tmp_path / "static"; static.mkdir()
+    lens_path = tmp_path / "lenses.json"
+    lens_data = {"schema": "nousos-review-lenses-1", "reading_mode": {"id": "synthetic"}}
+    lens_path.write_text(json.dumps(lens_data))
+    loaded = graph_review.load_lenses(lens_path)
+    lens_path.write_text("tampered after load")
+
+    def response(handler, path):
+        class Request:
+            def makefile(self, mode, _size=None): return BytesIO(b"") if "r" in mode else self.output
+            def sendall(self, data): self.output.write(data)
+        request = Request(); request.output = BytesIO()
+        server = type("SyntheticServer", (), {"server_name": "localhost", "server_port": 8766})()
+        class Routed(handler):
+            def handle(self):
+                self.raw_requestline = f"GET {path} HTTP/1.1\r\n".encode(); self.parse_request(); self.do_GET()
+        Routed(request, ("127.0.0.1", 1000), server)
+        return request.output.getvalue()
+
+    assert b"404 Not Found" in response(graph_review.make_handler(result, static), "/api/lenses.json")
+    assert b"application/json" in response(graph_review.make_handler(result, static), "/api/lenses.json")
+    supplied = response(graph_review.make_handler(result, static, loaded), "/api/lenses.json")
+    assert b"200 OK" in supplied and b"synthetic" in supplied
+    assert b"400 Bad Request" in response(graph_review.make_handler(result, static, loaded), "/api/lenses.json?x=1")
+    invalid = tmp_path / "invalid.json"; invalid.write_text('{"schema":"unknown"}')
+    with pytest.raises(ValueError, match="schema"):
+        graph_review.load_lenses(invalid)

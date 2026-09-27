@@ -1,53 +1,49 @@
-# Local graph review explorer (D-066)
+# D-067 review graph
 
-This explorer is a review projection of the D-065 connection cards and their cited NousOS source spans. It is not canon and does not define a final model. A connection card's tags and A/B/C/D class are provisional review conventions. The export marks each citation that fails byte verification and each record whose context cannot be read.
+The page is a read-only review projection over the D-066 export. It does not promote D-065 cards to canon or define an epistemology. The export format, digest and verified source spans remain unchanged. Spatial proximity is never an epistemic relation; only typed, attested edges support navigation.
 
-The classes are **una convenzione provvisoria di revisione (D-065), non un modello epistemico**: A = "dichiarazione esplicita del fondatore"; B = "conseguenza diretta sostenuta dal canone"; C = "interpretazione forte non approvata"; D = "analogia o ipotesi creativa".
+## Four independent axes
 
-## Model
+| Axis | Options | Changes |
+| --- | --- | --- |
+| Proiezione | 2D, 3D ortografico, 3D prospettico, Focus 3D | Camera and framing. Focus 3D requires a selection. |
+| Morfologia | Stellar, Neural, Mycelium | The product engine's rendering grammar; graph identities and relations stay fixed. |
+| Organizzazione | Flat, Indra | Layout and conversation membership windows, not a lens or a new relation. |
+| Lente | Registered reading mode and lenses from a sidecar | This export feeds no registered lens. The selector explains availability and never changes the graph. |
 
-| Node | Meaning and epistemic nature |
-| --- | --- |
-| `domain` | Atlasfield, ATLASvault, Quillmap, Orchardline, NousOS, FORGE, Showcase, Dossier, QRS. All nine are retained. Structural; `link_count` counts cards tagged with the domain. |
-| `connection` | D-065 card. Provisional class A/B/C/D with its rationale. |
-| `evidence` | Distinct cited span by source ID and byte range. Source fact of record, founder or assistant voice; repeated citations merge into one node. `verified` records byte comparison. |
-| `record` | Cited source record, source voice, date, digest, container, and bounded text context. |
-| `conversation` | Cited container. Inventory category and authentic project ID; the project name is explicitly inferred. Structural. |
-| `candidate` | Distilled proposal, with the package's standing and epistemic label. Canonical status is joined to `canon.assertions` when present. |
-| `canon` | Promoted canonical assertion, with its ID and text. |
+Black and white is the default. Optional semantic colour indicates standing; it does not encode the D-065 evidence classes. The main renderer groups seven export types into three readable families: **Aggregati** (domains and conversations, larger halo), **Concetti** (cards, proposals, canon, intermediate size), and **Fonti** (verified spans and records, smaller and quieter). The panel legend documents family size, halo, brightness, meaning and the attested relation line. The advanced **Provenienza/Debug** mode mounts the D-066 views and exposes their seven type shapes, standing colours and class codes as a technical view.
 
-| Directed edge | Attestation |
-| --- | --- |
-| connection → domain `links` | `d065-review-tagging`: the package's `linked` field, **not** founder wording. `Showcase / Dossier` expands to both domains. |
-| connection → evidence `supported_by` | `d065-card` |
-| evidence → record `quotes` | `provenance.span`; exact byte range |
-| record → conversation `in_conversation` | `knowledge.context`, when available |
-| conversation → domain `classified_in` | `inventory-v1 (project name inferred)`; A maps to Atlasfield and ATLASvault, B to FORGE. Other categories have no domain edge. |
-| evidence → candidate `distilled_as` | `d065-card` |
-| candidate → canon `promoted_as` | `canon.assertions` |
+**Stato dell'evidenza** is a provisional D-065 review convention: A, explicit founder statement; B, direct consequence supported by canon; C, strong unapproved interpretation; D, analogy or creative hypothesis. These are not epistemic modes or lenses. Their filter and rationale are in Avanzate; the main view shows no class letter or class colour. The panel uses `standingOf` to distinguish canon, proposal, review card, source and structure in plain Italian.
 
-An edge's `weight` is the count of distinct evidence rows behind it, usually one. It is **not epistemic strength**. Positions and distances are a visual layout, never relations. The nine domain nodes are pinned to an even 2D circle or a 3D Fibonacci sphere in label order. Other nodes use a seeded, 160-iteration force simulation with type-specific minimum distances and a final collision pass. Coordinates remain within `[-1, 1]`, preserving the anchor shape and comparable 3D axes. Parameters are stored in the export. Repeated spans across cards are one evidence node with multiple `supported_by` edges. Candidate versions are retained where the package or canonical assertion gives one. Replaced proposals absent from the package are not shown.
+## Focus and navigation
 
-Panel badges distinguish canonical assertions, promoted and other proposals, review cards, cited sources, and structural nodes. Relations carry no canonical badge; their `attested_by` value names the evidence path and the panel explains it in Italian. A card's "Evidenze canoniche collegate" counts its distinct evidence nodes whose candidate has a `promoted_as` link to canon.
+Selecting a node or relation follows actual visible edges. The first level is selected plus one hop, or a relation's endpoints plus one hop. The product view brightens that set, dims the rest and frames it within the canvas. **Espandi** adds one level with a 60-node cap; **Indietro** pops one focus frame; **Reimposta** clears selection and emphasis and fits. Search takes the same path. Axis changes preserve the focus stack. The right panel is outside the canvas and moves below it under 1100 px. The renderer receives the canvas alone and explicit zero insets because there are no canvas overlays.
 
-## Export and serve
+The proposed viewer target is `NavigationTarget = {level: "passage"|"work"|"constellation", id, parent_id?, snapshot_digest, source_edge_ids[]}`. Each level reports `{available, reason, targets}`. The panel breadcrumb links only targets backed by export edges:
 
-Set `PACKAGE` to the directory containing your review package's JSONL and `INVENTORY` to its inventory; both hold your own material and stay outside this repository. That directory must hold `COLLEGAMENTI-D065.jsonl`, one JSON card per line; `tests/test_graph_review.py` builds a synthetic package and inventory. The export discovers `WORKSPACE.env` next to `PACKAGE`, or accepts `NOUS_OS_GRAPH_WORKSPACE_ENV` to select a different env file. The output must be outside this repository.
+- **Passaggio**: an `evidence` span and its `record` context through `quotes`, with verified bytes, voice, date, byte range and digest. This is a NousOS review passage, not a public `Passage`.
+- **Opera**: unavailable as a Work. Conversations are dialogue containers with inventory category and inferred project name, without Work, Edition or Manifestation identity. A separate **Conversazione (contenitore, non un'opera)** link follows `record → in_conversation → conversation`.
+- **Costellazione**: available only as **Gruppo di revisione, non una costellazione epistemica**. It follows `conversation → classified_in → domain` or `card → links → domain`. The attestations are inventory or D-065 tagging, not an epistemic correspondence.
+
+Indra windows use `in_conversation` membership. Each cited record belongs to one conversation container, so these windows are disjoint by construction. Domains can overlap through several cards and conversations; they are not Indra windows. Flat perspective uses deterministic depth from the engine layout; Indra remains planar. A 3D projection therefore does not imply a new semantic layer.
+
+## Lens sidecar
+
+`serve --lenses <path>` optionally loads a JSON sidecar once at startup. It requires `schema: "nousos-review-lenses-1"` and serves `/api/lenses.json` from memory. Without it, the route returns JSON 404 and the page says **Registro delle lenti non fornito**. The sidecar carries `reading_mode`, `other_modes`, `lenses`, `planned`, `not_lenses`, `sources` and `notice`. The page validates their shape, displays the active reading mode as predefinita, and explains why other modes or lenses cannot be selected. Planned entries have no fabricated IDs. No private lens snapshot text is in this repository.
+
+## Export, serve and checks
+
+Set `PACKAGE` to your review package and `INVENTORY` to its inventory; both hold your own material and stay outside this repository. The package directory must hold `COLLEGAMENTI-D065.jsonl`, one JSON card per line, and the inventory is JSON Lines as well; `tests/test_graph_review.py` builds a synthetic package and inventory. The export discovers `WORKSPACE.env` next to `PACKAGE`, or accepts `NOUS_OS_GRAPH_WORKSPACE_ENV`. Write the output outside this repository.
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m nous_os.graph_review export \
-  --package "$PACKAGE" --inventory "$INVENTORY" --out "$TMPDIR/d066/export.json" --context 2
-cd ui && npm run build:review && cd ..
+  --package "$PACKAGE" --inventory "$INVENTORY" --out "$TMPDIR/d067/export.json" --context 2
+npm --prefix ui run build:review
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m nous_os.graph_review serve \
-  --export "$TMPDIR/d066/export.json" --port 8766 --static ui/dist/review
+  --export "$TMPDIR/d067/export.json" --lenses "$TMPDIR/d067/lenses.json" \
+  --port 8766 --static ui/dist/review
 ```
 
-Open `http://127.0.0.1:8766`. The server serves only `/`, `/index.html`, `/review.js`, `/api/export.json`, and `/api/health`. It checks the export digest before binding, rejects query strings, and never opens a NousOS store. The export records SHA-256 inputs, its own content digest (excluding `generated_at`), verification counts, model definitions, and layout parameters. A `.sha256` companion file holds the same digest. Two exports of unchanged inputs have the same digest.
+Omit `--lenses` when no approved sidecar exists. The loopback server serves only `/`, `/index.html`, `/review.js`, `/api/export.json`, `/api/lenses.json` and `/api/health`; it rejects query strings and checks the export digest before binding. The export uses only read grants (`provenance.span`, `knowledge.context`, `canon.assertions`), and source text stays in your export and the loopback response. The server opens no NousOS store.
 
-With the server running on any dataset, browser review captures can be produced with `REVIEW_EXPLORER=1 REVIEW_URL=http://127.0.0.1:8766 SHOTS_DIR="$TMPDIR/d066/shots" npx playwright test --project=review-explorer` from `ui/`. `SHOTS_DIR` must be outside the repository. The spec also writes `timings.json` with navigation, view-switch, and 2-second orbit frame counts.
-
-## Read-only boundary and limits
-
-Export uses the product Core with a grant containing only `Tier.READ`, and invokes only `provenance.span`, `knowledge.context`, and `canon.assertions`. It hashes the candidate and canon store generation files without modifying them. Source text appears only in the digest identified file outside the repository and in the loopback response. The browser requests no remote services. Serve reads the export and static bundle only. No route mutates stores, sources, relations, indexes, or canon.
-
-The shared product renderers (`ui/src/render2d`, `render3f`, `engine`, `scene`, `adapter`) lay their product grammar out on a plane (`z = 0` in `engine/layout.ts` and `scene/build.ts`). This separate review renderer uses the export's real 3D coordinates with OrbitControls. Neither projection implies a relation from spatial proximity. Context excerpts are capped at 700 characters per record; missing context remains marked. Only cited records and the D-065 cards appear; this is not an exhaustive NousOS graph.
+With the server running on any dataset, you can run `D067_VIEWER=1 REVIEW_URL=http://127.0.0.1:8766 SHOTS_DIR="$TMPDIR/d067/shots" npx playwright test --project=review-d067` from `ui/`. The suite refuses a repository-local shot directory, writes sixteen states with witnesses and pixel metrics to `SHOTS_DIR`, and checks label collision, focus framing, colour and visual differences. The old D-066 browser spec is superseded. Its export and unit tests remain as substrate checks.
