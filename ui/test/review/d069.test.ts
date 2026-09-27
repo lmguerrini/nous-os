@@ -18,7 +18,7 @@ mkdirSync(dirname(output), { recursive: true });
 writeFileSync(output, transformSync(readFileSync(cameraSource, "utf8"), { loader: "tsx", format: "esm" }).code);
 Object.assign(globalThis, { WebGL2RenderingContext: { BOOL: 1, BYTE: 2, UNSIGNED_BYTE: 3, SHORT: 4,
   UNSIGNED_SHORT: 5, INT: 6, UNSIGNED_INT: 7, FLOAT: 8 }, WebGLRenderingContext: { TRIANGLES: 9 } });
-const { arcballDrag, perspectivePanVector, presetOrientation, VIEW_DIRECTIONS, wheelZoomFactor } =
+const { arcballDrag, perspectivePanVector, presetOrientation, VIEW_DIRECTIONS, validOrbit, wheelZoomFactor } =
   await import(pathToFileURL(output).href) as typeof import("../../src/render3f/camera.tsx");
 
 const vector = (v: THREE.Vector3) => v.toArray().map((n) => Math.round(n * 1000) / 1000);
@@ -100,4 +100,12 @@ test("page bundle entry sources contain no obsolete lens UI", () => {
     readFileSync(new URL(`../../src/review/${name}`, import.meta.url), "utf8")).join("\n");
   const html = readFileSync(new URL("../../review/index.html", import.meta.url), "utf8");
   assert.doesNotMatch(sources + html, /lente|lens|noetico|Pythagorean|Lullian|Yi Jing|Brunian/i);
+});
+
+test("a restored 3D orbit keeps only a finite non-zero quaternion", () => {
+  assert.equal(validOrbit([0, 0, 0, 1]), true);
+  assert.equal(validOrbit([0, 0, 0, 0]), false);
+  assert.equal(validOrbit([0, Number.NaN, 0, 1]), false);
+  assert.equal(validOrbit([0, 0, 1]), false);
+  assert.equal(validOrbit("0,0,0,1"), false);
 });

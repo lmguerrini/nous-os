@@ -567,9 +567,20 @@ function copyCameraState(state: VisualStateCamera | SceneCameraRequest): ReviewC
     angle: state.angle,
     ratio: state.ratio,
     bounds: copyBounds(state.bounds),
-    ...(review.orbit ? { orbit: [...review.orbit] as [number, number, number, number] } : {}),
-    ...(review.targetZ === undefined ? {} : { targetZ: review.targetZ }),
+    ...(validOrbit(review.orbit) ? { orbit: normalisedOrbit(review.orbit) } : {}),
+    ...(Number.isFinite(review.targetZ) ? { targetZ: review.targetZ } : {}),
   };
+}
+
+/** A restored orbit is kept only as four finite components of a non-zero quaternion; anything else is dropped. */
+export function validOrbit(orbit: unknown): orbit is readonly [number, number, number, number] {
+  return Array.isArray(orbit) && orbit.length === 4 && orbit.every(Number.isFinite)
+    && Math.hypot(...(orbit as number[])) > Number.EPSILON;
+}
+
+function normalisedOrbit(orbit: readonly [number, number, number, number]): [number, number, number, number] {
+  const length = Math.hypot(...orbit);
+  return [orbit[0] / length, orbit[1] / length, orbit[2] / length, orbit[3] / length];
 }
 
 function copyBounds(bounds: Render3fFramingBox): { readonly x: readonly [number, number]; readonly y: readonly [number, number] } {
