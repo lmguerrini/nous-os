@@ -91,6 +91,8 @@ function content(parent: HTMLElement, node: ReviewNode, data: ReviewExport) {
     detail(parent, "Voce", node.role === "user" ? "Fondatore" : "Assistente");
     detail(parent, "Data", node.date);
     detail(parent, "Digest breve", String(node.snapshot_digest ?? "").slice(0, 12));
+    // A dynamic expansion that could not read the record context says so on the evidence itself.
+    detail(parent, "Contesto non disponibile", node.context_error);
   } else if (node.type === "record") {
     detail(parent, "Voce", node.role === "user" ? "Fondatore" : "Assistente");
     detail(parent, "Data", node.date);

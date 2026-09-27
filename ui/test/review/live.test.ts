@@ -63,4 +63,3 @@ test("placement scales with the supplied layout, so a new node never sits on its
   assert.ok(offset >= 3000 * 0.012, `offset ${offset} is at least 1.2% of the layout extent`);
   assert.ok(offset <= 3000 * 0.2, `offset ${offset} stays near its parent`);
 });
-

@@ -457,6 +457,9 @@ def dynamic_expand(hit: dict, query: str, invoke, limit: int) -> dict:
     graph = dynamic_hit(hit, query)
     nodes = graph["nodes"][:1]
     edges = []
+    # Every element of one expansion names the step that produced it, beside the query (if any) and its attestation.
+    step = f"expand:{nodes[0]['id']}"
+    origin = {"origin_query": query or None, "expansion_step": step}
     for citation in hit.get("citations", [])[:limit]:
         eid = f"evidence:{citation['source_id']}:{citation['start_byte']}:{citation['end_byte']}"
         try:
@@ -465,29 +468,29 @@ def dynamic_expand(hit: dict, query: str, invoke, limit: int) -> dict:
         except Exception as error:
             verified, failure = False, error_code(error)
         nodes.append({"id": eid, "type": "evidence", "label": citation["span"][:72],
-                      "epistemic": "source", "origin": "dynamic", "origin_query": query,
+                      "epistemic": "source", "origin": "dynamic", **origin,
                       "attested_by": "provenance.span", "verified": verified,
                       "verification_error": failure, **citation})
-        edges.append(dynamic_edge("supported_by", nodes[0]["id"], eid, "candidate.search", evidence_ids=[eid]))
+        edges.append(dynamic_edge("supported_by", nodes[0]["id"], eid, "candidate.search", evidence_ids=[eid], **origin))
         try:
             context = invoke("knowledge.context", {"source_id": citation["source_id"], "before": 2, "after": 2})
             rid = f"record:{citation['source_id']}"
             target = context["target"]
             nodes.append({"id": rid, "type": "record", "label": citation["source_id"],
-                          "epistemic": "source", "origin": "dynamic", "origin_query": query,
+                          "epistemic": "source", "origin": "dynamic", **origin,
                           "attested_by": "knowledge.context", "source_id": citation["source_id"],
                           "snapshot_digest": target.get("snapshot_digest"), "role": target.get("role"),
                           "date": target.get("created_at"),
                           "context": {key: excerpt(context[key]) if key == "target" else
                                       [excerpt(row) for row in context[key]] for key in ("before", "target", "after")},
                           "conversation_id": context.get("container")})
-            edges.append(dynamic_edge("quotes", eid, rid, "provenance.span", evidence_ids=[eid]))
+            edges.append(dynamic_edge("quotes", eid, rid, "provenance.span", evidence_ids=[eid], **origin))
             if context.get("container"):
                 vid = f"conversation:{context['container']}"
                 nodes.append({"id": vid, "type": "conversation", "label": context["container"],
-                              "epistemic": "structural", "origin": "dynamic", "origin_query": query,
+                              "epistemic": "structural", "origin": "dynamic", **origin,
                               "attested_by": "knowledge.context", "conversation_id": context["container"]})
-                edges.append(dynamic_edge("in_conversation", rid, vid, "knowledge.context", evidence_ids=[eid]))
+                edges.append(dynamic_edge("in_conversation", rid, vid, "knowledge.context", evidence_ids=[eid], **origin))
         except Exception as error:
             nodes[-1]["context_error"] = error_code(error)
     canonical = graph["nodes"][-1] if graph["nodes"][-1]["type"] == "canon" else None
@@ -495,8 +498,9 @@ def dynamic_expand(hit: dict, query: str, invoke, limit: int) -> dict:
         assertion = invoke("canon.assertions", {"assertion_id": hit["assertion_id"]})
         rows = assertion.get("assertions", [])
         if any(row.get("candidate_id") == hit["candidate_id"] and row.get("state") == "canonical" for row in rows):
-            nodes.append({**canonical, "attested_by": "canon.assertions"})
-            edges.append(dynamic_edge("promoted_as", nodes[0]["id"], canonical["id"], "canon.assertions"))
+            nodes.append({**canonical, "attested_by": "canon.assertions", **origin})
+            edges.append(dynamic_edge("promoted_as", nodes[0]["id"], canonical["id"], "canon.assertions", **origin))
+    nodes[0] = {**nodes[0], **origin}
     unique = {node["id"]: node for node in nodes}
     return {"nodes": list(unique.values()), "edges": edges,
             "relations": "No product relation operation filters by candidate; relation expansion unavailable."}

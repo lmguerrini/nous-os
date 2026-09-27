@@ -199,6 +199,9 @@ def test_live_routes_are_bounded_read_only_and_reverify(tmp_path, monkeypatch):
     assert any(node.get("verified") is True for node in expanded["nodes"])
     assert any(edge["type"] == "in_conversation" for edge in expanded["edges"])
     assert "no product relation" in expanded["relations"].lower()
+    for element in expanded["nodes"] + expanded["edges"]:
+        assert element["origin"] == "dynamic" and element["attested_by"]
+        assert element["expansion_step"] == "expand:candidate:candidate-synthetic" and "origin_query" in element
     for path in ("/api/search?q=x&bad=1", "/api/search?q=x&limit=21", "/api/search?q=x&q=y",
                  "/api/expand?id=bad", "/api/expand?id=candidate:candidate-synthetic&limit=41"):
         assert b"400" in response(active, path)[0]
@@ -246,3 +249,20 @@ def test_live_search_uses_product_core_against_temporary_store_without_writes(tm
     body = json.loads(raw.split(b"\r\n\r\n", 1)[1])
     assert body["results"][0]["nodes"][0]["id"] == f"candidate:{candidate_id}"
     assert before == {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in before}
+
+
+def test_expansion_keeps_a_context_failure_visible_on_its_evidence():
+    citation = {"source_id": "src-synthetic-one", "snapshot_digest": "0" * 64, "start_byte": 0, "end_byte": 5, "span": "hello"}
+    hit = {"candidate_id": "candidate-synthetic", "statement": "A synthetic statement", "citations": [citation],
+           "canonical_status": "non_canonical"}
+
+    def invoke(operation, arguments):
+        if operation == "provenance.span":
+            return arguments["citation"]["span"]
+        raise LookupError("no context for this synthetic source")
+
+    expanded = graph_review.dynamic_expand(hit, "synthetic", invoke, 5)
+    evidence = next(node for node in expanded["nodes"] if node["type"] == "evidence")
+    assert evidence["verified"] is True and evidence["context_error"] == "LookupError"
+    assert evidence["expansion_step"] == "expand:candidate:candidate-synthetic"
+    assert all(edge["expansion_step"] == "expand:candidate:candidate-synthetic" for edge in expanded["edges"])
