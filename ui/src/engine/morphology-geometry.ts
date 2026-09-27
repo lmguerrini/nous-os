@@ -18,8 +18,8 @@ export type MorphologySegment = {
   readonly sharedKey: string | null;
   readonly curvature: number;
 };
-export type MorphologyContainerInput = { readonly id: string; readonly level: number; readonly center: Coordinates; readonly radius: number };
-export type MorphologyContainerPath = { readonly id: string; readonly level: number; readonly points: readonly Coordinates[] };
+export type MorphologyContainerInput = { readonly id: string; readonly level: number; readonly center: Coordinates; readonly radius: number; readonly title?: string };
+export type MorphologyContainerPath = { readonly id: string; readonly level: number; readonly points: readonly Coordinates[]; readonly title?: string };
 /** World-space outlines shared by the front and rotated projections. */
 export function buildContainerGeometry(morphology: Morphology, containers: readonly MorphologyContainerInput[]): readonly MorphologyContainerPath[] {
   return containers.map(container => {
@@ -31,7 +31,7 @@ export function buildContainerGeometry(morphology: Morphology, containers: reado
       return { x: container.center.x + Math.cos(angle) * container.radius * ripple,
         y: container.center.y + Math.sin(angle) * container.radius * ripple, z: container.center.z };
     });
-    return { id: container.id, level: container.level, points };
+    return { id: container.id, level: container.level, points, ...(container.title ? { title: container.title } : {}) };
   });
 }
 

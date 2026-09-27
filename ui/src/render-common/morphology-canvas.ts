@@ -32,18 +32,29 @@ export function drawMorphologyCanvas(
   if (bounds.width === 0 || bounds.height === 0) return;
   context.setTransform(canvas.width / bounds.width, 0, 0, canvas.height / bounds.height, 0, 0);
   context.clearRect(0, 0, bounds.width, bounds.height);
-  // Containment is an outline behind every relation and glyph. Alpha rises gently at deeper levels.
+  // The nested circles are the hierarchy. Their fill and rim stay legible beneath sparse relations.
   const fieldIsLight = (style.fieldColor.match(/[\d.]+/g)?.map(Number).slice(0, 3).reduce((a, b) => a + b, 0) ?? 0) > 380;
   const ink = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
   for (const container of [...containers].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id))) {
     const points = container.points.map(project);
     if (!points.length) continue;
-    context.strokeStyle = `rgba(${ink}, ${clamp(0.15 + container.level * 0.045, 0, 0.4)})`;
-    context.lineWidth = geometry.morphology === "stellar" ? 0.8 : geometry.morphology === "neural" ? 1.2 : 1;
+    context.strokeStyle = `rgba(${ink}, ${clamp(0.76 - container.level * 0.09, 0.27, 0.7)})`;
+    context.lineWidth = (geometry.morphology === 'neural' ? 1.7 : 1.35) + (container.level === 1 ? 0.8 : 0);
     context.setLineDash(geometry.morphology === "stellar" ? [3, 5] : []);
     context.beginPath(); context.moveTo(points[0]!.x, points[0]!.y);
     for (let index = 1; index < points.length; index++) context.lineTo(points[index]!.x, points[index]!.y);
+    if (typeof context.fill === 'function') {
+      context.fillStyle = `rgba(${ink}, ${container.level === 1 ? 0.033 : 0.014})`;
+      context.fill();
+    }
     context.stroke();
+    const diameter = Math.hypot(points[0]!.x - points[32]!.x, points[0]!.y - points[32]!.y);
+    if (container.title && container.level <= 2 && diameter > 48 && typeof context.fillText === 'function') {
+      const top = points[48]!;
+      context.font = container.level === 1 ? 'bold 12px Arial' : '11px Arial';
+      context.fillStyle = `rgba(${ink}, ${container.level === 1 ? 0.9 : 0.65})`;
+      context.fillText(container.title.slice(0, 42), top.x + 6, top.y - 4);
+    }
   }
   context.setLineDash([]);
   const simplified = geometry.nodes.length > 1500;

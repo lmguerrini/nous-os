@@ -11,13 +11,14 @@ for (const projection of ["2d", "3d"] as const) for (const organization of ["fla
     // The overview shows domains only; open one domain and its largest visible conversation so three levels are drawn.
     await page.evaluate(async () => {
       const hook = (window as any).__d067;
-      await hook.expand("domain:quillmap");
+      const domain = hook.disclosure().nodes.find((node: any) => node.level === 1);
+      if (domain) await hook.expand(domain.id);
       const visible = Object.keys(hook.witness().nodeViewport ?? {}).filter((id) => id.startsWith("conversation:"));
       if (visible[0]) await hook.expand(visible[0]);
     });
     for (const morphology of ["stellar", "neural", "mycelium"] as const) {
       await page.evaluate(async axes => { await (window as any).__d067.setAxes(axes); },
-        { projection, organization, morphology, colour: "bw", labels: false });
+        { projection, organization, morphology, colour: "bw", labels: false, reading: "attested" });
       await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
       await expect(page.locator("#viewport canvas[data-morphology-canvas]")).toBeVisible();
       await writeFile(testInfo.outputPath(`${organization}-${projection}-${morphology}.png`), await page.locator("#viewport").screenshot());
@@ -30,8 +31,12 @@ for (const projection of ["2d", "3d"] as const) for (const organization of ["fla
           const distance = Math.hypot(outer.center.x - inner.center.x, outer.center.y - inner.center.y);
           return distance + inner.radius <= outer.radius + 1e-6;
         }));
-        return { count: containers.length, nested, source };
+        const pairs = witness.relations ?? [];
+        const domains = new Set((witness.disclosure?.nodes ?? []).filter((node: any) => node.level === 1).map((node: any) => node.id));
+        const domainLines = pairs.filter((edge: any) => domains.has(edge.source) && domains.has(edge.target));
+        return { count: containers.length, nested, source, domainLines: domainLines.length };
       });
+      expect(hierarchy.domainLines).toBeLessThanOrEqual(28);
       if (organization === "indra") {
         expect(hierarchy.count).toBeGreaterThan(0);
         expect(hierarchy.nested).toBe(true);
@@ -40,6 +45,9 @@ for (const projection of ["2d", "3d"] as const) for (const organization of ["fla
         expect(hierarchy.count).toBe(0);
         expect(hierarchy.source).toBe("flat-community");
       }
+      await page.evaluate(async () => { await (window as any).__d067.setAxes({ reading: "exploratory" }); });
+      const exploratory = await page.evaluate(() => (window as any).__d067.witness().relations.some((edge: any) => edge.class === "exploratory" && edge.type === "exploratory_lift"));
+      if (organization === "flat") expect(exploratory).toBe(true);
     }
   });
 }

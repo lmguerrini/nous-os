@@ -114,49 +114,22 @@ test("2500 visible nodes stay within layout budgets", () => {
 });
 
 
-test("attested crossings and overlaps improve on the former ring placeholder", () => {
+test("Flat forms organic communities distinct from recursive Indra", () => {
   const input = fixture(350);
-  const edges = Array.from({ length: 90 }, (_, index) => ({ id: `a${index}`,
-    source: `n${30 + index * 17 % 320}`, target: `n${30 + (index * 97 + 41) % 320}`,
-    class: "attested" as const }));
-  const flat = computeLayout({ ...input, edges }).positions;
-  const byId = new Map(input.nodes.map(node => [node.id, node]));
-  const children = new Map<string | null, LayoutNode[]>();
-  for (const node of input.nodes) { const parent = node.parent && byId.has(node.parent) ? node.parent : null; const list = children.get(parent) ?? []; list.push(node); children.set(parent, list); }
-  for (const list of children.values()) list.sort((a, b) => a.id.localeCompare(b.id));
-  const hash = (value: string) => { let result = 2166136261; for (const character of value) result = Math.imul(result ^ character.charCodeAt(0), 16777619); return result >>> 0; };
-  const placeholder = new Map<string, Point3>();
-  const place = (parent: string | null, x: number, y: number, radius: number): void => {
-    const list = children.get(parent) ?? [];
-    const turn = hash(parent ?? "root") % 360 * Math.PI / 180;
-    list.forEach((node, index) => {
-      const angle = turn + index / list.length * Math.PI * 2;
-      const point = { x: x + Math.cos(angle) * radius, y: y + Math.sin(angle) * radius, z: 0 };
-      placeholder.set(node.id, point);
-      place(node.id, point.x, point.y, radius / Math.max(2.5, Math.sqrt(list.length) * 1.4));
-    });
-  };
-  place(null, 0, 0, 500);
-  const orientation = (a: Point3, b: Point3, c: Point3) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-  const crossing = (positions: ReadonlyMap<string, Point3>) => {
-    let total = 0;
-    for (let a = 0; a < edges.length; a++) for (let b = a + 1; b < edges.length; b++) {
-      const left = edges[a]!, right = edges[b]!;
-      if (new Set([left.source, left.target, right.source, right.target]).size < 4) continue;
-      const p = positions.get(left.source)!, q = positions.get(left.target)!;
-      const r = positions.get(right.source)!, t = positions.get(right.target)!;
-      if (orientation(p, q, r) * orientation(p, q, t) < 0 && orientation(r, t, p) * orientation(r, t, q) < 0) total++;
-    }
-    return total;
-  };
-  const overlaps = (positions: ReadonlyMap<string, Point3>) => {
-    let total = 0;
-    for (let a = 0; a < input.nodes.length; a++) for (let b = a + 1; b < input.nodes.length; b++)
-      if (xy(positions.get(input.nodes[a]!.id)!, positions.get(input.nodes[b]!.id)!) < 20) total++;
-    return total;
-  };
-  assert.ok(crossing(flat) < crossing(placeholder));
-  assert.ok(overlaps(flat) < overlaps(placeholder));
+  const flat = computeLayout(input);
+  const indra = computeLayout({ ...input, organization: "indra" });
+  assert.equal(flat.containers.length, 0);
+  assert.ok(indra.containers.length > 0);
+  const displacements = input.nodes.map(node => xy(flat.positions.get(node.id)!, indra.positions.get(node.id)!));
+  assert.ok(displacements.filter(distance => distance > 100).length > input.nodes.length * 0.75);
+  const points = [...flat.positions.values()];
+  for (let a = 0; a < points.length; a++) for (let b = a + 1; b < points.length; b++)
+    assert.ok(xy(points[a]!, points[b]!) > 20);
+  const deltas = input.nodes.filter(node => node.parent === "n5").map(node => {
+    const point = flat.positions.get(node.id)!;
+    return Math.round(Math.atan2(point.y - flat.positions.get("n5")!.y, point.x - flat.positions.get("n5")!.x) * 100);
+  });
+  assert.ok(new Set(deltas).size > 5);
 });
 
 test("distinct canvas strokes container outlines in both projected views", () => {
@@ -172,4 +145,14 @@ test("distinct canvas strokes container outlines in both projected views", () =>
       { fieldColor: "rgb(0, 0, 0)", nodes: new Map(), edges: new Map() }, undefined, container, projection);
     assert.equal(strokes, 1);
   }
+});
+
+test('2500 independent roots avoid quadratic force work', () => {
+  const nodes: LayoutNode[] = Array.from({ length: 2500 }, (_, index) => ({
+    id: `root:${index}`, level: 1, parent: null, size: 0.2, domains: [],
+  }));
+  const start = performance.now();
+  const result = computeLayout({ nodes, edges: [], organization: 'flat', morphology: 'stellar' });
+  assert.equal(result.positions.size, nodes.length);
+  assert.ok(performance.now() - start <= 300);
 });

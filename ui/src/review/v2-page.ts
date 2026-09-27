@@ -3,166 +3,663 @@ import type { GraphEdge, GraphManifest } from './graph-v2.ts';
 import { computeLayout } from './layout-v2.ts';
 import type { Point3 } from './layout-v2.ts';
 import { adaptV2 } from './v2-adapter.ts';
-import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PAGE, v2Path, v2Reading, v2Visible } from './v2-core.ts';
+import { projectRelations } from './v2-relations.ts';
+import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
+import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
 import { createProductView } from './product-view.ts';
 import type { V2Category } from './palette.ts';
 import type { Axes, ProductView } from './view-contract.ts';
 import type { AppearanceOptions } from '../engine/presentation-options.ts';
 import type { PaletteValues } from './palette.ts';
-
-const element = (id:string) => document.getElementById(id)!;
-const line = (host:HTMLElement,label:string,value:unknown) => { if (value===undefined||value===null||value==='') return;
-  const row=document.createElement('div');row.className='detail-row';const dt=document.createElement('dt');dt.textContent=label;
-  const dd=document.createElement('dd');dd.textContent=typeof value==='string'?value:JSON.stringify(value);row.append(dt,dd);host.append(row); };
-const words:Record<string,string>={domain:'dominio',project:'progetto',work:'opera',conversation:'conversazione',proposal:'proposta',passage:'passaggio',CONCEPT:'concetto',DECISION:'decisione',REQUIREMENT:'requisito',OPEN_QUESTION:'questione aperta',CHANGE_OVER_TIME:'cambiamento nel tempo',RELATIONSHIP:'relazione',CONTRADICTION:'contraddizione',canon:'canonica',proposal_status:'proposta non canonica',overlay:'distillazione D-069 · non canonica',user:'fondatore',assistant:'assistente'};
-const term=(s:string|undefined)=>s ? words[s]??s.toLocaleLowerCase('it') : '';
-const citation=(host:HTMLElement,prefix:string,value:unknown) => { if (!value||typeof value!=='object') return;
-  const c=value as Record<string,unknown>;line(host,`${prefix} · fonte`,c.source_id);line(host,`${prefix} · digest`,c.snapshot_digest);
-  line(host,`${prefix} · byte verificati`,`${c.start_byte}–${c.end_byte}`);line(host,`${prefix} · passaggio`,c.span); };
-export type SearchHit = {id:string;level:number;title:string;match_field:string};
+const element = (id: string) => document.getElementById(id)!;
+const line = (host: HTMLElement, label: string, value: unknown) => {
+    if (value === undefined || value === null || value === '')
+        return;
+    const row = document.createElement('div');
+    row.className = 'detail-row';
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    dd.textContent = typeof value === 'string' ? value : JSON.stringify(value);
+    row.append(dt, dd);
+    host.append(row);
+};
+const words: Record<string, string> = {
+    domain: 'dominio', project: 'progetto', work: 'opera', conversation: 'conversazione',
+    proposal: 'proposta', passage: 'passaggio', CONCEPT: 'concetto', DECISION: 'decisione',
+    REQUIREMENT: 'requisito', OPEN_QUESTION: 'questione aperta',
+    CHANGE_OVER_TIME: 'cambiamento nel tempo', RELATIONSHIP: 'relazione',
+    CONTRADICTION: 'contraddizione', canon: 'canonica',
+    proposal_status: 'proposta non canonica', overlay: 'distillazione D-069 · non canonica',
+    user: 'fondatore', assistant: 'assistente',
+};
+const term = (s: string | undefined) => s ? words[s] ?? s.toLocaleLowerCase('it') : '';
+const citation = (host: HTMLElement, prefix: string, value: unknown) => {
+    if (!value || typeof value !== 'object')
+        return;
+    const c = value as Record<string, unknown>;
+    line(host, `${prefix} · fonte`, c.source_id);
+    line(host, `${prefix} · digest`, c.snapshot_digest);
+    line(host, `${prefix} · byte verificati`, `${c.start_byte}–${c.end_byte}`);
+    line(host, `${prefix} · passaggio`, c.span);
+};
+export type SearchHit = {
+    id: string;
+    level: number;
+    title: string;
+    match_field: string;
+};
 export class V2Page {
-  readonly history=new DisclosureHistory(); readonly index:V2Index; readonly manifest:GraphManifest;
-  private view:ProductView|null=null; private v2Colours:Partial<Record<V2Category,string>>; private axes:Axes; private appearance:AppearanceOptions; private palette:PaletteValues;
-  private selected:string|null=null; private detailCache=new Map<string,Record<string,unknown>>();
-  private positions=new Map<string,Point3>(); private containers:unknown[]=[]; private layoutSource='placeholder';
-  private lastArrangement='';
-  private auto=new Set<string>(); private zoomOn=true; private overviewRatio:number|null=null; private pending=Promise.resolve(); private results:SearchHit[]=[];
-  private searchTotal=0; private whyResult:ReturnType<typeof v2Path>|null=null; private whyRequest:[string,string]|null=null; private capMessage=false;
-  constructor(manifest:GraphManifest,index:V2Index,axes:Axes,appearance:AppearanceOptions,palette:PaletteValues,colours:Partial<Record<V2Category,string>>={}){this.manifest=manifest;this.index=index;this.axes=axes;this.appearance=appearance;this.palette=palette;this.v2Colours=colours;
-    for(const n of index.nodes)if(n.level===1&&index.nodes.some(child=>child.level===2&&child.parent===n.id))this.history.state.expanded.add(n.id);
-  }
-  static async load(manifest:GraphManifest,axes:Axes,appearance:AppearanceOptions,palette:PaletteValues,colours:Partial<Record<V2Category,string>>={}):Promise<V2Page>{
-    element('status').textContent='Caricamento del grafo… indice';
-    const response=await fetch('/api/graph/index');if(!response.ok)throw new Error(`Indice del grafo: HTTP ${response.status}`);
-    const index=validateIndex(await response.json()); const page=new V2Page(manifest,{nodes:index.nodes,edges:index.edges},axes,appearance,palette,colours);
-    await page.refresh();return page;
-  }
-  private run(action:()=>Promise<void>):Promise<void>{const task=this.pending.then(action);this.pending=task.catch(()=>{});
-    return task.catch(e=>{const message=e instanceof Error?e.message:String(e);element('status').textContent=`Errore: ${message}`;
-      element('error').hidden=false;element('error').replaceChildren(document.createTextNode(message));const retry=document.createElement('button');
-      retry.textContent='Riprova';retry.onclick=()=>{void this.refresh()};element('error').append(retry);throw e;});}
-  private visible(){return v2Visible(this.index,this.history.state,this.auto);}
-  private async detail(id:string){let found=this.detailCache.get(id);if(found)return found;
-    const response=await fetch(`/api/graph/node?id=${encodeURIComponent(id)}`);if(!response.ok)throw new Error(`Dettaglio: HTTP ${response.status}`);
-    found=await response.json() as Record<string,unknown>;this.detailCache.set(id,found);return found;}
-  private async passages(id:string,offset=0){const response=await fetch(`/api/graph/children?id=${encodeURIComponent(id)}&offset=${offset}&limit=${V2_PAGE}`);
-    if(!response.ok)throw new Error(`Passaggi: HTTP ${response.status}`);const body=await response.json() as {children:Record<string,unknown>[]};
-    const parent=this.index.nodes.find(n=>n.id===id)!;const ids=new Set(this.index.nodes.map(n=>n.id));
-    for(const item of body.children){const passage:V2Node={id:String(item.id),level:5,kind:'passage',parent:id,parents:[id],domains:parent.domains,
-      title:String(item.title??'Passaggio'),title_full:String(item.title??'Passaggio'),importance:{value:0,components:{}},size:0,
-      counts:{children:0,descendants:0,canon:0,passages:0}};
-      if(!ids.has(passage.id)){this.index.nodes.push(passage);ids.add(passage.id);}this.detailCache.set(passage.id,{detail:item});
+    readonly history = new DisclosureHistory();
+    readonly index: V2Index;
+    readonly manifest: GraphManifest;
+    private view: ProductView | null = null;
+    private v2Colours: Partial<Record<V2Category, string>>;
+    private axes: Axes;
+    private appearance: AppearanceOptions;
+    private palette: PaletteValues;
+    private selected: string | null = null;
+    private hovered: string | null = null;
+    private hoveredEdge: string | null = null;
+    private relationDetail: RelationDetail = 'essential';
+    private renderedRelations = new Map<string, LiftedRelation>();
+    private previousVisible = new Set<string>();
+    private detailCache = new Map<string, Record<string, unknown>>();
+    private positions = new Map<string, Point3>();
+    private containers: unknown[] = [];
+    private layoutSource = 'placeholder';
+    private lastArrangement = '';
+    private auto = new Set<string>();
+    private zoomOn = true;
+    private overviewRatio: number | null = null;
+    private pending = Promise.resolve();
+    private results: SearchHit[] = [];
+    private searchTotal = 0;
+    private whyResult: ReturnType<typeof v2Path> | null = null;
+    private whyRequest: [string, string] | null = null;
+    private capMessage = false;
+    constructor(manifest: GraphManifest, index: V2Index, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}) {
+        this.manifest = manifest;
+        this.index = index;
+        this.axes = axes;
+        this.appearance = appearance;
+        this.palette = palette;
+        this.v2Colours = colours;
+        for (const n of index.nodes)
+            if (n.level === 1 && index.nodes.some(child => child.level === 2 && child.parent === n.id))
+                this.history.state.expanded.add(n.id);
     }
-  }
-  refresh():Promise<void>{return this.run(async()=>{
-    const disclosed=this.visible();const ids=new Set(disclosed.nodes.map(n=>n.id));
-    const result=computeLayout({nodes:disclosed.nodes.map(n=>({id:n.id,level:n.level,parent:n.parent,size:n.size,domains:n.domains})),
-      edges:disclosed.edges.map(e=>({id:e.id,source:e.source,target:e.target,class:e.class})),organization:this.axes.organization,morphology:this.axes.morphology,previous:this.positions});
-    // The layout owns stability: Flat keeps every previous position and places only new nodes; Indra re-packs the whole
-    // tree so that every container still holds its children.
-    const next=new Map<string,Point3>();for(const n of disclosed.nodes)next.set(n.id,result.positions.get(n.id)??{x:0,y:0,z:0});
-    this.positions=next;this.containers=[...result.containers];this.layoutSource=result.source;
-    const containment:GraphEdge[]=disclosed.nodes.filter(n=>n.parent&&ids.has(n.parent)).map(n=>({id:`contains:${n.id}`,source:n.parent!,target:n.id,class:'attested',type:'contains',directed:true,evidence:[]}));
-    const shown=v2Reading([...disclosed.edges,...containment],this.axes.reading);const adapted=adaptV2(disclosed.nodes,shown,next,this.manifest.digest);
-    const old=this.view?.readCamera();this.view?.destroy();this.view=null;
-    this.view=await createProductView({container:element('render-root'),data:adapted.data,v2Prepared:adapted.prepared,v2Colours:this.v2Colours,layoutContainers:result.containers,visibleNodeIds:ids,axes:this.axes,appearance:this.appearance,customPalette:this.palette,
-      insets:{top:0,right:0,bottom:0,left:0},reducedMotion:true,
-      text:id=>{const n=disclosed.nodes.find(n=>n.id===id)!;return {short:n.title,full:n.title_full,family:n.level<=3?'aggregate':n.level===5?'source':'concept'};},
-      events:{onPick:target=>{if(target){if(target.shiftKey && this.selected && this.selected!==target.id){this.why(this.selected,target.id);}else void this.select(target.id);}},onDoublePick:target=>{if(target)void this.expand(target.id);},onHover:()=>{}}});
-    // A camera only carries over when the arrangement and the projection stay the same: another organization or projection
-    // places the nodes elsewhere and at another scale, and Indra re-packs on every step, so its camera is framed afresh.
-    const arrangement=`${this.axes.organization}|${this.axes.projection}`;
-    const keep=old&&arrangement===this.lastArrangement&&this.axes.organization==='flat';
-    this.lastArrangement=arrangement;
-    if(keep){try{this.view.restoreCamera(old);}catch{await this.view.fit();}}
-    if(this.overviewRatio===null){const camera=this.view.readCamera() as {ratio?:number}|null;this.overviewRatio=camera?.ratio??1;}
-    if(this.selected)this.view.select(this.selected);
-    element('status').textContent='Grafo pronto';const total=this.index.nodes.filter(n=>n.level!==5).length;
-    element('counter').textContent=`${disclosed.nodes.length}/${total} nodi · livelli ${[1,2,3,4,5].map(l=>`${l}: ${disclosed.counts[l]}`).join(' · ')} · limite ${V2_CAP}`;
-    element('focus-chip').hidden=!shown.some(e=>e.class==='exploratory');
-    (element('back') as HTMLButtonElement).disabled=this.history.undoDepth===0;
-    (element('v2-undo') as HTMLButtonElement).disabled=this.history.undoDepth===0;
-    (element('v2-redo') as HTMLButtonElement).disabled=this.history.redoDepth===0;
-    this.capMessage=disclosed.capped;element('v2-cap').textContent=disclosed.capped?`Limite di ${V2_CAP} nodi visibili raggiunto. Comprimi un ramo per continuare.`:'';
-    this.renderPanel();
-  });}
-  async expand(id:string){const n=this.index.nodes.find(n=>n.id===id);if(!n)return;
-    if(n.level===4&&!this.index.nodes.some(child=>child.parent===id))await this.passages(id);
-    this.history.expand(id);await this.refresh();}
-  async more(id:string){const n=this.index.nodes.find(n=>n.id===id);if(n?.level===4)await this.passages(id,this.index.nodes.filter(child=>child.parent===id).length);this.history.more(id);await this.refresh();}
-  async collapse(id:string){this.history.collapse(id,this.index);await this.refresh();}
-  async undo(){this.history.undo();await this.refresh();} async redo(){this.history.redo();await this.refresh();}
-  async reveal(id:string){if(!this.index.nodes.some(n=>n.id===id))throw new Error('Nodo non trovato');
-    this.history.reveal(id,this.index);
-    if(!this.visible().nodes.some(n=>n.id===id)){
-      const byId=new Map(this.index.nodes.map(n=>[n.id,n]));const ancestors:string[]=[];let child=byId.get(id);
-      while(child?.parent){ancestors.unshift(child.parent);child=byId.get(child.parent);}
-      this.auto.clear();this.history.change(state=>{state.expanded=new Set(ancestors);for(const key of [...state.pages.keys()])if(!ancestors.includes(key))state.pages.delete(key);});
+    static async load(manifest: GraphManifest, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}): Promise<V2Page> {
+        element('status').textContent = 'Caricamento del grafo\u2026 indice';
+        const response = await fetch('/api/graph/index');
+        if (!response.ok)
+            throw new Error(`Indice del grafo: HTTP ${response.status}`);
+        const index = validateIndex(await response.json());
+        const page = new V2Page(manifest, { nodes: index.nodes, edges: index.edges }, axes, appearance, palette, colours);
+        await page.refresh();
+        return page;
     }
-    await this.refresh();await this.select(id);await this.view?.frame([id]);}
-  async select(id:string){this.selected=id;this.view?.select(id);
-    element("expand").toggleAttribute("disabled",!this.index.nodes.some(n=>n.id===id));
-    (element("projection-focus") as HTMLButtonElement).disabled=this.axes.projection!=="3d"||!this.index.nodes.some(n=>n.id===id);
-    (element("fullscreen-focus") as HTMLButtonElement).disabled=this.axes.projection!=="3d"||!this.index.nodes.some(n=>n.id===id);if(this.index.nodes.some(n=>n.id===id))await this.detail(id);this.renderPanel();}
-  async search(q:string){if(!q.trim()){this.results=[];this.searchTotal=0;this.renderPanel();return []}
-    const response=await fetch(`/api/graph/search?q=${encodeURIComponent(q)}&limit=50`);if(!response.ok)throw new Error(`Ricerca: HTTP ${response.status}`);
-    const data=await response.json() as {results:SearchHit[];total:number};this.results=data.results;this.searchTotal=data.total;this.renderPanel();return data.results;}
-  why(a:string,b:string){this.whyRequest=[a,b];const ids=new Set(this.visible().nodes.map(n=>n.id));this.whyResult=v2Path(this.index,a,b,ids);this.renderPanel();return this.whyResult;}
-  async setAxes(value:Partial<Axes>){this.axes={...this.axes,...value};await this.refresh();
-    (element("projection-focus") as HTMLButtonElement).disabled=this.axes.projection!=="3d"||!this.selected;
-    (element("fullscreen-focus") as HTMLButtonElement).disabled=this.axes.projection!=="3d"||!this.selected;}
-  async setAppearance(value:AppearanceOptions){this.appearance=value;await this.refresh();}
-  async setPalette(value:PaletteValues){this.palette=value;await this.refresh();}
-  async setCategoryColours(value:Partial<Record<V2Category,string>>){this.v2Colours=value;await this.refresh();}
-  async fit(){await this.view?.fit();} async reset(){this.selected=null;this.view?.select(null);this.renderPanel();await this.view?.resetCamera();}
-  async frame(id:string){await this.view?.frame([id]);}
-  camera(){return this.view?.camera()??null;} viewPreset(name:Parameters<ProductView['viewPreset']>[0]){this.view?.viewPreset(name);}
-  setInsets(value:Parameters<ProductView['setInsets']>[0]){this.view?.setInsets(value);}
-  setSemanticZoom(on:boolean){this.zoomOn=on;if(!on){this.auto.clear();void this.refresh();}}
-  get semanticZoomEnabled(){return this.zoomOn;}
-  tickZoom(){if(!this.zoomOn||!this.view)return;const witness=this.view.witness();const next=new Set<string>();const rect=witness.visibleRect;
-    for(const n of this.visible().nodes)if(n.level<4){const p=witness.nodeViewport[n.id];if(!p||p.x<rect.left||p.x>rect.left+rect.width||p.y<rect.top||p.y>rect.top+rect.height)continue;
-      const camera=this.view.readCamera() as {ratio?:number}|null;const zoom=camera?.ratio?Math.max(0.1,(this.overviewRatio??camera.ratio)/camera.ratio):1;
-      if(semanticZoom(n.level,nodeRadius(n,this.appearance.nodeScale)*zoom))next.add(n.id);}
-    if(next.size!==this.auto.size||[...next].some(id=>!this.auto.has(id))){this.auto=next;void this.refresh();}}
-  disclosure(){const shown=this.visible();return {expanded:[...this.history.state.expanded],visible:shown.nodes.length,nodes:shown.nodes.map(n=>({id:n.id,level:n.level,parent:n.parent})),counts:shown.counts,cap:V2_CAP,capped:shown.capped,hidden:Object.fromEntries(shown.hidden),undoDepth:this.history.undoDepth,redoDepth:this.history.redoDepth};}
-  dataset(){return {mode:'v2',digest:this.manifest.digest,counts:this.manifest.counts};}
-  witness(){return {...this.view?.witness(),layoutSource:this.layoutSource,containers:this.containers,dataset:this.dataset(),disclosure:this.disclosure(),capMessage:this.capMessage};}
-  get selectedId(){return this.selected;}
-  private renderPanel(){const host=element('details');host.replaceChildren();const shown=this.visible();
-    const overview=document.createElement('section');overview.id='v2-overview';const oh=document.createElement('h3');oh.textContent='Domini · conversazioni';overview.append(oh);
-    for(const domain of this.index.nodes.filter(n=>n.level===1)){const button=document.createElement('button');button.className='relation';
-      const conversations=this.index.nodes.filter(n=>n.level===3&&n.domains.includes(domain.id.replace(/^domain:/,''))).length;
-      button.textContent=`${domain.title} · ${conversations} conversazioni`;button.onclick=()=>{void this.select(domain.id)};overview.append(button);}host.append(overview);
-    const controls=document.createElement('section');controls.id='v2-controls';line(controls,'Nodi visibili',`${shown.nodes.length}/${this.index.nodes.filter(n=>n.level!==5).length} · limite ${V2_CAP}`);
-    for(const [label,action,disabled] of [['Annulla',()=>this.undo(),this.history.undoDepth===0],['Ripeti',()=>this.redo(),this.history.redoDepth===0]] as const){const button=document.createElement('button');button.textContent=label;button.disabled=disabled;button.onclick=()=>{void action()};controls.append(button);}host.append(controls);
-    const search=document.createElement('section');search.id='v2-results';const head=document.createElement('h3');head.textContent=`Ricerca · ${this.searchTotal} risultati`;search.append(head);
-    const byId=new Map(this.index.nodes.map(n=>[n.id,n]));for(const hit of this.results){const n=byId.get(hit.id);const button=document.createElement('button');button.className='relation';const conversation=(()=>{let cursor=n;while(cursor&&cursor.level!==3)cursor=cursor.parent?byId.get(cursor.parent):undefined;return cursor?.title??'';})();
-      button.textContent=`${hit.title} · ${term(n?.kind)} · ${n?.domains.join(', ')??''} · ${conversation}`;button.onclick=()=>{void this.reveal(hit.id)};search.append(button);}host.append(search);
-    if(!this.selected){const p=document.createElement('p');p.textContent='Seleziona un nodo o una relazione.';host.append(p);return;}
-    const n=byId.get(this.selected),e=this.index.edges.find(e=>e.id===this.selected)??(this.selected.startsWith('contains:')?(()=>{const child=byId.get(this.selected.slice(9));return child?.parent?{id:this.selected,source:child.parent,target:child.id,class:'attested' as const,type:'contains',directed:true,evidence:[]}:undefined;})():undefined);
-    if(n){const path:V2Node[]=[];let cursor:V2Node|undefined=n;while(cursor){path.unshift(cursor);cursor=cursor.parent?byId.get(cursor.parent):undefined;}
-      const nav=document.createElement('nav');nav.className='breadcrumbs';nav.textContent=path.map(item=>term(item.kind)).join(' › ');host.append(nav);
-      const title=document.createElement('h2');title.textContent=n.title;title.title=n.title_full;host.append(title);
-      const dl=document.createElement('dl');host.append(dl);line(dl,'Titolo completo',n.title_full);line(dl,'Tipo',term(n.kind));line(dl,'Sottotipo',term(n.subkind));line(dl,'Stato',n.status==='proposal'?words.proposal_status:term(n.status));line(dl,'Data',italianDate(n.date));line(dl,'Dominio/i',n.domains.join(', '));line(dl,'Conversazione',path.find(item=>item.level===3)?.title);
-      const response=this.detailCache.get(n.id);const d=(response?.detail??response?.node??response??{}) as Record<string,unknown>;
-      line(dl,'Enunciato distillato (EN)',d.statement);line(dl,'Ambito',d.scope);line(dl,'Motivo',d.why);line(dl,'Produttore',d.producer);line(dl,'Origine',d.origin);line(dl,'Data della proposta',italianDate(String(d.proposed_at??'')));
-      const citations=d.citations as unknown[]|undefined;citations?.forEach((c,i)=>citation(dl,`Provenienza ${i+1}`,c));
-      if(n.level===5){const c=d.citation as Record<string,unknown>|undefined;citation(dl,'Passaggio verificato',c);const rec=d.record as Record<string,unknown>|undefined;
-        line(dl,'Voce',term(String(rec?.role??'')));line(dl,'Data del record',italianDate(String(rec?.date??'')));line(dl,'Contesto precedente',d.context_before);line(dl,'Contesto successivo',d.context_after);}
-      if(n.counts.children||n.counts.passages){const button=document.createElement('button');button.textContent=this.history.state.expanded.has(n.id)?'Comprimi':'Espandi';button.onclick=()=>{void(this.history.state.expanded.has(n.id)?this.collapse(n.id):this.expand(n.id))};host.append(button);}
-      if(shown.hidden.has(n.id)&&this.history.state.expanded.has(n.id)&&(n.level===3||n.level===4)){const button=document.createElement('button');button.textContent=`Mostra altri ${Math.min(V2_PAGE,shown.hidden.get(n.id)!)}`;button.onclick=()=>{void this.more(n.id)};host.append(button);}
-    } else if(e){const h=document.createElement('h2');h.textContent='Perché sono collegati?';host.append(h);this.whyResult=v2Path(this.index,e.source,e.target,new Set(shown.nodes.map(n=>n.id)));this.relation(host,e,byId);}
-    if(n){for(const kind of ['attested','exploratory'] as const){const relations=this.index.edges.filter(e=>(e.source===n.id||e.target===n.id)&&e.class===kind);
-      if(!relations.length)continue;const h=document.createElement('h3');h.textContent=kind==='attested'?'Relazioni attestate':'Relazioni esplorative · non canoniche';host.append(h);
-      for(const relation of relations){const button=document.createElement('button');button.className='relation';button.textContent=`${relation.source===n.id?'→':'←'} ${term(relation.type)} · ${byId.get(relation.source===n.id?relation.target:relation.source)?.title??''}`;button.onclick=()=>{void this.select(relation.id)};host.append(button);this.relation(host,relation,byId);}}
+    private run(action: () => Promise<void>): Promise<void> {
+        const task = this.pending.then(action);
+        this.pending = task.catch(() => { });
+        return task.catch(e => {
+            const message = e instanceof Error ? e.message : String(e);
+            element('status').textContent = `Errore: ${message}`;
+            element('error').hidden = false;
+            element('error').replaceChildren(document.createTextNode(message));
+            const retry = document.createElement('button');
+            retry.textContent = 'Riprova';
+            retry.onclick = () => { void this.refresh(); };
+            element('error').append(retry);
+            throw e;
+        });
     }
-    if(this.whyRequest&&!this.whyResult){const p=document.createElement('p');p.textContent='Nessun percorso fra questi nodi nel grafo caricato.';host.append(p);}
-    if(this.whyResult){const h=document.createElement('h3');h.textContent='Perché sono collegati?';host.append(h);for(const edge of this.whyResult.edges)this.relation(host,edge,byId);}
-  }
-  private relation(host:HTMLElement,e:GraphEdge|{class:'attested';type:'contains';source:string;target:string},byId:Map<string,V2Node>){const dl=document.createElement('dl');host.append(dl);
-    line(dl,'Relazione',`${e.class==='exploratory'?'esplorativa · non canonica':'attestata'} · ${term(e.type)}`);
-    line(dl,'Direzione',`${byId.get(e.source)?.title??e.source} ${'directed' in e && e.directed===false?'↔':'→'} ${byId.get(e.target)?.title??e.target}`);
-    if('explanation'in e){line(dl,'Spiegazione',e.explanation);line(dl,'Inferenza',e.inference);line(dl,'Confidenza',e.confidence);line(dl,'Evidenza',e.evidence);if('a_sources' in e)line(dl,'Fonti lato A',e.a_sources);if('b_sources' in e)line(dl,'Fonti lato B',e.b_sources);line(dl,'Contro evidenza',e.counter_evidence);}}
+    private visible() { return v2Visible(this.index, this.history.state, this.auto); }
+    private async detail(id: string) {
+        let found = this.detailCache.get(id);
+        if (found)
+            return found;
+        const response = await fetch(`/api/graph/node?id=${encodeURIComponent(id)}`);
+        if (!response.ok)
+            throw new Error(`Dettaglio: HTTP ${response.status}`);
+        found = await response.json() as Record<string, unknown>;
+        this.detailCache.set(id, found);
+        return found;
+    }
+    private async passages(id: string, offset = 0) {
+        const response = await fetch(`/api/graph/children?id=${encodeURIComponent(id)}&offset=${offset}&limit=${V2_PAGE}`);
+        if (!response.ok)
+            throw new Error(`Passaggi: HTTP ${response.status}`);
+        const body = await response.json() as {
+            children: Record<string, unknown>[];
+        };
+        const parent = this.index.nodes.find(n => n.id === id)!;
+        const ids = new Set(this.index.nodes.map(n => n.id));
+        for (const item of body.children) {
+            const passage: V2Node = {
+                id: String(item.id), level: 5, kind: 'passage', parent: id, parents: [id],
+                domains: parent.domains, title: String(item.title ?? 'Passaggio'),
+                title_full: String(item.title ?? 'Passaggio'),
+                importance: { value: 0, components: {} }, size: 0,
+                counts: { children: 0, descendants: 0, canon: 0, passages: 0 },
+            };
+            if (!ids.has(passage.id)) {
+                this.index.nodes.push(passage);
+                ids.add(passage.id);
+            }
+            this.detailCache.set(passage.id, { detail: item });
+        }
+    }
+    refresh(): Promise<void> {
+        return this.run(async () => {
+            const disclosed = this.visible();
+            const ids = new Set(disclosed.nodes.map(n => n.id));
+            const visibleById = new Map(disclosed.nodes.map(node => [node.id, node]));
+            const layoutEdges = projectRelations(
+                this.index.nodes, this.index.edges, ids, this.axes.reading, 'flat', 'essential',
+            ).edges;
+            const result = computeLayout({
+                nodes: disclosed.nodes.map(n => ({
+                    id: n.id, level: n.level, parent: n.parent, size: n.size, domains: n.domains,
+                })),
+                edges: layoutEdges.map(e => ({
+                    id: e.id, source: e.source, target: e.target, class: e.class,
+                })),
+                organization: this.axes.organization,
+                morphology: this.axes.morphology,
+                previous: this.positions,
+            });
+            const next = new Map<string, Point3>();
+            for (const n of disclosed.nodes)
+                next.set(n.id, result.positions.get(n.id) ?? { x: 0, y: 0, z: 0 });
+            this.positions = next;
+            this.containers = result.containers.map(c => ({ ...c, title: visibleById.get(c.id)?.title }));
+            this.layoutSource = result.source;
+            const active = this.hovered
+                ?? this.renderedRelations.get(this.selected ?? '')?.source
+                ?? this.index.edges.find(edge => edge.id === this.selected)?.source
+                ?? this.selected;
+            const relations = projectRelations(
+                this.index.nodes, this.index.edges, ids, this.axes.reading,
+                this.axes.organization, this.relationDetail, active,
+            );
+            this.renderedRelations = new Map(relations.byId);
+            const shown = relations.edges;
+            const adapted = adaptV2(disclosed.nodes, shown, next, this.manifest.digest);
+            const added = disclosed.nodes.filter(n => !this.previousVisible.has(n.id));
+            this.previousVisible = ids;
+            const old = this.view?.readCamera();
+            this.view?.destroy();
+            this.view = null;
+            this.view = await createProductView({ container: element('render-root'), data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: this.containers as typeof result.containers, visibleNodeIds: ids, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, text: id => { const n = visibleById.get(id)!; return { short: n.title, full: n.title_full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                        if (target.shiftKey && this.selected && this.selected !== target.id) {
+                            this.why(this.selected, target.id);
+                        }
+                        else
+                            void this.select(target.id);
+                    } }, onDoublePick: target => { if (target)
+                        void this.expand(target.id); }, onHover: target => {
+                        const node = target?.kind === 'node' ? target.id : null;
+                        const edge = target?.kind === 'edge' ? target.id : null;
+                        const changed = node !== this.hovered;
+                        this.hovered = node;
+                        this.hoveredEdge = edge;
+                        this.updateEmphasis();
+                        this.edgeTooltip(target);
+                        if (changed && this.axes.organization === 'indra' && this.relationDetail === 'essential')
+                            void this.refresh();
+                    } }
+            });
+            const arrangement = `${this.axes.organization}|${this.axes.projection}`;
+            const keep = old && arrangement === this.lastArrangement && this.axes.organization === 'flat';
+            this.lastArrangement = arrangement;
+            if (keep) {
+                try {
+                    this.view.restoreCamera(old);
+                }
+                catch {
+                    await this.view.fit();
+                }
+            }
+            if (this.overviewRatio === null) {
+                const camera = this.view.readCamera() as {
+                    ratio?: number;
+                } | null;
+                this.overviewRatio = camera?.ratio ?? 1;
+            }
+            if (this.selected)
+                this.view.select(this.selected);
+            this.updateEmphasis();
+            if (added.length && this.positions.size > added.length)
+                this.pulse(added.map(n => n.id));
+            element('status').textContent = 'Grafo pronto';
+            const total = this.index.nodes.filter(n => n.level !== 5).length;
+            element('counter').textContent = `${disclosed.nodes.length}/${total} nodi · livelli ${[1, 2, 3, 4, 5].map(l => `${l}: ${disclosed.counts[l]}`).join(' \u00B7 ')} · limite ${V2_CAP}`;
+            element('focus-chip').hidden = !shown.some(e => e.class === 'exploratory');
+            (element('back') as HTMLButtonElement).disabled = this.history.undoDepth === 0;
+            (element('v2-undo') as HTMLButtonElement).disabled = this.history.undoDepth === 0;
+            (element('v2-redo') as HTMLButtonElement).disabled = this.history.redoDepth === 0;
+            this.capMessage = disclosed.capped;
+            element('v2-cap').textContent = disclosed.capped ? `Limite di ${V2_CAP} nodi visibili raggiunto. Comprimi un ramo per continuare.` : '';
+            this.renderPanel();
+        });
+    }
+    async expand(id: string) {
+        const before = new Set(this.visible().nodes.map(n => n.id));
+        const n = this.index.nodes.find(n => n.id === id);
+        if (!n)
+            return;
+        if (n.level === 4 && !this.index.nodes.some(child => child.parent === id))
+            await this.passages(id);
+        this.history.expand(id);
+        await this.refresh();
+        const fresh = this.visible().nodes.filter(node => !before.has(node.id)).map(node => node.id);
+        await this.view?.frame([id, ...fresh]);
+    }
+    async more(id: string) {
+        const node = this.index.nodes.find(item => item.id === id);
+        if (node?.level === 4) {
+            const offset = this.index.nodes.filter(child => child.parent === id).length;
+            await this.passages(id, offset);
+        }
+        this.history.more(id);
+        await this.refresh();
+    }
+    async collapse(id: string) {
+        this.history.collapse(id, this.index);
+        await this.refresh();
+        await this.view?.frame([id]);
+    }
+    async undo() {
+        this.history.undo();
+        await this.refresh();
+    }
+    async redo() {
+        this.history.redo();
+        await this.refresh();
+    }
+    async reveal(id: string) {
+        if (!this.index.nodes.some(n => n.id === id))
+            throw new Error('Nodo non trovato');
+        this.history.reveal(id, this.index);
+        if (!this.visible().nodes.some(n => n.id === id)) {
+            const byId = new Map(this.index.nodes.map(n => [n.id, n]));
+            const ancestors: string[] = [];
+            let child = byId.get(id);
+            while (child?.parent) {
+                ancestors.unshift(child.parent);
+                child = byId.get(child.parent);
+            }
+            this.auto.clear();
+            this.history.change(state => { state.expanded = new Set(ancestors); for (const key of [...state.pages.keys()])
+                if (!ancestors.includes(key))
+                    state.pages.delete(key); });
+        }
+        await this.refresh();
+        await this.select(id);
+        await this.view?.frame([id]);
+    }
+    async select(id: string) {
+        this.selected = id;
+        this.view?.select(id);
+        this.updateEmphasis();
+        if (this.axes.organization === 'indra' && this.relationDetail === 'essential')
+            await this.refresh();
+        element("expand").toggleAttribute("disabled", !this.index.nodes.some(n => n.id === id));
+        (element("projection-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.index.nodes.some(n => n.id === id);
+        (element("fullscreen-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.index.nodes.some(n => n.id === id);
+        if (this.index.nodes.some(n => n.id === id)) {
+            await this.detail(id);
+            const near = new Set([id]);
+            for (const edge of this.renderedRelations.values())
+                if (edge.source === id || edge.target === id) {
+                    near.add(edge.source);
+                    near.add(edge.target);
+                }
+            await this.view?.frame([...near]);
+        }
+        this.renderPanel();
+    }
+    async search(q: string) {
+        if (!q.trim()) {
+            this.results = [];
+            this.searchTotal = 0;
+            this.renderPanel();
+            return [];
+        }
+        const response = await fetch(`/api/graph/search?q=${encodeURIComponent(q)}&limit=50`);
+        if (!response.ok)
+            throw new Error(`Ricerca: HTTP ${response.status}`);
+        const data = await response.json() as {
+            results: SearchHit[];
+            total: number;
+        };
+        this.results = data.results;
+        this.searchTotal = data.total;
+        this.renderPanel();
+        return data.results;
+    }
+    why(a: string, b: string) {
+        this.whyRequest = [a, b];
+        const ids = new Set(this.visible().nodes.map(node => node.id));
+        this.whyResult = v2Path(this.index, a, b, ids);
+        this.renderPanel();
+        return this.whyResult;
+    }
+    async setRelationDetail(value: RelationDetail) { this.relationDetail = value; await this.refresh(); }
+    private updateEmphasis() {
+        const id = this.hovered ?? this.selected;
+        const relation = this.renderedRelations.get(this.hoveredEdge ?? '') ?? this.renderedRelations.get(id ?? '');
+        if (!id && !relation) {
+            this.view?.setEmphasis(null);
+            return;
+        }
+        const neighbours = new Set(relation ? [relation.source, relation.target] : [id!]);
+        for (const edge of this.renderedRelations.values())
+            if (edge.source === id || edge.target === id) {
+                neighbours.add(edge.source);
+                neighbours.add(edge.target);
+            }
+        this.view?.setEmphasis(neighbours);
+    }
+    private edgeTooltip(target: {
+        kind: 'node' | 'edge';
+        id: string;
+        x: number;
+        y: number;
+    } | null) {
+        let tip = document.getElementById('v2-edge-tooltip');
+        if (!tip) {
+            tip = document.createElement('div');
+            tip.id = 'v2-edge-tooltip';
+            document.body.append(tip);
+        }
+        const relation = target?.kind === 'edge' ? this.renderedRelations.get(target.id) : undefined;
+        tip.hidden = !relation;
+        if (!relation)
+            return;
+        tip.textContent = relation.type === 'co_membership' ? `${relation.count} conversazioni in comune` : `${relation.class === 'exploratory' ? 'Esplorativa \u00B7 non canonica' : 'Attestata'} · ${relation.count} relazioni`;
+        tip.style.left = `${Math.min(innerWidth - 220, (target!).x + 12)}px`;
+        tip.style.top = `${Math.min(innerHeight - 35, (target!).y + 12)}px`;
+    }
+    private pulse(ids: string[]) {
+        const host = element('render-root');
+        const layer = document.createElement('div');
+        layer.className = 'v2-new-nodes';
+        Object.assign(layer.style, { position: 'absolute', inset: '0', pointerEvents: 'none', zIndex: '24' });
+        const witness = this.view?.witness();
+        for (const id of ids.slice(0, 80)) {
+            const point = witness?.nodeViewport[id];
+            if (!point)
+                continue;
+            const mark = document.createElement('span');
+            mark.className = 'v2-pulse';
+            mark.style.left = `${point.x}px`;
+            mark.style.top = `${point.y}px`;
+            layer.append(mark);
+        }
+        host.append(layer);
+        window.setTimeout(() => layer.remove(), 1000);
+    }
+    async setAxes(value: Partial<Axes>) {
+        this.axes = { ...this.axes, ...value };
+        await this.refresh();
+        (element("projection-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;
+        (element("fullscreen-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;
+    }
+    async setAppearance(value: AppearanceOptions) { this.appearance = value; await this.refresh(); }
+    async setPalette(value: PaletteValues) { this.palette = value; await this.refresh(); }
+    async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
+    async fit() { await this.view?.fit(); }
+    async reset() { this.selected = null; this.view?.select(null); this.renderPanel(); await this.view?.resetCamera(); }
+    async frame(id: string) { await this.view?.frame([id]); }
+    camera() {
+        return this.view?.camera() ?? null;
+    }
+    viewPreset(name: Parameters<ProductView['viewPreset']>[0]) { this.view?.viewPreset(name); }
+    setInsets(value: Parameters<ProductView['setInsets']>[0]) { this.view?.setInsets(value); }
+    setSemanticZoom(on: boolean) {
+        this.zoomOn = on;
+        if (!on) {
+            this.auto.clear();
+            void this.refresh();
+        }
+    }
+    get semanticZoomEnabled() { return this.zoomOn; }
+    tickZoom() {
+        if (!this.zoomOn || !this.view)
+            return;
+        const witness = this.view.witness();
+        const next = new Set<string>();
+        const rect = witness.visibleRect;
+        for (const n of this.visible().nodes)
+            if (n.level < 4) {
+                const p = witness.nodeViewport[n.id];
+                if (!p || p.x < rect.left || p.x > rect.left + rect.width || p.y < rect.top || p.y > rect.top + rect.height)
+                    continue;
+                const camera = this.view.readCamera() as {
+                    ratio?: number;
+                } | null;
+                const zoom = camera?.ratio ? Math.max(0.1, (this.overviewRatio ?? camera.ratio) / camera.ratio) : 1;
+                if (semanticZoom(n.level, nodeRadius(n, this.appearance.nodeScale) * zoom))
+                    next.add(n.id);
+            }
+        if (next.size !== this.auto.size || [...next].some(id => !this.auto.has(id))) {
+            this.auto = next;
+            void this.refresh();
+        }
+    }
+    disclosure() {
+        const shown = this.visible();
+        return {
+            expanded: [...this.history.state.expanded],
+            visible: shown.nodes.length,
+            nodes: shown.nodes.map(node => ({ id: node.id, level: node.level, parent: node.parent })),
+            counts: shown.counts,
+            cap: V2_CAP,
+            capped: shown.capped,
+            hidden: Object.fromEntries(shown.hidden),
+            undoDepth: this.history.undoDepth,
+            redoDepth: this.history.redoDepth,
+        };
+    }
+    dataset() {
+        return { mode: 'v2', digest: this.manifest.digest, counts: this.manifest.counts };
+    }
+    witness() {
+        return {
+            ...this.view?.witness(),
+            layoutSource: this.layoutSource,
+            containers: this.containers,
+            dataset: this.dataset(),
+            disclosure: this.disclosure(),
+            capMessage: this.capMessage,
+            relations: [...this.renderedRelations.values()].map(edge => ({
+                id: edge.id, source: edge.source, target: edge.target,
+                type: edge.type, class: edge.class, count: edge.count,
+            })),
+        };
+    }
+    get selectedId() { return this.selected; }
+    private renderPanel() {
+        const host = element('details');
+        host.replaceChildren();
+        const shown = this.visible();
+        const overview = document.createElement('section');
+        overview.id = 'v2-overview';
+        const oh = document.createElement('h3');
+        oh.textContent = 'Domini \u00B7 conversazioni';
+        overview.append(oh);
+        for (const domain of this.index.nodes.filter(n => n.level === 1)) {
+            const button = document.createElement('button');
+            button.className = 'relation';
+            const conversations = this.index.nodes.filter(n => n.level === 3 && n.domains.includes(domain.id.replace(/^domain:/, ''))).length;
+            button.textContent = `${domain.title} · ${conversations} conversazioni`;
+            button.onclick = () => { void this.select(domain.id); };
+            overview.append(button);
+        }
+        host.append(overview);
+        const controls = document.createElement('section');
+        controls.id = 'v2-controls';
+        line(controls, 'Nodi visibili', `${shown.nodes.length}/${this.index.nodes.filter(n => n.level !== 5).length} · limite ${V2_CAP}`);
+        for (const [label, action, disabled] of [['Annulla', () => this.undo(), this.history.undoDepth === 0], ['Ripeti', () => this.redo(), this.history.redoDepth === 0]] as const) {
+            const button = document.createElement('button');
+            button.textContent = label;
+            button.disabled = disabled;
+            button.onclick = () => { void action(); };
+            controls.append(button);
+        }
+        host.append(controls);
+        const search = document.createElement('section');
+        search.id = 'v2-results';
+        const head = document.createElement('h3');
+        head.textContent = `Ricerca · ${this.searchTotal} risultati`;
+        search.append(head);
+        const byId = new Map(this.index.nodes.map(n => [n.id, n]));
+        for (const hit of this.results) {
+            const n = byId.get(hit.id);
+            const button = document.createElement('button');
+            button.className = 'relation';
+            const conversation = (() => { let cursor = n; while (cursor && cursor.level !== 3)
+                cursor = cursor.parent ? byId.get(cursor.parent) : undefined; return cursor?.title ?? ''; })();
+            button.textContent = `${hit.title} · ${term(n?.kind)} · ${n?.domains.join(', ') ?? ''} · ${conversation}`;
+            button.onclick = () => { void this.reveal(hit.id); };
+            search.append(button);
+        }
+        host.append(search);
+        if (!this.selected) {
+            const p = document.createElement('p');
+            p.textContent = 'Seleziona un nodo o una relazione.';
+            host.append(p);
+            return;
+        }
+        const n = byId.get(this.selected), e = this.renderedRelations.get(this.selected) ?? this.index.edges.find(e => e.id === this.selected) ?? (this.selected.startsWith('contains:') ? (() => { const child = byId.get(this.selected.slice(9)); return child?.parent ? { id: this.selected, source: child.parent, target: child.id, class: 'attested' as const, type: 'contains', directed: true, evidence: [] } : undefined; })() : undefined);
+        if (n) {
+            const path: V2Node[] = [];
+            let cursor: V2Node | undefined = n;
+            while (cursor) {
+                path.unshift(cursor);
+                cursor = cursor.parent ? byId.get(cursor.parent) : undefined;
+            }
+            const nav = document.createElement('nav');
+            nav.className = 'breadcrumbs';
+            nav.textContent = path.map(item => term(item.kind)).join(' \u203A ');
+            host.append(nav);
+            const title = document.createElement('h2');
+            title.textContent = n.title;
+            title.title = n.title_full;
+            host.append(title);
+            const dl = document.createElement('dl');
+            host.append(dl);
+            line(dl, 'Titolo completo', n.title_full);
+            line(dl, 'Tipo', term(n.kind));
+            line(dl, 'Sottotipo', term(n.subkind));
+            line(dl, 'Stato', n.status === 'proposal' ? words.proposal_status : term(n.status));
+            line(dl, 'Data', italianDate(n.date));
+            line(dl, 'Dominio/i', n.domains.join(', '));
+            line(dl, 'Conversazione', path.find(item => item.level === 3)?.title);
+            const response = this.detailCache.get(n.id);
+            const d = (response?.detail ?? response?.node ?? response ?? {}) as Record<string, unknown>;
+            line(dl, 'Enunciato distillato (EN)', d.statement);
+            line(dl, 'Ambito', d.scope);
+            line(dl, 'Motivo', d.why);
+            line(dl, 'Produttore', d.producer);
+            line(dl, 'Origine', d.origin);
+            line(dl, 'Data della proposta', italianDate(String(d.proposed_at ?? '')));
+            const citations = d.citations as unknown[] | undefined;
+            citations?.forEach((c, i) => citation(dl, `Provenienza ${i + 1}`, c));
+            if (n.level === 5) {
+                const c = d.citation as Record<string, unknown> | undefined;
+                citation(dl, 'Passaggio verificato', c);
+                const rec = d.record as Record<string, unknown> | undefined;
+                line(dl, 'Voce', term(String(rec?.role ?? '')));
+                line(dl, 'Data del record', italianDate(String(rec?.date ?? '')));
+                line(dl, 'Contesto precedente', d.context_before);
+                line(dl, 'Contesto successivo', d.context_after);
+            }
+            if (n.counts.children || n.counts.passages) {
+                const button = document.createElement('button');
+                button.textContent = this.history.state.expanded.has(n.id) ? 'Comprimi' : 'Espandi';
+                button.onclick = () => { void (this.history.state.expanded.has(n.id) ? this.collapse(n.id) : this.expand(n.id)); };
+                host.append(button);
+            }
+            if (shown.hidden.
+                has(n.id) && this.history.state.expanded.has(n.id) && (n.level === 3 || n.level === 4)) {
+                const button = document.createElement('button');
+                button.textContent = `Mostra altri ${Math.min(V2_PAGE, shown.hidden.get(n.id)!)}`;
+                button.onclick = () => { void this.more(n.id); };
+                host.append(button);
+            }
+        }
+        else if (e) {
+            const h = document.createElement('h2');
+            h.textContent = 'Perch\u00E9 sono collegati?';
+            host.append(h);
+            this.whyResult = v2Path(this.index, e.source, e.target, new Set(shown.nodes.map(n => n.id)));
+            if ('underlying' in e) {
+                const lifted = e as LiftedRelation;
+                if (lifted.underlying.length) line(host, 'Relazioni raccolte', lifted.underlying.length);
+                if (e.type === 'co_membership')
+                    line(host, 'Significato', `${lifted.count} conversazioni in comune`);
+                for (const source of lifted.underlying)
+                    this.relation(host, source, byId);
+            }
+            else
+                this.relation(host, e, byId);
+        }
+        if (n) {
+            for (const kind of ['attested', 'exploratory'] as const) {
+                const relations = this.index.edges.filter(e => (e.source === n.id || e.target === n.id) && e.class === kind);
+                if (!relations.length)
+                    continue;
+                const h = document.createElement('h3');
+                h.textContent = kind === 'attested' ? 'Relazioni attestate' : 'Relazioni esplorative \u00B7 non canoniche';
+                host.append(h);
+                for (const relation of relations) {
+                    const button = document.createElement('button');
+                    button.className = 'relation';
+                    button.textContent = `${relation.source === n.id ? '\u2192' : '\u2190'} ${term(relation.type)} · ${byId.get(relation.source === n.id ? relation.target : relation.source)?.title ?? ''}`;
+                    button.onclick = () => { void this.select(relation.id); };
+                    host.append(button);
+                    this.relation(host, relation, byId);
+                }
+            }
+        }
+        if (this.whyRequest && !this.whyResult) {
+            const p = document.createElement('p');
+            p.textContent = 'Nessun percorso fra questi nodi nel grafo caricato.';
+            host.append(p);
+        }
+        if (this.whyResult) {
+            const h = document.createElement('h3');
+            h.textContent = 'Perch\u00E9 sono collegati?';
+            host.append(h);
+            for (const edge of this.whyResult.edges)
+                this.relation(host, edge, byId);
+        }
+    }
+    private relation(host: HTMLElement, e: GraphEdge | {
+        class: 'attested';
+        type: 'contains';
+        source: string;
+        target: string;
+    }, byId: Map<string, V2Node>) {
+        const dl = document.createElement('dl');
+        host.append(dl);
+        line(dl, 'Relazione', `${e.class === 'exploratory' ? 'esplorativa \u00B7 non canonica' : 'attestata'} · ${term(e.type)}`);
+        line(dl, 'Direzione', `${byId.
+            get(e.source)?.title ?? e.source} ${'directed' in e && e.directed === false ? '\u2194' : '\u2192'} ${byId.get(e.target)?.title ?? e.target}`);
+        if ('explanation' in e) {
+            line(dl, 'Spiegazione', e.explanation);
+            line(dl, 'Inferenza', e.inference);
+            line(dl, 'Confidenza', e.confidence);
+            line(dl, 'Evidenza', e.evidence);
+            if ('a_sources' in e)
+                line(dl, 'Fonti lato A', e.a_sources);
+            if ('b_sources' in e)
+                line(dl, 'Fonti lato B', e.b_sources);
+            line(dl, 'Contro evidenza', e.counter_evidence);
+        }
+    }
 }

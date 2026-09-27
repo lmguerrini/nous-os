@@ -62,6 +62,7 @@ export const createProductView: CreateProductView = async (input) => {
   const indraAnchors = input.v2Prepared ? base.indra : placeDynamic(base.indra, input.data);
   const fullDepth = input.v2Prepared ? base.flat : placeDynamic(base.depth, input.data);
   const nodesById = new Map(input.data.nodes.map((node) => [node.id, node]));
+  const edgesById = new Map(input.data.edges.map((edge) => [edge.id, edge]));
   const degree = new Map<string, number>();
   for (const edge of input.data.edges) {
     degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
@@ -270,7 +271,7 @@ export const createProductView: CreateProductView = async (input) => {
     handle = null;
     const all = graph();
     const subset = { ...all, edges: all.edges.filter((edge) => {
-      const original = input.data.edges.find((item) => item.id === edge.id)!;
+      const original = edgesById.get(edge.id)!;
       const kind = input.v2Prepared ? original.attested_by as "attested" | "exploratory" : relationClass(original, nodesById);
       return input.v2Prepared ? axes.reading !== "attested" || kind === "attested" : relationVisible(kind, axes.reading);
     }) };
@@ -284,11 +285,16 @@ export const createProductView: CreateProductView = async (input) => {
       emphasisIds: emphasis,
       appearance,
       edges: new Map(subset.edges.map((edge) => {
-        const original = input.data.edges.find((item) => item.id === edge.id)!;
+        const original = edgesById.get(edge.id)!;
         const exploratory = (input.v2Prepared ? original.attested_by : relationClass(original, nodesById)) === "exploratory";
+        const relation = original.v2 as import('./v2-relations.ts').LiftedRelation | undefined;
+        const coMembership = input.v2Prepared && relation?.type === 'co_membership';
+        const containment = input.v2Prepared && relation?.type === 'contains';
         return [edge.id, { stroke: exploratory ? "dashed" as const : "solid" as const,
-          opacityPermille: axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
-          widthPermille: exploratory ? Math.round(SCENE_PERMILLE_SCALE * 1.2) : SCENE_PERMILLE_SCALE,
+          opacityPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (exploratory ? 0.9 : coMembership ? 0.36 : containment ? 0.28 : axes.reading === 'attested' ? 0.45 : 0.18))
+            : axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
+          widthPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (coMembership ? Math.min(1.2, (relation?.width ?? 1) * 0.55) : containment ? 0.55 : exploratory ? 1.7 * (relation?.width ?? 1) : relation?.width ?? 1))
+            : exploratory ? Math.round(SCENE_PERMILLE_SCALE * 1.2) : SCENE_PERMILLE_SCALE,
           ...(axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
         }] as const;
       })),

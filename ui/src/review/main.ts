@@ -680,6 +680,7 @@ get<HTMLElement>("gizmo").querySelectorAll<HTMLButtonElement>("button[data-axis-
   button.addEventListener("click", () => { void viewPreset(({ x: "destra", y: "sinistra", z: "alto" } as const)[button.dataset.axisEnd as "x" | "y" | "z"]); });
 });
 get<HTMLInputElement>("semantic-zoom").addEventListener("change", event => v2?.setSemanticZoom((event.target as HTMLInputElement).checked));
+get<HTMLSelectElement>("v2-relation-detail").addEventListener("change", event => { void v2?.setRelationDetail((event.target as HTMLSelectElement).value as "essential" | "all"); });
 get<HTMLButtonElement>("v2-undo").addEventListener("click", () => { void v2?.undo(); });
 get<HTMLButtonElement>("v2-redo").addEventListener("click", () => { void v2?.redo(); });
 get<HTMLButtonElement>("labels").addEventListener("click", () => {
@@ -822,6 +823,7 @@ async function load() {
     if (manifest.schema !== "nousos.review-graph/2") throw new Error("Manifest del grafo non valido");
     v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours);
     get<HTMLElement>("v2-controls-top").hidden = false;
+    get<HTMLElement>("v2-relation-control").hidden = false;
     syncCustomColours();
     get<HTMLElement>("notice").textContent = "Grafo distillato D-069";
     updateInsets();
