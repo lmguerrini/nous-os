@@ -208,6 +208,17 @@ export const createProductView: CreateProductView = async (input) => {
         full: chosen || hovered,
       });
     }
+    // A selected container can have dozens of neighbours; name the few nearest to it so labels do not bury the
+    // structure (the others keep their emphasis and are named on hover or zoom).
+    const neighbourLabels = candidates.filter(item => item.reason === "neighbour");
+    if (neighbourLabels.length > 16 && selected) {
+      const origin = candidates.find(item => item.id === selected);
+      const keep = new Set(neighbourLabels
+        .map(item => ({ id: item.id, distance: origin ? Math.hypot(item.x - origin.x, item.y - origin.y) : 0 }))
+        .sort((a, b) => a.distance - b.distance || a.id.localeCompare(b.id)).slice(0, 16).map(item => item.id));
+      for (let index = candidates.length - 1; index >= 0; index--)
+        if (candidates[index]!.reason === "neighbour" && !keep.has(candidates[index]!.id)) candidates.splice(index, 1);
+    }
     const context = document.createElement("canvas").getContext("2d");
     const measured = (text: string, maxWidth: number, maxLines: number) => {
       const font = `${appearance.labelSizePx}px Arial`;
@@ -346,7 +357,9 @@ export const createProductView: CreateProductView = async (input) => {
         const coMembership = input.v2Prepared && relation?.type === 'co_membership';
         const containment = input.v2Prepared && relation?.type === 'contains';
         return [edge.id, { stroke: exploratory ? "dashed" as const : "solid" as const,
-          opacityPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (exploratory ? 0.94 : coMembership ? 0.62 : containment ? 0.52 : axes.reading === 'attested' ? 0.68 : 0.36))
+          // In Indra 3D the pearls carry the structure; semantic arcs recede so contours and names stay readable.
+          opacityPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (axes.organization === 'indra' && axes.projection === '3d' && !exploratory ? 0.6 : 1)
+            * (exploratory ? 0.94 : coMembership ? 0.62 : containment ? 0.52 : axes.reading === 'attested' ? 0.68 : 0.36))
             : axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
           widthPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (coMembership ? Math.min(1.4, (relation?.width ?? 1) * 0.75) : containment ? 0.85 : exploratory ? 1.7 * (relation?.width ?? 1) : 1.2 * (relation?.width ?? 1)))
             : exploratory ? Math.round(SCENE_PERMILLE_SCALE * 1.2) : SCENE_PERMILLE_SCALE,

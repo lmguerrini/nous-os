@@ -487,14 +487,17 @@ export class V2Page {
     get semanticZoomEnabled() { return this.zoomOn; }
     /** After an automatic refit, check once that every visible node landed in view (the panel and insets can settle
      * after the fit) and refit a single time if not, unless the user has taken the camera meanwhile. */
-    private confirmFit(view: ProductView): void {
+    private confirmFit(view: ProductView, attempt = 0): void {
+        // The side panel can change the canvas width after the fit (its column follows its content), so check again a
+        // few times while the view settles.
         window.setTimeout(() => {
             if (view !== this.view || this.userMovedSinceFit) return;
             const witness = view.witness();
             const rect = witness.visibleRect;
             const outside = Object.values(witness.nodeViewport).some(point => !(point.x >= rect.left - 1 && point.x <= rect.left + rect.width + 1
                 && point.y >= rect.top - 1 && point.y <= rect.top + rect.height + 1));
-            if (outside) void this.fit();
+            if (!outside) return;
+            void this.fit().then(() => { if (attempt < 2) this.confirmFit(view, attempt + 1); });
         }, 700);
     }
     /** A camera move the page makes itself is never read as the user zooming in: re-baseline and hold reveals briefly. */
