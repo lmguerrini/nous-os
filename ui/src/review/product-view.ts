@@ -371,7 +371,8 @@ export const createProductView: CreateProductView = async (input) => {
         return position ? [{ id, position, radius: value.radiusPx ?? value.corePermille * 8 / SCENE_PERMILLE_SCALE }] : [];
       }),
       edges: subset.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
-        width: Math.max(0.7, (presentation.edges.get(edge.id)?.widthPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE) })),
+        // The drawer applies the presentation width factor; the geometry carries the unit body width.
+        width: 1 })),
       colonies: [...colonyMembers].map(([id, members]) => {
         const positions = members.map(member => anchors.get(member)!).filter(Boolean);
         const center = { x: positions.reduce((s, p) => s + p.x, 0) / positions.length,
