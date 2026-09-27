@@ -64,6 +64,9 @@ test('D-070 Indra keeps depth after disclosure and fits its absolute shell', asy
   expect(expanded.containers.find((item: any) => item.id === parent.id)?.title).not.toMatch(/\+\d+/);
   const outer = expanded.containers.find((item: any) => item.level === 0);
   expect(outer.radius).toBeGreaterThan(outer.radius2d);
-  const rect = expanded.visibleRect;
-  expect(Object.values(expanded.nodeViewport).every((point: any) => point.x >= rect.left - 1 && point.x <= rect.left + rect.width + 1 && point.y >= rect.top - 1 && point.y <= rect.top + rect.height + 1)).toBe(true);
+  // The refit after a disclosure animates; wait for it to settle before reading screen positions.
+  await expect.poll(() => page.evaluate(() => {
+    const w = (window as any).__d067.witness(); const rect = w.visibleRect;
+    return Object.values(w.nodeViewport).every((point: any) => point.x >= rect.left - 1 && point.x <= rect.left + rect.width + 1 && point.y >= rect.top - 1 && point.y <= rect.top + rect.height + 1);
+  }), { timeout: 8000 }).toBe(true);
 });

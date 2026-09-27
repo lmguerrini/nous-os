@@ -39,10 +39,13 @@ test("D-069 camera, Focus, controls and persistence over the served export", asy
     await page.locator(`[data-preset="${name}"]`).click();
     const p = await pose(page);
     const direction = p.position.map((value: number, index: number) => value - p.target[index]);
-    if (name === "alto") expect(direction[2]).toBeGreaterThan(0);
-    if (name === "basso") expect(direction[2]).toBeLessThan(0);
-    if (name === "sinistra") expect(direction[1]).toBeLessThan(0);
-    if (name === "destra") expect(direction[1]).toBeGreaterThan(0);
+    // «Fronte» looks at the 2D plane from +z; the other presets follow from it.
+    if (name === "fronte") expect(direction[2]).toBeGreaterThan(0);
+    if (name === "retro") expect(direction[2]).toBeLessThan(0);
+    if (name === "alto") expect(direction[1]).toBeGreaterThan(0);
+    if (name === "basso") expect(direction[1]).toBeLessThan(0);
+    if (name === "sinistra") expect(direction[0]).toBeLessThan(0);
+    if (name === "destra") expect(direction[0]).toBeGreaterThan(0);
   }
   await page.locator('#gizmo button[data-axis-end="z"]').click();
   expect((await pose(page)).position[2]).toBeGreaterThan((await pose(page)).target[2]);
