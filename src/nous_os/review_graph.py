@@ -483,7 +483,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                 or rel.get("subject") not in nodes or rel.get("object") not in nodes):
             reasons["explicit relation unknown endpoint"] += 1
             continue
-        add_edge(rel.get("subject"), rel.get("object"), edge_type, evidence=ev,
+        add_edge(rel.get("subject"), rel.get("object"), edge_type, evidence=ev, record_id=rel.get("id"),
                  predicate=predicate, rule=rel.get("rule"), overlay_status="attested")
     citation_nodes: dict[tuple, set[str]] = defaultdict(set)
     for pid, info in details.items():
@@ -557,7 +557,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
         if not isinstance(inference, str) or inference not in {"analogy", "resonance", "dependency", "continuity", "contradiction", "application"}:
             reasons["exploratory invalid inference"] += 1
             continue
-        add_edge(a, b, inference, "exploratory", ev,
+        add_edge(a, b, inference, "exploratory", ev, record_id=rel.get("id"),
                  a_sources=a_sources, b_sources=b_sources,
                  explanation=rel.get("explanation_it", ""), inference=rel.get("inference"),
                  confidence=rel.get("confidence"), counter_evidence=rel.get("counter_evidence", []),
@@ -599,7 +599,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
             for b in sorted(linked):
                 if a >= b:
                     continue
-                add_edge(a, b, "card", "exploratory", valid[:8], explanation=card.get("statement", ""),
+                add_edge(a, b, "card", "exploratory", valid[:8], record_id=card.get("id"), explanation=card.get("statement", ""),
                          inference="card", confidence=card.get("confidence", "low"), counter_evidence=[],
                          status="exploratory/non-canonical", card_id=card["id"])
     # Use the strongest cited proposal to name conversations with no source title.
@@ -752,7 +752,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                           "primary_domain": "Most keyword-anchored live proposals citing the conversation; ties: orchardline, quillmap, qrs, forge, dossier, showcase, atlasfield, meridian; no anchor: COV-A primary",
                           "project_assignment": "Verified gazetteer entity of the conversation's primary domain: title alias match first (lexical ID tie break), else the entity named in the most live proposal statements if it is named in at least 3 and at least 10 %; otherwise level_skip",
                           "importance": "proposal=3*canon+kind weight (DECISION 2.0, CONCEPT 1.6, REQUIREMENT/RELATIONSHIP 1.4, CHANGE_OVER_TIME 1.2, CONTRADICTION 1.1, OPEN_QUESTION 0.8)+origin (USER_AUTHORED 0.5, QUOTED 0.2, else 0)+0.3*log1p(verified citations)+0.5*log1p(attested degree)+0.3*log1p(exploratory degree); aggregates=log1p(descendant live proposals)+2*log1p(canon descendants)+0.3*log1p(attested degree); size=0.15+0.85*average-tie percentile rank within level",
-                          "titles": "overlay title first; first statement clause at word boundary ≤60; canvas title strips leading emoji/status and retains title_full; untitled conversation uses strongest proposal title and month/year; duplicate ID suffix"},
+                          "titles": "overlay title first; first statement clause at word boundary ≤60; canvas title strips leading emoji/status and retains title_full; untitled conversation uses strongest proposal title and month/year; repeated titles: domains unchanged, entities by kind, conversations by month then day, proposals by conversation (when in different conversations), date, time and kind, then a reading-order number; never an id"},
                 "outcomes": outcomes,
                 "audit": {"duplicate_titles_global_before": duplicate_global, "duplicate_titles_within_parent_before": duplicate_parent,
                           "dropped": dict(sorted(reasons.items()))},

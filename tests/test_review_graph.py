@@ -137,7 +137,8 @@ def test_records_of_one_relation_merge_their_evidence(tmp_path):
     build(**args, overlay=overlay, out=tmp_path / "out")
     edges = [e for e in json.loads((tmp_path / "out/index.json").read_text())["edges"] if e["class"] == "exploratory"]
     assert len(edges) == 1
-    assert [r["explanation"] for r in edges[0]["merged_records"]] == ["Second reading"]
+    assert edges[0]["record_id"] == "p2b-1"
+    assert [(r["record_id"], r["explanation"]) for r in edges[0]["merged_records"]] == [("p2b-2", "Second reading")]
 
 
 def test_duplicate_titles_gain_discriminators(tmp_path):
