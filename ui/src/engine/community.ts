@@ -77,15 +77,23 @@ function bestPositiveMerge(
 ): Merge | undefined {
   const keys = [...communities.keys()].sort(compareText);
   const keysByNodeId = communityKeysByNodeId(communities, keys);
+  // One pass over the edges per merge step instead of one pass per candidate pair: the counts are
+  // the same numbers the pairwise scan produced, and the candidates are still visited in sorted
+  // key order with the same strict comparison, so the selected merge (ties included) is unchanged.
+  const between = edgeCountsBetweenCommunities(keysByNodeId, edges);
   let best: Merge | undefined;
   for (const [leftIndex, leftKey] of keys.entries()) {
+    const counts = between.get(leftKey);
+    if (counts === undefined) {
+      continue;
+    }
     const left = requiredCommunity(communities, leftKey);
     for (const rightKey of keys.slice(leftIndex + 1)) {
-      const right = requiredCommunity(communities, rightKey);
-      const edgesBetween = edgeCountBetween(left.key, right.key, keysByNodeId, edges);
+      const edgesBetween = counts.get(rightKey) ?? 0n;
       if (edgesBetween === 0n) {
         continue;
       }
+      const right = requiredCommunity(communities, rightKey);
       // This numerator is the Newman modularity merge delta scaled by the same
       // positive denominator for every candidate. BigInt keeps equal scores equal
       // instead of making the selected merge depend on floating-point rounding.
@@ -112,21 +120,28 @@ function communityKeysByNodeId(
   return keysByNodeId;
 }
 
-function edgeCountBetween(
-  leftKey: string,
-  rightKey: string,
+/** Edges between two different communities, in either direction, keyed by the lower then the higher community key. */
+function edgeCountsBetweenCommunities(
   keysByNodeId: ReadonlyMap<string, string>,
   edges: readonly StructuralEdge[],
-): bigint {
-  let count = 0n;
+): ReadonlyMap<string, ReadonlyMap<string, bigint>> {
+  const counts = new Map<string, Map<string, bigint>>();
   for (const edge of edges) {
     const sourceKey = requiredCommunityKey(keysByNodeId, edge.source);
     const targetKey = requiredCommunityKey(keysByNodeId, edge.target);
-    if ((sourceKey === leftKey && targetKey === rightKey) || (sourceKey === rightKey && targetKey === leftKey)) {
-      count += 1n;
+    if (sourceKey === targetKey) {
+      continue;
     }
+    const lower = compareText(sourceKey, targetKey) < 0 ? sourceKey : targetKey;
+    const higher = lower === sourceKey ? targetKey : sourceKey;
+    let row = counts.get(lower);
+    if (row === undefined) {
+      row = new Map<string, bigint>();
+      counts.set(lower, row);
+    }
+    row.set(higher, (row.get(higher) ?? 0n) + 1n);
   }
-  return count;
+  return counts;
 }
 
 function requiredDegree(degrees: ReadonlyMap<string, bigint>, id: string): bigint {
