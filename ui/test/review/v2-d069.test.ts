@@ -39,6 +39,15 @@ test('disclosure pages 60, caps, collapses, and supports undo/redo and reveal',(
   h.collapse('root',index);assert.equal(v2Visible(index,h.state).nodes.length,1);
 });
 test('semantic zoom is reversible by screen threshold',()=>{assert.equal(semanticZoom(1,29),false);assert.equal(semanticZoom(1,30),true);assert.equal(semanticZoom(3,20),true);assert.equal(semanticZoom(4,200),false);});
+test('automatic semantic disclosure exposes at most 150 children while explicit expansion remains complete',()=>{
+  const parent=make('parent',1,null);
+  const children=Array.from({length:220},(_,i)=>make(`child:${i}`,2,parent.id));
+  const synthetic:V2Index={nodes:[parent,...children],edges:[]};
+  const history=new DisclosureHistory();
+  assert.equal(v2Visible(synthetic,history.state,new Set([parent.id])).nodes.length,151);
+  history.expand(parent.id);
+  assert.equal(v2Visible(synthetic,history.state,new Set([parent.id])).nodes.length,221);
+});
 test('reading and why linked preserve relation class',()=>{
   assert.deepEqual(v2Reading(edges,'attested').map(e=>e.id),['attested']);
   assert.equal(v2Reading(edges,'exploratory').length,2);

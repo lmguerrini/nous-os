@@ -34,6 +34,7 @@ import { sceneCameraFramingSubjects } from "#render3f/camera-framing.ts";
 import type { ProjectedCameraFramingSubject } from "#render3f/camera-framing.ts";
 import { tokenToSrgb } from "#render3f/buffers.ts";
 import { mountDistinctOverlay } from "#render3f/distinct-overlay.ts";
+import { DENSE_SCENE_THRESHOLD } from "#render-common/morphology-canvas.ts";
 import {
   createAggregateRenderResources,
   updateAggregateProjectionUniforms,
@@ -233,8 +234,9 @@ export function mount(
     }))
     : null;
   if (distinct) {
-    filamentResources.mesh.visible = false;
-    nodeResources.mesh.visible = false;
+    // The GPU draws dense nodes and edges; the overlay keeps Indra's container structure.
+    filamentResources.mesh.visible = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD;
+    nodeResources.mesh.visible = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD;
   }
   const picker = new ScenePicker(live.scene, {
     project(point: Coordinates): { readonly x: number; readonly y: number } {
@@ -249,6 +251,7 @@ export function mount(
   });
   let emphasisIds = options.presentation?.emphasisIds ?? null;
   let destroyed = false;
+  let labelTimer: ReturnType<typeof setTimeout> | undefined;
   let fiberStore: ReturnType<ReturnType<typeof createFiberRoot>["render"]> | undefined;
   const fiberRoot = createFiberRoot(canvas);
 
@@ -290,7 +293,8 @@ export function mount(
       return;
     }
     updateProjection();
-    updateLabels();
+    if (labelTimer !== undefined) clearTimeout(labelTimer);
+    labelTimer = setTimeout(() => { if (!destroyed) updateLabels(); }, 160);
     renderer.render(threeScene, rig.camera);
     distinct?.draw();
   };
@@ -488,6 +492,7 @@ export function mount(
       };
     },
     destroy(): void {
+      if (labelTimer !== undefined) clearTimeout(labelTimer);
       if (destroyed) {
         return;
       }

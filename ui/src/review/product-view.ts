@@ -21,6 +21,7 @@ import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
 import { v2Encoding } from "./v2-adapter.ts";
 import type { ReviewCameraState } from "../render3f/camera.tsx";
+import { resolvedNodeBounds } from "../render3f/camera.tsx";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
 
 /** On-screen radius of an Indra container's own marker; the container ring carries the node. */
@@ -98,6 +99,7 @@ export const createProductView: CreateProductView = async (input) => {
   let hoverFrame = 0;
   let destroyed = false;
   let lastCamera = "";
+  let cameraLabelTimer: ReturnType<typeof setTimeout> | undefined;
   const cameras = new Map<string, VisualStateCamera>();
   const fitRatio = new Map<string, number>();
   const fullAnchor = (current: Axes) =>
@@ -131,6 +133,8 @@ export const createProductView: CreateProductView = async (input) => {
     const overview = camera.ratio >= fitted * 0.6;
     const close = camera.ratio < fitted * 0.25;
     const neighbours = emphasis ?? new Set<string>();
+    const containerById = new Map((axes.organization === "indra" ? input.layoutContainers ?? [] : [])
+      .map(ring => [ring.id, ring]));
     const candidates = [];
     for (const { id, position } of handle.readWorldAnchorWitnesses()) {
       const node = nodesById.get(id);
@@ -141,6 +145,20 @@ export const createProductView: CreateProductView = async (input) => {
         continue;
       const chosen = selected === id;
       const hovered = hover?.kind === "node" && hover.id === id;
+      // A large Indra ring carries its own title at the rim; keep one label per container.
+      const ring = containerById.get(id);
+      if (ring && !chosen && !hovered) {
+        const ends = [
+          project({ x: ring.center.x + ring.radius, y: ring.center.y, z: ring.center.z }),
+          project({ x: ring.center.x - ring.radius, y: ring.center.y, z: ring.center.z }),
+          project({ x: ring.center.x, y: ring.center.y + ring.radius, z: ring.center.z }),
+          project({ x: ring.center.x, y: ring.center.y - ring.radius, z: ring.center.z }),
+        ];
+        const xs = ends.map(point => point.x), ys = ends.map(point => point.y);
+        const top = Math.min(...ys);
+        if (Math.max(...xs) - Math.min(...xs) >= 85 && top >= 14 && top < bounds.height - 20)
+          continue;
+      }
       let reason: "hover" | "selected" | "neighbour" | "domain" | "main" | "zoom" | null = null;
       if (hovered) reason = "hover";
       else if (chosen) reason = "selected";
@@ -264,7 +282,8 @@ export const createProductView: CreateProductView = async (input) => {
     const now = handle ? JSON.stringify(handle.readCameraState()) : "";
     if (now !== lastCamera) {
       lastCamera = now;
-      labelPass();
+      if (cameraLabelTimer !== undefined) clearTimeout(cameraLabelTimer);
+      cameraLabelTimer = setTimeout(() => { if (!destroyed) labelPass(); }, 160);
     }
     frameId = requestAnimationFrame(followCamera);
   }
@@ -298,11 +317,12 @@ export const createProductView: CreateProductView = async (input) => {
         const coMembership = input.v2Prepared && relation?.type === 'co_membership';
         const containment = input.v2Prepared && relation?.type === 'contains';
         return [edge.id, { stroke: exploratory ? "dashed" as const : "solid" as const,
-          opacityPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (exploratory ? 0.9 : coMembership ? 0.36 : containment ? 0.28 : axes.reading === 'attested' ? 0.45 : 0.18))
+          opacityPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (exploratory ? 0.94 : coMembership ? 0.62 : containment ? 0.52 : axes.reading === 'attested' ? 0.68 : 0.36))
             : axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
-          widthPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (coMembership ? Math.min(1.2, (relation?.width ?? 1) * 0.55) : containment ? 0.55 : exploratory ? 1.7 * (relation?.width ?? 1) : relation?.width ?? 1))
+          widthPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (coMembership ? Math.min(1.4, (relation?.width ?? 1) * 0.75) : containment ? 0.85 : exploratory ? 1.7 * (relation?.width ?? 1) : 1.2 * (relation?.width ?? 1)))
             : exploratory ? Math.round(SCENE_PERMILLE_SCALE * 1.2) : SCENE_PERMILLE_SCALE,
-          ...(axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
+          ...(axes.colour === "bw" && input.v2Prepared ? { tintSrgb: [0.64, 0.64, 0.64] as const }
+            : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
         }] as const;
       })),
       nodes: new Map(
@@ -316,10 +336,12 @@ export const createProductView: CreateProductView = async (input) => {
                 : node.type === "canon" ? "double-ring"
                 : node.type === "record" || node.type === "evidence" ? "hollow" : "filled") as "ring" | "double-ring" | "hollow" | "filled",
               ...(node.origin === "dynamic" ? { haloPermille: Math.round(encoding.haloPermille * 0.55) } : {}),
+              ...(input.v2Prepared && visible.size > 400 ? { haloPermille: Math.round(encoding.haloPermille * 0.28) } : {}),
               // In Indra a node that holds visible children is drawn by its container ring; its own disc shrinks to a
               // small hollow marker so it never covers what it contains.
               ...(indraContainers.has(node.id) ? { radiusPx: INDRA_CONTAINER_MARKER_PX, haloPermille: 0, glyph: "hollow" as const } : {}),
-              ...(input.v2Prepared && axes.colour !== "bw" ? {tintSrgb:hexRgb(v2CategoryColour(node.v2 as import("./v2-core.ts").V2Node,palette,axes.colour==='custom'?input.v2Colours:undefined))}
+              ...(input.v2Prepared && axes.colour === "bw" ? { tintSrgb: (() => { const level = (node.v2 as import("./v2-core.ts").V2Node).level; const gray = level <= 2 ? 0.88 : level <= 4 ? 0.7 : 0.56; return [gray, gray, gray] as const; })() }
+                : input.v2Prepared && axes.colour !== "bw" ? {tintSrgb:hexRgb(v2CategoryColour(node.v2 as import("./v2-core.ts").V2Node,palette,axes.colour==='custom'?input.v2Colours:undefined))}
                 : axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] }
                 : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(palette[input.text(node.id).family]) }),
             }] as const;
@@ -338,7 +360,9 @@ export const createProductView: CreateProductView = async (input) => {
     // Each renderer derives its own first camera; framing below then works in whatever convention it uses.
     if (axes.projection === "2d") sigma = mount2d(container, subset, renderOptions, undefined, undefined, anchors);
     else {
-      three = mount3d(container, subset, renderOptions, undefined, undefined, anchors);
+      // Supplied anchors already contain the bounds; skip a provisional full scene build.
+      const frame = anchors.size ? resolvedNodeBounds([...anchors.values()]) : undefined;
+      three = mount3d(container, subset, renderOptions, frame, undefined, anchors);
       three.setCameraKind("perspective");
     }
     handle = (sigma ?? three)!;
@@ -380,6 +404,8 @@ export const createProductView: CreateProductView = async (input) => {
     return edge ? { kind: "edge" as const, id: edge } : null;
   }
   const onMove = (event: PointerEvent) => {
+    if (pressedAt && Math.hypot(event.clientX - pressedAt.x, event.clientY - pressedAt.y) > CLICK_DRAG_TOLERANCE_PX)
+      return;
     const p = pointer(event);
     cancelAnimationFrame(hoverFrame);
     hoverFrame = requestAnimationFrame(() => {
@@ -476,7 +502,6 @@ export const createProductView: CreateProductView = async (input) => {
             resolve();
             return;
           }
-          labelPass();
           if (t < 1) requestAnimationFrame(tick);
           else resolve();
         };
@@ -587,6 +612,7 @@ export const createProductView: CreateProductView = async (input) => {
     },
     destroy() {
       destroyed = true;
+      if (cameraLabelTimer !== undefined) clearTimeout(cameraLabelTimer);
       cancelAnimationFrame(frameId);
       cancelAnimationFrame(hoverFrame);
       container.removeEventListener("pointermove", onMove);

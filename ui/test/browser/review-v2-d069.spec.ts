@@ -13,7 +13,10 @@ test('D-069 v2 disclosure, search, details, readings and provenance',async({page
   const conversation=state.nodes.find((n:any)=>n.level===3);expect(conversation).toBeTruthy();
   await page.evaluate(id=>(window as any).__d067.expand(id),conversation.id);
   state=await page.evaluate(()=>(window as any).__d067.disclosure());expect(state.counts[4]).toBeGreaterThan(0);expect(state.counts[4]).toBeLessThanOrEqual(60);
-  const proposal=state.nodes.find((n:any)=>n.level===4);await page.evaluate(id=>(window as any).__d067.select(id),proposal.id);
+  const proposal=state.nodes.find((n:any)=>n.level===4);const beforeSelection=state.visible;
+  await page.evaluate(id=>(window as any).__d067.select(id),proposal.id);
+  await page.waitForTimeout(1000);
+  expect((await page.evaluate(()=>(window as any).__d067.disclosure())).visible).toBe(beforeSelection);
   await expect(page.locator('#details')).toContainText('Enunciato distillato (EN)');
   await page.evaluate(id=>(window as any).__d067.expand(id),proposal.id);
   const withPassages=await page.evaluate(()=>(window as any).__d067.disclosure());expect(withPassages.counts[5]).toBeGreaterThan(0);

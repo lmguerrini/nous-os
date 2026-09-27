@@ -233,7 +233,8 @@ function indra(input: LayoutInput): LayoutResult {
     const positions = new Map<string, Point3>();
     const containers: LayoutContainer[] = [];
     const place = (node: LayoutNode, x: number, y: number): void => {
-        const center = { x, y, z: (node.level - 3) * 90 * spacing };
+        // A side view needs a real vertical interval between the concentric XY tiers.
+        const center = { x, y, z: (node.level - 3) * 170 * spacing };
         positions.set(node.id, center);
         const list = children.get(node.id) ?? [];
         if (list.length)

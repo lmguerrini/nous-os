@@ -5,6 +5,7 @@ import type { MorphologyContainerPath, MorphologyGeometry } from "#engine/morpho
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 
 export type ProjectedPoint = { readonly x: number; readonly y: number; readonly scale: number };
+export const DENSE_SCENE_THRESHOLD = 1200;
 export type MorphologyCanvasStyle = {
   readonly fieldColor: string;
   readonly nodes: ReadonlyMap<string, { readonly color: string; readonly glyph?: NodeGlyph | undefined; readonly radiusPx?: number | undefined; readonly opacity?: number }>;
@@ -26,6 +27,7 @@ export function drawMorphologyCanvas(
   appearance: AppearanceOptions = DEFAULT_APPEARANCE,
   containers: readonly MorphologyContainerPath[] = geometry.containers ?? [],
   projection: "2d" | "3d" = "2d",
+  structureOnly = false,
 ): void {
   const canvas = context.canvas;
   const bounds = canvas.getBoundingClientRect();
@@ -38,8 +40,8 @@ export function drawMorphologyCanvas(
   for (const container of [...containers].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id))) {
     const points = container.points.map(project);
     if (!points.length) continue;
-    context.strokeStyle = `rgba(${ink}, ${clamp(0.76 - container.level * 0.09, 0.27, 0.7)})`;
-    context.lineWidth = (geometry.morphology === 'neural' ? 1.7 : 1.35) + (container.level === 1 ? 0.8 : 0);
+    context.strokeStyle = `rgba(${ink}, ${clamp(1.02 - container.level * 0.13, 0.28, 0.88)})`;
+    context.lineWidth = (geometry.morphology === 'neural' ? 1.7 : 1.35) + Math.max(0, 4 - container.level) * 0.55;
     context.setLineDash(geometry.morphology === "stellar" ? [3, 5] : []);
     context.beginPath(); context.moveTo(points[0]!.x, points[0]!.y);
     for (let index = 1; index < points.length; index++) context.lineTo(points[index]!.x, points[index]!.y);
@@ -48,10 +50,30 @@ export function drawMorphologyCanvas(
       context.fill();
     }
     context.stroke();
-    // The container's title is the node's own label, placed by the page's label layer with collision avoidance.
+    const left = Math.min(...points.map(p => p.x)), right = Math.max(...points.map(p => p.x));
+    const top = Math.min(...points.map(p => p.y));
+    if (container.title && right - left >= 85 && top >= 14 && top < bounds.height - 20) {
+      context.setLineDash([]);
+      context.fillStyle = `rgba(${ink}, ${clamp(0.95 - container.level * 0.1, 0.5, 0.9)})`;
+      context.font = `${container.level <= 2 ? 600 : 400} 12px Arial`;
+      context.fillText(container.title.slice(0, 32), (left + right) / 2 - Math.min(95, container.title.length * 3), top - 5, 190);
+    }
   }
   context.setLineDash([]);
-  const simplified = geometry.nodes.length > 1500;
+  if (projection === "3d" && containers.length) {
+    const tiers = [...new Set(containers.map(c => c.center.z))].sort((a, b) => a - b);
+    const tierGap = tiers.length > 1 ? Math.min(...tiers.slice(1).map((z, i) => z - tiers[i]!)) : 170;
+    context.strokeStyle = `rgba(${ink}, 0.52)`;
+    context.lineWidth = 0.9;
+    for (const container of containers) {
+      if (container.level >= 4) continue;
+      const a = project(container.center);
+      const b = project({ ...container.center, z: container.center.z + tierGap });
+      context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
+    }
+  }
+  if (structureOnly) return;
+  const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
   for (const part of geometry.drawnSegments) {
     const edge = style.edges.get(part.edgeId);
     const presentation = edge?.presentation;
@@ -65,7 +87,7 @@ export function drawMorphologyCanvas(
     context.lineJoin = "round";
     const is3dFilament = projection === "3d" && geometry.morphology === "mycelium";
     context.strokeStyle = rgba(is3dFilament ? (fieldIsLight ? "rgb(45, 45, 45)" : "rgb(240, 240, 240)") : baseColor,
-      clamp(opacity * appearance.edgeOpacity * (geometry.morphology === "stellar" ? 0.75 : 0.94), 0, 1));
+      clamp(Math.max(0.14, opacity * appearance.edgeOpacity * (geometry.morphology === "stellar" ? 0.9 : 1)), 0, 1));
     context.shadowColor = is3dFilament ? context.strokeStyle : "transparent";
     context.shadowBlur = is3dFilament ? 4 : 0;
     const dashed = stroke === "dashed" || stroke === "dotted";
@@ -74,7 +96,7 @@ export function drawMorphologyCanvas(
       if (!from || !to) continue;
       const width = (part.widthStart + (part.widthEnd - part.widthStart) * (index + 0.5) / steps)
         * (from.scale + to.scale) / 2 * widthFactor * appearance.edgeWidth;
-      context.lineWidth = is3dFilament ? clamp(width * 0.65, 0.35, 2.2) : clamp(width * (geometry.morphology === "mycelium" ? 1.45 : 1), 0.55, 16);
+      context.lineWidth = is3dFilament ? clamp(width * 0.9, 0.7, 2.2) : clamp(width * (geometry.morphology === "mycelium" ? 1.45 : 1), 0.85, 16);
       context.setLineDash(dashed ? (stroke === "dotted" ? [0.1, Math.max(2, context.lineWidth * 2.3)] : [Math.max(3, context.lineWidth * 3.2), Math.max(2, context.lineWidth * 2.1)]) : []);
       context.beginPath(); context.moveTo(from.x, from.y); context.lineTo(to.x, to.y); context.stroke();
     }
@@ -95,11 +117,11 @@ export function drawMorphologyCanvas(
     const radius = clamp((visual?.radiusPx ?? node.radius * appearance.nodeScale) * p.scale * morphologyScale,
       visual?.radiusPx ? 3 : geometry.morphology === "mycelium" ? 1.8 : 2.2, visual?.radiusPx ? 18 : 13);
     const color = visual?.color ?? "rgb(245, 245, 245)";
-    const opacity = visual?.opacity ?? 1;
+    const opacity = Math.max(0.48, visual?.opacity ?? 1);
     if (!simplified && appearance.glow > 0) {
       const halo = radius * (geometry.morphology === "stellar" ? 2.3 + appearance.glow * 1.5
         : geometry.morphology === "neural" ? 1.4 + appearance.glow * 0.9 : 1.2 + appearance.glow * 0.65);
-      const haloStrength = geometry.morphology === "stellar" ? 0.62 : geometry.morphology === "neural" ? 0.22 : 0.16;
+      const haloStrength = geometry.nodes.length > 400 ? 0.12 : geometry.morphology === "stellar" ? 0.45 : geometry.morphology === "neural" ? 0.2 : 0.15;
       const gradient = context.createRadialGradient(p.x, p.y, 0, p.x, p.y, halo);
       gradient.addColorStop(0, rgba(color, haloStrength * opacity * appearance.glow));
       gradient.addColorStop(0.25, rgba(color, haloStrength * 0.48 * opacity * appearance.glow));

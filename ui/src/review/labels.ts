@@ -26,6 +26,15 @@ export function placeLabels(
   measure: (text: string, maxWidth: number, maxLines: number) => { width: number; height: number },
 ): PlacedLabel[] {
   const placed: PlacedLabel[] = [];
+  const cellSize = 64;
+  const cells = new Map<string, PlacedLabel[]>();
+  const keys = (left: number, top: number, right: number, bottom: number) => {
+    const result: string[] = [];
+    for (let x = Math.floor(left / cellSize); x <= Math.floor(right / cellSize); x++)
+      for (let y = Math.floor(top / cellSize); y <= Math.floor(bottom / cellSize); y++)
+        result.push(`${x}:${y}`);
+    return result;
+  };
   const priority = { hover: 6, selected: 5, neighbour: 4, domain: 3, main: 2, zoom: 1 };
   for (const c of [...candidates].sort(
     (a, b) => priority[b.reason] - priority[a.reason] || b.priority - a.priority || a.id.localeCompare(b.id),
@@ -46,8 +55,10 @@ export function placeLabels(
         top + size.height > bounds.top + bounds.height
       )
         continue;
+      const nearby = new Set(keys(left - 3, top - 3, left + size.width + 3, top + size.height + 3)
+        .flatMap(key => cells.get(key) ?? []));
       if (
-        placed.some(
+        [...nearby].some(
           (other) =>
             rect.left < other.rect.left + other.rect.width + 3 &&
             rect.left + rect.width + 3 > other.rect.left &&
@@ -56,7 +67,13 @@ export function placeLabels(
         )
       )
         continue;
-      placed.push({ id: c.id, text: c.text, reason: c.reason, rect });
+      const label = { id: c.id, text: c.text, reason: c.reason, rect };
+      placed.push(label);
+      for (const key of keys(left, top, left + size.width, top + size.height)) {
+        const bucket = cells.get(key) ?? [];
+        bucket.push(label);
+        cells.set(key, bucket);
+      }
       break;
     }
   }

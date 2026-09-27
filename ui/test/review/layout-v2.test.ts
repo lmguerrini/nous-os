@@ -144,7 +144,7 @@ test("distinct canvas strokes container outlines in both projected views", () =>
     } as unknown as CanvasRenderingContext2D;
     drawMorphologyCanvas(context, geometry, point => ({ x: point.x + 100 + (projection === "3d" ? point.z * 0.4 : 0), y: point.y + 100 + (projection === "3d" ? point.z * 0.2 : 0), scale: 1 }),
       { fieldColor: "rgb(0, 0, 0)", nodes: new Map(), edges: new Map() }, undefined, container, projection);
-    assert.equal(strokes, 1);
+    assert.equal(strokes, projection === "3d" ? 2 : 1);
   }
 });
 

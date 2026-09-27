@@ -2,7 +2,7 @@ import { mixTowardField } from "#engine/presentation-options.ts";
 import type { AppearanceOptions } from "#engine/presentation-options.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import { buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
-import { drawMorphologyCanvas } from "#render-common/morphology-canvas.ts";
+import { DENSE_SCENE_THRESHOLD, drawMorphologyCanvas } from "#render-common/morphology-canvas.ts";
 import Sigma from "sigma";
 import { createEdgeCompoundProgram } from "sigma/rendering";
 import type { CameraState, EdgeDisplayData, NodeDisplayData } from "sigma/types";
@@ -287,7 +287,7 @@ export function mount(
   // DOM order is set by insertion, not by creation order, so the glow still sits
   // BELOW the windows: atmosphere does not occlude structure.
   const windows = mountAggregateWindows(sigma, model, options.calibration);
-  const glow = model.material.node.includes("halo")
+  const glow = model.material.node.includes("halo") && !(activeOptions.presentation?.morphologyLanguage === "distinct" && model.graph.order >= DENSE_SCENE_THRESHOLD)
     ? mountNodeGlow(sigma, model, options.calibration)
     : noGlowLayer();
   const distinct = activeOptions.presentation?.morphologyLanguage === "distinct"
@@ -485,30 +485,39 @@ function mountDistinctCanvas(sigma: Sigma, model: RenderModel, options: RenderOp
   requiredCanvas(sigma, "labels").before(canvas);
   const hidden = ["edges", "nodes", "node-glow"].map((id) => sigma.getCanvases()[id]).filter((item): item is HTMLCanvasElement => item !== undefined);
   const visibility = hidden.map((item) => item.style.visibility);
-  for (const item of hidden) item.style.visibility = "hidden";
+  const nativeTier = graph.order >= DENSE_SCENE_THRESHOLD;
+  for (const item of hidden) if (!nativeTier || item === sigma.getCanvases()["node-glow"]) item.style.visibility = "hidden";
   let appearance = options.presentation?.appearance ?? DEFAULT_APPEARANCE;
+  const context = canvas.getContext("2d");
+  const nodeStyles = new Map(graph.nodes().map((id) => [id, {
+    color: graph.getNodeAttributes(id).color,
+    glyph: options.presentation?.nodes?.get(id)?.glyph,
+    radiusPx: options.presentation?.nodes?.get(id)?.radiusPx,
+  }]));
+  const edgeStyles = new Map(graph.edges().map((id) => [id, {
+    color: graph.getEdgeAttributes(id).color,
+    presentation: options.presentation?.edges?.get(id),
+  }]));
   const draw = (): void => {
-    const context = canvas.getContext("2d");
     if (!context) return;
     const box = canvas.getBoundingClientRect();
     const width = Math.max(1, Math.round(box.width * devicePixelRatio));
     const height = Math.max(1, Math.round(box.height * devicePixelRatio));
     if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+    const projected = new WeakMap<Coordinates, { x: number; y: number; scale: number }>();
     drawMorphologyCanvas(context, geometry, (point) => {
-      const projected = sigma.graphToViewport(point);
-      return { x: projected.x, y: projected.y, scale: sigma.scaleSize(1) };
+      let value = projected.get(point);
+      if (!value) {
+        const screen = sigma.graphToViewport(point);
+        value = { x: screen.x, y: screen.y, scale: sigma.scaleSize(1) };
+        projected.set(point, value);
+      }
+      return value;
     }, {
       fieldColor: model.fieldColor,
-      nodes: new Map(graph.nodes().map((id) => [id, {
-        color: graph.getNodeAttributes(id).color,
-        glyph: options.presentation?.nodes?.get(id)?.glyph,
-        radiusPx: options.presentation?.nodes?.get(id)?.radiusPx,
-      }])),
-      edges: new Map(graph.edges().map((id) => [id, {
-        color: graph.getEdgeAttributes(id).color,
-        presentation: options.presentation?.edges?.get(id),
-      }])),
-    }, appearance);
+      nodes: nodeStyles,
+      edges: edgeStyles,
+    }, appearance, undefined, "2d", nativeTier);
   };
   sigma.on("afterRender", draw);
   draw();

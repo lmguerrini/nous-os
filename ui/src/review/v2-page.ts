@@ -62,6 +62,7 @@ export class V2Page {
     private selected: string | null = null;
     private hovered: string | null = null;
     private hoveredEdge: string | null = null;
+    private hoverRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     private relationDetail: RelationDetail = 'essential';
     private renderedRelations = new Map<string, LiftedRelation>();
     private previousVisible = new Set<string>();
@@ -73,6 +74,8 @@ export class V2Page {
     private auto = new Set<string>();
     private zoomOn = true;
     private overviewRatio: number | null = null;
+    private suppressZoomUntil = 0;
+    private lastZoomRatio: number | null = null;
     private pending = Promise.resolve();
     private results: SearchHit[] = [];
     private searchTotal = 0;
@@ -152,7 +155,9 @@ export class V2Page {
         }
     }
     refresh(): Promise<void> {
+        if (this.hoverRefreshTimer) { clearTimeout(this.hoverRefreshTimer); this.hoverRefreshTimer = null; }
         return this.run(async () => {
+            this.suppressZoomUntil = performance.now() + 900;
             const disclosed = this.visible();
             const ids = new Set(disclosed.nodes.map(n => n.id));
             const visibleById = new Map(disclosed.nodes.map(node => [node.id, node]));
@@ -207,8 +212,9 @@ export class V2Page {
                         this.hoveredEdge = edge;
                         this.updateEmphasis();
                         this.edgeTooltip(target);
+                        if (this.hoverRefreshTimer) clearTimeout(this.hoverRefreshTimer);
                         if (changed && this.axes.organization === 'indra' && this.relationDetail === 'essential')
-                            void this.refresh();
+                            this.hoverRefreshTimer = setTimeout(() => { this.hoverRefreshTimer = null; void this.refresh(); }, 220);
                     } }
             });
             const arrangement = `${this.axes.organization}|${this.axes.projection}`;
@@ -246,6 +252,7 @@ export class V2Page {
         });
     }
     async expand(id: string) {
+        this.suppressZoomUntil = performance.now() + 900;
         const before = new Set(this.visible().nodes.map(n => n.id));
         const n = this.index.nodes.find(n => n.id === id);
         if (!n)
@@ -267,6 +274,7 @@ export class V2Page {
         await this.refresh();
     }
     async collapse(id: string) {
+        this.suppressZoomUntil = performance.now() + 900;
         this.history.collapse(id, this.index);
         await this.refresh();
         await this.view?.frame([id]);
@@ -280,6 +288,7 @@ export class V2Page {
         await this.refresh();
     }
     async reveal(id: string) {
+        this.suppressZoomUntil = performance.now() + 900;
         if (!this.index.nodes.some(n => n.id === id))
             throw new Error('Nodo non trovato');
         this.history.reveal(id, this.index);
@@ -301,6 +310,7 @@ export class V2Page {
         await this.view?.frame([id]);
     }
     async select(id: string) {
+        this.suppressZoomUntil = performance.now() + 900;
         this.selected = id;
         this.view?.select(id);
         this.updateEmphasis();
@@ -411,9 +421,9 @@ export class V2Page {
     async setAppearance(value: AppearanceOptions) { this.appearance = value; await this.refresh(); }
     async setPalette(value: PaletteValues) { this.palette = value; await this.refresh(); }
     async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
-    async fit() { await this.view?.fit(); }
+    async fit() { this.suppressZoomUntil = performance.now() + 900; await this.view?.fit(); }
     async reset() { this.selected = null; this.view?.select(null); this.renderPanel(); await this.view?.resetCamera(); }
-    async frame(id: string) { await this.view?.frame([id]); }
+    async frame(id: string) { this.suppressZoomUntil = performance.now() + 900; await this.view?.frame([id]); }
     camera() {
         return this.view?.camera() ?? null;
     }
@@ -430,23 +440,28 @@ export class V2Page {
     tickZoom() {
         if (!this.zoomOn || !this.view)
             return;
+        const camera = this.view.readCamera() as { ratio?: number } | null;
+        const ratio = camera?.ratio;
+        if (!ratio) return;
+        const previous = this.lastZoomRatio;
+        this.lastZoomRatio = ratio;
+        if (performance.now() < this.suppressZoomUntil || previous === null || ratio >= previous * 0.995)
+            return;
         const witness = this.view.witness();
-        const next = new Set<string>();
         const rect = witness.visibleRect;
+        const candidates: { id: string; distance: number }[] = [];
         for (const n of this.visible().nodes)
-            if (n.level < 4) {
+            if (n.level < 4 && !this.history.state.expanded.has(n.id) && !this.auto.has(n.id)) {
                 const p = witness.nodeViewport[n.id];
                 if (!p || p.x < rect.left || p.x > rect.left + rect.width || p.y < rect.top || p.y > rect.top + rect.height)
                     continue;
-                const camera = this.view.readCamera() as {
-                    ratio?: number;
-                } | null;
-                const zoom = camera?.ratio ? Math.max(0.1, (this.overviewRatio ?? camera.ratio) / camera.ratio) : 1;
+                const zoom = Math.max(0.1, (this.overviewRatio ?? ratio) / ratio);
                 if (semanticZoom(n.level, nodeRadius(n, this.appearance.nodeScale) * zoom))
-                    next.add(n.id);
+                    candidates.push({ id: n.id, distance: Math.hypot(p.x - rect.left - rect.width / 2, p.y - rect.top - rect.height / 2) });
             }
-        if (next.size !== this.auto.size || [...next].some(id => !this.auto.has(id))) {
-            this.auto = next;
+        candidates.sort((a, b) => a.distance - b.distance || a.id.localeCompare(b.id));
+        if (candidates[0]) {
+            this.auto.add(candidates[0].id);
             void this.refresh();
         }
     }

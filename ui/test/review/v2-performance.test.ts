@@ -17,6 +17,6 @@ test('synthetic canvas draw cost for 500, 1500, 2500 visible nodes',()=>{
       edges:new Map(fixture.drawnSegments.map(e=>[e.edgeId,{color:'rgb(160, 160, 160)'}]))};
     const times=[];for(let i=0;i<8;i++){const start=performance.now();drawMorphologyCanvas(context,fixture,p=>({x:p.x,y:p.y,scale:1}),style);times.push(performance.now()-start);}
     times.sort((a,b)=>a-b);console.log(`v2 canvas ${count}: median ${times[4]!.toFixed(2)} ms, p75 ${times[6]!.toFixed(2)} ms`);
-    assert.equal(gradients()>0,count<=1500);
+    assert.equal(gradients()>0,count<1200);
   }
 });

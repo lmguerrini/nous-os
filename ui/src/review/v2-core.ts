@@ -48,7 +48,11 @@ export function v2Visible(index: V2Index, state: DisclosureState, auto: Readonly
         const all = children.get(n.id) ?? [];
         if (state.expanded.has(n.id) || auto.has(n.id)) {
             const page = state.pages.get(n.id) ?? V2_PAGE;
-            const take = n.level === 3 || n.level === 4 ? Math.min(page, all.length) : all.length;
+            // Semantic disclosure is one bounded page, including domains with many projects.
+            // Explicit expansion retains its normal complete level-1/2 behavior.
+            const take = auto.has(n.id) && !state.expanded.has(n.id)
+                ? Math.min(150, all.length)
+                : n.level === 3 || n.level === 4 ? Math.min(page, all.length) : all.length;
             const room = Math.max(0, cap - nodes.length - (queue.length - i - 1));
             queue.push(...all.slice(0, Math.min(take, room)));
             if (take > room)
