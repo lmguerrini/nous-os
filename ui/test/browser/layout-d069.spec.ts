@@ -8,6 +8,13 @@ for (const projection of ["2d", "3d"] as const) for (const organization of ["fla
     await page.goto(process.env.D069_URL ?? "http://127.0.0.1:8768/");
     await page.waitForFunction(() => Boolean((window as any).__d067));
     await page.evaluate(() => (window as any).__d067.ready);
+    // The overview shows domains only; open one domain and its largest visible conversation so three levels are drawn.
+    await page.evaluate(async () => {
+      const hook = (window as any).__d067;
+      await hook.expand("domain:quillmap");
+      const visible = Object.keys(hook.witness().nodeViewport ?? {}).filter((id) => id.startsWith("conversation:"));
+      if (visible[0]) await hook.expand(visible[0]);
+    });
     for (const morphology of ["stellar", "neural", "mycelium"] as const) {
       await page.evaluate(async axes => { await (window as any).__d067.setAxes(axes); },
         { projection, organization, morphology, colour: "bw", labels: false });

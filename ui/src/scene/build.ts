@@ -72,6 +72,9 @@ import {
 } from "#scene/contract.ts";
 import { applyRenderedStateChannel, renderedStateChannel, renderedStateToken } from "#scene/rendered-state.ts";
 
+/** Largest halo-to-core ratio for nodes whose radius the review page states explicitly. */
+const REVIEW_HALO_TO_CORE_MAX = 3;
+
 /** This is the mathematical divisor for a midpoint or symmetric half-width and does not borrow a filament tuning value. */
 const BISECTION_DIVISOR = 2;
 
@@ -1501,7 +1504,12 @@ function sceneNode(
   const requestedHaloIntensityPermille = materialIncludes(resolved.node, "halo")
     ? material.haloIntensityPermille
     : 0;
-  const haloRadiusPx = fusedJunction || blindTerminal ? radiusPx : requestedHaloRadiusPx;
+  // An explicit review radius also bounds the halo, so a high-degree aggregate never becomes a giant disc; without it the
+  // engine's own halo stays exactly as before.
+  const boundedHaloRadiusPx = appearance?.radiusPx === undefined
+    ? requestedHaloRadiusPx
+    : Math.min(requestedHaloRadiusPx, radiusPx * REVIEW_HALO_TO_CORE_MAX);
+  const haloRadiusPx = fusedJunction || blindTerminal ? radiusPx : boundedHaloRadiusPx;
   const haloIntensityPermille = fusedJunction || blindTerminal ? 0 : requestedHaloIntensityPermille;
   return {
     id: node.id,

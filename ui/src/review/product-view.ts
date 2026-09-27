@@ -313,7 +313,9 @@ export const createProductView: CreateProductView = async (input) => {
     const renderOptions = {
       ...options,
       morphology: axes.morphology,
-      organization: axes.organization,
+      // On the v2 dataset the page's layout places every node and its canvas layer draws the Indra containers, so the
+      // engine's own membership windows stay off in both organizations.
+      organization: input.v2Prepared ? "flat" as const : axes.organization,
       reducedMotion: input.reducedMotion,
       presentation,
     };

@@ -26,6 +26,7 @@ export class V2Page {
   private view:ProductView|null=null; private v2Colours:Partial<Record<V2Category,string>>; private axes:Axes; private appearance:AppearanceOptions; private palette:PaletteValues;
   private selected:string|null=null; private detailCache=new Map<string,Record<string,unknown>>();
   private positions=new Map<string,Point3>(); private containers:unknown[]=[]; private layoutSource='placeholder';
+  private lastArrangement='';
   private auto=new Set<string>(); private zoomOn=true; private overviewRatio:number|null=null; private pending=Promise.resolve(); private results:SearchHit[]=[];
   private searchTotal=0; private whyResult:ReturnType<typeof v2Path>|null=null; private whyRequest:[string,string]|null=null; private capMessage=false;
   constructor(manifest:GraphManifest,index:V2Index,axes:Axes,appearance:AppearanceOptions,palette:PaletteValues,colours:Partial<Record<V2Category,string>>={}){this.manifest=manifest;this.index=index;this.axes=axes;this.appearance=appearance;this.palette=palette;this.v2Colours=colours;
@@ -69,7 +70,12 @@ export class V2Page {
       insets:{top:0,right:0,bottom:0,left:0},reducedMotion:true,
       text:id=>{const n=disclosed.nodes.find(n=>n.id===id)!;return {short:n.title,full:n.title_full,family:n.level<=3?'aggregate':n.level===5?'source':'concept'};},
       events:{onPick:target=>{if(target){if(target.shiftKey && this.selected && this.selected!==target.id){this.why(this.selected,target.id);}else void this.select(target.id);}},onDoublePick:target=>{if(target)void this.expand(target.id);},onHover:()=>{}}});
-    if(old)this.view.restoreCamera(old);
+    // A camera only carries over when the arrangement and the projection stay the same: another organization or projection
+    // places the nodes elsewhere and at another scale, and Indra re-packs on every step, so its camera is framed afresh.
+    const arrangement=`${this.axes.organization}|${this.axes.projection}`;
+    const keep=old&&arrangement===this.lastArrangement&&this.axes.organization==='flat';
+    this.lastArrangement=arrangement;
+    if(keep){try{this.view.restoreCamera(old);}catch{await this.view.fit();}}
     if(this.overviewRatio===null){const camera=this.view.readCamera() as {ratio?:number}|null;this.overviewRatio=camera?.ratio??1;}
     if(this.selected)this.view.select(this.selected);
     element('status').textContent='Grafo pronto';const total=this.index.nodes.filter(n=>n.level!==5).length;
