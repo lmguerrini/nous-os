@@ -1,5 +1,11 @@
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
+import { buildContainerGeometry } from "#engine/container-geometry.ts";
+import type { MorphologyContainerInput, MorphologyContainerPath } from "#engine/container-geometry.ts";
+import { morphologyHash } from "#engine/stable-hash.ts";
+
+export { buildContainerGeometry, morphologyHash };
+export type { MorphologyContainerInput, MorphologyContainerPath };
 
 export type MorphologyNodeInput = { readonly id: string; readonly position: Coordinates; readonly radius: number };
 export type MorphologyEdgeInput = { readonly id: string; readonly source: string; readonly target: string; readonly width: number };
@@ -18,23 +24,6 @@ export type MorphologySegment = {
   readonly sharedKey: string | null;
   readonly curvature: number;
 };
-export type MorphologyContainerInput = { readonly id: string; readonly level: number; readonly center: Coordinates; readonly radius: number; readonly title?: string };
-export type MorphologyContainerPath = { readonly id: string; readonly level: number; readonly center: Coordinates; readonly points: readonly Coordinates[]; readonly title?: string };
-/** World-space outlines shared by the front and rotated projections. */
-export function buildContainerGeometry(morphology: Morphology, containers: readonly MorphologyContainerInput[]): readonly MorphologyContainerPath[] {
-  return containers.map(container => {
-    const phase = morphologyHash(container.id) / 4294967296 * Math.PI * 2;
-    const points = Array.from({ length: 65 }, (_, index): Coordinates => {
-      const angle = index / 64 * Math.PI * 2;
-      const ripple = morphology === "mycelium" ? 1 + 0.035 * Math.sin(7 * angle + phase) + 0.02 * Math.sin(13 * angle - phase)
-        : morphology === "neural" ? 1 + 0.012 * Math.sin(4 * angle + phase) : 1;
-      return { x: container.center.x + Math.cos(angle) * container.radius * ripple,
-        y: container.center.y + Math.sin(angle) * container.radius * ripple, z: container.center.z };
-    });
-    return { id: container.id, level: container.level, center: container.center, points, ...(container.title ? { title: container.title } : {}) };
-  });
-}
-
 export type MorphologyGeometry = {
   readonly morphology: Morphology;
   readonly nodes: readonly MorphologyNodeShape[];
@@ -43,13 +32,6 @@ export type MorphologyGeometry = {
   readonly branchPoints: readonly Coordinates[];
   readonly containers: readonly MorphologyContainerPath[];
 };
-
-/** Stable FNV-1a seed; no frame-time random choice enters geometry. */
-export function morphologyHash(id: string): number {
-  let value = 2166136261;
-  for (const character of id) value = Math.imul(value ^ character.charCodeAt(0), 16777619);
-  return value >>> 0;
-}
 
 const midpoint = (a: Coordinates, b: Coordinates): Coordinates => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 });
 const mix = (a: Coordinates, b: Coordinates, t: number): Coordinates => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t });

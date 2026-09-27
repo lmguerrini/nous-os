@@ -3,6 +3,7 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { MorphologyContainerPath, MorphologyGeometry } from "#engine/morphology-geometry.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
+import { drawContainers } from "#render-common/container-canvas.ts";
 
 export type ProjectedPoint = { readonly x: number; readonly y: number; readonly scale: number };
 export const DENSE_SCENE_THRESHOLD = 1200;
@@ -34,44 +35,8 @@ export function drawMorphologyCanvas(
   if (bounds.width === 0 || bounds.height === 0) return;
   context.setTransform(canvas.width / bounds.width, 0, 0, canvas.height / bounds.height, 0, 0);
   context.clearRect(0, 0, bounds.width, bounds.height);
-  // The nested circles are the hierarchy. Their fill and rim stay legible beneath sparse relations.
   const fieldIsLight = (style.fieldColor.match(/[\d.]+/g)?.map(Number).slice(0, 3).reduce((a, b) => a + b, 0) ?? 0) > 380;
-  const ink = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
-  for (const container of [...containers].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id))) {
-    const points = container.points.map(project);
-    if (!points.length) continue;
-    context.strokeStyle = `rgba(${ink}, ${clamp(1.02 - container.level * 0.13, 0.28, 0.88)})`;
-    context.lineWidth = (geometry.morphology === 'neural' ? 1.7 : 1.35) + Math.max(0, 4 - container.level) * 0.55;
-    context.setLineDash(geometry.morphology === "stellar" ? [3, 5] : []);
-    context.beginPath(); context.moveTo(points[0]!.x, points[0]!.y);
-    for (let index = 1; index < points.length; index++) context.lineTo(points[index]!.x, points[index]!.y);
-    if (typeof context.fill === 'function') {
-      context.fillStyle = `rgba(${ink}, ${container.level === 1 ? 0.033 : 0.014})`;
-      context.fill();
-    }
-    context.stroke();
-    const left = Math.min(...points.map(p => p.x)), right = Math.max(...points.map(p => p.x));
-    const top = Math.min(...points.map(p => p.y));
-    if (container.title && right - left >= 85 && top >= 14 && top < bounds.height - 20) {
-      context.setLineDash([]);
-      context.fillStyle = `rgba(${ink}, ${clamp(0.95 - container.level * 0.1, 0.5, 0.9)})`;
-      context.font = `${container.level <= 2 ? 600 : 400} 12px Arial`;
-      context.fillText(container.title.slice(0, 32), (left + right) / 2 - Math.min(95, container.title.length * 3), top - 5, 190);
-    }
-  }
-  context.setLineDash([]);
-  if (projection === "3d" && containers.length) {
-    const tiers = [...new Set(containers.map(c => c.center.z))].sort((a, b) => a - b);
-    const tierGap = tiers.length > 1 ? Math.min(...tiers.slice(1).map((z, i) => z - tiers[i]!)) : 170;
-    context.strokeStyle = `rgba(${ink}, 0.52)`;
-    context.lineWidth = 0.9;
-    for (const container of containers) {
-      if (container.level >= 4) continue;
-      const a = project(container.center);
-      const b = project({ ...container.center, z: container.center.z + tierGap });
-      context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
-    }
-  }
+  drawContainers(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection);
   if (structureOnly) return;
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
   for (const part of geometry.drawnSegments) {
