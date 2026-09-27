@@ -640,6 +640,7 @@ src/
     ├── projection.py     renderer-independent knowledge graph projections
     ├── graph_view.py     read-only sample export and a loopback server for the graph viewer
     ├── graph_review.py   read-only review export of cited cards and a loopback server for the review explorer
+    ├── review_graph.py   deterministic v2 review dataset builder with verified snapshot citations
     ├── operations.py     registration of the project's governed operations
     ├── core.py           the one application service boundary
     ├── cli.py            the command-line transport, generated from the catalogue

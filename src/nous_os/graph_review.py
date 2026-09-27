@@ -5,6 +5,7 @@ import argparse
 from collections import Counter, OrderedDict
 from datetime import datetime, timezone
 import hashlib
+import gzip
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
@@ -667,6 +668,139 @@ def serve(*, export_path: Path, static_root: Path = Path("ui/dist/review"), port
             signal.signal(sig, handler)
 
 
+def serve_graph(*, graph: Path, port: int = 8769) -> None:
+    """Serve a verified v2 dataset without accessing the underlying stores."""
+    from nous_os.review_graph import encoded, normalize
+
+    manifest = json.loads((graph / "manifest.json").read_bytes())
+    if manifest.get("schema") != "nousos.review-graph/2":
+        raise ValueError("invalid graph schema")
+    expected = manifest.get("digest")
+    actual = hashlib.sha256(encoded({k: v for k, v in manifest.items() if k != "digest"})).hexdigest()
+    if actual != expected:
+        raise ValueError("graph manifest digest mismatch")
+    for name, checksum in manifest["files"].items():
+        if file_digest(graph / name) != checksum:
+            raise ValueError(f"graph file digest mismatch: {name}")
+    index = json.loads((graph / "index.json").read_bytes())
+    nodes = {n["id"]: n for n in index["nodes"]}
+    offsets = json.loads((graph / "details-offsets.json").read_bytes())
+    detail_file = graph / "details.jsonl"
+    children: dict[str, list[str]] = {}
+    for node in index["nodes"]:
+        children.setdefault(node["parent"], []).append(node["id"])
+    for key in offsets:
+        if key.startswith("passage:"):
+            parent = key.rsplit(":", 1)[0].removeprefix("passage:")
+            children.setdefault(parent, []).append(key)
+    for value in children.values():
+        value.sort()
+    statements = {}
+    with detail_file.open("rb") as stream:
+        for line in stream:
+            item = json.loads(line)
+            if "statement" in item:
+                statements[item["id"]] = item["statement"]
+
+    def detail(identifier: str) -> dict | None:
+        if identifier not in offsets:
+            return None
+        with detail_file.open("rb") as stream:
+            stream.seek(offsets[identifier])
+            return json.loads(stream.readline())
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            parsed = urlsplit(self.path)
+            route = parsed.path
+            def send(code: int, payload: dict, max_bytes: int = 1048576):
+                body = encoded(payload)
+                if len(body) > max_bytes:
+                    code, body = 413, encoded({"error": "response too large"})
+                compressed = (code == 200 and route == "/api/graph/index" and
+                              "gzip" in self.headers.get("Accept-Encoding", "").lower())
+                if compressed:
+                    body = gzip.compress(body, mtime=0)
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                if route == "/api/graph/index":
+                    self.send_header("Vary", "Accept-Encoding")
+                if compressed:
+                    self.send_header("Content-Encoding", "gzip")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            if parsed.scheme or parsed.netloc or parsed.fragment or route not in {
+                    "/api/graph/manifest", "/api/graph/index", "/api/graph/node",
+                    "/api/graph/children", "/api/graph/search"}:
+                send(404, {"error": "route not found"})
+                return
+            try:
+                params = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+                keys = {"/api/graph/manifest": set(), "/api/graph/index": set(),
+                        "/api/graph/node": {"id"}, "/api/graph/children": {"id", "offset", "limit"},
+                        "/api/graph/search": {"q", "limit"}}[route]
+                if len(params) != len(dict(params)) or any(k not in keys for k, _ in params):
+                    raise ValueError("invalid query parameters")
+                args = dict(params)
+                if route == "/api/graph/manifest":
+                    send(200, manifest)
+                elif route == "/api/graph/index":
+                    # This route is intentionally the one large bounded response.
+                    send(200, index, 64 * 1024 * 1024)
+                elif route in {"/api/graph/node", "/api/graph/children"}:
+                    identifier = args.get("id", "")
+                    if not identifier or len(identifier) > 180 or not re.fullmatch(r"[A-Za-z0-9_:.-]+", identifier):
+                        raise ValueError("invalid node id")
+                    if identifier not in nodes and identifier not in offsets:
+                        send(404, {"error": "node not found"})
+                        return
+                    if route == "/api/graph/node":
+                        relations = [e for e in index["edges"] if e["source"] == identifier or e["target"] == identifier]
+                        send(200, {"node": nodes.get(identifier) or detail(identifier), "detail": detail(identifier),
+                                   "relations": relations[:100], "relations_total": len(relations)})
+                    else:
+                        offset = int(args.get("offset", "0"))
+                        limit = int(args.get("limit", "25"))
+                        if not 0 <= offset <= 1000000 or not 1 <= limit <= 100:
+                            raise ValueError("offset or limit out of range")
+                        ids = children.get(identifier, [])
+                        send(200, {"id": identifier, "offset": offset, "limit": limit, "total": len(ids),
+                                   "children": [nodes.get(i) or detail(i) for i in ids[offset:offset + limit]]})
+                else:
+                    query = args.get("q", "")
+                    limit = int(args.get("limit", "20"))
+                    if not query.strip() or len(query) > 200 or not 1 <= limit <= 50:
+                        raise ValueError("invalid query or limit")
+                    words = normalize(query).split()
+                    hits = []
+                    for node in index["nodes"]:
+                        fields = {"title": node["title"], "snippet": node.get("snippet") or ""}
+                        if node["level"] == 4:
+                            fields["statement"] = statements.get(node["id"], "")
+                        field = next((name for name, value in fields.items() if all(w in normalize(value) for w in words)), None)
+                        if field:
+                            hits.append({"id": node["id"], "level": node["level"], "match_field": field,
+                                         "title": node["title"]})
+                    send(200, {"query": query, "total": len(hits), "results": hits[:limit]})
+            except (ValueError, TypeError):
+                send(400, {"error": "invalid query parameters"})
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    def stop(_signum, _frame):
+        threading.Thread(target=server.shutdown, daemon=True).start()
+    previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -676,7 +810,8 @@ def main(argv: list[str] | None = None) -> int:
     exp.add_argument("--out", required=True, type=Path)
     exp.add_argument("--context", type=int, default=2)
     srv = sub.add_parser("serve")
-    srv.add_argument("--export", required=True, type=Path)
+    srv.add_argument("--export", type=Path)
+    srv.add_argument("--graph", type=Path)
     srv.add_argument("--port", type=int, default=8766)
     srv.add_argument("--static", type=Path, default=Path("ui/dist/review"))
     srv.add_argument("--lenses", type=Path)
@@ -690,7 +825,12 @@ def main(argv: list[str] | None = None) -> int:
             export(package=args.package, inventory=args.inventory, out=args.out,
                    workspace=core.resolve_workspace(), context_window=args.context)
         else:
-            serve(export_path=args.export, static_root=args.static, port=args.port, lenses_path=args.lenses, live=args.live)
+            if args.graph:
+                serve_graph(graph=args.graph, port=args.port)
+            elif args.export:
+                serve(export_path=args.export, static_root=args.static, port=args.port, lenses_path=args.lenses, live=args.live)
+            else:
+                raise ValueError("--export or --graph required")
     except (ValueError, OSError, KeyError) as error:
         parser.exit(2, f"graph-review: {error}\n")
     return 0
