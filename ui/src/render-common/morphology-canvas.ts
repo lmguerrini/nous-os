@@ -1,7 +1,7 @@
 import type { AppearanceOptions, EdgePresentation, NodeGlyph } from "#engine/presentation-options.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
-import type { MorphologyGeometry } from "#engine/morphology-geometry.ts";
+import type { MorphologyContainerPath, MorphologyGeometry } from "#engine/morphology-geometry.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 
 export type ProjectedPoint = { readonly x: number; readonly y: number; readonly scale: number };
@@ -24,12 +24,28 @@ export function drawMorphologyCanvas(
   project: (point: Coordinates) => ProjectedPoint,
   style: MorphologyCanvasStyle,
   appearance: AppearanceOptions = DEFAULT_APPEARANCE,
+  containers: readonly MorphologyContainerPath[] = geometry.containers,
+  projection: "2d" | "3d" = "2d",
 ): void {
   const canvas = context.canvas;
   const bounds = canvas.getBoundingClientRect();
   if (bounds.width === 0 || bounds.height === 0) return;
   context.setTransform(canvas.width / bounds.width, 0, 0, canvas.height / bounds.height, 0, 0);
   context.clearRect(0, 0, bounds.width, bounds.height);
+  // Containment is an outline behind every relation and glyph. Alpha rises gently at deeper levels.
+  const fieldIsLight = (style.fieldColor.match(/[\d.]+/g)?.map(Number).slice(0, 3).reduce((a, b) => a + b, 0) ?? 0) > 380;
+  const ink = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
+  for (const container of [...containers].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id))) {
+    const points = container.points.map(project);
+    if (!points.length) continue;
+    context.strokeStyle = `rgba(${ink}, ${clamp(0.15 + container.level * 0.045, 0, 0.4)})`;
+    context.lineWidth = geometry.morphology === "stellar" ? 0.8 : geometry.morphology === "neural" ? 1.2 : 1;
+    context.setLineDash(geometry.morphology === "stellar" ? [3, 5] : []);
+    context.beginPath(); context.moveTo(points[0]!.x, points[0]!.y);
+    for (let index = 1; index < points.length; index++) context.lineTo(points[index]!.x, points[index]!.y);
+    context.stroke();
+  }
+  context.setLineDash([]);
   for (const part of geometry.drawnSegments) {
     const edge = style.edges.get(part.edgeId);
     const presentation = edge?.presentation;
@@ -41,18 +57,22 @@ export function drawMorphologyCanvas(
     const steps = samples.length - 1;
     context.lineCap = "round";
     context.lineJoin = "round";
-    context.strokeStyle = rgba(baseColor, clamp(opacity * appearance.edgeOpacity * (geometry.morphology === "stellar" ? 0.75 : 0.94), 0, 1));
+    const is3dFilament = projection === "3d" && geometry.morphology === "mycelium";
+    context.strokeStyle = rgba(is3dFilament ? (fieldIsLight ? "rgb(45, 45, 45)" : "rgb(240, 240, 240)") : baseColor,
+      clamp(opacity * appearance.edgeOpacity * (geometry.morphology === "stellar" ? 0.75 : 0.94), 0, 1));
+    context.shadowColor = is3dFilament ? context.strokeStyle : "transparent";
+    context.shadowBlur = is3dFilament ? 4 : 0;
     const dashed = stroke === "dashed" || stroke === "dotted";
     for (let index = 0; index < steps; index += 1) {
       const from = samples[index], to = samples[index + 1];
       if (!from || !to) continue;
       const width = (part.widthStart + (part.widthEnd - part.widthStart) * (index + 0.5) / steps)
         * (from.scale + to.scale) / 2 * widthFactor * appearance.edgeWidth;
-      context.lineWidth = clamp(width * (geometry.morphology === "mycelium" ? 1.45 : 1), 0.55, 16);
+      context.lineWidth = is3dFilament ? clamp(width * 0.65, 0.35, 2.2) : clamp(width * (geometry.morphology === "mycelium" ? 1.45 : 1), 0.55, 16);
       context.setLineDash(dashed ? (stroke === "dotted" ? [0.1, Math.max(2, context.lineWidth * 2.3)] : [Math.max(3, context.lineWidth * 3.2), Math.max(2, context.lineWidth * 2.1)]) : []);
       context.beginPath(); context.moveTo(from.x, from.y); context.lineTo(to.x, to.y); context.stroke();
     }
-    context.setLineDash([]);
+    context.setLineDash([]); context.shadowBlur = 0;
   }
   if (geometry.morphology === "mycelium") {
     context.fillStyle = `rgba(245, 245, 245, ${clamp(appearance.edgeOpacity * 0.82, 0, 1)})`;

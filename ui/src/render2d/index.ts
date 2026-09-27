@@ -476,6 +476,7 @@ function mountDistinctCanvas(sigma: Sigma, model: RenderModel, options: RenderOp
     graph.edges().map((id) => ({ id, source: graph.source(id), target: graph.target(id), width: graph.getEdgeAttributes(id).size })),
     model.windows.map((window) => ({ id: window.id, members: window.members, center: window.center })),
     curvature,
+    options.presentation?.containers,
   );
   let geometry = buildGeometry(options.presentation?.appearance?.curvature ?? DEFAULT_APPEARANCE.curvature);
   const canvas = document.createElement("canvas");

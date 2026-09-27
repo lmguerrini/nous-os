@@ -51,6 +51,8 @@ export const DEFAULT_APPEARANCE: AppearanceOptions = {
 export type PresentationOptions = {
   /** Enables the D-069 geometry vocabulary. Omission preserves the historical renderer. */
   readonly morphologyLanguage?: "distinct";
+  /** Hierarchical circles in world coordinates, shared by 2D and 3D projections. */
+  readonly containers?: readonly { readonly id: string; readonly level: number; readonly center: { readonly x: number; readonly y: number; readonly z: number }; readonly radius: number }[];
   readonly nodes?: ReadonlyMap<string, NodePresentation & { readonly glyph?: NodeGlyph }>;
   readonly edges?: ReadonlyMap<string, EdgePresentation>;
   readonly emphasisIds?: ReadonlySet<string> | null;

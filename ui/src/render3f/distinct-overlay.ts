@@ -34,6 +34,7 @@ export function mountDistinctOverlay(
     scene.edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, width: edge.bodyWidthPx })),
     scene.aggregates.map((aggregate) => ({ id: aggregate.id, members: aggregate.members, center: aggregate.center })),
     appearance.curvature,
+    presentation?.containers,
   );
   let geometry = geometryFor();
   const draw = (): void => {
@@ -54,7 +55,7 @@ export function mountDistinctOverlay(
         color: cssColor(scene, edge.token),
         presentation: presentation?.edges?.get(edge.id),
       }])),
-    }, appearance);
+    }, appearance, undefined, "3d");
   };
   return {
     draw,
