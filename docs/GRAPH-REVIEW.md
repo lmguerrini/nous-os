@@ -2,6 +2,40 @@
 
 The page is a read-only review projection over the D-066 export. It does not promote D-065 cards to canon or define an epistemology. The export format, digest and verified source spans remain unchanged. Spatial proximity is never an epistemic relation; only typed, attested edges support navigation.
 
+## D-068 local expansion
+
+`serve --live` explicitly enables bounded, read-only search of the current NousOS distilled memory. The server resolves the
+workspace only in this mode and invokes product Core operations with a grant containing only `Tier.READ`. Without `--live`,
+the search panel says **Modalità dinamica non attiva**, the two live routes return JSON 404, and no store is opened. The
+browser receives search hits and selected first-level context, never the candidate store or full corpus.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m nous_os.graph_review serve \
+  --export "$TMPDIR/d067/export.json" --static ui/dist/review --port 8766 --live
+```
+
+`GET /api/search?q=<text>&limit=<1..20>` returns `query`, `total_matched`, and `results` (one export-shaped node/edge
+fragment per hit). A candidate is canonical only when `candidate.search` reports exact canonical standing and an assertion
+ID. Results carry the query, rank, standing, epistemic label, kind, scope, validity, replacement state and citations.
+`GET /api/expand?id=<export-shaped-id>&limit=<1..40>` returns `nodes`, `edges`, and `relations`. It rechecks selected
+citations with `provenance.span`, keeps verification failures visible, reads bounded `knowledge.context`, and checks an
+exact canon assertion. The product exposes no relation operation filtered by candidate, so live relation discovery is
+unavailable; curated nodes can only return their existing export relations. Both routes reject extra or repeated parameters,
+overlong queries and malformed IDs, cap responses at 256 KiB, and return JSON errors. Search hits are held only in a bounded
+server memory cache for expansion and are never persisted.
+
+The panel separates this search from curated graph search. **Aggiungi al grafo** attaches a result with its first level;
+**Espandi dalla memoria** requests the selected dynamic node's first level. Undo, redo and **Rimuovi risultati dinamici**
+manage additions with a 150 dynamic-node cap. The original export is immutable; every new node and edge has `origin` and
+`attested_by`. Dynamic nodes keep their family and semantic standing colour, with a dimmer halo and thin ring in the B/N
+product view. The panel and legend identify them as dynamic. The original layout anchors remain fixed; each new node is
+placed deterministically near an attested attachment, or on an outer ring when unattached. Indra membership uses only a
+real `knowledge.context` `in_conversation` edge. Proximity in either layout is never treated as evidence.
+
+The opt-in browser check is `D068_LIVE=1 REVIEW_URL=http://127.0.0.1:8766 SHOTS_DIR="$TMPDIR/d068/shots"
+npx playwright test --project=review-d067` from `ui/`, with a live server and optionally `D068_QUERY`. It checks search,
+add, expand, undo, redo and clear through Flat/Indra and 2D/3D, writing its witnesses to `SHOTS_DIR`.
+
 ## Four independent axes
 
 | Axis | Options | Changes |
@@ -44,6 +78,6 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m nous_os.graph_review serve \
   --port 8766 --static ui/dist/review
 ```
 
-Omit `--lenses` when no approved sidecar exists. The loopback server serves only `/`, `/index.html`, `/review.js`, `/api/export.json`, `/api/lenses.json` and `/api/health`; it rejects query strings and checks the export digest before binding. The `.sha256` file written next to an export holds that content digest (canonical JSON without `generated_at` and `export_digest`), not a hash of the file bytes, which change with `generated_at` on every regeneration. The export uses only read grants (`provenance.span`, `knowledge.context`, `canon.assertions`), and source text stays in your export and the loopback response. The server opens no NousOS store.
+Omit `--lenses` when no approved sidecar exists. By default the loopback server serves only `/`, `/index.html`, `/review.js`, `/api/export.json`, `/api/lenses.json` and `/api/health`; it rejects query strings and checks the export digest before binding. The `.sha256` file written next to an export holds that content digest (canonical JSON without `generated_at` and `export_digest`), not a hash of the file bytes, which change with `generated_at` on every regeneration. The export uses only read grants (`provenance.span`, `knowledge.context`, `canon.assertions`), and source text stays in your export and the loopback response. Without `--live`, the server opens no NousOS store.
 
 With the server running on any dataset, you can run `D067_VIEWER=1 REVIEW_URL=http://127.0.0.1:8766 SHOTS_DIR="$TMPDIR/d067/shots" npx playwright test --project=review-d067` from `ui/`. The suite refuses a repository-local shot directory, writes sixteen states with witnesses and pixel metrics to `SHOTS_DIR`, and checks label collision, focus framing, colour and visual differences. The old D-066 browser spec is superseded. Its export and unit tests remain as substrate checks.

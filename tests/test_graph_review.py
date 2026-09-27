@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nous_os import graph_review
+from nous_os import core, graph_review
 from nous_os.capability import Tier
 
 
@@ -36,8 +37,14 @@ def synthetic_fixture(tmp_path: Path, monkeypatch):
     def invoke(grant, op, ws, args):
         assert ws is workspace
         assert grant.tiers == frozenset({Tier.READ})
-        assert op in {"provenance.span", "knowledge.context", "canon.assertions"}
+        assert op in {"provenance.span", "knowledge.context", "canon.assertions", "candidate.search"}
         calls.append((op, args))
+        if op == "candidate.search":
+            return {"total_matched": 1, "hits": [{"candidate_id": "candidate-synthetic", "statement": "synthetic memory",
+                "candidate_version": "v1", "canonical_status": "canonical", "assertion_id": "assertion-synthetic",
+                "epistemic_label": "CANONICAL", "kind": "DECISION", "scope": "synthetic", "valid_from": None,
+                "replaced": False, "superseded_by": None, "rank": 1, "citations": [{key: evidence[key] for key in
+                    ("source_id", "snapshot_digest", "start_byte", "end_byte", "span")}] }]}
         if op == "canon.assertions":
             return {"status": "complete", "assertions": [{"candidate_id": "candidate-synthetic", "assertion_id": "assertion-synthetic",
                     "state": "canonical", "text": "synthetic assertion", "candidate_version": "v1"}]}
@@ -159,3 +166,83 @@ def test_lens_sidecar_route_is_optional_and_read_once(tmp_path):
     invalid = tmp_path / "invalid.json"; invalid.write_text('{"schema":"unknown"}')
     with pytest.raises(ValueError, match="schema"):
         graph_review.load_lenses(invalid)
+
+
+def test_live_routes_are_bounded_read_only_and_reverify(tmp_path, monkeypatch):
+    package, inventory, workspace, calls = synthetic_fixture(tmp_path, monkeypatch)
+    result = graph_review.export(package=package, inventory=inventory, out=tmp_path / "export.json", workspace=workspace)
+    files = [workspace.candidate_store_path, workspace.canon_root_path / "assertions.jsonl", inventory,
+             package / "COLLEGAMENTI-D065.jsonl"]
+    before = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
+
+    def response(handler, path):
+        class Request:
+            def makefile(self, mode, _size=None): return BytesIO(b"") if "r" in mode else self.output
+            def sendall(self, data): self.output.write(data)
+        request = Request(); request.output = BytesIO()
+        server = type("SyntheticServer", (), {"server_name": "localhost", "server_port": 8766})()
+        class Routed(handler):
+            def handle(self):
+                self.raw_requestline = f"GET {path} HTTP/1.1\r\n".encode(); self.parse_request(); self.do_GET()
+        Routed(request, ("127.0.0.1", 1000), server)
+        raw = request.output.getvalue()
+        return raw.split(b"\r\n\r\n", 1)[0], json.loads(raw.split(b"\r\n\r\n", 1)[1])
+
+    inactive = graph_review.make_handler(result, tmp_path)
+    assert b"404" in response(inactive, "/api/search?q=synthetic")[0]
+    active = graph_review.make_handler(result, tmp_path, workspace=workspace)
+    status, found = response(active, "/api/search?q=synthetic&limit=1")
+    assert b"200" in status and found["results"][0]["nodes"][0]["origin"] == "dynamic"
+    assert found["results"][0]["edges"][0]["attested_by"] == "candidate.search"
+    status, expanded = response(active, "/api/expand?id=candidate:candidate-synthetic&limit=2")
+    assert b"200" in status and any(node["type"] == "record" for node in expanded["nodes"])
+    assert any(node.get("verified") is True for node in expanded["nodes"])
+    assert any(edge["type"] == "in_conversation" for edge in expanded["edges"])
+    assert "no product relation" in expanded["relations"].lower()
+    for path in ("/api/search?q=x&bad=1", "/api/search?q=x&limit=21", "/api/search?q=x&q=y",
+                 "/api/expand?id=bad", "/api/expand?id=candidate:candidate-synthetic&limit=41"):
+        assert b"400" in response(active, path)[0]
+    assert before == {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
+    assert any(op == "candidate.search" for op, _ in calls)
+
+
+def test_live_search_uses_product_core_against_temporary_store_without_writes(tmp_path):
+    source_id = "src_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    candidate_id = "asr_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    content = {"statement": "Synthetic memory of a blue harbor", "kind": "DECISION", "scope": "synthetic",
+               "origin": "USER_AUTHORED", "support": "direct_quote", "citations": [{"source_id": source_id,
+               "snapshot_digest": "0" * 64, "start_byte": 0, "end_byte": 12, "span": "blue harbor"}],
+               "counter_citations": [], "valid_from": None, "valid_to": None, "why": "synthetic",
+               "producer": "fixture/1", "batch": "fixture", "supersedes": None}
+    store = tmp_path / "candidates.jsonl"
+    store.write_text(json.dumps({"proposal_id": candidate_id, "source_id": source_id,
+        "content": json.dumps(content), "proposed_at": "2026-01-01T00:00:00+00:00", "holder": "fixture"}) + "\n")
+    replacements = tmp_path / "replacements.jsonl"
+    replacements.write_text("")
+    documents = tmp_path / "documents"
+    documents.mkdir()
+    workspace = core.resolve_workspace(data_root=documents, snapshot_root=tmp_path / "snapshots",
+        ledger_path=tmp_path / "ledger.jsonl", derived_path=tmp_path / "derived.sqlite",
+        candidate_store_path=store, candidate_replacements_path=replacements,
+        bridge_registry_path=tmp_path / "bridges.jsonl", rejection_memory_path=tmp_path / "rejections.jsonl",
+        relation_store_path=tmp_path / "relations.jsonl")
+    before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in (store, replacements)}
+    handler = graph_review.make_handler({"export_digest": "synthetic"}, tmp_path, workspace=workspace)
+
+    class Request:
+        def makefile(self, mode, _size=None): return BytesIO(b"") if "r" in mode else self.output
+        def sendall(self, data): self.output.write(data)
+    request = Request()
+    request.output = BytesIO()
+    server = type("SyntheticServer", (), {"server_name": "localhost", "server_port": 8766})()
+    class Routed(handler):
+        def handle(self):
+            self.raw_requestline = b"GET /api/search?q=harbor&limit=1 HTTP/1.1\r\n"
+            self.parse_request()
+            self.do_GET()
+    Routed(request, ("127.0.0.1", 1000), server)
+    raw = request.output.getvalue()
+    assert b"200 OK" in raw
+    body = json.loads(raw.split(b"\r\n\r\n", 1)[1])
+    assert body["results"][0]["nodes"][0]["id"] == f"candidate:{candidate_id}"
+    assert before == {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in before}

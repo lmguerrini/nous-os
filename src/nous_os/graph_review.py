@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
+from collections import Counter, OrderedDict
 from datetime import datetime, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,7 +15,7 @@ import re
 import signal
 import sys
 import threading
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from nous_os import core
 from nous_os.capability import Grant, Tier
@@ -394,23 +394,223 @@ def load_lenses(path: Path) -> dict:
     return result
 
 
-def make_handler(result: dict, static_root: Path, lenses: dict | None = None):
+def dynamic_edge(kind: str, source: str, target: str, attested_by: str, **extra) -> dict:
+    return {"id": f"{kind}:{source}->{target}", "type": kind, "source": source, "target": target,
+            "attested_by": attested_by, "origin": "dynamic", "weight": 1, "evidence_ids": [], **extra}
+
+
+def dynamic_hit(hit: dict, query: str) -> dict:
+    """Project one product search hit; only an exact assertion makes it canon."""
+    canonical = hit.get("canonical_status") == "canonical" and bool(hit.get("assertion_id"))
+    cid = hit["candidate_id"]
+    node = {"id": f"candidate:{cid}", "type": "candidate", "label": hit["statement"][:72],
+            "text": hit["statement"], "epistemic": "canonical" if canonical else "proposal",
+            "origin": "dynamic", "origin_query": query, "attested_by": "candidate.search",
+            "candidate_id": cid, "candidate_version": hit.get("candidate_version"),
+            "standing": hit.get("canonical_status"), "epistemic_label": hit.get("epistemic_label"),
+            "kind": hit.get("kind"), "scope": hit.get("scope"), "valid_from": hit.get("valid_from"),
+            "replaced": hit.get("replaced"), "superseded_by": hit.get("superseded_by"),
+            "rank": hit.get("rank")}
+    nodes = [node]
+    edges = []
+    for citation in hit.get("citations", [])[:40]:
+        eid = f"evidence:{citation['source_id']}:{citation['start_byte']}:{citation['end_byte']}"
+        nodes.append({"id": eid, "type": "evidence", "label": citation["span"][:72],
+                      "epistemic": "source", "origin": "dynamic", "origin_query": query,
+                      "attested_by": "candidate.search", **citation})
+        edges.append(dynamic_edge("supported_by", node["id"], eid, "candidate.search",
+                                  origin_query=query, evidence_ids=[eid]))
+    if canonical:
+        aid = f"canon:{hit['assertion_id']}"
+        nodes.append({"id": aid, "type": "canon", "label": hit["statement"][:72], "text": hit["statement"],
+                      "epistemic": "canonical", "standing": "canonical", "origin": "dynamic",
+                      "origin_query": query, "attested_by": "candidate.search", "assertion_id": hit["assertion_id"]})
+        edges.append(dynamic_edge("promoted_as", node["id"], aid, "candidate.search", origin_query=query))
+    return {"nodes": nodes, "edges": edges}
+
+
+def dynamic_expand_ids(hit: dict) -> set[str]:
+    ids = {node["id"] for node in dynamic_hit(hit, "")["nodes"]}
+    ids.update(f"record:{citation['source_id']}" for citation in hit.get("citations", []))
+    return ids
+
+
+def curated_hit(node: dict, result: dict) -> dict:
+    """Recover only citations already linked to this candidate in the verified export."""
+    by_id = {item["id"]: item for item in result["nodes"]}
+    evidence = [by_id[edge["source"]] for edge in result["edges"]
+                if edge["type"] == "distilled_as" and edge["target"] == node["id"] and edge["source"] in by_id]
+    promoted = next((edge for edge in result["edges"]
+                     if edge["type"] == "promoted_as" and edge["source"] == node["id"]), None)
+    return {"candidate_id": node["candidate_id"], "statement": node.get("text") or node["label"],
+            "candidate_version": node.get("candidate_version"),
+            "canonical_status": "canonical" if promoted else "non_canonical",
+            "assertion_id": promoted["target"].split(":", 1)[1] if promoted else None,
+            "epistemic_label": node.get("epistemic_label"), "kind": node.get("kind"), "scope": node.get("scope"),
+            "valid_from": node.get("valid_from"), "replaced": False, "superseded_by": None, "rank": None,
+            "citations": [{key: item[key] for key in ("source_id", "snapshot_digest", "start_byte", "end_byte", "span")}
+                          for item in evidence]}
+
+
+def dynamic_expand(hit: dict, query: str, invoke, limit: int) -> dict:
+    """Recheck selected spans and read only their bounded record context."""
+    graph = dynamic_hit(hit, query)
+    nodes = graph["nodes"][:1]
+    edges = []
+    for citation in hit.get("citations", [])[:limit]:
+        eid = f"evidence:{citation['source_id']}:{citation['start_byte']}:{citation['end_byte']}"
+        try:
+            verified = invoke("provenance.span", {"citation": citation}) == citation["span"]
+            failure = None if verified else "SPAN_MISMATCH"
+        except Exception as error:
+            verified, failure = False, error_code(error)
+        nodes.append({"id": eid, "type": "evidence", "label": citation["span"][:72],
+                      "epistemic": "source", "origin": "dynamic", "origin_query": query,
+                      "attested_by": "provenance.span", "verified": verified,
+                      "verification_error": failure, **citation})
+        edges.append(dynamic_edge("supported_by", nodes[0]["id"], eid, "candidate.search", evidence_ids=[eid]))
+        try:
+            context = invoke("knowledge.context", {"source_id": citation["source_id"], "before": 2, "after": 2})
+            rid = f"record:{citation['source_id']}"
+            target = context["target"]
+            nodes.append({"id": rid, "type": "record", "label": citation["source_id"],
+                          "epistemic": "source", "origin": "dynamic", "origin_query": query,
+                          "attested_by": "knowledge.context", "source_id": citation["source_id"],
+                          "snapshot_digest": target.get("snapshot_digest"), "role": target.get("role"),
+                          "date": target.get("created_at"),
+                          "context": {key: excerpt(context[key]) if key == "target" else
+                                      [excerpt(row) for row in context[key]] for key in ("before", "target", "after")},
+                          "conversation_id": context.get("container")})
+            edges.append(dynamic_edge("quotes", eid, rid, "provenance.span", evidence_ids=[eid]))
+            if context.get("container"):
+                vid = f"conversation:{context['container']}"
+                nodes.append({"id": vid, "type": "conversation", "label": context["container"],
+                              "epistemic": "structural", "origin": "dynamic", "origin_query": query,
+                              "attested_by": "knowledge.context", "conversation_id": context["container"]})
+                edges.append(dynamic_edge("in_conversation", rid, vid, "knowledge.context", evidence_ids=[eid]))
+        except Exception as error:
+            nodes[-1]["context_error"] = error_code(error)
+    canonical = graph["nodes"][-1] if graph["nodes"][-1]["type"] == "canon" else None
+    if canonical:
+        assertion = invoke("canon.assertions", {"assertion_id": hit["assertion_id"]})
+        rows = assertion.get("assertions", [])
+        if any(row.get("candidate_id") == hit["candidate_id"] and row.get("state") == "canonical" for row in rows):
+            nodes.append({**canonical, "attested_by": "canon.assertions"})
+            edges.append(dynamic_edge("promoted_as", nodes[0]["id"], canonical["id"], "canon.assertions"))
+    unique = {node["id"]: node for node in nodes}
+    return {"nodes": list(unique.values()), "edges": edges,
+            "relations": "No product relation operation filters by candidate; relation expansion unavailable."}
+
+
+def make_handler(result: dict, static_root: Path, lenses: dict | None = None, workspace=None):
     export_body = json.dumps(result, ensure_ascii=False, sort_keys=True).encode("utf-8")
     lenses_body = json.dumps(lenses, ensure_ascii=False, sort_keys=True).encode("utf-8") if lenses is not None else None
-    health_body = canonical_bytes({"status": "ok", "export_digest": result["export_digest"]})
+    health = {"status": "ok", "export_digest": result["export_digest"]}
+    if workspace is not None:
+        health["live"] = True
+    health_body = canonical_bytes(health)
     root = static_root.resolve()
+    hits: OrderedDict[str, tuple[dict, str]] = OrderedDict()
+    expanded_ids: dict[str, str] = {}
+    hits_lock = threading.Lock()
+    curated = {node["id"]: node for node in result.get("nodes", [])}
+    identifier = re.compile(
+        r"(?:candidate|canon|record|conversation|connection|domain):[A-Za-z0-9_.-]+"
+        r"|evidence:[A-Za-z0-9_.-]+:[0-9]+:[0-9]+"
+    )
+
+    def invoke(op: str, args: dict) -> dict:
+        return core.invoke(Grant("graph-review-live", frozenset({Tier.READ})), op, workspace, args)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             parsed = urlsplit(self.path)
-            if "?" in self.path:
-                self.send_error(400)
-                return
+            def fail(code: int, message: str):
+                body = canonical_bytes({"error": message})
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             if parsed.scheme or parsed.netloc or parsed.fragment:
-                self.send_error(404)
+                fail(404, "route not found")
                 return
             route = parsed.path
-            if route == "/api/health":
+            if route in {"/api/search", "/api/expand"}:
+                if workspace is None:
+                    fail(404, "dynamic mode inactive")
+                    return
+                try:
+                    params = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+                    expected = {"q", "limit"} if route == "/api/search" else {"id", "limit"}
+                    if not params or len(params) != len({key for key, _ in params}) or any(k not in expected for k, _ in params):
+                        raise ValueError("invalid query parameters")
+                    args = dict(params)
+                    limit = int(args.get("limit", "10" if route == "/api/search" else "20"))
+                    maximum = 20 if route == "/api/search" else 40
+                    if not 1 <= limit <= maximum:
+                        raise ValueError("limit out of range")
+                    if route == "/api/search":
+                        query = args.get("q", "")
+                        if not query.strip() or len(query) > 200:
+                            raise ValueError("invalid query length")
+                        search = invoke("candidate.search", {"query": query, "limit": limit})
+                        graphs = []
+                        for hit in search["hits"]:
+                            graphs.append(dynamic_hit(hit, query))
+                            with hits_lock:
+                                hits[f"candidate:{hit['candidate_id']}"] = (hit, query)
+                                hits.move_to_end(f"candidate:{hit['candidate_id']}")
+                                while len(hits) > 100:
+                                    expired, _ = hits.popitem(last=False)
+                                    for key in [key for key, value in expanded_ids.items() if value == expired]:
+                                        del expanded_ids[key]
+                        payload = {"query": query, "results": graphs, "total_matched": search["total_matched"]}
+                    else:
+                        node_id = args.get("id", "")
+                        if not identifier.fullmatch(node_id) or len(node_id) > 180:
+                            raise ValueError("invalid node id")
+                        with hits_lock:
+                            found = hits.get(node_id) or hits.get(expanded_ids.get(node_id, ""))
+                            if found is None:
+                                for cached, query in hits.values():
+                                    if node_id in {node["id"] for node in dynamic_expand_ids(cached)}:
+                                        found = (cached, query)
+                                        break
+                        if found:
+                            payload = dynamic_expand(*found, invoke, limit)
+                            with hits_lock:
+                                for node in payload["nodes"]:
+                                    expanded_ids[node["id"]] = f"candidate:{found[0]['candidate_id']}"
+                        elif node_id in curated and curated[node_id]["type"] == "candidate":
+                            payload = dynamic_expand(curated_hit(curated[node_id], result), "", invoke, limit)
+                        elif node_id in curated:
+                            edge_rows = [edge for edge in result["edges"]
+                                         if edge["source"] == node_id or edge["target"] == node_id][:limit]
+                            ids = {node_id, *(value for edge in edge_rows for value in (edge["source"], edge["target"]))}
+                            payload = {"nodes": [{**curated[key], "origin": "dynamic", "attested_by": "review.export"}
+                                                 for key in ids if key in curated],
+                                       "edges": [{**edge, "origin": "dynamic"} for edge in edge_rows],
+                                       "relations": "Existing curated relations only; "
+                                                    "no candidate-filtered product relation operation."}
+                        else:
+                            fail(404, "node not found in this session")
+                            return
+                    body = canonical_bytes(payload)
+                    if len(body) > 262144:
+                        fail(413, "response exceeds 256 KiB")
+                        return
+                    mime = "application/json; charset=utf-8"
+                except (ValueError, KeyError, TypeError) as error:
+                    fail(400, str(error))
+                    return
+                except Exception as error:
+                    fail(502, error_code(error))
+                    return
+            elif parsed.query or "?" in self.path:
+                fail(400, "query not allowed")
+                return
+            elif route == "/api/health":
                 body, mime = health_body, "application/json; charset=utf-8"
             elif route == "/api/export.json":
                 body, mime = export_body, "application/json; charset=utf-8"
@@ -428,12 +628,12 @@ def make_handler(result: dict, static_root: Path, lenses: dict | None = None):
                 name = "index.html" if route == "/" else route[1:]
                 target = (root / name).resolve()
                 if not target.is_relative_to(root) or not target.is_file():
-                    self.send_error(404)
+                    fail(404, "static file not found")
                     return
                 body = target.read_bytes()
                 mime = "text/html; charset=utf-8" if name == "index.html" else "text/javascript; charset=utf-8"
             else:
-                self.send_error(404)
+                fail(404, "route not found")
                 return
             self.send_response(200)
             self.send_header("Content-Type", mime)
@@ -446,10 +646,12 @@ def make_handler(result: dict, static_root: Path, lenses: dict | None = None):
     return Handler
 
 
-def serve(*, export_path: Path, static_root: Path = Path("ui/dist/review"), port: int = 8766, lenses_path: Path | None = None) -> None:
+def serve(*, export_path: Path, static_root: Path = Path("ui/dist/review"), port: int = 8766,
+          lenses_path: Path | None = None, live: bool = False) -> None:
     result = load_export(export_path)
     lenses = load_lenses(lenses_path) if lenses_path is not None else None
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(result, static_root, lenses))
+    workspace = core.resolve_workspace() if live else None
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(result, static_root, lenses, workspace))
     def stop(_signum, _frame):
         threading.Thread(target=server.shutdown, daemon=True).start()
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
@@ -474,6 +676,7 @@ def main(argv: list[str] | None = None) -> int:
     srv.add_argument("--port", type=int, default=8766)
     srv.add_argument("--static", type=Path, default=Path("ui/dist/review"))
     srv.add_argument("--lenses", type=Path)
+    srv.add_argument("--live", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "export":
@@ -483,7 +686,7 @@ def main(argv: list[str] | None = None) -> int:
             export(package=args.package, inventory=args.inventory, out=args.out,
                    workspace=core.resolve_workspace(), context_window=args.context)
         else:
-            serve(export_path=args.export, static_root=args.static, port=args.port, lenses_path=args.lenses)
+            serve(export_path=args.export, static_root=args.static, port=args.port, lenses_path=args.lenses, live=args.live)
     except (ValueError, OSError, KeyError) as error:
         parser.exit(2, f"graph-review: {error}\n")
     return 0
