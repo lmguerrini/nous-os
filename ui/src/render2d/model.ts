@@ -231,22 +231,35 @@ export function buildRenderModel(
     }
     const size = nodeSizeForMaterial(nodeMaterial, view.material, morphology, calibration);
     const appearance = activeOptions.presentation?.nodes?.get(node.id);
+    const baseColor = nodeColorForMaterial(tokens, nodeMaterial, view.material, node.rendered ?? null, calibration);
+    const tintedColor = appearance?.tintSrgb
+      ? tintRgba(baseColor, appearance.tintSrgb, SCENE_PERMILLE_SCALE)
+      : baseColor;
     const attributes: RenderNodeAttributes = {
       x: anchor.x,
       y: anchor.y,
-      size: appearance ? size * appearance.corePermille / SCENE_PERMILLE_SCALE : size,
-      color: appearance ? mixTowardField(appearance.tintSrgb ? tintRgba(nodeColorForMaterial(tokens, nodeMaterial, view.material, node.rendered ?? null, calibration), appearance.tintSrgb, 1000) : nodeColorForMaterial(tokens, nodeMaterial, view.material, node.rendered ?? null, calibration), fieldColor, appearance.opacityPermille) : nodeColorForMaterial(tokens, nodeMaterial, view.material, node.rendered ?? null, calibration),
-      haloRadiusPx: (materialIncludes(view.material.node, "halo") ? nodeMaterial.haloRadiusPx : size) * (appearance ? appearance.haloPermille / SCENE_PERMILLE_SCALE : 1),
+      size: appearance ? (size * appearance.corePermille) / SCENE_PERMILLE_SCALE : size,
+      color: appearance ? mixTowardField(tintedColor, fieldColor, appearance.opacityPermille) : baseColor,
+      haloRadiusPx: (materialIncludes(view.material.node, "halo") ? nodeMaterial.haloRadiusPx : size)
+        * (appearance ? appearance.haloPermille / SCENE_PERMILLE_SCALE : 1),
       haloIntensityPermille: materialIncludes(view.material.node, "halo") ? nodeMaterial.haloIntensityPermille : 0,
       label: "",
-      labelText: activeOptions.presentation?.nativeLabels === false ? "" : materialIncludes(view.material.node, "label") ? node.visual.role : "",
+      labelText: activeOptions.presentation?.nativeLabels === false
+        ? ""
+        : materialIncludes(view.material.node, "label") ? node.visual.role : "",
       labelPriority: labelPriority(nodeMaterial.prominencePermille),
       labelColor: tokenColor(requiredToken(tokens, "text"), calibration.labels.nodeLabelOpacityPermille, calibration),
       zIndex: node.visual.label_priority,
     };
     const resolvedNode = nodeAttributesForVisualState(attributes, node.id, visualState, calibration);
     const emphasized = activeOptions.presentation?.emphasisIds;
-    sigmaGraph.addNode(node.id, emphasized && !emphasized.has(node.id) ? { ...resolvedNode, color: mixTowardField(resolvedNode.color, fieldColor, calibration.selection.focusDimFactorPermille), haloIntensityPermille: Math.round((resolvedNode.haloIntensityPermille * calibration.selection.focusDimFactorPermille) / 1000) } : resolvedNode);
+    sigmaGraph.addNode(node.id, emphasized && !emphasized.has(node.id) ? {
+      ...resolvedNode,
+      color: mixTowardField(resolvedNode.color, fieldColor, calibration.selection.focusDimFactorPermille),
+      haloIntensityPermille: Math.round(
+        (resolvedNode.haloIntensityPermille * calibration.selection.focusDimFactorPermille) / SCENE_PERMILLE_SCALE,
+      ),
+    } : resolvedNode);
   }
   for (const edge of engineGraph.edges) {
     const source = view.anchors.get(edge.source);
@@ -293,7 +306,11 @@ export function buildRenderModel(
     };
     const resolvedEdge = edgeAttributesForVisualState(attributes, edge.id, visualState, calibration);
     const emphasized = activeOptions.presentation?.emphasisIds;
-    sigmaGraph.addEdgeWithKey(edge.id, edge.source, edge.target, emphasized && (!emphasized.has(edge.source) || !emphasized.has(edge.target)) ? { ...resolvedEdge, color: mixTowardField(resolvedEdge.color, fieldColor, calibration.selection.focusDimFactorPermille) } : resolvedEdge);
+    sigmaGraph.addEdgeWithKey(edge.id, edge.source, edge.target,
+      emphasized && (!emphasized.has(edge.source) || !emphasized.has(edge.target)) ? {
+        ...resolvedEdge,
+        color: mixTowardField(resolvedEdge.color, fieldColor, calibration.selection.focusDimFactorPermille),
+      } : resolvedEdge);
   }
   assertEngineAccessTrace(engineAccessTrace);
   return { graph: sigmaGraph, anchors, windows: organization.windows, organization, tokens, tokenColors, fieldColor, lodBand: view.band, material: view.material, filamentMaterial: filamentUniformMaterial, filaments, propagation, engineAccessTrace };

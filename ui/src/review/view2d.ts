@@ -36,7 +36,10 @@ export function mount2d(host: HTMLElement, data: ReviewExport, nodes: ReviewNode
   renderer.on("leaveNode", () => hover(null));
   return {
     focus(id: string) { if (!id) { renderer.getCamera().animate(overview, { duration: 500 }); return; }
-      if (!graph.hasNode(id)) return; const attrs = graph.getNodeAttributes(id); renderer.getCamera().animate({ x: attrs.x, y: attrs.y, ratio: 0.24 }, { duration: 500 }); },
+      if (!graph.hasNode(id)) return; const attrs = graph.getNodeAttributes(id);
+      // Sigma's camera lives in normalised framed-graph coordinates, not in graph coordinates.
+      const framed = renderer.viewportToFramedGraph(renderer.graphToViewport({ x: attrs.x, y: attrs.y }));
+      renderer.getCamera().animate({ x: framed.x, y: framed.y, ratio: 0.24 }, { duration: 500 }); },
     highlight(id: string | null) { selectedId = id; selection = selectionNeighbourhood({ nodes, edges }, id); renderer.refresh(); },
     destroy() { renderer.kill(); host.replaceChildren(); },
   };

@@ -162,7 +162,10 @@ export function buildScene(
   const morphology = morphologyProfile(visualState.morphology);
   const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration, SHARED_SCENE_MATERIAL_TARGET);
   const activeTokens = shippingTokens(inputs.tokens, visualState.palette, visualState.theme, calibration);
-  const organization = resolveOrganization(engineGraph, calibration, () => layoutAnchors(engineGraph, calibration), visualState.organization, suppliedAnchors, presentation?.windowGeometryFromAnchors);
+  const organization = resolveOrganization(
+    engineGraph, calibration, () => layoutAnchors(engineGraph, calibration),
+    visualState.organization, suppliedAnchors, presentation?.windowGeometryFromAnchors,
+  );
   // Cross-community weighting is Indra-only: Flat's `organization.windows` is always empty, and
   // treating every edge as "no owning window" there would dim the entire Flat scene rather than
   // nothing at all. The same reasoning holds when Indra itself resolves zero windows (no
@@ -1493,7 +1496,8 @@ function sceneNode(
   const blindTerminal = isTerminal && material.terminalTreatment === MYCELIUM.terminalTreatment;
   const channel = renderedStateChannel(node.rendered ?? null, calibration);
   const baseToken = nodeTokenForMaterial(tokens, material, resolved, calibration);
-  const requestedHaloRadiusPx = (materialIncludes(resolved.node, "halo") ? material.haloRadiusPx : baseRadiusPx) * selectedMultiplier * (appearance ? appearance.haloPermille / scale : 1);
+  const requestedHaloRadiusPx = (materialIncludes(resolved.node, "halo") ? material.haloRadiusPx : baseRadiusPx)
+    * selectedMultiplier * (appearance ? appearance.haloPermille / scale : 1);
   const requestedHaloIntensityPermille = materialIncludes(resolved.node, "halo")
     ? material.haloIntensityPermille
     : 0;
@@ -1504,8 +1508,13 @@ function sceneNode(
     kind: node.kind,
     position: copyCoordinates(anchor),
     radiusPx,
-    token: appearance?.tintSrgb ? tintToken(appearance.tintSrgb) : copyToken(applyRenderedStateChannel(baseToken, channel, calibration)),
-    opacityPermille: blindTerminal ? 0 : reviewOpacity(interactionOpacity(material.opacityPermille, node.id, visualState, calibration), appearance?.opacityPermille, presentation?.emphasisIds, node.id, calibration),
+    token: appearance?.tintSrgb
+      ? tintToken(appearance.tintSrgb)
+      : copyToken(applyRenderedStateChannel(baseToken, channel, calibration)),
+    opacityPermille: blindTerminal ? 0 : reviewOpacity(
+      interactionOpacity(material.opacityPermille, node.id, visualState, calibration),
+      appearance?.opacityPermille, presentation?.emphasisIds, node.id, calibration,
+    ),
     junctionGeometry: isJunction ? material.junctionGeometry : null,
     terminalTreatment: isTerminal ? material.terminalTreatment : null,
     haloRadiusPx,
@@ -1614,12 +1623,13 @@ function sceneEdge(
       channel,
       calibration,
     )),
-    opacityPermille: reviewOpacity(interactionOpacity(
-      crossCommunityOpacity(material.opacityPermille, crossCommunity, calibration),
-      edge.id,
-      visualState,
-      calibration,
-    ), undefined, presentation?.emphasisIds, edge.source, calibration, edge.target),
+    opacityPermille: reviewOpacity(
+      interactionOpacity(
+        crossCommunityOpacity(material.opacityPermille, crossCommunity, calibration),
+        edge.id, visualState, calibration,
+      ),
+      undefined, presentation?.emphasisIds, edge.source, calibration, edge.target,
+    ),
     renderedStateChannel: channel,
     labelCandidacy: presentation?.nativeLabels === false ? null : labelCandidacy,
     interaction: interactionState(edge.id, visualState),
@@ -2422,7 +2432,19 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function reviewOpacity(value: number, multiplier: number | undefined, emphasis: ReadonlySet<string> | null | undefined, id: string, calibration: CalibrationProfile, target?: string): number {
-  const multiplied = multiplier === undefined ? value : Math.round(value * multiplier / SCENE_PERMILLE_SCALE);
-  return emphasis == null || (emphasis.has(id) && (target === undefined || emphasis.has(target))) ? multiplied : Math.round(multiplied * calibration.selection.focusDimFactorPermille / SCENE_PERMILLE_SCALE);
+/** Review emphasis dims material without changing the engine's interaction opacity. */
+function reviewOpacity(
+  value: number,
+  multiplier: number | undefined,
+  emphasis: ReadonlySet<string> | null | undefined,
+  id: string,
+  calibration: CalibrationProfile,
+  target?: string,
+): number {
+  const multiplied = multiplier === undefined
+    ? value
+    : Math.round(value * multiplier / SCENE_PERMILLE_SCALE);
+  return emphasis == null || (emphasis.has(id) && (target === undefined || emphasis.has(target)))
+    ? multiplied
+    : Math.round(multiplied * calibration.selection.focusDimFactorPermille / SCENE_PERMILLE_SCALE);
 }

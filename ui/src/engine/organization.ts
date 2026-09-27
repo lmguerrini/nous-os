@@ -72,8 +72,26 @@ export function indraOrganization(
         throw new TypeError("aggregate lacks a reserved disc");
       }
       const center = windowGeometryFromAnchors ? anchors.get(disc.id) ?? disc.center : disc.center;
-      const radius = windowGeometryFromAnchors ? Math.max(calibration.aggregate.windowPaddingPx, ...disc.members.map((id) => { const point=anchors.get(id); if (!point) throw new TypeError("missing window member anchor"); return Math.hypot(point.x-center.x, point.y-center.y)+calibration.aggregate.windowPaddingPx; })) : disc.radius;
-      return { id: disc.id, kind: disc.kind, members: disc.members, center, radius, bounds: discBounds(center, radius) };
+      // Review anchors may be supplied by the export, so the enclosing disc must
+      // follow those anchors instead of a separately computed layout.
+      const radius = windowGeometryFromAnchors
+        ? Math.max(
+            calibration.aggregate.windowPaddingPx,
+            ...disc.members.map((id) => {
+              const point = anchors.get(id);
+              if (!point) throw new TypeError("missing window member anchor");
+              return Math.hypot(point.x - center.x, point.y - center.y) + calibration.aggregate.windowPaddingPx;
+            }),
+          )
+        : disc.radius;
+      return {
+        id: disc.id,
+        kind: disc.kind,
+        members: disc.members,
+        center,
+        radius,
+        bounds: discBounds(center, radius),
+      };
     });
   const rejectionBounds = graph.nodes.filter((node) => node.kind === "rejection").map((node) => {
     const anchor = anchors.get(node.id);
