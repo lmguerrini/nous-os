@@ -7,7 +7,7 @@ import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 export type ProjectedPoint = { readonly x: number; readonly y: number; readonly scale: number };
 export type MorphologyCanvasStyle = {
   readonly fieldColor: string;
-  readonly nodes: ReadonlyMap<string, { readonly color: string; readonly glyph?: NodeGlyph | undefined; readonly opacity?: number }>;
+  readonly nodes: ReadonlyMap<string, { readonly color: string; readonly glyph?: NodeGlyph | undefined; readonly radiusPx?: number | undefined; readonly opacity?: number }>;
   readonly edges: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
 };
 
@@ -46,6 +46,7 @@ export function drawMorphologyCanvas(
     context.stroke();
   }
   context.setLineDash([]);
+  const simplified = geometry.nodes.length > 1500;
   for (const part of geometry.drawnSegments) {
     const edge = style.edges.get(part.edgeId);
     const presentation = edge?.presentation;
@@ -53,7 +54,7 @@ export function drawMorphologyCanvas(
     const opacity = (presentation?.opacityPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE;
     const widthFactor = (presentation?.widthPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE;
     const baseColor = presentation?.tintSrgb ? tint(presentation.tintSrgb) : edge?.color ?? "rgb(220, 220, 220)";
-    const samples = part.samples.map(project);
+    const samples = (simplified ? [part.samples[0]!, part.samples[part.samples.length - 1]!] : part.samples).map(project);
     const steps = samples.length - 1;
     context.lineCap = "round";
     context.lineJoin = "round";
@@ -74,7 +75,7 @@ export function drawMorphologyCanvas(
     }
     context.setLineDash([]); context.shadowBlur = 0;
   }
-  if (geometry.morphology === "mycelium") {
+  if (!simplified && geometry.morphology === "mycelium") {
     context.fillStyle = `rgba(245, 245, 245, ${clamp(appearance.edgeOpacity * 0.82, 0, 1)})`;
     for (const junction of geometry.branchPoints) {
       const p = project(junction);
@@ -86,11 +87,11 @@ export function drawMorphologyCanvas(
     const p = project(node.position);
     const morphologyScale = geometry.morphology === "mycelium" ? 0.52
       : geometry.morphology === "neural" ? (node.degree >= 2 ? 1.22 : 0.78) : 1;
-    const radius = clamp(node.radius * p.scale * appearance.nodeScale * morphologyScale,
-      geometry.morphology === "mycelium" ? 1.8 : 2.2, 13);
+    const radius = clamp((visual?.radiusPx ?? node.radius * appearance.nodeScale) * p.scale * morphologyScale,
+      visual?.radiusPx ? 3 : geometry.morphology === "mycelium" ? 1.8 : 2.2, visual?.radiusPx ? 18 : 13);
     const color = visual?.color ?? "rgb(245, 245, 245)";
     const opacity = visual?.opacity ?? 1;
-    if (appearance.glow > 0) {
+    if (!simplified && appearance.glow > 0) {
       const halo = radius * (geometry.morphology === "stellar" ? 2.3 + appearance.glow * 1.5
         : geometry.morphology === "neural" ? 1.4 + appearance.glow * 0.9 : 1.2 + appearance.glow * 0.65);
       const haloStrength = geometry.morphology === "stellar" ? 0.62 : geometry.morphology === "neural" ? 0.22 : 0.16;
@@ -101,7 +102,7 @@ export function drawMorphologyCanvas(
       context.fillStyle = gradient;
       context.beginPath(); context.arc(p.x, p.y, halo, 0, Math.PI * 2); context.fill();
     }
-    if (geometry.morphology === "neural" && node.dendriteAngles.length > 0) {
+    if (!simplified && geometry.morphology === "neural" && node.dendriteAngles.length > 0) {
       context.strokeStyle = rgba(color, 0.9 * opacity);
       context.lineWidth = clamp(radius * 0.24, 1, 2.8);
       context.lineCap = "round";
@@ -114,11 +115,14 @@ export function drawMorphologyCanvas(
         context.stroke();
       }
     }
-    const body = context.createRadialGradient(p.x - radius * 0.2, p.y - radius * 0.2, 0, p.x, p.y, radius);
-    body.addColorStop(0, rgba(color, opacity));
-    body.addColorStop(geometry.morphology === "mycelium" ? 0.45 : 0.7, rgba(color, opacity * 0.9));
-    body.addColorStop(1, rgba(color, geometry.morphology === "stellar" ? 0 : opacity * 0.52));
-    context.fillStyle = body;
+    if (simplified) context.fillStyle = rgba(color, opacity);
+    else {
+      const body = context.createRadialGradient(p.x - radius * 0.2, p.y - radius * 0.2, 0, p.x, p.y, radius);
+      body.addColorStop(0, rgba(color, opacity));
+      body.addColorStop(geometry.morphology === "mycelium" ? 0.45 : 0.7, rgba(color, opacity * 0.9));
+      body.addColorStop(1, rgba(color, geometry.morphology === "stellar" ? 0 : opacity * 0.52));
+      context.fillStyle = body;
+    }
     context.beginPath(); context.arc(p.x, p.y, radius, 0, Math.PI * 2); context.fill();
     const glyph = visual?.glyph ?? "filled";
     if (glyph !== "filled") {

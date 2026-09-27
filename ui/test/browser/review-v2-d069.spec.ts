@@ -1,0 +1,46 @@
+import { test, expect } from '@playwright/test';
+const url=process.env.D069_URL??'http://127.0.0.1:8768/';
+const ready=async(page:import('@playwright/test').Page)=>{await page.goto(url);await page.evaluate(()=> (window as any).__d067.ready);await expect(page.locator('#status')).toContainText('Grafo pronto');};
+test('D-069 v2 disclosure, search, details, readings and provenance',async({page})=>{
+  test.setTimeout(120000);await ready(page);
+  expect(await page.evaluate(()=>(window as any).__d067.dataset().mode)).toBe('v2');
+  const overview=await page.evaluate(()=>(window as any).__d067.disclosure());expect(overview.counts[1]).toBeGreaterThan(0);expect(overview.cap).toBe(2500);
+  let domain=overview.nodes.find((n:any)=>n.level===1).id;
+  await page.evaluate(id=>(window as any).__d067.expand(id),domain);
+  let state=await page.evaluate(()=>(window as any).__d067.disclosure());
+  const project=state.nodes.find((n:any)=>n.level===2);if(project)await page.evaluate(id=>(window as any).__d067.expand(id),project.id);
+  state=await page.evaluate(()=>(window as any).__d067.disclosure());
+  const conversation=state.nodes.find((n:any)=>n.level===3);expect(conversation).toBeTruthy();
+  await page.evaluate(id=>(window as any).__d067.expand(id),conversation.id);
+  state=await page.evaluate(()=>(window as any).__d067.disclosure());expect(state.counts[4]).toBeGreaterThan(0);expect(state.counts[4]).toBeLessThanOrEqual(60);
+  const proposal=state.nodes.find((n:any)=>n.level===4);await page.evaluate(id=>(window as any).__d067.select(id),proposal.id);
+  await expect(page.locator('#details')).toContainText('Enunciato distillato (EN)');
+  await page.evaluate(id=>(window as any).__d067.expand(id),proposal.id);
+  const withPassages=await page.evaluate(()=>(window as any).__d067.disclosure());expect(withPassages.counts[5]).toBeGreaterThan(0);
+  await page.evaluate(()=>(window as any).__d067.undo());expect((await page.evaluate(()=>(window as any).__d067.disclosure())).counts[5]).toBe(0);
+  await page.evaluate(()=>(window as any).__d067.redo());expect((await page.evaluate(()=>(window as any).__d067.disclosure())).counts[5]).toBeGreaterThan(0);
+  const title=(await page.locator('#details h2').first().textContent())!.slice(0,40);
+  await page.locator('#search').fill(title);await page.locator('#search-form button').click();
+  await expect(page.locator('#v2-results button').first()).toBeVisible();await page.locator('#v2-results button').first().click();
+  expect(await page.evaluate(()=>(window as any).__d067.state().selected)).toBeTruthy();
+  const witness=await page.evaluate(()=>(window as any).__d067.witness());expect(witness.nodeViewport[witness.page.selected]).toBeTruthy();
+  const index=await (await page.request.get(new URL('/api/graph/index',url).toString())).json();
+  const exploratory=index.edges.find((e:any)=>e.class==='exploratory');expect(exploratory).toBeTruthy();
+  await page.evaluate(id=>(window as any).__d067.reveal(id),exploratory.source);
+  await page.evaluate(id=>(window as any).__d067.reveal(id),exploratory.target);
+  await page.locator('[data-axis="reading"] [data-value="exploratory"]').click();
+  await expect(page.locator('#focus-chip')).toBeVisible();
+  await page.evaluate(id=>(window as any).__d067.select(id),exploratory.id);
+  await expect(page.locator('#details')).toContainText('Perché sono collegati?');
+  expect(await page.locator('body').textContent()).not.toMatch(/Messaggio del fondatore|\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+});
+test('D-069 v2 reports the visible node cap',async({page})=>{
+  test.setTimeout(90000);
+  const nodes=Array.from({length:2501},(_,i)=>({id:`synthetic:${i}`,level:1,kind:'domain',parent:null,parents:[],domains:['synthetic'],title:`Synthetic ${i}`,title_full:`Synthetic ${i}`,size:0.2,
+    importance:{value:0.2,components:{}},counts:{children:0,descendants:0,canon:0,passages:0}}));
+  await page.route('**/api/graph/manifest',route=>route.fulfill({json:{schema:'nousos.review-graph/2',digest:'synthetic',counts:{level:{1:2501}},limits:{}}}));
+  await page.route('**/api/graph/index',route=>route.fulfill({json:{schema:'nousos.review-graph/2',nodes,edges:[]}}));
+  await ready(page);await expect(page.locator('#v2-cap')).toContainText('Limite di 2500 nodi');
+  expect((await page.evaluate(()=>(window as any).__d067.disclosure())).visible).toBe(2500);
+});

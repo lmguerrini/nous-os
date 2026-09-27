@@ -1,6 +1,8 @@
 /** Optional review-only appearance channels. Absence is the exact engine baseline. */
 export type NodePresentation = {
   readonly corePermille: number;
+  /** Exact review v2 core radius before camera scaling, in CSS pixels. */
+  readonly radiusPx?: number;
   readonly haloPermille: number;
   readonly opacityPermille: number;
   readonly tintSrgb?: readonly [number, number, number];

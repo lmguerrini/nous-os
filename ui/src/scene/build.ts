@@ -1489,7 +1489,7 @@ function sceneNode(
     : 1;
   const baseRadiusPx = nodeSizeForMaterial(material, resolved, morphology, calibration);
   const appearance = presentation?.nodes?.get(node.id);
-  const radiusPx = baseRadiusPx * selectedMultiplier * (appearance ? appearance.corePermille / scale : 1);
+  const radiusPx = (appearance?.radiusPx ?? baseRadiusPx * (appearance ? appearance.corePermille / scale : 1)) * selectedMultiplier;
   const isJunction = Number(material.facts.degree.value) >= 2;
   const isTerminal = material.facts.terminal.value === true;
   const fusedJunction = isJunction && material.junctionGeometry === MYCELIUM.junctionGeometry;

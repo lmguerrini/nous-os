@@ -16,9 +16,10 @@ import { placeLabels } from "./labels.ts";
 import { encodingOf, SEMANTIC_COLOUR, standingOf } from "./presentation.ts";
 import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
 import type { AppearanceOptions } from "../engine/presentation-options.ts";
-import { PALETTES, hexRgb } from "./palette.ts";
+import { PALETTES, hexRgb, v2CategoryColour } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
+import { v2Encoding } from "./v2-adapter.ts";
 import type { ReviewCameraState } from "../render3f/camera.tsx";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
 
@@ -51,15 +52,15 @@ function finitePoint(point: Coordinates): boolean {
 }
 
 export const createProductView: CreateProductView = async (input) => {
-  const prepared = adaptReviewExport(input.data);
-  const base = anchorBaseline.get(input.data.export_digest) ?? {
+  const prepared = input.v2Prepared ?? adaptReviewExport(input.data);
+  const base = (input.v2Prepared ? undefined : anchorBaseline.get(input.data.export_digest)) ?? {
     flat: prepared.flatAnchors, indra: prepared.indraAnchors,
     depth: relaxDepth(prepared.flatGraph, prepared.flatAnchors),
   };
   anchorBaseline.set(input.data.export_digest, base);
-  const flatAnchors = placeDynamic(base.flat, input.data);
-  const indraAnchors = placeDynamic(base.indra, input.data);
-  const fullDepth = placeDynamic(base.depth, input.data);
+  const flatAnchors = input.v2Prepared ? base.flat : placeDynamic(base.flat, input.data);
+  const indraAnchors = input.v2Prepared ? base.indra : placeDynamic(base.indra, input.data);
+  const fullDepth = input.v2Prepared ? base.flat : placeDynamic(base.depth, input.data);
   const nodesById = new Map(input.data.nodes.map((node) => [node.id, node]));
   const degree = new Map<string, number>();
   for (const edge of input.data.edges) {
@@ -268,9 +269,11 @@ export const createProductView: CreateProductView = async (input) => {
     three = null;
     handle = null;
     const all = graph();
-    const subset = { ...all, edges: all.edges.filter((edge) => relationVisible(
-      relationClass(input.data.edges.find((item) => item.id === edge.id)!, nodesById), axes.reading,
-    )) };
+    const subset = { ...all, edges: all.edges.filter((edge) => {
+      const original = input.data.edges.find((item) => item.id === edge.id)!;
+      const kind = input.v2Prepared ? original.attested_by as "attested" | "exploratory" : relationClass(original, nodesById);
+      return input.v2Prepared ? axes.reading !== "attested" || kind === "attested" : relationVisible(kind, axes.reading);
+    }) };
     const anchors = restrictAnchors(fullAnchor(axes), visible);
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
     const presentation = {
@@ -281,9 +284,9 @@ export const createProductView: CreateProductView = async (input) => {
       appearance,
       edges: new Map(subset.edges.map((edge) => {
         const original = input.data.edges.find((item) => item.id === edge.id)!;
-        const exploratory = relationClass(original, nodesById) === "exploratory";
+        const exploratory = (input.v2Prepared ? original.attested_by : relationClass(original, nodesById)) === "exploratory";
         return [edge.id, { stroke: exploratory ? "dashed" as const : "solid" as const,
-          opacityPermille: axes.reading === "combined" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
+          opacityPermille: axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
           widthPermille: exploratory ? Math.round(SCENE_PERMILLE_SCALE * 1.2) : SCENE_PERMILLE_SCALE,
           ...(axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
         }] as const;
@@ -292,14 +295,15 @@ export const createProductView: CreateProductView = async (input) => {
         input.data.nodes
           .filter((node) => visible.has(node.id))
           .map((node) => {
-            const encoding = encodingOf(node, input.data);
+            const encoding = input.v2Prepared ? v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale) : encodingOf(node, input.data);
             return [node.id, {
               ...encoding,
-              glyph: (node.type === "domain" || node.type === "conversation" ? "ring"
+              glyph: input.v2Prepared ? v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale).glyph : (node.type === "domain" || node.type === "conversation" ? "ring"
                 : node.type === "canon" ? "double-ring"
                 : node.type === "record" || node.type === "evidence" ? "hollow" : "filled") as "ring" | "double-ring" | "hollow" | "filled",
               ...(node.origin === "dynamic" ? { haloPermille: Math.round(encoding.haloPermille * 0.55) } : {}),
-              ...(axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] }
+              ...(input.v2Prepared && axes.colour !== "bw" ? {tintSrgb:hexRgb(v2CategoryColour(node.v2 as import("./v2-core.ts").V2Node,palette,axes.colour==='custom'?input.v2Colours:undefined))}
+                : axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] }
                 : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(palette[input.text(node.id).family]) }),
             }] as const;
           }),
@@ -382,7 +386,8 @@ export const createProductView: CreateProductView = async (input) => {
     pressedAt = null;
     if (moved > CLICK_DRAG_TOLERANCE_PX) return;
     const r = container.getBoundingClientRect();
-    input.events.onPick(pick({ x: event.clientX - r.left, y: event.clientY - r.top }));
+    const target = pick({ x: event.clientX - r.left, y: event.clientY - r.top });
+    input.events.onPick(target ? {...target, shiftKey:event.shiftKey} : null);
   };
   const onDoubleClick = (event: MouseEvent) => {
     if (overControl(event.target)) return;
@@ -552,7 +557,7 @@ export const createProductView: CreateProductView = async (input) => {
           zMax: zs.length ? Math.max(...zs) : 0,
           zStd: Math.sqrt(mean(zs.map((z) => (z - zMean) ** 2))),
         },
-        anchorsSource:
+        anchorsSource: input.v2Prepared ? "v2-layout" :
           axes.organization === "indra"
             ? "engine-indra"
             : axes.projection === "3d"

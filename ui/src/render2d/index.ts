@@ -502,6 +502,7 @@ function mountDistinctCanvas(sigma: Sigma, model: RenderModel, options: RenderOp
       nodes: new Map(graph.nodes().map((id) => [id, {
         color: graph.getNodeAttributes(id).color,
         glyph: options.presentation?.nodes?.get(id)?.glyph,
+        radiusPx: options.presentation?.nodes?.get(id)?.radiusPx,
       }])),
       edges: new Map(graph.edges().map((id) => [id, {
         color: graph.getEdgeAttributes(id).color,

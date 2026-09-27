@@ -238,7 +238,7 @@ export function buildRenderModel(
     const attributes: RenderNodeAttributes = {
       x: anchor.x,
       y: anchor.y,
-      size: appearance ? (size * appearance.corePermille) / SCENE_PERMILLE_SCALE : size,
+      size: appearance?.radiusPx ?? (appearance ? (size * appearance.corePermille) / SCENE_PERMILLE_SCALE : size),
       color: appearance ? mixTowardField(tintedColor, fieldColor, appearance.opacityPermille) : baseColor,
       haloRadiusPx: (materialIncludes(view.material.node, "halo") ? nodeMaterial.haloRadiusPx : size)
         * (appearance ? appearance.haloPermille / SCENE_PERMILLE_SCALE : 1),

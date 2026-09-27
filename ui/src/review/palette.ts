@@ -31,3 +31,18 @@ export function contrast(a: string, b: string): number {
 export function paletteName(value: unknown): Colour {
   return value === "custom" || (typeof value === "string" && Object.hasOwn(PALETTES, value)) ? value as Colour : "bw";
 }
+
+/** D-069 kinds share preset families but have individually editable Custom colours. */
+export const V2_CATEGORY_FAMILY = {
+  domain:'aggregate',project:'aggregate',work:'aggregate',conversation:'aggregate',
+  canon:'concept',proposal:'concept',overlay:'concept',passage:'source',
+} as const satisfies Record<string,'aggregate'|'concept'|'source'>;
+export type V2Category = keyof typeof V2_CATEGORY_FAMILY;
+export function v2Category(node:{level:number;kind:string;status?:string}):V2Category {
+  if(node.level===5)return 'passage';
+  if(node.level===4)return node.status==='canon'?'canon':node.status==='overlay'?'overlay':'proposal';
+  return node.kind==='project'||node.kind==='work'?node.kind:node.level===3?'conversation':'domain';
+}
+export function v2CategoryColour(node:{level:number;kind:string;status?:string},palette:PaletteValues,custom?:Partial<Record<V2Category,string>>):string {
+  const key=v2Category(node);return custom?.[key]??palette[V2_CATEGORY_FAMILY[key]];
+}

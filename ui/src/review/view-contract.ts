@@ -106,11 +106,11 @@ export type ViewWitness = {
   /** Spread of the world z coordinate over visible nodes (all zero for planar arrangements). */
   readonly depth: { readonly zMin: number; readonly zMax: number; readonly zStd: number };
   /** Where node positions come from, so no screenshot is mistaken for a different layout. */
-  readonly anchorsSource: "engine-flat" | "engine-flat+depth" | "engine-indra";
+  readonly anchorsSource: "engine-flat" | "engine-flat+depth" | "engine-indra" | "v2-layout";
   readonly palette: string;
 };
 
-export type PickTarget = { readonly kind: "node" | "edge"; readonly id: string };
+export type PickTarget = { readonly kind: "node" | "edge"; readonly id: string; readonly shiftKey?: boolean };
 
 export type ViewEvents = {
   /** A click on a node or relation, or on empty space (null). */
@@ -124,6 +124,8 @@ export type ViewInput = {
   /** The canvas area; the page keeps its side panel outside this element. */
   readonly container: HTMLElement;
   readonly data: ReviewExport;
+  readonly v2Prepared?: import("./product-adapter.ts").AdaptedReview;
+  readonly v2Colours?: Partial<Record<import("./palette.ts").V2Category,string>>;
   /** The page's current filter result; positions never move because of a filter. */
   readonly visibleNodeIds: ReadonlySet<string>;
   readonly axes: Axes;

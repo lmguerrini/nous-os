@@ -49,6 +49,7 @@ export function mountDistinctOverlay(
       nodes: new Map(scene.nodes.map((node) => [node.id, {
         color: cssColor(scene, node.token),
         glyph: presentation?.nodes?.get(node.id)?.glyph,
+        radiusPx: presentation?.nodes?.get(node.id)?.radiusPx,
         opacity: node.opacityPermille / SCENE_PERMILLE_SCALE,
       }])),
       edges: new Map(scene.edges.map((edge) => [edge.id, {

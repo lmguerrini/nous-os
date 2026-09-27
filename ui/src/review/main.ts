@@ -11,7 +11,8 @@ import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
 import type { AppearanceOptions } from "../engine/presentation-options.ts";
 import { APPEARANCE_RANGES, normalizeAppearance, readLocal, writeLocal } from "./appearance.ts";
 import type { AppearancePresets } from "./appearance.ts";
-import { PALETTES, contrast, paletteName } from "./palette.ts";
+import { PALETTES, contrast, paletteName, V2_CATEGORY_FAMILY } from "./palette.ts";
+import type { V2Category } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
 import { fitNotice, focusAvailable, resetAppearance } from "./viewer-state.ts";
@@ -20,6 +21,8 @@ import { mount2d } from "./view2d.ts";
 import { mount3d } from "./view3d.ts";
 import { LiveGraph } from "./live-graph.ts";
 import type { LiveFragment } from "./live-graph.ts";
+import { V2Page } from "./v2-page.ts";
+import type { GraphManifest } from "./graph-v2.ts";
 
 const get = <T extends Element>(id: string): T => {
   const item = document.getElementById(id);
@@ -32,6 +35,7 @@ const renderRoot = get<HTMLElement>("render-root");
 const details = get<HTMLElement>("details");
 const status = get<HTMLElement>("status");
 let data: ReviewExport;
+let v2: V2Page | null = null;
 let liveGraph: LiveGraph;
 let liveActive = false;
 let liveResults: LiveFragment[] = [];
@@ -43,6 +47,7 @@ const storage = (() => { try { return localStorage; } catch { return null; } })(
 let appearance = normalizeAppearance(readLocal(storage, "d069.appearance", DEFAULT_APPEARANCE));
 let presets = readLocal<AppearancePresets>(storage, "d069.presets", {});
 let customPalette = readLocal<PaletteValues>(storage, "d069.customPalette", PALETTES.bw);
+let v2Colours = readLocal<Partial<Record<V2Category,string>>>(storage,"d069.v2Colours",{});
 let focusMode = false;
 let focusCamera: unknown = null;
 let panelCollapsed = Boolean(readLocal(storage, "d069.panelCollapsed", innerWidth <= 1100));
@@ -377,6 +382,7 @@ async function mount() {
   status.textContent = debug ? "Grafo pronto · vista tecnica" : "Grafo pronto";
 }
 function select(id: string): Promise<void> {
+  if (v2) return v2.select(id);
   return enqueue(async () => {
     if (!data) return;
     if (
@@ -393,6 +399,7 @@ function select(id: string): Promise<void> {
   });
 }
 function expand(): Promise<void> {
+  if (v2) return v2.selectedId ? v2.expand(v2.selectedId) : Promise.resolve();
   return enqueue(async () => {
     if (!stack) return;
     await stack.expand();
@@ -401,6 +408,7 @@ function expand(): Promise<void> {
   });
 }
 function back(): Promise<void> {
+  if (v2) return v2.undo();
   return enqueue(async () => {
     if (!stack) return;
     await stack.back();
@@ -422,6 +430,7 @@ function clearSelection(): Promise<void> { return enqueue(async () => {
   updateSummary();
 }); }
 function reset(): Promise<void> {
+  if (v2) { focusMode=false; appearance = resetAppearance(); syncAppearanceControls(); return v2.setAppearance(appearance).then(() => v2!.reset()); }
   return enqueue(async () => {
     if (!stack) return;
     focusMode = false;
@@ -437,12 +446,19 @@ function reset(): Promise<void> {
   });
 }
 function fit(): Promise<void> {
+  if (v2) return v2.fit();
   return enqueue(async () => {
     await view?.fit();
     announce(fitNotice(visibleIds.size));
   });
 }
 function setAxes(partial: Partial<Axes>): Promise<void> {
+  if (v2) { axes = {...axes,...partial}; syncCustomColours();
+    for(const axis of ["projection","morphology","organization","reading"] as const)
+      document.querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`).forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.value===axes[axis])));
+    get<HTMLElement>("gizmo").hidden=axes.projection!=="3d";
+    get<HTMLSelectElement>("palette").value=axes.colour;
+    return v2.setAxes(partial); }
   return enqueue(async () => {
     if (partial.projection && partial.projection !== "3d") { focusMode = false; focusCamera = null; }
     axes = { ...axes, ...partial };
@@ -462,7 +478,7 @@ function setAxes(partial: Partial<Axes>): Promise<void> {
     }
   });
 }
-function toggleFocus(): Promise<void> { return enqueue(async () => {
+function toggleFocus(): Promise<void> { if(v2){focusMode=!focusMode;return v2.selectedId?v2.frame(v2.selectedId):Promise.resolve();} return enqueue(async () => {
   if (!stack?.current || axes.projection !== "3d" || !data.nodes.some((node) => node.id === stack.current?.id)) return;
   if (focusMode) {
     focusMode = false;
@@ -477,7 +493,7 @@ function toggleFocus(): Promise<void> { return enqueue(async () => {
   }
   updateButtons();
 }); }
-function viewPreset(name: ViewPreset | "reset"): Promise<void> { return enqueue(async () => {
+function viewPreset(name: ViewPreset | "reset"): Promise<void> { if (v2) { if (name === "reset") return v2.reset(); v2.viewPreset(name); return Promise.resolve(); } return enqueue(async () => {
   if (axes.projection !== "3d") return;
   if (name === "reset") await view?.resetCamera();
   else view?.viewPreset(name);
@@ -494,7 +510,7 @@ function setDebug(on: boolean): Promise<void> {
 function updateInsets(): void {
   const appearanceInset = get<HTMLElement>("appearance-panel").hidden ? 0 : Math.min(280, viewport.clientWidth / 3);
   const drawerInset = details.classList.contains("drawer") ? Math.min(360, viewport.clientWidth / 2) : 0;
-  view?.setInsets({ top: document.fullscreenElement ? get<HTMLElement>("fullscreen-bar").offsetHeight + 16 : 0,
+  (v2 ?? view)?.setInsets({ top: document.fullscreenElement ? get<HTMLElement>("fullscreen-bar").offsetHeight + 16 : 0,
     right: Math.max(appearanceInset, drawerInset), bottom: 0, left: 0 });
 }
 function syncPanel(): void {
@@ -521,7 +537,7 @@ document.addEventListener("fullscreenchange", () => {
 function scheduleAppearance(): void {
   writeLocal(storage, "d069.appearance", appearance);
   if (appearanceFrame) return;
-  appearanceFrame = requestAnimationFrame(() => { appearanceFrame = 0; void enqueue(async () => { await view?.setAppearance(appearance); updateInsets(); }); });
+  appearanceFrame = requestAnimationFrame(() => { appearanceFrame = 0; void enqueue(async () => { if (v2) await v2.setAppearance(appearance); else await view?.setAppearance(appearance); updateInsets(); }); });
 }
 let appearanceFrame = 0;
 const sliderNames: Readonly<Record<keyof AppearanceOptions, string>> = {
@@ -564,8 +580,15 @@ function syncCustomColours(): void {
     const input = document.createElement("input"); input.type = "color"; input.value = customPalette[key]; input.id = `colour-${key}`;
     input.addEventListener("input", () => { customPalette = { ...customPalette, [key]: input.value };
       writeLocal(storage, "d069.customPalette", customPalette); syncContrast();
-      void setAxes({ colour: "custom" }).then(() => view?.setPalette(customPalette)); });
+      void setAxes({ colour: "custom" }).then(() => v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); });
     label.append(input); host.append(label);
+  }
+  if (v2) for (const key of Object.keys(V2_CATEGORY_FAMILY) as V2Category[]) {
+    const label=document.createElement("label");label.textContent=key;
+    const input=document.createElement("input");input.type="color";input.id=`colour-v2-${key}`;
+    input.value=v2Colours[key]??customPalette[V2_CATEGORY_FAMILY[key]];
+    input.addEventListener("input",()=>{v2Colours={...v2Colours,[key]:input.value};writeLocal(storage,"d069.v2Colours",v2Colours);void v2?.setCategoryColours(v2Colours);});
+    label.append(input);host.append(label);
   }
   syncContrast();
 }
@@ -656,6 +679,9 @@ get<HTMLButtonElement>("fullscreen-reset").addEventListener("click", () => { voi
 get<HTMLElement>("gizmo").querySelectorAll<HTMLButtonElement>("button[data-axis-end]").forEach((button) => {
   button.addEventListener("click", () => { void viewPreset(({ x: "destra", y: "sinistra", z: "alto" } as const)[button.dataset.axisEnd as "x" | "y" | "z"]); });
 });
+get<HTMLInputElement>("semantic-zoom").addEventListener("change", event => v2?.setSemanticZoom((event.target as HTMLInputElement).checked));
+get<HTMLButtonElement>("v2-undo").addEventListener("click", () => { void v2?.undo(); });
+get<HTMLButtonElement>("v2-redo").addEventListener("click", () => { void v2?.redo(); });
 get<HTMLButtonElement>("labels").addEventListener("click", () => {
   void setAxes({ labels: !axes.labels });
 });
@@ -691,6 +717,7 @@ document.addEventListener("pointerdown", (event) => {
     get<HTMLElement>("advanced-controls").hidden = true;
 });
 function search(query: string): void {
+  if (v2) { void v2.search(query); return; }
   if (!data) return;
   const found = searchNode(data, query);
   if (found) void select(found.id);
@@ -730,12 +757,22 @@ function updateGizmo(): void {
   requestAnimationFrame(updateGizmo);
 }
 requestAnimationFrame(updateGizmo);
+window.setInterval(() => v2?.tickZoom(), 250);
 const api = {
   ready: Promise.resolve(),
+  dataset: () => v2?.dataset() ?? {mode:"export",digest:data?.export_digest ?? null,counts:null},
+  disclosure: () => v2?.disclosure() ?? null,
+  collapse: (id: string) => v2?.collapse(id) ?? Promise.resolve(),
+  more: (id: string) => v2?.more(id) ?? Promise.resolve(),
+  undo: () => v2?.undo() ?? Promise.resolve(),
+  redo: () => v2?.redo() ?? Promise.resolve(),
+  search: (q: string) => v2?.search(q) ?? Promise.resolve([]),
+  reveal: (id: string) => v2?.reveal(id) ?? Promise.resolve(),
+  why: (a: string,b: string) => v2?.why(a,b) ?? null,
   errors,
   state: () => ({
     axes: { ...axes },
-    selected: stack?.current?.id ?? null,
+    selected: v2?.selectedId ?? stack?.current?.id ?? null,
     stack: stack?.ids ?? [],
     stackDepth: stack?.depth ?? 0,
     filters: { ...filter },
@@ -743,21 +780,21 @@ const api = {
   }),
   setAxes,
   select,
-  expand,
+  expand: (id?: string) => v2 ? id ? v2.expand(id) : v2.selectedId ? v2.expand(v2.selectedId) : Promise.resolve() : expand(),
   back,
   reset,
   fit,
   setDebug,
   get projection() { return axes.projection; },
   get focusMode() { return focusMode; },
-  camera: () => view?.camera() ?? null,
+  camera: () => v2?.camera() ?? view?.camera() ?? null,
   viewPreset,
   fullscreen,
   appearance: () => ({ ...appearance }),
   palette: () => ({ name: axes.colour, values: axes.colour === "custom" ? customPalette : PALETTES[axes.colour] }),
   reading: () => axes.reading,
   witness: () => ({
-    ...(view?.witness() ?? {}),
+    ...(v2?.witness() ?? view?.witness() ?? {}),
     panelRect: details.getBoundingClientRect().toJSON(),
     page: api.state(),
     focusMode,
@@ -778,6 +815,19 @@ const api = {
 };
 Object.assign(window, { __d067: api });
 async function load() {
+  status.textContent = "Caricamento del grafo… manifest";
+  const probe = await fetch("/api/graph/manifest");
+  if (probe.ok) {
+    const manifest = await probe.json() as GraphManifest;
+    if (manifest.schema !== "nousos.review-graph/2") throw new Error("Manifest del grafo non valido");
+    v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours);
+    get<HTMLElement>("v2-controls-top").hidden = false;
+    syncCustomColours();
+    get<HTMLElement>("notice").textContent = "Grafo distillato D-069";
+    updateInsets();
+    return;
+  }
+  if (probe.status !== 404) throw new Error(`Manifest del grafo: HTTP ${probe.status}`);
   const response = await fetch("/api/export.json");
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const payload: unknown = await response.json();
@@ -807,5 +857,6 @@ api.ready = load().catch((error: unknown) => {
   status.textContent = `Errore: ${message}`;
   get<HTMLElement>("error").hidden = false;
   get<HTMLElement>("error").textContent = message;
+  const retry = document.createElement("button"); retry.textContent = "Riprova"; retry.onclick = () => { get<HTMLElement>("error").hidden = true; api.ready = load(); }; get<HTMLElement>("error").append(retry);
   throw error;
 });
