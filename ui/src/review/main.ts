@@ -9,9 +9,9 @@ import { renderPanel } from "./panel.ts";
 import { renderLegend } from "./legend.ts";
 import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
 import type { AppearanceOptions } from "../engine/presentation-options.ts";
-import { APPEARANCE_RANGES, normalizeAppearance, readLocal, writeLocal } from "./appearance.ts";
+import { APPEARANCE_RANGES, CUSTOM_STORAGE_KEY, applyColour, normalizeAppearance, normalizePalette, readColourPresets, readLocal, saveColourPreset, validHex, writeLocal } from "./appearance.ts";
 import type { AppearancePresets } from "./appearance.ts";
-import { PALETTES, contrast, paletteName, V2_CATEGORY_FAMILY } from "./palette.ts";
+import { PALETTES, PALETTE_ROLES, contrast, paletteName } from "./palette.ts";
 import type { V2Category } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
@@ -46,7 +46,11 @@ let debug = false;
 const storage = (() => { try { return localStorage; } catch { return null; } })();
 let appearance = normalizeAppearance(readLocal(storage, "d069.appearance", DEFAULT_APPEARANCE));
 let presets = readLocal<AppearancePresets>(storage, "d069.presets", {});
-let customPalette = readLocal<PaletteValues>(storage, "d069.customPalette", PALETTES.bw);
+let customPalette = normalizePalette(readLocal(storage, "d069.customPalette", PALETTES.bw), PALETTES.bw);
+const storedOrigin = readLocal<{ name: string; palette: PaletteValues } | null>(storage, "d070.customOrigin", null);
+let customOrigin: PaletteValues = normalizePalette(storedOrigin?.palette, PALETTES.bw);
+let customOriginName = storedOrigin?.name || "Monocromatico";
+let selectedColourPreset = "";
 let v2Colours = readLocal<Partial<Record<V2Category,string>>>(storage,"d069.v2Colours",{});
 let focusMode = false;
 let focusCamera: unknown = null;
@@ -94,23 +98,24 @@ function updateButtons() {
   get<HTMLButtonElement>("labels").setAttribute("aria-pressed", String(axes.labels));
   get<HTMLSelectElement>("palette").value = axes.colour;
   get<HTMLButtonElement>("projection-focus").disabled = !focusAvailable(axes.projection, selectedNode);
-  get<HTMLButtonElement>("projection-focus").title = selectedNode ? "Mostra il nodo e i vicini" : "Seleziona prima un nodo";
+  get<HTMLButtonElement>("projection-focus").dataset.tooltip = selectedNode ? "Mostra il nodo e i vicini" : "Seleziona prima un nodo";
   get<HTMLButtonElement>("projection-focus").setAttribute("aria-pressed", String(focusMode));
   get<HTMLButtonElement>("fullscreen-focus").disabled = !focusAvailable(axes.projection, selectedNode);
-  get<HTMLButtonElement>("fullscreen-focus").title = selectedNode ? "Mostra il nodo e i vicini" : "Seleziona prima un nodo";
+  get<HTMLButtonElement>("fullscreen-focus").dataset.tooltip = selectedNode ? "Mostra il nodo e i vicini" : "Seleziona prima un nodo";
   document.querySelectorAll<HTMLButtonElement>("[data-preset]").forEach((button) => {
     button.disabled = axes.projection !== "3d";
-    button.title = button.disabled ? "Disponibile nella vista 3D" : button.title;
+    if (button.disabled) button.dataset.tooltip = "Disponibile nella vista 3D";
   });
   get<HTMLElement>("gizmo").hidden = axes.projection !== "3d";
+  get<HTMLElement>("view-presets").hidden = axes.projection !== "3d";
   syncAppearanceControls();
   syncCustomColours();
   get<HTMLButtonElement>("back").disabled = stack.depth === 0;
-  get<HTMLButtonElement>("back").title = stack.depth === 0 ? "Nessuna selezione precedente" : "Torna alla selezione precedente";
+  get<HTMLButtonElement>("back").dataset.tooltip = stack.depth === 0 ? "Nessuna selezione precedente" : "Torna alla selezione precedente";
   get<HTMLButtonElement>("expand").disabled = stack.depth === 0;
-  get<HTMLButtonElement>("expand").title = stack.depth === 0 ? "Seleziona prima un nodo" : "Espandi il vicinato";
+  get<HTMLButtonElement>("expand").dataset.tooltip = stack.depth === 0 ? "Seleziona prima un nodo" : "Espandi il vicinato";
   get<HTMLSelectElement>("fullscreen-preset").disabled = axes.projection !== "3d";
-  get<HTMLSelectElement>("fullscreen-preset").title = axes.projection === "3d" ? "Vista 3D" : "Disponibile nella vista 3D";
+  get<HTMLSelectElement>("fullscreen-preset").dataset.tooltip = axes.projection === "3d" ? "Vista 3D" : "Disponibile nella vista 3D";
   const current = stack.current;
   get<HTMLElement>("search-feedback").textContent = current?.capped ? "Vicinato limitato a 60 nodi." : "";
 }
@@ -457,7 +462,9 @@ function setAxes(partial: Partial<Axes>): Promise<void> {
     for(const axis of ["projection","morphology","organization","reading"] as const)
       document.querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`).forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.value===axes[axis])));
     get<HTMLElement>("gizmo").hidden=axes.projection!=="3d";
+    get<HTMLElement>("view-presets").hidden=axes.projection!=="3d";
     get<HTMLSelectElement>("palette").value=axes.colour;
+    if (partial.colour) writeLocal(storage, "d069.palette", partial.colour);
     return v2.setAxes(partial); }
   return enqueue(async () => {
     if (partial.projection && partial.projection !== "3d") { focusMode = false; focusCamera = null; }
@@ -529,6 +536,7 @@ async function toggleFullscreen(): Promise<void> {
 }
 document.addEventListener("fullscreenchange", () => {
   fullscreenDrawer = false;
+  get<HTMLElement>("fullscreen-bar").classList.remove("collapsed", "immersive");
   if (fullscreen()) viewport.append(details);
   else get<HTMLElement>("shell").append(details);
   syncPanel();
@@ -541,7 +549,7 @@ function scheduleAppearance(): void {
 }
 let appearanceFrame = 0;
 let depthSliderTimer: ReturnType<typeof setTimeout> | undefined;
-const sliderNames: Readonly<Record<keyof AppearanceOptions, string>> = {
+const sliderNames: Readonly<Record<string, string>> = {
   nodeScale: "Dimensione nodi", edgeWidth: "Spessore archi", labelSizePx: "Dimensione etichette",
   labelDensity: "Densità etichette", glow: "Bagliore", edgeOpacity: "Opacità archi", curvature: "Curvatura", depth3d: "Profondità 3D",
 };
@@ -551,13 +559,13 @@ function syncAppearanceControls(): void {
     input.value = String(appearance[key]);
     get<HTMLElement>(`value-${key}`).textContent = String(appearance[key]);
     input.disabled = key === "curvature" && axes.morphology === "stellar";
-    input.title = input.disabled ? "Le relazioni Stellar sono sempre diritte" : sliderNames[key];
+    input.title = input.disabled ? "Le relazioni Stellar sono sempre diritte" : sliderNames[key] ?? key;
   }
 }
 for (const key of Object.keys(APPEARANCE_RANGES) as (keyof AppearanceOptions)[]) {
   const [min, max, step] = APPEARANCE_RANGES[key];
   const label = document.createElement("label");
-  label.textContent = sliderNames[key];
+  label.textContent = sliderNames[key] ?? key;
   const value = document.createElement("output"); value.id = `value-${key}`;
   const input = document.createElement("input"); input.id = `appearance-${key}`; input.type = "range";
   input.min = String(min); input.max = String(max); input.step = String(step);
@@ -577,29 +585,42 @@ function syncPresetList(): void {
 function syncCustomColours(): void {
   const host = get<HTMLElement>("custom-colours");
   host.hidden = axes.colour !== "custom";
-  if (host.childElementCount) return;
-  const names: Readonly<Record<keyof PaletteValues, string>> = { aggregate: "Aggregati", concept: "Concetti", source: "Fonti",
-    attested: "Relazione attestata", exploratory: "Relazione esplorativa", selection: "Selezione", hover: "Passaggio", text: "Testo" };
-  for (const key of Object.keys(names) as (keyof PaletteValues)[]) {
-    const label = document.createElement("label"); label.textContent = names[key];
-    const input = document.createElement("input"); input.type = "color"; input.value = customPalette[key]; input.id = `colour-${key}`;
-    input.addEventListener("input", () => { customPalette = { ...customPalette, [key]: input.value };
-      writeLocal(storage, "d069.customPalette", customPalette); syncContrast();
-      void setAxes({ colour: "custom" }).then(() => v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); });
-    label.append(input); host.append(label);
+  get<HTMLElement>("custom-editor").hidden = axes.colour !== "custom";
+  get<HTMLElement>("custom-selected").textContent = `Preset selezionato: ${selectedColourPreset || customOriginName}`;
+  get<HTMLElement>("custom-storage").textContent = `Salvato in questo browser (localStorage «${CUSTOM_STORAGE_KEY}»)`;
+  if (host.childElementCount) {
+    for (const key of PALETTE_ROLES) {
+      get<HTMLInputElement>(`colour-${key}`).value = customPalette[key];
+      get<HTMLInputElement>(`hex-${key}`).value = customPalette[key];
+      get<HTMLElement>(`swatch-${key}`).style.background = customPalette[key];
+    }
+    syncContrast(); return;
   }
-  if (v2) for (const key of Object.keys(V2_CATEGORY_FAMILY) as V2Category[]) {
-    const label=document.createElement("label");label.textContent=key;
-    const input=document.createElement("input");input.type="color";input.id=`colour-v2-${key}`;
-    input.value=v2Colours[key]??customPalette[V2_CATEGORY_FAMILY[key]];
-    input.addEventListener("input",()=>{v2Colours={...v2Colours,[key]:input.value};writeLocal(storage,"d069.v2Colours",v2Colours);void v2?.setCategoryColours(v2Colours);});
-    label.append(input);host.append(label);
+  const names: Readonly<Record<keyof PaletteValues, string>> = { background: "Sfondo", aggregate: "Nodi primari", concept: "Nodi secondari",
+    attested: "Archi attestati", exploratory: "Archi esplorativi", selection: "Selezione", hover: "Hover", container: "Contenitori Indra", text: "Testo/etichette" };
+  for (const key of PALETTE_ROLES) {
+    const row = document.createElement("div"); row.className = "colour-row"; row.dataset.role = key;
+    const name = document.createElement("span"); name.textContent = names[key];
+    const swatch = document.createElement("button"); swatch.type = "button"; swatch.className = "colour-swatch"; swatch.id = `swatch-${key}`; swatch.title = `Scegli ${names[key]}`;
+    const picker = document.createElement("input"); picker.type = "color"; picker.id = `colour-${key}`; picker.setAttribute("aria-label", names[key]);
+    const hex = document.createElement("input"); hex.type = "text"; hex.id = `hex-${key}`; hex.maxLength = 7; hex.setAttribute("aria-label", `HEX ${names[key]}`);
+    const error = document.createElement("small"); error.className = "hex-error"; error.id = `hex-error-${key}`; error.setAttribute("role", "alert");
+    const change = (value: string) => {
+      if (!validHex(value)) { error.textContent = "Usa #RRGGBB"; hex.setAttribute("aria-invalid", "true"); return; }
+      error.textContent = ""; hex.removeAttribute("aria-invalid");
+      customPalette = applyColour(customPalette, key, value); selectedColourPreset = "";
+      writeLocal(storage, "d069.customPalette", customPalette);
+      syncCustomColours(); void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
+    };
+    picker.addEventListener("input", () => change(picker.value)); hex.addEventListener("input", () => change(hex.value));
+    swatch.addEventListener("click", () => picker.click());
+    row.append(name, swatch, picker, hex, error); host.append(row);
   }
   syncContrast();
 }
 function syncContrast(): void {
-  const failed = (Object.keys(customPalette) as (keyof PaletteValues)[]).filter((key) =>
-    contrast(customPalette[key], "#050505") < (key === "text" ? 4.5 : 3));
+  const failed = PALETTE_ROLES.filter((key) => key !== "background" &&
+    contrast(customPalette[key], customPalette.background) < (key === "text" ? 4.5 : 3));
   get<HTMLElement>("contrast-warning").textContent = failed.length ? `Contrasto insufficiente: ${failed.join(", ")}` : "Contrasto sufficiente";
 }
 function syncFilters() {
@@ -646,8 +667,51 @@ document.querySelectorAll<HTMLButtonElement>("[data-preset]").forEach((button) =
 get<HTMLButtonElement>("projection-focus").addEventListener("click", () => { void toggleFocus(); });
 get<HTMLButtonElement>("fullscreen-focus").addEventListener("click", () => { void toggleFocus(); });
 get<HTMLSelectElement>("palette").addEventListener("change", (event) => {
-  void setAxes({ colour: paletteName((event.target as HTMLSelectElement).value) });
+  const next = paletteName((event.target as HTMLSelectElement).value);
+  if (next === "custom" && axes.colour !== "custom") {
+    customOrigin = { ...PALETTES[axes.colour] };
+    customOriginName = get<HTMLSelectElement>("palette").querySelector<HTMLOptionElement>(`option[value="${axes.colour}"]`)?.textContent || axes.colour;
+    customPalette = { ...customOrigin }; selectedColourPreset = "";
+    writeLocal(storage, "d070.customOrigin", { name: customOriginName, palette: customOrigin });
+    writeLocal(storage, "d069.customPalette", customPalette);
+  }
+  get<HTMLElement>("appearance-panel").hidden = false;
+  void setAxes({ colour: next }).then(async () => { if (next === "custom") await (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); syncCustomColours(); }); updateInsets();
 });
+get<HTMLButtonElement>("edit-colours").addEventListener("click", () => {
+  if (axes.colour !== "custom") {
+    customOrigin = { ...PALETTES[axes.colour] };
+    customOriginName = get<HTMLSelectElement>("palette").selectedOptions[0]?.textContent || axes.colour;
+    customPalette = { ...customOrigin }; selectedColourPreset = "";
+    writeLocal(storage, "d070.customOrigin", { name: customOriginName, palette: customOrigin });
+    writeLocal(storage, "d069.customPalette", customPalette);
+    void setAxes({ colour: "custom" }).then(async () => { await (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); syncCustomColours(); });
+  }
+  get<HTMLElement>("appearance-panel").hidden = false; updateInsets();
+});
+function refreshColourPresetList(): void {
+  const list = get<HTMLSelectElement>("colour-preset-list");
+  list.replaceChildren(new Option("Preset colori salvati", ""), ...Object.keys(readColourPresets(storage)).sort().map(name => new Option(name, name)));
+  list.value = selectedColourPreset;
+}
+get<HTMLButtonElement>("custom-apply").addEventListener("click", () => {
+  const saved = readColourPresets(storage)[get<HTMLSelectElement>("colour-preset-list").value];
+  if (saved) { customPalette = { ...saved }; selectedColourPreset = get<HTMLSelectElement>("colour-preset-list").value; }
+  writeLocal(storage, "d069.customPalette", customPalette); syncCustomColours();
+  void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
+});
+get<HTMLButtonElement>("custom-save").addEventListener("click", () => {
+  const name = get<HTMLInputElement>("colour-preset-name").value.trim();
+  if (!name) { announce("Inserisci un nome per il preset colori"); return; }
+  saveColourPreset(storage, name, customPalette); selectedColourPreset = name.slice(0, 40);
+  refreshColourPresetList(); syncCustomColours(); announce(`Preset colori salvato · ${selectedColourPreset}`);
+});
+get<HTMLButtonElement>("custom-restore").addEventListener("click", () => {
+  customPalette = { ...customOrigin }; selectedColourPreset = "";
+  writeLocal(storage, "d069.customPalette", customPalette); syncCustomColours();
+  void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
+});
+refreshColourPresetList();
 get<HTMLButtonElement>("appearance-toggle").addEventListener("click", () => {
   const panel = get<HTMLElement>("appearance-panel"); panel.hidden = !panel.hidden; updateInsets();
 });
@@ -671,6 +735,19 @@ get<HTMLButtonElement>("preset-delete").addEventListener("click", () => {
 });
 get<HTMLButtonElement>("panel-toggle").addEventListener("click", togglePanel);
 get<HTMLButtonElement>("fullscreen-panel").addEventListener("click", () => { fullscreenDrawer = !fullscreenDrawer; syncPanel(); });
+get<HTMLButtonElement>("fullscreen-collapse").addEventListener("click", () => {
+  const bar = get<HTMLElement>("fullscreen-bar"); bar.classList.toggle("collapsed");
+  get<HTMLButtonElement>("fullscreen-collapse").textContent = bar.classList.contains("collapsed") ? "Espandi barra (T)" : "Riduci barra (T)";
+  updateInsets();
+});
+get<HTMLButtonElement>("immersive-toggle").addEventListener("click", () => {
+  const bar = get<HTMLElement>("fullscreen-bar"); bar.classList.remove("collapsed"); bar.classList.toggle("immersive");
+  get<HTMLButtonElement>("immersive-toggle").textContent = bar.classList.contains("immersive") ? "Esci da Immersiva" : "Immersiva";
+  updateInsets();
+});
+get<HTMLButtonElement>("fullscreen-appearance").addEventListener("click", () => {
+  const panel = get<HTMLElement>("appearance-panel"); panel.hidden = !panel.hidden; updateInsets();
+});
 get<HTMLButtonElement>("fullscreen").addEventListener("click", () => { void toggleFullscreen(); });
 get<HTMLButtonElement>("fullscreen-exit").addEventListener("click", () => { void document.exitFullscreen(); });
 document.querySelectorAll<HTMLButtonElement>("[data-full-projection]").forEach((button) => button.addEventListener("click", () => {
@@ -717,10 +794,29 @@ get<HTMLButtonElement>("advanced-button").addEventListener("click", () => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") get<HTMLElement>("advanced-controls").hidden = true;
   if (event.key.toLowerCase() === "p" && !(event.target instanceof HTMLInputElement)) togglePanel();
+  if (event.key.toLowerCase() === "t" && fullscreen() && !(event.target instanceof HTMLInputElement)) get<HTMLButtonElement>("fullscreen-collapse").click();
 });
 document.addEventListener("pointerdown", (event) => {
   if (!(event.target instanceof Element) || !event.target.closest("#advanced-button, #advanced-controls"))
     get<HTMLElement>("advanced-controls").hidden = true;
+});
+const controlTip = document.createElement("div"); controlTip.id = "control-tooltip"; controlTip.hidden = true; document.body.append(controlTip);
+let tipTimer = 0;
+document.querySelectorAll<HTMLElement>("header [title], #fullscreen-bar [title]").forEach(control => {
+  const message = control.getAttribute("title") || "";
+  control.removeAttribute("title"); control.setAttribute("data-tooltip", message);
+  control.addEventListener("pointerenter", () => {
+    clearTimeout(tipTimer); tipTimer = window.setTimeout(() => {
+      if (!control.isConnected || control.closest("[hidden]")) return;
+      controlTip.textContent = control.dataset.tooltip || message; controlTip.hidden = false;
+      const box = control.getBoundingClientRect();
+      const x = Math.min(innerWidth - controlTip.offsetWidth - 12, Math.max(12, box.left));
+      const y = box.bottom + 9 + controlTip.offsetHeight <= innerHeight - 12 ? box.bottom + 9 : box.top - controlTip.offsetHeight - 9;
+      controlTip.style.left = `${x}px`; controlTip.style.top = `${Math.max(12, y)}px`;
+    }, 550);
+  });
+  control.addEventListener("pointerleave", () => { clearTimeout(tipTimer); controlTip.hidden = true; });
+  control.addEventListener("pointerdown", () => { clearTimeout(tipTimer); controlTip.hidden = true; });
 });
 function search(query: string): void {
   if (v2) { void v2.search(query); return; }
@@ -753,11 +849,11 @@ function updateGizmo(): void {
     const up = cross(normalizedRight, forward);
     for (const [name, axis] of [["x", [1, 0, 0]], ["y", [0, 1, 0]], ["z", [0, 0, 1]]] as const) {
       const dot = (a: readonly number[], b: readonly number[]) => a.reduce((sum, value, i) => sum + value * b[i]!, 0);
-      const x = 46 + dot(axis, normalizedRight) * 27, y = 46 - dot(axis, up) * 27;
+      const x = 56 + dot(axis, normalizedRight) * 36, y = 56 - dot(axis, up) * 36;
       const line = get<SVGLineElement>(`axis-${name}`);
-      line.setAttribute("x1", "46"); line.setAttribute("y1", "46"); line.setAttribute("x2", String(x)); line.setAttribute("y2", String(y));
+      line.setAttribute("x1", "56"); line.setAttribute("y1", "56"); line.setAttribute("x2", String(x)); line.setAttribute("y2", String(y));
       const button = get<HTMLElement>("gizmo").querySelector<HTMLButtonElement>(`button[data-axis-end="${name}"]`)!;
-      button.style.left = `${x - 11}px`; button.style.top = `${y - 11}px`;
+      button.style.left = `${Math.max(0, Math.min(88, x - 12))}px`; button.style.top = `${Math.max(0, Math.min(88, y - 12))}px`;
     }
   }
   requestAnimationFrame(updateGizmo);

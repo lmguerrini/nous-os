@@ -1,5 +1,7 @@
 import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
 import type { AppearanceOptions } from "../engine/presentation-options.ts";
+import { PALETTE_ROLES } from "./palette.ts";
+import type { PaletteValues } from "./palette.ts";
 
 export type AppearancePresets = Record<string, AppearanceOptions>;
 export const APPEARANCE_RANGES: Readonly<Record<keyof AppearanceOptions, readonly [number, number, number]>> = {
@@ -22,4 +24,35 @@ export function readLocal<T>(storage: Pick<Storage, "getItem"> | null, key: stri
 }
 export function writeLocal(storage: Pick<Storage, "setItem"> | null, key: string, value: unknown): void {
   try { storage?.setItem(key, JSON.stringify(value)); } catch { /* Private browsing and denied storage remain usable. */ }
+}
+export const CUSTOM_STORAGE_KEY = "d070.colourPresets";
+export function validHex(value: string): boolean { return /^#[0-9a-f]{6}$/i.test(value); }
+export function normalizePalette(value: unknown, fallback: PaletteValues): PaletteValues {
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const next = { ...fallback };
+  for (const key of PALETTE_ROLES) if (typeof source[key] === "string" && validHex(source[key])) next[key] = source[key].toLowerCase();
+  return next;
+}
+export function applyColour(palette: PaletteValues, role: keyof PaletteValues, value: string): PaletteValues {
+  if (!validHex(value)) throw new TypeError("HEX richiesto: #RRGGBB");
+  return { ...palette, [role]: value.toLowerCase() };
+}
+export function readColourPresets(storage: Pick<Storage, "getItem"> | null): Record<string, PaletteValues> {
+  const raw = readLocal<unknown>(storage, CUSTOM_STORAGE_KEY, {});
+  if (!raw || typeof raw !== "object") return {};
+  const result: Record<string, PaletteValues> = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (!value || typeof value !== "object") continue;
+    const record = value as Record<string, unknown>;
+    if (PALETTE_ROLES.every(role => typeof record[role] === "string" && validHex(record[role])))
+      result[name] = record as PaletteValues;
+  }
+  return result;
+}
+export function saveColourPreset(storage: Pick<Storage, "getItem" | "setItem"> | null, name: string, palette: PaletteValues): Record<string, PaletteValues> {
+  const title = name.trim().slice(0, 40);
+  if (!title) throw new TypeError("Nome preset richiesto");
+  const next = { ...readColourPresets(storage), [title]: normalizePalette(palette, palette) };
+  writeLocal(storage, CUSTOM_STORAGE_KEY, next);
+  return next;
 }

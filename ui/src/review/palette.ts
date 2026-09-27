@@ -1,16 +1,24 @@
 import type { Colour } from "./view-contract.ts";
 
-export type PaletteValues = { aggregate: string; concept: string; source: string; attested: string;
-  exploratory: string; selection: string; hover: string; text: string };
-const neutral: PaletteValues = { aggregate: "#f0f0f0", concept: "#dedede", source: "#bdbdbd", attested: "#b8b8b8",
-  exploratory: "#e4e4e4", selection: "#ffffff", hover: "#ffffff", text: "#e8e8e8" };
+export type PaletteValues = { background: string; aggregate: string; concept: string; attested: string;
+  exploratory: string; selection: string; hover: string; container: string; text: string };
+export const PALETTE_ROLES = ["background", "aggregate", "concept", "attested", "exploratory", "selection", "hover", "container", "text"] as const;
+const neutral: PaletteValues = { background: "#050505", aggregate: "#f0f0f0", concept: "#dedede", attested: "#b8b8b8",
+  exploratory: "#e4e4e4", selection: "#ffffff", hover: "#ffffff", container: "#bcbcbc", text: "#e8e8e8" };
 export const PALETTES: Readonly<Record<Exclude<Colour, "custom">, PaletteValues>> = {
   bw: neutral,
-  warm: { ...neutral, aggregate: "#ffd5ab", concept: "#f4b48e", source: "#d8a582", exploratory: "#ffcf85" },
-  earth: { ...neutral, aggregate: "#e3c9a7", concept: "#bdc999", source: "#b4b6a1", exploratory: "#e8ac83" },
-  gems: { ...neutral, aggregate: "#b4e8db", concept: "#d8b8ec", source: "#a7cbe9", exploratory: "#f4c2a1" },
-  night: { ...neutral, aggregate: "#d2ddff", concept: "#aebfe9", source: "#a4b2d4", exploratory: "#e3b7dc" },
-  semantic: { ...neutral, aggregate: "#f0d1a6", concept: "#d4b8e8", source: "#a8c9dc", exploratory: "#efc08a" },
+  warm: { ...neutral, aggregate: "#ffd5ab", concept: "#f4b48e", exploratory: "#ffcf85" },
+  earth: { ...neutral, aggregate: "#e3c9a7", concept: "#d1b18a", exploratory: "#e8ac83" },
+  gems: { ...neutral, aggregate: "#b4e8db", concept: "#d8b8ec", exploratory: "#f4c2a1" },
+  night: { ...neutral, aggregate: "#d2ddff", concept: "#aebfe9", exploratory: "#e3b7dc" },
+  semantic: { ...neutral, aggregate: "#f0d1a6", concept: "#d4b8e8", exploratory: "#efc08a" },
+  amber: { ...neutral, background: "#120b05", aggregate: "#ffd38b", concept: "#f6b45e", attested: "#e4aa65", exploratory: "#ffce84", selection: "#fff1cf", hover: "#ffe1a0", container: "#cf9958", text: "#f6e3c4" },
+  "old-gold": { ...neutral, background: "#110e07", aggregate: "#eacb83", concept: "#d6b768", attested: "#d0b66e", exploratory: "#ead39b", selection: "#fff0b8", hover: "#f0d48d", container: "#c5a968", text: "#f0e4c6" },
+  ochre: { ...neutral, background: "#130d07", aggregate: "#e4bf82", concept: "#d3a45d", attested: "#c79e62", exploratory: "#e6be8b", selection: "#ffe2ad", hover: "#efc38d", container: "#c69c6b", text: "#f0dec3" },
+  copper: { ...neutral, background: "#130a08", aggregate: "#eab394", concept: "#d89576", attested: "#d29375", exploratory: "#eab49c", selection: "#ffdcc6", hover: "#f4b49a", container: "#c48d76", text: "#f4ddd3" },
+  "alchemical-red": { ...neutral, background: "#140909", aggregate: "#f4afa7", concept: "#df918c", attested: "#d88d86", exploratory: "#f0b1a2", selection: "#ffe0d9", hover: "#f6b2ab", container: "#c98984", text: "#f6ded9" },
+  "warm-twilight": { ...neutral, background: "#140c13", aggregate: "#e8b4bd", concept: "#cea0b0", attested: "#d0a0ac", exploratory: "#e9bcb1", selection: "#ffe4dd", hover: "#edbcc4", container: "#c59da8", text: "#f3e0e0" },
+  sepia: { ...neutral, background: "#110d0a", aggregate: "#dbc5ac", concept: "#c8ad91", attested: "#c1a78e", exploratory: "#dec4a8", selection: "#f7e5ce", hover: "#dfc8af", container: "#bda68c", text: "#eadecf" },
 };
 export function hexRgb(value: string): readonly [number, number, number] {
   const match = /^#([0-9a-f]{6})$/i.exec(value);
@@ -35,8 +43,8 @@ export function paletteName(value: unknown): Colour {
 /** D-069 kinds share preset families but have individually editable Custom colours. */
 export const V2_CATEGORY_FAMILY = {
   domain:'aggregate',project:'aggregate',work:'aggregate',conversation:'aggregate',
-  canon:'concept',proposal:'concept',overlay:'concept',passage:'source',
-} as const satisfies Record<string,'aggregate'|'concept'|'source'>;
+  canon:'concept',proposal:'concept',overlay:'concept',passage:'concept',
+} as const satisfies Record<string,'aggregate'|'concept'>;
 export type V2Category = keyof typeof V2_CATEGORY_FAMILY;
 export function v2Category(node:{level:number;kind:string;status?:string}):V2Category {
   if(node.level===5)return 'passage';

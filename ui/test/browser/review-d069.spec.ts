@@ -34,6 +34,7 @@ test("D-069 camera, Focus, controls and persistence over the served export", asy
   await canvas.hover();
   await page.mouse.wheel(0, -240);
   expect(distance(await pose(page))).toBeLessThan(distance(panned));
+  await page.locator("#view-preset-menu summary").click();
   for (const name of ["fronte", "retro", "sinistra", "destra", "alto", "basso"] as const) {
     await page.locator(`[data-preset="${name}"]`).click();
     const p = await pose(page);

@@ -22,7 +22,7 @@ export type Morphology = "stellar" | "neural" | "mycelium";
 export type Organization = "flat" | "indra";
 
 /** Black and white is the default; semantic colour is an optional reading aid. */
-export type Colour = "bw" | "warm" | "earth" | "gems" | "night" | "semantic" | "custom";
+export type Colour = "bw" | "warm" | "earth" | "gems" | "night" | "semantic" | "amber" | "old-gold" | "ochre" | "copper" | "alchemical-red" | "warm-twilight" | "sepia" | "custom";
 export type Reading = "attested" | "exploratory" | "combined";
 
 export type Axes = {

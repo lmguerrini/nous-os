@@ -128,6 +128,8 @@ export const createProductView: CreateProductView = async (input) => {
   function labelPass() {
     if (!handle || destroyed) return;
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
+    container.style.backgroundColor = palette.background;
+    container.style.setProperty("--review-container-ink", palette.container);
     const bounds = localRect();
     const camera = handle.readCameraState();
     const fitted = fitRatio.get(cameraKey()) ?? camera.ratio;
@@ -302,10 +304,13 @@ export const createProductView: CreateProductView = async (input) => {
     }) };
     const anchors = restrictAnchors(fullAnchor(axes), visible);
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
+    container.style.backgroundColor = palette.background;
+    container.style.setProperty("--review-container-ink", palette.container);
     const indraContainers = new Set(input.v2Prepared && axes.organization === "indra"
       ? (input.layoutContainers ?? []).map((container) => container.id) : []);
     const presentation = {
       morphologyLanguage: "distinct" as const,
+      containerTintSrgb: hexRgb(palette.container),
       nativeLabels: false,
       windowGeometryFromAnchors: true,
       ...(input.layoutContainers && axes.organization === "indra" ? { containers: input.layoutContainers } : {}),
@@ -344,7 +349,7 @@ export const createProductView: CreateProductView = async (input) => {
               ...(input.v2Prepared && axes.colour === "bw" ? { tintSrgb: (() => { const level = (node.v2 as import("./v2-core.ts").V2Node).level; const gray = level <= 2 ? 0.88 : level <= 4 ? 0.7 : 0.56; return [gray, gray, gray] as const; })() }
                 : input.v2Prepared && axes.colour !== "bw" ? {tintSrgb:hexRgb(v2CategoryColour(node.v2 as import("./v2-core.ts").V2Node,palette,axes.colour==='custom'?input.v2Colours:undefined))}
                 : axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] }
-                : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(palette[input.text(node.id).family]) }),
+                : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(palette[input.text(node.id).family === "aggregate" ? "aggregate" : "concept"]) }),
             }] as const;
           }),
       ),

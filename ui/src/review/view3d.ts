@@ -41,11 +41,12 @@ export function mount3d(host: HTMLElement, data: ReviewExport, nodes: ReviewNode
   }
   const gizmo = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   gizmo.setAttribute("viewBox", "0 0 112 112"); gizmo.setAttribute("aria-label", "Orientamento x y z");
-  gizmo.style.cssText = "position:absolute;left:12px;bottom:12px;width:112px;height:112px;pointer-events:none;background:#152033bb;border:1px solid #526880;border-radius:8px";
+  gizmo.style.cssText = "position:absolute;left:16px;bottom:16px;width:112px;height:112px;pointer-events:none;background:#152033bb;border:1px solid #526880;border-radius:8px";
   const axes = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
   const axisMarks = axes.map((_, index) => { const line = document.createElementNS("http://www.w3.org/2000/svg", "line"); const letter = document.createElementNS("http://www.w3.org/2000/svg", "text");
     const color = ["#f07e80", "#72dba7", "#7cbcff"][index]!; line.setAttribute("stroke", color); line.setAttribute("stroke-width", "2");
-    letter.setAttribute("fill", color); letter.setAttribute("font-size", "14"); letter.setAttribute("font-weight", "bold"); letter.textContent = ["x", "y", "z"][index]!;
+    letter.setAttribute("fill", "#ffffff"); letter.setAttribute("stroke", color); letter.setAttribute("paint-order", "stroke"); letter.setAttribute("stroke-width", "0.6"); letter.setAttribute("font-size", "17"); letter.setAttribute("font-weight", "bold"); letter.style.pointerEvents = "auto"; letter.style.cursor = "pointer"; letter.textContent = ["X", "Y", "Z"][index]!;
+    letter.addEventListener("click", () => { const direction = axes[index]!; const distance = camera.position.distanceTo(controls.target); camera.position.copy(controls.target).addScaledVector(direction, distance); camera.up.set(0, 0, 1); controls.update(); });
     gizmo.append(line, letter); return { line, letter }; }); host.append(gizmo);
   const drawGizmo = () => { const inverse = camera.quaternion.clone().invert(); axes.forEach((axis, index) => {
     const point = axis.clone().applyQuaternion(inverse).multiplyScalar(34); const x = 56 + point.x, y = 56 - point.y;
