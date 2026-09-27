@@ -169,7 +169,12 @@ def test_store_layer_placement_titles_marks_and_reconciliation(tmp_path):
     for layer in first["store_reconciliation"]["layers"].values():
         assert layer["store_count"] == layer["dataset_count"] == 1
         assert not layer["missing_from_dataset"] and not layer["missing_from_store"]
-    assert "snapshots/src_b/" + other_citation["snapshot_digest"] + ".snapshot" in first["store_reconciliation"]["store_files_sha256"]
+    files = first["store_reconciliation"]["store_files"]
+    listed = json.loads((tmp_path / "first" / files["list"]).read_text())
+    assert "snapshots/src_b/" + other_citation["snapshot_digest"] + ".snapshot" in listed
+    assert files["count"] == len(listed) and not any(key.startswith("snapshots/") for key in files["core_sha256"])
+    assert files["list_sha256"] == hashlib.sha256((tmp_path / "first" / files["list"]).read_bytes()).hexdigest()
+    assert len((tmp_path / "first" / "manifest.json").read_bytes()) < first["limits"]["response_max_bytes"]
 
 
 def test_store_layer_reconciliation_refuses_missing_record(tmp_path):

@@ -825,7 +825,11 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
             "exploratory_connections": set().union(*(record_ids(e) for e in edges.values()
                 if e.get("epistemic_status") == "exploratory/non-canonical")),
         }
-        store_reconciliation = {"layers": {}, "store_files_sha256": dict(sorted(store_hashes.items()))}
+        store_files = dict(sorted(store_hashes.items()))
+        # The per-file digests (one per snapshot) live beside the manifest; the manifest stays under the response limit.
+        core = {k: v for k, v in store_files.items() if not k.startswith("snapshots/")}
+        store_reconciliation = {"layers": {}, "store_files": {"count": len(store_files), "list": "store-files.json",
+                                                              "core_sha256": core}}
         for name, key in (("integrated_proposals", "proposal_id"), ("entities", "store_id"),
                           ("explicit_relations", "store_id"), ("exploratory_connections", "store_id")):
             source_ids = [row.get(key) for row in layer_rows[name]]
@@ -850,6 +854,9 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
             offsets[key] = stream.tell()
             stream.write(encoded(details[key]))
     (out / "details-offsets.json").write_bytes(encoded(offsets))
+    if store_reconciliation is not None:
+        (out / "store-files.json").write_bytes(encoded(store_files))
+        store_reconciliation["store_files"]["list_sha256"] = sha(out / "store-files.json")
     counts = {"level": dict(sorted(Counter(str(n["level"]) for n in nodes.values()).items())),
               "kind": dict(sorted(Counter(n["kind"] for n in nodes.values()).items())),
               "status": dict(sorted(Counter(n.get("status", "none") for n in nodes.values()).items())),
