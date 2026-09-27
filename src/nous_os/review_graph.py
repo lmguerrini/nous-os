@@ -157,7 +157,7 @@ def verify(citation: dict, stores: Path, cache: dict) -> tuple[bool, str]:
 
 
 def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, cards: Path,
-          out: Path, overlay: Path | None = None) -> dict:
+          out: Path, overlay: Path | None = None, require_complete: bool = False) -> dict:
     inv = {r["conversation"]: r for r in rows(inventory)}
     overlay = overlay if overlay and overlay.exists() else None
     membership_error = False
@@ -218,6 +218,16 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
         if source not in nodes or target not in nodes:
             return
         eid = f"{klass}:{kind}:{source}:{target}"
+        if eid in edges:
+            # Several records for the same relation are one edge whose evidence is the union, in a stable order; the first
+            # record stays primary and the others stay listed (the overlays are written sorted by id, so this is stable).
+            known = edges[eid]
+            merged = {json.dumps(item, sort_keys=True): item for item in [*known["evidence"], *(evidence or [])]}
+            known["evidence"] = [merged[key] for key in sorted(merged)]
+            if extra:
+                records = [*known.get("merged_records", []), {k: v for k, v in sorted(extra.items())}]
+                known["merged_records"] = sorted(records, key=lambda r: json.dumps(r, sort_keys=True, ensure_ascii=False))
+            return
         edges[eid] = {"id": eid, "source": source, "target": target, "class": klass, "type": kind,
                       "directed": True, "evidence": evidence or [], **extra}
     def add_node(identifier: str, level: int, kind: str, title: str, parent: str | None,
@@ -570,6 +580,10 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                     "eligible": len(eligible_conversations), "missing": len(eligible_conversations - outcome_seen[p]),
                     "complete": outcome_seen[p] == eligible_conversations}
                 for p in ("p2a", "p2b")}
+    if require_complete and not all(summary["complete"] for summary in outcomes.values()):
+        # A dataset that claims the selected domains must have a recorded outcome of both passes for every eligible
+        # conversation; nothing is written otherwise.
+        raise ValueError("pass outcomes incomplete: " + ", ".join(f"{p} missing {v['missing']}" for p, v in outcomes.items() if not v["complete"]))
     for card in rows(cards):
         linked = set()
         for label in card.get("linked", []):
@@ -616,31 +630,61 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
         by_title[node["title"]].append(node)
     duplicate_global = sum(len(group) for group in by_title.values() if len(group) > 1)
     duplicate_parent = sum(count for group in by_title.values() for count in Counter(n["parent"] for n in group).values() if count > 1)
-    # Domains keep their names; an entity says what it is, a conversation its month, a proposal its conversation; only
-    # what is still ambiguous after that gets the end of its id.
+    # Domains keep their names. Everything else that is ambiguous gets the most readable discriminator that resolves it:
+    # an entity its kind; a conversation its month, then its day; a proposal its conversation when the namesakes sit in
+    # different conversations, then its date, then its date and time. Only what is still ambiguous gets the end of its id.
     kind_it = {"project": "progetto", "work": "opera", "system": "sistema", "concept": "concetto"}
     months_it = ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"]
 
-    def discriminator(node: dict) -> str | None:
+    def date_it(value, precision: str) -> str | None:
+        m = re.match(r"(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?", str(value or ""))
+        if not m:
+            return None
+        if precision == "month":
+            return f"{months_it[int(m.group(2)) - 1]} {m.group(1)}"
+        day = f"{int(m.group(3))} {months_it[int(m.group(2)) - 1]} {m.group(1)}"
+        return f"{day}, {m.group(4)}:{m.group(5)}" if precision == "time" and m.group(4) else day
+
+    def discriminator(node: dict, step: int, spans_conversations: bool) -> str | None:
         if node["level"] == 2:
             return kind_it.get(node["kind"], node["kind"])
         if node["level"] == 3:
-            date = str(node.get("date") or "")
-            return f"{months_it[int(date[5:7]) - 1]} {date[:4]}" if re.fullmatch(r"\d{4}-\d{2}.*", date) else None
+            return date_it(node.get("date"), ("month", "day", "day")[step])
         if node["level"] == 4:
-            return short(nodes.get(node["parent"], {}).get("title", ""), 24) or None
+            if step == 0:
+                return short(nodes.get(node["parent"], {}).get("title", ""), 24) if spans_conversations else None
+            return date_it(node.get("date"), "day" if step == 1 else "time")
         return None
 
     for group in by_title.values():
-        if len(group) > 1:
-            for node in group:
-                extra = discriminator(node)
-                if extra:
-                    node["title"] = f"{short(node['title'], 48)} · {extra}"
-            remaining = Counter(node["title"] for node in group)
-            for node in group:
-                if remaining[node["title"]] > 1 and node["level"] != 1:
-                    node["title"] = f"{node['title']} · {node['id'][-6:]}"
+        if len(group) < 2:
+            continue
+        base = {node["id"]: node["title"] for node in group}
+        spans = len({node["parent"] for node in group}) > 1
+        extras: dict[str, list[str]] = defaultdict(list)
+        for step in range(3):
+            titles_now = Counter(node["title"] for node in group)
+            ambiguous = [node for node in group if titles_now[node["title"]] > 1 and node["level"] != 1]
+            if not ambiguous:
+                break
+            for node in ambiguous:
+                extra = discriminator(node, step, spans)
+                if extra and extra not in extras[node["id"]]:
+                    extras[node["id"]] = [e for e in extras[node["id"]] if not (node["level"] == 4 and step == 2 and e == date_it(node.get("date"), "day"))] + [extra]
+                    node["title"] = " · ".join([base[node["id"]], *extras[node["id"]]])
+        # identical title and minute: the proposal's kind, and finally a reading-order number, never an id
+        kind_word = {"DECISION": "decisione", "CONCEPT": "concetto", "REQUIREMENT": "requisito", "OPEN_QUESTION": "domanda",
+                     "CHANGE_OVER_TIME": "evoluzione", "RELATIONSHIP": "relazione", "CONTRADICTION": "contraddizione"}
+        titles_now = Counter(node["title"] for node in group)
+        for node in group:
+            if titles_now[node["title"]] > 1 and node["level"] == 4 and node.get("subkind") in kind_word:
+                node["title"] = f"{node['title']} · {kind_word[node['subkind']]}"
+        remaining = Counter(node["title"] for node in group)
+        numbered: dict[str, int] = defaultdict(int)
+        for node in sorted(group, key=lambda n: n["id"]):
+            if remaining[node["title"]] > 1 and node["level"] != 1:
+                numbered[node["title"]] += 1
+                node["title"] = f"{node['title']} · n. {numbered[node['title']]}"
     passage_titles: dict[str, list[dict]] = defaultdict(list)
     for item in details.values():
         if item.get("kind") == "passage":
@@ -650,8 +694,8 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                             for count in Counter(item["parent"] for item in group).values() if count > 1)
     for group in passage_titles.values():
         if len(group) > 1:
-            for item in group:
-                item["title"] = f"{item['title']} · {item['id'][-8:]}"
+            for number, item in enumerate(sorted(group, key=lambda i: i["id"]), 1):
+                item["title"] = f"{item['title']} · n. {number}"
     children: dict[str, list[str]] = defaultdict(list)
     for node in nodes.values():
         if node["parent"] in nodes:
@@ -725,6 +769,8 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("stores", "inventory", "membership", "replaced", "cards", "out"):
         p.add_argument(f"--{name}", type=Path, required=True)
     p.add_argument("--overlay", type=Path)
+    p.add_argument("--require-complete", action="store_true",
+                   help="refuse to write a dataset unless both passes record an outcome for every eligible conversation")
     m = sub.add_parser("membership")
     for name in ("coverage", "inventory", "proposals", "ledger", "stores", "out"):
         m.add_argument(f"--{name}", type=Path, required=True)

@@ -118,6 +118,28 @@ def test_exploratory_overlay_sources_are_used_and_verified(tmp_path):
     assert manifest["audit"]["dropped"]["exploratory invalid overlay source"] == 1
 
 
+def test_require_complete_refuses_a_dataset_without_every_outcome(tmp_path):
+    args, _ = fixture(tmp_path)
+    import pytest
+    with pytest.raises(ValueError, match="pass outcomes incomplete"):
+        build(**args, out=tmp_path / "out", require_complete=True)
+    assert not (tmp_path / "out" / "manifest.json").exists()
+
+
+def test_records_of_one_relation_merge_their_evidence(tmp_path):
+    args, citation = fixture(tmp_path)
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    row = {"schema": "nousos.exploratory-connection/1", "id": "p2b-1", "a": "asr_one", "b": "conv1", "inference": "analogy",
+           "explanation_it": "First reading", "confidence": "low", "counter_evidence": [], "status": "exploratory/non-canonical",
+           "a_sources": [citation], "b_sources": [citation]}
+    (overlay / "exploratory.jsonl").write_bytes(encoded(row) + encoded(row | {"id": "p2b-2", "explanation_it": "Second reading"}))
+    build(**args, overlay=overlay, out=tmp_path / "out")
+    edges = [e for e in json.loads((tmp_path / "out/index.json").read_text())["edges"] if e["class"] == "exploratory"]
+    assert len(edges) == 1
+    assert [r["explanation"] for r in edges[0]["merged_records"]] == ["Second reading"]
+
+
 def test_duplicate_titles_gain_discriminators(tmp_path):
     args, citation = fixture(tmp_path)
     path = args["stores"] / "candidates/proposals.jsonl"
