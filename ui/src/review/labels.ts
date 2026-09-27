@@ -24,6 +24,7 @@ export function placeLabels(
   candidates: readonly LabelCandidate[],
   bounds: ViewportRect,
   measure: (text: string, maxWidth: number, maxLines: number) => { width: number; height: number },
+  reserved: readonly ViewportRect[] = [],
 ): PlacedLabel[] {
   const placed: PlacedLabel[] = [];
   const cellSize = 64;
@@ -65,6 +66,8 @@ export function placeLabels(
             rect.top < other.rect.top + other.rect.height + 3 &&
             rect.top + rect.height + 3 > other.rect.top,
         )
+        || reserved.some(other => rect.left < other.left + other.width + 3 && rect.left + rect.width + 3 > other.left
+          && rect.top < other.top + other.height + 3 && rect.top + rect.height + 3 > other.top)
       )
         continue;
       const label = { id: c.id, text: c.text, reason: c.reason, rect };

@@ -79,13 +79,13 @@ function segment(id: string, edgeId: string, a: Coordinates, b: Coordinates, wid
     control = c1;
     for (let i = 0; i <= 20; i++) samples.push(cubic(source, c1, c2, target, i / 20));
   } else {
-    const amplitude = (contract.amplitude[0] + (seed % 13) / 12 * (contract.amplitude[1] - contract.amplitude[0])) * curvature * length;
-    const periods = contract.periods[0] + ((seed >>> 4) % 11) / 10 * (contract.periods[1] - contract.periods[0]);
+    const amplitude = Math.min(length * 0.28, Math.max(4, (contract.amplitude[0] + (seed % 13) / 12 * (contract.amplitude[1] - contract.amplitude[0])) * length)) * curvature;
+    const periods = contract.periods[0];
     const count = length < 45 ? 16 : 40;
     for (let i = 0; i <= count; i++) {
       const t = i / count;
       const envelope = Math.sin(Math.PI * t) ** 2;
-      const wave = Math.sin(2 * Math.PI * periods * t + (seed % 7) * 0.13);
+      const wave = Math.sin(2 * Math.PI * periods * t);
       samples.push(add(mix(source, target, t), mul(sideways, sign * amplitude * envelope * wave)));
     }
     control = samples[1]!;
@@ -160,7 +160,7 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
     if (part.sharedKey && seen.has(part.sharedKey)) continue;
     if (part.sharedKey) {
       seen.add(part.sharedKey);
-      const load = 1 + 0.35 * Math.log2(usage.get(part.sharedKey) ?? 1);
+      const load = 1 + 0.55 * Math.log2(usage.get(part.sharedKey) ?? 1);
       drawnSegments.push({ ...part, widthStart: part.widthStart * load, widthEnd: part.widthEnd * load });
       if (load > 1) for (const point of [part.source, part.target]) {
         const key = `${point.x}:${point.y}:${point.z}`;

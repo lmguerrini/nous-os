@@ -30,7 +30,12 @@ test("layout determinism, incremental stability, depth and morphology membership
     const mycelium = computeLayout({ ...input, organization, morphology: "mycelium" });
     assert.deepEqual(first.containers.map(c => c.id), neural.containers.map(c => c.id));
     assert.deepEqual(first.containers.map(c => c.id), mycelium.containers.map(c => c.id));
-    assert.notDeepEqual(first.positions.get("n10"), neural.positions.get("n10"));
+    if (organization === "indra") {
+      assert.deepEqual(first.positions, neural.positions);
+      assert.deepEqual(first.positions, mycelium.positions);
+      assert.deepEqual(first.containers, neural.containers);
+      assert.deepEqual(first.containers, mycelium.containers);
+    } else assert.notDeepEqual(first.positions.get("n10"), neural.positions.get("n10"));
     if (organization === "flat") {
       const prefix = fixture(280);
       const previous = computeLayout(prefix);
@@ -46,12 +51,13 @@ test("layout determinism, incremental stability, depth and morphology membership
   }
 });
 
-test("Indra packs visible children inside their parents without sibling overlap", () => {
+test("Indra packs visible children inside their parents without sibling overlap in every morphology", () => {
   const base = fixture(500);
   const input = { ...base, nodes: [...base.nodes,
     { id: "passage", level: 5 as const, parent: "n280", size: 0.4, domains: [] },
     { id: "skipped-project", level: 3 as const, parent: "n0", size: 0.5, domains: [] }] };
-  const result = computeLayout({ ...input, organization: "indra" });
+  for (const morphology of ["stellar", "neural", "mycelium"] as const) {
+  const result = computeLayout({ ...input, organization: "indra", morphology });
   const containers = new Map(result.containers.map(c => [c.id, c]));
   const byParent = new Map<string, LayoutNode[]>();
   for (const node of input.nodes) if (node.parent) {
@@ -59,20 +65,39 @@ test("Indra packs visible children inside their parents without sibling overlap"
     const parent = containers.get(node.parent);
     assert.ok(parent);
     const point = result.positions.get(node.id)!;
-    const childRadius = containers.get(node.id)?.radius ?? (5 + Math.max(0, Math.min(1, node.size)) * 5) * 1.45 / Math.sqrt(0.55);
+    const childRadius = containers.get(node.id)?.radius ?? (5 + Math.max(0, Math.min(1, node.size)) * 5);
     // containment is read in the front view: every level's ring lies in its own tier plane
     assert.ok(Math.hypot(point.x - parent.center.x, point.y - parent.center.y) + childRadius <= parent.radius * 0.94);
   }
   for (const siblings of byParent.values()) for (let a = 0; a < siblings.length; a++) for (let b = a + 1; b < siblings.length; b++) {
     const left = containers.get(siblings[a]!.id), right = containers.get(siblings[b]!.id);
-    if (left && right) assert.ok(xy(left.center, right.center) > left.radius + right.radius);
+    const leftRadius = left?.radius ?? 5 + siblings[a]!.size * 5;
+    const rightRadius = right?.radius ?? 5 + siblings[b]!.size * 5;
+    assert.ok(xy(result.positions.get(siblings[a]!.id)!, result.positions.get(siblings[b]!.id)!) + 1e-7 >= leftRadius + rightRadius);
   }
   assert.deepEqual([...new Set(result.containers.map(c => c.level))].sort(), [0, 1, 2, 3, 4]);
   const absolute = containers.get(ABSOLUTE_CONTAINER_ID)!;
-  for (const root of result.containers.filter(container => container.level === 1))
+  const roots = result.containers.filter(container => container.level === 1);
+  for (let a = 0; a < roots.length; a++) for (let b = a + 1; b < roots.length; b++)
+    assert.ok(xy(roots[a]!.center, roots[b]!.center) + 1e-7 >= roots[a]!.radius + roots[b]!.radius);
+  for (const root of roots)
     assert.ok(Math.hypot(root.center.x, root.center.y, root.center.z - absolute.center.z) + root.radius <= absolute.radius * 0.94);
   for (const point of result.positions.values())
     assert.ok(Math.hypot(point.x, point.y, point.z - absolute.center.z) < absolute.radius);
+  }
+});
+
+test("eight Indra domains including three bare pearls fill the absolute disc", () => {
+  const nodes: LayoutNode[] = Array.from({ length: 8 }, (_, i) => ({ id: `domain:${i}`, level: 1, parent: null, size: 0.5, domains: [] }));
+  for (let i = 0; i < 5; i++) {
+    nodes.push({ id: `project:${i}`, level: 2, parent: `domain:${i}`, size: 0.5, domains: [] });
+    for (let j = 0; j < 4; j++) nodes.push({ id: `conversation:${i}:${j}`, level: 3, parent: `project:${i}`, size: 0.3, domains: [] });
+  }
+  const result = computeLayout({ nodes, edges: [], organization: "indra", morphology: "stellar" });
+  const absolute = result.containers.find(c => c.id === ABSOLUTE_CONTAINER_ID)!;
+  const domains = result.containers.filter(c => c.level === 1);
+  const coverage = domains.reduce((sum, c) => sum + c.radius ** 2, 0) / absolute.radius ** 2;
+  assert.ok(coverage >= 0.55, `root coverage ${coverage.toFixed(3)}`);
 });
 
 test("Flat leaves a size-scaled separation and readable volume", () => {

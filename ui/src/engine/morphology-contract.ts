@@ -32,7 +32,7 @@ export const MORPHOLOGY_CONTRACT: Readonly<Record<Morphology, MorphologyGeometry
   mycelium: {
     node: { shape: "junction", scale: 0.48, maxRadiusPx: 5, brightness: [0.55, 0.9] },
     glow: { maximumCoreRatio: 1.25, strength: 0.08 },
-    edge: { path: "wave", amplitude: [0.03, 0.06], periods: [1.5, 3], taper: [0.7, 0.5], widthVariation: 0.45 },
+    edge: { path: "wave", amplitude: [0.09, 0.12], periods: [1.5, 1.5], taper: [0.7, 0.5], widthVariation: 0.45 },
     branching: "shared-trunks", terminals: "fine-tip",
     hover: { radiusMultiplier: 1.2, brightnessMultiplier: 1.2 }, focus: { radiusMultiplier: 1.3, brightnessMultiplier: 1.3 },
     organizations: ["flat", "indra"],

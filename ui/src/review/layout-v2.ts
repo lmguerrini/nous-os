@@ -244,8 +244,8 @@ function flat(input: LayoutInput): LayoutResult {
 /** Bottom-up circle packing; every child circle is inside its visible parent in XY. */
 function indra(input: LayoutInput): LayoutResult {
     const { children } = hierarchy(input.nodes);
-    const params = morphologyLayoutParams(input.morphology);
-    const spacing = params.spacingMultiplier / Math.sqrt(params.clusterCompactness);
+    // Containment is structural: morphology changes paths and material, never the packing.
+    const spacing = 1;
     const radii = new Map<string, number>();
     const offsets = new Map<string, {
         x: number;
@@ -295,7 +295,7 @@ function indra(input: LayoutInput): LayoutResult {
     const containers: LayoutContainer[] = [];
     const place = (node: LayoutNode, x: number, y: number): void => {
         // A side view needs a real vertical interval between the concentric XY tiers.
-        const center = { x, y, z: (node.level - 3) * 170 * spacing };
+        const center = { x, y, z: (node.level - 3) * 40 * spacing };
         positions.set(node.id, center);
         const list = children.get(node.id) ?? [];
         if (list.length || node.level === 1)
@@ -307,33 +307,66 @@ function indra(input: LayoutInput): LayoutResult {
     };
     // Domains are packed like siblings, each by its own radius, the largest first, so an expanded domain does not push
     // every other one far away.
-    const rootGap = 12 * spacing;
+    const rootGap = 3 * spacing;
     const ordered = [...roots].sort((a, b) => (radii.get(b.id) ?? 0) - (radii.get(a.id) ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     const meanRoot = ordered.reduce((sum, node) => sum + (radii.get(node.id) ?? 0), 0) / Math.max(1, ordered.length);
     const rootStep = 2.1 * meanRoot + rootGap;
+    const largest = radii.get(ordered[0]?.id ?? '') ?? 0;
+    const coreCount = ordered.length <= 64 ? ordered.filter(root => (radii.get(root.id) ?? 0) >= largest * 0.55).length : 0;
+    const coreRing = coreCount >= 3 && coreCount <= 12
+        ? (2 * largest + rootGap) / (2 * Math.sin(Math.PI / coreCount)) : 0;
     const placedRoots: { x: number; y: number; radius: number }[] = [];
     ordered.forEach((root, index) => {
         const radius = radii.get(root.id) ?? 0;
-        let point = index === 0 ? { x: 0, y: 0 } : spiral(index, rootStep);
-        for (let attempt = 0; attempt < 400; attempt++) {
-            if (placedRoots.every(other => Math.hypot(point.x - other.x, point.y - other.y) >= radius + other.radius + rootGap))
-                break;
-            point = spiral(index + (attempt + 1) * ordered.length, rootStep);
+        let point = { x: 0, y: 0 };
+        if (coreRing && index < coreCount) {
+            const angle = index * 2 * Math.PI / coreCount;
+            point = { x: Math.cos(angle) * coreRing, y: Math.sin(angle) * coreRing };
+        } else if (index > 0 && ordered.length <= 64) {
+            const candidates = placedRoots.flatMap(other => Array.from({ length: 48 }, (_, angleIndex) => {
+                const angle = angleIndex * Math.PI * 2 / 48;
+                const distance = radius + other.radius + rootGap;
+                return { x: other.x + Math.cos(angle) * distance, y: other.y + Math.sin(angle) * distance };
+            }));
+            const valid = candidates.filter(candidate => placedRoots.every(other =>
+                Math.hypot(candidate.x - other.x, candidate.y - other.y) + 1e-7 >= radius + other.radius + rootGap));
+            point = valid.sort((a, b) => (Math.hypot(a.x, a.y) - Math.hypot(b.x, b.y)) || a.x - b.x || a.y - b.y)[0]
+                ?? spiral(index, rootStep);
+        } else if (index > 0) {
+            point = spiral(index, rootStep);
+            for (let attempt = 0; attempt < 400; attempt++) {
+                if (placedRoots.every(other => Math.hypot(point.x - other.x, point.y - other.y) >= radius + other.radius + rootGap)) break;
+                point = spiral(index + (attempt + 1) * ordered.length, rootStep);
+            }
         }
         placedRoots.push({ ...point, radius });
         place(root, point.x, point.y);
     });
+    // Centre the packed discs in their enclosing ring, including small bare domains.
+    if (placedRoots.length && !coreRing) {
+        const left = Math.min(...placedRoots.map(root => root.x - root.radius));
+        const right = Math.max(...placedRoots.map(root => root.x + root.radius));
+        const top = Math.min(...placedRoots.map(root => root.y - root.radius));
+        const bottom = Math.max(...placedRoots.map(root => root.y + root.radius));
+        const dx = (left + right) / 2, dy = (top + bottom) / 2;
+        for (const root of placedRoots) { root.x -= dx; root.y -= dy; }
+        for (const [id, point] of positions) positions.set(id, { ...point, x: point.x - dx, y: point.y - dy });
+        for (let index = 0; index < containers.length; index++) {
+            const item = containers[index]!;
+            containers[index] = { ...item, center: { ...item.center, x: item.center.x - dx, y: item.center.y - dy } };
+        }
+    }
     const zValues = [...positions.values()].map(point => point.z);
     const zMid = zValues.length ? (Math.min(...zValues) + Math.max(...zValues)) / 2 : 0;
     // A sphere encloses the entire XY packing and every tier, including a six percent rim.
-    const rootZ = (1 - 3) * 170 * spacing;
+    const rootZ = (1 - 3) * 40 * spacing;
     const rootExtent = placedRoots.reduce((maximum, root) => Math.max(maximum,
         Math.hypot(root.x, root.y, rootZ - zMid) + root.radius), 0);
     const nodeExtent = input.nodes.reduce((maximum, node) => {
         const point = positions.get(node.id);
         return point ? Math.max(maximum, Math.hypot(point.x, point.y, point.z - zMid) + radiusOf(node) * spacing) : maximum;
     }, 0);
-    const radius = Math.max(rootExtent, nodeExtent) / 0.94 + rootGap;
+    const radius = Math.max(rootExtent, nodeExtent) / 0.94;
     containers.unshift({ id: ABSOLUTE_CONTAINER_ID, level: 0, center: { x: 0, y: 0, z: zMid }, radius, title: 'NousOS' });
     return { positions, containers, source: 'indra-recursive' };
 }

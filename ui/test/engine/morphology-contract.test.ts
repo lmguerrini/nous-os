@@ -77,12 +77,22 @@ test("Mycelium waves and varies width, with each shared trunk drawn once", () =>
   for (const part of geometry.drawnSegments) if (Math.hypot(part.target.x - part.source.x, part.target.y - part.source.y) > 40) {
     const d = descriptor(part);
     assert.ok(d.inflections >= 2, JSON.stringify(d));
-    assert.ok(d.deviation >= 0.02 && d.deviation <= 0.08, JSON.stringify(d));
+    assert.ok(d.deviation >= 0.08 && d.deviation <= 0.14, JSON.stringify(d));
   }
   assert.ok(geometry.drawnSegments.some(p => p.widthStart !== p.widthEnd));
   const shared = geometry.drawnSegments.filter(p => p.sharedKey);
   assert.equal(shared.length, new Set(shared.map(p => p.sharedKey)).size);
   assert.ok(shared.length < geometry.edges.flatMap(e => e.segments).filter(p => p.sharedKey).length);
+});
+
+test("Mycelium keeps a visible, regular wave on short links", () => {
+  const short = buildMorphologyGeometry("mycelium", [
+    { id: "short-a", position: { x: 0, y: 0, z: 0 }, radius: 2 },
+    { id: "short-b", position: { x: 20, y: 0, z: 0 }, radius: 2 },
+  ], [{ id: "short-edge", source: "short-a", target: "short-b", width: 1 }]);
+  const part = short.drawnSegments[0]!;
+  assert.ok(Math.max(...part.samples.map(point => Math.abs(point.y))) >= 2);
+  assert.ok(descriptor(part).inflections >= 2);
 });
 
 test("geometry is deterministic", () => {

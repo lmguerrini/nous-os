@@ -72,6 +72,8 @@ export class V2Page {
     private arcTotal = 0;
     private layoutSource = 'placeholder';
     private lastArrangement = '';
+    private lastBoundsKey = '';
+    private lastFitCamera: ReturnType<ProductView['readCamera']> = null;
     private auto = new Set<string>();
     private zoomOn = true;
     private overviewRatio: number | null = null;
@@ -221,16 +223,27 @@ export class V2Page {
                     } }
             });
             const arrangement = `${this.axes.organization}|${this.axes.projection}`;
+            const boundsKey = `${arrangement}|${this.axes.morphology}|${this.appearance.depth3d}|${[...ids].sort().join('|')}`;
+            const boundsChanged = boundsKey !== this.lastBoundsKey;
+            this.lastBoundsKey = boundsKey;
             const keep = old && arrangement === this.lastArrangement;
             this.lastArrangement = arrangement;
-            if (keep) {
+            const userMoved = old && this.lastFitCamera && JSON.stringify(old) !== JSON.stringify(this.lastFitCamera);
+            if (keep && (!boundsChanged || userMoved)) {
                 try {
                     this.view.restoreCamera(old);
                 }
                 catch {
                     await this.view.fit();
+                    this.lastFitCamera = this.view.readCamera();
+                    this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
                 }
+            } else if (boundsChanged && old) {
+                await this.view.fit();
+                this.lastFitCamera = this.view.readCamera();
+                this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
             }
+            if (!old) this.lastFitCamera = this.view.readCamera();
             if (this.overviewRatio === null) {
                 const camera = this.view.readCamera() as {
                     ratio?: number;
@@ -435,8 +448,8 @@ export class V2Page {
     async setAppearance(value: AppearanceOptions) { this.appearance = value; await this.refresh(); }
     async setPalette(value: PaletteValues) { this.palette = value; await this.refresh(); }
     async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
-    async fit() { this.suppressZoomUntil = performance.now() + 900; await this.view?.fit(); }
-    async reset() { this.selected = null; this.view?.select(null); this.renderPanel(); await this.view?.resetCamera(); }
+    async fit() { this.suppressZoomUntil = performance.now() + 900; await this.view?.fit(); this.lastFitCamera = this.view?.readCamera() ?? null; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
+    async reset() { this.selected = null; this.view?.select(null); this.renderPanel(); await this.view?.resetCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
     async frame(id: string) { this.suppressZoomUntil = performance.now() + 900; await this.view?.frame([id]); }
     camera() {
         return this.view?.camera() ?? null;

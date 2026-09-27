@@ -110,6 +110,14 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     context.fillStyle = rgba(color, opacity);
     context.beginPath();
     if (geometry.morphology === "neural") {
+      if (!simplified && typeof context.createRadialGradient === "function") {
+        const body = context.createRadialGradient(p.x - radius * 0.2, p.y - radius * 0.2, radius * 0.08,
+          p.x, p.y, radius * 1.4);
+        body.addColorStop(0, rgba(color, opacity));
+        body.addColorStop(0.55, rgba(color, opacity * 0.82));
+        body.addColorStop(1, rgba(color, opacity * 0.32));
+        context.fillStyle = body;
+      }
       const axis = node.axis ?? { x: 1, y: 0, z: 0 };
       const q = project({ x: node.position.x + axis.x, y: node.position.y + axis.y, z: node.position.z + axis.z });
       const angle = Math.atan2(q.y - p.y, q.x - p.x);

@@ -141,6 +141,19 @@ export const createProductView: CreateProductView = async (input) => {
     const neighbours = emphasis ?? new Set<string>();
     const containerById = new Map((axes.organization === "indra" ? input.layoutContainers ?? [] : [])
       .map(ring => [ring.id, ring]));
+    const titleRects = [...containerById.values()].flatMap(ring => {
+      if (!ring.title) return [];
+      const ends = [
+        project({ x: ring.center.x + ring.radius, y: ring.center.y, z: ring.center.z }),
+        project({ x: ring.center.x - ring.radius, y: ring.center.y, z: ring.center.z }),
+        project({ x: ring.center.x, y: ring.center.y + ring.radius, z: ring.center.z }),
+        project({ x: ring.center.x, y: ring.center.y - ring.radius, z: ring.center.z }),
+      ];
+      const left = Math.min(...ends.map(p => p.x)), right = Math.max(...ends.map(p => p.x));
+      const top = Math.min(...ends.map(p => p.y));
+      if (right - left < 85 || top < 14 || top >= bounds.height - 20) return [];
+      return [{ left: (left + right) / 2 - Math.min(95, ring.title.length * 3), top: top - 19, width: 190, height: 18 }];
+    });
     const candidates = [];
     for (const { id, position } of handle.readWorldAnchorWitnesses()) {
       const node = nodesById.get(id);
@@ -212,7 +225,7 @@ export const createProductView: CreateProductView = async (input) => {
     const density = appearance.labelDensity / DEFAULT_APPEARANCE.labelDensity;
     const limited = density >= 1 ? candidates : candidates.filter((candidate, index) =>
       candidate.full || candidate.reason === "selected" || index < Math.round(candidates.length * density));
-    const next = placeLabels(limited, bounds, measured);
+    const next = placeLabels(limited, bounds, measured, titleRects);
     const rect = container.getBoundingClientRect();
     placed = next.map((label) => ({
       ...label,
@@ -237,8 +250,9 @@ export const createProductView: CreateProductView = async (input) => {
           padding: "4px 6px",
           font: `${appearance.labelSizePx}px/${appearance.labelSizePx + 4}px Arial`,
           color: label.reason === "selected" ? palette.selection : label.reason === "hover" ? palette.hover : palette.text,
-          background:
-            label.reason === "hover" || label.reason === "selected" ? "rgba(10,10,10,.94)" : "rgba(10,10,10,.62)",
+          background: axes.organization === "indra" ? "transparent"
+            : label.reason === "hover" || label.reason === "selected" ? "rgba(10,10,10,.94)" : "rgba(10,10,10,.62)",
+          textShadow: axes.organization === "indra" ? "0 0 3px #000, 0 0 3px #000, 0 0 5px #000" : "none",
           borderRadius: "3px",
           whiteSpace: "normal",
           overflow: "hidden",
@@ -338,14 +352,18 @@ export const createProductView: CreateProductView = async (input) => {
         input.data.nodes
           .filter((node) => visible.has(node.id))
           .map((node) => {
-            const encoding = input.v2Prepared ? v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale) : encodingOf(node, input.data);
+            const v2Encoded = input.v2Prepared ? v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale) : null;
+            const encoding = v2Encoded ?? encodingOf(node, input.data);
             return [node.id, {
               ...encoding,
-              glyph: input.v2Prepared ? v2Encoding(node.v2 as import("./v2-core.ts").V2Node, appearance.nodeScale).glyph : (node.type === "domain" || node.type === "conversation" ? "ring"
+              glyph: v2Encoded ? v2Encoded.glyph : (node.type === "domain" || node.type === "conversation" ? "ring"
                 : node.type === "canon" ? "double-ring"
                 : node.type === "record" || node.type === "evidence" ? "hollow" : "filled") as "ring" | "double-ring" | "hollow" | "filled",
               ...(node.origin === "dynamic" ? { haloPermille: Math.round(encoding.haloPermille * 0.55) } : {}),
               ...(input.v2Prepared && visible.size > 400 ? { haloPermille: Math.round(encoding.haloPermille * 0.28) } : {}),
+              ...(v2Encoded && axes.morphology === "neural" ? { radiusPx: v2Encoded.radiusPx * (
+                (node.v2 as import("./v2-core.ts").V2Node).level >= 3 ? 0.62
+                  : (node.v2 as import("./v2-core.ts").V2Node).level === 2 ? 0.8 : 1) } : {}),
               // In Indra a node that holds visible children is drawn by its container ring; its own disc shrinks to a
               // small hollow marker so it never covers what it contains.
               ...(indraContainers.has(node.id) ? { radiusPx: INDRA_CONTAINER_MARKER_PX, haloPermille: 0, glyph: "hollow" as const } : {}),
