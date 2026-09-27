@@ -1,3 +1,4 @@
+import { mixTowardField } from "#engine/presentation-options.ts";
 import Sigma from "sigma";
 import { createEdgeCompoundProgram } from "sigma/rendering";
 import type { CameraState, EdgeDisplayData, NodeDisplayData } from "sigma/types";
@@ -93,6 +94,7 @@ export type RenderHandle = {
   getSelection(): string | null;
   /** This focuses one existing graph element and dims material outside that singleton focus set. */
   setFocus(id: string): void;
+  setEmphasis(ids: ReadonlySet<string> | null): void;
   /** This clears focus and restores undimmed material. */
   clearFocus(): void;
   /** This reports the focused graph element id without returning graph contents. */
@@ -161,7 +163,7 @@ export function mount(
     ? undefined
     : createVisualState(visualGraph, initialVisualState);
   const activeOptions = resolveRenderOptions(suppliedState === undefined ? options : renderOptionsForVisualState(options, suppliedState));
-  const model = buildRenderModel(visualGraph, activeOptions, undefined, suppliedAnchors);
+  const model = buildRenderModel(visualGraph, activeOptions.presentation?.emphasisIds ? { ...activeOptions, presentation: { ...activeOptions.presentation, emphasisIds: null } } : activeOptions, undefined, suppliedAnchors);
   // Incremented where layout is actually resolved, so the number is a record of what ran rather
   // than a literal describing what is expected to have run.
   const layoutPasses = suppliedAnchors === undefined ? 1 : 0;
@@ -222,13 +224,22 @@ export function mount(
     reducedMotion: activeOptions.reducedMotion,
   });
   let appearanceCalibration = calibration;
+  let emphasisIds = activeOptions.presentation?.emphasisIds ?? null;
   let edgeLabelRevealVisible = true;
+  const dimmedNode = <T extends { color: string; haloIntensityPermille: number }>(attributes: T): T => ({
+    ...attributes,
+    color: mixTowardField(attributes.color, model.fieldColor, calibration.selection.focusDimFactorPermille),
+    haloIntensityPermille: Math.round((attributes.haloIntensityPermille * calibration.selection.focusDimFactorPermille) / 1000),
+  });
   const applyVisualStateAppearance = (): void => {
     for (const [id, attributes] of baseNodeAttributes) {
-      model.graph.replaceNodeAttributes(id, nodeAttributesForVisualState(attributes, id, currentState, appearanceCalibration));
+      const adjusted = nodeAttributesForVisualState(attributes, id, currentState, appearanceCalibration);
+      model.graph.replaceNodeAttributes(id, emphasisIds && !emphasisIds.has(id) ? dimmedNode(adjusted) : adjusted);
     }
     for (const [id, attributes] of baseEdgeAttributes) {
-      model.graph.replaceEdgeAttributes(id, edgeAttributesForVisualState(attributes, id, currentState, appearanceCalibration));
+      const adjusted = edgeAttributesForVisualState(attributes, id, currentState, appearanceCalibration);
+      const bright = emphasisIds === null || (emphasisIds.has(model.graph.source(id)) && emphasisIds.has(model.graph.target(id)));
+      model.graph.replaceEdgeAttributes(id, bright ? adjusted : { ...adjusted, color: mixTowardField(adjusted.color, model.fieldColor, calibration.selection.focusDimFactorPermille) });
     }
     sigma.refresh();
   };
@@ -245,7 +256,7 @@ export function mount(
     applyVisualStateAppearance();
     placeEdgeLabels(sigma, model, currentState, calibration, edgeLabelRevealVisible);
   };
-  if (currentState.selectedId !== null || currentState.focusedId !== null) {
+  if (currentState.selectedId !== null || currentState.focusedId !== null || emphasisIds !== null) {
     applyVisualStateAppearance();
   }
   placeNodeLabels(sigma, model, calibration);
@@ -291,6 +302,7 @@ export function mount(
     getSelection(): string | null {
       return currentState.selectedId;
     },
+    setEmphasis(ids: ReadonlySet<string> | null): void { emphasisIds = ids; applyVisualStateAppearance(); },
     setFocus(id: string): void {
       updateVisualState(currentState.selectedId, id);
     },

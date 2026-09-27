@@ -1,3 +1,5 @@
+import type { PresentationOptions } from "#engine/presentation-options.ts";
+import { tintToken } from "#engine/presentation-options.ts";
 import type { CalibrationProfile, MorphologyMaterial as CalibrationMorphologyMaterial } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION, assertCalibrationProfile } from "#engine/calibration.ts";
 import type { CameraKind } from "#engine/camera-kind.ts";
@@ -148,6 +150,7 @@ export function buildScene(
   navigationPath?: ScaleNavigationPath,
   temporalInstant?: string,
   suppliedAnchors?: LayoutAnchors,
+  presentation?: PresentationOptions,
 ): Scene {
   assertCalibrationProfile(calibration);
   assertVisualState(graph, visualState);
@@ -159,7 +162,7 @@ export function buildScene(
   const morphology = morphologyProfile(visualState.morphology);
   const morphologyMaterial = applyMorphology(engineGraph, morphology, calibration, SHARED_SCENE_MATERIAL_TARGET);
   const activeTokens = shippingTokens(inputs.tokens, visualState.palette, visualState.theme, calibration);
-  const organization = resolveOrganization(engineGraph, calibration, () => layoutAnchors(engineGraph, calibration), visualState.organization, suppliedAnchors);
+  const organization = resolveOrganization(engineGraph, calibration, () => layoutAnchors(engineGraph, calibration), visualState.organization, suppliedAnchors, presentation?.windowGeometryFromAnchors);
   // Cross-community weighting is Indra-only: Flat's `organization.windows` is always empty, and
   // treating every edge as "no owning window" there would dim the entire Flat scene rather than
   // nothing at all. The same reasoning holds when Indra itself resolves zero windows (no
@@ -186,6 +189,7 @@ export function buildScene(
     visualState,
     calibration,
     activeTokens,
+    presentation,
   ));
   const edgeCandidacies = edgeLabelCandidacies(engineGraph, visualState, calibration, activeTokens, crossCommunityEdgeIds);
   const edges = engineGraph.edges.map((edge) => sceneEdge(
@@ -201,6 +205,7 @@ export function buildScene(
     activeTokens,
     crossCommunityEdgeIds.has(edge.id),
     axonLikeEndpoints.get(edge.id) ?? NO_AXON_LIKE_ENDPOINTS,
+    presentation,
   ));
   const selectedLabelIds = selectedSceneLabelIds(nodes, edges, visualState, calibration);
   assertEngineAccessTrace(trace);
@@ -1473,20 +1478,22 @@ function sceneNode(
   visualState: VisualState,
   calibration: CalibrationProfile,
   tokens: TokenMap,
+  presentation?: PresentationOptions,
 ): SceneNode {
   const scale = SCENE_PERMILLE_SCALE;
   const selectedMultiplier = visualState.selectedId === node.id
     ? calibration.selection.emphasisMultiplierPermille / scale
     : 1;
   const baseRadiusPx = nodeSizeForMaterial(material, resolved, morphology, calibration);
-  const radiusPx = baseRadiusPx * selectedMultiplier;
+  const appearance = presentation?.nodes?.get(node.id);
+  const radiusPx = baseRadiusPx * selectedMultiplier * (appearance ? appearance.corePermille / scale : 1);
   const isJunction = Number(material.facts.degree.value) >= 2;
   const isTerminal = material.facts.terminal.value === true;
   const fusedJunction = isJunction && material.junctionGeometry === MYCELIUM.junctionGeometry;
   const blindTerminal = isTerminal && material.terminalTreatment === MYCELIUM.terminalTreatment;
   const channel = renderedStateChannel(node.rendered ?? null, calibration);
   const baseToken = nodeTokenForMaterial(tokens, material, resolved, calibration);
-  const requestedHaloRadiusPx = (materialIncludes(resolved.node, "halo") ? material.haloRadiusPx : baseRadiusPx) * selectedMultiplier;
+  const requestedHaloRadiusPx = (materialIncludes(resolved.node, "halo") ? material.haloRadiusPx : baseRadiusPx) * selectedMultiplier * (appearance ? appearance.haloPermille / scale : 1);
   const requestedHaloIntensityPermille = materialIncludes(resolved.node, "halo")
     ? material.haloIntensityPermille
     : 0;
@@ -1497,8 +1504,8 @@ function sceneNode(
     kind: node.kind,
     position: copyCoordinates(anchor),
     radiusPx,
-    token: copyToken(applyRenderedStateChannel(baseToken, channel, calibration)),
-    opacityPermille: blindTerminal ? 0 : interactionOpacity(material.opacityPermille, node.id, visualState, calibration),
+    token: appearance?.tintSrgb ? tintToken(appearance.tintSrgb) : copyToken(applyRenderedStateChannel(baseToken, channel, calibration)),
+    opacityPermille: blindTerminal ? 0 : reviewOpacity(interactionOpacity(material.opacityPermille, node.id, visualState, calibration), appearance?.opacityPermille, presentation?.emphasisIds, node.id, calibration),
     junctionGeometry: isJunction ? material.junctionGeometry : null,
     terminalTreatment: isTerminal ? material.terminalTreatment : null,
     haloRadiusPx,
@@ -1507,7 +1514,7 @@ function sceneNode(
     haloAlphaStops: resolveSceneHaloAlphaStops(haloIntensityPermille, calibration),
     coreSharpnessPermille: calibration.morphology[morphology.id].coreSharpnessPermille,
     minimumCoreDeviceRadiusPx: calibration.salience.minimumCoreDeviceRadiusPx,
-    labelCandidacy: materialIncludes(resolved.node, "label") ? {
+    labelCandidacy: presentation?.nativeLabels === false ? null : materialIncludes(resolved.node, "label") ? {
       text: node.visual.role,
       token: copyToken(requiredToken(tokens, "text")),
       priority: nodeLabelPriority(node, material, calibration),
@@ -1538,6 +1545,7 @@ function sceneEdge(
   tokens: TokenMap,
   crossCommunity: boolean,
   axonLike: AxonLikeEndpoints,
+  presentation?: PresentationOptions,
 ): SceneEdge {
   const scale = SCENE_PERMILLE_SCALE;
   const emphasis = visualState.selectedId === edge.id
@@ -1606,14 +1614,14 @@ function sceneEdge(
       channel,
       calibration,
     )),
-    opacityPermille: interactionOpacity(
+    opacityPermille: reviewOpacity(interactionOpacity(
       crossCommunityOpacity(material.opacityPermille, crossCommunity, calibration),
       edge.id,
       visualState,
       calibration,
-    ),
+    ), undefined, presentation?.emphasisIds, edge.source, calibration, edge.target),
     renderedStateChannel: channel,
-    labelCandidacy,
+    labelCandidacy: presentation?.nativeLabels === false ? null : labelCandidacy,
     interaction: interactionState(edge.id, visualState),
     lodBand: visualState.lodBand,
     filament: {
@@ -1759,10 +1767,11 @@ function resolveOrganization(
   sharedAnchors: () => LayoutAnchors,
   organization: VisualState["organization"],
   suppliedAnchors?: LayoutAnchors,
+  windowGeometryFromAnchors = false,
 ): ResolvedOrganization {
   if (suppliedAnchors !== undefined) {
     const resolved = organization === "indra"
-      ? indraOrganization(graph, calibration, suppliedAnchors)
+      ? indraOrganization(graph, calibration, suppliedAnchors, windowGeometryFromAnchors)
       : flatOrganization(graph, suppliedAnchors);
     if (organization === "indra") {
       assertIndraOrganization(graph, resolved);
@@ -2411,4 +2420,9 @@ function compareIds(left: { readonly id: string }, right: { readonly id: string 
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function reviewOpacity(value: number, multiplier: number | undefined, emphasis: ReadonlySet<string> | null | undefined, id: string, calibration: CalibrationProfile, target?: string): number {
+  const multiplied = multiplier === undefined ? value : Math.round(value * multiplier / SCENE_PERMILLE_SCALE);
+  return emphasis == null || (emphasis.has(id) && (target === undefined || emphasis.has(target))) ? multiplied : Math.round(multiplied * calibration.selection.focusDimFactorPermille / SCENE_PERMILLE_SCALE);
 }

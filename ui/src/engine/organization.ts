@@ -61,6 +61,7 @@ export function indraOrganization(
   graph: EngineGraph,
   calibration: CalibrationProfile,
   anchors: LayoutAnchors = layoutAnchors(graph, calibration),
+  windowGeometryFromAnchors = false,
 ): OrganizationResult {
   const discsById = new Map(aggregateDiscs(graph, calibration).map((disc) => [disc.id, disc]));
   const windows = graph.nodes
@@ -70,14 +71,9 @@ export function indraOrganization(
       if (disc === undefined) {
         throw new TypeError("aggregate lacks a reserved disc");
       }
-      return {
-        id: disc.id,
-        kind: disc.kind,
-        members: disc.members,
-        center: disc.center,
-        radius: disc.radius,
-        bounds: discBounds(disc.center, disc.radius),
-      };
+      const center = windowGeometryFromAnchors ? anchors.get(disc.id) ?? disc.center : disc.center;
+      const radius = windowGeometryFromAnchors ? Math.max(calibration.aggregate.windowPaddingPx, ...disc.members.map((id) => { const point=anchors.get(id); if (!point) throw new TypeError("missing window member anchor"); return Math.hypot(point.x-center.x, point.y-center.y)+calibration.aggregate.windowPaddingPx; })) : disc.radius;
+      return { id: disc.id, kind: disc.kind, members: disc.members, center, radius, bounds: discBounds(center, radius) };
     });
   const rejectionBounds = graph.nodes.filter((node) => node.kind === "rejection").map((node) => {
     const anchor = anchors.get(node.id);

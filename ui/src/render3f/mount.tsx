@@ -1,3 +1,4 @@
+import type { PresentationOptions } from "#engine/presentation-options.ts";
 import type { ReactElement } from "react";
 import { createRoot as createFiberRoot } from "@react-three/fiber";
 import * as THREE from "three";
@@ -65,6 +66,7 @@ export type Render3fOptions = {
   readonly reducedMotion: boolean;
   readonly elapsedMilliseconds: number;
   readonly calibration?: CalibrationProfile;
+  readonly presentation?: PresentationOptions;
   /**
    * This is the render input `buildScene` accepts as its own optional trailing `phase` argument (see
    * scene/build.ts) and has no Sigma equivalent: motion-grammar phase only exists on this renderer's
@@ -101,6 +103,9 @@ export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountin
   /** This copies the picker-held resolved relation geometry and does not rebuild scene geometry. */
   readRelationGeometryWitnesses(): readonly RelationGeometryWitness[];
   readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[];
+  setEmphasis(ids: ReadonlySet<string> | null): void;
+  readReviewWindows(): readonly { id: string; members: readonly string[]; center: Coordinates; radius: number }[];
+  isWorldPointVisible(point: Coordinates): boolean;
 };
 
 type RelationGeometryWitness = {
@@ -154,7 +159,7 @@ export function mount(
       // transient phase happened to be requested. `navigationPath` IS passed, unlike `phase`: it
       // selects which nodes exist at all, so probing without it would frame the root graph while the
       // drawn scene shows an entered world.
-      const provisionalScene = buildSceneWithCalibration(visualGraph, provisionalState, options.calibration, undefined, options.navigationPath, options.temporalInstant, suppliedAnchors);
+      const provisionalScene = buildSceneWithCalibration(visualGraph, provisionalState, options.calibration, undefined, options.navigationPath, options.temporalInstant, suppliedAnchors, options.presentation);
       layoutPassCount += 1;
       const bounds = provisionalScene.nodes.length === 0
         ? provisionalBounds
@@ -167,7 +172,7 @@ export function mount(
       currentState = provisionalState;
     }
   }
-  const initialScenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath, options.temporalInstant, suppliedAnchors);
+  const initialScenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath, options.temporalInstant, suppliedAnchors, options.presentation);
   layoutPassCount += suppliedAnchors === undefined ? cameraKindCount() : 0;
   const live = new LiveSceneState(initialScenes, currentState.cameraKind, layoutPassCount);
   const retainedSceneReferences = new Set<Scene>([initialScenes.orthographic, initialScenes.perspective]);
@@ -222,6 +227,7 @@ export function mount(
       return rig.readProjectionState().filamentSizeScale;
     },
   });
+  let emphasisIds = options.presentation?.emphasisIds ?? null;
   let destroyed = false;
   let fiberStore: ReturnType<ReturnType<typeof createFiberRoot>["render"]> | undefined;
   const fiberRoot = createFiberRoot(canvas);
@@ -336,7 +342,7 @@ export function mount(
       selectedId,
       focusedId,
     });
-    const scenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath, options.temporalInstant, suppliedAnchors);
+    const scenes = scenesForState(visualGraph, currentState, options.calibration, options.phase, options.navigationPath, options.temporalInstant, suppliedAnchors, { ...options.presentation, emphasisIds });
     live.replaceScenes(scenes, suppliedAnchors === undefined ? cameraKindCount() : 0);
     retainedSceneReferences.clear();
     retainedSceneReferences.add(scenes.orthographic);
@@ -350,6 +356,9 @@ export function mount(
   };
 
   return {
+    setEmphasis(ids: ReadonlySet<string> | null): void { emphasisIds = ids; applyMaterialState(currentState.selectedId, currentState.focusedId); },
+    readReviewWindows() { return live.scene.aggregates.map((window) => ({ id: window.id, members: window.members, center: window.center, radius: window.radius })); },
+    isWorldPointVisible(point: Coordinates): boolean { const projected = new THREE.Vector3(point.x, point.y, point.z).project(rig.camera); return projected.z >= -1 && projected.z <= 1; },
     get cameraKind(): CameraKind {
       return rig.kind;
     },
@@ -470,12 +479,13 @@ function scenesForState(
   navigationPath: ScaleNavigationPath | undefined,
   temporalInstant: string | undefined,
   suppliedAnchors: ReadonlyMap<string, Coordinates> | undefined,
+  presentation?: PresentationOptions,
 ): CameraScenes {
   const orthographicState = createVisualState(graph, { ...state, cameraKind: ORTHOGRAPHIC });
   const perspectiveState = createVisualState(graph, { ...state, cameraKind: PERSPECTIVE });
   return {
-    orthographic: buildSceneWithCalibration(graph, orthographicState, calibration, phase, navigationPath, temporalInstant, suppliedAnchors),
-    perspective: buildSceneWithCalibration(graph, perspectiveState, calibration, phase, navigationPath, temporalInstant, suppliedAnchors),
+    orthographic: buildSceneWithCalibration(graph, orthographicState, calibration, phase, navigationPath, temporalInstant, suppliedAnchors, presentation),
+    perspective: buildSceneWithCalibration(graph, perspectiveState, calibration, phase, navigationPath, temporalInstant, suppliedAnchors, presentation),
   };
 }
 
@@ -493,11 +503,12 @@ function buildSceneWithCalibration(
   navigationPath: ScaleNavigationPath | undefined,
   temporalInstant: string | undefined,
   suppliedAnchors: ReadonlyMap<string, Coordinates> | undefined,
+  presentation?: PresentationOptions,
 ): Scene {
   const effectivePhase = state.reducedMotion ? undefined : phase;
   return calibration === undefined
-    ? buildScene(graph, state, undefined, undefined, undefined, effectivePhase, navigationPath, temporalInstant, suppliedAnchors)
-    : buildScene(graph, state, calibration, undefined, undefined, effectivePhase, navigationPath, temporalInstant, suppliedAnchors);
+    ? buildScene(graph, state, undefined, undefined, undefined, effectivePhase, navigationPath, temporalInstant, suppliedAnchors, presentation)
+    : buildScene(graph, state, calibration, undefined, undefined, effectivePhase, navigationPath, temporalInstant, suppliedAnchors, presentation);
 }
 
 function stateFromOptions(

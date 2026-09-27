@@ -1,3 +1,5 @@
+import type { PresentationOptions } from "#engine/presentation-options.ts";
+import { mixTowardField, tintRgba } from "#engine/presentation-options.ts";
 import { MultiDirectedGraph } from "graphology";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
@@ -78,6 +80,7 @@ export type RenderOptions = {
   readonly reducedMotion: boolean;
   readonly elapsedMilliseconds: number;
   readonly calibration?: CalibrationProfile;
+  readonly presentation?: PresentationOptions;
 };
 
 /** This is the declared shipping selection and does not constrain explicit palette comparisons. */
@@ -191,7 +194,7 @@ export function buildRenderModel(
   const tokenColors = new Map(Object.entries(tokens).map(([name, token]) => [name, tokenColor(token, permilleScale(calibration), calibration)]));
   const fieldColor = requiredTokenColor(tokenColors, "background");
   const organization = activeOptions.organization === "indra"
-    ? indraOrganization(engineGraph, calibration, anchors)
+    ? indraOrganization(engineGraph, calibration, anchors, activeOptions.presentation?.windowGeometryFromAnchors)
     : flatOrganization(engineGraph, anchors);
   if (activeOptions.organization === "indra") {
     assertIndraOrganization(engineGraph, organization);
@@ -227,20 +230,23 @@ export function buildRenderModel(
       throw new TypeError("renderer node material lacks an engine anchor");
     }
     const size = nodeSizeForMaterial(nodeMaterial, view.material, morphology, calibration);
+    const appearance = activeOptions.presentation?.nodes?.get(node.id);
     const attributes: RenderNodeAttributes = {
       x: anchor.x,
       y: anchor.y,
-      size,
-      color: nodeColorForMaterial(tokens, nodeMaterial, view.material, node.rendered ?? null, calibration),
-      haloRadiusPx: materialIncludes(view.material.node, "halo") ? nodeMaterial.haloRadiusPx : size,
+      size: appearance ? size * appearance.corePermille / SCENE_PERMILLE_SCALE : size,
+      color: appearance ? mixTowardField(appearance.tintSrgb ? tintRgba(nodeColorForMaterial(tokens, nodeMaterial, view.material, node.rendered ?? null, calibration), appearance.tintSrgb, 1000) : nodeColorForMaterial(tokens, nodeMaterial, view.material, node.rendered ?? null, calibration), fieldColor, appearance.opacityPermille) : nodeColorForMaterial(tokens, nodeMaterial, view.material, node.rendered ?? null, calibration),
+      haloRadiusPx: (materialIncludes(view.material.node, "halo") ? nodeMaterial.haloRadiusPx : size) * (appearance ? appearance.haloPermille / SCENE_PERMILLE_SCALE : 1),
       haloIntensityPermille: materialIncludes(view.material.node, "halo") ? nodeMaterial.haloIntensityPermille : 0,
       label: "",
-      labelText: materialIncludes(view.material.node, "label") ? node.visual.role : "",
+      labelText: activeOptions.presentation?.nativeLabels === false ? "" : materialIncludes(view.material.node, "label") ? node.visual.role : "",
       labelPriority: labelPriority(nodeMaterial.prominencePermille),
       labelColor: tokenColor(requiredToken(tokens, "text"), calibration.labels.nodeLabelOpacityPermille, calibration),
       zIndex: node.visual.label_priority,
     };
-    sigmaGraph.addNode(node.id, nodeAttributesForVisualState(attributes, node.id, visualState, calibration));
+    const resolvedNode = nodeAttributesForVisualState(attributes, node.id, visualState, calibration);
+    const emphasized = activeOptions.presentation?.emphasisIds;
+    sigmaGraph.addNode(node.id, emphasized && !emphasized.has(node.id) ? { ...resolvedNode, color: mixTowardField(resolvedNode.color, fieldColor, calibration.selection.focusDimFactorPermille), haloIntensityPermille: Math.round((resolvedNode.haloIntensityPermille * calibration.selection.focusDimFactorPermille) / 1000) } : resolvedNode);
   }
   for (const edge of engineGraph.edges) {
     const source = view.anchors.get(edge.source);
@@ -280,12 +286,14 @@ export function buildRenderModel(
       propagationContinuous: state.continuous ? 1 : 0,
       afterglowDecayPermille: calibration.motion.afterglowDecayPermille,
       label: "",
-      labelText: edge.kind,
+      labelText: activeOptions.presentation?.nativeLabels === false ? "" : edge.kind,
       forceLabel: false,
       labelColor: requiredTokenColor(tokenColors, "textMuted"),
       zIndex: edge.visual.label_priority,
     };
-    sigmaGraph.addEdgeWithKey(edge.id, edge.source, edge.target, edgeAttributesForVisualState(attributes, edge.id, visualState, calibration));
+    const resolvedEdge = edgeAttributesForVisualState(attributes, edge.id, visualState, calibration);
+    const emphasized = activeOptions.presentation?.emphasisIds;
+    sigmaGraph.addEdgeWithKey(edge.id, edge.source, edge.target, emphasized && (!emphasized.has(edge.source) || !emphasized.has(edge.target)) ? { ...resolvedEdge, color: mixTowardField(resolvedEdge.color, fieldColor, calibration.selection.focusDimFactorPermille) } : resolvedEdge);
   }
   assertEngineAccessTrace(engineAccessTrace);
   return { graph: sigmaGraph, anchors, windows: organization.windows, organization, tokens, tokenColors, fieldColor, lodBand: view.band, material: view.material, filamentMaterial: filamentUniformMaterial, filaments, propagation, engineAccessTrace };
