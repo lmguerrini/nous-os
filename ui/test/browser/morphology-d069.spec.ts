@@ -35,32 +35,39 @@ for (const projection of projections) for (const organization of organizations) 
         context.drawImage(bitmap, 0, 0);
         return { width: bitmap.width, height: bitmap.height, data: context.getImageData(0, 0, bitmap.width, bitmap.height).data };
       }));
-      const pairs: { pair: string; mean: number; edgeMapDifference: number }[] = [];
+      // Black-and-white captures are mostly empty field, so a mean over every pixel mostly measures the
+      // background. The measures below look only where either capture draws something (luminance > 40):
+      // the mean difference there, and the Jaccard distance between the two sets of lit pixels. The
+      // D-067 baseline gave 17–22 and 0.19–0.25 for its three morphologies in 2D Flat.
+      const pairs: { pair: string; meanLit: number; jaccard: number; edgeMapDifference: number }[] = [];
+      const luminance = (data: Uint8ClampedArray, offset: number) =>
+        (data[offset]! * 0.2126) + (data[offset + 1]! * 0.7152) + (data[offset + 2]! * 0.0722);
       for (let a = 0; a < pixels.length; a++) for (let b = a + 1; b < pixels.length; b++) {
         const left = pixels[a]!, right = pixels[b]!;
-        let colourSum = 0, changedEdges = 0, edgeUnion = 0;
-        const luminance = (data: Uint8ClampedArray, offset: number) =>
-          (data[offset]! * 0.2126) + (data[offset + 1]! * 0.7152) + (data[offset + 2]! * 0.0722);
-        for (let y = 1; y < left.height - 1; y++) for (let x = 1; x < left.width - 1; x++) {
-          const offset = (y * left.width + x) * 4;
-          colourSum += (Math.abs(left.data[offset]! - right.data[offset]!)
-            + Math.abs(left.data[offset + 1]! - right.data[offset + 1]!)
-            + Math.abs(left.data[offset + 2]! - right.data[offset + 2]!)) / 3;
-          const edge = (data: Uint8ClampedArray) => {
-            const dx = luminance(data, offset + 4) - luminance(data, offset - 4);
-            const dy = luminance(data, offset + left.width * 4) - luminance(data, offset - left.width * 4);
-            return Math.hypot(dx, dy) > 28;
-          };
-          const e1 = edge(left.data), e2 = edge(right.data);
+        const width = Math.min(left.width, right.width), height = Math.min(left.height, right.height);
+        let litUnion = 0, litBoth = 0, litDifference = 0, changedEdges = 0, edgeUnion = 0;
+        for (let y = 1; y < height - 1; y++) for (let x = 1; x < width - 1; x++) {
+          const l = (y * left.width + x) * 4, r = (y * right.width + x) * 4;
+          const vl = luminance(left.data, l), vr = luminance(right.data, r);
+          if (vl > 40 || vr > 40) { litUnion++; litDifference += Math.abs(vl - vr); }
+          if (vl > 40 && vr > 40) litBoth++;
+          const edge = (data: Uint8ClampedArray, offset: number, rowWidth: number) => Math.hypot(
+            luminance(data, offset + 4) - luminance(data, offset - 4),
+            luminance(data, offset + rowWidth * 4) - luminance(data, offset - rowWidth * 4)) > 28;
+          const e1 = edge(left.data, l, left.width), e2 = edge(right.data, r, right.width);
           if (e1 || e2) edgeUnion++;
           if (e1 !== e2) changedEdges++;
         }
-        pairs.push({ pair: `${a}-${b}`, mean: colourSum / ((left.width - 2) * (left.height - 2)), edgeMapDifference: changedEdges / Math.max(1, edgeUnion) });
+        pairs.push({ pair: `${a}-${b}`, meanLit: litDifference / Math.max(1, litUnion), jaccard: 1 - litBoth / Math.max(1, litUnion),
+          edgeMapDifference: changedEdges / Math.max(1, edgeUnion) });
       }
       return pairs;
     }, shots);
+    await testInfo.attach("morphology-metrics", { body: JSON.stringify(differences), contentType: "application/json" });
+    await writeFile(testInfo.outputPath("metrics.json"), JSON.stringify(differences, null, 1));
     for (const comparison of differences) {
-      expect(comparison.mean, `${projection}/${organization} ${comparison.pair} mean pixel difference`).toBeGreaterThanOrEqual(9);
+      expect(comparison.meanLit, `${projection}/${organization} ${comparison.pair} mean difference over lit pixels`).toBeGreaterThanOrEqual(40);
+      expect(comparison.jaccard, `${projection}/${organization} ${comparison.pair} lit-pixel Jaccard distance`).toBeGreaterThanOrEqual(0.5);
       expect(comparison.edgeMapDifference, `${projection}/${organization} ${comparison.pair} structural edge map`).toBeGreaterThan(0.08);
     }
   });
