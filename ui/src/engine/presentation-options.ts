@@ -49,6 +49,8 @@ export const DEFAULT_APPEARANCE: AppearanceOptions = {
   labelDensity: 0.6,
 };
 export type PresentationOptions = {
+  /** Enables the D-069 geometry vocabulary. Omission preserves the historical renderer. */
+  readonly morphologyLanguage?: "distinct";
   readonly nodes?: ReadonlyMap<string, NodePresentation & { readonly glyph?: NodeGlyph }>;
   readonly edges?: ReadonlyMap<string, EdgePresentation>;
   readonly emphasisIds?: ReadonlySet<string> | null;

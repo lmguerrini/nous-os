@@ -1,4 +1,8 @@
 import { mixTowardField } from "#engine/presentation-options.ts";
+import type { AppearanceOptions } from "#engine/presentation-options.ts";
+import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
+import { buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
+import { drawMorphologyCanvas } from "#render-common/morphology-canvas.ts";
 import Sigma from "sigma";
 import { createEdgeCompoundProgram } from "sigma/rendering";
 import type { CameraState, EdgeDisplayData, NodeDisplayData } from "sigma/types";
@@ -81,6 +85,8 @@ export type RenderPickingSurface = {
 /** This is one mounted renderer and does not retain an independent graph copy. */
 export type RenderHandle = {
   readonly model: RenderModel;
+  /** Changes the distinct canvas appearance without repeating layout or remounting Sigma. */
+  setAppearance(options: AppearanceOptions): void;
   graphToViewport(point: Coordinates): { readonly x: number; readonly y: number };
   readCameraState(): RenderCameraState;
   restoreCameraState(state: RenderCameraState): void;
@@ -284,9 +290,13 @@ export function mount(
   const glow = model.material.node.includes("halo")
     ? mountNodeGlow(sigma, model, options.calibration)
     : noGlowLayer();
+  const distinct = activeOptions.presentation?.morphologyLanguage === "distinct"
+    ? mountDistinctCanvas(sigma, model, activeOptions)
+    : null;
   sigma.refresh();
   return {
     model,
+    setAppearance(appearance: AppearanceOptions): void { distinct?.setAppearance(appearance); },
     graphToViewport(point: Coordinates): { readonly x: number; readonly y: number } {
       return sigma.graphToViewport(point);
     },
@@ -443,9 +453,73 @@ export function mount(
       return sigma.scaleSize(size);
     },
     destroy(): void {
+      distinct?.destroy();
       glow.destroy();
       windows.destroy();
       sigma.kill();
+    },
+  };
+}
+
+/** The opt-in canvas follows Sigma's camera while its original passes retain picking and witnesses. */
+function mountDistinctCanvas(sigma: Sigma, model: RenderModel, options: RenderOptions): {
+  setAppearance(options: AppearanceOptions): void;
+  destroy(): void;
+} {
+  const graph = model.graph;
+  const buildGeometry = (curvature: number) => buildMorphologyGeometry(
+    options.morphology,
+    graph.nodes().map((id) => {
+      const node = graph.getNodeAttributes(id);
+      return { id, position: { x: node.x, y: node.y, z: 0 }, radius: node.size };
+    }),
+    graph.edges().map((id) => ({ id, source: graph.source(id), target: graph.target(id), width: graph.getEdgeAttributes(id).size })),
+    model.windows.map((window) => ({ id: window.id, members: window.members, center: window.center })),
+    curvature,
+  );
+  let geometry = buildGeometry(options.presentation?.appearance?.curvature ?? DEFAULT_APPEARANCE.curvature);
+  const canvas = document.createElement("canvas");
+  canvas.dataset.morphologyCanvas = "distinct";
+  Object.assign(canvas.style, { position: "absolute", inset: "0", width: "100%", height: "100%", pointerEvents: "none" });
+  requiredCanvas(sigma, "labels").before(canvas);
+  const hidden = ["edges", "nodes", "node-glow"].map((id) => sigma.getCanvases()[id]).filter((item): item is HTMLCanvasElement => item !== undefined);
+  const visibility = hidden.map((item) => item.style.visibility);
+  for (const item of hidden) item.style.visibility = "hidden";
+  let appearance = options.presentation?.appearance ?? DEFAULT_APPEARANCE;
+  const draw = (): void => {
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const box = canvas.getBoundingClientRect();
+    const width = Math.max(1, Math.round(box.width * devicePixelRatio));
+    const height = Math.max(1, Math.round(box.height * devicePixelRatio));
+    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+    drawMorphologyCanvas(context, geometry, (point) => {
+      const projected = sigma.graphToViewport(point);
+      return { x: projected.x, y: projected.y, scale: sigma.scaleSize(1) };
+    }, {
+      fieldColor: model.fieldColor,
+      nodes: new Map(graph.nodes().map((id) => [id, {
+        color: graph.getNodeAttributes(id).color,
+        glyph: options.presentation?.nodes?.get(id)?.glyph,
+      }])),
+      edges: new Map(graph.edges().map((id) => [id, {
+        color: graph.getEdgeAttributes(id).color,
+        presentation: options.presentation?.edges?.get(id),
+      }])),
+    }, appearance);
+  };
+  sigma.on("afterRender", draw);
+  draw();
+  return {
+    setAppearance(next): void {
+      if (next.curvature !== appearance.curvature) geometry = buildGeometry(next.curvature);
+      appearance = next;
+      draw();
+    },
+    destroy(): void {
+      sigma.off("afterRender", draw);
+      hidden.forEach((item, index) => { item.style.visibility = visibility[index] ?? ""; });
+      canvas.remove();
     },
   };
 }

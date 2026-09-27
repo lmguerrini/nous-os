@@ -10,6 +10,7 @@
     "#comparison/*": "./src/comparison/*",
     "#engine/*": "./src/engine/*",
     "#render2d/*": "./src/render2d/*",
+    "#render-common/*": "./src/render-common/*",
     "#render3f/*": "./src/render3f/*",
     "#scene/*": "./src/scene/*",
     "#test-render3f/*": "./test/render3f/*",

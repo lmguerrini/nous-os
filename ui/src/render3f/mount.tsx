@@ -1,4 +1,5 @@
 import type { PresentationOptions } from "#engine/presentation-options.ts";
+import type { AppearanceOptions } from "#engine/presentation-options.ts";
 import type { ReactElement } from "react";
 import { createRoot as createFiberRoot } from "@react-three/fiber";
 import * as THREE from "three";
@@ -32,6 +33,7 @@ import type { Render3fFramingBox } from "#render3f/camera.tsx";
 import { sceneCameraFramingSubjects } from "#render3f/camera-framing.ts";
 import type { ProjectedCameraFramingSubject } from "#render3f/camera-framing.ts";
 import { tokenToSrgb } from "#render3f/buffers.ts";
+import { mountDistinctOverlay } from "#render3f/distinct-overlay.ts";
 import {
   createAggregateRenderResources,
   updateAggregateProjectionUniforms,
@@ -106,6 +108,7 @@ export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountin
   readRelationGeometryWitnesses(): readonly RelationGeometryWitness[];
   readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[];
   setEmphasis(ids: ReadonlySet<string> | null): void;
+  setAppearance(options: AppearanceOptions): void;
   readReviewWindows(): readonly { id: string; members: readonly string[]; center: Coordinates; radius: number }[];
   isWorldPointVisible(point: Coordinates): boolean;
 };
@@ -224,6 +227,15 @@ export function mount(
   updateField(renderer, live.scene);
 
   const labels = new LabelOverlayController(container);
+  const distinct = options.presentation?.morphologyLanguage === "distinct"
+    ? mountDistinctOverlay(container, live.scene, options.morphology, options.presentation, (point) => ({
+      ...rig.graphToViewport(point), scale: rig.sizeScaleAt(point),
+    }))
+    : null;
+  if (distinct) {
+    filamentResources.mesh.visible = false;
+    nodeResources.mesh.visible = false;
+  }
   const picker = new ScenePicker(live.scene, {
     project(point: Coordinates): { readonly x: number; readonly y: number } {
       return rig.graphToViewport(point);
@@ -280,6 +292,7 @@ export function mount(
     updateProjection();
     updateLabels();
     renderer.render(threeScene, rig.camera);
+    distinct?.draw();
   };
   const syncCameraState = (): void => {
     currentState = createVisualState(visualGraph, {
@@ -360,6 +373,7 @@ export function mount(
     retainedSceneReferences.add(scenes.perspective);
     updateNodeRenderResources(nodeResources, live.buffers.nodes);
     updateFilamentRenderResources(filamentResources, live.buffers.filaments);
+    distinct?.setScene(live.scene);
     rig.setWorldFramingSubjects(sceneCameraFramingSubjects(live.scene));
     picker.replaceScene(live.scene);
     updateField(renderer, live.scene);
@@ -367,6 +381,7 @@ export function mount(
   };
 
   return {
+    setAppearance(appearance: AppearanceOptions): void { distinct?.setAppearance(appearance); },
     setEmphasis(ids: ReadonlySet<string> | null): void {
       emphasisIds = ids;
       applyMaterialState(currentState.selectedId, currentState.focusedId);
@@ -480,6 +495,7 @@ export function mount(
       resizeObserver.disconnect();
       detachInteractions();
       labels.destroy();
+      distinct?.destroy();
       fiberRoot.unmount();
       registry.disposeAll();
       renderer.dispose();

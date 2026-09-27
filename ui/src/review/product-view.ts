@@ -3,6 +3,7 @@ import type { VisualStateCamera } from "../engine/visual-state.ts";
 import type { Coordinates } from "../engine/contract.ts";
 import type { GraphRendererHandle } from "../engine/renderer-handle.ts";
 import { DEFAULT_CALIBRATION } from "../engine/calibration.ts";
+import { SCENE_PERMILLE_SCALE } from "../scene/contract.ts";
 import { mount as mount2d } from "../render2d/index.ts";
 import type { RenderHandle } from "../render2d/index.ts";
 import { mount as mount3d } from "../render3f/mount.tsx";
@@ -273,6 +274,7 @@ export const createProductView: CreateProductView = async (input) => {
     const anchors = restrictAnchors(fullAnchor(axes), visible);
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
     const presentation = {
+      morphologyLanguage: "distinct" as const,
       nativeLabels: false,
       windowGeometryFromAnchors: true,
       emphasisIds: emphasis,
@@ -281,8 +283,8 @@ export const createProductView: CreateProductView = async (input) => {
         const original = input.data.edges.find((item) => item.id === edge.id)!;
         const exploratory = relationClass(original, nodesById) === "exploratory";
         return [edge.id, { stroke: exploratory ? "dashed" as const : "solid" as const,
-          opacityPermille: axes.reading === "combined" && !exploratory ? 450 : 1000,
-          widthPermille: exploratory ? 1200 : 1000,
+          opacityPermille: axes.reading === "combined" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
+          widthPermille: exploratory ? Math.round(SCENE_PERMILLE_SCALE * 1.2) : SCENE_PERMILLE_SCALE,
           ...(axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
         }] as const;
       })),
@@ -293,9 +295,10 @@ export const createProductView: CreateProductView = async (input) => {
             const encoding = encodingOf(node, input.data);
             return [node.id, {
               ...encoding,
+              glyph: (node.type === "domain" || node.type === "conversation" ? "ring"
+                : node.type === "canon" ? "double-ring"
+                : node.type === "record" || node.type === "evidence" ? "hollow" : "filled") as "ring" | "double-ring" | "hollow" | "filled",
               ...(node.origin === "dynamic" ? { haloPermille: Math.round(encoding.haloPermille * 0.55) } : {}),
-              glyph: node.type === "domain" || node.type === "conversation" ? "double-ring" as const
-                : node.type === "evidence" || node.type === "record" ? "hollow" as const : "filled" as const,
               ...(axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] }
                 : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(palette[input.text(node.id).family]) }),
             }] as const;

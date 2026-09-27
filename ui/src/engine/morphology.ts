@@ -10,6 +10,23 @@ export const JUNCTION_MINIMUM_DEGREE = 2;
 /** This is a material vocabulary and does not select or alter graph structure. */
 export type Morphology = "stellar" | "neural" | "mycelium";
 
+/** Hints for a future layout worker. These do not mutate today's anchors or graph. */
+export type MorphologyLayoutParams = {
+  readonly spacingMultiplier: number;
+  readonly linkDistance: number;
+  readonly clusterCompactness: number;
+  readonly colonyGravity: number;
+};
+
+/** Pure layout policy: Stellar breathes, Neural keeps axons local, Mycelium pulls colonies together. */
+export function morphologyLayoutParams(morphology: Morphology): MorphologyLayoutParams {
+  switch (morphology) {
+    case "stellar": return { spacingMultiplier: 1.45, linkDistance: 1.25, clusterCompactness: 0.55, colonyGravity: 0.1 };
+    case "neural": return { spacingMultiplier: 1.05, linkDistance: 0.9, clusterCompactness: 0.8, colonyGravity: 0.35 };
+    case "mycelium": return { spacingMultiplier: 0.85, linkDistance: 0.72, clusterCompactness: 1.3, colonyGravity: 0.9 };
+  }
+}
+
 /** This is a junction material vocabulary and does not add geometry between incident relations. */
 export type JunctionGeometry = "separate-luminous-point" | "core-before-halo" | "fused-filament";
 

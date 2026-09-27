@@ -399,7 +399,7 @@ void main(void) {
     float bodyCoverage = distance < halfThickness ? 1.0 : 0.0;
     float coreCoverage = distance < halfThickness * u_coreScale ? 1.0 : 0.0;
     float lightPosition = v_propagationContinuous > 0.5 ? v_propagationArcPosition : 1.0;
-    float afterglowDecay = max(v_afterglowDecayPermille, 1.0) / 1000.0;
+    float afterglowDecay = max(v_afterglowDecayPermille, 1.0) / ${SCENE_PERMILLE_SCALE.toFixed(1)};
     float propagationAlpha = max(afterglowDecay, 1.0 - (abs(curveT - lightPosition) / afterglowDecay));
     vec4 sheathColor = v_color;
     sheathColor.a *= propagationAlpha * u_sheathAlpha * sheathCoverage;

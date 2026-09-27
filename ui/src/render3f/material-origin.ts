@@ -49,6 +49,10 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#render3f/camera-framing.ts",
   ])],
   ["filament-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts"])],
+  ["distinct-overlay.ts", new Set([
+    "#engine/contract.ts", "#engine/morphology-geometry.ts", "#render-common/morphology-canvas.ts",
+    "#engine/presentation-options.ts", "#engine/morphology.ts", "#render3f/buffers.ts", "#scene/contract.ts",
+  ])],
   ["label-collision.ts", new Set()],
   ["labels.tsx", new Set([
     "react",
@@ -80,6 +84,7 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#render3f/buffers.ts",
     "#render3f/aggregate-material.ts",
     "#render3f/filament-material.ts",
+    "#render3f/distinct-overlay.ts",
     "#render3f/labels.tsx",
     "#render3f/node-material.ts",
     "#render3f/picking.ts",
@@ -105,6 +110,15 @@ const ALLOWED_RENDERER_IMPORTS = new Set(
 );
 
 const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>> = new Map([
+  ["distinct-overlay.ts", new Map([
+    ["#engine/contract.ts", new Set(["Coordinates"])],
+    ["#engine/morphology-geometry.ts", new Set(["buildMorphologyGeometry"])],
+    ["#render-common/morphology-canvas.ts", new Set(["drawMorphologyCanvas"])],
+    ["#engine/presentation-options.ts", new Set(["AppearanceOptions", "PresentationOptions", "DEFAULT_APPEARANCE"])],
+    ["#engine/morphology.ts", new Set(["Morphology"])],
+    ["#render3f/buffers.ts", new Set(["tokenToSrgb"])],
+    ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE", "Scene"])],
+  ])],
   ["aggregate-material.ts", new Map([
     ["three", new Set(["*"])],
     ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE"])],
@@ -182,7 +196,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["@react-three/fiber", new Set(["createRoot"])],
     ["three", new Set(["*"])],
     ["#engine/calibration.ts", new Set(["CalibrationProfile"])],
-    ["#engine/presentation-options.ts", new Set(["PresentationOptions"])],
+    ["#engine/presentation-options.ts", new Set(["AppearanceOptions", "PresentationOptions"])],
     ["#engine/camera-kind.ts", new Set(["CameraKind", "ORTHOGRAPHIC", "PERSPECTIVE"])],
     ["#engine/contract.ts", new Set(["Coordinates", "DerivedValue", "VisualGraph"])],
     ["#engine/renderer-handle.ts", new Set([
@@ -222,6 +236,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
       "updateFilamentProjectionUniforms",
       "updateFilamentRenderResources",
     ])],
+    ["#render3f/distinct-overlay.ts", new Set(["mountDistinctOverlay"])],
     ["#render3f/labels.tsx", new Set(["LabelOverlayController"])],
     ["#render3f/node-material.ts", new Set([
       "createNodeRenderResources",
