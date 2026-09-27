@@ -688,6 +688,8 @@ get<HTMLButtonElement>("edit-colours").addEventListener("click", () => {
     void setAxes({ colour: "custom" }).then(async () => { await (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); syncCustomColours(); });
   }
   get<HTMLElement>("appearance-panel").hidden = false; updateInsets();
+  // The editor sits below the sliders; bring it into view so all nine roles and the buttons are visible at once.
+  requestAnimationFrame(() => get<HTMLElement>("custom-editor").scrollIntoView({ block: "start" }));
 });
 function refreshColourPresetList(): void {
   const list = get<HTMLSelectElement>("colour-preset-list");

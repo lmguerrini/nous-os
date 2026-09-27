@@ -191,7 +191,9 @@ export const createProductView: CreateProductView = async (input) => {
       else if (node.type === "connection") reason = "main";
       // Projects, works and systems of the v2 hierarchy are named in the overview next to the domains.
       else if ((node.v2 as { level?: number } | undefined)?.level === 2) reason = "main";
-      else if (!overview && (node.type === "canon" || node.type === "candidate" || node.type === "conversation"))
+      // In Indra 3D the pearls already carry their titles; inner nodes are named only when the camera is close.
+      else if (!overview && !(axes.organization === "indra" && axes.projection === "3d")
+        && (node.type === "canon" || node.type === "candidate" || node.type === "conversation"))
         reason = "zoom";
       else if (close) reason = "zoom";
       if (!reason) continue;
