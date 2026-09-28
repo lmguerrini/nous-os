@@ -123,13 +123,13 @@ test("G9 Neural somata: stronger irregularity that still honours the ±0.22 radi
   }
 });
 
-test("G9 starfield: every star stays smaller and fainter than a satellite node, at every setting", () => {
+test("G9 starfield: every star stays smaller than a satellite node and under the alpha cap, at every setting", () => {
   // The smallest drawn Stellar node: the 2 px clamp floor of the shared canvas layer; the smallest
-  // drawn node alpha: the 0.48 opacity floor. Stars stay under 0.6× the radius and under the alpha.
-  const smallestNodeRadiusPx = 2, smallestNodeAlpha = 0.48;
+  // drawn node alpha: the 0.48 opacity floor. Stars stay under 0.6× the radius, so no star reads as a node.
+  const smallestNodeRadiusPx = 2;
   assert.ok(STAR_MAX_RADIUS_PX < 0.6 * smallestNodeRadiusPx, `${STAR_MAX_RADIUS_PX}`);
-  assert.ok(STAR_MAX_ALPHA < smallestNodeAlpha, `${STAR_MAX_ALPHA}`);
-  assert.ok(starAlpha(1, 1) < smallestNodeAlpha, "a star at maximum settings cannot outshine a node");
+  assert.ok(STAR_MAX_ALPHA <= 0.7, `${STAR_MAX_ALPHA}`);
+  assert.ok(starAlpha(1, 1) <= STAR_MAX_ALPHA, "a star at maximum settings stays under the cap");
   for (const density of [0.05, 0.25, 0.5, 1]) {
     for (const brightness of [0.05, 0.35, 0.7, 1]) {
       const stars = starfieldStars(1400, 900, density);

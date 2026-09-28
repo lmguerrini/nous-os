@@ -10,10 +10,10 @@ export const STARFIELD_MAX_STARS = 2200;
  * 2 px on-screen floor of the smallest drawn Stellar satellite node, so no star can be read as a
  * node (D-071 G9 final audit: some stars looked as large as the smallest satellites). */
 export const STAR_MAX_RADIUS_PX = 1.19;
-/** Hard cap on every star's drawn alpha, at any setting: below the 0.48 minimum drawn node alpha of the
- * shared morphology layer. Size is what separates a star from a node (the radius cap above); a lower
- * alpha cap made the default field almost invisible, so the alpha cap only keeps stars under nodes. */
-export const STAR_MAX_ALPHA = 0.45;
+/** Hard cap on every star's drawn alpha, at any setting. Size is what separates a star from a node (the
+ * radius cap above keeps every star under 0.6× the smallest node); a cap below the dimmest node's alpha
+ * made the default field almost invisible and left the brightness control almost no range. */
+export const STAR_MAX_ALPHA = 0.7;
 
 export type StarfieldStar = {
   /** Normalised position in [0, 1); scaled to the canvas at draw time so stars are stable across resizes. */
