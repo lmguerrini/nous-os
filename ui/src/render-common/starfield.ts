@@ -33,7 +33,10 @@ export function starfieldStars(width: number, height: number, density: number): 
   const count = Math.min(STARFIELD_MAX_STARS, Math.floor(density * width * height * 0.0012));
   const stars: StarfieldStar[] = [];
   for (let index = 0; index < count; index += 1) {
-    stars.push({ u: random(), v: random(), size: 0.4 + random() * 1.3, intensity: 0.3 + random() * 0.7 });
+    // Most stars are faint single points; about one in twenty is a brighter, slightly larger star, as in a real sky.
+    const bright = random() < 0.05;
+    stars.push({ u: random(), v: random(), size: bright ? 1.6 + random() * 0.9 : 0.9 + random() * 0.6,
+      intensity: bright ? 0.75 + random() * 0.25 : 0.35 + random() * 0.45 });
   }
   return stars;
 }
@@ -48,9 +51,20 @@ export function drawStarfield(context: CanvasRenderingContext2D, width: number, 
   if (!(density > 0) || !(brightness > 0)) return;
   const stars = starfieldStars(width, height, density);
   for (const star of stars) {
-    const alpha = brightness * star.intensity;
+    const alpha = Math.min(0.95, brightness * star.intensity * 1.6);
     if (alpha <= 0) continue;
-    context.fillStyle = `rgba(255, 255, 255, ${alpha})`;
-    context.fillRect?.(star.u * width, star.v * height, star.size, star.size);
+    const x = star.u * width, y = star.v * height;
+    if (star.size > 1.5 && typeof context.createRadialGradient === "function") {
+      // A bright star keeps a small soft halo; it never grows into a disc that could read as a node.
+      const halo = context.createRadialGradient(x, y, 0, x, y, star.size * 2.2);
+      halo.addColorStop(0, `rgba(255, 255, 255, ${alpha})`);
+      halo.addColorStop(0.35, `rgba(255, 255, 255, ${alpha * 0.35})`);
+      halo.addColorStop(1, "rgba(255, 255, 255, 0)");
+      context.fillStyle = halo;
+      context.fillRect?.(x - star.size * 2.2, y - star.size * 2.2, star.size * 4.4, star.size * 4.4);
+    } else {
+      context.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+      context.fillRect?.(x, y, star.size, star.size);
+    }
   }
 }
