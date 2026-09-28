@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { performance } from "node:perf_hooks";
 import { ABSOLUTE_CONTAINER_ID, DEPTH_RATIO_MIN, computeLayout, layoutStats, packDiscs, pearlRadius, type LayoutEdge, type LayoutInput, type LayoutNode, type Point3 } from "../../src/review/layout-v2.ts";
-import { applyExpansion, equilibrate, volumeStats } from "../../src/review/volume.ts";
+import { applyExpansion, canonicalize, equilibrate, volumeStats } from "../../src/review/volume.ts";
 import { buildContainerGeometry, buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
 import { drawMorphologyCanvas } from "#render-common/morphology-canvas.ts";
 
@@ -189,17 +189,20 @@ test("Flat 2D stays planar while Flat 3D becomes a real volume", () => {
   const planar = computeLayout(input);
   assert.equal(planar.source, "flat-community");
   assert.equal(planar.containers.length, 0);
+  // Stellar packs each community densely; no two nodes overlap, and clusters are separated by a void.
   for (let a = 0; a < input.nodes.length; a++) for (let b = a + 1; b < input.nodes.length; b++) {
     const left = input.nodes[a]!, right = input.nodes[b]!;
-    const minimum = (21 * 1.45 / Math.sqrt(0.55)) * (0.72 + (10 + Math.min(1, left.size) * 5 + Math.min(1, right.size) * 5) / 24);
-    assert.ok(xy(planar.positions.get(left.id)!, planar.positions.get(right.id)!) + 1e-9 >= minimum);
+    assert.ok(xy(planar.positions.get(left.id)!, planar.positions.get(right.id)!) + 1e-9 > 20);
   }
   for (const point of planar.positions.values()) assert.equal(point.z, 0);
   const volumetric = computeLayout({ ...input, projection: "3d" });
   assert.equal(volumetric.source, "flat-community");
   assert.ok([...volumetric.positions.values()].some(point => point.z !== 0));
-  const stats = volumeStats(volumetric.positions);
-  assert.ok(stats.ratios.third >= 0.25, `λ3/λ1 ${stats.ratios.third.toFixed(3)}`);
+  // The default anisotropy targets now hold on the canonicalised cloud (rotation + default scaling).
+  const canonical = canonicalize(volumetric.positions);
+  const stats = volumeStats(canonical);
+  assert.ok(stats.ratios.second >= 0.5, `λ2/λ1 ${stats.ratios.second.toFixed(3)}`);
+  assert.ok(stats.ratios.third >= 0.3, `λ3/λ1 ${stats.ratios.third.toFixed(3)}`);
 });
 
 test('realistic hierarchy has deterministic 3D spacing and balances to a ball', () => {
@@ -211,12 +214,68 @@ test('realistic hierarchy has deterministic 3D spacing and balances to a ball', 
   const input: LayoutInput = { nodes, edges: nodes.filter(n => n.parent).map(n => ({ id: `edge:${n.id}`, source: n.parent!, target: n.id, class: 'attested' })), organization: 'flat', morphology: 'stellar', projection: '3d' };
   const first = computeLayout(input), second = computeLayout(input);
   assert.deepEqual(first, second);
-  assert.ok(volumeStats(first.positions).ratios.third >= 0.25);
+  const canonical = canonicalize(first.positions);
+  assert.ok(volumeStats(canonical).ratios.second >= 0.5);
+  assert.ok(volumeStats(canonical).ratios.third >= 0.3);
   const points = nodes.map(n => first.positions.get(n.id)!);
   for (let a = 0; a < points.length; a++) for (let b = a + 1; b < points.length; b++)
     assert.ok(Math.hypot(points[a]!.x - points[b]!.x, points[a]!.y - points[b]!.y, points[a]!.z - points[b]!.z) > 20);
-  const balanced = applyExpansion(first.positions, equilibrate(first.positions));
-  assert.ok(volumeStats(balanced).ratios.third >= 0.6);
+  const balanced = applyExpansion(canonical, equilibrate(canonical));
+  assert.ok(volumeStats(balanced).ratios.second >= 0.6, `balanced λ2/λ1 ${volumeStats(balanced).ratios.second.toFixed(3)}`);
+  assert.ok(volumeStats(balanced).ratios.third >= 0.6, `balanced λ3/λ1 ${volumeStats(balanced).ratios.third.toFixed(3)}`);
+});
+
+test("unequal communities (one with 60% of the nodes) canonicalise and equilibrate to the target ratios", () => {
+  const roots: LayoutNode[] = Array.from({ length: 8 }, (_, i) => ({ id: `domain:${i}`, level: 1 as const, parent: null, size: 0.9, domains: [] }));
+  const nodes: LayoutNode[] = [...roots];
+  const edges: LayoutEdge[] = [];
+  // One community holds ~60% of the total node mass, reproducing the real overview's elongation.
+  const memberCounts = [120, 8, 8, 8, 8, 8, 8, 8];
+  memberCounts.forEach((count, i) => {
+    for (let j = 0; j < count; j++) {
+      const id = `domain:${i}:m:${j}`;
+      nodes.push({ id, level: 2 as const, parent: `domain:${i}`, size: 0.5, domains: [] });
+      edges.push({ id: `edge:${id}`, source: `domain:${i}`, target: id, class: 'attested' });
+    }
+  });
+  const input: LayoutInput = { nodes, edges, organization: 'flat', morphology: 'stellar', projection: '3d' };
+  const first = computeLayout(input), second = computeLayout(input);
+  assert.deepEqual(first, second);
+  const canonical = canonicalize(first.positions);
+  const stats = volumeStats(canonical);
+  assert.ok(stats.ratios.second >= 0.5, `λ2/λ1 ${stats.ratios.second.toFixed(3)}`);
+  assert.ok(stats.ratios.third >= 0.3, `λ3/λ1 ${stats.ratios.third.toFixed(3)}`);
+  const balanced = applyExpansion(canonical, equilibrate(canonical));
+  assert.ok(volumeStats(balanced).ratios.second >= 0.6, `balanced λ2/λ1 ${volumeStats(balanced).ratios.second.toFixed(3)}`);
+  assert.ok(volumeStats(balanced).ratios.third >= 0.6, `balanced λ3/λ1 ${volumeStats(balanced).ratios.third.toFixed(3)}`);
+});
+
+test("Stellar communities keep a void of at least 1.5× the mean cluster radius in 2D and 3D", () => {
+  const roots: LayoutNode[] = Array.from({ length: 8 }, (_, i) => ({ id: `c${i}`, level: 1 as const, parent: null, size: 0.9, domains: [] }));
+  const nodes: LayoutNode[] = [...roots];
+  const edges: LayoutEdge[] = [];
+  const memberCounts = [120, 8, 8, 8, 8, 8, 8, 8];
+  memberCounts.forEach((count, i) => {
+    for (let j = 0; j < count; j++) {
+      const id = `c${i}:m${j}`;
+      nodes.push({ id, level: 2 as const, parent: `c${i}`, size: 0.5, domains: [] });
+      edges.push({ id: `e:${id}`, source: `c${i}`, target: id, class: 'attested' });
+    }
+  });
+  for (const projection of ['2d', '3d'] as const) {
+    const result = computeLayout({ nodes, edges, organization: 'flat', morphology: 'stellar', projection });
+    const communities = result.communities!;
+    assert.equal(communities.length, 8);
+    assert.equal(communities.reduce((sum, community) => sum + community.count, 0), nodes.length);
+    // The exposed per-community summary is what the browser check reads.
+    const meanRadius = communities.reduce((sum, community) => sum + community.radius, 0) / communities.length;
+    for (let a = 0; a < communities.length; a++) for (let b = a + 1; b < communities.length; b++) {
+      const left = communities[a]!, right = communities[b]!;
+      const distance = Math.hypot(left.center.x - right.center.x, left.center.y - right.center.y, left.center.z - right.center.z);
+      assert.ok(distance >= left.radius + right.radius + 1.5 * meanRadius - 1e-6,
+        `${projection} void ${(distance - left.radius - right.radius).toFixed(1)} vs ${(1.5 * meanRadius).toFixed(1)}`);
+    }
+  }
 });
 
 test("container paths appear in both projections, and Stellar geometry remains straight", () => {

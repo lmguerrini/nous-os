@@ -76,6 +76,28 @@ test("D-071 Neural somata differ: eccentricity spread and bounded outline irregu
   assert.ok(fingerprints.size > 1);
 });
 
+test("D-071 Neural eccentricity spans 1.1–1.9 and the outline bound is 0.22", () => {
+  const collinear = buildMorphologyGeometry("neural", [
+    { id: "hub", position: { x: 0, y: 0, z: 0 }, radius: 11 },
+    { id: "e", position: { x: 100, y: 0, z: 0 }, radius: 4 },
+    { id: "w", position: { x: -100, y: 0, z: 0 }, radius: 4 },
+  ], [
+    { id: "he", source: "hub", target: "e", width: 2 },
+    { id: "hw", source: "hub", target: "w", width: 2 },
+  ]);
+  // Two collinear connections pull the soma into a long ellipse, at the top of the wider range.
+  assert.ok(collinear.nodes[0]!.eccentricity >= 1.8, `collinear eccentricity ${collinear.nodes[0]!.eccentricity}`);
+  assert.ok(collinear.nodes[0]!.eccentricity <= 1.9);
+  // Isolated somata stay round: no local connection to orient them.
+  const isolated = buildMorphologyGeometry("neural", [{ id: "iso", position: { x: 0, y: 0, z: 0 }, radius: 6 }], []).nodes[0]!;
+  assert.equal(isolated.eccentricity, 1);
+  assert.equal(SOMA_OUTLINE_MAX_RADIAL, 0.22);
+  // The per-node harmonics can actually approach the bound (not just a tiny, invisible ripple).
+  const harmonics = somaOutlineHarmonics("hub");
+  const maxReach = harmonics.reduce((sum, harmonic) => sum + harmonic.amplitude, 0);
+  assert.ok(maxReach > 0.15, `harmonic reach ${maxReach.toFixed(3)}`);
+});
+
 test("D-071 Neural taper: soma end is at least twice the mid-edge width", () => {
   const geometry = buildMorphologyGeometry("neural", [
     { id: "hub", position: { x: 0, y: 0, z: 0 }, radius: 7 },

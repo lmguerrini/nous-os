@@ -31,7 +31,9 @@ test('D-071 Flat volume equilibrates and frames from useful views', async ({ pag
   await page.evaluate(() => (window as any).__d067.ready);
   await page.evaluate(() => (window as any).__d067.setAxes({ projection: '3d', organization: 'flat', reading: 'attested' }));
   const initial = await page.evaluate(() => (window as any).__d067.witness());
-  expect(initial.volume.ratios.third).toBeGreaterThanOrEqual(0.25);
+  // The default canonicalisation raised the default anisotropy above the pre-fix 0.25 target.
+  expect(initial.volume.ratios.second).toBeGreaterThanOrEqual(0.5);
+  expect(initial.volume.ratios.third).toBeGreaterThanOrEqual(0.3);
   await page.locator('#appearance-toggle').click();
   await page.locator('#equilibra-volume').click();
   await expect.poll(async () => (await page.evaluate(() => (window as any).__d067.witness())).volume.ratios.third).toBeGreaterThanOrEqual(0.6);

@@ -1,8 +1,8 @@
 import { validateIndex } from './graph-v2.ts';
 import type { GraphEdge, GraphManifest } from './graph-v2.ts';
 import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
-import type { LayoutContainer, Point3 } from './layout-v2.ts';
-import { applyExpansion, equilibrate, volumeStats } from './volume.ts';
+import type { CommunityInfo, LayoutContainer, Point3 } from './layout-v2.ts';
+import { applyExpansion, canonicalize, equilibrate, volumeStats } from './volume.ts';
 import type { Expansion } from './volume.ts';
 import { adaptV2 } from './v2-adapter.ts';
 import { projectRelations } from './v2-relations.ts';
@@ -72,10 +72,13 @@ export class V2Page {
     private previousVisible = new Set<string>();
     private detailCache = new Map<string, Record<string, unknown>>();
     private positions = new Map<string, Point3>();
-    /** Un-expanded layout positions, the deterministic base for `previous` and `equilibrateVolume`. */
+    /** Un-expanded layout positions, the deterministic base for `previous`. */
     private rawPositions: ReadonlyMap<string, Point3> = new Map<string, Point3>();
+    /** The Flat 3D embedding rotated into its PCA frame and default-normalised; the base for `equilibrateVolume`. */
+    private canonicalPositions: ReadonlyMap<string, Point3> = new Map<string, Point3>();
     private layoutProjection: '2d' | '3d' = '2d';
     private containers: LayoutContainer[] = [];
+    private communities: readonly CommunityInfo[] = [];
     private arcTotal = 0;
     private layoutSource = 'placeholder';
     private lastArrangement = '';
@@ -203,13 +206,16 @@ export class V2Page {
             });
             this.rawPositions = result.positions;
             this.layoutProjection = projection;
-            const expanded = this.axes.organization === 'flat'
-                ? applyExpansion(result.positions, { expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ })
+            const flat3d = this.axes.organization === 'flat' && projection === '3d';
+            this.canonicalPositions = flat3d ? canonicalize(result.positions) : result.positions;
+            const expanded = flat3d
+                ? applyExpansion(this.canonicalPositions, { expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ })
                 : result.positions;
             const next = new Map<string, Point3>();
             for (const n of disclosed.nodes)
                 next.set(n.id, expanded.get(n.id) ?? { x: 0, y: 0, z: 0 });
             this.positions = next;
+            this.communities = result.communities ?? [];
             this.containers = result.containers.map(c => {
                 const title = visibleById.get(c.id)?.title;
                 const node = visibleById.get(c.id);
@@ -219,7 +225,11 @@ export class V2Page {
             this.layoutSource = result.source;
             const volume = volumeStats(this.positions);
             const volumeRow = document.getElementById('volume-stats');
-            if (volumeRow) volumeRow.textContent = `Volume 3D: λ2/λ1 ${volume.ratios.second.toFixed(2)} · λ3/λ1 ${volume.ratios.third.toFixed(2)}`;
+            if (volumeRow) {
+                volumeRow.hidden = projection !== '3d';
+                if (projection === '3d')
+                    volumeRow.textContent = `Volume 3D: λ2/λ1 ${volume.ratios.second.toFixed(2)} · λ3/λ1 ${volume.ratios.third.toFixed(2)}`;
+            }
             const active = this.hovered
                 ?? this.renderedRelations.get(this.selected ?? '')?.source
                 ?? this.index.edges.find(edge => edge.id === this.selected)?.source
@@ -484,9 +494,9 @@ export class V2Page {
     }
     async setAppearance(value: AppearanceOptions) { this.appearance = value; await this.refresh(); }
     setFlowMotion(enabled: boolean) { this.flowMotion = enabled; this.view?.setFlowMotion(enabled); }
-    /** Per-axis expansion that balances the Flat 3D embedding's principal extents (PCA), from the raw layout. */
+    /** Per-axis expansion that balances the Flat 3D embedding's principal extents (PCA), from the canonical base. */
     equilibrateVolume(): Expansion {
-        return equilibrate(this.rawPositions);
+        return equilibrate(this.canonicalPositions);
     }
     async setPalette(value: PaletteValues) { this.palette = value; await this.refresh(); }
     async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
@@ -576,6 +586,7 @@ export class V2Page {
             ...this.view?.witness(),
             layoutSource: this.layoutSource,
             containers: this.containers,
+            communities: this.communities,
             layoutStats: layoutStats(this.positions),
             volume: volumeStats(this.positions),
             arcs: { shown: this.renderedRelations.size, total: this.arcTotal },
@@ -611,8 +622,10 @@ export class V2Page {
         controls.id = 'v2-controls';
         line(controls, 'Nodi visibili', `${shown.nodes.length}/${this.index.nodes.filter(n => n.level !== 5).length} · limite ${V2_CAP}`);
         if (this.axes.organization === 'indra') line(controls, 'Archi', `${this.renderedRelations.size} di ${this.arcTotal}`);
-        const volume = volumeStats(this.positions);
-        line(controls, 'Volume 3D', `λ2/λ1 ${volume.ratios.second.toFixed(2)} · λ3/λ1 ${volume.ratios.third.toFixed(2)}`);
+        if (this.axes.projection === '3d') {
+            const volume = volumeStats(this.positions);
+            line(controls, 'Volume 3D', `λ2/λ1 ${volume.ratios.second.toFixed(2)} · λ3/λ1 ${volume.ratios.third.toFixed(2)}`);
+        }
         for (const [label, action, disabled] of [['Annulla', () => this.undo(), this.history.undoDepth === 0], ['Ripeti', () => this.redo(), this.history.redoDepth === 0]] as const) {
             const button = document.createElement('button');
             button.textContent = label;

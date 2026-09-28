@@ -47,8 +47,10 @@ export const NEURAL_TAPER = { proximal: 1.7, mid: 0.5, distal: 0.85 } as const;
 /** Mycelium wave bound: a visibility floor for tiny links and a hard cap so no arc leaves the field. */
 export const MYCELIUM_AMPLITUDE_MIN_PX = 2.5;
 export const MYCELIUM_AMPLITUDE_CAP_PX = 48;
-/** Bounded radial deviation of a soma outline away from its ellipse (fraction of the local radius). */
-export const SOMA_OUTLINE_MAX_RADIAL = 0.16;
+/** Bounded radial deviation of a soma outline away from its ellipse (fraction of the local radius).
+ * Large somata reach the full bound; small somata are drawn with a scaled-down irregularity so the
+ * organic shape stays visible at overview without deforming tiny cells. */
+export const SOMA_OUTLINE_MAX_RADIAL = 0.22;
 
 const SOMA_OUTLINE_ORDERS = [2, 3, 4] as const;
 /** Deterministic per-node low-frequency outline harmonics, so no two somata are identical. */
@@ -56,7 +58,7 @@ export function somaOutlineHarmonics(id: string): readonly SomaOutlineHarmonic[]
   const seed = morphologyHash(id);
   return SOMA_OUTLINE_ORDERS.map((order, index) => {
     const raw = ((seed >>> (index * 8)) & 0xff) / 255;
-    return { order, amplitude: 0.02 + raw * 0.03, phase: ((seed >>> (index * 5)) % 6283) / 1000 };
+    return { order, amplitude: 0.03 + raw * 0.043, phase: ((seed >>> (index * 5)) % 6283) / 1000 };
   });
 }
 /** Radial outline deviation in [−SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL] at ellipse parameter angle θ. */
@@ -81,7 +83,7 @@ function somaAxis(node: MorphologyNodeInput, incident: readonly Coordinates[]): 
   const squareTrace = xx * xx + yy * yy + zz * zz + 2 * (xy * xy + xz * xz + yz * yz);
   const rest = 1 - lambda;
   const second = (rest + Math.sqrt(Math.max(0, 2 * (squareTrace - lambda * lambda) - rest * rest))) / 2;
-  return { axis, eccentricity: Math.min(1.7, Math.max(1, 1 + 0.7 * (lambda - second))) };
+  return { axis, eccentricity: Math.min(1.9, Math.max(1.1, 1.1 + 0.8 * (lambda - second))) };
 }
 function somaRadius(node: MorphologyNodeShape, direction: Coordinates): number {
   const alignment = dot(node.axis, direction);

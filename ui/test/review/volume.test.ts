@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Point3 } from "../../src/review/layout-v2.ts";
-import { applyExpansion, equilibrate, volumeStats } from "../../src/review/volume.ts";
+import { applyExpansion, canonicalize, equilibrate, rotateToPrincipalAxes, volumeStats } from "../../src/review/volume.ts";
 
 /** Deterministic LCG in [0,1). */
 function lcg(seed: number): () => number {
@@ -73,4 +73,33 @@ test("volumeStats and equilibrate are deterministic", () => {
   assert.deepEqual(equilibrate(points), equilibrate(points));
   const map = new Map(points.map((point, index) => [`n${index}`, point] as const));
   assert.deepEqual(volumeStats(map), volumeStats(points));
+});
+
+test("canonicalize rotates a tilted elongated cloud into principal axes and normalises anisotropy", () => {
+  const next = lcg(31);
+  // A cloud elongated along a tilted axis: its principal axis is not aligned with X, Y or Z, so a plain
+  // diagonal scaling (the old equilibrate path) could not fix it — the rotation must happen first.
+  const points: Point3[] = Array.from({ length: 400 }, () => {
+    const a = next() * 2 - 1, b = next() * 2 - 1, c = next() * 2 - 1;
+    return { x: a * 90 + b * 8 + c * 4, y: a * 60 + b * 30 + c * 6, z: a * 12 + b * 5 + c * 40 };
+  });
+  const before = volumeStats(points);
+  const canonical = canonicalize(points);
+  const stats = volumeStats(canonical);
+  assert.ok(stats.ratios.second >= 0.5, `λ2/λ1 ${stats.ratios.second.toFixed(3)}`);
+  assert.ok(stats.ratios.third >= 0.3, `λ3/λ1 ${stats.ratios.third.toFixed(3)}`);
+  assert.ok(stats.ratios.second >= before.ratios.second, "canonicalise must never worsen λ2/λ1");
+  assert.ok(stats.ratios.third >= before.ratios.third, "canonicalise must never worsen λ3/λ1");
+  // The canonical frame's covariance is diagonal, so equilibrate is exact and reaches a ball.
+  const balanced = applyExpansion(canonical, equilibrate(canonical));
+  assert.ok(volumeStats(balanced).ratios.second >= 0.6, `balanced λ2/λ1 ${volumeStats(balanced).ratios.second.toFixed(3)}`);
+  assert.ok(volumeStats(balanced).ratios.third >= 0.6, `balanced λ3/λ1 ${volumeStats(balanced).ratios.third.toFixed(3)}`);
+});
+
+test("canonicalize and rotateToPrincipalAxes are deterministic and preserve ids", () => {
+  const ball = unitBall(200, 7);
+  assert.deepEqual(canonicalize(ball), canonicalize(ball));
+  assert.deepEqual(rotateToPrincipalAxes(ball), rotateToPrincipalAxes(ball));
+  const map = new Map(ball.map((point, index) => [`n${index}`, point] as const));
+  assert.deepEqual([...canonicalize(map).keys()], [...map.keys()]);
 });

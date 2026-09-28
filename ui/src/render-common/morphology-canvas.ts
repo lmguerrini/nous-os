@@ -44,6 +44,10 @@ const dim = (color: string, factor: number): string => {
   const values = color.match(/[\d.]+/g)?.map(Number) ?? [255, 255, 255];
   return `rgb(${Math.round((values[0] ?? 255) * factor)}, ${Math.round((values[1] ?? 255) * factor)}, ${Math.round((values[2] ?? 255) * factor)})`;
 };
+const brighten = (color: string, factor: number): string => {
+  const values = color.match(/[\d.]+/g)?.map(Number) ?? [255, 255, 255];
+  return `rgb(${values.slice(0, 3).map(value => Math.round((value ?? 255) + (255 - (value ?? 255)) * factor)).join(", ")})`;
+};
 const tint = (rgb: readonly [number, number, number]) => `rgb(${rgb.map(value => Math.round(value * 255)).join(", ")})`;
 const testHook = () => (globalThis as typeof globalThis & { __d070?: { hideEdges?: boolean; hideNodes?: boolean; onlyNodeId?: string } }).__d070;
 
@@ -217,17 +221,8 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       context.fillStyle = gradient;
       context.beginPath(); context.arc(p.x, p.y, halo, 0, Math.PI * 2); context.fill();
     }
-    context.fillStyle = rgba(lit, opacity);
     context.beginPath();
     if (geometry.morphology === "neural") {
-      if (!simplified && typeof context.createRadialGradient === "function") {
-        const body = context.createRadialGradient(p.x - radius * 0.2, p.y - radius * 0.2, radius * 0.08,
-          p.x, p.y, radius * 1.4);
-        body.addColorStop(0, rgba(lit, opacity));
-        body.addColorStop(0.55, rgba(lit, opacity * 0.82));
-        body.addColorStop(1, rgba(lit, opacity * 0.32));
-        context.fillStyle = body;
-      }
       const axis = node.axis ?? { x: 1, y: 0, z: 0 };
       const q = project({ x: node.position.x + axis.x, y: node.position.y + axis.y, z: node.position.z + axis.z });
       const angle = Math.atan2(q.y - p.y, q.x - p.x);
@@ -239,24 +234,62 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       const projectedUnit = Math.max(1e-9, ...basis.map(value => Math.hypot(value.x - p.x, value.y - p.y)));
       const visibleAxis = clamp(Math.hypot(q.x - p.x, q.y - p.y) / projectedUnit, 0, 1);
       const eccentricity = Math.sqrt(1 + ((node.eccentricity ?? 1) ** 2 - 1) * visibleAxis ** 2);
-      // An oriented, gently irregular soma: the ellipse radii carry the connection-driven elongation, and the
-      // per-node low-frequency harmonics break the perfect-oval sameness without ever leaving the body.
+      // An oriented, organic soma: the ellipse radii carry the connection-driven elongation, the per-node
+      // low-frequency harmonics break the perfect-oval sameness, and large somata show the full irregularity
+      // while small ones keep a scaled-down amount so it stays visible at overview.
       const major = radius * eccentricity, minor = radius;
       const harmonics = node.outline ?? [];
       const steps = simplified ? 12 : 24;
       const cosA = Math.cos(angle), sinA = Math.sin(angle);
-      for (let i = 0; i < steps; i += 1) {
-        const theta = (i / steps) * Math.PI * 2;
-        const bulge = 1 + somaOutlineIrregularity(harmonics, theta);
-        const ex = major * Math.cos(theta) * bulge;
-        const ey = minor * Math.sin(theta) * bulge;
-        const x = p.x + cosA * ex - sinA * ey;
-        const y = p.y + sinA * ex + cosA * ey;
-        if (i === 0) context.moveTo(x, y); else context.lineTo(x, y);
+      const irregularityScale = clamp(radius / 11, 0.4, 1);
+      const somaPath = () => {
+        context.beginPath();
+        for (let i = 0; i < steps; i += 1) {
+          const theta = (i / steps) * Math.PI * 2;
+          const bulge = 1 + somaOutlineIrregularity(harmonics, theta) * irregularityScale;
+          const ex = major * Math.cos(theta) * bulge;
+          const ey = minor * Math.sin(theta) * bulge;
+          const x = p.x + cosA * ex - sinA * ey;
+          const y = p.y + sinA * ex + cosA * ey;
+          if (i === 0) context.moveTo(x, y); else context.lineTo(x, y);
+        }
+        context.closePath?.();
+      };
+      // Softer membrane: a gentle gradient that fades toward the edge of the soma body.
+      if (!simplified && typeof context.createRadialGradient === "function") {
+        const membrane = context.createRadialGradient(p.x, p.y, radius * 0.12, p.x, p.y, radius * 1.6);
+        membrane.addColorStop(0, rgba(lit, opacity));
+        membrane.addColorStop(0.5, rgba(lit, opacity * 0.62));
+        membrane.addColorStop(1, rgba(lit, opacity * 0.24));
+        context.fillStyle = membrane;
+      } else context.fillStyle = rgba(lit, opacity);
+      somaPath();
+      context.fill();
+      // Brighter small nucleus inside the softer membrane, oriented with the soma.
+      if (!simplified && typeof context.createRadialGradient === "function") {
+        const nucleus = context.createRadialGradient(p.x - radius * 0.12, p.y - radius * 0.12, 0, p.x, p.y, radius * 0.5);
+        nucleus.addColorStop(0, rgba(brighten(lit, 0.6), opacity));
+        nucleus.addColorStop(0.7, rgba(lit, opacity * 0.5));
+        nucleus.addColorStop(1, rgba(lit, 0));
+        context.fillStyle = nucleus;
+        context.beginPath();
+        const nx = radius * 0.4, ny = radius * 0.32;
+        for (let i = 0; i < 24; i += 1) {
+          const theta = (i / 24) * Math.PI * 2;
+          const ex = nx * Math.cos(theta);
+          const ey = ny * Math.sin(theta);
+          const x = p.x + cosA * ex - sinA * ey;
+          const y = p.y + sinA * ex + cosA * ey;
+          if (i === 0) context.moveTo(x, y); else context.lineTo(x, y);
+        }
+        context.closePath?.();
+        context.fill();
       }
-      context.closePath?.();
-    } else context.arc(p.x, p.y, radius, 0, Math.PI * 2);
-    context.fill();
+    } else {
+      context.fillStyle = rgba(lit, opacity);
+      context.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      context.fill();
+    }
     // A neural soma is one closed body. Semantic glyph rings apply only to the other morphologies.
     const glyph = geometry.morphology === "neural" ? "filled" : visual?.glyph ?? "filled";
     if (glyph !== "filled" && !testHook()?.hideEdges) {

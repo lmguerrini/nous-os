@@ -45,6 +45,14 @@ export type LayoutResult = {
     readonly positions: ReadonlyMap<string, Point3>;
     readonly containers: readonly LayoutContainer[];
     readonly source: 'flat-community' | 'indra-recursive' | 'placeholder';
+    /** Stellar cluster summary (centre, radius, member count) for the browser check. Empty otherwise. */
+    readonly communities?: readonly CommunityInfo[];
+};
+export type CommunityInfo = {
+    readonly id: string;
+    readonly center: Point3;
+    readonly radius: number;
+    readonly count: number;
 };
 export const LAYOUT_EXTENT = 1000;
 export const DEPTH_RATIO_MIN = 0.4;
@@ -181,6 +189,8 @@ function domainCentres3d(roots: readonly LayoutNode[], edges: readonly LayoutEdg
     return new Map(points.map(point => [point.id, { x: point.x, y: point.y, z: point.z }]));
 }
 function flat(input: LayoutInput): LayoutResult {
+    if (input.morphology === 'stellar')
+        return flatStellar(input);
     return input.projection === '3d' ? flat3d(input) : flat2d(input);
 }
 function flat2d(input: LayoutInput): LayoutResult {
@@ -429,6 +439,177 @@ function relax3d(positions: Map<string, Point3>, movable: readonly string[], byI
         }
     }
 }
+/** Stellar cluster packing: members are placed this many `spacing` units apart (dense, yet no overlap),
+ * and neighbouring cluster edges are separated by at least this × the mean cluster radius. */
+const STELLAR_CLUSTER_STEP = 1.0;
+const STELLAR_VOID_RATIO = 1.5;
+const STELLAR_SEARCH_STEPS = 240;
+
+/** Communities of the Stellar overview: every node belongs to its level-1 ancestor (its primary domain). */
+function stellarCommunities(children: ReadonlyMap<string | null, LayoutNode[]>, roots: readonly LayoutNode[]): { rootOf: Map<string, string>; membersOf: Map<string, LayoutNode[]> } {
+    const rootOf = new Map<string, string>();
+    const membersOf = new Map<string, LayoutNode[]>();
+    const queue = [...roots];
+    for (let index = 0; index < queue.length; index++) {
+        const node = queue[index]!;
+        const rootId = node.parent && rootOf.has(node.parent) ? rootOf.get(node.parent)! : node.id;
+        rootOf.set(node.id, rootId);
+        const list = membersOf.get(rootId) ?? [];
+        list.push(node);
+        membersOf.set(rootId, list);
+        queue.push(...(children.get(node.id) ?? []));
+    }
+    return { rootOf, membersOf };
+}
+
+/** Deterministic sphere/disc placement that guarantees `distance ≥ rᵢ + rⱼ + gap` for every pair. */
+function placeClusterCores(ordered: readonly LayoutNode[], clusterRadius: ReadonlyMap<string, number>, gap: number, fixed: ReadonlyMap<string, Point3>, projection3d: boolean): Map<string, Point3> {
+    const result = new Map<string, Point3>(fixed);
+    const placed: { point: Point3; radius: number }[] = [...fixed].map(([id, point]) => ({ point, radius: clusterRadius.get(id) ?? 0 }));
+    for (const community of ordered) {
+        const radius = clusterRadius.get(community.id) ?? 0;
+        let point: Point3 | null = null;
+        if (placed.length === 0) {
+            point = { x: 0, y: 0, z: 0 };
+        } else {
+            const centre = {
+                x: placed.reduce((sum, item) => sum + item.point.x, 0) / placed.length,
+                y: placed.reduce((sum, item) => sum + item.point.y, 0) / placed.length,
+                z: placed.reduce((sum, item) => sum + item.point.z, 0) / placed.length,
+            };
+            const base = placed.reduce((sum, item) => sum + item.radius, 0) + radius + gap;
+            search: for (let shell = 0; shell < STELLAR_SEARCH_STEPS; shell++) {
+                const shellRadius = base * (1 + shell * 0.2);
+                const directions = projection3d ? 144 : 96;
+                for (let k = 0; k < directions; k++) {
+                    let candidate: Point3;
+                    if (projection3d) {
+                        const direction = fibonacciSpherePoint(k, directions, 1);
+                        candidate = { x: centre.x + direction.x * shellRadius, y: centre.y + direction.y * shellRadius, z: centre.z + direction.z * shellRadius };
+                    } else {
+                        const angle = k * 2 * Math.PI / directions;
+                        candidate = { x: centre.x + Math.cos(angle) * shellRadius, y: centre.y + Math.sin(angle) * shellRadius, z: 0 };
+                    }
+                    if (placed.every(item => Math.hypot(candidate.x - item.point.x, candidate.y - item.point.y, candidate.z - item.point.z) >= radius + item.radius + gap - 1e-6)) {
+                        point = candidate;
+                        break search;
+                    }
+                }
+            }
+            if (!point) point = { x: centre.x, y: centre.y + radius + gap + (placed[0]?.radius ?? 0), z: projection3d ? centre.z : 0 };
+        }
+        result.set(community.id, point);
+        placed.push({ point, radius });
+    }
+    return result;
+}
+
+/** Flat Stellar layout (2D and 3D): communities are densely packed clusters separated by a clear void.
+ * Only Stellar uses this rule; Neural and Mycelium keep their organic Flat layout. */
+function flatStellar(input: LayoutInput): LayoutResult {
+    const { children } = hierarchy(input.nodes);
+    const params = morphologyLayoutParams('stellar');
+    const spacing = 21 * params.spacingMultiplier / Math.sqrt(params.clusterCompactness);
+    const projection3d = input.projection === '3d';
+    const step = spacing * STELLAR_CLUSTER_STEP;
+    const positions = new Map<string, Point3>();
+    // Disclosing a branch never moves nodes already on screen.
+    for (const node of input.nodes) {
+        const previous = input.previous?.get(node.id);
+        if (previous) positions.set(node.id, previous);
+    }
+    const roots = children.get(null) ?? [];
+    const { membersOf } = stellarCommunities(children, roots);
+    const clusterRadius = new Map<string, number>();
+    for (const root of roots) {
+        const count = (membersOf.get(root.id) ?? []).length;
+        clusterRadius.set(root.id, step * Math.sqrt(Math.max(1, count)) + radiusOf(root));
+    }
+    const radiusValues = roots.map(root => clusterRadius.get(root.id) ?? 0);
+    const meanRadius = radiusValues.length ? radiusValues.reduce((sum, value) => sum + value, 0) / radiusValues.length : 1;
+    const gap = STELLAR_VOID_RATIO * meanRadius;
+    // Few communities get a separation-guaranteed packing; many independent roots fall back to the
+    // deterministic spread so no quadratic work runs on the node cap.
+    const corePositions = new Map<string, Point3>();
+    if (roots.length <= 64) {
+        const fixed = new Map<string, Point3>();
+        const fresh: LayoutNode[] = [];
+        for (const root of roots) {
+            const previous = positions.get(root.id);
+            if (previous) fixed.set(root.id, previous);
+            else fresh.push(root);
+        }
+        const orderedFresh = [...fresh].sort((a, b) => (clusterRadius.get(b.id) ?? 0) - (clusterRadius.get(a.id) ?? 0) || compare(a.id, b.id));
+        for (const [id, point] of placeClusterCores(orderedFresh, clusterRadius, gap, fixed, projection3d))
+            corePositions.set(id, point);
+    } else {
+        const total = roots.length;
+        let index = 0;
+        for (const root of roots) {
+            if (positions.has(root.id)) { index++; continue; }
+            corePositions.set(root.id, projection3d
+                ? { ...fibonacciSpherePoint(index, total, step * Math.sqrt(total) * 1.4) }
+                : { ...spiral(index, step * Math.sqrt(total) * 0.6), z: 0 });
+            index++;
+        }
+    }
+    for (const root of roots)
+        positions.set(root.id, corePositions.get(root.id) ?? positions.get(root.id) ?? { x: 0, y: 0, z: 0 });
+    // Collision grid over every already-placed point, so a fresh member never lands on an existing node.
+    const cell = step * 1.4;
+    const occupied = new Map<string, string[]>();
+    const cellKey = (x: number, y: number, z: number) => `${Math.floor(x / cell)}:${Math.floor(y / cell)}:${Math.floor(z / cell)}`;
+    for (const [id, point] of positions) {
+        const key = cellKey(point.x, point.y, point.z);
+        const list = occupied.get(key) ?? [];
+        list.push(id);
+        occupied.set(key, list);
+    }
+    const free = (point: Point3): boolean => {
+        const col = Math.floor(point.x / cell), row = Math.floor(point.y / cell), depth = Math.floor(point.z / cell);
+        for (let dx = -1; dx <= 1; dx++)
+            for (let dy = -1; dy <= 1; dy++)
+                for (let dz = -1; dz <= 1; dz++)
+                    for (const id of occupied.get(`${col + dx}:${row + dy}:${depth + dz}`) ?? []) {
+                        const other = positions.get(id)!;
+                        if (Math.hypot(point.x - other.x, point.y - other.y, point.z - other.z) < step * 0.8)
+                            return false;
+                    }
+        return true;
+    };
+    const memberIndex = new Map<string, number>();
+    for (const root of roots) {
+        const core = positions.get(root.id)!;
+        const members = (membersOf.get(root.id) ?? []).filter(node => node.id !== root.id)
+            .sort((a, b) => b.size - a.size || compare(a.id, b.id));
+        let start = memberIndex.get(root.id) ?? 0;
+        for (const member of members) {
+            if (positions.has(member.id)) continue;
+            const phase = member.level * 0.33;
+            let point: Point3 | null = null;
+            for (let attempt = start; attempt < start + members.length + 64; attempt++) {
+                const offset = projection3d ? shell3d(attempt, step, phase) : (() => { const s = spiral(attempt, step, phase); return { x: s.x, y: s.y, z: 0 }; })();
+                const candidate = { x: core.x + offset.x, y: core.y + offset.y, z: core.z + offset.z };
+                if (free(candidate)) { point = candidate; start = attempt + 1; break; }
+            }
+            positions.set(member.id, point ?? { x: core.x, y: core.y, z: core.z });
+            const placed = positions.get(member.id)!;
+            const key = cellKey(placed.x, placed.y, placed.z);
+            const list = occupied.get(key) ?? [];
+            list.push(member.id);
+            occupied.set(key, list);
+        }
+        memberIndex.set(root.id, start);
+    }
+    const communities: CommunityInfo[] = roots.map(root => ({
+        id: root.id,
+        center: positions.get(root.id) ?? { x: 0, y: 0, z: 0 },
+        radius: clusterRadius.get(root.id) ?? 0,
+        count: (membersOf.get(root.id) ?? []).length,
+    }));
+    return { positions, containers: [], source: 'flat-community', communities };
+}
+
 type Disc = { x: number; y: number; radius: number };
 /** Largest first. Tangencies nearest the origin keep small siblings beside a large pearl. */
 export function packDiscs(items: readonly { id: string; radius: number }[], gap: number, coreCount = 0): Map<string, Disc> {
