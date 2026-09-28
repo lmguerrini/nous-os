@@ -9,14 +9,14 @@ import { projectRelations } from './v2-relations.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
-import { adjacencyOf, communityResolver, DENSITY_BUDGETS, formatCount, lodLevelFromZoom, normalizeDensity, refreshCameraAction, selectArcs, selectNodes } from './lod.ts';
-import type { Density, LodLevel } from './lod.ts';
+import { adjacencyOf, communityResolver, DENSITY_BUDGETS, formatCount, lodLevelFromZoom, normalizeDensity, refreshCameraAction, safeSelectNodes, selectArcs } from './lod.ts';
+import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
 import { labelBudgetOf } from './labels.ts';
 import { createProductView } from './product-view.ts';
 import { appendFlowLegend } from './legend.ts';
 import { buildNodePanel, buildRelationPanel, createEvidenceResolver, renderSelection } from './panel-view.ts';
 import type { V2Category } from './palette.ts';
-import type { Axes, ProductView } from './view-contract.ts';
+import type { Axes, CreateProductView, ProductView } from './view-contract.ts';
 import type { AppearanceOptions } from '../engine/presentation-options.ts';
 import type { PaletteValues } from './palette.ts';
 const element = (id: string) => document.getElementById(id)!;
@@ -43,6 +43,20 @@ const words: Record<string, string> = {
     user: 'fondatore', assistant: 'assistente',
 };
 const term = (s: string | undefined) => s ? words[s] ?? s.toLocaleLowerCase('it') : '';
+/** D-072 R1: the log-once guard for a failed view remount. The user reads the status notice,
+ * the console keeps a single record of the first cause — a condition to fix, not to narrate. */
+let mountFailureLogged = false;
+/** Test-only: re-arms the once-per-session remount failure log. */
+export function resetMountFailureLog(): void {
+    mountFailureLogged = false;
+}
+/** D-072 R1: injection points for the page tests — a fake view factory that counts its mounts
+ * and destroys, and a seam over the LOD selection so a throwing selection is observable. The
+ * page's behaviour is identical with the defaults. */
+export type V2PageDeps = {
+    readonly createView?: CreateProductView;
+    readonly safeSelect?: typeof safeSelectNodes;
+};
 export type SearchHit = {
     id: string;
     level: number;
@@ -90,6 +104,12 @@ export class V2Page {
     /** The disclosed ids + arrangement + morphology of the last refresh. Unchanged means a density
      * or level refresh: the same scene, so the camera is restored and never refit. */
     private lastSceneKey = '';
+    /** D-072 R1: the last LOD selection the page actually mounted — what a failing selection
+     * keeps verbatim (`safeSelectNodes` fallback), retired only by a successful mount. */
+    private lastNodeSelection: LodNodeSelection | null = null;
+    /** D-072 R1: how this page creates its views and selects its LOD set; injectable for tests. */
+    private readonly createView: CreateProductView;
+    private readonly selectLod: typeof safeSelectNodes;
     private lastFitCamera: ReturnType<ProductView['readCamera']> = null;
     /** Set by the user's own camera gestures; an automatic refit only happens while it is false. */
     private userMovedSinceFit = false;
@@ -104,7 +124,7 @@ export class V2Page {
     private whyResult: ReturnType<typeof v2Path> | null = null;
     private whyRequest: [string, string] | null = null;
     private capMessage = false;
-    constructor(manifest: GraphManifest, index: V2Index, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced') {
+    constructor(manifest: GraphManifest, index: V2Index, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
         this.manifest = manifest;
         this.index = index;
         this.axes = axes;
@@ -112,6 +132,8 @@ export class V2Page {
         this.palette = palette;
         this.v2Colours = colours;
         this.density = normalizeDensity(density);
+        this.createView = deps.createView ?? createProductView;
+        this.selectLod = deps.safeSelect ?? safeSelectNodes;
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
             root.addEventListener(type, () => { this.userMovedSinceFit = true; }, { passive: true });
@@ -213,18 +235,19 @@ export class V2Page {
                 ...(this.axes.organization === 'indra' ? { expandZ: this.appearance.expandZ } : {}),
                 ...(usePrevious ? { previous: this.rawPositions } : {}),
             });
-            this.rawPositions = result.positions;
-            this.layoutProjection = projection;
+            // D-072 R1: everything this refresh computes is held in locals until the new view is
+            // on screen — a refresh that fails mid-way must leave the page describing the view it
+            // actually displays, not the one it wanted.
+            const nextRawPositions = result.positions;
             const flat3d = this.axes.organization === 'flat' && projection === '3d';
-            this.canonicalPositions = flat3d ? canonicalize(result.positions) : result.positions;
+            const nextCanonicalPositions = flat3d ? canonicalize(result.positions) : result.positions;
             const expanded = flat3d
-                ? applyExpansion(this.canonicalPositions, { expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ })
+                ? applyExpansion(nextCanonicalPositions, { expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ })
                 : result.positions;
             const next = new Map<string, Point3>();
             for (const n of disclosed.nodes)
                 next.set(n.id, expanded.get(n.id) ?? { x: 0, y: 0, z: 0 });
-            this.positions = next;
-            this.communities = result.communities ?? [];
+            const nextCommunities = result.communities ?? [];
             const active = this.hovered
                 ?? this.renderedRelations.get(this.selected ?? '')?.source
                 ?? this.index.edges.find(edge => edge.id === this.selected)?.source
@@ -241,7 +264,9 @@ export class V2Page {
             const communityOf = communityResolver(this.index.nodes);
             const adjacency = adjacencyOf(disclosed.nodes, this.index.edges);
             const pinned = this.pinnedNodeIds();
-            const selection = selectNodes({
+            // D-072 R1: a selection failure keeps the last mounted selection verbatim
+            // (`safeSelectNodes`), so the drawing never loses its node set — or its labels.
+            const selection = this.selectLod({
                 nodes: disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
                 level: this.lod,
                 budget: budget.nodes,
@@ -249,7 +274,7 @@ export class V2Page {
                 focus: active,
                 adjacency,
                 communityOf,
-            });
+            }, this.lastNodeSelection);
             const renderedIds = new Set(selection.rendered);
             const pool = projectRelations(
                 this.index.nodes, this.index.edges, renderedIds, this.axes.reading,
@@ -263,17 +288,16 @@ export class V2Page {
                 communityOf,
                 keepExploratory: this.axes.reading !== 'attested',
             }).map(id => pool.byId.get(id)!).filter(edge => edge);
-            this.rendered = renderedIds;
             // D-072 FixA: pinned accounting. L1 keeps the explicit set (selection path, hovered,
             // children of manual expansions) even beyond the budget, by design — so the budget
             // binds on the unpinned fill and the witness says how many nodes the pins added.
             const pinnedRendered = [...pinned].filter(id => renderedIds.has(id)).sort();
-            this.lodCounts = {
+            const nextLodCounts = {
                 nodes: { rendered: renderedIds.size, available: ids.size, pinned: pinnedRendered.length, pinnedIds: pinnedRendered },
                 arcs: { rendered: shown.length, available: availableArcs.total },
             };
-            this.renderedRelations = new Map(shown.map(edge => [edge.id, edge]));
-            this.arcTotal = availableArcs.total;
+            const nextRenderedRelations = new Map(shown.map(edge => [edge.id, edge]));
+            const nextArcTotal = availableArcs.total;
             // An Indra container whose children the LOD dropped draws as a closed pearl, never as
             // an empty shell; the drawing reads the open flag, positions are untouched.
             const renderedChildren = new Map<string, number>();
@@ -281,14 +305,91 @@ export class V2Page {
                 const parent = visibleById.get(id)?.parent;
                 if (parent) renderedChildren.set(parent, (renderedChildren.get(parent) ?? 0) + 1);
             }
-            this.containers = result.containers.map(c => {
+            const nextContainers = result.containers.map(c => {
                 const node = visibleById.get(c.id);
                 const title = node && displayLabel(node);
                 const hidden = node ? hiddenCount(node) : 0;
                 const open = c.id === ABSOLUTE_CONTAINER_ID || (c.open !== false && (renderedChildren.get(c.id) ?? 0) > 0);
                 return { ...c, open, ...(title ? { title: hidden ? `${title} · +${hidden}` : title } : {}) };
             });
-            this.layoutSource = result.source;
+            const nextLayoutSource = result.source;
+            const adapted = adaptV2(disclosed.nodes, shown, next, this.manifest.digest);
+            const added = [...renderedIds].filter(id => !this.previousVisible.has(id));
+            const old = this.view?.readCamera();
+            const arrangement = `${this.axes.organization}|${this.axes.projection}`;
+            // Bounds change with the visible set and also when a pearl resizes as its hidden children load.
+            const box = layoutStats(next).bbox;
+            const extent = [box.x, box.y, box.z].map(range => range.map(value => Math.round(value)).join(':')).join('/');
+            const boundsKey = `${arrangement}|${this.axes.morphology}|${this.appearance.expandX}|${this.appearance.expandY}|${this.appearance.expandZ}|${extent}|${[...ids].sort().join('|')}`;
+            const boundsChanged = boundsKey !== this.lastBoundsKey;
+            // D-072 FixA: the same scene (same disclosed ids, arrangement and morphology) means a
+            // density or level refresh — it must never move the camera, even when the rendered
+            // subset's extents jitter enough to look like a bounds change. Only a genuinely new
+            // scene may refit, and only while the user has not taken the camera themselves.
+            const sceneKey = `${arrangement}|${this.axes.morphology}|${[...ids].sort().join('|')}`;
+            const sceneUnchanged = !!old && sceneKey === this.lastSceneKey;
+            const keep = old && arrangement === this.lastArrangement;
+            // Comparing camera states misreads an unfinished fit animation as a user move; the gestures say it directly.
+            const userMoved = !!old && this.userMovedSinceFit;
+            const cameraAction = refreshCameraAction({ hasCamera: !!old, keep: !!keep, boundsChanged, userMoved, sceneUnchanged });
+            // D-072 R1: never destroy the working view before its replacement exists. The new view
+            // mounts first; only a mount that succeeds swaps it in, destroys the old one exactly
+            // once and commits the page state. A mount that throws keeps the old view with its
+            // camera and its labels — and, with no previous view at all (the very first load),
+            // there is nothing to keep, so the error keeps its blocking form and its Riprova.
+            let mounted: ProductView;
+            try {
+                mounted = await this.createView({ container: element('render-root'), data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                            if (target.shiftKey && this.selected && this.selected !== target.id) {
+                                this.why(this.selected, target.id);
+                            }
+                            else
+                                void this.select(target.id);
+                        } }, onDoublePick: target => { if (target)
+                            void this.expand(target.id); }, onHover: target => {
+                            const node = target?.kind === 'node' ? target.id : null;
+                            const edge = target?.kind === 'edge' ? target.id : null;
+                            this.hovered = node;
+                            this.hoveredEdge = edge;
+                            this.updateEmphasis();
+                            this.edgeTooltip(target);
+                            if (this.hoverRefreshTimer) clearTimeout(this.hoverRefreshTimer);
+                        } }
+                });
+            }
+            catch (error) {
+                if (!this.view)
+                    throw error;
+                if (!mountFailureLogged) {
+                    mountFailureLogged = true;
+                    console.error('[d072] view remount failed; keeping the last good view', error);
+                }
+                element('status').textContent = 'Aggiornamento sospeso \u00B7 resta l\u2019ultima vista valida';
+                return;
+            }
+            const previousView = this.view;
+            this.view = mounted;
+            previousView?.destroy();
+            // D-072 R1: the replacement is on screen — only now does the page state describe it.
+            // A failed refresh above leaves every field at the last good values, matching the
+            // view that is actually displayed (witness, labels, panel counts included).
+            this.rawPositions = nextRawPositions;
+            this.layoutProjection = projection;
+            this.canonicalPositions = nextCanonicalPositions;
+            this.positions = next;
+            this.communities = nextCommunities;
+            this.rendered = renderedIds;
+            this.lodCounts = nextLodCounts;
+            this.renderedRelations = nextRenderedRelations;
+            this.arcTotal = nextArcTotal;
+            this.containers = nextContainers;
+            this.layoutSource = nextLayoutSource;
+            this.previousVisible = renderedIds;
+            this.lastNodeSelection = selection;
+            this.lastBoundsKey = boundsKey;
+            this.lastSceneKey = sceneKey;
+            this.lastArrangement = arrangement;
+            this.lastMorphology = this.axes.morphology;
             const volume = volumeStats(this.positions);
             const volumeRow = document.getElementById('volume-stats');
             if (volumeRow) {
@@ -298,49 +399,6 @@ export class V2Page {
                     volumeRow.title = VOLUME_READOUT_HELP;
                 }
             }
-            const adapted = adaptV2(disclosed.nodes, shown, next, this.manifest.digest);
-            const added = [...renderedIds].filter(id => !this.previousVisible.has(id));
-            this.previousVisible = renderedIds;
-            const old = this.view?.readCamera();
-            this.view?.destroy();
-            this.view = null;
-            this.view = await createProductView({ container: element('render-root'), data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: this.containers as typeof result.containers, visibleNodeIds: renderedIds, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
-                        if (target.shiftKey && this.selected && this.selected !== target.id) {
-                            this.why(this.selected, target.id);
-                        }
-                        else
-                            void this.select(target.id);
-                    } }, onDoublePick: target => { if (target)
-                        void this.expand(target.id); }, onHover: target => {
-                        const node = target?.kind === 'node' ? target.id : null;
-                        const edge = target?.kind === 'edge' ? target.id : null;
-                        this.hovered = node;
-                        this.hoveredEdge = edge;
-                        this.updateEmphasis();
-                        this.edgeTooltip(target);
-                        if (this.hoverRefreshTimer) clearTimeout(this.hoverRefreshTimer);
-                    } }
-            });
-            const arrangement = `${this.axes.organization}|${this.axes.projection}`;
-            // Bounds change with the visible set and also when a pearl resizes as its hidden children load.
-            const box = layoutStats(this.positions).bbox;
-            const extent = [box.x, box.y, box.z].map(range => range.map(value => Math.round(value)).join(':')).join('/');
-            const boundsKey = `${arrangement}|${this.axes.morphology}|${this.appearance.expandX}|${this.appearance.expandY}|${this.appearance.expandZ}|${extent}|${[...ids].sort().join('|')}`;
-            const boundsChanged = boundsKey !== this.lastBoundsKey;
-            this.lastBoundsKey = boundsKey;
-            // D-072 FixA: the same scene (same disclosed ids, arrangement and morphology) means a
-            // density or level refresh — it must never move the camera, even when the rendered
-            // subset's extents jitter enough to look like a bounds change. Only a genuinely new
-            // scene may refit, and only while the user has not taken the camera themselves.
-            const sceneKey = `${arrangement}|${this.axes.morphology}|${[...ids].sort().join('|')}`;
-            const sceneUnchanged = !!old && sceneKey === this.lastSceneKey;
-            this.lastSceneKey = sceneKey;
-            const keep = old && arrangement === this.lastArrangement;
-            this.lastArrangement = arrangement;
-            this.lastMorphology = this.axes.morphology;
-            // Comparing camera states misreads an unfinished fit animation as a user move; the gestures say it directly.
-            const userMoved = !!old && this.userMovedSinceFit;
-            const cameraAction = refreshCameraAction({ hasCamera: !!old, keep: !!keep, boundsChanged, userMoved, sceneUnchanged });
             if (cameraAction === "restore") {
                 try {
                     this.programmaticCamera(); this.view.restoreCamera(old);
