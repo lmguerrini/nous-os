@@ -11,10 +11,15 @@ export type MorphologyNodeInput = { readonly id: string; readonly position: Coor
 export type MorphologyEdgeInput = { readonly id: string; readonly source: string; readonly target: string; readonly width: number };
 export type MorphologyColonyInput = { readonly id: string; readonly members: readonly string[]; readonly center: Coordinates };
 export type MorphologyInput = { readonly nodes: readonly MorphologyNodeInput[]; readonly edges: readonly MorphologyEdgeInput[]; readonly colonies: readonly MorphologyColonyInput[]; readonly containers: readonly MorphologyContainerInput[] };
-export type MorphologyNodeShape = MorphologyNodeInput & { readonly degree: number; readonly axis: Coordinates; readonly eccentricity: number };
+/** One low-frequency outline harmonic that deforms a soma away from a perfect ellipse. */
+export type SomaOutlineHarmonic = { readonly order: number; readonly amplitude: number; readonly phase: number };
+export type MorphologyNodeShape = MorphologyNodeInput & {
+  readonly degree: number; readonly axis: Coordinates; readonly eccentricity: number;
+  readonly outline: readonly SomaOutlineHarmonic[];
+};
 export type MorphologySegment = {
   readonly id: string; readonly edgeId: string; readonly source: Coordinates; readonly control: Coordinates; readonly target: Coordinates;
-  readonly samples: readonly Coordinates[]; readonly widthStart: number; readonly widthEnd: number; readonly sharedKey: string | null;
+  readonly samples: readonly Coordinates[]; readonly widthStart: number; readonly widthEnd: number; readonly widthMid: number; readonly sharedKey: string | null;
   readonly curvature: number; readonly path: "straight" | "soft-curve" | "wave";
 };
 export type MorphologyGeometry = {
@@ -36,6 +41,30 @@ const normal = (a: Coordinates, b: Coordinates): Coordinates => {
 };
 const cubic = (a: Coordinates, b: Coordinates, c: Coordinates, d: Coordinates, t: number): Coordinates =>
   add(add(mul(a, (1 - t) ** 3), mul(b, 3 * t * (1 - t) ** 2)), add(mul(c, 3 * t * t * (1 - t)), mul(d, t ** 3)));
+
+/** Neural dendrite/axon width factors: thick near each soma, thinnest at the mid-edge. */
+export const NEURAL_TAPER = { proximal: 1.7, mid: 0.5, distal: 0.85 } as const;
+/** Mycelium wave bound: a visibility floor for tiny links and a hard cap so no arc leaves the field. */
+export const MYCELIUM_AMPLITUDE_MIN_PX = 2.5;
+export const MYCELIUM_AMPLITUDE_CAP_PX = 48;
+/** Bounded radial deviation of a soma outline away from its ellipse (fraction of the local radius). */
+export const SOMA_OUTLINE_MAX_RADIAL = 0.16;
+
+const SOMA_OUTLINE_ORDERS = [2, 3, 4] as const;
+/** Deterministic per-node low-frequency outline harmonics, so no two somata are identical. */
+export function somaOutlineHarmonics(id: string): readonly SomaOutlineHarmonic[] {
+  const seed = morphologyHash(id);
+  return SOMA_OUTLINE_ORDERS.map((order, index) => {
+    const raw = ((seed >>> (index * 8)) & 0xff) / 255;
+    return { order, amplitude: 0.02 + raw * 0.03, phase: ((seed >>> (index * 5)) % 6283) / 1000 };
+  });
+}
+/** Radial outline deviation in [−SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL] at ellipse parameter angle θ. */
+export function somaOutlineIrregularity(harmonics: readonly SomaOutlineHarmonic[], theta: number): number {
+  let value = 0;
+  for (const harmonic of harmonics) value += harmonic.amplitude * Math.cos(harmonic.order * theta + harmonic.phase);
+  return value;
+}
 function somaAxis(node: MorphologyNodeInput, incident: readonly Coordinates[]): { axis: Coordinates; eccentricity: number } {
   const vectors = incident.map(point => unit(sub(point, node.position))).filter(vector => norm(vector) > 0);
   if (!vectors.length) return { axis: { x: 1, y: 0, z: 0 }, eccentricity: 1 };
@@ -60,7 +89,8 @@ function somaRadius(node: MorphologyNodeShape, direction: Coordinates): number {
   return 1 / Math.sqrt((alignment / major) ** 2 + (1 - alignment ** 2) / node.radius ** 2);
 }
 function segment(id: string, edgeId: string, a: Coordinates, b: Coordinates, widthStart: number, widthEnd: number,
-  morphology: Morphology, curvature: number, sharedKey: string | null = null, startInset = 0, endInset = 0): MorphologySegment {
+  morphology: Morphology, curvature: number, sharedKey: string | null = null, startInset = 0, endInset = 0,
+  widthMid = (widthStart + widthEnd) / 2): MorphologySegment {
   const contract = MORPHOLOGY_CONTRACT[morphology].edge;
   const direction = unit(sub(b, a));
   const source = add(a, mul(direction, startInset));
@@ -79,7 +109,10 @@ function segment(id: string, edgeId: string, a: Coordinates, b: Coordinates, wid
     control = c1;
     for (let i = 0; i <= 20; i++) samples.push(cubic(source, c1, c2, target, i / 20));
   } else {
-    const amplitude = Math.min(length * 0.28, Math.max(4, (contract.amplitude[0] + (seed % 13) / 12 * (contract.amplitude[1] - contract.amplitude[0])) * length)) * curvature;
+    // Waviness is bounded relative to the link length (no gigantic arcs) and by a fixed pixel cap (nothing
+    // leaves the field), with a small floor so even the shortest hyphae keep a visible, regular wave.
+    const ratio = contract.amplitude[0] + (seed % 13) / 12 * (contract.amplitude[1] - contract.amplitude[0]);
+    const amplitude = Math.min(MYCELIUM_AMPLITUDE_CAP_PX, Math.max(MYCELIUM_AMPLITUDE_MIN_PX, ratio * length)) * curvature;
     const periods = contract.periods[0];
     const count = length < 45 ? 16 : 40;
     for (let i = 0; i <= count; i++) {
@@ -90,7 +123,7 @@ function segment(id: string, edgeId: string, a: Coordinates, b: Coordinates, wid
     }
     control = samples[1]!;
   }
-  return { id, edgeId, source, target, control, samples, widthStart, widthEnd, sharedKey,
+  return { id, edgeId, source, target, control, samples, widthStart, widthEnd, widthMid, sharedKey,
     curvature: contract.path === "straight" ? 0 : curvature, path: contract.path };
 }
 
@@ -104,7 +137,7 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
     if (!a || !b) throw new TypeError(`morphology edge ${edge.id} lacks an endpoint`);
     incident.get(a.id)!.push(b.position); incident.get(b.id)!.push(a.position);
   }
-  const shaped = nodes.map((node): MorphologyNodeShape => ({ ...node, degree: incident.get(node.id)!.length, ...somaAxis(node, incident.get(node.id)!) }));
+  const shaped = nodes.map((node): MorphologyNodeShape => ({ ...node, degree: incident.get(node.id)!.length, ...somaAxis(node, incident.get(node.id)!), outline: somaOutlineHarmonics(node.id) }));
   const shapes = new Map(shaped.map(node => [node.id, node]));
   const colonyByNode = new Map<string, MorphologyColonyInput>();
   for (const colony of [...colonies].sort((a, b) => a.id.localeCompare(b.id)))
@@ -117,8 +150,10 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
     if (morphology === "stellar") return { id: edge.id, segments: [segment(edge.id, edge.id, a.position, b.position, edge.width, edge.width, morphology, 0)] };
     if (morphology === "neural") {
       const proximal = a.degree >= b.degree;
-      return { id: edge.id, segments: [segment(edge.id, edge.id, a.position, b.position, edge.width * (proximal ? 1.65 : 0.55),
-        edge.width * (proximal ? 0.55 : 1.65), morphology, curvature, null, insetA, insetB)] };
+      return { id: edge.id, segments: [segment(edge.id, edge.id, a.position, b.position,
+        edge.width * (proximal ? NEURAL_TAPER.proximal : NEURAL_TAPER.distal),
+        edge.width * (proximal ? NEURAL_TAPER.distal : NEURAL_TAPER.proximal),
+        morphology, curvature, null, insetA, insetB, edge.width * NEURAL_TAPER.mid)] };
     }
     const sourceColony = colonyByNode.get(a.id), targetColony = colonyByNode.get(b.id);
     if (targetColony?.id === a.id && norm(sub(a.position, targetColony.center)) > 1) {
@@ -161,7 +196,7 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
     if (part.sharedKey) {
       seen.add(part.sharedKey);
       const load = 1 + 0.55 * Math.log2(usage.get(part.sharedKey) ?? 1);
-      drawnSegments.push({ ...part, widthStart: part.widthStart * load, widthEnd: part.widthEnd * load });
+      drawnSegments.push({ ...part, widthStart: part.widthStart * load, widthEnd: part.widthEnd * load, widthMid: part.widthMid * load });
       if (load > 1) for (const point of [part.source, part.target]) {
         const key = `${point.x}:${point.y}:${point.z}`;
         if (!branchSeen.has(key)) { branchSeen.add(key); branchPoints.push(point); }

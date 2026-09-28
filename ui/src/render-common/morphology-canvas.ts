@@ -2,9 +2,11 @@ import type { AppearanceOptions, EdgePresentation, NodeGlyph } from "#engine/pre
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { MorphologyContainerPath, MorphologyGeometry } from "#engine/morphology-geometry.ts";
+import { somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { drawContainers } from "#render-common/container-canvas.ts";
+import { drawStarfield } from "#render-common/starfield.ts";
 
 export type ProjectedPoint = { readonly x: number; readonly y: number; readonly scale: number };
 export const DENSE_SCENE_THRESHOLD = 1200;
@@ -32,6 +34,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   if (bounds.width === 0 || bounds.height === 0) return;
   context.setTransform(canvas.width / bounds.width, 0, 0, canvas.height / bounds.height, 0, 0);
   context.clearRect(0, 0, bounds.width, bounds.height);
+  if (geometry.morphology === "stellar") drawStarfield(context, bounds.width, bounds.height, appearance.starfieldDensity, appearance.starfieldBrightness);
   drawContainers(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection);
   if (structureOnly) return;
   const contract = MORPHOLOGY_CONTRACT[geometry.morphology];
@@ -129,8 +132,22 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       const projectedUnit = Math.max(1e-9, ...basis.map(value => Math.hypot(value.x - p.x, value.y - p.y)));
       const visibleAxis = clamp(Math.hypot(q.x - p.x, q.y - p.y) / projectedUnit, 0, 1);
       const eccentricity = Math.sqrt(1 + ((node.eccentricity ?? 1) ** 2 - 1) * visibleAxis ** 2);
-      if (context.ellipse) context.ellipse(p.x, p.y, radius * eccentricity, radius, angle, 0, Math.PI * 2);
-      else context.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      // An oriented, gently irregular soma: the ellipse radii carry the connection-driven elongation, and the
+      // per-node low-frequency harmonics break the perfect-oval sameness without ever leaving the body.
+      const major = radius * eccentricity, minor = radius;
+      const harmonics = node.outline ?? [];
+      const steps = simplified ? 12 : 24;
+      const cosA = Math.cos(angle), sinA = Math.sin(angle);
+      for (let i = 0; i < steps; i += 1) {
+        const theta = (i / steps) * Math.PI * 2;
+        const bulge = 1 + somaOutlineIrregularity(harmonics, theta);
+        const ex = major * Math.cos(theta) * bulge;
+        const ey = minor * Math.sin(theta) * bulge;
+        const x = p.x + cosA * ex - sinA * ey;
+        const y = p.y + sinA * ex + cosA * ey;
+        if (i === 0) context.moveTo(x, y); else context.lineTo(x, y);
+      }
+      context.closePath?.();
     } else context.arc(p.x, p.y, radius, 0, Math.PI * 2);
     context.fill();
     // A neural soma is one closed body. Semantic glyph rings apply only to the other morphologies.

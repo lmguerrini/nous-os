@@ -77,7 +77,7 @@ test("Mycelium waves and varies width, with each shared trunk drawn once", () =>
   for (const part of geometry.drawnSegments) if (Math.hypot(part.target.x - part.source.x, part.target.y - part.source.y) > 40) {
     const d = descriptor(part);
     assert.ok(d.inflections >= 2, JSON.stringify(d));
-    assert.ok(d.deviation >= 0.08 && d.deviation <= 0.14, JSON.stringify(d));
+    assert.ok(d.deviation >= 0.03 && d.deviation <= 0.06, JSON.stringify(d));
   }
   assert.ok(geometry.drawnSegments.some(p => p.widthStart !== p.widthEnd));
   const shared = geometry.drawnSegments.filter(p => p.sharedKey);

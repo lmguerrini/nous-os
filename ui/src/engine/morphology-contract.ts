@@ -24,7 +24,7 @@ export const MORPHOLOGY_CONTRACT: Readonly<Record<Morphology, MorphologyGeometry
   neural: {
     node: { shape: "soma", scale: 0.85, maxRadiusPx: 11, brightness: [0.64, 1] },
     glow: { maximumCoreRatio: 1.55, strength: 0.15 },
-    edge: { path: "soft-curve", amplitude: [0.06, 0.14], periods: [0, 0], taper: [1.65, 0.55], widthVariation: 0.3 },
+    edge: { path: "soft-curve", amplitude: [0.06, 0.14], periods: [0, 0], taper: [1.7, 0.85], widthVariation: 0.3 },
     branching: "topological", terminals: "soma",
     hover: { radiusMultiplier: 1.15, brightnessMultiplier: 1.2 }, focus: { radiusMultiplier: 1.25, brightnessMultiplier: 1.3 },
     organizations: ["flat", "indra"],
@@ -32,7 +32,7 @@ export const MORPHOLOGY_CONTRACT: Readonly<Record<Morphology, MorphologyGeometry
   mycelium: {
     node: { shape: "junction", scale: 0.48, maxRadiusPx: 5, brightness: [0.55, 0.9] },
     glow: { maximumCoreRatio: 1.25, strength: 0.08 },
-    edge: { path: "wave", amplitude: [0.09, 0.12], periods: [1.5, 1.5], taper: [0.7, 0.5], widthVariation: 0.45 },
+    edge: { path: "wave", amplitude: [0.04, 0.055], periods: [1.5, 1.5], taper: [0.8, 0.55], widthVariation: 0.45 },
     branching: "shared-trunks", terminals: "fine-tip",
     hover: { radiusMultiplier: 1.2, brightnessMultiplier: 1.2 }, focus: { radiusMultiplier: 1.3, brightnessMultiplier: 1.3 },
     organizations: ["flat", "indra"],
