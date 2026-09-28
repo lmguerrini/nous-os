@@ -35,7 +35,7 @@ test('D-069 v2 disclosure, search, details, readings and provenance',async({page
   await page.locator('header [data-axis="reading"] [data-value="exploratory"]').click();
   await expect(page.locator('#focus-chip')).toBeVisible();
   await page.evaluate(id=>(window as any).__d067.select(id),exploratory.id);
-  await expect(page.locator('#details')).toContainText('Perché sono collegati?');
+  await expect(page.locator('#details .selection-card h3', { hasText: 'Perché è collegato?' })).toHaveCount(1);
   expect(await page.locator('body').textContent()).not.toMatch(/Messaggio del fondatore|\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });

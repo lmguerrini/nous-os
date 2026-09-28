@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { waitForCameraRest } from './camera-rest.ts';
 
 test.skip(process.env.D072_BROWSER !== "1", "Serve the review page with D072_BROWSER=1");
 const url = process.env.D072_URL ?? "http://127.0.0.1:8768/";
@@ -84,10 +85,12 @@ test("D072 quality recovers after drag and performance overlay opens, samples an
   await page.mouse.move(box.x + box.width * 0.65, box.y + box.height * 0.6, { steps: 5 });
   expect(await page.evaluate(() => (window as any).__d072.quality())).toBe("moving");
   await page.mouse.up();
+  await waitForCameraRest(page);
   await expect.poll(() => page.evaluate(() => (window as any).__d072.quality()), { timeout: 400, intervals: [50] }).toBe("full");
 
   const opener = page.locator("#performance-toggle");
   const surface = page.locator("#performance-overlay");
+  await page.locator('#more-menu summary').click();
   await opener.click();
   await expect(surface).toBeVisible();
   await expect(opener).toHaveAttribute("aria-pressed", "true");

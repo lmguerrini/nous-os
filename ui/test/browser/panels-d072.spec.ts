@@ -2,6 +2,14 @@ import { test, expect } from '@playwright/test';
 
 test.skip(process.env.D072_BROWSER !== '1', 'Serve the review page with D072_BROWSER=1');
 const url = process.env.D072_URL ?? 'http://127.0.0.1:8768/';
+const assertCloseOnTop = async (page: import('@playwright/test').Page, surface: string) => {
+  const close = page.locator(`${surface} .surface-close`);
+  await expect(close).toBeVisible();
+  expect(await close.evaluate(button => {
+    const rect = button.getBoundingClientRect();
+    return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === button;
+  }), `${surface} close button is the hit target at its centre`).toBe(true);
+};
 
 test('D072 every review surface has close, Escape, toggle and active opener', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -20,7 +28,7 @@ test('D072 every review surface has close, Escape, toggle and active opener', as
     await page.locator(opener).click();
     await expect(page.locator(surface)).toBeVisible();
     await expect(page.locator(opener)).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.locator(`${surface} .surface-close`)).toBeVisible();
+    await assertCloseOnTop(page, surface);
     await page.locator(`${surface} .surface-close`).click();
     await expect(page.locator(surface)).toBeHidden();
     await expect(page.locator(opener)).toHaveAttribute('aria-pressed', 'false');
@@ -35,7 +43,7 @@ test('D072 every review surface has close, Escape, toggle and active opener', as
   await page.locator('#panel-toggle').click();
   await expect(page.locator('#details')).toBeHidden();
   await page.locator('#panel-toggle').click();
-  await expect(page.locator('#details .surface-close')).toBeVisible();
+  await assertCloseOnTop(page, '#details');
   await expect(page.locator('#panel-toggle')).toHaveAttribute('aria-pressed', 'true');
   await page.locator('#details .surface-close').click();
   await expect(page.locator('#details')).toBeHidden();
@@ -52,12 +60,17 @@ test('D072 every review surface has close, Escape, toggle and active opener', as
   await page.keyboard.press('Escape');
   await expect(page.locator('#appearance-panel')).toBeHidden();
   await page.locator('#edit-colours').click();
+  await assertCloseOnTop(page, '#appearance-panel');
   await page.locator('#appearance-panel .surface-close').click();
   await expect(page.locator('#appearance-panel')).toBeHidden();
   if (await page.locator('#performance-overlay').count()) {
+    await page.locator('#more-menu summary').click();
     await page.locator('#performance-toggle').click();
-    await expect(page.locator('#performance-overlay .surface-close')).toBeVisible();
+    await assertCloseOnTop(page, '#performance-overlay');
     await expect(page.locator('#performance-toggle')).toHaveAttribute('aria-pressed', 'true');
+    await page.locator('#appearance-toggle').click();
+    await assertCloseOnTop(page, '#appearance-panel');
+    await page.locator('#appearance-panel .surface-close').click();
     await page.locator('#performance-overlay .surface-close').click();
     await expect(page.locator('#performance-overlay')).toBeHidden();
     await page.locator('#performance-toggle').click();

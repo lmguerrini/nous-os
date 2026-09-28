@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { waitForCameraRest } from './camera-rest.ts';
 
 test.skip(!(process.env.D071_BROWSER === "1" || process.env.D071_CAPTURE === "1"), "Set D071_BROWSER=1 (or D071_CAPTURE=1) and serve the review page");
 
@@ -44,6 +45,7 @@ test("D-071 panel toggle hides and shows the panel, preserving camera and select
   });
   await page.evaluate((nodeId) => (window as any).__d067.select(nodeId), id);
   await expect.poll(() => page.evaluate(() => (window as any).__d067.state().selected)).toBe(id);
+  await waitForCameraRest(page);
   const beforePose = await pose(page);
   const beforeWidth = (await page.locator("#viewport").boundingBox())!.width;
   await expect(page.locator("#panel-edge-toggle")).toBeVisible();

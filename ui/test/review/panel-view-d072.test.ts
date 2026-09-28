@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { buildNodePanel, buildRelationPanel, epistemicLabel, initialEvidence, panelSectionOrder } from '../../src/review/panel-view.ts';
+import { buildNodePanel, buildRelationPanel, createEvidenceResolver, epistemicLabel, initialEvidence, panelSectionOrder } from '../../src/review/panel-view.ts';
 import type { GraphEdge } from '../../src/review/graph-v2.ts';
 import type { V2Node } from '../../src/review/v2-core.ts';
 
@@ -52,4 +52,39 @@ test('D072 JSON-shaped source strings stay out of visible synthesis and excerpts
   assert.equal(model.synthesis, 'Sintesi leggibile.');
   assert.equal(model.evidence[0]?.quote, 'Estratto leggibile.');
   assert.match(JSON.stringify(model.technical), /\\"statement\\"/);
+});
+
+test('D072 evidence resolver uses conversation, container and snapshot placements with readable roles', () => {
+  const conversation = { ...node('conversation:invented', 'conversation', 'Titolo inventato', 3), date: '2026-02-03' };
+  const proposal = { ...node('proposal:invented', 'proposal', 'Proposta inventata', 4), parent: conversation.id };
+  const local = new Map([conversation, proposal].map(item => [item.id, item]));
+  const resolve = createEvidenceResolver(local);
+  assert.equal(resolve({ conversation_id: 'invented' })?.id, conversation.id);
+  assert.equal(resolve({ container: 'invented' })?.id, conversation.id);
+  assert.equal(resolve({ snapshot: { conversation_id: 'invented' } })?.id, conversation.id);
+  assert.equal(resolve({ source_id: 'unmapped' }, proposal.id)?.id, conversation.id);
+  const model = buildNodePanel(proposal, { citations: [
+    { span: 'Citazione inventata uno.', container: 'invented', role: 'founder' },
+    { span: 'Citazione inventata due.', conversation_id: 'invented', voice: 'assistant' },
+    { span: 'Citazione inventata tre.', snapshot: { conversation_id: 'invented' }, role: 'user' },
+  ] }, [], local, resolve);
+  assert.deepEqual(model.evidence.map(item => item.source), Array(3).fill('Titolo inventato'));
+  assert.deepEqual(model.evidence.map(item => item.speaker), ['Fondatore', 'Assistente', 'Utente']);
+  assert.deepEqual(model.evidence.map(item => item.date), Array(3).fill('3 febbraio 2026'));
+});
+
+test('D072 relation citations inherit the conversation on their own side', () => {
+  const leftConversation = { ...node('conversation:left', 'conversation', 'Dialogo sinistro', 3), date: '2026-01-01' };
+  const rightConversation = { ...node('conversation:right', 'conversation', 'Dialogo destro', 3), date: '2026-01-02' };
+  const left = { ...node('proposal:left', 'proposal', 'Idea sinistra', 4), parent: leftConversation.id };
+  const right = { ...node('proposal:right', 'proposal', 'Idea destra', 4), parent: rightConversation.id };
+  const local = new Map([leftConversation, rightConversation, left, right].map(item => [item.id, item]));
+  const a = { source_id: 'src_left', snapshot_digest: 'digest-left', start_byte: 0, end_byte: 4, span: 'Testo sinistro.' };
+  const b = { source_id: 'src_right', snapshot_digest: 'digest-right', start_byte: 0, end_byte: 5, span: 'Testo destro.' };
+  const relation = { id: 'invented-relation', source: left.id, target: right.id, class: 'exploratory' as const,
+    type: 'analogy', directed: true, evidence: [a, b], a_sources: [a], b_sources: [b] };
+  const model = buildRelationPanel(relation, local, createEvidenceResolver(local));
+  assert.deepEqual(model.evidence.map(item => item.source), ['Dialogo sinistro', 'Dialogo destro']);
+  assert.deepEqual(model.evidence.map(item => item.date), ['1 gennaio 2026', '2 gennaio 2026']);
+  assert.deepEqual(model.evidence.map(item => item.speaker), ['Fonte citata', 'Fonte citata']);
 });

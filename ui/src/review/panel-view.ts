@@ -5,6 +5,7 @@ import type { LiftedRelation } from './v2-relations.ts';
 
 type RecordValue = Record<string, unknown>;
 export type PanelEvidence = { quote: string; speaker: string; date: string; source: string; raw: unknown };
+export type EvidenceResolver = (record: unknown, ownerId?: string) => V2Node | undefined;
 export type RelationGroup = { label: string; count: number; items: { id: string; label: string }[] };
 export type PanelModel = {
   title: string; type: string; badge: string; epistemic?: string | undefined; synthesis: string;
@@ -81,15 +82,38 @@ const conversationFor = (id: string, nodes: ReadonlyMap<string, V2Node>): V2Node
   }
   return undefined;
 };
-function evidenceOf(raw: unknown[], nodes: ReadonlyMap<string, V2Node>, fallback?: V2Node): PanelEvidence[] {
-  return raw.flatMap(item => {
+/** Resolve explicit record placement first, then the relation side that supplied a bare citation. */
+export function createEvidenceResolver(nodes: ReadonlyMap<string, V2Node>): EvidenceResolver {
+  return (item, ownerId) => {
     const record = asRecord(item);
-    const sourceNode = nodes.get(asText(record.source_id)) ?? nodes.get(asText(record.conversation_id));
-    const conversation = sourceNode ? conversationFor(sourceNode.id, nodes) : fallback;
-    const source = asText(record.conversation_title) || (conversation ? displayLabel(conversation) : record.date ? `Conversazione del ${date(record.date)}` : 'Conversazione senza titolo');
+    for (const value of [record.container_external_id, record.container_id, record.container,
+      record.conversation_id, record.conversation, record.snapshot_id, record.snapshot, record.snapshot_digest,
+      record.source_id, ownerId]) {
+      const nested = asRecord(value);
+      const id = asText(value) || asText(nested.conversation_id || nested.conversation || nested.container_external_id || nested.container_id || nested.container || nested.id);
+      if (!id) continue;
+      const node = nodes.get(id) ?? nodes.get(`conversation:${id}`);
+      if (node) {
+        const conversation = conversationFor(node.id, nodes);
+        if (conversation) return conversation;
+      }
+    }
+    return undefined;
+  };
+}
+const citationKey = (item: unknown): string => {
+  const record = asRecord(item);
+  return [record.source_id, record.snapshot_digest, record.start_byte, record.end_byte].map(value => String(value ?? '')).join(':');
+};
+function evidenceOf(raw: { item: unknown; ownerId?: string | undefined }[], resolver: EvidenceResolver, fallback?: V2Node): PanelEvidence[] {
+  return raw.flatMap(item => {
+    const record = asRecord(item.item);
+    const conversation = resolver(item.item, item.ownerId) ?? fallback;
+    const source = conversation ? displayLabel(conversation) : asText(record.conversation_title) || (record.date ? `Conversazione del ${date(record.date)}` : 'Conversazione senza titolo');
     const quote = excerpt(record.span || record.quote || record.text || record.context);
     if (!quote) return [];
-    return [{ quote, speaker: ({ user: 'Fondatore', founder: 'Fondatore', assistant: 'Assistente' } as Record<string, string>)[asText(record.voice).toLowerCase()] ?? 'Voce non indicata', date: date(record.date || conversation?.date), source, raw: item }];
+    const voice = asText(record.voice || record.role || record.speaker).toLowerCase();
+    return [{ quote, speaker: ({ user: 'Utente', founder: 'Fondatore', assistant: 'Assistente' } as Record<string, string>)[voice] ?? (voice || 'Fonte citata'), date: date(conversation?.date || record.date), source, raw: item.item }];
   });
 }
 export function groupRelations(node: V2Node, edges: readonly GraphEdge[], nodes: ReadonlyMap<string, V2Node>): RelationGroup[] {
@@ -109,12 +133,12 @@ export function groupRelations(node: V2Node, edges: readonly GraphEdge[], nodes:
   }
   return [...groups.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'it'));
 }
-export function buildNodePanel(node: V2Node, detail: unknown, edges: readonly GraphEdge[], nodes: ReadonlyMap<string, V2Node>): PanelModel {
+export function buildNodePanel(node: V2Node, detail: unknown, edges: readonly GraphEdge[], nodes: ReadonlyMap<string, V2Node>, resolver: EvidenceResolver = createEvidenceResolver(nodes)): PanelModel {
   const outer = asRecord(detail);
   const d = asRecord(outer.detail ?? outer.node ?? outer);
   const conversation = conversationFor(node.id, nodes);
   const rawEvidence = [...(Array.isArray(d.citations) ? d.citations : []), ...(d.citation ? [d.citation] : [])];
-  const evidence = evidenceOf(rawEvidence, nodes, conversation);
+  const evidence = evidenceOf(rawEvidence.map(item => ({ item, ownerId: node.id })), resolver, conversation);
   const state = asText(d.canonical_status || node.status);
   const synthesis = sentence(d.statement || d.why || node.snippet || node.title_full || node.title);
   const source = conversation ? `${displayLabel(conversation)}${conversation.date ? ` · ${date(conversation.date)}` : ''}` : '';
@@ -122,13 +146,23 @@ export function buildNodePanel(node: V2Node, detail: unknown, edges: readonly Gr
     evidence, evidenceSummary: evidence.length ? `${evidence.length} ${evidence.length === 1 ? 'evidenza' : 'evidenze'} da ${source ? '1 conversazione' : 'una fonte'}` : undefined,
     sources: source ? [source] : [], groups: groupRelations(node, edges, nodes), technical: { id: node.id, title_full: node.title_full, detail: outer } };
 }
-export function buildRelationPanel(edge: GraphEdge | LiftedRelation, nodes: ReadonlyMap<string, V2Node>): PanelModel {
+export function buildRelationPanel(edge: GraphEdge | LiftedRelation, nodes: ReadonlyMap<string, V2Node>, resolver: EvidenceResolver = createEvidenceResolver(nodes)): PanelModel {
   const source = nodes.get(edge.source), target = nodes.get(edge.target);
   const left = source ? displayLabel(source) : 'Elemento di origine';
   const right = target ? displayLabel(target) : 'Elemento collegato';
   const underlying = 'underlying' in edge && edge.underlying.length ? edge.underlying : [edge];
-  const rawEvidence = underlying.flatMap(item => item.evidence);
-  const evidence = evidenceOf(rawEvidence, nodes);
+  const sourceConversation = source ? resolver({}, source.id) : undefined;
+  const sharedConversation = sourceConversation && target && sourceConversation.id === resolver({}, target.id)?.id ? source!.id : undefined;
+  const rawEvidence = underlying.flatMap(item => {
+    const fields = asRecord(item);
+    const a = Array.isArray(fields.a_sources) ? fields.a_sources : [];
+    const b = Array.isArray(fields.b_sources) ? fields.b_sources : [];
+    const aKeys = new Set(a.map(citationKey));
+    const bKeys = new Set(b.map(citationKey));
+    return item.evidence.map(record => ({ item: record,
+      ownerId: aKeys.has(citationKey(record)) ? item.source : bKeys.has(citationKey(record)) ? item.target : sharedConversation }));
+  });
+  const evidence = evidenceOf(rawEvidence, resolver);
   const sources = [...new Set(evidence.map(item => `${item.source}${item.date ? ` · ${item.date}` : ''}`))];
   const count = 'count' in edge ? edge.count : underlying.length;
   const shared = edge.type === 'co_membership' ? `${count} conversazioni in comune.` : '';

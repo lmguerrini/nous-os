@@ -14,7 +14,7 @@ import type { Density, LodLevel } from './lod.ts';
 import { labelBudgetOf } from './labels.ts';
 import { createProductView } from './product-view.ts';
 import { appendFlowLegend } from './legend.ts';
-import { buildNodePanel, buildRelationPanel, renderSelection } from './panel-view.ts';
+import { buildNodePanel, buildRelationPanel, createEvidenceResolver, renderSelection } from './panel-view.ts';
 import type { V2Category } from './palette.ts';
 import type { Axes, ProductView } from './view-contract.ts';
 import type { AppearanceOptions } from '../engine/presentation-options.ts';
@@ -850,7 +850,7 @@ export class V2Page {
         }
         const n = byId.get(this.selected), e = this.renderedRelations.get(this.selected) ?? this.index.edges.find(e => e.id === this.selected) ?? (this.selected.startsWith('contains:') ? (() => { const child = byId.get(this.selected.slice(9)); return child?.parent ? { id: this.selected, source: child.parent, target: child.id, class: 'attested' as const, type: 'contains', directed: true, evidence: [] } : undefined; })() : undefined);
         if (n) {
-            renderSelection(host, buildNodePanel(n, this.detailCache.get(n.id), this.index.edges, byId), id => { void this.select(id); });
+            renderSelection(host, buildNodePanel(n, this.detailCache.get(n.id), this.index.edges, byId, createEvidenceResolver(byId)), id => { void this.select(id); });
             if (n.counts.children || n.counts.passages) {
                 const button = document.createElement('button');
                 button.textContent = this.history.state.expanded.has(n.id) ? 'Comprimi' : 'Espandi';
@@ -864,7 +864,7 @@ export class V2Page {
                 host.append(button);
             }
         } else if (e) {
-            renderSelection(host, buildRelationPanel(e, byId), id => { void this.select(id); });
+            renderSelection(host, buildRelationPanel(e, byId, createEvidenceResolver(byId)), id => { void this.select(id); });
         }
         if (this.whyRequest && !this.whyResult) {
             const p = document.createElement('p');
