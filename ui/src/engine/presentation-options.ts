@@ -43,8 +43,6 @@ export type AppearanceOptions = {
   readonly labelSizePx: number;
   /** Share of candidate labels the label layer may place, 0–1. */
   readonly labelDensity: number;
-  /** Flat 3D volume: 0 planar, 1 default, 2 double depth. */
-  readonly depth3d: number;
   /** Per-axis expansion of the 3D volume, 0.3–2.5; never changes data, relations or identities. */
   readonly expandX: number;
   readonly expandY: number;
@@ -64,7 +62,6 @@ export const DEFAULT_APPEARANCE: AppearanceOptions = {
   curvature: 1,
   labelSizePx: 12,
   labelDensity: 0.6,
-  depth3d: 1,
   expandX: 1,
   expandY: 1,
   expandZ: 1,

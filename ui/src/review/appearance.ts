@@ -7,7 +7,6 @@ export type AppearancePresets = Record<string, AppearanceOptions>;
 export const APPEARANCE_RANGES: Readonly<Record<keyof AppearanceOptions, readonly [number, number, number]>> = {
   nodeScale: [0.4, 2.5, 0.05], edgeWidth: [0.3, 3, 0.05], labelSizePx: [10, 18, 1],
   labelDensity: [0, 1, 0.05], glow: [0, 1.5, 0.05], edgeOpacity: [0.05, 1, 0.05], curvature: [0, 1, 0.05],
-  depth3d: [0, 2, 0.05],
   expandX: [0.3, 2.5, 0.05], expandY: [0.3, 2.5, 0.05], expandZ: [0.3, 2.5, 0.05],
   starfieldDensity: [0, 1, 0.05], starfieldBrightness: [0, 1, 0.05],
   flowIntensity: [0, 1, 0.05], flowSpeed: [0, 2, 0.05],
@@ -15,6 +14,9 @@ export const APPEARANCE_RANGES: Readonly<Record<keyof AppearanceOptions, readonl
 export function normalizeAppearance(value: unknown): AppearanceOptions {
   const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const next = { ...DEFAULT_APPEARANCE };
+  // Old presets carried `depth3d` (0 planar, 1 default, 2 double depth); its role is now `expandZ`.
+  if (typeof source.expandZ !== "number" && typeof source.depth3d === "number" && Number.isFinite(source.depth3d))
+    next.expandZ = Math.max(0.3, Math.min(2.5, source.depth3d as number));
   for (const key of Object.keys(APPEARANCE_RANGES) as (keyof AppearanceOptions)[]) {
     const [low, high] = APPEARANCE_RANGES[key];
     const number = source[key];

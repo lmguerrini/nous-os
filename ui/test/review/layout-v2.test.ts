@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { performance } from "node:perf_hooks";
-import { ABSOLUTE_CONTAINER_ID, DEPTH_RATIO_MIN, computeLayout, layoutStats, packDiscs, pearlRadius, type LayoutInput, type LayoutNode, type Point3 } from "../../src/review/layout-v2.ts";
+import { ABSOLUTE_CONTAINER_ID, DEPTH_RATIO_MIN, computeLayout, layoutStats, packDiscs, pearlRadius, type LayoutEdge, type LayoutInput, type LayoutNode, type Point3 } from "../../src/review/layout-v2.ts";
+import { applyExpansion, equilibrate, volumeStats } from "../../src/review/volume.ts";
 import { buildContainerGeometry, buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
 import { drawMorphologyCanvas } from "#render-common/morphology-canvas.ts";
 
@@ -25,7 +26,7 @@ test("layout determinism, incremental stability, depth and morphology membership
     const second = computeLayout({ ...input, organization });
     assert.deepEqual(first, second);
     assert.equal(first.positions.size, input.nodes.length);
-    assert.ok([...first.positions.values()].some(point => point.z !== 0));
+    if (organization === "indra") assert.ok([...first.positions.values()].some(point => point.z !== 0));
     const neural = computeLayout({ ...input, organization, morphology: "neural" });
     const mycelium = computeLayout({ ...input, organization, morphology: "mycelium" });
     assert.deepEqual(first.containers.map(c => c.id), neural.containers.map(c => c.id));
@@ -171,46 +172,44 @@ test("Indra depth remains readable after disclosing a large proposal page", () =
     const input: LayoutInput = { nodes, edges: [], organization: 'indra', morphology: 'stellar' };
     const result = computeLayout(input);
     assert.ok(layoutStats(result.positions).depthRatio >= DEPTH_RATIO_MIN);
-    const shallow = computeLayout({ ...input, depth: 0.5 });
+    const shallow = computeLayout({ ...input, expandZ: 0.5 });
     assert.ok(Math.abs(layoutStats(shallow.positions).depthRatio - layoutStats(result.positions).depthRatio * 0.5) < 1e-8);
   }
 });
 
-test("Flat leaves a size-scaled separation and readable volume", () => {
+test("Flat 2D stays planar while Flat 3D becomes a real volume", () => {
   const input = fixture(500);
-  const result = computeLayout(input);
-  assert.equal(result.source, "flat-community");
-  assert.equal(result.containers.length, 0);
+  const planar = computeLayout(input);
+  assert.equal(planar.source, "flat-community");
+  assert.equal(planar.containers.length, 0);
   for (let a = 0; a < input.nodes.length; a++) for (let b = a + 1; b < input.nodes.length; b++) {
     const left = input.nodes[a]!, right = input.nodes[b]!;
     const minimum = (21 * 1.45 / Math.sqrt(0.55)) * (0.72 + (10 + Math.min(1, left.size) * 5 + Math.min(1, right.size) * 5) / 24);
-    assert.ok(xy(result.positions.get(left.id)!, result.positions.get(right.id)!) + 1e-9 >= minimum);
+    assert.ok(xy(planar.positions.get(left.id)!, planar.positions.get(right.id)!) + 1e-9 >= minimum);
   }
-  assert.ok(layoutStats(result.positions).depthRatio >= DEPTH_RATIO_MIN);
-  const planar = computeLayout({ ...input, depth: 0 });
-  for (const [id, point] of result.positions) {
-    assert.equal(point.x, planar.positions.get(id)?.x);
-    assert.equal(point.y, planar.positions.get(id)?.y);
-    assert.ok(Number.isFinite(point.z));
-    assert.equal(planar.positions.get(id)?.z, 0);
-  }
-  const doubled = computeLayout({ ...input, depth: 2 });
-  assert.ok(Math.abs(layoutStats(doubled.positions).depthRatio - 2 * layoutStats(result.positions).depthRatio) < 1e-6);
+  for (const point of planar.positions.values()) assert.equal(point.z, 0);
+  const volumetric = computeLayout({ ...input, projection: "3d" });
+  assert.equal(volumetric.source, "flat-community");
+  assert.ok([...volumetric.positions.values()].some(point => point.z !== 0));
+  const stats = volumeStats(volumetric.positions);
+  assert.ok(stats.ratios.third >= 0.25, `λ3/λ1 ${stats.ratios.third.toFixed(3)}`);
 });
 
-test('realistic hierarchy has stable depth and three-dimensional spacing', () => {
+test('realistic hierarchy has deterministic 3D spacing and balances to a ball', () => {
   const nodes: LayoutNode[] = [];
   for (let i = 0; i < 8; i++) nodes.push({ id: `domain:${i}`, level: 1, parent: null, size: 0.7, domains: [] });
   for (let i = 0; i < 31; i++) nodes.push({ id: `project:${i}`, level: 2, parent: `domain:${i % 8}`, size: 0.5, domains: [] });
   for (let i = 0; i < 165; i++) nodes.push({ id: `conversation:${i}`, level: 3, parent: `project:${i % 31}`, size: 0.3, domains: [] });
   for (let i = 0; i < 220; i++) nodes.push({ id: `proposal:${i}`, level: 4, parent: `conversation:${i % 165}`, size: 0.1, domains: [] });
-  const input: LayoutInput = { nodes, edges: nodes.filter(n => n.parent).map(n => ({ id: `edge:${n.id}`, source: n.parent!, target: n.id, class: 'attested' })), organization: 'flat', morphology: 'stellar' };
+  const input: LayoutInput = { nodes, edges: nodes.filter(n => n.parent).map(n => ({ id: `edge:${n.id}`, source: n.parent!, target: n.id, class: 'attested' })), organization: 'flat', morphology: 'stellar', projection: '3d' };
   const first = computeLayout(input), second = computeLayout(input);
   assert.deepEqual(first, second);
-  assert.ok(layoutStats(first.positions).depthRatio >= DEPTH_RATIO_MIN);
+  assert.ok(volumeStats(first.positions).ratios.third >= 0.25);
   const points = nodes.map(n => first.positions.get(n.id)!);
   for (let a = 0; a < points.length; a++) for (let b = a + 1; b < points.length; b++)
     assert.ok(Math.hypot(points[a]!.x - points[b]!.x, points[a]!.y - points[b]!.y, points[a]!.z - points[b]!.z) > 20);
+  const balanced = applyExpansion(first.positions, equilibrate(first.positions));
+  assert.ok(volumeStats(balanced).ratios.third >= 0.6);
 });
 
 test("container paths appear in both projections, and Stellar geometry remains straight", () => {
@@ -277,6 +276,30 @@ test("distinct canvas strokes container outlines in both projected views", () =>
       { fieldColor: "rgb(0, 0, 0)", nodes: new Map(), edges: new Map() }, undefined, container, projection);
     assert.equal(strokes, projection === "3d" ? 2 : 1);
   }
+});
+
+test("3D communities are separated clusters: centres at least 3× the intra-community radius", () => {
+  const roots: LayoutNode[] = Array.from({ length: 8 }, (_, i) => ({ id: `community:${i}`, level: 1 as const, parent: null, size: 0.9, domains: [] }));
+  const nodes: LayoutNode[] = [...roots];
+  const edges: LayoutEdge[] = [];
+  for (let i = 0; i < 8; i++) for (let j = 0; j < 12; j++) {
+    const id = `community:${i}:node:${j}`;
+    nodes.push({ id, level: 2 as const, parent: `community:${i}`, size: 0.5, domains: [] });
+    edges.push({ id: `edge:${id}`, source: `community:${i}`, target: id, class: 'attested' });
+  }
+  const result = computeLayout({ nodes, edges, organization: 'flat', morphology: 'stellar', projection: '3d' });
+  const centre = (i: number) => result.positions.get(`community:${i}`)!;
+  const meanIntra = roots.reduce((sum, root, i) => {
+    const members = nodes.filter(n => n.parent === root.id).map(n => result.positions.get(n.id)!);
+    return sum + members.reduce((total, m) => total + Math.hypot(m.x - centre(i).x, m.y - centre(i).y, m.z - centre(i).z), 0) / members.length;
+  }, 0) / roots.length;
+  let inter = 0, pairs = 0;
+  for (let a = 0; a < 8; a++) for (let b = a + 1; b < 8; b++) {
+    inter += Math.hypot(centre(a).x - centre(b).x, centre(a).y - centre(b).y, centre(a).z - centre(b).z);
+    pairs++;
+  }
+  const meanInter = inter / pairs;
+  assert.ok(meanInter >= 3 * meanIntra, `inter ${meanInter.toFixed(1)} < 3× intra ${meanIntra.toFixed(1)}`);
 });
 
 test('2500 independent roots avoid quadratic force work', () => {

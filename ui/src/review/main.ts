@@ -560,10 +560,9 @@ function scheduleAppearance(): void {
   appearanceFrame = requestAnimationFrame(() => { appearanceFrame = 0; void enqueue(async () => { if (v2) await v2.setAppearance(appearance); else await view?.setAppearance(appearance); updateInsets(); }); });
 }
 let appearanceFrame = 0;
-let depthSliderTimer: ReturnType<typeof setTimeout> | undefined;
 const sliderNames: Readonly<Record<string, string>> = {
   nodeScale: "Dimensione nodi", edgeWidth: "Spessore archi", labelSizePx: "Dimensione etichette",
-  labelDensity: "Densità etichette", glow: "Bagliore", edgeOpacity: "Opacità archi", curvature: "Curvatura", depth3d: "Profondità 3D",
+  labelDensity: "Densità etichette", glow: "Bagliore", edgeOpacity: "Opacità archi", curvature: "Curvatura",
   expandX: "Espansione X", expandY: "Espansione Y", expandZ: "Espansione Z",
   starfieldDensity: "Stelle di fondo · densità", starfieldBrightness: "Stelle di fondo · luminosità",
   flowIntensity: "Flusso esplorativo · intensità", flowSpeed: "Flusso esplorativo · velocità (0 = fermo)",
@@ -584,9 +583,7 @@ for (const key of Object.keys(APPEARANCE_RANGES) as (keyof AppearanceOptions)[])
   const value = document.createElement("output"); value.id = `value-${key}`;
   const input = document.createElement("input"); input.id = `appearance-${key}`; input.type = "range";
   input.min = String(min); input.max = String(max); input.step = String(step);
-  input.addEventListener("input", () => { appearance = { ...appearance, [key]: Number(input.value) }; syncAppearanceControls();
-    if (key === 'depth3d') { if (depthSliderTimer) clearTimeout(depthSliderTimer); depthSliderTimer = setTimeout(() => { depthSliderTimer = undefined; scheduleAppearance(); }, 120); }
-    else scheduleAppearance(); });
+  input.addEventListener("input", () => { appearance = { ...appearance, [key]: Number(input.value) }; syncAppearanceControls(); scheduleAppearance(); });
   label.append(value, input); get<HTMLElement>("appearance-sliders").append(label);
 }
 const volumeStats = document.createElement('p'); volumeStats.id = 'volume-stats';
@@ -779,6 +776,19 @@ get<HTMLButtonElement>("appearance-toggle").addEventListener("click", () => {
 });
 get<HTMLButtonElement>("appearance-default").addEventListener("click", () => {
   appearance = { ...DEFAULT_APPEARANCE }; syncAppearanceControls(); scheduleAppearance();
+});
+get<HTMLButtonElement>("equilibra-volume").addEventListener("click", () => {
+  if (!v2) return;
+  if (axes.projection !== "3d" || axes.organization !== "flat") {
+    announce("Equilibra volume è disponibile nella vista 3D Flat");
+    return;
+  }
+  const next = v2.equilibrateVolume();
+  appearance = { ...appearance, ...next };
+  writeLocal(storage, "d069.appearance", appearance);
+  syncAppearanceControls();
+  scheduleAppearance();
+  announce(`Volume equilibrato · X ${next.expandX.toFixed(2)} · Y ${next.expandY.toFixed(2)} · Z ${next.expandZ.toFixed(2)}`);
 });
 get<HTMLButtonElement>("preset-save").addEventListener("click", () => {
   const name = get<HTMLInputElement>("preset-name").value.trim().slice(0, 40);

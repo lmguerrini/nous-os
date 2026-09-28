@@ -26,15 +26,15 @@ test('D-070 absolute Indra, semantic arcs, and selectable pearls', async ({ page
   expect(Object.keys(selected.nodeViewport).length).toBe(scene.disclosure.visible);
 });
 
-test('D-070 Flat volume responds to depth and frames from useful views', async ({ page }) => {
+test('D-071 Flat volume equilibrates and frames from useful views', async ({ page }) => {
   await page.goto(url);
   await page.evaluate(() => (window as any).__d067.ready);
   await page.evaluate(() => (window as any).__d067.setAxes({ projection: '3d', organization: 'flat', reading: 'attested' }));
   const initial = await page.evaluate(() => (window as any).__d067.witness());
-  expect(initial.layoutStats.depthRatio).toBeGreaterThanOrEqual(0.4);
-  const slider = page.locator('#appearance-depth3d');
-  await slider.evaluate((input: HTMLInputElement) => { input.value = '1.5'; input.dispatchEvent(new Event('input', { bubbles: true })); });
-  await expect.poll(async () => (await page.evaluate(() => (window as any).__d067.witness())).layoutStats.depthRatio).toBeGreaterThan(initial.layoutStats.depthRatio * 1.4);
+  expect(initial.volume.ratios.third).toBeGreaterThanOrEqual(0.25);
+  await page.locator('#appearance-toggle').click();
+  await page.locator('#equilibra-volume').click();
+  await expect.poll(async () => (await page.evaluate(() => (window as any).__d067.witness())).volume.ratios.third).toBeGreaterThanOrEqual(0.6);
   await page.evaluate(() => (window as any).__d067.fit());
   const fitted = await page.evaluate(() => (window as any).__d067.witness());
   const rect = fitted.visibleRect;

@@ -34,6 +34,16 @@ const rgba = (color: string, alpha: number): string => {
   const values = color.match(/[\d.]+/g)?.map(Number) ?? [255, 255, 255];
   return `rgba(${Math.round(values[0] ?? 255)}, ${Math.round(values[1] ?? 255)}, ${Math.round(values[2] ?? 255)}, ${clamp(alpha, 0, 1)})`;
 };
+/** A discreet depth cue: in 3D, points farther than the reference plane dim at most 25% toward black.
+ * `scale` is the renderer's per-point perspective size scale, so this is a single scalar per point and
+ * never touches a node's epistemic colour or glyph. */
+const depthBrightness = (scale: number, projection: "2d" | "3d") =>
+  projection === "3d" ? clamp(0.75 + 0.25 * Math.min(1, Math.max(0, scale)), 0.75, 1) : 1;
+const dim = (color: string, factor: number): string => {
+  if (factor >= 1) return color;
+  const values = color.match(/[\d.]+/g)?.map(Number) ?? [255, 255, 255];
+  return `rgb(${Math.round((values[0] ?? 255) * factor)}, ${Math.round((values[1] ?? 255) * factor)}, ${Math.round((values[2] ?? 255) * factor)})`;
+};
 const tint = (rgb: readonly [number, number, number]) => `rgb(${rgb.map(value => Math.round(value * 255)).join(", ")})`;
 const testHook = () => (globalThis as typeof globalThis & { __d070?: { hideEdges?: boolean; hideNodes?: boolean; onlyNodeId?: string } }).__d070;
 
@@ -197,24 +207,25 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
       geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
     const color = visual?.color ?? "rgb(245, 245, 245)";
+    const lit = dim(color, depthBrightness(p.scale, projection));
     const opacity = clamp(Math.max(0.48, visual?.opacity ?? 1) * (emphasis?.brightnessMultiplier ?? 1), 0, 1);
     if (!simplified && appearance.glow > 0 && !testHook()?.hideEdges) {
       const halo = radius * contract.glow.maximumCoreRatio;
       const gradient = context.createRadialGradient(p.x, p.y, 0, p.x, p.y, halo);
-      gradient.addColorStop(0, rgba(color, contract.glow.strength * opacity * appearance.glow));
-      gradient.addColorStop(1, rgba(color, 0));
+      gradient.addColorStop(0, rgba(lit, contract.glow.strength * opacity * appearance.glow));
+      gradient.addColorStop(1, rgba(lit, 0));
       context.fillStyle = gradient;
       context.beginPath(); context.arc(p.x, p.y, halo, 0, Math.PI * 2); context.fill();
     }
-    context.fillStyle = rgba(color, opacity);
+    context.fillStyle = rgba(lit, opacity);
     context.beginPath();
     if (geometry.morphology === "neural") {
       if (!simplified && typeof context.createRadialGradient === "function") {
         const body = context.createRadialGradient(p.x - radius * 0.2, p.y - radius * 0.2, radius * 0.08,
           p.x, p.y, radius * 1.4);
-        body.addColorStop(0, rgba(color, opacity));
-        body.addColorStop(0.55, rgba(color, opacity * 0.82));
-        body.addColorStop(1, rgba(color, opacity * 0.32));
+        body.addColorStop(0, rgba(lit, opacity));
+        body.addColorStop(0.55, rgba(lit, opacity * 0.82));
+        body.addColorStop(1, rgba(lit, opacity * 0.32));
         context.fillStyle = body;
       }
       const axis = node.axis ?? { x: 1, y: 0, z: 0 };
@@ -249,7 +260,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // A neural soma is one closed body. Semantic glyph rings apply only to the other morphologies.
     const glyph = geometry.morphology === "neural" ? "filled" : visual?.glyph ?? "filled";
     if (glyph !== "filled" && !testHook()?.hideEdges) {
-      context.strokeStyle = rgba(color, opacity);
+      context.strokeStyle = rgba(lit, opacity);
       context.lineWidth = clamp(radius * 0.2, 0.8, 2);
       context.beginPath(); context.arc(p.x, p.y, radius * 0.72, 0, Math.PI * 2); context.stroke();
       if (glyph === "hollow") {

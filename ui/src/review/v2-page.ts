@@ -2,6 +2,8 @@ import { validateIndex } from './graph-v2.ts';
 import type { GraphEdge, GraphManifest } from './graph-v2.ts';
 import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
 import type { LayoutContainer, Point3 } from './layout-v2.ts';
+import { applyExpansion, equilibrate, volumeStats } from './volume.ts';
+import type { Expansion } from './volume.ts';
 import { adaptV2 } from './v2-adapter.ts';
 import { projectRelations } from './v2-relations.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
@@ -70,6 +72,9 @@ export class V2Page {
     private previousVisible = new Set<string>();
     private detailCache = new Map<string, Record<string, unknown>>();
     private positions = new Map<string, Point3>();
+    /** Un-expanded layout positions, the deterministic base for `previous` and `equilibrateVolume`. */
+    private rawPositions: ReadonlyMap<string, Point3> = new Map<string, Point3>();
+    private layoutProjection: '2d' | '3d' = '2d';
     private containers: LayoutContainer[] = [];
     private arcTotal = 0;
     private layoutSource = 'placeholder';
@@ -179,6 +184,9 @@ export class V2Page {
             const layoutEdges = projectRelations(
                 this.index.nodes, this.index.edges, ids, this.axes.reading, 'flat', 'essential',
             ).edges;
+            const projection = this.axes.projection;
+            const usePrevious = this.layoutSource === 'flat-community' && this.axes.organization === 'flat'
+                && this.layoutProjection === projection;
             const result = computeLayout({
                 nodes: disclosed.nodes.map(n => ({
                     id: n.id, level: n.level, parent: n.parent, size: n.size, domains: n.domains,
@@ -189,12 +197,18 @@ export class V2Page {
                 })),
                 organization: this.axes.organization,
                 morphology: this.axes.morphology,
-                ...(this.layoutSource === 'flat-community' && this.axes.organization === 'flat' ? { previous: this.positions } : {}),
-                depth: this.appearance.depth3d,
+                projection,
+                ...(this.axes.organization === 'indra' ? { expandZ: this.appearance.expandZ } : {}),
+                ...(usePrevious ? { previous: this.rawPositions } : {}),
             });
+            this.rawPositions = result.positions;
+            this.layoutProjection = projection;
+            const expanded = this.axes.organization === 'flat'
+                ? applyExpansion(result.positions, { expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ })
+                : result.positions;
             const next = new Map<string, Point3>();
             for (const n of disclosed.nodes)
-                next.set(n.id, result.positions.get(n.id) ?? { x: 0, y: 0, z: 0 });
+                next.set(n.id, expanded.get(n.id) ?? { x: 0, y: 0, z: 0 });
             this.positions = next;
             this.containers = result.containers.map(c => {
                 const title = visibleById.get(c.id)?.title;
@@ -203,9 +217,9 @@ export class V2Page {
                 return { ...c, ...(title ? { title: hidden ? `${title} · +${hidden}` : title } : {}) };
             });
             this.layoutSource = result.source;
-            const volume = layoutStats(this.positions);
+            const volume = volumeStats(this.positions);
             const volumeRow = document.getElementById('volume-stats');
-            if (volumeRow) volumeRow.textContent = `Volume 3D: X ${(volume.bbox.x[1] - volume.bbox.x[0]).toFixed(0)} · Y ${(volume.bbox.y[1] - volume.bbox.y[0]).toFixed(0)} · Z ${(volume.bbox.z[1] - volume.bbox.z[0]).toFixed(0)} · profondità ${volume.depthRatio.toFixed(2)}`;
+            if (volumeRow) volumeRow.textContent = `Volume 3D: λ2/λ1 ${volume.ratios.second.toFixed(2)} · λ3/λ1 ${volume.ratios.third.toFixed(2)}`;
             const active = this.hovered
                 ?? this.renderedRelations.get(this.selected ?? '')?.source
                 ?? this.index.edges.find(edge => edge.id === this.selected)?.source
@@ -244,7 +258,7 @@ export class V2Page {
             // Bounds change with the visible set and also when a pearl resizes as its hidden children load.
             const box = layoutStats(this.positions).bbox;
             const extent = [box.x, box.y, box.z].map(range => range.map(value => Math.round(value)).join(':')).join('/');
-            const boundsKey = `${arrangement}|${this.axes.morphology}|${this.appearance.depth3d}|${extent}|${[...ids].sort().join('|')}`;
+            const boundsKey = `${arrangement}|${this.axes.morphology}|${this.appearance.expandX}|${this.appearance.expandY}|${this.appearance.expandZ}|${extent}|${[...ids].sort().join('|')}`;
             const boundsChanged = boundsKey !== this.lastBoundsKey;
             this.lastBoundsKey = boundsKey;
             const keep = old && arrangement === this.lastArrangement;
@@ -470,6 +484,10 @@ export class V2Page {
     }
     async setAppearance(value: AppearanceOptions) { this.appearance = value; await this.refresh(); }
     setFlowMotion(enabled: boolean) { this.flowMotion = enabled; this.view?.setFlowMotion(enabled); }
+    /** Per-axis expansion that balances the Flat 3D embedding's principal extents (PCA), from the raw layout. */
+    equilibrateVolume(): Expansion {
+        return equilibrate(this.rawPositions);
+    }
     async setPalette(value: PaletteValues) { this.palette = value; await this.refresh(); }
     async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
     async fit() { this.programmaticCamera(); await this.view?.fit(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
@@ -559,6 +577,7 @@ export class V2Page {
             layoutSource: this.layoutSource,
             containers: this.containers,
             layoutStats: layoutStats(this.positions),
+            volume: volumeStats(this.positions),
             arcs: { shown: this.renderedRelations.size, total: this.arcTotal },
             dataset: this.dataset(),
             disclosure: this.disclosure(),
@@ -592,8 +611,8 @@ export class V2Page {
         controls.id = 'v2-controls';
         line(controls, 'Nodi visibili', `${shown.nodes.length}/${this.index.nodes.filter(n => n.level !== 5).length} · limite ${V2_CAP}`);
         if (this.axes.organization === 'indra') line(controls, 'Archi', `${this.renderedRelations.size} di ${this.arcTotal}`);
-        const stats = layoutStats(this.positions);
-        line(controls, 'Volume 3D', `X ${(stats.bbox.x[1] - stats.bbox.x[0]).toFixed(0)} · Y ${(stats.bbox.y[1] - stats.bbox.y[0]).toFixed(0)} · Z ${(stats.bbox.z[1] - stats.bbox.z[0]).toFixed(0)} · profondità ${stats.depthRatio.toFixed(2)}`);
+        const volume = volumeStats(this.positions);
+        line(controls, 'Volume 3D', `λ2/λ1 ${volume.ratios.second.toFixed(2)} · λ3/λ1 ${volume.ratios.third.toFixed(2)}`);
         for (const [label, action, disabled] of [['Annulla', () => this.undo(), this.history.undoDepth === 0], ['Ripeti', () => this.redo(), this.history.redoDepth === 0]] as const) {
             const button = document.createElement('button');
             button.textContent = label;
