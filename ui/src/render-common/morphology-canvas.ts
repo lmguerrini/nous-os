@@ -5,7 +5,8 @@ import type { MorphologyContainerPath, MorphologyGeometry, MorphologySegment } f
 import { somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
-import { drawContainers } from "#render-common/container-canvas.ts";
+import { drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
+import type { CanvasDisc } from "#render-common/container-canvas.ts";
 import { drawStarfield } from "#render-common/starfield.ts";
 import {
   EDGE_CATEGORY_SET,
@@ -68,9 +69,29 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   context.setTransform(canvas.width / bounds.width, 0, 0, canvas.height / bounds.height, 0, 0);
   context.clearRect(0, 0, bounds.width, bounds.height);
   if (geometry.morphology === "stellar") drawStarfield(context, bounds.width, bounds.height, appearance.starfieldDensity, appearance.starfieldBrightness);
-  drawContainers(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction);
-  if (structureOnly) return;
   const contract = MORPHOLOGY_CONTRACT[geometry.morphology];
+  // The pearl and soma discs about to be drawn, with exactly the radii the node pass below uses:
+  // container titles avoid them, so a name is never covered by a pearl. A neural soma is elongated
+  // along its axis, so its disc carries the eccentricity.
+  const pearlDiscs: CanvasDisc[] = [];
+  for (const node of geometry.nodes) {
+    if (testHook()?.onlyNodeId && testHook()?.onlyNodeId !== node.id) continue;
+    const visual = style.nodes.get(node.id);
+    const p = project(node.position);
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+    const emphasis = style.interaction?.hoverId === node.id ? contract.hover
+      : style.interaction?.focusIds?.has(node.id) ? contract.focus : null;
+    const given = visual?.radiusPx ?? node.radius * appearance.nodeScale;
+    const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
+      geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+    const elongation = geometry.morphology === "neural" ? Math.max(1, node.eccentricity ?? 1) : 1;
+    pearlDiscs.push({ x: p.x, y: p.y, radius: radius * elongation });
+  }
+  drawContainers(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction);
+  if (structureOnly) {
+    drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, pearlDiscs);
+    return;
+  }
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
   if (!testHook()?.hideEdges) {
     const hoverId = style.interaction?.hoverId;
@@ -206,11 +227,10 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       context.beginPath(); context.arc(p.x, p.y, clamp(1.4 * p.scale * appearance.edgeWidth, 0.9, 3), 0, Math.PI * 2); context.fill();
     }
   }
-  if (testHook()?.hideNodes) return;
   // Indra 3D pearls read as glass spheres: soft spherical shading and a small highlight. Flat 3D and
   // the 2D view keep their flat node discs.
   const indra3d = projection === "3d" && containers.length > 0;
-  for (const node of geometry.nodes) {
+  for (const node of (testHook()?.hideNodes ? [] : geometry.nodes)) {
     if (testHook()?.onlyNodeId && testHook()?.onlyNodeId !== node.id) continue;
     const visual = style.nodes.get(node.id);
     const p = project(node.position);
@@ -221,7 +241,10 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
     const color = visual?.color ?? "rgb(245, 245, 245)";
     const lit = dim(color, depthBrightness(p.scale, projection));
-    const opacity = clamp(Math.max(0.48, visual?.opacity ?? 1) * (emphasis?.brightnessMultiplier ?? 1), 0, 1);
+    // Depth reads on the pearls themselves: the back ones are slightly fainter (the radius already
+    // carries the depth through the projection's size scale).
+    const depthAlpha = projection === "3d" ? clamp(0.85 + 0.15 * Math.min(1, Math.max(0, p.scale)), 0.85, 1) : 1;
+    const opacity = clamp(Math.max(0.48, visual?.opacity ?? 1) * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha, 0, 1);
     if (!simplified && appearance.glow > 0 && !testHook()?.hideEdges) {
       const halo = radius * contract.glow.maximumCoreRatio;
       const gradient = context.createRadialGradient(p.x, p.y, 0, p.x, p.y, halo);
@@ -347,5 +370,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       }
     }
   }
+  // Names come last, above every pearl and arc, so no label is ever covered by its own drawing.
+  drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, pearlDiscs);
   context.globalAlpha = 1;
 }

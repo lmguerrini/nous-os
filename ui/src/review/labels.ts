@@ -12,6 +12,12 @@ export type LabelCandidate = {
 };
 export type PlacedLabel = { id: string; text: string; reason: LabelReason; rect: ViewportRect };
 
+/** One projected obstacle a label must stay clear of: a pearl or soma disc (centre and radius). */
+export type LabelDisc = { readonly x: number; readonly y: number; readonly radius: number };
+
+/** Clear space kept between a label rectangle and any pearl or soma disc. */
+export const PEARL_LABEL_MARGIN_PX = 3;
+
 /** Hard ceiling on labels drawn in one state: selected, neighbours, hubs and focused communities first. */
 export const LABEL_BUDGET = 60;
 
@@ -91,6 +97,7 @@ export function placeLabels(
   measure: (text: string, maxWidth: number, maxLines: number) => { width: number; height: number },
   reserved: readonly ViewportRect[] = [],
   budget: number = Number.POSITIVE_INFINITY,
+  discs: readonly LabelDisc[] = [],
 ): PlacedLabel[] {
   const placed: PlacedLabel[] = [];
   const cellSize = 64;
@@ -101,6 +108,29 @@ export function placeLabels(
       for (let y = Math.floor(top / cellSize); y <= Math.floor(bottom / cellSize); y++)
         result.push(`${x}:${y}`);
     return result;
+  };
+  // Pearl and soma discs, bucketed by cell: a label rectangle must avoid every one of them, not only
+  // other labels (requirement: «nessuna etichetta coperta dal proprio nodo o da altre perle»).
+  const discCells = new Map<string, LabelDisc[]>();
+  for (const disc of discs) {
+    if (!(disc.radius >= 0) || !Number.isFinite(disc.x) || !Number.isFinite(disc.y)) continue;
+    const reach = disc.radius + PEARL_LABEL_MARGIN_PX + 8;
+    for (const key of keys(disc.x - reach, disc.y - reach, disc.x + reach, disc.y + reach)) {
+      const bucket = discCells.get(key) ?? [];
+      bucket.push(disc);
+      discCells.set(key, bucket);
+    }
+  }
+  const discBlocked = (rect: ViewportRect): boolean => {
+    const seen = new Set<LabelDisc>();
+    for (const key of keys(rect.left - 2, rect.top - 2, rect.left + rect.width + 2, rect.top + rect.height + 2)) {
+      for (const disc of discCells.get(key) ?? []) {
+        if (seen.has(disc)) continue;
+        seen.add(disc);
+        if (rectOverlapsDisc(rect, disc.x, disc.y, disc.radius + PEARL_LABEL_MARGIN_PX - 2)) return true;
+      }
+    }
+    return false;
   };
   const priority = { hover: 6, selected: 5, neighbour: 4, domain: 3, main: 2, zoom: 1 };
   for (const c of [...candidates].sort(
@@ -127,6 +157,7 @@ export function placeLabels(
       )
         continue;
       if (radius > 0 && rectOverlapsDisc(rect, c.x, c.y, radius)) continue;
+      if (discs.length > 0 && discBlocked(rect)) continue;
       const nearby = new Set(keys(left - 3, top - 3, left + size.width + 3, top + size.height + 3)
         .flatMap(key => cells.get(key) ?? []));
       if (

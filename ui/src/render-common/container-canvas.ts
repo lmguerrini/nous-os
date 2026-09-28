@@ -4,9 +4,9 @@ import type { Morphology } from "#engine/morphology.ts";
 import type { ProjectedPoint } from "#render-common/morphology-canvas.ts";
 
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
-const dashHook = () => (globalThis as typeof globalThis & { __indraContainers?: { dashed: number; draws: number; limbs?: number | undefined; equators?: number | undefined; minEquatorFlatness?: number | undefined } }).__indraContainers;
+const dashHook = () => (globalThis as typeof globalThis & { __indraContainers?: { dashed: number; draws: number; limbs?: number | undefined; equators?: number | undefined; minEquatorFlatness?: number | undefined; nousosLimb?: { x: number; y: number; radiusPx: number } | undefined } }).__indraContainers;
 const bump = (hook: ReturnType<typeof dashHook>, key: "limbs" | "equators", value: number) => {
-  if (hook) (hook as Record<string, number>)[key] = ((hook as Record<string, number>)[key] ?? 0) + value;
+  if (hook) hook[key] = (hook[key] ?? 0) + value;
 };
 
 /** Continuous outlines only: a non-empty dash pattern would be recorded for the browser check. */
@@ -19,10 +19,11 @@ function setDash(context: CanvasRenderingContext2D, pattern: number[]): void {
   context.setLineDash(pattern);
 }
 
-/** Below this minor/major axis ratio a projected great circle is an edge-on line and is not drawn. */
-export const GREAT_CIRCLE_FLATNESS_CUTOFF = 0.25;
+/** Below this minor/major axis ratio a projected great circle is an edge-on line and is not drawn.
+ * D-071 G3: 0.45 — a near-edge-on ellipse still read as a long thin arc beside the shell limb. */
+export const GREAT_CIRCLE_FLATNESS_CUTOFF = 0.45;
 /** Flatness at which a great circle reaches its full alpha; the fade is linear between the two. */
-export const GREAT_CIRCLE_FLATNESS_FULL = 0.55;
+export const GREAT_CIRCLE_FLATNESS_FULL = 0.8;
 
 /** Fade factor of a great circle from the flatness of its projected ellipse: 0 (edge-on) to 1 (round). */
 export function greatCircleFade(flatness: number): number {
@@ -103,6 +104,49 @@ export type ContainerInteraction = {
   readonly focusIds?: ReadonlySet<string> | null;
 };
 
+/** One projected obstacle a label must stay clear of: a pearl or soma disc. */
+export type CanvasDisc = { readonly x: number; readonly y: number; readonly radius: number };
+
+/** Peak alpha of the glass rim light at the shell limb. Discreet: the background stays dark. */
+export const CONTAINER_RIM_LIGHT_PEAK = 0.16;
+
+/** The rim light of a container sphere: a thin radial gradient just inside the limb, brighter at
+ * the rim and transparent toward the centre (soap-bubble glass). Nothing is added inside
+ * `innerRadius × limbRadius`, so the total added alpha at the centre of the sphere is the first
+ * stop's alpha — at most 0.04 by construction. */
+export function containerRimLight(level: number): {
+  readonly innerRatio: number;
+  readonly stops: readonly { readonly offset: number; readonly alpha: number }[];
+} {
+  const peak = level === 0 ? CONTAINER_RIM_LIGHT_PEAK : clamp(CONTAINER_RIM_LIGHT_PEAK - level * 0.02, 0.06, CONTAINER_RIM_LIGHT_PEAK);
+  return {
+    innerRatio: 0.7,
+    stops: [
+      { offset: 0, alpha: 0 },
+      { offset: 0.62, alpha: peak * 0.25 },
+      { offset: 0.9, alpha: peak },
+      { offset: 1, alpha: peak * 0.5 },
+    ],
+  };
+}
+
+/** A text that does not fit is cut on a word boundary and ends with «…»; the complete text stays in
+ * the tooltip. Pure: the caller supplies the width function. */
+export function ellipsizeText(text: string, maxWidth: number, measure: (text: string) => number): string {
+  if (measure(text) <= maxWidth) return text;
+  const words = text.split(/\s+/);
+  for (let count = words.length - 1; count > 0; count -= 1) {
+    const candidate = `${words.slice(0, count).join(" ")}…`;
+    if (measure(candidate) <= maxWidth) return candidate;
+  }
+  const characters = [...text];
+  for (let count = characters.length - 1; count > 0; count -= 1) {
+    const candidate = `${characters.slice(0, count).join("")}…`;
+    if (measure(candidate) <= maxWidth) return candidate;
+  }
+  return "…";
+}
+
 function containerSelected(container: MorphologyContainerPath, interaction: ContainerInteraction | undefined): boolean {
   return interaction?.hoverId === container.id || (interaction?.focusIds?.has(container.id) ?? false);
 }
@@ -122,11 +166,34 @@ function titleOutline(container: MorphologyContainerPath, projection: "2d" | "3d
   return container.points;
 }
 
+/** True when an axis-aligned rect overlaps a disc of the given radius around (cx, cy). */
+function rectOverlapsDisc(
+  rect: { readonly left: number; readonly top: number; readonly width: number; readonly height: number },
+  cx: number,
+  cy: number,
+  radius: number,
+): boolean {
+  const nearestX = Math.min(Math.max(cx, rect.left), rect.left + rect.width);
+  const nearestY = Math.min(Math.max(cy, rect.top), rect.top + rect.height);
+  return (cx - nearestX) ** 2 + (cy - nearestY) ** 2 <= (radius + 2) ** 2;
+}
+
+/** The first candidate rect that no pearl or soma disc covers, or null when every slot is taken. */
+function firstFreeRect(candidates: readonly { readonly left: number; readonly top: number; readonly width: number; readonly height: number }[], discs: readonly CanvasDisc[] | undefined): { readonly left: number; readonly top: number; readonly width: number; readonly height: number } | null {
+  for (const rect of candidates) {
+    if (discs?.some(disc => rectOverlapsDisc(rect, disc.x, disc.y, disc.radius))) continue;
+    return rect;
+  }
+  return null;
+}
+
 /**
  * The single predicate that decides whether a container draws its own title on the canvas, and where.
- * Returns null when no title is drawn (no title, too narrow, or off-screen). Both the canvas drawer and
- * the DOM label pass call this, so a container never carries two names. In 3D a container hidden by the
- * sphere LOD is only its pearl: its title anchors right above the pearl instead of the sphere's rim.
+ * Returns null when no title is drawn (no title, too narrow, off-screen, or every candidate slot
+ * covered by a pearl). Both the canvas drawer and the DOM label pass call this, so a container never
+ * carries two names. In 3D a container hidden by the sphere LOD is only its pearl: its title anchors
+ * right above the pearl instead of the sphere's rim. When `discs` is supplied the title moves to the
+ * first free slot around its anchor and is dropped when a pearl would cover every slot.
  */
 export function containerTitleRect(
   container: MorphologyContainerPath,
@@ -134,33 +201,49 @@ export function containerTitleRect(
   bounds: { readonly width: number; readonly height: number },
   projection: "2d" | "3d",
   interaction?: ContainerInteraction,
+  discs?: readonly CanvasDisc[],
 ): { readonly left: number; readonly top: number; readonly width: number; readonly height: number } | null {
   if (!container.title) return null;
   if (projection === "3d") {
     const center = project(container.center);
     const limbRadiusPx = Math.max(0.5, container.radius * projectedWorldScale(container.center, container.radius, project));
     if (!containerSphereLOD(container.level, container.open !== false, containerSelected(container, interaction), limbRadiusPx)) {
-      // Below LOD the container is its pearl and its «+N» name: the title sits just above the pearl.
+      // Below LOD the container is its pearl and its «+N» name: the title tries the slots around
+      // the pearl, its natural place just above it, each clear of the pearl's own disc.
       const text = container.title.slice(0, TITLE_MAX_CHARS);
       const width = Math.min(TITLE_MAX_WIDTH, text.length * TITLE_CHAR_WIDTH);
-      const top = center.y - PEARL_TITLE_GAP_PX - 18;
-      if (top < 14 || top >= bounds.height - 20) return null;
-      return { left: center.x - width / 2, top, width, height: 18 };
+      const gap = limbRadiusPx + PEARL_TITLE_GAP_PX;
+      const candidates = [
+        { left: center.x - width / 2, top: center.y - gap - 18, width, height: 18 },
+        { left: center.x - width / 2, top: center.y + gap, width, height: 18 },
+        { left: center.x + gap, top: center.y - 9, width, height: 18 },
+        { left: center.x - gap - width, top: center.y - 9, width, height: 18 },
+      ].filter(rect => rect.top >= 14 && rect.top < bounds.height - 20
+        && rect.left >= 2 && rect.left + rect.width <= bounds.width - 2);
+      return firstFreeRect(candidates, discs);
     }
   }
   const outline = titleOutline(container, projection).map(project);
   if (!outline.length) return null;
   const xs = outline.map(p => p.x), ys = outline.map(p => p.y);
   const left = Math.min(...xs), right = Math.max(...xs);
-  const top = Math.min(...ys);
+  const top = Math.min(...ys), bottom = Math.max(...ys);
   const wideEnough = right - left >= (container.level <= 2 ? 85 : 160);
-  if (!wideEnough || top < 14 || top >= bounds.height - 20) return null;
+  if (!wideEnough) return null;
   const text = container.title.slice(0, TITLE_MAX_CHARS);
   const width = Math.min(TITLE_MAX_WIDTH, text.length * TITLE_CHAR_WIDTH);
-  return { left: (left + right) / 2 - width / 2, top: top - 19, width, height: 18 };
+  const centered = (offsetTop: number) => ({ left: (left + right) / 2 - width / 2, top: offsetTop, width, height: 18 });
+  // The rim title stays above the outline; the other slots only serve pearl avoidance, never a
+  // rim that simply sits too high on screen (the previous rule).
+  const preferred = centered(top - 19);
+  if (preferred.top < 14 || preferred.top >= bounds.height - 20
+    || preferred.left < 2 || preferred.left + preferred.width > bounds.width - 2) return null;
+  return firstFreeRect([preferred, centered(top - 39), centered(bottom + 3)], discs);
 }
 
-/** Draws the Indra containers (nested circles in 2D, nested translucent spheres in 3D) beneath the relations. */
+/** Draws the Indra containers (nested circles in 2D, nested translucent spheres in 3D) beneath the
+ * relations. Titles are a separate, later pass (`drawContainerTitles`) so a name is never drawn
+ * under a pearl. */
 export function drawContainers(
   context: CanvasRenderingContext2D,
   morphology: Morphology,
@@ -178,15 +261,14 @@ export function drawContainers(
     hook.limbs = 0;
     hook.equators = 0;
     hook.minEquatorFlatness = undefined;
+    hook.nousosLimb = undefined;
   }
   const fieldIsLight = (fieldColor.match(/[\d.]+/g)?.map(Number).slice(0, 3).reduce((a, b) => a + b, 0) ?? 0) > 380;
   // The nested shells are the hierarchy. Their lines stay thin, continuous and translucent.
   const ink = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
-  // Titles never collide: outer levels claim their rectangle first and a later title that would overlap is skipped.
-  const titleRects: { left: number; top: number; right: number; bottom: number }[] = [];
   for (const container of [...containers].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id))) {
     if (projection === "3d") {
-      drawSphere(context, container, project, ink, interaction);
+      drawSphere(context, container, project, ink, interaction, bounds);
     } else {
       const points = container.points.map(project);
       if (!points.length) continue;
@@ -201,20 +283,20 @@ export function drawContainers(
       }
       context.stroke();
     }
-    drawTitle(context, container, project, bounds, projection, ink, titleRects, interaction);
   }
   setDash(context, []);
 
-  /** The projected limb circle plus a faint glass fill and at most one equator, chosen as the most
-   * face-on great circle and faded by its projected flatness; its back half is dimmer than its front
-   * half, always continuous, never dashed. Containers below the sphere LOD draw no sphere at all:
-   * they are carried by their pearl and their «+N» title. */
+  /** The projected limb circle plus a faint glass fill, a rim light just inside the limb, and at most
+   * one equator, chosen as the most face-on great circle and faded by its projected flatness; its
+   * back half is dimmer than its front half, always continuous, never dashed. Containers below the
+   * sphere LOD draw no sphere at all: they are carried by their pearl and their «+N» title. */
   function drawSphere(
     context: CanvasRenderingContext2D,
     container: MorphologyContainerPath,
     project: (point: Coordinates) => ProjectedPoint,
     ink: string,
     interaction: ContainerInteraction | undefined,
+    bounds: { readonly width: number; readonly height: number },
   ): void {
     const hook = dashHook();
     const center = project(container.center);
@@ -232,6 +314,14 @@ export function drawContainers(
       gradient.addColorStop(1, `rgba(${ink}, 0)`);
       context.fillStyle = gradient;
       context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
+      // Glass rim light: brighter at the rim, transparent toward the centre, so the shell reads as a
+      // volume instead of a flat disc. Nothing is added over the inner 70 % of the radius.
+      const rim = containerRimLight(container.level);
+      const rimGradient = context.createRadialGradient(
+        center.x, center.y, limbRadius * rim.innerRatio, center.x, center.y, limbRadius);
+      for (const stop of rim.stops) rimGradient.addColorStop(stop.offset, `rgba(${ink}, ${stop.alpha})`);
+      context.fillStyle = rimGradient;
+      context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
     }
     // The projected silhouette: the level-0 NousOS limb stays light and clearly visible.
     const limbAlpha = container.level === 0 ? 0.6 : clamp(0.4 - container.level * 0.03, 0.16, 0.4);
@@ -240,17 +330,22 @@ export function drawContainers(
     setDash(context, []);
     context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.stroke();
     bump(hook, "limbs", 1);
+    if (container.level === 0 && hook) hook.nousosLimb = { x: center.x, y: center.y, radiusPx: limbRadius };
     // At most one equator, the most face-on great circle, faded by flatness so an edge-on circle
     // (a long line with no identifiable meaning) is never drawn.
     const equator = chosenEquator(container.shell ?? [], project);
     if (!equator) return;
+    const shellPoints = equator.circle.map(project);
+    // The NousOS equator never reaches outside the canvas: a tall narrow ellipse pressed against the
+    // border reads as geometry with no semantics, so it is not drawn at all there.
+    if (container.level === 0 && shellPoints.some(point =>
+      point.x < -1 || point.x > bounds.width + 1 || point.y < -1 || point.y > bounds.height + 1)) return;
     bump(hook, "equators", 1);
     if (hook) hook.minEquatorFlatness = Math.min(hook.minEquatorFlatness ?? Infinity, equator.flatness);
     const centerScale = Math.max(center.scale, 1e-4);
     const frontAlpha = (container.level === 0 ? 0.34 : clamp(0.3 - container.level * 0.035, 0.12, 0.3)) * equator.fade;
     const backAlpha = clamp(frontAlpha * 0.32, 0.04, 0.12);
     const band = Math.max(centerScale * 0.08, 1e-4);
-    const shellPoints = equator.circle.map(project);
     for (let index = 0; index < shellPoints.length - 1; index++) {
       const a = shellPoints[index]!, b = shellPoints[index + 1]!;
       const midScale = (a.scale + b.scale) / 2;
@@ -260,24 +355,43 @@ export function drawContainers(
       context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
     }
   }
+}
 
-  function drawTitle(
-    context: CanvasRenderingContext2D,
-    container: MorphologyContainerPath,
-    project: (point: Coordinates) => ProjectedPoint,
-    bounds: { readonly width: number; readonly height: number },
-    projection: "2d" | "3d",
-    ink: string,
-    titleRects: { left: number; top: number; right: number; bottom: number }[],
-    interaction?: ContainerInteraction,
-  ): void {
-    const rect = containerTitleRect(container, project, bounds, projection, interaction);
-    if (!rect) return;
+/** Draws the container titles after (therefore above) all nodes and arcs. A title that does not fit
+ * ends with «…»; a title whose every slot a pearl would cover is dropped (its LOD already carries it). */
+export function drawContainerTitles(
+  context: CanvasRenderingContext2D,
+  morphology: Morphology,
+  containers: readonly MorphologyContainerPath[],
+  project: (point: Coordinates) => ProjectedPoint,
+  fieldColor: string,
+  bounds: { readonly width: number; readonly height: number },
+  projection: "2d" | "3d",
+  interaction?: ContainerInteraction,
+  discs?: readonly CanvasDisc[],
+): void {
+  const fieldIsLight = (fieldColor.match(/[\d.]+/g)?.map(Number).slice(0, 3).reduce((a, b) => a + b, 0) ?? 0) > 380;
+  const ink = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
+  const measure = typeof context.measureText === "function"
+    ? (text: string) => context.measureText(text).width
+    : (text: string) => text.length * TITLE_CHAR_WIDTH;
+  // Titles never collide: outer levels claim their rectangle first and a later title that would overlap is skipped.
+  const titleRects: { left: number; top: number; right: number; bottom: number }[] = [];
+  for (const container of [...containers].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id))) {
+    const rect = containerTitleRect(container, project, bounds, projection, interaction, discs);
+    if (!rect) continue;
     const box = { left: rect.left - 3, top: rect.top, right: rect.left + rect.width + 3, bottom: rect.top + rect.height };
-    if (titleRects.some(other => box.left < other.right && other.left < box.right && box.top < other.bottom && other.top < box.bottom)) return;
+    if (titleRects.some(other => box.left < other.right && other.left < box.right && box.top < other.bottom && other.top < box.bottom)) continue;
     titleRects.push(box);
+    const text = ellipsizeText(container.title!.slice(0, TITLE_MAX_CHARS), TITLE_MAX_WIDTH, measure);
+    // A thin dark halo keeps the name legible over any arc that still runs beneath it.
+    if (typeof context.strokeText === "function") {
+      context.strokeStyle = fieldIsLight ? "rgba(255, 255, 255, 0.55)" : "rgba(10, 10, 10, 0.6)";
+      context.lineWidth = 3;
+      context.strokeText(text, rect.left, rect.top + 14, TITLE_MAX_WIDTH);
+    }
     context.fillStyle = `rgba(${ink}, ${clamp(0.95 - container.level * 0.1, 0.5, 0.9)})`;
     context.font = `${container.level <= 2 ? 600 : 400} 12px Arial`;
-    context.fillText(container.title!.slice(0, TITLE_MAX_CHARS), rect.left, rect.top + 14, TITLE_MAX_WIDTH);
+    context.fillText(text, rect.left, rect.top + 14, TITLE_MAX_WIDTH);
   }
 }

@@ -211,11 +211,12 @@ test("3D limbs draw at true projected size; small closed spheres draw none and k
   assert.equal(hook.equators, 3);
   assert.ok((hook.minEquatorFlatness ?? 0) >= GREAT_CIRCLE_FLATNESS_CUTOFF);
   assert.equal(hook.dashed, 0);
-  // The closed pearl keeps its name: anchored above the pearl itself, even though the sphere is narrow.
+  // The closed pearl keeps its name: anchored above the pearl itself (its projected radius plus a
+  // gap), even though the sphere is narrow.
   const pearl = containers.find(container => container.id === "project")!;
   const rect = containerTitleRect(pearl, project, { width: 900, height: 640 }, "3d");
   assert.ok(rect, "a closed pearl below the LOD keeps its «+N» title");
-  assert.ok(Math.abs(rect.top - (320 - 30)) < 1e-9, `title top ${rect.top}`);
+  assert.ok(Math.abs(rect.top - (320 - 12 - 12 - 18)) < 1e-9, `title top ${rect.top}`);
   assert.ok(Math.abs(rect.left + rect.width / 2 - 510) < 1e-9);
   // When the sphere is selected the LOD lifts and the title follows the sphere rim again.
   const focused = containerTitleRect(pearl, project, { width: 900, height: 640 }, "3d", { focusIds: new Set(["project"]) });

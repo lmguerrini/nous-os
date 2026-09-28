@@ -9,6 +9,7 @@ import type { RenderHandle } from "../render2d/index.ts";
 import { mount as mount3d } from "../render3f/mount.tsx";
 import type { Render3fRendererHandle } from "../render3f/mount.tsx";
 import { framingSpherePoints, framingVolumePoints, solveFraming } from "./framing.ts";
+import { framingShellRingPoints } from "./framing-shell.ts";
 import { adaptReviewExport, restrictAnchors, subgraph } from "./product-adapter.ts";
 import { placeDynamic } from "./live-placement.ts";
 import { relaxDepth } from "./depth.ts";
@@ -28,7 +29,9 @@ import type { ReviewCameraState } from "../render3f/camera.tsx";
 import { defaultObliqueOrbit, resolvedNodeBounds } from "../render3f/camera.tsx";
 import { buildContainerGeometry } from "../engine/container-geometry.ts";
 import type { MorphologyContainerPath } from "../engine/container-geometry.ts";
-import { containerSphereLOD, containerTitleRect, projectedWorldScale } from "../render-common/container-canvas.ts";
+import { containerSphereLOD, containerTitleRect, ellipsizeText, projectedWorldScale } from "../render-common/container-canvas.ts";
+import type { CanvasDisc } from "../render-common/container-canvas.ts";
+import { MORPHOLOGY_CONTRACT } from "../engine/morphology-contract.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
 import {
   classifyEdgeCategory,
@@ -202,11 +205,27 @@ export const createProductView: CreateProductView = async (input) => {
     if (axes.organization === "indra" && input.layoutContainers) {
       for (const path of buildContainerGeometry(axes.morphology, input.layoutContainers)) pathById.set(path.id, path);
     }
+    // The pearls about to be drawn, projected with their radii: every label must avoid them, not only
+    // other labels. The footprint witness already carries the projection's size scale, and a hovered
+    // or focused pearl (and a neural soma, which is elongated) gets a little clearance extra.
+    const contract = MORPHOLOGY_CONTRACT[axes.morphology];
+    const footprints = handle.readNodeFootprintWitnesses();
+    const discs: CanvasDisc[] = [];
+    for (const footprint of footprints) {
+      const { x, y } = footprint.viewportCenter;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const emphasisFactor = morphologyInteraction.hoverId === footprint.id ? contract.hover.radiusMultiplier
+        : morphologyInteraction.focusIds?.has(footprint.id) ? contract.focus.radiusMultiplier : 1;
+      discs.push({
+        x, y,
+        radius: footprint.coreRadiusPx * emphasisFactor * (axes.morphology === "neural" ? 1.3 : 1.05) + 2,
+      });
+    }
     const titleRects = [...pathById.values()].flatMap(path => {
-      const rect = containerTitleRect(path, project, bounds, axes.projection, containerInteraction);
+      const rect = containerTitleRect(path, project, bounds, axes.projection, containerInteraction, discs);
       return rect ? [rect] : [];
     });
-    const footprintRadius = new Map(handle.readNodeFootprintWitnesses().map(footprint => [footprint.id, footprint.coreRadiusPx]));
+    const footprintRadius = new Map(footprints.map(footprint => [footprint.id, footprint.coreRadiusPx]));
     const candidates = [];
     for (const [id, position] of anchors) {
       const node = nodesById.get(id);
@@ -221,7 +240,7 @@ export const createProductView: CreateProductView = async (input) => {
       if (occluded.has(id) && !chosen && !hovered) continue;
       // A large Indra ring carries its own title at the rim; keep one label per container.
       const path = pathById.get(id);
-      if (path && !chosen && !hovered && containerTitleRect(path, project, bounds, axes.projection, containerInteraction))
+      if (path && !chosen && !hovered && containerTitleRect(path, project, bounds, axes.projection, containerInteraction, discs))
         continue;
       let reason: "hover" | "selected" | "neighbour" | "domain" | "main" | "zoom" | null = null;
       if (hovered) reason = "hover";
@@ -262,6 +281,7 @@ export const createProductView: CreateProductView = async (input) => {
         if (candidates[index]!.reason === "neighbour" && !keep.has(candidates[index]!.id)) candidates.splice(index, 1);
     }
     const context = document.createElement("canvas").getContext("2d");
+    if (context) context.font = `${appearance.labelSizePx}px Arial`;
     const measured = (text: string, maxWidth: number, maxLines: number) => {
       const font = `${appearance.labelSizePx}px Arial`;
       if (context) context.font = font;
@@ -294,7 +314,13 @@ export const createProductView: CreateProductView = async (input) => {
       reserved.push({ left: panelRect.left - hostRect.left, top: panelRect.top - hostRect.top,
         width: panelRect.width, height: panelRect.height });
     }
-    const next = placeLabels(disambiguateLabels(limited), bounds, measured, reserved, LABEL_BUDGET);
+    // A short label stays on one line: a title that does not fit is cut on a word boundary and ends
+    // with «…» (the full title stays in the hover label and the panel), never a clipped word.
+    const singleLineWidth = (text: string) => text.split(/\s+/)
+      .reduce((sum, word) => sum + (context?.measureText(word).width ?? word.length * appearance.labelSizePx * 0.58) + 5, 0);
+    const labelled = disambiguateLabels(limited).map(candidate =>
+      candidate.full ? candidate : { ...candidate, text: ellipsizeText(candidate.text, 180, singleLineWidth) });
+    const next = placeLabels(labelled, bounds, measured, reserved, LABEL_BUDGET, discs);
     const rect = container.getBoundingClientRect();
     placed = next.map((label) => ({
       ...label,
@@ -518,7 +544,12 @@ export const createProductView: CreateProductView = async (input) => {
         initialPoints.push(...framingVolumePoints(initialPoints));
       if (axes.organization === 'indra' && input.layoutContainers) {
         const outer = input.layoutContainers.find(item => item.level === 0);
-        if (outer) initialPoints.push(...framingSpherePoints(outer.center, axes.projection === '2d' ? outer.radius2d ?? outer.radius : outer.radius));
+        // The framing subjects include the whole drawn shell: in 3D the limb circle (radius ×
+        // projectedWorldScale) reaches beyond the six axis supports under the oblique default
+        // orbit, so the fit gets the shell's great-circle ring too.
+        if (outer) initialPoints.push(...(axes.projection === '2d'
+          ? framingSpherePoints(outer.center, outer.radius2d ?? outer.radius)
+          : framingShellRingPoints(outer.center, outer.radius)));
       }
       solveFraming(handle, {
         points: initialPoints,
@@ -651,7 +682,9 @@ export const createProductView: CreateProductView = async (input) => {
       points.push(...framingVolumePoints(points));
     if (ids.length === visible.size && axes.organization === 'indra' && input.layoutContainers) {
       const outer = input.layoutContainers.find(item => item.level === 0);
-      if (outer) points.push(...framingSpherePoints(outer.center, axes.projection === '2d' ? outer.radius2d ?? outer.radius : outer.radius));
+      if (outer) points.push(...(axes.projection === '2d'
+        ? framingSpherePoints(outer.center, outer.radius2d ?? outer.radius)
+        : framingShellRingPoints(outer.center, outer.radius)));
     }
     if (ids.length === visible.size && three)
       points.push(...three.readRelationGeometryWitnesses().map((relation) => relation.controlPoint).filter(finitePoint));
@@ -772,10 +805,12 @@ export const createProductView: CreateProductView = async (input) => {
       if (!handle) throw new Error("view destroyed");
       const r = container.getBoundingClientRect();
       const mounted = handle.readWorldAnchorWitnesses();
+      const radii = new Map(handle.readNodeFootprintWitnesses().map(footprint => [footprint.id, footprint.coreRadiusPx]));
       const nodeViewport = Object.fromEntries(
         mounted.map(({ id, position }) => {
           const p = project(position);
-          return [id, { x: r.left + p.x, y: r.top + p.y }];
+          const radius = radii.get(id);
+          return [id, { x: r.left + p.x, y: r.top + p.y, ...(radius !== undefined ? { radius } : {}) }];
         }),
       );
       const positions = Object.fromEntries(

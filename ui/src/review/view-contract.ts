@@ -96,8 +96,8 @@ export type ViewWitness = {
   readonly cameraKind: "orthographic" | "perspective";
   /** The canvas area really available for the graph: the container minus the declared insets. */
   readonly visibleRect: ViewportRect;
-  /** Projected centre of every visible node, page CSS pixels. */
-  readonly nodeViewport: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
+  /** Projected centre of every visible node, page CSS pixels; `radius` is the drawn pearl/soma disc radius. */
+  readonly nodeViewport: Readonly<Record<string, { readonly x: number; readonly y: number; readonly radius?: number }>>;
   /** World coordinates of every visible node, in the layout's own space. */
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
   readonly labels: readonly LabelWitness[];

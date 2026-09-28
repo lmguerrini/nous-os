@@ -92,7 +92,7 @@ test('D-071 G1 container LOD draws true-size limbs and at most one flatness-fade
   expect(before.hook.limbs as number).toBeLessThan(before.total);
   // At most one equator per sphere, and every drawn equator is round enough to mean something.
   expect(before.hook.equators as number).toBeLessThanOrEqual(before.hook.limbs as number);
-  expect(before.hook.minEquatorFlatness ?? 1).toBeGreaterThanOrEqual(0.25);
+  expect(before.hook.minEquatorFlatness ?? 1).toBeGreaterThanOrEqual(0.45);
 
   // Selecting a closed container lifts the LOD: its sphere appears.
   const closedId = before.closed[0]!;
@@ -100,6 +100,68 @@ test('D-071 G1 container LOD draws true-size limbs and at most one flatness-fade
   await page.waitForTimeout(900);
   const after = await page.evaluate(() => (window as any).__indraContainers as Record<string, number | undefined>);
   expect(after.limbs as number).toBeGreaterThanOrEqual((before.hook.limbs as number) + 1);
-  expect(after.minEquatorFlatness ?? 1).toBeGreaterThanOrEqual(0.25);
+  expect(after.minEquatorFlatness ?? 1).toBeGreaterThanOrEqual(0.45);
   expect(after.equators as number).toBeLessThanOrEqual(after.limbs as number);
+});
+
+test('D-071 G3 no label sits under a pearl, and the whole NousOS shell stays in view', async ({ page }) => {
+  await page.goto(url);
+  await page.evaluate(() => (window as any).__d067.ready);
+  await page.evaluate(() => { (window as any).__indraContainers = { dashed: 0, draws: 0 }; });
+
+  // Every label rectangle clears every pearl/soma disc, in all three 3D morphologies.
+  for (const morphology of ['stellar', 'neural', 'mycelium']) {
+    await page.evaluate((m: string) => (window as any).__d067.setAxes({ projection: '3d', organization: 'indra', morphology: m, reading: 'attested' }), morphology);
+    await page.waitForTimeout(1600);
+    const overlaps = await page.evaluate(() => {
+      const w = (window as any).__d067.witness();
+      const labels = w.labels as { id: string; rect: { left: number; top: number; width: number; height: number } }[];
+      const nodes = w.nodeViewport as Record<string, { x: number; y: number; radius?: number }>;
+      const bad: string[] = [];
+      for (const label of labels) {
+        for (const [id, node] of Object.entries(nodes)) {
+          const radius = node.radius ?? 0;
+          const nearestX = Math.min(Math.max(node.x, label.rect.left), label.rect.left + label.rect.width);
+          const nearestY = Math.min(Math.max(node.y, label.rect.top), label.rect.top + label.rect.height);
+          if ((node.x - nearestX) ** 2 + (node.y - nearestY) ** 2 < (radius + 1) ** 2)
+            bad.push(`${label.id} under ${id}`);
+        }
+      }
+      return { bad, labels: labels.length, radii: Object.values(nodes).filter((n: any) => (n.radius ?? 0) > 0).length };
+    });
+    expect(overlaps.radii, `${morphology}: the witness must report pearl radii`).toBeGreaterThan(0);
+    expect(overlaps.bad, `${morphology}: ${overlaps.bad.join(', ')}`).toEqual([]);
+  }
+
+  // The NousOS limb circle lies inside the visible rectangle, after the automatic fit…
+  const limbClearances = () => page.evaluate(() => {
+    const w = (window as any).__d067.witness();
+    const hook = (window as any).__indraContainers as { nousosLimb?: { x: number; y: number; radiusPx: number } };
+    if (!hook.nousosLimb) return { missing: true as const };
+    const rect = w.visibleRect as { left: number; top: number; width: number; height: number };
+    const limb = hook.nousosLimb;
+    // The hook is in canvas-local pixels; visibleRect.left/top gives the same origin in page pixels.
+    const clearances: { missing: false; left: number; right: number; top: number; bottom: number } = {
+      missing: false,
+      left: limb.x - limb.radiusPx,
+      right: rect.width - (limb.x + limb.radiusPx),
+      top: limb.y - limb.radiusPx,
+      bottom: rect.height - (limb.y + limb.radiusPx),
+    };
+    return clearances;
+  });
+  const afterAutoFit = await limbClearances();
+  expect(afterAutoFit.missing).toBe(false);
+  if (!afterAutoFit.missing)
+    expect(Math.min(afterAutoFit.left, afterAutoFit.right, afterAutoFit.top, afterAutoFit.bottom)).toBeGreaterThanOrEqual(-1);
+
+  // …and after «Adatta» (fit).
+  await page.evaluate(() => (window as any).__d067.setAxes({ projection: '3d', organization: 'indra', morphology: 'stellar', reading: 'attested' }));
+  await page.waitForTimeout(1600);
+  await page.evaluate(() => (window as any).__d067.fit());
+  await page.waitForTimeout(1600);
+  const afterFit = await limbClearances();
+  expect(afterFit.missing).toBe(false);
+  if (!afterFit.missing)
+    expect(Math.min(afterFit.left, afterFit.right, afterFit.top, afterFit.bottom)).toBeGreaterThanOrEqual(-1);
 });
