@@ -1,4 +1,5 @@
 import type { LabelReason, ViewportRect } from "./view-contract.ts";
+import { ellipsizeText, ellipsizeTextKeepCount } from "../render-common/container-canvas.ts";
 export type LabelCandidate = {
   id: string;
   text: string;
@@ -12,14 +13,76 @@ export type LabelCandidate = {
 };
 export type PlacedLabel = { id: string; text: string; reason: LabelReason; rect: ViewportRect };
 
-/** One projected obstacle a label must stay clear of: a pearl or soma disc (centre and radius). */
-export type LabelDisc = { readonly x: number; readonly y: number; readonly radius: number };
+/** One projected obstacle a label must stay clear of: a pearl or soma disc (centre and radius). A
+ * disc carrying the candidate's own id is skipped for that candidate: the label places itself by
+ * its anchor radius, so its own (possibly enlarged) disc never rejects it. */
+export type LabelDisc = { readonly x: number; readonly y: number; readonly radius: number; readonly id?: string };
 
 /** Clear space kept between a label rectangle and any pearl or soma disc. */
 export const PEARL_LABEL_MARGIN_PX = 3;
 
 /** Hard ceiling on labels drawn in one state: selected, neighbours, hubs and focused communities first. */
 export const LABEL_BUDGET = 60;
+
+/** Clearance added to a node's drawn core radius when building its blocking disc: the disc is the
+ * real footprint plus a little air, never a multiplier of the long half-axis (a neural soma's
+ * elongation is drawn along its axis; the minor radius plus this clearance is the agreed bound). */
+export const PEARL_DISC_CLEAR_PX = 2;
+
+/** Second ring of anchor offsets, tried when every slot at the anchor's own rim is taken: a label
+ * may sit a little further from its anchor instead of being dropped. */
+export const LABEL_SECOND_RING_PX = 14;
+
+/** Hard caps on the disc spatial-hash work per placement pass, so no loop can depend on a radius
+ * value. A viewport grid holds at most ~2 100 cells on a 4 K canvas; a disc clipped to the
+ * viewport never needs more than that plus a pad ring, and one that would is viewport-covering. */
+export const MAX_DISC_CELLS = 4_096;
+export const MAX_DISC_BUCKET_INSERTS = 120_000;
+
+/** The blocking disc for one projected node footprint: the drawn core radius times the live
+ * emphasis multiplier (hover/focus grow the drawn pearl), plus the clearance. Pure. */
+export function footprintDisc(
+  footprint: { readonly id: string; readonly x: number; readonly y: number; readonly coreRadiusPx: number },
+  emphasisFactor = 1,
+): LabelDisc {
+  return { id: footprint.id, x: footprint.x, y: footprint.y, radius: footprint.coreRadiusPx * emphasisFactor + PEARL_DISC_CLEAR_PX };
+}
+
+/** The suffix a container title or label carries when its node holds hidden children (« · +12»). */
+const COUNT_SUFFIX = /\s·\s\+\d+$/;
+
+/**
+ * One short label's final text. A short title the page cut out of the full title is marked with
+ * «…» (backed off to a word boundary when the page cut inside a word); a text wider than
+ * `maxWidth` is cut on a word boundary with «…»; a « · +N» count suffix is never the part cut.
+ * Pure: the caller supplies the width function.
+ */
+export function shortLabelWithEllipsis(input: {
+  readonly short: string;
+  readonly full: string;
+  readonly maxWidth: number;
+  readonly measure: (text: string) => number;
+}): string {
+  const suffix = input.short.match(COUNT_SUFFIX)?.[0] ?? "";
+  const head = suffix ? input.short.slice(0, input.short.length - suffix.length) : input.short;
+  const fullHead = input.full.replace(COUNT_SUFFIX, "");
+  let name = head.trimEnd();
+  const cut = fullHead.length > name.length && fullHead.startsWith(name);
+  if (cut) {
+    const midWord = name.length > 0 && /\S/.test(fullHead[name.length] ?? " ") && /\S$/.test(name);
+    if (midWord) name = name.replace(/\S+\s*$/, "").trimEnd();
+    if (name.length > 0) name = `${name}…`;
+    else name = `${head.trimEnd()}…`;
+  }
+  const text = suffix ? `${name}${suffix}` : name;
+  if (input.measure(text) <= input.maxWidth) return text;
+  const budget = input.maxWidth - input.measure(suffix);
+  if (suffix && budget > input.measure("…")) return `${ellipsizeText(name, budget, input.measure)}${suffix}`;
+  return ellipsizeText(input.short, input.maxWidth, input.measure);
+}
+
+/** Re-exported so the DOM label path and its tests share one word-boundary ellipsis. */
+export { ellipsizeTextKeepCount };
 
 /** A sample of one anchor projected on screen, with its depth along the camera's view axis. */
 export type DepthSample = { id: string; x: number; y: number; depth: number };
@@ -111,22 +174,46 @@ export function placeLabels(
   };
   // Pearl and soma discs, bucketed by cell: a label rectangle must avoid every one of them, not only
   // other labels (requirement: «nessuna etichetta coperta dal proprio nodo o da altre perle»).
+  // Every range is clipped to the viewport rect (only cells a label can occupy matter) and the work
+  // is hard-capped, so a runaway projected radius — near the camera the footprint can be enormous
+  // or, behind the camera plane, infinite — can neither hang the pass nor exhaust memory.
+  const span = Math.max(bounds.width, bounds.height);
   const discCells = new Map<string, LabelDisc[]>();
+  let inserts = 0;
   for (const disc of discs) {
-    if (!(disc.radius >= 0) || !Number.isFinite(disc.x) || !Number.isFinite(disc.y)) continue;
+    if (!Number.isFinite(disc.x) || !Number.isFinite(disc.y)) continue;
+    if (!Number.isFinite(disc.radius) || disc.radius < 0) continue;
+    // A disc at least as large as the viewport: the camera is at or inside the node (the 3D dolly
+    // can reach 12.5× magnification). Treating it as an obstacle would blank every label, so it
+    // blocks nothing — the node is the environment at that scale, not an obstacle.
+    if (disc.radius >= span) continue;
     const reach = disc.radius + PEARL_LABEL_MARGIN_PX + 8;
-    for (const key of keys(disc.x - reach, disc.y - reach, disc.x + reach, disc.y + reach)) {
+    const left = Math.max(disc.x - reach, bounds.left - cellSize);
+    const right = Math.min(disc.x + reach, bounds.left + bounds.width + cellSize);
+    const top = Math.max(disc.y - reach, bounds.top - cellSize);
+    const bottom = Math.min(disc.y + reach, bounds.top + bounds.height + cellSize);
+    if (right < left || bottom < top) continue;
+    const cellsNeeded = (Math.floor(right / cellSize) - Math.floor(left / cellSize) + 1)
+      * (Math.floor(bottom / cellSize) - Math.floor(top / cellSize) + 1);
+    if (cellsNeeded > MAX_DISC_CELLS) continue;
+    inserts += cellsNeeded;
+    if (inserts > MAX_DISC_BUCKET_INSERTS) break;
+    for (const key of keys(left, top, right, bottom)) {
       const bucket = discCells.get(key) ?? [];
       bucket.push(disc);
       discCells.set(key, bucket);
     }
   }
-  const discBlocked = (rect: ViewportRect): boolean => {
+  const discBlocked = (rect: ViewportRect, ownId?: string): boolean => {
     const seen = new Set<LabelDisc>();
     for (const key of keys(rect.left - 2, rect.top - 2, rect.left + rect.width + 2, rect.top + rect.height + 2)) {
       for (const disc of discCells.get(key) ?? []) {
         if (seen.has(disc)) continue;
         seen.add(disc);
+        // A label's own anchor disc never rejects it: the anchor offsets already place it outside
+        // the node's true radius, and an enlarged own disc (emphasis, soma elongation) must not
+        // box the label in against itself.
+        if (ownId !== undefined && disc.id === ownId) continue;
         if (rectOverlapsDisc(rect, disc.x, disc.y, disc.radius + PEARL_LABEL_MARGIN_PX - 2)) return true;
       }
     }
@@ -141,9 +228,12 @@ export function placeLabels(
       continue;
     const size = measure(c.text, c.full ? 280 : 180, c.reason === "selected" ? 2 : c.full ? 8 : 1);
     if (size.width > bounds.width || size.height > bounds.height) continue;
-    const radius = Number.isFinite(c.radius) && (c.radius ?? 0) > 0 ? c.radius! : 0;
+    const rawRadius = Number.isFinite(c.radius) && (c.radius ?? 0) > 0 ? c.radius! : 0;
+    // An anchor disc that covers the viewport places its label near the anchor point instead of
+    // throwing it off-screen: the selection stays named at any zoom.
+    const radius = rawRadius >= span ? 0 : rawRadius;
     const attempts = radius > 0 && c.reason !== "hover"
-      ? discOffsets(radius)
+      ? [...discOffsets(radius), ...discOffsets(radius + LABEL_SECOND_RING_PX)]
       : c.reason === "hover" ? [[12, 12], [-12, 12], [12, -12], [-12, -12], ...positions] : positions;
     for (const [dx, dy] of attempts) {
       const left = c.x + dx + (dx < 0 ? -size.width : 0);
@@ -157,7 +247,7 @@ export function placeLabels(
       )
         continue;
       if (radius > 0 && rectOverlapsDisc(rect, c.x, c.y, radius)) continue;
-      if (discs.length > 0 && discBlocked(rect)) continue;
+      if (discs.length > 0 && discBlocked(rect, c.id)) continue;
       const nearby = new Set(keys(left - 3, top - 3, left + size.width + 3, top + size.height + 3)
         .flatMap(key => cells.get(key) ?? []));
       if (

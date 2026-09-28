@@ -26,7 +26,7 @@ export type ProjectedPoint = { readonly x: number; readonly y: number; readonly 
 export const DENSE_SCENE_THRESHOLD = 1200;
 export type MorphologyCanvasStyle = {
   readonly fieldColor: string;
-  readonly interaction?: { readonly hoverId: string | null; readonly focusIds: ReadonlySet<string> | null } | undefined;
+  readonly interaction?: { readonly hoverId: string | null; readonly focusIds: ReadonlySet<string> | null; readonly labelDiscs?: readonly CanvasDisc[] | null } | undefined;
   readonly nodes: ReadonlyMap<string, { readonly color: string; readonly glyph?: NodeGlyph | undefined; readonly radiusPx?: number | undefined; readonly opacity?: number }>;
   readonly edges: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
 };
@@ -88,8 +88,11 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     pearlDiscs.push({ x: p.x, y: p.y, radius: radius * elongation });
   }
   drawContainers(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction);
+  // Container titles are placed against the review label pass's disc set when it is shared through
+  // the interaction, so a title's reserved rectangle and its ink are the same thing everywhere.
+  const titleDiscs = style.interaction?.labelDiscs ?? pearlDiscs;
   if (structureOnly) {
-    drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, pearlDiscs);
+    drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs);
     return;
   }
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
@@ -371,6 +374,6 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     }
   }
   // Names come last, above every pearl and arc, so no label is ever covered by its own drawing.
-  drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, pearlDiscs);
+  drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs);
   context.globalAlpha = 1;
 }

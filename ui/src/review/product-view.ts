@@ -13,7 +13,7 @@ import { framingShellRingPoints } from "./framing-shell.ts";
 import { adaptReviewExport, restrictAnchors, subgraph } from "./product-adapter.ts";
 import { placeDynamic } from "./live-placement.ts";
 import { relaxDepth } from "./depth.ts";
-import { LABEL_BUDGET, disambiguateLabels, occludedAnchors, placeLabels } from "./labels.ts";
+import { LABEL_BUDGET, disambiguateLabels, footprintDisc, occludedAnchors, placeLabels, shortLabelWithEllipsis } from "./labels.ts";
 import type { DepthSample } from "./labels.ts";
 import { encodingOf, SEMANTIC_COLOUR, standingOf } from "./presentation.ts";
 import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
@@ -29,7 +29,7 @@ import type { ReviewCameraState } from "../render3f/camera.tsx";
 import { defaultObliqueOrbit, resolvedNodeBounds } from "../render3f/camera.tsx";
 import { buildContainerGeometry } from "../engine/container-geometry.ts";
 import type { MorphologyContainerPath } from "../engine/container-geometry.ts";
-import { containerSphereLOD, containerTitleRect, ellipsizeText, projectedWorldScale } from "../render-common/container-canvas.ts";
+import { containerSphereLOD, placeContainerTitles, projectedWorldScale } from "../render-common/container-canvas.ts";
 import type { CanvasDisc } from "../render-common/container-canvas.ts";
 import { MORPHOLOGY_CONTRACT } from "../engine/morphology-contract.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
@@ -111,7 +111,7 @@ export const createProductView: CreateProductView = async (input) => {
   let selected: string | null = null;
   let emphasis: ReadonlySet<string> | null = null;
   let hover: { kind: "node" | "edge"; id: string; x: number; y: number } | null = null;
-  const morphologyInteraction = { hoverId: null as string | null, focusIds: null as ReadonlySet<string> | null };
+  const morphologyInteraction: { hoverId: string | null; focusIds: ReadonlySet<string> | null; labelDiscs: readonly CanvasDisc[] | null } = { hoverId: null, focusIds: null, labelDiscs: null };
   const redrawMorphology = () => (container.querySelector("canvas[data-morphology-canvas]") as
     (HTMLCanvasElement & { __morphRedraw?: () => void }) | null)?.__morphRedraw?.();
   let placed: LabelWitness[] = [];
@@ -196,37 +196,45 @@ export const createProductView: CreateProductView = async (input) => {
       }
       occluded = occludedAnchors(samples);
     }
-    // One name per container: the canvas draws a container's title exactly when `containerTitleRect`
-    // resolves, and the DOM label pass suppresses the same container's node label in exactly those
-    // cases (and allows it otherwise), so a pearl never carries two names. The interaction must be
-    // the same object state the canvas layer uses, so both agree on the sphere LOD.
+    // One name per container: the canvas draws a container's title exactly where the shared
+    // placement puts it, and the DOM label pass suppresses the same container's node label in
+    // exactly those cases (and allows it otherwise), so a pearl never carries two names. The
+    // interaction must be the same object state the canvas layer uses, so both agree on the LOD.
     const containerInteraction = { hoverId: morphologyInteraction.hoverId, focusIds: morphologyInteraction.focusIds };
     const pathById = new Map<string, MorphologyContainerPath>();
     if (axes.organization === "indra" && input.layoutContainers) {
       for (const path of buildContainerGeometry(axes.morphology, input.layoutContainers)) pathById.set(path.id, path);
     }
     // The pearls about to be drawn, projected with their radii: every label must avoid them, not only
-    // other labels. The footprint witness already carries the projection's size scale, and a hovered
-    // or focused pearl (and a neural soma, which is elongated) gets a little clearance extra.
+    // other labels. Each disc is the node's real drawn footprint (for a neural soma, its minor
+    // radius — the long half-axis is not a blocking radius) plus a small clearance, grown only while
+    // hovered or focused, because that is when the drawn pearl itself grows. Discs non-finite or
+    // covering the whole viewport (the camera at or inside the node) block nothing: they cannot be
+    // obstacles, and unbounded they once exhausted the tab. This one set is shared with the canvas
+    // title pass through the interaction, so titles and labels are placed by one collision set.
     const contract = MORPHOLOGY_CONTRACT[axes.morphology];
     const footprints = handle.readNodeFootprintWitnesses();
+    const span = Math.max(bounds.width, bounds.height);
     const discs: CanvasDisc[] = [];
     for (const footprint of footprints) {
       const { x, y } = footprint.viewportCenter;
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const core = footprint.coreRadiusPx;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(core) || !(core >= 0)) continue;
       const emphasisFactor = morphologyInteraction.hoverId === footprint.id ? contract.hover.radiusMultiplier
         : morphologyInteraction.focusIds?.has(footprint.id) ? contract.focus.radiusMultiplier : 1;
-      discs.push({
-        x, y,
-        radius: footprint.coreRadiusPx * emphasisFactor * (axes.morphology === "neural" ? 1.3 : 1.05) + 2,
-      });
+      const disc = footprintDisc({ id: footprint.id, x, y, coreRadiusPx: core }, emphasisFactor);
+      if (disc.radius >= span) continue;
+      discs.push(disc);
     }
-    const titleRects = [...pathById.values()].flatMap(path => {
-      const rect = containerTitleRect(path, project, bounds, axes.projection, containerInteraction, discs);
-      return rect ? [rect] : [];
-    });
+    morphologyInteraction.labelDiscs = discs;
+    // Titles are placed on the canvas's own rectangle (the overlay canvas spans the container), with
+    // the same discs the DOM pass uses; the reserved rects below are exactly the drawn ones.
+    const titleBounds = { width: container.clientWidth, height: container.clientHeight };
+    const titlePlacements = placeContainerTitles([...pathById.values()], project, titleBounds, axes.projection, containerInteraction, discs);
+    const titledContainerIds = new Set(titlePlacements.map(placement => placement.id));
     const footprintRadius = new Map(footprints.map(footprint => [footprint.id, footprint.coreRadiusPx]));
     const candidates = [];
+    const fullText = new Map<string, string>();
     for (const [id, position] of anchors) {
       const node = nodesById.get(id);
       if (!node) continue;
@@ -238,9 +246,8 @@ export const createProductView: CreateProductView = async (input) => {
       const hovered = hover?.kind === "node" && hover.id === id;
       // A label occluded by nearer geometry is hidden, except the selection and hover, which always stay legible.
       if (occluded.has(id) && !chosen && !hovered) continue;
-      // A large Indra ring carries its own title at the rim; keep one label per container.
-      const path = pathById.get(id);
-      if (path && !chosen && !hovered && containerTitleRect(path, project, bounds, axes.projection, containerInteraction, discs))
+      // A container whose canvas title is drawn carries no second name (its own node label waits).
+      if (pathById.has(id) && !chosen && !hovered && titledContainerIds.has(id))
         continue;
       let reason: "hover" | "selected" | "neighbour" | "domain" | "main" | "zoom" | null = null;
       if (hovered) reason = "hover";
@@ -258,6 +265,7 @@ export const createProductView: CreateProductView = async (input) => {
       else if (close) reason = "zoom";
       if (!reason) continue;
       const text = input.text(id);
+      fullText.set(id, text.full);
       candidates.push({
         id,
         text: chosen || hovered ? text.full : text.short,
@@ -305,8 +313,11 @@ export const createProductView: CreateProductView = async (input) => {
     const limited = density >= 1 ? candidates : candidates.filter((candidate, index) =>
       candidate.full || candidate.reason === "selected" || index < Math.round(candidates.length * density));
     // Any floating overlay that covers part of the canvas (the Aspetto panel) is reserved, so labels stay
-    // fully inside the visible area not covered by panels.
-    const reserved: ViewportRect[] = [...titleRects];
+    // fully inside the visible area not covered by panels — and so do the drawn container titles:
+    // titles and node labels are placed by one shared collision set.
+    const reserved: ViewportRect[] = titlePlacements.map(placement => ({
+      left: placement.left, top: placement.top, width: placement.width, height: placement.height,
+    }));
     const appearancePanel = document.getElementById("appearance-panel");
     if (appearancePanel && !appearancePanel.hidden) {
       const panelRect = appearancePanel.getBoundingClientRect();
@@ -314,12 +325,21 @@ export const createProductView: CreateProductView = async (input) => {
       reserved.push({ left: panelRect.left - hostRect.left, top: panelRect.top - hostRect.top,
         width: panelRect.width, height: panelRect.height });
     }
-    // A short label stays on one line: a title that does not fit is cut on a word boundary and ends
-    // with «…» (the full title stays in the hover label and the panel), never a clipped word.
+    // A short label stays on one line: a page-truncated short title is marked with «…» on a word
+    // boundary, a too-wide text is cut the same way, and a « · +N» count is never the part cut
+    // (the full title stays in the tooltip and the panel), never a clipped word.
     const singleLineWidth = (text: string) => text.split(/\s+/)
       .reduce((sum, word) => sum + (context?.measureText(word).width ?? word.length * appearance.labelSizePx * 0.58) + 5, 0);
-    const labelled = disambiguateLabels(limited).map(candidate =>
-      candidate.full ? candidate : { ...candidate, text: ellipsizeText(candidate.text, 180, singleLineWidth) });
+    const marked = limited.map(candidate => candidate.full ? candidate : {
+      ...candidate,
+      text: shortLabelWithEllipsis({
+        short: candidate.text,
+        full: fullText.get(candidate.id) ?? candidate.text,
+        maxWidth: 180,
+        measure: singleLineWidth,
+      }),
+    });
+    const labelled = disambiguateLabels(marked);
     const next = placeLabels(labelled, bounds, measured, reserved, LABEL_BUDGET, discs);
     const rect = container.getBoundingClientRect();
     placed = next.map((label) => ({
@@ -335,6 +355,9 @@ export const createProductView: CreateProductView = async (input) => {
       ...next.map((label) => {
         const el = document.createElement("div");
         el.dataset.reviewLabelId = label.id;
+        // A truncated or cut label keeps its complete title in the tooltip.
+        const whole = fullText.get(label.id);
+        if (whole !== undefined && !label.text.includes(whole)) el.title = whole;
         Object.assign(el.style, {
           position: "absolute",
           left: `${label.rect.left}px`,
@@ -391,6 +414,10 @@ export const createProductView: CreateProductView = async (input) => {
         layer.append(marker);
       }
     }
+    // The shared discs this pass just published feed the canvas title placement: repaint the
+    // morphology layer even when no animation loop is running (reduced motion), so the ink and
+    // the reserved rectangles can never sit at two different placements.
+    redrawMorphology();
   }
   function followCamera() {
     if (destroyed) return;
