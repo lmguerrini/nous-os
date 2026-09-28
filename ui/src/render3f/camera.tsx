@@ -499,15 +499,16 @@ function updatePerspectiveCamera(
     widthCssPx,
     heightCssPx,
   );
-  const defaultBoundsTangent = verticalHalfSpan / span;
-  const framingScale = defaultTangent / defaultBoundsTangent;
   const navigationRange = request.kind === "perspective"
     ? request.navigation.maximumDollyPermille / request.navigation.minimumDollyPermille
     : request.navigation.maximumZoomPermille / request.navigation.minimumZoomPermille;
   camera.aspect = aspect;
+  // The perspective camera treats `ratio` as a pure dolly: the field of view stays fixed at the
+  // tangent that frames the default opening at `ratio = 1`, so on-screen size follows `1 / ratio`
+  // instead of the angle compensating the distance (which kept magnification constant).
   camera.fov = (
     bisectionDivisor()
-    * Math.atan((verticalHalfSpan / distance) * framingScale)
+    * Math.atan(defaultTangent)
     * halfTurnDegrees()
   ) / Math.PI;
   camera.near = distance / navigationRange;
