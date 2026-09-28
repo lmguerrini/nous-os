@@ -278,6 +278,54 @@ test("Stellar communities keep a void of at least 1.5× the mean cluster radius 
   }
 });
 
+test("morphology owns its Flat layout: switching Stellar→Neural changes positions and switching back restores them exactly", () => {
+  const roots: LayoutNode[] = Array.from({ length: 8 }, (_, i) => ({ id: `c${i}`, level: 1 as const, parent: null, size: 0.9, domains: [] }));
+  const nodes: LayoutNode[] = [...roots];
+  const edges: LayoutEdge[] = [];
+  const memberCounts = [120, 8, 8, 8, 8, 8, 8, 8];
+  memberCounts.forEach((count, i) => {
+    for (let j = 0; j < count; j++) {
+      const id = `c${i}:m${j}`;
+      nodes.push({ id, level: 2 as const, parent: `c${i}`, size: 0.5, domains: [] });
+      edges.push({ id: `e:${id}`, source: `c${i}`, target: id, class: 'attested' });
+    }
+  });
+  const base = { nodes, edges, organization: 'flat' as const };
+  const stellar = computeLayout({ ...base, morphology: 'stellar' });
+  const neural = computeLayout({ ...base, morphology: 'neural' });
+  const mycelium = computeLayout({ ...base, morphology: 'mycelium' });
+  // Each morphology owns its own Flat layout; the Stellar cluster positions must not leak into Neural
+  // or Mycelium (the organic layouts).
+  assert.notDeepEqual(stellar.positions, neural.positions);
+  assert.notDeepEqual(stellar.positions, mycelium.positions);
+  assert.notDeepEqual(neural.positions, mycelium.positions);
+  // Switching back to Stellar restores the exact positions (determinism).
+  assert.deepEqual(computeLayout({ ...base, morphology: 'stellar' }).positions, stellar.positions);
+  assert.deepEqual(computeLayout({ ...base, morphology: 'neural' }).positions, neural.positions);
+});
+
+test("2D Stellar layout is round, not a line: bounding-box aspect ratio ≥ 0.45 with one 60 % community", () => {
+  const roots: LayoutNode[] = Array.from({ length: 8 }, (_, i) => ({ id: `c${i}`, level: 1 as const, parent: null, size: 0.9, domains: [] }));
+  const nodes: LayoutNode[] = [...roots];
+  const edges: LayoutEdge[] = [];
+  // One community holds 60 % of the node mass, the real overview's worst case.
+  const memberCounts = [120, 8, 8, 8, 8, 8, 8, 8];
+  memberCounts.forEach((count, i) => {
+    for (let j = 0; j < count; j++) {
+      const id = `c${i}:m${j}`;
+      nodes.push({ id, level: 2 as const, parent: `c${i}`, size: 0.5, domains: [] });
+      edges.push({ id: `e:${id}`, source: `c${i}`, target: id, class: 'attested' });
+    }
+  });
+  const result = computeLayout({ nodes, edges, organization: 'flat', morphology: 'stellar', projection: '2d' });
+  const points = [...result.positions.values()];
+  const box = layoutStats(result.positions).bbox;
+  const width = box.x[1] - box.x[0];
+  const height = box.y[1] - box.y[0];
+  const aspect = Math.min(width, height) / Math.max(width, height);
+  assert.ok(aspect >= 0.45, `2D Stellar aspect ratio ${aspect.toFixed(3)} < 0.45`);
+});
+
 test("container paths appear in both projections, and Stellar geometry remains straight", () => {
   const input = fixture(80);
   const result = computeLayout({ ...input, organization: "indra" });

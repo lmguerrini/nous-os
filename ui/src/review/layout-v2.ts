@@ -66,9 +66,12 @@ export function layoutStats(positions: ReadonlyMap<string, Point3>): LayoutStats
     return { bbox: { x, y, z }, depthRatio: (z[1] - z[0]) / Math.max(1, x[1] - x[0], y[1] - y[0]) };
 }
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-const TANGENT_DIRECTIONS = Array.from({ length: 24 }, (_, index) => ({
-    x: Math.cos(index * 2 * Math.PI / 24), y: Math.sin(index * 2 * Math.PI / 24),
+const TANGENT_DIRECTIONS: readonly Point3[] = Array.from({ length: 24 }, (_, index) => ({
+    x: Math.cos(index * 2 * Math.PI / 24), y: Math.sin(index * 2 * Math.PI / 24), z: 0,
 }));
+/** Unit directions for the 3D core packing: a fixed Fibonacci sphere, deterministic and dense enough
+ * to pack the community spheres tightly around the origin instead of along a single axis. */
+const SPHERE_DIRECTIONS: readonly Point3[] = Array.from({ length: 96 }, (_, index) => fibonacciSpherePoint(index, 96, 1));
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const radiusOf = (node: LayoutNode) => 5 + Math.max(0, Math.min(1, node.size)) * 5;
 export const pearlRadius = (node: LayoutNode) => radiusOf(node) + Math.min(80, 3.1 * Math.sqrt(Math.max(0, node.hiddenDescendants ?? 0)));
@@ -443,7 +446,6 @@ function relax3d(positions: Map<string, Point3>, movable: readonly string[], byI
  * and neighbouring cluster edges are separated by at least this × the mean cluster radius. */
 const STELLAR_CLUSTER_STEP = 1.0;
 const STELLAR_VOID_RATIO = 1.5;
-const STELLAR_SEARCH_STEPS = 240;
 
 /** Communities of the Stellar overview: every node belongs to its level-1 ancestor (its primary domain). */
 function stellarCommunities(children: ReadonlyMap<string | null, LayoutNode[]>, roots: readonly LayoutNode[]): { rootOf: Map<string, string>; membersOf: Map<string, LayoutNode[]> } {
@@ -462,41 +464,40 @@ function stellarCommunities(children: ReadonlyMap<string | null, LayoutNode[]>, 
     return { rootOf, membersOf };
 }
 
-/** Deterministic sphere/disc placement that guarantees `distance ≥ rᵢ + rⱼ + gap` for every pair. */
+/** Deterministic compact disc/sphere placement that guarantees `distance ≥ rᵢ + rⱼ + gap` for every
+ * pair and hugs the origin. Each fresh core is placed tangent to an already-placed core along a fixed
+ * direction, choosing the tangent that lands nearest the origin, so the cores form a round cluster
+ * (never a line) — the same rule `packDiscs` uses for the Indra roots. A fixed seed (a core that was
+ * already disclosed) is never moved. */
 function placeClusterCores(ordered: readonly LayoutNode[], clusterRadius: ReadonlyMap<string, number>, gap: number, fixed: ReadonlyMap<string, Point3>, projection3d: boolean): Map<string, Point3> {
     const result = new Map<string, Point3>(fixed);
     const placed: { point: Point3; radius: number }[] = [...fixed].map(([id, point]) => ({ point, radius: clusterRadius.get(id) ?? 0 }));
+    const directions = projection3d ? SPHERE_DIRECTIONS : TANGENT_DIRECTIONS;
     for (const community of ordered) {
         const radius = clusterRadius.get(community.id) ?? 0;
         let point: Point3 | null = null;
         if (placed.length === 0) {
             point = { x: 0, y: 0, z: 0 };
         } else {
-            const centre = {
-                x: placed.reduce((sum, item) => sum + item.point.x, 0) / placed.length,
-                y: placed.reduce((sum, item) => sum + item.point.y, 0) / placed.length,
-                z: placed.reduce((sum, item) => sum + item.point.z, 0) / placed.length,
-            };
-            const base = placed.reduce((sum, item) => sum + item.radius, 0) + radius + gap;
-            search: for (let shell = 0; shell < STELLAR_SEARCH_STEPS; shell++) {
-                const shellRadius = base * (1 + shell * 0.2);
-                const directions = projection3d ? 144 : 96;
-                for (let k = 0; k < directions; k++) {
-                    let candidate: Point3;
-                    if (projection3d) {
-                        const direction = fibonacciSpherePoint(k, directions, 1);
-                        candidate = { x: centre.x + direction.x * shellRadius, y: centre.y + direction.y * shellRadius, z: centre.z + direction.z * shellRadius };
-                    } else {
-                        const angle = k * 2 * Math.PI / directions;
-                        candidate = { x: centre.x + Math.cos(angle) * shellRadius, y: centre.y + Math.sin(angle) * shellRadius, z: 0 };
-                    }
-                    if (placed.every(item => Math.hypot(candidate.x - item.point.x, candidate.y - item.point.y, candidate.z - item.point.z) >= radius + item.radius + gap - 1e-6)) {
-                        point = candidate;
-                        break search;
-                    }
+            let best: Point3 | null = null;
+            let bestDistance2 = Infinity;
+            for (const other of placed) for (const direction of directions) {
+                const distance = radius + other.radius + gap;
+                const candidate = {
+                    x: other.point.x + direction.x * distance,
+                    y: other.point.y + direction.y * distance,
+                    z: other.point.z + direction.z * distance,
+                };
+                const radial2 = candidate.x ** 2 + candidate.y ** 2 + candidate.z ** 2;
+                if (radial2 > bestDistance2 + 1e-9
+                    || !placed.every(previous => (candidate.x - previous.point.x) ** 2 + (candidate.y - previous.point.y) ** 2 + (candidate.z - previous.point.z) ** 2 + 1e-7 >= (radius + previous.radius + gap) ** 2)) continue;
+                if (best === null || radial2 < bestDistance2 - 1e-9
+                    || candidate.x < best.x || (candidate.x === best.x && (candidate.y < best.y || (candidate.y === best.y && candidate.z < best.z)))) {
+                    best = candidate;
+                    bestDistance2 = radial2;
                 }
             }
-            if (!point) point = { x: centre.x, y: centre.y + radius + gap + (placed[0]?.radius ?? 0), z: projection3d ? centre.z : 0 };
+            point = best ?? { x: placed[0]!.point.x, y: placed[0]!.point.y + radius + (placed[0]!.radius) + gap, z: projection3d ? placed[0]!.point.z : 0 };
         }
         result.set(community.id, point);
         placed.push({ point, radius });

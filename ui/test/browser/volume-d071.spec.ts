@@ -6,6 +6,7 @@ test.skip(process.env.D071_BROWSER !== "1", "Set D071_BROWSER=1 and serve the re
 type Witness = {
   volume: { eigenvalues: [number, number, number]; ratios: { second: number; third: number } };
   nodeViewport: Record<string, { x: number; y: number }>;
+  layoutStats?: { bbox: { x: [number, number]; y: [number, number]; z: [number, number] } };
   communities?: { id: string; center: { x: number; y: number; z: number }; radius: number; count: number }[];
 };
 
@@ -113,6 +114,24 @@ test("D-071 Front, Side and Top views never collapse into a strip", async ({ pag
     expect(positions.length).toBeGreaterThan(30);
     expect(extentRatio(positions)).toBeGreaterThanOrEqual(0.25);
   }
+});
+
+test("D-071 switching morphology recomputes Flat positions and switching back restores them", async ({ page }) => {
+  await ready(page);
+  await setFlat2d(page);
+  const bbox = async () => (await witness(page)).layoutStats?.bbox;
+  await page.evaluate(() => (window as any).__d067.setAxes({ morphology: "stellar" }));
+  const stellar = await bbox();
+  await page.evaluate(() => (window as any).__d067.setAxes({ morphology: "neural" }));
+  const neural = await bbox();
+  await page.evaluate(() => (window as any).__d067.setAxes({ morphology: "mycelium" }));
+  const mycelium = await bbox();
+  await page.evaluate(() => (window as any).__d067.setAxes({ morphology: "stellar" }));
+  const stellarAgain = await bbox();
+  // Each morphology owns its own Flat layout; switching back to Stellar restores it exactly.
+  expect(neural).not.toEqual(stellar);
+  expect(mycelium).not.toEqual(stellar);
+  expect(stellarAgain).toEqual(stellar);
 });
 
 test("D-071 witness positions are identical after reload", async ({ page }) => {

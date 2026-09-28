@@ -82,6 +82,7 @@ export class V2Page {
     private arcTotal = 0;
     private layoutSource = 'placeholder';
     private lastArrangement = '';
+    private lastMorphology = '';
     private lastBoundsKey = '';
     private lastFitCamera: ReturnType<ProductView['readCamera']> = null;
     /** Set by the user's own camera gestures; an automatic refit only happens while it is false. */
@@ -189,7 +190,7 @@ export class V2Page {
             ).edges;
             const projection = this.axes.projection;
             const usePrevious = this.layoutSource === 'flat-community' && this.axes.organization === 'flat'
-                && this.layoutProjection === projection;
+                && this.layoutProjection === projection && this.axes.morphology === this.lastMorphology;
             const result = computeLayout({
                 nodes: disclosed.nodes.map(n => ({
                     id: n.id, level: n.level, parent: n.parent, size: n.size, domains: n.domains,
@@ -273,6 +274,7 @@ export class V2Page {
             this.lastBoundsKey = boundsKey;
             const keep = old && arrangement === this.lastArrangement;
             this.lastArrangement = arrangement;
+            this.lastMorphology = this.axes.morphology;
             // Comparing camera states misreads an unfinished fit animation as a user move; the gestures say it directly.
             const userMoved = !!old && this.userMovedSinceFit;
             if (keep && (!boundsChanged || userMoved)) {
