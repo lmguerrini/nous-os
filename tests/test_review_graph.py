@@ -6,7 +6,7 @@ import io
 import gzip
 import pytest
 
-from nous_os.review_graph import build, encoded, short
+from nous_os.review_graph import assign_display_labels, build, encoded, label_phrase, short
 from nous_os.graph_review import serve_graph
 
 
@@ -61,6 +61,47 @@ def test_build_determinism_and_provenance(tmp_path):
     assert nodes["asr_one"]["title"].startswith("A distinctive Atlasfield statement")
     assert all(.15 <= n["size"] <= 1 for n in nodes.values())
     assert any(e["type"] == "classified_in" for e in index["edges"])
+    labels = {n["id"]: n["display_label"] for n in index["nodes"]}
+    assert labels == {n["id"]: n["display_label"] for n in json.loads((tmp_path / "second/index.json").read_text())["nodes"]}
+    assert first["display_labels"]["rule"] == "d072-display-label/1"
+    assert first["display_labels"]["map_sha256"] == hashlib.sha256(encoded(labels)).hexdigest()
+    assert all(label and len(label) <= 60 for label in labels.values())
+    assert all(not label.casefold().startswith(("messaggio del fondatore", "il fondatore", "senza titolo"))
+               for label in labels.values())
+
+
+def test_display_label_rules_and_collisions():
+    phrases = [
+        "Messaggio del fondatore: Giardino luminoso e materiali",
+        "Il fondatore propone che Atlasfield usi pietra calda",
+        "The founder says that the garden needs warm stone",
+        "✅ Done: Garden status", "Senza titolo · Giardino luminoso · 09/2026",
+        "«Luminous garden and materials» · Garden · 2026-09-28",
+        "Decision: The garden will use warm stone.", "Open question: What material should we select?",
+        "Requirement: The garden needs a circular pavilion",
+        "Concept: A constellation of lights around the pavilion",
+        "The harbor uses a quiet blue palette", "The workshop stores sketches by theme",
+        "The artist chooses a soft amber light", "A map shows nearby connections",
+        "The archive records each citation", "The room contains three stone tables",
+        "The installation links sound and light", "The design leaves an open question",
+        "The team revises the glass roof", "The proposal describes a public garden",
+    ]
+    cleaned = [label_phrase(p) for p in phrases]
+    assert sum(len(p) <= 40 for p in cleaned) >= 19
+    assert all(0 < len(p) <= 60 for p in cleaned)
+    assert all(not p.casefold().startswith(("messaggio del fondatore", "il fondatore", "the founder", "senza titolo")) for p in cleaned)
+    nodes = [{"id": "domain:synthetic", "level": 1, "parent": None, "title": "Synthetic domain"}]
+    nodes += [{"id": f"proposal:{i}", "level": 4, "parent": "domain:synthetic", "subkind": "DECISION",
+               "date": "2026-09-28", "title": "same"} for i in range(4)]
+    source = {n["id"]: "The garden will use warm stone" if n["level"] == 4 else n["title"] for n in nodes}
+    assign_display_labels(nodes, source, {n["id"]: n for n in nodes})
+    assert len({n["display_label"] for n in nodes}) == len(nodes)
+    assert all(len(n["display_label"]) <= 60 for n in nodes)
+    assert all(n["display_label"].startswith("Decisione:") for n in nodes[1:])
+    assert "stone" in nodes[1]["display_label"]
+    question = [{"id": "question", "level": 4, "parent": None, "subkind": "OPEN_QUESTION"}]
+    assign_display_labels(question, {"question": "What material should we select?"}, {})
+    assert question[0]["display_label"].endswith("?")
 
 
 def test_overlay_merge_and_invalid_citation(tmp_path):

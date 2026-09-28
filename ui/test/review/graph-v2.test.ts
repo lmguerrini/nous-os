@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { collapse, disclose, hierarchy, loadGraphV2, revealPath, validateIndex, type GraphIndex, type GraphNode } from '../../src/review/graph-v2.ts';
+import { collapse, disclose, displayLabel, hierarchy, loadGraphV2, presentationText, revealPath, validateIndex, type GraphIndex, type GraphNode } from '../../src/review/graph-v2.ts';
 
 function node(id: string, level: 1 | 2 | 3 | 4, parent: string | null, children = 0): GraphNode {
   return { id, level, kind: level === 1 ? 'domain' : level === 4 ? 'proposal' : 'conversation',
@@ -18,6 +18,16 @@ const index: GraphIndex = { schema: 'nousos.review-graph/2', nodes: [
 test('validates graph structure and rejects dangling edges', () => {
   assert.equal(validateIndex(index), index);
   assert.throws(() => validateIndex({ ...index, edges: [{ ...index.edges[0], target: 'missing' }] }));
+});
+
+test('display label wins while tooltip text stays full; older indexes fall back', () => {
+  const labelled = { ...index.nodes[2]!, title: 'Original short title',
+    display_label: 'Garden warm stone', title_full: 'The complete original statement about the garden and warm stone.' };
+  assert.equal(displayLabel(labelled), 'Garden warm stone');
+  assert.deepEqual(presentationText(labelled), { short: 'Garden warm stone', full: labelled.title_full });
+  assert.equal(displayLabel({ title: labelled.title }), 'Original short title');
+  assert.equal(validateIndex({ ...index, nodes: [index.nodes[0], index.nodes[1], labelled, index.nodes[3]] }).nodes[2]?.display_label,
+    'Garden warm stone');
 });
 
 test('disclosure, reveal, collapse and cap remain bounded', () => {

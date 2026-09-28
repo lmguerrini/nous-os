@@ -1,4 +1,4 @@
-import { validateIndex } from './graph-v2.ts';
+import { displayLabel, presentationText, validateIndex } from './graph-v2.ts';
 import type { GraphEdge, GraphManifest } from './graph-v2.ts';
 import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
 import type { CommunityInfo, LayoutContainer, Point3 } from './layout-v2.ts';
@@ -163,6 +163,7 @@ export class V2Page {
             const passage: V2Node = {
                 id: String(item.id), level: 5, kind: 'passage', parent: id, parents: [id],
                 domains: parent.domains, title: String(item.title ?? 'Passaggio'),
+                ...(typeof item.display_label === 'string' ? { display_label: item.display_label } : {}),
                 title_full: String(item.title ?? 'Passaggio'),
                 importance: { value: 0, components: {} }, size: 0,
                 counts: { children: 0, descendants: 0, canon: 0, passages: 0 },
@@ -219,8 +220,8 @@ export class V2Page {
             this.positions = next;
             this.communities = result.communities ?? [];
             this.containers = result.containers.map(c => {
-                const title = visibleById.get(c.id)?.title;
                 const node = visibleById.get(c.id);
+                const title = node && displayLabel(node);
                 const hidden = node ? hiddenCount(node) : 0;
                 return { ...c, ...(title ? { title: hidden ? `${title} · +${hidden}` : title } : {}) };
             });
@@ -251,7 +252,7 @@ export class V2Page {
             const old = this.view?.readCamera();
             this.view?.destroy();
             this.view = null;
-            this.view = await createProductView({ container: element('render-root'), data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: this.containers as typeof result.containers, visibleNodeIds: ids, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; return { short: n.title + hint, full: n.title_full + hint, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+            this.view = await createProductView({ container: element('render-root'), data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: this.containers as typeof result.containers, visibleNodeIds: ids, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                         if (target.shiftKey && this.selected && this.selected !== target.id) {
                             this.why(this.selected, target.id);
                         }
@@ -618,7 +619,7 @@ export class V2Page {
             const button = document.createElement('button');
             button.className = 'relation';
             const conversations = this.index.nodes.filter(n => n.level === 3 && n.domains.includes(domain.id.replace(/^domain:/, ''))).length;
-            button.textContent = `${domain.title} · ${conversations} conversazioni`;
+            button.textContent = `${displayLabel(domain)} · ${conversations} conversazioni`;
             button.onclick = () => { void this.select(domain.id); };
             overview.append(button);
         }
@@ -651,8 +652,8 @@ export class V2Page {
             const button = document.createElement('button');
             button.className = 'relation';
             const conversation = (() => { let cursor = n; while (cursor && cursor.level !== 3)
-                cursor = cursor.parent ? byId.get(cursor.parent) : undefined; return cursor?.title ?? ''; })();
-            button.textContent = `${hit.title} · ${term(n?.kind)} · ${n?.domains.join(', ') ?? ''} · ${conversation}`;
+                cursor = cursor.parent ? byId.get(cursor.parent) : undefined; return cursor ? displayLabel(cursor) : ''; })();
+            button.textContent = `${n ? displayLabel(n) : hit.title} · ${term(n?.kind)} · ${n?.domains.join(', ') ?? ''} · ${conversation}`;
             button.onclick = () => { void this.reveal(hit.id); };
             search.append(button);
         }
@@ -690,18 +691,20 @@ export class V2Page {
             nav.textContent = path.map(item => term(item.kind)).join(' \u203A ');
             host.append(nav);
             const title = document.createElement('h2');
-            title.textContent = n.title;
-            title.title = n.title_full;
+            title.textContent = displayLabel(n);
+            title.title = presentationText(n).full;
             host.append(title);
             const dl = document.createElement('dl');
             host.append(dl);
             line(dl, 'Titolo completo', n.title_full);
+            line(dl, 'ID', n.id);
             line(dl, 'Tipo', term(n.kind));
             line(dl, 'Sottotipo', term(n.subkind));
             line(dl, 'Stato', n.status === 'proposal' ? words.proposal_status : term(n.status));
             line(dl, 'Data', italianDate(n.date));
             line(dl, 'Dominio/i', n.domains.join(', '));
-            line(dl, 'Conversazione', path.find(item => item.level === 3)?.title);
+            const conversationNode = path.find(item => item.level === 3);
+            line(dl, 'Conversazione', conversationNode && displayLabel(conversationNode));
             const response = this.detailCache.get(n.id);
             const d = (response?.detail ?? response?.node ?? response ?? {}) as Record<string, unknown>;
             line(dl, 'Enunciato distillato (EN)', d.statement);
@@ -763,7 +766,8 @@ export class V2Page {
                 for (const relation of relations) {
                     const button = document.createElement('button');
                     button.className = 'relation';
-                    button.textContent = `${relation.source === n.id ? '\u2192' : '\u2190'} ${term(relation.type)} · ${byId.get(relation.source === n.id ? relation.target : relation.source)?.title ?? ''}`;
+                    const other = byId.get(relation.source === n.id ? relation.target : relation.source);
+                    button.textContent = `${relation.source === n.id ? '\u2192' : '\u2190'} ${term(relation.type)} · ${other ? displayLabel(other) : ''}`;
                     button.onclick = () => { void this.select(relation.id); };
                     host.append(button);
                     this.relation(host, relation, byId);
@@ -792,8 +796,7 @@ export class V2Page {
         const dl = document.createElement('dl');
         host.append(dl);
         line(dl, 'Relazione', `${e.class === 'exploratory' ? 'esplorativa \u00B7 non canonica' : 'attestata'} · ${term(e.type)}`);
-        line(dl, 'Direzione', `${byId.
-            get(e.source)?.title ?? e.source} ${'directed' in e && e.directed === false ? '\u2194' : '\u2192'} ${byId.get(e.target)?.title ?? e.target}`);
+        line(dl, 'Direzione', `${byId.has(e.source) ? displayLabel(byId.get(e.source)!) : e.source} ${'directed' in e && e.directed === false ? '\u2194' : '\u2192'} ${byId.has(e.target) ? displayLabel(byId.get(e.target)!) : e.target}`);
         if ('explanation' in e) {
             line(dl, 'Spiegazione', e.explanation);
             line(dl, 'Inferenza', e.inference);

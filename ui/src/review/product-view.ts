@@ -298,12 +298,12 @@ export const createProductView: CreateProductView = async (input) => {
         || (axes.organization === "flat" && reason === "domain");
       candidates.push({
         id,
-        text: chosen || hovered ? text.full : text.short,
+        text: input.v2Prepared ? text.short : chosen || hovered ? text.full : text.short,
         reason,
         x: hovered ? hover!.x : p.x,
         y: hovered ? hover!.y : p.y,
         priority: degree.get(id) ?? 0,
-        full: chosen || hovered,
+        full: !input.v2Prepared && (chosen || hovered),
         ...(tier1 ? { tier1: true } : {}),
         ...(footprintRadius.has(id) ? { radius: footprintRadius.get(id)! } : {}),
       });
@@ -393,7 +393,7 @@ export const createProductView: CreateProductView = async (input) => {
         el.dataset.reviewLabelId = label.id;
         // A truncated or cut label keeps its complete title in the tooltip.
         const whole = fullText.get(label.id);
-        if (whole !== undefined && !label.text.includes(whole)) el.title = whole;
+        if (whole !== undefined) el.title = whole;
         Object.assign(el.style, {
           position: "absolute",
           left: `${label.rect.left}px`,

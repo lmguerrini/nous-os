@@ -6,6 +6,7 @@ import type { ReviewEdge, ReviewExport, ReviewNode } from './model.ts';
 import type { AdaptedReview } from './product-adapter.ts';
 import type { V2Node } from './v2-core.ts';
 import { nodeRadius } from './v2-core.ts';
+import { displayLabel } from './graph-v2.ts';
 import type { Point3 } from './layout-v2.ts';
 
 export type V2RenderData = ReviewExport & { v2: true };
@@ -20,7 +21,7 @@ export function adaptV2(
     id: node.id,
     type: node.level <= 3 ? node.level === 1 ? 'domain' : 'conversation'
       : node.level === 5 ? 'evidence' : node.status === 'canon' ? 'canon' : 'candidate',
-    label: node.title,
+    label: displayLabel(node),
     epistemic: node.status === 'canon' ? 'canonical' : node.level >= 4 ? 'proposal' : 'structural',
     v2: node,
   }));

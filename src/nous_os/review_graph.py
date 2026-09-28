@@ -11,6 +11,7 @@ import re
 import unicodedata
 
 SCHEMA = "nousos.review-graph/2"
+DISPLAY_LABEL_RULE = "d072-display-label/1"
 DOMAINS = ("atlasfield", "forge", "quillmap", "orchardline", "showcase", "dossier", "qrs", "meridian")
 SPECIFICITY = ("orchardline", "quillmap", "qrs", "forge", "dossier", "showcase", "atlasfield", "meridian")
 KIND_WEIGHT = {"DECISION": 2.0, "CONCEPT": 1.6, "REQUIREMENT": 1.4, "RELATIONSHIP": 1.4,
@@ -67,6 +68,71 @@ def canvas_title(value: str) -> str:
     value = re.sub(r"^[^\w\s]+\s*", "", value, flags=re.UNICODE)
     value = re.sub(r"^(?:(?:done|todo|wip|draft|completed|pending|status)\s*[:|\-]\s*|[✅☑️⬜🟢🟡🔴🚧✨📌]+\s*)+", "", value, flags=re.I)
     return value.strip(" -–—·:| ")
+
+
+def label_phrase(value: str, cap: int = 40) -> str:
+    """Compact source words for display only; never used as a canonical title."""
+    value = canvas_title(value).strip(" \"'«»“”‘’…")
+    value = re.sub(r"^(?:s[ei]nza titolo\s*[·:–—-]\s*|(?:il\s+)?messaggio del fondatore\s*[:·–—-]?\s*|(?:il\s+)?fondatore\s+(?:(?:ha\s+)?(?:deciso|decide|detto|dice|proposto|propone|chiesto|chiede|suggerito|suggerisce)\s+(?:che\s+)?|[:·–—-]\s*)|(?:the\s+)?founder(?:'s)?\s+(?:(?:has\s+)?(?:decided|decides|said|says|proposed|proposes|asked|asks)\s+(?:that\s+)?|[:·–—-]\s*)|(?:decision|open question|requirement|proposal|concept)\s*:\s*)+", "", value, flags=re.I)
+    value = re.split(r"\s+·\s+", value, maxsplit=1)[0]
+    value = re.sub(r"\s+(?:[-–—·]\s*)?\d{4}-\d{2}(?:-\d{2})?\s*$", "", value)
+    value = re.sub(r"\s+", " ", value).strip(" \"'«»“”‘’….,;:!?–—-")
+    words = value.split()
+    if len(words) > 7:
+        value = " ".join(words[:7])
+    else:
+        value = " ".join(words)
+    if len(value) > cap:
+        value = value[:cap + 1].rsplit(" ", 1)[0] or value[:cap]
+    value = re.sub(r"(?:\s+(?:about|and|or|of|for|to|the|a|an|di|del|della|dei|per|e|o|il|la|un|una))+$", "", value, flags=re.I)
+    return value.rstrip(" ,;:–—-")
+
+
+def assign_display_labels(items: list[dict], source: dict[str, str], parents: dict[str, dict]) -> None:
+    """Resolve equal labels by parent, month, then stable reading order, never by id text."""
+    base = {}
+    for item in items:
+        text = source[item["id"]]
+        if item["level"] == 4:
+            text = re.sub(r"\b(?:the|a|an)\s+", "", text, flags=re.I)
+        label = label_phrase(text, 60 if item["level"] <= 2 else 40)
+        if item.get("subkind") == "DECISION":
+            subject = re.sub(r"^(?:the|a|an|il|la|lo|un|una)\s+", "", label, flags=re.I)
+            subject = re.sub(r"\b(?:will|should|must)\s+(?:use|be|have)\b\s*", "", subject, flags=re.I)
+            label = f"Decisione: {label_phrase(subject, 29)}"
+        elif item.get("subkind") == "OPEN_QUESTION":
+            label = f"{label_phrase(label, 39).rstrip('?')}?"
+        base[item["id"]] = label or ("Domanda?" if item.get("subkind") == "OPEN_QUESTION" else "Tema")
+        item["display_label"] = base[item["id"]]
+    for step in ("parent", "month", "number"):
+        groups: dict[str, list[dict]] = defaultdict(list)
+        for item in items:
+            groups[item["display_label"]].append(item)
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            for order, item in enumerate(sorted(group, key=lambda n: n["id"]), 1):
+                suffix = ""
+                if step == "parent":
+                    suffix = label_phrase(base.get(item.get("parent"), parents.get(item.get("parent"), {}).get("display_label", "")), 18)
+                elif step == "month":
+                    date = str(item.get("date") or "")
+                    suffix = date[:7] if re.match(r"\d{4}-\d{2}", date) else ""
+                else:
+                    suffix = str(order)
+                if suffix:
+                    stem = label_phrase(base[item["id"]], 40 - len(suffix) - 3)
+                    item["display_label"] = f"{stem} · {suffix}"
+    used: set[str] = set()
+    for item in sorted(items, key=lambda n: (n["level"], n["id"])):
+        candidate = item["display_label"]
+        number = 2
+        while candidate in used:
+            suffix = f" · {number}"
+            candidate = f"{label_phrase(base[item['id']], 40 - len(suffix))}{suffix}"
+            number += 1
+        item["display_label"] = candidate
+        used.add(candidate)
 
 
 def interim_membership(coverage: Path, inventory: Path, proposals: Path, ledger: Path, stores: Path, out: Path,
@@ -809,6 +875,18 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                 average_rank = (bisect_left(group, value) + bisect_right(group, value) - 1) / 2
                 percentile_rank = average_rank / (len(group) - 1) if len(group) > 1 else .5
                 node["size"] = round(.15 + .85 * percentile_rank, 6)
+    assign_display_labels(list(nodes.values()), {
+        node["id"]: details[node["id"]]["statement"] if node["level"] == 4 else node["title"]
+        for node in nodes.values()
+    }, nodes)
+    passages = [item for item in details.values() if item.get("kind") == "passage"]
+    passage_labels = [{"id": item["id"], "level": 5, "parent": item["parent"],
+                       "date": item.get("record", {}).get("date")} for item in passages]
+    assign_display_labels(passage_labels, {
+        item["id"]: item["citation"]["span"] for item in passages
+    }, nodes)
+    for item, labelled in zip(passages, passage_labels):
+        item["display_label"] = labelled["display_label"]
     sorted_nodes = sorted(nodes.values(), key=lambda n: (n["level"], n["id"]))
     sorted_edges = sorted(edges.values(), key=lambda e: e["id"])
     store_reconciliation = None
@@ -871,6 +949,7 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                           "project_assignment": "Verified gazetteer entity of the conversation's primary domain: title alias match first (lexical ID tie break), else the entity named in the most live proposal statements if it is named in at least 3 and at least 10 %; otherwise level_skip",
                           "importance": "proposal=3*canon+kind weight (DECISION 2.0, CONCEPT 1.6, REQUIREMENT/RELATIONSHIP 1.4, CHANGE_OVER_TIME 1.2, CONTRADICTION 1.1, OPEN_QUESTION 0.8)+origin (USER_AUTHORED 0.5, QUOTED 0.2, else 0)+0.3*log1p(verified citations)+0.5*log1p(attested degree)+0.3*log1p(exploratory degree); aggregates=log1p(descendant live proposals)+2*log1p(canon descendants)+0.3*log1p(attested degree); size=0.15+0.85*average-tie percentile rank within level",
                           "titles": ("presentation title first, re-keyed through integration mapping; " if store_layer else "overlay title first; ") + "first statement clause at word boundary ≤60; canvas title strips leading emoji/status and retains title_full; untitled conversation uses strongest proposal title and month/year; repeated titles: domains unchanged, entities by kind, conversations by month then day, proposals by conversation (when in different conversations), date, time and kind, then a reading-order number; never an id"},
+                "display_labels": {"rule": DISPLAY_LABEL_RULE, "map_sha256": hashlib.sha256(encoded({n["id"]: n["display_label"] for n in sorted_nodes})).hexdigest()},
                 "outcomes": outcomes,
                 "store_reconciliation": store_reconciliation,
                 "audit": {"duplicate_titles_global_before": duplicate_global, "duplicate_titles_within_parent_before": duplicate_parent,

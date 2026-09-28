@@ -12,6 +12,7 @@ export interface GraphNode {
   primary_domain?: string;
   primary_domain_anchors?: Record<string, number>;
   title: string;
+  display_label?: string;
   title_full: string;
   date?: string;
   origin?: string;
@@ -52,6 +53,7 @@ export function validateIndex(value: unknown): GraphIndex {
   for (const node of value.nodes) {
     if (!object(node) || typeof node.id !== 'string' || ids.has(node.id) || ![1, 2, 3, 4].includes(Number(node.level)) ||
         typeof node.kind !== 'string' || typeof node.title !== 'string' || typeof node.title_full !== 'string' ||
+        (node.display_label !== undefined && typeof node.display_label !== 'string') ||
         !(node.parent === null || typeof node.parent === 'string') ||
         !Array.isArray(node.parents) || !node.parents.every(p => typeof p === 'string') ||
         !Array.isArray(node.domains) || !node.domains.every(d => typeof d === 'string') ||
@@ -80,6 +82,14 @@ export function validateIndex(value: unknown): GraphIndex {
     }
   }
   return value as unknown as GraphIndex;
+}
+
+export function displayLabel(node: Pick<GraphNode, 'title' | 'display_label'>): string {
+  return node.display_label ?? node.title;
+}
+
+export function presentationText(node: Pick<GraphNode, 'title' | 'display_label' | 'title_full'>): { short: string; full: string } {
+  return { short: displayLabel(node), full: node.title_full };
 }
 
 export async function loadGraphV2(fetcher: typeof fetch = fetch, base = ''): Promise<{ manifest: GraphManifest; index: GraphIndex }> {
