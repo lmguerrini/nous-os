@@ -60,3 +60,46 @@ test('D-071 Indra 3D nests every node inside its domain sphere, with continuous 
   expect(dash.draws).toBeGreaterThan(0);
   expect(dash.dashed).toBe(0);
 });
+
+test('D-071 G1 container LOD draws true-size limbs and at most one flatness-faded equator per sphere', async ({ page }) => {
+  await page.goto(url);
+  await page.evaluate(() => (window as any).__d067.ready);
+  await page.evaluate(() => { (window as any).__indraContainers = { dashed: 0, draws: 0 }; });
+  await page.evaluate(() => (window as any).__d067.setAxes({ projection: '3d', organization: 'indra', reading: 'attested' }));
+  // Let the initial framing animation and its single confirm-refit settle.
+  await page.waitForTimeout(1500);
+
+  const before = await page.evaluate(() => {
+    const w = (window as any).__d067.witness();
+    const hook = (window as any).__indraContainers as Record<string, number | undefined>;
+    const containers = w.containers as { id: string; level: number; open?: boolean }[];
+    return {
+      hook,
+      domains: containers.filter((c) => c.level === 1).length,
+      total: containers.length,
+      // Spheres the LOD always draws at the overview: the NousOS shell, the domains, and open pearls.
+      expected: containers.filter((c) => c.level <= 1 || c.open !== false).length,
+      closed: containers.filter((c) => c.open === false && c.level >= 2).map((c) => c.id),
+    };
+  });
+  expect(before.hook.draws).toBeGreaterThan(0);
+  expect(before.hook.dashed).toBe(0);
+  // The NousOS shell and every domain sphere draw their limb.
+  expect(before.hook.limbs).toBeGreaterThanOrEqual(1 + before.domains);
+  // The overview hides the small closed (+N) spheres: the LOD leaves only shells that carry content.
+  expect(before.closed.length).toBeGreaterThan(0);
+  expect(before.hook.limbs as number).toBeLessThanOrEqual(before.expected);
+  expect(before.hook.limbs as number).toBeLessThan(before.total);
+  // At most one equator per sphere, and every drawn equator is round enough to mean something.
+  expect(before.hook.equators as number).toBeLessThanOrEqual(before.hook.limbs as number);
+  expect(before.hook.minEquatorFlatness ?? 1).toBeGreaterThanOrEqual(0.25);
+
+  // Selecting a closed container lifts the LOD: its sphere appears.
+  const closedId = before.closed[0]!;
+  await page.evaluate((id: string) => (window as any).__d067.select(id), closedId);
+  await page.waitForTimeout(900);
+  const after = await page.evaluate(() => (window as any).__indraContainers as Record<string, number | undefined>);
+  expect(after.limbs as number).toBeGreaterThanOrEqual((before.hook.limbs as number) + 1);
+  expect(after.minEquatorFlatness ?? 1).toBeGreaterThanOrEqual(0.25);
+  expect(after.equators as number).toBeLessThanOrEqual(after.limbs as number);
+});

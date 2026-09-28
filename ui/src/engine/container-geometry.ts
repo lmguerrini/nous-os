@@ -2,7 +2,7 @@ import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import { morphologyHash } from "#engine/stable-hash.ts";
 
-export type MorphologyContainerInput = { readonly id: string; readonly level: number; readonly center: Coordinates; readonly radius: number; readonly radius2d?: number; readonly title?: string };
+export type MorphologyContainerInput = { readonly id: string; readonly level: number; readonly center: Coordinates; readonly radius: number; readonly radius2d?: number; readonly title?: string; readonly open?: boolean };
 export type MorphologyContainerPath = {
   readonly id: string;
   readonly level: number;
@@ -11,6 +11,8 @@ export type MorphologyContainerPath = {
   readonly radius: number;
   /** Tight XY ring radius for the absolute container (2D ring); the XYZ shell otherwise. */
   readonly radius2d?: number;
+  /** True when the container's children are visible (an open pearl); a closed `+N` pearl is `open: false`. */
+  readonly open?: boolean;
   readonly points: readonly Coordinates[];
   readonly shell?: readonly (readonly Coordinates[])[];
   readonly title?: string;
@@ -46,7 +48,8 @@ export function buildContainerGeometry(morphology: Morphology, containers: reado
     // Every container carries a full XYZ wireframe so the 3D view shows nested spheres, never flat discs.
     const shell = sphereShell(container.center, container.radius);
     return { id: container.id, level: container.level, center: container.center, radius: container.radius,
-      ...(container.radius2d !== undefined ? { radius2d: container.radius2d } : {}), points,
-      shell, ...(container.title ? { title: container.title } : {}) };
+      ...(container.radius2d !== undefined ? { radius2d: container.radius2d } : {}),
+      ...(container.open !== undefined ? { open: container.open } : {}),
+      points, shell, ...(container.title ? { title: container.title } : {}) };
   });
 }

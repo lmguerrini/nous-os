@@ -51,6 +51,12 @@ const brighten = (color: string, factor: number): string => {
 const tint = (rgb: readonly [number, number, number]) => `rgb(${rgb.map(value => Math.round(value * 255)).join(", ")})`;
 const testHook = () => (globalThis as typeof globalThis & { __d070?: { hideEdges?: boolean; hideNodes?: boolean; onlyNodeId?: string } }).__d070;
 
+/** A discreet pearl highlight: never smaller than a visible pixel-and-a-half (so it reads at overview
+ * scale), never larger than a fifth of the pearl, placed on the lit upper-left side. */
+export function pearlHighlight(radiusPx: number): { readonly radiusPx: number; readonly dx: number; readonly dy: number } {
+  return { radiusPx: Math.max(0.9, radiusPx * 0.18), dx: -radiusPx * 0.32, dy: -radiusPx * 0.36 };
+}
+
 /** One world-space geometry, with projection and depth scale supplied by the renderer. */
 export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry: MorphologyGeometry,
   project: (point: Coordinates) => ProjectedPoint, style: MorphologyCanvasStyle,
@@ -62,7 +68,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   context.setTransform(canvas.width / bounds.width, 0, 0, canvas.height / bounds.height, 0, 0);
   context.clearRect(0, 0, bounds.width, bounds.height);
   if (geometry.morphology === "stellar") drawStarfield(context, bounds.width, bounds.height, appearance.starfieldDensity, appearance.starfieldBrightness);
-  drawContainers(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection);
+  drawContainers(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction);
   if (structureOnly) return;
   const contract = MORPHOLOGY_CONTRACT[geometry.morphology];
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
@@ -290,22 +296,36 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       }
       // In Indra 3D a soma also carries a small lit glint so it reads as a pearl, not a flat disc.
       if (indra3d) {
+        const glint = pearlHighlight(radius);
         context.fillStyle = rgba(brighten(lit, 0.9), clamp(opacity, 0, 1));
-        context.beginPath(); context.arc(p.x - radius * 0.32, p.y - radius * 0.36, Math.max(0.6, radius * 0.15), 0, Math.PI * 2); context.fill();
+        context.beginPath(); context.arc(p.x + glint.dx, p.y + glint.dy, glint.radiusPx, 0, Math.PI * 2); context.fill();
       }
     } else {
       if (indra3d && typeof context.createRadialGradient === "function") {
-        // Soft spherical shading: light gathered off-centre, dimming toward the limb.
+        // Soft spherical shading: light gathered off-centre, dimming toward the limb, with a faint
+        // rim stroke so the sphere edge stays defined even at overview-scale pearl sizes.
         const shade = context.createRadialGradient(
-          p.x - radius * 0.35, p.y - radius * 0.35, radius * 0.06, p.x, p.y, radius);
-        shade.addColorStop(0, rgba(brighten(lit, 0.55), opacity));
+          p.x - radius * 0.35, p.y - radius * 0.35, Math.max(0.5, radius * 0.06), p.x, p.y, radius);
+        shade.addColorStop(0, rgba(brighten(lit, 0.65), opacity));
         shade.addColorStop(0.55, rgba(lit, opacity));
-        shade.addColorStop(1, rgba(dim(lit, 0.35), opacity));
+        shade.addColorStop(0.85, rgba(dim(lit, 0.55), opacity));
+        shade.addColorStop(1, rgba(dim(lit, 0.35), opacity * 0.9));
         context.fillStyle = shade;
         context.beginPath(); context.arc(p.x, p.y, radius, 0, Math.PI * 2); context.fill();
-        // A small, bright glint on the lit side.
+        context.strokeStyle = rgba(dim(lit, 0.5), opacity * 0.55);
+        context.lineWidth = clamp(radius * 0.1, 0.5, 1.2);
+        context.beginPath(); context.arc(p.x, p.y, Math.max(0.5, radius - context.lineWidth / 2), 0, Math.PI * 2); context.stroke();
+        // A small, bright glint on the lit side, with a soft glow so it survives small radii.
+        const glint = pearlHighlight(radius);
+        if (radius >= 3) {
+          const halo = context.createRadialGradient(p.x + glint.dx, p.y + glint.dy, 0, p.x + glint.dx, p.y + glint.dy, glint.radiusPx * 2.4);
+          halo.addColorStop(0, rgba(brighten(lit, 0.75), opacity * 0.55));
+          halo.addColorStop(1, rgba(lit, 0));
+          context.fillStyle = halo;
+          context.beginPath(); context.arc(p.x + glint.dx, p.y + glint.dy, glint.radiusPx * 2.4, 0, Math.PI * 2); context.fill();
+        }
         context.fillStyle = rgba(brighten(lit, 0.9), clamp(opacity, 0, 1));
-        context.beginPath(); context.arc(p.x - radius * 0.32, p.y - radius * 0.36, Math.max(0.6, radius * 0.15), 0, Math.PI * 2); context.fill();
+        context.beginPath(); context.arc(p.x + glint.dx, p.y + glint.dy, glint.radiusPx, 0, Math.PI * 2); context.fill();
       } else {
         context.fillStyle = rgba(lit, opacity);
         context.arc(p.x, p.y, radius, 0, Math.PI * 2);

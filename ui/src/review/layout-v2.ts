@@ -39,6 +39,8 @@ export type LayoutContainer = {
     readonly radius: number;
     /** Tight XY ring for the absolute container only; radius is its XYZ shell. */
     readonly radius2d?: number;
+    /** True when the container's children are visible (an open pearl); a closed `+N` pearl is false. */
+    readonly open?: boolean;
     readonly title?: string;
 };
 export type LayoutResult = {
@@ -765,7 +767,7 @@ function indra(input: LayoutInput): LayoutResult {
         positions.set(node.id, center);
         const list = children.get(node.id) ?? [];
         if (list.length || node.level === 1 || (node.hiddenDescendants ?? 0) > 0)
-            containers.push({ id: node.id, level: node.level, center, radius: radii.get(node.id)! });
+            containers.push({ id: node.id, level: node.level, center, radius: radii.get(node.id)!, open: list.length > 0 });
         for (const child of list) {
             const offset = offsets.get(child.id)!;
             place(child, x + offset.x, y + offset.y, z + (zOffsets.get(child.id) ?? 0));
@@ -789,7 +791,7 @@ function indra(input: LayoutInput): LayoutResult {
         return point ? Math.max(maximum, Math.hypot(Math.hypot(point.x, point.y) + (radii.get(node.id) ?? radiusOf(node)) * spacing, point.z)) : maximum;
     }, 0);
     const radius = Math.max(ringExtent, nodeExtent) / 0.94;
-    containers.unshift({ id: ABSOLUTE_CONTAINER_ID, level: 0, center: { x: 0, y: 0, z: 0 }, radius, radius2d, title: 'NousOS' });
+    containers.unshift({ id: ABSOLUTE_CONTAINER_ID, level: 0, center: { x: 0, y: 0, z: 0 }, radius, radius2d, open: true, title: 'NousOS' });
     return { positions, containers, source: 'indra-recursive' };
 }
 export function computeLayout(input: LayoutInput): LayoutResult {

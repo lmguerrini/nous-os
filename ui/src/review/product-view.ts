@@ -28,7 +28,7 @@ import type { ReviewCameraState } from "../render3f/camera.tsx";
 import { defaultObliqueOrbit, resolvedNodeBounds } from "../render3f/camera.tsx";
 import { buildContainerGeometry } from "../engine/container-geometry.ts";
 import type { MorphologyContainerPath } from "../engine/container-geometry.ts";
-import { containerTitleRect } from "../render-common/container-canvas.ts";
+import { containerSphereLOD, containerTitleRect, projectedWorldScale } from "../render-common/container-canvas.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
 import {
   classifyEdgeCategory,
@@ -195,13 +195,15 @@ export const createProductView: CreateProductView = async (input) => {
     }
     // One name per container: the canvas draws a container's title exactly when `containerTitleRect`
     // resolves, and the DOM label pass suppresses the same container's node label in exactly those
-    // cases (and allows it otherwise), so a pearl never carries two names.
+    // cases (and allows it otherwise), so a pearl never carries two names. The interaction must be
+    // the same object state the canvas layer uses, so both agree on the sphere LOD.
+    const containerInteraction = { hoverId: morphologyInteraction.hoverId, focusIds: morphologyInteraction.focusIds };
     const pathById = new Map<string, MorphologyContainerPath>();
     if (axes.organization === "indra" && input.layoutContainers) {
       for (const path of buildContainerGeometry(axes.morphology, input.layoutContainers)) pathById.set(path.id, path);
     }
     const titleRects = [...pathById.values()].flatMap(path => {
-      const rect = containerTitleRect(path, project, bounds, axes.projection);
+      const rect = containerTitleRect(path, project, bounds, axes.projection, containerInteraction);
       return rect ? [rect] : [];
     });
     const footprintRadius = new Map(handle.readNodeFootprintWitnesses().map(footprint => [footprint.id, footprint.coreRadiusPx]));
@@ -219,7 +221,7 @@ export const createProductView: CreateProductView = async (input) => {
       if (occluded.has(id) && !chosen && !hovered) continue;
       // A large Indra ring carries its own title at the rim; keep one label per container.
       const path = pathById.get(id);
-      if (path && !chosen && !hovered && containerTitleRect(path, project, bounds, axes.projection))
+      if (path && !chosen && !hovered && containerTitleRect(path, project, bounds, axes.projection, containerInteraction))
         continue;
       let reason: "hover" | "selected" | "neighbour" | "domain" | "main" | "zoom" | null = null;
       if (hovered) reason = "hover";
@@ -390,8 +392,8 @@ export const createProductView: CreateProductView = async (input) => {
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
     container.style.backgroundColor = palette.background;
     container.style.setProperty("--review-container-ink", palette.container);
-    const indraContainers = new Set(input.v2Prepared && axes.organization === "indra"
-      ? (input.layoutContainers ?? []).map((container) => container.id) : []);
+    const openContainers = new Set(input.v2Prepared && axes.organization === "indra"
+      ? (input.layoutContainers ?? []).filter((container) => container.open !== false).map((container) => container.id) : []);
     const presentation = {
       morphologyLanguage: "distinct" as const,
       containerTintSrgb: hexRgb(palette.container),
@@ -439,9 +441,10 @@ export const createProductView: CreateProductView = async (input) => {
               ...(v2Encoded && axes.morphology === "neural" ? { radiusPx: v2Encoded.radiusPx * (
                 (node.v2 as import("./v2-core.ts").V2Node).level >= 3 ? 0.62
                   : (node.v2 as import("./v2-core.ts").V2Node).level === 2 ? 0.8 : 1) } : {}),
-              // In Indra a node that holds visible children is drawn by its container ring; its own disc shrinks to a
-              // small hollow marker so it never covers what it contains.
-              ...(indraContainers.has(node.id) ? { radiusPx: INDRA_CONTAINER_MARKER_PX, haloPermille: 0, glyph: "hollow" as const } : {}),
+              // In Indra a node whose children are visible is drawn by its container ring; its own disc
+              // shrinks to a small hollow marker. A closed `+N` container keeps its own pearl, because
+              // below the sphere LOD the pearl is all that carries it.
+              ...(openContainers.has(node.id) ? { radiusPx: INDRA_CONTAINER_MARKER_PX, haloPermille: 0, glyph: "hollow" as const } : {}),
               ...(input.v2Prepared && axes.colour === "bw" ? { tintSrgb: (() => { const level = (node.v2 as import("./v2-core.ts").V2Node).level; const gray = level <= 2 ? 0.88 : level <= 4 ? 0.7 : 0.56; return [gray, gray, gray] as const; })() }
                 : input.v2Prepared && axes.colour !== "bw" ? {tintSrgb:hexRgb(v2CategoryColour(node.v2 as import("./v2-core.ts").V2Node,palette,axes.colour==='custom'?input.v2Colours:undefined))}
                 : axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] }
@@ -545,6 +548,16 @@ export const createProductView: CreateProductView = async (input) => {
     if (axes.organization === 'indra' && input.layoutContainers) {
       let closest: { id: string; distance: number } | null = null;
       for (const outline of buildContainerGeometry(axes.morphology, input.layoutContainers)) {
+        // Only a sphere the view actually draws answers a click on its rim; a closed pearl below the
+        // LOD is picked by its pearl marker instead.
+        if (axes.projection === '3d') {
+          const center = project(outline.center);
+          const limbRadius = outline.radius * projectedWorldScale(outline.center, outline.radius, project);
+          if (!containerSphereLOD(outline.level, outline.open !== false,
+            morphologyInteraction.focusIds?.has(outline.id) ?? false, Math.max(0.5, limbRadius))) continue;
+          if (center.x + limbRadius < -8 || center.x - limbRadius > container.clientWidth + 8
+            || center.y + limbRadius < -8 || center.y - limbRadius > container.clientHeight + 8) continue;
+        }
         const circles = axes.projection === '3d' ? (outline.shell ?? [outline.points]) : [outline.points];
         for (const circle of circles) {
           const projected = circle.map(point => project(point));

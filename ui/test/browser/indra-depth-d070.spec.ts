@@ -38,6 +38,14 @@ test('D-071 Flat volume equilibrates and frames from useful views', async ({ pag
   await page.locator('#equilibra-volume').click();
   await expect.poll(async () => (await page.evaluate(() => (window as any).__d067.witness())).volume.ratios.third).toBeGreaterThanOrEqual(0.6);
   await page.evaluate(() => (window as any).__d067.fit());
+  // The fit animates the camera (and a late panel/inset settle can refit once more), so positions
+  // read immediately are mid-flight. Poll with a bounded timeout until every node is inside the
+  // visible rectangle; the assertion itself is unchanged.
+  await expect.poll(() => page.evaluate(() => {
+    const w = (window as any).__d067.witness();
+    const rect = w.visibleRect;
+    return Object.values(w.nodeViewport).every((point: any) => point.x >= rect.left - 1 && point.x <= rect.left + rect.width + 1 && point.y >= rect.top - 1 && point.y <= rect.top + rect.height + 1);
+  }), { timeout: 25000 }).toBe(true);
   const fitted = await page.evaluate(() => (window as any).__d067.witness());
   const rect = fitted.visibleRect;
   expect(Object.values(fitted.nodeViewport).every((point: any) => point.x >= rect.left - 1 && point.x <= rect.left + rect.width + 1 && point.y >= rect.top - 1 && point.y <= rect.top + rect.height + 1)).toBe(true);
