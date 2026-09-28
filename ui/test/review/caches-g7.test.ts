@@ -109,17 +109,17 @@ test("resetDrawingCaches clears the title memo and the witness returns to zero",
   resetDrawingCaches();
   const measure = (text: string) => [...text].length * 6.5;
   containerTitleLayout("memo witness", measure, 1);
-  assert.ok(drawingCacheSize() >= 1);
+  assert.ok(drawingCacheSize(measure) >= 1);
   resetDrawingCaches();
-  assert.equal(drawingCacheSize(), 0);
+  assert.equal(drawingCacheSize(measure), 0);
 });
 
 test("the title memo is size-capped: inserting past the cap resets it, never growing unbounded", () => {
   resetDrawingCaches();
   const measure = (text: string) => [...text].length * 6.5;
   for (let index = 0; index <= DRAWING_CACHE_CAP + 8; index++) containerTitleLayout(`title ${index}`, measure, 1);
-  assert.ok(drawingCacheSize() <= DRAWING_CACHE_CAP + 8);
-  assert.ok(drawingCacheSize() >= 1);
+  assert.ok(drawingCacheSize(measure) <= DRAWING_CACHE_CAP + 8);
+  assert.ok(drawingCacheSize(measure) >= 1);
   resetDrawingCaches();
 });
 
@@ -272,7 +272,6 @@ test("the bucketed pearl paint stays within one channel step of the exact dim/br
 
 test("the pearl paint cache warms within a frame and never grows past its cap", () => {
   resetPearlCaches();
-  assert.equal(pearlPaintCacheSize(), 0);
   const geometry = buildMorphologyGeometry("mycelium",
     [{ id: "a", position: { x: 0, y: 0, z: 0 }, radius: 4 }, { id: "b", position: { x: 30, y: 10, z: -5 }, radius: 3 },
       { id: "c", position: { x: -25, y: -8, z: 6 }, radius: 3 }],
@@ -287,20 +286,22 @@ test("the pearl paint cache warms within a frame and never grows past its cap", 
       ["e2", { color: "rgb(160, 160, 160)", presentation: { opacityPermille: 680, widthPermille: 1000 } }]]),
   };
   const appearance = { ...DEFAULT_APPEARANCE, starfieldDensity: 0 } as typeof DEFAULT_APPEARANCE;
+  // One persistent context across frames, as the renderers reuse one context per canvas.
+  const { context } = recordingContext(true);
+  assert.equal(pearlPaintCacheSize(context), 0);
   const draw = (frame: number) => {
-    const { context } = recordingContext(true);
     drawMorphologyCanvas(context, geometry, projectAt(frame), style as never, appearance, geometry.containers, "3d", false);
   };
   draw(1);
-  const warmed = pearlPaintCacheSize();
+  const warmed = pearlPaintCacheSize(context);
   assert.ok(warmed >= 1);
   draw(1);
   draw(2);
   draw(3);
-  assert.ok(pearlPaintCacheSize() <= PEARL_PAINT_CACHE_CAP);
-  assert.ok(pearlPaintCacheSize() >= warmed);
+  assert.ok(pearlPaintCacheSize(context) <= PEARL_PAINT_CACHE_CAP);
+  assert.ok(pearlPaintCacheSize(context) >= warmed);
   resetPearlCaches();
-  assert.equal(pearlPaintCacheSize(), 0);
+  assert.equal(pearlPaintCacheSize(context), 0);
 });
 
 // ---------------------------------------------------------------- run-batched equator strokes

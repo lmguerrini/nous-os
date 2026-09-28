@@ -169,31 +169,32 @@ export const PEARL_DEPTH_STEPS = 128;
  * gradient also depends on a quarter-pixel radius bucket. */
 const PEARL_PROPORTIONAL_RADIUS_PX = 0.5 / 0.06;
 export const PEARL_PAINT_CACHE_CAP = 2048;
-const pearlPaintLists: Map<string, PearlPaint>[] = [];
+/** Pearl paints per drawing context, keyed weakly BY the context (as `sphereGradientCaches` in
+ * container-canvas.ts): a paint's gradients belong to the context that built them, and a destroyed
+ * renderer's cache is collectable with its context. An array of maps keyed the other way round
+ * would pin dead canvases: a WeakMap holds its value strongly while its key lives, and the array
+ * kept the keys (the maps) alive — so module state must hold no strong reference to any context. */
+let pearlPaintCaches = new WeakMap<CanvasRenderingContext2D, Map<string, PearlPaint>>();
 
-/** Resets the cached pearl paints and parsed colours. Tests use it to observe cache behaviour. */
+/** Resets the cached pearl paints and parsed colours (the WeakMap is replaced, so every context —
+ * live or dead — starts a fresh cache). Tests use it to observe cache behaviour. */
 export function resetPearlCaches(): void {
-  pearlPaintLists.length = 0;
+  pearlPaintCaches = new WeakMap();
   colourChannelsCache.clear();
 }
-/** Number of cached pearl paints (bounded by the cap) — the bounded-growth witness. */
-export function pearlPaintCacheSize(): number {
-  let total = 0;
-  for (const map of pearlPaintLists) total += map.size;
-  return total;
+/** Number of cached pearl paints for one drawing context (bounded by the cap) — the bounded-growth
+ * witness. Per context because the cache itself is: with no strong reference to any context there
+ * is no cross-context total, and none to leak. */
+export function pearlPaintCacheSize(context: CanvasRenderingContext2D): number {
+  return pearlPaintCaches.get(context)?.size ?? 0;
 }
 function pearlPaintCacheFor(context: CanvasRenderingContext2D): Map<string, PearlPaint> {
-  for (const map of pearlPaintLists) if (map.size && pearlPaintOwner.get(map) === context) return map;
+  let byKey = pearlPaintCaches.get(context);
+  if (byKey) return byKey;
   const map = new Map<string, PearlPaint>();
-  pearlPaintOwner.set(map, context);
-  pearlPaintLists.push(map);
-  if (pearlPaintLists.length > 64) {
-    const removed = pearlPaintLists.shift();
-    if (removed) pearlPaintOwner.delete(removed);
-  }
+  pearlPaintCaches.set(context, map);
   return map;
 }
-const pearlPaintOwner = new WeakMap<Map<string, PearlPaint>, CanvasRenderingContext2D>();
 
 /** Every colour string one pearl of this paint key draws with, plus its cached unit gradients. */
 export type PearlPaint = {

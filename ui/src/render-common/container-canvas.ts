@@ -241,10 +241,10 @@ const estimatedMeasure: TitleMeasure = (text) => [...text].length * TITLE_CHAR_W
 // rotating camera cannot grow them without bound.
 
 export const DRAWING_CACHE_CAP = 1024;
-/** Memoised title layouts, one map per measure function (a measure is deterministic: a fixed font). */
+/** Memoised title layouts, one map per measure function (a measure is deterministic: a fixed font).
+ * Keyed weakly: a context-bound measure (stableContextMeasurer) captures its context, so a strong
+ * registry of measures would pin every renderer's context and canvas after its death. */
 let titleLayoutCaches = new WeakMap<TitleMeasure, Map<string, { readonly text: string; readonly width: number }>>();
-/** The measures the size probe can see (bounded: contexts and views are few, and the set resets with the caches). */
-let knownMeasures = new Set<TitleMeasure>();
 let containersOrderCaches = new WeakMap<readonly MorphologyContainerPath[], {
   readonly sorted: readonly MorphologyContainerPath[];
   readonly byId: ReadonlyMap<string, MorphologyContainerPath>;
@@ -279,16 +279,15 @@ function stableContextMeasurer(context: CanvasRenderingContext2D): TitleMeasure 
  * Tests use it to observe cache behaviour. */
 export function resetDrawingCaches(): void {
   titleLayoutCaches = new WeakMap();
-  knownMeasures = new Set();
   containersOrderCaches = new WeakMap();
   sphereGradientCaches = new WeakMap();
   contextMeasurers = new WeakMap();
 }
-/** Number of memoised title layouts (bounded by the cap) — the bounded-growth witness. */
-export function drawingCacheSize(): number {
-  let total = 0;
-  for (const measure of knownMeasures) total += titleLayoutCaches.get(measure)?.size ?? 0;
-  return total;
+/** Number of memoised title layouts for one measure (bounded by the cap) — the bounded-growth
+ * witness. Per measure because the memo is: the measures are held weakly (a context-bound measure
+ * dies with its renderer), so there is no set of them to sum over — and none to leak. */
+export function drawingCacheSize(measure: TitleMeasure): number {
+  return titleLayoutCaches.get(measure)?.size ?? 0;
 }
 
 function memoisedTitleLayout(title: string, measure: TitleMeasure, level: number): { readonly text: string; readonly width: number } {
@@ -296,7 +295,6 @@ function memoisedTitleLayout(title: string, measure: TitleMeasure, level: number
   if (!cache) {
     cache = new Map();
     titleLayoutCaches.set(measure, cache);
-    knownMeasures.add(measure);
   }
   const key = `${level}\u0000${title}`;
   const hit = cache.get(key);
