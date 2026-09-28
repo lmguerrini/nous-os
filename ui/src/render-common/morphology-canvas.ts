@@ -135,7 +135,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         const base = (1 - t) * (1 - t) * part.widthStart + 2 * t * (1 - t) * (2 * part.widthMid - (part.widthStart + part.widthEnd) / 2)
           + t * t * part.widthEnd;
         const profile = geometry.morphology === "neural" ? Math.max(0.2, base) : part.widthStart + (part.widthEnd - part.widthStart) * smooth;
-        return clamp(profile * points[i]!.scale * widthFactor * appearance.edgeWidth
+        // Fractional sample positions (the flow pulse asks for midpoints) read the nearest projected scale.
+        const scaleAt = points[Math.min(points.length - 1, Math.max(0, Math.round(i)))]!.scale;
+        return clamp(profile * scaleAt * widthFactor * appearance.edgeWidth
           * (emphasis?.radiusMultiplier ?? 1) * variation, 0.5, 16);
       };
       const alpha = clamp(Math.max(0.14, opacity * appearance.edgeOpacity * (geometry.morphology === "stellar" ? 0.9 : 1)
