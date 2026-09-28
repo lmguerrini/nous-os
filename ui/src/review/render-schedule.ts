@@ -61,6 +61,19 @@ export class QualityGovernor {
     this.lastTouchMs = null;
     return "full";
   }
+
+  /** Ends a motion the page itself started — a programmatic framing that has just completed. The
+   * camera sits at its final state and nothing further will move it, so quality returns to full
+   * now rather than after `restoreDelayMs` of stillness: the label pass that closes the framing
+   * draws the full set, and secondary labels return with the fit itself instead of a settle
+   * later. Returns `"full"` when quality actually flipped, so the caller runs its full-restore
+   * path exactly once; already-full is a no-op. */
+  endMotion(nowMs: number): RenderQuality | null {
+    if (this.state !== "moving") return null;
+    this.state = "full";
+    this.lastTouchMs = null;
+    return "full";
+  }
 }
 
 /** Whether the camera watch loop still has a reason to run: a pointer is pressed on the canvas,

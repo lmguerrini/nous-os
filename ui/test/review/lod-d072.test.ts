@@ -13,6 +13,7 @@ import {
   LOD_EXIT_INTERMEDIATE,
   LOD_EXIT_NEAR,
   normalizeDensity,
+  refreshCameraAction,
   selectArcs,
   selectNodes,
 } from "../../src/review/lod.ts";
@@ -255,4 +256,20 @@ test("normalizeDensity and formatCount", () => {
   assert.equal(formatCount(3900), "3.900");
   assert.equal(formatCount(12345), "12.345");
   assert.equal(formatCount(42), "42");
+});
+
+test("refreshCameraAction: a density or level refresh never refits", () => {
+  const base = { hasCamera: true, keep: true, boundsChanged: true, userMoved: false };
+  // The same scene — same disclosed ids, arrangement, morphology — restores even when the
+  // rendered subset's extents jitter enough to look like a bounds change.
+  assert.equal(refreshCameraAction({ ...base, sceneUnchanged: true }), "restore");
+  assert.equal(refreshCameraAction({ ...base, userMoved: true, sceneUnchanged: true }), "restore");
+  // Genuinely new bounds the user did not move past still refit; a user gesture restores.
+  assert.equal(refreshCameraAction({ ...base, sceneUnchanged: false }), "refit");
+  assert.equal(refreshCameraAction({ ...base, userMoved: true, sceneUnchanged: false }), "restore");
+  // Unchanged bounds restore; another arrangement keeps the mount-solved camera; no camera at
+  // all means there is nothing to do.
+  assert.equal(refreshCameraAction({ ...base, boundsChanged: false, sceneUnchanged: false }), "restore");
+  assert.equal(refreshCameraAction({ ...base, keep: false, boundsChanged: false, sceneUnchanged: false }), "none");
+  assert.equal(refreshCameraAction({ hasCamera: false, keep: true, boundsChanged: true, userMoved: false, sceneUnchanged: false }), "none");
 });

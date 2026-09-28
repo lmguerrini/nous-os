@@ -14,7 +14,7 @@ const BUDGETS = {
 type LodWitness = {
   level: string;
   density: string;
-  nodes: { rendered: number; available: number };
+  nodes: { rendered: number; available: number; pinned: number; pinnedIds: string[] };
   arcs: { rendered: number; available: number };
   labels: { rendered: number; available: number };
 };
@@ -46,10 +46,17 @@ const disclose = async (page: Page) => {
   }
 };
 
-/** One wheel notch; the level is evaluated on a 250 ms page tick, so settle before reading. */
+/** One wheel notch; the level is evaluated on a 250 ms page tick, so settle before reading.
+ * A level change rebuilds the view, and for a moment no canvas exists at all — the box is
+ * polled until the new view mounts instead of crashing on the recreation window. */
 const notch = async (page: Page, direction: 1 | -1, settle = 400) => {
   const canvas = page.locator("#viewport canvas").first();
-  const box = (await canvas.boundingBox())!;
+  let box = await canvas.boundingBox();
+  for (let attempt = 0; !box && attempt < 100; attempt += 1) {
+    await page.waitForTimeout(50);
+    box = await canvas.boundingBox();
+  }
+  if (!box) throw new Error("the viewport canvas never came back after the refresh");
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
   await page.mouse.wheel(0, -direction * 120);
   await page.waitForTimeout(settle);
@@ -63,6 +70,20 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
   await disclose(page);
   await page.waitForTimeout(1100); // the page holds zoom reveals briefly after a refresh
 
+  // The explicit set L1 pins beyond the budget: the selection's path, the hovered focus, and
+  // every child of a node expanded by hand. This spec selects and hovers nothing, so the pins
+  // here are exactly the expansion structure it built itself.
+  const disclosureState = await page.evaluate(() => {
+    const state = (window as any).__d067.disclosure();
+    return {
+      expanded: state.expanded as string[],
+      nodes: state.nodes as Array<{ id: string; parent?: string }>,
+    };
+  });
+  const allowedPinned = new Set<string>(disclosureState.expanded);
+  for (const node of disclosureState.nodes)
+    if (node.parent && disclosureState.expanded.includes(node.parent)) allowedPinned.add(node.id);
+
   const results: Record<string, LodWitness & { panel: string }> = {};
   const order = ["essential", "balanced", "complete", "balanced"] as const;
   for (const density of order) {
@@ -72,12 +93,17 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
     const budget = BUDGETS[density as keyof typeof BUDGETS];
     expect(witness.density, `density setting took effect`).toBe(density);
     expect(witness.nodes.available, "the disclosed set is large enough to bind the budgets").toBeGreaterThan(budget.nodes);
-    expect(witness.nodes.rendered, `${density}: nodes ≤ ${budget.nodes}`).toBeLessThanOrEqual(budget.nodes);
+    // The budget binds on the unpinned fill; pinned children of manual expansions are accounted
+    // for explicitly, so the rule is testable rather than an invisible exception.
+    expect(witness.nodes.pinned, `${density}: the pinned set is counted`).toBeGreaterThan(0);
+    expect(witness.nodes.rendered, `${density}: nodes ≤ ${budget.nodes} + pinned`).toBeLessThanOrEqual(budget.nodes + witness.nodes.pinned);
+    for (const id of witness.nodes.pinnedIds)
+      expect(allowedPinned.has(id), `${density}: pinned ${id} is an expansion child or an expanded node`).toBe(true);
     expect(witness.arcs.rendered, `${density}: arcs ≤ ${budget.arcs}`).toBeLessThanOrEqual(budget.arcs);
-    // The per-density label allowance is the page's own truth; the view still caps placement at the
-    // absolute 60 until P1 honours input.labelBudget (reported in the D-072 L1 REPORT).
+    // The per-density label allowance is the page's own truth and the view honours it at draw
+    // time (FixA: product-view places labels within ViewInput.labelBudget).
     expect(witness.labels.available, `${density}: label allowance`).toBe(budget.labels);
-    expect(witness.labels.rendered, `${density}: labels within the current view cap`).toBeLessThanOrEqual(budget.labelCapNow);
+    expect(witness.labels.rendered, `${density}: labels within the density allowance`).toBeLessThanOrEqual(budget.labels);
     const panel = await page.locator("#v2-controls").innerText();
     expect(panel, `${density}: the panel names the node budget`).toContain("Nodi");
     expect(panel, `${density}: the panel names the arc budget`).toContain("Archi");
@@ -98,6 +124,36 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
   await page.reload();
   await ready(page);
   expect(await lod(page).then(w => w.density), "the density persists across a reload").toBe("essential");
+
+  // The budget also has to bind on a disclosed set built without any manual expansion — semantic
+  // zoom alone. The reload left the disclosure history empty, so nothing is pinned by hand here.
+  await page.evaluate(() => (window as any).__d067.fit());
+  await page.waitForTimeout(1700); // fit suppresses zoom reveals for 1.5 s
+  const initial = await lod(page);
+  let steps = 0;
+  let level = initial.level;
+  while (level !== "near" && steps < 40) {
+    await notch(page, 1, 350);
+    level = (await lod(page)).level;
+    steps += 1;
+  }
+  expect(level, "semantic zoom alone reaches the near level").toBe("near");
+  // Stay deep a while: the near level's progressive disclosure adds nodes on its own tick.
+  await notch(page, 1, 350);
+  await page.waitForTimeout(3000);
+  // Leave the canvas before forcing a refresh, so no hover pins anything.
+  await page.mouse.move(1, 1);
+  await page.waitForTimeout(300);
+  await page.evaluate(() => (window as any).__d067.setDensity("balanced"));
+  await page.waitForTimeout(1100);
+  await page.evaluate(() => (window as any).__d067.setDensity("essential"));
+  await page.waitForTimeout(1100);
+  const zoomed = await lod(page);
+  expect(zoomed.nodes.pinned, "no manual expansions means nothing pinned").toBe(0);
+  expect(zoomed.nodes.rendered, "essential: nodes ≤ 150 with no pins to excuse them").toBeLessThanOrEqual(BUDGETS.essential.nodes);
+  expect(zoomed.nodes.available, "semantic zoom disclosed nodes on its own").toBeGreaterThan(initial.nodes.available);
+  results.zoomOnly = { ...zoomed, panel: "semantic zoom alone" };
+
   await page.evaluate(() => (window as any).__d067.setDensity("balanced"));
   await writeFile(testInfo.outputPath("lod-budgets.json"), JSON.stringify(results, null, 2));
   console.log(`D-072 budgets: ${Object.entries(results).map(([name, cell]) =>

@@ -509,7 +509,10 @@ export const createProductView: CreateProductView = async (input) => {
       }),
     });
     const labelled = disambiguateLabels(marked);
-    const next = placeLabels(labelled, bounds, measured, reserved, LABEL_BUDGET, discs);
+    // D-072 FixA: the density's own allowance (20/40/60, L1's ViewInput.labelBudget) drives the
+    // placement; the absolute LABEL_BUDGET stays only as the default for callers that say nothing.
+    const allowance = input.labelBudget ?? LABEL_BUDGET;
+    const next = placeLabels(labelled, bounds, measured, reserved, allowance, discs);
     const rect = container.getBoundingClientRect();
     placed = next.map((label) => ({
       ...label,
@@ -1041,6 +1044,9 @@ export const createProductView: CreateProductView = async (input) => {
     const final = solved.camera;
     if (!validCamera(final)) {
       if (validCamera(start)) current.restoreCameraState(start);
+      // The programmatic motion is over either way: settle quality now so the closing pass below
+      // is the full one — labels return with the framing, never a settle later.
+      if (qualityGovernor.endMotion(performance.now()) === "full") onQualityFull(performance.now());
       labelPass();
       return;
     }
@@ -1077,6 +1083,10 @@ export const createProductView: CreateProductView = async (input) => {
     if (handle !== current) return;
     current.restoreCameraState(final);
     cameras.set(cameraKey(), final);
+    // The programmatic framing has landed: nothing further will move the camera, so quality
+    // returns to full now — the closing label pass below draws the full set, and secondary labels
+    // return with the fit itself rather than through the stillness delay and the idle settle.
+    if (qualityGovernor.endMotion(performance.now()) === "full") onQualityFull(performance.now());
     labelPass();
   }
   return {

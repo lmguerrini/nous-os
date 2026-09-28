@@ -180,3 +180,23 @@ test("the occlusion pass is fed at most a budget-scaled set of the nearest ancho
   ], 2);
   assert.deepEqual(tied.map((sample) => sample.id), ["c", "a"], "depth ties break by id, deterministically");
 });
+
+test("QualityGovernor.endMotion ends a programmatic motion without the stillness delay", () => {
+  const governor = new QualityGovernor();
+  assert.equal(governor.quality, "full");
+  assert.equal(governor.endMotion(1_000), null, "already full: nothing to flip");
+
+  governor.touch(2_000);
+  assert.equal(governor.quality, "moving");
+  // A poll just after the touch is still moving — the restore needs QUALITY_RESTORE_MS…
+  assert.equal(governor.poll(2_000 + QUALITY_RESTORE_MS - 1), null);
+  // …but a finished programmatic framing ends the motion at once, mid-delay.
+  assert.equal(governor.endMotion(2_050), "full");
+  assert.equal(governor.quality, "full");
+  assert.equal(governor.endMotion(2_100), null, "a second settle is a no-op");
+
+  // Camera changes afterwards still drop to moving and still restore by stillness alone.
+  governor.touch(3_000);
+  assert.equal(governor.quality, "moving");
+  assert.equal(governor.poll(3_000 + QUALITY_RESTORE_MS), "full");
+});

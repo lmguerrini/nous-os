@@ -133,6 +133,13 @@ test("D-071 the 3D wheel is a true dolly: it magnifies at a fixed field of view"
 
     await page.evaluate(() => (window as any).__d067.fit());
     await expect.poll(() => settled(page), { timeout: 20000, message: `${cell.name}: camera never settled after the refit` }).toBe(true);
+    // Labels return with the fit itself now (FixA settles quality at the end of a programmatic
+    // framing), but the return stays polled generously: labels must reliably come back.
+    await expect.poll(async () => await page.evaluate(() =>
+      ((window as any).__d067.witness().labels as unknown[]).length), {
+      timeout: 5000,
+      message: `${cell.name}: labels return after the refit`,
+    }).toBeGreaterThan(0);
     const refitted = await measure(page);
     expect(refitted.outside, `${cell.name}: fit after the wheel restores a framed view`).toEqual([]);
     expect(refitted.fov, `${cell.name}: refitted fov within 10°–90°`).toBeGreaterThanOrEqual(10);

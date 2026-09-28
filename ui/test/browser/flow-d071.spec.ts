@@ -18,10 +18,13 @@ async function ready(page: Page): Promise<void> {
 async function setAxes(page: Page, axes: Record<string, unknown>): Promise<void> {
   await page.evaluate((axes) => (window as Window & { __d067?: AxisApi }).__d067!.setAxes(axes), axes);
 }
+/** Motion lives on the flow overlay since D-072 P1a: the morphology canvas is static at rest and
+ * the travelling highlights repaint `canvas[data-flow-canvas]`. The hash follows that layer —
+ * the exploratory reading repaints it between frames, while the attested reading and a stopped
+ * Movimento leave it untouched. */
 function captureHash(page: Page): Promise<string> {
   return page.evaluate(() => {
-    const canvas = document.querySelector<CanvasHook>("#viewport canvas[data-morphology-canvas]")!;
-    canvas.__morphRedraw?.();
+    const canvas = document.querySelector<HTMLCanvasElement>("#viewport canvas[data-flow-canvas]")!;
     const context = canvas.getContext("2d")!;
     const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
     let hash = 0x811c9dc5;

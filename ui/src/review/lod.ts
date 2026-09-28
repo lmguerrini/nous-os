@@ -302,3 +302,27 @@ export function selectArcs(input: SelectArcsInput): readonly string[] {
 export function formatCount(value: number): string {
   return new Intl.NumberFormat("it-IT", { useGrouping: "always" }).format(value);
 }
+
+/** What the camera does after a refresh rebuilds the view behind the same page. Pure.
+ *
+ * A density or level change draws a different slice of the *same* scene — the disclosed set, the
+ * arrangement and the morphology are unchanged — so the camera is always restored, never refit:
+ * changing how much one sees must not move what one sees. The restore also covers layout-extent
+ * jitter that would otherwise masquerade as a bounds change. The refit stays reserved for scenes
+ * whose bounds really changed (new disclosures, another morphology) and only while the user has
+ * not taken the camera themselves. */
+export function refreshCameraAction(state: {
+  readonly hasCamera: boolean;
+  readonly keep: boolean;
+  readonly boundsChanged: boolean;
+  readonly userMoved: boolean;
+  /** The disclosed ids, the arrangement and the morphology are all unchanged — a density or
+   * level refresh, a hover, a label toggle. Never refit, whatever the layout extents read like. */
+  readonly sceneUnchanged: boolean;
+}): "restore" | "refit" | "none" {
+  if (!state.hasCamera) return "none";
+  if (state.sceneUnchanged) return "restore";
+  if (state.keep && (!state.boundsChanged || state.userMoved)) return "restore";
+  if (state.boundsChanged) return "refit";
+  return "none";
+}

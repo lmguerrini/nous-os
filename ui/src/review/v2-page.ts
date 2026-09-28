@@ -9,7 +9,7 @@ import { projectRelations } from './v2-relations.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
-import { adjacencyOf, communityResolver, DENSITY_BUDGETS, formatCount, lodLevelFromZoom, normalizeDensity, selectArcs, selectNodes } from './lod.ts';
+import { adjacencyOf, communityResolver, DENSITY_BUDGETS, formatCount, lodLevelFromZoom, normalizeDensity, refreshCameraAction, selectArcs, selectNodes } from './lod.ts';
 import type { Density, LodLevel } from './lod.ts';
 import { labelBudgetOf } from './labels.ts';
 import { createProductView } from './product-view.ts';
@@ -72,7 +72,7 @@ export class V2Page {
     private lod: LodLevel = 'far';
     /** The subset of the disclosed set the LOD actually hands to the view. */
     private rendered = new Set<string>();
-    private lodCounts = { nodes: { rendered: 0, available: 0 }, arcs: { rendered: 0, available: 0 } };
+    private lodCounts = { nodes: { rendered: 0, available: 0, pinned: 0, pinnedIds: [] as string[] }, arcs: { rendered: 0, available: 0 } };
     private detailCache = new Map<string, Record<string, unknown>>();
     private positions = new Map<string, Point3>();
     /** Un-expanded layout positions, the deterministic base for `previous`. */
@@ -87,6 +87,9 @@ export class V2Page {
     private lastArrangement = '';
     private lastMorphology = '';
     private lastBoundsKey = '';
+    /** The disclosed ids + arrangement + morphology of the last refresh. Unchanged means a density
+     * or level refresh: the same scene, so the camera is restored and never refit. */
+    private lastSceneKey = '';
     private lastFitCamera: ReturnType<ProductView['readCamera']> = null;
     /** Set by the user's own camera gestures; an automatic refit only happens while it is false. */
     private userMovedSinceFit = false;
@@ -237,11 +240,12 @@ export class V2Page {
             );
             const communityOf = communityResolver(this.index.nodes);
             const adjacency = adjacencyOf(disclosed.nodes, this.index.edges);
+            const pinned = this.pinnedNodeIds();
             const selection = selectNodes({
                 nodes: disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
                 level: this.lod,
                 budget: budget.nodes,
-                pinned: this.pinnedNodeIds(),
+                pinned,
                 focus: active,
                 adjacency,
                 communityOf,
@@ -260,8 +264,12 @@ export class V2Page {
                 keepExploratory: this.axes.reading !== 'attested',
             }).map(id => pool.byId.get(id)!).filter(edge => edge);
             this.rendered = renderedIds;
+            // D-072 FixA: pinned accounting. L1 keeps the explicit set (selection path, hovered,
+            // children of manual expansions) even beyond the budget, by design — so the budget
+            // binds on the unpinned fill and the witness says how many nodes the pins added.
+            const pinnedRendered = [...pinned].filter(id => renderedIds.has(id)).sort();
             this.lodCounts = {
-                nodes: { rendered: renderedIds.size, available: ids.size },
+                nodes: { rendered: renderedIds.size, available: ids.size, pinned: pinnedRendered.length, pinnedIds: pinnedRendered },
                 arcs: { rendered: shown.length, available: availableArcs.total },
             };
             this.renderedRelations = new Map(shown.map(edge => [edge.id, edge]));
@@ -320,12 +328,20 @@ export class V2Page {
             const boundsKey = `${arrangement}|${this.axes.morphology}|${this.appearance.expandX}|${this.appearance.expandY}|${this.appearance.expandZ}|${extent}|${[...ids].sort().join('|')}`;
             const boundsChanged = boundsKey !== this.lastBoundsKey;
             this.lastBoundsKey = boundsKey;
+            // D-072 FixA: the same scene (same disclosed ids, arrangement and morphology) means a
+            // density or level refresh — it must never move the camera, even when the rendered
+            // subset's extents jitter enough to look like a bounds change. Only a genuinely new
+            // scene may refit, and only while the user has not taken the camera themselves.
+            const sceneKey = `${arrangement}|${this.axes.morphology}|${[...ids].sort().join('|')}`;
+            const sceneUnchanged = !!old && sceneKey === this.lastSceneKey;
+            this.lastSceneKey = sceneKey;
             const keep = old && arrangement === this.lastArrangement;
             this.lastArrangement = arrangement;
             this.lastMorphology = this.axes.morphology;
             // Comparing camera states misreads an unfinished fit animation as a user move; the gestures say it directly.
             const userMoved = !!old && this.userMovedSinceFit;
-            if (keep && (!boundsChanged || userMoved)) {
+            const cameraAction = refreshCameraAction({ hasCamera: !!old, keep: !!keep, boundsChanged, userMoved, sceneUnchanged });
+            if (cameraAction === "restore") {
                 try {
                     this.programmaticCamera(); this.view.restoreCamera(old);
                 }
@@ -334,7 +350,7 @@ export class V2Page {
                     this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
                     this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
                 }
-            } else if (boundsChanged && old) {
+            } else if (cameraAction === "refit") {
                 this.programmaticCamera(); await this.view.fit(); this.programmaticCamera();
                 this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
                 this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
@@ -768,6 +784,11 @@ export class V2Page {
         host.append(overview);
         const controls = document.createElement('section');
         controls.id = 'v2-controls';
+        // D-072 FixA: the counters change with the density («Nodi 160 di …», «Densità Essenziale»)
+        // and the details column follows its content. A width that breathes with the digits resizes
+        // the canvas — and with the camera kept, every node would drift on screen across a density
+        // or level change. The floor keeps the column stable.
+        controls.style.minWidth = '26ch';
         // D-072 L1: rendered versus available, the counts — «Nodi 300 di 1.200
         // disponibili · Archi 400 di 3.900». Nodes and arcs are what the LOD actually draws
         // against what the current disclosure makes available; labels are drawn against the
