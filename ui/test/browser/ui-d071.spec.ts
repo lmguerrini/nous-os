@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 
+test.skip(!(process.env.D071_BROWSER === "1" || process.env.D071_CAPTURE === "1"), "Set D071_BROWSER=1 (or D071_CAPTURE=1) and serve the review page");
+
 const url = process.env.D069_URL ?? "http://127.0.0.1:8768/";
 const ready = async (page: import("@playwright/test").Page) => {
   await page.goto(url);

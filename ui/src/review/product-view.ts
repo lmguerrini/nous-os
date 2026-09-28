@@ -44,6 +44,25 @@ import {
 /** On-screen radius of an Indra container's own marker; the container ring carries the node. */
 const INDRA_CONTAINER_MARKER_PX = 2.5;
 
+/** One offscreen measuring canvas owned by this module (never a per-renderer context, which would
+ * pin a dead renderer's canvas after teardown). Both measuring fonts — container titles and node
+ * labels — live on it; every measure sets its font before reading, so sharing is invisible. */
+let measureCanvas: HTMLCanvasElement | null = null;
+function measureContext(): CanvasRenderingContext2D | null {
+  if (!measureCanvas) measureCanvas = document.createElement("canvas");
+  return measureCanvas.getContext("2d");
+}
+
+/** Title width at the font its level draws with, on the shared measuring canvas. A stable
+ * module-level identity: the title-layout memo (keyed by measure identity) then hits for every
+ * pass of every view of the page session instead of once per pass. */
+const titleMeasure = (text: string, level: number): number => {
+  const context = measureContext();
+  if (!context) return [...text].length * 6.5;
+  context.font = containerTitleFont(level);
+  return context.measureText(text).width;
+};
+
 const options = {
   palette: "monochrome" as const,
   temperature: "balanced" as const,
@@ -111,7 +130,7 @@ export const createProductView: CreateProductView = async (input) => {
   let selected: string | null = null;
   let emphasis: ReadonlySet<string> | null = null;
   let hover: { kind: "node" | "edge"; id: string; x: number; y: number } | null = null;
-  const morphologyInteraction: { hoverId: string | null; focusIds: ReadonlySet<string> | null; labelDiscs: readonly CanvasDisc[] | null } = { hoverId: null, focusIds: null, labelDiscs: null };
+  const morphologyInteraction: { hoverId: string | null; focusIds: ReadonlySet<string> | null; labelDiscs: readonly CanvasDisc[] | null; containerColor: string | null } = { hoverId: null, focusIds: null, labelDiscs: null, containerColor: null };
   const redrawMorphology = () => (container.querySelector("canvas[data-morphology-canvas]") as
     (HTMLCanvasElement & { __morphRedraw?: () => void }) | null)?.__morphRedraw?.();
   let placed: LabelWitness[] = [];
@@ -172,7 +191,9 @@ export const createProductView: CreateProductView = async (input) => {
     if (!handle || destroyed) return;
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
     container.style.backgroundColor = palette.background;
-    container.style.setProperty("--review-container-ink", palette.container);
+    // The palette's container role reaches the scene through the shared interaction object: the
+    // morphology layer reads it on its next redraw and draws the shells with it.
+    morphologyInteraction.containerColor = palette.container;
     const bounds = localRect();
     const camera = handle.readCameraState();
     const fitted = fitRatio.get(cameraKey()) ?? camera.ratio;
@@ -229,14 +250,8 @@ export const createProductView: CreateProductView = async (input) => {
     morphologyInteraction.labelDiscs = discs;
     // Titles are placed on the canvas's own rectangle (the overlay canvas spans the container), with
     // the same discs the DOM pass uses; the reserved rects below are exactly the drawn ones. The
-    // width is measured with the title font itself (a dedicated context: the label measurer keeps
-    // its own font), so a title that fits the 190 px budget is never truncated by an estimate.
-    const titleContext = document.createElement("canvas").getContext("2d");
-    const titleMeasure = (text: string, level: number): number => {
-      if (!titleContext) return [...text].length * 6.5;
-      titleContext.font = containerTitleFont(level);
-      return titleContext.measureText(text).width;
-    };
+    // width is measured with the title font itself on the shared module canvas, so a title that
+    // fits the 190 px budget is never truncated by an estimate.
     const titleBounds = { width: container.clientWidth, height: container.clientHeight };
     const titlePlacements = placeContainerTitles([...pathById.values()], project, titleBounds, axes.projection, containerInteraction, discs, titleMeasure);
     const titledContainerIds = new Set(titlePlacements.map(placement => placement.id));
@@ -304,7 +319,7 @@ export const createProductView: CreateProductView = async (input) => {
       for (let index = candidates.length - 1; index >= 0; index--)
         if (candidates[index]!.reason === "neighbour" && !keep.has(candidates[index]!.id)) candidates.splice(index, 1);
     }
-    const context = document.createElement("canvas").getContext("2d");
+    const context = measureContext();
     if (context) context.font = `${appearance.labelSizePx}px Arial`;
     const measured = (text: string, maxWidth: number, maxLines: number) => {
       const font = `${appearance.labelSizePx}px Arial`;
@@ -346,8 +361,11 @@ export const createProductView: CreateProductView = async (input) => {
     // A short label stays on one line: a page-truncated short title is marked with «…» on a word
     // boundary, a too-wide text is cut the same way, and a « · +N» count is never the part cut
     // (the full title stays in the tooltip and the panel), never a clipped word.
-    const singleLineWidth = (text: string) => text.split(/\s+/)
-      .reduce((sum, word) => sum + (context?.measureText(word).width ?? word.length * appearance.labelSizePx * 0.58) + 5, 0);
+    const singleLineWidth = (text: string) => {
+      if (context) context.font = `${appearance.labelSizePx}px Arial`;
+      return text.split(/\s+/)
+        .reduce((sum, word) => sum + (context?.measureText(word).width ?? word.length * appearance.labelSizePx * 0.58) + 5, 0);
+    };
     const marked = limited.map(candidate => candidate.full ? candidate : {
       ...candidate,
       text: shortLabelWithEllipsis({
@@ -466,12 +484,11 @@ export const createProductView: CreateProductView = async (input) => {
     const anchors = restrictAnchors(fullAnchor(axes), visible);
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
     container.style.backgroundColor = palette.background;
-    container.style.setProperty("--review-container-ink", palette.container);
+    morphologyInteraction.containerColor = palette.container;
     const openContainers = new Set(input.v2Prepared && axes.organization === "indra"
       ? (input.layoutContainers ?? []).filter((container) => container.open !== false).map((container) => container.id) : []);
     const presentation = {
       morphologyLanguage: "distinct" as const,
-      containerTintSrgb: hexRgb(palette.container),
       nativeLabels: false,
       windowGeometryFromAnchors: true,
       ...(input.layoutContainers && axes.organization === "indra" ? { containers: input.layoutContainers } : {}),

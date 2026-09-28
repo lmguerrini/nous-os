@@ -57,6 +57,31 @@ export function starfieldStars(width: number, height: number, density: number): 
   return stars;
 }
 
+/** Upper bound of cached star lists: resizes and density changes are rare, so a handful of keys
+ * covers a session; past the cap the cache resets, never grows unbounded. */
+export const STAR_CACHE_CAP = 8;
+const starCache = new Map<string, readonly StarfieldStar[]>();
+
+/** `starfieldStars` behind a bounded cache keyed by its only inputs (width, height, density): a hit
+ * can never serve a stale value, and the flow animation — which repaints this layer many times per
+ * second — stops allocating up to 2200 star objects per frame. Pure values, so the cached array is
+ * shared read-only. Exposed for tests alongside the reset. */
+export function cachedStarfieldStars(width: number, height: number, density: number): readonly StarfieldStar[] {
+  if (!(density > 0) || !(width > 0) || !(height > 0)) return [];
+  const key = `${width}\u0000${height}\u0000${density}`;
+  const hit = starCache.get(key);
+  if (hit) return hit;
+  const stars = starfieldStars(width, height, density);
+  if (starCache.size >= STAR_CACHE_CAP) starCache.clear();
+  starCache.set(key, stars);
+  return stars;
+}
+
+/** Empties the star cache; tests use it to observe cache behaviour in isolation. */
+export function resetStarfieldCache(): void {
+  starCache.clear();
+}
+
 /**
  * Draws the starfield in screen space, beneath every other layer. Density and brightness 0 draw nothing.
  * Chosen placement: fixed in screen space (a far, non-parallax background), so it never shifts the scene
@@ -65,7 +90,7 @@ export function starfieldStars(width: number, height: number, density: number): 
 export function drawStarfield(context: CanvasRenderingContext2D, width: number, height: number,
   density: number, brightness: number): void {
   if (!(density > 0) || !(brightness > 0)) return;
-  const stars = starfieldStars(width, height, density);
+  const stars = cachedStarfieldStars(width, height, density);
   for (const star of stars) {
     const alpha = starAlpha(brightness, star.intensity);
     if (alpha <= 0) continue;

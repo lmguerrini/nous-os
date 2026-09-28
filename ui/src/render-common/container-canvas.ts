@@ -136,11 +136,71 @@ export type ContainerInteraction = {
    * the discs it derives from its own drawing.
    */
   readonly labelDiscs?: readonly CanvasDisc[] | null;
+  /**
+   * The palette's `container` role, as `#rrggbb` or `rgb(r, g, b)`: the colour the containers draw
+   * with (2D rings, 3D limbs, equators, rim light, titles), clamped in lightness against the field
+   * by `containerInkRgb`. Absent: the historical field-derived neutral ink.
+   */
+  readonly containerColor?: string | null;
 };
 
 /** One projected obstacle a label must stay clear of: a pearl or soma disc. The optional id marks
  * the disc as some anchor's own, which never rejects that anchor's label. */
 export type CanvasDisc = { readonly x: number; readonly y: number; readonly radius: number; readonly id?: string };
+
+/** Channel sum above which a field counts as light — the same heuristic the fixed ink always used. */
+const FIELD_LIGHT_CHANNEL_SUM = 380;
+
+/** On a light field the container ink may not be lighter than this channel sum (a mid-dark grey):
+ * above it the shells stop reading against a pale background. */
+export const CONTAINER_INK_LIGHT_FIELD_MAX_SUM = 344;
+/** On a dark field the container ink may not be darker than this channel sum (a mid-light grey):
+ * below it the shells sink into the night. Every shipped preset's container role sits above it
+ * (monochrome `#bcbcbc` sums 564), so presets draw unclamped; only a user-chosen too-dark role
+ * is lifted toward white until it reads. */
+export const CONTAINER_INK_DARK_FIELD_MIN_SUM = 444;
+
+function channelSum(colour: string): number {
+  const values = colour.match(/[\d.]+/g)?.map(Number) ?? [];
+  return (values[0] ?? 0) + (values[1] ?? 0) + (values[2] ?? 0);
+}
+
+function hexChannels(hex: string): readonly [number, number, number] | null {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!match) return null;
+  const digits = match[1]!;
+  return [parseInt(digits.slice(0, 2), 16), parseInt(digits.slice(2, 4), 16), parseInt(digits.slice(4, 6), 16)];
+}
+
+/**
+ * The ink the containers draw with: the palette's `container` role when one is supplied, clamped in
+ * lightness against the field so a role too close to the background still reads — a light role on a
+ * light field is darkened along the line to black, a dark role on a dark field is lightened along
+ * the line to white, so the role's hue survives the clamp and the legend swatch stays truthful.
+ * Without a role (pure callers, non-review mounts) the historical fixed ink stays exactly as it
+ * was. Pure over its two strings, so the clamp is testable without a canvas.
+ */
+export function containerInkRgb(containerColor: string | null | undefined, fieldColor: string): string {
+  const fieldIsLight = channelSum(fieldColor) > FIELD_LIGHT_CHANNEL_SUM;
+  const fallback = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
+  const parsed = typeof containerColor === "string"
+    ? containerColor.startsWith("#") ? hexChannels(containerColor) : (() => {
+      const values = containerColor.match(/[\d.]+/g)?.map(Number) ?? [];
+      return values.length >= 3 && values.slice(0, 3).every(value => Number.isFinite(value))
+        ? [values[0]!, values[1]!, values[2]!] as const : null;
+    })()
+    : null;
+  if (!parsed) return fallback;
+  const sum = parsed[0] + parsed[1] + parsed[2];
+  if (fieldIsLight) {
+    if (sum <= CONTAINER_INK_LIGHT_FIELD_MAX_SUM) return `${parsed[0]}, ${parsed[1]}, ${parsed[2]}`;
+    const scale = CONTAINER_INK_LIGHT_FIELD_MAX_SUM / sum;
+    return parsed.map(value => Math.round(value * scale)).join(", ");
+  }
+  if (sum >= CONTAINER_INK_DARK_FIELD_MIN_SUM) return `${parsed[0]}, ${parsed[1]}, ${parsed[2]}`;
+  const mix = (CONTAINER_INK_DARK_FIELD_MIN_SUM - sum) / (765 - sum);
+  return parsed.map(value => Math.round(value + (255 - value) * mix)).join(", ");
+}
 
 /** Peak alpha of the glass rim light at the shell limb. Discreet: the background stays dark. */
 export const CONTAINER_RIM_LIGHT_PEAK = 0.16;
@@ -465,9 +525,9 @@ export function drawContainers(
     hook.minEquatorFlatness = undefined;
     hook.nousosLimb = undefined;
   }
-  const fieldIsLight = (fieldColor.match(/[\d.]+/g)?.map(Number).slice(0, 3).reduce((a, b) => a + b, 0) ?? 0) > 380;
-  // The nested shells are the hierarchy. Their lines stay thin, continuous and translucent.
-  const ink = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
+  // The nested shells are the hierarchy. Their lines stay thin, continuous and translucent, and
+  // carry the palette's container role (lightness-clamped against the field) as their ink.
+  const ink = containerInkRgb(interaction?.containerColor, fieldColor);
   // Limb stroke styles vary only by (ink, level): one string per level per draw, not per sphere.
   const limbStyles = new Map<number, string>();
   for (const container of containersInDrawOrder(containers).sorted) {
@@ -694,8 +754,9 @@ export function drawContainerTitles(
   measure?: TitleMeasure,
   cache?: ContainerFrameCache,
 ): void {
-  const fieldIsLight = (fieldColor.match(/[\d.]+/g)?.map(Number).slice(0, 3).reduce((a, b) => a + b, 0) ?? 0) > 380;
-  const ink = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
+  const fieldIsLight = channelSum(fieldColor) > FIELD_LIGHT_CHANNEL_SUM;
+  // The title ink is the same role-driven ink the shells draw with, so name and rim agree.
+  const ink = containerInkRgb(interaction?.containerColor, fieldColor);
   // One disc set with the review's label pass when it shares its discs; the canvas-derived set only
   // stands in when the channel is absent (pure callers, non-review mounts).
   const effectiveDiscs = interaction?.labelDiscs ?? discs;

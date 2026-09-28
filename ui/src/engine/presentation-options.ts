@@ -79,7 +79,10 @@ export type PresentationOptions = {
   readonly morphologyInteraction?: { hoverId: string | null; focusIds: ReadonlySet<string> | null;
     /** Pearl/soma discs the review label pass shares with the canvas title pass (see CanvasDisc).
      * Declared structurally so the engine layer keeps its dependency direction. */
-    readonly labelDiscs?: readonly { readonly x: number; readonly y: number; readonly radius: number; readonly id?: string }[] | null };
+    readonly labelDiscs?: readonly { readonly x: number; readonly y: number; readonly radius: number; readonly id?: string }[] | null;
+    /** The palette's `container` role colour: the ink the container layer draws with, clamped in
+     * lightness against the field (see `containerInkRgb` in render-common/container-canvas). */
+    readonly containerColor?: string | null };
   /** Hierarchical circles in world coordinates, shared by 2D and 3D projections. */
   readonly containers?: readonly { readonly id: string; readonly level: number; readonly center: { readonly x: number; readonly y: number; readonly z: number }; readonly radius: number }[];
   readonly nodes?: ReadonlyMap<string, NodePresentation & { readonly glyph?: NodeGlyph }>;
