@@ -315,6 +315,7 @@ function debugView(graph: ReturnType<typeof filterGraph>): ProductView {
       cameraKind: axes.projection === "2d" ? "orthographic" : "perspective",
       visibleRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
       nodeViewport: {},
+      positions: {},
       labels: [],
       selected: stack.current?.id ?? null,
       emphasised: stack.current?.ids ?? [],

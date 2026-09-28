@@ -22,6 +22,7 @@ import type { AppearanceOptions } from "../engine/presentation-options.ts";
 import { PALETTES, hexRgb, v2CategoryColour } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
+import { indraArcPresentation } from "./v2-relations.ts";
 import { v2Encoding } from "./v2-adapter.ts";
 import type { ReviewCameraState } from "../render3f/camera.tsx";
 import { defaultObliqueOrbit, resolvedNodeBounds } from "../render3f/camera.tsx";
@@ -410,13 +411,17 @@ export const createProductView: CreateProductView = async (input) => {
         const coMembership = Boolean(input.v2Prepared && relation?.type === 'co_membership');
         const containment = Boolean(input.v2Prepared && relation?.type === 'contains');
         const category = classifyEdgeCategory(exploratory, containment);
+        // In Indra the pearls carry the structure: unselected semantic arcs recede (thinner, fainter) so rims and names read.
+        const indraDim = axes.organization === 'indra' ? indraArcPresentation(axes.projection, exploratory) : null;
         return [edge.id, { category,
-          // In Indra 3D the pearls carry the structure; semantic arcs recede so contours and names stay readable.
           // Width is never the only signal: exploratory reads through its halo and flow, not through extra thickness.
-          opacityPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (axes.organization === 'indra' && axes.projection === '3d' && !exploratory ? 0.6 : 1)
-            * (exploratory ? 0.9 : coMembership ? 0.62 : containment ? 0.5 : axes.reading === 'attested' ? 0.68 : 0.36))
+          opacityPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE
+            * (exploratory ? 0.9 : coMembership ? 0.62 : containment ? 0.5 : axes.reading === 'attested' ? 0.68 : 0.36)
+            * (indraDim?.opacityFactor ?? 1))
             : axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
-          widthPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (coMembership ? Math.min(1.4, (relation?.width ?? 1) * 0.75) : containment ? 0.8 : 1))
+          widthPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE
+            * (coMembership ? Math.min(1.4, (relation?.width ?? 1) * 0.75) : containment ? 0.8 : 1)
+            * (indraDim?.widthFactor ?? 1))
             : SCENE_PERMILLE_SCALE,
           ...(axes.colour === "bw" && input.v2Prepared ? { tintSrgb: [0.64, 0.64, 0.64] as const }
             : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
@@ -544,13 +549,16 @@ export const createProductView: CreateProductView = async (input) => {
     if (axes.organization === 'indra' && input.layoutContainers) {
       let closest: { id: string; distance: number } | null = null;
       for (const outline of buildContainerGeometry(axes.morphology, input.layoutContainers)) {
-        const projected = (axes.projection === '3d' ? outline.points3d ?? outline.points : outline.points).map(point => project(point));
-        for (let index = 1; index < projected.length; index++) {
-          const a = projected[index - 1]!, b = projected[index]!;
-          const dx = b.x - a.x, dy = b.y - a.y;
-          const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / Math.max(1e-9, dx * dx + dy * dy)));
-          const distance = Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy);
-          if (distance < 7 && (!closest || distance < closest.distance)) closest = { id: outline.id, distance };
+        const circles = axes.projection === '3d' ? (outline.shell ?? [outline.points]) : [outline.points];
+        for (const circle of circles) {
+          const projected = circle.map(point => project(point));
+          for (let index = 1; index < projected.length; index++) {
+            const a = projected[index - 1]!, b = projected[index]!;
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / Math.max(1e-9, dx * dx + dy * dy)));
+            const distance = Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy);
+            if (distance < 7 && (!closest || distance < closest.distance)) closest = { id: outline.id, distance };
+          }
         }
       }
       if (closest) return { kind: 'node' as const, id: closest.id };
@@ -761,6 +769,9 @@ export const createProductView: CreateProductView = async (input) => {
           return [id, { x: r.left + p.x, y: r.top + p.y }];
         }),
       );
+      const positions = Object.fromEntries(
+        mounted.map(({ id, position }) => [id, { x: position.x, y: position.y, z: position.z }]),
+      );
       const zs = mounted.map((p) => p.position.z);
       const zMean = mean(zs);
       const windows = sigma?.model.windows ?? three?.readReviewWindows() ?? [];
@@ -769,6 +780,7 @@ export const createProductView: CreateProductView = async (input) => {
         cameraKind: handle.cameraKind,
         visibleRect: pageRect(),
         nodeViewport,
+        positions,
         labels: placed,
         selected,
         emphasised: [...(emphasis ?? [])],

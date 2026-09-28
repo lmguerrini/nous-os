@@ -1,5 +1,6 @@
 /** Deterministic positions for the disclosed hierarchy; XY is the 2D and front-facing 3D view. */
 import { morphologyLayoutParams } from '#engine/morphology.ts';
+import { morphologyHash } from '#engine/stable-hash.ts';
 export type Point3 = {
     readonly x: number;
     readonly y: number;
@@ -34,8 +35,9 @@ export type LayoutContainer = {
     readonly id: string;
     readonly level: number;
     readonly center: Point3;
+    /** XYZ shell radius: every child sphere lies inside it, in three dimensions. */
     readonly radius: number;
-    /** Tight XY ring for the absolute container; radius is its XYZ shell. */
+    /** Tight XY ring for the absolute container only; radius is its XYZ shell. */
     readonly radius2d?: number;
     readonly title?: string;
 };
@@ -477,17 +479,31 @@ export function packDiscs(items: readonly { id: string; radius: number }[], gap:
     }
     return result;
 }
-/** Bottom-up circle packing; every child circle is inside its visible parent in XY. */
+/** Bottom-up 3D sphere packing: every child sphere lies inside its parent's shell in three dimensions. */
 function indra(input: LayoutInput): LayoutResult {
     const { children } = hierarchy(input.nodes);
     // Containment is structural: morphology changes paths and material, never the packing.
     const spacing = 1;
+    const depth = input.expandZ ?? 1;
+    // How much of a parent's radius its children are allowed to occupy vertically. With the XY disc
+    // already sizing the shell, this keeps the whole structure roughly spherical instead of flat.
+    const Z_FILL = 0.62;
     const radii = new Map<string, number>();
     const offsets = new Map<string, {
         x: number;
         y: number;
     }>();
+    const zOffsets = new Map<string, number>();
     const visiting = new Set<string>();
+    // A stable, continuous per-node depth in [-1, 1]: no level is a plane, and no two ids share a
+    // value by accident, so a side view never collapses into parallel tiers.
+    const depthOf = (id: string): number => {
+        let value = morphologyHash(id);
+        value = Math.imul(value ^ (value >>> 16), 0x45d9f3b);
+        value = Math.imul(value ^ (value >>> 16), 0x45d9f3b);
+        value ^= value >>> 16;
+        return (value >>> 0) / 4294967296 * 2 - 1;
+    };
     const capCollapsed = (list: readonly LayoutNode[]) => {
         const expanded = list.filter(child => (children.get(child.id)?.length ?? 0) > 0);
         if (!expanded.length) return;
@@ -510,12 +526,24 @@ function indra(input: LayoutInput): LayoutResult {
             // Siblings keep a gap that stays visible next to large pearls, not only next to small ones.
             const meanChild = list.reduce((sum, child) => sum + (radii.get(child.id) ?? 0), 0) / list.length;
             const gap = Math.max(7, 0.08 * meanChild) * spacing;
+            // Children are packed by their XYZ radius, so their XY separation already guarantees the
+            // stronger 3D separation their spheres need.
             const packed = packDiscs(list.map(child => ({ id: child.id, radius: radii.get(child.id)! })), gap);
+            // The XY disc radius that every child circle fits inside in the front view.
+            let xyRadius = radius;
             list.forEach(child => {
                 const offset = packed.get(child.id)!;
                 offsets.set(child.id, offset);
-                // Containment is read in the front view, where every tier's ring lies in its own plane.
-                radius = Math.max(radius, (Math.hypot(offset.x, offset.y) + offset.radius + gap) / 0.94);
+                xyRadius = Math.max(xyRadius, (Math.hypot(offset.x, offset.y) + offset.radius + gap) / 0.94);
+            });
+            // Children sink into their parent's depth, scaled by the parent's own radius so the whole
+            // structure stays spherical at every scale instead of growing a tall column. The unit depth
+            // is fixed at 1; the global `depth` control scales z afterwards without moving the packing.
+            list.forEach(child => zOffsets.set(child.id, depthOf(child.id) * xyRadius * Z_FILL));
+            // The XYZ shell encloses every child sphere with the same margin as the front view.
+            list.forEach(child => {
+                const offset = offsets.get(child.id)!;
+                radius = Math.max(radius, (Math.hypot(offset.x, offset.y, zOffsets.get(child.id)!) + (radii.get(child.id) ?? 0) + gap) / 0.94);
             });
         }
         visiting.delete(node.id);
@@ -527,18 +555,6 @@ function indra(input: LayoutInput): LayoutResult {
     capCollapsed(roots);
     const positions = new Map<string, Point3>();
     const containers: LayoutContainer[] = [];
-    const place = (node: LayoutNode, x: number, y: number): void => {
-        // A side view needs a real vertical interval between the concentric XY tiers.
-        const center = { x, y, z: 0 };
-        positions.set(node.id, center);
-        const list = children.get(node.id) ?? [];
-        if (list.length || node.level === 1 || (node.hiddenDescendants ?? 0) > 0)
-            containers.push({ id: node.id, level: node.level, center, radius: radii.get(node.id)! });
-        for (const child of list) {
-            const offset = offsets.get(child.id)!;
-            place(child, x + offset.x, y + offset.y);
-        }
-    };
     // Domains are packed like siblings, each by its own radius, the largest first, so an expanded domain does not push
     // every other one far away.
     const meanRoot = roots.reduce((sum, root) => sum + (radii.get(root.id) ?? 0), 0) / Math.max(1, roots.length);
@@ -547,12 +563,7 @@ function indra(input: LayoutInput): LayoutResult {
     const largestRoot = radii.get(ordered[0]?.id ?? '') ?? 0;
     const coreCount = ordered.length <= 64 ? ordered.filter(root => (radii.get(root.id) ?? 0) >= largestRoot * 0.55).length : 0;
     const packedRoots = packDiscs(ordered.map(root => ({ id: root.id, radius: radii.get(root.id)! })), rootGap, coreCount);
-    const placedRoots: { x: number; y: number; radius: number }[] = [];
-    ordered.forEach(root => {
-        const disc = packedRoots.get(root.id)!;
-        placedRoots.push({ ...disc });
-        place(root, disc.x, disc.y);
-    });
+    const placedRoots: { x: number; y: number; radius: number }[] = ordered.map(root => ({ ...packedRoots.get(root.id)! }));
     // Centre the packed discs in their enclosing ring, including small bare domains.
     if (placedRoots.length && !(coreCount >= 3 && coreCount <= 12)) {
         const left = Math.min(...placedRoots.map(root => root.x - root.radius));
@@ -561,37 +572,42 @@ function indra(input: LayoutInput): LayoutResult {
         const bottom = Math.max(...placedRoots.map(root => root.y + root.radius));
         const dx = (left + right) / 2, dy = (top + bottom) / 2;
         for (const root of placedRoots) { root.x -= dx; root.y -= dy; }
-        for (const [id, point] of positions) positions.set(id, { ...point, x: point.x - dx, y: point.y - dy });
-        for (let index = 0; index < containers.length; index++) {
-            const item = containers[index]!;
-            containers[index] = { ...item, center: { ...item.center, x: item.center.x - dx, y: item.center.y - dy } };
-        }
     }
-    const xyBounds = layoutStats(positions).bbox;
-    const xyExtent = Math.max(xyBounds.x[1] - xyBounds.x[0], xyBounds.y[1] - xyBounds.y[0]);
-    const levels = input.nodes.map(node => node.level);
-    const lowLevel = Math.min(...levels), highLevel = Math.max(...levels);
-    const tierStep = highLevel > lowLevel ? xyExtent * 0.44 * (input.expandZ ?? 1) / (highLevel - lowLevel) : 0;
-    const tierZ = (level: number) => (level - (lowLevel + highLevel) / 2) * tierStep;
-    const byId = new Map(input.nodes.map(node => [node.id, node]));
-    for (const [id, point] of positions) positions.set(id, { ...point, z: tierZ(byId.get(id)!.level) });
-    for (let index = 0; index < containers.length; index++) {
-        const item = containers[index]!;
-        containers[index] = { ...item, center: { ...item.center, z: tierZ(item.level) } };
-    }
-    const zValues = [...positions.values()].map(point => point.z);
-    const zMid = zValues.length ? (Math.min(...zValues) + Math.max(...zValues)) / 2 : 0;
-    // A sphere encloses the entire XY packing and every tier, including a six percent rim.
+    // The absolute XY ring tightens around the packed domains; the XYZ shell is wider (below) by the depth.
     const radius2d = placedRoots.reduce((maximum, root) => Math.max(maximum,
         Math.hypot(root.x, root.y) + root.radius), 0) / 0.94;
+    for (const root of ordered)
+        zOffsets.set(root.id, depthOf(root.id) * radius2d * Z_FILL);
+    const place = (node: LayoutNode, x: number, y: number, z: number): void => {
+        const center = { x, y, z };
+        positions.set(node.id, center);
+        const list = children.get(node.id) ?? [];
+        if (list.length || node.level === 1 || (node.hiddenDescendants ?? 0) > 0)
+            containers.push({ id: node.id, level: node.level, center, radius: radii.get(node.id)! });
+        for (const child of list) {
+            const offset = offsets.get(child.id)!;
+            place(child, x + offset.x, y + offset.y, z + (zOffsets.get(child.id) ?? 0));
+        }
+    };
+    const rootDisc = new Map(placedRoots.map((disc, index) => [ordered[index]!.id, disc]));
+    ordered.forEach(root => place(root, rootDisc.get(root.id)!.x, rootDisc.get(root.id)!.y, zOffsets.get(root.id) ?? 0));
+    // Centre the depth so the absolute sphere sits at z 0 rather than drifting with the ids.
+    const zValues = [...positions.values()].map(point => point.z);
+    const zMid = zValues.length ? (Math.min(...zValues) + Math.max(...zValues)) / 2 : 0;
+    for (const [id, point] of positions) positions.set(id, { ...point, z: (point.z - zMid) * depth });
+    for (let index = 0; index < containers.length; index++) {
+        const item = containers[index]!;
+        containers[index] = { ...item, center: { ...item.center, z: (item.center.z - zMid) * depth } };
+    }
+    // The XYZ shell encloses the XY packing, every child depth and every node, with a six percent rim.
     const ringExtent = containers.reduce((maximum, ring) => Math.max(maximum,
-        Math.hypot(Math.hypot(ring.center.x, ring.center.y) + ring.radius, ring.center.z - zMid)), 0);
+        Math.hypot(Math.hypot(ring.center.x, ring.center.y) + ring.radius, ring.center.z)), 0);
     const nodeExtent = input.nodes.reduce((maximum, node) => {
         const point = positions.get(node.id);
-        return point ? Math.max(maximum, Math.hypot(Math.hypot(point.x, point.y) + (radii.get(node.id) ?? radiusOf(node)) * spacing, point.z - zMid)) : maximum;
+        return point ? Math.max(maximum, Math.hypot(Math.hypot(point.x, point.y) + (radii.get(node.id) ?? radiusOf(node)) * spacing, point.z)) : maximum;
     }, 0);
     const radius = Math.max(ringExtent, nodeExtent) / 0.94;
-    containers.unshift({ id: ABSOLUTE_CONTAINER_ID, level: 0, center: { x: 0, y: 0, z: zMid }, radius, radius2d, title: 'NousOS' });
+    containers.unshift({ id: ABSOLUTE_CONTAINER_ID, level: 0, center: { x: 0, y: 0, z: 0 }, radius, radius2d, title: 'NousOS' });
     return { positions, containers, source: 'indra-recursive' };
 }
 export function computeLayout(input: LayoutInput): LayoutResult {

@@ -98,6 +98,8 @@ export type ViewWitness = {
   readonly visibleRect: ViewportRect;
   /** Projected centre of every visible node, page CSS pixels. */
   readonly nodeViewport: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
+  /** World coordinates of every visible node, in the layout's own space. */
+  readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
   readonly labels: readonly LabelWitness[];
   readonly selected: string | null;
   readonly emphasised: readonly string[];

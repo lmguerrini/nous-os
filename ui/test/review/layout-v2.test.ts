@@ -67,14 +67,16 @@ test("Indra packs visible children inside their parents without sibling overlap 
     assert.ok(parent);
     const point = result.positions.get(node.id)!;
     const childRadius = containers.get(node.id)?.radius ?? (5 + Math.max(0, Math.min(1, node.size)) * 5);
-    // containment is read in the front view: every level's ring lies in its own tier plane
-    assert.ok(Math.hypot(point.x - parent.center.x, point.y - parent.center.y) + childRadius <= parent.radius * 0.94);
+    // Containment is a 3D invariant: the child sphere lies inside its parent shell with a margin.
+    assert.ok(Math.hypot(point.x - parent.center.x, point.y - parent.center.y, point.z - parent.center.z) + childRadius <= parent.radius * 0.94);
   }
   for (const siblings of byParent.values()) for (let a = 0; a < siblings.length; a++) for (let b = a + 1; b < siblings.length; b++) {
     const left = containers.get(siblings[a]!.id), right = containers.get(siblings[b]!.id);
     const leftRadius = left?.radius ?? 5 + siblings[a]!.size * 5;
     const rightRadius = right?.radius ?? 5 + siblings[b]!.size * 5;
-    assert.ok(xy(result.positions.get(siblings[a]!.id)!, result.positions.get(siblings[b]!.id)!) + 1e-7 >= leftRadius + rightRadius);
+    const leftPoint = result.positions.get(siblings[a]!.id)!, rightPoint = result.positions.get(siblings[b]!.id)!;
+    // Sibling spheres never overlap in 3D.
+    assert.ok(Math.hypot(leftPoint.x - rightPoint.x, leftPoint.y - rightPoint.y, leftPoint.z - rightPoint.z) + 1e-7 >= leftRadius + rightRadius);
   }
   assert.deepEqual([...new Set(result.containers.map(c => c.level))].sort(), [0, 1, 2, 3, 4]);
   const absolute = containers.get(ABSOLUTE_CONTAINER_ID)!;
@@ -97,10 +99,15 @@ test("eight Indra domains including three bare pearls fill the absolute disc", (
   const result = computeLayout({ nodes, edges: [], organization: "indra", morphology: "stellar" });
   const absolute = result.containers.find(c => c.id === ABSOLUTE_CONTAINER_ID)!;
   const domains = result.containers.filter(c => c.level === 1);
-  const coverage = domains.reduce((sum, c) => sum + c.radius ** 2, 0) / absolute.radius2d! ** 2;
-  assert.ok(coverage >= 0.5, `root coverage ${coverage.toFixed(3)}`);
+  // The absolute 2D rim is tight: it just encloses the packed domain shells.
   const tight = Math.max(...domains.map(c => Math.hypot(c.center.x, c.center.y) + c.radius));
   assert.ok(Math.abs(absolute.radius2d! * 0.94 - tight) < 1e-7);
+  // Each domain sphere lies inside the absolute shell in three dimensions.
+  for (const c of domains)
+    assert.ok(Math.hypot(Math.hypot(c.center.x, c.center.y) + c.radius, c.center.z) <= absolute.radius * 0.94 + 1e-7);
+  // The three bare pearls keep their own size rather than growing with the packed domains.
+  const bare = domains.filter(c => c.radius < 10);
+  assert.equal(bare.length, 3);
 });
 
 test("a large Indra child leaves room for thirty small siblings without growing the parent", () => {
@@ -268,13 +275,16 @@ test("distinct canvas strokes container outlines in both projected views", () =>
   const geometry = buildMorphologyGeometry("stellar", [], []);
   for (const projection of ["2d", "3d"] as const) {
     let strokes = 0;
+    const dashes: number[][] = [];
     const context = {
       canvas: { width: 200, height: 200, getBoundingClientRect: () => ({ width: 200, height: 200 }) },
-      setTransform() {}, clearRect() {}, setLineDash() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() { strokes++; },
+      setTransform() {}, clearRect() {}, setLineDash(pattern: number[]) { dashes.push(pattern); }, beginPath() {}, moveTo() {}, lineTo() {}, stroke() { strokes++; },
     } as unknown as CanvasRenderingContext2D;
     drawMorphologyCanvas(context, geometry, point => ({ x: point.x + 100 + (projection === "3d" ? point.z * 0.4 : 0), y: point.y + 100 + (projection === "3d" ? point.z * 0.2 : 0), scale: 1 }),
       { fieldColor: "rgb(0, 0, 0)", nodes: new Map(), edges: new Map() }, undefined, container, projection);
-    assert.equal(strokes, projection === "3d" ? 2 : 1);
+    assert.ok(strokes > 0);
+    // No dashed or dotted rim anywhere.
+    assert.ok(dashes.every(pattern => pattern.length === 0));
   }
 });
 

@@ -16,6 +16,14 @@ export type RelationProjection = {
 };
 export const INDRA_ESSENTIAL_ARC_CAP = 160;
 
+/** Indra recedes its semantic arcs so the nested shells stay legible. Non-selected arcs are strongly
+ * reduced: the opacity factor is at most half of the D-070 value (0.6 in 3D, 1.0 in 2D). */
+export function indraArcPresentation(projection: "2d" | "3d", exploratory: boolean): { opacityFactor: number; widthFactor: number } {
+  if (projection === "3d")
+    return { opacityFactor: exploratory ? 0.5 : 0.3, widthFactor: 0.55 };
+  return { opacityFactor: exploratory ? 0.7 : 0.5, widthFactor: 0.7 };
+}
+
 /** Resolve hidden endpoints along the declared primary-parent chain only. */
 export function visibleAncestor(id: string, visible: ReadonlySet<string>, nodes: ReadonlyMap<string, V2Node>): string | null {
   const seen = new Set<string>();
