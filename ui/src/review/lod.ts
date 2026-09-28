@@ -211,14 +211,51 @@ export function selectNodes(input: SelectNodesInput): LodNodeSelection {
       }
     for (const list of communities.values()) list.sort(byImportance);
     const keys = [...communities.keys()].sort(compare);
+    // D-072 FixC (X7): the round-robin walks to the longest community's length, so a community
+    // shorter than the current round simply has no principal to offer that round — skip it
+    // instead of reading past its end (`communities.get(key)[round]` of a short community was
+    // the crash that emptied the labels when the zoom crossed into the intermediate level).
     const rounds = keys.reduce((most, key) => Math.max(most, communities.get(key)!.length), 0);
     for (let round = 0; round < rounds && room(); round++)
       for (const key of keys) {
         if (!room()) break;
-        add(communities.get(key)![round]!.id);
+        const principal = communities.get(key)![round];
+        if (principal !== undefined) add(principal.id);
       }
   }
   return { rendered, dropped: [...byId.keys()].filter(id => !kept.has(id)).sort(compare) };
+}
+
+/** The log-once guard behind `safeSelectNodes`: a failing selection is insurance, not a
+ * condition to narrate — the first failure is reported, the rest fall back in silence. */
+let lodSelectionFailureLogged = false;
+/** Test-only: re-arms the once-per-session failure log. */
+export function resetLodSelectionFailureLog(): void {
+  lodSelectionFailureLogged = false;
+}
+
+/** D-072 FixC (X7): the selection the page may actually use. A LOD selection failure must never
+ * take the drawing down with it — `selectNodes` is pure and total by contract, but the guarantee
+ * needed is behavioural: on any throw the previous selection survives verbatim (the
+ * view keeps drawing exactly what it drew, labels included) and the failure is logged once per
+ * session. Without a previous selection (the very first refresh) the degraded answer is the
+ * always-safe tier: the pinned ids, which no level rule can drop. */
+export function safeSelectNodes(
+  input: SelectNodesInput,
+  previous: LodNodeSelection | null,
+): LodNodeSelection {
+  try {
+    return selectNodes(input);
+  } catch (error) {
+    if (!lodSelectionFailureLogged) {
+      lodSelectionFailureLogged = true;
+      console.error("[d072] LOD selection failed, keeping the previous selection", error);
+    }
+    if (previous !== null) return previous;
+    const available = new Set(input.nodes.map(node => node.id));
+    const rendered = [...input.pinned].filter(id => available.has(id)).sort(compare);
+    return { rendered, dropped: [...available].filter(id => !input.pinned.has(id)).sort(compare) };
+  }
 }
 
 /** Share of the arc budget reserved for exploratory relations when the reading shows them, so

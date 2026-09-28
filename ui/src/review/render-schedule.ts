@@ -92,6 +92,34 @@ export function cameraWatchShouldRun(state: {
   return state.nowMs - state.lastChangeMs < (state.stillnessMs ?? CAMERA_STILLNESS_MS);
 }
 
+/** D-072 FixC (X8): a LOD band crossing observed while the camera still moves is only noted,
+ * never applied — the level refresh runs once the camera has been still this long. Pure. */
+export const LOD_REFRESH_IDLE_MS = 300;
+
+/** Whether a pending level change may be applied now: never during continuous zoom, only after
+ * the camera has been unchanged for `LOD_REFRESH_IDLE_MS` (a camera that never moved is at rest).
+ * Pure. */
+export function lodRefreshDue(state: {
+  readonly nowMs: number;
+  readonly pending: boolean;
+  readonly lastCameraChangeMs: number | null;
+  readonly idleMs?: number;
+}): boolean {
+  if (!state.pending) return false;
+  if (state.lastCameraChangeMs === null) return true;
+  return state.nowMs - state.lastCameraChangeMs >= (state.idleMs ?? LOD_REFRESH_IDLE_MS);
+}
+
+/** D-072 FixC (X9): the backing-store scale of the canvas layers never changes while the camera
+ * moves. The mid-motion swap to a lower ratio cost a resize plus a full repaint ~90 ms into
+ * motion — one 110–190 ms frame at every interaction start — so the moving frame now draws at
+ * the rest scale (its own reduced drawing is what makes it cheap, not the resolution), and the
+ * only scheduled swap left is the one back to the rest cap after `applyResolution` policy
+ * changes. Pure. */
+export function resolutionSwapAllowed(quality: RenderQuality): boolean {
+  return quality === "full";
+}
+
 /** The depth-epsilon the 3D rig clamps its size scale with (camera.tsx `sizeScaleAt`), so the
  * scale reproduced here from the review pose matches the rig's exactly, degenerate points
  * included. */
