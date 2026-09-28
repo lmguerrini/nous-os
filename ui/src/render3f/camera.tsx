@@ -38,6 +38,13 @@ export type CameraProjectionState = {
 export type ReviewCameraState = VisualStateCamera & {
   readonly orbit?: readonly [number, number, number, number];
   readonly targetZ?: number;
+  /**
+   * The framing half-angle tangent this view was deliberately framed at (first mount, a kind
+   * switch's fresh construction, a fit or reset remount). It travels with saved camera states so
+   * a restore — undo, redo, a disclosure remount — reproduces the same field of view instead of
+   * re-deriving one from whatever the scene happens to contain now.
+   */
+  readonly framingTangent?: number;
 };
 
 /** Compose screen-space trackball motion in world space, including travel over either pole. */
@@ -107,6 +114,7 @@ export class CameraRig {
   private devicePixelRatio: number;
   private worldCenterZ: number;
   private worldFramingSubjects: readonly CameraFramingSubject[];
+  private framingTangentValue: number;
 
   /** This creates both projections over copied state and does not modify a world object. */
   constructor(
@@ -127,6 +135,7 @@ export class CameraRig {
     this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(
       this.worldFramingSubjects.map((subject) => subject.position),
     ));
+    this.framingTangentValue = this.deriveFramingTangent();
     this.updateCameras();
   }
 
@@ -140,14 +149,22 @@ export class CameraRig {
     return this.kindValue;
   }
 
-  /** This copies the serialisable camera record and does not expose mutable camera state. */
+  /** This copies the serialisable camera record, including the live framing tangent, and does
+   * not expose mutable camera state. */
   readCameraState(): ReviewCameraState {
-    return copyCameraState(this.stateValue);
+    return { ...copyCameraState(this.stateValue), framingTangent: this.framingTangentValue };
   }
 
   /** This restores serialisable camera state and does not move a world anchor. */
   restoreCameraState(state: VisualStateCamera): void {
-    this.stateValue = copyCameraState(state);
+    const next = copyCameraState(state);
+    // A state that carries a framing tangent (every state this rig emitted) reproduces its own
+    // field of view; a tangent-less state (a fresh mount, a legacy record) is a deliberate
+    // reframe and derives the tangent from the restored bounds and the current subjects.
+    this.framingTangentValue = validFramingTangent(next.framingTangent)
+      ? next.framingTangent
+      : this.deriveFramingTangent(next);
+    this.stateValue = next;
     this.updateCameras();
   }
 
@@ -183,6 +200,8 @@ export class CameraRig {
     this.worldCenterZ = quantizeCameraFramingValue(resolvedWorldCenterZ(
       this.worldFramingSubjects.map((subject) => subject.position),
     ));
+    // New subjects alone (a disclosure, a selection) must not move the field of view: the
+    // framing tangent is rig state, recomputed only where the framing is deliberate.
     this.updateCameras();
   }
 
@@ -323,7 +342,30 @@ export class CameraRig {
       this.widthCssPx,
       this.heightCssPx,
       this.worldCenterZ,
+      this.framingTangentValue,
+    );
+  }
+
+  /** This derives the framing tangent from bounds, subjects and viewport and does not store it. */
+  private deriveFramingTangent(state: ReviewCameraState = this.stateValue): number {
+    const aspect = this.widthCssPx / this.heightCssPx;
+    const span = Math.max(
+      state.bounds.x[1] - state.bounds.x[0],
+      state.bounds.y[1] - state.bounds.y[0],
+    );
+    const verticalHalfSpan = Math.max(
+      (state.bounds.y[1] - state.bounds.y[0]) / bisectionDivisor(),
+      (state.bounds.x[1] - state.bounds.x[0]) / (bisectionDivisor() * aspect),
+    );
+    return perspectiveDefaultHalfAngleTangent(
+      state,
+      aspect,
+      span,
+      verticalHalfSpan,
+      this.worldCenterZ,
       this.worldFramingSubjects,
+      this.widthCssPx,
+      this.heightCssPx,
     );
   }
 
@@ -476,7 +518,7 @@ function updatePerspectiveCamera(
   widthCssPx: number,
   heightCssPx: number,
   worldCenterZ: number,
-  worldFramingSubjects: readonly CameraFramingSubject[],
+  framingTangent: number,
 ): void {
   const target = perspectiveTarget(state, worldCenterZ);
   const span = Math.max(
@@ -485,30 +527,18 @@ function updatePerspectiveCamera(
   );
   const distance = span * state.ratio;
   const aspect = widthCssPx / heightCssPx;
-  const verticalHalfSpan = Math.max(
-    (state.bounds.y[1] - state.bounds.y[0]) / bisectionDivisor(),
-    (state.bounds.x[1] - state.bounds.x[0]) / (bisectionDivisor() * aspect),
-  );
-  const defaultTangent = perspectiveDefaultHalfAngleTangent(
-    state,
-    aspect,
-    span,
-    verticalHalfSpan,
-    worldCenterZ,
-    worldFramingSubjects,
-    widthCssPx,
-    heightCssPx,
-  );
   const navigationRange = request.kind === "perspective"
     ? request.navigation.maximumDollyPermille / request.navigation.minimumDollyPermille
     : request.navigation.maximumZoomPermille / request.navigation.minimumZoomPermille;
   camera.aspect = aspect;
-  // The perspective camera treats `ratio` as a pure dolly: the field of view stays fixed at the
-  // tangent that frames the default opening at `ratio = 1`, so on-screen size follows `1 / ratio`
-  // instead of the angle compensating the distance (which kept magnification constant).
+  // The perspective camera treats `ratio` as a pure dolly and the field of view as rig state:
+  // `framingTangent` is the quantised half-angle tangent a deliberate framing moment computed
+  // (construction, a tangent-less restore). Wheel, orbit, pan, disclosure subjects and viewport
+  // resizes reuse the stored value, so the angle never moves under the reader — only the aspect
+  // tracks the viewport — and on-screen size follows `1 / ratio`.
   camera.fov = (
     bisectionDivisor()
-    * Math.atan(defaultTangent)
+    * Math.atan(framingTangent)
     * halfTurnDegrees()
   ) / Math.PI;
   camera.near = distance / navigationRange;
@@ -584,6 +614,7 @@ function copyCameraState(state: VisualStateCamera | SceneCameraRequest): ReviewC
     bounds: copyBounds(state.bounds),
     ...(validOrbit(review.orbit) ? { orbit: normalisedOrbit(review.orbit) } : {}),
     ...(Number.isFinite(review.targetZ) ? { targetZ: review.targetZ } : {}),
+    ...(validFramingTangent(review.framingTangent) ? { framingTangent: review.framingTangent } : {}),
   };
 }
 
@@ -591,6 +622,11 @@ function copyCameraState(state: VisualStateCamera | SceneCameraRequest): ReviewC
 export function validOrbit(orbit: unknown): orbit is readonly [number, number, number, number] {
   return Array.isArray(orbit) && orbit.length === 4 && orbit.every(Number.isFinite)
     && Math.hypot(...(orbit as number[])) > Number.EPSILON;
+}
+
+/** A carried framing tangent is kept only as one finite positive number; anything else is dropped. */
+export function validFramingTangent(tangent: unknown): tangent is number {
+  return typeof tangent === "number" && Number.isFinite(tangent) && tangent > 0;
 }
 
 function normalisedOrbit(orbit: readonly [number, number, number, number]): [number, number, number, number] {

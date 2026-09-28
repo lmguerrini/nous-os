@@ -209,12 +209,15 @@ async function navigationPathWiringPageBundle(): Promise<string> {
         "  };",
         // A throwaway mount with no navigationPath, purely to obtain a valid starting camera for the
         // real (call sites 2 and 3) scenario below -- correctness there depends only on which node/
-        // relation ids get drawn, never on framing, so this camera need not be pixel-accurate.
+        // relation ids get drawn, never on framing, so this camera need not be pixel-accurate. It is
+        // reduced to the engine's pinned camera fields because createVisualState refuses extra ones
+        // (the rig's own record legitimately carries renderer-only framing state).
         "  const roughContainer = document.createElement(\"div\");",
         "  roughContainer.style.cssText = \"width:640px;height:480px;position:relative;overflow:hidden\";",
         "  document.body.replaceChildren(roughContainer);",
         "  const roughProbe = mount(roughContainer, graph, baseOptions);",
-        "  const roughCamera = roughProbe.readCameraState();",
+        "  const roughCameraFull = roughProbe.readCameraState();",
+        "  const roughCamera = { x: roughCameraFull.x, y: roughCameraFull.y, angle: roughCameraFull.angle, ratio: roughCameraFull.ratio, bounds: roughCameraFull.bounds };",
         "  roughProbe.destroy();",
         // Call sites 2 (scenesForState / initialScenes) and 3 (applyMaterialState, via setSelection).
         "  const container = document.createElement(\"div\");",

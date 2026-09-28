@@ -16,7 +16,7 @@ assignments, and imports of the modules that would let them resolve visual polic
 **Sigma does not.** It builds its own render model and resolves its own tokens, morphology, layout and
 material — as it always has — and imports exactly one thing from the shared layer: the governed-state
 composition, so that the repair to that composition reaches it from one place rather than being copied
-into two. Rewiring it further is outside this capability's scope: its output is a closed, audited
+into two. Rewiring it further is outside this capability's scope: its output is a closed, verified
 artifact of the previous capability whose pixels may not move.
 
 **This is stated here and not only among the limitations, because it changes what every parity claim
@@ -159,7 +159,7 @@ lifecycle, and that is why its handle cannot answer two of the questions the sha
 it has one camera and cannot enumerate resources it does not own. Those are honest absences, recorded
 as capabilities it does not declare rather than as fabricated answers.
 
-**The Three engine** is a little over seven thousand lines of source and its own tests together. The
+**The Three engine** is a little over eight thousand lines of source and its own tests together. The
 figure grows every time its controls are strengthened — it has moved three times while this document
 was being written, and a check now refuses the claim when the command below stops reproducing it — so
 it is deliberately given as an order of magnitude and reproduced rather than pinned:

@@ -23,7 +23,7 @@ const PERFORMANCE_PATH = ["dist", "evidence", "performance.json"].join("/");
 const LAYOUT_SCALE_PATH = ["dist", "evidence", "layout-scale.json"].join("/");
 
 /** The document states this band for the engine's size; the command beside it must reproduce it. */
-const LINE_COUNT_BAND = { atLeast: 7000, below: 8000 } as const;
+const LINE_COUNT_BAND = { atLeast: 8000, below: 9000 } as const;
 
 test("the comparison document transcribes no timing figure", async () => {
   assertNoTimingFigures(await readFile(DOCUMENT_PATH, "utf8"));
@@ -242,7 +242,7 @@ test("the comparison document does not claim a promotion that was settled agains
 });
 
 test("the promotion rule refuses the claims it exists to refuse", () => {
-  // An auditor replaced the settled paragraph with a promotion of the new engine and every
+  // A reviewer replaced the settled paragraph with a promotion of the new engine and every
   // obligation in this file stayed green, because none of them read the document's conclusions.
   for (const relapse of [
     "Three 3D is the certified winner and replaces Sigma as the default 2D surface.",

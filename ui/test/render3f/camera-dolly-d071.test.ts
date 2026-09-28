@@ -33,14 +33,14 @@ const SPAN = 900;
 const VERTICAL_HALF_SPAN = 450;
 const NAVIGATION = DEFAULT_CALIBRATION.camera.perspective;
 
-function makeRig(ratio = 1) {
+function makeRig(ratio = 1, bounds: { readonly x: readonly [number, number]; readonly y: readonly [number, number] } = BOUNDS) {
   const request: SceneCameraRequest = {
     kind: "perspective",
     x: 0.5,
     y: 0.5,
     angle: 0,
     ratio,
-    bounds: BOUNDS,
+    bounds,
     navigation: NAVIGATION,
   };
   return new CameraRig(PERSPECTIVE, request, WIDTH, HEIGHT, 1, []);
@@ -71,8 +71,14 @@ test("the perspective fov stays fixed while only the dolly ratio changes", () =>
     rig.restoreCameraState({ ...rig.readCameraState(), ratio });
     assert.equal(rig.readPose().fov, openingFov, `fov must not follow ratio ${ratio}`);
   }
+  // G4b: a restore that carries the saved tangent (every state read from the rig does) keeps the
+  // fov even when the bounds change — the disclosure remount restores exactly such a state.
   rig.restoreCameraState({ ...rig.readCameraState(), bounds: { x: [-1350, 1350], y: [-450, 450] } });
-  assert.ok(Math.abs(rig.readPose().fov - openingFov) > 5, "the fov still follows the scene bounds");
+  assert.equal(rig.readPose().fov, openingFov, "a carried tangent keeps the fov across a bounds change");
+  // The scene shape still moves the fov where the framing is deliberately recomputed: a fresh
+  // construction (first mount, reset's remount) derives it from the new bounds.
+  const remounted = makeRig(1, { x: [-1350, 1350], y: [-450, 450] });
+  assert.ok(Math.abs(remounted.readPose().fov - openingFov) > 5, "a deliberate reframe still follows the scene bounds");
 });
 
 test("the ratio = 1 view is exactly the one the previous formula framed", () => {
