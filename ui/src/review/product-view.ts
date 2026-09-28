@@ -29,7 +29,7 @@ import type { ReviewCameraState } from "../render3f/camera.tsx";
 import { defaultObliqueOrbit, resolvedNodeBounds } from "../render3f/camera.tsx";
 import { buildContainerGeometry } from "../engine/container-geometry.ts";
 import type { MorphologyContainerPath } from "../engine/container-geometry.ts";
-import { containerSphereLOD, placeContainerTitles, projectedWorldScale } from "../render-common/container-canvas.ts";
+import { containerSphereLOD, containerTitleFont, placeContainerTitles, projectedWorldScale } from "../render-common/container-canvas.ts";
 import type { CanvasDisc } from "../render-common/container-canvas.ts";
 import { MORPHOLOGY_CONTRACT } from "../engine/morphology-contract.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
@@ -228,9 +228,17 @@ export const createProductView: CreateProductView = async (input) => {
     }
     morphologyInteraction.labelDiscs = discs;
     // Titles are placed on the canvas's own rectangle (the overlay canvas spans the container), with
-    // the same discs the DOM pass uses; the reserved rects below are exactly the drawn ones.
+    // the same discs the DOM pass uses; the reserved rects below are exactly the drawn ones. The
+    // width is measured with the title font itself (a dedicated context: the label measurer keeps
+    // its own font), so a title that fits the 190 px budget is never truncated by an estimate.
+    const titleContext = document.createElement("canvas").getContext("2d");
+    const titleMeasure = (text: string, level: number): number => {
+      if (!titleContext) return [...text].length * 6.5;
+      titleContext.font = containerTitleFont(level);
+      return titleContext.measureText(text).width;
+    };
     const titleBounds = { width: container.clientWidth, height: container.clientHeight };
-    const titlePlacements = placeContainerTitles([...pathById.values()], project, titleBounds, axes.projection, containerInteraction, discs);
+    const titlePlacements = placeContainerTitles([...pathById.values()], project, titleBounds, axes.projection, containerInteraction, discs, titleMeasure);
     const titledContainerIds = new Set(titlePlacements.map(placement => placement.id));
     const footprintRadius = new Map(footprints.map(footprint => [footprint.id, footprint.coreRadiusPx]));
     const candidates = [];
@@ -244,8 +252,10 @@ export const createProductView: CreateProductView = async (input) => {
         continue;
       const chosen = selected === id;
       const hovered = hover?.kind === "node" && hover.id === id;
-      // A label occluded by nearer geometry is hidden, except the selection and hover, which always stay legible.
-      if (occluded.has(id) && !chosen && !hovered) continue;
+      // A label occluded by nearer geometry is hidden, except the selection and hover and the
+      // Flat domains (tier 1: a domain name is always placed, drawn above the geometry).
+      if (occluded.has(id) && !chosen && !hovered
+        && !(axes.organization === "flat" && node.type === "domain")) continue;
       // A container whose canvas title is drawn carries no second name (its own node label waits).
       if (pathById.has(id) && !chosen && !hovered && titledContainerIds.has(id))
         continue;
@@ -266,6 +276,11 @@ export const createProductView: CreateProductView = async (input) => {
       if (!reason) continue;
       const text = input.text(id);
       fullText.set(id, text.full);
+      // Tier 1, the rule: a domain name in Flat, the selected or focused node, and the
+      // hovered node — always named, even boxed in among pearls (never under their own node,
+      // the panel or another label).
+      const tier1 = reason === "hover" || reason === "selected"
+        || (axes.organization === "flat" && reason === "domain");
       candidates.push({
         id,
         text: chosen || hovered ? text.full : text.short,
@@ -274,6 +289,7 @@ export const createProductView: CreateProductView = async (input) => {
         y: hovered ? hover!.y : p.y,
         priority: degree.get(id) ?? 0,
         full: chosen || hovered,
+        ...(tier1 ? { tier1: true } : {}),
         ...(footprintRadius.has(id) ? { radius: footprintRadius.get(id)! } : {}),
       });
     }
@@ -368,9 +384,13 @@ export const createProductView: CreateProductView = async (input) => {
           padding: "4px 6px",
           font: `${appearance.labelSizePx}px/${appearance.labelSizePx + 4}px Arial`,
           color: label.reason === "selected" ? palette.selection : label.reason === "hover" ? palette.hover : palette.text,
+          // A tier-1 label may sit over another node's pearl: the dark scrim plus a text halo
+          // keeps its words legible there (requirement: legible above a pearl, never under its
+          // own node or the panel).
           background: axes.organization === "indra" ? "transparent"
-            : label.reason === "hover" || label.reason === "selected" ? "rgba(10,10,10,.94)" : "rgba(10,10,10,.62)",
-          textShadow: axes.organization === "indra" ? "0 0 3px #000, 0 0 3px #000, 0 0 5px #000" : "none",
+            : label.reason === "hover" || label.reason === "selected" ? "rgba(10,10,10,.94)" : "rgba(10,10,10,.72)",
+          textShadow: axes.organization === "indra" ? "0 0 3px #000, 0 0 3px #000, 0 0 5px #000"
+            : "0 0 2px #000, 0 1px 2px #000",
           borderRadius: "3px",
           whiteSpace: "normal",
           overflow: "hidden",

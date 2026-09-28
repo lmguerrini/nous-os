@@ -138,18 +138,30 @@ export function containerRimLight(level: number): {
   };
 }
 
+/** Trailing separators a truncation never leaves before its «…»: the cut must fall on a word, not
+ * right after a «·», «-», «—», «–» or «|» («Signal Stack ·…» loses «sistema» for nothing). */
+const TRAILING_SEPARATORS = /[\s\u00B7\u2022\u2219\-—–|]+$/;
+export function stripTrailingSeparators(text: string): string {
+  return text.replace(TRAILING_SEPARATORS, "");
+}
+
 /** A text that does not fit is cut on a word boundary and ends with «…»; the complete text stays in
- * the tooltip. Pure: the caller supplies the width function. */
+ * the tooltip. A cut never lands right after a separator. Pure: the caller supplies the width
+ * function. */
 export function ellipsizeText(text: string, maxWidth: number, measure: (text: string) => number): string {
   if (measure(text) <= maxWidth) return text;
   const words = text.split(/\s+/);
   for (let count = words.length - 1; count > 0; count -= 1) {
-    const candidate = `${words.slice(0, count).join(" ")}…`;
+    const kept = stripTrailingSeparators(words.slice(0, count).join(" "));
+    if (!kept) continue;
+    const candidate = `${kept}…`;
     if (measure(candidate) <= maxWidth) return candidate;
   }
   const characters = [...text];
   for (let count = characters.length - 1; count > 0; count -= 1) {
-    const candidate = `${characters.slice(0, count).join("")}…`;
+    const kept = stripTrailingSeparators(characters.slice(0, count).join(""));
+    if (!kept) continue;
+    const candidate = `${kept}…`;
     if (measure(candidate) <= maxWidth) return candidate;
   }
   return "…";
@@ -173,19 +185,32 @@ function containerSelected(container: MorphologyContainerPath, interaction: Cont
   return interaction?.hoverId === container.id || (interaction?.focusIds?.has(container.id) ?? false);
 }
 
-/** A title rectangle uses this conservative per-character width, so the reserved space and the drawn
- * title always agree (the shared predicate below is the single source of truth for both). */
+/** A title rectangle uses this conservative per-character width when no real font is supplied, so
+ * the reserved space and the drawn title always agree (the shared predicate below is the single
+ * source of truth for both). */
 const TITLE_CHAR_WIDTH = 6.5;
 const TITLE_MAX_WIDTH = 190;
 /** A closed pearl carries its title this far above its own centre, clear of the pearl itself. */
 const PEARL_TITLE_GAP_PX = 12;
 
+/** The exact font a title of this level is drawn in — the measure must use it, so a title that
+ * fits the budget at the real font is never truncated by a per-character estimate. */
+export function containerTitleFont(level: number): string {
+  return `${level <= 2 ? 600 : 400} 12px Arial`;
+}
+
+/** Width measurement of a title at the font its level draws with. Pure callers that have no
+ * context fall back to the conservative per-character estimate. */
+export type TitleMeasure = (text: string, level: number) => number;
+
+const estimatedMeasure: TitleMeasure = (text) => [...text].length * TITLE_CHAR_WIDTH;
+
 /** The final drawn text of a container title and the width its rectangle reserves: the one layout
  * both the canvas drawer and the DOM label pass read, so a title's ink and its reserved rectangle
  * are the same thing. A « · +N» count suffix always survives; only the name part is ellipsized. */
-export function containerTitleLayout(title: string): { readonly text: string; readonly width: number } {
-  const text = ellipsizeTextKeepCount(title, TITLE_MAX_WIDTH, (value) => [...value].length * TITLE_CHAR_WIDTH);
-  return { text, width: Math.min(TITLE_MAX_WIDTH, [...text].length * TITLE_CHAR_WIDTH) };
+export function containerTitleLayout(title: string, measure: TitleMeasure = estimatedMeasure, level = 1): { readonly text: string; readonly width: number } {
+  const text = ellipsizeTextKeepCount(title, TITLE_MAX_WIDTH, value => measure(value, level));
+  return { text, width: Math.min(TITLE_MAX_WIDTH, Math.max(1, measure(text, level))) };
 }
 
 /** Projected outline used to measure a container's title position: the flat ring in 2D, the sphere
@@ -231,6 +256,7 @@ export function containerTitleRect(
   projection: "2d" | "3d",
   interaction?: ContainerInteraction,
   discs?: readonly CanvasDisc[],
+  measure: TitleMeasure = estimatedMeasure,
 ): { readonly left: number; readonly top: number; readonly width: number; readonly height: number } | null {
   if (!container.title) return null;
   if (projection === "3d") {
@@ -239,7 +265,7 @@ export function containerTitleRect(
     if (!containerSphereLOD(container.level, container.open !== false, containerSelected(container, interaction), limbRadiusPx)) {
       // Below LOD the container is its pearl and its «+N» name: the title tries the slots around
       // the pearl, its natural place just above it, each clear of the pearl's own disc.
-      const width = containerTitleLayout(container.title).width;
+      const width = containerTitleLayout(container.title, measure, container.level).width;
       const gap = limbRadiusPx + PEARL_TITLE_GAP_PX;
       const candidates = [
         { left: center.x - width / 2, top: center.y - gap - 18, width, height: 18 },
@@ -258,7 +284,7 @@ export function containerTitleRect(
   const top = Math.min(...ys), bottom = Math.max(...ys);
   const wideEnough = right - left >= (container.level <= 2 ? 85 : 160);
   if (!wideEnough) return null;
-  const width = containerTitleLayout(container.title).width;
+  const width = containerTitleLayout(container.title, measure, container.level).width;
   const centered = (offsetTop: number) => ({ left: (left + right) / 2 - width / 2, top: offsetTop, width, height: 18 });
   // The rim title stays above the outline; the other slots only serve pearl avoidance, never a
   // rim that simply sits too high on screen (the previous rule).
@@ -408,11 +434,12 @@ export function placeContainerTitles(
   projection: "2d" | "3d",
   interaction?: ContainerInteraction,
   discs?: readonly CanvasDisc[],
+  measure: TitleMeasure = estimatedMeasure,
 ): ContainerTitlePlacement[] {
   const placements: ContainerTitlePlacement[] = [];
   const boxes: { left: number; right: number; top: number; bottom: number }[] = [];
   for (const container of [...containers].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id))) {
-    const rect = containerTitleRect(container, project, bounds, projection, interaction, discs);
+    const rect = containerTitleRect(container, project, bounds, projection, interaction, discs, measure);
     if (!rect) continue;
     const box = { left: rect.left - 3, top: rect.top, right: rect.left + rect.width + 3, bottom: rect.top + rect.height };
     if (boxes.some(other => box.left < other.right && other.left < box.right && box.top < other.bottom && other.top < box.bottom)) continue;
@@ -434,17 +461,25 @@ export function drawContainerTitles(
   projection: "2d" | "3d",
   interaction?: ContainerInteraction,
   discs?: readonly CanvasDisc[],
+  measure?: TitleMeasure,
 ): void {
   const fieldIsLight = (fieldColor.match(/[\d.]+/g)?.map(Number).slice(0, 3).reduce((a, b) => a + b, 0) ?? 0) > 380;
   const ink = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
   // One disc set with the review's label pass when it shares its discs; the canvas-derived set only
   // stands in when the channel is absent (pure callers, non-review mounts).
   const effectiveDiscs = interaction?.labelDiscs ?? discs;
+  // The width is measured with the very font the title is drawn in, so what fits is what stays.
+  const effectiveMeasure: TitleMeasure = measure ?? ((text, level) => {
+    context.font = containerTitleFont(level);
+    return context.measureText(text).width;
+  });
   const byId = new Map(containers.map(container => [container.id, container]));
-  for (const placement of placeContainerTitles(containers, project, bounds, projection, interaction, effectiveDiscs)) {
+  for (const placement of placeContainerTitles(containers, project, bounds, projection, interaction, effectiveDiscs, effectiveMeasure)) {
     const container = byId.get(placement.id);
     if (!container?.title) continue;
-    const text = containerTitleLayout(container.title).text;
+    const text = containerTitleLayout(container.title, effectiveMeasure, container.level).text;
+    // The font is set before the halo so the stroke and the fill share one letterform.
+    context.font = containerTitleFont(placement.level);
     // A thin dark halo keeps the name legible over any arc that still runs beneath it.
     if (typeof context.strokeText === "function") {
       context.strokeStyle = fieldIsLight ? "rgba(255, 255, 255, 0.55)" : "rgba(10, 10, 10, 0.6)";
@@ -452,7 +487,6 @@ export function drawContainerTitles(
       context.strokeText(text, placement.left, placement.top + 14, TITLE_MAX_WIDTH);
     }
     context.fillStyle = `rgba(${ink}, ${clamp(0.95 - placement.level * 0.1, 0.5, 0.9)})`;
-    context.font = `${placement.level <= 2 ? 600 : 400} 12px Arial`;
     context.fillText(text, placement.left, placement.top + 14, TITLE_MAX_WIDTH);
   }
 }

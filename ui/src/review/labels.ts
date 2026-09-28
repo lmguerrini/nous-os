@@ -10,6 +10,11 @@ export type LabelCandidate = {
   full?: boolean;
   /** Screen-space radius of the anchor node's disc; the label is offset outside it, never over it. */
   radius?: number;
+  /** Tier 1 (the rule): a domain name in Flat, the selected or hovered node. Placed
+   * first, and when no slot is clear of every pearl it takes the least-covered slot instead of
+   * being dropped — a label over another node's pearl stays legible above it; under its own node,
+   * under the panel or over another label it never sits. */
+  tier1?: boolean;
 };
 export type PlacedLabel = { id: string; text: string; reason: LabelReason; rect: ViewportRect };
 
@@ -144,6 +149,26 @@ function rectOverlapsDisc(
   return (cx - nearestX) ** 2 + (cy - nearestY) ** 2 <= (radius + 2) ** 2;
 }
 
+/** The area (px²) of the part of a disc that lies inside an axis-aligned rect, summed over 1 px
+ * columns: the deterministic measure a tier-1 label minimizes when every clear slot is taken.
+ * Pure. */
+export function discRectOverlapArea(rect: ViewportRect, cx: number, cy: number, radius: number): number {
+  if (!(radius > 0) || !Number.isFinite(radius)) return 0;
+  const right = rect.left + rect.width, bottom = rect.top + rect.height;
+  const from = Math.max(rect.left, cx - radius), to = Math.min(right, cx + radius);
+  if (to <= from) return 0;
+  let area = 0;
+  for (let x = from; x < to; x += 1) {
+    const column = Math.min(x + 1, to) - x;
+    const dx = (x + column / 2) - cx;
+    const halfChord = Math.sqrt(Math.max(0, radius * radius - dx * dx));
+    if (halfChord <= 0) continue;
+    const covered = Math.min(bottom, cy + halfChord) - Math.max(rect.top, cy - halfChord);
+    if (covered > 0) area += covered * column;
+  }
+  return area;
+}
+
 /** Offsets that place the label just outside a node disc of the given radius, in eight directions. */
 function discOffsets(radius: number): readonly [number, number][] {
   const m = radius + 6;
@@ -221,7 +246,8 @@ export function placeLabels(
   };
   const priority = { hover: 6, selected: 5, neighbour: 4, domain: 3, main: 2, zoom: 1 };
   for (const c of [...candidates].sort(
-    (a, b) => priority[b.reason] - priority[a.reason] || b.priority - a.priority || a.id.localeCompare(b.id),
+    (a, b) => (b.tier1 === true ? 1 : 0) - (a.tier1 === true ? 1 : 0)
+      || priority[b.reason] - priority[a.reason] || b.priority - a.priority || a.id.localeCompare(b.id),
   )) {
     if (placed.length >= budget) break;
     if (c.x < bounds.left || c.y < bounds.top || c.x > bounds.left + bounds.width || c.y > bounds.top + bounds.height)
@@ -235,20 +261,24 @@ export function placeLabels(
     const attempts = radius > 0 && c.reason !== "hover"
       ? [...discOffsets(radius), ...discOffsets(radius + LABEL_SECOND_RING_PX)]
       : c.reason === "hover" ? [[12, 12], [-12, 12], [12, -12], [-12, -12], ...positions] : positions;
-    for (const [dx, dy] of attempts) {
-      const left = c.x + dx + (dx < 0 ? -size.width : 0);
-      const top = c.y + dy + (dy < 0 ? -size.height : 0);
-      const rect = { left, top, width: size.width, height: size.height };
+    const rectAt = (dx: number, dy: number): ViewportRect => ({
+      left: c.x + dx + (dx < 0 ? -size.width : 0),
+      top: c.y + dy + (dy < 0 ? -size.height : 0),
+      width: size.width,
+      height: size.height,
+    });
+    // The hard constraints no tier may ever bend: inside the visible rect, clear of the anchor's
+    // own disc, and over no placed label or reserved rect (the Aspetto panel).
+    const admissible = (rect: ViewportRect): boolean => {
       if (
-        left < bounds.left ||
-        top < bounds.top ||
-        left + size.width > bounds.left + bounds.width ||
-        top + size.height > bounds.top + bounds.height
+        rect.left < bounds.left ||
+        rect.top < bounds.top ||
+        rect.left + size.width > bounds.left + bounds.width ||
+        rect.top + size.height > bounds.top + bounds.height
       )
-        continue;
-      if (radius > 0 && rectOverlapsDisc(rect, c.x, c.y, radius)) continue;
-      if (discs.length > 0 && discBlocked(rect, c.id)) continue;
-      const nearby = new Set(keys(left - 3, top - 3, left + size.width + 3, top + size.height + 3)
+        return false;
+      if (radius > 0 && rectOverlapsDisc(rect, c.x, c.y, radius)) return false;
+      const nearby = new Set(keys(rect.left - 3, rect.top - 3, rect.left + size.width + 3, rect.top + size.height + 3)
         .flatMap(key => cells.get(key) ?? []));
       if (
         [...nearby].some(
@@ -261,10 +291,51 @@ export function placeLabels(
         || reserved.some(other => rect.left < other.left + other.width + 3 && rect.left + rect.width + 3 > other.left
           && rect.top < other.top + other.height + 3 && rect.top + rect.height + 3 > other.top)
       )
-        continue;
+        return false;
+      return true;
+    };
+    // Tier 1 keeps the narrow rule: never under its own node, never over another label
+    // or the panel — but another node's pearl may sit beneath it, so when no slot is fully clear
+    // the least-covered admissible slot wins instead of dropping the name.
+    if (c.tier1 === true) {
+      let fallback: { rect: ViewportRect; covered: number } | null = null;
+      for (const [dx, dy] of attempts) {
+        const rect = rectAt(dx, dy);
+        if (!admissible(rect)) continue;
+        if (discs.length === 0 || !discBlocked(rect, c.id)) {
+          fallback = { rect, covered: -1 };
+          break;
+        }
+        let covered = 0;
+        for (const disc of discs) {
+          if (disc.id === c.id) continue;
+          // Cheap gate first: the exact column sum runs only on discs the rect truly touches.
+          const nearestX = Math.min(Math.max(disc.x, rect.left), rect.left + rect.width);
+          const nearestY = Math.min(Math.max(disc.y, rect.top), rect.top + rect.height);
+          if ((disc.x - nearestX) ** 2 + (disc.y - nearestY) ** 2 > disc.radius ** 2) continue;
+          covered += discRectOverlapArea(rect, disc.x, disc.y, disc.radius);
+        }
+        if (!fallback || covered < fallback.covered) fallback = { rect, covered };
+      }
+      if (fallback) {
+        const label = { id: c.id, text: c.text, reason: c.reason, rect: fallback.rect };
+        placed.push(label);
+        for (const key of keys(fallback.rect.left, fallback.rect.top, fallback.rect.left + fallback.rect.width, fallback.rect.top + fallback.rect.height)) {
+          const bucket = cells.get(key) ?? [];
+          bucket.push(label);
+          cells.set(key, bucket);
+        }
+      }
+      continue;
+    }
+    for (const [dx, dy] of attempts) {
+      const rect = rectAt(dx, dy);
+      if (!admissible(rect)) continue;
+      if (radius > 0 && rectOverlapsDisc(rect, c.x, c.y, radius)) continue;
+      if (discs.length > 0 && discBlocked(rect, c.id)) continue;
       const label = { id: c.id, text: c.text, reason: c.reason, rect };
       placed.push(label);
-      for (const key of keys(left, top, left + size.width, top + size.height)) {
+      for (const key of keys(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height)) {
         const bucket = cells.get(key) ?? [];
         bucket.push(label);
         cells.set(key, bucket);
