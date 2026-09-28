@@ -59,8 +59,10 @@ test("G9 Neural halo: radius cap 1.5× the soma, lower constant strength, densit
   assert.ok(neural.maximumCoreRatio <= 1.5, `neural halo ratio ${neural.maximumCoreRatio}`);
   assert.ok(neural.strength <= 0.12, `neural halo strength ${neural.strength}`);
   assert.ok(neural.strength < stellar.strength, "the Neural halo is fainter than Stellar's");
-  // Stellar and Mycelium halos are untouched.
-  assert.deepEqual(stellar, { maximumCoreRatio: 1.8, strength: 0.18 });
+  // D-072 V4/V5: Stellar's halo is a short glow contained at 1.6× the core; Neural's hugs the soma
+  // at 1.1× with a very low strength. Mycelium stays untouched.
+  assert.deepEqual(stellar, { maximumCoreRatio: 1.6, strength: 0.18 });
+  assert.deepEqual(neural, { maximumCoreRatio: 1.1, strength: 0.05 });
   assert.deepEqual(mycelium, { maximumCoreRatio: 1.25, strength: 0.08 });
   // Alone a soma keeps its full halo; overlapping somata dim it, never below the floor.
   assert.equal(neuralHaloAlphaFactor(1), 1);

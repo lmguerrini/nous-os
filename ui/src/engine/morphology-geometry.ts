@@ -24,9 +24,13 @@ export type MorphologySegment = {
 };
 export type MorphologyGeometry = {
   readonly morphology: Morphology; readonly nodes: readonly MorphologyNodeShape[];
-  readonly edges: readonly { readonly id: string; readonly segments: readonly MorphologySegment[] }[];
+  readonly edges: readonly { readonly id: string; readonly source: string; readonly target: string; readonly segments: readonly MorphologySegment[] }[];
   readonly drawnSegments: readonly MorphologySegment[]; readonly branchPoints: readonly Coordinates[];
   readonly containers: readonly MorphologyContainerPath[];
+  /** D-072 F3: the communities the caller declared, carried verbatim so the shared canvas layer can
+   * build cluster-aware Stellar presentation (dust, intra-community arcs) without re-deriving them.
+   * Purely presentational input: absent or empty means no community-aware modulation. */
+  readonly colonies: readonly MorphologyColonyInput[];
 };
 const add = (a: Coordinates, b: Coordinates): Coordinates => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z });
 const sub = (a: Coordinates, b: Coordinates): Coordinates => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
@@ -149,17 +153,17 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
     const direction = unit(sub(b.position, a.position));
     const insetA = morphology === "neural" ? Math.min(somaRadius(a, direction), norm(sub(b.position, a.position)) * 0.2) : 0;
     const insetB = morphology === "neural" ? Math.min(somaRadius(b, direction), norm(sub(b.position, a.position)) * 0.2) : 0;
-    if (morphology === "stellar") return { id: edge.id, segments: [segment(edge.id, edge.id, a.position, b.position, edge.width, edge.width, morphology, 0)] };
+    if (morphology === "stellar") return { id: edge.id, source: edge.source, target: edge.target, segments: [segment(edge.id, edge.id, a.position, b.position, edge.width, edge.width, morphology, 0)] };
     if (morphology === "neural") {
       const proximal = a.degree >= b.degree;
-      return { id: edge.id, segments: [segment(edge.id, edge.id, a.position, b.position,
+      return { id: edge.id, source: edge.source, target: edge.target, segments: [segment(edge.id, edge.id, a.position, b.position,
         edge.width * (proximal ? NEURAL_TAPER.proximal : NEURAL_TAPER.distal),
         edge.width * (proximal ? NEURAL_TAPER.distal : NEURAL_TAPER.proximal),
         morphology, curvature, null, insetA, insetB, edge.width * NEURAL_TAPER.mid)] };
     }
     const sourceColony = colonyByNode.get(a.id), targetColony = colonyByNode.get(b.id);
     if (targetColony?.id === a.id && norm(sub(a.position, targetColony.center)) > 1) {
-      return { id: edge.id, segments: [
+      return { id: edge.id, source: edge.source, target: edge.target, segments: [
         segment(`${edge.id}:trunk`, edge.id, a.position, targetColony.center, edge.width * 1.1, edge.width * 1.35,
           morphology, curvature, `${targetColony.id}:parent-trunk`),
         segment(`${edge.id}:branch`, edge.id, targetColony.center, b.position, edge.width * 1.35, edge.width * 0.5,
@@ -167,7 +171,7 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
       ] };
     }
     if (sourceColony?.id === b.id && norm(sub(b.position, sourceColony.center)) > 1) {
-      return { id: edge.id, segments: [
+      return { id: edge.id, source: edge.source, target: edge.target, segments: [
         segment(`${edge.id}:branch`, edge.id, a.position, sourceColony.center, edge.width * 0.5, edge.width * 1.35,
           morphology, curvature),
         segment(`${edge.id}:trunk`, edge.id, sourceColony.center, b.position, edge.width * 1.35, edge.width * 1.1,
@@ -176,11 +180,11 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
     }
     const colony = sourceColony;
     if (!colony || colony.id !== colonyByNode.get(b.id)?.id) {
-      return { id: edge.id, segments: [segment(edge.id, edge.id, a.position, b.position, edge.width * 0.8, edge.width * 0.55, morphology, curvature)] };
+      return { id: edge.id, source: edge.source, target: edge.target, segments: [segment(edge.id, edge.id, a.position, b.position, edge.width * 0.8, edge.width * 0.55, morphology, curvature)] };
     }
     const core = colony.center;
     const aj = mix(a.position, core, 0.24), bj = mix(b.position, core, 0.24);
-    return { id: edge.id, segments: [
+    return { id: edge.id, source: edge.source, target: edge.target, segments: [
       segment(`${edge.id}:a`, edge.id, a.position, aj, edge.width * 0.5, edge.width * 0.8, morphology, curvature),
       segment(`${edge.id}:at`, edge.id, aj, core, edge.width * 0.8, edge.width * 1.15, morphology, curvature, `${colony.id}:${a.id}`),
       segment(`${edge.id}:bt`, edge.id, core, bj, edge.width * 1.15, edge.width * 0.8, morphology, curvature, `${colony.id}:${b.id}`),
@@ -205,5 +209,5 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
       }
     } else drawnSegments.push(part);
   }
-  return { morphology, nodes: shaped, edges: routed, drawnSegments, branchPoints, containers: buildContainerGeometry(morphology, containers) };
+  return { morphology, nodes: shaped, edges: routed, drawnSegments, branchPoints, containers: buildContainerGeometry(morphology, containers), colonies };
 }

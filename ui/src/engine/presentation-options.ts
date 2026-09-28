@@ -86,7 +86,11 @@ export type PresentationOptions = {
     /** Drawing quality of the container/morphology pass: `"moving"` is the reduced frame while the
      * camera rotates or zooms (limbs only for the structural spheres, no rim-light gradients, no
      * equators, titles only for levels ≤ 1); `"full"` (the default) is the complete drawing. */
-    readonly quality?: "full" | "moving" };
+    readonly quality?: "full" | "moving";
+    /** D-072 V13: where the travelling flow highlights draw. `"inline"` (the default) draws them in
+     * the main morphology pass, today's behaviour; `"separate"` skips them there because a small
+     * dedicated overlay repaints them alone every frame via `drawFlowLayer` (render-common). */
+    readonly flowLayer?: "inline" | "separate" };
   /** Hierarchical circles in world coordinates, shared by 2D and 3D projections. */
   readonly containers?: readonly { readonly id: string; readonly level: number; readonly center: { readonly x: number; readonly y: number; readonly z: number }; readonly radius: number }[];
   readonly nodes?: ReadonlyMap<string, NodePresentation & { readonly glyph?: NodeGlyph }>;

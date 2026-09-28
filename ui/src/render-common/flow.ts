@@ -44,13 +44,63 @@ export function flowAnimates(state: {
   return state.motionEnabled && !state.reducedMotion && state.intensity > 0 && state.speed > 0;
 }
 
-/** Soft luminous pulse envelope: brightness at a normalised arc distance from the pulse centre. */
+/** Soft luminous pulse envelope: brightness at a normalised arc distance from the pulse centre.
+ * D-071 legacy envelope, kept as the reduced-motion-period reference; the travelling highlight
+ * below replaced it for the animated reading. */
 export function flowPulseAlpha(distanceNormalised: number, centre: number, intensity: number): number {
   if (!(intensity > 0)) return 0;
   let delta = Math.abs(distanceNormalised - centre);
   delta = Math.min(delta, 1 - delta);
   const sigma = FLOW_PULSE_SIGMA;
   return Math.min(1, Math.max(0, intensity)) * Math.exp(-(delta * delta) / (2 * sigma * sigma));
+}
+
+// ---------------------------------------------------------------- D-072 V13 travelling highlight
+//
+// The exploratory flow no longer oscillates a symmetric pulse: a luminous head really travels from
+// the relation's source to its target at a uniform speed in screen pixels per second, with a short
+// bright head and a fading tail behind it, and a smooth fade-in each time it restarts. The cycle of
+// one edge is its own projected length plus the tail, so the tail fully drains past the target
+// before the head re-enters at the source — nothing ahead of the head, ever.
+
+/** Head travel speed at speed 1, in screen px/s. Every edge shares it: uniform speed, per-edge cycle. */
+export const FLOW_HEAD_SPEED_PX_S = 90;
+/** Reach of the bright head, in px along the path from the head backwards. */
+export const FLOW_HEAD_PX = 9;
+/** Total reach of the fading tail behind the head, in px (head included). */
+export const FLOW_TAIL_PX = 46;
+/** The restart fade-in covers this much head travel, in px. */
+export const FLOW_RESTART_FADE_PX = 14;
+
+/** Position of the head along a path whose cycle (projected length + tail) is `cyclePx`, at
+ * `elapsedMilliseconds` of flow clock and the live speed control. Pure and monotone in time modulo
+ * the cycle; 0 for a still flow. */
+export function flowHeadPositionPx(elapsedMilliseconds: number, speed: number, cyclePx: number): number {
+  if (!(speed > 0) || !(cyclePx > 0) || !Number.isFinite(elapsedMilliseconds)) return 0;
+  const travelled = (elapsedMilliseconds / 1000) * speed * FLOW_HEAD_SPEED_PX_S;
+  const head = travelled % cyclePx;
+  return head < 0 ? head + cyclePx : head;
+}
+
+const smoothstep = (t: number): number => {
+  const clamped = Math.min(1, Math.max(0, t));
+  return clamped * clamped * (3 - 2 * clamped);
+};
+
+/**
+ * Highlight alpha at `atPx` along a projected path of cycle `cyclePx` whose head sits at `headPx`:
+ * full under the head, smoothly fading to nothing across the tail behind it, zero ahead of the
+ * head (the wrapped tail draining past the target counts as behind), and scaled by the restart
+ * fade-in while the head has just re-entered the source. Pure.
+ */
+export function flowHighlightAlpha(atPx: number, headPx: number, cyclePx: number, intensity: number): number {
+  if (!(intensity > 0) || !(cyclePx > 0)) return 0;
+  let behind = headPx - atPx;
+  if (behind < 0) behind += cyclePx;
+  if (behind > FLOW_TAIL_PX) return 0;
+  const fade = behind <= FLOW_HEAD_PX ? 1 : 1 - smoothstep((behind - FLOW_HEAD_PX) / (FLOW_TAIL_PX - FLOW_HEAD_PX));
+  const fadeIn = Math.min(1, Math.max(0, headPx) / FLOW_RESTART_FADE_PX);
+  return Math.min(1, Math.max(0, intensity)) * fade * fadeIn;
 }
 
 /** One candidate edge for the animation budget. Lower priority animates first. */

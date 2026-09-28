@@ -15,7 +15,9 @@ export type MorphologyGeometryContract = {
 export const MORPHOLOGY_CONTRACT: Readonly<Record<Morphology, MorphologyGeometryContract>> = {
   stellar: {
     node: { shape: "sphere", scale: 1, maxRadiusPx: 12, brightness: [0.62, 1] },
-    glow: { maximumCoreRatio: 1.8, strength: 0.18 },
+    // D-072 V4: the halo stays a short soft glow around a nearly opaque core (≤ 1.6× the core),
+    // never the big transparent disc the user read at 1.8×.
+    glow: { maximumCoreRatio: 1.6, strength: 0.18 },
     edge: { path: "straight", amplitude: [0, 0], periods: [0, 0], taper: [1, 1], widthVariation: 0 },
     branching: "individual", terminals: "point",
     hover: { radiusMultiplier: 1.2, brightnessMultiplier: 1.2 }, focus: { radiusMultiplier: 1.3, brightnessMultiplier: 1.3 },
@@ -23,9 +25,9 @@ export const MORPHOLOGY_CONTRACT: Readonly<Record<Morphology, MorphologyGeometry
   },
   neural: {
     node: { shape: "soma", scale: 0.85, maxRadiusPx: 11, brightness: [0.64, 1] },
-    // The soma halo stays compact (≤ 1.5× the core) and faint: hubs are many overlapping somata,
-    // and a stronger bloom merges them into one unreadable luminous mass over the dendrites.
-    glow: { maximumCoreRatio: 1.45, strength: 0.09 },
+    // D-072 V5: the wide glow is removed almost completely — the halo hugs the soma (≤ 1.1× the
+    // core) at a very low strength, so the nearly opaque body and its dendrites read as one shape.
+    glow: { maximumCoreRatio: 1.1, strength: 0.05 },
     // D-071 G9 taper: drawn width at each soma end, as a multiple of the mid-edge width, so the
     // rastremazione survives the pixel floors at overview scale (2.2–2.6×, mid never below ~0.6 px).
     // D-071 G11: each end's ratio is additionally capped by its soma's degree in the canvas layer
