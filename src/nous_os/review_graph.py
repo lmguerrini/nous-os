@@ -11,7 +11,7 @@ import re
 import unicodedata
 
 SCHEMA = "nousos.review-graph/2"
-DISPLAY_LABEL_RULE = "d072-display-label/1"
+DISPLAY_LABEL_RULE = "d072-display-label/2"
 DOMAINS = ("atlasfield", "forge", "quillmap", "orchardline", "showcase", "dossier", "qrs", "meridian")
 SPECIFICITY = ("orchardline", "quillmap", "qrs", "forge", "dossier", "showcase", "atlasfield", "meridian")
 KIND_WEIGHT = {"DECISION": 2.0, "CONCEPT": 1.6, "REQUIREMENT": 1.4, "RELATIONSHIP": 1.4,
@@ -88,51 +88,114 @@ def label_phrase(value: str, cap: int = 40) -> str:
     return value.rstrip(" ,;:–—-")
 
 
+LABEL_STOP_WORDS = frozenset("il lo la i gli le un una uno del dello della dei degli delle nel nello nella the a an of".split())
+
+
+def formula_title(value: str) -> bool:
+    """Titles generated from an excerpt have no independent distilled subject."""
+    value = value.strip()
+    return (not value or bool(re.match(r"^senza titolo(?:\s*[·:–—-]|$)", value, re.I))
+            or bool(re.match(r"^[«\"“].*…[»\"”](?:\s*·|$)", value))
+            or bool(re.match(r"^[«\"“][^»\"”]+[»\"”]\s*·", value)))
+
+
+def shorten_title(value: str, cap: int = 40) -> str:
+    """Shorten a distilled title in ordered, reversible presentation steps."""
+    value = re.sub(r"\s+", " ", value or "").strip()
+    if len(value) <= cap:
+        return value
+    lead = re.match(r"^(?:messaggio del fondatore\s*:\s*|il fondatore\s+|the founder\s+)", value, re.I)
+    if lead:
+        value = value[lead.end():].strip()
+        if value:
+            value = value[0].upper() + value[1:]
+        if len(value) <= cap:
+            return value
+    without_parens = re.sub(r"\s*\([^()]*\)", "", value).strip()
+    if len(without_parens.split()) >= 2:
+        value = without_parens
+    if len(value) <= cap:
+        return value
+    head = re.split(r"\s+[—–]\s+|:\s+", value, maxsplit=1)[0].strip()
+    content_words = [w for w in head.split() if w.casefold().strip(".,;:!?«»") not in LABEL_STOP_WORDS]
+    if len(content_words) >= 3:
+        value = head
+    if len(value) <= cap:
+        return value
+    words = value.split()
+    reduced = " ".join(w for w in words if w.casefold().strip(".,;:!?«»") not in LABEL_STOP_WORDS)
+    if len(reduced.split()) >= 2:
+        value = reduced
+    if len(value) <= cap:
+        return value
+    # Word boundaries also protect hyphenated code tokens such as CAP-07 and EC-A/B/C/E.
+    fit = [w for w in value.split() if w]
+    while len(fit) > 2 and len(" ".join(fit)) > cap - 1:
+        fit.pop()
+    if len(" ".join(fit)) <= cap - 1:
+        return " ".join(fit).rstrip(" ,;:") + "…"
+    return " ".join(fit[:2]).rstrip(" ,;:") + "…"
+
+
 def assign_display_labels(items: list[dict], source: dict[str, str], parents: dict[str, dict]) -> None:
-    """Resolve equal labels by parent, month, then stable reading order, never by id text."""
+    """Use distilled titles first; resolve sibling labels without exposing IDs."""
     base = {}
     for item in items:
-        text = source[item["id"]]
-        if item["level"] == 4:
-            text = re.sub(r"\b(?:the|a|an)\s+", "", text, flags=re.I)
-        label = label_phrase(text, 60 if item["level"] <= 2 else 40)
-        if item.get("subkind") == "DECISION":
-            subject = re.sub(r"^(?:the|a|an|il|la|lo|un|una)\s+", "", label, flags=re.I)
-            subject = re.sub(r"\b(?:will|should|must)\s+(?:use|be|have)\b\s*", "", subject, flags=re.I)
-            label = f"Decisione: {label_phrase(subject, 29)}"
-        elif item.get("subkind") == "OPEN_QUESTION":
-            label = f"{label_phrase(label, 39).rstrip('?')}?"
+        title = str(item.get("title") or "")
+        if item["level"] <= 2:
+            label = title
+        elif item["level"] == 4:
+            label = shorten_title(source.get(item["id"], "")) if formula_title(title) else shorten_title(title)
+        elif item["level"] == 3:
+            label = shorten_title(canvas_title(title))
+        else:
+            label = label_phrase(source.get(item["id"], ""))
         base[item["id"]] = label or ("Domanda?" if item.get("subkind") == "OPEN_QUESTION" else "Tema")
         item["display_label"] = base[item["id"]]
-    for step in ("parent", "month", "number"):
-        groups: dict[str, list[dict]] = defaultdict(list)
-        for item in items:
-            groups[item["display_label"]].append(item)
-        for group in groups.values():
-            if len(group) < 2:
-                continue
-            for order, item in enumerate(sorted(group, key=lambda n: n["id"]), 1):
-                suffix = ""
-                if step == "parent":
-                    suffix = label_phrase(base.get(item.get("parent"), parents.get(item.get("parent"), {}).get("display_label", "")), 18)
-                elif step == "month":
-                    date = str(item.get("date") or "")
-                    suffix = date[:7] if re.match(r"\d{4}-\d{2}", date) else ""
-                else:
-                    suffix = str(order)
-                if suffix:
-                    stem = label_phrase(base[item["id"]], 40 - len(suffix) - 3)
-                    item["display_label"] = f"{stem} · {suffix}"
-    used: set[str] = set()
-    for item in sorted(items, key=lambda n: (n["level"], n["id"])):
-        candidate = item["display_label"]
-        number = 2
-        while candidate in used:
-            suffix = f" · {number}"
-            candidate = f"{label_phrase(base[item['id']], 40 - len(suffix))}{suffix}"
-            number += 1
-        item["display_label"] = candidate
-        used.add(candidate)
+    global_proposals: dict[str, list[dict]] = defaultdict(list)
+    for item in items:
+        if item["level"] == 4:
+            global_proposals[base[item["id"]]].append(item)
+    for group in global_proposals.values():
+        if len(group) < 2:
+            continue
+        parent_names = [base.get(item.get("parent"), parents.get(item.get("parent"), {}).get("display_label", ""))
+                        for item in group]
+        if all(parent_names) and len(set(parent_names)) == len(group):
+            for item, parent_name in zip(group, parent_names):
+                qualifier = shorten_title(parent_name.split(" · ")[0], 18)
+                if normalize(qualifier) != normalize(base[item["id"]]):
+                    stem = shorten_title(base[item["id"]], 40 - len(qualifier) - 3)
+                    candidate = f"{stem} · {qualifier}"
+                    if len(candidate) <= 40:
+                        item["display_label"] = candidate
+    groups: dict[tuple[str | None, str], list[dict]] = defaultdict(list)
+    for item in items:
+        groups[item.get("parent"), item["display_label"]].append(item)
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        # The parent's name is identical for siblings, so it cannot distinguish them.
+        months = {item["id"]: str(item.get("date") or "")[:7] for item in group}
+        distinct_months = all(re.fullmatch(r"\d{4}-\d{2}", m) for m in months.values()) and len(set(months.values())) == len(group)
+        for order, item in enumerate(sorted(group, key=lambda n: n["id"]), 1):
+            suffix = months[item["id"]] if distinct_months else str(order)
+            stem = shorten_title(base[item["id"]], 40 - len(suffix) - 3)
+            item["display_label"] = f"{stem} · {suffix}"
+    by_parent: dict[str | None, list[dict]] = defaultdict(list)
+    for item in items:
+        by_parent[item.get("parent")].append(item)
+    for siblings in by_parent.values():
+        used: set[str] = set()
+        for item in sorted(siblings, key=lambda n: n["id"]):
+            candidate = item["display_label"]
+            number = 2
+            while candidate in used:
+                suffix = f" · {number}"
+                candidate = f"{shorten_title(base[item['id']], 40 - len(suffix))}{suffix}"
+                number += 1
+            item["display_label"] = candidate
+            used.add(candidate)
 
 
 def interim_membership(coverage: Path, inventory: Path, proposals: Path, ledger: Path, stores: Path, out: Path,
@@ -876,8 +939,8 @@ def build(*, stores: Path, inventory: Path, membership: Path, replaced: Path, ca
                 percentile_rank = average_rank / (len(group) - 1) if len(group) > 1 else .5
                 node["size"] = round(.15 + .85 * percentile_rank, 6)
     assign_display_labels(list(nodes.values()), {
-        node["id"]: details[node["id"]]["statement"] if node["level"] == 4 else node["title"]
-        for node in nodes.values()
+        node["id"]: details[node["id"]]["statement"]
+        for node in nodes.values() if node["level"] == 4
     }, nodes)
     passages = [item for item in details.values() if item.get("kind") == "passage"]
     passage_labels = [{"id": item["id"], "level": 5, "parent": item["parent"],

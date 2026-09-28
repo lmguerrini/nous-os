@@ -6,7 +6,7 @@ import io
 import gzip
 import pytest
 
-from nous_os.review_graph import assign_display_labels, build, encoded, label_phrase, short
+from nous_os.review_graph import assign_display_labels, build, encoded, label_phrase, short, shorten_title
 from nous_os.graph_review import serve_graph
 
 
@@ -63,45 +63,77 @@ def test_build_determinism_and_provenance(tmp_path):
     assert any(e["type"] == "classified_in" for e in index["edges"])
     labels = {n["id"]: n["display_label"] for n in index["nodes"]}
     assert labels == {n["id"]: n["display_label"] for n in json.loads((tmp_path / "second/index.json").read_text())["nodes"]}
-    assert first["display_labels"]["rule"] == "d072-display-label/1"
+    assert first["display_labels"]["rule"] == "d072-display-label/2"
     assert first["display_labels"]["map_sha256"] == hashlib.sha256(encoded(labels)).hexdigest()
     assert all(label and len(label) <= 60 for label in labels.values())
     assert all(not label.casefold().startswith(("messaggio del fondatore", "il fondatore", "senza titolo"))
                for label in labels.values())
 
 
-def test_display_label_rules_and_collisions():
-    phrases = [
-        "Messaggio del fondatore: Giardino luminoso e materiali",
-        "Il fondatore propone che Atlasfield usi pietra calda",
-        "The founder says that the garden needs warm stone",
-        "✅ Done: Garden status", "Senza titolo · Giardino luminoso · 09/2026",
-        "«Luminous garden and materials» · Garden · 2026-09-28",
-        "Decision: The garden will use warm stone.", "Open question: What material should we select?",
-        "Requirement: The garden needs a circular pavilion",
-        "Concept: A constellation of lights around the pavilion",
-        "The harbor uses a quiet blue palette", "The workshop stores sketches by theme",
-        "The artist chooses a soft amber light", "A map shows nearby connections",
-        "The archive records each citation", "The room contains three stone tables",
-        "The installation links sound and light", "The design leaves an open question",
-        "The team revises the glass roof", "The proposal describes a public garden",
+def test_title_first_and_formula_fallback():
+    nodes = [
+        {"id": "short", "level": 4, "parent": "conv", "title": "Pietra calda nel giardino", "subkind": "DECISION"},
+        {"id": "long", "level": 4, "parent": "conv", "title": "Materiali luminosi per il giardino nella nuova installazione"},
+        {"id": "empty", "level": 4, "parent": "conv", "title": ""},
+        {"id": "untitled", "level": 4, "parent": "conv", "title": "Senza titolo"},
+        {"id": "excerpt", "level": 4, "parent": "conv", "title": "«Si cerca una pietra…» · giardino"},
+        {"id": "quoted", "level": 4, "parent": "conv", "title": "«Si cerca una pietra» · giardino"},
     ]
-    cleaned = [label_phrase(p) for p in phrases]
-    assert sum(len(p) <= 40 for p in cleaned) >= 19
-    assert all(0 < len(p) <= 60 for p in cleaned)
-    assert all(not p.casefold().startswith(("messaggio del fondatore", "il fondatore", "the founder", "senza titolo")) for p in cleaned)
-    nodes = [{"id": "domain:synthetic", "level": 1, "parent": None, "title": "Synthetic domain"}]
-    nodes += [{"id": f"proposal:{i}", "level": 4, "parent": "domain:synthetic", "subkind": "DECISION",
-               "date": "2026-09-28", "title": "same"} for i in range(4)]
-    source = {n["id"]: "The garden will use warm stone" if n["level"] == 4 else n["title"] for n in nodes}
-    assign_display_labels(nodes, source, {n["id"]: n for n in nodes})
-    assert len({n["display_label"] for n in nodes}) == len(nodes)
-    assert all(len(n["display_label"]) <= 60 for n in nodes)
-    assert all(n["display_label"].startswith("Decisione:") for n in nodes[1:])
-    assert "stone" in nodes[1]["display_label"]
-    question = [{"id": "question", "level": 4, "parent": None, "subkind": "OPEN_QUESTION"}]
-    assign_display_labels(question, {"question": "What material should we select?"}, {})
-    assert question[0]["display_label"].endswith("?")
+    source = {n["id"]: f"Raw statement for {n['id']} about a blue harbor" for n in nodes}
+    assign_display_labels(nodes, source, {})
+    labels = {n["id"]: n["display_label"] for n in nodes}
+    assert labels["short"] == "Pietra calda nel giardino"
+    assert labels["long"] == shorten_title(nodes[1]["title"])
+    assert all("Raw statement" not in labels[key] for key in ("short", "long"))
+    assert all(labels[key].startswith("Raw statement") for key in ("empty", "untitled", "excerpt", "quoted"))
+
+
+@pytest.mark.parametrize(("title", "expected"), [
+    ("Giardino luminoso per Atlasfield", "Giardino luminoso per Atlasfield"),
+    ("Il fondatore approva filtri modulari per Quillmap", "Approva filtri modulari per Quillmap"),
+    ("Messaggio del fondatore: Approva filtri modulari per Quillmap", "Approva filtri modulari per Quillmap"),
+    ("The founder approves modular filters for the Quillmap installation", "Approves modular filters for Quillmap…"),
+    ("Filtri modulari (versione preliminare) per Quillmap", "Filtri modulari per Quillmap"),
+    ("Filtri modulari per Quillmap — versione preliminare", "Filtri modulari per Quillmap"),
+    ("Filtri modulari per Quillmap: versione preliminare", "Filtri modulari per Quillmap"),
+    ("La forma del giardino nella luce della sera", "forma giardino luce sera"),
+    ("CAP-07 e EC-A/B/C/E guidano la revisione dettagliata del giardino luminoso", "CAP-07 e EC-A/B/C/E guidano revisione…"),
+])
+def test_shortening_steps(title, expected):
+    assert shorten_title(title) == expected
+
+
+def test_names_qualifiers_and_sibling_collisions():
+    nodes = [
+        {"id": "domain", "level": 1, "parent": None, "title": "Quillmap"},
+        {"id": "entity", "level": 2, "parent": "domain", "title": "Quillmap · progetto"},
+        {"id": "conv", "level": 3, "parent": "entity", "title": "✅ Done: Giardino luminoso"},
+        *({"id": f"proposal:{i}", "level": 4, "parent": "conv", "title": "Pietra calda nel giardino",
+           "date": "2026-09-28"} for i in range(3)),
+    ]
+    assign_display_labels(nodes, {}, {n["id"]: n for n in nodes})
+    assert [n["display_label"] for n in nodes[:3]] == ["Quillmap", "Quillmap · progetto", "Giardino luminoso"]
+    labels = [n["display_label"] for n in nodes[3:]]
+    assert len(set(labels)) == 3
+    assert all(label.startswith("Pietra calda nel giardino · ") for label in labels)
+    assert all("proposal:" not in label and len(label) <= 40 for label in labels)
+
+
+def test_collision_uses_parent_then_month_when_distinguishing():
+    nodes = [
+        {"id": "north", "level": 3, "parent": "domain", "title": "Giardino nord"},
+        {"id": "south", "level": 3, "parent": "domain", "title": "Giardino sud"},
+        {"id": "across:north", "level": 4, "parent": "north", "title": "Pietra calda"},
+        {"id": "across:south", "level": 4, "parent": "south", "title": "Pietra calda"},
+        {"id": "month:aug", "level": 4, "parent": "north", "title": "Luce soffusa", "date": "2026-08-01"},
+        {"id": "month:sep", "level": 4, "parent": "north", "title": "Luce soffusa", "date": "2026-09-01"},
+    ]
+    assign_display_labels(nodes, {}, {n["id"]: n for n in nodes})
+    labels = {n["id"]: n["display_label"] for n in nodes}
+    assert labels["across:north"] == "Pietra calda · Giardino nord"
+    assert labels["across:south"] == "Pietra calda · Giardino sud"
+    assert labels["month:aug"] == "Luce soffusa · 2026-08"
+    assert labels["month:sep"] == "Luce soffusa · 2026-09"
 
 
 def test_overlay_merge_and_invalid_citation(tmp_path):
