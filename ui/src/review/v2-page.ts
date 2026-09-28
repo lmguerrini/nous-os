@@ -8,6 +8,7 @@ import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
 import { createProductView } from './product-view.ts';
+import { appendFlowLegend } from './legend.ts';
 import type { V2Category } from './palette.ts';
 import type { Axes, ProductView } from './view-contract.ts';
 import type { AppearanceOptions } from '../engine/presentation-options.ts';
@@ -64,6 +65,7 @@ export class V2Page {
     private hoveredEdge: string | null = null;
     private hoverRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     private relationDetail: RelationDetail = 'essential';
+    private flowMotion = true;
     private renderedRelations = new Map<string, LiftedRelation>();
     private previousVisible = new Set<string>();
     private detailCache = new Map<string, Record<string, unknown>>();
@@ -221,7 +223,7 @@ export class V2Page {
             const old = this.view?.readCamera();
             this.view?.destroy();
             this.view = null;
-            this.view = await createProductView({ container: element('render-root'), data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: this.containers as typeof result.containers, visibleNodeIds: ids, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; return { short: n.title + hint, full: n.title_full + hint, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+            this.view = await createProductView({ container: element('render-root'), data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: this.containers as typeof result.containers, visibleNodeIds: ids, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; return { short: n.title + hint, full: n.title_full + hint, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                         if (target.shiftKey && this.selected && this.selected !== target.id) {
                             this.why(this.selected, target.id);
                         }
@@ -467,6 +469,7 @@ export class V2Page {
         (element("fullscreen-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;
     }
     async setAppearance(value: AppearanceOptions) { this.appearance = value; await this.refresh(); }
+    setFlowMotion(enabled: boolean) { this.flowMotion = enabled; this.view?.setFlowMotion(enabled); }
     async setPalette(value: PaletteValues) { this.palette = value; await this.refresh(); }
     async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
     async fit() { this.programmaticCamera(); await this.view?.fit(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
@@ -616,6 +619,7 @@ export class V2Page {
             search.append(button);
         }
         host.append(search);
+        appendFlowLegend(host);
         if (this.selected === ABSOLUTE_CONTAINER_ID) {
             const h = document.createElement('h2'); h.textContent = 'NousOS'; host.append(h);
             line(host, 'Domini', shown.nodes.filter(node => node.level === 1).length);

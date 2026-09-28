@@ -136,6 +136,8 @@ export type ViewInput = {
   readonly events: ViewEvents;
   /** Honour reduced motion: frame without animation. */
   readonly reducedMotion: boolean;
+  /** User-facing motion switch for the exploratory flow; false stops it even without reduced motion. */
+  readonly flowMotion?: boolean;
   readonly appearance?: AppearanceOptions;
   readonly customPalette?: PaletteValues;
 };
@@ -146,6 +148,8 @@ export type ProductView = {
   setVisible(nodeIds: ReadonlySet<string>): Promise<void>;
   setInsets(insets: Insets): void;
   setAppearance(value: AppearanceOptions): Promise<void>;
+  /** Starts or stops the exploratory flow motion without remounting or touching the camera. */
+  setFlowMotion(enabled: boolean): void;
   setPalette(value: PaletteValues): Promise<void>;
   viewPreset(name: ViewPreset): void;
   camera(): { position: number[]; target: number[]; up: number[]; fov: number } | null;

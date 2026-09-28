@@ -1,12 +1,25 @@
 import type { AppearanceOptions, EdgePresentation, NodeGlyph } from "#engine/presentation-options.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
-import type { MorphologyContainerPath, MorphologyGeometry } from "#engine/morphology-geometry.ts";
+import type { MorphologyContainerPath, MorphologyGeometry, MorphologySegment } from "#engine/morphology-geometry.ts";
 import { somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { drawContainers } from "#render-common/container-canvas.ts";
 import { drawStarfield } from "#render-common/starfield.ts";
+import {
+  EDGE_CATEGORY_SET,
+  FLOW_HALO_ALPHA,
+  FLOW_HALO_WIDTH_MULTIPLIER,
+  FLOW_PULSE_WIDTH_MULTIPLIER,
+  FLOW_STATIC_CORE_ALPHA,
+  flowMotionAllowedNow,
+  flowNow,
+  flowPhaseAt,
+  flowPulseAlpha,
+  selectFlowEdges,
+  setFlowAnimatedEdgeCount,
+} from "#render-common/flow.ts";
 
 export type ProjectedPoint = { readonly x: number; readonly y: number; readonly scale: number };
 export const DENSE_SCENE_THRESHOLD = 1200;
@@ -39,49 +52,130 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   if (structureOnly) return;
   const contract = MORPHOLOGY_CONTRACT[geometry.morphology];
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
-  if (!testHook()?.hideEdges) for (const part of geometry.drawnSegments) {
-    const edge = style.edges.get(part.edgeId);
-    const presentation = edge?.presentation;
-    const stroke = presentation?.stroke ?? "solid";
-    const opacity = (presentation?.opacityPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE;
-    const widthFactor = (presentation?.widthPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE;
-    const emphasis = style.interaction?.hoverId === part.edgeId ? contract.hover
-      : style.interaction?.focusIds?.has(part.edgeId) ? contract.focus : null;
-    const color = presentation?.tintSrgb ? tint(presentation.tintSrgb) : edge?.color ?? "rgb(220, 220, 220)";
-    const source = simplified && part.samples.length > 8 ? part.samples.filter((_, i) => i % 4 === 0 || i === part.samples.length - 1) : part.samples;
-    const points = source.map(project);
-    if (points.length < 2) continue;
-    const widthAt = (i: number) => {
-      const t = i / (points.length - 1);
-      const smooth = t * t * (3 - 2 * t);
-      const variation = geometry.morphology === "mycelium" ? 1 + contract.edge.widthVariation * Math.sin(Math.PI * t) ** 2 * Math.cos(t * Math.PI * 4) : 1;
-      return clamp((part.widthStart + (part.widthEnd - part.widthStart) * smooth) * points[i]!.scale * widthFactor * appearance.edgeWidth
-        * (emphasis?.radiusMultiplier ?? 1) * variation, 0.5, 16);
+  if (!testHook()?.hideEdges) {
+    const hoverId = style.interaction?.hoverId;
+    const focusIds = style.interaction?.focusIds;
+    const focusPositions = new Map<string, Coordinates>();
+    if (focusIds) for (const node of geometry.nodes) if (focusIds.has(node.id)) focusPositions.set(node.id, node.position);
+    const sceneExtent = (() => {
+      if (!geometry.nodes.length) return 1;
+      let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      for (const node of geometry.nodes) {
+        minX = Math.min(minX, node.position.x); maxX = Math.max(maxX, node.position.x);
+        minY = Math.min(minY, node.position.y); maxY = Math.max(maxY, node.position.y);
+        minZ = Math.min(minZ, node.position.z); maxZ = Math.max(maxZ, node.position.z);
+      }
+      return Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) || 1;
+    })();
+    const nearFocus = (part: MorphologySegment): boolean => {
+      if (!focusPositions.size) return false;
+      const radius = sceneExtent * 0.22;
+      for (const pos of focusPositions.values()) {
+        const d1 = Math.hypot(part.source.x - pos.x, part.source.y - pos.y, part.source.z - pos.z);
+        const d2 = Math.hypot(part.target.x - pos.x, part.target.y - pos.y, part.target.z - pos.z);
+        if (Math.min(d1, d2) <= radius) return true;
+      }
+      return false;
     };
-    context.fillStyle = rgba(color, Math.max(0.14, opacity * appearance.edgeOpacity * (geometry.morphology === "stellar" ? 0.9 : 1)
-      * (emphasis?.brightnessMultiplier ?? 1)));
-    context.strokeStyle = context.fillStyle;
-    if (stroke !== "solid") {
-      context.lineWidth = widthAt(0);
-      context.lineCap = "round";
-      context.setLineDash(stroke === "dotted" ? [0.1, Math.max(2, context.lineWidth * 2.3)] : [Math.max(3, context.lineWidth * 3.2), Math.max(2, context.lineWidth * 2.1)]);
-      context.beginPath(); context.moveTo(points[0]!.x, points[0]!.y);
-      for (const point of points.slice(1)) context.lineTo(point.x, point.y);
-      context.stroke(); context.setLineDash([]);
-      continue;
+    const withinViewport = (part: MorphologySegment): boolean => {
+      const margin = 12;
+      const a = project(part.source), b = project(part.target);
+      return (a.x >= -margin && a.x <= bounds.width + margin && a.y >= -margin && a.y <= bounds.height + margin)
+        || (b.x >= -margin && b.x <= bounds.width + margin && b.y >= -margin && b.y <= bounds.height + margin);
+    };
+    const candidates = new Map<string, { visible: boolean; priority: number }>();
+    for (const part of geometry.drawnSegments) {
+      if (style.edges.get(part.edgeId)?.presentation?.category !== "exploratory") continue;
+      const selected = hoverId === part.edgeId || (focusIds?.has(part.edgeId) ?? false);
+      const priority = selected ? 0 : nearFocus(part) ? 1 : 2;
+      const visible = withinViewport(part);
+      const current = candidates.get(part.edgeId);
+      if (!current) candidates.set(part.edgeId, { visible, priority });
+      else { current.priority = Math.min(current.priority, priority); current.visible ||= visible; }
     }
-    // A single filled ribbon keeps organic paths continuous across all sample joins and camera angles.
-    const sides = points.map((point, i) => {
-      const before = points[Math.max(0, i - 1)]!, after = points[Math.min(points.length - 1, i + 1)]!;
-      const dx = after.x - before.x, dy = after.y - before.y, length = Math.hypot(dx, dy) || 1;
-      const half = widthAt(i) / 2;
-      return { left: { x: point.x - dy / length * half, y: point.y + dx / length * half },
-        right: { x: point.x + dy / length * half, y: point.y - dx / length * half } };
-    });
-    context.beginPath(); context.moveTo(sides[0]!.left.x, sides[0]!.left.y);
-    for (const side of sides.slice(1)) context.lineTo(side.left.x, side.left.y);
-    for (const side of sides.slice().reverse()) context.lineTo(side.right.x, side.right.y);
-    context.closePath?.(); context.fill();
+    const animatedEdges = selectFlowEdges([...candidates].map(([edgeId, value]) =>
+      ({ edgeId, visible: value.visible, priority: value.priority })));
+    setFlowAnimatedEdgeCount(animatedEdges.size);
+    const animating = flowMotionAllowedNow() && appearance.flowIntensity > 0 && appearance.flowSpeed > 0;
+    const phase = flowPhaseAt(flowNow(), appearance.flowSpeed);
+    const intensity = appearance.flowIntensity;
+
+    const fillRibbon = (points: readonly ProjectedPoint[], widthAt: (i: number) => number): void => {
+      const sides = points.map((point, i) => {
+        const before = points[Math.max(0, i - 1)]!, after = points[Math.min(points.length - 1, i + 1)]!;
+        const dx = after.x - before.x, dy = after.y - before.y, length = Math.hypot(dx, dy) || 1;
+        const half = widthAt(i) / 2;
+        return { left: { x: point.x - dy / length * half, y: point.y + dx / length * half },
+          right: { x: point.x + dy / length * half, y: point.y - dx / length * half } };
+      });
+      context.beginPath(); context.moveTo(sides[0]!.left.x, sides[0]!.left.y);
+      for (const side of sides.slice(1)) context.lineTo(side.left.x, side.left.y);
+      for (const side of sides.slice().reverse()) context.lineTo(side.right.x, side.right.y);
+      context.closePath?.(); context.fill();
+    };
+
+    for (const part of geometry.drawnSegments) {
+      const edge = style.edges.get(part.edgeId);
+      const presentation = edge?.presentation;
+      const category = presentation?.category ?? "attested";
+      if (!EDGE_CATEGORY_SET.has(category)) continue; // no semantics -> not drawn
+      const opacity = (presentation?.opacityPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE;
+      const widthFactor = (presentation?.widthPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE;
+      const emphasis = hoverId === part.edgeId ? contract.hover
+        : focusIds?.has(part.edgeId) ? contract.focus : null;
+      const color = presentation?.tintSrgb ? tint(presentation.tintSrgb) : edge?.color ?? "rgb(220, 220, 220)";
+      const source = simplified && part.samples.length > 8 ? part.samples.filter((_, i) => i % 4 === 0 || i === part.samples.length - 1) : part.samples;
+      const points = source.map(project);
+      if (points.length < 2) continue;
+      const widthAt = (i: number) => {
+        const t = i / (points.length - 1);
+        const smooth = t * t * (3 - 2 * t);
+        const variation = geometry.morphology === "mycelium" ? 1 + contract.edge.widthVariation * Math.sin(Math.PI * t) ** 2 * Math.cos(t * Math.PI * 4) : 1;
+        // Quadratic profile through the start, middle and end widths: Neural tapers from each soma toward mid-edge.
+        const base = (1 - t) * (1 - t) * part.widthStart + 2 * t * (1 - t) * (2 * part.widthMid - (part.widthStart + part.widthEnd) / 2)
+          + t * t * part.widthEnd;
+        const profile = geometry.morphology === "neural" ? Math.max(0.2, base) : part.widthStart + (part.widthEnd - part.widthStart) * smooth;
+        return clamp(profile * points[i]!.scale * widthFactor * appearance.edgeWidth
+          * (emphasis?.radiusMultiplier ?? 1) * variation, 0.5, 16);
+      };
+      const alpha = clamp(Math.max(0.14, opacity * appearance.edgeOpacity * (geometry.morphology === "stellar" ? 0.9 : 1)
+        * (emphasis?.brightnessMultiplier ?? 1)), 0, 1);
+      // Exploratory relations carry a slightly stronger halo, then the flow, over the same continuous base line.
+      if (category === "exploratory") {
+        context.fillStyle = rgba(color, clamp(alpha * FLOW_HALO_ALPHA, 0, 1));
+        fillRibbon(points, (i) => widthAt(i) * FLOW_HALO_WIDTH_MULTIPLIER);
+      }
+      context.fillStyle = rgba(color, alpha);
+      fillRibbon(points, widthAt);
+      if (category === "exploratory") {
+        const previousComposite = context.globalCompositeOperation;
+        context.globalCompositeOperation = "lighter";
+        context.lineCap = "round";
+        context.lineJoin = "round";
+        if (animating && animatedEdges.has(part.edgeId)) {
+          const cumulative = [0];
+          for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1]! + Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y));
+          const total = cumulative[cumulative.length - 1]! || 1;
+          for (let i = 0; i < points.length - 1; i++) {
+            const mid = (cumulative[i]! + cumulative[i + 1]!) / 2;
+            const pulse = flowPulseAlpha(mid / total, phase, intensity);
+            if (pulse <= 0.004) continue;
+            context.strokeStyle = rgba(color, clamp(alpha * pulse, 0, 1));
+            context.lineWidth = widthAt(i + 0.5) * FLOW_PULSE_WIDTH_MULTIPLIER;
+            context.beginPath(); context.moveTo(points[i]!.x, points[i]!.y); context.lineTo(points[i + 1]!.x, points[i + 1]!.y);
+            context.stroke();
+          }
+        } else if (intensity > 0) {
+          // Reduced-motion static fallback: a steady, slightly brighter core with no travel.
+          context.strokeStyle = rgba(color, clamp(alpha * FLOW_STATIC_CORE_ALPHA * intensity, 0, 1));
+          context.lineWidth = Math.max(0.5, widthAt(0) * 0.7);
+          context.beginPath(); context.moveTo(points[0]!.x, points[0]!.y);
+          for (const point of points.slice(1)) context.lineTo(point.x, point.y);
+          context.stroke();
+        }
+        context.globalCompositeOperation = previousComposite;
+      }
+    }
   }
   if (!simplified && geometry.morphology === "mycelium" && !testHook()?.hideEdges) {
     context.fillStyle = rgba("rgb(245, 245, 245)", appearance.edgeOpacity * 0.65);

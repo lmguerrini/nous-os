@@ -13,10 +13,12 @@ export type NodePresentation = {
  * as by colour. `filled` is the engine baseline.
  */
 export type NodeGlyph = "filled" | "ring" | "double-ring" | "hollow";
-/** Line pattern of one relation; attested relations are solid, interpretive ones are never solid. */
-export type EdgeStroke = "solid" | "dashed" | "dotted";
+/** The semantics every drawn relation must carry. `attested` covers deterministic and co-membership
+ * relations, `exploratory` covers interpretive connections, `containment` covers Indra nesting. The
+ * selected/focus state is an emphasis applied on top of one of these, never a fifth line kind. */
+export type EdgeCategory = "attested" | "exploratory" | "containment";
 export type EdgePresentation = {
-  readonly stroke: EdgeStroke;
+  readonly category: EdgeCategory;
   readonly opacityPermille: number;
   readonly widthPermille: number;
   readonly tintSrgb?: readonly [number, number, number];

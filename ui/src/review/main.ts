@@ -6,7 +6,7 @@ import type { Axes, ProductView, ViewWitness } from "./view-contract.ts";
 import { FAMILY_OF, standingOf } from "./presentation.ts";
 import { FocusStack } from "./focus-stack.ts";
 import { renderPanel } from "./panel.ts";
-import { renderLegend } from "./legend.ts";
+import { appendFlowLegend, renderFlowLegend, renderLegend } from "./legend.ts";
 import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
 import type { AppearanceOptions } from "../engine/presentation-options.ts";
 import { APPEARANCE_RANGES, CUSTOM_STORAGE_KEY, applyColour, normalizeAppearance, normalizePalette, readColourPresets, readLocal, saveColourPreset, validHex, writeLocal } from "./appearance.ts";
@@ -58,6 +58,8 @@ let v2Colours = readLocal<Partial<Record<V2Category,string>>>(storage,"d069.v2Co
 let focusMode = false;
 let focusCamera: unknown = null;
 let panelCollapsed = Boolean(readLocal(storage, "d069.panelCollapsed", innerWidth <= 1100));
+/** User-facing motion switch for the exploratory flow; false stops it even without reduced motion. */
+let flowMotion = Boolean(readLocal(storage, "d071.flowMotion", true));
 /** In fullscreen the details panel is a drawer of its own, closed on entry so the canvas gets the whole screen. */
 let fullscreenDrawer = false;
 let visibleIds = new Set<string>();
@@ -214,6 +216,7 @@ function updatePanel() {
   legendSection.append(legend);
   renderLegend(legend, axes.colour, debug, axes.reading);
   details.append(legendSection);
+  appendFlowLegend(details);
 }
 let liveQuery = "";
 async function liveSearch(query: string, limit = 10): Promise<LiveFragment[]> {
@@ -326,6 +329,7 @@ function debugView(graph: ReturnType<typeof filterGraph>): ProductView {
     setVisible: async () => {},
     setInsets: () => {},
     setAppearance: async () => {},
+    setFlowMotion: () => {},
     setPalette: async () => {},
     viewPreset: () => {},
     camera: () => null,
@@ -382,6 +386,7 @@ async function mount() {
         },
       },
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      flowMotion,
     });
   await stack.restore();
   syncFocusPresentation();
@@ -586,6 +591,22 @@ for (const key of Object.keys(APPEARANCE_RANGES) as (keyof AppearanceOptions)[])
 }
 const volumeStats = document.createElement('p'); volumeStats.id = 'volume-stats';
 get<HTMLElement>('appearance-sliders').append(volumeStats);
+const motionRow = document.createElement('label');
+motionRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer';
+const motionInput = document.createElement('input');
+motionInput.type = 'checkbox';
+motionInput.id = 'flow-motion';
+motionInput.checked = flowMotion;
+motionInput.title = 'Attiva o ferma il flusso luminoso sulle connessioni esplorative';
+motionInput.addEventListener('change', () => {
+  flowMotion = motionInput.checked;
+  writeLocal(storage, 'd071.flowMotion', flowMotion);
+  if (v2) v2.setFlowMotion(flowMotion); else view?.setFlowMotion(flowMotion);
+});
+const motionLabel = document.createElement('span');
+motionLabel.textContent = 'Movimento';
+motionRow.append(motionInput, motionLabel);
+get<HTMLElement>('appearance-sliders').append(motionRow);
 function syncPresetList(): void {
   const list = get<HTMLSelectElement>("preset-list");
   const selected = list.value;
@@ -877,6 +898,7 @@ get<HTMLFormElement>("fullscreen-search-form").addEventListener("submit", (event
 syncAppearanceControls();
 syncPresetList();
 syncPanel();
+renderFlowLegend(get<HTMLElement>("fullscreen-legend"));
 axes = { ...axes, colour: paletteName(readLocal(storage, "d069.palette", "bw")) };
 function updateGizmo(): void {
   const pose = v2 ? v2.camera() : view?.camera();
@@ -965,6 +987,7 @@ async function load() {
     const manifest = await probe.json() as GraphManifest;
     if (manifest.schema !== "nousos.review-graph/2") throw new Error("Manifest del grafo non valido");
     v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours);
+    v2.setFlowMotion(flowMotion);
     get<HTMLElement>("v2-controls-top").hidden = false;
     get<HTMLElement>("v2-relation-control").hidden = false;
     get<HTMLElement>("gizmo").hidden = axes.projection !== "3d";

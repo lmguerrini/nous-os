@@ -27,6 +27,13 @@ import type { ReviewCameraState } from "../render3f/camera.tsx";
 import { defaultObliqueOrbit, resolvedNodeBounds } from "../render3f/camera.tsx";
 import { buildContainerGeometry } from "../engine/container-geometry.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
+import {
+  classifyEdgeCategory,
+  flowAnimatedEdgeCount,
+  flowAnimates,
+  setFlowMotionAllowed,
+  setFlowNow,
+} from "#render-common/flow.ts";
 
 /** On-screen radius of an Indra container's own marker; the container ring carries the node. */
 const INDRA_CONTAINER_MARKER_PX = 2.5;
@@ -107,6 +114,32 @@ export const createProductView: CreateProductView = async (input) => {
   let destroyed = false;
   let lastCamera = "";
   let cameraLabelTimer: ReturnType<typeof setTimeout> | undefined;
+  // Luminous flow animation: a single rAF loop that repaints the canvas layer while edges animate,
+  // then stops itself the moment nothing is left to animate.
+  let flowMotion = input.flowMotion ?? true;
+  let flowLoop = { running: false, raf: 0, start: 0, frameCostMs: 0 };
+  const flowTick = (now: number) => {
+    if (destroyed || handle === null) { flowLoop.running = false; return; }
+    const began = performance.now();
+    setFlowNow(now - flowLoop.start);
+    redrawMorphology();
+    flowLoop.frameCostMs = performance.now() - began;
+    if (flowAnimatedEdgeCount() > 0) flowLoop.raf = requestAnimationFrame(flowTick);
+    else { setFlowMotionAllowed(false); flowLoop.running = false; }
+  };
+  const syncFlowLoop = () => {
+    const allowed = flowAnimates({ intensity: appearance.flowIntensity, speed: appearance.flowSpeed, motionEnabled: flowMotion, reducedMotion: input.reducedMotion });
+    setFlowMotionAllowed(allowed);
+    if (allowed && !flowLoop.running) {
+      flowLoop.running = true;
+      flowLoop.start = performance.now();
+      flowLoop.raf = requestAnimationFrame(flowTick);
+    } else if (!allowed && flowLoop.running) {
+      cancelAnimationFrame(flowLoop.raf);
+      flowLoop.running = false;
+      setFlowNow(0);
+    }
+  };
   const cameras = new Map<string, VisualStateCamera>();
   const fitRatio = new Map<string, number>();
   const fullAnchor = (current: Axes) =>
@@ -374,15 +407,17 @@ export const createProductView: CreateProductView = async (input) => {
         const original = edgesById.get(edge.id)!;
         const exploratory = (input.v2Prepared ? original.attested_by : relationClass(original, nodesById)) === "exploratory";
         const relation = original.v2 as import('./v2-relations.ts').LiftedRelation | undefined;
-        const coMembership = input.v2Prepared && relation?.type === 'co_membership';
-        const containment = input.v2Prepared && relation?.type === 'contains';
-        return [edge.id, { stroke: exploratory ? "dashed" as const : "solid" as const,
+        const coMembership = Boolean(input.v2Prepared && relation?.type === 'co_membership');
+        const containment = Boolean(input.v2Prepared && relation?.type === 'contains');
+        const category = classifyEdgeCategory(exploratory, containment);
+        return [edge.id, { category,
           // In Indra 3D the pearls carry the structure; semantic arcs recede so contours and names stay readable.
+          // Width is never the only signal: exploratory reads through its halo and flow, not through extra thickness.
           opacityPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (axes.organization === 'indra' && axes.projection === '3d' && !exploratory ? 0.6 : 1)
-            * (exploratory ? 0.94 : coMembership ? 0.62 : containment ? 0.52 : axes.reading === 'attested' ? 0.68 : 0.36))
+            * (exploratory ? 0.9 : coMembership ? 0.62 : containment ? 0.5 : axes.reading === 'attested' ? 0.68 : 0.36))
             : axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
-          widthPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (coMembership ? Math.min(1.4, (relation?.width ?? 1) * 0.75) : containment ? 0.85 : exploratory ? 1.7 * (relation?.width ?? 1) : 1.2 * (relation?.width ?? 1)))
-            : exploratory ? Math.round(SCENE_PERMILLE_SCALE * 1.2) : SCENE_PERMILLE_SCALE,
+          widthPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE * (coMembership ? Math.min(1.4, (relation?.width ?? 1) * 0.75) : containment ? 0.8 : 1))
+            : SCENE_PERMILLE_SCALE,
           ...(axes.colour === "bw" && input.v2Prepared ? { tintSrgb: [0.64, 0.64, 0.64] as const }
             : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
         }] as const;
@@ -492,6 +527,7 @@ export const createProductView: CreateProductView = async (input) => {
       cameras.set(cameraKey(), handle.readCameraState());
     }
     labelPass();
+    syncFlowLoop();
   }
   function saveCamera() {
     const camera = handle?.readCameraState();
@@ -575,6 +611,16 @@ export const createProductView: CreateProductView = async (input) => {
   container.addEventListener("pointerleave", onLeave);
   mount();
   followCamera();
+  (globalThis as typeof globalThis & { __d071?: unknown }).__d071 = {
+    flow: {
+      // Test/measurement hooks for the browser checks.
+      now: (milliseconds: number) => { setFlowNow(milliseconds); redrawMorphology(); },
+      animatedEdges: () => flowAnimatedEdgeCount(),
+      motionAllowed: () => flowAnimates({ intensity: appearance.flowIntensity, speed: appearance.flowSpeed, motionEnabled: flowMotion, reducedMotion: input.reducedMotion }),
+      frameCostMs: () => flowLoop.frameCostMs,
+      setMotion: (enabled: boolean) => { flowMotion = enabled; syncFlowLoop(); },
+    },
+  };
   async function frameIds(ids: readonly string[], anchorFirst: boolean) {
     // The framing belongs to the renderer mounted now; a remount during the animation must not receive a camera
     // interpolated in another renderer's convention.
@@ -673,6 +719,7 @@ export const createProductView: CreateProductView = async (input) => {
       labelPass();
     },
     async setAppearance(value) { appearance = value; saveCamera(); mount(); },
+    setFlowMotion(enabled) { flowMotion = enabled; syncFlowLoop(); },
     async setPalette(value) { customPalette = value; saveCamera(); mount(); },
     viewPreset(name) { three?.setReviewViewPreset(name); labelPass(); },
     camera() { return three?.readReviewCameraPose() ?? null; },
@@ -747,6 +794,9 @@ export const createProductView: CreateProductView = async (input) => {
     },
     destroy() {
       destroyed = true;
+      if (flowLoop.running) cancelAnimationFrame(flowLoop.raf);
+      flowLoop.running = false;
+      setFlowMotionAllowed(false);
       if (cameraLabelTimer !== undefined) clearTimeout(cameraLabelTimer);
       cancelAnimationFrame(frameId);
       cancelAnimationFrame(hoverFrame);
