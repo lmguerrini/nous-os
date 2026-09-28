@@ -17,7 +17,8 @@ test('D-069 v2 disclosure, search, details, readings and provenance',async({page
   await page.evaluate(id=>(window as any).__d067.select(id),proposal.id);
   await page.waitForTimeout(1000);
   expect((await page.evaluate(()=>(window as any).__d067.disclosure())).visible).toBe(beforeSelection);
-  await expect(page.locator('#details')).toContainText('Enunciato distillato (EN)');
+  await expect(page.locator('#details .selection-card h3', { hasText: 'Sintesi' })).toBeVisible();
+  await expect(page.locator('#details .selection-section', { has: page.locator('h3', { hasText: 'Sintesi' }) }).locator('p')).not.toBeEmpty();
   await page.evaluate(id=>(window as any).__d067.expand(id),proposal.id);
   const withPassages=await page.evaluate(()=>(window as any).__d067.disclosure());expect(withPassages.counts[5]).toBeGreaterThan(0);
   await page.evaluate(()=>(window as any).__d067.undo());expect((await page.evaluate(()=>(window as any).__d067.disclosure())).counts[5]).toBe(0);

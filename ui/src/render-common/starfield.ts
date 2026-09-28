@@ -161,6 +161,15 @@ export const STELLAR_DUST_MAX_PER_CLUSTER = 150;
 /** Drawn alpha per brightness bucket (0 dimmest … 2 brightest), inside the D-072 M1b window
  * 0.25–0.8; the brightest bucket stays a small share so dust never reads as a satellite node. */
 export const STELLAR_DUST_BUCKET_ALPHAS: readonly [number, number, number] = [0.28, 0.5, 0.75];
+/** The default controls retain M1b's designed dust; lower density uses a stable prefix. */
+export function stellarDustFraction(density: number): number {
+  return Math.max(0, Math.min(1, density / 0.25));
+}
+
+/** The default brightness retains M1b's designed alphas. */
+export function stellarDustAlpha(bucket: 0 | 1 | 2, brightness: number): number {
+  return Math.min(1, STELLAR_DUST_BUCKET_ALPHAS[bucket] * (Math.max(0, brightness) / 0.35));
+}
 /** Drawn mote side in CSS px: the M1b window, below the 2 px on-screen floor of the smallest
  * drawn Stellar star core, so no mote can be read as a node. */
 export const STELLAR_DUST_SIZE_PX: readonly [number, number] = [0.6, 1.8];

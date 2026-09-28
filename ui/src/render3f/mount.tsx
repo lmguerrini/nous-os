@@ -187,6 +187,10 @@ export function mount(
   );
   layoutPassCount += suppliedAnchors === undefined ? cameraKindCount() : 0;
   const live = new LiveSceneState(initialScenes, currentState.cameraKind, layoutPassCount);
+  const renderPixelRatio = (scene: Scene, pixelRatio: number): number =>
+    options.presentation?.morphologyLanguage === "distinct" && scene.nodes.length < DENSE_SCENE_THRESHOLD
+      ? 1 : pixelRatio;
+  let currentRenderDpr = renderPixelRatio(live.scene, devicePixelRatio);
   const retainedSceneReferences = new Set<Scene>([initialScenes.orthographic, initialScenes.perspective]);
   const worldFramingSubjects = sceneCameraFramingSubjects(live.scene);
   const rig = new CameraRig(
@@ -223,7 +227,7 @@ export function mount(
     stencil: false,
   });
   renderer.sortObjects = true;
-  renderer.setPixelRatio(devicePixelRatio);
+  renderer.setPixelRatio(currentRenderDpr);
   renderer.setSize(dimensions.width, dimensions.height, false);
   updateField(renderer, live.scene);
 
@@ -315,7 +319,7 @@ export function mount(
       return;
     }
     threeScene.add(world);
-    rig.resize(dimensions.width, dimensions.height, devicePixelRatio);
+    rig.resize(dimensions.width, dimensions.height, renderPixelRatio(live.scene, devicePixelRatio));
     renderFrame();
     requestAnimationFrame(renderWhileFiberConfigures);
   };
@@ -327,7 +331,7 @@ export function mount(
     camera: rig.camera,
     frameloop: "never",
     size: { width: dimensions.width, height: dimensions.height, top: 0, left: 0 },
-    dpr: devicePixelRatio,
+    dpr: renderPixelRatio(live.scene, devicePixelRatio),
     onCreated: () => {
       renderFrame();
     },
@@ -338,7 +342,7 @@ export function mount(
     fiberStore = fiberRoot.render(<WorldLayer world={world} />);
     fiberStore.setState({ camera: rig.camera });
     threeScene.add(world);
-    rig.resize(dimensions.width, dimensions.height, devicePixelRatio);
+    rig.resize(dimensions.width, dimensions.height, renderPixelRatio(live.scene, devicePixelRatio));
     renderFrame();
   });
 
@@ -348,9 +352,13 @@ export function mount(
     }
     const next = containerDimensions(container);
     const nextDevicePixelRatio = requiredDevicePixelRatio();
-    renderer.setPixelRatio(nextDevicePixelRatio);
+    const renderDpr = renderPixelRatio(live.scene, nextDevicePixelRatio);
+    if (renderDpr !== currentRenderDpr) {
+      renderer.setPixelRatio(renderDpr);
+      currentRenderDpr = renderDpr;
+    }
     renderer.setSize(next.width, next.height, false);
-    rig.resize(next.width, next.height, nextDevicePixelRatio);
+    rig.resize(next.width, next.height, renderDpr);
     fiberStore?.setState({
       size: { width: next.width, height: next.height, top: 0, left: 0 },
       viewport: fiberStore.getState().viewport,
@@ -372,6 +380,18 @@ export function mount(
       options.temporalInstant, suppliedAnchors, { ...options.presentation, emphasisIds },
     );
     live.replaceScenes(scenes, suppliedAnchors === undefined ? cameraKindCount() : 0);
+    const nextRenderDpr = renderPixelRatio(live.scene, requiredDevicePixelRatio());
+    if (nextRenderDpr !== currentRenderDpr) {
+      const nextDimensions = containerDimensions(container);
+      renderer.setPixelRatio(nextRenderDpr);
+      renderer.setSize(nextDimensions.width, nextDimensions.height, false);
+      rig.resize(nextDimensions.width, nextDimensions.height, nextRenderDpr);
+      currentRenderDpr = nextRenderDpr;
+    }
+    if (distinct) {
+      filamentResources.mesh.visible = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD;
+      nodeResources.mesh.visible = live.scene.nodes.length >= DENSE_SCENE_THRESHOLD;
+    }
     retainedSceneReferences.clear();
     retainedSceneReferences.add(scenes.orthographic);
     retainedSceneReferences.add(scenes.perspective);

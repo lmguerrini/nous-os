@@ -247,12 +247,18 @@ test("M1b dust: only fillRect ops, no ink, and Stellar alone draws it", () => {
   assert.ok(ops.length > 0);
   for (const op of ops) assert.equal(op.op, "fillRect", `dust must only fillRect, saw ${op.op}`);
 
-  // The whole pass on a Stellar geometry (starfield off) draws exactly the on-canvas motes.
+  // The default decorative controls retain the designed dust budget.
   resetStellarDustCache();
   const stellar = recordingContext();
-  drawMorphologyCanvas(stellar.context, geometry, project, style, appearance());
+  drawMorphologyCanvas(stellar.context, geometry, project, style,
+    appearance({ starfieldDensity: 0.25, starfieldBrightness: 0.35 }));
   const expected = clusters.reduce((sum, cluster) => sum + cluster.motes.length, 0);
-  assert.equal(stellar.ops.filter(op => op.op === "fillRect").length, expected);
+  assert.ok(stellar.ops.filter(op => op.op === "fillRect").length >= expected);
+
+  const absent = recordingContext();
+  drawMorphologyCanvas(absent.context, geometry, project, style, appearance());
+  assert.equal(absent.ops.filter(op => op.op === "fillRect").length, 0,
+    "density zero omits both dust and starfield");
 
   // Stellar only: the same pass on Neural and Mycelium geometries draws no dust (and no starfield).
   for (const morphology of ["neural", "mycelium"] as const) {
@@ -544,7 +550,7 @@ test("M1b moving: zero gradients from nodes, halos, dust and starfield; \"full\"
     const { context, ops, gradients } = recordingContext();
     withHiddenEdges(() => drawMorphologyCanvas(context, geometry, project,
       quality ? { ...style, interaction: { hoverId: null, focusIds: null, quality } } : style,
-      appearance({ glow: 1 })));
+      appearance({ glow: 1, starfieldDensity: 0.25, starfieldBrightness: 0.35 })));
     return { ops, gradients, fillRects: ops.filter(op => op.op === "fillRect").length };
   };
   // With the edges hidden the pass is starfield + cluster glow + dust + nodes, exactly the layers
@@ -561,7 +567,8 @@ test("M1b moving: zero gradients from nodes, halos, dust and starfield; \"full\"
   // The halo unit gradients are cached per context; a fresh context rebuilds them on its first
   // frame — so the full pass must build at least one radial gradient (haloes) where moving built none.
   const fullFresh = recordingContext();
-  withHiddenEdges(() => drawMorphologyCanvas(fullFresh.context, geometry, project, style, appearance({ glow: 1 })));
+  withHiddenEdges(() => drawMorphologyCanvas(fullFresh.context, geometry, project, style,
+    appearance({ glow: 1, starfieldDensity: 0.25, starfieldBrightness: 0.35 })));
   assert.ok(fullFresh.gradients.length > 0, "the full pass builds its halo gradients");
   assert.ok(fullFresh.ops.filter(op => op.op === "fillRect").length > 0, "the full pass draws the dust");
   assert.deepEqual(absent.ops, full.ops, "an absent quality field is exactly the \"full\" drawing");

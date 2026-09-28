@@ -8,7 +8,7 @@ import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
 import type { CanvasDisc } from "#render-common/container-canvas.ts";
-import { STELLAR_DUST_BUCKET_ALPHAS, cachedStellarDustClusters, drawStarfield } from "#render-common/starfield.ts";
+import { STELLAR_DUST_BUCKET_ALPHAS, cachedStellarDustClusters, drawStarfield, stellarDustAlpha, stellarDustFraction } from "#render-common/starfield.ts";
 import type { StellarDustCluster } from "#render-common/starfield.ts";
 import {
   EDGE_CATEGORY_SET,
@@ -389,12 +389,16 @@ export function stellarArcClasses(geometry: MorphologyGeometry): ReadonlyMap<str
  */
 export function drawStellarDust(context: CanvasRenderingContext2D, clusters: readonly StellarDustCluster[],
   project: (point: Coordinates) => ProjectedPoint, nodeColour: (hubId: string) => string | undefined,
-  width: number, height: number): void {
+  width: number, height: number, density = 0.25, brightness = 0.35): void {
+  const fraction = stellarDustFraction(density);
+  if (fraction === 0 || brightness <= 0) return;
   for (const cluster of clusters) {
     const colour = nodeColour(cluster.hubId) ?? STELLAR_DUST_FALLBACK_COLOUR;
     for (let bucket = 0; bucket < STELLAR_DUST_BUCKET_ALPHAS.length; bucket += 1) {
-      context.fillStyle = rgba(colour, STELLAR_DUST_BUCKET_ALPHAS[bucket]!);
-      for (const mote of cluster.motes) {
+      context.fillStyle = rgba(colour, stellarDustAlpha(bucket as 0 | 1 | 2, brightness));
+      const count = Math.floor(cluster.motes.length * fraction);
+      for (let index = 0; index < count; index += 1) {
+        const mote = cluster.motes[index]!;
         if (mote.bucket !== bucket) continue;
         const p = project(mote.position);
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
@@ -1079,12 +1083,14 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   // the cluster reads as a mass; then the satellite dust around each hub. Stellar only; both are
   // skipped by the single-node test view and by the moving frame. Never data: no identifier, no
   // label, no witness, no hit-test surface (see starfield.ts).
-  if (geometry.morphology === "stellar" && !testHook()?.onlyNodeId && !moving) {
+  if (geometry.morphology === "stellar" && !testHook()?.onlyNodeId && !moving
+    && appearance.starfieldDensity > 0 && appearance.starfieldBrightness > 0) {
     const clusters = cachedStellarDustClusters(geometry);
     drawStellarClusterGlow(context, clusters, project,
       hubId => style.nodes.get(hubId)?.color, bounds.width, bounds.height);
     drawStellarDust(context, clusters, project,
-      hubId => style.nodes.get(hubId)?.color, bounds.width, bounds.height);
+      hubId => style.nodes.get(hubId)?.color, bounds.width, bounds.height,
+      appearance.starfieldDensity, appearance.starfieldBrightness);
   }
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
   // D-072 V5: the drawn soma frames exist before the dendrites, so the junction pass and the node

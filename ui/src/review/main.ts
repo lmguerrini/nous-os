@@ -25,6 +25,7 @@ import { LiveGraph } from "./live-graph.ts";
 import type { LiveFragment } from "./live-graph.ts";
 import { V2Page } from "./v2-page.ts";
 import { bindSurfaces } from "./popover.ts";
+import { mountPerformanceOverlay } from "./perf-overlay.ts";
 import type { PopoverStack, SurfaceBinding } from "./popover.ts";
 import type { GraphManifest } from "./graph-v2.ts";
 import { normalizeDensity } from "./lod.ts";
@@ -934,9 +935,10 @@ const surfaceBindings: SurfaceBinding[] = [
 ];
 const performanceSurface = document.getElementById("performance-overlay");
 const performanceOpener = document.getElementById("performance-toggle");
+const performanceOverlay = performanceSurface ? mountPerformanceOverlay(performanceSurface, viewport) : null;
 if (performanceSurface && performanceOpener) surfaceBindings.push({ id: "performance", surface: performanceSurface,
   openers: [performanceOpener], readOpen: () => !performanceSurface.hidden,
-  writeOpen: open => { performanceSurface.hidden = !open; } });
+  writeOpen: open => { performanceSurface.hidden = !open; performanceOverlay?.setOpen(open); } });
 surfaceStack = bindSurfaces(surfaceBindings);
 surfaceStack.subscribe(() => requestAnimationFrame(updateInsets));
 document.addEventListener("keydown", (event) => {
