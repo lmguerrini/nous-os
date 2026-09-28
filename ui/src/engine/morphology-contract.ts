@@ -14,10 +14,14 @@ export type MorphologyGeometryContract = {
 
 export const MORPHOLOGY_CONTRACT: Readonly<Record<Morphology, MorphologyGeometryContract>> = {
   stellar: {
+    // D-072 M1b: `maxRadiusPx` stays the importance window the layout sizes nodes into (and the
+    // basis the pickers' radius mirrors); the canvas layer compresses it to the star core window
+    // 2–6 px (8 for domain hubs) at draw time — see `stellarStarCoreRadiusPx`.
     node: { shape: "sphere", scale: 1, maxRadiusPx: 12, brightness: [0.62, 1] },
-    // D-072 V4: the halo stays a short soft glow around a nearly opaque core (≤ 1.6× the core),
-    // never the big transparent disc the user read at 1.8×.
-    glow: { maximumCoreRatio: 1.6, strength: 0.18 },
+    // D-072 V4/M1b: the halo is a short soft glow around the small, nearly opaque star core
+    // (≤ 1.6× the core). The strength rose with M1b: a 2–6 px core needs a firmer glow to read as
+    // a star, still far under any big transparent disc.
+    glow: { maximumCoreRatio: 1.6, strength: 0.24 },
     edge: { path: "straight", amplitude: [0, 0], periods: [0, 0], taper: [1, 1], widthVariation: 0 },
     branching: "individual", terminals: "point",
     hover: { radiusMultiplier: 1.2, brightnessMultiplier: 1.2 }, focus: { radiusMultiplier: 1.3, brightnessMultiplier: 1.3 },

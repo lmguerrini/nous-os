@@ -9,6 +9,7 @@ import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
 import type { CanvasDisc } from "#render-common/container-canvas.ts";
 import { STELLAR_DUST_BUCKET_ALPHAS, cachedStellarDustClusters, drawStarfield } from "#render-common/starfield.ts";
+import type { StellarDustCluster } from "#render-common/starfield.ts";
 import {
   EDGE_CATEGORY_SET,
   FLOW_HALO_ALPHA,
@@ -29,6 +30,12 @@ export const DENSE_SCENE_THRESHOLD = 1200;
 export type MorphologyCanvasStyle = {
   readonly fieldColor: string;
   readonly interaction?: { readonly hoverId: string | null; readonly focusIds: ReadonlySet<string> | null; readonly labelDiscs?: readonly CanvasDisc[] | null;
+    /** D-072 M1b: the containers already honour this field (I1). `"moving"` is the reduced frame
+     * while the camera rotates, pans or zooms: nodes draw as solid fills (no radial gradients,
+     * halos, glints or rim strokes), the Stellar dust, cluster glow and starfield are skipped, and
+     * Neural dendrites stroke one simple polyline at their mid width. The flow layer is untouched:
+     * its owner (P1) decides what it draws. `"full"` (absence) is the complete, exact drawing. */
+    readonly quality?: "full" | "moving";
     /** D-072 V13: `"separate"` makes this pass skip the travelling flow highlights because a small
      * dedicated overlay draws them alone via {@link drawFlowLayer}; `"inline"` (absence) keeps
      * today's behaviour of drawing them in this pass. */
@@ -279,15 +286,73 @@ export function morphologyCoreAlphaFloor(morphology: Morphology): number {
   return morphology === "stellar" ? STELLAR_CORE_MIN_ALPHA : morphology === "neural" ? NEURAL_SOMA_MIN_ALPHA : 0.48;
 }
 
-/** D-072 V4: intra-community Stellar arcs read thin and discreet; the inter-community bridges keep
- * the full presentation values, so they stand out without any invented semantics of their own. */
-export const STELLAR_INTRA_ALPHA_FACTOR = 0.6;
-export const STELLAR_INTRA_WIDTH_FACTOR = 0.7;
-/** D-072 V4 (Stellar Indra 3D): smaller nodes and reference-like thin arcs, so pearls never read
- * as big transparent discs while the Indra spheres stay readable. */
-export const STELLAR_INDRA_NODE_SCALE = 0.72;
-export const STELLAR_INDRA_EDGE_WIDTH = 0.75;
-export const STELLAR_INDRA_EDGE_ALPHA = 0.85;
+// ---------------------------------------------------------------- D-072 M1b star grammar
+//
+// A Stellar data node draws as a star of the plexus reference: a small, bright, nearly
+// opaque core whose size still follows the importance scale (the contract's 2–12 px window the
+// layout sizes into), compressed at draw time into the 2–6 px star window — up to 8 px where the
+// node's degree marks it a domain hub. The pick radius is untouched: the pickers size from the
+// same pre-mapping basis (`radiusPx`/`node.radius`), so clicking never gets harder.
+
+/** Drawn core radius of a regular star, in CSS px: the importance scale compresses into this window. */
+export const STELLAR_STAR_CORE_MIN_PX = 2;
+export const STELLAR_STAR_CORE_MAX_PX = 6;
+/** The window grows toward this cap as the node's degree marks it a domain hub. */
+export const STELLAR_STAR_HUB_MAX_PX = 8;
+/** Degree at which the hub window starts growing, and at which it reaches the full 8 px. */
+export const STELLAR_STAR_HUB_DEGREE = 8;
+export const STELLAR_STAR_HUB_FULL_DEGREE = 14;
+
+/** The star-core window of one degree: 6 px up to {@link STELLAR_STAR_HUB_DEGREE}, then a linear
+ * rise to 8 px at {@link STELLAR_STAR_HUB_FULL_DEGREE}. Pure, monotone in the degree. */
+export function stellarStarCapRadiusPx(degree: number): number {
+  const rise = clamp((degree - STELLAR_STAR_HUB_DEGREE) / (STELLAR_STAR_HUB_FULL_DEGREE - STELLAR_STAR_HUB_DEGREE), 0, 1);
+  return STELLAR_STAR_CORE_MAX_PX + (STELLAR_STAR_HUB_MAX_PX - STELLAR_STAR_CORE_MAX_PX) * rise;
+}
+
+/**
+ * The drawn core radius of one Stellar star: the pre-mapping on-screen radius (the importance
+ * basis, clamped to the contract's node window) compressed into the star window of this node's
+ * degree, through a square root so the scale stays perceptual. Pure, monotone in the basis, and
+ * never above it — the drawn star never outgrows the disc the pickers size from the same basis,
+ * so clicking never gets harder.
+ */
+export function stellarStarCoreRadiusPx(baseRadiusPx: number, degree: number): number {
+  const max = MORPHOLOGY_CONTRACT.stellar.node.maxRadiusPx;
+  const basis = clamp(baseRadiusPx, STELLAR_STAR_CORE_MIN_PX, max);
+  const reach = (basis - STELLAR_STAR_CORE_MIN_PX) / (max - STELLAR_STAR_CORE_MIN_PX);
+  const cap = stellarStarCapRadiusPx(degree);
+  return Math.min(basis, STELLAR_STAR_CORE_MIN_PX + (cap - STELLAR_STAR_CORE_MIN_PX) * Math.sqrt(reach));
+}
+
+/** D-072 M1b arc windows (CSS px): intra-community arcs thin and discreet, inter-community
+ * bridges slightly stronger, as the reference reads. The presentation's own width/opacity factors
+ * modulate inside the window; the categories and exploratory styling are untouched. */
+export const STELLAR_ARC_INTRA_WIDTH_PX: readonly [number, number] = [0.6, 0.9];
+export const STELLAR_ARC_BRIDGE_WIDTH_PX: readonly [number, number] = [1.0, 1.3];
+/** A geometry without declared communities has no classes: a middle window, no invented semantics. */
+export const STELLAR_ARC_UNCLASSIFIED_WIDTH_PX: readonly [number, number] = [0.7, 1.1];
+/** Base alpha windows: intra arcs faint, bridges near 0.5. Emphasis (hover/focus) may exceed. */
+export const STELLAR_ARC_INTRA_ALPHA: readonly [number, number] = [0.2, 0.35];
+export const STELLAR_ARC_BRIDGE_ALPHA: readonly [number, number] = [0.35, 0.55];
+export const STELLAR_ARC_UNCLASSIFIED_ALPHA: readonly [number, number] = [0.25, 0.45];
+
+const stellarArcWindow = (arcClass: "intra" | "bridge" | undefined, windows: readonly (readonly [number, number])[]) =>
+  arcClass === "intra" ? windows[0]! : arcClass === "bridge" ? windows[1]! : windows[2]!;
+
+/** The drawn width of one Stellar arc: the data width times the live factors, held inside its
+ * class window. Pure. */
+export function stellarArcWidthPx(arcClass: "intra" | "bridge" | undefined, factor: number): number {
+  const [low, high] = stellarArcWindow(arcClass, [STELLAR_ARC_INTRA_WIDTH_PX, STELLAR_ARC_BRIDGE_WIDTH_PX, STELLAR_ARC_UNCLASSIFIED_WIDTH_PX]);
+  return clamp(factor, low, high);
+}
+
+/** The constant base alpha of one Stellar arc: the data opacity mapped into its class window
+ * (emphasis applies on top, outside this function). Pure. */
+export function stellarArcAlpha(arcClass: "intra" | "bridge" | undefined, factor: number): number {
+  const [low, high] = stellarArcWindow(arcClass, [STELLAR_ARC_INTRA_ALPHA, STELLAR_ARC_BRIDGE_ALPHA, STELLAR_ARC_UNCLASSIFIED_ALPHA]);
+  return low + (high - low) * clamp(factor, 0, 1);
+}
 
 const stellarArcClassCache = new WeakMap<MorphologyGeometry, ReadonlyMap<string, "intra" | "bridge"> | null>();
 /**
@@ -319,12 +384,11 @@ export function stellarArcClasses(geometry: MorphologyGeometry): ReadonlyMap<str
 /**
  * The decorative Stellar dust of a whole geometry, drawn beneath every arc and pearl: small
  * satellite stars around each declared community's hub (see starfield.ts for generation, budget
- * and the no-identifier rule). Pure wrapper over the per-geometry memo.
+ * and the no-identifier rule). Pure wrapper over the per-geometry memo. Only `fillRect` ops, three
+ * per cluster at most (one bucket colour at a time): no per-mote gradients, paths or labels.
  */
-export function drawStellarDust(context: CanvasRenderingContext2D, clusters: readonly {
-  readonly colonyId: string; readonly hubId: string;
-  readonly motes: readonly { readonly position: Coordinates; readonly size: number; readonly bucket: 0 | 1 | 2 }[];
-}[], project: (point: Coordinates) => ProjectedPoint, nodeColour: (hubId: string) => string | undefined,
+export function drawStellarDust(context: CanvasRenderingContext2D, clusters: readonly StellarDustCluster[],
+  project: (point: Coordinates) => ProjectedPoint, nodeColour: (hubId: string) => string | undefined,
   width: number, height: number): void {
   for (const cluster of clusters) {
     const colour = nodeColour(cluster.hubId) ?? STELLAR_DUST_FALLBACK_COLOUR;
@@ -335,12 +399,58 @@ export function drawStellarDust(context: CanvasRenderingContext2D, clusters: rea
         const p = project(mote.position);
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
         if (p.x < -2 || p.x > width + 2 || p.y < -2 || p.y > height + 2) continue;
-        context.fillRect?.(p.x, p.y, mote.size, mote.size);
+        context.fillRect?.(p.x - mote.size / 2, p.y - mote.size / 2, mote.size, mote.size);
       }
     }
   }
 }
 const STELLAR_DUST_FALLBACK_COLOUR = "rgb(226, 230, 238)";
+
+/** D-072 M1b: the peak centre alpha of the per-community cluster glow. ≤ 0.06 by brief; one cached
+ * radial sprite per (colour, alpha) serves every community, composed under translate + scale. */
+export const STELLAR_CLUSTER_GLOW_ALPHA = 0.05;
+/** A community smaller than this on screen reads through its stars and dust alone: no glow disc. */
+export const STELLAR_CLUSTER_GLOW_MIN_RADIUS_PX = 12;
+
+/**
+ * The optional, subtle cluster mass (D-072 M1b): one very faint large radial glow per community,
+ * beneath the dust, so a cluster reads as gathered brightness rather than scattered points. One
+ * cached unit gradient per (colour, quantised alpha) — one composed fill per community per frame,
+ * deterministic, never data (no identifier leaves the decorative layer).
+ */
+export function drawStellarClusterGlow(context: CanvasRenderingContext2D, clusters: readonly StellarDustCluster[],
+  project: (point: Coordinates) => ProjectedPoint, nodeColour: (hubId: string) => string | undefined,
+  width: number, height: number): void {
+  const canTransform = canComposeTransform(context);
+  for (const cluster of clusters) {
+    const centre = project(cluster.center);
+    if (!Number.isFinite(centre.x) || !Number.isFinite(centre.y)) continue;
+    const rim = project({ x: cluster.center.x + cluster.radius, y: cluster.center.y, z: cluster.center.z });
+    const radius = Math.hypot(rim.x - centre.x, rim.y - centre.y);
+    if (!(radius >= STELLAR_CLUSTER_GLOW_MIN_RADIUS_PX)) continue;
+    if (centre.x + radius < 0 || centre.x - radius > width || centre.y + radius < 0 || centre.y - radius > height) continue;
+    const colour = nodeColour(cluster.hubId) ?? STELLAR_DUST_FALLBACK_COLOUR;
+    const channels = colourChannels(colour);
+    const alpha = quantisedAlpha(STELLAR_CLUSTER_GLOW_ALPHA);
+    const stops = [
+      { offset: 0, colour: rgbaChannels(channels, alpha) },
+      { offset: 0.55, colour: rgbaChannels(channels, alpha * 0.35) },
+      { offset: 1, colour: rgbaChannels(channels, 0) },
+    ];
+    const unit = canTransform ? cachedUnitRadial(context, `cluster-glow\u0000${colour}\u0000${alpha}`, 0, 0, 0, 1, stops) : null;
+    if (unit) {
+      fillUnitGradient(context, unit, centre.x, centre.y, radius);
+    } else if (typeof context.createRadialGradient === "function") {
+      const gradient = context.createRadialGradient(centre.x, centre.y, 0, centre.x, centre.y, radius);
+      for (const stop of stops) gradient.addColorStop(stop.offset, stop.colour);
+      context.fillStyle = gradient;
+      context.beginPath(); context.arc(centre.x, centre.y, radius, 0, Math.PI * 2); context.fill();
+    } else {
+      context.fillStyle = rgbaChannels(channels, alpha * 0.5);
+      context.beginPath(); context.arc(centre.x, centre.y, radius, 0, Math.PI * 2); context.fill();
+    }
+  }
+}
 
 /** D-072 V5: every Neural edge overlaps the drawn soma outline by about this much, so the dendrite
  * and the soma read as one body with no suspended-egg gap. */
@@ -648,11 +758,11 @@ function fillUnitGradient(
 
 /** The pearl and soma discs the node pass below draws, with exactly its radii: container titles avoid
  * them, so a name is never covered by a pearl. A neural soma is elongated along its axis, so its
- * disc carries the eccentricity. `nodeScaleFactor` carries the Stellar Indra 3D node reduction so
- * the discs reserve what is actually drawn. */
+ * disc carries the eccentricity. A Stellar star draws its compressed core radius (M1b), so titles
+ * approach the small star, not the old big disc. */
 function pearlDiscsFor(geometry: MorphologyGeometry, style: MorphologyCanvasStyle,
   project: (point: Coordinates) => ProjectedPoint, contract: (typeof MORPHOLOGY_CONTRACT)[keyof typeof MORPHOLOGY_CONTRACT],
-  appearance: AppearanceOptions, nodeScaleFactor: number): CanvasDisc[] {
+  appearance: AppearanceOptions): CanvasDisc[] {
   const discs: CanvasDisc[] = [];
   for (const node of geometry.nodes) {
     if (testHook()?.onlyNodeId && testHook()?.onlyNodeId !== node.id) continue;
@@ -662,12 +772,13 @@ function pearlDiscsFor(geometry: MorphologyGeometry, style: MorphologyCanvasStyl
     const emphasis = style.interaction?.hoverId === node.id ? contract.hover
       : style.interaction?.focusIds?.has(node.id) ? contract.focus : null;
     const given = visual?.radiusPx ?? node.radius * appearance.nodeScale;
-    const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1) * nodeScaleFactor,
+    const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
       geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+    const drawn = geometry.morphology === "stellar" ? stellarStarCoreRadiusPx(radius, node.degree) : radius;
     const elongation = geometry.morphology === "neural"
       ? somaDrawnElongation(Math.max(1, node.eccentricity ?? 1), node.outline ?? [])
       : 1;
-    discs.push({ x: p.x, y: p.y, radius: radius * elongation });
+    discs.push({ x: p.x, y: p.y, radius: drawn * elongation });
   }
   return discs;
 }
@@ -747,12 +858,11 @@ export function selectAnimatedFlowEdges(geometry: MorphologyGeometry, style: Mor
 function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasStyle,
   project: (point: Coordinates) => ProjectedPoint, appearance: AppearanceOptions,
   contract: (typeof MORPHOLOGY_CONTRACT)[keyof typeof MORPHOLOGY_CONTRACT], projection: "2d" | "3d",
-  indra3d: boolean, somaFrames: ReadonlyMap<string, NeuralSomaFrame> | null): MorphologyEdgePaint[] {
+  somaFrames: ReadonlyMap<string, NeuralSomaFrame> | null): MorphologyEdgePaint[] {
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
   const neuralDegrees = geometry.morphology === "neural" ? neuralEndpointDegrees(geometry) : null;
   const endpointSomata = somaFrames ? neuralEndpointSomata(geometry) : null;
   const stellarArcs = geometry.morphology === "stellar" ? stellarArcClasses(geometry) : null;
-  const stellarIndra = geometry.morphology === "stellar" && indra3d;
   const paints: MorphologyEdgePaint[] = [];
   for (const part of geometry.drawnSegments) {
     const edge = style.edges.get(part.edgeId);
@@ -761,9 +871,7 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     if (!EDGE_CATEGORY_SET.has(category)) continue; // no semantics -> not drawn
     const opacity = (presentation?.opacityPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE;
     const arcClass = stellarArcs?.get(part.edgeId);
-    const widthFactor = (presentation?.widthPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE
-      * (arcClass === "intra" ? STELLAR_INTRA_WIDTH_FACTOR : 1)
-      * (stellarIndra ? STELLAR_INDRA_EDGE_WIDTH : 1);
+    const widthFactor = (presentation?.widthPermille ?? SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE;
     const emphasis = style.interaction?.hoverId === part.edgeId ? contract.hover
       : style.interaction?.focusIds?.has(part.edgeId) ? contract.focus : null;
     const color = presentation?.tintSrgb ? tint(presentation.tintSrgb) : edge?.color ?? "rgb(220, 220, 220)";
@@ -808,6 +916,12 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
       // Fractional sample positions (the flow pulse asks for midpoints) read the nearest projected scale.
       const scaleAt = points[Math.min(points.length - 1, Math.max(0, Math.round(i)))]!.scale;
       const factors = scaleAt * widthFactor * appearance.edgeWidth * (emphasis?.radiusMultiplier ?? 1) * variation;
+      if (stellarArcs) {
+        // D-072 M1b: the reference's arc grammar — intra arcs thin and discreet, bridges slightly
+        // stronger; the data's own width modulates inside the class window (2D and 3D the same).
+        const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
+        return stellarArcWidthPx(arcClass, profile * factors);
+      }
       if (neuralTaper) {
         // Quadratic through the three keyframes: the mid width keeps a visible on-screen floor,
         // each soma end keeps the contract ratio above it, and the cap leaves room for the ratio.
@@ -822,11 +936,13 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
       return clamp(profile * factors, 0.5, 16);
     };
     // D-072 V13: the base alpha of a line is constant across frames — presentation-derived factors
-    // only. The Stellar community modulation dims intra-cluster arcs; bridges keep the presented
-    // value, and the Indra 3D arcs thin further toward the reference's faintness.
-    const alpha = clamp(Math.max(0.14, opacity * appearance.edgeOpacity
-      * (geometry.morphology === "stellar" ? 0.9 * (arcClass === "intra" ? STELLAR_INTRA_ALPHA_FACTOR : 1) * (stellarIndra ? STELLAR_INDRA_EDGE_ALPHA : 1) : 1)
-      * (emphasis?.brightnessMultiplier ?? 1)), 0, 1);
+    // only. D-072 M1b: a Stellar arc's base alpha is its class window (intra faint, bridges near
+    // 0.5), the presentation's opacity mapping inside it; emphasis may push above the window.
+    const alpha = clamp(
+      (stellarArcs
+        ? stellarArcAlpha(arcClass, opacity * appearance.edgeOpacity) * (emphasis?.brightnessMultiplier ?? 1)
+        : Math.max(0.14, opacity * appearance.edgeOpacity * (emphasis?.brightnessMultiplier ?? 1))),
+      0, 1);
     const cumulative: number[] = [0];
     for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1]! + Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y));
     paints.push({ part, edgeId: part.edgeId, category, points, cumulative, totalPx: cumulative[cumulative.length - 1]! || 1, color, alpha, widthAt });
@@ -835,9 +951,12 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
 }
 
 /** The exploratory halo ribbon and the constant base ribbon of one paint (D-071 G11 root fade kept:
- * within the first pixels of a high-degree soma the dendrite also loses a little alpha). */
+ * within the first pixels of a high-degree soma the dendrite also loses a little alpha). With
+ * `simple` (the `moving` frame of a neural geometry) the base is one stroked polyline at the mid
+ * width — no taper keyframes, no root-fade gradient — while the exploratory halo ribbon above it
+ * keeps the exploratory line recognisable. */
 function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
-  rootFadeStart: number, rootFadeEnd: number, gradientCapable: boolean): void {
+  rootFadeStart: number, rootFadeEnd: number, gradientCapable: boolean, simple = false): void {
   const { points, color, alpha } = paint;
   const chordPx = Math.hypot(points[points.length - 1]!.x - points[0]!.x, points[points.length - 1]!.y - points[0]!.y);
   const rootFadedFill = (edgeAlpha: number): string | CanvasGradient => {
@@ -868,6 +987,16 @@ function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePa
   if (paint.category === "exploratory") {
     context.fillStyle = rootFadedFill(clamp(paint.alpha * FLOW_HALO_ALPHA, 0, 1));
     fillRibbon((i) => paint.widthAt(i) * FLOW_HALO_WIDTH_MULTIPLIER);
+  }
+  if (simple) {
+    // One polyline stroke at the dendrite's mid width: the moving frame's cheap neural base.
+    context.strokeStyle = rgba(color, alpha);
+    context.lineWidth = paint.widthAt((points.length - 1) / 2);
+    context.beginPath();
+    context.moveTo(points[0]!.x, points[0]!.y);
+    for (const point of points.slice(1)) context.lineTo(point.x, point.y);
+    context.stroke();
+    return;
   }
   context.fillStyle = rootFadedFill(paint.alpha);
   fillRibbon(paint.widthAt);
@@ -920,19 +1049,21 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   const canvas = context.canvas;
   const bounds = canvas.getBoundingClientRect();
   if (bounds.width === 0 || bounds.height === 0) return;
+  // D-072 M1b: the reduced frame while the camera moves — solid node fills, no decorative layers,
+  // simple neural dendrites. The flow drawing is untouched: its owner decides what it draws.
+  const moving = style.interaction?.quality === "moving";
   context.setTransform(canvas.width / bounds.width, 0, 0, canvas.height / bounds.height, 0, 0);
   context.clearRect(0, 0, bounds.width, bounds.height);
-  if (geometry.morphology === "stellar") drawStarfield(context, bounds.width, bounds.height, appearance.starfieldDensity, appearance.starfieldBrightness);
+  if (geometry.morphology === "stellar" && !moving) drawStarfield(context, bounds.width, bounds.height, appearance.starfieldDensity, appearance.starfieldBrightness);
   const contract = MORPHOLOGY_CONTRACT[geometry.morphology];
   // Indra 3D pearls read as glass spheres: soft spherical shading and a small highlight. Flat 3D and
-  // the 2D view keep their flat node discs. In Stellar Indra 3D the nodes also shrink (D-072 V4) so
-  // pearls never read as big transparent discs while the Indra spheres stay readable.
+  // the 2D view keep their flat node discs. A Stellar pearl is a star everywhere (M1b): the same
+  // small core in 2D, 3D, Flat and Indra, so no pearl reads as a big transparent disc.
   const indra3d = projection === "3d" && containers.length > 0;
-  const stellarIndraNodeScale = geometry.morphology === "stellar" && indra3d ? STELLAR_INDRA_NODE_SCALE : 1;
   // The disc set the titles avoid: the review label pass's shared set when present, otherwise the
   // pearls about to be drawn — built lazily so a shared label set skips that whole pass.
   const sharedDiscs = style.interaction?.labelDiscs;
-  const pearlDiscs = sharedDiscs ? null : pearlDiscsFor(geometry, style, project, contract, appearance, stellarIndraNodeScale);
+  const pearlDiscs = sharedDiscs ? null : pearlDiscsFor(geometry, style, project, contract, appearance);
   // One projection → limb-radius memo per frame keeps each sphere's outline geometry single-pass.
   const frameCache = createContainerFrameCache();
   drawContainers(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, frameCache);
@@ -944,11 +1075,15 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   context.globalAlpha = 1;
     return;
   }
-  // D-072 V4: the decorative cluster dust sits beneath every arc and pearl, around each declared
-  // community's hub. Stellar only; skipped entirely by the single-node test view. Never data: no
-  // identifier, no label, no witness, no hit-test surface (see starfield.ts).
-  if (geometry.morphology === "stellar" && !testHook()?.onlyNodeId) {
-    drawStellarDust(context, cachedStellarDustClusters(geometry), project,
+  // D-072 M1b: beneath the dust, each declared community carries a very faint cached radial glow so
+  // the cluster reads as a mass; then the satellite dust around each hub. Stellar only; both are
+  // skipped by the single-node test view and by the moving frame. Never data: no identifier, no
+  // label, no witness, no hit-test surface (see starfield.ts).
+  if (geometry.morphology === "stellar" && !testHook()?.onlyNodeId && !moving) {
+    const clusters = cachedStellarDustClusters(geometry);
+    drawStellarClusterGlow(context, clusters, project,
+      hubId => style.nodes.get(hubId)?.color, bounds.width, bounds.height);
+    drawStellarDust(context, clusters, project,
       hubId => style.nodes.get(hubId)?.color, bounds.width, bounds.height);
   }
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
@@ -957,7 +1092,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   const somaFrames = geometry.morphology === "neural" ? neuralSomaFrames(geometry, project, style, contract, appearance) : null;
   if (!testHook()?.hideEdges) {
     const gradientCapable = typeof context.createLinearGradient === "function";
-    const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, indra3d, somaFrames);
+    const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames);
     // D-071 G11: the soma degree at every dendrite end (memoised per geometry, world space).
     const neuralDegrees = geometry.morphology === "neural" ? neuralEndpointDegrees(geometry) : null;
     const animatedEdges = selectAnimatedFlowEdges(geometry, style, project, bounds);
@@ -975,18 +1110,23 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       // alpha (deterministic, projected-length based, so 2D and 3D fade identically).
       const rootFadeStart = neuralDegrees ? neuralRootAlphaFactor(startDegree) : 1;
       const rootFadeEnd = neuralDegrees ? neuralRootAlphaFactor(endDegree) : 1;
-      drawEdgeBase(context, paint, rootFadeStart, rootFadeEnd, gradientCapable);
+      drawEdgeBase(context, paint, rootFadeStart, rootFadeEnd, gradientCapable, moving && geometry.morphology === "neural");
       if (paint.category === "exploratory") {
-        const previousComposite = context.globalCompositeOperation;
-        context.globalCompositeOperation = "lighter";
-        context.lineCap = "round";
-        context.lineJoin = "round";
-        if (animating && animatedEdges.has(paint.edgeId)) {
-          if (inlineHighlights) drawEdgeTravellingHighlight(context, paint, now, appearance.flowSpeed, intensity);
-        } else if (intensity > 0) {
-          drawEdgeStaticCue(context, paint, intensity, gradientCapable);
+        // "separate" leaves the travelling highlight to the dedicated overlay: nothing draws here,
+        // so the lighter composite (and its restore) is skipped for that edge entirely.
+        const animatedHere = animating && animatedEdges.has(paint.edgeId);
+        if (!animatedHere || inlineHighlights) {
+          const previousComposite = context.globalCompositeOperation;
+          context.globalCompositeOperation = "lighter";
+          context.lineCap = "round";
+          context.lineJoin = "round";
+          if (animatedHere) {
+            drawEdgeTravellingHighlight(context, paint, now, appearance.flowSpeed, intensity);
+          } else if (intensity > 0) {
+            drawEdgeStaticCue(context, paint, intensity, gradientCapable);
+          }
+          context.globalCompositeOperation = previousComposite;
         }
-        context.globalCompositeOperation = previousComposite;
       }
     }
   }
@@ -998,11 +1138,11 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     }
   }
   // The whole Indra paint (shading, rim, glint, glow) comes from the depth-bucketed cache above;
-  // Flat and 2D keep the exact per-node computation.
+  // Flat and 2D keep the exact per-node computation. The moving frame skips it: solid fills only.
   const canTransform = canComposeTransform(context);
   // D-071 G9: Neural halos dim where many somata overlap, so hub cores stop merging into a single
   // luminous mass that invades the dendrites. Built once per frame, only when halos are drawn.
-  const haloDensity = geometry.morphology === "neural" && !simplified && appearance.glow > 0 && !testHook()?.hideEdges
+  const haloDensity = geometry.morphology === "neural" && !simplified && appearance.glow > 0 && !testHook()?.hideEdges && !moving
     ? neuralHaloNeighbourCounts(geometry.nodes) : null;
   // D-072 V4/V5: the Stellar core and the Neural soma draw nearly opaque; Mycelium keeps its floor.
   const coreFloor = morphologyCoreAlphaFloor(geometry.morphology);
@@ -1013,8 +1153,11 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const emphasis = style.interaction?.hoverId === node.id ? contract.hover
       : style.interaction?.focusIds?.has(node.id) ? contract.focus : null;
     const given = visual?.radiusPx ?? node.radius * appearance.nodeScale;
-    const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1) * stellarIndraNodeScale,
+    const basis = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
       geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+    // D-072 M1b: a Stellar node draws as a star — the importance basis compressed into the star
+    // window of this node's degree, never above the basis (pick radius untouched), 2D and 3D alike.
+    const radius = geometry.morphology === "stellar" ? stellarStarCoreRadiusPx(basis, node.degree) : basis;
     // A pearl wholly outside the canvas (with its glow halo) draws nothing a viewer could see.
     const haloExtent = appearance.glow > 0 ? radius * contract.glow.maximumCoreRatio : radius;
     if (p.x + haloExtent < 0 || p.x - haloExtent > bounds.width
@@ -1026,8 +1169,8 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       ? contract.glow.strength * neuralHaloAlphaFactor(haloDensity.get(node.id) ?? 1)
       : contract.glow.strength;
     // In Indra 3D every colour of the pearl comes from one cached paint entry (quantised depth);
-    // elsewhere the exact per-node factors stay.
-    const paint = indra3d
+    // elsewhere the exact per-node factors stay. The moving frame wants no pearl paint at all.
+    const paint = indra3d && !moving
       ? pearlPaint(context, color, p.scale, emphasis?.brightnessMultiplier ?? 1,
         style.interaction?.hoverId === node.id ? 1 : style.interaction?.focusIds?.has(node.id) ? 2 : 0,
         baseOpacity, radius, appearance.glow, glowStrength, coreFloor)
@@ -1041,7 +1184,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       : coreFloor > 0.48
         ? clamp(Math.max(coreFloor, baseOpacity * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha), 0, 1)
         : clamp(Math.max(0.48, baseOpacity) * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha, 0, 1);
-    if (!simplified && appearance.glow > 0 && !testHook()?.hideEdges) {
+    if (!simplified && appearance.glow > 0 && !testHook()?.hideEdges && !moving) {
       const halo = radius * contract.glow.maximumCoreRatio;
       if (paint?.glow && canTransform) {
         fillUnitGradient(context, paint.glow, p.x, p.y, halo);
@@ -1099,7 +1242,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         eccentricity = somaDrawnElongation(projectedEccentricity, harmonics);
       }
       const major = radius * eccentricity, minor = radius;
-      const steps = simplified ? 12 : 24;
+      const steps = simplified ? 12 : moving ? 16 : 24;
       const cosA = Math.cos(angle), sinA = Math.sin(angle);
       const irregularityScale = somaIrregularityScale(radius);
       const somaPath = () => {
@@ -1124,7 +1267,8 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       context.fill();
       // Brighter small nucleus inside the body, oriented with the soma; its gradient is cached per
       // context in unit space (colour + quantised opacity key) and composed under translate + scale.
-      if (!simplified) {
+      // The moving frame skips it: the soma stays one solid body.
+      if (!simplified && !moving) {
         const nucleusAlpha = quantisedAlpha(opacity);
         const nucleus = canTransform
           ? cachedUnitRadial(context, `nucleus\u0000${lit}\u0000${nucleusAlpha}`, -0.12, -0.12, 0, 0.5, [
@@ -1171,13 +1315,14 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         }
       }
       // In Indra 3D a soma also carries a small lit glint so it reads as a pearl, not a flat disc.
-      if (indra3d) {
+      // The moving frame draws no glints.
+      if (indra3d && !moving) {
         const glint = pearlHighlight(radius);
         context.fillStyle = paint ? paint.glintFill : rgba(brighten(lit, 0.9), clamp(opacity, 0, 1));
         context.beginPath(); context.arc(p.x + glint.dx, p.y + glint.dy, glint.radiusPx, 0, Math.PI * 2); context.fill();
       }
     } else {
-      if (indra3d && typeof context.createRadialGradient === "function" && paint) {
+      if (indra3d && !moving && typeof context.createRadialGradient === "function" && paint) {
         // Soft spherical shading: light gathered off-centre, dimming toward the limb, with a faint
         // rim stroke so the sphere edge stays defined even at overview-scale pearl sizes. The cached
         // unit gradient composes under translate + scale (or the entry's stops rebuild it in place).
@@ -1207,7 +1352,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         }
         context.fillStyle = paint.glintFill;
         context.beginPath(); context.arc(p.x + glint.dx, p.y + glint.dy, glint.radiusPx, 0, Math.PI * 2); context.fill();
-      } else if (indra3d && typeof context.createRadialGradient === "function") {
+      } else if (indra3d && !moving && typeof context.createRadialGradient === "function") {
         // No cached paint (a context without gradients for the cache): the exact per-pearl path.
         const shade = context.createRadialGradient(
           p.x - radius * 0.35, p.y - radius * 0.35, Math.max(0.5, radius * 0.06), p.x, p.y, radius);
@@ -1280,9 +1425,8 @@ export function drawFlowLayer(context: CanvasRenderingContext2D, geometry: Morph
   const bounds = context.canvas.getBoundingClientRect();
   if (bounds.width === 0 || bounds.height === 0) return;
   const contract = MORPHOLOGY_CONTRACT[geometry.morphology];
-  const indra3d = projection === "3d" && (geometry.containers?.length ?? 0) > 0;
   const somaFrames = geometry.morphology === "neural" ? neuralSomaFrames(geometry, project, style, contract, appearance) : null;
-  const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, indra3d, somaFrames);
+  const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames);
   const animatedEdges = selectAnimatedFlowEdges(geometry, style, project, bounds);
   if (!animatedEdges.size) return;
   const now = flowNow();

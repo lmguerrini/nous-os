@@ -152,11 +152,20 @@ function cachedBrightStarHalo(context: CanvasRenderingContext2D, sizeBucket: num
 // ---------------------------------------------------------------- D-072 F3 cluster dust
 
 /** Global cap on the total number of dust motes, whatever the scene size (V3: a declared budget,
- * not an accident of the data). */
-export const STELLAR_DUST_BUDGET = 600;
-/** Drawn alpha per brightness bucket (0 dimmest … 2 brightest). Every bucket stays below the
- * starfield's node-subordination cap, so dust can never read as a satellite node. */
-export const STELLAR_DUST_BUCKET_ALPHAS: readonly [number, number, number] = [0.26, 0.42, 0.6];
+ * not an accident of the data). D-072 M1b: 900 — the dust must make each cluster's mass perceptible
+ * (M1's 600-cap field was measured as «a handful of faint sub-pixel points»). */
+export const STELLAR_DUST_BUDGET = 900;
+/** Per-community window: a cluster reads as a gathered mass from 30 motes, and never denser than 150. */
+export const STELLAR_DUST_MIN_PER_CLUSTER = 30;
+export const STELLAR_DUST_MAX_PER_CLUSTER = 150;
+/** Drawn alpha per brightness bucket (0 dimmest … 2 brightest), inside the D-072 M1b window
+ * 0.25–0.8; the brightest bucket stays a small share so dust never reads as a satellite node. */
+export const STELLAR_DUST_BUCKET_ALPHAS: readonly [number, number, number] = [0.28, 0.5, 0.75];
+/** Drawn mote side in CSS px: the M1b window, below the 2 px on-screen floor of the smallest
+ * drawn Stellar star core, so no mote can be read as a node. */
+export const STELLAR_DUST_SIZE_PX: readonly [number, number] = [0.6, 1.8];
+/** Share of a cluster's motes in the brightest bucket (a few brighter points per cluster). */
+export const STELLAR_DUST_BRIGHT_SHARE = 0.06;
 
 /** One decorative satellite star. It deliberately carries no identifier: dust is stellar only and
  * can never enter witness counts, hit-testing or labels (D-072 brief). */
@@ -164,7 +173,7 @@ export type StellarDustMote = {
   /** World-space position: generated once per geometry, projected every frame, so the dust moves
    * with its cluster in both 2D and 3D. */
   readonly position: Coordinates;
-  /** Drawn side in CSS pixels; always below STAR_MAX_RADIUS_PX, like every star. */
+  /** Drawn side in CSS pixels; always below the 2 px floor of the smallest drawn star core. */
   readonly size: number;
   readonly bucket: 0 | 1 | 2;
 };
@@ -172,14 +181,20 @@ export type StellarDustCluster = {
   readonly colonyId: string;
   /** The cluster's highest-degree member; the dust inherits its colour at draw time. */
   readonly hubId: string;
+  /** The community's declared centre and world-space radius: the cluster glow and the voids
+   * between communities are both read from these (motes never leave the disc). */
+  readonly center: Coordinates;
+  readonly radius: number;
   readonly motes: readonly StellarDustMote[];
 };
 export type StellarDustNode = { readonly id: string; readonly position: Coordinates; readonly degree: number };
 export type StellarDustColony = { readonly id: string; readonly members: readonly string[]; readonly center: Coordinates };
 
 /** Pure, deterministic cluster dust: seeded per colony id, count and spread growing with the
- * cluster's size and its hub's degree, the whole field capped by the budget. No colonies means no
- * dust (nothing invents communities the data did not declare). */
+ * cluster's size and its hub's degree, the whole field capped by the budget. The motes gather
+ * around the hub and fall off to the community radius, never leaving the community's disc — so
+ * communities stay separated by readable voids. No colonies means no dust (nothing invents
+ * communities the data did not declare). */
 export function stellarDustClusters(
   nodes: readonly StellarDustNode[],
   colonies: readonly StellarDustColony[] | undefined,
@@ -188,7 +203,7 @@ export function stellarDustClusters(
   if (!colonies?.length || !(budget > 0)) return [];
   const byId = new Map(nodes.map(node => [node.id, node]));
   const ordered = [...colonies].sort((a, b) => a.id.localeCompare(b.id));
-  const prepared: { colony: StellarDustColony; hub: StellarDustNode; extent: number; spread: number; weight: number }[] = [];
+  const prepared: { colony: StellarDustColony; hub: StellarDustNode; extent: number; weight: number }[] = [];
   let totalWeight = 0;
   for (const colony of ordered) {
     const members = colony.members.map(id => byId.get(id)).filter((node): node is StellarDustNode => Boolean(node));
@@ -199,47 +214,63 @@ export function stellarDustClusters(
     let extent = 8;
     for (const member of members)
       extent = Math.max(extent, Math.hypot(member.position.x - colony.center.x, member.position.y - colony.center.y, member.position.z - colony.center.z));
-    const spread = extent * Math.min(1.6, 1 + hub.degree * 0.04);
     const weight = 6 + members.length * 1.4 + hub.degree * 1.6;
     totalWeight += weight;
-    prepared.push({ colony, hub, extent, spread, weight });
+    prepared.push({ colony, hub, extent, weight });
   }
   if (!prepared.length || totalWeight <= 0) return [];
   const scale = budget / totalWeight;
-  const counts = prepared.map(entry => Math.max(2, Math.floor(entry.weight * scale)));
-  // The per-cluster floor can push the total past the budget: trim deterministically from the last
-  // clusters (ordered by id) until the budget holds exactly.
-  let over = counts.reduce((sum, count) => sum + count, 0) - budget;
-  for (let index = counts.length - 1; over > 0 && index >= 0; index -= 1) {
-    const take = Math.min(over, counts[index]!);
+  const counts = prepared.map(entry =>
+    Math.max(STELLAR_DUST_MIN_PER_CLUSTER, Math.min(STELLAR_DUST_MAX_PER_CLUSTER, Math.floor(entry.weight * scale))));
+  // When many communities crowd the budget, the counts shrink together (a proportional pass, so no
+  // community goes dark while its neighbours keep a full share), then a final exact trim from the
+  // last clusters (ordered by id) makes the total hold the budget precisely.
+  let total = counts.reduce((sum, count) => sum + count, 0);
+  if (total > budget) {
+    const factor = budget / total;
+    for (let index = 0; index < counts.length; index += 1) counts[index] = Math.floor(counts[index]! * factor);
+    total = counts.reduce((sum, count) => sum + count, 0);
+  }
+  for (let index = counts.length - 1; total > budget && index >= 0; index -= 1) {
+    const take = Math.min(total - budget, counts[index]!);
     counts[index] = counts[index]! - take;
-    over -= take;
+    total -= take;
   }
   const clusters: StellarDustCluster[] = [];
   for (let index = 0; index < prepared.length; index += 1) {
     const count = counts[index]!;
     if (count <= 0) continue;
-    const { colony, hub, extent, spread } = prepared[index]!;
+    const { colony, hub, extent } = prepared[index]!;
     const random = mulberry32(morphologyHash(colony.id));
     const motes: StellarDustMote[] = [];
     for (let mote = 0; mote < count; mote += 1) {
+      // Denser near the hub: the radius follows a power above one, so the density rises toward
+      // the cluster's core as a gathered community reads.
       const angle = random() * Math.PI * 2;
-      // Squared radius: the density rises toward the cluster's core, as a gathered community reads.
-      const radius = spread * (0.18 + 0.82 * random() ** 2);
-      const lift = (random() * 2 - 1) * extent * 0.22;
+      const radius = extent * (0.08 + 0.92 * random() ** 2.2);
       const draw = random();
       const brightness = random();
+      const position = {
+        x: hub.position.x + Math.cos(angle) * radius,
+        y: hub.position.y + Math.sin(angle) * radius,
+        z: colony.center.z + (random() * 2 - 1) * extent * 0.22,
+      };
+      // The mote never leaves the community's disc: the voids between communities stay dark.
+      const outwards = Math.hypot(position.x - colony.center.x, position.y - colony.center.y);
+      if (outwards > extent) {
+        const pull = extent / outwards;
+        position.x = colony.center.x + (position.x - colony.center.x) * pull;
+        position.y = colony.center.y + (position.y - colony.center.y) * pull;
+      }
+      const bright = brightness < STELLAR_DUST_BRIGHT_SHARE;
       motes.push({
-        position: {
-          x: colony.center.x + Math.cos(angle) * radius,
-          y: colony.center.y + Math.sin(angle) * radius,
-          z: colony.center.z + lift,
-        },
-        size: 0.55 + draw * 0.55,
-        bucket: brightness < 0.18 ? 2 : brightness < 0.55 ? 1 : 0,
+        position,
+        size: bright ? STELLAR_DUST_SIZE_PX[0] + 0.6 + draw * (STELLAR_DUST_SIZE_PX[1] - STELLAR_DUST_SIZE_PX[0] - 0.6)
+          : STELLAR_DUST_SIZE_PX[0] + draw * (STELLAR_DUST_SIZE_PX[1] - STELLAR_DUST_SIZE_PX[0]),
+        bucket: bright ? 2 : brightness < 0.5 ? 1 : 0,
       });
     }
-    clusters.push({ colonyId: colony.id, hubId: hub.id, motes });
+    clusters.push({ colonyId: colony.id, hubId: hub.id, center: colony.center, radius: extent, motes });
   }
   return clusters;
 }
