@@ -43,6 +43,16 @@ export type AppearanceOptions = {
   readonly labelDensity: number;
   /** Flat 3D volume: 0 planar, 1 default, 2 double depth. */
   readonly depth3d: number;
+  /** Per-axis expansion of the 3D volume, 0.3–2.5; never changes data, relations or identities. */
+  readonly expandX: number;
+  readonly expandY: number;
+  readonly expandZ: number;
+  /** Decorative Stellar starfield: density and brightness, 0–1 (0 density hides it). */
+  readonly starfieldDensity: number;
+  readonly starfieldBrightness: number;
+  /** Luminous flow along exploratory connections: intensity 0–1, speed 0–2 (0 is still). */
+  readonly flowIntensity: number;
+  readonly flowSpeed: number;
 };
 export const DEFAULT_APPEARANCE: AppearanceOptions = {
   nodeScale: 1,
@@ -53,6 +63,13 @@ export const DEFAULT_APPEARANCE: AppearanceOptions = {
   labelSizePx: 12,
   labelDensity: 0.6,
   depth3d: 1,
+  expandX: 1,
+  expandY: 1,
+  expandZ: 1,
+  starfieldDensity: 0.25,
+  starfieldBrightness: 0.35,
+  flowIntensity: 0.6,
+  flowSpeed: 1,
 };
 export type PresentationOptions = {
   /** Enables the D-069 geometry vocabulary. Omission preserves the historical renderer. */

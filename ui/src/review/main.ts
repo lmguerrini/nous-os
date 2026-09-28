@@ -552,6 +552,9 @@ let depthSliderTimer: ReturnType<typeof setTimeout> | undefined;
 const sliderNames: Readonly<Record<string, string>> = {
   nodeScale: "Dimensione nodi", edgeWidth: "Spessore archi", labelSizePx: "Dimensione etichette",
   labelDensity: "Densità etichette", glow: "Bagliore", edgeOpacity: "Opacità archi", curvature: "Curvatura", depth3d: "Profondità 3D",
+  expandX: "Espansione X", expandY: "Espansione Y", expandZ: "Espansione Z",
+  starfieldDensity: "Stelle di fondo · densità", starfieldBrightness: "Stelle di fondo · luminosità",
+  flowIntensity: "Flusso esplorativo · intensità", flowSpeed: "Flusso esplorativo · velocità (0 = fermo)",
 };
 function syncAppearanceControls(): void {
   for (const key of Object.keys(APPEARANCE_RANGES) as (keyof AppearanceOptions)[]) {
