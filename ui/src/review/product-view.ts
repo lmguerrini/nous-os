@@ -12,7 +12,8 @@ import { framingSpherePoints, framingVolumePoints, solveFraming } from "./framin
 import { adaptReviewExport, restrictAnchors, subgraph } from "./product-adapter.ts";
 import { placeDynamic } from "./live-placement.ts";
 import { relaxDepth } from "./depth.ts";
-import { placeLabels } from "./labels.ts";
+import { LABEL_BUDGET, disambiguateLabels, occludedAnchors, placeLabels } from "./labels.ts";
+import type { DepthSample } from "./labels.ts";
 import { encodingOf, SEMANTIC_COLOUR, standingOf } from "./presentation.ts";
 import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
 import { buildMorphologyGeometry } from "../engine/morphology-geometry.ts";
@@ -139,6 +140,23 @@ export const createProductView: CreateProductView = async (input) => {
     const overview = camera.ratio >= fitted * 0.6;
     const close = camera.ratio < fitted * 0.25;
     const neighbours = emphasis ?? new Set<string>();
+    const anchors = new Map(handle.readWorldAnchorWitnesses().map((item) => [item.id, item.position]));
+    // Depth occlusion: in 3D a label whose anchor sits behind nearer geometry is hidden. Depth is the
+    // distance along the camera's view axis, so nearer geometry has a smaller depth.
+    let occluded: ReadonlySet<string> = new Set<string>();
+    if (three) {
+      const pose = three.readReviewCameraPose();
+      const viewX = pose.target[0]! - pose.position[0]!, viewY = pose.target[1]! - pose.position[1]!, viewZ = pose.target[2]! - pose.position[2]!;
+      const viewLength = Math.hypot(viewX, viewY, viewZ) || 1;
+      const samples: DepthSample[] = [];
+      for (const [id, position] of anchors) {
+        const p = project(position);
+        if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+        const depth = ((position.x - pose.position[0]!) * viewX + (position.y - pose.position[1]!) * viewY + (position.z - pose.position[2]!) * viewZ) / viewLength;
+        samples.push({ id, x: p.x, y: p.y, depth });
+      }
+      occluded = occludedAnchors(samples);
+    }
     const containerById = new Map((axes.organization === "indra" ? input.layoutContainers ?? [] : [])
       .map(ring => [ring.id, ring]));
     const ringRadius = (ring: NonNullable<typeof input.layoutContainers>[number]) =>
@@ -158,7 +176,7 @@ export const createProductView: CreateProductView = async (input) => {
       return [{ left: (left + right) / 2 - Math.min(95, ring.title.length * 3), top: top - 19, width: 190, height: 18 }];
     });
     const candidates = [];
-    for (const { id, position } of handle.readWorldAnchorWitnesses()) {
+    for (const [id, position] of anchors) {
       const node = nodesById.get(id);
       if (!node) continue;
       const p = project(position);
@@ -167,6 +185,8 @@ export const createProductView: CreateProductView = async (input) => {
         continue;
       const chosen = selected === id;
       const hovered = hover?.kind === "node" && hover.id === id;
+      // A label occluded by nearer geometry is hidden, except the selection and hover, which always stay legible.
+      if (occluded.has(id) && !chosen && !hovered) continue;
       // A large Indra ring carries its own title at the rim; keep one label per container.
       const ring = containerById.get(id);
       if (ring && !chosen && !hovered) {
@@ -204,7 +224,7 @@ export const createProductView: CreateProductView = async (input) => {
         reason,
         x: hovered ? hover!.x : p.x,
         y: hovered ? hover!.y : p.y,
-        priority: node.type === "connection" ? (degree.get(id) ?? 0) : 0,
+        priority: degree.get(id) ?? 0,
         full: chosen || hovered,
       });
     }
@@ -242,7 +262,7 @@ export const createProductView: CreateProductView = async (input) => {
     const density = appearance.labelDensity / DEFAULT_APPEARANCE.labelDensity;
     const limited = density >= 1 ? candidates : candidates.filter((candidate, index) =>
       candidate.full || candidate.reason === "selected" || index < Math.round(candidates.length * density));
-    const next = placeLabels(limited, bounds, measured, titleRects);
+    const next = placeLabels(disambiguateLabels(limited), bounds, measured, titleRects, LABEL_BUDGET);
     const rect = container.getBoundingClientRect();
     placed = next.map((label) => ({
       ...label,

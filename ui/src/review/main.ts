@@ -14,6 +14,8 @@ import type { AppearancePresets } from "./appearance.ts";
 import { PALETTES, PALETTE_ROLES, contrast, paletteName } from "./palette.ts";
 import type { V2Category } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
+import { harmonize } from "./color-harmony.ts";
+import type { HarmonyName } from "./color-harmony.ts";
 import { relationClass, relationVisible } from "./reading.ts";
 import { fitNotice, focusAvailable, resetAppearance } from "./viewer-state.ts";
 import type { ViewPreset } from "../render3f/camera.tsx";
@@ -51,6 +53,7 @@ const storedOrigin = readLocal<{ name: string; palette: PaletteValues } | null>(
 let customOrigin: PaletteValues = normalizePalette(storedOrigin?.palette, PALETTES.bw);
 let customOriginName = storedOrigin?.name || "Monocromatico";
 let selectedColourPreset = "";
+let harmonyPreview: PaletteValues | null = null;
 let v2Colours = readLocal<Partial<Record<V2Category,string>>>(storage,"d069.v2Colours",{});
 let focusMode = false;
 let focusCamera: unknown = null;
@@ -524,6 +527,10 @@ function syncPanel(): void {
   get<HTMLElement>("shell").classList.toggle("panel-collapsed", panelCollapsed);
   details.classList.toggle("drawer", fullscreen() ? fullscreenDrawer : !panelCollapsed && innerWidth <= 1100);
   get<HTMLButtonElement>("panel-toggle").setAttribute("aria-pressed", String(!panelCollapsed));
+  const edge = get<HTMLButtonElement>("panel-edge-toggle");
+  edge.setAttribute("aria-pressed", String(!panelCollapsed));
+  edge.textContent = panelCollapsed ? "◀" : "▶";
+  edge.title = panelCollapsed ? "Apri il pannello · scorciatoia P" : "Chiudi il pannello · scorciatoia P";
   get<HTMLButtonElement>("fullscreen-panel").setAttribute("aria-pressed", String(fullscreenDrawer));
   writeLocal(storage, "d069.panelCollapsed", panelCollapsed);
   requestAnimationFrame(updateInsets);
@@ -716,6 +723,35 @@ get<HTMLButtonElement>("custom-restore").addEventListener("click", () => {
   writeLocal(storage, "d069.customPalette", customPalette); syncCustomColours();
   void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
 });
+const harmonyRoleNames: Readonly<Record<keyof PaletteValues, string>> = { background: "Sfondo", aggregate: "Primari", concept: "Secondari",
+  attested: "Archi attestati", exploratory: "Archi esplorativi", selection: "Selezione", hover: "Hover", container: "Contenitori", text: "Testo" };
+function currentHarmony(): PaletteValues {
+  const reference = get<HTMLInputElement>("harmony-reference").value;
+  const name = get<HTMLSelectElement>("harmony-name").value as HarmonyName;
+  return harmonize(reference, customPalette.background, name);
+}
+function renderHarmonyPreview(): void {
+  harmonyPreview = currentHarmony();
+  const host = get<HTMLElement>("harmony-swatches");
+  host.replaceChildren();
+  for (const key of PALETTE_ROLES) {
+    const item = document.createElement("span"); item.className = "h-swatch";
+    const chip = document.createElement("i"); chip.style.background = harmonyPreview[key];
+    const label = document.createElement("span"); label.textContent = harmonyRoleNames[key];
+    item.append(chip, label); host.append(item);
+  }
+  host.hidden = false;
+}
+get<HTMLButtonElement>("harmony-preview").addEventListener("click", () => { renderHarmonyPreview(); announce("Anteprima armonia pronta · premi Applica per confermare"); });
+get<HTMLButtonElement>("harmony-apply").addEventListener("click", () => {
+  if (!harmonyPreview) renderHarmonyPreview();
+  if (!harmonyPreview) return;
+  customPalette = { ...harmonyPreview }; selectedColourPreset = "";
+  writeLocal(storage, "d069.customPalette", customPalette);
+  syncCustomColours();
+  void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
+  announce(`Armonia ${get<HTMLSelectElement>("harmony-name").selectedOptions[0]?.textContent ?? ""} applicata`);
+});
 refreshColourPresetList();
 get<HTMLButtonElement>("appearance-toggle").addEventListener("click", () => {
   const panel = get<HTMLElement>("appearance-panel"); panel.hidden = !panel.hidden; updateInsets();
@@ -739,6 +775,7 @@ get<HTMLButtonElement>("preset-delete").addEventListener("click", () => {
   writeLocal(storage, "d069.presets", presets); syncPresetList(); announce("Preset eliminato");
 });
 get<HTMLButtonElement>("panel-toggle").addEventListener("click", togglePanel);
+get<HTMLButtonElement>("panel-edge-toggle").addEventListener("click", togglePanel);
 get<HTMLButtonElement>("fullscreen-panel").addEventListener("click", () => { fullscreenDrawer = !fullscreenDrawer; syncPanel(); });
 get<HTMLButtonElement>("fullscreen-collapse").addEventListener("click", () => {
   const bar = get<HTMLElement>("fullscreen-bar"); bar.classList.toggle("collapsed");

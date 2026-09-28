@@ -1,4 +1,5 @@
 import type { Colour } from "./view-contract.ts";
+import { harmonize } from "./color-harmony.ts";
 
 export type PaletteValues = { background: string; aggregate: string; concept: string; attested: string;
   exploratory: string; selection: string; hover: string; container: string; text: string };
@@ -19,6 +20,9 @@ export const PALETTES: Readonly<Record<Exclude<Colour, "custom">, PaletteValues>
   "alchemical-red": { ...neutral, background: "#140909", aggregate: "#f4afa7", concept: "#df918c", attested: "#d88d86", exploratory: "#f0b1a2", selection: "#ffe0d9", hover: "#f6b2ab", container: "#c98984", text: "#f6ded9" },
   "warm-twilight": { ...neutral, background: "#140c13", aggregate: "#e8b4bd", concept: "#cea0b0", attested: "#d0a0ac", exploratory: "#e9bcb1", selection: "#ffe4dd", hover: "#edbcc4", container: "#c59da8", text: "#f3e0e0" },
   sepia: { ...neutral, background: "#110d0a", aggregate: "#dbc5ac", concept: "#c8ad91", attested: "#c1a78e", exploratory: "#dec4a8", selection: "#f7e5ce", hover: "#dfc8af", container: "#bda68c", text: "#eadecf" },
+  // D-071: two warm presets derived by OKLCH harmony (analogous) and kept in the same family.
+  brace: harmonize("#f0a06a", "#140a06", "analogous"),
+  miele: harmonize("#ffd38b", "#120b05", "analogous"),
 };
 export function hexRgb(value: string): readonly [number, number, number] {
   const match = /^#([0-9a-f]{6})$/i.exec(value);
