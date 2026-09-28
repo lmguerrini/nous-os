@@ -32,11 +32,27 @@ import type { MorphologyContainerPath } from "../engine/container-geometry.ts";
 import { containerSphereLOD, containerTitleFont, placeContainerTitles, projectedWorldScale } from "../render-common/container-canvas.ts";
 import type { CanvasDisc } from "../render-common/container-canvas.ts";
 import { MORPHOLOGY_CONTRACT } from "../engine/morphology-contract.ts";
+import { drawFlowLayer } from "../render-common/morphology-canvas.ts";
+import type { MorphologyCanvasStyle } from "../render-common/morphology-canvas.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
+import {
+  CAMERA_STILLNESS_MS,
+  QualityGovernor,
+  cameraWatchShouldRun,
+  occlusionSampleCap,
+  capOcclusionSamples,
+  perspectiveSizeScale,
+  renderPixelScale,
+  rgbFromUnit,
+} from "./render-schedule.ts";
+import type { RenderQuality } from "./render-schedule.ts";
 import {
   classifyEdgeCategory,
   flowAnimatedEdgeCount,
   flowAnimates,
+  flowLayerFrameDue,
+  flowLayerResumeAlpha,
+  flowLayerShouldRun,
   setFlowMotionAllowed,
   setFlowNow,
 } from "#render-common/flow.ts";
@@ -130,7 +146,12 @@ export const createProductView: CreateProductView = async (input) => {
   let selected: string | null = null;
   let emphasis: ReadonlySet<string> | null = null;
   let hover: { kind: "node" | "edge"; id: string; x: number; y: number } | null = null;
-  const morphologyInteraction: { hoverId: string | null; focusIds: ReadonlySet<string> | null; labelDiscs: readonly CanvasDisc[] | null; containerColor: string | null } = { hoverId: null, focusIds: null, labelDiscs: null, containerColor: null };
+  const morphologyInteraction: {
+    hoverId: string | null; focusIds: ReadonlySet<string> | null; labelDiscs: readonly CanvasDisc[] | null; containerColor: string | null;
+    /** D-072 P1a: the shared passes read both fields — "moving" makes the container/morphology
+     * pass draw its reduced frame, "separate" leaves the travelling highlights to the overlay. */
+    quality: RenderQuality; flowLayer: "inline" | "separate";
+  } = { hoverId: null, focusIds: null, labelDiscs: null, containerColor: null, quality: "full", flowLayer: "separate" };
   const redrawMorphology = () => (container.querySelector("canvas[data-morphology-canvas]") as
     (HTMLCanvasElement & { __morphRedraw?: () => void }) | null)?.__morphRedraw?.();
   let placed: LabelWitness[] = [];
@@ -139,32 +160,133 @@ export const createProductView: CreateProductView = async (input) => {
   let destroyed = false;
   let lastCamera = "";
   let cameraLabelTimer: ReturnType<typeof setTimeout> | undefined;
-  // Luminous flow animation: a single rAF loop that repaints the canvas layer while edges animate,
-  // then stops itself the moment nothing is left to animate.
+  let cameraLabelIdle: number | null = null;
+  // D-072 P1a: the scheduled backing-store scale of the canvas layers. The view shadows
+  // `window.devicePixelRatio` with a live getter for its whole lifetime: the only per-draw readers
+  // of the global are the two morphology canvases (render2d and the 3D distinct overlay), so the
+  // cap reaches exactly the layers it names while the GL layers keep the ratio they captured at
+  // mount. Restored in destroy().
+  const nativeDevicePixelRatio = window.devicePixelRatio;
+  let scheduledDevicePixelRatio = renderPixelScale("full", nativeDevicePixelRatio);
+  const devicePixelRatioDescriptor = Object.getOwnPropertyDescriptor(window, "devicePixelRatio");
+  Object.defineProperty(window, "devicePixelRatio", { configurable: true, get: () => scheduledDevicePixelRatio });
+  let resolutionTimer: ReturnType<typeof setTimeout> | undefined;
+  // Luminous flow animation (D-072 P1a): a dedicated overlay canvas above the morphology layer
+  // repaints only the travelling highlights, at about 30 fps, pausing whenever nothing can animate
+  // (hidden tab, reduced motion, controls off, no animated edge left). The main morphology canvas
+  // is touched only by camera, scene and appearance changes.
   let flowMotion = input.flowMotion ?? true;
-  let flowLoop = { running: false, raf: 0, start: 0, frameCostMs: 0 };
-  const flowTick = (now: number) => {
-    if (destroyed || handle === null) { flowLoop.running = false; return; }
-    const began = performance.now();
-    setFlowNow(now - flowLoop.start);
-    redrawMorphology();
-    flowLoop.frameCostMs = performance.now() - began;
-    if (flowAnimatedEdgeCount() > 0) flowLoop.raf = requestAnimationFrame(flowTick);
-    else { setFlowMotionAllowed(false); flowLoop.running = false; }
+  const qualityGovernor = new QualityGovernor();
+  let flowCanvas: HTMLCanvasElement | null = null;
+  let flowContext: CanvasRenderingContext2D | null = null;
+  let flowCleared = true;
+  let flowScene: {
+    readonly geometry: Parameters<typeof drawFlowLayer>[1];
+    readonly project: Parameters<typeof drawFlowLayer>[2];
+    readonly style: MorphologyCanvasStyle;
+  } | null = null;
+  const flowLoop = { running: false, raf: 0, origin: null as number | null, lastFrameMs: 0, resumedAtMs: 0, frameCostMs: 0, frames: 0, windowStartMs: 0, measuredFps: 0 };
+  const flowAnimatesNow = () => flowAnimates({ intensity: appearance.flowIntensity, speed: appearance.flowSpeed, motionEnabled: flowMotion, reducedMotion: input.reducedMotion });
+  const ensureFlowCanvas = () => {
+    if (flowCanvas) return flowCanvas;
+    const canvas = document.createElement("canvas");
+    canvas.dataset.flowCanvas = "true";
+    Object.assign(canvas.style, { position: "absolute", inset: "0", width: "100%", height: "100%", pointerEvents: "none", zIndex: "10" });
+    container.append(canvas);
+    flowCanvas = canvas;
+    flowContext = canvas.getContext("2d");
+    return canvas;
   };
-  const syncFlowLoop = () => {
-    const allowed = flowAnimates({ intensity: appearance.flowIntensity, speed: appearance.flowSpeed, motionEnabled: flowMotion, reducedMotion: input.reducedMotion });
-    setFlowMotionAllowed(allowed);
-    if (allowed && !flowLoop.running) {
-      flowLoop.running = true;
-      flowLoop.start = performance.now();
-      flowLoop.raf = requestAnimationFrame(flowTick);
-    } else if (!allowed && flowLoop.running) {
-      cancelAnimationFrame(flowLoop.raf);
+  const sizeFlowCanvas = () => {
+    const canvas = ensureFlowCanvas();
+    const box = canvas.getBoundingClientRect();
+    const scale = renderPixelScale(morphologyInteraction.quality, nativeDevicePixelRatio);
+    const width = Math.max(1, Math.round(box.width * scale));
+    const height = Math.max(1, Math.round(box.height * scale));
+    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+  };
+  const clearFlowOverlay = () => {
+    if (!flowCanvas || !flowContext) return;
+    flowContext.setTransform(1, 0, 0, 1, 0, 0);
+    flowContext.clearRect(0, 0, flowCanvas.width, flowCanvas.height);
+    flowCleared = true;
+  };
+  const drawFlowOverlay = (now: number, force = false) => {
+    if (!flowCanvas || !flowContext || !flowScene || destroyed || handle === null) return;
+    // While the camera moves the overlay rests cleared: the highlights would trail one capped
+    // frame behind the geometry, and the moving frame stays lighter without them.
+    if (morphologyInteraction.quality === "moving") {
+      if (!flowCleared) clearFlowOverlay();
+      return;
+    }
+    const box = flowCanvas.getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) return;
+    flowContext.setTransform(flowCanvas.width / box.width, 0, 0, flowCanvas.height / box.height, 0, 0);
+    flowContext.clearRect(0, 0, box.width, box.height);
+    flowCleared = false;
+    // A forced draw (the test hook, captures) never fades: the phase is the caller's, full alpha.
+    flowContext.globalAlpha = force ? 1 : flowLayerResumeAlpha(now - flowLoop.resumedAtMs);
+    drawFlowLayer(flowContext, flowScene.geometry, flowScene.project, flowScene.style, appearance, axes.projection);
+    flowContext.globalAlpha = 1;
+  };
+  const flowTick = (now: number) => {
+    flowLoop.raf = 0;
+    if (destroyed || handle === null) { flowLoop.running = false; return; }
+    const allowed = flowAnimatesNow();
+    if (!flowLayerFrameDue(now, flowLoop.lastFrameMs)) {
+      // Paused between frames: only a still-running reason may reschedule; the visibilitychange
+      // listener and syncFlowLoop own resuming.
+      if (allowed && !document.hidden) flowLoop.raf = requestAnimationFrame(flowTick);
+      else flowLoop.running = false;
+      return;
+    }
+    flowLoop.lastFrameMs = now;
+    // One flow-clock origin for the view's whole life: pauses never reset it, so the travelling
+    // heads resume exactly where they were — only the overlay fades, nothing jumps.
+    if (flowLoop.origin === null) flowLoop.origin = now;
+    setFlowNow(now - flowLoop.origin);
+    const began = performance.now();
+    drawFlowOverlay(now);
+    flowLoop.frameCostMs = performance.now() - began;
+    if (now - flowLoop.windowStartMs >= 1000) { flowLoop.measuredFps = flowLoop.frames; flowLoop.frames = 0; flowLoop.windowStartMs = now; }
+    flowLoop.frames += 1;
+    if (flowLayerShouldRun({ allowed, hidden: document.hidden, animatedEdges: flowAnimatedEdgeCount() })) flowLoop.raf = requestAnimationFrame(flowTick);
+    else {
       flowLoop.running = false;
-      setFlowNow(0);
+      if (!document.hidden) { clearFlowOverlay(); redrawMorphology(); }
     }
   };
+  const startFlowLoop = () => {
+    if (destroyed || flowLoop.running) return;
+    flowLoop.running = true;
+    flowLoop.resumedAtMs = performance.now();
+    flowLoop.lastFrameMs = 0;
+    flowLoop.raf = requestAnimationFrame(flowTick);
+  };
+  const stopFlowLoop = () => {
+    if (flowLoop.raf) cancelAnimationFrame(flowLoop.raf);
+    flowLoop.raf = 0;
+    flowLoop.running = false;
+  };
+  let flowFlag: boolean | null = null;
+  const syncFlowLoop = () => {
+    const allowed = flowAnimatesNow();
+    setFlowMotionAllowed(allowed);
+    if (allowed !== flowFlag) {
+      // The base pass flips between the overlay-owned highlights and the static cue: repaint it
+      // once so an exploratory reading never shows both or neither.
+      flowFlag = allowed;
+      if (!allowed) clearFlowOverlay();
+      if (!destroyed && handle !== null) redrawMorphology();
+    }
+    if (allowed && !flowLoop.running && !document.hidden) startFlowLoop();
+    else if (!allowed && flowLoop.running) { stopFlowLoop(); if (!document.hidden) redrawMorphology(); }
+  };
+  const onVisibilityChange = () => {
+    if (document.hidden) stopFlowLoop();
+    else syncFlowLoop();
+  };
+  document.addEventListener("visibilitychange", onVisibilityChange);
   const cameras = new Map<string, VisualStateCamera>();
   const fitRatio = new Map<string, number>();
   const fullAnchor = (current: Axes) =>
@@ -189,6 +311,10 @@ export const createProductView: CreateProductView = async (input) => {
   }
   function labelPass() {
     if (!handle || destroyed) return;
+    // D-072 P1a: while the camera moves this pass is the reduced one — tier-1 labels only, no
+    // depth-occlusion build, no trailing morphology repaint (the renderer repaints every camera
+    // frame already). The full pass returns on the frame after quality is restored.
+    const moving = morphologyInteraction.quality === "moving";
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
     container.style.backgroundColor = palette.background;
     // The palette's container role reaches the scene through the shared interaction object: the
@@ -204,7 +330,7 @@ export const createProductView: CreateProductView = async (input) => {
     // Depth occlusion: in 3D a label whose anchor sits behind nearer geometry is hidden. Depth is the
     // distance along the camera's view axis, so nearer geometry has a smaller depth.
     let occluded: ReadonlySet<string> = new Set<string>();
-    if (three) {
+    if (three && !moving) {
       const pose = three.readReviewCameraPose();
       const viewX = pose.target[0]! - pose.position[0]!, viewY = pose.target[1]! - pose.position[1]!, viewZ = pose.target[2]! - pose.position[2]!;
       const viewLength = Math.hypot(viewX, viewY, viewZ) || 1;
@@ -215,7 +341,12 @@ export const createProductView: CreateProductView = async (input) => {
         const depth = ((position.x - pose.position[0]!) * viewX + (position.y - pose.position[1]!) * viewY + (position.z - pose.position[2]!) * viewZ) / viewLength;
         samples.push({ id, x: p.x, y: p.y, depth });
       }
-      occluded = occludedAnchors(samples);
+      // D-072 P1a hitch fix: the occlusion pass is O(n²) over what it is fed — at 425+ visible
+      // anchors it alone was the 100–340 ms settle hitch. It now receives at most the nearest
+      // `occlusionSampleCap(LABEL_BUDGET)` anchors by depth (the geometry that actually covers
+      // others on screen); anchors beyond the cap keep their labels, which still pass the full
+      // collision placement, so the no-overlap guarantee never depends on this cap.
+      occluded = occludedAnchors(capOcclusionSamples(samples, occlusionSampleCap(LABEL_BUDGET)));
     }
     // One name per container: the canvas draws a container's title exactly where the shared
     // placement puts it, and the DOM label pass suppresses the same container's node label in
@@ -296,6 +427,8 @@ export const createProductView: CreateProductView = async (input) => {
       // the panel or another label).
       const tier1 = reason === "hover" || reason === "selected"
         || (axes.organization === "flat" && reason === "domain");
+      // While the camera moves only tier 1 stays named; the others return with the full pass.
+      if (moving && !tier1) continue;
       candidates.push({
         id,
         text: input.v2Prepared ? text.short : chosen || hovered ? text.full : text.short,
@@ -456,18 +589,92 @@ export const createProductView: CreateProductView = async (input) => {
     }
     // The shared discs this pass just published feed the canvas title placement: repaint the
     // morphology layer even when no animation loop is running (reduced motion), so the ink and
-    // the reserved rectangles can never sit at two different placements.
-    redrawMorphology();
+    // the reserved rectangles can never sit at two different placements. While the camera moves
+    // the renderer's own repaint consumes the fresh discs; no extra pass is scheduled here.
+    if (!moving) redrawMorphology();
   }
-  function followCamera() {
-    if (destroyed) return;
-    const now = handle ? JSON.stringify(handle.readCameraState()) : "";
-    if (now !== lastCamera) {
-      lastCamera = now;
-      if (cameraLabelTimer !== undefined) clearTimeout(cameraLabelTimer);
-      cameraLabelTimer = setTimeout(() => { if (!destroyed) labelPass(); }, 160);
+  // D-072 P1a: no polling at rest. The camera watch loop runs only while something moves — a
+  // pressed pointer on the canvas, an open motion window (wheel, keys, a programmatic camera
+  // write) or a camera state that changed within the stillness interval — and stops itself after
+  // 300 ms of an unchanged camera with nothing pressed and no window open. Nothing in these files
+  // runs a forever rAF loop anymore: the flow layer above is the only always-on animation, and it
+  // pauses whenever nothing can animate.
+  const cameraWatch = { running: false, lastChangeMs: null as number | null, motionUntilMs: 0, lastMovingPassMs: 0 };
+  // The settle label pass (D-072 P1a): deferred to idle time so the camera-settle frame itself
+  // stays light — one 100–340 ms hitch per interaction was exactly this pass running synchronously
+  // at settle. `requestIdleCallback` with a timeout keeps it within ~220 ms even under load; the
+  // setTimeout fallback keeps non-browser hosts on the old cadence. Coalesced: each new camera
+  // change cancels the pending pass and reschedules it.
+  const cancelSettleLabelPass = () => {
+    if (cameraLabelIdle !== null && typeof cancelIdleCallback === "function") cancelIdleCallback(cameraLabelIdle);
+    cameraLabelIdle = null;
+    if (cameraLabelTimer !== undefined) clearTimeout(cameraLabelTimer);
+    cameraLabelTimer = undefined;
+  };
+  const scheduleSettleLabelPass = () => {
+    cancelSettleLabelPass();
+    if (typeof requestIdleCallback === "function") {
+      cameraLabelIdle = requestIdleCallback(() => { cameraLabelIdle = null; if (!destroyed) labelPass(); }, { timeout: 220 });
+    } else {
+      cameraLabelTimer = setTimeout(() => { if (!destroyed) labelPass(); }, 200);
     }
-    frameId = requestAnimationFrame(followCamera);
+  };
+  // Capped resolution (D-072 P1a): the backing-store scale swap runs outside any frame loop, on a
+  // debounce — into motion (90 ms, so a short drag never pays the resize) and out of it (40 ms,
+  // coalesced with the settle). The apply itself may resize the two canvas layers exactly once and
+  // repaints the morphology layer once at the new scale.
+  const applyResolution = (quality: RenderQuality) => {
+    const scale = renderPixelScale(quality, nativeDevicePixelRatio);
+    if (scale !== scheduledDevicePixelRatio) {
+      scheduledDevicePixelRatio = scale;
+      sizeFlowCanvas();
+    }
+    redrawMorphology();
+  };
+  const scheduleResolution = (quality: RenderQuality, delayMs: number) => {
+    if (resolutionTimer !== undefined) clearTimeout(resolutionTimer);
+    resolutionTimer = setTimeout(() => { if (!destroyed) applyResolution(quality); }, delayMs);
+  };
+  const onQualityMoving = () => {
+    morphologyInteraction.quality = "moving";
+    scheduleResolution("moving", 90);
+  };
+  const onQualityFull = (now: number) => {
+    morphologyInteraction.quality = "full";
+    scheduleResolution("full", 40);
+    // The full drawing returns on this frame; the deferred full label pass brings the other labels
+    // back, and the flow overlay fades in with its clock uninterrupted.
+    flowLoop.resumedAtMs = now;
+    redrawMorphology();
+    scheduleSettleLabelPass();
+  };
+  function startCameraWatch() {
+    if (destroyed || cameraWatch.running || handle === null) return;
+    cameraWatch.running = true;
+    frameId = requestAnimationFrame(cameraWatchTick);
+  }
+  const noteCameraMotion = () => {
+    cameraWatch.motionUntilMs = performance.now() + CAMERA_STILLNESS_MS;
+    startCameraWatch();
+  };
+  function cameraWatchTick(now: number) {
+    frameId = 0;
+    if (destroyed || handle === null) { cameraWatch.running = false; return; }
+    const state = JSON.stringify(handle.readCameraState());
+    if (state !== lastCamera) {
+      lastCamera = state;
+      cameraWatch.lastChangeMs = now;
+      if (qualityGovernor.touch(now) === "moving") onQualityMoving();
+      // Labels track the camera while it moves, throttled: the reduced (tier-1) label pass below
+      // keeps the always-named set on the geometry without paying the full pass every frame.
+      if (now - cameraWatch.lastMovingPassMs >= 120) { cameraWatch.lastMovingPassMs = now; labelPass(); }
+      scheduleSettleLabelPass();
+    } else if (qualityGovernor.poll(now) === "full") onQualityFull(now);
+    if (!cameraWatchShouldRun({ nowMs: now, lastChangeMs: cameraWatch.lastChangeMs, pressed: pressedAt !== null, motionUntilMs: cameraWatch.motionUntilMs })) {
+      cameraWatch.running = false;
+      return;
+    }
+    frameId = requestAnimationFrame(cameraWatchTick);
   }
   function mount() {
     sigma?.destroy();
@@ -594,6 +801,35 @@ export const createProductView: CreateProductView = async (input) => {
       three.setCameraKind("perspective");
     }
     handle = (sigma ?? three)!;
+    // D-072 P1a: the flow overlay draws with the same geometry, projector and style the main pass
+    // uses — the geometry this view built for both renderers, the live projector the mounted
+    // renderer answers with (2D: Sigma's viewport mapping and size scale; 3D: the review pose's
+    // perspective size scale, exactly the rig's `sizeScaleAt`), and the presentation maps the
+    // shared drawer reads its colours from.
+    ensureFlowCanvas();
+    sizeFlowCanvas();
+    flowScene = {
+      geometry: sharedPresentation.morphologyGeometry,
+      project: sigma
+        ? (point) => { const p = sigma!.graphToViewport(point); return { x: p.x, y: p.y, scale: sigma!.scaleSize(1) }; }
+        : (point) => {
+          const p = handle!.graphToViewport(point);
+          return { x: p.x, y: p.y, scale: perspectiveSizeScale(three!.readReviewCameraPose(), point) };
+        },
+      style: {
+        fieldColor: palette.background,
+        interaction: morphologyInteraction,
+        nodes: new Map([...presentation.nodes].map(([id, value]) => [id, {
+          color: value.tintSrgb ? rgbFromUnit(value.tintSrgb) : "rgb(245, 245, 245)",
+          glyph: value.glyph,
+          radiusPx: value.radiusPx,
+        }])),
+        edges: new Map([...presentation.edges].map(([id, value]) => [id, {
+          color: value.tintSrgb ? rgbFromUnit(value.tintSrgb) : "rgb(220, 220, 220)",
+          presentation: value,
+        }])),
+      },
+    };
     container.append(layer);
     if (emphasis) {
       sigma?.setEmphasis(emphasis);
@@ -627,6 +863,9 @@ export const createProductView: CreateProductView = async (input) => {
       fitRatio.set(cameraKey(), handle.readCameraState().ratio);
       cameras.set(cameraKey(), handle.readCameraState());
     }
+    // The mounted camera (any restored or solved framing included) is the watch loop's baseline:
+    // only changes from here on are motion.
+    lastCamera = JSON.stringify(handle.readCameraState());
     labelPass();
     syncFlowLoop();
   }
@@ -695,6 +934,9 @@ export const createProductView: CreateProductView = async (input) => {
   const onPress = (event: PointerEvent) => {
     if (overControl(event.target)) return;
     pressedAt = { x: event.clientX, y: event.clientY };
+    // A press may become a drag: the camera watch loop starts observing from the press, not from
+    // the first camera change.
+    noteCameraMotion();
   };
   const onClick = (event: MouseEvent) => {
     if (overControl(event.target)) return;
@@ -707,6 +949,7 @@ export const createProductView: CreateProductView = async (input) => {
   };
   const onDoubleClick = (event: MouseEvent) => {
     if (overControl(event.target)) return;
+    noteCameraMotion();
     const r = container.getBoundingClientRect();
     const target = pick({ x: event.clientX - r.left, y: event.clientY - r.top });
     if (target?.kind === "node") input.events.onDoublePick?.(target);
@@ -723,6 +966,15 @@ export const createProductView: CreateProductView = async (input) => {
   container.addEventListener("click", onClick);
   container.addEventListener("dblclick", onDoubleClick);
   container.addEventListener("pointerleave", onLeave);
+  // Wheel and keyboard navigation move the camera without a pointer press; each event opens the
+  // motion window so the watch loop observes the change (and stops again at stillness).
+  const onWheel = () => noteCameraMotion();
+  const onKeyNavigation = (event: KeyboardEvent) => {
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+    noteCameraMotion();
+  };
+  container.addEventListener("wheel", onWheel, { passive: true });
+  container.addEventListener("keydown", onKeyNavigation);
   // A panel collapse or reopen changes the container's size while the camera state stays
   // byte-identical, so `followCamera` never re-runs the label pass and the labels keep the
   // closed-canvas positions. One resize observation closes the loop: the renderers' own
@@ -730,26 +982,36 @@ export const createProductView: CreateProductView = async (input) => {
   // updated geometry.
   const resizeLabelObserver = new ResizeObserver(() => {
     if (destroyed) return;
-    requestAnimationFrame(() => { if (!destroyed) labelPass(); });
+    requestAnimationFrame(() => { if (!destroyed) { sizeFlowCanvas(); labelPass(); } });
   });
   resizeLabelObserver.observe(container);
   mount();
-  followCamera();
   (globalThis as typeof globalThis & { __d071?: unknown }).__d071 = {
     flow: {
       // Test/measurement hooks for the browser checks.
-      now: (milliseconds: number) => { setFlowNow(milliseconds); redrawMorphology(); },
+      now: (milliseconds: number) => { setFlowNow(milliseconds); drawFlowOverlay(performance.now(), true); },
       animatedEdges: () => flowAnimatedEdgeCount(),
-      motionAllowed: () => flowAnimates({ intensity: appearance.flowIntensity, speed: appearance.flowSpeed, motionEnabled: flowMotion, reducedMotion: input.reducedMotion }),
+      motionAllowed: () => flowAnimatesNow(),
       frameCostMs: () => flowLoop.frameCostMs,
       setMotion: (enabled: boolean) => { flowMotion = enabled; syncFlowLoop(); },
     },
+  };
+  // D-072 P1a test hooks: the quality state, the measured flow-layer cadence, and whether the
+  // camera watch loop (the only thing allowed to poll the camera) is running at all.
+  (globalThis as typeof globalThis & { __d072?: Record<string, unknown> }).__d072 = {
+    ...((globalThis as typeof globalThis & { __d072?: Record<string, unknown> }).__d072 ?? {}),
+    quality: () => morphologyInteraction.quality,
+    flowFps: () => flowLoop.measuredFps,
+    cameraWatchRunning: () => cameraWatch.running,
   };
   async function frameIds(ids: readonly string[], anchorFirst: boolean) {
     // The framing belongs to the renderer mounted now; a remount during the animation must not receive a camera
     // interpolated in another renderer's convention.
     const current = handle;
     if (!current) return;
+    // The framing solver and the settle animation move the camera programmatically: keep the
+    // watch loop observing for their whole duration.
+    noteCameraMotion();
     const byId = new Map(current.readWorldAnchorWitnesses().map((p) => [p.id, p.position]));
     // The layout already knows every visible position; right after a remount the renderer may not report them all yet.
     const layout = restrictAnchors(fullAnchor(axes), visible);
@@ -805,6 +1067,7 @@ export const createProductView: CreateProductView = async (input) => {
             resolve();
             return;
           }
+          noteCameraMotion();
           if (t < 1) requestAnimationFrame(tick);
           else resolve();
         };
@@ -847,11 +1110,11 @@ export const createProductView: CreateProductView = async (input) => {
     async setAppearance(value) { appearance = value; saveCamera(); mount(); },
     setFlowMotion(enabled) { flowMotion = enabled; syncFlowLoop(); },
     async setPalette(value) { customPalette = value; saveCamera(); mount(); },
-    viewPreset(name) { three?.setReviewViewPreset(name); labelPass(); },
+    viewPreset(name) { three?.setReviewViewPreset(name); noteCameraMotion(); labelPass(); },
     camera() { return three?.readReviewCameraPose() ?? null; },
     readCamera() { return handle?.readCameraState() ?? null; },
     restoreCamera(state) { if (handle && validCamera(state as VisualStateCamera)) {
-      handle.restoreCameraState(state as VisualStateCamera); labelPass();
+      handle.restoreCameraState(state as VisualStateCamera); noteCameraMotion(); labelPass();
     } },
     async resetCamera() {
       cameras.delete(cameraKey());
@@ -926,9 +1189,12 @@ export const createProductView: CreateProductView = async (input) => {
     },
     destroy() {
       destroyed = true;
-      if (flowLoop.running) cancelAnimationFrame(flowLoop.raf);
-      flowLoop.running = false;
+      stopFlowLoop();
       setFlowMotionAllowed(false);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (resolutionTimer !== undefined) clearTimeout(resolutionTimer);
+      if (cameraLabelIdle !== null && typeof cancelIdleCallback === "function") cancelIdleCallback(cameraLabelIdle);
+      cameraLabelIdle = null;
       resizeLabelObserver.disconnect();
       if (cameraLabelTimer !== undefined) clearTimeout(cameraLabelTimer);
       cancelAnimationFrame(frameId);
@@ -938,9 +1204,18 @@ export const createProductView: CreateProductView = async (input) => {
       container.removeEventListener("click", onClick);
       container.removeEventListener("dblclick", onDoubleClick);
       container.removeEventListener("pointerleave", onLeave);
+      container.removeEventListener("wheel", onWheel);
+      container.removeEventListener("keydown", onKeyNavigation);
       sigma?.destroy();
       three?.destroy();
       layer.remove();
+      flowCanvas?.remove();
+      flowCanvas = null;
+      flowContext = null;
+      flowScene = null;
+      // The devicePixelRatio shadow lives exactly as long as the view.
+      if (devicePixelRatioDescriptor) Object.defineProperty(window, "devicePixelRatio", devicePixelRatioDescriptor);
+      else delete (window as { devicePixelRatio?: number }).devicePixelRatio;
       handle = null;
     },
   };

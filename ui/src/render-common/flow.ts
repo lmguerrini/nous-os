@@ -123,6 +123,42 @@ export function selectFlowEdges(
   return new Set(visible.slice(0, budget).map((candidate) => candidate.edgeId));
 }
 
+// ---------------------------------------------------------------- D-072 P1a separate-layer scheduling
+//
+// The separate flow layer (see `drawFlowLayer` in render-common/morphology-canvas) repaints alone at
+// a capped cadence and pauses whenever nothing can animate. These are the pure scheduling decisions;
+// the product view owns the rAF loop and injects time.
+
+/** Minimum spacing between drawn flow-layer frames: about 30 fps. */
+export const FLOW_LAYER_FRAME_MS = 1000 / 30;
+/** The overlay fades back in over this long whenever the layer resumes (tab visible again, motion
+ * re-allowed, camera settled); the flow clock's phase itself is never reset. */
+export const FLOW_RESUME_FADE_MS = 240;
+
+/** Whether a flow-layer frame is due at `nowMs`, given the last drawn frame's timestamp. The first
+ * frame and any wall-clock step backwards are due, so the loop can never deadlock. Pure. */
+export function flowLayerFrameDue(nowMs: number, lastFrameMs: number, minIntervalMs: number = FLOW_LAYER_FRAME_MS): boolean {
+  const elapsed = nowMs - lastFrameMs;
+  return !(elapsed >= 0 && elapsed < minIntervalMs);
+}
+
+/** Overlay opacity while resuming: 0 → 1 across `fadeMs`, then 1. Pure. */
+export function flowLayerResumeAlpha(elapsedMs: number, fadeMs: number = FLOW_RESUME_FADE_MS): number {
+  if (!(fadeMs > 0)) return 1;
+  if (!Number.isFinite(elapsedMs)) return 0;
+  return Math.min(1, Math.max(0, elapsedMs / fadeMs));
+}
+
+/** Whether the flow layer should keep running: the controls allow motion, the page is visible and
+ * the last drawn frame still had an animated edge. Pure. */
+export function flowLayerShouldRun(state: {
+  readonly allowed: boolean;
+  readonly hidden: boolean;
+  readonly animatedEdges: number;
+}): boolean {
+  return state.allowed && !state.hidden && state.animatedEdges > 0;
+}
+
 // Module clock: driven by the product view's animation loop, read by the morphology canvas while it
 // draws. Kept here so both the 2D and 3D canvas layers share one time source without adding renderer
 // imports, and so the canvas can draw the static fallback when the loop is intentionally stopped.
