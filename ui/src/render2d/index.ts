@@ -4,8 +4,9 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import { buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
 import { DENSE_SCENE_THRESHOLD, drawMorphologyCanvas } from "#render-common/morphology-canvas.ts";
 import Sigma from "sigma";
-import { createEdgeCompoundProgram } from "sigma/rendering";
-import type { CameraState, EdgeDisplayData, NodeDisplayData } from "sigma/types";
+import { createEdgeCompoundProgram, NodeCircleProgram } from "sigma/rendering";
+import type { NodeProgramType } from "sigma/rendering";
+import type { CameraState, EdgeDisplayData, NodeDisplayData, RenderParams } from "sigma/types";
 import { parseColor } from "sigma/utils";
 import type { CalibrationProfile } from "#engine/calibration.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
@@ -185,13 +186,19 @@ export function mount(
   );
   const materialBindings = createLiveRelationMaterialBindings();
   const geometryBindings = createLiveRelationGeometryBindings();
+  // While the distinct morphology canvas covers the WebGL tiers, this switch keeps every
+  // program's picking pass (the framebuffer `getNodeAtPosition`/`getEdgeAtPoint` read) and
+  // stops only the invisible screen pass, whose full-DPR fill was pure cost.
+  const screenPaint = { enabled: true };
+  const nativeLabelsUsed = activeOptions.presentation?.nativeLabels !== false;
   const edgeProgramClasses = {
-    filament: createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings, geometryBindings),
+    filament: createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings, geometryBindings, screenPaint),
   };
   const sigma = new Sigma(model.graph, container, {
     defaultEdgeType: "filament",
     edgeProgramClasses,
-    renderLabels: model.material.node.includes("label"),
+    nodeProgramClasses: { circle: createPickingCapableNodeProgram(screenPaint) },
+    renderLabels: nativeLabelsUsed && model.material.node.includes("label"),
     renderEdgeLabels: false,
     labelSize: calibration.labels.nodeLabelSizePx,
     edgeLabelSize: calibration.labels.edgeLabelSizePx,
@@ -287,11 +294,12 @@ export function mount(
   // DOM order is set by insertion, not by creation order, so the glow still sits
   // BELOW the windows: atmosphere does not occlude structure.
   const windows = mountAggregateWindows(sigma, model, options.calibration);
-  const glow = model.material.node.includes("halo") && !(activeOptions.presentation?.morphologyLanguage === "distinct" && model.graph.order >= DENSE_SCENE_THRESHOLD)
-    ? mountNodeGlow(sigma, model, options.calibration)
+  const distinctLanguage = activeOptions.presentation?.morphologyLanguage === "distinct";
+  const glow = model.material.node.includes("halo") && !(distinctLanguage && model.graph.order >= DENSE_SCENE_THRESHOLD)
+    ? mountNodeGlow(sigma, model, options.calibration, !distinctLanguage)
     : noGlowLayer();
-  const distinct = activeOptions.presentation?.morphologyLanguage === "distinct"
-    ? mountDistinctCanvas(sigma, model, activeOptions)
+  const distinct = distinctLanguage
+    ? mountDistinctCanvas(sigma, model, activeOptions, screenPaint)
     : null;
   sigma.refresh();
   return {
@@ -401,8 +409,8 @@ export function mount(
       }
       const originalProgramClasses = sigma.getSetting("edgeProgramClasses");
       const stackedProgram = createEdgeCompoundProgram([
-        createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings, geometryBindings),
-        createObservedFilamentProgram(model.filamentMaterial, "filament-control", materialBindings, geometryBindings),
+        createObservedFilamentProgram(model.filamentMaterial, "filament", materialBindings, geometryBindings, screenPaint),
+        createObservedFilamentProgram(model.filamentMaterial, "filament-control", materialBindings, geometryBindings, screenPaint),
       ]);
       try {
         sigma.setSetting("edgeProgramClasses", { ...originalProgramClasses, filament: stackedProgram });
@@ -461,8 +469,41 @@ export function mount(
   };
 }
 
+/** This is the switch every distinct-path program consults before its invisible screen pass. */
+export type ScreenPaintControl = { enabled: boolean };
+
+/** This plans which Sigma layers the distinct canvas may collapse and does not touch a renderer. */
+export type DistinctLayerPolicy = {
+  /** Layers that never answer anything: display none, backing collapsed to one pixel. */
+  readonly collapse: readonly string[];
+  /** WebGL picking surfaces: display none, full backing kept (readPixels divides by drawingBufferHeight). */
+  readonly pickingOnly: readonly string[];
+  /** The captor surface: stays visible for events, backing collapsed to one pixel. */
+  readonly shrinkBacking: readonly string[];
+};
+
+/**
+ * This resolves the distinct path's layer plan from what actually draws. The morphology canvas
+ * paints nodes, arcs and containers; DOM labels paint names; the page owns hover. What remains
+ * per Sigma layer is picking (`nodes`, `edges`) and event capture (`mouse`), so everything else
+ * is removed from compositing instead of merely being repainted blank every frame.
+ */
+export function distinctLayerPolicy(input: { nativeTier: boolean; nativeLabelsUsed: boolean }): DistinctLayerPolicy {
+  const collapse = input.nativeLabelsUsed ? ["hovers", "hoverNodes"] : ["labels", "edgeLabels", "hovers", "hoverNodes"];
+  return {
+    collapse,
+    pickingOnly: input.nativeTier ? [] : ["edges", "nodes"],
+    shrinkBacking: ["mouse"],
+  };
+}
+
 /** The opt-in canvas follows Sigma's camera while its original passes retain picking and witnesses. */
-function mountDistinctCanvas(sigma: Sigma, model: RenderModel, options: RenderOptions): {
+function mountDistinctCanvas(
+  sigma: Sigma,
+  model: RenderModel,
+  options: RenderOptions,
+  screenPaint: ScreenPaintControl,
+): {
   setAppearance(options: AppearanceOptions): void;
   destroy(): void;
 } {
@@ -487,10 +528,45 @@ function mountDistinctCanvas(sigma: Sigma, model: RenderModel, options: RenderOp
   canvas.dataset.morphologyCanvas = "distinct";
   Object.assign(canvas.style, { position: "absolute", inset: "0", width: "100%", height: "100%", pointerEvents: "none" });
   requiredCanvas(sigma, "labels").before(canvas);
-  const hidden = ["edges", "nodes", "node-glow"].map((id) => sigma.getCanvases()[id]).filter((item): item is HTMLCanvasElement => item !== undefined);
-  const visibility = hidden.map((item) => item.style.visibility);
   const nativeTier = graph.order >= DENSE_SCENE_THRESHOLD;
-  for (const item of hidden) if (!nativeTier || item === sigma.getCanvases()["node-glow"]) item.style.visibility = "hidden";
+  const layerPolicy = distinctLayerPolicy({
+    nativeTier,
+    nativeLabelsUsed: options.presentation?.nativeLabels !== false,
+  });
+  const collapsed = layerPolicy.collapse
+    .map((id) => sigma.getCanvases()[id])
+    .filter((item): item is HTMLCanvasElement => item !== undefined);
+  const previousDisplay = collapsed.map((item) => item.style.display);
+  const previousBacking = collapsed.map((item) => [item.width, item.height] as const);
+  const shrinkable = layerPolicy.shrinkBacking
+    .map((id) => sigma.getCanvases()[id])
+    .filter((item): item is HTMLCanvasElement => item !== undefined);
+  const previousShrinkBacking = shrinkable.map((item) => [item.width, item.height] as const);
+  const detached = layerPolicy.pickingOnly
+    .map((id) => sigma.getCanvases()[id])
+    .filter((item): item is HTMLCanvasElement => item !== undefined);
+  const previousDetachedDisplay = detached.map((item) => item.style.display);
+  const collapseLayer = (): void => {
+    // One pixel, not zero: a canvas keeps its context and its measureText surface either way,
+    // and 1×1 keeps the backing store alive without a full-DPR buffer to composite or clear.
+    for (const item of collapsed) {
+      item.style.display = "none";
+      item.width = 1;
+      item.height = 1;
+    }
+    for (const item of shrinkable) {
+      item.width = 1;
+      item.height = 1;
+    }
+  };
+  collapseLayer();
+  // Sigma's own resize restores every layer it owns to full backing size; this listener is what
+  // keeps the collapsed plan true after a window resize without fighting the renderer.
+  sigma.on("resize", collapseLayer);
+  if (!nativeTier) {
+    screenPaint.enabled = false;
+    for (const item of detached) item.style.display = "none";
+  }
   let appearance = options.presentation?.appearance ?? DEFAULT_APPEARANCE;
   const context = canvas.getContext("2d");
   const nodeStyles = new Map(graph.nodes().map((id) => [id, {
@@ -535,7 +611,18 @@ function mountDistinctCanvas(sigma: Sigma, model: RenderModel, options: RenderOp
     },
     destroy(): void {
       sigma.off("afterRender", draw);
-      hidden.forEach((item, index) => { item.style.visibility = visibility[index] ?? ""; });
+      sigma.off("resize", collapseLayer);
+      collapsed.forEach((item, index) => {
+        item.style.display = previousDisplay[index] ?? "";
+        const backing = previousBacking[index];
+        if (backing) { item.width = backing[0]; item.height = backing[1]; }
+      });
+      shrinkable.forEach((item, index) => {
+        const backing = previousShrinkBacking[index];
+        if (backing) { item.width = backing[0]; item.height = backing[1]; }
+      });
+      screenPaint.enabled = true;
+      detached.forEach((item, index) => { item.style.display = previousDetachedDisplay[index] ?? ""; });
       canvas.remove();
     },
   };
@@ -607,6 +694,7 @@ function createObservedFilamentProgram(
   materialType: string,
   bindings: LiveRelationMaterialBindings,
   geometryBindings: LiveRelationGeometryBindings,
+  screenPaint: ScreenPaintControl,
 ): typeof FilamentProgram {
   const BaseProgram = createFilamentProgram(material);
   return class extends BaseProgram {
@@ -628,6 +716,61 @@ function createObservedFilamentProgram(
         }
         geometryBindings.record(edgeIndex, { x, y });
       }
+    }
+
+    // The picking pass Sigma's own render() interleaves with the screen pass, alone: the picking
+    // framebuffer geometry (down-sized from the same render params) is reproduced verbatim, so
+    // `getEdgeAtPoint` reads the pixels it always read while the hidden tier stops filling a
+    // full-DPR buffer nobody composites.
+    override render(params: RenderParams): void {
+      if (screenPaint.enabled) {
+        super.render(params);
+        return;
+      }
+      if (this.hasNothingToRender()) {
+        return;
+      }
+      const pick = this.pickProgram;
+      if (pick === null) {
+        return;
+      }
+      pick.gl.viewport(
+        0,
+        0,
+        (params.width * params.pixelRatio) / params.downSizingRatio,
+        (params.height * params.pixelRatio) / params.downSizingRatio,
+      );
+      this.bindProgram(pick);
+      this.renderProgram({ ...params, pixelRatio: params.pixelRatio / params.downSizingRatio }, pick);
+      this.unbindProgram(pick);
+    }
+  };
+}
+
+/** This wraps Sigma's circle node program so the hidden tier keeps its picking pass only. */
+function createPickingCapableNodeProgram(screenPaint: ScreenPaintControl): NodeProgramType {
+  return class extends NodeCircleProgram {
+    override render(params: RenderParams): void {
+      if (screenPaint.enabled) {
+        super.render(params);
+        return;
+      }
+      if (this.hasNothingToRender()) {
+        return;
+      }
+      const pick = this.pickProgram;
+      if (pick === null) {
+        return;
+      }
+      pick.gl.viewport(
+        0,
+        0,
+        (params.width * params.pixelRatio) / params.downSizingRatio,
+        (params.height * params.pixelRatio) / params.downSizingRatio,
+      );
+      this.bindProgram(pick);
+      this.renderProgram({ ...params, pixelRatio: params.pixelRatio / params.downSizingRatio }, pick);
+      this.unbindProgram(pick);
     }
   };
 }
@@ -711,8 +854,14 @@ function mountNodeGlow(
   sigma: Sigma,
   model: RenderModel,
   calibration: CalibrationProfile | undefined,
+  paint = true,
 ): GlowLayer {
   const profile = calibration ?? DEFAULT_CALIBRATION;
+  if (!paint) {
+    // The distinct path covers the glow with its own canvas and keeps only the footprints the
+    // DOM label pass collides against: no layer, no afterRender draw, witnesses unchanged.
+    return witnessesOnlyGlowLayer(sigma, model, profile);
+  }
   sigma.createCanvasContext("node-glow");
   const canvas = requiredCanvas(sigma, "node-glow");
   // Below the aggregate windows: the ring is structure, the glow is atmosphere.
@@ -764,21 +913,7 @@ function mountNodeGlow(
   draw();
   return {
     readWitnesses(): readonly RenderNodeGlowWitness[] {
-      return model.graph.nodes().map((id) => {
-        const attributes = model.graph.getNodeAttributes(id);
-        const coreRadiusPx = sigma.scaleSize(attributes.size);
-        const viewportCenter = sigma.graphToViewport({ x: attributes.x, y: attributes.y });
-        return {
-          id,
-          viewportCenter,
-          coreRadiusPx,
-          haloRadiusPx: resolvedGlowHaloRadius(
-            coreRadiusPx,
-            sigma.scaleSize(attributes.haloRadiusPx),
-            profile,
-          ),
-        };
-      });
+      return glowWitnesses(sigma, model, profile);
     },
     setVisible(visible: boolean): void {
       canvas.style.visibility = visible ? "visible" : "hidden";
@@ -787,6 +922,36 @@ function mountNodeGlow(
       sigma.off("afterRender", draw);
       sigma.killLayer("node-glow");
     },
+  };
+}
+
+/** This reports the live core and halo footprints with or without a painted canvas. */
+function glowWitnesses(sigma: Sigma, model: RenderModel, profile: CalibrationProfile): readonly RenderNodeGlowWitness[] {
+  return model.graph.nodes().map((id) => {
+    const attributes = model.graph.getNodeAttributes(id);
+    const coreRadiusPx = sigma.scaleSize(attributes.size);
+    const viewportCenter = sigma.graphToViewport({ x: attributes.x, y: attributes.y });
+    return {
+      id,
+      viewportCenter,
+      coreRadiusPx,
+      haloRadiusPx: resolvedGlowHaloRadius(
+        coreRadiusPx,
+        sigma.scaleSize(attributes.haloRadiusPx),
+        profile,
+      ),
+    };
+  });
+}
+
+/** This answers the footprint witnesses the label pass collides against without a layer of its own. */
+function witnessesOnlyGlowLayer(sigma: Sigma, model: RenderModel, profile: CalibrationProfile): GlowLayer {
+  return {
+    readWitnesses(): readonly RenderNodeGlowWitness[] {
+      return glowWitnesses(sigma, model, profile);
+    },
+    setVisible(): void {},
+    destroy(): void {},
   };
 }
 
@@ -952,7 +1117,10 @@ function placeEdgeLabels(
         : withCalibratedAlpha(attributes.labelColor, candidate.opacityPermille, calibration),
     });
   }
-  sigma.setSetting("renderEdgeLabels", visible.size > 0);
+  // An empty relation text draws nothing, whatever selected it: sigma's edge-label pass is
+  // enabled only when a label would actually put ink on its layer.
+  const drawable = eligible.some((candidate) => visible.has(candidate.id) && candidate.text !== "");
+  sigma.setSetting("renderEdgeLabels", drawable);
   sigma.refresh();
 }
 
@@ -974,6 +1142,18 @@ function mountAggregateWindows(
   const canvas = requiredCanvas(sigma, "aggregate-windows");
   requiredCanvas(sigma, "edges").before(canvas);
   sigma.resize(true);
+  // A flat organization has no windows: the layer still exists (the glow is inserted below it)
+  // but a windowless clear is the only thing it would ever paint, so it collapses instead of
+  // holding a full-DPR backing store Sigma re-clears on every render.
+  const windowless = model.windows.length === 0;
+  const collapseLayer = (): void => {
+    if (!windowless) return;
+    canvas.style.display = "none";
+    canvas.width = 1;
+    canvas.height = 1;
+  };
+  collapseLayer();
+  sigma.on("resize", collapseLayer);
   const context = canvas.getContext("2d");
   const draw = (): void => {
     if (context === null) {
@@ -1000,6 +1180,7 @@ function mountAggregateWindows(
   return {
     destroy(): void {
       sigma.off("afterRender", draw);
+      sigma.off("resize", collapseLayer);
       sigma.killLayer("aggregate-windows");
     },
   };
