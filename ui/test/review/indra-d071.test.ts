@@ -71,7 +71,8 @@ test("container geometry gives every container a wireframe shell and never a das
     const context = {
       canvas: { width: 400, height: 400, getBoundingClientRect: () => ({ width: 400, height: 400 }) },
       setTransform() {}, clearRect() {}, setLineDash(p: number[]) { patterns.push(p); },
-      beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fill() {},
+      beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fill() {}, arc() {}, closePath() {},
+      createRadialGradient: () => ({ addColorStop() {} }),
       measureText: (t: string) => ({ width: t.length * 6 }),
       fillText() {},
     } as unknown as CanvasRenderingContext2D;

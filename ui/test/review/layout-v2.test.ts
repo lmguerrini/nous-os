@@ -385,7 +385,8 @@ test("distinct canvas strokes container outlines in both projected views", () =>
     const dashes: number[][] = [];
     const context = {
       canvas: { width: 200, height: 200, getBoundingClientRect: () => ({ width: 200, height: 200 }) },
-      setTransform() {}, clearRect() {}, setLineDash(pattern: number[]) { dashes.push(pattern); }, beginPath() {}, moveTo() {}, lineTo() {}, stroke() { strokes++; },
+      setTransform() {}, clearRect() {}, setLineDash(pattern: number[]) { dashes.push(pattern); }, beginPath() {}, moveTo() {}, lineTo() {}, stroke() { strokes++; }, arc() {}, fill() {},
+      createRadialGradient: () => ({ addColorStop() {} }),
     } as unknown as CanvasRenderingContext2D;
     drawMorphologyCanvas(context, geometry, point => ({ x: point.x + 100 + (projection === "3d" ? point.z * 0.4 : 0), y: point.y + 100 + (projection === "3d" ? point.z * 0.2 : 0), scale: 1 }),
       { fieldColor: "rgb(0, 0, 0)", nodes: new Map(), edges: new Map() }, undefined, container, projection);

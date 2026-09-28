@@ -7,6 +7,8 @@ export type LabelCandidate = {
   y: number;
   priority: number;
   full?: boolean;
+  /** Screen-space radius of the anchor node's disc; the label is offset outside it, never over it. */
+  radius?: number;
 };
 export type PlacedLabel = { id: string; text: string; reason: LabelReason; rect: ViewportRect };
 
@@ -60,6 +62,28 @@ const positions = [
   [12, 0],
   [-12, 0],
 ] as const;
+
+/** True when an axis-aligned rect overlaps a node disc of the given radius around (cx, cy). */
+function rectOverlapsDisc(
+  rect: ViewportRect,
+  cx: number,
+  cy: number,
+  radius: number,
+): boolean {
+  const nearestX = Math.min(Math.max(cx, rect.left), rect.left + rect.width);
+  const nearestY = Math.min(Math.max(cy, rect.top), rect.top + rect.height);
+  return (cx - nearestX) ** 2 + (cy - nearestY) ** 2 <= (radius + 2) ** 2;
+}
+
+/** Offsets that place the label just outside a node disc of the given radius, in eight directions. */
+function discOffsets(radius: number): readonly [number, number][] {
+  const m = radius + 6;
+  const d = m * Math.SQRT1_2;
+  return [
+    [m, 0], [-m, 0], [0, -m], [0, m],
+    [d, -d], [-d, -d], [d, d], [-d, d],
+  ];
+}
 /** Prioritise selected and hovered labels before lower-priority labels compete for screen space. */
 export function placeLabels(
   candidates: readonly LabelCandidate[],
@@ -87,7 +111,10 @@ export function placeLabels(
       continue;
     const size = measure(c.text, c.full ? 280 : 180, c.reason === "selected" ? 2 : c.full ? 8 : 1);
     if (size.width > bounds.width || size.height > bounds.height) continue;
-    const attempts = c.reason === "hover" ? [[12, 12], [-12, 12], [12, -12], [-12, -12], ...positions] : positions;
+    const radius = Number.isFinite(c.radius) && (c.radius ?? 0) > 0 ? c.radius! : 0;
+    const attempts = radius > 0 && c.reason !== "hover"
+      ? discOffsets(radius)
+      : c.reason === "hover" ? [[12, 12], [-12, 12], [12, -12], [-12, -12], ...positions] : positions;
     for (const [dx, dy] of attempts) {
       const left = c.x + dx + (dx < 0 ? -size.width : 0);
       const top = c.y + dy + (dy < 0 ? -size.height : 0);
@@ -99,6 +126,7 @@ export function placeLabels(
         top + size.height > bounds.top + bounds.height
       )
         continue;
+      if (radius > 0 && rectOverlapsDisc(rect, c.x, c.y, radius)) continue;
       const nearby = new Set(keys(left - 3, top - 3, left + size.width + 3, top + size.height + 3)
         .flatMap(key => cells.get(key) ?? []));
       if (

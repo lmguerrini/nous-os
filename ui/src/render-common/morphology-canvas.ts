@@ -201,6 +201,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     }
   }
   if (testHook()?.hideNodes) return;
+  // Indra 3D pearls read as glass spheres: soft spherical shading and a small highlight. Flat 3D and
+  // the 2D view keep their flat node discs.
+  const indra3d = projection === "3d" && containers.length > 0;
   for (const node of geometry.nodes) {
     if (testHook()?.onlyNodeId && testHook()?.onlyNodeId !== node.id) continue;
     const visual = style.nodes.get(node.id);
@@ -285,10 +288,29 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         context.closePath?.();
         context.fill();
       }
+      // In Indra 3D a soma also carries a small lit glint so it reads as a pearl, not a flat disc.
+      if (indra3d) {
+        context.fillStyle = rgba(brighten(lit, 0.9), clamp(opacity, 0, 1));
+        context.beginPath(); context.arc(p.x - radius * 0.32, p.y - radius * 0.36, Math.max(0.6, radius * 0.15), 0, Math.PI * 2); context.fill();
+      }
     } else {
-      context.fillStyle = rgba(lit, opacity);
-      context.arc(p.x, p.y, radius, 0, Math.PI * 2);
-      context.fill();
+      if (indra3d && typeof context.createRadialGradient === "function") {
+        // Soft spherical shading: light gathered off-centre, dimming toward the limb.
+        const shade = context.createRadialGradient(
+          p.x - radius * 0.35, p.y - radius * 0.35, radius * 0.06, p.x, p.y, radius);
+        shade.addColorStop(0, rgba(brighten(lit, 0.55), opacity));
+        shade.addColorStop(0.55, rgba(lit, opacity));
+        shade.addColorStop(1, rgba(dim(lit, 0.35), opacity));
+        context.fillStyle = shade;
+        context.beginPath(); context.arc(p.x, p.y, radius, 0, Math.PI * 2); context.fill();
+        // A small, bright glint on the lit side.
+        context.fillStyle = rgba(brighten(lit, 0.9), clamp(opacity, 0, 1));
+        context.beginPath(); context.arc(p.x - radius * 0.32, p.y - radius * 0.36, Math.max(0.6, radius * 0.15), 0, Math.PI * 2); context.fill();
+      } else {
+        context.fillStyle = rgba(lit, opacity);
+        context.arc(p.x, p.y, radius, 0, Math.PI * 2);
+        context.fill();
+      }
     }
     // A neural soma is one closed body. Semantic glyph rings apply only to the other morphologies.
     const glyph = geometry.morphology === "neural" ? "filled" : visual?.glyph ?? "filled";

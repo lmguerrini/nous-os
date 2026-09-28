@@ -27,6 +27,8 @@ import { v2Encoding } from "./v2-adapter.ts";
 import type { ReviewCameraState } from "../render3f/camera.tsx";
 import { defaultObliqueOrbit, resolvedNodeBounds } from "../render3f/camera.tsx";
 import { buildContainerGeometry } from "../engine/container-geometry.ts";
+import type { MorphologyContainerPath } from "../engine/container-geometry.ts";
+import { containerTitleRect } from "../render-common/container-canvas.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
 import {
   classifyEdgeCategory,
@@ -191,24 +193,18 @@ export const createProductView: CreateProductView = async (input) => {
       }
       occluded = occludedAnchors(samples);
     }
-    const containerById = new Map((axes.organization === "indra" ? input.layoutContainers ?? [] : [])
-      .map(ring => [ring.id, ring]));
-    const ringRadius = (ring: NonNullable<typeof input.layoutContainers>[number]) =>
-      axes.projection === '2d' ? ring.radius2d ?? ring.radius : ring.radius;
-    const titleRects = [...containerById.values()].flatMap(ring => {
-      if (!ring.title) return [];
-      const radius = ringRadius(ring);
-      const ends = [
-        project({ x: ring.center.x + radius, y: ring.center.y, z: ring.center.z }),
-        project({ x: ring.center.x - radius, y: ring.center.y, z: ring.center.z }),
-        project({ x: ring.center.x, y: ring.center.y + radius, z: ring.center.z }),
-        project({ x: ring.center.x, y: ring.center.y - radius, z: ring.center.z }),
-      ];
-      const left = Math.min(...ends.map(p => p.x)), right = Math.max(...ends.map(p => p.x));
-      const top = Math.min(...ends.map(p => p.y));
-      if (right - left < 85 || top < 14 || top >= bounds.height - 20) return [];
-      return [{ left: (left + right) / 2 - Math.min(95, ring.title.length * 3), top: top - 19, width: 190, height: 18 }];
+    // One name per container: the canvas draws a container's title exactly when `containerTitleRect`
+    // resolves, and the DOM label pass suppresses the same container's node label in exactly those
+    // cases (and allows it otherwise), so a pearl never carries two names.
+    const pathById = new Map<string, MorphologyContainerPath>();
+    if (axes.organization === "indra" && input.layoutContainers) {
+      for (const path of buildContainerGeometry(axes.morphology, input.layoutContainers)) pathById.set(path.id, path);
+    }
+    const titleRects = [...pathById.values()].flatMap(path => {
+      const rect = containerTitleRect(path, project, bounds, axes.projection);
+      return rect ? [rect] : [];
     });
+    const footprintRadius = new Map(handle.readNodeFootprintWitnesses().map(footprint => [footprint.id, footprint.coreRadiusPx]));
     const candidates = [];
     for (const [id, position] of anchors) {
       const node = nodesById.get(id);
@@ -222,20 +218,9 @@ export const createProductView: CreateProductView = async (input) => {
       // A label occluded by nearer geometry is hidden, except the selection and hover, which always stay legible.
       if (occluded.has(id) && !chosen && !hovered) continue;
       // A large Indra ring carries its own title at the rim; keep one label per container.
-      const ring = containerById.get(id);
-      if (ring && !chosen && !hovered) {
-        const radius = ringRadius(ring);
-        const ends = [
-          project({ x: ring.center.x + radius, y: ring.center.y, z: ring.center.z }),
-          project({ x: ring.center.x - radius, y: ring.center.y, z: ring.center.z }),
-          project({ x: ring.center.x, y: ring.center.y + radius, z: ring.center.z }),
-          project({ x: ring.center.x, y: ring.center.y - radius, z: ring.center.z }),
-        ];
-        const xs = ends.map(point => point.x), ys = ends.map(point => point.y);
-        const top = Math.min(...ys);
-        if (Math.max(...xs) - Math.min(...xs) >= 85 && top >= 14 && top < bounds.height - 20)
-          continue;
-      }
+      const path = pathById.get(id);
+      if (path && !chosen && !hovered && containerTitleRect(path, project, bounds, axes.projection))
+        continue;
       let reason: "hover" | "selected" | "neighbour" | "domain" | "main" | "zoom" | null = null;
       if (hovered) reason = "hover";
       else if (chosen) reason = "selected";
@@ -260,6 +245,7 @@ export const createProductView: CreateProductView = async (input) => {
         y: hovered ? hover!.y : p.y,
         priority: degree.get(id) ?? 0,
         full: chosen || hovered,
+        ...(footprintRadius.has(id) ? { radius: footprintRadius.get(id)! } : {}),
       });
     }
     // A selected container can have dozens of neighbours; name the few nearest to it so labels do not bury the
@@ -296,7 +282,17 @@ export const createProductView: CreateProductView = async (input) => {
     const density = appearance.labelDensity / DEFAULT_APPEARANCE.labelDensity;
     const limited = density >= 1 ? candidates : candidates.filter((candidate, index) =>
       candidate.full || candidate.reason === "selected" || index < Math.round(candidates.length * density));
-    const next = placeLabels(disambiguateLabels(limited), bounds, measured, titleRects, LABEL_BUDGET);
+    // Any floating overlay that covers part of the canvas (the Aspetto panel) is reserved, so labels stay
+    // fully inside the visible area not covered by panels.
+    const reserved: ViewportRect[] = [...titleRects];
+    const appearancePanel = document.getElementById("appearance-panel");
+    if (appearancePanel && !appearancePanel.hidden) {
+      const panelRect = appearancePanel.getBoundingClientRect();
+      const hostRect = container.getBoundingClientRect();
+      reserved.push({ left: panelRect.left - hostRect.left, top: panelRect.top - hostRect.top,
+        width: panelRect.width, height: panelRect.height });
+    }
+    const next = placeLabels(disambiguateLabels(limited), bounds, measured, reserved, LABEL_BUDGET);
     const rect = container.getBoundingClientRect();
     placed = next.map((label) => ({
       ...label,
