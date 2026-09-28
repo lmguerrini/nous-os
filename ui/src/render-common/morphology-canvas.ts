@@ -80,21 +80,102 @@ export function pearlHighlight(radiusPx: number): { readonly radiusPx: number; r
  * disappears at overview scale (audit: «spessi al nodo, rastremati a metà arco»). */
 export const NEURAL_EDGE_MID_MIN_PX = 0.6;
 
+/** Up to this soma degree a dendrite root keeps the contract's full soma/mid taper ratio. */
+export const NEURAL_TAPER_DEGREE_FULL = 4;
+/** The taper ratio never falls below this floor, so the rastremazione stays visible on every
+ * dendrite however crowded the soma (audit: hub roots must stay separable, not uniform). */
+export const NEURAL_TAPER_RATIO_FLOOR = 1.3;
+
+/**
+ * The soma-end/mid width ratio one end of a dendrite draws, from that end's own soma degree: the
+ * full base ratio up to {@link NEURAL_TAPER_DEGREE_FULL}, then base/√(degree/4), floored at
+ * {@link NEURAL_TAPER_RATIO_FLOOR}. Monotone in the degree, deterministic, pure.
+ */
+export function neuralSomaTaperRatio(baseRatio: number, degree: number): number {
+  if (!(degree > NEURAL_TAPER_DEGREE_FULL)) return baseRatio;
+  return Math.min(baseRatio,
+    Math.max(NEURAL_TAPER_RATIO_FLOOR, baseRatio / Math.sqrt(degree / NEURAL_TAPER_DEGREE_FULL)));
+}
+
 /**
  * The drawn Neural width keyframes (same units as the inputs): the width at each soma end and at
- * mid-edge. The contract's taper gives the soma/mid ratio for the proximal and distal ends, and the
- * segment's larger end width anchors the scale, so the profile keeps the edge's data-driven weight
- * while the rastremazione reads at overview scale (2.2–2.6× the mid width at each end).
+ * mid-edge. The contract's taper gives the soma/mid ratio for the proximal and distal ends, each
+ * capped by its own end's soma degree ({@link neuralSomaTaperRatio}), and the segment's larger end
+ * width anchors the scale, so the profile keeps the edge's data-driven weight while the
+ * rastremazione reads at overview scale and the roots of a hub stay separable (D-071 G11).
  */
-export function neuralTaperProfile(widthStart: number, widthEnd: number, taper: readonly [number, number] | readonly number[]) {
+export function neuralTaperProfile(widthStart: number, widthEnd: number, taper: readonly [number, number] | readonly number[],
+  degreeStart = 1, degreeEnd = 1) {
   const [proximalRatio = 2.4, distalRatio = 2.2] = taper;
-  const mid = Math.max(widthStart, widthEnd) / Math.max(proximalRatio, distalRatio);
   const proximalAtStart = widthStart >= widthEnd;
-  return {
-    start: mid * (proximalAtStart ? Math.max(proximalRatio, distalRatio) : Math.min(proximalRatio, distalRatio)),
-    mid,
-    end: mid * (proximalAtStart ? Math.min(proximalRatio, distalRatio) : Math.max(proximalRatio, distalRatio)),
+  const startRatio = neuralSomaTaperRatio(
+    proximalAtStart ? Math.max(proximalRatio, distalRatio) : Math.min(proximalRatio, distalRatio), degreeStart);
+  const endRatio = neuralSomaTaperRatio(
+    proximalAtStart ? Math.min(proximalRatio, distalRatio) : Math.max(proximalRatio, distalRatio), degreeEnd);
+  const mid = Math.max(widthStart, widthEnd) / Math.max(startRatio, endRatio);
+  return { start: mid * startRatio, mid, end: mid * endRatio };
+}
+
+/** A dendrite root loses at most this share of its alpha near a high-degree soma: the widths
+ * already separate the roots, this keeps the residual stack of edges from re-merging as glow. */
+export const NEURAL_ROOT_ALPHA_FLOOR = 0.8;
+/** The on-screen reach of the root alpha fade, in pixels along the edge from each soma. */
+export const NEURAL_ROOT_FADE_PX = 10;
+/** The alpha factor of a dendrite's first pixels at a soma of the given degree: full up to
+ * {@link NEURAL_TAPER_DEGREE_FULL}, then a gentle linear falloff to the floor. Pure. */
+export function neuralRootAlphaFactor(degree: number): number {
+  if (!(degree > NEURAL_TAPER_DEGREE_FULL)) return 1;
+  return Math.max(NEURAL_ROOT_ALPHA_FLOOR, 1 - 0.05 * (degree - NEURAL_TAPER_DEGREE_FULL));
+}
+
+/** Exact endpoint key of a drawn segment (world-space coordinates, never remultipplied). */
+const neuralEndpointKey = (point: Coordinates): string => `${point.x}|${point.y}|${point.z}`;
+const neuralEndpointDegreeCache = new WeakMap<MorphologyGeometry, ReadonlyMap<string, number>>();
+/** The two soma-side ends of a drawn segment; the samples bracket them when a minimal fixture
+ * carries no explicit endpoints. */
+const segmentEnds = (part: MorphologySegment): readonly (Coordinates | undefined)[] =>
+  [part.source ?? part.samples[0], part.target ?? part.samples[part.samples.length - 1]];
+
+/**
+ * The soma degree at each end of every drawn Neural segment, world-space and deterministic: each
+ * endpoint resolves to its nearest soma centre on a fixed grid (the endpoint sits within one soma
+ * radius of its own soma by construction, and 1 where no soma is found). Memoised per geometry, so
+ * the per-frame edge pass pays a map lookup; identical in 2D and 3D (shared canvas layer).
+ */
+export function neuralEndpointDegrees(geometry: MorphologyGeometry): ReadonlyMap<string, number> {
+  const cached = neuralEndpointDegreeCache.get(geometry);
+  if (cached) return cached;
+  let maxRadius = 0;
+  for (const node of geometry.nodes) maxRadius = Math.max(maxRadius, node.radius);
+  // A cell of at least four max radii keeps every endpoint's own soma inside its 3×3 neighbourhood
+  // (the neural inset is bounded by the soma radius times its ≤1.9 eccentricity).
+  const cell = Math.max(NEURAL_HALO_DENSITY_CELL, 4 * maxRadius);
+  const grid = new Map<string, MorphologyGeometry["nodes"][number][]>();
+  for (const node of geometry.nodes) {
+    const key = `${Math.floor(node.position.x / cell)}:${Math.floor(node.position.y / cell)}`;
+    const bucket = grid.get(key);
+    if (bucket) bucket.push(node); else grid.set(key, [node]);
+  }
+  const degreeAt = (point: Coordinates): number => {
+    const cx = Math.floor(point.x / cell), cy = Math.floor(point.y / cell);
+    let best: MorphologyGeometry["nodes"][number] | null = null;
+    let bestDistance = Infinity;
+    for (let dx = -1; dx <= 1; dx += 1) for (let dy = -1; dy <= 1; dy += 1)
+      for (const node of grid.get(`${cx + dx}:${cy + dy}`) ?? []) {
+        const distance = (node.position.x - point.x) ** 2 + (node.position.y - point.y) ** 2 + (node.position.z - point.z) ** 2;
+        if (distance < bestDistance) { bestDistance = distance; best = node; }
+      }
+    return best?.degree ?? 1;
   };
+  const degrees = new Map<string, number>();
+  for (const part of geometry.drawnSegments)
+    for (const point of segmentEnds(part)) {
+      if (!point) continue;
+      const key = neuralEndpointKey(point);
+      if (!degrees.has(key)) degrees.set(key, degreeAt(point));
+    }
+  neuralEndpointDegreeCache.set(geometry, degrees);
+  return degrees;
 }
 
 /** Deterministic per-soma elongation factor (±12%), driven by the id-hashed outline harmonics'
@@ -441,6 +522,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const animating = flowMotionAllowedNow() && appearance.flowIntensity > 0 && appearance.flowSpeed > 0;
     const phase = flowPhaseAt(flowNow(), appearance.flowSpeed);
     const intensity = appearance.flowIntensity;
+    // D-071 G11: the soma degree at every dendrite end (memoised per geometry, world space).
+    const neuralDegrees = geometry.morphology === "neural" && !testHook()?.hideEdges
+      ? neuralEndpointDegrees(geometry) : null;
 
     const fillRibbon = (points: readonly ProjectedPoint[], widthAt: (i: number) => number): void => {
       const sides = points.map((point, i) => {
@@ -469,10 +553,15 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       const source = simplified && part.samples.length > 8 ? part.samples.filter((_, i) => i % 4 === 0 || i === part.samples.length - 1) : part.samples;
       const points = source.map(project);
       if (points.length < 2) continue;
+      // D-071 G11: each soma end's taper ratio is capped by that soma's degree, so the roots of a
+      // high-degree hub stay separable instead of overlapping into one luminous mass.
+      const [segmentStart, segmentEnd] = segmentEnds(part);
+      const startDegree = (segmentStart && neuralDegrees?.get(neuralEndpointKey(segmentStart))) ?? 1;
+      const endDegree = (segmentEnd && neuralDegrees?.get(neuralEndpointKey(segmentEnd))) ?? 1;
       // D-071 G9: the Neural profile is anchored on the contract's taper ratios so the rastremazione
       // survives the pixel floors at overview scale; the other morphologies keep their profiles.
       const neuralTaper = geometry.morphology === "neural"
-        ? neuralTaperProfile(part.widthStart, part.widthEnd, contract.edge.taper) : null;
+        ? neuralTaperProfile(part.widthStart, part.widthEnd, contract.edge.taper, startDegree, endDegree) : null;
       const widthAt = (i: number) => {
         const t = i / (points.length - 1);
         const smooth = t * t * (3 - 2 * t);
@@ -495,12 +584,29 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       };
       const alpha = clamp(Math.max(0.14, opacity * appearance.edgeOpacity * (geometry.morphology === "stellar" ? 0.9 : 1)
         * (emphasis?.brightnessMultiplier ?? 1)), 0, 1);
+      // D-071 G11: within the first pixels of a high-degree soma the dendrite also loses a little
+      // alpha (deterministic, projected-length based, so 2D and 3D fade identically).
+      const rootFadeStart = neuralDegrees ? neuralRootAlphaFactor(startDegree) : 1;
+      const rootFadeEnd = neuralDegrees ? neuralRootAlphaFactor(endDegree) : 1;
+      const gradientCapable = typeof context.createLinearGradient === "function";
+      const chordPx = Math.hypot(points[points.length - 1]!.x - points[0]!.x, points[points.length - 1]!.y - points[0]!.y);
+      const rootFadedFill = (edgeAlpha: number): string | CanvasGradient => {
+        if (rootFadeStart >= 1 && rootFadeEnd >= 1) return rgba(color, edgeAlpha);
+        if (!gradientCapable || chordPx <= 0) return rgba(color, edgeAlpha);
+        const gradient = context.createLinearGradient(points[0]!.x, points[0]!.y, points[points.length - 1]!.x, points[points.length - 1]!.y);
+        const reach = clamp(NEURAL_ROOT_FADE_PX / chordPx, 1e-4, 0.5);
+        gradient.addColorStop(0, rgba(color, clamp(edgeAlpha * rootFadeStart, 0, 1)));
+        gradient.addColorStop(reach, rgba(color, edgeAlpha));
+        gradient.addColorStop(1 - reach, rgba(color, edgeAlpha));
+        gradient.addColorStop(1, rgba(color, clamp(edgeAlpha * rootFadeEnd, 0, 1)));
+        return gradient;
+      };
       // Exploratory relations carry a slightly stronger halo, then the flow, over the same continuous base line.
       if (category === "exploratory") {
-        context.fillStyle = rgba(color, clamp(alpha * FLOW_HALO_ALPHA, 0, 1));
+        context.fillStyle = rootFadedFill(clamp(alpha * FLOW_HALO_ALPHA, 0, 1));
         fillRibbon(points, (i) => widthAt(i) * FLOW_HALO_WIDTH_MULTIPLIER);
       }
-      context.fillStyle = rgba(color, alpha);
+      context.fillStyle = rootFadedFill(alpha);
       fillRibbon(points, widthAt);
       if (category === "exploratory") {
         const previousComposite = context.globalCompositeOperation;

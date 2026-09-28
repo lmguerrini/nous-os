@@ -133,6 +133,30 @@ export const HARMONY_SEPARATIONS = [
   { roles: ["attested", "exploratory"] as const, minDeltaE: 0.08 },
 ];
 
+/** True when the background reads light (WCAG relative luminance ≥ 1/2): the ladder then places the
+ * exploratory role among the darker ones instead of the brighter ones. */
+function backgroundIsLight(background: string): boolean {
+  return luminance(...hexToRgb(background)) >= 0.5;
+}
+
+/**
+ * The hue furthest from every hue of a harmony set: the midpoint of the largest empty arc between
+ * the set's distinct hues (ties resolved by the smallest arc start, so it is deterministic). The
+ * exploratory line lands there — clearly apart from the node and attested roles on every harmony,
+ * where the best reachable separation is 60° (triadic) and the worst case is a full complement.
+ */
+export function apartHue(hues: readonly number[]): number {
+  const distinct = [...new Set(hues.map(wrapHue))].sort((a, b) => a - b);
+  let bestMid = wrapHue(distinct[0]! + 180), bestGap = -1;
+  for (let index = 0; index < distinct.length; index += 1) {
+    const from = distinct[index]!;
+    const to = index + 1 === distinct.length ? distinct[0]! + 360 : distinct[index + 1]!;
+    const gap = to - from;
+    if (gap > bestGap) { bestGap = gap; bestMid = wrapHue(from + gap / 2); }
+  }
+  return bestMid;
+}
+
 type HarmonyRole = Exclude<keyof PaletteValues, "background">;
 
 /**
@@ -147,13 +171,17 @@ export function harmonize(reference: string, background: string, name: HarmonyNa
   const { H, C } = srgbToOklch(reference);
   const hues = harmonyHues(name, H);
   const hue = (index: number) => hues[index % hues.length]!;
-  // Lightness ladder: exploratory sits well under the node colours, attested between them,
-  // selection clearly under text and clearly over hover's partner roles.
+  // D-071 G11: exploratory connections must stand out — a halo and flow on a distinct, bright line
+  // — so the role joins the brighter half of the ladder (mirrored on a light background) and takes
+  // the hue furthest from every node and attested role.
+  const exploratoryL = backgroundIsLight(background) ? 0.26 : 0.74;
+  // Lightness ladder: exploratory sits with the brighter roles on its own hue, attested between
+  // them, selection clearly under text and clearly over hover's partner roles.
   const roles: Record<HarmonyRole, { L: number; C: number; H: number; floor: number }> = {
     aggregate: { L: 0.8, C, H: hue(0), floor: 3 },
     concept: { L: 0.7, C: C * 0.85, H: hue(1), floor: 3 },
     attested: { L: 0.6, C: C * 0.7, H: hue(2), floor: 3 },
-    exploratory: { L: 0.5, C: C * 0.9, H: hue(0), floor: 3 },
+    exploratory: { L: exploratoryL, C: C * 0.9, H: apartHue(hues), floor: 3 },
     selection: { L: 0.8, C: C * 0.55, H: hue(0), floor: 3 },
     hover: { L: 0.93, C: C * 0.6, H: hue(1), floor: 3 },
     container: { L: 0.66, C: C * 0.8, H: hue(2), floor: 3 },
@@ -199,7 +227,6 @@ function separateRoles(
     return true;
   };
   for (let sweep = 0; sweep < 40; sweep += 1) {
-    let failing = false;
     for (const { roles: [roleA, roleB], minDeltaE } of HARMONY_SEPARATIONS) {
       for (let nudge = 0; nudge < 120 && deltaEok(hex[roleA], hex[roleB]) < minDeltaE; nudge += 1) {
         const a = srgbToOklch(hex[roleA]), b = srgbToOklch(hex[roleB]);
@@ -208,8 +235,13 @@ function separateRoles(
         if (tryLower(darker)) continue;
         break;
       }
-      if (deltaEok(hex[roleA], hex[roleB]) < minDeltaE) failing = true;
     }
+    // The sweep only counts as done when every pair holds against the final state: repairing a
+    // later pair can erode an earlier one's margin (D-071 G11: exploratory sits between the node
+    // roles, so raising it for one pair moves it toward another's role).
+    let failing = false;
+    for (const { roles: [roleA, roleB], minDeltaE } of HARMONY_SEPARATIONS)
+      if (deltaEok(hex[roleA], hex[roleB]) < minDeltaE) failing = true;
     if (!failing) return;
   }
 }

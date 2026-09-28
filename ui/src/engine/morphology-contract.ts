@@ -28,6 +28,8 @@ export const MORPHOLOGY_CONTRACT: Readonly<Record<Morphology, MorphologyGeometry
     glow: { maximumCoreRatio: 1.45, strength: 0.09 },
     // D-071 G9 taper: drawn width at each soma end, as a multiple of the mid-edge width, so the
     // rastremazione survives the pixel floors at overview scale (2.2–2.6×, mid never below ~0.6 px).
+    // D-071 G11: each end's ratio is additionally capped by its soma's degree in the canvas layer
+    // (full up to degree 4, then base/√(degree/4), floor 1.3) so hub roots stay separable.
     edge: { path: "soft-curve", amplitude: [0.06, 0.14], periods: [0, 0], taper: [2.4, 2.2], widthVariation: 0.3 },
     branching: "topological", terminals: "soma",
     hover: { radiusMultiplier: 1.15, brightnessMultiplier: 1.2 }, focus: { radiusMultiplier: 1.25, brightnessMultiplier: 1.3 },

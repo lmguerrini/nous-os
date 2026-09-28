@@ -100,7 +100,7 @@ test("D-071 the volume line is hidden in 2D and shown in 3D", async ({ page }) =
   await expect(page.locator("#volume-stats")).toBeHidden();
   await setFlat3d(page);
   await expect(page.locator("#volume-stats")).toBeVisible();
-  await expect(page.locator("#volume-stats")).toContainText("proporzioni 1 :");
+  await expect(page.locator("#volume-stats")).toContainText("lunghezza 100 %");
 });
 
 test("D-071 Front, Side and Top views never collapse into a strip", async ({ page }) => {

@@ -38,11 +38,11 @@ test("shortLabelWithEllipsis: a page-truncated short title never keeps its trail
   assert.equal(midWord, "Signal…");
 });
 
-test("formatVolumeProportions: Italian readout with decimal comma, largest axis first", () => {
-  assert.equal(formatVolumeProportions({ second: 0.98, third: 0.47 }), "proporzioni 1 : 0,98 : 0,47");
-  assert.equal(formatVolumeProportions({ second: 1, third: 1 }), "proporzioni 1 : 1,00 : 1,00");
-  assert.equal(formatVolumeProportions({ second: 0.25, third: 0.12 }), "proporzioni 1 : 0,25 : 0,12");
-  assert.ok(!formatVolumeProportions({ second: 0.5, third: 0.3 }).includes("."), "no decimal point survives");
+test("formatVolumeProportions: the three PCA extents in words, as percentages of the longest axis", () => {
+  assert.equal(formatVolumeProportions({ second: 0.98, third: 0.47 }), "lunghezza 100 % · larghezza 98 % · spessore 47 %");
+  assert.equal(formatVolumeProportions({ second: 1, third: 1 }), "lunghezza 100 % · larghezza 100 % · spessore 100 %");
+  assert.equal(formatVolumeProportions({ second: 0.25, third: 0.12 }), "lunghezza 100 % · larghezza 25 % · spessore 12 %");
+  assert.ok(!formatVolumeProportions({ second: 0.5, third: 0.3 }).includes(":"), "no ratio colon survives");
   assert.ok(!formatVolumeProportions({ second: 0.5, third: 0.3 }).includes("λ"), "no λ jargon survives");
 });
 

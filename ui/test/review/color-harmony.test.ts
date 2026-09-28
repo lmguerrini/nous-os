@@ -84,7 +84,9 @@ test("the new warm palettes are warm and harmonically coherent", () => {
     const { H } = srgbToOklch(palette.aggregate);
     // Warm hues live between orange and yellow (roughly 45°–95°).
     assert.ok(H >= 40 && H <= 100, `${name} aggregate hue ${H}`);
-    for (const role of ["aggregate", "concept", "exploratory", "container"] as const) {
+    // D-071 G11: the exploratory role is deliberately the hue-apart accent line, not a family
+    // member; every other role stays within the analogous band of the base.
+    for (const role of ["aggregate", "concept", "container"] as const) {
       const diff = Math.abs(signedDiff(srgbToOklch(palette[role]).H, H));
       assert.ok(diff <= 40, `${name}.${role} stays within an analogous band of the base (${diff}°)`);
     }
@@ -102,7 +104,8 @@ test("the warm preset families keep their warm character", () => {
   const warmHue = (hue: number) => (hue >= 0 && hue <= 110) || hue >= 340;
   for (const name of warmPresets) {
     const palette = PALETTES[name];
-    for (const role of ["aggregate", "concept", "exploratory"] as const) {
+    // The node roles stay warm; the generated exploratory accent may sit on its apart hue (G11).
+    for (const role of ["aggregate", "concept"] as const) {
       const hue = srgbToOklch(palette[role]).H;
       assert.ok(warmHue(hue), `${name}.${role} hue ${hue.toFixed(1)} is not warm`);
     }

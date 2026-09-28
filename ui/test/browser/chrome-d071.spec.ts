@@ -79,7 +79,7 @@ test('G8 defects 2, 3, 6, 8: solid gizmo, labels clear of the overlays, Italian 
   });
   expect(volume.exists).toBe(true);
   expect(volume.hidden).toBe(false);
-  expect(volume.text).toMatch(/^Volume 3D: proporzioni 1 : \d+,\d{2} : \d+,\d{2}$/);
+  expect(volume.text).toMatch(/^Volume 3D · lunghezza 100 % · larghezza \d{1,3} % · spessore \d{1,3} %$/);
   expect(volume.text).not.toContain('λ');
   expect(volume.title.length).toBeGreaterThan(20);
 
@@ -148,4 +148,38 @@ test('G8 defects 4, 5: the legend draws the active palette, and the editor names
   expect(harmony[1]).toEqual([state.palette.values.exploratory, state.palette.values.exploratory]);
   expect(harmony[2]).toEqual([state.palette.values.container]);
   expect(harmony[3]).toEqual([state.palette.values.selection, state.palette.values.selection]);
+});
+
+test('G11: the preset button says «Applica preset», and the selection details start under their own heading', async ({ page }) => {
+  await page.goto(url);
+  await page.evaluate(() => (window as any).__d067.ready);
+  await page.waitForTimeout(1500);
+
+  // Item 3: the appearance preset button is no longer a bare ambiguous «Applica».
+  const presetButton = await page.evaluate(() => ({
+    text: document.getElementById('preset-apply')!.textContent,
+  }));
+  expect(presetButton.text).toBe('Applica preset');
+
+  // Item 4: the legend is followed by a ruled «Selezione» heading before any detail line.
+  const separation = await page.evaluate(() => {
+    const heading = document.getElementById('selection-heading');
+    if (!heading) return { exists: false };
+    const legend = document.getElementById('flow-legend-section')!;
+    const style = getComputedStyle(heading);
+    const headingRect = heading.getBoundingClientRect();
+    const legendRect = legend.getBoundingClientRect();
+    return {
+      exists: true,
+      label: heading.textContent,
+      ruled: style.borderTopWidth !== '0px' && style.borderTopStyle !== 'none',
+      margin: Number.parseFloat(style.marginTop),
+      after: headingRect.top >= legendRect.bottom,
+    };
+  });
+  expect(separation.exists).toBe(true);
+  expect((separation as { label?: string }).label).toBe('Selezione');
+  expect((separation as { ruled?: boolean }).ruled).toBe(true);
+  expect((separation as { margin?: number }).margin ?? 0).toBeGreaterThanOrEqual(8);
+  expect((separation as { after?: boolean }).after).toBe(true);
 });

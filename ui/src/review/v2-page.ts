@@ -230,7 +230,7 @@ export class V2Page {
             if (volumeRow) {
                 volumeRow.hidden = projection !== '3d';
                 if (projection === '3d') {
-                    volumeRow.textContent = `Volume 3D: ${formatVolumeProportions(volume.ratios)}`;
+                    volumeRow.textContent = `Volume 3D · ${formatVolumeProportions(volume.ratios)}`;
                     volumeRow.title = VOLUME_READOUT_HELP;
                 }
             }
@@ -658,6 +658,12 @@ export class V2Page {
         }
         host.append(search);
         appendFlowLegend(host, this.palette);
+        // D-071 G11: a rule and a heading separate the selection details from the legend, so the
+        // first detail line («dominio …») never reads as a truncated legend entry.
+        const selectionHeading = document.createElement('h3');
+        selectionHeading.id = 'selection-heading';
+        selectionHeading.textContent = 'Selezione';
+        host.append(selectionHeading);
         if (this.selected === ABSOLUTE_CONTAINER_ID) {
             const h = document.createElement('h2'); h.textContent = 'NousOS'; host.append(h);
             line(host, 'Domini', shown.nodes.filter(node => node.level === 1).length);
