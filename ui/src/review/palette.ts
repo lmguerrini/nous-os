@@ -21,8 +21,10 @@ export const PALETTES: Readonly<Record<Exclude<Colour, "custom">, PaletteValues>
   "warm-twilight": { ...neutral, background: "#140c13", aggregate: "#e8b4bd", concept: "#cea0b0", attested: "#d0a0ac", exploratory: "#e9bcb1", selection: "#ffe4dd", hover: "#edbcc4", container: "#c59da8", text: "#f3e0e0" },
   sepia: { ...neutral, background: "#110d0a", aggregate: "#dbc5ac", concept: "#c8ad91", attested: "#c1a78e", exploratory: "#dec4a8", selection: "#f7e5ce", hover: "#dfc8af", container: "#bda68c", text: "#eadecf" },
   // D-071: two warm presets derived by OKLCH harmony (analogous) and kept in the same family.
-  brace: harmonize("#f0a06a", "#140a06", "analogous"),
-  miele: harmonize("#ffd38b", "#120b05", "analogous"),
+  // Curated warm presets keep a warm exploratory accent, set apart by lightness and chroma rather than by the
+  // generated harmonies' hue-apart accent, which would put a cold line in a warm palette.
+  brace: { ...harmonize("#f0a06a", "#140a06", "analogous"), exploratory: "#ffd166" },
+  miele: { ...harmonize("#ffd38b", "#120b05", "analogous"), exploratory: "#f5e663" },
 };
 export function hexRgb(value: string): readonly [number, number, number] {
   const match = /^#([0-9a-f]{6})$/i.exec(value);
