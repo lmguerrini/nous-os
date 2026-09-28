@@ -5,7 +5,7 @@ export type PaletteValues = { background: string; aggregate: string; concept: st
   exploratory: string; selection: string; hover: string; container: string; text: string };
 export const PALETTE_ROLES = ["background", "aggregate", "concept", "attested", "exploratory", "selection", "hover", "container", "text"] as const;
 const neutral: PaletteValues = { background: "#050505", aggregate: "#f0f0f0", concept: "#dedede", attested: "#b8b8b8",
-  exploratory: "#e4e4e4", selection: "#ffffff", hover: "#ffffff", container: "#bcbcbc", text: "#e8e8e8" };
+  exploratory: "#e4e4e4", selection: "#ffffff", hover: "#ffffff", container: "#ebebeb", text: "#e8e8e8" };
 export const PALETTES: Readonly<Record<Exclude<Colour, "custom">, PaletteValues>> = {
   bw: neutral,
   warm: { ...neutral, aggregate: "#ffd5ab", concept: "#f4b48e", exploratory: "#ffcf85" },

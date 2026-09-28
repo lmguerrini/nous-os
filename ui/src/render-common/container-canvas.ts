@@ -156,7 +156,7 @@ const FIELD_LIGHT_CHANNEL_SUM = 380;
 export const CONTAINER_INK_LIGHT_FIELD_MAX_SUM = 344;
 /** On a dark field the container ink may not be darker than this channel sum (a mid-light grey):
  * below it the shells sink into the night. Every shipped preset's container role sits above it
- * (monochrome `#bcbcbc` sums 564), so presets draw unclamped; only a user-chosen too-dark role
+ * (monochrome `#ebebeb` sums 705), so presets draw unclamped; only a user-chosen too-dark role
  * is lifted toward white until it reads. */
 export const CONTAINER_INK_DARK_FIELD_MIN_SUM = 444;
 

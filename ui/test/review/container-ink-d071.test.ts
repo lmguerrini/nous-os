@@ -90,10 +90,10 @@ test("without a role the historical fixed ink stays, so pure callers keep today'
   assert.equal(containerInkRgb("#zzzzzz", DARK_FIELD), "235, 235, 235", "an unparseable role falls back");
 });
 
-test("the monochrome preset draws with its own role: #bcbcbc, exactly 0.8× the old fixed ink", () => {
+test("the monochrome preset draws with its own role, #ebebeb, the historical container ink", () => {
   const ink = containerInkRgb(PALETTES.bw.container, `rgb(5, 5, 5)`);
-  assert.equal(ink, "188, 188, 188");
-  assert.equal(188 / 235, 0.8, "188 is exactly 80 % of the old 235 channel: same neutral hue, one fifth dimmer");
+  assert.equal(ink, "235, 235, 235", "the neutral role keeps the ink every earlier build drew with");
+  assert.equal(containerInkRgb(undefined, `rgb(5, 5, 5)`), ink, "role and fallback agree for the neutral presets");
   assert.ok(sum(ink) >= CONTAINER_INK_DARK_FIELD_MIN_SUM, "the monochrome role needs no clamping");
 });
 
