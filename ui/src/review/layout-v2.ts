@@ -138,6 +138,50 @@ function domainCentres(roots: readonly LayoutNode[], edges: readonly LayoutEdge[
     }
     return new Map(points.map(point => [point.id, { x: point.x, y: point.y, z: 0 }]));
 }
+/** Weighted relation degree per node: attested edges count fully, exploratory half. A pure fold over
+ * the edge list, so it never depends on iteration order beyond exact dyadic additions. */
+function relationDegrees(nodes: readonly LayoutNode[], edges: readonly LayoutEdge[]): Map<string, number> {
+    const degree = new Map<string, number>(nodes.map(node => [node.id, 0]));
+    for (const edge of edges) {
+        if (edge.source === edge.target)
+            continue;
+        const weight = edge.class === 'attested' ? 1 : 0.5;
+        const source = degree.get(edge.source);
+        if (source !== undefined)
+            degree.set(edge.source, source + weight);
+        const target = degree.get(edge.target);
+        if (target !== undefined)
+            degree.set(edge.target, target + weight);
+    }
+    return degree;
+}
+/** Relation degree at which a node is a full hub; above it the clearance saturates. */
+const HUB_DEGREE_SATURATION = 18;
+/** Extra pairwise distance a full hub enforces, in spacing units, added once per endpoint. */
+const HUB_CLEARANCE = 1.7;
+/** Nodes at or above this hub factor leave the fine collision grid for the coarse hub grid, because
+ * their minimum distance to a partner can exceed one fine cell. */
+const HUB_HEAVY_FACTOR = 0.25;
+/** Share of the hub clearance the 3D relax step enforces: placement already guarantees the full
+ * floor, and the cap keeps the relax repulsion grid near its old density so the fixed iterations
+ * stay cheap. */
+const RELAX_HUB_CAP = 0.5;
+/** Degree-weighted collision radii for the organic Flat layouts (Neural and Mycelium): principal
+ * nodes with many relations keep clear room around them. Stellar never uses this — its packed
+ * cluster grammar has its own separation rule. */
+type HubClearances = {
+    readonly of: (id: string) => number;
+    readonly isHeavy: (id: string) => boolean;
+};
+function hubClearances(nodes: readonly LayoutNode[], edges: readonly LayoutEdge[], spacing: number): HubClearances {
+    const degree = relationDegrees(nodes, edges);
+    const factorOf = (id: string) => Math.min(1, (degree.get(id) ?? 0) / HUB_DEGREE_SATURATION);
+    const heavySet = new Set(nodes.filter(node => factorOf(node.id) >= HUB_HEAVY_FACTOR).map(node => node.id));
+    return {
+        of: (id: string) => spacing * HUB_CLEARANCE * factorOf(id),
+        isHeavy: (id: string) => heavySet.has(id),
+    };
+}
 const frac = (value: number) => value - Math.floor(value);
 /** A child's 3D shell grows outward with the phyllotaxis index, so later siblings sit farther out. */
 function shell3d(index: number, step: number, phase = 0): Point3 {
@@ -202,29 +246,48 @@ function flat2d(input: LayoutInput): LayoutResult {
     const { byId, children } = hierarchy(input.nodes);
     const params = morphologyLayoutParams(input.morphology);
     const spacing = 21 * params.spacingMultiplier / Math.sqrt(params.clusterCompactness);
+    const hubs = hubClearances(input.nodes, input.edges, spacing);
     const positions = new Map<string, Point3>();
-    const cell = spacing * 2;
-    const occupied = new Map<string, string[]>();
-    const cellKey = (x: number, y: number) => `${Math.floor(x / cell)}:${Math.floor(y / cell)}`;
+    // Light nodes hash into a fine grid whose cell covers the largest minimum two light nodes can
+    // demand; hub-strength nodes hash into a coarse one covering the largest hub-involving minimum,
+    // so degree-weighted collisions stay exact without scanning the whole field per candidate.
+    const lightCell = spacing * (0.72 + 20 / 24 + 2 * HUB_CLEARANCE * HUB_HEAVY_FACTOR);
+    const heavyCell = spacing * (0.72 + 20 / 24 + 2 * HUB_CLEARANCE);
+    const light = new Map<string, string[]>();
+    const heavy = new Map<string, string[]>();
     const occupy = (id: string, point: Point3) => {
         positions.set(id, point);
-        const key = cellKey(point.x, point.y);
-        const list = occupied.get(key) ?? [];
+        const isHeavy = hubs.isHeavy(id);
+        const cell = isHeavy ? heavyCell : lightCell;
+        const key = `${Math.floor(point.x / cell)}:${Math.floor(point.y / cell)}`;
+        const grid = isHeavy ? heavy : light;
+        const list = grid.get(key) ?? [];
         list.push(id);
-        occupied.set(key, list);
+        grid.set(key, list);
     };
     const free = (node: LayoutNode, point: Point3) => {
-        const col = Math.floor(point.x / cell), row = Math.floor(point.y / cell);
+        const mine = hubs.of(node.id);
+        const base = (other: LayoutNode) => spacing * (0.72 + (radiusOf(node) + radiusOf(other)) / 24);
+        const hc = Math.floor(point.x / heavyCell), hr = Math.floor(point.y / heavyCell);
         for (let dx = -1; dx <= 1; dx++)
-            for (let dy = -1; dy <= 1; dy++) {
-                for (const id of occupied.get(`${col + dx}:${row + dy}`) ?? []) {
-                    const other = byId.get(id)!;
+            for (let dy = -1; dy <= 1; dy++)
+                for (const id of heavy.get(`${hc + dx}:${hr + dy}`) ?? []) {
+                    if (id === node.id)
+                        continue;
                     const previous = positions.get(id)!;
-                    const minimum = spacing * (0.72 + (radiusOf(node) + radiusOf(other)) / 24);
-                    if (Math.hypot(point.x - previous.x, point.y - previous.y) < minimum)
+                    if (Math.hypot(point.x - previous.x, point.y - previous.y) < base(byId.get(id)!) + mine + hubs.of(id))
                         return false;
                 }
-            }
+        const rings = Math.max(1, Math.ceil((spacing * (0.72 + (radiusOf(node) + 10) / 24) + mine + spacing * HUB_CLEARANCE * HUB_HEAVY_FACTOR) / lightCell));
+        const lc = Math.floor(point.x / lightCell), lr = Math.floor(point.y / lightCell);
+        for (let dx = -rings; dx <= rings; dx++)
+            for (let dy = -rings; dy <= rings; dy++)
+                for (const id of light.get(`${lc + dx}:${lr + dy}`) ?? []) {
+                    const other = byId.get(id)!;
+                    const previous = positions.get(id)!;
+                    if (Math.hypot(point.x - previous.x, point.y - previous.y) < base(other) + mine + hubs.of(id))
+                        return false;
+                }
         return true;
     };
     for (const node of input.nodes) {
@@ -282,30 +345,49 @@ function flat3d(input: LayoutInput): LayoutResult {
     const { byId, children } = hierarchy(input.nodes);
     const params = morphologyLayoutParams(input.morphology);
     const spacing = 21 * params.spacingMultiplier / Math.sqrt(params.clusterCompactness);
+    const hubs = hubClearances(input.nodes, input.edges, spacing);
     const positions = new Map<string, Point3>();
-    const cell = spacing * 2;
-    const occupied = new Map<string, string[]>();
-    const cellKey = (x: number, y: number, z: number) => `${Math.floor(x / cell)}:${Math.floor(y / cell)}:${Math.floor(z / cell)}`;
+    // As in flat2d: a fine grid for light nodes, a coarse one for hubs, so the weighted minimums
+    // are enforced exactly without a whole-field scan.
+    const lightCell = spacing * (0.72 + 20 / 24 + 2 * HUB_CLEARANCE * HUB_HEAVY_FACTOR);
+    const heavyCell = spacing * (0.72 + 20 / 24 + 2 * HUB_CLEARANCE);
+    const light = new Map<string, string[]>();
+    const heavy = new Map<string, string[]>();
     const occupy = (id: string, point: Point3) => {
         positions.set(id, point);
-        const key = cellKey(point.x, point.y, point.z);
-        const list = occupied.get(key) ?? [];
+        const isHeavy = hubs.isHeavy(id);
+        const cell = isHeavy ? heavyCell : lightCell;
+        const key = `${Math.floor(point.x / cell)}:${Math.floor(point.y / cell)}:${Math.floor(point.z / cell)}`;
+        const grid = isHeavy ? heavy : light;
+        const list = grid.get(key) ?? [];
         list.push(id);
-        occupied.set(key, list);
+        grid.set(key, list);
     };
     const free = (node: LayoutNode, point: Point3) => {
-        const col = Math.floor(point.x / cell), row = Math.floor(point.y / cell), depth = Math.floor(point.z / cell);
+        const mine = hubs.of(node.id);
+        const base = (other: LayoutNode) => spacing * (0.72 + (radiusOf(node) + radiusOf(other)) / 24);
+        const hc = Math.floor(point.x / heavyCell), hr = Math.floor(point.y / heavyCell), hd = Math.floor(point.z / heavyCell);
         for (let dx = -1; dx <= 1; dx++)
             for (let dy = -1; dy <= 1; dy++)
-                for (let dz = -1; dz <= 1; dz++) {
-                    for (const id of occupied.get(`${col + dx}:${row + dy}:${depth + dz}`) ?? []) {
-                        const other = byId.get(id)!;
+                for (let dz = -1; dz <= 1; dz++)
+                    for (const id of heavy.get(`${hc + dx}:${hr + dy}:${hd + dz}`) ?? []) {
+                        if (id === node.id)
+                            continue;
                         const previous = positions.get(id)!;
-                        const minimum = spacing * (0.72 + (radiusOf(node) + radiusOf(other)) / 24);
-                        if (Math.hypot(point.x - previous.x, point.y - previous.y, point.z - previous.z) < minimum)
+                        if (Math.hypot(point.x - previous.x, point.y - previous.y, point.z - previous.z) < base(byId.get(id)!) + mine + hubs.of(id))
                             return false;
                     }
-                }
+        const rings = Math.max(1, Math.ceil((spacing * (0.72 + (radiusOf(node) + 10) / 24) + mine + spacing * HUB_CLEARANCE * HUB_HEAVY_FACTOR) / lightCell));
+        const lc = Math.floor(point.x / lightCell), lr = Math.floor(point.y / lightCell), ld = Math.floor(point.z / lightCell);
+        for (let dx = -rings; dx <= rings; dx++)
+            for (let dy = -rings; dy <= rings; dy++)
+                for (let dz = -rings; dz <= rings; dz++)
+                    for (const id of light.get(`${lc + dx}:${lr + dy}:${ld + dz}`) ?? []) {
+                        const other = byId.get(id)!;
+                        const previous = positions.get(id)!;
+                        if (Math.hypot(point.x - previous.x, point.y - previous.y, point.z - previous.z) < base(other) + mine + hubs.of(id))
+                            return false;
+                    }
         return true;
     };
     for (const node of input.nodes) {
@@ -353,13 +435,15 @@ function flat3d(input: LayoutInput): LayoutResult {
         if (!rootSet.has(node.id))
             movable.push(node.id);
     }
-    relax3d(positions, movable, byId, input.edges, spacing);
+    relax3d(positions, movable, byId, input.edges, spacing, hubs);
     return { positions, containers: [], source: 'flat-community' };
 }
 /** A fixed number of deterministic force steps: repulsion keeps the 3D shells apart while attested
  * relations and the parent keep semantic neighbours close. Only freshly placed non-root nodes move, so
- * disclosing a branch never disturbs positions that are already on screen. */
-function relax3d(positions: Map<string, Point3>, movable: readonly string[], byId: Map<string, LayoutNode>, edges: readonly LayoutEdge[], spacing: number): void {
+ * disclosing a branch never disturbs positions that are already on screen. The repulsion minimum is
+ * degree-weighted, mirroring the placement collision radius, so hubs keep their room while the
+ * bounded iterations run. */
+function relax3d(positions: Map<string, Point3>, movable: readonly string[], byId: Map<string, LayoutNode>, edges: readonly LayoutEdge[], spacing: number, hubs: HubClearances): void {
     if (!movable.length)
         return;
     const neighbourIds = new Map<string, string[]>();
@@ -370,7 +454,10 @@ function relax3d(positions: Map<string, Point3>, movable: readonly string[], byI
         list.push(edge.target);
         neighbourIds.set(edge.source, list);
     }
-    const cell = spacing * 1.4;
+    // The cell spans the largest weighted minimum any pair can demand under the relax cap, so the
+    // 3×3×3 scan still sees every violator.
+    const cell = spacing * (1.05 + 2 * RELAX_HUB_CAP);
+    const relaxClearance = (id: string) => Math.min(hubs.of(id), spacing * RELAX_HUB_CAP);
     for (let iteration = 0; iteration < 16; iteration++) {
         const grid = new Map<string, string[]>();
         for (const [id, point] of positions) {
@@ -395,9 +482,9 @@ function relax3d(positions: Map<string, Point3>, movable: readonly string[], byI
                             const other = positions.get(otherId)!;
                             const vx = point.x - other.x, vy = point.y - other.y, vz = point.z - other.z;
                             const distance = Math.max(0.001, Math.hypot(vx, vy, vz));
-                            const minimum = spacing * 1.05;
+                            const minimum = spacing * 1.05 + relaxClearance(id) + relaxClearance(otherId);
                             if (distance < minimum) {
-                                const push = (minimum - distance) / minimum * spacing * 0.12;
+                                const push = (minimum - distance) * 0.12;
                                 fx += vx / distance * push;
                                 fy += vy / distance * push;
                                 fz += vz / distance * push;
@@ -425,7 +512,9 @@ function relax3d(positions: Map<string, Point3>, movable: readonly string[], byI
                     continue;
                 const vx = neighbour.x - point.x, vy = neighbour.y - point.y, vz = neighbour.z - point.z;
                 const distance = Math.max(0.001, Math.hypot(vx, vy, vz));
-                const target = spacing * 3.2;
+                // The relation target itself is degree-weighted, so a hub-hub attested link rests
+                // near its own wider floor instead of dragging both hubs back together.
+                const target = spacing * 3.2 + 0.45 * (hubs.of(id) + hubs.of(neighbourId));
                 if (distance > target) {
                     const pull = (distance - target) / distance * spacing * 0.03;
                     fx += vx / distance * pull;
