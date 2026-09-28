@@ -1,4 +1,6 @@
 import type { LabelReason, ViewportRect } from "./view-contract.ts";
+import { normalizeDensity } from "./lod.ts";
+import type { Density } from "./lod.ts";
 import { ellipsizeText, ellipsizeTextKeepCount, stripTrailingSeparators } from "../render-common/container-canvas.ts";
 export type LabelCandidate = {
   id: string;
@@ -28,6 +30,17 @@ export const PEARL_LABEL_MARGIN_PX = 3;
 
 /** Hard ceiling on labels drawn in one state: selected, neighbours, hubs and focused communities first. */
 export const LABEL_BUDGET = 60;
+
+/** D-072 L1: the label allowance of each density setting. LABEL_BUDGET stays the absolute
+ * ceiling and the Completa value; the page passes `labelBudget` through the view input and the
+ * view must hand it to `placeLabels` as its budget (falling back to LABEL_BUDGET). */
+export const DENSITY_LABEL_BUDGETS: Readonly<Record<Density, number>> = {
+  essential: 20,
+  balanced: 40,
+  complete: 60,
+};
+
+export const labelBudgetOf = (density: Density): number => DENSITY_LABEL_BUDGETS[normalizeDensity(density)];
 
 /** Clearance added to a node's drawn core radius when building its blocking disc: the disc is the
  * real footprint plus a little air, never a multiplier of the long half-axis (a neural soma's

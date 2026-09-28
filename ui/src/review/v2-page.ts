@@ -9,6 +9,9 @@ import { projectRelations } from './v2-relations.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
+import { adjacencyOf, communityResolver, DENSITY_BUDGETS, formatCount, lodLevelFromZoom, normalizeDensity, selectArcs, selectNodes } from './lod.ts';
+import type { Density, LodLevel } from './lod.ts';
+import { labelBudgetOf } from './labels.ts';
 import { createProductView } from './product-view.ts';
 import { appendFlowLegend } from './legend.ts';
 import { buildNodePanel, buildRelationPanel, renderSelection } from './panel-view.ts';
@@ -63,6 +66,13 @@ export class V2Page {
     private flowMotion = true;
     private renderedRelations = new Map<string, LiftedRelation>();
     private previousVisible = new Set<string>();
+    /** D-072 L1: the density setting (Essenziale · Bilanciata · Completa) and the camera LOD
+     * level with its hysteresis state. */
+    private density: Density = 'balanced';
+    private lod: LodLevel = 'far';
+    /** The subset of the disclosed set the LOD actually hands to the view. */
+    private rendered = new Set<string>();
+    private lodCounts = { nodes: { rendered: 0, available: 0 }, arcs: { rendered: 0, available: 0 } };
     private detailCache = new Map<string, Record<string, unknown>>();
     private positions = new Map<string, Point3>();
     /** Un-expanded layout positions, the deterministic base for `previous`. */
@@ -91,13 +101,14 @@ export class V2Page {
     private whyResult: ReturnType<typeof v2Path> | null = null;
     private whyRequest: [string, string] | null = null;
     private capMessage = false;
-    constructor(manifest: GraphManifest, index: V2Index, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}) {
+    constructor(manifest: GraphManifest, index: V2Index, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced') {
         this.manifest = manifest;
         this.index = index;
         this.axes = axes;
         this.appearance = appearance;
         this.palette = palette;
         this.v2Colours = colours;
+        this.density = normalizeDensity(density);
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
             root.addEventListener(type, () => { this.userMovedSinceFit = true; }, { passive: true });
@@ -105,13 +116,13 @@ export class V2Page {
             if (n.level === 1 && index.nodes.some(child => child.level === 2 && child.parent === n.id))
                 this.history.state.expanded.add(n.id);
     }
-    static async load(manifest: GraphManifest, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}): Promise<V2Page> {
+    static async load(manifest: GraphManifest, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced'): Promise<V2Page> {
         element('status').textContent = 'Caricamento del grafo\u2026 indice';
         const response = await fetch('/api/graph/index');
         if (!response.ok)
             throw new Error(`Indice del grafo: HTTP ${response.status}`);
         const index = validateIndex(await response.json());
-        const page = new V2Page(manifest, { nodes: index.nodes, edges: index.edges }, axes, appearance, palette, colours);
+        const page = new V2Page(manifest, { nodes: index.nodes, edges: index.edges }, axes, appearance, palette, colours, density);
         await page.refresh();
         return page;
     }
@@ -211,11 +222,63 @@ export class V2Page {
                 next.set(n.id, expanded.get(n.id) ?? { x: 0, y: 0, z: 0 });
             this.positions = next;
             this.communities = result.communities ?? [];
+            const active = this.hovered
+                ?? this.renderedRelations.get(this.selected ?? '')?.source
+                ?? this.index.edges.find(edge => edge.id === this.selected)?.source
+                ?? this.selected;
+            // D-072 L1: the semantic level of detail. The layout above is computed over the whole
+            // disclosed set and never sees the LOD, so a level or density change cannot move a
+            // node: whatever stays visible keeps its exact coordinates (the layout's own
+            // incremental stability — existing positions are seeds, only fresh nodes are placed).
+            const budget = DENSITY_BUDGETS[this.density];
+            const availableArcs = projectRelations(
+                this.index.nodes, this.index.edges, ids, this.axes.reading,
+                this.axes.organization, this.relationDetail, active,
+            );
+            const communityOf = communityResolver(this.index.nodes);
+            const adjacency = adjacencyOf(disclosed.nodes, this.index.edges);
+            const selection = selectNodes({
+                nodes: disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
+                level: this.lod,
+                budget: budget.nodes,
+                pinned: this.pinnedNodeIds(),
+                focus: active,
+                adjacency,
+                communityOf,
+            });
+            const renderedIds = new Set(selection.rendered);
+            const pool = projectRelations(
+                this.index.nodes, this.index.edges, renderedIds, this.axes.reading,
+                this.axes.organization, this.relationDetail, active,
+            );
+            const shown = selectArcs({
+                arcs: pool.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, class: edge.class, count: edge.count })),
+                budget: budget.arcs,
+                pinned: this.pinnedArcIds(),
+                focus: active,
+                communityOf,
+                keepExploratory: this.axes.reading !== 'attested',
+            }).map(id => pool.byId.get(id)!).filter(edge => edge);
+            this.rendered = renderedIds;
+            this.lodCounts = {
+                nodes: { rendered: renderedIds.size, available: ids.size },
+                arcs: { rendered: shown.length, available: availableArcs.total },
+            };
+            this.renderedRelations = new Map(shown.map(edge => [edge.id, edge]));
+            this.arcTotal = availableArcs.total;
+            // An Indra container whose children the LOD dropped draws as a closed pearl, never as
+            // an empty shell; the drawing reads the open flag, positions are untouched.
+            const renderedChildren = new Map<string, number>();
+            for (const id of renderedIds) {
+                const parent = visibleById.get(id)?.parent;
+                if (parent) renderedChildren.set(parent, (renderedChildren.get(parent) ?? 0) + 1);
+            }
             this.containers = result.containers.map(c => {
                 const node = visibleById.get(c.id);
                 const title = node && displayLabel(node);
                 const hidden = node ? hiddenCount(node) : 0;
-                return { ...c, ...(title ? { title: hidden ? `${title} · +${hidden}` : title } : {}) };
+                const open = c.id === ABSOLUTE_CONTAINER_ID || (c.open !== false && (renderedChildren.get(c.id) ?? 0) > 0);
+                return { ...c, open, ...(title ? { title: hidden ? `${title} · +${hidden}` : title } : {}) };
             });
             this.layoutSource = result.source;
             const volume = volumeStats(this.positions);
@@ -227,24 +290,13 @@ export class V2Page {
                     volumeRow.title = VOLUME_READOUT_HELP;
                 }
             }
-            const active = this.hovered
-                ?? this.renderedRelations.get(this.selected ?? '')?.source
-                ?? this.index.edges.find(edge => edge.id === this.selected)?.source
-                ?? this.selected;
-            const relations = projectRelations(
-                this.index.nodes, this.index.edges, ids, this.axes.reading,
-                this.axes.organization, this.relationDetail, active,
-            );
-            this.renderedRelations = new Map(relations.byId);
-            this.arcTotal = relations.total;
-            const shown = relations.edges;
             const adapted = adaptV2(disclosed.nodes, shown, next, this.manifest.digest);
-            const added = disclosed.nodes.filter(n => !this.previousVisible.has(n.id));
-            this.previousVisible = ids;
+            const added = [...renderedIds].filter(id => !this.previousVisible.has(id));
+            this.previousVisible = renderedIds;
             const old = this.view?.readCamera();
             this.view?.destroy();
             this.view = null;
-            this.view = await createProductView({ container: element('render-root'), data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: this.containers as typeof result.containers, visibleNodeIds: ids, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+            this.view = await createProductView({ container: element('render-root'), data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: this.containers as typeof result.containers, visibleNodeIds: renderedIds, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                         if (target.shiftKey && this.selected && this.selected !== target.id) {
                             this.why(this.selected, target.id);
                         }
@@ -299,7 +351,7 @@ export class V2Page {
                 this.view.select(this.selected);
             this.updateEmphasis();
             if (added.length && this.positions.size > added.length)
-                this.pulse(added.map(n => n.id));
+                this.pulse(added);
             element('status').textContent = 'Grafo pronto';
             const total = this.index.nodes.filter(n => n.level !== 5).length;
             element('counter').textContent = `${disclosed.nodes.length}/${total} nodi · livelli ${[1, 2, 3, 4, 5].map(l => `${l}: ${disclosed.counts[l]}`).join(' \u00B7 ')} · limite ${V2_CAP}`;
@@ -418,6 +470,77 @@ export class V2Page {
         return this.whyResult;
     }
     async setRelationDetail(value: RelationDetail) { this.relationDetail = value; await this.refresh(); }
+    /** D-072 L1: change the density setting (Essenziale · Bilanciata · Completa); the budgets are
+     * recomputed on the next refresh and the coordinates never move. */
+    async setDensity(value: Density) {
+        const next = normalizeDensity(value);
+        if (next === this.density)
+            return;
+        this.density = next;
+        await this.refresh();
+    }
+    get densitySetting() { return this.density; }
+    get lodLevel() { return this.lod; }
+    /** The explicit set of nodes no budget may drop: the selection with its whole parent path,
+     * the hovered focus, and every child of a node the user expanded by hand («Espandi»,
+     * «Mostra altri», reveal) — auto expansions by semantic zoom are not part of it. */
+    private pinnedNodeIds(): Set<string> {
+        const byId = new Map(this.index.nodes.map(n => [n.id, n]));
+        const pinned = new Set<string>();
+        const addPath = (id: string) => {
+            let cursor = byId.get(id);
+            const seen = new Set<string>();
+            while (cursor && !seen.has(cursor.id)) {
+                seen.add(cursor.id);
+                pinned.add(cursor.id);
+                cursor = cursor.parent ? byId.get(cursor.parent) : undefined;
+            }
+        };
+        if (this.selected)
+            addPath(this.selected);
+        if (this.hovered)
+            pinned.add(this.hovered);
+        for (const id of this.history.state.expanded) {
+            pinned.add(id);
+            for (const node of this.index.nodes)
+                if (node.parent === id)
+                    pinned.add(node.id);
+        }
+        return pinned;
+    }
+    /** Arc ids no budget may drop: the selected relation, the contains arcs along the selection's
+     * parent path, and the contains arcs a manual expansion opened. */
+    private pinnedArcIds(): Set<string> {
+        const pinned = new Set<string>();
+        const addPath = (id: string) => {
+            let cursor = this.index.nodes.find(n => n.id === id);
+            const seen = new Set<string>();
+            while (cursor && !seen.has(cursor.id)) {
+                seen.add(cursor.id);
+                if (cursor.parent)
+                    pinned.add(`contains:${cursor.id}`);
+                cursor = cursor.parent ? this.index.nodes.find(n => n.id === cursor!.parent) : undefined;
+            }
+        };
+        if (this.selected) {
+            pinned.add(this.selected);
+            addPath(this.selected);
+        }
+        for (const id of this.history.state.expanded)
+            for (const node of this.index.nodes)
+                if (node.parent === id)
+                    pinned.add(`contains:${node.id}`);
+        return pinned;
+    }
+    /** Labels actually placed by the view in its last pass. */
+    private labelCount(): number {
+        try {
+            return this.view?.witness().labels.length ?? 0;
+        }
+        catch {
+            return 0;
+        }
+    }
     private updateEmphasis() {
         const id = this.hovered ?? this.selected;
         const relation = this.renderedRelations.get(this.hoveredEdge ?? '') ?? this.renderedRelations.get(id ?? '');
@@ -542,7 +665,24 @@ export class V2Page {
         if (!ratio) return;
         const previous = this.lastZoomRatio;
         this.lastZoomRatio = ratio;
-        if (performance.now() < this.suppressZoomUntil || previous === null || ratio >= previous * 0.995)
+        if (performance.now() < this.suppressZoomUntil || previous === null)
+            return;
+        // D-072 L1: the LOD level is re-evaluated here, on camera settle — this tick runs four
+        // times a second, never per frame — and only a genuine band crossing rebuilds anything:
+        // the hysteresis absorbs small wheel movements back and forth. The scene is never
+        // rebuilt per frame.
+        const zoom = Math.max(0.1, (this.overviewRatio ?? ratio) / ratio);
+        const next = lodLevelFromZoom(zoom, this.lod);
+        if (next !== this.lod) {
+            this.lod = next;
+            void this.refresh();
+            return;
+        }
+        if (ratio >= previous * 0.995)
+            return;
+        // Progressive disclosure on zoom now belongs to the near level only: intermediate and far
+        // stay budgeted summaries, so a wheel step there can no longer add hundreds of nodes.
+        if (this.lod !== 'near')
             return;
         const witness = this.view.witness();
         const rect = witness.visibleRect;
@@ -574,6 +714,7 @@ export class V2Page {
             hidden: Object.fromEntries(shown.hidden),
             undoDepth: this.history.undoDepth,
             redoDepth: this.history.redoDepth,
+            lod: { level: this.lod, density: this.density, rendered: this.rendered.size },
         };
     }
     dataset() {
@@ -588,6 +729,15 @@ export class V2Page {
             layoutStats: layoutStats(this.positions),
             volume: volumeStats(this.positions),
             arcs: { shown: this.renderedRelations.size, total: this.arcTotal },
+            // D-072 L1: what the LOD is showing — level, density, and rendered vs available
+            // nodes, arcs and labels. The same numbers the panel prints.
+            lod: {
+                level: this.lod,
+                density: this.density,
+                nodes: { ...this.lodCounts.nodes },
+                arcs: { ...this.lodCounts.arcs },
+                labels: { rendered: this.labelCount(), available: labelBudgetOf(this.density) },
+            },
             dataset: this.dataset(),
             disclosure: this.disclosure(),
             capMessage: this.capMessage,
@@ -618,8 +768,15 @@ export class V2Page {
         host.append(overview);
         const controls = document.createElement('section');
         controls.id = 'v2-controls';
-        line(controls, 'Nodi visibili', `${shown.nodes.length}/${this.index.nodes.filter(n => n.level !== 5).length} · limite ${V2_CAP}`);
-        if (this.axes.organization === 'indra') line(controls, 'Archi', `${this.renderedRelations.size} di ${this.arcTotal}`);
+        // D-072 L1: rendered versus available, the counts — «Nodi 300 di 1.200
+        // disponibili · Archi 400 di 3.900». Nodes and arcs are what the LOD actually draws
+        // against what the current disclosure makes available; labels are drawn against the
+        // density's allowance.
+        line(controls, 'Nodi', `${formatCount(this.lodCounts.nodes.rendered)} di ${formatCount(this.lodCounts.nodes.available)} disponibili`);
+        line(controls, 'Archi', `${formatCount(this.lodCounts.arcs.rendered)} di ${formatCount(this.lodCounts.arcs.available)}`);
+        line(controls, 'Etichette', `${formatCount(this.labelCount())} di ${formatCount(labelBudgetOf(this.density))}`);
+        line(controls, 'Densità', { essential: 'Essenziale', balanced: 'Bilanciata', complete: 'Completa' }[this.density]);
+        line(controls, 'Grafo', `${formatCount(this.index.nodes.filter(n => n.level !== 5).length)} nodi · limite ${V2_CAP}`);
         if (this.axes.projection === '3d') {
             const volume = volumeStats(this.positions);
             const volumeRow = line(controls, 'Volume 3D', formatVolumeProportions(volume.ratios));
@@ -660,8 +817,8 @@ export class V2Page {
         if (this.selected === ABSOLUTE_CONTAINER_ID) {
             const h = document.createElement('h2'); h.textContent = 'NousOS'; host.append(h);
             line(host, 'Domini', shown.nodes.filter(node => node.level === 1).length);
-            line(host, 'Nodi visibili', shown.nodes.length);
-            line(host, 'Archi', `${this.renderedRelations.size} di ${this.arcTotal}`);
+            line(host, 'Nodi', `${formatCount(this.lodCounts.nodes.rendered)} di ${formatCount(this.lodCounts.nodes.available)} disponibili`);
+            line(host, 'Archi', `${formatCount(this.lodCounts.arcs.rendered)} di ${formatCount(this.lodCounts.arcs.available)} disponibili`);
             return;
         }
         if (!this.selected) {

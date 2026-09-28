@@ -142,6 +142,10 @@ export type ViewInput = {
   readonly flowMotion?: boolean;
   readonly appearance?: AppearanceOptions;
   readonly customPalette?: PaletteValues;
+  /** D-072 L1: maximum labels the view may place in one pass, from the density setting. The
+   * view must honour it by passing it to `placeLabels` as its budget; absent, it keeps using
+   * `LABEL_BUDGET`. */
+  readonly labelBudget?: number;
 };
 
 export type ProductView = {

@@ -27,6 +27,8 @@ import { V2Page } from "./v2-page.ts";
 import { bindSurfaces } from "./popover.ts";
 import type { PopoverStack, SurfaceBinding } from "./popover.ts";
 import type { GraphManifest } from "./graph-v2.ts";
+import { normalizeDensity } from "./lod.ts";
+import type { Density } from "./lod.ts";
 
 const get = <T extends Element>(id: string): T => {
   const item = document.getElementById(id);
@@ -864,6 +866,25 @@ get<HTMLElement>("gizmo").querySelectorAll<HTMLButtonElement>("button[data-axis-
   button.addEventListener("click", () => { void viewPreset(({ x: "destra", y: "alto", z: "fronte" } as const)[button.dataset.axisEnd as "x" | "y" | "z"]); });
 });
 get<HTMLInputElement>("semantic-zoom").addEventListener("change", event => v2?.setSemanticZoom((event.target as HTMLInputElement).checked));
+// D-072 L1: the density selector — Essenziale · Bilanciata · Completa — a small segmented control
+// in the toolbar row, default Bilanciata and remembered like the other preferences.
+let density = normalizeDensity(readLocal(storage, "d072.density", "balanced"));
+const densityButtons = [...document.querySelectorAll<HTMLButtonElement>("#density-control button[data-density]")];
+function syncDensity(): void {
+  for (const button of densityButtons)
+    button.setAttribute("aria-pressed", String(button.dataset.density === density));
+}
+function applyDensity(next: unknown): void {
+  const value = normalizeDensity(next);
+  if (value === density) return;
+  density = value;
+  writeLocal(storage, "d072.density", density);
+  syncDensity();
+  void v2?.setDensity(density);
+}
+for (const button of densityButtons)
+  button.addEventListener("click", () => { applyDensity(button.dataset.density); });
+syncDensity();
 get<HTMLSelectElement>("v2-relation-detail").addEventListener("change", event => { void v2?.setRelationDetail((event.target as HTMLSelectElement).value as "essential" | "all"); });
 get<HTMLButtonElement>("v2-undo").addEventListener("click", () => { void v2?.undo(); });
 get<HTMLButtonElement>("v2-redo").addEventListener("click", () => { void v2?.redo(); });
@@ -1018,6 +1039,8 @@ const api = {
   appearance: () => ({ ...appearance }),
   palette: () => ({ name: axes.colour, values: axes.colour === "custom" ? customPalette : PALETTES[axes.colour] }),
   reading: () => axes.reading,
+  density: () => density,
+  setDensity: (value: string) => { applyDensity(value); },
   witness: () => ({
     ...(v2?.witness() ?? view?.witness() ?? {}),
     panelRect: details.getBoundingClientRect().toJSON(),
@@ -1045,9 +1068,10 @@ async function load() {
   if (probe.ok) {
     const manifest = await probe.json() as GraphManifest;
     if (manifest.schema !== "nousos.review-graph/2") throw new Error("Manifest del grafo non valido");
-    v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours);
+    v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours, density);
     v2.setFlowMotion(flowMotion);
     get<HTMLElement>("v2-controls-top").hidden = false;
+    get<HTMLElement>("density-control").hidden = false;
     get<HTMLElement>("v2-relation-control").hidden = false;
     get<HTMLElement>("gizmo").hidden = axes.projection !== "3d";
     get<HTMLElement>("view-presets").hidden = axes.projection !== "3d";
