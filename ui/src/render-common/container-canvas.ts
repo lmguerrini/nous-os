@@ -73,6 +73,8 @@ export function projectedWorldScale(
 /** The one equator that reads best from this camera: the most face-on great circle, faded by the
  * flatness of its projected ellipse. Never more than one circle per sphere; null when every circle
  * is edge-on (flatness below the cutoff) and would read as a meaningless straight line. */
+const flatnessScratchX = new Float64Array(64);
+const flatnessScratchY = new Float64Array(64);
 export function chosenEquator(
   circles: readonly (readonly Coordinates[])[],
   project: (point: Coordinates) => ProjectedPoint,
@@ -81,13 +83,38 @@ export function chosenEquator(
   for (const circle of circles) {
     if (circle.length < 3) continue;
     const step = Math.max(1, Math.floor(circle.length / 16));
-    const sampled: { x: number; y: number }[] = [];
-    for (let index = 0; index < circle.length; index += step) sampled.push(project(circle[index]!));
-    const flatness = projectedFlatness(sampled);
+    let count = 0;
+    for (let index = 0; index < circle.length; index += step) {
+      const point = project(circle[index]!);
+      flatnessScratchX[count] = point.x;
+      flatnessScratchY[count] = point.y;
+      count += 1;
+    }
+    const flatness = flatnessOfSamples(flatnessScratchX, flatnessScratchY, count);
     if (greatCircleFade(flatness) <= 0) continue;
     if (!best || flatness > best.flatness) best = { circle, fade: greatCircleFade(flatness), flatness };
   }
   return best;
+}
+
+/** `projectedFlatness` over scratch buffers: same covariance, no per-circle allocation. */
+function flatnessOfSamples(xs: Float64Array, ys: Float64Array, count: number): number {
+  if (count < 3) return 0;
+  let meanX = 0, meanY = 0;
+  for (let index = 0; index < count; index++) { meanX += xs[index]!; meanY += ys[index]!; }
+  meanX /= count;
+  meanY /= count;
+  let xx = 0, yy = 0, xy = 0;
+  for (let index = 0; index < count; index++) {
+    const dx = xs[index]! - meanX, dy = ys[index]! - meanY;
+    xx += dx * dx;
+    yy += dy * dy;
+    xy += dx * dy;
+  }
+  const trace = xx + yy;
+  const root = Math.sqrt(Math.max(0, (xx - yy) ** 2 + 4 * xy * xy));
+  const major = (trace + root) / 2, minor = (trace - root) / 2;
+  return major <= 1e-12 ? 0 : clamp(Math.sqrt(Math.max(0, minor) / major), 0, 1);
 }
 
 /** An inner container sphere draws in 3D only when selected/hovered, open (children visible) or
@@ -189,7 +216,7 @@ function containerSelected(container: MorphologyContainerPath, interaction: Cont
  * the reserved space and the drawn title always agree (the shared predicate below is the single
  * source of truth for both). */
 const TITLE_CHAR_WIDTH = 6.5;
-const TITLE_MAX_WIDTH = 190;
+export const TITLE_MAX_WIDTH = 190;
 /** A closed pearl carries its title this far above its own centre, clear of the pearl itself. */
 const PEARL_TITLE_GAP_PX = 12;
 
@@ -205,19 +232,128 @@ export type TitleMeasure = (text: string, level: number) => number;
 
 const estimatedMeasure: TitleMeasure = (text) => [...text].length * TITLE_CHAR_WIDTH;
 
-/** The final drawn text of a container title and the width its rectangle reserves: the one layout
- * both the canvas drawer and the DOM label pass read, so a title's ink and its reserved rectangle
- * are the same thing. A « · +N» count suffix always survives; only the name part is ellipsized. */
-export function containerTitleLayout(title: string, measure: TitleMeasure = estimatedMeasure, level = 1): { readonly text: string; readonly width: number } {
-  const text = ellipsizeTextKeepCount(title, TITLE_MAX_WIDTH, value => measure(value, level));
-  return { text, width: Math.min(TITLE_MAX_WIDTH, Math.max(1, measure(text, level))) };
+// ---------------------------------------------------------------- per-frame drawing caches
+//
+// Everything below only ever caches values that are pure functions of their key, so a hit can never
+// serve a stale value: the key carries every input the value depends on (ink, level, text, measure
+// identity). The maps are size-capped and cleared when the cap is reached, so a long session with a
+// rotating camera cannot grow them without bound.
+
+export const DRAWING_CACHE_CAP = 1024;
+/** Memoised title layouts, one map per measure function (a measure is deterministic: a fixed font). */
+let titleLayoutCaches = new WeakMap<TitleMeasure, Map<string, { readonly text: string; readonly width: number }>>();
+/** The measures the size probe can see (bounded: contexts and views are few, and the set resets with the caches). */
+let knownMeasures = new Set<TitleMeasure>();
+let containersOrderCaches = new WeakMap<readonly MorphologyContainerPath[], {
+  readonly sorted: readonly MorphologyContainerPath[];
+  readonly byId: ReadonlyMap<string, MorphologyContainerPath>;
+}>();
+/** Unit-space sphere gradients, per drawing context (a gradient belongs to the context that built it):
+ * keyed by (kind, ink, level), so a palette change is a different key, never a stale hit. */
+const SPHERE_GRADIENT_CACHE_CAP = 64;
+let sphereGradientCaches = new WeakMap<CanvasRenderingContext2D, Map<string, CanvasGradient>>();
+
+/** A context that can compose translate/scale around a cached unit gradient (real canvas contexts
+ * can; minimal test doubles may not, and fall back to the per-sphere construction). */
+function canComposeTransform(context: CanvasRenderingContext2D): boolean {
+  return typeof context.translate === "function" && typeof context.scale === "function"
+    && typeof context.save === "function" && typeof context.restore === "function";
 }
 
-/** Projected outline used to measure a container's title position: the flat ring in 2D, the sphere
- * silhouette (all great circles) in 3D. */
-function titleOutline(container: MorphologyContainerPath, projection: "2d" | "3d"): readonly Coordinates[] {
-  if (projection === "3d") return container.shell?.flat() ?? [];
-  return container.points;
+/** One stable measurer per context, so the title-layout memo (keyed by measure identity) hits across
+ * frames while still measuring with the exact context and font it draws with. */
+let contextMeasurers = new WeakMap<CanvasRenderingContext2D, TitleMeasure>();
+function stableContextMeasurer(context: CanvasRenderingContext2D): TitleMeasure {
+  const hit = contextMeasurers.get(context);
+  if (hit) return hit;
+  const measure: TitleMeasure = (text, level) => {
+    context.font = containerTitleFont(level);
+    return context.measureText(text).width;
+  };
+  contextMeasurers.set(context, measure);
+  return measure;
+}
+
+/** Resets every drawing cache (title layouts, container order, sphere gradients, context measurers).
+ * Tests use it to observe cache behaviour. */
+export function resetDrawingCaches(): void {
+  titleLayoutCaches = new WeakMap();
+  knownMeasures = new Set();
+  containersOrderCaches = new WeakMap();
+  sphereGradientCaches = new WeakMap();
+  contextMeasurers = new WeakMap();
+}
+/** Number of memoised title layouts (bounded by the cap) — the bounded-growth witness. */
+export function drawingCacheSize(): number {
+  let total = 0;
+  for (const measure of knownMeasures) total += titleLayoutCaches.get(measure)?.size ?? 0;
+  return total;
+}
+
+function memoisedTitleLayout(title: string, measure: TitleMeasure, level: number): { readonly text: string; readonly width: number } {
+  let cache = titleLayoutCaches.get(measure);
+  if (!cache) {
+    cache = new Map();
+    titleLayoutCaches.set(measure, cache);
+    knownMeasures.add(measure);
+  }
+  const key = `${level}\u0000${title}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const text = ellipsizeTextKeepCount(title, TITLE_MAX_WIDTH, value => measure(value, level));
+  const layout = { text, width: Math.min(TITLE_MAX_WIDTH, Math.max(1, measure(text, level))) };
+  if (cache.size >= DRAWING_CACHE_CAP) cache.clear();
+  cache.set(key, layout);
+  return layout;
+}
+
+/** Containers in draw order (level, then id). The sorted copy is memoised per containers array — the
+ * array identity is stable across frames in the renderers — so the per-frame sort allocation is gone. */
+function containersInDrawOrder(containers: readonly MorphologyContainerPath[]): {
+  readonly sorted: readonly MorphologyContainerPath[];
+  readonly byId: ReadonlyMap<string, MorphologyContainerPath>;
+} {
+  const cached = containersOrderCaches.get(containers);
+  if (cached) return cached;
+  const sorted = [...containers].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id));
+  const entry = { sorted, byId: new Map(sorted.map(container => [container.id, container])) };
+  containersOrderCaches.set(containers, entry);
+  return entry;
+}
+
+/** One drawing pass's shared container state: the projected limb radius, computed once per container
+ * per pass and read by both the sphere pass and the title pass, keyed by the exact `project` closure
+ * they share (a different closure — the label pass — gets a fresh cache, never a stale radius). */
+export type ContainerFrameCache = {
+  project: ((point: Coordinates) => { readonly x: number; readonly y: number }) | null;
+  limbPx: Map<MorphologyContainerPath, number>;
+};
+export function createContainerFrameCache(): ContainerFrameCache {
+  return { project: null, limbPx: new Map() };
+}
+function cachedLimbRadiusPx(cache: ContainerFrameCache | undefined, container: MorphologyContainerPath,
+  project: (point: Coordinates) => { readonly x: number; readonly y: number }): number {
+  if (!cache) return projectedWorldScale(container.center, container.radius, project);
+  if (cache.project !== project) {
+    // A cache is only ever shared within one drawing pass; a different closure means a new pass.
+    cache.project = project;
+    cache.limbPx.clear();
+  }
+  let value = cache.limbPx.get(container);
+  if (value === undefined) {
+    value = projectedWorldScale(container.center, container.radius, project);
+    cache.limbPx.set(container, value);
+  }
+  return value;
+}
+
+/** The final drawn text of a container title and the width its rectangle reserves: the one layout
+ * both the canvas drawer and the DOM label pass read, so a title's ink and its reserved rectangle
+ * are the same thing. A « · +N» count suffix always survives; only the name part is ellipsized.
+ * The layout is memoised per (measure, level, title): the measure is deterministic (a fixed font), so
+ * a repeated frame pays no `measureText`, and a title's ink and rectangle can never diverge. */
+export function containerTitleLayout(title: string, measure: TitleMeasure = estimatedMeasure, level = 1): { readonly text: string; readonly width: number } {
+  return memoisedTitleLayout(title, measure, level);
 }
 
 /** True when an axis-aligned rect overlaps a disc of the given radius around (cx, cy). */
@@ -247,7 +383,9 @@ function firstFreeRect(candidates: readonly { readonly left: number; readonly to
  * covered by a pearl). Both the canvas drawer and the DOM label pass call this, so a container never
  * carries two names. In 3D a container hidden by the sphere LOD is only its pearl: its title anchors
  * right above the pearl instead of the sphere's rim. When `discs` is supplied the title moves to the
- * first free slot around its anchor and is dropped when a pearl would cover every slot.
+ * first free slot around its anchor and is dropped when a pearl would cover every slot. The outline
+ * bounds are scanned in place (no per-frame `flat()`/`map` copies); `cache` reuses the limb radius
+ * the sphere pass already computed for this exact `project`.
  */
 export function containerTitleRect(
   container: MorphologyContainerPath,
@@ -257,11 +395,12 @@ export function containerTitleRect(
   interaction?: ContainerInteraction,
   discs?: readonly CanvasDisc[],
   measure: TitleMeasure = estimatedMeasure,
+  cache?: ContainerFrameCache,
 ): { readonly left: number; readonly top: number; readonly width: number; readonly height: number } | null {
   if (!container.title) return null;
   if (projection === "3d") {
     const center = project(container.center);
-    const limbRadiusPx = Math.max(0.5, container.radius * projectedWorldScale(container.center, container.radius, project));
+    const limbRadiusPx = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
     if (!containerSphereLOD(container.level, container.open !== false, containerSelected(container, interaction), limbRadiusPx)) {
       // Below LOD the container is its pearl and its «+N» name: the title tries the slots around
       // the pearl, its natural place just above it, each clear of the pearl's own disc.
@@ -277,11 +416,21 @@ export function containerTitleRect(
       return firstFreeRect(candidates, discs);
     }
   }
-  const outline = titleOutline(container, projection).map(project);
-  if (!outline.length) return null;
-  const xs = outline.map(p => p.x), ys = outline.map(p => p.y);
-  const left = Math.min(...xs), right = Math.max(...xs);
-  const top = Math.min(...ys), bottom = Math.max(...ys);
+  // Projected outline bounds: the flat ring in 2D, the sphere silhouette (all great circles) in 3D —
+  // scanned point by point, the same min/max the projected copies would give, without the copies.
+  let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity, count = 0;
+  const rings = projection === "3d" ? container.shell ?? [] : [container.points];
+  for (const ring of rings) {
+    for (const point of ring) {
+      const p = project(point);
+      if (p.x < left) left = p.x;
+      if (p.x > right) right = p.x;
+      if (p.y < top) top = p.y;
+      if (p.y > bottom) bottom = p.y;
+      count += 1;
+    }
+  }
+  if (!count) return null;
   const wideEnough = right - left >= (container.level <= 2 ? 85 : 160);
   if (!wideEnough) return null;
   const width = containerTitleLayout(container.title, measure, container.level).width;
@@ -296,7 +445,7 @@ export function containerTitleRect(
 
 /** Draws the Indra containers (nested circles in 2D, nested translucent spheres in 3D) beneath the
  * relations. Titles are a separate, later pass (`drawContainerTitles`) so a name is never drawn
- * under a pearl. */
+ * under a pearl. `cache` shares one limb-radius memo between this pass and the title pass. */
 export function drawContainers(
   context: CanvasRenderingContext2D,
   morphology: Morphology,
@@ -306,6 +455,7 @@ export function drawContainers(
   bounds: { readonly width: number; readonly height: number },
   projection: "2d" | "3d",
   interaction?: ContainerInteraction,
+  cache?: ContainerFrameCache,
 ): void {
   const hook = dashHook();
   // Per-draw counters for the browser check: they describe the last frame drawn, not the
@@ -319,9 +469,11 @@ export function drawContainers(
   const fieldIsLight = (fieldColor.match(/[\d.]+/g)?.map(Number).slice(0, 3).reduce((a, b) => a + b, 0) ?? 0) > 380;
   // The nested shells are the hierarchy. Their lines stay thin, continuous and translucent.
   const ink = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
-  for (const container of [...containers].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id))) {
+  // Limb stroke styles vary only by (ink, level): one string per level per draw, not per sphere.
+  const limbStyles = new Map<number, string>();
+  for (const container of containersInDrawOrder(containers).sorted) {
     if (projection === "3d") {
-      drawSphere(context, container, project, ink, interaction, bounds);
+      drawSphere(context, container, project, ink, interaction, bounds, cache, limbStyles);
     } else {
       const points = container.points.map(project);
       if (!points.length) continue;
@@ -339,6 +491,30 @@ export function drawContainers(
   }
   setDash(context, []);
 
+  /** A radial gradient in unit space (radius 1 around the origin), cached per context and key: the
+   * drawing pass composes translate + scale around it, so one gradient serves every sphere of the
+   * same (ink, level) at any radius — the geometry under the composed transform is exactly the
+   * gradient the per-sphere construction would build, and the stops are a pure function of the key. */
+  function unitGradient(
+    key: string,
+    innerX: number, innerY: number, innerRadius: number,
+    build: (gradient: CanvasGradient) => void,
+  ): CanvasGradient | null {
+    if (typeof context.createRadialGradient !== "function") return null;
+    let byKey = sphereGradientCaches.get(context);
+    if (!byKey) {
+      byKey = new Map();
+      sphereGradientCaches.set(context, byKey);
+    }
+    const hit = byKey.get(key);
+    if (hit) return hit;
+    const gradient = context.createRadialGradient(innerX, innerY, innerRadius, 0, 0, 1);
+    build(gradient);
+    if (byKey.size >= SPHERE_GRADIENT_CACHE_CAP) byKey.clear();
+    byKey.set(key, gradient);
+    return gradient;
+  }
+
   /** The projected limb circle plus a faint glass fill, a rim light just inside the limb, and at most
    * one equator, chosen as the most face-on great circle and faded by its projected flatness; its
    * back half is dimmer than its front half, always continuous, never dashed. Containers below the
@@ -350,35 +526,72 @@ export function drawContainers(
     ink: string,
     interaction: ContainerInteraction | undefined,
     bounds: { readonly width: number; readonly height: number },
+    cache: ContainerFrameCache | undefined,
+    limbStyles: Map<number, string>,
   ): void {
     const hook = dashHook();
     const center = project(container.center);
     // True projected radius, measured on the projection itself (world radius × px per world unit).
-    const limbRadius = Math.max(0.5, container.radius * projectedWorldScale(container.center, container.radius, project));
+    const limbRadius = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
     if (!containerSphereLOD(container.level, container.open !== false, containerSelected(container, interaction), limbRadius)) return;
-    // Subtle radial gradient fill: a translucent glass sphere with the light gathered off-centre.
+    // A sphere wholly outside the canvas draws nothing a viewer could see; the NousOS shell keeps its
+    // witness (the framing checks read it) even while panned out.
+    if (container.level > 0 && (center.x + limbRadius < -2 || center.x - limbRadius > bounds.width + 2
+      || center.y + limbRadius < -2 || center.y - limbRadius > bounds.height + 2)) return;
+    // Subtle radial gradient fill: a translucent glass sphere with the light gathered off-centre, and
+    // a glass rim light brighter at the limb — both proportional to the limb radius, so one cached
+    // unit gradient per (ink, level) serves every sphere, composed under translate + scale.
     if (typeof context.createRadialGradient === "function") {
       const fillAlpha = container.level === 0 ? 0.07 : clamp(0.05 - container.level * 0.004, 0.02, 0.05);
-      const gradient = context.createRadialGradient(
-        center.x - limbRadius * 0.32, center.y - limbRadius * 0.32, limbRadius * 0.06,
-        center.x, center.y, limbRadius);
-      gradient.addColorStop(0, `rgba(${ink}, ${fillAlpha})`);
-      gradient.addColorStop(0.62, `rgba(${ink}, ${fillAlpha * 0.5})`);
-      gradient.addColorStop(1, `rgba(${ink}, 0)`);
-      context.fillStyle = gradient;
-      context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
-      // Glass rim light: brighter at the rim, transparent toward the centre, so the shell reads as a
-      // volume instead of a flat disc. Nothing is added over the inner 70 % of the radius.
       const rim = containerRimLight(container.level);
-      const rimGradient = context.createRadialGradient(
-        center.x, center.y, limbRadius * rim.innerRatio, center.x, center.y, limbRadius);
-      for (const stop of rim.stops) rimGradient.addColorStop(stop.offset, `rgba(${ink}, ${stop.alpha})`);
-      context.fillStyle = rimGradient;
-      context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
+      // The unit gradients are only worth building where they can be composed (translate + scale);
+      // a minimal context without them falls straight to the per-sphere construction.
+      const compose = canComposeTransform(context);
+      const fill = compose ? unitGradient(`sphere-fill\u0000${ink}\u0000${container.level}`, -0.32, -0.32, 0.06, gradient => {
+        gradient.addColorStop(0, `rgba(${ink}, ${fillAlpha})`);
+        gradient.addColorStop(0.62, `rgba(${ink}, ${fillAlpha * 0.5})`);
+        gradient.addColorStop(1, `rgba(${ink}, 0)`);
+      }) : null;
+      // Unit geometry: light gathered off-centre at (−0.32, −0.32), from 0.06 out to the limb at 1;
+      // the rim light spans the outer 30 % of the radius, transparent toward the centre.
+      const rimGradient = compose ? unitGradient(`sphere-rim\u0000${ink}\u0000${container.level}`, 0, 0, rim.innerRatio, gradient => {
+        for (const stop of rim.stops) gradient.addColorStop(stop.offset, `rgba(${ink}, ${stop.alpha})`);
+      }) : null;
+      if (fill && rimGradient) {
+        context.save();
+        context.translate(center.x, center.y);
+        context.scale(limbRadius, limbRadius);
+        context.fillStyle = fill;
+        context.beginPath(); context.arc(0, 0, 1, 0, Math.PI * 2); context.fill();
+        context.fillStyle = rimGradient;
+        context.beginPath(); context.arc(0, 0, 1, 0, Math.PI * 2); context.fill();
+        context.restore();
+      } else {
+        const gradient = context.createRadialGradient(
+          center.x - limbRadius * 0.32, center.y - limbRadius * 0.32, limbRadius * 0.06,
+          center.x, center.y, limbRadius);
+        gradient.addColorStop(0, `rgba(${ink}, ${fillAlpha})`);
+        gradient.addColorStop(0.62, `rgba(${ink}, ${fillAlpha * 0.5})`);
+        gradient.addColorStop(1, `rgba(${ink}, 0)`);
+        context.fillStyle = gradient;
+        context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
+        // Glass rim light: brighter at the rim, transparent toward the centre, so the shell reads as a
+        // volume instead of a flat disc. Nothing is added over the inner 70 % of the radius.
+        const rimAbsolute = context.createRadialGradient(
+          center.x, center.y, limbRadius * rim.innerRatio, center.x, center.y, limbRadius);
+        for (const stop of rim.stops) rimAbsolute.addColorStop(stop.offset, `rgba(${ink}, ${stop.alpha})`);
+        context.fillStyle = rimAbsolute;
+        context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
+      }
     }
     // The projected silhouette: the level-0 NousOS limb stays light and clearly visible.
     const limbAlpha = container.level === 0 ? 0.6 : clamp(0.4 - container.level * 0.03, 0.16, 0.4);
-    context.strokeStyle = `rgba(${ink}, ${limbAlpha})`;
+    let limbStyle = limbStyles.get(container.level);
+    if (limbStyle === undefined) {
+      limbStyle = `rgba(${ink}, ${limbAlpha})`;
+      limbStyles.set(container.level, limbStyle);
+    }
+    context.strokeStyle = limbStyle;
     context.lineWidth = container.level === 0 ? 1.1 : 0.75;
     setDash(context, []);
     context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.stroke();
@@ -399,13 +612,29 @@ export function drawContainers(
     const frontAlpha = (container.level === 0 ? 0.34 : clamp(0.3 - container.level * 0.035, 0.12, 0.3)) * equator.fade;
     const backAlpha = clamp(frontAlpha * 0.32, 0.04, 0.12);
     const band = Math.max(centerScale * 0.08, 1e-4);
+    // Consecutive segments whose style string is identical are stroked as subpaths of one path:
+    // each segment keeps its own butt-capped subpath (the same pixels as a stroke per segment), and
+    // the clamped front/back runs collapse from dozens of stroke calls to a couple.
+    let runStyle: string | null = null;
     for (let index = 0; index < shellPoints.length - 1; index++) {
       const a = shellPoints[index]!, b = shellPoints[index + 1]!;
       const midScale = (a.scale + b.scale) / 2;
       const front = clamp(0.5 + (midScale - centerScale) / band, 0, 1);
       const alpha = backAlpha + (frontAlpha - backAlpha) * front;
-      context.strokeStyle = `rgba(${ink}, ${alpha})`;
-      context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
+      const style = `rgba(${ink}, ${alpha})`;
+      if (style !== runStyle) {
+        if (runStyle !== null) {
+          context.strokeStyle = runStyle;
+          context.stroke();
+        }
+        context.beginPath();
+        runStyle = style;
+      }
+      context.moveTo(a.x, a.y); context.lineTo(b.x, b.y);
+    }
+    if (runStyle !== null) {
+      context.strokeStyle = runStyle;
+      context.stroke();
     }
   }
 }
@@ -425,7 +654,8 @@ export type ContainerTitlePlacement = {
  * The one placement pass for container titles: outer levels claim their rectangle first (level, then
  * id) and a later title that would overlap an earlier one is skipped. Pure over its inputs, so the
  * canvas drawer and the DOM label pass — fed the same discs — reserve and draw exactly the same
- * titles at the same rectangles: one collision set for titles and node labels.
+ * titles at the same rectangles: one collision set for titles and node labels. `cache` shares the
+ * limb-radius memo with the sphere pass of the same drawing pass (same `project`).
  */
 export function placeContainerTitles(
   containers: readonly MorphologyContainerPath[],
@@ -435,11 +665,12 @@ export function placeContainerTitles(
   interaction?: ContainerInteraction,
   discs?: readonly CanvasDisc[],
   measure: TitleMeasure = estimatedMeasure,
+  cache?: ContainerFrameCache,
 ): ContainerTitlePlacement[] {
   const placements: ContainerTitlePlacement[] = [];
   const boxes: { left: number; right: number; top: number; bottom: number }[] = [];
-  for (const container of [...containers].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id))) {
-    const rect = containerTitleRect(container, project, bounds, projection, interaction, discs, measure);
+  for (const container of containersInDrawOrder(containers).sorted) {
+    const rect = containerTitleRect(container, project, bounds, projection, interaction, discs, measure, cache);
     if (!rect) continue;
     const box = { left: rect.left - 3, top: rect.top, right: rect.left + rect.width + 3, bottom: rect.top + rect.height };
     if (boxes.some(other => box.left < other.right && other.left < box.right && box.top < other.bottom && other.top < box.bottom)) continue;
@@ -462,19 +693,18 @@ export function drawContainerTitles(
   interaction?: ContainerInteraction,
   discs?: readonly CanvasDisc[],
   measure?: TitleMeasure,
+  cache?: ContainerFrameCache,
 ): void {
   const fieldIsLight = (fieldColor.match(/[\d.]+/g)?.map(Number).slice(0, 3).reduce((a, b) => a + b, 0) ?? 0) > 380;
   const ink = fieldIsLight ? "20, 20, 20" : "235, 235, 235";
   // One disc set with the review's label pass when it shares its discs; the canvas-derived set only
   // stands in when the channel is absent (pure callers, non-review mounts).
   const effectiveDiscs = interaction?.labelDiscs ?? discs;
-  // The width is measured with the very font the title is drawn in, so what fits is what stays.
-  const effectiveMeasure: TitleMeasure = measure ?? ((text, level) => {
-    context.font = containerTitleFont(level);
-    return context.measureText(text).width;
-  });
-  const byId = new Map(containers.map(container => [container.id, container]));
-  for (const placement of placeContainerTitles(containers, project, bounds, projection, interaction, effectiveDiscs, effectiveMeasure)) {
+  // The width is measured with the very font the title is drawn in, so what fits is what stays. The
+  // measurer is memoised per context: one stable identity across frames, so the layout memo hits.
+  const effectiveMeasure: TitleMeasure = measure ?? stableContextMeasurer(context);
+  const { byId } = containersInDrawOrder(containers);
+  for (const placement of placeContainerTitles(containers, project, bounds, projection, interaction, effectiveDiscs, effectiveMeasure, cache)) {
     const container = byId.get(placement.id);
     if (!container?.title) continue;
     const text = containerTitleLayout(container.title, effectiveMeasure, container.level).text;

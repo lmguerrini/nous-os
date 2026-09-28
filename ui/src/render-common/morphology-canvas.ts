@@ -5,7 +5,7 @@ import type { MorphologyContainerPath, MorphologyGeometry, MorphologySegment } f
 import { somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
-import { drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
+import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
 import type { CanvasDisc } from "#render-common/container-canvas.ts";
 import { drawStarfield } from "#render-common/starfield.ts";
 import {
@@ -31,10 +31,26 @@ export type MorphologyCanvasStyle = {
   readonly edges: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
 };
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
-const rgba = (color: string, alpha: number): string => {
-  const values = color.match(/[\d.]+/g)?.map(Number) ?? [255, 255, 255];
-  return `rgba(${Math.round(values[0] ?? 255)}, ${Math.round(values[1] ?? 255)}, ${Math.round(values[2] ?? 255)}, ${clamp(alpha, 0, 1)})`;
-};
+/** Parsed channel triples, memoised per colour string: the hot loops meet the same handful of
+ * colours every frame, so the regex runs once per colour instead of once per pearl per call. */
+const COLOUR_CACHE_CAP = 256;
+let colourChannelsCache = new Map<string, readonly [number, number, number]>();
+function colourChannels(colour: string): readonly [number, number, number] {
+  const hit = colourChannelsCache.get(colour);
+  if (hit) return hit;
+  const values = colour.match(/[\d.]+/g)?.map(Number) ?? [255, 255, 255];
+  const channels: readonly [number, number, number] = [values[0] ?? 255, values[1] ?? 255, values[2] ?? 255];
+  if (colourChannelsCache.size >= COLOUR_CACHE_CAP) colourChannelsCache.clear();
+  colourChannelsCache.set(colour, channels);
+  return channels;
+}
+const rgbaChannels = (channels: readonly [number, number, number], alpha: number): string =>
+  `rgba(${Math.round(channels[0])}, ${Math.round(channels[1])}, ${Math.round(channels[2])}, ${clamp(alpha, 0, 1)})`;
+const dimChannels = (channels: readonly [number, number, number], factor: number): readonly [number, number, number] =>
+  [Math.round(channels[0] * factor), Math.round(channels[1] * factor), Math.round(channels[2] * factor)];
+const brightenChannels = (channels: readonly [number, number, number], factor: number): readonly [number, number, number] =>
+  [Math.round(channels[0] + (255 - channels[0]) * factor), Math.round(channels[1] + (255 - channels[1]) * factor), Math.round(channels[2] + (255 - channels[2]) * factor)];
+const rgba = (color: string, alpha: number): string => rgbaChannels(colourChannels(color), alpha);
 /** A discreet depth cue: in 3D, points farther than the reference plane dim at most 25% toward black.
  * `scale` is the renderer's per-point perspective size scale, so this is a single scalar per point and
  * never touches a node's epistemic colour or glyph. */
@@ -42,12 +58,12 @@ const depthBrightness = (scale: number, projection: "2d" | "3d") =>
   projection === "3d" ? clamp(0.75 + 0.25 * Math.min(1, Math.max(0, scale)), 0.75, 1) : 1;
 const dim = (color: string, factor: number): string => {
   if (factor >= 1) return color;
-  const values = color.match(/[\d.]+/g)?.map(Number) ?? [255, 255, 255];
-  return `rgb(${Math.round((values[0] ?? 255) * factor)}, ${Math.round((values[1] ?? 255) * factor)}, ${Math.round((values[2] ?? 255) * factor)})`;
+  const values = colourChannels(color);
+  return `rgb(${Math.round(values[0] * factor)}, ${Math.round(values[1] * factor)}, ${Math.round(values[2] * factor)})`;
 };
 const brighten = (color: string, factor: number): string => {
-  const values = color.match(/[\d.]+/g)?.map(Number) ?? [255, 255, 255];
-  return `rgb(${values.slice(0, 3).map(value => Math.round((value ?? 255) + (255 - (value ?? 255)) * factor)).join(", ")})`;
+  const values = colourChannels(color);
+  return `rgb(${values.slice(0, 3).map(value => Math.round(value + (255 - value) * factor)).join(", ")})`;
 };
 const tint = (rgb: readonly [number, number, number]) => `rgb(${rgb.map(value => Math.round(value * 255)).join(", ")})`;
 const testHook = () => (globalThis as typeof globalThis & { __d070?: { hideEdges?: boolean; hideNodes?: boolean; onlyNodeId?: string } }).__d070;
@@ -56,6 +72,214 @@ const testHook = () => (globalThis as typeof globalThis & { __d070?: { hideEdges
  * scale), never larger than a fifth of the pearl, placed on the lit upper-left side. */
 export function pearlHighlight(radiusPx: number): { readonly radiusPx: number; readonly dx: number; readonly dy: number } {
   return { radiusPx: Math.max(0.9, radiusPx * 0.18), dx: -radiusPx * 0.32, dy: -radiusPx * 0.36 };
+}
+
+// ---------------------------------------------------------------- cached pearl paint (Indra 3D)
+//
+// In Indra 3D every pearl draws the same spherical shading, whose colours depend only on (node
+// colour, depth, emphasis, base opacity, glow) and whose gradient geometry is proportional to the
+// radius. The depth scale is quantised to 1/128 — every channel of every stop then differs from the
+// exact per-pearle value by less than 1/255, below what a viewer can notice — and one cached
+// unit-space gradient per key then serves every pearl of that key at any radius, composed under
+// translate + scale. The key carries every input the paint depends on, so a palette, appearance or
+// emphasis change is a different key, never a stale hit; the cache is capped per context.
+
+/** Depth quantisation steps for the cached pearl paint (1/128 keeps every channel within 1/255). */
+export const PEARL_DEPTH_STEPS = 128;
+/** Below this radius the shading gradient's inner radius is clamped in absolute pixels, so the unit
+ * gradient also depends on a quarter-pixel radius bucket. */
+const PEARL_PROPORTIONAL_RADIUS_PX = 0.5 / 0.06;
+export const PEARL_PAINT_CACHE_CAP = 2048;
+const pearlPaintLists: Map<string, PearlPaint>[] = [];
+
+/** Resets the cached pearl paints and parsed colours. Tests use it to observe cache behaviour. */
+export function resetPearlCaches(): void {
+  pearlPaintLists.length = 0;
+  colourChannelsCache.clear();
+}
+/** Number of cached pearl paints (bounded by the cap) — the bounded-growth witness. */
+export function pearlPaintCacheSize(): number {
+  let total = 0;
+  for (const map of pearlPaintLists) total += map.size;
+  return total;
+}
+function pearlPaintCacheFor(context: CanvasRenderingContext2D): Map<string, PearlPaint> {
+  for (const map of pearlPaintLists) if (map.size && pearlPaintOwner.get(map) === context) return map;
+  const map = new Map<string, PearlPaint>();
+  pearlPaintOwner.set(map, context);
+  pearlPaintLists.push(map);
+  if (pearlPaintLists.length > 64) {
+    const removed = pearlPaintLists.shift();
+    if (removed) pearlPaintOwner.delete(removed);
+  }
+  return map;
+}
+const pearlPaintOwner = new WeakMap<Map<string, PearlPaint>, CanvasRenderingContext2D>();
+
+/** Every colour string one pearl of this paint key draws with, plus its cached unit gradients. */
+export type PearlPaint = {
+  /** Dimmed body colour (`rgb(...)` string) and its parsed channels, shared by every part. */
+  readonly lit: string;
+  readonly litChannels: readonly [number, number, number];
+  readonly opacity: number;
+  /** Unit-space shading gradient (inner circle at (−0.35, −0.35), radius `shadeInner`, outer at the
+   * limb), or null where the context cannot build one. */
+  readonly shade: CanvasGradient | null;
+  readonly shadeInner: number;
+  readonly shadeStops: readonly { readonly offset: number; readonly colour: string }[];
+  /** Unit-space glow halo gradient (0 → 1). */
+  readonly glow: CanvasGradient | null;
+  readonly glowStops: readonly { readonly offset: number; readonly colour: string }[];
+  /** Unit-space glint halo gradient (0 → 1). */
+  readonly glintHalo: CanvasGradient | null;
+  readonly glintHaloStops: readonly { readonly offset: number; readonly colour: string }[];
+  readonly rimStroke: string;
+  readonly glintFill: string;
+};
+
+/** The quantised depth scale a pearl's paint is built from: `scale` clamped and bucketed, so nearby
+ * depths share one paint entry while no channel moves more than 1/255 from its exact value. */
+export function bucketedDepthScale(scale: number): number {
+  return Math.round(clamp(scale, 0, 1) * PEARL_DEPTH_STEPS) / PEARL_DEPTH_STEPS;
+}
+
+/** The paint of one pearl, from its key's quantised depth: pure colour computation over parsed
+ * channels (no regex, no per-pearl string parsing), with the same rounding the exact path uses. */
+export function pearlPaintColours(
+  color: string,
+  scale: number,
+  emphasisBrightness: number,
+  baseOpacity: number,
+): {
+  readonly lit: string;
+  readonly litChannels: readonly [number, number, number];
+  readonly opacity: number;
+  readonly shadeStops: readonly { readonly offset: number; readonly colour: string }[];
+  readonly glowStopsFactory: (strength: number, glow: number) => readonly { readonly offset: number; readonly colour: string }[];
+  readonly glintHaloStops: readonly { readonly offset: number; readonly colour: string }[];
+  readonly rimStroke: string;
+  readonly glintFill: string;
+} {
+  const depth = bucketedDepthScale(scale);
+  const brightness = clamp(0.75 + 0.25 * depth, 0.75, 1);
+  const litChannels = brightness >= 1 ? colourChannels(color) : dimChannels(colourChannels(color), brightness);
+  const depthAlpha = clamp(0.85 + 0.15 * depth, 0.85, 1);
+  const opacity = clamp(Math.max(0.48, baseOpacity) * emphasisBrightness * depthAlpha, 0, 1);
+  const lit = `rgb(${litChannels[0]}, ${litChannels[1]}, ${litChannels[2]})`;
+  return {
+    lit,
+    litChannels,
+    opacity,
+    shadeStops: [
+      { offset: 0, colour: rgbaChannels(brightenChannels(litChannels, 0.65), opacity) },
+      { offset: 0.55, colour: rgbaChannels(litChannels, opacity) },
+      { offset: 0.85, colour: rgbaChannels(dimChannels(litChannels, 0.55), opacity) },
+      { offset: 1, colour: rgbaChannels(dimChannels(litChannels, 0.35), opacity * 0.9) },
+    ],
+    glowStopsFactory: (strength, glow) => [
+      { offset: 0, colour: rgbaChannels(litChannels, strength * opacity * glow) },
+      { offset: 1, colour: rgbaChannels(litChannels, 0) },
+    ],
+    glintHaloStops: [
+      { offset: 0, colour: rgbaChannels(brightenChannels(litChannels, 0.75), opacity * 0.55) },
+      { offset: 1, colour: rgbaChannels(litChannels, 0) },
+    ],
+    rimStroke: rgbaChannels(dimChannels(litChannels, 0.5), opacity * 0.55),
+    glintFill: rgbaChannels(brightenChannels(litChannels, 0.9), clamp(opacity, 0, 1)),
+  };
+}
+
+/** The cached paint of one pearl: colours quantised to the depth bucket, gradients built once per
+ * (context, key) in unit space. `radiusBucket` is "" for pearls whose shading geometry is
+ * proportional to the radius, and a quarter-pixel bucket below the clamp radius. */
+function pearlPaint(
+  context: CanvasRenderingContext2D,
+  color: string,
+  scale: number,
+  emphasisBrightness: number,
+  emphasisKind: 0 | 1 | 2,
+  baseOpacity: number,
+  radius: number,
+  glow: number,
+  glowStrength: number,
+): PearlPaint {
+  const radiusBucket = radius >= PEARL_PROPORTIONAL_RADIUS_PX ? "" : `r${Math.round(radius * 4)}`;
+  const key = `${color}\u0000${emphasisKind}\u0000${Math.round(baseOpacity * 1000)}\u0000${Math.round(glow * 1000)}\u0000${bucketedDepthScale(scale)}\u0000${radiusBucket}`;
+  const byKey = pearlPaintCacheFor(context);
+  const hit = byKey.get(key);
+  if (hit) return hit;
+  const colours = pearlPaintColours(color, scale, emphasisBrightness, baseOpacity);
+  const shadeInner = Math.max(0.5 / Math.max(radius, 0.5), 0.06);
+  const build = (stops: readonly { readonly offset: number; readonly colour: string }[], innerX = 0, innerY = 0, innerRadius = 0): CanvasGradient | null => {
+    if (typeof context.createRadialGradient !== "function") return null;
+    const gradient = context.createRadialGradient(innerX, innerY, innerRadius, 0, 0, 1);
+    for (const stop of stops) gradient.addColorStop(stop.offset, stop.colour);
+    return gradient;
+  };
+  const paint: PearlPaint = {
+    lit: colours.lit,
+    litChannels: colours.litChannels,
+    opacity: colours.opacity,
+    shade: build(colours.shadeStops, -0.35, -0.35, shadeInner),
+    shadeInner,
+    shadeStops: colours.shadeStops,
+    glow: build(colours.glowStopsFactory(glowStrength, glow)),
+    glowStops: colours.glowStopsFactory(glowStrength, glow),
+    glintHalo: build(colours.glintHaloStops),
+    glintHaloStops: colours.glintHaloStops,
+    rimStroke: colours.rimStroke,
+    glintFill: colours.glintFill,
+  };
+  if (byKey.size >= PEARL_PAINT_CACHE_CAP) byKey.clear();
+  byKey.set(key, paint);
+  return paint;
+}
+
+/** A context that can compose translate + scale around a cached unit gradient. */
+function canComposeTransform(context: CanvasRenderingContext2D): boolean {
+  return typeof context.translate === "function" && typeof context.scale === "function"
+    && typeof context.save === "function" && typeof context.restore === "function";
+}
+
+/** Fill a unit circle with a cached unit gradient, translated and scaled into place. */
+function fillUnitGradient(
+  context: CanvasRenderingContext2D,
+  gradient: CanvasGradient,
+  x: number,
+  y: number,
+  radius: number,
+): void {
+  context.save();
+  context.translate(x, y);
+  context.scale(radius, radius);
+  context.fillStyle = gradient;
+  context.beginPath();
+  context.arc(0, 0, 1, 0, Math.PI * 2);
+  context.fill();
+  context.restore();
+}
+
+/** The pearl and soma discs the node pass below draws, with exactly its radii: container titles avoid
+ * them, so a name is never covered by a pearl. A neural soma is elongated along its axis, so its
+ * disc carries the eccentricity. */
+function pearlDiscsFor(geometry: MorphologyGeometry, style: MorphologyCanvasStyle,
+  project: (point: Coordinates) => ProjectedPoint, contract: (typeof MORPHOLOGY_CONTRACT)[keyof typeof MORPHOLOGY_CONTRACT],
+  appearance: AppearanceOptions): CanvasDisc[] {
+  const discs: CanvasDisc[] = [];
+  for (const node of geometry.nodes) {
+    if (testHook()?.onlyNodeId && testHook()?.onlyNodeId !== node.id) continue;
+    const visual = style.nodes.get(node.id);
+    const p = project(node.position);
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+    const emphasis = style.interaction?.hoverId === node.id ? contract.hover
+      : style.interaction?.focusIds?.has(node.id) ? contract.focus : null;
+    const given = visual?.radiusPx ?? node.radius * appearance.nodeScale;
+    const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
+      geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+    const elongation = geometry.morphology === "neural" ? Math.max(1, node.eccentricity ?? 1) : 1;
+    discs.push({ x: p.x, y: p.y, radius: radius * elongation });
+  }
+  return discs;
 }
 
 /** One world-space geometry, with projection and depth scale supplied by the renderer. */
@@ -70,29 +294,19 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   context.clearRect(0, 0, bounds.width, bounds.height);
   if (geometry.morphology === "stellar") drawStarfield(context, bounds.width, bounds.height, appearance.starfieldDensity, appearance.starfieldBrightness);
   const contract = MORPHOLOGY_CONTRACT[geometry.morphology];
-  // The pearl and soma discs about to be drawn, with exactly the radii the node pass below uses:
-  // container titles avoid them, so a name is never covered by a pearl. A neural soma is elongated
-  // along its axis, so its disc carries the eccentricity.
-  const pearlDiscs: CanvasDisc[] = [];
-  for (const node of geometry.nodes) {
-    if (testHook()?.onlyNodeId && testHook()?.onlyNodeId !== node.id) continue;
-    const visual = style.nodes.get(node.id);
-    const p = project(node.position);
-    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
-    const emphasis = style.interaction?.hoverId === node.id ? contract.hover
-      : style.interaction?.focusIds?.has(node.id) ? contract.focus : null;
-    const given = visual?.radiusPx ?? node.radius * appearance.nodeScale;
-    const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
-      geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
-    const elongation = geometry.morphology === "neural" ? Math.max(1, node.eccentricity ?? 1) : 1;
-    pearlDiscs.push({ x: p.x, y: p.y, radius: radius * elongation });
-  }
-  drawContainers(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction);
+  // The disc set the titles avoid: the review label pass's shared set when present, otherwise the
+  // pearls about to be drawn — built lazily so a shared label set skips that whole pass.
+  const sharedDiscs = style.interaction?.labelDiscs;
+  const pearlDiscs = sharedDiscs ? null : pearlDiscsFor(geometry, style, project, contract, appearance);
+  // One projection → limb-radius memo per frame keeps each sphere's outline geometry single-pass.
+  const frameCache = createContainerFrameCache();
+  drawContainers(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, frameCache);
   // Container titles are placed against the review label pass's disc set when it is shared through
   // the interaction, so a title's reserved rectangle and its ink are the same thing everywhere.
-  const titleDiscs = style.interaction?.labelDiscs ?? pearlDiscs;
+  const titleDiscs: readonly CanvasDisc[] = sharedDiscs ?? pearlDiscs!;
   if (structureOnly) {
-    drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs);
+  drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);
+  context.globalAlpha = 1;
     return;
   }
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
@@ -231,8 +445,10 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     }
   }
   // Indra 3D pearls read as glass spheres: soft spherical shading and a small highlight. Flat 3D and
-  // the 2D view keep their flat node discs.
+  // the 2D view keep their flat node discs. The whole Indra paint (shading, rim, glint, glow) comes
+  // from the depth-bucketed cache above; Flat and 2D keep the exact per-node computation.
   const indra3d = projection === "3d" && containers.length > 0;
+  const canTransform = canComposeTransform(context);
   for (const node of (testHook()?.hideNodes ? [] : geometry.nodes)) {
     if (testHook()?.onlyNodeId && testHook()?.onlyNodeId !== node.id) continue;
     const visual = style.nodes.get(node.id);
@@ -242,19 +458,37 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const given = visual?.radiusPx ?? node.radius * appearance.nodeScale;
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
       geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
+    // A pearl wholly outside the canvas (with its glow halo) draws nothing a viewer could see.
+    const haloExtent = appearance.glow > 0 ? radius * contract.glow.maximumCoreRatio : radius;
+    if (p.x + haloExtent < 0 || p.x - haloExtent > bounds.width
+      || p.y + haloExtent < 0 || p.y - haloExtent > bounds.height) continue;
     const color = visual?.color ?? "rgb(245, 245, 245)";
-    const lit = dim(color, depthBrightness(p.scale, projection));
+    const baseOpacity = visual?.opacity ?? 1;
+    // In Indra 3D every colour of the pearl comes from one cached paint entry (quantised depth);
+    // elsewhere the exact per-node factors stay.
+    const paint = indra3d
+      ? pearlPaint(context, color, p.scale, emphasis?.brightnessMultiplier ?? 1,
+        style.interaction?.hoverId === node.id ? 1 : style.interaction?.focusIds?.has(node.id) ? 2 : 0,
+        baseOpacity, radius, appearance.glow, contract.glow.strength)
+      : null;
+    const lit = paint ? paint.lit : dim(color, depthBrightness(p.scale, projection));
+    const litChannels = paint ? paint.litChannels : colourChannels(lit);
     // Depth reads on the pearls themselves: the back ones are slightly fainter (the radius already
     // carries the depth through the projection's size scale).
     const depthAlpha = projection === "3d" ? clamp(0.85 + 0.15 * Math.min(1, Math.max(0, p.scale)), 0.85, 1) : 1;
-    const opacity = clamp(Math.max(0.48, visual?.opacity ?? 1) * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha, 0, 1);
+    const opacity = paint ? paint.opacity
+      : clamp(Math.max(0.48, baseOpacity) * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha, 0, 1);
     if (!simplified && appearance.glow > 0 && !testHook()?.hideEdges) {
       const halo = radius * contract.glow.maximumCoreRatio;
-      const gradient = context.createRadialGradient(p.x, p.y, 0, p.x, p.y, halo);
-      gradient.addColorStop(0, rgba(lit, contract.glow.strength * opacity * appearance.glow));
-      gradient.addColorStop(1, rgba(lit, 0));
-      context.fillStyle = gradient;
-      context.beginPath(); context.arc(p.x, p.y, halo, 0, Math.PI * 2); context.fill();
+      if (paint?.glow && canTransform) {
+        fillUnitGradient(context, paint.glow, p.x, p.y, halo);
+      } else {
+        const gradient = context.createRadialGradient(p.x, p.y, 0, p.x, p.y, halo);
+        gradient.addColorStop(0, rgbaChannels(litChannels, contract.glow.strength * opacity * appearance.glow));
+        gradient.addColorStop(1, rgbaChannels(litChannels, 0));
+        context.fillStyle = gradient;
+        context.beginPath(); context.arc(p.x, p.y, halo, 0, Math.PI * 2); context.fill();
+      }
     }
     context.beginPath();
     if (geometry.morphology === "neural") {
@@ -293,19 +527,19 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       // Softer membrane: a gentle gradient that fades toward the edge of the soma body.
       if (!simplified && typeof context.createRadialGradient === "function") {
         const membrane = context.createRadialGradient(p.x, p.y, radius * 0.12, p.x, p.y, radius * 1.6);
-        membrane.addColorStop(0, rgba(lit, opacity));
-        membrane.addColorStop(0.5, rgba(lit, opacity * 0.62));
-        membrane.addColorStop(1, rgba(lit, opacity * 0.24));
+        membrane.addColorStop(0, rgbaChannels(litChannels, opacity));
+        membrane.addColorStop(0.5, rgbaChannels(litChannels, opacity * 0.62));
+        membrane.addColorStop(1, rgbaChannels(litChannels, opacity * 0.24));
         context.fillStyle = membrane;
-      } else context.fillStyle = rgba(lit, opacity);
+      } else context.fillStyle = rgbaChannels(litChannels, opacity);
       somaPath();
       context.fill();
       // Brighter small nucleus inside the softer membrane, oriented with the soma.
       if (!simplified && typeof context.createRadialGradient === "function") {
         const nucleus = context.createRadialGradient(p.x - radius * 0.12, p.y - radius * 0.12, 0, p.x, p.y, radius * 0.5);
-        nucleus.addColorStop(0, rgba(brighten(lit, 0.6), opacity));
-        nucleus.addColorStop(0.7, rgba(lit, opacity * 0.5));
-        nucleus.addColorStop(1, rgba(lit, 0));
+        nucleus.addColorStop(0, rgbaChannels(brightenChannels(litChannels, 0.6), opacity));
+        nucleus.addColorStop(0.7, rgbaChannels(litChannels, opacity * 0.5));
+        nucleus.addColorStop(1, rgbaChannels(litChannels, 0));
         context.fillStyle = nucleus;
         context.beginPath();
         const nx = radius * 0.4, ny = radius * 0.32;
@@ -323,13 +557,42 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       // In Indra 3D a soma also carries a small lit glint so it reads as a pearl, not a flat disc.
       if (indra3d) {
         const glint = pearlHighlight(radius);
-        context.fillStyle = rgba(brighten(lit, 0.9), clamp(opacity, 0, 1));
+        context.fillStyle = paint ? paint.glintFill : rgba(brighten(lit, 0.9), clamp(opacity, 0, 1));
         context.beginPath(); context.arc(p.x + glint.dx, p.y + glint.dy, glint.radiusPx, 0, Math.PI * 2); context.fill();
       }
     } else {
-      if (indra3d && typeof context.createRadialGradient === "function") {
+      if (indra3d && typeof context.createRadialGradient === "function" && paint) {
         // Soft spherical shading: light gathered off-centre, dimming toward the limb, with a faint
-        // rim stroke so the sphere edge stays defined even at overview-scale pearl sizes.
+        // rim stroke so the sphere edge stays defined even at overview-scale pearl sizes. The cached
+        // unit gradient composes under translate + scale (or the entry's stops rebuild it in place).
+        if (paint.shade && canTransform) {
+          fillUnitGradient(context, paint.shade, p.x, p.y, radius);
+        } else {
+          const shade = context.createRadialGradient(
+            p.x - radius * 0.35, p.y - radius * 0.35, radius * paint.shadeInner, p.x, p.y, radius);
+          for (const stop of paint.shadeStops) shade.addColorStop(stop.offset, stop.colour);
+          context.fillStyle = shade;
+          context.beginPath(); context.arc(p.x, p.y, radius, 0, Math.PI * 2); context.fill();
+        }
+        context.strokeStyle = paint.rimStroke;
+        context.lineWidth = clamp(radius * 0.1, 0.5, 1.2);
+        context.beginPath(); context.arc(p.x, p.y, Math.max(0.5, radius - context.lineWidth / 2), 0, Math.PI * 2); context.stroke();
+        // A small, bright glint on the lit side, with a soft glow so it survives small radii.
+        const glint = pearlHighlight(radius);
+        if (radius >= 3) {
+          if (paint.glintHalo && canTransform) {
+            fillUnitGradient(context, paint.glintHalo, p.x + glint.dx, p.y + glint.dy, glint.radiusPx * 2.4);
+          } else {
+            const halo = context.createRadialGradient(p.x + glint.dx, p.y + glint.dy, 0, p.x + glint.dx, p.y + glint.dy, glint.radiusPx * 2.4);
+            for (const stop of paint.glintHaloStops) halo.addColorStop(stop.offset, stop.colour);
+            context.fillStyle = halo;
+            context.beginPath(); context.arc(p.x + glint.dx, p.y + glint.dy, glint.radiusPx * 2.4, 0, Math.PI * 2); context.fill();
+          }
+        }
+        context.fillStyle = paint.glintFill;
+        context.beginPath(); context.arc(p.x + glint.dx, p.y + glint.dy, glint.radiusPx, 0, Math.PI * 2); context.fill();
+      } else if (indra3d && typeof context.createRadialGradient === "function") {
+        // No cached paint (a context without gradients for the cache): the exact per-pearl path.
         const shade = context.createRadialGradient(
           p.x - radius * 0.35, p.y - radius * 0.35, Math.max(0.5, radius * 0.06), p.x, p.y, radius);
         shade.addColorStop(0, rgba(brighten(lit, 0.65), opacity));
@@ -341,7 +604,6 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         context.strokeStyle = rgba(dim(lit, 0.5), opacity * 0.55);
         context.lineWidth = clamp(radius * 0.1, 0.5, 1.2);
         context.beginPath(); context.arc(p.x, p.y, Math.max(0.5, radius - context.lineWidth / 2), 0, Math.PI * 2); context.stroke();
-        // A small, bright glint on the lit side, with a soft glow so it survives small radii.
         const glint = pearlHighlight(radius);
         if (radius >= 3) {
           const halo = context.createRadialGradient(p.x + glint.dx, p.y + glint.dy, 0, p.x + glint.dx, p.y + glint.dy, glint.radiusPx * 2.4);
@@ -353,7 +615,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         context.fillStyle = rgba(brighten(lit, 0.9), clamp(opacity, 0, 1));
         context.beginPath(); context.arc(p.x + glint.dx, p.y + glint.dy, glint.radiusPx, 0, Math.PI * 2); context.fill();
       } else {
-        context.fillStyle = rgba(lit, opacity);
+        context.fillStyle = rgbaChannels(litChannels, opacity);
         context.arc(p.x, p.y, radius, 0, Math.PI * 2);
         context.fill();
       }
@@ -361,7 +623,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // A neural soma is one closed body. Semantic glyph rings apply only to the other morphologies.
     const glyph = geometry.morphology === "neural" ? "filled" : visual?.glyph ?? "filled";
     if (glyph !== "filled" && !testHook()?.hideEdges) {
-      context.strokeStyle = rgba(lit, opacity);
+      context.strokeStyle = rgbaChannels(litChannels, opacity);
       context.lineWidth = clamp(radius * 0.2, 0.8, 2);
       context.beginPath(); context.arc(p.x, p.y, radius * 0.72, 0, Math.PI * 2); context.stroke();
       if (glyph === "hollow") {
@@ -374,6 +636,5 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     }
   }
   // Names come last, above every pearl and arc, so no label is ever covered by its own drawing.
-  drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs);
-  context.globalAlpha = 1;
+  drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);
 }
