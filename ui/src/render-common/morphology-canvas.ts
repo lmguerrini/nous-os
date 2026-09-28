@@ -1,8 +1,8 @@
 import type { AppearanceOptions, EdgePresentation, NodeGlyph } from "#engine/presentation-options.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
-import type { MorphologyContainerPath, MorphologyGeometry, MorphologySegment } from "#engine/morphology-geometry.ts";
-import { somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
+import type { MorphologyContainerPath, MorphologyGeometry, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
+import { SOMA_OUTLINE_MAX_RADIAL, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
@@ -72,6 +72,85 @@ const testHook = () => (globalThis as typeof globalThis & { __d070?: { hideEdges
  * scale), never larger than a fifth of the pearl, placed on the lit upper-left side. */
 export function pearlHighlight(radiusPx: number): { readonly radiusPx: number; readonly dx: number; readonly dy: number } {
   return { radiusPx: Math.max(0.9, radiusPx * 0.18), dx: -radiusPx * 0.32, dy: -radiusPx * 0.36 };
+}
+
+// ---------------------------------------------------------------- D-071 G9 Neural refinements
+
+/** The Neural mid-edge width never falls below this on-screen floor, so a tapered dendrite never
+ * disappears at overview scale (audit: «spessi al nodo, rastremati a metà arco»). */
+export const NEURAL_EDGE_MID_MIN_PX = 0.6;
+
+/**
+ * The drawn Neural width keyframes (same units as the inputs): the width at each soma end and at
+ * mid-edge. The contract's taper gives the soma/mid ratio for the proximal and distal ends, and the
+ * segment's larger end width anchors the scale, so the profile keeps the edge's data-driven weight
+ * while the rastremazione reads at overview scale (2.2–2.6× the mid width at each end).
+ */
+export function neuralTaperProfile(widthStart: number, widthEnd: number, taper: readonly [number, number] | readonly number[]) {
+  const [proximalRatio = 2.4, distalRatio = 2.2] = taper;
+  const mid = Math.max(widthStart, widthEnd) / Math.max(proximalRatio, distalRatio);
+  const proximalAtStart = widthStart >= widthEnd;
+  return {
+    start: mid * (proximalAtStart ? Math.max(proximalRatio, distalRatio) : Math.min(proximalRatio, distalRatio)),
+    mid,
+    end: mid * (proximalAtStart ? Math.min(proximalRatio, distalRatio) : Math.max(proximalRatio, distalRatio)),
+  };
+}
+
+/** Deterministic per-soma elongation factor (±12%), driven by the id-hashed outline harmonics'
+ * phases, so the same ellipse template is never merely rotated across somata. */
+export const SOMA_ELONGATION_JITTER = 0.12;
+export function somaElongationFactor(harmonics: readonly SomaOutlineHarmonic[]): number {
+  if (harmonics.length === 0) return 1;
+  const weighted = harmonics.reduce((sum, harmonic, index) => sum + harmonic.phase * (index + 1), 0);
+  return 1 + SOMA_ELONGATION_JITTER * Math.sin(weighted);
+}
+
+/** The drawn elongation of one soma: the connection-driven eccentricity with the deterministic
+ * per-node jitter, kept inside the geometry's 1.1–1.9 eccentricity bounds. A round soma (no local
+ * connections to orient it) is left exactly round. */
+export function somaDrawnElongation(eccentricity: number, harmonics: readonly SomaOutlineHarmonic[]): number {
+  if (eccentricity <= 1) return eccentricity;
+  return clamp(eccentricity * somaElongationFactor(harmonics), Math.min(1.1, eccentricity), 1.9);
+}
+
+/** Small somata keep a scaled-down but stronger irregularity than before (floor 0.55 instead of
+ * 0.4) and the drawn radial deviation stays within the geometry's ±SOMA_OUTLINE_MAX_RADIAL bound. */
+export const SOMA_IRREGULARITY_BOOST = 1.3;
+export const SOMA_IRREGULARITY_MIN_SCALE = 0.55;
+export function somaIrregularityScale(radiusPx: number): number {
+  return clamp(radiusPx / 11, SOMA_IRREGULARITY_MIN_SCALE, 1);
+}
+
+/** World-space cell (≈ twice the largest soma radius) used to count overlapping somata per frame. */
+export const NEURAL_HALO_DENSITY_CELL = 24;
+/** Lower bound of the density-aware halo alpha: hubs stay present, never a wall of bloom. */
+export const NEURAL_HALO_ALPHA_FLOOR = 0.45;
+/** Halo alpha factor from the number of somata whose centres share a 3×3 neighbourhood: alone 1,
+ * then a slow reciprocal falloff to the floor, so dense cores stop merging into one luminous mass. */
+export function neuralHaloAlphaFactor(neighbours: number): number {
+  if (!(neighbours > 1)) return 1;
+  return Math.max(NEURAL_HALO_ALPHA_FLOOR, 1 / (1 + 0.3 * (neighbours - 1)));
+}
+
+/** Per-frame count of nearby soma centres for every node, in world space (projection-independent,
+ * so 2D and 3D dim the same hub the same way). O(n) build, O(1) per lookup. */
+export function neuralHaloNeighbourCounts(nodes: readonly MorphologyGeometry["nodes"][number][]): ReadonlyMap<string, number> {
+  const cell = NEURAL_HALO_DENSITY_CELL;
+  const grid = new Map<string, number>();
+  const cellOf = (node: MorphologyGeometry["nodes"][number]) =>
+    `${Math.floor(node.position.x / cell)}:${Math.floor(node.position.y / cell)}`;
+  for (const node of nodes) grid.set(cellOf(node), (grid.get(cellOf(node)) ?? 0) + 1);
+  const counts = new Map<string, number>();
+  for (const node of nodes) {
+    const [rawX, rawY] = cellOf(node).split(":");
+    const cx = Number(rawX), cy = Number(rawY);
+    let total = 0;
+    for (let dx = -1; dx <= 1; dx += 1) for (let dy = -1; dy <= 1; dy += 1)
+      total += grid.get(`${cx + dx}:${cy + dy}`) ?? 0;
+    counts.set(node.id, total);
+  }
+  return counts;
 }
 
 // ---------------------------------------------------------------- cached pearl paint (Indra 3D)
@@ -204,7 +283,9 @@ function pearlPaint(
   glowStrength: number,
 ): PearlPaint {
   const radiusBucket = radius >= PEARL_PROPORTIONAL_RADIUS_PX ? "" : `r${Math.round(radius * 4)}`;
-  const key = `${color}\u0000${emphasisKind}\u0000${Math.round(baseOpacity * 1000)}\u0000${Math.round(glow * 1000)}\u0000${bucketedDepthScale(scale)}\u0000${radiusBucket}`;
+  // The glow strength is part of the key: the Neural density-aware halo varies it per soma, and a
+  // hit must never serve one soma's dimmed bloom as another's full-strength halo.
+  const key = `${color}\u0000${emphasisKind}\u0000${Math.round(baseOpacity * 1000)}\u0000${Math.round(glow * 1000)}\u0000${Math.round(glowStrength * 128)}\u0000${bucketedDepthScale(scale)}\u0000${radiusBucket}`;
   const byKey = pearlPaintCacheFor(context);
   const hit = byKey.get(key);
   if (hit) return hit;
@@ -276,7 +357,9 @@ function pearlDiscsFor(geometry: MorphologyGeometry, style: MorphologyCanvasStyl
     const given = visual?.radiusPx ?? node.radius * appearance.nodeScale;
     const radius = clamp(given * p.scale * contract.node.scale * (emphasis?.radiusMultiplier ?? 1),
       geometry.morphology === "mycelium" ? 1.3 : 2, contract.node.maxRadiusPx);
-    const elongation = geometry.morphology === "neural" ? Math.max(1, node.eccentricity ?? 1) : 1;
+    const elongation = geometry.morphology === "neural"
+      ? somaDrawnElongation(Math.max(1, node.eccentricity ?? 1), node.outline ?? [])
+      : 1;
     discs.push({ x: p.x, y: p.y, radius: radius * elongation });
   }
   return discs;
@@ -385,18 +468,29 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       const source = simplified && part.samples.length > 8 ? part.samples.filter((_, i) => i % 4 === 0 || i === part.samples.length - 1) : part.samples;
       const points = source.map(project);
       if (points.length < 2) continue;
+      // D-071 G9: the Neural profile is anchored on the contract's taper ratios so the rastremazione
+      // survives the pixel floors at overview scale; the other morphologies keep their profiles.
+      const neuralTaper = geometry.morphology === "neural"
+        ? neuralTaperProfile(part.widthStart, part.widthEnd, contract.edge.taper) : null;
       const widthAt = (i: number) => {
         const t = i / (points.length - 1);
         const smooth = t * t * (3 - 2 * t);
         const variation = geometry.morphology === "mycelium" ? 1 + contract.edge.widthVariation * Math.sin(Math.PI * t) ** 2 * Math.cos(t * Math.PI * 4) : 1;
-        // Quadratic profile through the start, middle and end widths: Neural tapers from each soma toward mid-edge.
-        const base = (1 - t) * (1 - t) * part.widthStart + 2 * t * (1 - t) * (2 * part.widthMid - (part.widthStart + part.widthEnd) / 2)
-          + t * t * part.widthEnd;
-        const profile = geometry.morphology === "neural" ? Math.max(0.2, base) : part.widthStart + (part.widthEnd - part.widthStart) * smooth;
         // Fractional sample positions (the flow pulse asks for midpoints) read the nearest projected scale.
         const scaleAt = points[Math.min(points.length - 1, Math.max(0, Math.round(i)))]!.scale;
-        return clamp(profile * scaleAt * widthFactor * appearance.edgeWidth
-          * (emphasis?.radiusMultiplier ?? 1) * variation, 0.5, 16);
+        const factors = scaleAt * widthFactor * appearance.edgeWidth * (emphasis?.radiusMultiplier ?? 1) * variation;
+        if (neuralTaper) {
+          // Quadratic through the three keyframes: the mid width keeps a visible on-screen floor,
+          // each soma end keeps the contract ratio above it, and the cap leaves room for the ratio.
+          const somaRatio = Math.max(neuralTaper.start, neuralTaper.end) / neuralTaper.mid;
+          const mid = clamp(neuralTaper.mid * factors, NEURAL_EDGE_MID_MIN_PX, 16 / somaRatio);
+          const start = mid * (neuralTaper.start / neuralTaper.mid);
+          const end = mid * (neuralTaper.end / neuralTaper.mid);
+          const base = (1 - t) * (1 - t) * start + 2 * t * (1 - t) * (2 * mid - (start + end) / 2) + t * t * end;
+          return clamp(base, NEURAL_EDGE_MID_MIN_PX, 16);
+        }
+        const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
+        return clamp(profile * factors, 0.5, 16);
       };
       const alpha = clamp(Math.max(0.14, opacity * appearance.edgeOpacity * (geometry.morphology === "stellar" ? 0.9 : 1)
         * (emphasis?.brightnessMultiplier ?? 1)), 0, 1);
@@ -449,6 +543,10 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   // from the depth-bucketed cache above; Flat and 2D keep the exact per-node computation.
   const indra3d = projection === "3d" && containers.length > 0;
   const canTransform = canComposeTransform(context);
+  // D-071 G9: Neural halos dim where many somata overlap, so hub cores stop merging into a single
+  // luminous mass that invades the dendrites. Built once per frame, only when halos are drawn.
+  const haloDensity = geometry.morphology === "neural" && !simplified && appearance.glow > 0 && !testHook()?.hideEdges
+    ? neuralHaloNeighbourCounts(geometry.nodes) : null;
   for (const node of (testHook()?.hideNodes ? [] : geometry.nodes)) {
     if (testHook()?.onlyNodeId && testHook()?.onlyNodeId !== node.id) continue;
     const visual = style.nodes.get(node.id);
@@ -464,12 +562,16 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       || p.y + haloExtent < 0 || p.y - haloExtent > bounds.height) continue;
     const color = visual?.color ?? "rgb(245, 245, 245)";
     const baseOpacity = visual?.opacity ?? 1;
+    // The effective halo strength carries the Neural density falloff; other morphologies keep theirs.
+    const glowStrength = haloDensity
+      ? contract.glow.strength * neuralHaloAlphaFactor(haloDensity.get(node.id) ?? 1)
+      : contract.glow.strength;
     // In Indra 3D every colour of the pearl comes from one cached paint entry (quantised depth);
     // elsewhere the exact per-node factors stay.
     const paint = indra3d
       ? pearlPaint(context, color, p.scale, emphasis?.brightnessMultiplier ?? 1,
         style.interaction?.hoverId === node.id ? 1 : style.interaction?.focusIds?.has(node.id) ? 2 : 0,
-        baseOpacity, radius, appearance.glow, contract.glow.strength)
+        baseOpacity, radius, appearance.glow, glowStrength)
       : null;
     const lit = paint ? paint.lit : dim(color, depthBrightness(p.scale, projection));
     const litChannels = paint ? paint.litChannels : colourChannels(lit);
@@ -484,7 +586,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         fillUnitGradient(context, paint.glow, p.x, p.y, halo);
       } else {
         const gradient = context.createRadialGradient(p.x, p.y, 0, p.x, p.y, halo);
-        gradient.addColorStop(0, rgbaChannels(litChannels, contract.glow.strength * opacity * appearance.glow));
+        gradient.addColorStop(0, rgbaChannels(litChannels, glowStrength * opacity * appearance.glow));
         gradient.addColorStop(1, rgbaChannels(litChannels, 0));
         context.fillStyle = gradient;
         context.beginPath(); context.arc(p.x, p.y, halo, 0, Math.PI * 2); context.fill();
@@ -502,20 +604,24 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
       ];
       const projectedUnit = Math.max(1e-9, ...basis.map(value => Math.hypot(value.x - p.x, value.y - p.y)));
       const visibleAxis = clamp(Math.hypot(q.x - p.x, q.y - p.y) / projectedUnit, 0, 1);
-      const eccentricity = Math.sqrt(1 + ((node.eccentricity ?? 1) ** 2 - 1) * visibleAxis ** 2);
-      // An oriented, organic soma: the ellipse radii carry the connection-driven elongation, the per-node
-      // low-frequency harmonics break the perfect-oval sameness, and large somata show the full irregularity
-      // while small ones keep a scaled-down amount so it stays visible at overview.
-      const major = radius * eccentricity, minor = radius;
+      const projectedEccentricity = Math.sqrt(1 + ((node.eccentricity ?? 1) ** 2 - 1) * visibleAxis ** 2);
+      // An oriented, organic soma: the ellipse radii carry the connection-driven elongation plus the
+      // deterministic per-node jitter (id-hashed phases), the low-frequency harmonics break the
+      // perfect-oval sameness — boosted, still within the geometry's radial bound — and large somata
+      // show the full irregularity while small ones keep a scaled-down amount so it stays visible.
       const harmonics = node.outline ?? [];
+      const eccentricity = somaDrawnElongation(projectedEccentricity, harmonics);
+      const major = radius * eccentricity, minor = radius;
       const steps = simplified ? 12 : 24;
       const cosA = Math.cos(angle), sinA = Math.sin(angle);
-      const irregularityScale = clamp(radius / 11, 0.4, 1);
+      const irregularityScale = somaIrregularityScale(radius);
       const somaPath = () => {
         context.beginPath();
         for (let i = 0; i < steps; i += 1) {
           const theta = (i / steps) * Math.PI * 2;
-          const bulge = 1 + somaOutlineIrregularity(harmonics, theta) * irregularityScale;
+          const bulge = 1 + clamp(
+            somaOutlineIrregularity(harmonics, theta) * irregularityScale * SOMA_IRREGULARITY_BOOST,
+            -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
           const ex = major * Math.cos(theta) * bulge;
           const ey = minor * Math.sin(theta) * bulge;
           const x = p.x + cosA * ex - sinA * ey;

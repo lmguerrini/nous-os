@@ -114,26 +114,102 @@ export function adjustLightness(colour: OkLCH, background: string, target: numbe
   return oklchToSrgb({ ...colour, L: high });
 }
 
+/** Euclidean OKLab distance (ΔE_ok) between two hex colours: the perceptual metric the review
+ * editor keeps between roles, so two states never collapse into the same colour. */
+export function deltaEok(one: string, other: string): number {
+  const a = srgbToOklch(one), b = srgbToOklch(other);
+  const aa = { L: a.L, x: a.C * Math.cos(a.H * Math.PI / 180), y: a.C * Math.sin(a.H * Math.PI / 180) };
+  const bb = { L: b.L, x: b.C * Math.cos(b.H * Math.PI / 180), y: b.C * Math.sin(b.H * Math.PI / 180) };
+  return Math.hypot(aa.L - bb.L, aa.x - bb.x, aa.y - bb.y);
+}
+
+/** The role pairs whose colours must stay perceptually apart (D-071 G9 final audit: triadic from
+ * #ffd38b gave hover = selection = white, selection ≈ text, exploratory ≈ the primary nodes). */
+export const HARMONY_SEPARATIONS = [
+  { roles: ["hover", "selection"] as const, minDeltaE: 0.08 },
+  { roles: ["selection", "text"] as const, minDeltaE: 0.08 },
+  { roles: ["exploratory", "aggregate"] as const, minDeltaE: 0.1 },
+  { roles: ["exploratory", "concept"] as const, minDeltaE: 0.1 },
+  { roles: ["attested", "exploratory"] as const, minDeltaE: 0.08 },
+];
+
+type HarmonyRole = Exclude<keyof PaletteValues, "background">;
+
 /**
  * Propose a nine-role palette from a reference colour and a harmony. The reference hue becomes the
- * primary aggregate; the other roles follow the harmony's hue set, and every role is nudged in L
- * until it meets the contrast floor (3:1 for graphic roles, 4.5:1 for text) against the background.
+ * primary aggregate; the other roles follow the harmony's hue set spread over a lightness ladder,
+ * and every role is nudged in L until it meets the contrast floor (3:1 for graphic roles, 4.5:1 for
+ * text) against the background. The ladder spacing keeps the role separations of
+ * {@link HARMONY_SEPARATIONS} by construction; a deterministic repair pass restores them where the
+ * contrast adjustment compressed the ladder, without ever dropping a role below its floor.
  */
 export function harmonize(reference: string, background: string, name: HarmonyName): PaletteValues {
   const { H, C } = srgbToOklch(reference);
   const hues = harmonyHues(name, H);
-  const accent = (index: number, lightness: number, chroma: number): string =>
-    adjustLightness({ L: lightness, C: chroma, H: hues[index % hues.length]! }, background, 3);
-  const text = adjustLightness({ L: 0.94, C: 0.02, H }, background, 4.5);
+  const hue = (index: number) => hues[index % hues.length]!;
+  // Lightness ladder: exploratory sits well under the node colours, attested between them,
+  // selection clearly under text and clearly over hover's partner roles.
+  const roles: Record<HarmonyRole, { L: number; C: number; H: number; floor: number }> = {
+    aggregate: { L: 0.8, C, H: hue(0), floor: 3 },
+    concept: { L: 0.7, C: C * 0.85, H: hue(1), floor: 3 },
+    attested: { L: 0.6, C: C * 0.7, H: hue(2), floor: 3 },
+    exploratory: { L: 0.5, C: C * 0.9, H: hue(0), floor: 3 },
+    selection: { L: 0.8, C: C * 0.55, H: hue(0), floor: 3 },
+    hover: { L: 0.93, C: C * 0.6, H: hue(1), floor: 3 },
+    container: { L: 0.66, C: C * 0.8, H: hue(2), floor: 3 },
+    text: { L: 0.94, C: 0.02, H: hue(0), floor: 4.5 },
+  };
+  const hex = {} as Record<HarmonyRole, string>;
+  for (const [role, colour] of Object.entries(roles) as [HarmonyRole, { L: number; C: number; H: number; floor: number }][])
+    hex[role] = adjustLightness(colour, background, colour.floor);
+  separateRoles(hex, roles, background);
   return {
     background,
-    aggregate: accent(0, 0.8, C),
-    concept: accent(1, 0.72, C * 0.85),
-    attested: accent(2, 0.62, C * 0.7),
-    exploratory: accent(0, 0.74, C * 0.9),
-    selection: accent(0, 0.93, C * 0.55),
-    hover: accent(1, 0.87, C * 0.7),
-    container: accent(2, 0.68, C * 0.8),
-    text,
+    aggregate: hex.aggregate, concept: hex.concept, attested: hex.attested,
+    exploratory: hex.exploratory, selection: hex.selection, hover: hex.hover,
+    container: hex.container, text: hex.text,
   };
+}
+
+/**
+ * Deterministic repair of every separation: for a failing pair the lighter role rises in L (its
+ * contrast against the dark background only improves) or, when it is already at the top, the darker
+ * role drops while its contrast floor still holds. Fixed pair order, fixed step, bounded sweeps:
+ * same inputs, same result. Where a background makes a floor unreachable no move is forced, so the
+ * contrast rules always win over the separations.
+ */
+function separateRoles(
+  hex: Record<HarmonyRole, string>,
+  roles: Record<HarmonyRole, { floor: number }>,
+  background: string,
+): void {
+  const STEP = 0.01;
+  const tryRaise = (role: HarmonyRole): boolean => {
+    const colour = srgbToOklch(hex[role]);
+    if (colour.L >= 0.995) return false;
+    hex[role] = adjustLightness({ ...colour, L: Math.min(0.995, colour.L + STEP) }, background, roles[role].floor);
+    return true;
+  };
+  const tryLower = (role: HarmonyRole): boolean => {
+    const colour = srgbToOklch(hex[role]);
+    if (colour.L <= 0.05) return false;
+    const candidate = oklchToSrgb({ ...colour, L: colour.L - STEP });
+    if (contrastRatio(candidate, background) < roles[role].floor) return false;
+    hex[role] = candidate;
+    return true;
+  };
+  for (let sweep = 0; sweep < 40; sweep += 1) {
+    let failing = false;
+    for (const { roles: [roleA, roleB], minDeltaE } of HARMONY_SEPARATIONS) {
+      for (let nudge = 0; nudge < 120 && deltaEok(hex[roleA], hex[roleB]) < minDeltaE; nudge += 1) {
+        const a = srgbToOklch(hex[roleA]), b = srgbToOklch(hex[roleB]);
+        const lighter = a.L >= b.L ? roleA : roleB, darker = a.L >= b.L ? roleB : roleA;
+        if (tryRaise(lighter)) continue;
+        if (tryLower(darker)) continue;
+        break;
+      }
+      if (deltaEok(hex[roleA], hex[roleB]) < minDeltaE) failing = true;
+    }
+    if (!failing) return;
+  }
 }

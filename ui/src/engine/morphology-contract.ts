@@ -23,8 +23,12 @@ export const MORPHOLOGY_CONTRACT: Readonly<Record<Morphology, MorphologyGeometry
   },
   neural: {
     node: { shape: "soma", scale: 0.85, maxRadiusPx: 11, brightness: [0.64, 1] },
-    glow: { maximumCoreRatio: 1.55, strength: 0.15 },
-    edge: { path: "soft-curve", amplitude: [0.06, 0.14], periods: [0, 0], taper: [1.7, 0.85], widthVariation: 0.3 },
+    // The soma halo stays compact (≤ 1.5× the core) and faint: hubs are many overlapping somata,
+    // and a stronger bloom merges them into one unreadable luminous mass over the dendrites.
+    glow: { maximumCoreRatio: 1.45, strength: 0.09 },
+    // D-071 G9 taper: drawn width at each soma end, as a multiple of the mid-edge width, so the
+    // rastremazione survives the pixel floors at overview scale (2.2–2.6×, mid never below ~0.6 px).
+    edge: { path: "soft-curve", amplitude: [0.06, 0.14], periods: [0, 0], taper: [2.4, 2.2], widthVariation: 0.3 },
     branching: "topological", terminals: "soma",
     hover: { radiusMultiplier: 1.15, brightnessMultiplier: 1.2 }, focus: { radiusMultiplier: 1.25, brightnessMultiplier: 1.3 },
     organizations: ["flat", "indra"],
