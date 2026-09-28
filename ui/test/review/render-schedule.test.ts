@@ -3,13 +3,18 @@ import assert from "node:assert/strict";
 import {
   CAMERA_STILLNESS_MS,
   MOVING_DEVICE_PIXEL_RATIO,
+  MOVING_LABEL_PASS_INTERVAL_MS,
+  MovingLabelPassSchedule,
   QUALITY_RESTORE_MS,
   QualityGovernor,
+  ScheduleMarks,
   cameraWatchShouldRun,
   capOcclusionSamples,
+  movingLabelPassHasCandidates,
   occlusionSampleCap,
   perspectiveSizeScale,
   renderPixelScale,
+  resolutionApplyPlan,
   SIZE_SCALE_EPSILON,
 } from "../../src/review/render-schedule.ts";
 import {
@@ -199,4 +204,70 @@ test("QualityGovernor.endMotion ends a programmatic motion without the stillness
   governor.touch(3_000);
   assert.equal(governor.quality, "moving");
   assert.equal(governor.poll(3_000 + QUALITY_RESTORE_MS), "full");
+});
+
+// ---------------------------------------------------------------- D-072 R3 (X9): interaction start
+
+test("no backing-store swap is planned while moving, whatever the ratios involved", () => {
+  // Motion never swaps: the canvases keep the scheduled (rest) scale through the whole drag.
+  assert.deepEqual(resolutionApplyPlan("moving", 2, 1.5), { apply: false, scale: 1.5 },
+    "the rest scale is kept while moving");
+  assert.deepEqual(resolutionApplyPlan("moving", 2, 1), { apply: false, scale: 1 },
+    "even a stale lower scale is not touched during motion");
+  assert.deepEqual(resolutionApplyPlan("moving", 1, 1), { apply: false, scale: 1 });
+  // At rest the swap runs exactly when the rest policy differs from the scheduled scale.
+  assert.deepEqual(resolutionApplyPlan("full", 2, 1.5), { apply: false, scale: 1.5 },
+    "already at the rest cap: nothing to apply");
+  assert.deepEqual(resolutionApplyPlan("full", 2, 1), { apply: true, scale: 1.5 },
+    "a restore after a policy change applies the rest cap");
+  assert.deepEqual(resolutionApplyPlan("full", 1.25, 1.25), { apply: false, scale: 1.25 },
+    "a lower display ratio is never raised");
+  assert.deepEqual(resolutionApplyPlan("full", 3, 1.5), { apply: false, scale: 1.5 });
+});
+
+test("the moving label pass early-outs unless a tier-1 candidate can exist", () => {
+  const none = { hoverId: null as string | null, selectedId: null as string | null, flatDomains: false };
+  assert.equal(movingLabelPassHasCandidates(none), false,
+    "no hover, no selection, not the Flat domains: the pass has zero output");
+  assert.equal(movingLabelPassHasCandidates({ ...none, hoverId: "n7" }), true, "a hovered node is tier 1");
+  assert.equal(movingLabelPassHasCandidates({ ...none, selectedId: "n7" }), true, "a selection is tier 1");
+  assert.equal(movingLabelPassHasCandidates({ ...none, flatDomains: true }), true, "the Flat domains are tier 1");
+});
+
+test("a camera change defers the moving label pass by one frame and never runs it synchronously", () => {
+  const schedule = new MovingLabelPassSchedule();
+  // The first camera change answers "defer" — the pass runs on the next animation frame, never
+  // inside the watch tick that observed the change.
+  assert.equal(schedule.request(1_000), "defer");
+  // A request while the deferred frame is still pending is coalesced into it.
+  assert.equal(schedule.request(1_002), "skip");
+  // The deferred pass runs one frame later, at t=1016; the interval counts from there.
+  schedule.ran(1_016);
+  assert.equal(schedule.request(1_030), "skip", "inside the throttle interval");
+  assert.equal(schedule.request(1_100), "skip", "84 ms since the run: still inside the interval");
+  assert.equal(schedule.request(1_016 + MOVING_LABEL_PASS_INTERVAL_MS), "defer",
+    "one interval after the run, a new change defers again");
+  schedule.ran(1_152);
+  assert.equal(schedule.request(1_260), "skip");
+  assert.equal(schedule.request(1_152 + MOVING_LABEL_PASS_INTERVAL_MS), "defer");
+});
+
+test("the marks ring keeps the last 400 scheduling events, oldest first, as a copy", () => {
+  const marks = new ScheduleMarks();
+  assert.deepEqual(marks.list(), [], "empty at start");
+  for (let index = 0; index < 405; index++) marks.record(`e${index}`, index, index / 2);
+  const list = marks.list();
+  assert.equal(list.length, 400, "capped at the capacity, never growing");
+  assert.deepEqual(list[0], { name: "e5", at: 5, ms: 2.5 }, "the oldest five fell off");
+  assert.deepEqual(list.at(-1), { name: "e404", at: 404, ms: 202 }, "the newest is last");
+  // The returned list is a fresh array: mutating it cannot mutate the ring.
+  list.shift();
+  list.pop();
+  assert.equal(marks.list().length, 400);
+  assert.deepEqual(marks.list()[0], { name: "e5", at: 5, ms: 2.5 });
+  // A small capacity keeps exactly its newest events.
+  const tiny = new ScheduleMarks(3);
+  for (let index = 0; index < 5; index++) tiny.record("m", index, 0);
+  assert.deepEqual(tiny.list().map((mark) => mark.at), [2, 3, 4]);
+  assert.deepEqual(tiny.list().map((mark) => mark.name), ["m", "m", "m"]);
 });

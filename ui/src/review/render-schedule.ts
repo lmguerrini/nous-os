@@ -120,6 +120,105 @@ export function resolutionSwapAllowed(quality: RenderQuality): boolean {
   return quality === "full";
 }
 
+/** D-072 R3 (X9): the apply decision built on `resolutionSwapAllowed`. While the camera moves the
+ * plan never applies — the moving frame draws at the rest scale, its own reduced drawing is what
+ * makes it cheap, not a lower resolution — so the backing stores keep `scheduledScale`; at rest
+ * the swap runs exactly when the rest policy differs from the scheduled scale (a DPR or window
+ * policy change). Pure. */
+export function resolutionApplyPlan(
+  quality: RenderQuality,
+  devicePixelRatio: number,
+  scheduledScale: number,
+): { apply: boolean; scale: number } {
+  if (!resolutionSwapAllowed(quality)) return { apply: false, scale: scheduledScale };
+  const target = renderPixelScale("full", devicePixelRatio);
+  return { apply: target !== scheduledScale, scale: target };
+}
+
+/** D-072 R3 (X9): whether the reduced (tier-1 only) label pass has any candidate at all — a
+ * hovered node, a selection, or the Flat domains (`flatDomains`: labels on, flat organization,
+ * at least one visible domain). When false the whole moving pass is skipped: no anchor
+ * projection, no footprint discs, no Indra container title placement, no DOM rebuild. Pure. */
+export function movingLabelPassHasCandidates(state: {
+  readonly hoverId: string | null;
+  readonly selectedId: string | null;
+  readonly flatDomains: boolean;
+}): boolean {
+  return state.hoverId !== null || state.selectedId !== null || state.flatDomains;
+}
+
+/** D-072 R3 (X9): the reduced label pass never runs more often than this while the camera moves. */
+export const MOVING_LABEL_PASS_INTERVAL_MS = 120;
+
+/** D-072 R3 (X9): the schedule of the moving label pass. A camera change never runs the pass
+ * synchronously inside the watch tick — `request` answers `"defer"` and the pass runs one
+ * animation frame later, coalesced with whatever the intervening frames ask for; `"skip"` covers
+ * the throttle interval and an already-pending frame. Pure; the view drives it with frame
+ * timestamps and reports each run. */
+export class MovingLabelPassSchedule {
+  private lastRunMs: number | null = null;
+  private pending = false;
+  private readonly intervalMs: number;
+
+  constructor(intervalMs: number = MOVING_LABEL_PASS_INTERVAL_MS) {
+    this.intervalMs = intervalMs;
+  }
+
+  request(nowMs: number): "defer" | "skip" {
+    if (this.lastRunMs !== null && nowMs - this.lastRunMs < this.intervalMs) return "skip";
+    if (this.pending) return "skip";
+    this.pending = true;
+    return "defer";
+  }
+
+  /** The deferred pass just ran one frame after its request; the interval counts from here. */
+  ran(nowMs: number): void {
+    this.lastRunMs = nowMs;
+    this.pending = false;
+  }
+}
+
+/** D-072 R3: one scheduling event of the product view, as `__d072.marks()` reports it — `at` is
+ * the performance clock, `ms` the event's own duration (0 for instants like quality flips). */
+export interface ScheduleMark {
+  readonly name: string;
+  readonly at: number;
+  readonly ms: number;
+}
+
+/** D-072 R3: how many scheduling events `__d072.marks()` keeps — the last 400, never per frame. */
+export const SCHEDULE_MARKS_CAPACITY = 400;
+
+/** D-072 R3: a fixed-capacity ring of the view's scheduling events (quality flips, resolution
+ * applies, label passes, remounts). Deterministic, no growth: the ring reuses its slots, only
+ * the small mark objects are allocated, and events are rare by contract — never per frame.
+ * Pure. */
+export class ScheduleMarks {
+  private readonly capacity: number;
+  private readonly slots: (ScheduleMark | undefined)[];
+  private head = 0;
+  private count = 0;
+
+  constructor(capacity: number = SCHEDULE_MARKS_CAPACITY) {
+    this.capacity = Math.max(1, Math.floor(capacity));
+    this.slots = new Array<ScheduleMark | undefined>(this.capacity).fill(undefined);
+  }
+
+  record(name: string, at: number, ms: number): void {
+    this.slots[this.head] = { name, at, ms };
+    this.head = (this.head + 1) % this.capacity;
+    if (this.count < this.capacity) this.count += 1;
+  }
+
+  /** The last events, oldest first, in a fresh array — the caller can never mutate the ring. */
+  list(): ScheduleMark[] {
+    const out: ScheduleMark[] = [];
+    const start = (this.head - this.count + this.capacity) % this.capacity;
+    for (let index = 0; index < this.count; index += 1) out.push(this.slots[(start + index) % this.capacity]!);
+    return out;
+  }
+}
+
 /** The depth-epsilon the 3D rig clamps its size scale with (camera.tsx `sizeScaleAt`), so the
  * scale reproduced here from the review pose matches the rig's exactly, degenerate points
  * included. */
