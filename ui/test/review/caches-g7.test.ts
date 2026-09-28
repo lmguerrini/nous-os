@@ -20,6 +20,7 @@ import {
   projectedFlatness,
   projectedWorldScale,
   resetDrawingCaches,
+  sphereSegmentCount,
 } from "#render-common/container-canvas.ts";
 import {
   PEARL_DEPTH_STEPS,
@@ -322,6 +323,11 @@ test("batched equator strokes cover every segment once, with the exact per-segme
   const alpha = backAlpha + (frontAlpha - backAlpha) * 0.5;
   const strokes = ops.filter(o => o.op === "stroke").map(o => (o.args as [string, number]));
   assert.deepEqual(strokes.map(s => s[0]).sort(), [`rgba(20, 20, 20, ${clampN(0.4 - 0.03, 0.16, 0.4)})`, `rgba(20, 20, 20, ${alpha})`].sort());
+  // D-072: the limb is a polyline of sphereSegmentCount(projected radius) segments (60 world units ×
+  // the projector's 4 px per unit = 240 px → 64), plus one lineTo per equator segment.
   const segmentCount = equator.circle.length - 1;
-  assert.equal(ops.filter(o => o.op === "lineTo").length, segmentCount);
+  assert.equal(sphereSegmentCount(240), 64);
+  assert.equal(ops.filter(o => o.op === "lineTo").length, sphereSegmentCount(240) + segmentCount);
+  // The equator keeps its own subpaths: one moveTo per segment, plus the limb's single one.
+  assert.equal(ops.filter(o => o.op === "moveTo").length, 1 + segmentCount);
 });

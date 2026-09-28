@@ -1,8 +1,13 @@
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
-import { morphologyHash } from "#engine/stable-hash.ts";
 
 export type MorphologyContainerInput = { readonly id: string; readonly level: number; readonly center: Coordinates; readonly radius: number; readonly radius2d?: number; readonly title?: string; readonly open?: boolean };
+/** The world plane a shell great circle lies in: `xy` keeps z constant, `xz` keeps y constant,
+ * `yz` keeps x constant. The drawer resamples the circle at any angle from this + center + radius. */
+export type ShellCircleAxis = "xy" | "xz" | "yz";
+/** A shell great circle: its 65 sampled points (i/64 of a turn) plus the axis it lies in, so the
+ * 3D drawer can rebuild the circle at a different resolution without per-frame allocation. */
+export type ShellCircle = readonly Coordinates[] & { readonly axis: ShellCircleAxis };
 export type MorphologyContainerPath = {
   readonly id: string;
   readonly level: number;
@@ -14,36 +19,33 @@ export type MorphologyContainerPath = {
   /** True when the container's children are visible (an open pearl); a closed `+N` pearl is `open: false`. */
   readonly open?: boolean;
   readonly points: readonly Coordinates[];
-  readonly shell?: readonly (readonly Coordinates[])[];
+  readonly shell?: readonly ShellCircle[];
   readonly title?: string;
 };
 
 /** A few great circles that read as a translucent sphere from any camera angle: an equator and two
  * meridians. The projected limb circle (silhouette) is drawn separately from the shell radius. */
-function sphereShell(center: Coordinates, radius: number): readonly (readonly Coordinates[])[] {
-  const circle = (axis: "xy" | "xz" | "yz"): readonly Coordinates[] => Array.from({ length: 65 }, (_, index): Coordinates => {
+function sphereShell(center: Coordinates, radius: number): readonly ShellCircle[] {
+  const circle = (axis: ShellCircleAxis): ShellCircle => Object.assign(Array.from({ length: 65 }, (_, index): Coordinates => {
     const angle = index / 64 * Math.PI * 2;
     const cos = Math.cos(angle), sin = Math.sin(angle);
     if (axis === "xy") return { x: center.x + cos * radius, y: center.y + sin * radius, z: center.z };
     if (axis === "xz") return { x: center.x + cos * radius, y: center.y, z: center.z + sin * radius };
     return { x: center.x, y: center.y + cos * radius, z: center.z + sin * radius };
-  });
+  }), { axis });
   return [circle("xy"), circle("xz"), circle("yz")];
 }
 
-/** World-space outlines shared by the front and rotated projections. */
-export function buildContainerGeometry(morphology: Morphology, containers: readonly MorphologyContainerInput[]): readonly MorphologyContainerPath[] {
+/** World-space outlines shared by the front and rotated projections. Every pearl and container is
+ * an exact circle in every morphology (D-072 V7): Stellar, Neural and Mycelium may only style the
+ * nodes and arcs inside a pearl, never its boundary — the absolute NousOS pearl included. */
+export function buildContainerGeometry(_morphology: Morphology, containers: readonly MorphologyContainerInput[]): readonly MorphologyContainerPath[] {
   return containers.map(container => {
-    const phase = morphologyHash(container.id) / 4294967296 * Math.PI * 2;
     const rim = container.radius2d ?? container.radius;
     const points = Array.from({ length: 65 }, (_, index): Coordinates => {
       const angle = index / 64 * Math.PI * 2;
-      // Outlines only ripple inward, so no morphology draws a pearl beyond its packed radius.
-      const ripple = morphology === "mycelium" ? 1 - 0.055 + 0.035 * Math.sin(7 * angle + phase) + 0.02 * Math.sin(13 * angle - phase)
-        : morphology === "neural" ? 1 - 0.012 + 0.012 * Math.sin(4 * angle + phase) : 1;
-      const radius = rim;
-      return { x: container.center.x + Math.cos(angle) * radius * ripple,
-        y: container.center.y + Math.sin(angle) * radius * ripple, z: container.center.z };
+      return { x: container.center.x + Math.cos(angle) * rim,
+        y: container.center.y + Math.sin(angle) * rim, z: container.center.z };
     });
     // Every container carries a full XYZ wireframe so the 3D view shows nested spheres, never flat discs.
     const shell = sphereShell(container.center, container.radius);

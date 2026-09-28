@@ -1,10 +1,10 @@
 import type { Coordinates } from "#engine/contract.ts";
-import type { MorphologyContainerPath } from "#engine/container-geometry.ts";
+import type { MorphologyContainerPath, ShellCircle } from "#engine/container-geometry.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { ProjectedPoint } from "#render-common/morphology-canvas.ts";
 
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
-const dashHook = () => (globalThis as typeof globalThis & { __indraContainers?: { dashed: number; draws: number; limbs?: number | undefined; equators?: number | undefined; minEquatorFlatness?: number | undefined; nousosLimb?: { x: number; y: number; radiusPx: number } | undefined } }).__indraContainers;
+const dashHook = () => (globalThis as typeof globalThis & { __indraContainers?: { dashed: number; draws: number; limbs?: number | undefined; equators?: number | undefined; minEquatorFlatness?: number | undefined; nousosLimb?: { x: number; y: number; radiusPx: number } | undefined; quality?: "full" | "moving" | undefined } }).__indraContainers;
 const bump = (hook: ReturnType<typeof dashHook>, key: "limbs" | "equators", value: number) => {
   if (hook) hook[key] = (hook[key] ?? 0) + value;
 };
@@ -125,6 +125,38 @@ export function containerSphereLOD(level: number, open: boolean, selected: boole
   return open || selected || projectedRadiusPx >= CONTAINER_SPHERE_MIN_PX;
 }
 
+/** Below this projected radius a sphere is a single thin circle: at that size a fill, a rim light
+ * and an equator cost far more than they could ever show (D-072 V8 distance simplification). */
+export const CONTAINER_SPHERE_TINY_PX = 12;
+
+/** Adaptive sphere resolution (D-072 V8): the number of limb and equator segments follows the
+ * projected radius — about 24 below 40 px (indistinguishable from a circle at that size) up to 64
+ * for large spheres. */
+export const SPHERE_MIN_SEGMENTS = 24;
+export const SPHERE_MAX_SEGMENTS = 64;
+export const SPHERE_SEGMENT_TIERS: readonly { readonly minPx: number; readonly segments: number }[] = [
+  { minPx: 0, segments: SPHERE_MIN_SEGMENTS },
+  { minPx: 40, segments: 32 },
+  { minPx: 100, segments: 48 },
+  { minPx: 200, segments: SPHERE_MAX_SEGMENTS },
+];
+/** The segment count a sphere of this projected radius draws with: the highest tier it reaches. */
+export function sphereSegmentCount(projectedRadiusPx: number): number {
+  let segments = SPHERE_MIN_SEGMENTS;
+  for (const tier of SPHERE_SEGMENT_TIERS) if (projectedRadiusPx >= tier.minPx) segments = tier.segments;
+  return segments;
+}
+/** One shared unit-circle table per tier: cos/sin at k/segments of a turn, closing point included.
+ * Precomputed once at module load; drawing a circle from it allocates nothing per frame. */
+export type CircleTable = { readonly cos: Float64Array; readonly sin: Float64Array };
+const CIRCLE_TABLES: ReadonlyMap<number, CircleTable> = new Map(SPHERE_SEGMENT_TIERS.map(tier => [tier.segments, {
+  cos: Float64Array.from({ length: tier.segments + 1 }, (_, index) => Math.cos(index / tier.segments * Math.PI * 2)),
+  sin: Float64Array.from({ length: tier.segments + 1 }, (_, index) => Math.sin(index / tier.segments * Math.PI * 2)),
+}]));
+function circleTable(segments: number): CircleTable {
+  return CIRCLE_TABLES.get(segments) ?? CIRCLE_TABLES.get(SPHERE_MAX_SEGMENTS)!;
+}
+
 /** Selection state the container layer needs: a focused or hovered pearl shows its sphere. */
 export type ContainerInteraction = {
   readonly hoverId?: string | null;
@@ -142,6 +174,13 @@ export type ContainerInteraction = {
    * by `containerInkRgb`. Absent: the historical field-derived neutral ink.
    */
   readonly containerColor?: string | null;
+  /**
+   * Drawing quality of the pass (D-072 V8). `"moving"` is the reduced frame drawn while the camera
+   * rotates or zooms: limbs only for the spheres that carry the structure (levels ≤ 1, plus open
+   * or selected pearls), no rim-light gradients, no equators, and titles only for levels ≤ 1.
+   * `"full"` — the default when absent — draws the complete spheres exactly as a still frame.
+   */
+  readonly quality?: "full" | "moving";
 };
 
 /** One projected obstacle a label must stay clear of: a pearl or soma disc. The optional id marks
@@ -313,6 +352,39 @@ let containersOrderCaches = new WeakMap<readonly MorphologyContainerPath[], {
  * keyed by (kind, ink, level), so a palette change is a different key, never a stale hit. */
 const SPHERE_GRADIENT_CACHE_CAP = 64;
 let sphereGradientCaches = new WeakMap<CanvasRenderingContext2D, Map<string, CanvasGradient>>();
+/** World-space samples of a shell circle resampled at a lower tier's resolution, keyed weakly by the
+ * circle itself (it dies with its geometry — G10's weak-key rule). At the top tier the layout's own
+ * 65-point circle is already the 64-segment table, so its identity — and the renderer's projection
+ * memo keyed on it — is kept; lower tiers are built once per (circle, tier), never per frame. */
+const EQUATOR_SAMPLE_CACHE_CAP = 16;
+let equatorSampleCaches = new WeakMap<readonly Coordinates[], Map<number, readonly Coordinates[]>>();
+function equatorSamples(
+  circle: readonly Coordinates[],
+  container: MorphologyContainerPath,
+  segments: number,
+): readonly Coordinates[] {
+  if (segments >= SPHERE_MAX_SEGMENTS) return circle;
+  const axis = (circle as ShellCircle).axis;
+  if (!axis) return circle;
+  let bySegments = equatorSampleCaches.get(circle);
+  if (!bySegments) {
+    bySegments = new Map();
+    equatorSampleCaches.set(circle, bySegments);
+  }
+  const hit = bySegments.get(segments);
+  if (hit) return hit;
+  const table = circleTable(segments);
+  const { center, radius } = container;
+  const points: Coordinates[] = Array.from({ length: segments + 1 }, (_, index) => {
+    const cos = table.cos[index]!, sin = table.sin[index]!;
+    if (axis === "xy") return { x: center.x + cos * radius, y: center.y + sin * radius, z: center.z };
+    if (axis === "xz") return { x: center.x + cos * radius, y: center.y, z: center.z + sin * radius };
+    return { x: center.x, y: center.y + cos * radius, z: center.z + sin * radius };
+  });
+  if (bySegments.size >= EQUATOR_SAMPLE_CACHE_CAP) bySegments.clear();
+  bySegments.set(segments, points);
+  return points;
+}
 
 /** A context that can compose translate/scale around a cached unit gradient (real canvas contexts
  * can; minimal test doubles may not, and fall back to the per-sphere construction). */
@@ -335,13 +407,14 @@ function stableContextMeasurer(context: CanvasRenderingContext2D): TitleMeasure 
   return measure;
 }
 
-/** Resets every drawing cache (title layouts, container order, sphere gradients, context measurers).
- * Tests use it to observe cache behaviour. */
+/** Resets every drawing cache (title layouts, container order, sphere gradients, context measurers,
+ * equator samples). Tests use it to observe cache behaviour. */
 export function resetDrawingCaches(): void {
   titleLayoutCaches = new WeakMap();
   containersOrderCaches = new WeakMap();
   sphereGradientCaches = new WeakMap();
   contextMeasurers = new WeakMap();
+  equatorSampleCaches = new WeakMap();
 }
 /** Number of memoised title layouts for one measure (bounded by the cap) — the bounded-growth
  * witness. Per measure because the memo is: the measures are held weakly (a context-bound measure
@@ -457,6 +530,8 @@ export function containerTitleRect(
   cache?: ContainerFrameCache,
 ): { readonly left: number; readonly top: number; readonly width: number; readonly height: number } | null {
   if (!container.title) return null;
+  // The moving pass keeps titles only on the spheres that carry the structure (levels ≤ 1).
+  if (interaction?.quality === "moving" && container.level > 1) return null;
   if (projection === "3d") {
     const center = project(container.center);
     const limbRadiusPx = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
@@ -524,6 +599,7 @@ export function drawContainers(
     hook.equators = 0;
     hook.minEquatorFlatness = undefined;
     hook.nousosLimb = undefined;
+    hook.quality = interaction?.quality === "moving" ? "moving" : "full";
   }
   // The nested shells are the hierarchy. Their lines stay thin, continuous and translucent, and
   // carry the palette's container role (lightness-clamped against the field) as their ink.
@@ -534,13 +610,19 @@ export function drawContainers(
     if (projection === "3d") {
       drawSphere(context, container, project, ink, interaction, bounds, cache, limbStyles);
     } else {
-      const points = container.points.map(project);
-      if (!points.length) continue;
+      const outline = container.points;
+      if (!outline.length) continue;
+      // The exact circle the geometry built, projected point by point — no per-frame point copies.
       context.strokeStyle = `rgba(${ink}, ${container.level === 0 ? 0.42 : clamp(0.95 - container.level * 0.1, 0.3, 0.8)})`;
       context.lineWidth = 0.85 + Math.max(0, 4 - container.level) * 0.18;
       setDash(context, []);
-      context.beginPath(); context.moveTo(points[0]!.x, points[0]!.y);
-      for (let index = 1; index < points.length; index++) context.lineTo(points[index]!.x, points[index]!.y);
+      context.beginPath();
+      const first = project(outline[0]!);
+      context.moveTo(first.x, first.y);
+      for (let index = 1; index < outline.length; index++) {
+        const point = project(outline[index]!);
+        context.lineTo(point.x, point.y);
+      }
       if (typeof context.fill === 'function') {
         context.fillStyle = `rgba(${ink}, ${container.level === 0 ? 0.012 : 0.014})`;
         context.fill();
@@ -577,7 +659,10 @@ export function drawContainers(
   /** The projected limb circle plus a faint glass fill, a rim light just inside the limb, and at most
    * one equator, chosen as the most face-on great circle and faded by its projected flatness; its
    * back half is dimmer than its front half, always continuous, never dashed. Containers below the
-   * sphere LOD draw no sphere at all: they are carried by their pearl and their «+N» title. */
+   * sphere LOD draw no sphere at all: they are carried by their pearl and their «+N» title.
+   * D-072 V8: the limb and equator segment counts follow the projected radius (shared precomputed
+   * unit-circle tables); the `moving` quality draws limbs only (no gradients, no equator); a sphere
+   * under `CONTAINER_SPHERE_TINY_PX` on screen is a single thin circle. */
   function drawSphere(
     context: CanvasRenderingContext2D,
     container: MorphologyContainerPath,
@@ -590,60 +675,75 @@ export function drawContainers(
   ): void {
     const hook = dashHook();
     const center = project(container.center);
+    const moving = interaction?.quality === "moving";
+    const open = container.open !== false;
+    const selected = containerSelected(container, interaction);
     // True projected radius, measured on the projection itself (world radius × px per world unit).
     const limbRadius = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
-    if (!containerSphereLOD(container.level, container.open !== false, containerSelected(container, interaction), limbRadius)) return;
+    if (!containerSphereLOD(container.level, open, selected, limbRadius)) return;
+    // The moving pass keeps only the limbs of the spheres that carry the structure: the absolute
+    // shell and the domains always, any other pearl only while open or selected.
+    if (moving && container.level > 1 && !open && !selected) return;
     // A sphere wholly outside the canvas draws nothing a viewer could see; the NousOS shell keeps its
     // witness (the framing checks read it) even while panned out.
     if (container.level > 0 && (center.x + limbRadius < -2 || center.x - limbRadius > bounds.width + 2
       || center.y + limbRadius < -2 || center.y - limbRadius > bounds.height + 2)) return;
-    // Subtle radial gradient fill: a translucent glass sphere with the light gathered off-centre, and
-    // a glass rim light brighter at the limb — both proportional to the limb radius, so one cached
-    // unit gradient per (ink, level) serves every sphere, composed under translate + scale.
-    if (typeof context.createRadialGradient === "function") {
-      const fillAlpha = container.level === 0 ? 0.07 : clamp(0.05 - container.level * 0.004, 0.02, 0.05);
-      const rim = containerRimLight(container.level);
-      // The unit gradients are only worth building where they can be composed (translate + scale);
-      // a minimal context without them falls straight to the per-sphere construction.
-      const compose = canComposeTransform(context);
-      const fill = compose ? unitGradient(`sphere-fill\u0000${ink}\u0000${container.level}`, -0.32, -0.32, 0.06, gradient => {
-        gradient.addColorStop(0, `rgba(${ink}, ${fillAlpha})`);
-        gradient.addColorStop(0.62, `rgba(${ink}, ${fillAlpha * 0.5})`);
-        gradient.addColorStop(1, `rgba(${ink}, 0)`);
-      }) : null;
-      // Unit geometry: light gathered off-centre at (−0.32, −0.32), from 0.06 out to the limb at 1;
-      // the rim light spans the outer 30 % of the radius, transparent toward the centre.
-      const rimGradient = compose ? unitGradient(`sphere-rim\u0000${ink}\u0000${container.level}`, 0, 0, rim.innerRatio, gradient => {
-        for (const stop of rim.stops) gradient.addColorStop(stop.offset, `rgba(${ink}, ${stop.alpha})`);
-      }) : null;
-      if (fill && rimGradient) {
-        context.save();
-        context.translate(center.x, center.y);
-        context.scale(limbRadius, limbRadius);
-        context.fillStyle = fill;
-        context.beginPath(); context.arc(0, 0, 1, 0, Math.PI * 2); context.fill();
-        context.fillStyle = rimGradient;
-        context.beginPath(); context.arc(0, 0, 1, 0, Math.PI * 2); context.fill();
-        context.restore();
-      } else {
-        const gradient = context.createRadialGradient(
-          center.x - limbRadius * 0.32, center.y - limbRadius * 0.32, limbRadius * 0.06,
-          center.x, center.y, limbRadius);
-        gradient.addColorStop(0, `rgba(${ink}, ${fillAlpha})`);
-        gradient.addColorStop(0.62, `rgba(${ink}, ${fillAlpha * 0.5})`);
-        gradient.addColorStop(1, `rgba(${ink}, 0)`);
-        context.fillStyle = gradient;
-        context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
-        // Glass rim light: brighter at the rim, transparent toward the centre, so the shell reads as a
-        // volume instead of a flat disc. Nothing is added over the inner 70 % of the radius.
-        const rimAbsolute = context.createRadialGradient(
-          center.x, center.y, limbRadius * rim.innerRatio, center.x, center.y, limbRadius);
-        for (const stop of rim.stops) rimAbsolute.addColorStop(stop.offset, `rgba(${ink}, ${stop.alpha})`);
-        context.fillStyle = rimAbsolute;
-        context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
+    // Distance simplification: a sphere this small on screen is a single thin circle — its fill, rim
+    // light and equator could never read at that size.
+    const tiny = limbRadius < CONTAINER_SPHERE_TINY_PX;
+    // Adaptive resolution: the segment count follows the projected radius, from the shared tables.
+    const segments = sphereSegmentCount(limbRadius);
+    const table = circleTable(segments);
+    if (!tiny && !moving) {
+      // Subtle radial gradient fill: a translucent glass sphere with the light gathered off-centre, and
+      // a glass rim light brighter at the limb — both proportional to the limb radius, so one cached
+      // unit gradient per (ink, level) serves every sphere, composed under translate + scale.
+      if (typeof context.createRadialGradient === "function") {
+        const fillAlpha = container.level === 0 ? 0.07 : clamp(0.05 - container.level * 0.004, 0.02, 0.05);
+        const rim = containerRimLight(container.level);
+        // The unit gradients are only worth building where they can be composed (translate + scale);
+        // a minimal context without them falls straight to the per-sphere construction.
+        const compose = canComposeTransform(context);
+        const fill = compose ? unitGradient(`sphere-fill\u0000${ink}\u0000${container.level}`, -0.32, -0.32, 0.06, gradient => {
+          gradient.addColorStop(0, `rgba(${ink}, ${fillAlpha})`);
+          gradient.addColorStop(0.62, `rgba(${ink}, ${fillAlpha * 0.5})`);
+          gradient.addColorStop(1, `rgba(${ink}, 0)`);
+        }) : null;
+        // Unit geometry: light gathered off-centre at (−0.32, −0.32), from 0.06 out to the limb at 1;
+        // the rim light spans the outer 30 % of the radius, transparent toward the centre.
+        const rimGradient = compose ? unitGradient(`sphere-rim\u0000${ink}\u0000${container.level}`, 0, 0, rim.innerRatio, gradient => {
+          for (const stop of rim.stops) gradient.addColorStop(stop.offset, `rgba(${ink}, ${stop.alpha})`);
+        }) : null;
+        if (fill && rimGradient) {
+          context.save();
+          context.translate(center.x, center.y);
+          context.scale(limbRadius, limbRadius);
+          context.fillStyle = fill;
+          context.beginPath(); context.arc(0, 0, 1, 0, Math.PI * 2); context.fill();
+          context.fillStyle = rimGradient;
+          context.beginPath(); context.arc(0, 0, 1, 0, Math.PI * 2); context.fill();
+          context.restore();
+        } else {
+          const gradient = context.createRadialGradient(
+            center.x - limbRadius * 0.32, center.y - limbRadius * 0.32, limbRadius * 0.06,
+            center.x, center.y, limbRadius);
+          gradient.addColorStop(0, `rgba(${ink}, ${fillAlpha})`);
+          gradient.addColorStop(0.62, `rgba(${ink}, ${fillAlpha * 0.5})`);
+          gradient.addColorStop(1, `rgba(${ink}, 0)`);
+          context.fillStyle = gradient;
+          context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
+          // Glass rim light: brighter at the rim, transparent toward the centre, so the shell reads as a
+          // volume instead of a flat disc. Nothing is added over the inner 70 % of the radius.
+          const rimAbsolute = context.createRadialGradient(
+            center.x, center.y, limbRadius * rim.innerRatio, center.x, center.y, limbRadius);
+          for (const stop of rim.stops) rimAbsolute.addColorStop(stop.offset, `rgba(${ink}, ${stop.alpha})`);
+          context.fillStyle = rimAbsolute;
+          context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
+        }
       }
     }
-    // The projected silhouette: the level-0 NousOS limb stays light and clearly visible.
+    // The projected silhouette: the level-0 NousOS limb stays light and clearly visible. The circle
+    // is a polyline from the shared unit-circle table — `segments` of them at this projected radius.
     const limbAlpha = container.level === 0 ? 0.6 : clamp(0.4 - container.level * 0.03, 0.16, 0.4);
     let limbStyle = limbStyles.get(container.level);
     if (limbStyle === undefined) {
@@ -651,20 +751,31 @@ export function drawContainers(
       limbStyles.set(container.level, limbStyle);
     }
     context.strokeStyle = limbStyle;
-    context.lineWidth = container.level === 0 ? 1.1 : 0.75;
+    context.lineWidth = tiny ? 0.5 : container.level === 0 ? 1.1 : 0.75;
     setDash(context, []);
-    context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.stroke();
+    context.beginPath();
+    context.moveTo(center.x + table.cos[0]! * limbRadius, center.y + table.sin[0]! * limbRadius);
+    for (let index = 1; index <= segments; index++) {
+      context.lineTo(center.x + table.cos[index]! * limbRadius, center.y + table.sin[index]! * limbRadius);
+    }
+    context.stroke();
     bump(hook, "limbs", 1);
     if (container.level === 0 && hook) hook.nousosLimb = { x: center.x, y: center.y, radiusPx: limbRadius };
+    if (tiny || moving) return;
     // At most one equator, the most face-on great circle, faded by flatness so an edge-on circle
-    // (a long line with no identifiable meaning) is never drawn.
+    // (a long line with no identifiable meaning) is never drawn. It is sampled at the same adaptive
+    // segment count as the limb, from the circle's own world parametrization (cached, never rebuilt).
     const equator = chosenEquator(container.shell ?? [], project);
     if (!equator) return;
-    const shellPoints = equator.circle.map(project);
+    const samples = equatorSamples(equator.circle, container, segments);
     // The NousOS equator never reaches outside the canvas: a tall narrow ellipse pressed against the
     // border reads as geometry with no semantics, so it is not drawn at all there.
-    if (container.level === 0 && shellPoints.some(point =>
-      point.x < -1 || point.x > bounds.width + 1 || point.y < -1 || point.y > bounds.height + 1)) return;
+    if (container.level === 0) {
+      for (const sample of samples) {
+        const point = project(sample);
+        if (point.x < -1 || point.x > bounds.width + 1 || point.y < -1 || point.y > bounds.height + 1) return;
+      }
+    }
     bump(hook, "equators", 1);
     if (hook) hook.minEquatorFlatness = Math.min(hook.minEquatorFlatness ?? Infinity, equator.flatness);
     const centerScale = Math.max(center.scale, 1e-4);
@@ -673,10 +784,12 @@ export function drawContainers(
     const band = Math.max(centerScale * 0.08, 1e-4);
     // Consecutive segments whose style string is identical are stroked as subpaths of one path:
     // each segment keeps its own butt-capped subpath (the same pixels as a stroke per segment), and
-    // the clamped front/back runs collapse from dozens of stroke calls to a couple.
+    // the clamped front/back runs collapse from dozens of stroke calls to a couple. The samples are
+    // projected one at a time — no per-frame point array.
     let runStyle: string | null = null;
-    for (let index = 0; index < shellPoints.length - 1; index++) {
-      const a = shellPoints[index]!, b = shellPoints[index + 1]!;
+    let a = project(samples[0]!);
+    for (let index = 1; index < samples.length; index++) {
+      const b = project(samples[index]!);
       const midScale = (a.scale + b.scale) / 2;
       const front = clamp(0.5 + (midScale - centerScale) / band, 0, 1);
       const alpha = backAlpha + (frontAlpha - backAlpha) * front;
@@ -690,6 +803,7 @@ export function drawContainers(
         runStyle = style;
       }
       context.moveTo(a.x, a.y); context.lineTo(b.x, b.y);
+      a = b;
     }
     if (runStyle !== null) {
       context.strokeStyle = runStyle;

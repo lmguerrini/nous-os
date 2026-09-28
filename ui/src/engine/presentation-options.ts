@@ -82,7 +82,11 @@ export type PresentationOptions = {
     readonly labelDiscs?: readonly { readonly x: number; readonly y: number; readonly radius: number; readonly id?: string }[] | null;
     /** The palette's `container` role colour: the ink the container layer draws with, clamped in
      * lightness against the field (see `containerInkRgb` in render-common/container-canvas). */
-    readonly containerColor?: string | null };
+    readonly containerColor?: string | null;
+    /** Drawing quality of the container/morphology pass: `"moving"` is the reduced frame while the
+     * camera rotates or zooms (limbs only for the structural spheres, no rim-light gradients, no
+     * equators, titles only for levels ≤ 1); `"full"` (the default) is the complete drawing. */
+    readonly quality?: "full" | "moving" };
   /** Hierarchical circles in world coordinates, shared by 2D and 3D projections. */
   readonly containers?: readonly { readonly id: string; readonly level: number; readonly center: { readonly x: number; readonly y: number; readonly z: number }; readonly radius: number }[];
   readonly nodes?: ReadonlyMap<string, NodePresentation & { readonly glyph?: NodeGlyph }>;

@@ -169,10 +169,11 @@ test("projectedWorldScale measures true px-per-world-unit, not the depth scale",
   assert.ok(Math.abs(projectedWorldScale({ x: 0, y: 0, z: 0 }, 100, perspectiveLike) - 0.4) < 1e-9);
 });
 
-function recordingContext(arcs: { x: number; y: number; r: number }[]) {
+function recordingContext(arcs: { x: number; y: number; r: number }[], verts: { x: number; y: number }[] = []) {
   return {
     canvas: { width: 900, height: 640, getBoundingClientRect: () => ({ width: 900, height: 640 }) },
-    setTransform() {}, clearRect() {}, setLineDash() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},
+    setTransform() {}, clearRect() {}, setLineDash() {}, beginPath() {}, closePath() {},
+    moveTo(x: number, y: number) { verts.push({ x, y }); }, lineTo(x: number, y: number) { verts.push({ x, y }); },
     stroke() {}, fill() {}, fillText() {}, measureText: (text: string) => ({ width: text.length * 6 }),
     arc(x: number, y: number, r: number) { arcs.push({ x, y, r }); },
     createRadialGradient: () => ({ addColorStop() {} }),
@@ -184,23 +185,26 @@ test("3D limbs draw at true projected size; small closed spheres draw none and k
     { id: "nousos", level: 0, center: { x: 0, y: 0, z: 0 }, radius: 1000, open: true, title: "NousOS" },
     { id: "domain", level: 1, center: { x: -300, y: 0, z: 0 }, radius: 400, open: true },
     { id: "project", level: 2, center: { x: 300, y: 0, z: 0 }, radius: 60, open: false, title: "project · +12" },
-    { id: "conversation", level: 3, center: { x: 0, y: 280, z: 0 }, radius: 25, open: true },
+    { id: "conversation", level: 3, center: { x: 0, y: 280, z: 0 }, radius: 70, open: true },
   ]);
   // An overview projector: 0.2 px per world unit, front view.
   const project = (point: { x: number; y: number; z: number }) => ({ x: 450 + point.x * 0.2, y: 320 + point.y * 0.2, scale: 1 });
   const arcs: { x: number; y: number; r: number }[] = [];
+  const verts: { x: number; y: number }[] = [];
   const hook: Record<string, number | undefined> = { dashed: 0, draws: 0 };
   (globalThis as typeof globalThis & { __indraContainers?: unknown }).__indraContainers = hook;
   try {
-    drawContainers(recordingContext(arcs), "stellar", containers, project, "rgb(0,0,0)", { width: 900, height: 640 }, "3d");
+    drawContainers(recordingContext(arcs, verts), "stellar", containers, project, "rgb(0,0,0)", { width: 900, height: 640 }, "3d");
   } finally {
     delete (globalThis as typeof globalThis & { __indraContainers?: unknown }).__indraContainers;
   }
   const near = (x: number, y: number) => arcs.filter(arc => Math.hypot(arc.x - x, arc.y - y) < 2);
-  // The NousOS limb is its true projected radius (~200 px), never its world radius drawn as pixels.
-  const nousos = near(450, 320);
-  assert.ok(nousos.some(arc => Math.abs(arc.r - 200) < 5), `nousos limbs: ${JSON.stringify(nousos)}`);
-  assert.ok(Math.max(...arcs.map(arc => arc.r)) < 260, "a limb drew at world units mistaken for pixels");
+  // The NousOS limb is its true projected radius (~200 px), never its world radius drawn as pixels:
+  // the limb is a polyline from the unit-circle table, so its vertices sit on that circle.
+  const distances = verts.map(vertex => Math.hypot(vertex.x - 450, vertex.y - 320));
+  assert.ok(distances.filter(distance => Math.abs(distance - 200) < 5).length >= 60, `nousos limb vertices: ${distances.filter(d => Math.abs(d - 200) < 5).length}`);
+  assert.ok(Math.max(...distances, 0) < 260, "a limb drew at world units mistaken for pixels");
+  assert.ok(Math.max(...arcs.map(arc => arc.r)) < 260, "a fill disc drew at world units mistaken for pixels");
   // A domain sphere draws; a small open conversation sphere still draws (children visible).
   assert.ok(near(390, 320).length > 0);
   assert.ok(near(450, 376).length > 0);
