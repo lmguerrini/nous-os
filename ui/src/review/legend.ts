@@ -9,6 +9,7 @@ import {
   STANDING_TEXT,
 } from "./presentation.ts";
 import type { FamilyId, Colour, Reading } from "./view-contract.ts";
+import type { PaletteValues } from "./palette.ts";
 function rgb(values: readonly number[]) {
   return `rgb(${values.map((n) => Math.round(n * 255)).join(",")})`;
 }
@@ -66,10 +67,13 @@ export function renderLegend(host: HTMLElement, colour: Colour, debug: boolean, 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 /**
- * The four semantic line kinds every drawn relation must resolve to. Rendered with a small drawn
- * sample each so the legend reads even before the graph is inspected.
+ * The four semantic line kinds every drawn relation must resolve to, rendered with a small drawn
+ * sample each so the legend reads even before the graph is inspected. The samples use the same
+ * palette roles the renderer receives (`attested`, `exploratory`, `container`, `selection`), so
+ * the legend always matches the graph, preset or custom palette alike; the exploratory sample is
+ * the same continuous line with a soft halo the canvas draws — one tone, no foreign accent.
  */
-export function renderFlowLegend(host: HTMLElement): void {
+export function renderFlowLegend(host: HTMLElement, palette: PaletteValues): void {
   host.replaceChildren();
   const entry = (label: string, title: string, build: (svg: SVGSVGElement) => void): HTMLElement => {
     const row = document.createElement("p");
@@ -111,31 +115,30 @@ export function renderFlowLegend(host: HTMLElement): void {
   };
 
   entry("Relazione attestata", "Linea continua: relazione registrata e deterministica.", (svg) => {
-    svg.append(line(2, 7, 24, 7, "#9aa3ad", 1.4));
+    svg.append(line(2, 7, 24, 7, palette.attested, 1.4));
   });
   entry("Connessione esplorativa", "Linea continua con alone e flusso luminoso in movimento.", (svg) => {
-    svg.append(line(2, 7, 24, 7, "#9fc7ff", 3.4, 0.26));
-    svg.append(line(2, 7, 24, 7, "#9fc7ff", 1.3));
-    svg.append(line(12, 7, 19, 7, "#ffffff", 2.1));
+    svg.append(line(2, 7, 24, 7, palette.exploratory, 3.4, 0.26));
+    svg.append(line(2, 7, 24, 7, palette.exploratory, 1.3));
   });
   entry("Contenimento Indra", "Contorno che racchiude una perla o un livello ricorsivo.", (svg) => {
-    svg.append(circle(13, 7, 5.5, "#7fd0c4", 1.3));
+    svg.append(circle(13, 7, 5.5, palette.container, 1.3));
   });
   entry("Selezionato / focus", "Elemento evidenziato dalla selezione o dal focus.", (svg) => {
-    svg.append(line(2, 7, 24, 7, "#ffd27f", 1.6));
-    svg.append(circle(13, 7, 4, "#ffd27f", 1.6));
+    svg.append(line(2, 7, 24, 7, palette.selection, 1.6));
+    svg.append(circle(13, 7, 4, palette.selection, 1.6));
   });
 }
 
 /** A compact legend section appended to a panel; used by both the legacy and the v2 page. */
-export function appendFlowLegend(host: HTMLElement): void {
+export function appendFlowLegend(host: HTMLElement, palette: PaletteValues): void {
   const section = document.createElement("section");
   section.id = "flow-legend-section";
   const heading = document.createElement("h3");
   heading.textContent = "Legenda";
   const box = document.createElement("div");
   box.className = "legend flow-legend";
-  renderFlowLegend(box);
+  renderFlowLegend(box, palette);
   section.append(heading, box);
   host.append(section);
 }

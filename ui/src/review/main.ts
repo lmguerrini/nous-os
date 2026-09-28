@@ -54,6 +54,9 @@ let customOrigin: PaletteValues = normalizePalette(storedOrigin?.palette, PALETT
 let customOriginName = storedOrigin?.name || "Monocromatico";
 let selectedColourPreset = "";
 let harmonyPreview: PaletteValues | null = null;
+/** The Italian name of the last applied colour harmony («Triadica»), cleared the moment the
+ * palette stops being exactly that harmony — a manual colour, a preset, a restore. */
+let appliedHarmonyName = "";
 let v2Colours = readLocal<Partial<Record<V2Category,string>>>(storage,"d069.v2Colours",{});
 let focusMode = false;
 let focusCamera: unknown = null;
@@ -216,7 +219,7 @@ function updatePanel() {
   legendSection.append(legend);
   renderLegend(legend, axes.colour, debug, axes.reading);
   details.append(legendSection);
-  appendFlowLegend(details);
+  appendFlowLegend(details, activePalette());
 }
 let liveQuery = "";
 async function liveSearch(query: string, limit = 10): Promise<LiveFragment[]> {
@@ -611,11 +614,27 @@ function syncPresetList(): void {
   list.replaceChildren(new Option("Preset salvati", ""), ...Object.keys(presets).sort().map((name) => new Option(name, name)));
   list.value = selected;
 }
+/** The palette the graph is drawn with right now: the saved one, or the custom editor's. */
+function activePalette(): PaletteValues {
+  return axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
+}
+/** The flow legend samples must be the colours the graph is drawn with, so every legend mount —
+ * the fullscreen one and any panel section — re-renders on each palette change. */
+function refreshFlowLegends(): void {
+  const palette = activePalette();
+  const fullscreen = get<HTMLElement>("fullscreen-legend");
+  renderFlowLegend(fullscreen, palette);
+  for (const host of document.querySelectorAll<HTMLElement>(".flow-legend"))
+    if (host !== fullscreen) renderFlowLegend(host, palette);
+}
 function syncCustomColours(): void {
+  refreshFlowLegends();
   const host = get<HTMLElement>("custom-colours");
   host.hidden = axes.colour !== "custom";
   get<HTMLElement>("custom-editor").hidden = axes.colour !== "custom";
-  get<HTMLElement>("custom-selected").textContent = `Preset selezionato: ${selectedColourPreset || customOriginName}`;
+  get<HTMLElement>("custom-selected").textContent = appliedHarmonyName
+    ? `Custom · armonia ${appliedHarmonyName.toLowerCase()}`
+    : `Preset selezionato: ${selectedColourPreset || customOriginName}`;
   get<HTMLElement>("custom-storage").textContent = `Salvato in questo browser (localStorage «${CUSTOM_STORAGE_KEY}»)`;
   if (host.childElementCount) {
     for (const key of PALETTE_ROLES) {
@@ -637,7 +656,7 @@ function syncCustomColours(): void {
     const change = (value: string) => {
       if (!validHex(value)) { error.textContent = "Usa #RRGGBB"; hex.setAttribute("aria-invalid", "true"); return; }
       error.textContent = ""; hex.removeAttribute("aria-invalid");
-      customPalette = applyColour(customPalette, key, value); selectedColourPreset = "";
+      customPalette = applyColour(customPalette, key, value); selectedColourPreset = ""; appliedHarmonyName = "";
       writeLocal(storage, "d069.customPalette", customPalette);
       syncCustomColours(); void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
     };
@@ -727,7 +746,7 @@ function refreshColourPresetList(): void {
 }
 get<HTMLButtonElement>("custom-apply").addEventListener("click", () => {
   const saved = readColourPresets(storage)[get<HTMLSelectElement>("colour-preset-list").value];
-  if (saved) { customPalette = { ...saved }; selectedColourPreset = get<HTMLSelectElement>("colour-preset-list").value; }
+  if (saved) { customPalette = { ...saved }; selectedColourPreset = get<HTMLSelectElement>("colour-preset-list").value; appliedHarmonyName = ""; }
   writeLocal(storage, "d069.customPalette", customPalette); syncCustomColours();
   void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
 });
@@ -738,7 +757,7 @@ get<HTMLButtonElement>("custom-save").addEventListener("click", () => {
   refreshColourPresetList(); syncCustomColours(); announce(`Preset colori salvato · ${selectedColourPreset}`);
 });
 get<HTMLButtonElement>("custom-restore").addEventListener("click", () => {
-  customPalette = { ...customOrigin }; selectedColourPreset = "";
+  customPalette = { ...customOrigin }; selectedColourPreset = ""; appliedHarmonyName = "";
   writeLocal(storage, "d069.customPalette", customPalette); syncCustomColours();
   void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
 });
@@ -766,10 +785,11 @@ get<HTMLButtonElement>("harmony-apply").addEventListener("click", () => {
   if (!harmonyPreview) renderHarmonyPreview();
   if (!harmonyPreview) return;
   customPalette = { ...harmonyPreview }; selectedColourPreset = "";
+  appliedHarmonyName = get<HTMLSelectElement>("harmony-name").selectedOptions[0]?.textContent ?? "";
   writeLocal(storage, "d069.customPalette", customPalette);
   syncCustomColours();
   void (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette));
-  announce(`Armonia ${get<HTMLSelectElement>("harmony-name").selectedOptions[0]?.textContent ?? ""} applicata`);
+  announce(`Armonia ${appliedHarmonyName} applicata`);
 });
 refreshColourPresetList();
 get<HTMLButtonElement>("appearance-toggle").addEventListener("click", () => {
@@ -909,7 +929,7 @@ get<HTMLFormElement>("fullscreen-search-form").addEventListener("submit", (event
 syncAppearanceControls();
 syncPresetList();
 syncPanel();
-renderFlowLegend(get<HTMLElement>("fullscreen-legend"));
+refreshFlowLegends();
 axes = { ...axes, colour: paletteName(readLocal(storage, "d069.palette", "bw")) };
 function updateGizmo(): void {
   const pose = v2 ? v2.camera() : view?.camera();

@@ -1,5 +1,5 @@
 import type { LabelReason, ViewportRect } from "./view-contract.ts";
-import { ellipsizeText, ellipsizeTextKeepCount } from "../render-common/container-canvas.ts";
+import { ellipsizeText, ellipsizeTextKeepCount, stripTrailingSeparators } from "../render-common/container-canvas.ts";
 export type LabelCandidate = {
   id: string;
   text: string;
@@ -75,7 +75,8 @@ export function shortLabelWithEllipsis(input: {
   const cut = fullHead.length > name.length && fullHead.startsWith(name);
   if (cut) {
     const midWord = name.length > 0 && /\S/.test(fullHead[name.length] ?? " ") && /\S$/.test(name);
-    if (midWord) name = name.replace(/\S+\s*$/, "").trimEnd();
+    if (midWord) name = stripTrailingSeparators(name.replace(/\S+\s*$/, "").trimEnd());
+    else name = stripTrailingSeparators(name);
     if (name.length > 0) name = `${name}…`;
     else name = `${head.trimEnd()}…`;
   }

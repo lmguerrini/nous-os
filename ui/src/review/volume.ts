@@ -22,6 +22,20 @@ export type VolumeStats = {
 };
 export type Expansion = { readonly expandX: number; readonly expandY: number; readonly expandZ: number };
 
+/** What the volume readout explains in its tooltip: the terms are the principal extents of the
+ * visible cloud, each relative to the largest — not λ eigenvalues. */
+export const VOLUME_READOUT_HELP = "Estensioni principali del grafo (PCA) relative alla più estesa: "
+  + "1 : 1 : 1 è un volume pieno, un terzo valore basso è un grafico piatto. «Equilibra volume» avvicina i tre valori.";
+
+/**
+ * The volume readout the pages show, in Italian with the decimal comma: «proporzioni 1 : 0,98 : 0,47».
+ * Pure: the same ratios always render to the same string.
+ */
+export function formatVolumeProportions(ratios: VolumeRatios): string {
+  const term = (value: number) => value.toFixed(2).replace(".", ",");
+  return `proporzioni 1 : ${term(ratios.second)} : ${term(ratios.third)}`;
+}
+
 /** Share of the farthest points removed before the covariance is estimated. */
 const TRIM_FRACTION = 0.02;
 /** Expansion limits, matching the appearance ranges so the button never leaves them. */

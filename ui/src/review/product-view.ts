@@ -328,18 +328,20 @@ export const createProductView: CreateProductView = async (input) => {
     const density = appearance.labelDensity / DEFAULT_APPEARANCE.labelDensity;
     const limited = density >= 1 ? candidates : candidates.filter((candidate, index) =>
       candidate.full || candidate.reason === "selected" || index < Math.round(candidates.length * density));
-    // Any floating overlay that covers part of the canvas (the Aspetto panel) is reserved, so labels stay
-    // fully inside the visible area not covered by panels — and so do the drawn container titles:
-    // titles and node labels are placed by one shared collision set.
+    // Any floating overlay that covers part of the canvas (the Aspetto panel, the axis gizmo, the
+    // panel edge tab) is reserved, so labels stay fully inside the visible area not covered by
+    // panels — and so do the drawn container titles: titles and node labels are placed by one
+    // shared collision set.
     const reserved: ViewportRect[] = titlePlacements.map(placement => ({
       left: placement.left, top: placement.top, width: placement.width, height: placement.height,
     }));
-    const appearancePanel = document.getElementById("appearance-panel");
-    if (appearancePanel && !appearancePanel.hidden) {
-      const panelRect = appearancePanel.getBoundingClientRect();
-      const hostRect = container.getBoundingClientRect();
-      reserved.push({ left: panelRect.left - hostRect.left, top: panelRect.top - hostRect.top,
-        width: panelRect.width, height: panelRect.height });
+    const hostRect = container.getBoundingClientRect();
+    for (const overlay of [document.getElementById("appearance-panel"), document.getElementById("gizmo"), document.getElementById("panel-edge-toggle")]) {
+      if (!overlay || overlay.hidden) continue;
+      const rect = overlay.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      reserved.push({ left: rect.left - hostRect.left, top: rect.top - hostRect.top,
+        width: rect.width, height: rect.height });
     }
     // A short label stays on one line: a page-truncated short title is marked with «…» on a word
     // boundary, a too-wide text is cut the same way, and a « · +N» count is never the part cut
@@ -704,6 +706,16 @@ export const createProductView: CreateProductView = async (input) => {
   container.addEventListener("click", onClick);
   container.addEventListener("dblclick", onDoubleClick);
   container.addEventListener("pointerleave", onLeave);
+  // A panel collapse or reopen changes the container's size while the camera state stays
+  // byte-identical, so `followCamera` never re-runs the label pass and the labels keep the
+  // closed-canvas positions. One resize observation closes the loop: the renderers' own
+  // observers (registered first) resize the rig, and this pass runs on the next frame with the
+  // updated geometry.
+  const resizeLabelObserver = new ResizeObserver(() => {
+    if (destroyed) return;
+    requestAnimationFrame(() => { if (!destroyed) labelPass(); });
+  });
+  resizeLabelObserver.observe(container);
   mount();
   followCamera();
   (globalThis as typeof globalThis & { __d071?: unknown }).__d071 = {
@@ -900,6 +912,7 @@ export const createProductView: CreateProductView = async (input) => {
       if (flowLoop.running) cancelAnimationFrame(flowLoop.raf);
       flowLoop.running = false;
       setFlowMotionAllowed(false);
+      resizeLabelObserver.disconnect();
       if (cameraLabelTimer !== undefined) clearTimeout(cameraLabelTimer);
       cancelAnimationFrame(frameId);
       cancelAnimationFrame(hoverFrame);

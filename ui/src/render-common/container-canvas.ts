@@ -166,8 +166,9 @@ export function containerRimLight(level: number): {
 }
 
 /** Trailing separators a truncation never leaves before its «…»: the cut must fall on a word, not
- * right after a «·», «-», «—», «–» or «|» («Signal Stack ·…» loses «sistema» for nothing). */
-const TRAILING_SEPARATORS = /[\s\u00B7\u2022\u2219\-—–|]+$/;
+ * right after a «·», «-», «—», «–», «|», «,», «;» or «:» («Signal Stack ·…» loses «sistema» for
+ * nothing; «Beacon,…» keeps a comma that cuts nothing). */
+const TRAILING_SEPARATORS = /[\s\u00B7\u2022\u2219,;:\-—–|]+$/;
 export function stripTrailingSeparators(text: string): string {
   return text.replace(TRAILING_SEPARATORS, "");
 }

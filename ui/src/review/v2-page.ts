@@ -2,7 +2,7 @@ import { validateIndex } from './graph-v2.ts';
 import type { GraphEdge, GraphManifest } from './graph-v2.ts';
 import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
 import type { CommunityInfo, LayoutContainer, Point3 } from './layout-v2.ts';
-import { applyExpansion, canonicalize, equilibrate, volumeStats } from './volume.ts';
+import { applyExpansion, canonicalize, equilibrate, formatVolumeProportions, volumeStats, VOLUME_READOUT_HELP } from './volume.ts';
 import type { Expansion } from './volume.ts';
 import { adaptV2 } from './v2-adapter.ts';
 import { projectRelations } from './v2-relations.ts';
@@ -27,6 +27,7 @@ const line = (host: HTMLElement, label: string, value: unknown) => {
     dd.textContent = typeof value === 'string' ? value : JSON.stringify(value);
     row.append(dt, dd);
     host.append(row);
+    return row;
 };
 const words: Record<string, string> = {
     domain: 'dominio', project: 'progetto', work: 'opera', conversation: 'conversazione',
@@ -228,8 +229,10 @@ export class V2Page {
             const volumeRow = document.getElementById('volume-stats');
             if (volumeRow) {
                 volumeRow.hidden = projection !== '3d';
-                if (projection === '3d')
-                    volumeRow.textContent = `Volume 3D: λ2/λ1 ${volume.ratios.second.toFixed(2)} · λ3/λ1 ${volume.ratios.third.toFixed(2)}`;
+                if (projection === '3d') {
+                    volumeRow.textContent = `Volume 3D: ${formatVolumeProportions(volume.ratios)}`;
+                    volumeRow.title = VOLUME_READOUT_HELP;
+                }
             }
             const active = this.hovered
                 ?? this.renderedRelations.get(this.selected ?? '')?.source
@@ -626,7 +629,8 @@ export class V2Page {
         if (this.axes.organization === 'indra') line(controls, 'Archi', `${this.renderedRelations.size} di ${this.arcTotal}`);
         if (this.axes.projection === '3d') {
             const volume = volumeStats(this.positions);
-            line(controls, 'Volume 3D', `λ2/λ1 ${volume.ratios.second.toFixed(2)} · λ3/λ1 ${volume.ratios.third.toFixed(2)}`);
+            const volumeRow = line(controls, 'Volume 3D', formatVolumeProportions(volume.ratios));
+            volumeRow?.setAttribute('title', VOLUME_READOUT_HELP);
         }
         for (const [label, action, disabled] of [['Annulla', () => this.undo(), this.history.undoDepth === 0], ['Ripeti', () => this.redo(), this.history.redoDepth === 0]] as const) {
             const button = document.createElement('button');
@@ -653,7 +657,7 @@ export class V2Page {
             search.append(button);
         }
         host.append(search);
-        appendFlowLegend(host);
+        appendFlowLegend(host, this.palette);
         if (this.selected === ABSOLUTE_CONTAINER_ID) {
             const h = document.createElement('h2'); h.textContent = 'NousOS'; host.append(h);
             line(host, 'Domini', shown.nodes.filter(node => node.level === 1).length);
