@@ -1,0 +1,174 @@
+import { displayLabel } from './graph-v2.ts';
+import type { GraphEdge } from './graph-v2.ts';
+import type { V2Node } from './v2-core.ts';
+import type { LiftedRelation } from './v2-relations.ts';
+
+type RecordValue = Record<string, unknown>;
+export type PanelEvidence = { quote: string; speaker: string; date: string; source: string; raw: unknown };
+export type RelationGroup = { label: string; count: number; items: { id: string; label: string }[] };
+export type PanelModel = {
+  title: string; type: string; badge: string; epistemic?: string | undefined; synthesis: string;
+  why?: string | undefined; direction?: string | undefined; directionMeaning?: string | undefined; confidence?: string | undefined;
+  evidence: PanelEvidence[]; evidenceSummary?: string | undefined; sources: string[];
+  groups: RelationGroup[]; technical: unknown;
+};
+export function panelSectionOrder(model: PanelModel): string[] {
+  return ['Sintesi', ...(model.why ? ['Perché è collegato?'] : []),
+    ...(model.direction ? ['Direzione'] : []), ...(model.confidence ? ['Confidenza'] : []),
+    ...(model.evidenceSummary ? ['Evidenze'] : []), ...(model.groups.length ? ['Relazioni'] : []),
+    'Dettagli tecnici / JSON'];
+}
+export const initialEvidence = (model: PanelModel): PanelEvidence[] => model.evidence.slice(0, 3);
+
+const asRecord = (value: unknown): RecordValue => value && typeof value === 'object' && !Array.isArray(value) ? value as RecordValue : {};
+const asText = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
+const readable = (value: unknown): string => {
+  const text = asText(value);
+  if (!/^(\[\{|\{\")/.test(text)) return text;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    const item = Array.isArray(parsed) ? parsed[0] : parsed;
+    const record = asRecord(item);
+    return asText(record.span || record.statement || record.quote || record.text || record.context) || 'Contenuto nei dettagli tecnici.';
+  } catch { return 'Contenuto nei dettagli tecnici.'; }
+};
+const date = (value: unknown): string => {
+  const text = asText(value);
+  if (!text) return '';
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? text.slice(0, 10) : new Intl.DateTimeFormat('it-IT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(parsed);
+};
+const sentence = (value: unknown, limit = 3): string => {
+  const clean = readable(value).replace(/\s+/g, ' ');
+  if (!clean) return '';
+  const sentences = clean.match(/[^.!?]+[.!?]+(?:[”"']?)/g);
+  if (sentences?.length) {
+    const chosen: string[] = [];
+    for (const part of sentences.slice(0, limit)) {
+      if (chosen.length && chosen.join(' ').length + part.length > 360) break;
+      chosen.push(part.trim());
+    }
+    return chosen.join(' ');
+  }
+  return clean.length <= 360 ? clean : `${clean.slice(0, 357).replace(/\s+\S*$/, '')}…`;
+};
+const excerpt = (value: unknown): string => {
+  const clean = readable(value).replace(/\s+/g, ' ');
+  return clean.length > 280 ? `${clean.slice(0, 277).replace(/\s+\S*$/, '')}…` : clean;
+};
+export function epistemicLabel(value: unknown): string {
+  const labels: Record<string, string> = {
+    NOT_YET_CLASSIFIED: 'Non classificato', PROPOSAL_NOT_APPROVED: 'Candidato',
+    DECISION_STATED_BY_PERSON: 'Decisione dichiarata', IMPLEMENTATION_STATE_AT_DATE: 'Stato alla data indicata',
+    CANONICAL: 'Canonico', canonical: 'Canonico', proposal: 'Candidato',
+  };
+  return labels[asText(value)] ?? (asText(value) ? 'Non classificato' : '');
+}
+const badge = (state: string, kind: string): string => {
+  if (kind === 'exploratory') return 'Esplorativo';
+  if (/proposal|candidat/i.test(state)) return 'Candidato';
+  if (/canon/i.test(state)) return 'Canonico';
+  return 'Non classificato';
+};
+const typeName = (kind: string): string => ({ domain: 'Dominio', project: 'Progetto', work: 'Opera', conversation: 'Conversazione', proposal: 'Proposta', passage: 'Passaggio', CONCEPT: 'Concetto', DECISION: 'Decisione', REQUIREMENT: 'Requisito', RELATIONSHIP: 'Relazione' } as Record<string, string>)[kind] ?? 'Elemento';
+const relationName = (kind: string): string => ({ classified_in: 'classificati', contains: 'contenuti', mentions: 'menzioni', co_membership: 'conversazioni condivise', exploratory_lift: 'collegamenti esplorativi', attested_lift: 'relazioni attestate' } as Record<string, string>)[kind] ?? 'collegamenti';
+const conversationFor = (id: string, nodes: ReadonlyMap<string, V2Node>): V2Node | undefined => {
+  let cursor = nodes.get(id);
+  const seen = new Set<string>();
+  while (cursor && !seen.has(cursor.id)) {
+    if (cursor.level === 3) return cursor;
+    seen.add(cursor.id); cursor = cursor.parent ? nodes.get(cursor.parent) : undefined;
+  }
+  return undefined;
+};
+function evidenceOf(raw: unknown[], nodes: ReadonlyMap<string, V2Node>, fallback?: V2Node): PanelEvidence[] {
+  return raw.flatMap(item => {
+    const record = asRecord(item);
+    const sourceNode = nodes.get(asText(record.source_id)) ?? nodes.get(asText(record.conversation_id));
+    const conversation = sourceNode ? conversationFor(sourceNode.id, nodes) : fallback;
+    const source = asText(record.conversation_title) || (conversation ? displayLabel(conversation) : record.date ? `Conversazione del ${date(record.date)}` : 'Conversazione senza titolo');
+    const quote = excerpt(record.span || record.quote || record.text || record.context);
+    if (!quote) return [];
+    return [{ quote, speaker: ({ user: 'Fondatore', founder: 'Fondatore', assistant: 'Assistente' } as Record<string, string>)[asText(record.voice).toLowerCase()] ?? 'Voce non indicata', date: date(record.date || conversation?.date), source, raw: item }];
+  });
+}
+export function groupRelations(node: V2Node, edges: readonly GraphEdge[], nodes: ReadonlyMap<string, V2Node>): RelationGroup[] {
+  const groups = new Map<string, RelationGroup>();
+  for (const edge of edges) {
+    if (edge.source !== node.id && edge.target !== node.id) continue;
+    const incoming = edge.target === node.id;
+    const direction = incoming ? 'in questo elemento' : 'da questo elemento';
+    const label = `${relationName(edge.type)} ${node.kind === 'domain' && incoming ? 'in questo dominio' : direction}`;
+    const other = nodes.get(incoming ? edge.source : edge.target);
+    if (!other) continue;
+    const key = `${edge.type}:${incoming ? 'in' : 'out'}`;
+    const group = groups.get(key) ?? { label, count: 0, items: [] };
+    group.items.push({ id: edge.id, label: displayLabel(other) });
+    group.count++;
+    groups.set(key, group);
+  }
+  return [...groups.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'it'));
+}
+export function buildNodePanel(node: V2Node, detail: unknown, edges: readonly GraphEdge[], nodes: ReadonlyMap<string, V2Node>): PanelModel {
+  const outer = asRecord(detail);
+  const d = asRecord(outer.detail ?? outer.node ?? outer);
+  const conversation = conversationFor(node.id, nodes);
+  const rawEvidence = [...(Array.isArray(d.citations) ? d.citations : []), ...(d.citation ? [d.citation] : [])];
+  const evidence = evidenceOf(rawEvidence, nodes, conversation);
+  const state = asText(d.canonical_status || node.status);
+  const synthesis = sentence(d.statement || d.why || node.snippet || node.title_full || node.title);
+  const source = conversation ? `${displayLabel(conversation)}${conversation.date ? ` · ${date(conversation.date)}` : ''}` : '';
+  return { title: displayLabel(node), type: typeName(node.kind), badge: badge(state, ''), epistemic: epistemicLabel(d.epistemic_label), synthesis,
+    evidence, evidenceSummary: evidence.length ? `${evidence.length} ${evidence.length === 1 ? 'evidenza' : 'evidenze'} da ${source ? '1 conversazione' : 'una fonte'}` : undefined,
+    sources: source ? [source] : [], groups: groupRelations(node, edges, nodes), technical: { id: node.id, title_full: node.title_full, detail: outer } };
+}
+export function buildRelationPanel(edge: GraphEdge | LiftedRelation, nodes: ReadonlyMap<string, V2Node>): PanelModel {
+  const source = nodes.get(edge.source), target = nodes.get(edge.target);
+  const left = source ? displayLabel(source) : 'Elemento di origine';
+  const right = target ? displayLabel(target) : 'Elemento collegato';
+  const underlying = 'underlying' in edge && edge.underlying.length ? edge.underlying : [edge];
+  const rawEvidence = underlying.flatMap(item => item.evidence);
+  const evidence = evidenceOf(rawEvidence, nodes);
+  const sources = [...new Set(evidence.map(item => `${item.source}${item.date ? ` · ${item.date}` : ''}`))];
+  const count = 'count' in edge ? edge.count : underlying.length;
+  const shared = edge.type === 'co_membership' ? `${count} conversazioni in comune.` : '';
+  const explanation = underlying.map(item => sentence(item.explanation, 2)).find(Boolean) || shared;
+  const inference = underlying.map(item => asText(item.inference)).find(Boolean);
+  const why = `${explanation}${inference === 'card' ? ' Il collegamento proviene da una scheda di collegamento esplorativa.' : ''}`.trim();
+  const confidenceRaw = underlying.map(item => asText(item.confidence).toLowerCase()).find(Boolean);
+  const confidence = confidenceRaw ? `${({ high: 'Alta', medium: 'Media', low: 'Bassa' } as Record<string, string>)[confidenceRaw] ?? 'Non indicata'} — ${edge.class === 'exploratory' ? 'collegamento non canonico, da verificare nelle fonti.' : 'grado di supporto nelle fonti disponibili.'}` : undefined;
+  const conversationCount = new Set(evidence.map(item => item.source)).size;
+  return { title: `${left} → ${right}`, type: 'Relazione', badge: badge('', edge.class), synthesis: sentence(explanation || `${left} è collegato a ${right}.`, 3),
+    why: why || undefined, direction: `${left} ${edge.directed ? '→' : '↔'} ${right}`, directionMeaning: edge.directed ? `Il collegamento parte da ${left} e arriva a ${right}.` : 'Il collegamento vale in entrambe le direzioni.',
+    confidence, evidence, evidenceSummary: evidence.length ? `${evidence.length} ${evidence.length === 1 ? 'evidenza' : 'evidenze'} da ${conversationCount} ${conversationCount === 1 ? 'conversazione' : 'conversazioni'}` : '0 evidenze dirette consultabili',
+    sources, groups: [], technical: { id: edge.id, type: edge.type, class: edge.class, underlying } };
+}
+
+export function renderSelection(host: HTMLElement, model: PanelModel, onRelation: (id: string) => void): void {
+  const root = document.createElement('article'); root.className = 'selection-card';
+  const title = document.createElement('h2'); title.textContent = model.title; root.append(title);
+  const badges = document.createElement('div'); badges.className = 'selection-badges';
+  for (const label of [model.type, model.badge, model.epistemic].filter(Boolean)) { const badge = document.createElement('span'); badge.className = 'selection-badge'; badge.textContent = label!; badges.append(badge); }
+  root.append(badges);
+  const section = (heading: string, content: string) => { if (!content) return; const box = document.createElement('section'); box.className = 'selection-section'; const h = document.createElement('h3'); h.textContent = heading; const p = document.createElement('p'); p.textContent = content; box.append(h, p); root.append(box); };
+  section('Sintesi', model.synthesis);
+  if (model.why) section('Perché è collegato?', model.why);
+  if (model.direction) section('Direzione', `${model.direction}. ${model.directionMeaning ?? ''}`);
+  if (model.confidence) section('Confidenza', model.confidence);
+  if (model.evidenceSummary) {
+    const box = document.createElement('section'); box.className = 'selection-section'; const h = document.createElement('h3'); h.textContent = 'Evidenze'; box.append(h);
+    const count = document.createElement('p'); count.textContent = model.evidenceSummary ?? ''; box.append(count);
+    for (const source of model.sources.slice(0, 3)) { const p = document.createElement('p'); p.className = 'evidence-source'; p.textContent = source; box.append(p); }
+    const list = document.createElement('div'); list.className = 'evidence-list';
+    for (const [index, item] of model.evidence.entries()) { const card = document.createElement('blockquote'); card.hidden = index >= initialEvidence(model).length; const quote = document.createElement('p'); quote.textContent = `“${item.quote}”`; const caption = document.createElement('footer'); caption.textContent = [item.speaker, item.date, item.source].filter(Boolean).join(' · '); card.append(quote, caption); list.append(card); }
+    box.append(list);
+    if (model.evidence.length > 3) { const more = document.createElement('button'); more.type = 'button'; more.textContent = `Mostra tutte le evidenze (${model.evidence.length})`; more.onclick = () => { const expanded = more.getAttribute('aria-expanded') !== 'true'; more.setAttribute('aria-expanded', String(expanded)); for (const [index, card] of [...list.children].entries()) (card as HTMLElement).hidden = !expanded && index >= 3; more.textContent = expanded ? 'Mostra meno evidenze' : `Mostra tutte le evidenze (${model.evidence.length})`; }; box.append(more); }
+    root.append(box);
+  }
+  if (model.groups.length) { const box = document.createElement('section'); box.className = 'selection-section'; const h = document.createElement('h3'); h.textContent = 'Relazioni'; box.append(h);
+    for (const group of model.groups) { const subsection = document.createElement('div'); subsection.className = 'relation-group'; const heading = document.createElement('h4'); heading.textContent = `${group.label} · ${group.count}`; subsection.append(heading); const items = document.createElement('div');
+      for (const [index, item] of group.items.entries()) { const button = document.createElement('button'); button.className = 'relation'; button.textContent = item.label; button.hidden = index >= 5; button.onclick = () => onRelation(item.id); items.append(button); } subsection.append(items);
+      if (group.items.length > 5) { const more = document.createElement('button'); more.textContent = `Mostra altri ${group.items.length - 5}`; more.onclick = () => { const expanded = more.getAttribute('aria-expanded') !== 'true'; more.setAttribute('aria-expanded', String(expanded)); for (const [index, item] of [...items.children].entries()) (item as HTMLElement).hidden = !expanded && index >= 5; more.textContent = expanded ? 'Mostra meno' : `Mostra altri ${group.items.length - 5}`; }; subsection.append(more); } box.append(subsection); } root.append(box); }
+  const technical = document.createElement('details'); technical.className = 'selection-technical'; const summary = document.createElement('summary'); summary.textContent = 'Dettagli tecnici / JSON'; const pre = document.createElement('pre'); pre.textContent = JSON.stringify(model.technical, null, 2); technical.append(summary, pre); root.append(technical);
+  host.append(root);
+}

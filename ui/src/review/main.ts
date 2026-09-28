@@ -24,6 +24,8 @@ import { mount3d } from "./view3d.ts";
 import { LiveGraph } from "./live-graph.ts";
 import type { LiveFragment } from "./live-graph.ts";
 import { V2Page } from "./v2-page.ts";
+import { bindSurfaces } from "./popover.ts";
+import type { PopoverStack, SurfaceBinding } from "./popover.ts";
 import type { GraphManifest } from "./graph-v2.ts";
 
 const get = <T extends Element>(id: string): T => {
@@ -65,6 +67,7 @@ let panelCollapsed = Boolean(readLocal(storage, "d069.panelCollapsed", innerWidt
 let flowMotion = Boolean(readLocal(storage, "d071.flowMotion", true));
 /** In fullscreen the details panel is a drawer of its own, closed on entry so the canvas gets the whole screen. */
 let fullscreenDrawer = false;
+let surfaceStack: PopoverStack | null = null;
 let visibleIds = new Set<string>();
 let stack: FocusStack;
 let filter = { domain: "", family: "", standing: "", evidence: "" };
@@ -529,8 +532,12 @@ function setDebug(on: boolean): Promise<void> {
 function updateInsets(): void {
   const appearanceInset = get<HTMLElement>("appearance-panel").hidden ? 0 : Math.min(280, viewport.clientWidth / 3);
   const drawerInset = details.classList.contains("drawer") ? Math.min(360, viewport.clientWidth / 2) : 0;
+  const overlayInset = ["advanced-controls", "performance-overlay"].reduce((width, id) => {
+    const surface = document.getElementById(id);
+    return surface && !surface.hidden ? Math.max(width, Math.min(surface.getBoundingClientRect().width, viewport.clientWidth / 3)) : width;
+  }, 0);
   (v2 ?? view)?.setInsets({ top: document.fullscreenElement ? get<HTMLElement>("fullscreen-bar").offsetHeight + 16 : 0,
-    right: Math.max(appearanceInset, drawerInset), bottom: 0, left: 0 });
+    right: Math.max(appearanceInset, drawerInset, overlayInset), bottom: 0, left: 0 });
 }
 function syncPanel(): void {
   get<HTMLElement>("shell").classList.toggle("panel-collapsed", panelCollapsed);
@@ -542,9 +549,14 @@ function syncPanel(): void {
   edge.title = panelCollapsed ? "Apri il pannello · scorciatoia P" : "Chiudi il pannello · scorciatoia P";
   get<HTMLButtonElement>("fullscreen-panel").setAttribute("aria-pressed", String(fullscreenDrawer));
   writeLocal(storage, "d069.panelCollapsed", panelCollapsed);
+  const visible = fullscreen() ? fullscreenDrawer : !panelCollapsed;
+  if (surfaceStack && surfaceStack.isOpen("panel") !== visible) surfaceStack.set("panel", visible);
   requestAnimationFrame(updateInsets);
 }
-function togglePanel(): void { panelCollapsed = !panelCollapsed; syncPanel(); }
+function togglePanel(): void {
+  if (surfaceStack) surfaceStack.toggle("panel");
+  else { panelCollapsed = !panelCollapsed; syncPanel(); }
+}
 function fullscreen(): boolean { return document.fullscreenElement === viewport; }
 async function toggleFullscreen(): Promise<void> {
   if (fullscreen()) await document.exitFullscreen();
@@ -632,6 +644,7 @@ function syncCustomColours(): void {
   const host = get<HTMLElement>("custom-colours");
   host.hidden = axes.colour !== "custom";
   get<HTMLElement>("custom-editor").hidden = axes.colour !== "custom";
+  get<HTMLButtonElement>("edit-colours").setAttribute("aria-pressed", String(!get<HTMLElement>("appearance-panel").hidden && axes.colour === "custom"));
   get<HTMLElement>("custom-selected").textContent = appliedHarmonyName
     ? `Custom · armonia ${appliedHarmonyName.toLowerCase()}`
     : `Preset selezionato: ${selectedColourPreset || customOriginName}`;
@@ -723,10 +736,13 @@ get<HTMLSelectElement>("palette").addEventListener("change", (event) => {
     writeLocal(storage, "d070.customOrigin", { name: customOriginName, palette: customOrigin });
     writeLocal(storage, "d069.customPalette", customPalette);
   }
-  get<HTMLElement>("appearance-panel").hidden = false;
+  surfaceStack?.set("appearance", true);
   void setAxes({ colour: next }).then(async () => { if (next === "custom") await (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); syncCustomColours(); }); updateInsets();
 });
+const canCloseColours = () => ![...get<HTMLElement>("custom-editor").querySelectorAll<HTMLInputElement>(".colour-row input[type=text]")]
+  .some(input => input.getAttribute("aria-invalid") === "true");
 get<HTMLButtonElement>("edit-colours").addEventListener("click", () => {
+  if (surfaceStack?.isOpen("appearance") && axes.colour === "custom") { if (canCloseColours()) surfaceStack.set("appearance", false); return; }
   if (axes.colour !== "custom") {
     customOrigin = { ...PALETTES[axes.colour] };
     customOriginName = get<HTMLSelectElement>("palette").selectedOptions[0]?.textContent || axes.colour;
@@ -735,7 +751,8 @@ get<HTMLButtonElement>("edit-colours").addEventListener("click", () => {
     writeLocal(storage, "d069.customPalette", customPalette);
     void setAxes({ colour: "custom" }).then(async () => { await (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); syncCustomColours(); });
   }
-  get<HTMLElement>("appearance-panel").hidden = false; updateInsets();
+  surfaceStack?.set("appearance", true);
+  get<HTMLButtonElement>("edit-colours").setAttribute("aria-pressed", "true");
   // The editor sits below the sliders; bring it into view so all nine roles and the buttons are visible at once.
   requestAnimationFrame(() => get<HTMLElement>("custom-editor").scrollIntoView({ block: "start" }));
 });
@@ -792,9 +809,6 @@ get<HTMLButtonElement>("harmony-apply").addEventListener("click", () => {
   announce(`Armonia ${appliedHarmonyName} applicata`);
 });
 refreshColourPresetList();
-get<HTMLButtonElement>("appearance-toggle").addEventListener("click", () => {
-  const panel = get<HTMLElement>("appearance-panel"); panel.hidden = !panel.hidden; updateInsets();
-});
 get<HTMLButtonElement>("appearance-default").addEventListener("click", () => {
   appearance = { ...DEFAULT_APPEARANCE }; syncAppearanceControls(); scheduleAppearance();
 });
@@ -826,9 +840,6 @@ get<HTMLButtonElement>("preset-delete").addEventListener("click", () => {
   const next = { ...presets }; delete next[name]; presets = next;
   writeLocal(storage, "d069.presets", presets); syncPresetList(); announce("Preset eliminato");
 });
-get<HTMLButtonElement>("panel-toggle").addEventListener("click", togglePanel);
-get<HTMLButtonElement>("panel-edge-toggle").addEventListener("click", togglePanel);
-get<HTMLButtonElement>("fullscreen-panel").addEventListener("click", () => { fullscreenDrawer = !fullscreenDrawer; syncPanel(); });
 get<HTMLButtonElement>("fullscreen-collapse").addEventListener("click", () => {
   const bar = get<HTMLElement>("fullscreen-bar"); bar.classList.toggle("collapsed");
   get<HTMLButtonElement>("fullscreen-collapse").textContent = bar.classList.contains("collapsed") ? "Espandi barra (T)" : "Riduci barra (T)";
@@ -838,9 +849,6 @@ get<HTMLButtonElement>("immersive-toggle").addEventListener("click", () => {
   const bar = get<HTMLElement>("fullscreen-bar"); bar.classList.remove("collapsed"); bar.classList.toggle("immersive");
   get<HTMLButtonElement>("immersive-toggle").textContent = bar.classList.contains("immersive") ? "Esci da Immersiva" : "Immersiva";
   updateInsets();
-});
-get<HTMLButtonElement>("fullscreen-appearance").addEventListener("click", () => {
-  const panel = get<HTMLElement>("appearance-panel"); panel.hidden = !panel.hidden; updateInsets();
 });
 get<HTMLButtonElement>("fullscreen").addEventListener("click", () => { void toggleFullscreen(); });
 get<HTMLButtonElement>("fullscreen-exit").addEventListener("click", () => { void document.exitFullscreen(); });
@@ -881,18 +889,38 @@ for (const id of ["filter-domain", "filter-family", "filter-standing", "filter-c
 get<HTMLInputElement>("debug").addEventListener("change", (event) => {
   void setDebug((event.target as HTMLInputElement).checked);
 });
-get<HTMLButtonElement>("advanced-button").addEventListener("click", () => {
-  const popover = get<HTMLElement>("advanced-controls"); popover.hidden = !popover.hidden;
-  get<HTMLButtonElement>("advanced-button").setAttribute("aria-expanded", String(!popover.hidden));
-});
+const surfaceBindings: SurfaceBinding[] = [
+  { id: "panel", surface: details,
+    openers: [get("panel-toggle"), get("panel-edge-toggle"), get("fullscreen-panel")],
+    readOpen: () => fullscreen() ? fullscreenDrawer : !panelCollapsed,
+    writeOpen: open => { if (fullscreen()) fullscreenDrawer = open; else panelCollapsed = !open; syncPanel(); } },
+  { id: "appearance", surface: get("appearance-panel"),
+    openers: [get("appearance-toggle"), get("fullscreen-appearance")],
+    readOpen: () => !get<HTMLElement>("appearance-panel").hidden,
+    writeOpen: open => { get<HTMLElement>("appearance-panel").hidden = !open; updateInsets();
+      get<HTMLButtonElement>("edit-colours").setAttribute("aria-pressed", String(open && !get<HTMLElement>("custom-editor").hidden)); },
+    canClose: canCloseColours },
+  ...(["filter-menu", "more-menu", "view-preset-menu"] as const).map(id => {
+    const menu = get<HTMLDetailsElement>(id);
+    return { id, surface: menu.querySelector<HTMLElement>(".menu-content")!, openers: [menu.querySelector<HTMLElement>("summary")!],
+      readOpen: () => menu.open, writeOpen: (open: boolean) => { menu.open = open;
+        if (id === "more-menu" && !open && surfaceStack?.isOpen("advanced")) surfaceStack.set("advanced", false); } };
+  }),
+  { id: "advanced", surface: get("advanced-controls"), openers: [get("advanced-button")],
+    readOpen: () => !get<HTMLElement>("advanced-controls").hidden,
+    writeOpen: open => { get<HTMLElement>("advanced-controls").hidden = !open;
+      get<HTMLButtonElement>("advanced-button").setAttribute("aria-expanded", String(open)); } },
+];
+const performanceSurface = document.getElementById("performance-overlay");
+const performanceOpener = document.getElementById("performance-toggle");
+if (performanceSurface && performanceOpener) surfaceBindings.push({ id: "performance", surface: performanceSurface,
+  openers: [performanceOpener], readOpen: () => !performanceSurface.hidden,
+  writeOpen: open => { performanceSurface.hidden = !open; } });
+surfaceStack = bindSurfaces(surfaceBindings);
+surfaceStack.subscribe(() => requestAnimationFrame(updateInsets));
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") get<HTMLElement>("advanced-controls").hidden = true;
   if (event.key.toLowerCase() === "p" && !(event.target instanceof HTMLInputElement)) togglePanel();
   if (event.key.toLowerCase() === "t" && fullscreen() && !(event.target instanceof HTMLInputElement)) get<HTMLButtonElement>("fullscreen-collapse").click();
-});
-document.addEventListener("pointerdown", (event) => {
-  if (!(event.target instanceof Element) || !event.target.closest("#advanced-button, #advanced-controls"))
-    get<HTMLElement>("advanced-controls").hidden = true;
 });
 const controlTip = document.createElement("div"); controlTip.id = "control-tooltip"; controlTip.hidden = true; document.body.append(controlTip);
 let tipTimer = 0;

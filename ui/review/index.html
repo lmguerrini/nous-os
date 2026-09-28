@@ -90,6 +90,25 @@
     #fullscreen-bar .immersive-axis {display:none} #fullscreen-bar.immersive .immersive-axis {display:flex}
     #control-tooltip {position:fixed;z-index:50;max-width:220px;padding:5px 8px;background:#242424;border:1px solid #777;border-radius:4px;box-shadow:0 5px 12px #000;pointer-events:none;font-size:11px}
     @media(max-width:1350px) {header {display:flex;flex-wrap:wrap;align-content:start;gap:4px 6px}.header-top {flex-basis:100%}.axes,.tools {display:contents}}
+    #details .selection-card { max-width:62ch; line-height:1.45; overflow-wrap:break-word }
+    #details .selection-card h2 { margin:8px 0 10px; font-size:19px; line-height:1.25 }
+    #details .selection-section { border-top:1px solid #333; padding:11px 0 10px }
+    #details .selection-section h3 { margin:0 0 5px; font-size:13px }
+    #details .selection-section p { margin:4px 0; white-space:normal }
+    #details .selection-badges { display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px }
+    #details .selection-badge { border:1px solid #666;border-radius:12px;padding:2px 7px;font-size:11px;color:#ddd }
+    #details .evidence-source,#details blockquote footer { color:#bcbcbc;font-size:12px }
+    #details blockquote { margin:9px 0;padding:8px 10px;border-left:2px solid #aaa;background:#171717 }
+    #details blockquote p { margin:0 0 5px }
+    #details .relation-group { border-top:1px solid #292929;padding:8px 0 }
+    #details .relation-group h4 { margin:0 0 6px;font-size:12px;color:#ccc }
+    #details .selection-technical { border-top:1px solid #333;padding:12px 0 }
+    #details .selection-technical summary { cursor:pointer;color:#ccc }
+    #details .selection-technical pre { overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;color:#bbb }
+    .surface-close { position:sticky;top:0;float:right;z-index:2;display:grid;place-items:center;width:30px;height:30px;margin:0 0 6px 8px;padding:0;border:1px solid #777;border-radius:5px;background:#252525;color:#fff;font-size:22px;line-height:1;cursor:pointer }
+    .menu-content .surface-close { align-self:flex-end;float:none }
+    button.surface-active,summary.surface-active { background:#343434!important;border-color:#ddd!important;color:#fff!important }
+    [hidden] { display:none!important }
   </style>
 </head>
 <body>

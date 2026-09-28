@@ -1,5 +1,5 @@
 import { displayLabel, presentationText, validateIndex } from './graph-v2.ts';
-import type { GraphEdge, GraphManifest } from './graph-v2.ts';
+import type { GraphManifest } from './graph-v2.ts';
 import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
 import type { CommunityInfo, LayoutContainer, Point3 } from './layout-v2.ts';
 import { applyExpansion, canonicalize, equilibrate, formatVolumeProportions, volumeStats, VOLUME_READOUT_HELP } from './volume.ts';
@@ -11,6 +11,7 @@ import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PA
 import type { V2Index, V2Node } from './v2-core.ts';
 import { createProductView } from './product-view.ts';
 import { appendFlowLegend } from './legend.ts';
+import { buildNodePanel, buildRelationPanel, renderSelection } from './panel-view.ts';
 import type { V2Category } from './palette.ts';
 import type { Axes, ProductView } from './view-contract.ts';
 import type { AppearanceOptions } from '../engine/presentation-options.ts';
@@ -39,15 +40,6 @@ const words: Record<string, string> = {
     user: 'fondatore', assistant: 'assistente',
 };
 const term = (s: string | undefined) => s ? words[s] ?? s.toLocaleLowerCase('it') : '';
-const citation = (host: HTMLElement, prefix: string, value: unknown) => {
-    if (!value || typeof value !== 'object')
-        return;
-    const c = value as Record<string, unknown>;
-    line(host, `${prefix} · fonte`, c.source_id);
-    line(host, `${prefix} · digest`, c.snapshot_digest);
-    line(host, `${prefix} · byte verificati`, `${c.start_byte}–${c.end_byte}`);
-    line(host, `${prefix} · passaggio`, c.span);
-};
 export type SearchHit = {
     id: string;
     level: number;
@@ -680,133 +672,38 @@ export class V2Page {
         }
         const n = byId.get(this.selected), e = this.renderedRelations.get(this.selected) ?? this.index.edges.find(e => e.id === this.selected) ?? (this.selected.startsWith('contains:') ? (() => { const child = byId.get(this.selected.slice(9)); return child?.parent ? { id: this.selected, source: child.parent, target: child.id, class: 'attested' as const, type: 'contains', directed: true, evidence: [] } : undefined; })() : undefined);
         if (n) {
-            const path: V2Node[] = [];
-            let cursor: V2Node | undefined = n;
-            while (cursor) {
-                path.unshift(cursor);
-                cursor = cursor.parent ? byId.get(cursor.parent) : undefined;
-            }
-            const nav = document.createElement('nav');
-            nav.className = 'breadcrumbs';
-            nav.textContent = path.map(item => term(item.kind)).join(' \u203A ');
-            host.append(nav);
-            const title = document.createElement('h2');
-            title.textContent = displayLabel(n);
-            title.title = presentationText(n).full;
-            host.append(title);
-            const dl = document.createElement('dl');
-            host.append(dl);
-            line(dl, 'Titolo completo', n.title_full);
-            line(dl, 'ID', n.id);
-            line(dl, 'Tipo', term(n.kind));
-            line(dl, 'Sottotipo', term(n.subkind));
-            line(dl, 'Stato', n.status === 'proposal' ? words.proposal_status : term(n.status));
-            line(dl, 'Data', italianDate(n.date));
-            line(dl, 'Dominio/i', n.domains.join(', '));
-            const conversationNode = path.find(item => item.level === 3);
-            line(dl, 'Conversazione', conversationNode && displayLabel(conversationNode));
-            const response = this.detailCache.get(n.id);
-            const d = (response?.detail ?? response?.node ?? response ?? {}) as Record<string, unknown>;
-            line(dl, 'Enunciato distillato (EN)', d.statement);
-            line(dl, 'Ambito', d.scope);
-            line(dl, 'Motivo', d.why);
-            line(dl, 'Produttore', d.producer);
-            line(dl, 'Origine', d.origin);
-            line(dl, 'Data della proposta', italianDate(String(d.proposed_at ?? '')));
-            line(dl, 'Provenienza', d.provenance_line);
-            const citations = d.citations as unknown[] | undefined;
-            citations?.forEach((c, i) => citation(dl, `Provenienza ${i + 1}`, c));
-            if (n.level === 5) {
-                const c = d.citation as Record<string, unknown> | undefined;
-                citation(dl, 'Passaggio verificato', c);
-                const rec = d.record as Record<string, unknown> | undefined;
-                line(dl, 'Voce', term(String(rec?.role ?? '')));
-                line(dl, 'Data del record', italianDate(String(rec?.date ?? '')));
-                line(dl, 'Contesto precedente', d.context_before);
-                line(dl, 'Contesto successivo', d.context_after);
-            }
+            renderSelection(host, buildNodePanel(n, this.detailCache.get(n.id), this.index.edges, byId), id => { void this.select(id); });
             if (n.counts.children || n.counts.passages) {
                 const button = document.createElement('button');
                 button.textContent = this.history.state.expanded.has(n.id) ? 'Comprimi' : 'Espandi';
                 button.onclick = () => { void (this.history.state.expanded.has(n.id) ? this.collapse(n.id) : this.expand(n.id)); };
                 host.append(button);
             }
-            if (shown.hidden.
-                has(n.id) && this.history.state.expanded.has(n.id) && (n.level === 3 || n.level === 4)) {
+            if (shown.hidden.has(n.id) && this.history.state.expanded.has(n.id) && (n.level === 3 || n.level === 4)) {
                 const button = document.createElement('button');
                 button.textContent = `Mostra altri ${Math.min(V2_PAGE, shown.hidden.get(n.id)!)}`;
                 button.onclick = () => { void this.more(n.id); };
                 host.append(button);
             }
-        }
-        else if (e) {
-            const h = document.createElement('h2');
-            h.textContent = 'Perch\u00E9 sono collegati?';
-            host.append(h);
-            this.whyResult = v2Path(this.index, e.source, e.target, new Set(shown.nodes.map(n => n.id)));
-            if ('underlying' in e) {
-                const lifted = e as LiftedRelation;
-                if (lifted.underlying.length) line(host, 'Relazioni raccolte', lifted.underlying.length);
-                if (e.type === 'co_membership')
-                    line(host, 'Significato', `${lifted.count} conversazioni in comune`);
-                for (const source of lifted.underlying)
-                    this.relation(host, source, byId);
-            }
-            else
-                this.relation(host, e, byId);
-        }
-        if (n) {
-            for (const kind of ['attested', 'exploratory'] as const) {
-                const relations = this.index.edges.filter(e => (e.source === n.id || e.target === n.id) && e.class === kind);
-                if (!relations.length)
-                    continue;
-                const h = document.createElement('h3');
-                h.textContent = kind === 'attested' ? 'Relazioni attestate' : 'Relazioni esplorative \u00B7 non canoniche';
-                host.append(h);
-                for (const relation of relations) {
-                    const button = document.createElement('button');
-                    button.className = 'relation';
-                    const other = byId.get(relation.source === n.id ? relation.target : relation.source);
-                    button.textContent = `${relation.source === n.id ? '\u2192' : '\u2190'} ${term(relation.type)} · ${other ? displayLabel(other) : ''}`;
-                    button.onclick = () => { void this.select(relation.id); };
-                    host.append(button);
-                    this.relation(host, relation, byId);
-                }
-            }
+        } else if (e) {
+            renderSelection(host, buildRelationPanel(e, byId), id => { void this.select(id); });
         }
         if (this.whyRequest && !this.whyResult) {
             const p = document.createElement('p');
             p.textContent = 'Nessun percorso fra questi nodi nel grafo caricato.';
             host.append(p);
-        }
-        if (this.whyResult) {
-            const h = document.createElement('h3');
-            h.textContent = 'Perch\u00E9 sono collegati?';
-            host.append(h);
-            for (const edge of this.whyResult.edges)
-                this.relation(host, edge, byId);
-        }
-    }
-    private relation(host: HTMLElement, e: GraphEdge | {
-        class: 'attested';
-        type: 'contains';
-        source: string;
-        target: string;
-    }, byId: Map<string, V2Node>) {
-        const dl = document.createElement('dl');
-        host.append(dl);
-        line(dl, 'Relazione', `${e.class === 'exploratory' ? 'esplorativa \u00B7 non canonica' : 'attestata'} · ${term(e.type)}`);
-        line(dl, 'Direzione', `${byId.has(e.source) ? displayLabel(byId.get(e.source)!) : e.source} ${'directed' in e && e.directed === false ? '\u2194' : '\u2192'} ${byId.has(e.target) ? displayLabel(byId.get(e.target)!) : e.target}`);
-        if ('explanation' in e) {
-            line(dl, 'Spiegazione', e.explanation);
-            line(dl, 'Inferenza', e.inference);
-            line(dl, 'Confidenza', e.confidence);
-            line(dl, 'Evidenza', e.evidence);
-            if ('a_sources' in e)
-                line(dl, 'Fonti lato A', e.a_sources);
-            if ('b_sources' in e)
-                line(dl, 'Fonti lato B', e.b_sources);
-            line(dl, 'Contro evidenza', e.counter_evidence);
+        } else if (this.whyResult?.edges.length) {
+            const path = document.createElement('section'); path.className = 'selection-section';
+            const heading = document.createElement('h3'); heading.textContent = 'Percorso tra i nodi'; path.append(heading);
+            for (const edge of this.whyResult.edges) {
+                const relation = 'id' in edge ? edge : { ...edge, id: `contains:${edge.target}`, directed: true, evidence: [] };
+                const button = document.createElement('button'); button.className = 'relation';
+                button.textContent = buildRelationPanel(relation, byId).title;
+                button.onclick = () => { void this.select(relation.id); };
+                path.append(button);
+            }
+            host.append(path);
         }
     }
+
 }
