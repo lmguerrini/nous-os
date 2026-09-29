@@ -87,11 +87,13 @@ export class LiveSceneState {
   }
 
   /** This reports node positions copied into mounted arrays and does not read scene objects. */
-  readWorldAnchorWitnesses(): readonly WorldAnchorWitness[] {
-    return this.buffersValue.nodes.ids.map((id, index) => ({
-      id,
-      position: coordinatesAt(this.buffersValue.nodes.positions, index),
-    }));
+  readWorldAnchorWitnesses(ids?: ReadonlySet<string>): readonly WorldAnchorWitness[] {
+    const result: WorldAnchorWitness[] = [];
+    this.buffersValue.nodes.ids.forEach((id, index) => {
+      if (ids && !ids.has(id)) return;
+      result.push({ id, position: coordinatesAt(this.buffersValue.nodes.positions, index) });
+    });
+    return result;
   }
 
   /**

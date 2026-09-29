@@ -404,6 +404,8 @@ export const createProductView: CreateProductView = async (input) => {
     // depth-occlusion build, no trailing morphology repaint (the renderer repaints every camera
     // frame already). The full pass returns on the frame after quality is restored.
     const moving = morphologyInteraction.quality === "moving";
+    const movingIndra3d = moving && three !== null && axes.organization === "indra";
+    const movingIds = movingIndra3d ? new Set([selected, hover?.id].filter((id): id is string => id != null)) : undefined;
     // D-072 R3 (X9): while moving with no tier-1 candidate the reduced pass has zero output, so
     // it is skipped entirely — no anchor projection, no footprint discs, no Indra container
     // title placement, no DOM rebuild. The rest labels were dropped at motion start; this keeps
@@ -425,7 +427,9 @@ export const createProductView: CreateProductView = async (input) => {
     const overview = camera.ratio >= fitted * 0.6;
     const close = camera.ratio < fitted * 0.25;
     const neighbours = emphasis ?? new Set<string>();
-    const anchors = new Map(throughVisible(handle.readWorldAnchorWitnesses()).map((item) => [item.id, item.position]));
+    const anchors = new Map(throughVisible(movingIds ? three!.readWorldAnchorWitnesses(movingIds) : handle.readWorldAnchorWitnesses())
+      .filter(item => !movingIndra3d || item.id === selected || item.id === hover?.id)
+      .map((item) => [item.id, item.position]));
     // Depth occlusion: in 3D a label whose anchor sits behind nearer geometry is hidden. Depth is the
     // distance along the camera's view axis, so nearer geometry has a smaller depth.
     let occluded: ReadonlySet<string> = new Set<string>();
@@ -453,7 +457,7 @@ export const createProductView: CreateProductView = async (input) => {
     // interaction must be the same object state the canvas layer uses, so both agree on the LOD.
     const containerInteraction = { hoverId: morphologyInteraction.hoverId, focusIds: morphologyInteraction.focusIds, dimFocus: focusStyle };
     const pathById = new Map<string, MorphologyContainerPath>();
-    if (axes.organization === "indra" && layoutContainers) {
+    if (!movingIndra3d && axes.organization === "indra" && layoutContainers) {
       for (const path of buildContainerGeometry(axes.morphology, layoutContainers)) pathById.set(path.id, path);
     }
     // The pearls about to be drawn, projected with their radii: every label must avoid them, not only
@@ -464,7 +468,8 @@ export const createProductView: CreateProductView = async (input) => {
     // obstacles, and unbounded they once exhausted the tab. This one set is shared with the canvas
     // title pass through the interaction, so titles and labels are placed by one collision set.
     const contract = MORPHOLOGY_CONTRACT[axes.morphology];
-    const footprints = throughVisible(handle.readNodeFootprintWitnesses());
+    const footprints = throughVisible(movingIds ? three!.readNodeFootprintWitnesses(movingIds) : handle.readNodeFootprintWitnesses())
+      .filter(footprint => !movingIndra3d || footprint.id === selected || footprint.id === hover?.id);
     const span = Math.max(bounds.width, bounds.height);
     const discs: CanvasDisc[] = [];
     for (const footprint of footprints) {
@@ -483,7 +488,7 @@ export const createProductView: CreateProductView = async (input) => {
     // width is measured with the title font itself on the shared module canvas, so a title that
     // fits the 190 px budget is never truncated by an estimate.
     const titleBounds = { width: container.clientWidth, height: container.clientHeight };
-    const titlePlacements = placeContainerTitles([...pathById.values()], project, titleBounds, axes.projection, containerInteraction, discs, titleMeasure);
+    const titlePlacements = movingIndra3d ? [] : placeContainerTitles([...pathById.values()], project, titleBounds, axes.projection, containerInteraction, discs, titleMeasure);
     const titledContainerIds = new Set(titlePlacements.map(placement => placement.id));
     const footprintRadius = new Map(footprints.map(footprint => [footprint.id, footprint.coreRadiusPx]));
     const candidates = [];
@@ -667,7 +672,7 @@ export const createProductView: CreateProductView = async (input) => {
         return el;
       }),
     );
-    for (const { id, position } of handle.readWorldAnchorWitnesses()) {
+    for (const { id, position } of movingIndra3d ? [] : handle.readWorldAnchorWitnesses()) {
       if (nodesById.get(id)?.origin !== "dynamic") continue;
       const point = project(position);
       if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
@@ -1167,8 +1172,9 @@ export const createProductView: CreateProductView = async (input) => {
     return edge ? { kind: "edge" as const, id: edge } : null;
   }
   const onMove = (event: PointerEvent) => {
-    if (pressedAt && Math.hypot(event.clientX - pressedAt.x, event.clientY - pressedAt.y) > CLICK_DRAG_TOLERANCE_PX)
-      return;
+    // A pressed pointer owns the orbit. Picking under its early drag samples can rebuild the
+    // 3D scene and issue a second label pass in the same frame; hover resumes on release.
+    if (pressedAt !== null) return;
     const p = pointer(event);
     cancelAnimationFrame(hoverFrame);
     hoverFrame = requestAnimationFrame(() => {
@@ -1188,6 +1194,7 @@ export const createProductView: CreateProductView = async (input) => {
   let pressedAt: { x: number; y: number } | null = null;
   const onPress = (event: PointerEvent) => {
     if (overControl(event.target)) return;
+    cancelAnimationFrame(hoverFrame);
     pressedAt = { x: event.clientX, y: event.clientY };
     // A press may become a drag: the camera watch loop starts observing from the press, not from
     // the first camera change.

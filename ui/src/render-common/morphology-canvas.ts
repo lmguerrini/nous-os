@@ -1101,7 +1101,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   // the interaction, so a title's reserved rectangle and its ink are the same thing everywhere.
   const titleDiscs: readonly CanvasDisc[] = sharedDiscs ?? pearlDiscs!;
   if (structureOnly) {
-  drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);
+    if (!moving || projection === "2d") drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);
   context.globalAlpha = 1;
     return;
   }
@@ -1431,7 +1431,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     context.globalAlpha = 1;
   }
   // Names come last, above every pearl and arc, so no label is ever covered by its own drawing.
-  drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);
+  if (!moving || projection === "2d") drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);
 }
 
 // ---------------------------------------------------------------- D-072 separate flow layer

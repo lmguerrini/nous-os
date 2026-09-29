@@ -484,8 +484,8 @@ export function mount(
     readSurfaceWitness(): SurfaceWitness {
       return live.readSurfaceWitness();
     },
-    readNodeFootprintWitnesses(): readonly NodeFootprintWitness[] {
-      return readNodeFootprints(live, rig);
+    readNodeFootprintWitnesses(ids?: ReadonlySet<string>): readonly NodeFootprintWitness[] {
+      return readNodeFootprints(live, rig, ids);
     },
     readRelationGeometryWitnesses(): readonly RelationGeometryWitness[] {
       return live.readRelationGeometryWitnesses(readSceneHeldByPicker(picker));
@@ -493,8 +493,8 @@ export function mount(
     readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[] {
       return rig.projectFramingSubjects();
     },
-    readWorldAnchorWitnesses(): readonly WorldAnchorWitness[] {
-      return live.readWorldAnchorWitnesses();
+    readWorldAnchorWitnesses(ids?: ReadonlySet<string>): readonly WorldAnchorWitness[] {
+      return live.readWorldAnchorWitnesses(ids);
     },
     readLayoutPassCount(): number {
       return live.readLayoutPassCount();
@@ -611,9 +611,11 @@ function stateFromOptions(
   });
 }
 
-function readNodeFootprints(live: LiveSceneState, rig: CameraRig): readonly NodeFootprintWitness[] {
+function readNodeFootprints(live: LiveSceneState, rig: CameraRig, ids?: ReadonlySet<string>): readonly NodeFootprintWitness[] {
   const buffers = live.buffers.nodes;
-  return buffers.ids.map((id, index) => {
+  const result: NodeFootprintWitness[] = [];
+  buffers.ids.forEach((id, index) => {
+    if (ids && !ids.has(id)) return;
     const position = coordinatesAt(buffers.positions, index);
     const sizeScale = rig.sizeScaleAt(position);
     const coreRadiusPx = requiredNumber(buffers.coreRadiiPx[index], `mounted node ${id} core radius`) * sizeScale;
@@ -622,13 +624,14 @@ function readNodeFootprints(live: LiveSceneState, rig: CameraRig): readonly Node
       requiredNumber(buffers.coreRadiiPx[index], `mounted node ${id} core radius`)
       + requiredNumber(buffers.haloCoreGapsPx[index], `mounted node ${id} halo core gap`)
     ) * sizeScale;
-    return {
+    result.push({
       id,
       viewportCenter: rig.graphToViewport(position),
       coreRadiusPx,
       haloRadiusPx: Math.max(requestedHaloRadius, gapHaloRadius),
-    };
+    });
   });
+  return result;
 }
 
 /** This reads ScenePicker's actual retained scene object and does not substitute a mount-time scene reference. */

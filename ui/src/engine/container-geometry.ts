@@ -23,6 +23,13 @@ export type MorphologyContainerPath = {
   readonly title?: string;
 };
 
+// Layout containers are immutable view snapshots. A camera change changes their projection, not
+// their world-space shell. Keep the 65-point rims and three great circles with that snapshot.
+let geometryByInput = new WeakMap<readonly MorphologyContainerInput[], readonly MorphologyContainerPath[]>();
+
+/** Drop the memo when a caller deliberately needs to rebuild a mutated input in a test. */
+export function resetContainerGeometryCache(): void { geometryByInput = new WeakMap(); }
+
 /** A few great circles that read as a translucent sphere from any camera angle: an equator and two
  * meridians. The projected limb circle (silhouette) is drawn separately from the shell radius. */
 function sphereShell(center: Coordinates, radius: number): readonly ShellCircle[] {
@@ -40,7 +47,9 @@ function sphereShell(center: Coordinates, radius: number): readonly ShellCircle[
  * an exact circle in every morphology (D-072 V7): Stellar, Neural and Mycelium may only style the
  * nodes and arcs inside a pearl, never its boundary — the absolute NousOS pearl included. */
 export function buildContainerGeometry(_morphology: Morphology, containers: readonly MorphologyContainerInput[]): readonly MorphologyContainerPath[] {
-  return containers.map(container => {
+  const cached = geometryByInput.get(containers);
+  if (cached) return cached;
+  const geometry = containers.map(container => {
     const rim = container.radius2d ?? container.radius;
     const points = Array.from({ length: 65 }, (_, index): Coordinates => {
       const angle = index / 64 * Math.PI * 2;
@@ -54,4 +63,6 @@ export function buildContainerGeometry(_morphology: Morphology, containers: read
       ...(container.open !== undefined ? { open: container.open } : {}),
       points, shell, ...(container.title ? { title: container.title } : {}) };
   });
+  geometryByInput.set(containers, geometry);
+  return geometry;
 }

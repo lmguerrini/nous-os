@@ -104,7 +104,7 @@ export type GraphRendererHandle = {
   /** This reports node and relation ids from MOUNTED renderer state and does not read the scene model. */
   readSurfaceWitness(): SurfaceWitness;
   /** This reports live drawn node footprints and does not inspect an offscreen canvas. */
-  readNodeFootprintWitnesses(): readonly NodeFootprintWitness[];
+  readNodeFootprintWitnesses(ids?: ReadonlySet<string>): readonly NodeFootprintWitness[];
   /**
    * This reports world anchors from MOUNTED renderer state and does not read the scene model.
    *
@@ -113,7 +113,7 @@ export type GraphRendererHandle = {
    * the criterion that a camera switch moves no world anchor has no witness at all and can only be
    * recorded NOT_RUN.
    */
-  readWorldAnchorWitnesses(): readonly WorldAnchorWitness[];
+  readWorldAnchorWitnesses(ids?: ReadonlySet<string>): readonly WorldAnchorWitness[];
   /**
    * This counts the layout passes this handle has run since mount, and does not run one.
    *

@@ -203,13 +203,14 @@ test("D-072 V8: quality \"moving\" draws only limbs — no gradients, no equator
   assert.equal(fullHook.limbs, 5);
   assert.equal(fullHook.equators, 5);
   assert.ok(full.counters.gradients > 0, "the full pass does draw its gradients");
-  // Titles: levels ≤ 1 keep theirs, deeper levels lose them for the moving frame.
+  // All title layout waits for the full frame; sphere structure still moves with the camera.
   const pearlBelowLod = buildContainerGeometry("stellar", [
     { id: "closed", level: 2, center: { x: 0, y: 0, z: 0 }, radius: 20, open: false, title: "Perla · +3" }])[0]!;
   assert.equal(containerTitleRect(pearlBelowLod, flatProject, { width: 900, height: 640 }, "3d", { quality: "moving" }), null);
   assert.ok(containerTitleRect(pearlBelowLod, flatProject, { width: 900, height: 640 }, "3d", { quality: "full" }));
   const domain = qualityScene().find(container => container.id === "domain")!;
-  assert.ok(containerTitleRect(domain, flatProject, { width: 900, height: 640 }, "3d", { quality: "moving" }));
+  assert.equal(containerTitleRect(domain, flatProject, { width: 900, height: 640 }, "3d", { quality: "moving" }), null);
+  assert.ok(containerTitleRect(domain, flatProject, { width: 900, height: 640 }, "3d", { quality: "full" }));
 });
 
 test("D-072 V8: quality \"full\" (the default) is unchanged — the same op sequence as without the flag", () => {

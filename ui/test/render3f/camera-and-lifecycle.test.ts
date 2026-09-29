@@ -52,6 +52,16 @@ declare global {
   }
 }
 
+test("targeted mounted anchors preserve order and avoid copying every node", () => {
+  const live = new LiveSceneState(resolvedCameraScenes(), ORTHOGRAPHIC, 1);
+  const all = live.readWorldAnchorWitnesses();
+  const selected = all.at(-1)!;
+  assert.ok(all.length > 1);
+  assert.deepEqual(live.readWorldAnchorWitnesses(new Set([selected.id])), [selected]);
+  assert.deepEqual(live.readWorldAnchorWitnesses(new Set(["absent"])), []);
+  assert.deepEqual(live.readWorldAnchorWitnesses(new Set(all.map(item => item.id))), all);
+});
+
 test("projection changes preserve live anchors while screen label collisions preserve scene priority", (context) => {
   const scenes = resolvedCameraScenes();
   const live = new LiveSceneState(scenes, ORTHOGRAPHIC, cameraKindCount());

@@ -134,6 +134,7 @@ export const CONTAINER_SPHERE_TINY_PX = 12;
  * for large spheres. */
 export const SPHERE_MIN_SEGMENTS = 24;
 export const SPHERE_MAX_SEGMENTS = 64;
+export const MOVING_SPHERE_SEGMENTS = 16;
 export const SPHERE_SEGMENT_TIERS: readonly { readonly minPx: number; readonly segments: number }[] = [
   { minPx: 0, segments: SPHERE_MIN_SEGMENTS },
   { minPx: 40, segments: 32 },
@@ -149,10 +150,16 @@ export function sphereSegmentCount(projectedRadiusPx: number): number {
 /** One shared unit-circle table per tier: cos/sin at k/segments of a turn, closing point included.
  * Precomputed once at module load; drawing a circle from it allocates nothing per frame. */
 export type CircleTable = { readonly cos: Float64Array; readonly sin: Float64Array };
-const CIRCLE_TABLES: ReadonlyMap<number, CircleTable> = new Map(SPHERE_SEGMENT_TIERS.map(tier => [tier.segments, {
+const CIRCLE_TABLES: ReadonlyMap<number, CircleTable> = new Map([...SPHERE_SEGMENT_TIERS.map(tier => [tier.segments, {
   cos: Float64Array.from({ length: tier.segments + 1 }, (_, index) => Math.cos(index / tier.segments * Math.PI * 2)),
   sin: Float64Array.from({ length: tier.segments + 1 }, (_, index) => Math.sin(index / tier.segments * Math.PI * 2)),
-}]));
+}] as const), [MOVING_SPHERE_SEGMENTS, {
+  cos: Float64Array.from({ length: MOVING_SPHERE_SEGMENTS + 1 }, (_, index) => Math.cos(index / MOVING_SPHERE_SEGMENTS * Math.PI * 2)),
+  sin: Float64Array.from({ length: MOVING_SPHERE_SEGMENTS + 1 }, (_, index) => Math.sin(index / MOVING_SPHERE_SEGMENTS * Math.PI * 2)),
+}] as const]);
+export function sphereSegmentsForQuality(projectedRadiusPx: number, quality: "full" | "moving"): number {
+  return quality === "moving" ? MOVING_SPHERE_SEGMENTS : sphereSegmentCount(projectedRadiusPx);
+}
 function circleTable(segments: number): CircleTable {
   return CIRCLE_TABLES.get(segments) ?? CIRCLE_TABLES.get(SPHERE_MAX_SEGMENTS)!;
 }
@@ -531,8 +538,8 @@ export function containerTitleRect(
   cache?: ContainerFrameCache,
 ): { readonly left: number; readonly top: number; readonly width: number; readonly height: number } | null {
   if (!container.title) return null;
-  // The moving pass keeps titles only on the spheres that carry the structure (levels ≤ 1).
-  if (interaction?.quality === "moving" && container.level > 1) return null;
+  // In 3D titles return with full quality after motion. The 2D moving rule remains level ≤ 1.
+  if (interaction?.quality === "moving" && (projection === "3d" || container.level > 1)) return null;
   if (projection === "3d") {
     const center = project(container.center);
     const limbRadiusPx = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
@@ -695,7 +702,7 @@ export function drawContainers(
     // light and equator could never read at that size.
     const tiny = limbRadius < CONTAINER_SPHERE_TINY_PX;
     // Adaptive resolution: the segment count follows the projected radius, from the shared tables.
-    const segments = sphereSegmentCount(limbRadius);
+    const segments = sphereSegmentsForQuality(limbRadius, moving ? "moving" : "full");
     const table = circleTable(segments);
     if (!tiny && !moving) {
       // Subtle radial gradient fill: a translucent glass sphere with the light gathered off-centre, and
