@@ -136,7 +136,10 @@ test('VF1 absolute Indra focus, relation chip and search result retain the selec
 
   const target = await page.evaluate(() => (window as any).__d067.disclosure().nodes.find((item: any) => item.level === 1));
   await page.evaluate(id => (window as any).__d067.select(id), target.id);
-  await page.locator('#search').fill(target.id);
+  // Search matches titles and text, never ids: query the level-1 node by its own title from the graph index.
+  const targetTitle = await page.evaluate(async id => (await fetch('/api/graph/index').then(r => r.json())).nodes.find((n: any) => n.id === id)?.title as string, target.id);
+  expect(targetTitle).toBeTruthy();
+  await page.locator('#search').fill(targetTitle.slice(0, 40));
   await page.locator('#search-form button').click();
   const result = page.locator('#v2-results button').first();
   await expect(result).toBeVisible();
