@@ -24,7 +24,7 @@ export type PanelEvidence = { quote: string; speaker: string; date: string; sour
 export type EvidenceResolver = (record: unknown, ownerId?: string) => V2Node | undefined;
 export type RelationGroup = { label: string; count: number; items: { id: string; label: string }[] };
 export type PanelModel = {
-  title: string; type: string; badge: string; epistemic?: string | undefined; synthesis: string;
+  title: string; fullTitle?: string; type: string; badge: string; epistemic?: string | undefined; synthesis: string;
   why?: string | undefined; direction?: string | undefined; directionMeaning?: string | undefined; confidence?: string | undefined;
   evidence: PanelEvidence[]; evidenceSummary?: string | undefined; sources: string[];
   groups: RelationGroup[]; technical: unknown;
@@ -158,7 +158,7 @@ export function buildNodePanel(node: V2Node, detail: unknown, edges: readonly Gr
   const state = asText(d.canonical_status || node.status);
   const synthesis = sentence(d.statement || d.why || node.snippet || node.title_full || node.title);
   const source = conversation ? `${displayLabel(conversation)}${conversation.date ? ` · ${date(conversation.date)}` : ''}` : '';
-  return { title: compactDisplayLabel(node), type: typeName(node.kind), badge: badge(state, ''), epistemic: epistemicLabel(d.epistemic_label), synthesis,
+  return { title: compactDisplayLabel(node), fullTitle: node.title_full, type: typeName(node.kind), badge: badge(state, ''), epistemic: epistemicLabel(d.epistemic_label), synthesis,
     evidence, evidenceSummary: evidence.length ? `${evidence.length} ${evidence.length === 1 ? 'evidenza' : 'evidenze'} da ${source ? '1 conversazione' : 'una fonte'}` : undefined,
     sources: source ? [source] : [], groups: groupRelations(node, edges, nodes), technical: { id: node.id, title_full: node.title_full, detail: outer } };
 }
@@ -196,7 +196,7 @@ export function buildRelationPanel(edge: GraphEdge | LiftedRelation, nodes: Read
 
 export function renderSelection(host: HTMLElement, model: PanelModel, onRelation: (id: string) => void): void {
   const root = document.createElement('article'); root.className = 'selection-card';
-  const title = document.createElement('h2'); title.textContent = model.title; root.append(title);
+  const title = document.createElement('h2'); title.textContent = model.title; title.title = model.fullTitle ?? model.title; root.append(title);
   const badges = document.createElement('div'); badges.className = 'selection-badges';
   for (const label of [model.type, model.badge, model.epistemic].filter(Boolean)) { const badge = document.createElement('span'); badge.className = 'selection-badge'; badge.textContent = label!; badges.append(badge); }
   root.append(badges);

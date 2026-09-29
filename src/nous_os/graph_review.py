@@ -801,7 +801,8 @@ def serve_graph(*, graph: Path, port: int = 8769, static_root: Path | None = Non
                     words = normalize(query).split()
                     hits = []
                     for node in index["nodes"]:
-                        fields = {"title": node["title"], "snippet": node.get("snippet") or ""}
+                        fields = {"title": node["title"], "title_full": node.get("title_full") or "",
+                                  "snippet": node.get("snippet") or ""}
                         if node["level"] == 4:
                             fields["statement"] = statements.get(node["id"], "")
                         field = next((name for name, value in fields.items() if all(w in normalize(value) for w in words)), None)

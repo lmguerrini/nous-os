@@ -91,6 +91,9 @@ export const PEARL_DISC_CLEAR_PX = 2;
 /** Second ring of anchor offsets, tried when every slot at the anchor's own rim is taken: a label
  * may sit a little further from its anchor instead of being dropped. */
 export const LABEL_SECOND_RING_PX = 14;
+const RIM_NUDGES: readonly [number, number][] = [
+  [6, 0], [-6, 0], [0, 6], [0, -6], [6, 6], [6, -6], [-6, 6], [-6, -6],
+];
 
 /** Hard caps on the disc spatial-hash work per placement pass, so no loop can depend on a radius
  * value. A viewport grid holds at most ~2 100 cells on a 4 K canvas; a disc clipped to the
@@ -305,8 +308,10 @@ export function placeLabels(
     }
     return false;
   };
-  const crossesRim = (rect: ViewportRect): boolean => rims.some(rim => {
-    if (!(rim.radius > 0) || !Number.isFinite(rim.radius)) return false;
+  // Radial width of rim bands touched by this rectangle. Zero means wholly inside or outside
+  // every rim; when all legal slots cross, the smallest overlap wins without hiding the label.
+  const rimOverlap = (rect: ViewportRect): number => rims.reduce((overlap, rim) => {
+    if (!(rim.radius > 0) || !Number.isFinite(rim.radius)) return overlap;
     const nearestX = Math.min(Math.max(rim.x, rect.left), rect.left + rect.width);
     const nearestY = Math.min(Math.max(rim.y, rect.top), rect.top + rect.height);
     const minimum = Math.hypot(nearestX - rim.x, nearestY - rim.y);
@@ -316,8 +321,8 @@ export function placeLabels(
       Math.hypot(rect.left - rim.x, rect.top + rect.height - rim.y),
       Math.hypot(rect.left + rect.width - rim.x, rect.top + rect.height - rim.y),
     );
-    return minimum <= rim.radius + 3 && farthest >= rim.radius - 3;
-  });
+    return overlap + Math.max(0, Math.min(farthest, rim.radius + 3) - Math.max(minimum, rim.radius - 3));
+  }, 0);
   const priority = { hover: 6, selected: 5, neighbour: 4, domain: 3, main: 2, zoom: 1 };
   for (const c of [...candidates].sort(
     (a, b) => (b.tier1 === true ? 1 : 0) - (a.tier1 === true ? 1 : 0)
@@ -343,12 +348,9 @@ export function placeLabels(
       width: size.width,
       height: size.height,
     });
-    // Preserve anchor preference among clear slots. A rim crossing is never admissible.
-    attempts.sort((a, b) => Number(crossesRim(rectAt(a[0]!, a[1]!))) - Number(crossesRim(rectAt(b[0]!, b[1]!))));
     // The hard constraints no tier may ever bend: inside the visible rect, clear of the anchor's
     // own disc, and over no placed label or reserved rect (the Aspetto panel).
     const admissible = (rect: ViewportRect): boolean => {
-      if (crossesRim(rect)) return false;
       if (
         rect.left < bounds.left ||
         rect.top < bounds.top ||
@@ -373,45 +375,41 @@ export function placeLabels(
         return false;
       return true;
     };
-    // Tier 1 keeps the narrow rule: never under its own node, never over another label
-    // or the panel — but another node's pearl may sit beneath it, so when no slot is fully clear
-    // the least-covered admissible slot wins instead of dropping the name.
-    if (c.tier1 === true) {
-      let fallback: { rect: ViewportRect; covered: number } | null = null;
-      for (const [dx, dy] of attempts) {
-        const rect = rectAt(dx, dy);
-        if (!admissible(rect)) continue;
-        if (discs.length === 0 || !discBlocked(rect, c.id)) {
-          fallback = { rect, covered: -1 };
-          break;
-        }
-        let covered = 0;
-        for (const disc of discs) {
-          if (disc.id === c.id) continue;
-          // Cheap gate first: the exact column sum runs only on discs the rect truly touches.
-          const nearestX = Math.min(Math.max(disc.x, rect.left), rect.left + rect.width);
-          const nearestY = Math.min(Math.max(disc.y, rect.top), rect.top + rect.height);
-          if ((disc.x - nearestX) ** 2 + (disc.y - nearestY) ** 2 > disc.radius ** 2) continue;
-          covered += discRectOverlapArea(rect, disc.x, disc.y, disc.radius);
-        }
-        if (!fallback || covered < fallback.covered) fallback = { rect, covered };
-      }
-      if (fallback) {
-        const label = { id: c.id, text: c.text, reason: c.reason, rect: fallback.rect };
-        placed.push(label);
-        for (const key of keys(fallback.rect.left, fallback.rect.top, fallback.rect.left + fallback.rect.width, fallback.rect.top + fallback.rect.height)) {
-          const bucket = cells.get(key) ?? [];
-          bucket.push(label);
-          cells.set(key, bucket);
-        }
-      }
-      continue;
-    }
-    for (const [dx, dy] of attempts) {
+    // Tier 1 alone may sit over another pearl. Among legal slots prefer a clear rim, then less
+    // pearl coverage. Tier 2 retains pearl clearance as a hard constraint.
+    const choice: { best: { rect: ViewportRect; rim: number; pearlBlocked: boolean; covered: number } | null } = { best: null };
+    const consider = (dx: number, dy: number): boolean => {
       const rect = rectAt(dx, dy);
-      if (!admissible(rect)) continue;
-      if (radius > 0 && rectOverlapsDisc(rect, c.x, c.y, radius)) continue;
-      if (discs.length > 0 && discBlocked(rect, c.id)) continue;
+      if (!admissible(rect)) return false;
+      const pearlBlocked = discs.length > 0 && discBlocked(rect, c.id);
+      if (c.tier1 !== true && pearlBlocked) return false;
+      const rim = rimOverlap(rect);
+      let covered = 0;
+      if (pearlBlocked) for (const disc of discs) {
+        if (disc.id === c.id) continue;
+        const nearestX = Math.min(Math.max(disc.x, rect.left), rect.left + rect.width);
+        const nearestY = Math.min(Math.max(disc.y, rect.top), rect.top + rect.height);
+        if ((disc.x - nearestX) ** 2 + (disc.y - nearestY) ** 2 > disc.radius ** 2) continue;
+        covered += discRectOverlapArea(rect, disc.x, disc.y, disc.radius);
+      }
+      if (!choice.best || rim < choice.best.rim
+        || (rim === choice.best.rim && Number(pearlBlocked) < Number(choice.best.pearlBlocked))
+        || (rim === choice.best.rim && pearlBlocked === choice.best.pearlBlocked && covered < choice.best.covered))
+        choice.best = { rect, rim, pearlBlocked, covered };
+      return rim === 0 && !pearlBlocked;
+    };
+    let ideal = false;
+    for (const [dx, dy] of attempts) if (consider(dx, dy)) { ideal = true; break; }
+    // A few nearby positions can move a name just inside or outside a rim. Only run this extra
+    // search when the original slots found no placement clear of both rim and pearls.
+    if (!ideal && rims.length) {
+      for (const [dx, dy] of attempts) {
+        for (const [nx, ny] of RIM_NUDGES) if (consider(dx + nx, dy + ny)) { ideal = true; break; }
+        if (ideal) break;
+      }
+    }
+    if (choice.best) {
+      const { rect } = choice.best;
       const label = { id: c.id, text: c.text, reason: c.reason, rect };
       placed.push(label);
       for (const key of keys(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height)) {
@@ -419,7 +417,6 @@ export function placeLabels(
         bucket.push(label);
         cells.set(key, bucket);
       }
-      break;
     }
   }
   return placed;

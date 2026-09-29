@@ -23,8 +23,10 @@ test('D-069 v2 disclosure, search, details, readings and provenance',async({page
   const withPassages=await page.evaluate(()=>(window as any).__d067.disclosure());expect(withPassages.counts[5]).toBeGreaterThan(0);
   await page.evaluate(()=>(window as any).__d067.undo());expect((await page.evaluate(()=>(window as any).__d067.disclosure())).counts[5]).toBe(0);
   await page.evaluate(()=>(window as any).__d067.redo());expect((await page.evaluate(()=>(window as any).__d067.disclosure())).counts[5]).toBeGreaterThan(0);
-  const title=(await page.locator('#details h2').first().textContent())!.slice(0,40);
+  const title=(await page.locator('#details h2').first().getAttribute('title'))!;expect(title).toBe(proposal.title_full);
   await page.locator('#search').fill(title);await page.locator('#search-form button').click();
+  await expect(page.locator('#v2-results button').first()).toBeVisible();
+  await page.locator('#search').fill(`${title}…`);await page.locator('#search-form button').click();
   await expect(page.locator('#v2-results button').first()).toBeVisible();await page.locator('#v2-results button').first().click();
   expect(await page.evaluate(()=>(window as any).__d067.state().selected)).toBeTruthy();
   const witness=await page.evaluate(()=>(window as any).__d067.witness());expect(witness.nodeViewport[witness.page.selected]).toBeTruthy();

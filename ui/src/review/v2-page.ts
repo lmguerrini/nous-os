@@ -706,13 +706,14 @@ export class V2Page {
         }
     }
     async search(q: string) {
-        if (!q.trim()) {
+        const query = q.trim().replace(/…$/u, '').trimEnd();
+        if (!query) {
             this.results = [];
             this.searchTotal = 0;
             this.renderPanel();
             return [];
         }
-        const response = await fetch(`/api/graph/search?q=${encodeURIComponent(q)}&limit=50`);
+        const response = await fetch(`/api/graph/search?q=${encodeURIComponent(query)}&limit=50`);
         if (!response.ok)
             throw new Error(`Ricerca: HTTP ${response.status}`);
         const data = await response.json() as {

@@ -23,7 +23,7 @@ test('Stellar importance raises the opaque core above the travelling head', () =
   assert.ok(flowHeadAlpha(0.6) > 0.4, 'head remains visible');
 });
 
-test('labels choose a rim-clear slot and disappear if every slot straddles a rim', () => {
+test('labels choose a rim-clear slot and survive when every slot straddles Indra rims', () => {
   const candidate = { id: 'hub', text: 'Hub name', reason: 'domain' as const, x: 100, y: 100, priority: 1, tier1: true, radius: 20 };
   const bounds = { left: 0, top: 0, width: 300, height: 300 };
   const measure = () => ({ width: 40, height: 16 });
@@ -33,7 +33,10 @@ test('labels choose a rim-clear slot and disappear if every slot straddles a rim
     clear[0]!.rect.top >= 124 || clear[0]!.rect.top + 16 <= 76);
   const blocked = placeLabels([candidate], bounds, measure, [], 40, [],
     Array.from({ length: 80 }, (_, radius) => ({ x: 100, y: 100, radius: radius + 1 })));
-  assert.equal(blocked.length, 0);
+  assert.equal(blocked.length, 1);
+  const tier2 = placeLabels([{ ...candidate, tier1: false }], bounds, measure, [], 40, [],
+    Array.from({ length: 80 }, (_, radius) => ({ x: 100, y: 100, radius: radius + 1 })));
+  assert.equal(tier2.length, 1, 'a resting label survives when rims alone block every slot');
 });
 
 test('title count is explicit and the shared node title is the same in canvas and panel', () => {

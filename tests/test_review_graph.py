@@ -422,6 +422,9 @@ def test_generic_lead_in_is_removed_from_fallback_title():
 
 def test_server_routes_and_bounds(tmp_path, monkeypatch):
     args, _ = fixture(tmp_path)
+    membership = json.loads(args["membership"].read_bytes())
+    membership["conversations"]["conv1"]["title"] = "Luminous garden conversations around invented materials and distant constellations"
+    args["membership"].write_bytes(encoded(membership))
     build(**args, out=tmp_path / "out")
     holder = {}
     class FakeServer:
@@ -455,6 +458,10 @@ def test_server_routes_and_bounds(tmp_path, monkeypatch):
     assert query("node?id=asr_one")[1]["detail"]["citations"][0]["span"] == "conv1"
     assert query("children?id=asr_one&limit=1")[1]["children"][0]["kind"] == "passage"
     assert any(hit["id"] == "asr_one" for hit in query("search?q=garden")[1]["results"])
+    # The panel heading is short; search must still accept words from its full title.
+    assert "constellations" not in next(node["title"] for node in query("index")[1]["nodes"] if node["id"] == "conversation:conv1").lower()
+    assert any(hit["id"] == "conversation:conv1" and hit["match_field"] == "title_full"
+               for hit in query("search?q=constellations")[1]["results"])
     assert query("children?id=asr_one&limit=1000")[0] == 400
     assert query("index", "gzip")[1]["schema"] == "nousos.review-graph/2"
 
