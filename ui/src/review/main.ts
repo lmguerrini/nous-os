@@ -1,8 +1,10 @@
 import { humanLabel, initialState, searchNode, shortHumanLabel, visibleGraph } from "./model.ts";
 import type { ReviewExport, ReviewNode } from "./model.ts";
 import { createProductView } from "./product-view.ts";
-import { DEFAULT_AXES } from "./view-contract.ts";
+import { DEFAULT_AXES, parseSavedAxes, savedAxesRecord, serializeAxes } from "./view-contract.ts";
 import type { Axes, ProductView, ViewWitness } from "./view-contract.ts";
+import { resolveNaturalArrangementWithSource } from "../projection/natural-bridge.ts";
+import type { ResolvedNaturalArrangement } from "../projection/natural-bridge.ts";
 import { FAMILY_OF, standingOf } from "./presentation.ts";
 import { FocusStack } from "./focus-stack.ts";
 import { renderPanel } from "./panel.ts";
@@ -49,7 +51,7 @@ let liveActive = false;
 let liveResults: LiveFragment[] = [];
 let liveMessage = "";
 let view: ProductView | null = null;
-let axes: Axes = { ...DEFAULT_AXES };
+let axes: Axes;
 let debug = false;
 const storage = (() => { try { return localStorage; } catch { return null; } })();
 let appearance = normalizeAppearance(readLocal(storage, "d069.appearance", DEFAULT_APPEARANCE));
@@ -77,6 +79,64 @@ let stack: FocusStack;
 let filter = { domain: "", family: "", standing: "", evidence: "" };
 let operation = Promise.resolve();
 const errors: string[] = [];
+const VIEW_STORAGE_KEY = "d073.view";
+const VIEW_URL_PARAMETER = "view";
+const MORPHOLOGY_LABELS = { stellar: "Stellar", neural: "Neural", mycelium: "Mycelium" } as const;
+function readViewSource(raw: string): { axes: Axes; explicitArrangement: boolean } | null {
+  try {
+    const explicitArrangement = typeof (JSON.parse(raw) as { arrangement?: unknown }).arrangement === "string";
+    return { axes: parseSavedAxes(raw), explicitArrangement };
+  } catch (error) {
+    errors.push(`Vista salvata rifiutata: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+function readUrlView(): { axes: Axes; explicitArrangement: boolean } | null {
+  const hash = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : "");
+  const raw = new URLSearchParams(location.search).get(VIEW_URL_PARAMETER) ?? hash.get(VIEW_URL_PARAMETER);
+  return raw === null ? null : readViewSource(raw);
+}
+function readStoredView(): { axes: Axes; explicitArrangement: boolean } | null {
+  const raw = readLocal<string>(storage, VIEW_STORAGE_KEY, "");
+  return raw ? readViewSource(raw) : null;
+}
+const initialUrlView = readUrlView();
+const initialView = initialUrlView ?? readStoredView();
+if (initialView) axes = initialView.axes;
+else axes = { ...DEFAULT_AXES, arrangement: resolveNaturalArrangementWithSource(DEFAULT_AXES.morphology).arrangement };
+let resolvedArrangement: ResolvedNaturalArrangement | null = axes.organization === "flat"
+  ? resolveNaturalArrangementWithSource(axes.morphology, initialView?.explicitArrangement === true ? axes.arrangement : undefined)
+  : null;
+function appliedAxes(partial: Partial<Axes>): Axes {
+  const next: Axes = { ...axes, ...partial };
+  if (next.organization === "indra") {
+    return { projection: next.projection, morphology: next.morphology, organization: "indra", colour: next.colour, labels: next.labels, reading: next.reading };
+  }
+  if (partial.arrangement !== undefined) resolvedArrangement = resolveNaturalArrangementWithSource(next.morphology, partial.arrangement);
+  if (resolvedArrangement === null) resolvedArrangement = resolveNaturalArrangementWithSource(next.morphology);
+  return next.arrangement === undefined ? { ...next, arrangement: resolvedArrangement.arrangement } : next;
+}
+function writeViewUrl(): void {
+  try {
+    const params = new URLSearchParams(location.search);
+    params.delete(VIEW_URL_PARAMETER);
+    const search = params.toString();
+    history.replaceState(history.state, "", `${location.pathname}${search ? `?${search}` : ""}#${VIEW_URL_PARAMETER}=${encodeURIComponent(serializeAxes(axes))}`);
+  } catch { /* an unwritable URL never blocks the view */ }
+}
+function persistView(): void {
+  writeLocal(storage, VIEW_STORAGE_KEY, serializeAxes(axes));
+  writeViewUrl();
+}
+function syncArrangementInspector(): void {
+  const host = document.getElementById("arrangement-inspector");
+  if (!host) return;
+  if (!resolvedArrangement || axes.organization !== "flat") { host.hidden = true; host.textContent = ""; return; }
+  host.textContent = resolvedArrangement.source === "explicit"
+    ? `Natural · ${resolvedArrangement.arrangement} · esplicita · ${resolvedArrangement.layoutVersion}`
+    : `Natural · ${resolvedArrangement.arrangement} · predefinita da ${MORPHOLOGY_LABELS[axes.morphology]} · ${resolvedArrangement.layoutVersion}`;
+  host.hidden = false;
+}
 function enqueue(work: () => Promise<void>): Promise<void> {
   operation = operation.then(work).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -487,9 +547,12 @@ function fit(): Promise<void> {
   });
 }
 function setAxes(partial: Partial<Axes>): Promise<void> {
+  axes = appliedAxes(partial);
+  persistView();
+  syncArrangementInspector();
   if (partial.projection === "2d") stopGizmoUpdate();
   else requestGizmoUpdate();
-  if (v2) { axes = {...axes,...partial}; syncCustomColours();
+  if (v2) { syncCustomColours();
     for(const axis of ["projection","morphology","organization","reading"] as const)
       document.querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`).forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.value===axes[axis])));
     get<HTMLElement>("gizmo").hidden=axes.projection!=="3d";
@@ -499,7 +562,6 @@ function setAxes(partial: Partial<Axes>): Promise<void> {
     return v2.setAxes(partial); }
   return enqueue(async () => {
     if (partial.projection && partial.projection !== "3d") { focusMode = false; focusCamera = null; }
-    axes = { ...axes, ...partial };
     if (partial.colour) writeLocal(storage, "d069.palette", partial.colour);
     if (!data) return;
     if (partial.reading && stack.current) {
@@ -831,7 +893,7 @@ get<HTMLButtonElement>("appearance-default").addEventListener("click", () => {
 get<HTMLButtonElement>("equilibra-volume").addEventListener("click", () => {
   if (!v2) return;
   if (axes.projection !== "3d" || axes.organization !== "flat") {
-    announce("Equilibra volume è disponibile nella vista 3D Flat");
+    announce("Equilibra volume è disponibile nella vista 3D Natural");
     return;
   }
   const next = v2.equilibrateVolume();
@@ -1005,7 +1067,10 @@ syncAppearanceControls();
 syncPresetList();
 syncPanel();
 refreshFlowLegends();
-axes = { ...axes, colour: paletteName(readLocal(storage, "d069.palette", "bw")) };
+if (initialUrlView) writeLocal(storage, "d069.palette", axes.colour);
+else axes = { ...axes, colour: paletteName(readLocal(storage, "d069.palette", "bw")) };
+persistView();
+syncArrangementInspector();
 let gizmoFrame: number | null = null;
 let gizmoKeepAliveUntilMs = 0;
 function cameraWatchRunning(): boolean {
@@ -1074,6 +1139,8 @@ const api = {
   errors,
   state: () => ({
     axes: { ...axes },
+    view: savedAxesRecord(axes),
+    resolvedArrangement: axes.organization === "flat" && resolvedArrangement ? { ...resolvedArrangement } : null,
     selected: v2?.selectedId ?? stack?.current?.id ?? null,
     stack: stack?.ids ?? [],
     stackDepth: stack?.depth ?? 0,
