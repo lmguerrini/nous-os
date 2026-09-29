@@ -34,6 +34,7 @@ import { sceneCameraFramingSubjects } from "#render3f/camera-framing.ts";
 import type { ProjectedCameraFramingSubject } from "#render3f/camera-framing.ts";
 import { tokenToSrgb } from "#render3f/buffers.ts";
 import { mountDistinctOverlay } from "#render3f/distinct-overlay.ts";
+import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
 import { DENSE_SCENE_THRESHOLD } from "#render-common/morphology-canvas.ts";
 import {
   createAggregateRenderResources,
@@ -110,6 +111,10 @@ export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountin
   readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[];
   setEmphasis(ids: ReadonlySet<string> | null): void;
   setAppearance(options: AppearanceOptions): void;
+  /** D-072 R2: swaps the drawn level-of-detail subset in place — the scene, its picking surface and
+   * the camera are untouched; only the distinct overlay's geometry snapshot and style lookups move.
+   * A no-op when no distinct overlay is mounted. */
+  updateVisibleSubset(update: DistinctSubsetUpdate): void;
   readReviewWindows(): readonly { id: string; members: readonly string[]; center: Coordinates; radius: number }[];
   isWorldPointVisible(point: Coordinates): boolean;
 };
@@ -406,6 +411,7 @@ export function mount(
 
   return {
     setAppearance(appearance: AppearanceOptions): void { distinct?.setAppearance(appearance); },
+    updateVisibleSubset(update: DistinctSubsetUpdate): void { distinct?.updateVisibleSubset(update); },
     setEmphasis(ids: ReadonlySet<string> | null): void {
       emphasisIds = ids;
       applyMaterialState(currentState.selectedId, currentState.focusedId);

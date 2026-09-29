@@ -3,6 +3,7 @@ import type { AppearanceOptions } from "#engine/presentation-options.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import { buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
 import { DENSE_SCENE_THRESHOLD, drawMorphologyCanvas } from "#render-common/morphology-canvas.ts";
+import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
 import Sigma from "sigma";
 import { createEdgeCompoundProgram, NodeCircleProgram } from "sigma/rendering";
 import type { NodeProgramType } from "sigma/rendering";
@@ -140,6 +141,10 @@ export type RenderHandle = {
   readPickingSurface(): RenderPickingSurface;
   /** This converts a live node size into the mounted renderer's viewport scale. */
   scaleSize(size: number): number;
+  /** Swaps the drawn level-of-detail subset in place — the mounted Sigma graph, its
+   * picking buffers and the camera are untouched; only the distinct canvas's geometry snapshot
+   * and style lookups move. A no-op when no distinct canvas is mounted. */
+  updateVisibleSubset(update: DistinctSubsetUpdate): void;
   destroy(): void;
 };
 
@@ -305,6 +310,7 @@ export function mount(
   return {
     model,
     setAppearance(appearance: AppearanceOptions): void { distinct?.setAppearance(appearance); },
+    updateVisibleSubset(update: DistinctSubsetUpdate): void { distinct?.updateVisibleSubset(update); },
     graphToViewport(point: Coordinates): { readonly x: number; readonly y: number } {
       return sigma.graphToViewport(point);
     },
@@ -505,6 +511,7 @@ function mountDistinctCanvas(
   screenPaint: ScreenPaintControl,
 ): {
   setAppearance(options: AppearanceOptions): void;
+  updateVisibleSubset(update: DistinctSubsetUpdate): void;
   destroy(): void;
 } {
   const graph = model.graph;
@@ -520,8 +527,9 @@ function mountDistinctCanvas(
     options.presentation?.containers,
   );
   const shared = options.presentation?.morphologyInput;
-  const sharedGeometry = (curvature: number) => shared
-    ? buildMorphologyGeometry(options.morphology, shared.nodes, shared.edges, shared.colonies, curvature, shared.containers)
+  let sharedInput = shared;
+  const sharedGeometry = (curvature: number) => sharedInput
+    ? buildMorphologyGeometry(options.morphology, sharedInput.nodes, sharedInput.edges, sharedInput.colonies, curvature, sharedInput.containers)
     : buildGeometry(curvature);
   let geometry = options.presentation?.morphologyGeometry ?? sharedGeometry(options.presentation?.appearance?.curvature ?? DEFAULT_APPEARANCE.curvature);
   const canvas = document.createElement("canvas");
@@ -574,7 +582,7 @@ function mountDistinctCanvas(
     glyph: options.presentation?.nodes?.get(id)?.glyph,
     radiusPx: options.presentation?.nodes?.get(id)?.radiusPx,
   }]));
-  const edgeStyles = new Map(graph.edges().map((id) => [id, {
+  const edgeStyles = new Map<string, { color: string; presentation: import("#engine/presentation-options.ts").EdgePresentation | undefined }>(graph.edges().map((id) => [id, {
     color: graph.getEdgeAttributes(id).color,
     presentation: options.presentation?.edges?.get(id),
   }]));
@@ -607,6 +615,21 @@ function mountDistinctCanvas(
     setAppearance(next): void {
       if (next.curvature !== appearance.curvature) geometry = sharedGeometry(next.curvature);
       appearance = next;
+      draw();
+    },
+    // The LOD swap: `draw` closes over the three mutables below, so the update only assigns
+    // them and repaints once — no Sigma refresh, no layer re-creation, no camera touch. The
+    // swapped input also feeds any later curvature rebuild, so an appearance change after an
+    // in-place update derives from the current subset, not the mounted one.
+    updateVisibleSubset(update): void {
+      geometry = update.geometry;
+      sharedInput = update.input;
+      for (const [id, entry] of update.nodeEntries) {
+        const current = nodeStyles.get(id);
+        if (current) nodeStyles.set(id, { ...current, glyph: entry.glyph, radiusPx: entry.radiusPx });
+      }
+      for (const [id, entry] of update.edgeEntries)
+        edgeStyles.set(id, { color: entry.color, presentation: entry.presentation });
       draw();
     },
     destroy(): void {

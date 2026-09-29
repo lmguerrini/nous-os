@@ -2,7 +2,7 @@ import type { AppearanceOptions, EdgeCategory, EdgePresentation, NodeGlyph } fro
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
-import type { MorphologyContainerPath, MorphologyGeometry, MorphologyNodeShape, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
+import type { MorphologyContainerPath, MorphologyGeometry, MorphologyInput, MorphologyNodeShape, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
 import { SOMA_OUTLINE_MAX_RADIAL, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
@@ -42,6 +42,20 @@ export type MorphologyCanvasStyle = {
     readonly flowLayer?: "inline" | "separate" } | undefined;
   readonly nodes: ReadonlyMap<string, { readonly color: string; readonly glyph?: NodeGlyph | undefined; readonly radiusPx?: number | undefined; readonly opacity?: number }>;
   readonly edges: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
+};
+
+/** D-072 R2: one in-place level-of-detail swap for a distinct morphology layer. The input and
+ * geometry are the fully rebuilt drawing (the caller builds them with the same derivation a
+ * remount uses, and later curvature rebuilds must derive from the new input, not the mounted
+ * one), the node entries overwrite only what a subset change can flip (an Indra open-container
+ * marker), and the edge entries cover every newly drawn relation — the entries of already-mounted
+ * edges never change with the subset, because their presentation derives from the relation record
+ * alone. */
+export type DistinctSubsetUpdate = {
+  readonly input: MorphologyInput;
+  readonly geometry: MorphologyGeometry;
+  readonly nodeEntries: ReadonlyMap<string, { readonly glyph?: NodeGlyph | undefined; readonly radiusPx?: number | undefined }>;
+  readonly edgeEntries: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
 };
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
 /** Parsed channel triples, memoised per colour string: the hot loops meet the same handful of

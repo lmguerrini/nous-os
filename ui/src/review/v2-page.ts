@@ -10,6 +10,7 @@ import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
 import { adjacencyOf, communityResolver, DENSITY_BUDGETS, formatCount, lodLevelFromZoom, normalizeDensity, refreshCameraAction, safeSelectNodes, selectArcs } from './lod.ts';
+import { lodRefreshDue } from './render-schedule.ts';
 import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
 import { labelBudgetOf } from './labels.ts';
 import { createProductView } from './product-view.ts';
@@ -118,6 +119,15 @@ export class V2Page {
     /** D-072 R1: the last LOD selection the page actually mounted — what a failing selection
      * keeps verbatim (`safeSelectNodes` fallback), retired only by a successful mount. */
     private lastNodeSelection: LodNodeSelection | null = null;
+    /** D-072 R2: everything a mounted view's drawing derives from. An unchanged key means the
+     * next refresh is a pure level-of-detail change — same disclosed set, same arrangement, same
+     * axes, same colours — and the view applies it in place instead of remounting. */
+    private lastLodKey: string | null = null;
+    /** D-072 R2 (X8): a band crossing observed while the camera still moves is only noted; the
+     * level refresh lands once the camera has been still `LOD_REFRESH_IDLE_MS`. */
+    private pendingLod: LodLevel | null = null;
+    /** The last tickZoom sample at which the camera ratio actually changed. */
+    private cameraChangedAt: number | null = null;
     /** D-072 R1: how this page creates its views and selects its LOD set; injectable for tests. */
     private readonly createView: CreateProductView;
     private readonly selectLod: typeof safeSelectNodes;
@@ -335,6 +345,48 @@ export class V2Page {
             const adapted = adaptV2(disclosed.nodes, shown, next, this.manifest.digest);
             const added = [...renderedIds].filter(id => !this.previousVisible.has(id));
             const old = this.view?.readCamera();
+            // D-072 R2 (X8): a pure level-of-detail change — same disclosed set, arrangement, axes
+            // and colours — is applied to the mounted view in place: no new renderer, no camera
+            // loss, no remount spike. Everything above ran exactly as before (the layout over the
+            // whole disclosed set, the LOD selection, the arc selection), so the payload carries
+            // the same data a mount would receive.
+            const lodKey = [this.axes.organization, this.axes.projection, this.axes.morphology,
+                this.axes.reading, this.axes.colour, this.axes.labels, this.relationDetail,
+                JSON.stringify(this.appearance), JSON.stringify(this.palette), JSON.stringify(this.v2Colours),
+                [...ids].sort().join('|')].join('\u00B7');
+            if (this.view && this.view.updateVisibleSubset && lodKey === this.lastLodKey) {
+                let applied = false;
+                try {
+                    applied = this.view.updateVisibleSubset({
+                        visibleNodeIds: renderedIds,
+                        edges: shown,
+                        containers: nextContainers,
+                        labelBudget: budget.labels,
+                    });
+                }
+                catch { applied = false; }
+                if (applied) {
+                    // The same commit a successful mount makes, minus everything a remount owns
+                    // (positions, camera bookkeeping, layout keys — the scene did not change).
+                    this.rendered = renderedIds;
+                    this.lodCounts = nextLodCounts;
+                    this.renderedRelations = nextRenderedRelations;
+                    this.arcTotal = nextArcTotal;
+                    this.containers = nextContainers;
+                    this.previousVisible = renderedIds;
+                    this.lastNodeSelection = selection;
+                    if (this.selected)
+                        this.view.select(this.selected);
+                    this.updateEmphasis();
+                    this.renderPanel();
+                    element('status').textContent = 'Grafo pronto';
+                    element('focus-chip').hidden = !shown.some(e => e.class === 'exploratory');
+                    if (added.length && this.positions.size > added.length)
+                        this.pulse(added);
+                    return;
+                }
+                // The view could not take the update in place: fall through and remount as before.
+            }
             const arrangement = `${this.axes.organization}|${this.axes.projection}`;
             // Bounds change with the visible set and also when a pearl resizes as its hidden children load.
             const box = layoutStats(next).bbox;
@@ -362,7 +414,7 @@ export class V2Page {
             element('render-root').append(nextHost);
             let mounted: ProductView;
             try {
-                mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(shown.map(edge => edge.id)), axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {
                                 this.why(this.selected, target.id);
                             }
@@ -413,6 +465,7 @@ export class V2Page {
             this.layoutSource = nextLayoutSource;
             this.previousVisible = renderedIds;
             this.lastNodeSelection = selection;
+            this.lastLodKey = lodKey;
             this.lastBoundsKey = boundsKey;
             this.lastSceneKey = sceneKey;
             this.lastArrangement = arrangement;
@@ -800,19 +853,32 @@ export class V2Page {
         if (!ratio) return;
         const previous = this.lastZoomRatio;
         this.lastZoomRatio = ratio;
+        if (ratio !== previous)
+            this.cameraChangedAt = performance.now();
         if (performance.now() < this.suppressZoomUntil || previous === null)
             return;
         // D-072 L1: the LOD level is re-evaluated here, on camera settle — this tick runs four
         // times a second, never per frame — and only a genuine band crossing rebuilds anything:
         // the hysteresis absorbs small wheel movements back and forth. The scene is never
         // rebuilt per frame.
+        // D-072 R2 (X8): the crossing itself is only noted while the camera still moves; the
+        // refresh (an in-place subset change on the mounted view) lands once the camera has
+        // been still `LOD_REFRESH_IDLE_MS`, and a zoom back inside the band cancels it.
         const zoom = Math.max(0.1, (this.overviewRatio ?? ratio) / ratio);
         const next = lodLevelFromZoom(zoom, this.lod);
-        if (next !== this.lod) {
-            this.lod = next;
+        this.pendingLod = next === this.lod ? null : next;
+        if (this.pendingLod !== null && lodRefreshDue({
+            nowMs: performance.now(),
+            pending: true,
+            lastCameraChangeMs: this.cameraChangedAt,
+        })) {
+            this.lod = this.pendingLod;
+            this.pendingLod = null;
             void this.refresh();
             return;
         }
+        if (this.pendingLod !== null)
+            return;
         if (ratio >= previous * 0.995)
             return;
         // Progressive disclosure on zoom now belongs to the near level only: intermediate and far

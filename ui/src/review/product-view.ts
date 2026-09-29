@@ -23,6 +23,7 @@ import type { AppearanceOptions } from "../engine/presentation-options.ts";
 import { PALETTES, hexRgb, v2CategoryColour } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
+import type { ReviewEdge } from "./model.ts";
 import { indraArcPresentation } from "./v2-relations.ts";
 import { v2Encoding } from "./v2-adapter.ts";
 import type { ReviewCameraState } from "../render3f/camera.tsx";
@@ -33,8 +34,8 @@ import { containerSphereLOD, containerTitleFont, placeContainerTitles, projected
 import type { CanvasDisc } from "../render-common/container-canvas.ts";
 import { MORPHOLOGY_CONTRACT } from "../engine/morphology-contract.ts";
 import { drawFlowLayer } from "../render-common/morphology-canvas.ts";
-import type { MorphologyCanvasStyle } from "../render-common/morphology-canvas.ts";
-import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect } from "./view-contract.ts";
+import type { DistinctSubsetUpdate, MorphologyCanvasStyle } from "../render-common/morphology-canvas.ts";
+import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect, VisibleSubsetUpdate } from "./view-contract.ts";
 import {
   CAMERA_STILLNESS_MS,
   MovingLabelPassSchedule,
@@ -175,6 +176,35 @@ export const createProductView: CreateProductView = async (input) => {
   let customPalette: PaletteValues = input.customPalette ?? PALETTES.bw;
   let visible = new Set(input.visibleNodeIds);
   let insets = input.insets;
+  // D-072 R2: the level-of-detail mode. When the page names the drawn edge subset it takes ownership
+  // of the LOD: every node of `data` is mounted for picking and style coverage, the drawn edges are
+  // `drawnEdges`, and a later band or density change lands in place through `updateVisibleSubset`
+  // instead of a remount. The containers become view-local state for the same reason — an in-place
+  // subset change maps new Indra containers without recreating the view.
+  const lodMode = input.visibleEdgeIds !== undefined;
+  const mountedIds = new Set(input.data.nodes.map((node) => node.id));
+  // The edges the mounted graph itself holds (captured at mount); an in-place update only needs
+  // style entries for drawn edges beyond this set.
+  const mountedEdgeIds = new Set<string>();
+  let layoutContainers = input.layoutContainers;
+  // D-072 R2: the label allowance is view state — an in-place density change moves it with the
+  // subset instead of remounting.
+  let labelBudget = input.labelBudget;
+  let drawnEdges: readonly ReviewEdge[];
+  let drawnEdgeIds: ReadonlySet<string>;
+  const readingAllows = (edge: ReviewEdge): boolean => {
+    const kind = input.v2Prepared ? edge.attested_by as "attested" | "exploratory" : relationClass(edge, nodesById);
+    return input.v2Prepared ? axes.reading !== "attested" || kind === "attested" : relationVisible(kind, axes.reading);
+  };
+  const initialDrawn = input.data.edges.filter((edge) => visible.has(edge.source) && visible.has(edge.target) && readingAllows(edge));
+  drawnEdges = initialDrawn;
+  drawnEdgeIds = new Set(initialDrawn.map((edge) => edge.id));
+  // The latest drawing the view handed its renderers; the LOD edge hit-test reads it. Kept in step
+  // by mount() and updateVisibleSubset().
+  let drawnGeometry: import("../engine/morphology-geometry.ts").MorphologyGeometry | null = null;
+  // D-072 R2: the marker bits (glyph, radiusPx) the renderers' style maps last saw, so an
+  // in-place subset change can ship only the entries that actually flipped.
+  let lastNodeMarks = new Map<string, { glyph: import("../engine/presentation-options.ts").NodeGlyph | undefined; radiusPx: number | undefined }>();
   let handle: GraphRendererHandle | null = null;
   let sigma: RenderHandle | null = null;
   let three: Render3fRendererHandle | null = null;
@@ -362,6 +392,10 @@ export const createProductView: CreateProductView = async (input) => {
   function project(point: Coordinates) {
     return handle!.graphToViewport(point);
   }
+  /** D-072 R2: in LOD mode the mounted renderers witness every disclosed node, so every consumer
+   * that means "what is drawn" filters through the drawn subset. */
+  const throughVisible = <T extends { id: string }>(items: readonly T[]): readonly T[] =>
+    lodMode ? items.filter((item) => visible.has(item.id)) : items;
   function labelPass() {
     if (!handle || destroyed) return;
     // D-072 P1a: while the camera moves this pass is the reduced one — tier-1 labels only, no
@@ -389,7 +423,7 @@ export const createProductView: CreateProductView = async (input) => {
     const overview = camera.ratio >= fitted * 0.6;
     const close = camera.ratio < fitted * 0.25;
     const neighbours = emphasis ?? new Set<string>();
-    const anchors = new Map(handle.readWorldAnchorWitnesses().map((item) => [item.id, item.position]));
+    const anchors = new Map(throughVisible(handle.readWorldAnchorWitnesses()).map((item) => [item.id, item.position]));
     // Depth occlusion: in 3D a label whose anchor sits behind nearer geometry is hidden. Depth is the
     // distance along the camera's view axis, so nearer geometry has a smaller depth.
     let occluded: ReadonlySet<string> = new Set<string>();
@@ -417,8 +451,8 @@ export const createProductView: CreateProductView = async (input) => {
     // interaction must be the same object state the canvas layer uses, so both agree on the LOD.
     const containerInteraction = { hoverId: morphologyInteraction.hoverId, focusIds: morphologyInteraction.focusIds };
     const pathById = new Map<string, MorphologyContainerPath>();
-    if (axes.organization === "indra" && input.layoutContainers) {
-      for (const path of buildContainerGeometry(axes.morphology, input.layoutContainers)) pathById.set(path.id, path);
+    if (axes.organization === "indra" && layoutContainers) {
+      for (const path of buildContainerGeometry(axes.morphology, layoutContainers)) pathById.set(path.id, path);
     }
     // The pearls about to be drawn, projected with their radii: every label must avoid them, not only
     // other labels. Each disc is the node's real drawn footprint (for a neural soma, its minor
@@ -428,7 +462,7 @@ export const createProductView: CreateProductView = async (input) => {
     // obstacles, and unbounded they once exhausted the tab. This one set is shared with the canvas
     // title pass through the interaction, so titles and labels are placed by one collision set.
     const contract = MORPHOLOGY_CONTRACT[axes.morphology];
-    const footprints = handle.readNodeFootprintWitnesses();
+    const footprints = throughVisible(handle.readNodeFootprintWitnesses());
     const span = Math.max(bounds.width, bounds.height);
     const discs: CanvasDisc[] = [];
     for (const footprint of footprints) {
@@ -574,7 +608,8 @@ export const createProductView: CreateProductView = async (input) => {
     const labelled = disambiguateLabels(marked);
     // D-072 FixA: the density's own allowance (20/40/60, L1's ViewInput.labelBudget) drives the
     // placement; the absolute LABEL_BUDGET stays only as the default for callers that say nothing.
-    const allowance = input.labelBudget ?? LABEL_BUDGET;
+    // D-072 R2: an in-place density change moves the allowance with the subset.
+    const allowance = labelBudget ?? LABEL_BUDGET;
     const next = placeLabels(labelled, bounds, measured, reserved, allowance, discs);
     const rect = container.getBoundingClientRect();
     placed = next.map((label) => ({
@@ -640,7 +675,7 @@ export const createProductView: CreateProductView = async (input) => {
       layer.append(ring);
     }
     if (axes.colour === "custom") {
-      const anchors = new Map(handle.readWorldAnchorWitnesses().map((item) => [item.id, item.position]));
+      const anchors = new Map(throughVisible(handle.readWorldAnchorWitnesses()).map((item) => [item.id, item.position]));
       for (const [id, colour] of [[selected, palette.selection], [hover?.kind === "node" ? hover.id : null, palette.hover]] as const) {
         const position = id ? anchors.get(id) : null;
         if (!position) continue;
@@ -769,55 +804,52 @@ export const createProductView: CreateProductView = async (input) => {
     }
     frameId = requestAnimationFrame(cameraWatchTick);
   }
-  function mount() {
-    const began = performance.now();
-    sigma?.destroy();
-    three?.destroy();
-    sigma = null;
-    three = null;
-    handle = null;
-    const all = graph();
-    const subset = { ...all, edges: all.edges.filter((edge) => {
-      const original = edgesById.get(edge.id)!;
-      const kind = input.v2Prepared ? original.attested_by as "attested" | "exploratory" : relationClass(original, nodesById);
-      return input.v2Prepared ? axes.reading !== "attested" || kind === "attested" : relationVisible(kind, axes.reading);
-    }) };
-    const anchors = restrictAnchors(fullAnchor(axes), visible);
+  /** The edges the drawing shows for one node subset: reading-allowed relations whose both
+   * endpoints are in the subset — exactly the set the mounted graph's subgraph would keep. */
+  const resolveDrawnEdges = (records: readonly ReviewEdge[], ids: ReadonlySet<string>): readonly ReviewEdge[] =>
+    records.filter((edge) => ids.has(edge.source) && ids.has(edge.target) && readingAllows(edge));
+  /** The presentation edge record for one drawn relation: colour category, opacity and width
+   * derived from the relation record and the axes alone — never from the subset, which is why an
+   * in-place LOD change only ever needs entries for edges that were not drawn before. */
+  const presentationEdge = (edge: ReviewEdge, palette: PaletteValues) => {
+    const exploratory = (input.v2Prepared ? edge.attested_by : relationClass(edge, nodesById)) === "exploratory";
+    const relation = edge.v2 as import('./v2-relations.ts').LiftedRelation | undefined;
+    const coMembership = Boolean(input.v2Prepared && relation?.type === 'co_membership');
+    const containment = Boolean(input.v2Prepared && relation?.type === 'contains');
+    const category = classifyEdgeCategory(exploratory, containment);
+    // In Indra the pearls carry the structure: unselected semantic arcs recede (thinner, fainter) so rims and names read.
+    const indraDim = axes.organization === 'indra' ? indraArcPresentation(axes.projection, exploratory) : null;
+    return { category,
+      // Width is never the only signal: exploratory reads through its halo and flow, not through extra thickness.
+      opacityPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE
+        * (exploratory ? 0.9 : coMembership ? 0.62 : containment ? 0.5 : axes.reading === 'attested' ? 0.68 : 0.36)
+        * (indraDim?.opacityFactor ?? 1))
+        : axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
+      widthPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE
+        * (coMembership ? Math.min(1.4, (relation?.width ?? 1) * 0.75) : containment ? 0.8 : 1)
+        * (indraDim?.widthFactor ?? 1))
+        : SCENE_PERMILLE_SCALE,
+      ...(axes.colour === "bw" && input.v2Prepared ? { tintSrgb: [0.64, 0.64, 0.64] as const }
+        : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
+    } as const;
+  };
+  /** D-072 R2: the whole drawing of the current drawn subset — presentation maps, morphology
+   * input and geometry — derived from view state only. mount() and updateVisibleSubset() both
+   * build through this one path, so an in-place LOD swap and a remount of the same subset derive
+   * identical pixels. `anchors` is the mounted anchor map; only drawn ids are ever read. */
+  function buildDrawnScene(anchors: ReadonlyMap<string, Coordinates>) {
     const palette = axes.colour === "custom" ? customPalette : PALETTES[axes.colour];
-    container.style.backgroundColor = palette.background;
-    morphologyInteraction.containerColor = palette.container;
     const openContainers = new Set(input.v2Prepared && axes.organization === "indra"
-      ? (input.layoutContainers ?? []).filter((container) => container.open !== false).map((container) => container.id) : []);
+      ? (layoutContainers ?? []).filter((container) => container.open !== false).map((container) => container.id) : []);
+    const containers = layoutContainers && axes.organization === "indra" ? layoutContainers : undefined;
     const presentation = {
       morphologyLanguage: "distinct" as const,
       nativeLabels: false,
       windowGeometryFromAnchors: true,
-      ...(input.layoutContainers && axes.organization === "indra" ? { containers: input.layoutContainers } : {}),
+      ...(containers ? { containers } : {}),
       emphasisIds: emphasis,
       appearance,
-      edges: new Map(subset.edges.map((edge) => {
-        const original = edgesById.get(edge.id)!;
-        const exploratory = (input.v2Prepared ? original.attested_by : relationClass(original, nodesById)) === "exploratory";
-        const relation = original.v2 as import('./v2-relations.ts').LiftedRelation | undefined;
-        const coMembership = Boolean(input.v2Prepared && relation?.type === 'co_membership');
-        const containment = Boolean(input.v2Prepared && relation?.type === 'contains');
-        const category = classifyEdgeCategory(exploratory, containment);
-        // In Indra the pearls carry the structure: unselected semantic arcs recede (thinner, fainter) so rims and names read.
-        const indraDim = axes.organization === 'indra' ? indraArcPresentation(axes.projection, exploratory) : null;
-        return [edge.id, { category,
-          // Width is never the only signal: exploratory reads through its halo and flow, not through extra thickness.
-          opacityPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE
-            * (exploratory ? 0.9 : coMembership ? 0.62 : containment ? 0.5 : axes.reading === 'attested' ? 0.68 : 0.36)
-            * (indraDim?.opacityFactor ?? 1))
-            : axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
-          widthPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE
-            * (coMembership ? Math.min(1.4, (relation?.width ?? 1) * 0.75) : containment ? 0.8 : 1)
-            * (indraDim?.widthFactor ?? 1))
-            : SCENE_PERMILLE_SCALE,
-          ...(axes.colour === "bw" && input.v2Prepared ? { tintSrgb: [0.64, 0.64, 0.64] as const }
-            : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
-        }] as const;
-      })),
+      edges: new Map(drawnEdges.map((edge) => [edge.id, presentationEdge(edge, palette)] as const)),
       nodes: new Map(
         input.data.nodes
           .filter((node) => visible.has(node.id))
@@ -859,7 +891,7 @@ export const createProductView: CreateProductView = async (input) => {
         const position = anchors.get(id);
         return position ? [{ id, position, radius: value.radiusPx ?? value.corePermille * 8 / SCENE_PERMILLE_SCALE }] : [];
       }),
-      edges: subset.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
+      edges: drawnEdges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
         // The drawer applies the presentation width factor; the geometry carries the unit body width.
         width: 1 })),
       colonies: [...colonyMembers].map(([id, members]) => {
@@ -869,12 +901,37 @@ export const createProductView: CreateProductView = async (input) => {
           z: positions.reduce((s, p) => s + p.z, 0) / positions.length };
         return { id, members, center };
       }),
-      containers: presentation.containers ?? [],
+      containers: containers ?? [],
     };
+    const geometry = buildMorphologyGeometry(axes.morphology, morphologyInput.nodes, morphologyInput.edges,
+      morphologyInput.colonies, appearance.curvature, morphologyInput.containers);
+    return { palette, presentation, morphologyInput, geometry };
+  }
+  function mount() {
+    const began = performance.now();
+    sigma?.destroy();
+    three?.destroy();
+    sigma = null;
+    three = null;
+    handle = null;
+    // D-072 R2: the drawn subset is resolved once per mount (and once per in-place update) — the
+    // reading-allowed edges whose both endpoints are visible, the exact set the previous
+    // subgraph-plus-reading filter produced.
+    drawnEdges = resolveDrawnEdges(input.data.edges, visible);
+    drawnEdgeIds = new Set(drawnEdges.map((edge) => edge.id));
+    if (lodMode) for (const id of drawnEdgeIds) mountedEdgeIds.add(id);
+    // The mounted graph: in LOD mode every disclosed node stays mounted — picking, witnesses and
+    // style coverage for any future subset; otherwise exactly the visible subset as before. The
+    // mounted edges are the drawn subset either way.
+    const all = subgraph(axes.organization === "indra" ? prepared.indraGraph : prepared.flatGraph, lodMode ? mountedIds : visible);
+    const subset = { ...all, edges: all.edges.filter((edge) => drawnEdgeIds.has(edge.id)) };
+    const anchors = restrictAnchors(fullAnchor(axes), lodMode ? mountedIds : visible);
+    const { palette, presentation, morphologyInput, geometry } = buildDrawnScene(anchors);
+    container.style.backgroundColor = palette.background;
+    morphologyInteraction.containerColor = palette.container;
     morphologyInteraction.focusIds = new Set([...(emphasis ?? []), ...(selected ? [selected] : [])]);
     const sharedPresentation = { ...presentation, morphologyInput, morphologyInteraction,
-      morphologyGeometry: buildMorphologyGeometry(axes.morphology, morphologyInput.nodes, morphologyInput.edges,
-        morphologyInput.colonies, appearance.curvature, morphologyInput.containers) };
+      morphologyGeometry: geometry };
     const renderOptions = {
       ...options,
       ...(axes.organization === 'indra' ? { calibration: { ...DEFAULT_CALIBRATION,
@@ -889,12 +946,17 @@ export const createProductView: CreateProductView = async (input) => {
     // Each renderer derives its own first camera; framing below then works in whatever convention it uses.
     if (axes.projection === "2d") sigma = mount2d(container, subset, renderOptions, undefined, undefined, anchors);
     else {
-      // Supplied anchors already contain the bounds; skip a provisional full scene build.
-      const frame = anchors.size ? resolvedNodeBounds([...anchors.values()]) : undefined;
+      // Supplied anchors already contain the bounds; skip a provisional full scene build. In LOD
+      // mode the provisional frame covers the drawn subset, exactly what a non-LOD mount would fit.
+      const drawnAnchors = lodMode ? restrictAnchors(anchors, visible) : anchors;
+      const frame = drawnAnchors.size ? resolvedNodeBounds([...drawnAnchors.values()]) : undefined;
       three = mount3d(container, subset, renderOptions, frame, undefined, anchors);
       three.setCameraKind("perspective");
     }
     handle = (sigma ?? three)!;
+    drawnGeometry = geometry;
+    lastNodeMarks = new Map([...presentation.nodes].map(([id, value]) =>
+      [id, { glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined, radiusPx: value.radiusPx }]));
     // D-072 P1a: the flow overlay draws with the same geometry, projector and style the main pass
     // uses — the geometry this view built for both renderers, the live projector the mounted
     // renderer answers with (2D: Sigma's viewport mapping and size scale; 3D: the review pose's
@@ -929,17 +991,17 @@ export const createProductView: CreateProductView = async (input) => {
       sigma?.setEmphasis(emphasis);
       three?.setEmphasis(emphasis);
     }
-    if (selected && (subset.nodes.some((n) => n.id === selected) || subset.edges.some((e) => e.id === selected)))
+    if (selected && (visible.has(selected) || drawnEdgeIds.has(selected)))
       handle.setSelection(selected);
     const saved = cameras.get(cameraKey());
     if (saved && validCamera(saved)) handle.restoreCameraState(saved);
     else {
       if (three && input.v2Prepared) handle.restoreCameraState({ ...handle.readCameraState(), orbit: defaultObliqueOrbit() } as ReviewCameraState);
-      const initialPoints = subset.nodes.map((n) => anchors.get(n.id)!).filter(Boolean);
+      const initialPoints = input.data.nodes.filter((n) => visible.has(n.id)).map((n) => anchors.get(n.id)!).filter(Boolean);
       if (axes.projection === '3d' && axes.organization === 'flat')
         initialPoints.push(...framingVolumePoints(initialPoints));
-      if (axes.organization === 'indra' && input.layoutContainers) {
-        const outer = input.layoutContainers.find(item => item.level === 0);
+      if (axes.organization === 'indra' && layoutContainers) {
+        const outer = layoutContainers.find(item => item.level === 0);
         // The framing subjects include the whole drawn shell: in 3D the limb circle (radius ×
         // projectedWorldScale) reaches beyond the six axis supports under the oblique default
         // orbit, so the fit gets the shell's great-circle ring too.
@@ -968,17 +1030,112 @@ export const createProductView: CreateProductView = async (input) => {
     const camera = handle?.readCameraState();
     if (camera && validCamera(camera)) cameras.set(cameraKey(), camera);
   }
+  /** D-072 R2: apply one level-of-detail subset change in place. Everything the drawing shows is
+   * rebuilt through buildDrawnScene — the same derivation a remount of this subset would run — and
+   * pushed into the mounted renderers' distinct layers, the flow overlay and the label pass. The
+   * renderers, the camera, the flow clock and every other frame of the page's state are not
+   * touched. Returns false when the update cannot land in place; the caller remounts then. */
+  function applyVisibleSubset(update: VisibleSubsetUpdate): boolean {
+    if (!lodMode || destroyed || handle === null || drawnGeometry === null) return false;
+    for (const id of update.visibleNodeIds) if (!mountedIds.has(id)) return false;
+    const began = performance.now();
+    visible = new Set(update.visibleNodeIds);
+    // The page sends the relation records of the whole drawn set; the view keeps its own lookup
+    // (select and the presentation builder read records, not ids) and resolves the drawn subset
+    // through the same membership-plus-reading rule a mount applies.
+    const records = update.edges.map((edge) => ({
+      id: edge.id, source: edge.source, target: edge.target, type: edge.type,
+      attested_by: edge.class, weight: "count" in edge ? edge.count : 1,
+      evidence_ids: [], v2: edge,
+    }) as ReviewEdge);
+    for (const edge of records) edgesById.set(edge.id, edge);
+    if (update.containers) layoutContainers = update.containers;
+    if (update.labelBudget !== undefined) labelBudget = update.labelBudget;
+    drawnEdges = resolveDrawnEdges(records, visible);
+    drawnEdgeIds = new Set(drawnEdges.map((edge) => edge.id));
+    // A selection the new subset no longer draws is dropped, exactly as a remount would not
+    // restore it; emphasis survives (it is the page's, not the subset's).
+    if (selected && !visible.has(selected) && !drawnEdgeIds.has(selected)) {
+      selected = null;
+      handle.clearSelection();
+      morphologyInteraction.focusIds = new Set([...(emphasis ?? [])]);
+    }
+    const anchors = restrictAnchors(fullAnchor(axes), mountedIds);
+    const { presentation, morphologyInput, geometry } = buildDrawnScene(anchors);
+    drawnGeometry = geometry;
+    // The marker deltas: only ids whose glyph or radius changed against what the renderers' style
+    // maps last saw. In 2D the mounted graph's own node size follows the same flip so the pick
+    // radius stays honest; Sigma reschedules its render from the attribute event itself.
+    const nodeEntries = new Map<string, { glyph: import("../engine/presentation-options.ts").NodeGlyph | undefined; radiusPx: number | undefined }>();
+    for (const [id, value] of presentation.nodes) {
+      const mark = { glyph: value.glyph as import("../engine/presentation-options.ts").NodeGlyph | undefined, radiusPx: value.radiusPx };
+      const before = lastNodeMarks.get(id);
+      if (!before || before.glyph !== mark.glyph || before.radiusPx !== mark.radiusPx) {
+        nodeEntries.set(id, mark);
+        lastNodeMarks.set(id, mark);
+      }
+    }
+    for (const id of [...lastNodeMarks.keys()]) if (!presentation.nodes.has(id)) lastNodeMarks.delete(id);
+    if (sigma) for (const [id, entry] of nodeEntries)
+      if (entry.radiusPx !== undefined && sigma.model.graph.hasNode(id))
+        sigma.model.graph.setNodeAttribute(id, "size", entry.radiusPx);
+    // Entries for edges the mounted graph never held; an already-mounted edge's presentation
+    // derives from its record alone, so re-sending it would change nothing.
+    const edgeEntries = new Map<string, { color: string; presentation: ReturnType<typeof presentationEdge> }>();
+    for (const [id, value] of presentation.edges) if (!mountedEdgeIds.has(id))
+      edgeEntries.set(id, { color: value.tintSrgb ? rgbFromUnit(value.tintSrgb) : "rgb(220, 220, 220)", presentation: value });
+    const subsetUpdate: DistinctSubsetUpdate = { input: morphologyInput, geometry, nodeEntries, edgeEntries };
+    sigma?.updateVisibleSubset(subsetUpdate);
+    three?.updateVisibleSubset(subsetUpdate);
+    if (flowScene) flowScene = {
+      ...flowScene,
+      geometry,
+      style: {
+        ...flowScene.style,
+        nodes: new Map([...presentation.nodes].map(([id, value]) => [id, {
+          color: value.tintSrgb ? rgbFromUnit(value.tintSrgb) : "rgb(245, 245, 245)",
+          glyph: value.glyph,
+          radiusPx: value.radiusPx,
+        }])),
+        edges: new Map([...presentation.edges].map(([id, value]) => [id, {
+          color: value.tintSrgb ? rgbFromUnit(value.tintSrgb) : "rgb(220, 220, 220)",
+          presentation: value,
+        }])),
+      },
+    };
+    labelPass();
+    scheduleMarks.record("lod-in-place", began, performance.now() - began);
+    return true;
+  }
   const pointer = (event: PointerEvent) => {
     const r = container.getBoundingClientRect();
     return { x: event.clientX - r.left, y: event.clientY - r.top };
   };
+  /** D-072 R2: in LOD mode the mounted renderers hold the mount-time edge set, so edge picking
+   * hit-tests the drawn geometry itself — the segments the distinct canvas last drew, projected
+   * through the same live projector, with the same tolerance the Indra container rims use. */
+  function drawnEdgeAtPoint(p: { x: number; y: number }): string | null {
+    if (!drawnGeometry) return null;
+    let closest: { id: string; distance: number } | null = null;
+    for (const part of drawnGeometry.drawnSegments) {
+      for (let index = 1; index < part.samples.length; index++) {
+        const a = project(part.samples[index - 1]!), b = project(part.samples[index]!);
+        if (!Number.isFinite(a.x) || !Number.isFinite(a.y) || !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / Math.max(1e-9, dx * dx + dy * dy)));
+        const distance = Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy);
+        if (distance < 7 && (!closest || distance < closest.distance)) closest = { id: part.edgeId, distance };
+      }
+    }
+    return closest?.id ?? null;
+  }
   function pick(p: { x: number; y: number }) {
     if (!handle) return null;
     const node = handle.pickNodeAtPosition(p);
-    if (node) return { kind: "node" as const, id: node };
-    if (axes.organization === 'indra' && input.layoutContainers) {
+    if (node && (!lodMode || visible.has(node))) return { kind: "node" as const, id: node };
+    if (axes.organization === 'indra' && layoutContainers) {
       let closest: { id: string; distance: number } | null = null;
-      for (const outline of buildContainerGeometry(axes.morphology, input.layoutContainers)) {
+      for (const outline of buildContainerGeometry(axes.morphology, layoutContainers)) {
         // Only a sphere the view actually draws answers a click on its rim; a closed pearl below the
         // LOD is picked by its pearl marker instead.
         if (axes.projection === '3d') {
@@ -1003,7 +1160,7 @@ export const createProductView: CreateProductView = async (input) => {
       }
       if (closest) return { kind: 'node' as const, id: closest.id };
     }
-    const edge = handle.pickEdgeAtPoint(p.x, p.y);
+    const edge = lodMode ? drawnEdgeAtPoint(p) : handle.pickEdgeAtPoint(p.x, p.y);
     return edge ? { kind: "edge" as const, id: edge } : null;
   }
   const onMove = (event: PointerEvent) => {
@@ -1123,20 +1280,22 @@ export const createProductView: CreateProductView = async (input) => {
     // The framing solver and the settle animation move the camera programmatically: keep the
     // watch loop observing for their whole duration.
     noteCameraMotion();
-    const byId = new Map(current.readWorldAnchorWitnesses().map((p) => [p.id, p.position]));
+    const byId = new Map(throughVisible(current.readWorldAnchorWitnesses()).map((p) => [p.id, p.position]));
     // The layout already knows every visible position; right after a remount the renderer may not report them all yet.
     const layout = restrictAnchors(fullAnchor(axes), visible);
     const points = ids.map((id) => layout.get(id) ?? byId.get(id)).filter((p): p is Coordinates => p !== undefined && finitePoint(p));
     if (ids.length === visible.size && axes.projection === '3d' && axes.organization === 'flat')
       points.push(...framingVolumePoints(points));
-    if (ids.length === visible.size && axes.organization === 'indra' && input.layoutContainers) {
-      const outer = input.layoutContainers.find(item => item.level === 0);
+    if (ids.length === visible.size && axes.organization === 'indra' && layoutContainers) {
+      const outer = layoutContainers.find(item => item.level === 0);
       if (outer) points.push(...(axes.projection === '2d'
         ? framingSpherePoints(outer.center, outer.radius2d ?? outer.radius)
         : framingShellRingPoints(outer.center, outer.radius)));
     }
     if (ids.length === visible.size && three)
-      points.push(...three.readRelationGeometryWitnesses().map((relation) => relation.controlPoint).filter(finitePoint));
+      points.push(...(lodMode
+        ? three.readRelationGeometryWitnesses().filter((relation) => drawnEdgeIds.has(relation.id))
+        : three.readRelationGeometryWitnesses()).map((relation) => relation.controlPoint).filter(finitePoint));
     if (!points.length) return;
     const start = current.readCameraState();
     const startZ = three?.readReviewCameraPose().target[2] ?? 0;
@@ -1221,6 +1380,7 @@ export const createProductView: CreateProductView = async (input) => {
       if (selected && !visible.has(selected)) selected = null;
       mount();
     },
+    updateVisibleSubset(update) { return applyVisibleSubset(update); },
     setInsets(value) {
       insets = value;
       labelPass();
@@ -1239,7 +1399,9 @@ export const createProductView: CreateProductView = async (input) => {
       mount();
     },
     select(id) {
-      selected = id && (visible.has(id) || (axes.organization === 'indra' && input.layoutContainers?.some(item => item.id === id)) || graph().edges.some((e) => e.id === id)) ? id : null;
+      selected = id && (visible.has(id)
+        || (axes.organization === 'indra' && layoutContainers?.some(item => item.id === id))
+        || (lodMode ? drawnEdgeIds.has(id) : graph().edges.some((e) => e.id === id))) ? id : null;
       morphologyInteraction.focusIds = new Set([...(emphasis ?? []), ...(selected ? [selected] : [])]);
       redrawMorphology();
       if (handle) {
@@ -1261,7 +1423,7 @@ export const createProductView: CreateProductView = async (input) => {
     witness() {
       if (!handle) throw new Error("view destroyed");
       const r = container.getBoundingClientRect();
-      const mounted = handle.readWorldAnchorWitnesses();
+      const mounted = throughVisible(handle.readWorldAnchorWitnesses());
       const radii = new Map(handle.readNodeFootprintWitnesses().map(footprint => [footprint.id, footprint.coreRadiusPx]));
       const nodeViewport = Object.fromEntries(
         mounted.map(({ id, position }) => {

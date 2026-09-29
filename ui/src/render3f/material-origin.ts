@@ -114,7 +114,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
   ["distinct-overlay.ts", new Map([
     ["#engine/contract.ts", new Set(["Coordinates"])],
     ["#engine/morphology-geometry.ts", new Set(["buildMorphologyGeometry"])],
-    ["#render-common/morphology-canvas.ts", new Set(["DENSE_SCENE_THRESHOLD", "drawMorphologyCanvas"])],
+    ["#render-common/morphology-canvas.ts", new Set(["DENSE_SCENE_THRESHOLD", "DistinctSubsetUpdate", "drawMorphologyCanvas"])],
     ["#engine/presentation-options.ts", new Set(["AppearanceOptions", "EdgePresentation", "NodeGlyph", "PresentationOptions", "DEFAULT_APPEARANCE"])],
     ["#engine/morphology.ts", new Set(["Morphology"])],
     ["#render3f/buffers.ts", new Set(["tokenToSrgb"])],

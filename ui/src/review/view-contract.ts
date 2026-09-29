@@ -132,6 +132,11 @@ export type ViewInput = {
   readonly layoutContainers?: readonly import("./layout-v2.ts").LayoutContainer[];
   /** The page's current filter result; positions never move because of a filter. */
   readonly visibleNodeIds: ReadonlySet<string>;
+  /** D-072 R2: when present, the view mounts in level-of-detail mode — every node of `data` stays
+   * mounted for picking and style coverage, `visibleEdgeIds` names the edges actually drawn, and
+   * a later LOD band or density change is applied in place through `updateVisibleSubset` instead
+   * of a remount. Absent (the main mode), the view mounts exactly the visible subset as before. */
+  readonly visibleEdgeIds?: ReadonlySet<string>;
   readonly axes: Axes;
   readonly insets: Insets;
   readonly text: (id: string) => NodeText;
@@ -148,10 +153,28 @@ export type ViewInput = {
   readonly labelBudget?: number;
 };
 
+/** One in-place level-of-detail change (D-072 R2): the new drawn node subset, the new drawn
+ * relations (records for every drawn edge, in the page's own lifted form), and the Indra
+ * containers mapped for that subset. The disclosed set, the arrangement and every axis are
+ * unchanged — those still remount. */
+export type VisibleSubsetUpdate = {
+  readonly visibleNodeIds: ReadonlySet<string>;
+  readonly edges: readonly import("./v2-relations.ts").LiftedRelation[];
+  readonly containers?: readonly import("./layout-v2.ts").LayoutContainer[];
+  /** The density's label allowance; absent keeps the mounted view's own. */
+  readonly labelBudget?: number;
+};
+
 export type ProductView = {
   /** Changes axes; remounts only when needed and restores selection, emphasis, filter and camera where meaningful. */
   setAxes(next: Partial<Axes>): Promise<void>;
   setVisible(nodeIds: ReadonlySet<string>): Promise<void>;
+  /** D-072 R2: swaps the drawn level-of-detail subset without remounting — the mounted renderers,
+   * the camera and the flow clock stay exactly as they are; only the drawn geometry, its style
+   * lookups and the labels are rebuilt from the same code path a remount would use. Returns false
+   * when the update cannot be applied in place (not in LOD mode, or the payload names nodes the
+   * mounted scene does not cover); the caller then remounts as before. */
+  updateVisibleSubset?(update: VisibleSubsetUpdate): boolean;
   setInsets(insets: Insets): void;
   setAppearance(value: AppearanceOptions): Promise<void>;
   /** Starts or stops the exploratory flow motion without remounting or touching the camera. */
