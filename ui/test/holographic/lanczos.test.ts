@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildSpectralGraph } from '../../src/holographic/adjacency.ts';
-import { DENSE_BENCHMARK_OPT_IN, denseLaplacian, solveDenseSymmetricEigen } from '../../src/holographic/dense.ts';
+import { DENSE_BENCHMARK_OPT_IN, DENSE_DEFAULT_MAX_N, denseLaplacian, solveDenseSymmetricEigen } from '../../src/holographic/dense.ts';
 import { lanczosRestartSize, solveSpectrum, type LanczosConverged, type LanczosOutcome, type LanczosRefusal } from '../../src/holographic/lanczos.ts';
 import { largestEntryIndex } from '../../src/holographic/linear-algebra.ts';
 import { cycleGraph, combineGraphs, completeGraph, pathGraph, ringLatticeGraph, starGraph, weakBridgeGraph } from './fixtures.ts';
@@ -258,6 +258,58 @@ test('invalid options refuse as invalid-input', () => {
   assert.equal(refusal(solveSpectrum(graph, { k: 1.5 })).code, 'invalid-input');
   assert.equal(refusal(solveSpectrum(graph, { tolerance: 0 })).code, 'invalid-input');
   assert.equal(refusal(solveSpectrum(graph, { restartSize: 2 })).code, 'invalid-input');
+});
+
+/** Negative control: a connected 174-node graph with
+ * restartSize 173 used to reach the dense solver at n = 173 (above its default ceiling) and
+ * throw; it must instead refuse typed, naming both numbers, identically on every repeat. */
+test('a restart size above the dense ceiling refuses typed instead of reaching the dense solver', () => {
+  const graph = pathGraph(DENSE_DEFAULT_MAX_N + 2); // connected: effective order 173
+  const refused = refusal(solveSpectrum(graph, { seed: 'ceiling', restartSize: DENSE_DEFAULT_MAX_N + 1 }));
+  assert.equal(refused.code, 'restart-size-above-dense-ceiling');
+  assert.ok(refused.message.includes(`restartSize ${String(DENSE_DEFAULT_MAX_N + 1)}`), refused.message);
+  assert.ok(refused.message.includes(`DENSE_DEFAULT_MAX_N = ${String(DENSE_DEFAULT_MAX_N)}`), refused.message);
+  assert.equal(refused.restartsUsed, 0);
+  assert.deepEqual([...refused.cycles], []);
+  assert.equal(refused.componentCount, 1);
+  const repeat = refusal(solveSpectrum(graph, { seed: 'ceiling', restartSize: DENSE_DEFAULT_MAX_N + 1 }));
+  assert.equal(repeat.code, refused.code);
+  assert.equal(repeat.message, refused.message);
+  assert.equal(repeat.requestedModes, refused.requestedModes);
+});
+
+test('a restart size at the dense ceiling still solves: the 174-node path matches its analytic spectrum', () => {
+  const n = DENSE_DEFAULT_MAX_N + 2;
+  const result = converged(solveSpectrum(pathGraph(n), { seed: 'ceiling-ok', restartSize: DENSE_DEFAULT_MAX_N }));
+  assert.equal(result.restartSize, DENSE_DEFAULT_MAX_N);
+  assert.ok(result.peakBasisSize <= DENSE_DEFAULT_MAX_N);
+  assert.ok(result.relativeResidualMax <= 1e-8);
+  assert.ok(result.orthogonalityDefect <= 1e-8);
+  // Path Laplacian spectrum: lambda_j = 2 - 2 cos(pi j / n), j = 0..n-1 (analytic).
+  for (let j = 1; j <= result.requestedModes; j += 1) {
+    assert.ok(Math.abs(result.eigenvalues[j]! - (2 - 2 * Math.cos((Math.PI * j) / n))) <= 1e-8, `mode ${j}`);
+  }
+});
+
+test('a large k whose default restart size exceeds the dense ceiling refuses typed; the boundary k still solves', () => {
+  const graph = pathGraph(DENSE_DEFAULT_MAX_N + 2); // effective order 173
+  const oversizedK = (DENSE_DEFAULT_MAX_N - 8) / 2 + 1; // 2k + 8 = 174 > 172
+  assert.ok(lanczosRestartSize(graph.size - graph.componentCount, oversizedK) > DENSE_DEFAULT_MAX_N);
+  const refused = refusal(solveSpectrum(graph, { seed: 'ceiling-k', k: oversizedK }));
+  assert.equal(refused.code, 'restart-size-above-dense-ceiling');
+  assert.ok(refused.message.includes('the default restart size'), refused.message);
+  assert.ok(refused.message.includes(String(DENSE_DEFAULT_MAX_N + 1)), refused.message);
+  assert.ok(refused.message.includes(`DENSE_DEFAULT_MAX_N = ${String(DENSE_DEFAULT_MAX_N)}`), refused.message);
+  assert.equal(refused.requestedModes, oversizedK);
+  const repeat = refusal(solveSpectrum(graph, { seed: 'ceiling-k', k: oversizedK }));
+  assert.equal(repeat.code, refused.code);
+  assert.equal(repeat.message, refused.message);
+  // The largest k whose default restart lands exactly on the ceiling is still served.
+  const boundaryK = (DENSE_DEFAULT_MAX_N - 8) / 2;
+  const boundary = converged(solveSpectrum(graph, { seed: 'ceiling-k-boundary', k: boundaryK }));
+  assert.equal(boundary.restartSize, DENSE_DEFAULT_MAX_N);
+  assert.equal(boundary.requestedModes, boundaryK);
+  assert.ok(boundary.relativeResidualMax <= 1e-8);
 });
 
 /** Tied eigenspaces are only defined up to rotation, so the cluster projector is compared. */

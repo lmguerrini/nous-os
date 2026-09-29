@@ -11,12 +11,15 @@
  * modified Gram-Schmidt passes against every column (full reorthogonalisation). Breakdowns
  * (invariant subspaces, which tie multiplicities cause) inject deterministic SHA-256-seeded
  * noise vectors — this is how degenerate eigenvalues accumulate copies. The projected problem
- * H = V^T L V is formed explicitly and solved by the dense reference solver; wanted Ritz pairs
+ * H = V^T L V is formed explicitly and solved by the dense reference solver, whose fallback
+ * ceiling DENSE_DEFAULT_MAX_N therefore also bounds the restart size: an explicit or default
+ * restart size above it refuses typed instead of clamping; wanted Ritz pairs
  * are accepted only on direct residual checks. Thick restarts keep the k + 12 smallest Ritz
  * vectors (at most m - 8) and expand a fresh chain from the last kept vector, which discards
  * the high-end junk the chain has already resolved; nonconvergence, orthogonality failure,
- * negative eigenvalues or a zero-cluster ambiguity refuse with a typed code and diagnostics,
- * never a silent substitute.
+ * negative eigenvalues, a zero-cluster ambiguity, a restart size whose projected order
+ * exceeds the dense ceiling or a refusal of the projected dense solve refuse with a typed
+ * code and diagnostics, never a silent substitute.
  *
  * Work per restart: O(rm + r^2 n + r^3); peak memory O(m + r n + r^2). Deterministic by
  * (graph bytes, seed, options): identical inputs give identical outputs bit for bit. */
@@ -31,7 +34,7 @@ import {
   norm2,
   orthogonalityDefect,
 } from './linear-algebra.ts';
-import { solveDenseSymmetricEigen } from './dense.ts';
+import { DENSE_DEFAULT_MAX_N, solveDenseSymmetricEigen, type DenseEigenSolution } from './dense.ts';
 
 export const LANCZOS_SOLVER_VERSION = 'thick-restart-lanczos-fullreorth-v1';
 export const LANCZOS_DEFAULT_MODES = 24;
@@ -44,16 +47,21 @@ export const LANCZOS_BREAKDOWN_RELATIVE_TOLERANCE = 1e-11;
 
 export type LanczosRefusalCode =
   | 'invalid-input'
+  | 'restart-size-above-dense-ceiling'
   | 'injection-failure'
   | 'nonconvergence'
   | 'orthogonality-failure'
   | 'negative-eigenvalue'
-  | 'component-count-mismatch';
+  | 'component-count-mismatch'
+  | 'projected-dense-solve-refused';
 
 export interface LanczosOptions {
   /** Wanted nontrivial modes; clamped to min(k, n - c). Default 24. */
   readonly k?: number;
-  /** Krylov restart size r; default min(n - c, max(2k + 8, 96)). */
+  /** Krylov restart size r; default min(n - c, max(2k + 8, 96)). An explicit or default
+   * restart size above DENSE_DEFAULT_MAX_N (the projected Ritz problem is dense-solved)
+   * refuses typed `restart-size-above-dense-ceiling` and is never clamped to the ceiling;
+   * at or below the ceiling it is still clamped to the effective (complement) dimension. */
   readonly restartSize?: number;
   readonly maxRestarts?: number;
   /** Relative residual tolerance on max(1, ||L||_2 Gershgorin bound). Default 1e-8. */
@@ -186,7 +194,20 @@ export function solveSpectrum(graph: SpectralGraph, options: LanczosOptions = {}
   if (options.restartSize !== undefined && (!Number.isInteger(options.restartSize) || options.restartSize < k + 1)) {
     return refuse('invalid-input', `restartSize ${String(options.restartSize)} cannot hold k=${String(k)} modes`);
   }
-  const r = Math.min(options.restartSize ?? lanczosRestartSize(nEff, k), nEff);
+  // The projected m x m Ritz problem is dense-solved, so its order is held at or below the
+  // dense fallback ceiling DENSE_DEFAULT_MAX_N (dense.ts size policy): an explicit or default
+  // restart size above it refuses typed, naming both numbers, and is never clamped silently.
+  const requestedRestart = options.restartSize ?? lanczosRestartSize(nEff, k);
+  if (requestedRestart > DENSE_DEFAULT_MAX_N) {
+    return refuse(
+      'restart-size-above-dense-ceiling',
+      `${options.restartSize === undefined ? 'the default restart size' : 'restartSize'} ${String(requestedRestart)} ` +
+        `exceeds the dense ceiling DENSE_DEFAULT_MAX_N = ${String(DENSE_DEFAULT_MAX_N)}; the projected Ritz problem of ` +
+        `that order would be solved by the dense reference solver above its fallback ceiling, and an above-ceiling ` +
+        `restart size is never clamped silently`,
+    );
+  }
+  const r = Math.min(requestedRestart, nEff);
 
   // Exact zero cluster: component indicators have disjoint supports, so they are exactly
   // orthogonal; normalising each is a complete orthonormalisation of the null space.
@@ -284,7 +305,19 @@ export function solveSpectrum(graph: SpectralGraph, options: LanczosOptions = {}
         if (row !== col) hValues[col + row * m] = value;
       }
     }
-    const projected = solveDenseSymmetricEigen({ n: m, values: hValues });
+    // Defence in depth: the ceiling validation above already holds m at or below
+    // DENSE_DEFAULT_MAX_N, but any dense refusal here (size policy, nonfinite entries, sweep
+    // nonconvergence) is still translated into a typed LanczosRefusal, never a throw.
+    let projected: DenseEigenSolution;
+    try {
+      projected = solveDenseSymmetricEigen({ n: m, values: hValues });
+    } catch (error) {
+      return refuse(
+        'projected-dense-solve-refused',
+        `the projected ${String(m)}x${String(m)} Ritz eigenproblem was refused by the dense solver: ${error instanceof Error ? error.message : String(error)}`,
+        { cycles, restartsUsed },
+      );
+    }
 
     // Ritz vectors for the k wanted pairs (residual-checked) plus the extra retained vectors
     // a thick restart keeps beyond k, bounded by the basis size.

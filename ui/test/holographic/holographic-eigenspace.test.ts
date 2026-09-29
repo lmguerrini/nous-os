@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildSpectralGraph, type SpectralGraph } from '../../src/holographic/adjacency.ts';
-import { DENSE_SYMMETRIC_SOLVER_VERSION } from '../../src/holographic/dense.ts';
+import { DENSE_DEFAULT_MAX_N, DENSE_SYMMETRIC_SOLVER_VERSION } from '../../src/holographic/dense.ts';
 import {
   spectralGeometry,
   type SpectralGeometryCoordinates,
@@ -246,6 +246,44 @@ test('the default backend follows the dense cap: path 172 solves dense, path 173
   const repeat = refusal(spectralGeometry(pathGraph(173), options('2d', { backend: 'dense' })));
   assert.equal(repeat.code, refused.code);
   assert.equal(repeat.resultDigest, refused.resultDigest);
+});
+
+/** Negative control: a connected 174-node graph with
+ * a Lanczos restartSize of 173 used to escape as an exception from both solveSpectrum and
+ * spectralGeometry; both must return their typed refusal states, identically on repeat. */
+test('a Lanczos restart size above the dense ceiling gives the typed no-coordinates solver-failure state, never a throw', () => {
+  const graph = pathGraph(DENSE_DEFAULT_MAX_N + 2);
+  const geometryOptions = {
+    dimension: '2d' as const,
+    snapshotDigest: SNAPSHOT,
+    domainDigest: DOMAIN,
+    backend: 'lanczos' as const,
+    lanczos: { restartSize: DENSE_DEFAULT_MAX_N + 1 },
+  };
+  const refused = refusal(spectralGeometry(graph, geometryOptions));
+  assert.equal(refused.code, 'solver-failure');
+  assert.equal(refused.solver.backend, 'lanczos');
+  assert.equal(refused.solver.solverVersion, LANCZOS_SOLVER_VERSION);
+  assert.ok(refused.message.includes('restart-size-above-dense-ceiling'), refused.message);
+  assert.ok(refused.message.includes(String(DENSE_DEFAULT_MAX_N + 1)), refused.message);
+  assert.ok(refused.message.includes(String(DENSE_DEFAULT_MAX_N)), refused.message);
+  assert.deepEqual([...refused.loadedNodeIds], []);
+  assert.equal(refused.eigenvalues.length, 0);
+  assert.ok(!('positions2' in refused) && !('positions3' in refused));
+  assert.match(refused.resultDigest, /^[0-9a-f]{64}$/);
+  const repeat = refusal(spectralGeometry(graph, geometryOptions));
+  assert.equal(repeat.code, refused.code);
+  assert.equal(repeat.message, refused.message);
+  assert.equal(repeat.resultDigest, refused.resultDigest);
+
+  // At the ceiling itself the same route still produces coordinates.
+  const solved = coordinates(spectralGeometry(graph, { ...geometryOptions, lanczos: { restartSize: DENSE_DEFAULT_MAX_N } }));
+  assert.equal(solved.solver.backend, 'lanczos');
+  assert.equal(solved.solver.solverVersion, LANCZOS_SOLVER_VERSION);
+  assert.ok(Math.abs(solved.clusters[0]!.eigenvalueMin - (2 - 2 * Math.cos(Math.PI / (DENSE_DEFAULT_MAX_N + 2)))) <= 1e-8);
+  assert.deepEqual([...solved.loadedNodeIds], [...graph.nodeIds]);
+  const solvedRepeat = coordinates(spectralGeometry(graph, { ...geometryOptions, lanczos: { restartSize: DENSE_DEFAULT_MAX_N } }));
+  assert.equal(solvedRepeat.resultDigest, solved.resultDigest);
 });
 
 test('the geometry explanation carries the full inspector witness', () => {
