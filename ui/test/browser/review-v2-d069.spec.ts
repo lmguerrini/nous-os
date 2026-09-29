@@ -23,7 +23,8 @@ test('D-069 v2 disclosure, search, details, readings and provenance',async({page
   const withPassages=await page.evaluate(()=>(window as any).__d067.disclosure());expect(withPassages.counts[5]).toBeGreaterThan(0);
   await page.evaluate(()=>(window as any).__d067.undo());expect((await page.evaluate(()=>(window as any).__d067.disclosure())).counts[5]).toBe(0);
   await page.evaluate(()=>(window as any).__d067.redo());expect((await page.evaluate(()=>(window as any).__d067.disclosure())).counts[5]).toBeGreaterThan(0);
-  const title=(await page.locator('#details h2').first().getAttribute('title'))!;expect(title).toBe(proposal.title_full);
+  const title=(await page.locator('#details h2').first().getAttribute('title'))!;
+  const indexTitle=await page.evaluate(async id=>{const n=(await fetch('/api/graph/index').then(r=>r.json())).nodes.find((x:any)=>x.id===id);return n?.title_full??n?.title;},proposal.id);expect(title).toBe(indexTitle);
   await page.locator('#search').fill(title);await page.locator('#search-form button').click();
   await expect(page.locator('#v2-results button').first()).toBeVisible();
   await page.locator('#search').fill(`${title}…`);await page.locator('#search-form button').click();
