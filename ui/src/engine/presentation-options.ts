@@ -1,5 +1,6 @@
 /** Optional review-only appearance channels. Absence is the exact engine baseline. */
 import type { MorphologyGeometry, MorphologyInput } from "#engine/morphology-geometry.ts";
+import type { VisualRelation } from "../projection/contract-types.ts";
 export type NodePresentation = {
   readonly corePermille: number;
   /** Exact review v2 core radius before camera scaling, in CSS pixels. */
@@ -13,9 +14,7 @@ export type NodePresentation = {
  * as by colour. `filled` is the engine baseline.
  */
 export type NodeGlyph = "filled" | "ring" | "double-ring" | "hollow";
-/** The semantics every drawn relation must carry. `attested` covers deterministic and co-membership
- * relations, `exploratory` covers interpretive connections, `containment` covers Indra nesting. The
- * selected/focus state is an emphasis applied on top of one of these, never a fifth line kind. */
+/** Legacy edge categories remain for the current page until its typed input is mounted. */
 export type EdgeCategory = "attested" | "exploratory" | "containment";
 export type EdgePresentation = {
   readonly category: EdgeCategory;
@@ -23,6 +22,27 @@ export type EdgePresentation = {
   readonly widthPermille: number;
   readonly tintSrgb?: readonly [number, number, number];
 };
+/** A visual relation has no source-edge category, evidence, or semantic carrier. */
+export type StructuralVisualPresentation = {
+  readonly category: "structural-visual";
+  readonly relationKind: VisualRelation["kind"];
+  readonly opacityPermille: number;
+  readonly widthPermille: number;
+};
+
+/** Deterministic, neutral treatment for every non-semantic relation kind. */
+export function structuralVisualPresentation(relation: VisualRelation): StructuralVisualPresentation {
+  if (relation.semantic !== false) throw new TypeError("visual relation must be non-semantic");
+  switch (relation.kind) {
+    case "lifted-route": return { category: "structural-visual", relationKind: relation.kind,
+      opacityPermille: 680, widthPermille: 850 };
+    case "co-membership": return { category: "structural-visual", relationKind: relation.kind,
+      opacityPermille: 620, widthPermille: 1050 };
+    case "synthetic-containment": return { category: "structural-visual", relationKind: relation.kind,
+      opacityPermille: 500, widthPermille: 650 };
+    default: throw new TypeError("unknown visual relation kind");
+  }
+}
 /**
  * Live appearance controls of the review page. Every value is a multiplier where 1 is the engine
  * baseline, except `edgeOpacity` (absolute alpha factor), `labelSizePx` and `labelDensity`, which only

@@ -51,6 +51,13 @@ import {
   rgbFromUnit,
 } from "./render-schedule.ts";
 import type { RenderQuality } from "./render-schedule.ts";
+import type {
+  Dimension, PickResult, ProjectionResult, RenderVisibility, SemanticEdge, SemanticGraphSnapshot,
+  StyledProjection, VisualRelation,
+} from "../projection/contract-types.ts";
+import { validatePickResult, validateRenderVisibility, validateSemanticEdgeCarriers } from "../projection/contract.ts";
+import { structuralVisualPresentation } from "../engine/presentation-options.ts";
+import type { StructuralVisualPresentation } from "../engine/presentation-options.ts";
 import {
   classifyEdgeCategory,
   flowAnimatedEdgeCount,
@@ -63,6 +70,111 @@ import {
   releaseFlowMotion,
   setFlowNow,
 } from "#render-common/flow.ts";
+
+/** The opt-in product input keeps source edges and B9 visual IDs in separate collections. */
+export type ProductProjectionInput = Readonly<{
+  styled: StyledProjection;
+  visibility: RenderVisibility;
+  semanticEdges: readonly SemanticEdge[];
+  visualRelations: readonly VisualRelation[];
+  structuralPresentation: ReadonlyMap<string, StructuralVisualPresentation>;
+}>;
+
+/** A renderer adapter consumes the frozen result and mask without a ReviewEdge conversion. */
+export type ProductProjectionRenderer = {
+  readonly dimension: Dimension;
+  mount(input: ProductProjectionInput): void;
+  updateVisibleSubset(input: ProductProjectionInput): void;
+  pickAt(position: Readonly<{ x: number; y: number }>): PickResult | null;
+  destroy(): void;
+};
+
+function pickVisible(pick: PickResult, visibility: RenderVisibility): boolean {
+  switch (pick.kind) {
+    case "node": return visibility.nodeIds.has(pick.id);
+    case "semantic-edge": return visibility.semanticEdgeIds.has(pick.id);
+    case "visual-relation": return visibility.visualRelationIds.has(pick.visualId);
+    case "container": return visibility.containerIds.has(pick.visualId);
+    case "curve": return visibility.curveIds.has(pick.visualId);
+    case "field": return visibility.fieldIds.has(pick.visualId);
+  }
+}
+
+function assertProductProjectionDimension(dimension: Dimension, result: ProjectionResult): void {
+  if (result.coordinateState.kind === "no-coordinates") {
+    if (result.positions2 || result.positions3) throw new Error("refused projection has coordinates");
+  } else if (dimension === "2d" ? !result.positions2 || !!result.positions3
+    : !result.positions3 || !!result.positions2) {
+    throw new Error("projection dimension mismatch");
+  }
+}
+
+export function prepareProductProjection(
+  styled: StyledProjection, visibility: RenderVisibility, snapshot: SemanticGraphSnapshot,
+): ProductProjectionInput {
+  const result: ProjectionResult = styled.projection;
+  if (result.determinism.snapshotDigest !== snapshot.digest || result.fullLedger.snapshotDigest !== snapshot.digest ||
+      result.fullLedger.canonicalBytesDigest !== snapshot.rawLedger.canonicalBytesDigest)
+    throw new Error("projection source ledger mismatch");
+  validateRenderVisibility(result, visibility, snapshot);
+  const sourceEdges = new Map(snapshot.edges.map(edge => [edge.id, edge]));
+  if (sourceEdges.size !== snapshot.edges.length) throw new Error("duplicate source edge ID");
+  const sourceIds = new Set([...snapshot.nodes.map(node => node.id), ...sourceEdges.keys()]);
+  const semanticEdges = result.domainEdgeIds.map(id => {
+    const edge = sourceEdges.get(id);
+    if (!edge) throw new Error(`unknown source edge ${id}`);
+    return edge;
+  });
+  validateSemanticEdgeCarriers(semanticEdges, result, snapshot);
+  const visualIds = new Set<string>();
+  const structuralPresentation = new Map<string, StructuralVisualPresentation>();
+  for (const relation of result.visualRelations) {
+    if (!relation.visualId.startsWith("visual:") || sourceIds.has(relation.visualId) ||
+        visualIds.has(relation.visualId) || relation.semantic !== false ||
+        !result.domainNodeIds.includes(relation.source) || !result.domainNodeIds.includes(relation.target) ||
+        new Set(relation.underlyingEdgeIds).size !== relation.underlyingEdgeIds.length ||
+        relation.underlyingEdgeIds.some(id => !sourceEdges.has(id)) ||
+        (relation.kind === "lifted-route" && relation.underlyingEdgeIds.length === 0))
+      throw new Error(`invalid visual relation ${relation.visualId}`);
+    visualIds.add(relation.visualId);
+    structuralPresentation.set(relation.visualId, structuralVisualPresentation(relation));
+  }
+  return { styled, visibility, semanticEdges, visualRelations: result.visualRelations, structuralPresentation };
+}
+
+/** B8 can opt in here; createProductView below remains the current page path. */
+export function mountProductProjection(
+  dimension: Dimension, styled: StyledProjection, visibility: RenderVisibility,
+  snapshot: SemanticGraphSnapshot,
+  renderers: Readonly<Record<Dimension, () => ProductProjectionRenderer>>,
+): Readonly<{ updateVisibleSubset(styled: StyledProjection, visibility: RenderVisibility,
+  snapshot: SemanticGraphSnapshot): void;
+  pickAt(position: Readonly<{ x: number; y: number }>): PickResult | null; destroy(): void }> {
+  assertProductProjectionDimension(dimension, styled.projection);
+  const initial = prepareProductProjection(styled, visibility, snapshot);
+  const renderer = renderers[dimension]();
+  if (renderer.dimension !== dimension) throw new Error("projection renderer dimension mismatch");
+  renderer.mount(initial);
+  let disposed = false;
+  let current = initial;
+  return {
+    updateVisibleSubset(nextStyled, nextVisibility, nextSnapshot) {
+      if (disposed) throw new Error("projection renderer destroyed");
+      assertProductProjectionDimension(dimension, nextStyled.projection);
+      const next = prepareProductProjection(nextStyled, nextVisibility, nextSnapshot);
+      renderer.updateVisibleSubset(next);
+      current = next;
+    },
+    pickAt(position) {
+      if (disposed) return null;
+      const pick = renderer.pickAt(position);
+      if (!pick) return null;
+      validatePickResult(current.styled.projection, pick);
+      return pickVisible(pick, current.visibility) ? pick : null;
+    },
+    destroy() { if (!disposed) { disposed = true; renderer.destroy(); } },
+  };
+}
 
 /** On-screen radius of an Indra container's own marker; the container ring carries the node. */
 const INDRA_CONTAINER_MARKER_PX = 2.5;
