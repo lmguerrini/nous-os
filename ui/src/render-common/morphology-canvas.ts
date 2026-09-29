@@ -1033,8 +1033,7 @@ function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePa
   fillRibbon(paint.widthAt);
 }
 
-/** The travelling highlight of one exploratory paint: a bright head with a fading tail behind it,
- * uniform screen speed, restart fade-in (D-072 V13). Draws strokes only, in the caller's composite. */
+/** Fallback for contexts without image drawing (notably the small recording contexts in tests). */
 function drawEdgeTravellingHighlight(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   elapsedMilliseconds: number, speed: number, intensity: number): void {
   const { points, cumulative, totalPx, color, widthAt } = paint;
@@ -1070,6 +1069,162 @@ function drawEdgeTravellingHighlight(context: CanvasRenderingContext2D, paint: M
       context.beginPath(); context.moveTo(x0 + dx * a, y0 + dy * a); context.lineTo(x0 + dx * b, y0 + dy * b); context.stroke();
     }
   }
+}
+
+/** The browser's flow pass uses two shared paths, irrespective of the number of arcs. The moving
+ * head is a small cached radial sprite: its gradient is built on an offscreen canvas once per
+ * colour, width bucket and DPR, never on the flow context during a frame. */
+const FLOW_SPRITE_CACHE_CAP = 128;
+const flowHeadSprites = new Map<string, CanvasImageSource>();
+const flowTailSprites = new Map<string, OffscreenCanvas | HTMLCanvasElement>();
+function flowHeadSprite(color: string, widthPx: number, dpr: number): CanvasImageSource | null {
+  const widthBucket = Math.max(1, Math.min(8, Math.round(widthPx * 2) / 2));
+  const density = Math.max(1, Math.min(4, Math.round(dpr * 2) / 2));
+  const key = `${color}|${widthBucket}|${density}`;
+  const cached = flowHeadSprites.get(key);
+  if (cached) return cached;
+  const diameter = Math.max(18, Math.ceil(widthBucket * 7));
+  const canvas = typeof OffscreenCanvas !== "undefined"
+    ? new OffscreenCanvas(Math.ceil(diameter * density), Math.ceil(diameter * density))
+    : typeof document !== "undefined" ? document.createElement("canvas") : null;
+  if (!canvas) return null;
+  canvas.width = Math.ceil(diameter * density);
+  canvas.height = Math.ceil(diameter * density);
+  const brush = canvas.getContext("2d");
+  if (!brush) return null;
+  const cx = canvas.width / 2, cy = canvas.height / 2, radius = Math.min(cx, cy);
+  const glow = brush.createRadialGradient(cx, cy, 0, cx, cy, radius);
+  glow.addColorStop(0, rgba(color, 0.96));
+  glow.addColorStop(0.18, rgba(color, 0.84));
+  glow.addColorStop(0.42, rgba(color, 0.3));
+  glow.addColorStop(1, rgba(color, 0));
+  brush.fillStyle = glow;
+  brush.fillRect(0, 0, canvas.width, canvas.height);
+  if (flowHeadSprites.size >= FLOW_SPRITE_CACHE_CAP) flowHeadSprites.clear();
+  flowHeadSprites.set(key, canvas);
+  return canvas;
+}
+
+function flowTailSprite(color: string, tailPx: number, dpr: number): OffscreenCanvas | HTMLCanvasElement | null {
+  const length = Math.max(24, Math.ceil(tailPx / 4) * 4);
+  const density = Math.max(1, Math.min(4, Math.round(dpr * 2) / 2));
+  const key = `${color}|${length}|${density}`;
+  const cached = flowTailSprites.get(key);
+  if (cached) return cached;
+  const canvas = typeof OffscreenCanvas !== "undefined"
+    ? new OffscreenCanvas(Math.ceil(length * density), Math.ceil(12 * density))
+    : typeof document !== "undefined" ? document.createElement("canvas") : null;
+  if (!canvas) return null;
+  canvas.width = Math.ceil(length * density);
+  canvas.height = Math.ceil(12 * density);
+  const brush = canvas.getContext("2d");
+  if (!brush) return null;
+  const tail = brush.createLinearGradient(0, 0, canvas.width, 0);
+  tail.addColorStop(0, rgba(color, 0));
+  tail.addColorStop(0.18, rgba(color, 0.08));
+  tail.addColorStop(0.6, rgba(color, 0.22));
+  tail.addColorStop(1, rgba(color, 0.62));
+  brush.fillStyle = tail;
+  brush.fillRect(0, 2 * density, canvas.width, 8 * density);
+  brush.fillRect(0, 4.5 * density, canvas.width, 3 * density);
+  if (flowTailSprites.size >= FLOW_SPRITE_CACHE_CAP) flowTailSprites.clear();
+  flowTailSprites.set(key, canvas);
+  return canvas;
+}
+
+type FlowTrail = { readonly paint: MorphologyEdgePaint; readonly head: number; readonly tail: number };
+function flowPointAt(trail: FlowTrail, distance: number): { x: number; y: number } {
+  const { points, cumulative } = trail.paint;
+  for (let i = 0; i < cumulative.length - 1; i++) {
+    if (distance > cumulative[i + 1]! && i < cumulative.length - 2) continue;
+    const span = cumulative[i + 1]! - cumulative[i]!;
+    const t = span > 0 ? clamp((distance - cumulative[i]!) / span, 0, 1) : 0;
+    return { x: points[i]!.x + (points[i + 1]!.x - points[i]!.x) * t,
+      y: points[i]!.y + (points[i + 1]!.y - points[i]!.y) * t };
+  }
+  return points[points.length - 1]!;
+}
+
+/** Append the clipped section of an arc to the current shared path; one move and only the source
+ * polyline's actual bends, without the former per-segment subdivisions or per-arc strokes. */
+function appendFlowTail(context: CanvasRenderingContext2D, trail: FlowTrail, from: number, to: number): void {
+  const { points, cumulative } = trail.paint;
+  if (to <= from) return;
+  const first = flowPointAt(trail, from);
+  context.moveTo(first.x, first.y);
+  for (let i = 1; i < cumulative.length - 1; i++)
+    if (cumulative[i]! > from && cumulative[i]! < to) context.lineTo(points[i]!.x, points[i]!.y);
+  const last = flowPointAt(trail, to);
+  context.lineTo(last.x, last.y);
+}
+
+function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: readonly MorphologyEdgePaint[],
+  now: number, speed: number, intensity: number): void {
+  if (!paints.length) return;
+  // Recording contexts without drawImage keep the original stroke semantics.
+  if (typeof context.drawImage !== "function") {
+    for (const paint of paints) drawEdgeTravellingHighlight(context, paint, now, speed, intensity);
+    return;
+  }
+  const trails: FlowTrail[] = [];
+  for (const paint of paints) {
+    const tail = flowTailLengthPx(paint.totalPx);
+    const cycle = paint.totalPx + tail;
+    const head = flowHeadPositionPx(now, speed, cycle);
+    if (head > 0 && head - tail < paint.totalPx) trails.push({ paint, head, tail });
+  }
+  if (!trails.length) return;
+  const peak = flowHeadAlpha(intensity);
+  const previousAlpha = context.globalAlpha;
+  const canvas = context.canvas;
+  const bounds = canvas.getBoundingClientRect();
+  const dpr = bounds.width > 0 ? canvas.width / bounds.width : 1;
+  // At small counts the curved polyline reads best. Above 12 arcs, a cached gradient strip
+  // follows each tail chord: only one drawImage per tail, keeping the browser operation budget
+  // below the full-scene fraction even when all 30 selected arcs are luminous together.
+  if (paints.length <= 12) {
+    for (let band = 0; band < 2; band++) {
+      context.beginPath();
+      for (const trail of trails) {
+        const end = Math.min(trail.head, trail.paint.totalPx);
+        const reach = band === 0 ? trail.tail : trail.tail * 0.48;
+        appendFlowTail(context, trail, Math.max(0, trail.head - reach), end);
+      }
+      context.strokeStyle = band === 0 ? "rgb(178, 199, 235)" : "rgb(218, 230, 250)";
+      context.lineWidth = band === 0 ? 6 : 2.8;
+      context.globalAlpha = previousAlpha * peak * (band === 0 ? 0.22 : 0.48);
+      context.stroke();
+    }
+  } else for (const trail of trails) {
+    const from = Math.max(0, trail.head - trail.tail);
+    const to = Math.min(trail.head, trail.paint.totalPx);
+    if (to <= from) continue;
+    const first = flowPointAt(trail, from), last = flowPointAt(trail, to);
+    const dx = last.x - first.x, dy = last.y - first.y;
+    const chord = Math.hypot(dx, dy);
+    if (chord <= 0) continue;
+    const sprite = flowTailSprite(trail.paint.color, trail.tail, dpr);
+    if (!sprite) continue;
+    const sourceWidth = (to - from) / trail.tail * sprite.width;
+    const sourceX = (trail.tail - trail.head + from) / trail.tail * sprite.width;
+    context.globalAlpha = previousAlpha * peak * Math.min(1, trail.head / 14);
+    context.save();
+    context.translate(first.x, first.y);
+    context.rotate(Math.atan2(dy, dx));
+    context.drawImage(sprite, sourceX, 0, sourceWidth, sprite.height, 0, -6, chord, 12);
+    context.restore();
+  }
+  for (const trail of trails) {
+    if (trail.head > trail.paint.totalPx) continue;
+    const head = flowPointAt(trail, trail.head);
+    const width = trail.paint.widthAt((trail.paint.points.length - 1) / 2) * FLOW_PULSE_WIDTH_MULTIPLIER;
+    const sprite = flowHeadSprite(trail.paint.color, width, dpr);
+    if (!sprite) continue;
+    const diameter = Math.max(18, Math.ceil(Math.max(1, Math.min(8, Math.round(width * 2) / 2)) * 7));
+    context.globalAlpha = previousAlpha * peak * Math.min(1, trail.head / 14);
+    context.drawImage(sprite, head.x - diameter / 2, head.y - diameter / 2, diameter, diameter);
+  }
+  context.globalAlpha = previousAlpha;
 }
 
 /** The reduced-motion (and still-flow) exploratory cue: a static line whose brightness rises
@@ -1156,6 +1311,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // (drawFlowLayer); the static reduced-motion cue and the constant base stay in this pass.
     const inlineHighlights = (style.interaction?.flowLayer ?? "inline") === "inline";
     const now = flowNow();
+    const inlineFlowPaints: MorphologyEdgePaint[] = [];
     for (const paint of paints) {
       const [segmentStart, segmentEnd] = segmentEnds(paint.part);
       const startDegree = (segmentStart && neuralDegrees?.get(neuralEndpointKey(segmentStart))) ?? 1;
@@ -1175,13 +1331,21 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
           context.lineCap = "round";
           context.lineJoin = "round";
           if (animatedHere) {
-            drawEdgeTravellingHighlight(context, paint, now, appearance.flowSpeed, intensity);
+            inlineFlowPaints.push(paint);
           } else if (intensity > 0) {
             drawEdgeStaticCue(context, paint, intensity, gradientCapable);
           }
           context.globalCompositeOperation = previousComposite;
         }
       }
+    }
+    if (inlineFlowPaints.length) {
+      const previousComposite = context.globalCompositeOperation;
+      context.globalCompositeOperation = "lighter";
+      context.lineCap = "round";
+      context.lineJoin = "round";
+      drawTravellingHighlights(context, inlineFlowPaints, now, appearance.flowSpeed, intensity);
+      context.globalCompositeOperation = previousComposite;
     }
   }
   if (!simplified && geometry.morphology === "mycelium" && !testHook()?.hideEdges) {
@@ -1458,11 +1622,42 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
 
 // ---------------------------------------------------------------- D-072 separate flow layer
 
+type FlowPaintCache = {
+  readonly geometry: MorphologyGeometry;
+  readonly project: (point: Coordinates) => ProjectedPoint;
+  readonly style: MorphologyCanvasStyle;
+  readonly projection: "2d" | "3d";
+  readonly boundsWidth: number;
+  readonly boundsHeight: number;
+  readonly canvasWidth: number;
+  readonly canvasHeight: number;
+  readonly appearanceKey: string;
+  readonly hoverId: string | null | undefined;
+  readonly focusIds: ReadonlySet<string> | null | undefined;
+  readonly dimFocus: unknown;
+  readonly anchors: readonly number[];
+  readonly paints: readonly MorphologyEdgePaint[];
+  readonly animatedCount: number;
+};
+const flowPaintCaches = new WeakMap<CanvasRenderingContext2D, FlowPaintCache>();
+function flowProjectionAnchors(geometry: MorphologyGeometry,
+  project: (point: Coordinates) => ProjectedPoint): readonly number[] {
+  const nodes = geometry.nodes;
+  const anchors: number[] = [];
+  for (const index of [0, Math.floor(nodes.length / 2), nodes.length - 1]) {
+    const node = nodes[index];
+    if (!node) continue;
+    const point = project(node.position);
+    anchors.push(point.x, point.y, point.scale);
+  }
+  return anchors;
+}
+
 /**
  * The travelling flow highlights alone (D-072 V13 architecture): a small dedicated canvas can call
  * this every frame while the scene below stays painted, so the exploratory reading stops repainting
  * the whole graph. The caller owns the layer completely — sizing, the transform and the clear before
- * each call; this function only strokes the moving heads and tails of the exploratory relations the
+ * each call; this function only draws the moving heads and tails of the exploratory relations the
  * shared budget selected (same deterministic selection the inline pass would draw, so both layers
  * agree without coordination). Reads the shared flow clock (`setFlowNow`/`setFlowMotionAllowed`,
  * driven today by the product view's animation loop). Nothing else is drawn: no base lines, no halo
@@ -1480,19 +1675,33 @@ export function drawFlowLayer(context: CanvasRenderingContext2D, geometry: Morph
   if (!flowMotionAllowedNow() || !(appearance.flowIntensity > 0) || !(appearance.flowSpeed > 0)) return;
   const bounds = context.canvas.getBoundingClientRect();
   if (bounds.width === 0 || bounds.height === 0) return;
-  const contract = MORPHOLOGY_CONTRACT[geometry.morphology];
-  const somaFrames = geometry.morphology === "neural" ? neuralSomaFrames(geometry, project, style, contract, appearance) : null;
-  const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames);
-  const animatedEdges = selectAnimatedFlowEdges(geometry, style, project, bounds);
-  if (!animatedEdges.size) return;
+  const anchors = flowProjectionAnchors(geometry, project);
+  const appearanceKey = `${appearance.edgeWidth}|${appearance.edgeOpacity}|${appearance.nodeScale}`;
+  let cache = flowPaintCaches.get(context);
+  if (!cache || cache.geometry !== geometry || cache.project !== project || cache.style !== style
+    || cache.projection !== projection || cache.boundsWidth !== bounds.width || cache.boundsHeight !== bounds.height
+    || cache.canvasWidth !== context.canvas.width || cache.canvasHeight !== context.canvas.height
+    || cache.appearanceKey !== appearanceKey || cache.hoverId !== style.interaction?.hoverId
+    || cache.focusIds !== style.interaction?.focusIds || cache.dimFocus !== style.interaction?.dimFocus
+    || cache.anchors.length !== anchors.length || cache.anchors.some((value, index) => value !== anchors[index])) {
+    const contract = MORPHOLOGY_CONTRACT[geometry.morphology];
+    const somaFrames = geometry.morphology === "neural" ? neuralSomaFrames(geometry, project, style, contract, appearance) : null;
+    const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames);
+    const animatedEdges = selectAnimatedFlowEdges(geometry, style, project, bounds);
+    cache = { geometry, project, style, projection, boundsWidth: bounds.width, boundsHeight: bounds.height,
+      canvasWidth: context.canvas.width, canvasHeight: context.canvas.height, appearanceKey,
+      hoverId: style.interaction?.hoverId, focusIds: style.interaction?.focusIds,
+      dimFocus: style.interaction?.dimFocus, anchors,
+      paints: paints.filter(paint => paint.category === "exploratory" && animatedEdges.has(paint.edgeId)),
+      animatedCount: animatedEdges.size };
+    flowPaintCaches.set(context, cache);
+  } else setFlowAnimatedEdgeCount(cache.animatedCount);
+  if (!cache.paints.length) return;
   const now = flowNow();
   const previousComposite = context.globalCompositeOperation;
   context.globalCompositeOperation = "lighter";
   context.lineCap = "round";
   context.lineJoin = "round";
-  for (const paint of paints) {
-    if (paint.category !== "exploratory" || !animatedEdges.has(paint.edgeId)) continue;
-    drawEdgeTravellingHighlight(context, paint, now, appearance.flowSpeed, appearance.flowIntensity);
-  }
+  drawTravellingHighlights(context, cache.paints, now, appearance.flowSpeed, appearance.flowIntensity);
   context.globalCompositeOperation = previousComposite;
 }
