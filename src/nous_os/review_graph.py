@@ -11,7 +11,7 @@ import re
 import unicodedata
 
 SCHEMA = "nousos.review-graph/2"
-DISPLAY_LABEL_RULE = "d072-display-label/2"
+DISPLAY_LABEL_RULE = "d072-display-label/3"
 DOMAINS = ("atlasfield", "forge", "quillmap", "orchardline", "showcase", "dossier", "qrs", "meridian")
 SPECIFICITY = ("orchardline", "quillmap", "qrs", "forge", "dossier", "showcase", "atlasfield", "meridian")
 KIND_WEIGHT = {"DECISION": 2.0, "CONCEPT": 1.6, "REQUIREMENT": 1.4, "RELATIONSHIP": 1.4,
@@ -143,7 +143,7 @@ def assign_display_labels(items: list[dict], source: dict[str, str], parents: di
     for item in items:
         title = str(item.get("title") or "")
         if item["level"] <= 2:
-            label = title
+            label = shorten_title(title) if len(title) > 40 else title
         elif item["level"] == 4:
             label = shorten_title(source.get(item["id"], "")) if formula_title(title) else shorten_title(title)
         elif item["level"] == 3:

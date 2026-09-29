@@ -63,9 +63,9 @@ def test_build_determinism_and_provenance(tmp_path):
     assert any(e["type"] == "classified_in" for e in index["edges"])
     labels = {n["id"]: n["display_label"] for n in index["nodes"]}
     assert labels == {n["id"]: n["display_label"] for n in json.loads((tmp_path / "second/index.json").read_text())["nodes"]}
-    assert first["display_labels"]["rule"] == "d072-display-label/2"
+    assert first["display_labels"]["rule"] == "d072-display-label/3"
     assert first["display_labels"]["map_sha256"] == hashlib.sha256(encoded(labels)).hexdigest()
-    assert all(label and len(label) <= 60 for label in labels.values())
+    assert all(label and len(label) <= 40 for label in labels.values())
     assert all(not label.casefold().startswith(("messaggio del fondatore", "il fondatore", "senza titolo"))
                for label in labels.values())
 
@@ -117,6 +117,26 @@ def test_names_qualifiers_and_sibling_collisions():
     assert len(set(labels)) == 3
     assert all(label.startswith("Pietra calda nel giardino · ") for label in labels)
     assert all("proposal:" not in label and len(label) <= 40 for label in labels)
+
+
+def test_long_domain_and_entity_names_are_shortened_only_for_display():
+    nodes = [
+        {"id": "domain:invented", "level": 1, "parent": None,
+         "title": "Invented Astronomical Cartography Observatory"},
+        {"id": "entity:invented", "level": 2, "parent": "domain:invented",
+         "title": "Imaginary Intercontinental Botanical Archive"},
+        {"id": "domain:short", "level": 1, "parent": None, "title": "Short Domain"},
+        {"id": "entity:short", "level": 2, "parent": "domain:short", "title": "Short Entity"},
+    ]
+    original_titles = {node["id"]: node["title"] for node in nodes}
+    assign_display_labels(nodes, {}, {node["id"]: node for node in nodes})
+    labels = {node["id"]: node["display_label"] for node in nodes}
+    assert labels["domain:invented"] == shorten_title(original_titles["domain:invented"])
+    assert labels["entity:invented"] == shorten_title(original_titles["entity:invented"])
+    assert labels["domain:short"] == original_titles["domain:short"]
+    assert labels["entity:short"] == original_titles["entity:short"]
+    assert all(len(label) <= 40 for label in labels.values())
+    assert {node["id"]: node["title"] for node in nodes} == original_titles
 
 
 def test_collision_uses_parent_then_month_when_distinguishing():

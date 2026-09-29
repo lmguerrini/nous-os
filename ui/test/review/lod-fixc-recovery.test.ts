@@ -12,15 +12,20 @@ function unevenInput(level: "intermediate" | "near") {
     ...Array.from({ length: 2 }, (_, i) => ({ id: `b:${i}`, level: 3, importance: 2 - i })),
     { id: "c:0", level: 3, importance: 1 },
   ];
-  const community = (id: string) => id.startsWith("a:") ? "domain:a" : id.startsWith("b:") ? "domain:b" : "domain:c";
+  // Sort the shortest community first so the pre-fix round-robin reaches its missing
+  // principal while budget remains, reproducing the original out-of-range read.
+  const community = (id: string) => id.startsWith("c:") ? "community:a" : id.startsWith("b:") ? "community:b" : "community:c";
   return { nodes, level, budget: 10, pinned: new Set<string>(), focus: null, communityOf: community } as never;
 }
 
 test("the intermediate round-robin skips communities shorter than the current round", () => {
   for (const level of ["intermediate", "near"] as const) {
     const result = selectNodes(unevenInput(level));
-    assert.ok(result.rendered.length <= 10 || result.rendered.length > 0);
+    assert.ok(result.rendered.length <= 10);
     assert.ok(result.rendered.every((id: string) => typeof id === "string"));
+    for (const prefix of ["a:", "b:", "c:"]) {
+      assert.ok(result.rendered.some((id: string) => id.startsWith(prefix)), `community ${prefix} contributes a node`);
+    }
   }
 });
 
