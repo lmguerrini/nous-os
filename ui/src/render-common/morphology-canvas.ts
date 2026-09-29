@@ -350,6 +350,13 @@ export function stellarStarCoreRadiusPx(baseRadiusPx: number, degree: number): n
   return Math.min(basis, STELLAR_STAR_CORE_MIN_PX + (cap - STELLAR_STAR_CORE_MIN_PX) * Math.sqrt(reach));
 }
 
+/** Importance lights the opaque nucleus in both projections; a top hub approaches white. */
+export function stellarCoreLuminance(baseRadiusPx: number, degree: number): number {
+  const size = clamp((baseRadiusPx - 2) / (MORPHOLOGY_CONTRACT.stellar.node.maxRadiusPx - 2), 0, 1);
+  const connectivity = clamp(degree / STELLAR_STAR_HUB_FULL_DEGREE, 0, 1);
+  return 0.2 + 0.78 * Math.max(size, connectivity);
+}
+
 /** D-072 M1b arc windows (CSS px): intra-community arcs thin and discreet, inter-community
  * bridges slightly stronger, as the reference reads. The presentation's own width/opacity factors
  * modulate inside the window; the categories and exploratory styling are untouched. */
@@ -1094,9 +1101,9 @@ function flowHeadSprite(color: string, widthPx: number, dpr: number): CanvasImag
   if (!brush) return null;
   const cx = canvas.width / 2, cy = canvas.height / 2, radius = Math.min(cx, cy);
   const glow = brush.createRadialGradient(cx, cy, 0, cx, cy, radius);
-  glow.addColorStop(0, rgba(color, 0.96));
-  glow.addColorStop(0.18, rgba(color, 0.84));
-  glow.addColorStop(0.42, rgba(color, 0.3));
+  glow.addColorStop(0, rgba(color, 0.82));
+  glow.addColorStop(0.18, rgba(color, 0.68));
+  glow.addColorStop(0.42, rgba(color, 0.22));
   glow.addColorStop(1, rgba(color, 0));
   brush.fillStyle = glow;
   brush.fillRect(0, 0, canvas.width, canvas.height);
@@ -1121,9 +1128,9 @@ function flowTailSprite(color: string, tailPx: number, dpr: number): OffscreenCa
   if (!brush) return null;
   const tail = brush.createLinearGradient(0, 0, canvas.width, 0);
   tail.addColorStop(0, rgba(color, 0));
-  tail.addColorStop(0.18, rgba(color, 0.08));
-  tail.addColorStop(0.6, rgba(color, 0.22));
-  tail.addColorStop(1, rgba(color, 0.62));
+  tail.addColorStop(0.18, rgba(color, 0.05));
+  tail.addColorStop(0.6, rgba(color, 0.14));
+  tail.addColorStop(1, rgba(color, 0.38));
   brush.fillStyle = tail;
   brush.fillRect(0, 2 * density, canvas.width, 8 * density);
   brush.fillRect(0, 4.5 * density, canvas.width, 3 * density);
@@ -1599,6 +1606,11 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         context.arc(p.x, p.y, radius, 0, Math.PI * 2);
         context.fill();
       }
+    }
+    if (geometry.morphology === "stellar") {
+      const nucleus = brightenChannels(colourChannels(color), stellarCoreLuminance(basis, node.degree));
+      context.fillStyle = rgbaChannels(nucleus, 1);
+      context.beginPath(); context.arc(p.x, p.y, radius * 0.58, 0, Math.PI * 2); context.fill();
     }
     // A neural soma is one closed body. Semantic glyph rings apply only to the other morphologies.
     const glyph = geometry.morphology === "neural" ? "filled" : visual?.glyph ?? "filled";

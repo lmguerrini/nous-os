@@ -1,4 +1,5 @@
 /** Validated, renderer independent progressive disclosure for review graph v2. */
+import { ellipsizeText } from '../render-common/container-canvas.ts';
 export interface GraphNode {
   id: string;
   level: 1 | 2 | 3 | 4;
@@ -88,8 +89,13 @@ export function displayLabel(node: Pick<GraphNode, 'title' | 'display_label'>): 
   return node.display_label ?? node.title;
 }
 
+/** One display title shared by the node canvas and its selection panel. */
+export function compactDisplayLabel(node: Pick<GraphNode, 'title' | 'display_label'>): string {
+  return ellipsizeText(displayLabel(node), 33, text => [...text].length);
+}
+
 export function presentationText(node: Pick<GraphNode, 'title' | 'display_label' | 'title_full'>): { short: string; full: string } {
-  return { short: displayLabel(node), full: node.title_full };
+  return { short: compactDisplayLabel(node), full: node.title_full };
 }
 
 export async function loadGraphV2(fetcher: typeof fetch = fetch, base = ''): Promise<{ manifest: GraphManifest; index: GraphIndex }> {

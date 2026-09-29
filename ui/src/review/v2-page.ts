@@ -12,7 +12,7 @@ import type { V2Index, V2Node } from './v2-core.ts';
 import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, manualExpansionTiers, normalizeDensity, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
 import { lodRefreshDue } from './render-schedule.ts';
 import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
-import { labelBudgetOf } from './labels.ts';
+import { formatLabelCounts, labelBudgetOf } from './labels.ts';
 import { createProductView } from './product-view.ts';
 import { appendFlowLegend } from './legend.ts';
 import { buildNodePanel, buildRelationPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
@@ -793,6 +793,10 @@ export class V2Page {
             return 0;
         }
     }
+    private titleCount(): number {
+        try { return this.view?.witness().titleCount ?? 0; }
+        catch { return 0; }
+    }
     private focusMembers(id: string, nodes = this.visible().nodes): Set<string> {
         if (id === ABSOLUTE_CONTAINER_ID) return new Set(nodes.map(node => node.id));
         return focusMembers(nodes, this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested'), id);
@@ -1078,7 +1082,7 @@ export class V2Page {
         // density's allowance.
         line(controls, 'Nodi', `${formatCount(this.lodCounts.nodes.rendered)} di ${formatCount(this.lodCounts.nodes.available)} disponibili · ${formatCount(this.lodCounts.nodes.pinned)} fissati`);
         line(controls, 'Archi', `${formatCount(this.lodCounts.arcs.rendered)} di ${formatCount(this.lodCounts.arcs.available)} disponibili · ${formatCount(this.lodCounts.arcs.pinned)} fissati`);
-        line(controls, 'Etichette', `${formatCount(this.labelCount())} di ${formatCount(labelBudgetOf(this.density))}`);
+        line(controls, 'Etichette', formatLabelCounts(this.labelCount(), this.titleCount(), labelBudgetOf(this.density)));
         line(controls, 'Densità', { essential: 'Essenziale', balanced: 'Bilanciata', complete: 'Completa' }[this.density]);
         line(controls, 'Grafo', `${formatCount(this.index.nodes.filter(n => n.level !== 5).length)} nodi · limite ${V2_CAP}`);
         if (this.axes.projection === '3d') {

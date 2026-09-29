@@ -75,7 +75,7 @@ export function flowTailLengthPx(arcLengthPx: number): number {
 }
 /** Peak opacity on the separate layer at the default intensity. */
 export function flowHeadAlpha(intensity: number): number {
-  return 0.9 * Math.min(1, Math.max(0, intensity) / 0.6);
+  return 0.56 * Math.min(1, Math.max(0, intensity) / 0.6);
 }
 /** The restart fade-in covers this much head travel, in px. */
 export const FLOW_RESTART_FADE_PX = 14;

@@ -101,6 +101,8 @@ export type ViewWitness = {
   /** World coordinates of every visible node, in the layout's own space. */
   readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z: number }>>;
   readonly labels: readonly LabelWitness[];
+  /** Canvas container titles placed in the current label pass; labels retains its historical node-only meaning. */
+  readonly titleCount?: number;
   readonly selected: string | null;
   readonly emphasised: readonly string[];
   /** Indra windows as drawn (empty for Flat). */

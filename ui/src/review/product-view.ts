@@ -223,6 +223,7 @@ export const createProductView: CreateProductView = async (input) => {
   const redrawMorphology = () => (container.querySelector("canvas[data-morphology-canvas]") as
     (HTMLCanvasElement & { __morphRedraw?: () => void }) | null)?.__morphRedraw?.();
   let placed: LabelWitness[] = [];
+  let visibleTitleCount = 0;
   let frameId = 0;
   let hoverFrame = 0;
   let movingLabelFrame = 0;
@@ -417,7 +418,7 @@ export const createProductView: CreateProductView = async (input) => {
     // title placement, no DOM rebuild. The rest labels were dropped at motion start; this keeps
     // the layer empty through the whole drag at no cost.
     if (moving && !movingPassCandidates(labelVisible)) {
-      if (placed.length > 0 || layer.childElementCount > 0) { placed = []; layer.replaceChildren(); }
+      if (placed.length > 0 || layer.childElementCount > 0) { placed = []; visibleTitleCount = 0; layer.replaceChildren(); }
       scheduleMarks.record("label-pass-skip", performance.now(), 0);
       return;
     }
@@ -495,6 +496,7 @@ export const createProductView: CreateProductView = async (input) => {
     // fits the 190 px budget is never truncated by an estimate.
     const titleBounds = { width: container.clientWidth, height: container.clientHeight };
     const titlePlacements = movingIndra3d ? [] : placeContainerTitles([...pathById.values()], project, titleBounds, axes.projection, containerInteraction, discs, titleMeasure);
+    visibleTitleCount = titlePlacements.length;
     const titledContainerIds = new Set(titlePlacements.map(placement => placement.id));
     const footprintRadius = new Map(footprints.map(footprint => [footprint.id, footprint.coreRadiusPx]));
     const candidates = [];
@@ -577,7 +579,7 @@ export const createProductView: CreateProductView = async (input) => {
       left: placement.left - 4, top: placement.top - 4, width: placement.width + 8, height: placement.height + 8,
     }));
     const rims: LabelRim[] = [];
-    if (axes.organization === "indra" && !moving) for (const path of pathById.values()) {
+    if (axes.organization === "indra") for (const path of pathById.values()) {
       const center = project(path.center);
       const worldRadius = axes.projection === "2d" ? path.radius2d ?? path.radius : path.radius;
       const radius = worldRadius * projectedWorldScale(path.center, worldRadius, project);
@@ -606,7 +608,7 @@ export const createProductView: CreateProductView = async (input) => {
       ...candidate,
       text: shortLabelWithEllipsis({
         short: candidate.text,
-        full: fullText.get(candidate.id) ?? candidate.text,
+        full: input.v2Prepared ? candidate.text : fullText.get(candidate.id) ?? candidate.text,
         maxWidth: 180,
         measure: singleLineWidth,
       }),
@@ -708,6 +710,7 @@ export const createProductView: CreateProductView = async (input) => {
   // runs a forever rAF loop anymore: the flow layer above is the only always-on animation, and it
   // pauses whenever nothing can animate.
   const cameraWatch = { running: false, lastChangeMs: null as number | null, motionUntilMs: 0 };
+  const cameraFrameTimes: number[] = [];
   // The settle label pass (D-072 P1a): deferred to idle time so the camera-settle frame itself
   // stays light — one 100–340 ms hitch per interaction was exactly this pass running synchronously
   // at settle. `requestIdleCallback` with a timeout keeps it within ~220 ms even under load; the
@@ -794,6 +797,8 @@ export const createProductView: CreateProductView = async (input) => {
     const state = JSON.stringify(handle.readCameraState());
     if (state !== lastCamera) {
       lastCamera = state;
+      cameraFrameTimes.push(now);
+      if (cameraFrameTimes.length > 120) cameraFrameTimes.shift();
       cameraWatch.lastChangeMs = now;
       if (qualityGovernor.touch(now) === "moving") onQualityMoving();
       // Labels track the camera while it moves — tier-1 only, throttled to the interval, and
@@ -1328,6 +1333,7 @@ export const createProductView: CreateProductView = async (input) => {
     quality: () => morphologyInteraction.quality,
     flowFps: () => flowLoop.measuredFps,
     cameraWatchRunning: () => cameraWatch.running,
+    cameraFrames: () => cameraFrameTimes,
     marks: () => scheduleMarks.list(),
   };
   async function frameIds(ids: readonly string[], anchorFirst: boolean, marginPx = 32, fill = 0.9) {
@@ -1510,6 +1516,7 @@ export const createProductView: CreateProductView = async (input) => {
         nodeViewport,
         positions,
         labels: placed,
+        titleCount: visibleTitleCount,
         selected,
         emphasised: [...(emphasis ?? [])],
         windows: windows.map((w) => ({

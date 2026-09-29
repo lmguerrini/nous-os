@@ -79,6 +79,10 @@ export const DENSITY_LABEL_BUDGETS: Readonly<Record<Density, number>> = {
 
 export const labelBudgetOf = (density: Density): number => DENSITY_LABEL_BUDGETS[normalizeDensity(density)];
 
+export function formatLabelCounts(labels: number, titles: number, budget: number): string {
+  return `${labels} · titoli ${titles} (budget ${budget})`;
+}
+
 /** Clearance added to a node's drawn core radius when building its blocking disc: the disc is the
  * real footprint plus a little air, never a multiplier of the long half-axis (a neural soma's
  * elongation is drawn along its axis; the minor radius plus this clearance is the agreed bound). */
@@ -339,12 +343,12 @@ export function placeLabels(
       width: size.width,
       height: size.height,
     });
-    // Preserve the existing anchor preference among clear slots. A straddling slot is considered
-    // only after every clear slot has been tried.
+    // Preserve anchor preference among clear slots. A rim crossing is never admissible.
     attempts.sort((a, b) => Number(crossesRim(rectAt(a[0]!, a[1]!))) - Number(crossesRim(rectAt(b[0]!, b[1]!))));
     // The hard constraints no tier may ever bend: inside the visible rect, clear of the anchor's
     // own disc, and over no placed label or reserved rect (the Aspetto panel).
     const admissible = (rect: ViewportRect): boolean => {
+      if (crossesRim(rect)) return false;
       if (
         rect.left < bounds.left ||
         rect.top < bounds.top ||

@@ -1,4 +1,4 @@
-import { displayLabel } from './graph-v2.ts';
+import { compactDisplayLabel, displayLabel } from './graph-v2.ts';
 import type { GraphEdge } from './graph-v2.ts';
 import type { V2Node } from './v2-core.ts';
 import type { LiftedRelation } from './v2-relations.ts';
@@ -158,7 +158,7 @@ export function buildNodePanel(node: V2Node, detail: unknown, edges: readonly Gr
   const state = asText(d.canonical_status || node.status);
   const synthesis = sentence(d.statement || d.why || node.snippet || node.title_full || node.title);
   const source = conversation ? `${displayLabel(conversation)}${conversation.date ? ` · ${date(conversation.date)}` : ''}` : '';
-  return { title: displayLabel(node), type: typeName(node.kind), badge: badge(state, ''), epistemic: epistemicLabel(d.epistemic_label), synthesis,
+  return { title: compactDisplayLabel(node), type: typeName(node.kind), badge: badge(state, ''), epistemic: epistemicLabel(d.epistemic_label), synthesis,
     evidence, evidenceSummary: evidence.length ? `${evidence.length} ${evidence.length === 1 ? 'evidenza' : 'evidenze'} da ${source ? '1 conversazione' : 'una fonte'}` : undefined,
     sources: source ? [source] : [], groups: groupRelations(node, edges, nodes), technical: { id: node.id, title_full: node.title_full, detail: outer } };
 }
