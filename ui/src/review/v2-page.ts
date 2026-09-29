@@ -75,14 +75,19 @@ const PROJECTION_LEVEL_RATIOS: Record<LodLevel, number> = { far: 0.4, intermedia
 const DENSITY_RATIOS = { essential: 0.35, balanced: 0.7, complete: 1 } as const;
 /** The URL parameter that opts the page into the default typed projection pipeline. */
 const PROJECTION_FLAG_PARAM = 'projection';
-function defaultPipelineEnabled(): boolean {
-    if (typeof location !== 'object' || location === null) return false;
+export function projectionFlagEnabled(search: string, hash: string): boolean {
     try {
-        return new URLSearchParams(location.search).get(PROJECTION_FLAG_PARAM) === 'natural';
+        const queryEnabled = new URLSearchParams(search).get(PROJECTION_FLAG_PARAM) === 'natural';
+        const hashEnabled = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash).get(PROJECTION_FLAG_PARAM) === 'natural';
+        return hashEnabled || queryEnabled;
     }
     catch {
         return false;
     }
+}
+function defaultPipelineEnabled(): boolean {
+    if (typeof location !== 'object' || location === null) return false;
+    return projectionFlagEnabled(location.search, location.hash);
 }
 /** The 3D typed layer owns the whole scene; the engine graph underneath stays empty and valid. */
 function emptyTypedVisualGraph(): VisualGraph {

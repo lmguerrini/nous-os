@@ -100,6 +100,17 @@ function readStoredView(): { axes: Axes; explicitArrangement: boolean } | null {
   const raw = readLocal<string>(storage, VIEW_STORAGE_KEY, "");
   return raw ? readViewSource(raw) : null;
 }
+/** Keep the view state and unrelated hash parameters together for static review servers. */
+export function rewriteViewHash(hash: string, serializedAxes: string): string {
+  const params = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
+  params.delete(VIEW_URL_PARAMETER);
+  const entries = [...params.entries(), [VIEW_URL_PARAMETER, serializedAxes] as const]
+    .map((entry, index) => ({ key: entry[0], value: entry[1], index }))
+    .sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : a.index - b.index);
+  const ordered = new URLSearchParams();
+  for (const { key, value } of entries) ordered.append(key, value);
+  return `#${ordered.toString()}`;
+}
 const initialUrlView = readUrlView();
 const initialView = initialUrlView ?? readStoredView();
 if (initialView) axes = initialView.axes;
@@ -121,7 +132,7 @@ function writeViewUrl(): void {
     const params = new URLSearchParams(location.search);
     params.delete(VIEW_URL_PARAMETER);
     const search = params.toString();
-    history.replaceState(history.state, "", `${location.pathname}${search ? `?${search}` : ""}#${VIEW_URL_PARAMETER}=${encodeURIComponent(serializeAxes(axes))}`);
+    history.replaceState(history.state, "", `${location.pathname}${search ? `?${search}` : ""}${rewriteViewHash(location.hash, serializeAxes(axes))}`);
   } catch { /* an unwritable URL never blocks the view */ }
 }
 function persistView(): void {
@@ -131,10 +142,11 @@ function persistView(): void {
 function syncArrangementInspector(): void {
   const host = document.getElementById("arrangement-inspector");
   if (!host) return;
-  if (!resolvedArrangement || axes.organization !== "natural") { host.hidden = true; host.textContent = ""; return; }
+  if (!resolvedArrangement || axes.organization !== "natural") { host.hidden = true; host.textContent = ""; host.title = ""; return; }
   host.textContent = resolvedArrangement.source === "explicit"
     ? `Natural · ${resolvedArrangement.arrangement} · esplicita · ${resolvedArrangement.layoutVersion}`
     : `Natural · ${resolvedArrangement.arrangement} · predefinita da ${MORPHOLOGY_LABELS[axes.morphology]} · ${resolvedArrangement.layoutVersion}`;
+  host.title = host.textContent;
   host.hidden = false;
 }
 function enqueue(work: () => Promise<void>): Promise<void> {

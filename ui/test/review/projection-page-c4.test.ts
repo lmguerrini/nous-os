@@ -30,7 +30,7 @@ const bundled = await build({
   bundle: true, format: 'esm', platform: 'browser', target: 'es2022', write: false,
   stdin: {
     resolveDir: dirname(fileURLToPath(pageSource)), sourcefile: 'c4-page-entry.ts', loader: 'ts',
-    contents: `export { V2Page } from ${JSON.stringify(fileURLToPath(pageSource))};`,
+    contents: `export { V2Page, projectionFlagEnabled } from ${JSON.stringify(fileURLToPath(pageSource))};`,
   },
 });
 writeFileSync(bundlePath, bundled.outputFiles[0]!.text);
@@ -62,6 +62,13 @@ Object.assign(globalThis, {
 });
 const pageModule = (await import(pathToFileURL(bundlePath).href)) as typeof import('../../src/review/v2-page.ts');
 const { V2Page: Page } = pageModule;
+
+test('D-073 pipeline flag reads the projection hash and keeps query compatibility', () => {
+  assert.equal(pageModule.projectionFlagEnabled('', '#projection=natural'), true);
+  assert.equal(pageModule.projectionFlagEnabled('?projection=natural', ''), true);
+  assert.equal(pageModule.projectionFlagEnabled('', '#view=%7B%7D'), false);
+  assert.equal(pageModule.projectionFlagEnabled('', '#projection=legacy'), false);
+});
 
 const MANIFEST: GraphManifest = { schema: 'nousos.review-graph/2', digest: 'd073-c4-fixture', counts: {}, limits: {} };
 const AXES = { projection: '2d' as const, morphology: 'stellar' as const, organization: 'natural' as const,

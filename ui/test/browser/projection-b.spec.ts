@@ -3,7 +3,7 @@ import { waitForCameraRest } from './camera-rest.ts';
 
 test.skip(process.env.D073_BROWSER !== '1', 'Serve the D-073 review page with D073_BROWSER=1');
 const url = process.env.D073_URL ?? 'http://127.0.0.1:8768/';
-const pipelineUrl = process.env.D073_PIPELINE_URL ?? url;
+const pipelineUrl = process.env.D073_PIPELINE_URL ?? `${url}#projection=natural`;
 
 type ProjectionWitness = {
   resultDigest: string;
@@ -49,11 +49,11 @@ const typedHost = (page: Page) => page.locator('#render-root > .view-host').last
 test('D-073 pipeline off retains the D-072 page smoke behavior in 2D and 3D', async ({ page }) => {
   const errors = await ready(page);
   await setAxes(page, { projection: '2d', organization: 'flat', morphology: 'stellar' });
-  await expect(page.locator('#viewport canvas').first()).toBeVisible();
+  await expect(page.locator('#viewport canvas[data-morphology-canvas]')).toBeVisible();
   await expect(page.locator('#structural-pick-controls')).toBeHidden();
   const before = await witness(page);
   await setAxes(page, { projection: '3d' });
-  await expect(page.locator('#viewport canvas').first()).toBeVisible();
+  await expect(page.locator('#viewport canvas[data-morphology-canvas]')).toBeVisible();
   expect((await witness(page)).axes.projection).toBe('3d');
   expect(errors).toEqual([]);
   expect(before.lod).toBeTruthy();
@@ -119,7 +119,7 @@ test('D-073 typed pipeline renders 2D and 3D and settles without an idle RAF', a
   for (const projection of ['2d', '3d'] as const) {
     await setAxes(page, { projection, organization: 'flat', morphology: 'stellar', reading: 'attested' });
     await expect.poll(async () => (await projectionWitness(page)).enabled).toBe(true);
-    await expect(page.locator('#viewport canvas').first()).toBeVisible();
+    await expect(page.locator('#viewport canvas[data-morphology-canvas]')).toBeVisible();
     await waitForCameraRest(page);
     const idleFrames = await page.evaluate(async () => {
       const before = (window as any).__d073FrameCount as number;
