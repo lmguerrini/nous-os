@@ -99,3 +99,43 @@ test('D072 Solo vicinato shows exact one/two hop node sets and restores camera a
   expect(restored.camera).toEqual(before.camera);
   expect(restored.focus.neighbourhood).toBeNull();
 });
+
+test('VF1 absolute Indra focus, relation chip and search result retain the selected item', async ({ page }) => {
+  await page.goto(url);
+  await page.evaluate(() => (window as any).__d067.ready);
+  await page.evaluate(() => (window as any).__d067.setAxes({ projection: '2d', organization: 'indra', reading: 'attested' }));
+  const initial = await page.evaluate(() => (window as any).__d067.witness());
+  const absolute = initial.containers.find((item: any) => item.level === 0);
+  expect(absolute).toBeTruthy();
+  await page.evaluate(id => (window as any).__d067.select(id), absolute.id);
+  await expect.poll(() => page.evaluate(() => (window as any).__d067.witness().emphasised.length)).toBe(initial.disclosure.visible);
+  await expect(page.locator('#selection-focus-chip')).toContainText('NousOS');
+
+  await page.evaluate(() => (window as any).__d067.setAxes({ organization: 'flat', reading: 'exploratory' }));
+  const relation = await page.evaluate(() => {
+    const w = (window as any).__d067.witness();
+    const edge = w.relations.find((item: any) => item.class === 'exploratory');
+    const nodes = new Map(w.disclosure.nodes.map((item: any) => [item.id, item]));
+    return edge && { id: edge.id,
+      source: (nodes.get(edge.source) as any)?.display_label ?? (nodes.get(edge.source) as any)?.title,
+      target: (nodes.get(edge.target) as any)?.display_label ?? (nodes.get(edge.target) as any)?.title };
+  });
+  expect(relation?.source).toBeTruthy();
+  expect(relation?.target).toBeTruthy();
+  await page.evaluate(id => (window as any).__d067.select(id), relation!.id);
+  await expect(page.locator('#selection-focus-chip')).toContainText('↔');
+  await expect(page.locator('#selection-focus-chip')).toContainText(relation!.source.slice(0, 10));
+  await expect(page.locator('#selection-focus-chip')).toContainText(relation!.target.slice(0, 10));
+  await expect(page.locator('#selection-focus-chip')).not.toContainText('lift:');
+
+  const target = await page.evaluate(() => (window as any).__d067.disclosure().nodes.find((item: any) => item.level === 1));
+  await page.evaluate(id => (window as any).__d067.select(id), target.id);
+  await page.locator('#search').fill(target.id);
+  await page.locator('#search-form button').click();
+  const result = page.locator('#v2-results button').first();
+  await expect(result).toBeVisible();
+  await result.click();
+  await expect.poll(() => page.evaluate(() => (window as any).__d067.state().selected)).toBe(target.id);
+  await expect(page.locator('#selection-focus-chip')).toBeVisible();
+  expect(await page.locator('#neighbourhood-control button').filter({ hasText: 'Solo vicinato' }).count()).toBe(1);
+});

@@ -102,15 +102,15 @@ test("D072 quality recovers after drag and performance overlay opens, samples an
   expect(rects.overlayBottom).toBeLessThanOrEqual(rects.panelTop);
   await page.waitForTimeout(600);
   const perf = await page.evaluate(() => (window as any).__d072.perf());
-  expect(perf.fps.median).toBeGreaterThan(0);
-  expect(perf.frameTime.p95).toBeGreaterThan(0);
+  expect(perf.activity).toBe("a riposo");
+  expect(perf.frameTime.p95).toBeLessThan(100);
   expect(perf.nodes.rendered).toBeGreaterThan(0);
   expect(perf.arcs.available).toBeGreaterThanOrEqual(0);
   expect(perf.labels).toBeGreaterThanOrEqual(0);
   expect(perf.quality).toBe("piena");
   expect(perf.dpr).toBeGreaterThan(0);
   expect(perf.canvases.length).toBeGreaterThan(0);
-  await expect(surface).toContainText(/FPS|Frame time|Nodi|Archi|Etichette|Qualità|DPR/);
+  await expect(surface).toContainText(/a riposo|FPS|Frame time|Nodi|Archi|Etichette|Qualità|DPR/);
   await opener.click();
   await expect(surface).toBeHidden();
   await opener.click();

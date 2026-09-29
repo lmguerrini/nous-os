@@ -942,6 +942,10 @@ const surfaceBindings: SurfaceBinding[] = [
 const performanceSurface = document.getElementById("performance-overlay");
 const performanceOpener = document.getElementById("performance-toggle");
 const performanceOverlay = performanceSurface ? mountPerformanceOverlay(performanceSurface, viewport) : null;
+const diagnostics = globalThis as typeof globalThis & { __d072?: Record<string, unknown> };
+diagnostics.__d072 = { ...(diagnostics.__d072 ?? {}), flowActive: () =>
+  flowMotion && axes.reading !== "attested" && appearance.flowIntensity > 0 && appearance.flowSpeed > 0 &&
+  !document.hidden && !window.matchMedia("(prefers-reduced-motion: reduce)").matches };
 if (performanceSurface && performanceOpener) surfaceBindings.push({ id: "performance", surface: performanceSurface,
   openers: [performanceOpener], readOpen: () => !performanceSurface.hidden,
   writeOpen: open => { performanceSurface.hidden = !open; performanceOverlay?.setOpen(open); } });

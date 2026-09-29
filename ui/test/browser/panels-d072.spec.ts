@@ -28,6 +28,10 @@ test('D072 every review surface has close, Escape, toggle and active opener', as
     await page.locator(opener).click();
     await expect(page.locator(surface)).toBeVisible();
     await expect(page.locator(opener)).toHaveAttribute('aria-pressed', 'true');
+    expect(await page.locator(opener).evaluate(element => {
+      const style = getComputedStyle(element);
+      return style.boxShadow !== 'none' && style.backgroundColor !== 'rgb(21, 21, 21)';
+    })).toBe(true);
     await assertCloseOnTop(page, surface);
     await page.locator(`${surface} .surface-close`).click();
     await expect(page.locator(surface)).toBeHidden();

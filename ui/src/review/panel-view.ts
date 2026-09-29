@@ -2,6 +2,22 @@ import { displayLabel } from './graph-v2.ts';
 import type { GraphEdge } from './graph-v2.ts';
 import type { V2Node } from './v2-core.ts';
 import type { LiftedRelation } from './v2-relations.ts';
+import { ABSOLUTE_CONTAINER_ID } from './layout-v2.ts';
+
+export function focusChipLabel(id: string | null, nodes: readonly V2Node[], relations: ReadonlyMap<string, Pick<LiftedRelation, 'source' | 'target'>>): string {
+  if (!id) return '';
+  if (id === ABSOLUTE_CONTAINER_ID) return 'NousOS';
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  const node = byId.get(id);
+  if (node) return displayLabel(node);
+  const relation = relations.get(id);
+  if (relation) return `${byId.get(relation.source) ? displayLabel(byId.get(relation.source)!) : 'Elemento di origine'} ↔ ${byId.get(relation.target) ? displayLabel(byId.get(relation.target)!) : 'Elemento collegato'}`;
+  return 'Relazione';
+}
+
+export function relationBadge(count: number): string {
+  return `${count} ${count === 1 ? 'relazione' : 'relazioni'}`;
+}
 
 type RecordValue = Record<string, unknown>;
 export type PanelEvidence = { quote: string; speaker: string; date: string; source: string; raw: unknown };

@@ -15,7 +15,7 @@ import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
 import { labelBudgetOf } from './labels.ts';
 import { createProductView } from './product-view.ts';
 import { appendFlowLegend } from './legend.ts';
-import { buildNodePanel, buildRelationPanel, createEvidenceResolver, renderSelection } from './panel-view.ts';
+import { buildNodePanel, buildRelationPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
 import type { V2Category } from './palette.ts';
 import type { Axes, CreateProductView, ProductView } from './view-contract.ts';
 import type { AppearanceOptions } from '../engine/presentation-options.ts';
@@ -152,6 +152,8 @@ export class V2Page {
     private whyResult: ReturnType<typeof v2Path> | null = null;
     private whyRequest: [string, string] | null = null;
     private capMessage = false;
+    private pointerDown = false;
+    private hoverNeedsMove = false;
     constructor(manifest: GraphManifest, index: V2Index, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
         this.manifest = manifest;
         this.index = index;
@@ -165,6 +167,10 @@ export class V2Page {
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
             root.addEventListener(type, () => { this.userMovedSinceFit = true; this.noteCameraIntent(); }, { passive: true });
+        root?.addEventListener('pointerdown', () => { this.pointerDown = true; this.hoverNeedsMove = true; this.edgeTooltip(null); }, true);
+        for (const type of ['pointerup', 'pointercancel'] as const)
+            root?.addEventListener(type, () => { this.pointerDown = false; this.edgeTooltip(null); }, true);
+        root?.addEventListener('pointermove', () => { if (!this.pointerDown) this.hoverNeedsMove = false; }, true);
         root?.addEventListener('keydown', event => {
             if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
             if (!CAMERA_NAVIGATION_KEYS.has(event.key)) return;
@@ -304,7 +310,7 @@ export class V2Page {
             const pinned = this.pinnedNodeIds(tiers);
             // D-072 R1: a selection failure keeps the last mounted selection verbatim
             // (`safeSelectNodes`), so the drawing never loses its node set — or its labels.
-            const focusPriority = this.selected ? focusMembers(disclosed.nodes, this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested'), this.selected) : null;
+            const focusPriority = this.selected ? this.focusMembers(this.selected, disclosed.nodes) : null;
             const byImportance = new Map(disclosed.nodes.map(node => [node.id, node.importance.value]));
             const priority = [...tiers.priorityChildren, ...[...(focusPriority ?? [])]
                 .sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
@@ -457,13 +463,13 @@ export class V2Page {
                             else
                                 void this.select(target.id);
                         } else void this.exitFocus(); }, onDoublePick: target => { if (target)
-                            void this.expand(target.id); }, onHover: target => {
+                            void this.expand(target.id).then(() => this.select(target.id, false)); }, onHover: target => {
                             const node = target?.kind === 'node' ? target.id : null;
                             const edge = target?.kind === 'edge' ? target.id : null;
                             this.hovered = node;
                             this.hoveredEdge = edge;
                             this.updateEmphasis();
-                            this.edgeTooltip(target);
+                            this.edgeTooltip(this.pointerDown || this.hoverNeedsMove ? null : target);
                             if (this.hoverRefreshTimer) clearTimeout(this.hoverRefreshTimer);
                         } }
                 });
@@ -621,11 +627,11 @@ export class V2Page {
                     state.pages.delete(key); });
         }
         await this.refresh();
-        await this.select(id);
+        await this.select(id, false);
         await this.view?.frame([id]);
     }
-    async select(id: string) {
-        if (this.selected === id) { await this.exitFocus(); return; }
+    async select(id: string, toggleExisting = true) {
+        if (this.selected === id) { if (toggleExisting) await this.exitFocus(); return; }
         this.noteCameraIntent();
         this.suppressZoomUntil = performance.now() + 900;
         this.selected = id;
@@ -644,7 +650,7 @@ export class V2Page {
         (element("fullscreen-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.index.nodes.some(n => n.id === id);
         if (this.index.nodes.some(n => n.id === id)) {
             await this.detail(id);
-            const members = focusMembers(this.visible().nodes, this.index.edges, id);
+            const members = this.focusMembers(id);
             const frameIds = [...members].filter(nodeId => this.rendered.has(nodeId));
             this.noteCameraIntent();
             this.programmaticCamera();
@@ -686,8 +692,7 @@ export class V2Page {
         const control = document.getElementById('neighbourhood-control');
         if (chip) {
             chip.hidden = !this.selected;
-            const node = this.index.nodes.find(item => item.id === this.selected);
-            chip.textContent = this.selected ? `Esci dal focus × · ${node ? displayLabel(node) : this.selected}` : '';
+            chip.textContent = this.selected ? `Esci dal focus × · ${focusChipLabel(this.selected, this.index.nodes, this.renderedRelations)}` : '';
         }
         if (control) {
             control.hidden = !this.selected;
@@ -788,6 +793,10 @@ export class V2Page {
             return 0;
         }
     }
+    private focusMembers(id: string, nodes = this.visible().nodes): Set<string> {
+        if (id === ABSOLUTE_CONTAINER_ID) return new Set(nodes.map(node => node.id));
+        return focusMembers(nodes, this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested'), id);
+    }
     private updateEmphasis() {
         if (!this.selected) {
             this.view?.setFocusStyle?.(null);
@@ -800,7 +809,7 @@ export class V2Page {
             this.view?.setEmphasis(resting);
             return;
         }
-        const members = focusMembers(this.visible().nodes, this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested'), this.selected);
+        const members = this.focusMembers(this.selected);
         const communityOf = communityResolver(this.index.nodes);
         const arcs = focusArcs(members, [...this.renderedRelations.values()], communityOf);
         const emphasis = new Set([...members].filter(id => this.rendered.has(id)));
@@ -828,7 +837,7 @@ export class V2Page {
         tip.hidden = !relation;
         if (!relation)
             return;
-        tip.textContent = relation.type === 'co_membership' ? `${relation.count} conversazioni in comune` : `${relation.class === 'exploratory' ? 'Esplorativa \u00B7 non canonica' : 'Attestata'} · ${relation.count} relazioni`;
+        tip.textContent = relation.type === 'co_membership' ? `${relation.count} conversazioni in comune` : `${relation.class === 'exploratory' ? 'Esplorativa \u00B7 non canonica' : 'Attestata'} · ${relationBadge(relation.count)}`;
         tip.style.left = `${Math.min(innerWidth - 220, (target!).x + 12)}px`;
         tip.style.top = `${Math.min(innerHeight - 35, (target!).y + 12)}px`;
     }
@@ -1002,7 +1011,7 @@ export class V2Page {
         return { mode: 'v2', digest: this.manifest.digest, counts: this.manifest.counts };
     }
     witness() {
-        const members = this.selected ? focusMembers(this.visible().nodes, this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested'), this.selected) : new Set<string>();
+        const members = this.selected ? this.focusMembers(this.selected) : new Set<string>();
         const arcs = focusArcs(members, [...this.renderedRelations.values()], communityResolver(this.index.nodes));
         return {
             ...this.view?.witness(),
@@ -1103,6 +1112,9 @@ export class V2Page {
         }
         host.append(search);
         appendFlowLegend(host, this.palette);
+        const containerHint = document.createElement('p');
+        containerHint.textContent = '+N = elementi nascosti nel contenitore';
+        host.append(containerHint);
         // D-071 G11: a rule and a heading separate the selection details from the legend, so the
         // first detail line («dominio …») never reads as a truncated legend entry.
         const selectionHeading = document.createElement('h3');
