@@ -63,7 +63,7 @@ def test_build_determinism_and_provenance(tmp_path):
     assert any(e["type"] == "classified_in" for e in index["edges"])
     labels = {n["id"]: n["display_label"] for n in index["nodes"]}
     assert labels == {n["id"]: n["display_label"] for n in json.loads((tmp_path / "second/index.json").read_text())["nodes"]}
-    assert first["display_labels"]["rule"] == "d072-display-label/3"
+    assert first["display_labels"]["rule"] == "d072-display-label/4"
     assert first["display_labels"]["map_sha256"] == hashlib.sha256(encoded(labels)).hexdigest()
     assert all(label and len(label) <= 40 for label in labels.values())
     assert all(not label.casefold().startswith(("messaggio del fondatore", "il fondatore", "senza titolo"))
@@ -101,6 +101,30 @@ def test_title_first_and_formula_fallback():
 ])
 def test_shortening_steps(title, expected):
     assert shorten_title(title) == expected
+
+
+@pytest.mark.parametrize("token", [
+    "invented-garden-path-with-many-connected-parts",
+    "synthetic/archive/path/with/several/segments",
+    "imaginary.botanical.archive.with.many.parts",
+    "z" * 80,
+])
+def test_shortening_caps_unbroken_tokens(token):
+    shortened = shorten_title(token)
+    assert len(shortened) <= 40
+    assert shortened.endswith("…")
+    assert len(label_phrase(token)) <= 40
+
+
+def test_shortening_cap_property_for_deterministic_strings():
+    pieces = ("invented", "synthetic-garden", "archive/path", "botanical.record", "leaf", "")
+    for length in range(1, 101):
+        value = "".join(pieces[(length + index * 3) % len(pieces)] for index in range(length))
+        assert len(shorten_title(value)) <= 40
+        assert len(label_phrase(value)) <= 40
+    for value in ("Short invented title", "A compact garden label", "Synthetic archive"):
+        assert shorten_title(value) == value
+        assert label_phrase(value) == value
 
 
 def test_names_qualifiers_and_sibling_collisions():
@@ -154,6 +178,23 @@ def test_collision_uses_parent_then_month_when_distinguishing():
     assert labels["across:south"] == "Pietra calda · Giardino sud"
     assert labels["month:aug"] == "Luce soffusa · 2026-08"
     assert labels["month:sep"] == "Luce soffusa · 2026-09"
+
+
+def test_collision_suffix_shortens_base_to_stay_within_cap():
+    base = "Q" + "x" * 38
+    nodes = [
+        {"id": "near-cap:aug", "level": 4, "parent": "synthetic-parent", "title": base, "date": "2026-08-01"},
+        {"id": "near-cap:sep", "level": 4, "parent": "synthetic-parent", "title": base, "date": "2026-09-01"},
+    ]
+    assign_display_labels(nodes, {}, {})
+    labels = [node["display_label"] for node in nodes]
+    assert labels[0].endswith(" · 2026-08")
+    assert labels[1].endswith(" · 2026-09")
+    assert all(len(label) <= 40 for label in labels)
+    assert all(len(label.removesuffix(suffix)) == 30 for label, suffix in zip(
+        labels, (" · 2026-08", " · 2026-09")))
+    assert all(label.removesuffix(suffix).endswith("…") for label, suffix in zip(
+        labels, (" · 2026-08", " · 2026-09")))
 
 
 def test_overlay_merge_and_invalid_citation(tmp_path):

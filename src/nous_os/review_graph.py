@@ -11,7 +11,7 @@ import re
 import unicodedata
 
 SCHEMA = "nousos.review-graph/2"
-DISPLAY_LABEL_RULE = "d072-display-label/3"
+DISPLAY_LABEL_RULE = "d072-display-label/4"
 DOMAINS = ("atlasfield", "forge", "quillmap", "orchardline", "showcase", "dossier", "qrs", "meridian")
 SPECIFICITY = ("orchardline", "quillmap", "qrs", "forge", "dossier", "showcase", "atlasfield", "meridian")
 KIND_WEIGHT = {"DECISION": 2.0, "CONCEPT": 1.6, "REQUIREMENT": 1.4, "RELATIONSHIP": 1.4,
@@ -82,8 +82,11 @@ def label_phrase(value: str, cap: int = 40) -> str:
         value = " ".join(words[:7])
     else:
         value = " ".join(words)
+    if cap <= 0:
+        return ""
     if len(value) > cap:
-        value = value[:cap + 1].rsplit(" ", 1)[0] or value[:cap]
+        boundary = value[:cap + 1].rsplit(" ", 1)[0]
+        value = boundary if boundary and len(boundary) <= cap else value[:cap - 1] + "…"
     value = re.sub(r"(?:\s+(?:about|and|or|of|for|to|the|a|an|di|del|della|dei|per|e|o|il|la|un|una))+$", "", value, flags=re.I)
     return value.rstrip(" ,;:–—-")
 
@@ -102,6 +105,8 @@ def formula_title(value: str) -> bool:
 def shorten_title(value: str, cap: int = 40) -> str:
     """Shorten a distilled title in ordered, reversible presentation steps."""
     value = re.sub(r"\s+", " ", value or "").strip()
+    if cap <= 0:
+        return ""
     if len(value) <= cap:
         return value
     lead = re.match(r"^(?:messaggio del fondatore\s*:\s*|il fondatore\s+|the founder\s+)", value, re.I)
@@ -134,7 +139,12 @@ def shorten_title(value: str, cap: int = 40) -> str:
         fit.pop()
     if len(" ".join(fit)) <= cap - 1:
         return " ".join(fit).rstrip(" ,;:") + "…"
-    return " ".join(fit[:2]).rstrip(" ,;:") + "…"
+    fallback = " ".join(fit[:2]).rstrip(" ,;:") + "…"
+    if len(fallback) <= cap:
+        return fallback
+    # A punctuation-joined token can be longer than the full label cap. Keep
+    # the ellipsis inside the cap even when there is no usable word boundary.
+    return value[:cap - 1] + "…"
 
 
 def assign_display_labels(items: list[dict], source: dict[str, str], parents: dict[str, dict]) -> None:
