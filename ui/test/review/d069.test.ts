@@ -57,7 +57,7 @@ test("Fronte projects the layout XY plane without rotation or reflection", () =>
   const right = new THREE.Vector3(0, 1, 0).applyQuaternion(orientation);
   const up = new THREE.Vector3(-1, 0, 1).normalize().applyQuaternion(orientation);
   const layout = computeLayout({ nodes: Array.from({ length: 6 }, (_, i) => ({ id: `node:${i}`, level: 1 as const,
-    parent: null, size: 0.5, domains: [] })), edges: [], organization: 'flat', morphology: 'stellar' });
+    parent: null, size: 0.5, domains: [] })), edges: [], organization: 'natural', morphology: 'stellar' });
   const points = [...layout.positions.values()].map(point => new THREE.Vector3(point.x, point.y, point.z));
   for (const point of points) {
     assert.ok(Math.abs(point.dot(right) - point.x) < 1e-10);

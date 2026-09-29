@@ -415,7 +415,7 @@ export function restingEmphasis(input: {
   readonly relations: ReadonlyMap<string, { source: string; target: string }>;
   readonly nodes: readonly { id: string; parent: string | null }[];
   readonly containerIds: ReadonlySet<string>;
-  readonly organization: "flat" | "indra";
+  readonly organization: "natural" | "indra";
   readonly absoluteContainerId: string;
 }): Set<string> | null {
   const id = input.hovered;

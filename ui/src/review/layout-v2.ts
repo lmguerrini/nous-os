@@ -23,7 +23,7 @@ export type LayoutEdge = {
 export type LayoutInput = {
     readonly nodes: readonly LayoutNode[];
     readonly edges: readonly LayoutEdge[];
-    readonly organization: 'flat' | 'indra';
+    readonly organization: 'natural' | 'indra';
     readonly morphology: 'stellar' | 'neural' | 'mycelium';
     readonly previous?: ReadonlyMap<string, Point3>;
     /** 2D keeps its own planar layout; 3D uses the deterministic volumetric embedding. Default 2d. */

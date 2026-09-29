@@ -33,7 +33,8 @@ import { appendFlowLegend, renderTypedStructuralLegend } from './legend.ts';
 import { buildNodePanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
 import type { V2Category } from './palette.ts';
 import { v2CategoryColour } from './palette.ts';
-import type { Axes, CreateProductView, ProductView } from './view-contract.ts';
+import type { Axes, AxesInput, CreateProductView, FullAxesInput, ProductView } from './view-contract.ts';
+import { normalizeAxesInput, normalizeFullAxesInput } from './view-contract.ts';
 import type { AppearanceOptions } from '../engine/presentation-options.ts';
 import type { PaletteValues } from './palette.ts';
 const element = (id: string) => document.getElementById(id)!;
@@ -290,10 +291,10 @@ export class V2Page {
      * A changed identity re-seeds from the last flat result (D-072 `previous` parity). */
     private naturalAnchorState: { key: string; anchors: Readonly<Record<string, Vec3>> | null } | null = null;
     private naturalPreviousFlat: ProjectionResult | null = null;
-    constructor(manifest: GraphManifest, index: V2Index, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
+    constructor(manifest: GraphManifest, index: V2Index, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
         this.manifest = manifest;
         this.index = index;
-        this.axes = axes;
+        this.axes = normalizeFullAxesInput(axes);
         this.appearance = appearance;
         this.palette = palette;
         this.v2Colours = colours;
@@ -332,7 +333,7 @@ export class V2Page {
             if (n.level === 1 && index.nodes.some(child => child.level === 2 && child.parent === n.id))
                 this.history.state.expanded.add(n.id);
     }
-    static async load(manifest: GraphManifest, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}): Promise<V2Page> {
+    static async load(manifest: GraphManifest, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}): Promise<V2Page> {
         element('status').textContent = 'Caricamento del grafo\u2026 indice';
         const response = await fetch('/api/graph/index');
         if (!response.ok)
@@ -376,6 +377,14 @@ export class V2Page {
         const resultDigest = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
         return { ...payload, determinism: { ...metadata, resultDigest } };
     }
+    /** D-073: the arrangement the Natural branch requests — an explicit axes arrangement wins,
+     * then the arrangement committed by the last natural refresh, then the style's creation-time
+     * default. The same once-only precedence the main entry point's appliedAxes applies, so an
+     * explicit arrangement (a saved view, the URL, an arrangement control) always reaches the
+     * request while later style switches keep the resolved arrangement and the digest. */
+    private resolvedNaturalArrangement(): NaturalArrangement {
+        return this.axes.arrangement ?? this.naturalArrangement ?? resolveNaturalArrangement(this.axes.morphology);
+    }
     private async refreshProjection(epoch: number): Promise<void> {
         const input = this.projectionInput!;
         const registry = this.projectionRegistry!;
@@ -395,8 +404,8 @@ export class V2Page {
         let arrangementToCommit: NaturalArrangement | null = null;
         let anchorKeyToCommit: string | null = null;
         let anchorsToCommit: Readonly<Record<string, Vec3>> | null = null;
-        if (this.axes.organization === 'flat') {
-            const arrangement = this.naturalArrangement ?? resolveNaturalArrangement(this.axes.morphology);
+        if (this.axes.organization === 'natural') {
+            const arrangement = this.resolvedNaturalArrangement();
             arrangementToCommit = arrangement;
             const layoutRelationPolicy = this.axes.reading === 'attested' ? 'attested-essential' as const
                 : this.axes.reading === 'exploratory' ? 'exploratory-essential' as const : 'combined-essential' as const;
@@ -601,7 +610,7 @@ export class V2Page {
             enabled: true,
             resultDigest: result?.determinism.resultDigest ?? null,
             algorithm: result?.determinism.algorithmId ?? null,
-            arrangement: this.naturalArrangement,
+            arrangement: this.axes.organization === 'indra' ? this.naturalArrangement : this.resolvedNaturalArrangement(),
             revision: this.projectionRevision,
             revisionDigest: visibility?.projectionResultDigest ?? null,
             domainDigest: this.projectionDomain?.domainDigest ?? null,
@@ -702,7 +711,7 @@ export class V2Page {
                             .filter((point): point is Vec3 => !!point);
                         const frame = points.length ? resolvedNodeBounds(points) : undefined;
                         handle = mount3f(host, emptyTypedVisualGraph(),
-                            { morphology: 'stellar', organization: 'flat', palette: 'monochrome',
+                            { morphology: 'stellar', organization: 'natural', palette: 'monochrome',
                                 temperature: 'balanced', theme: 'dark', lodBand: 'micro',
                                 reducedMotion: true, elapsedMilliseconds: 0 },
                             frame, undefined, undefined, input);
@@ -882,10 +891,10 @@ export class V2Page {
                 return hidden && !visibleParents.has(node.id) ? Math.max(hidden, node.counts.descendants) : hidden;
             };
             const layoutEdges = projectRelations(
-                this.index.nodes, this.index.edges, ids, this.axes.reading, 'flat', 'essential',
+                this.index.nodes, this.index.edges, ids, this.axes.reading, 'natural', 'essential',
             ).edges;
             const projection = this.axes.projection;
-            const usePrevious = this.layoutSource === 'flat-community' && this.axes.organization === 'flat'
+            const usePrevious = this.layoutSource === 'flat-community' && this.axes.organization === 'natural'
                 && this.layoutProjection === projection && this.axes.morphology === this.lastMorphology;
             const result = computeLayout({
                 nodes: disclosed.nodes.map(n => ({
@@ -905,7 +914,7 @@ export class V2Page {
             // on screen — a refresh that fails mid-way must leave the page describing the view it
             // actually displays, not the one it wanted.
             const nextRawPositions = result.positions;
-            const flat3d = this.axes.organization === 'flat' && projection === '3d';
+            const flat3d = this.axes.organization === 'natural' && projection === '3d';
             const nextCanonicalPositions = flat3d ? canonicalize(result.positions) : result.positions;
             const expanded = flat3d
                 ? applyExpansion(nextCanonicalPositions, { expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ })
@@ -1498,8 +1507,15 @@ export class V2Page {
         host.append(layer);
         window.setTimeout(() => layer.remove(), 1000);
     }
-    async setAxes(value: Partial<Axes>) {
-        this.axes = { ...this.axes, ...value };
+    async setAxes(value: AxesInput) {
+        const merged: Axes = { ...this.axes, ...normalizeAxesInput(value) };
+        // D-073: the arrangement axis is Natural-only — the merged Indra view drops it, exactly
+        // like the main entry point's appliedAxes, so the axes the page keeps and hands to the
+        // product view never carry an arrangement on Indra.
+        this.axes = merged.organization === 'indra'
+            ? { projection: merged.projection, morphology: merged.morphology, organization: 'indra',
+                colour: merged.colour, labels: merged.labels, reading: merged.reading }
+            : merged;
         await this.refresh();
         (element("projection-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;
         (element("fullscreen-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;

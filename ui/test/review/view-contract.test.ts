@@ -33,9 +33,9 @@ test("ViewInput has an exact envelope, axes, insets, and event register", () => 
     optionalEvents: ["onDoublePick"],
   });
   assert.doesNotThrow(() => assertViewInputFieldRegister(inputFixture()));
-  const legacyAxesFixture = '{"projection":"2d","morphology":"stellar","organization":"flat","colour":"bw","labels":true,"reading":"attested"}';
-  assert.equal(JSON.stringify(JSON.parse(legacyAxesFixture)), legacyAxesFixture, "the current UI input fixture preserves its registered field order and values");
-  assert.deepEqual(JSON.parse(legacyAxesFixture), DEFAULT_AXES);
+  const axesFixture = '{"projection":"2d","morphology":"stellar","organization":"natural","colour":"bw","labels":true,"reading":"attested"}';
+  assert.equal(JSON.stringify(JSON.parse(axesFixture)), axesFixture, "the current UI input fixture preserves its registered field order and values");
+  assert.deepEqual(JSON.parse(axesFixture), DEFAULT_AXES);
   assert.throws(() => assertViewInputFieldRegister({ ...inputFixture(), surprise: true }), /ViewInput fields do not match the pinned register/);
   assert.throws(() => assertViewInputFieldRegister({ ...inputFixture(), axes: { ...DEFAULT_AXES, surprise: true } }), /ViewInput\.axes fields do not match the pinned register/);
   assert.throws(() => assertViewInputFieldRegister({ ...inputFixture(), insets: { top: 0, right: 0, bottom: 0, left: 0, surprise: 1 } }), /ViewInput\.insets fields do not match the pinned register/);
@@ -103,7 +103,7 @@ test("the live default axes serialize as Natural plus the Stellar default arrang
   assert.equal(record.arrangement, "constellation");
   assert.deepEqual(Object.keys(record), [...VIEW_INPUT_FIELD_REGISTER.axes, "arrangement"]);
   const parsed = parseSavedAxes(serializeAxes(DEFAULT_AXES));
-  assert.deepEqual(parsed, { ...DEFAULT_AXES, organization: "flat", arrangement: "constellation" });
+  assert.deepEqual(parsed, { ...DEFAULT_AXES, arrangement: "constellation" });
   for (const morphology of ["stellar", "neural", "mycelium"] as const) {
     assert.equal(savedAxesRecord({ ...DEFAULT_AXES, morphology }).arrangement, defaultNaturalArrangement(morphology));
     assert.equal(savedAxesRecord({ ...DEFAULT_AXES, morphology }).arrangement, resolveNaturalArrangement(morphology));

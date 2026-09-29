@@ -16,13 +16,13 @@ function fixture(count = 2500): LayoutInput {
     nodes.push({ id: `n${i}`, level, parent, size: (i % 11) / 10, domains: [] });
   }
   const edges = nodes.filter(node => node.parent).map(node => ({ id: `e${node.id}`, source: node.parent!, target: node.id, class: "attested" as const }));
-  return { nodes, edges, organization: "flat", morphology: "stellar" };
+  return { nodes, edges, organization: "natural", morphology: "stellar" };
 }
 const xy = (a: Point3, b: Point3) => Math.hypot(a.x - b.x, a.y - b.y);
 
 test("layout determinism, incremental stability, depth and morphology membership", () => {
   const input = fixture(350);
-  for (const organization of ["flat", "indra"] as const) {
+  for (const organization of ["natural", "indra"] as const) {
     const first = computeLayout({ ...input, organization });
     const second = computeLayout({ ...input, organization });
     assert.deepEqual(first, second);
@@ -38,7 +38,7 @@ test("layout determinism, incremental stability, depth and morphology membership
       assert.deepEqual(first.containers, neural.containers);
       assert.deepEqual(first.containers, mycelium.containers);
     } else assert.notDeepEqual(first.positions.get("n10"), neural.positions.get("n10"));
-    if (organization === "flat") {
+    if (organization === "natural") {
       const prefix = fixture(280);
       const previous = computeLayout(prefix);
       const increment = computeLayout({ ...input, previous: previous.positions });
@@ -212,7 +212,7 @@ test('realistic hierarchy has deterministic 3D spacing and balances to a ball', 
   for (let i = 0; i < 31; i++) nodes.push({ id: `project:${i}`, level: 2, parent: `domain:${i % 8}`, size: 0.5, domains: [] });
   for (let i = 0; i < 165; i++) nodes.push({ id: `conversation:${i}`, level: 3, parent: `project:${i % 31}`, size: 0.3, domains: [] });
   for (let i = 0; i < 220; i++) nodes.push({ id: `proposal:${i}`, level: 4, parent: `conversation:${i % 165}`, size: 0.1, domains: [] });
-  const input: LayoutInput = { nodes, edges: nodes.filter(n => n.parent).map(n => ({ id: `edge:${n.id}`, source: n.parent!, target: n.id, class: 'attested' })), organization: 'flat', morphology: 'stellar', projection: '3d' };
+  const input: LayoutInput = { nodes, edges: nodes.filter(n => n.parent).map(n => ({ id: `edge:${n.id}`, source: n.parent!, target: n.id, class: 'attested' })), organization: 'natural', morphology: 'stellar', projection: '3d' };
   const first = computeLayout(input), second = computeLayout(input);
   assert.deepEqual(first, second);
   const canonical = canonicalize(first.positions);
@@ -239,7 +239,7 @@ test("unequal communities (one with 60% of the nodes) canonicalise and equilibra
       edges.push({ id: `edge:${id}`, source: `domain:${i}`, target: id, class: 'attested' });
     }
   });
-  const input: LayoutInput = { nodes, edges, organization: 'flat', morphology: 'stellar', projection: '3d' };
+  const input: LayoutInput = { nodes, edges, organization: 'natural', morphology: 'stellar', projection: '3d' };
   const first = computeLayout(input), second = computeLayout(input);
   assert.deepEqual(first, second);
   const canonical = canonicalize(first.positions);
@@ -264,7 +264,7 @@ test("Stellar communities keep a void of at least 1.5× the mean cluster radius 
     }
   });
   for (const projection of ['2d', '3d'] as const) {
-    const result = computeLayout({ nodes, edges, organization: 'flat', morphology: 'stellar', projection });
+    const result = computeLayout({ nodes, edges, organization: 'natural', morphology: 'stellar', projection });
     const communities = result.communities!;
     assert.equal(communities.length, 8);
     assert.equal(communities.reduce((sum, community) => sum + community.count, 0), nodes.length);
@@ -291,7 +291,7 @@ test("morphology owns its Flat layout: switching Stellar→Neural changes positi
       edges.push({ id: `e:${id}`, source: `c${i}`, target: id, class: 'attested' });
     }
   });
-  const base = { nodes, edges, organization: 'flat' as const };
+  const base = { nodes, edges, organization: 'natural' as const };
   const stellar = computeLayout({ ...base, morphology: 'stellar' });
   const neural = computeLayout({ ...base, morphology: 'neural' });
   const mycelium = computeLayout({ ...base, morphology: 'mycelium' });
@@ -318,7 +318,7 @@ test("2D Stellar layout is round, not a line: bounding-box aspect ratio ≥ 0.45
       edges.push({ id: `e:${id}`, source: `c${i}`, target: id, class: 'attested' });
     }
   });
-  const result = computeLayout({ nodes, edges, organization: 'flat', morphology: 'stellar', projection: '2d' });
+  const result = computeLayout({ nodes, edges, organization: 'natural', morphology: 'stellar', projection: '2d' });
   const points = [...result.positions.values()];
   const box = layoutStats(result.positions).bbox;
   const width = box.x[1] - box.x[0];
@@ -350,7 +350,7 @@ test("2500 visible nodes stay within layout budgets", () => {
   const input = { ...base, edges: Array.from({ length: 120 }, (_, index) => ({ id: `relation${index}`,
     source: `n${280 + index * 17 % 2220}`, target: `n${280 + (index * 97 + 41) % 2220}`,
     class: "attested" as const })) };
-  for (const [organization, budget] of [["flat", 300], ["indra", 100]] as const) {
+  for (const [organization, budget] of [["natural", 300], ["indra", 100]] as const) {
     const start = performance.now();
     const result = computeLayout({ ...input, organization });
     const elapsed = performance.now() - start;
@@ -406,7 +406,7 @@ test("3D communities are separated clusters: centres at least 3× the intra-comm
     nodes.push({ id, level: 2 as const, parent: `community:${i}`, size: 0.5, domains: [] });
     edges.push({ id: `edge:${id}`, source: `community:${i}`, target: id, class: 'attested' });
   }
-  const result = computeLayout({ nodes, edges, organization: 'flat', morphology: 'stellar', projection: '3d' });
+  const result = computeLayout({ nodes, edges, organization: 'natural', morphology: 'stellar', projection: '3d' });
   const centre = (i: number) => result.positions.get(`community:${i}`)!;
   const meanIntra = roots.reduce((sum, root, i) => {
     const members = nodes.filter(n => n.parent === root.id).map(n => result.positions.get(n.id)!);
@@ -426,7 +426,7 @@ test('2500 independent roots avoid quadratic force work', () => {
     id: `root:${index}`, level: 1, parent: null, size: 0.2, domains: [],
   }));
   const start = performance.now();
-  const result = computeLayout({ nodes, edges: [], organization: 'flat', morphology: 'stellar' });
+  const result = computeLayout({ nodes, edges: [], organization: 'natural', morphology: 'stellar' });
   assert.equal(result.positions.size, nodes.length);
   assert.ok(performance.now() - start <= 300);
 });
@@ -494,7 +494,7 @@ function hubFixture(): LayoutInput {
       if (a !== b) edges.push({ id: `rel:${relation++}`, source: a, target: b, class: "exploratory" });
     }
   }
-  return { nodes, edges, organization: "flat", morphology: "neural" };
+  return { nodes, edges, organization: "natural", morphology: "neural" };
 }
 
 type HubMetrics = {
@@ -630,7 +630,7 @@ test("degree-weighted clearance keeps determinism, exact morphology switching an
       // Disclosing more nodes never moves what is already on screen, in every axis.
       const prefixNodes = fixtureInput.nodes.filter(node => node.level <= 2);
       const prefixEdges = fixtureInput.edges.filter(edge => prefixNodes.some(n => n.id === edge.source) && prefixNodes.some(n => n.id === edge.target));
-      const prefix = computeLayout({ nodes: prefixNodes, edges: prefixEdges, organization: "flat", morphology, projection });
+      const prefix = computeLayout({ nodes: prefixNodes, edges: prefixEdges, organization: "natural", morphology, projection });
       const grown = computeLayout({ ...input, previous: prefix.positions });
       for (const [id, point] of prefix.positions) {
         const after = grown.positions.get(id)!;
@@ -659,7 +659,7 @@ test("Stellar Flat coordinates are byte-identical to the pre-clearance digests",
     "77024949b338e20b3088b386f70c654b1f5e625229b45b27cb951e9434b4ea5e");
   const prefixNodes = fixtureInput.nodes.filter(node => node.level <= 2);
   const prefixEdges = fixtureInput.edges.filter(edge => prefixNodes.some(n => n.id === edge.source) && prefixNodes.some(n => n.id === edge.target));
-  const prefix = computeLayout({ nodes: prefixNodes, edges: prefixEdges, organization: "flat", morphology: "stellar" });
+  const prefix = computeLayout({ nodes: prefixNodes, edges: prefixEdges, organization: "natural", morphology: "stellar" });
   assert.equal(digest(serialize(computeLayout({ ...fixtureInput, morphology: "stellar", previous: prefix.positions }).positions)),
     "a9aa5783b370cb74830924ab969225b3914dc9a139c5de5da0fc187c1bf889d8");
 });
@@ -697,7 +697,7 @@ test("relation-heavy 2500-node layouts stay within the flat budgets with hub cle
     let best = Infinity;
     for (let run = 0; run < 3; run += 1) {
       const start = performance.now();
-      const result = computeLayout({ nodes, edges, organization: "flat", morphology: "neural", projection });
+      const result = computeLayout({ nodes, edges, organization: "natural", morphology: "neural", projection });
       best = Math.min(best, performance.now() - start);
       assert.equal(result.positions.size, nodes.length);
     }

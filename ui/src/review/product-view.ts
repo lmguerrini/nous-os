@@ -271,7 +271,7 @@ export function resolvedViewArrangement(axes: Axes): NaturalArrangement | null {
 export type ProductCameraKey = Readonly<{
   /** `${projection}/natural/${arrangement}` for Natural, `${projection}/indra` for Indra. */
   readonly key: string;
-  /** The D-072 form `${projection}/${organization}`: Indra's own key, Natural's replay source. */
+  /** The D-072 form `${projection}/${organization}`, with Natural under its canonical name: Indra's own key, Natural's replay source. */
   readonly legacyKey: string;
   /** True only for Natural, whose legacy key can still hold a camera the new key never met. */
   readonly replaysLegacy: boolean;
@@ -281,7 +281,7 @@ export type ProductCameraKey = Readonly<{
  * D-073 C6: the product camera key. D-072 keyed the camera by projection and organization alone, so
  * every Natural arrangement shared one entry; with the arrangement explicit the key is qualified by
  * the resolved arrangement, and camera carryover follows arrangement continuity, never the currently
- * selected morphology. The legacy spelling stays as the replay source, so a camera recorded before
+ * selected morphology. The unqualified key stays as the replay source, so a camera recorded before
  * the arrangement axis existed still replays instead of being silently dropped.
  */
 export function productCameraKey(axes: Axes): ProductCameraKey {
@@ -373,8 +373,8 @@ export function assertNaturalArrangementAxis(axes: Axes): void {
  * the arrangement resolved restyles the same scene and the camera carries over through the map.
  */
 export function productViewRemountsAxes(previous: Axes, next: Axes): boolean {
-  const oldDepth = previous.organization === "flat" && previous.projection === "3d";
-  const newDepth = next.organization === "flat" && next.projection === "3d";
+  const oldDepth = previous.organization === "natural" && previous.projection === "3d";
+  const newDepth = next.organization === "natural" && next.projection === "3d";
   return previous.projection !== next.projection
     || previous.morphology !== next.morphology
     || previous.organization !== next.organization
@@ -639,7 +639,7 @@ export const createProductView: CreateProductView = async (input) => {
   const movingPassCandidates = (ids: ReadonlySet<string> = visible) => movingLabelPassHasCandidates({
     hoverId: hover?.kind === "node" ? hover.id : null,
     selectedId: selected,
-    flatDomains: axes.labels && axes.organization === "flat"
+    flatDomains: axes.labels && axes.organization === "natural"
       && [...ids].some((id) => nodesById.get(id)?.type === "domain"),
   });
   function project(point: Coordinates) {
@@ -762,7 +762,7 @@ export const createProductView: CreateProductView = async (input) => {
       // A label occluded by nearer geometry is hidden, except the selection and hover and the
       // Flat domains (tier 1: a domain name is always placed, drawn above the geometry).
       if (occluded.has(id) && !chosen && !hovered
-        && !(axes.organization === "flat" && node.type === "domain")) continue;
+        && !(axes.organization === "natural" && node.type === "domain")) continue;
       // A container whose canvas title is drawn carries no second name (its own node label waits).
       if (pathById.has(id) && !chosen && !hovered && titledContainerIds.has(id))
         continue;
@@ -1205,7 +1205,7 @@ export const createProductView: CreateProductView = async (input) => {
       morphology: axes.morphology,
       // On the v2 dataset the page's layout places every node and its canvas layer draws the Indra containers, so the
       // engine's own membership windows stay off in both organizations.
-      organization: input.v2Prepared ? "flat" as const : axes.organization,
+      organization: input.v2Prepared ? "natural" as const : axes.organization,
       reducedMotion: input.reducedMotion,
       presentation: sharedPresentation,
     };
@@ -1265,7 +1265,7 @@ export const createProductView: CreateProductView = async (input) => {
     else {
       if (three && input.v2Prepared) handle.restoreCameraState({ ...handle.readCameraState(), orbit: defaultObliqueOrbit() } as ReviewCameraState);
       const initialPoints = input.data.nodes.filter((n) => visible.has(n.id)).map((n) => anchors.get(n.id)!).filter(Boolean);
-      if (axes.projection === '3d' && axes.organization === 'flat')
+      if (axes.projection === '3d' && axes.organization === 'natural')
         initialPoints.push(...framingVolumePoints(initialPoints));
       if (axes.organization === 'indra' && layoutContainers) {
         const outer = layoutContainers.find(item => item.level === 0);
@@ -1599,7 +1599,7 @@ export const createProductView: CreateProductView = async (input) => {
     // The layout already knows every visible position; right after a remount the renderer may not report them all yet.
     const layout = restrictAnchors(fullAnchor(axes), visible);
     const points = ids.map((id) => layout.get(id) ?? byId.get(id)).filter((p): p is Coordinates => p !== undefined && finitePoint(p));
-    if (ids.length === visible.size && axes.projection === '3d' && axes.organization === 'flat')
+    if (ids.length === visible.size && axes.projection === '3d' && axes.organization === 'natural')
       points.push(...framingVolumePoints(points));
     if (ids.length === visible.size && axes.organization === 'indra' && layoutContainers) {
       const outer = layoutContainers.find(item => item.level === 0);

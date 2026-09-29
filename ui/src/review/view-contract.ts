@@ -22,14 +22,14 @@ export type Projection = "2d" | "3d";
 export type Morphology = "stellar" | "neural" | "mycelium";
 
 /**
- * How the scene is arranged; Indra draws real membership windows, never new relations. `flat` is the
- * legacy in-memory spelling of the Natural placement, retained by the live engine vocabulary until
- * its migration: every saved form reads it as legacy input and no serialization writes it.
+ * How the scene is arranged; Indra draws real membership windows, never new relations. Natural is
+ * the canonical name everywhere in the live path; the legacy spelling `flat` is only a read alias
+ * that `normalizeOrganizationInput` turns into Natural at each entry point, and nothing writes it.
  */
-export type Organization = "flat" | "indra";
+export type Organization = "natural" | "indra";
 
 /** The saved-view organization vocabulary: Natural under its canonical name, or Indra. */
-export type SavedOrganization = "natural" | "indra";
+export type SavedOrganization = Organization;
 
 /**
  * How Natural places nodes: an explicit projection input, never the current style. A morphology
@@ -56,7 +56,7 @@ export type Axes = {
 export const DEFAULT_AXES: Axes = {
   projection: "2d",
   morphology: "stellar",
-  organization: "flat",
+  organization: "natural",
   colour: "bw",
   labels: true,
   reading: "attested",
@@ -105,6 +105,41 @@ export const LEGACY_ORGANIZATION = "flat";
 
 /** The canonical Natural name on the wire. */
 export const NATURAL_ORGANIZATION: SavedOrganization = "natural";
+
+/** Axes as an entry point may receive them: the organization may still use the legacy read alias. */
+export type AxesInput = Partial<Omit<Axes, "organization">> & {
+  readonly organization?: Organization | typeof LEGACY_ORGANIZATION;
+};
+
+/**
+ * Reads an organization at an entry point (saved view, storage, URL, bookmark, hook argument): the
+ * legacy `flat` alias becomes Natural here and every other spelling outside the closed vocabulary is
+ * refused, so the live path only ever sees `natural` or `indra`.
+ */
+export function normalizeOrganizationInput(value: unknown): Organization {
+  if (value === "natural" || value === "indra") return value;
+  if (value === LEGACY_ORGANIZATION) return NATURAL_ORGANIZATION;
+  throw new TypeError(`organization is outside its closed vocabulary: ${String(value)}`);
+}
+
+/** Complete axes as an entry point may receive them, with the organization still allowed to be the legacy alias. */
+export type FullAxesInput = Omit<Axes, "organization"> & {
+  readonly organization: Organization | typeof LEGACY_ORGANIZATION;
+};
+
+/** Normalises the organization of complete axes from an entry point; other fields pass through. */
+export function normalizeFullAxesInput(value: FullAxesInput): Axes {
+  return { ...value, organization: normalizeOrganizationInput(value.organization) };
+}
+
+/** Normalises the organization of a partial axes update from an entry point; other fields pass through. */
+export function normalizeAxesInput(value: AxesInput): Partial<Axes> {
+  if (value.organization === undefined) {
+    const { organization: _absent, ...rest } = value;
+    return rest;
+  }
+  return { ...value, organization: normalizeOrganizationInput(value.organization) };
+}
 
 /**
  * Serializes the view axes to the saved wire form: old Flat in the producer becomes Natural plus an
@@ -172,12 +207,10 @@ export function parseSavedAxes(serialized: string): Axes {
     const arrangement = record.arrangement === undefined
       ? undefined
       : (assertVocabulary(record.arrangement, SAVED_AXES_VOCABULARIES.arrangement, "arrangement"), record.arrangement as Arrangement);
-    // The saved form is canonical (`natural`); the live page vocabulary still spells Natural as the
-    // legacy `flat` until the engine-vocabulary migration, and serialization writes `natural` back.
     return {
       projection: record.projection as Projection,
       morphology: record.morphology as Morphology,
-      organization: "flat",
+      organization: NATURAL_ORGANIZATION,
       colour: record.colour as Colour,
       labels: record.labels as boolean,
       reading: record.reading as Reading,

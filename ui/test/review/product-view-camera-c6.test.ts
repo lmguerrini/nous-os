@@ -45,7 +45,7 @@ const {
 const axes = (overrides: Partial<Axes> = {}): Axes => ({
   projection: "2d",
   morphology: "stellar",
-  organization: "flat",
+  organization: "natural",
   colour: "bw",
   labels: true,
   reading: "attested",
@@ -57,9 +57,9 @@ const camera = (x: number): VisualStateCamera => ({
 
 test("the camera key is arrangement-qualified for Natural and unchanged in form for Indra", () => {
   assert.deepEqual(productCameraKey(axes({ arrangement: "constellation" })),
-    { key: "2d/natural/constellation", legacyKey: "2d/flat", replaysLegacy: true });
+    { key: "2d/natural/constellation", legacyKey: "2d/natural", replaysLegacy: true });
   assert.deepEqual(productCameraKey(axes({ projection: "3d", morphology: "neural", arrangement: "network" })),
-    { key: "3d/natural/network", legacyKey: "3d/flat", replaysLegacy: true });
+    { key: "3d/natural/network", legacyKey: "3d/natural", replaysLegacy: true });
   // The pinned D-072 legacy form: projection/organization, which is also Indra's whole key.
   assert.deepEqual(productCameraKey(axes({ organization: "indra" })),
     { key: "2d/indra", legacyKey: "2d/indra", replaysLegacy: false });
@@ -81,8 +81,8 @@ test("an old camera replays under the new key and is promoted with its fit ratio
   const cameras = new Map<string, VisualStateCamera>();
   const fitRatio = new Map<string, number>();
   const old = camera(7);
-  cameras.set("2d/flat", old);
-  fitRatio.set("2d/flat", 4);
+  cameras.set("2d/natural", old);
+  fitRatio.set("2d/natural", 4);
   const keys = productCameraKey(axes({ morphology: "mycelium" }));
   assert.equal(replayProductCamera(cameras, fitRatio, keys), old, "the legacy camera replays");
   assert.equal(cameras.get("2d/natural/mycelium"), old, "the replay landed under the new key");
@@ -92,7 +92,7 @@ test("an old camera replays under the new key and is promoted with its fit ratio
   const fresh = camera(9);
   cameras.set(keys.key, fresh);
   assert.equal(replayProductCamera(cameras, fitRatio, keys), fresh);
-  assert.equal(cameras.get("2d/flat"), old);
+  assert.equal(cameras.get("2d/natural"), old);
   // Indra never replays and never promotes: its key is its own legacy key.
   const indraKeys = productCameraKey(axes({ organization: "indra" }));
   assert.equal(replayProductCamera(cameras, fitRatio, indraKeys), undefined);
@@ -110,18 +110,18 @@ test("an explicit fit commits under both keys and an explicit reset cannot be re
   const fitted = camera(11);
   commitProductCamera(cameras, fitRatio, keys, fitted, 6);
   assert.equal(cameras.get("2d/natural/mycelium"), fitted);
-  assert.equal(cameras.get("2d/flat"), fitted, "the explicit fit becomes the replay source");
+  assert.equal(cameras.get("2d/natural"), fitted, "the explicit fit becomes the replay source");
   assert.equal(fitRatio.get("2d/natural/mycelium"), 6);
-  assert.equal(fitRatio.get("2d/flat"), 6);
+  assert.equal(fitRatio.get("2d/natural"), 6);
   // A later arrangement switch replays the explicitly fitted camera, not a pre-fit one.
   const replayed = replayProductCamera(cameras, fitRatio, productCameraKey(axes({ morphology: "neural" })));
   assert.equal(replayed, fitted);
   // The explicit reset forgets both spellings, so the remount refits instead of resurrecting.
   forgetProductCamera(cameras, fitRatio, keys);
   assert.equal(cameras.has("2d/natural/mycelium"), false);
-  assert.equal(cameras.has("2d/flat"), false, "the deleted camera cannot be replayed back");
+  assert.equal(cameras.has("2d/natural"), false, "the deleted camera cannot be replayed back");
   assert.equal(fitRatio.has("2d/natural/mycelium"), false);
-  assert.equal(fitRatio.has("2d/flat"), false);
+  assert.equal(fitRatio.has("2d/natural"), false);
   assert.equal(replayProductCamera(cameras, fitRatio, keys), undefined);
   // Indra commits and forgets exactly one key.
   const indraKeys = productCameraKey(axes({ projection: "3d", organization: "indra" }));

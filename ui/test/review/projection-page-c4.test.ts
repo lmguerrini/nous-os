@@ -64,7 +64,7 @@ const pageModule = (await import(pathToFileURL(bundlePath).href)) as typeof impo
 const { V2Page: Page } = pageModule;
 
 const MANIFEST: GraphManifest = { schema: 'nousos.review-graph/2', digest: 'd073-c4-fixture', counts: {}, limits: {} };
-const AXES = { projection: '2d' as const, morphology: 'stellar' as const, organization: 'flat' as const,
+const AXES = { projection: '2d' as const, morphology: 'stellar' as const, organization: 'natural' as const,
   colour: 'bw' as const, labels: true, reading: 'attested' as const };
 const APPEARANCE = { expandX: 1, expandY: 1, expandZ: 1, nodeScale: 1 } as never;
 const PALETTE = { background: '#050505', aggregate: '#f0f0f0', concept: '#dedede', attested: '#b8b8b8',
@@ -228,6 +228,75 @@ test('audit 3: continuity anchors re-seed on disclosure and replay byte-identica
     assert.equal(witness().projection.resultDigest, anchored.resultDigest,
       `morphology ${morphology} keeps the resolved arrangement, anchors and digest`);
   }
+});
+
+test('an explicit axes arrangement reaches the request and survives style switches and an Indra round-trip', async () => {
+  const index = fixtureIndex();
+  const { page } = await typedPage(index, { arrangement: 'network' });
+  const witness = () => page.witness() as { projection: { resultDigest: string; arrangement: string | null } };
+  assert.equal(witness().projection.arrangement, 'network', 'the explicit arrangement reached the request');
+  const explicitDigest = witness().projection.resultDigest;
+
+  // The explicit arrangement wins over every style's creation-time default: same request, same digest.
+  for (const morphology of ['stellar', 'mycelium'] as const) {
+    await page.setAxes({ morphology });
+    assert.equal(witness().projection.arrangement, 'network');
+    assert.equal(witness().projection.resultDigest, explicitDigest,
+      `morphology ${morphology} keeps the explicit arrangement, anchors and digest`);
+  }
+
+  // An explicit arrangement switch is a request change: a different result.
+  await page.setAxes({ arrangement: 'mycelium' });
+  assert.equal(witness().projection.arrangement, 'mycelium');
+  const myceliumDigest = witness().projection.resultDigest;
+  assert.notEqual(myceliumDigest, explicitDigest);
+
+  // Indra never carries an arrangement — the register rule holds on the page's own axes — and
+  // the round-trip restores the resolved arrangement and its digest unchanged.
+  await page.setAxes({ organization: 'indra' });
+  assert.equal((page as unknown as { axes: Axes }).axes.arrangement, undefined,
+    'the merged Indra axes carry no arrangement');
+  await page.setAxes({ organization: 'flat' });
+  assert.equal(witness().projection.arrangement, 'mycelium', 'the Indra round-trip keeps the resolved arrangement');
+  assert.equal(witness().projection.resultDigest, myceliumDigest, 'the round-trip replays the same natural result');
+});
+
+test('the flat spelling is a read alias at the page entry points: it is normalised and never re-emitted', async () => {
+  const index = fixtureIndex();
+  const snapshot = await snapshotFor(index);
+  const legacyPage = async (organization: 'flat' | 'natural'): Promise<V2Page> => {
+    const fake = fakePipeline(snapshot, { dimension: '2d', mount() {}, updateVisibleSubset() {}, destroy() {}, onPick() {}, onHover() {} });
+    const page = new Page(MANIFEST, index, { ...AXES, organization }, APPEARANCE, PALETTE, {}, 'complete',
+      { projectionPipeline: fake.input });
+    await page.refresh();
+    return page;
+  };
+  const axesOf = (page: V2Page) => (page as unknown as { axes: Axes }).axes;
+  const witnessOf = (page: V2Page) => page.witness() as { projection: { resultDigest: string; arrangement: string | null } };
+
+  const viaAlias = await legacyPage('flat');
+  const viaCanonical = await legacyPage('natural');
+  assert.equal(axesOf(viaAlias).organization, 'natural', 'the constructor normalises the alias');
+  assert.equal(witnessOf(viaAlias).projection.resultDigest, witnessOf(viaCanonical).projection.resultDigest,
+    'Natural is the old Flat layout: same request, same result');
+  assert.equal(witnessOf(viaAlias).projection.arrangement, 'constellation');
+
+  // The setAxes hook: the alias is normalised, an Indra round trip through it lands on Natural again.
+  await viaCanonical.setAxes({ organization: 'indra' });
+  assert.equal(axesOf(viaCanonical).organization, 'indra');
+  await viaCanonical.setAxes({ organization: 'flat' });
+  assert.equal(axesOf(viaCanonical).organization, 'natural');
+  await viaCanonical.setAxes({ organization: 'natural' });
+  assert.equal(axesOf(viaCanonical).organization, 'natural');
+  for (const page of [viaAlias, viaCanonical]) {
+    assert.doesNotMatch(JSON.stringify(page.witness()), /"flat"/, 'no hook result carries the legacy spelling');
+    assert.doesNotMatch(JSON.stringify(axesOf(page)), /"flat"/);
+  }
+  const before = axesOf(viaAlias);
+  await assert.rejects(viaAlias.setAxes({ organization: 'bogus' as never }), /organization is outside its closed vocabulary/);
+  assert.equal(axesOf(viaAlias), before, 'a refused organization leaves the page state untouched');
+  assert.throws(() => new Page(MANIFEST, index, { ...AXES, organization: 'bogus' as never }, APPEARANCE, PALETTE, {}, 'complete'),
+    /organization is outside its closed vocabulary/);
 });
 
 test('the six-class mask composes the density ratio with the camera level', async () => {

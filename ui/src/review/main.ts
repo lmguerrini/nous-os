@@ -1,8 +1,8 @@
 import { humanLabel, initialState, searchNode, shortHumanLabel, visibleGraph } from "./model.ts";
 import type { ReviewExport, ReviewNode } from "./model.ts";
 import { createProductView } from "./product-view.ts";
-import { DEFAULT_AXES, parseSavedAxes, savedAxesRecord, serializeAxes } from "./view-contract.ts";
-import type { Axes, ProductView, ViewWitness } from "./view-contract.ts";
+import { DEFAULT_AXES, normalizeAxesInput, parseSavedAxes, savedAxesRecord, serializeAxes } from "./view-contract.ts";
+import type { Axes, AxesInput, ProductView, ViewWitness } from "./view-contract.ts";
 import { resolveNaturalArrangementWithSource } from "../projection/natural-bridge.ts";
 import type { ResolvedNaturalArrangement } from "../projection/natural-bridge.ts";
 import { FAMILY_OF, standingOf } from "./presentation.ts";
@@ -104,7 +104,7 @@ const initialUrlView = readUrlView();
 const initialView = initialUrlView ?? readStoredView();
 if (initialView) axes = initialView.axes;
 else axes = { ...DEFAULT_AXES, arrangement: resolveNaturalArrangementWithSource(DEFAULT_AXES.morphology).arrangement };
-let resolvedArrangement: ResolvedNaturalArrangement | null = axes.organization === "flat"
+let resolvedArrangement: ResolvedNaturalArrangement | null = axes.organization === "natural"
   ? resolveNaturalArrangementWithSource(axes.morphology, initialView?.explicitArrangement === true ? axes.arrangement : undefined)
   : null;
 function appliedAxes(partial: Partial<Axes>): Axes {
@@ -131,7 +131,7 @@ function persistView(): void {
 function syncArrangementInspector(): void {
   const host = document.getElementById("arrangement-inspector");
   if (!host) return;
-  if (!resolvedArrangement || axes.organization !== "flat") { host.hidden = true; host.textContent = ""; return; }
+  if (!resolvedArrangement || axes.organization !== "natural") { host.hidden = true; host.textContent = ""; return; }
   host.textContent = resolvedArrangement.source === "explicit"
     ? `Natural · ${resolvedArrangement.arrangement} · esplicita · ${resolvedArrangement.layoutVersion}`
     : `Natural · ${resolvedArrangement.arrangement} · predefinita da ${MORPHOLOGY_LABELS[axes.morphology]} · ${resolvedArrangement.layoutVersion}`;
@@ -546,7 +546,8 @@ function fit(): Promise<void> {
     announce(fitNotice(visibleIds.size));
   });
 }
-function setAxes(partial: Partial<Axes>): Promise<void> {
+function setAxes(input: AxesInput): Promise<void> {
+  const partial = normalizeAxesInput(input);
   axes = appliedAxes(partial);
   persistView();
   syncArrangementInspector();
@@ -797,7 +798,7 @@ function readFilters(): Promise<void> {
 for (const axis of ["projection", "morphology", "organization", "reading"] as const)
   document.querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`).forEach((button) => {
     button.addEventListener("click", () => {
-      void setAxes({ [axis]: button.dataset.value } as Partial<Axes>);
+      void setAxes({ [axis]: button.dataset.value } as AxesInput);
     });
   });
 document.querySelectorAll<HTMLButtonElement>("[data-preset]").forEach((button) => button.addEventListener("click", () => {
@@ -892,7 +893,7 @@ get<HTMLButtonElement>("appearance-default").addEventListener("click", () => {
 });
 get<HTMLButtonElement>("equilibra-volume").addEventListener("click", () => {
   if (!v2) return;
-  if (axes.projection !== "3d" || axes.organization !== "flat") {
+  if (axes.projection !== "3d" || axes.organization !== "natural") {
     announce("Equilibra volume è disponibile nella vista 3D Natural");
     return;
   }
@@ -1140,7 +1141,7 @@ const api = {
   state: () => ({
     axes: { ...axes },
     view: savedAxesRecord(axes),
-    resolvedArrangement: axes.organization === "flat" && resolvedArrangement ? { ...resolvedArrangement } : null,
+    resolvedArrangement: axes.organization === "natural" && resolvedArrangement ? { ...resolvedArrangement } : null,
     selected: v2?.selectedId ?? stack?.current?.id ?? null,
     stack: stack?.ids ?? [],
     stackDepth: stack?.depth ?? 0,

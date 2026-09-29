@@ -21,8 +21,8 @@ export type NaturalLayoutBranch = 'flat-stellar' | 'flat-organic';
 /** One pinned row of the arrangement-to-existing-branch table. */
 export type NaturalArrangementDispatch = Readonly<{
   readonly arrangement: NaturalArrangement;
-  /** The legacy layout vocabulary has no `natural`; the bridge adapts the arrangement to it. */
-  readonly legacyOrganization: 'flat';
+  /** The legacy layout has no arrangement parameter; the bridge adapts the arrangement to its branch and style. */
+  readonly legacyOrganization: 'natural';
   readonly legacyMorphology: 'stellar' | 'neural' | 'mycelium';
   readonly layoutBranch: NaturalLayoutBranch;
   /** Every Flat branch of the pinned D-072 head reports this `LayoutResult.source`. */
@@ -31,22 +31,22 @@ export type NaturalArrangementDispatch = Readonly<{
 
 /**
  * The arrangement-to-existing-branch table, pinned against the verified D-072 integration head:
- * `computeLayout` dispatch (`src/review/layout-v2.ts:886-888`) sends organization `flat` to the
+ * `computeLayout` dispatch (`src/review/layout-v2.ts:886-888`) sends organization `natural` to the
  * `flat` branch (`:240-244`), which selects `flatStellar` (`:601-704`) for morphology `stellar`
  * and the organic `flat2d`/`flat3d` branches otherwise. The explicit arrangement — never the
  * current style — picks the row; a style switch can only restyle the same positions.
  */
 export const NATURAL_ARRANGEMENT_LAYOUT_DISPATCH: Readonly<Record<NaturalArrangement, NaturalArrangementDispatch>> = Object.freeze({
   constellation: Object.freeze({
-    arrangement: 'constellation', legacyOrganization: 'flat', legacyMorphology: 'stellar',
+    arrangement: 'constellation', legacyOrganization: 'natural', legacyMorphology: 'stellar',
     layoutBranch: 'flat-stellar', layoutSource: 'flat-community',
   }),
   network: Object.freeze({
-    arrangement: 'network', legacyOrganization: 'flat', legacyMorphology: 'neural',
+    arrangement: 'network', legacyOrganization: 'natural', legacyMorphology: 'neural',
     layoutBranch: 'flat-organic', layoutSource: 'flat-community',
   }),
   mycelium: Object.freeze({
-    arrangement: 'mycelium', legacyOrganization: 'flat', legacyMorphology: 'mycelium',
+    arrangement: 'mycelium', legacyOrganization: 'natural', legacyMorphology: 'mycelium',
     layoutBranch: 'flat-organic', layoutSource: 'flat-community',
   }),
 });
@@ -157,7 +157,7 @@ function legacyRelations(snapshot: SemanticGraphSnapshot, selected: ReadonlySet<
   const edges: GraphEdge[] = snapshot.edges.map(edge => edge.rawEdge.raw as GraphEdge);
   // D-072's exploratory reading includes both classes; only attested reading filters one out.
   const reading = policy === 'attested-essential' ? 'attested' : 'combined';
-  return projectRelations(nodes, edges, selected, reading, 'flat', 'essential').edges;
+  return projectRelations(nodes, edges, selected, reading, 'natural', 'essential').edges;
 }
 
 function visualRelations(relations: ReturnType<typeof legacyRelations>): VisualRelation[] {

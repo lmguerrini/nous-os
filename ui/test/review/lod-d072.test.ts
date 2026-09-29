@@ -144,7 +144,7 @@ test("coordinates are stable for nodes that stay visible across density and leve
     id: node.id, level: node.level as 1 | 2 | 3 | 4 | 5, parent: node.parent, size: 0.3, domains: [],
   }));
   const edges: LayoutEdge[] = fixture.arcs.map(arc => ({ id: arc.id, source: arc.source, target: arc.target, class: arc.class }));
-  const positions = new Map(computeLayout({ nodes: layoutNodes, edges, organization: "flat", morphology: "stellar" }).positions);
+  const positions = new Map(computeLayout({ nodes: layoutNodes, edges, organization: "natural", morphology: "stellar" }).positions);
   const atEssential = new Set(selectNodes(baseInput(fixture, "far", DENSITY_BUDGETS.essential.nodes)).rendered);
   const atComplete = new Set(selectNodes(baseInput(fixture, "intermediate", DENSITY_BUDGETS.complete.nodes)).rendered);
   const staying = [...atEssential].filter(id => atComplete.has(id));
@@ -152,7 +152,7 @@ test("coordinates are stable for nodes that stay visible across density and leve
   // The layout's incremental stability: re-running with the previous positions as seeds returns
   // every existing coordinate unchanged, whatever subset a later pass renders.
   for (const morphology of ["stellar", "mycelium"] as const) {
-    const second = computeLayout({ nodes: layoutNodes, edges, organization: "flat", morphology, previous: positions });
+    const second = computeLayout({ nodes: layoutNodes, edges, organization: "natural", morphology, previous: positions });
     for (const id of staying) {
       assert.deepEqual(second.positions.get(id), positions.get(id), `${morphology}: ${id} must not move`);
     }

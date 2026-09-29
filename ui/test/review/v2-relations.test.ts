@@ -37,15 +37,15 @@ test('co-membership counts conversations once per domain pair', () => {
 
 test('lifting merges underlying evidence and applies readings after aggregation', () => {
   const visible = new Set(['domain:a', 'domain:b', 'domain:c']);
-  const attested = projectRelations(nodes, edges, visible, 'attested', 'flat');
+  const attested = projectRelations(nodes, edges, visible, 'attested', 'natural');
   assert.equal(attested.edges.filter(item => item.class === 'exploratory').length, 0);
   const lifted = attested.edges.find(item => item.type === 'co_membership' && item.source === 'domain:a');
   assert.deepEqual(lifted?.underlying.map(item => item.id), ['a', 'b']);
   assert.equal(lifted?.count, 2);
   assert.equal(attested.edges.some(item => item.underlying.some(source => source.id === 'd' || source.id === 'e')), false);
-  const exploratory = projectRelations(nodes, edges, visible, 'exploratory', 'flat');
+  const exploratory = projectRelations(nodes, edges, visible, 'exploratory', 'natural');
   assert.ok(exploratory.edges.some(item => item.class === 'exploratory' && item.underlying[0]?.id === 'c'));
-  const all = projectRelations(nodes, edges, visible, 'combined', 'flat', 'all');
+  const all = projectRelations(nodes, edges, visible, 'combined', 'natural', 'all');
   assert.ok(all.edges.some(item => item.underlying.some(source => source.id === 'd')));
 });
 
@@ -95,29 +95,29 @@ test('Indra keeps intra-pearl and inter-pearl semantics separate from hierarchy'
 test('typed lifted relation records every source contributor without rewriting semantic records', () => {
   const sources = [...edges, edge('f', 'proposal:1', 'proposal:2', 'attested', 'supports')];
   const visible = new Set(['domain:a', 'domain:b', 'domain:c']);
-  const result = projectTypedRelations(nodes, sources, visible, 'attested', 'flat');
+  const result = projectTypedRelations(nodes, sources, visible, 'attested', 'natural');
   const pair = result.visualRelations.find(relation => relation.kind === 'co-membership' &&
     relation.source === 'domain:a' && relation.target === 'domain:b');
   assert.deepEqual(pair?.underlyingEdgeIds, ['a', 'b', 'f']);
   assert.equal(pair?.semantic, false);
   assert.ok(pair?.visualId.startsWith('visual:relation:'));
   assert.deepEqual(result.semanticEdges, []); // Hidden endpoints remain in the source ledger, not the visible semantic set.
-  const expanded = projectTypedRelations(nodes, sources, new Set(nodes.map(item => item.id)), 'combined', 'flat', 'all');
+  const expanded = projectTypedRelations(nodes, sources, new Set(nodes.map(item => item.id)), 'combined', 'natural', 'all');
   assert.strictEqual(expanded.semanticEdges.find(item => item.id === 'f'), sources.at(-1));
   assert.ok(expanded.visualRelations.some(relation => relation.kind === 'lifted-route' &&
     relation.underlyingEdgeIds.includes('f')));
   assert.strictEqual(expanded.semanticEdges.find(item => item.id === 'c'), edges[2]);
   const direct = projectTypedRelations(nodes, [edges[0]!, edge('z', 'proposal:1', 'proposal:2', 'attested')],
-    new Set(nodes.map(item => item.id)), 'attested', 'flat', 'all');
+    new Set(nodes.map(item => item.id)), 'attested', 'natural', 'all');
   assert.ok(direct.visualRelations.some(relation => relation.kind === 'lifted-route' &&
     JSON.stringify(relation.underlyingEdgeIds) === JSON.stringify(['a', 'z'])));
-  assert.throws(() => projectTypedRelations(nodes, [edges[0]!, edges[0]!], visible, 'attested', 'flat'),
+  assert.throws(() => projectTypedRelations(nodes, [edges[0]!, edges[0]!], visible, 'attested', 'natural'),
     /Duplicate source edge ID/);
 });
 
 test('empty-underlying co-membership and containment are explicitly non-semantic', () => {
   const visible = new Set(nodes.map(item => item.id));
-  const result = projectTypedRelations(nodes, [], visible, 'attested', 'flat');
+  const result = projectTypedRelations(nodes, [], visible, 'attested', 'natural');
   const structural = result.visualRelations.filter(relation =>
     relation.kind === 'co-membership' || relation.kind === 'synthetic-containment');
   assert.ok(structural.some(relation => relation.kind === 'co-membership'));

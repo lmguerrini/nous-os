@@ -34,7 +34,7 @@ export function labelCandidateKind(input: {
   readonly neighbour: boolean;
   readonly overview: boolean;
   readonly close: boolean;
-  readonly organization: "flat" | "indra";
+  readonly organization: "natural" | "indra";
   readonly projection: "2d" | "3d";
   readonly focusMembers: ReadonlySet<string> | null;
   readonly moving: boolean;
@@ -51,7 +51,7 @@ export function labelCandidateKind(input: {
   else if (input.close) reason = "zoom";
   if (!reason) return null;
   const tier1 = reason === "hover" || reason === "selected"
-    || (input.organization === "flat" && reason === "domain");
+    || (input.organization === "natural" && reason === "domain");
   if (input.focusMembers && !input.focusMembers.has(input.id) && !tier1) return null;
   if (input.moving && !tier1) return null;
   return { reason, tier1 };

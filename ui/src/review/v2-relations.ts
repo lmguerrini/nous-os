@@ -68,7 +68,7 @@ const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 /** Typed output for the projection/render bridge. Original semantic records are never rewritten. */
 export function projectTypedRelations(
   nodes: readonly V2Node[], edges: readonly GraphEdge[], visible: ReadonlySet<string>,
-  reading: Reading, organization: 'flat' | 'indra', detail: RelationDetail = 'essential',
+  reading: Reading, organization: 'natural' | 'indra', detail: RelationDetail = 'essential',
   active: string | null = null,
 ): TypedRelationProjection {
   const legacy = projectRelations(nodes, edges, visible, reading, organization, detail, active);
@@ -126,7 +126,7 @@ export function coMembership(nodes: readonly V2Node[], visible: ReadonlySet<stri
 
 function projectLegacyRelations(
   nodes: readonly V2Node[], edges: readonly GraphEdge[], visible: ReadonlySet<string>,
-  reading: Reading, organization: 'flat' | 'indra', detail: RelationDetail = 'essential',
+  reading: Reading, organization: 'natural' | 'indra', detail: RelationDetail = 'essential',
   active: string | null = null,
 ): RelationProjection {
   const byNode = new Map(nodes.map(node => [node.id, node]));
@@ -142,7 +142,7 @@ function projectLegacyRelations(
   for (const edge of edges) {
     if (edge.type === 'contains' || edge.type === 'classified_in') continue;
     if (reading === 'attested' && edge.class === 'exploratory') continue;
-    if (organization === 'flat' && edge.type === 'mentions' && detail === 'essential' && active !== edge.source && active !== edge.target) continue;
+    if (organization === 'natural' && edge.type === 'mentions' && detail === 'essential' && active !== edge.source && active !== edge.target) continue;
     const source = visibleAncestor(edge.source, visible, byNode);
     const target = visibleAncestor(edge.target, visible, byNode);
     if (!source || !target || source === target) continue;
@@ -154,14 +154,14 @@ function projectLegacyRelations(
     underlying: bucket.items, lifted: bucket.lifted || bucket.items.length > 1,
     width: width(bucket.items.length),
   }));
-  if (organization === 'flat') {
+  if (organization === 'natural') {
     for (const node of nodes) if (visible.has(node.id) && node.parent && visible.has(node.parent)) {
       projected.push({ id: `contains:${node.id}`, source: node.parent, target: node.id,
         class: 'attested', type: 'contains', directed: true, evidence: [], count: 1,
         underlying: [], lifted: false, width: 0.65 });
     }
   }
-  if (organization === 'flat' || organization === 'indra') {
+  if (organization === 'natural' || organization === 'indra') {
     for (const membership of coMembership(nodes, visible)) {
       const duplicate = projected.findIndex(edge => edge.class === 'attested' &&
         edge.source === membership.source && edge.target === membership.target && edge.type !== 'contains');
@@ -184,7 +184,7 @@ function projectLegacyRelations(
 /** Temporary shape for v2-page and the legacy Natural coordinate bridge. */
 export function projectRelations(
   nodes: readonly V2Node[], edges: readonly GraphEdge[], visible: ReadonlySet<string>,
-  reading: Reading, organization: 'flat' | 'indra', detail: RelationDetail = 'essential',
+  reading: Reading, organization: 'natural' | 'indra', detail: RelationDetail = 'essential',
   active: string | null = null,
 ): RelationProjection {
   return projectLegacyRelations(nodes, edges, visible, reading, organization, detail, active);
