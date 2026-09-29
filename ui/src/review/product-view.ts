@@ -101,6 +101,35 @@ const anchorBaseline = new Map<string, {
 /** Pointer travel (CSS px) beyond which a press-and-release is a drag, not a click. */
 const CLICK_DRAG_TOLERANCE_PX = 5;
 
+// Views overlap during a page refresh. Each one owns its shadow so retiring an older view
+// cannot restore the browser descriptor over the new view's live resolution getter.
+const devicePixelRatioShadows: Array<{ get: () => number }> = [];
+let originalDevicePixelRatioDescriptor: PropertyDescriptor | undefined;
+let nativeDevicePixelRatio: number | undefined;
+
+export function installDevicePixelRatioShadow(get: () => number): () => void {
+  if (devicePixelRatioShadows.length === 0) {
+    originalDevicePixelRatioDescriptor = Object.getOwnPropertyDescriptor(window, "devicePixelRatio");
+    nativeDevicePixelRatio = window.devicePixelRatio;
+  }
+  const entry = { get };
+  devicePixelRatioShadows.push(entry);
+  Object.defineProperty(window, "devicePixelRatio", { configurable: true, get });
+  return () => {
+    const index = devicePixelRatioShadows.indexOf(entry);
+    if (index < 0) return;
+    devicePixelRatioShadows.splice(index, 1);
+    const top = devicePixelRatioShadows.at(-1);
+    if (top) Object.defineProperty(window, "devicePixelRatio", { configurable: true, get: top.get });
+    else {
+      if (originalDevicePixelRatioDescriptor) Object.defineProperty(window, "devicePixelRatio", originalDevicePixelRatioDescriptor);
+      else delete (window as { devicePixelRatio?: number }).devicePixelRatio;
+      originalDevicePixelRatioDescriptor = undefined;
+      nativeDevicePixelRatio = undefined;
+    }
+  };
+}
+
 /** A camera every renderer accepts: finite centre and a finite, positive zoom or dolly. */
 function validCamera(camera: VisualStateCamera | undefined | null): camera is VisualStateCamera {
   return !!camera && Number.isFinite(camera.x) && Number.isFinite(camera.y) && Number.isFinite(camera.ratio)
@@ -171,10 +200,9 @@ export const createProductView: CreateProductView = async (input) => {
   // of the global are the two morphology canvases (render2d and the 3D distinct overlay), so the
   // cap reaches exactly the layers it names while the GL layers keep the ratio they captured at
   // mount. Restored in destroy().
-  const nativeDevicePixelRatio = window.devicePixelRatio;
-  let scheduledDevicePixelRatio = renderPixelScale("full", nativeDevicePixelRatio);
-  const devicePixelRatioDescriptor = Object.getOwnPropertyDescriptor(window, "devicePixelRatio");
-  Object.defineProperty(window, "devicePixelRatio", { configurable: true, get: () => scheduledDevicePixelRatio });
+  const viewNativeDevicePixelRatio = nativeDevicePixelRatio ?? window.devicePixelRatio;
+  let scheduledDevicePixelRatio = renderPixelScale("full", viewNativeDevicePixelRatio);
+  const removeDevicePixelRatioShadow = installDevicePixelRatioShadow(() => scheduledDevicePixelRatio);
   let resolutionTimer: ReturnType<typeof setTimeout> | undefined;
   // Luminous flow animation (D-072 P1a): a dedicated overlay canvas above the morphology layer
   // repaints only the travelling highlights, at about 30 fps, pausing whenever nothing can animate
@@ -660,7 +688,7 @@ export const createProductView: CreateProductView = async (input) => {
   // because of its reduced drawing, not a lower resolution, so the canvases keep the rest scale
   // while moving and the only applies left are policy changes at rest (a DPR or window change).
   const applyResolution = () => {
-    const plan = resolutionApplyPlan(morphologyInteraction.quality, nativeDevicePixelRatio, scheduledDevicePixelRatio);
+    const plan = resolutionApplyPlan(morphologyInteraction.quality, viewNativeDevicePixelRatio, scheduledDevicePixelRatio);
     if (!plan.apply) return;
     const began = performance.now();
     scheduledDevicePixelRatio = plan.scale;
@@ -1048,7 +1076,20 @@ export const createProductView: CreateProductView = async (input) => {
     requestAnimationFrame(() => { if (!destroyed) { sizeFlowCanvas(); labelPass(); } });
   });
   resizeLabelObserver.observe(container);
-  mount();
+  try { mount(); }
+  catch (error) {
+    destroyed = true;
+    resizeLabelObserver.disconnect();
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    if (resolutionTimer !== undefined) clearTimeout(resolutionTimer);
+    if (cameraLabelTimer !== undefined) clearTimeout(cameraLabelTimer);
+    cancelAnimationFrame(frameId);
+    cancelAnimationFrame(hoverFrame);
+    cancelAnimationFrame(movingLabelFrame);
+    stopFlowLoop();
+    removeDevicePixelRatioShadow();
+    throw error;
+  }
   (globalThis as typeof globalThis & { __d071?: unknown }).__d071 = {
     flow: {
       // Test/measurement hooks for the browser checks.
@@ -1288,8 +1329,7 @@ export const createProductView: CreateProductView = async (input) => {
       flowContext = null;
       flowScene = null;
       // The devicePixelRatio shadow lives exactly as long as the view.
-      if (devicePixelRatioDescriptor) Object.defineProperty(window, "devicePixelRatio", devicePixelRatioDescriptor);
-      else delete (window as { devicePixelRatio?: number }).devicePixelRatio;
+      removeDevicePixelRatioShadow();
       handle = null;
     },
   };

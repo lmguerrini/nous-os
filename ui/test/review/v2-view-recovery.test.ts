@@ -43,12 +43,22 @@ writeFileSync(bundlePath, bundled.outputFiles[0]!.text);
 const fakeElement = (hidden = false) => {
   const el = {
     children: [] as unknown[], style: {} as Record<string, string>, dataset: {} as Record<string, string>,
+    parent: null as { children: unknown[] } | null,
     textContent: "", hidden,
     className: "", title: "", id: "", disabled: false, onclick: null as null | (() => void),
-    append(...items: unknown[]) { this.children.push(...items); },
+    append(...items: unknown[]) {
+      for (const item of items)
+        if (item && typeof item === "object" && "parent" in item)
+          (item as { parent: { children: unknown[] } | null }).parent = this;
+      this.children.push(...items);
+    },
     prepend(...items: unknown[]) { this.children.unshift(...items); },
     replaceChildren(...items: unknown[]) { this.children = items; },
-    remove() { this.children = []; },
+    remove() {
+      if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1);
+      this.parent = null;
+    },
+    getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; },
     addEventListener() { }, setAttribute() { }, toggleAttribute() { },
   };
   return el;
@@ -195,6 +205,43 @@ test("a successful mount swaps and destroys the old view exactly once, camera re
   assert.equal(view(page).destroyed(), 0);
   assert.equal(page.witness().lod.labels.rendered, labelCountFor(2), "labels come from the new view");
   assert.ok(view(page).restoredWith().length >= 1, "the D-071 same-scene rule restores the camera, never refits");
+});
+
+test("each refresh owns a host; failed mounts remove only their new host", async () => {
+  resetMountFailureLog();
+  mountCount = 0; mountAttempts = 0; destroyCount = 0; failMounts = false;
+  const root = elements.get("render-root")!;
+  root.replaceChildren();
+  const observed: string[] = [];
+  const page = makePage({ createView: async input => {
+    const host = input.container as unknown as ReturnType<typeof fakeElement>;
+    assert.equal(host.className, "view-host");
+    assert.deepEqual(host.style, { position: "absolute", inset: "0" });
+    assert.equal(root.children.at(-1), host, "the new host is attached before mount");
+    observed.push(`mount:${root.children.length}`);
+    if (failMounts) throw new Error("mount exploded (invented)");
+    const created = await fakeCreateView(input);
+    const destroy = created.destroy.bind(created);
+    created.destroy = () => {
+      observed.push(`destroy:${root.children.length}`);
+      destroy();
+    };
+    return created;
+  } });
+  await page.refresh();
+  const firstHost = root.children[0];
+  assert.equal(root.children.length, 1);
+  await page.refresh();
+  const secondHost = root.children[0];
+  assert.notEqual(secondHost, firstHost);
+  assert.deepEqual(observed.slice(0, 3), ["mount:1", "mount:2", "destroy:2"], "the old host survives until its view is destroyed");
+  assert.equal(root.children.length, 1, "the old host is removed after success");
+  failMounts = true;
+  await muteErrorLog(() => page.refresh());
+  assert.equal(observed.at(-1), "mount:2", "the working host remains during the attempted mount");
+  assert.deepEqual(root.children, [secondHost], "failure removes the attempted host only");
+  assert.equal(view(page).destroyed(), 0, "the working view survives failure");
+  failMounts = false;
 });
 
 test("safeSelectNodes is used: a throwing selection keeps the previous rendered set", async () => {

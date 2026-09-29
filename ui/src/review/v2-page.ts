@@ -68,6 +68,7 @@ export class V2Page {
     readonly index: V2Index;
     readonly manifest: GraphManifest;
     private view: ProductView | null = null;
+    private viewHost: HTMLElement | null = null;
     private v2Colours: Partial<Record<V2Category, string>>;
     private axes: Axes;
     private appearance: AppearanceOptions;
@@ -337,9 +338,13 @@ export class V2Page {
             // once and commits the page state. A mount that throws keeps the old view with its
             // camera and its labels — and, with no previous view at all (the very first load),
             // there is nothing to keep, so the error keeps its blocking form and its Riprova.
+            const nextHost = document.createElement('div');
+            nextHost.className = 'view-host';
+            Object.assign(nextHost.style, { position: 'absolute', inset: '0' });
+            element('render-root').append(nextHost);
             let mounted: ProductView;
             try {
-                mounted = await this.createView({ container: element('render-root'), data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {
                                 this.why(this.selected, target.id);
                             }
@@ -358,6 +363,7 @@ export class V2Page {
                 });
             }
             catch (error) {
+                nextHost.remove();
                 if (!this.view)
                     throw error;
                 if (!mountFailureLogged) {
@@ -368,8 +374,11 @@ export class V2Page {
                 return;
             }
             const previousView = this.view;
+            const previousHost = this.viewHost;
             this.view = mounted;
-            previousView?.destroy();
+            this.viewHost = nextHost;
+            try { previousView?.destroy(); }
+            finally { previousHost?.remove(); }
             // D-072 R1: the replacement is on screen — only now does the page state describe it.
             // A failed refresh above leaves every field at the last good values, matching the
             // view that is actually displayed (witness, labels, panel counts included).
@@ -664,6 +673,8 @@ export class V2Page {
     }
     private pulse(ids: string[]) {
         const host = element('render-root');
+        // Witness points are page coordinates; the root and its inset view host share a box.
+        const rect = host.getBoundingClientRect();
         const layer = document.createElement('div');
         layer.className = 'v2-new-nodes';
         Object.assign(layer.style, { position: 'absolute', inset: '0', pointerEvents: 'none', zIndex: '24' });
@@ -674,8 +685,8 @@ export class V2Page {
                 continue;
             const mark = document.createElement('span');
             mark.className = 'v2-pulse';
-            mark.style.left = `${point.x}px`;
-            mark.style.top = `${point.y}px`;
+            mark.style.left = `${point.x - rect.left}px`;
+            mark.style.top = `${point.y - rect.top}px`;
             layer.append(mark);
         }
         host.append(layer);
