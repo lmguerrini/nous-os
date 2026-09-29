@@ -110,7 +110,7 @@ export class V2Page {
     /** The Flat 3D embedding rotated into its PCA frame and default-normalised; the base for `equilibrateVolume`. */
     private canonicalPositions: ReadonlyMap<string, Point3> = new Map<string, Point3>();
     private layoutProjection: '2d' | '3d' = '2d';
-    private containers: LayoutContainer[] = [];
+    private containers: readonly LayoutContainer[] = [];
     private communities: readonly CommunityInfo[] = [];
     private arcTotal = 0;
     private layoutSource = 'placeholder';
@@ -366,13 +366,16 @@ export class V2Page {
                 const parent = visibleById.get(id)?.parent;
                 if (parent) renderedChildren.set(parent, (renderedChildren.get(parent) ?? 0) + 1);
             }
-            const nextContainers = result.containers.map(c => {
+            // This is the view's container snapshot. The geometry memo uses its array identity,
+            // so freeze the array, each record and each centre before either renderer sees it.
+            const nextContainers = Object.freeze(result.containers.map(c => {
                 const node = visibleById.get(c.id);
                 const title = node && displayLabel(node);
                 const hidden = node ? hiddenCount(node) : 0;
                 const open = c.id === ABSOLUTE_CONTAINER_ID || (c.open !== false && (renderedChildren.get(c.id) ?? 0) > 0);
-                return { ...c, open, ...(title ? { title: hidden ? `${title} · +${hidden}` : title } : {}) };
-            });
+                return Object.freeze({ ...c, center: Object.freeze({ ...c.center }), open,
+                    ...(title ? { title: hidden ? `${title} · +${hidden}` : title } : {}) });
+            }));
             const nextLayoutSource = result.source;
             const adapted = adaptV2(disclosed.nodes, shown, next, this.manifest.digest);
             const added = [...renderedIds].filter(id => !this.previousVisible.has(id));

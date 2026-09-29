@@ -27,7 +27,7 @@ export type MorphologyContainerPath = {
 // their world-space shell. Keep the 65-point rims and three great circles with that snapshot.
 let geometryByInput = new WeakMap<readonly MorphologyContainerInput[], readonly MorphologyContainerPath[]>();
 
-/** Drop the memo when a caller deliberately needs to rebuild a mutated input in a test. */
+/** Drop the memo between isolated tests. Cached input snapshots themselves cannot be mutated. */
 export function resetContainerGeometryCache(): void { geometryByInput = new WeakMap(); }
 
 /** A few great circles that read as a translucent sphere from any camera angle: an equator and two
@@ -47,6 +47,13 @@ function sphereShell(center: Coordinates, radius: number): readonly ShellCircle[
  * an exact circle in every morphology (D-072 V7): Stellar, Neural and Mycelium may only style the
  * nodes and arcs inside a pearl, never its boundary — the absolute NousOS pearl included. */
 export function buildContainerGeometry(_morphology: Morphology, containers: readonly MorphologyContainerInput[]): readonly MorphologyContainerPath[] {
+  // Identity is a valid cache key only when neither the array, a record, nor its centre can
+  // change. Freeze all three layers, including snapshots supplied by non-page callers.
+  for (const container of containers) {
+    Object.freeze(container.center);
+    Object.freeze(container);
+  }
+  Object.freeze(containers);
   const cached = geometryByInput.get(containers);
   if (cached) return cached;
   const geometry = containers.map(container => {

@@ -117,13 +117,31 @@ let mountCount = 0;
 let destroyCount = 0;
 let updateAttempts = 0;
 let refuseUpdates = false;
+let throwAfterFirstRenderer = false;
+let failReplacementMount = false;
+let firstRendererChanged = false;
 let cameraRatio = 1;
+let lastRendered: {
+  rendered: { pickable: Set<string>; geometry: string[]; style: Map<string, string>; labels: string[] };
+  firstRenderer: { geometry: string[]; style: Map<string, string> };
+  secondRenderer: { geometry: string[]; style: Map<string, string> };
+} | null = null;
 const updates: VisibleSubsetUpdate[] = [];
 const mountInputs: { visibleNodeIds: ReadonlySet<string>; visibleEdgeIds: ReadonlySet<string> | undefined }[] = [];
 const fakeCreateView: CreateProductView = async (input) => {
   mountCount += 1;
+  if (failReplacementMount && mountCount > 1) throw new Error("replacement mount failed");
   mountInputs.push({ visibleNodeIds: input.visibleNodeIds, visibleEdgeIds: input.visibleEdgeIds });
   cameraRatio = 1;
+  const rendered = {
+    pickable: new Set(input.visibleNodeIds),
+    geometry: [...(input.visibleEdgeIds ?? [])].sort(),
+    style: new Map([...(input.visibleEdgeIds ?? [])].map(id => [id, `old:${id}`])),
+    labels: [...input.visibleNodeIds].slice(0, input.labelBudget ?? 40).sort(),
+  };
+  const firstRenderer = { geometry: [...rendered.geometry], style: new Map(rendered.style) };
+  const secondRenderer = { geometry: [...rendered.geometry], style: new Map(rendered.style) };
+  lastRendered = { rendered, firstRenderer, secondRenderer };
   const view = {
     destroy() { destroyCount += 1; },
     readCamera: () => ({ ratio: cameraRatio }),
@@ -135,6 +153,17 @@ const fakeCreateView: CreateProductView = async (input) => {
       updateAttempts += 1;
       if (refuseUpdates)
         return false;
+      if (throwAfterFirstRenderer) {
+        const oldGeometry = [...firstRenderer.geometry];
+        const oldStyle = new Map(firstRenderer.style);
+        // The first renderer accepts the new overlay, then the injected failure fires before
+        // the second renderer, label pass or view-state commit. A transactional view restores it.
+        firstRenderer.geometry = ["partial:new", ...update.edges.map(edge => edge.id).sort()];
+        firstRenderer.style = new Map(update.edges.map(edge => [edge.id, `new:${edge.id}`]));
+        firstRendererChanged = true;
+        try { throw new Error("second renderer update failed"); }
+        finally { firstRenderer.geometry = oldGeometry; firstRenderer.style = oldStyle; }
+      }
       updates.push(update);
       return true;
     },
@@ -148,7 +177,9 @@ const fakeCreateView: CreateProductView = async (input) => {
 };
 
 const resetRecording = () => {
-  mountCount = 0; destroyCount = 0; updateAttempts = 0; refuseUpdates = false; cameraRatio = 1;
+  mountCount = 0; destroyCount = 0; updateAttempts = 0; refuseUpdates = false;
+  throwAfterFirstRenderer = false; failReplacementMount = false; firstRendererChanged = false;
+  cameraRatio = 1; lastRendered = null;
   updates.length = 0; mountInputs.length = 0;
 };
 /** `discloseConversations` seeds `auto` with the projects (semantic-zoom style, unpinned), so the
@@ -252,6 +283,41 @@ test("a view that refuses the update falls back to the remount", async () => {
   assert.equal(mountCount, 2, "the page falls back to a full remount");
   assert.equal(destroyCount, 1);
   assert.equal(page.densitySetting, "essential");
+});
+
+test("a renderer throw followed by a failed replacement keeps the last rendered view", async () => {
+  resetRecording();
+  const page = makePage(true);
+  await page.refresh();
+  const state = lastRendered!;
+  const before = {
+    ids: [...state.rendered.pickable].sort(),
+    geometry: [...state.rendered.geometry],
+    style: [...state.rendered.style],
+    labels: [...state.rendered.labels],
+    first: { geometry: [...state.firstRenderer.geometry], style: [...state.firstRenderer.style] },
+    second: { geometry: [...state.secondRenderer.geometry], style: [...state.secondRenderer.style] },
+    witness: page.witness(),
+  };
+  throwAfterFirstRenderer = true;
+  failReplacementMount = true;
+  await page.setDensity("essential");
+  assert.equal(firstRendererChanged, true, "the injected failure followed an actual overlay mutation");
+  assert.equal(mountCount, 2, "replacement was attempted");
+  assert.equal(destroyCount, 0, "the last good view was kept");
+  assert.strictEqual(lastRendered, state);
+  assert.deepEqual([...state.rendered.pickable].sort(), before.ids, "only old ids remain pickable");
+  assert.deepEqual(state.rendered.geometry, before.geometry);
+  assert.deepEqual([...state.rendered.style], before.style);
+  assert.deepEqual(state.rendered.labels, before.labels);
+  assert.deepEqual(state.firstRenderer.geometry, before.first.geometry);
+  assert.deepEqual([...state.firstRenderer.style], before.first.style);
+  assert.deepEqual(state.secondRenderer.geometry, before.second.geometry);
+  assert.deepEqual([...state.secondRenderer.style], before.second.style);
+  assert.deepEqual(page.witness().lod.nodes, before.witness.lod.nodes, "node counts remain committed");
+  assert.deepEqual(page.witness().lod.arcs, before.witness.lod.arcs, "arc counts remain committed");
+  assert.equal(page.witness().lod.labels.rendered, before.witness.lod.labels.rendered);
+  assert.deepEqual(page.witness().arcs, before.witness.arcs);
 });
 
 test("a disclosure change still remounts, with the drawn edge set named at mount", async () => {
