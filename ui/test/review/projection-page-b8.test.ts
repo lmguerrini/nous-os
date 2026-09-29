@@ -114,6 +114,12 @@ test('typed page uses one host and in-place mask revision on density', async () 
       {} as never, {}, 'complete', { projectionPipeline: input });
     await page.refresh();
     const first = (page as unknown as { projectionResult: ProjectionResult }).projectionResult;
+    // The far band's composed mask (complete × 0.4) still shows both endpoints of source-edge, so
+    // the semantic-edge pick is visible here; after 'balanced' the ratio keeps one node and the
+    // gate would correctly refuse the hidden edge.
+    callbacks.picked?.({ kind: 'semantic-edge', id: 'source-edge' }, false);
+    assert.equal(page.selectedId, 'source-edge');
+    assert.throws(() => callbacks.picked?.({ kind: 'semantic-edge', id: 'visual:relation' }, false), /unknown semantic edge/);
     await page.setDensity('balanced');
     assert.equal(mounts, 1);
     assert.equal(updates, 1);
@@ -125,9 +131,6 @@ test('typed page uses one host and in-place mask revision on density', async () 
     assert.equal(mounts, 1);
     assert.equal((page as unknown as { projectionResult: ProjectionResult }).projectionResult.determinism.resultDigest,
       first.determinism.resultDigest, 'style change retains the resolved Natural arrangement');
-    callbacks.picked?.({ kind: 'semantic-edge', id: 'source-edge' }, false);
-    assert.equal(page.selectedId, 'source-edge');
-    assert.throws(() => callbacks.picked?.({ kind: 'semantic-edge', id: 'visual:relation' }, false), /unknown semantic edge/);
   } finally { globalThis.requestAnimationFrame = oldRaf; }
 });
 
