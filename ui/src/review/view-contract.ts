@@ -189,8 +189,12 @@ export type ProductView = {
   select(id: string | null): void;
   /** The focus subgraph, stays bright while everything else dims; null clears. */
   setEmphasis(ids: ReadonlySet<string> | null): void;
+  /** Strong focus dimming for the distinct canvas and its labels. */
+  setFocusStyle?(style: { members: ReadonlySet<string>; arcs: ReadonlySet<string>; bridges: ReadonlySet<string> } | null): void;
   /** Frames these node ids inside the visible rect, never under a panel or overlay. */
   frame(ids: readonly string[]): Promise<void>;
+  /** Frames the bounding box of a focus with room for surrounding context. */
+  frameFocus?(ids: readonly string[]): Promise<void>;
   /** Frames every visible node. */
   fit(): Promise<void>;
   witness(): ViewWitness;

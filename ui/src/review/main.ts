@@ -942,8 +942,16 @@ if (performanceSurface && performanceOpener) surfaceBindings.push({ id: "perform
 surfaceStack = bindSurfaces(surfaceBindings);
 surfaceStack.subscribe(() => requestAnimationFrame(updateInsets));
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && v2?.selectedId) { event.preventDefault(); void v2.exitFocus(); return; }
   if (event.key.toLowerCase() === "p" && !(event.target instanceof HTMLInputElement)) togglePanel();
   if (event.key.toLowerCase() === "t" && fullscreen() && !(event.target instanceof HTMLInputElement)) get<HTMLButtonElement>("fullscreen-collapse").click();
+});
+get<HTMLButtonElement>("selection-focus-chip").addEventListener("click", () => { void v2?.exitFocus(); });
+get<HTMLElement>("neighbourhood-control").addEventListener("click", event => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-depth]");
+  if (!button || !v2) return;
+  const depth = button.dataset.depth === "1" ? 1 : button.dataset.depth === "2" ? 2 : null;
+  void v2.setNeighbourhood(depth);
 });
 const controlTip = document.createElement("div"); controlTip.id = "control-tooltip"; controlTip.hidden = true; document.body.append(controlTip);
 let tipTimer = 0;
@@ -1028,6 +1036,8 @@ const api = {
   }),
   setAxes,
   select,
+  setNeighbourhood: (depth: 1 | 2 | null) => v2?.setNeighbourhood(depth) ?? Promise.resolve(),
+  exitFocus: () => v2?.exitFocus() ?? Promise.resolve(),
   expand: (id?: string) => v2 ? id ? v2.expand(id) : v2.selectedId ? v2.expand(v2.selectedId) : Promise.resolve() : expand(),
   back,
   reset,

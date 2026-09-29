@@ -30,6 +30,7 @@ export const DENSE_SCENE_THRESHOLD = 1200;
 export type MorphologyCanvasStyle = {
   readonly fieldColor: string;
   readonly interaction?: { readonly hoverId: string | null; readonly focusIds: ReadonlySet<string> | null; readonly labelDiscs?: readonly CanvasDisc[] | null;
+    readonly dimFocus?: { readonly members: ReadonlySet<string>; readonly arcs: ReadonlySet<string>; readonly bridges: ReadonlySet<string> } | null;
     /** D-072 M1b: the containers already honour this field (I1). `"moving"` is the reduced frame
      * while the camera rotates, pans or zooms: nodes draw as solid fills (no radial gradients,
      * halos, glints or rim strokes), the Stellar dust, cluster glow and starfield are skipped, and
@@ -43,6 +44,15 @@ export type MorphologyCanvasStyle = {
   readonly nodes: ReadonlyMap<string, { readonly color: string; readonly glyph?: NodeGlyph | undefined; readonly radiusPx?: number | undefined; readonly opacity?: number }>;
   readonly edges: ReadonlyMap<string, { readonly color: string; readonly presentation?: EdgePresentation | undefined }>;
 };
+export function focusNodeOpacity(members: ReadonlySet<string> | null, id: string): number {
+  return !members || members.has(id) ? 1 : 0.15;
+}
+export function focusArcOpacity(
+  focus: { arcs: ReadonlySet<string>; bridges: ReadonlySet<string> } | null, id: string, base: number,
+): number {
+  return !focus ? base : focus.arcs.has(id) ? Math.max(0.55, base)
+    : focus.bridges.has(id) ? 0.38 : 0.08;
+}
 
 /** D-072 R2: one in-place level-of-detail swap for a distinct morphology layer. The input and
  * geometry are the fully rebuilt drawing (the caller builds them with the same derivation a
@@ -956,11 +966,13 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     // D-072 V13: the base alpha of a line is constant across frames — presentation-derived factors
     // only. D-072 M1b: a Stellar arc's base alpha is its class window (intra faint, bridges near
     // 0.5), the presentation's opacity mapping inside it; emphasis may push above the window.
-    const alpha = clamp(
+    const focus = style.interaction?.dimFocus;
+    const baseAlpha = clamp(
       (stellarArcs
         ? stellarArcAlpha(arcClass, opacity * appearance.edgeOpacity) * (emphasis?.brightnessMultiplier ?? 1)
         : Math.max(0.14, opacity * appearance.edgeOpacity * (emphasis?.brightnessMultiplier ?? 1))),
       0, 1);
+    const alpha = focusArcOpacity(focus ?? null, part.edgeId, baseAlpha);
     const cumulative: number[] = [0];
     for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1]! + Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y));
     paints.push({ part, edgeId: part.edgeId, category, points, cumulative, totalPx: cumulative[cumulative.length - 1]! || 1, color, alpha, widthAt });
@@ -1182,6 +1194,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const haloExtent = appearance.glow > 0 ? radius * contract.glow.maximumCoreRatio : radius;
     if (p.x + haloExtent < 0 || p.x - haloExtent > bounds.width
       || p.y + haloExtent < 0 || p.y - haloExtent > bounds.height) continue;
+    context.globalAlpha = focusNodeOpacity(style.interaction?.dimFocus?.members ?? null, node.id);
     const color = visual?.color ?? "rgb(245, 245, 245)";
     const baseOpacity = visual?.opacity ?? 1;
     // The effective halo strength carries the Neural density falloff; other morphologies keep theirs.
@@ -1415,6 +1428,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         context.beginPath(); context.arc(p.x, p.y, radius * 0.38, 0, Math.PI * 2); context.stroke();
       }
     }
+    context.globalAlpha = 1;
   }
   // Names come last, above every pearl and arc, so no label is ever covered by its own drawing.
   drawContainerTitles(context, geometry.morphology, containers, project, style.fieldColor, bounds, projection, style.interaction, titleDiscs, undefined, frameCache);

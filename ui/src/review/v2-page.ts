@@ -9,7 +9,7 @@ import { projectRelations } from './v2-relations.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
-import { adjacencyOf, communityResolver, DENSITY_BUDGETS, formatCount, lodLevelFromZoom, normalizeDensity, refreshCameraAction, safeSelectNodes, selectArcs } from './lod.ts';
+import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, formatCount, lodLevelFromZoom, normalizeDensity, refreshCameraAction, safeSelectNodes, selectArcs } from './lod.ts';
 import { lodRefreshDue } from './render-schedule.ts';
 import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
 import { labelBudgetOf } from './labels.ts';
@@ -85,6 +85,10 @@ export class V2Page {
     private appearance: AppearanceOptions;
     private palette: PaletteValues;
     private selected: string | null = null;
+    private neighbourhoodDepth: 1 | 2 | null = null;
+    private neighbourhoodCamera: ReturnType<ProductView['readCamera']> = null;
+    private neighbourhoodBefore: { nodes: Set<string>; arcs: LiftedRelation[] } | null = null;
+    private restoreNeighbourhood = false;
     private hovered: string | null = null;
     private hoveredEdge: string | null = null;
     private hoverRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -142,6 +146,7 @@ export class V2Page {
     private suppressZoomUntil = 0;
     private lastZoomRatio: number | null = null;
     private pending = Promise.resolve();
+    private refreshPending = 0;
     private results: SearchHit[] = [];
     private searchTotal = 0;
     private whyResult: ReturnType<typeof v2Path> | null = null;
@@ -234,6 +239,7 @@ export class V2Page {
     }
     refresh(): Promise<void> {
         if (this.hoverRefreshTimer) { clearTimeout(this.hoverRefreshTimer); this.hoverRefreshTimer = null; }
+        this.refreshPending++;
         return this.run(async () => {
             this.suppressZoomUntil = performance.now() + 900;
             const disclosed = this.visible();
@@ -277,10 +283,9 @@ export class V2Page {
             for (const n of disclosed.nodes)
                 next.set(n.id, expanded.get(n.id) ?? { x: 0, y: 0, z: 0 });
             const nextCommunities = result.communities ?? [];
-            const active = this.hovered
-                ?? this.renderedRelations.get(this.selected ?? '')?.source
+            const active = this.renderedRelations.get(this.selected ?? '')?.source
                 ?? this.index.edges.find(edge => edge.id === this.selected)?.source
-                ?? this.selected;
+                ?? this.selected ?? this.hovered;
             // D-072 L1: the semantic level of detail. The layout above is computed over the whole
             // disclosed set and never sees the LOD, so a level or density change cannot move a
             // node: whatever stays visible keeps its exact coordinates (the layout's own
@@ -295,28 +300,44 @@ export class V2Page {
             const pinned = this.pinnedNodeIds();
             // D-072 R1: a selection failure keeps the last mounted selection verbatim
             // (`safeSelectNodes`), so the drawing never loses its node set — or its labels.
+            const focusPriority = this.selected ? focusMembers(disclosed.nodes, this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested'), this.selected) : null;
             const selection = this.selectLod({
                 nodes: disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
                 level: this.lod,
                 budget: budget.nodes,
                 pinned,
                 focus: active,
+                ...(focusPriority ? { priority: focusPriority } : {}),
                 adjacency,
                 communityOf,
             }, this.lastNodeSelection);
-            const renderedIds = new Set(selection.rendered);
+            let renderedIds = new Set(selection.rendered);
+            if (this.neighbourhoodDepth && focusPriority) {
+                const allowed = this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested');
+                renderedIds = focusNeighbourhood(focusPriority, disclosed.nodes, allowed, this.neighbourhoodDepth).nodes;
+            } else if (this.restoreNeighbourhood && this.neighbourhoodBefore) renderedIds = new Set(this.neighbourhoodBefore.nodes);
             const pool = projectRelations(
                 this.index.nodes, this.index.edges, renderedIds, this.axes.reading,
                 this.axes.organization, this.relationDetail, active,
             );
-            const shown = selectArcs({
+            const focusRelations = focusPriority ? focusArcs(focusPriority, pool.edges, communityOf) : null;
+            const focusArcPriority = focusRelations ? [
+                ...focusRelations.bridges,
+                ...pool.edges.filter(edge => focusRelations.relevant.has(edge.id))
+                    .sort((a, b) => b.count - a.count || a.id.localeCompare(b.id)).map(edge => edge.id),
+            ] : [];
+            let shown = selectArcs({
                 arcs: pool.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, class: edge.class, count: edge.count })),
                 budget: budget.arcs,
                 pinned: this.pinnedArcIds(),
                 focus: active,
+                priority: focusArcPriority,
                 communityOf,
                 keepExploratory: this.axes.reading !== 'attested',
             }).map(id => pool.byId.get(id)!).filter(edge => edge);
+            if (this.neighbourhoodDepth) shown = pool.edges;
+            else if (this.restoreNeighbourhood && this.neighbourhoodBefore) shown = this.neighbourhoodBefore.arcs;
+            this.restoreNeighbourhood = false;
             // D-072 FixA: pinned accounting. L1 keeps the explicit set (selection path, hovered,
             // children of manual expansions) even beyond the budget, by design — so the budget
             // binds on the unpinned fill and the witness says how many nodes the pins added.
@@ -378,6 +399,7 @@ export class V2Page {
                     if (this.selected)
                         this.view.select(this.selected);
                     this.updateEmphasis();
+                    this.syncFocusControls();
                     this.renderPanel();
                     element('status').textContent = 'Grafo pronto';
                     element('focus-chip').hidden = !shown.some(e => e.class === 'exploratory');
@@ -420,7 +442,7 @@ export class V2Page {
                             }
                             else
                                 void this.select(target.id);
-                        } }, onDoublePick: target => { if (target)
+                        } else void this.exitFocus(); }, onDoublePick: target => { if (target)
                             void this.expand(target.id); }, onHover: target => {
                             const node = target?.kind === 'node' ? target.id : null;
                             const edge = target?.kind === 'edge' ? target.id : null;
@@ -515,6 +537,7 @@ export class V2Page {
             if (this.selected)
                 this.view.select(this.selected);
             this.updateEmphasis();
+            this.syncFocusControls();
             if (added.length && this.positions.size > added.length)
                 this.pulse(added);
             element('status').textContent = 'Grafo pronto';
@@ -527,7 +550,7 @@ export class V2Page {
             this.capMessage = disclosed.capped;
             element('v2-cap').textContent = disclosed.capped ? `Limite di ${V2_CAP} nodi visibili raggiunto. Comprimi un ramo per continuare.` : '';
             this.renderPanel();
-        });
+        }).finally(() => { this.refreshPending--; });
     }
     async expand(id: string) {
         this.suppressZoomUntil = performance.now() + 900;
@@ -588,26 +611,80 @@ export class V2Page {
         await this.view?.frame([id]);
     }
     async select(id: string) {
+        if (this.selected === id) { await this.exitFocus(); return; }
         this.noteCameraIntent();
         this.suppressZoomUntil = performance.now() + 900;
         this.selected = id;
+        this.neighbourhoodDepth = null;
+        this.neighbourhoodBefore = null;
         this.view?.select(id);
         this.updateEmphasis();
+        this.syncFocusControls();
+        const busy = this.refreshPending > 0;
+        const focusRefresh = this.refresh();
+        if (busy) void focusRefresh.catch(() => { });
+        else await focusRefresh;
         if (id === ABSOLUTE_CONTAINER_ID) { this.renderPanel(); return; }
         element("expand").toggleAttribute("disabled", !this.index.nodes.some(n => n.id === id));
         (element("projection-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.index.nodes.some(n => n.id === id);
         (element("fullscreen-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.index.nodes.some(n => n.id === id);
         if (this.index.nodes.some(n => n.id === id)) {
             await this.detail(id);
-            const near = new Set([id]);
-            for (const edge of this.renderedRelations.values())
-                if (edge.source === id || edge.target === id) {
-                    near.add(edge.source);
-                    near.add(edge.target);
-                }
-            await this.view?.frame([...near]);
+            const members = focusMembers(this.visible().nodes, this.index.edges, id);
+            const frameIds = [...members].filter(nodeId => this.rendered.has(nodeId));
+            this.noteCameraIntent();
+            this.programmaticCamera();
+            await (this.view?.frameFocus?.(frameIds.length ? frameIds : [id]) ?? this.view?.frame(frameIds.length ? frameIds : [id]));
+            this.programmaticCamera();
         }
         this.renderPanel();
+    }
+    async exitFocus() {
+        if (!this.selected) return;
+        this.noteCameraIntent();
+        const restoreCamera = this.neighbourhoodCamera;
+        if (this.neighbourhoodBefore) this.restoreNeighbourhood = true;
+        this.neighbourhoodDepth = null;
+        this.selected = null;
+        this.view?.select(null);
+        await this.refresh();
+        if (restoreCamera) this.view?.restoreCamera(restoreCamera);
+        this.neighbourhoodBefore = null;
+        this.neighbourhoodCamera = null;
+        this.updateEmphasis();
+        this.syncFocusControls();
+    }
+    async setNeighbourhood(depth: 1 | 2 | null) {
+        if (!this.selected) return;
+        if (depth && !this.neighbourhoodDepth) {
+            this.neighbourhoodCamera = this.view?.readCamera() ?? null;
+            this.neighbourhoodBefore = { nodes: new Set(this.rendered), arcs: [...this.renderedRelations.values()] };
+        }
+        if (!depth && this.neighbourhoodBefore) this.restoreNeighbourhood = true;
+        this.neighbourhoodDepth = depth;
+        await this.refresh();
+        if (!depth && this.neighbourhoodCamera) { this.noteCameraIntent(); this.view?.restoreCamera(this.neighbourhoodCamera); }
+        if (!depth) { this.neighbourhoodBefore = null; this.neighbourhoodCamera = null; }
+        this.syncFocusControls();
+    }
+    private syncFocusControls() {
+        const chip = document.getElementById('selection-focus-chip');
+        const control = document.getElementById('neighbourhood-control');
+        if (chip) {
+            chip.hidden = !this.selected;
+            const node = this.index.nodes.find(item => item.id === this.selected);
+            chip.textContent = this.selected ? `Esci dal focus × · ${node ? displayLabel(node) : this.selected}` : '';
+        }
+        if (control) {
+            control.hidden = !this.selected;
+            for (const button of control.querySelectorAll<HTMLButtonElement>('button[data-depth]'))
+                button.setAttribute('aria-pressed', String(button.dataset.depth === String(this.neighbourhoodDepth ?? 'off')));
+        }
+        const count = document.getElementById('neighbourhood-count');
+        if (count) {
+            count.hidden = !this.neighbourhoodDepth;
+            count.textContent = this.neighbourhoodDepth ? `Vicinato: ${formatCount(this.rendered.size)} nodi · ${formatCount(this.renderedRelations.size)} archi` : '';
+        }
     }
     async search(q: string) {
         if (!q.trim()) {
@@ -708,31 +785,18 @@ export class V2Page {
         }
     }
     private updateEmphasis() {
-        const id = this.hovered ?? this.selected;
-        const relation = this.renderedRelations.get(this.hoveredEdge ?? '') ?? this.renderedRelations.get(id ?? '');
-        if (!id && !relation) {
-            this.view?.setEmphasis(null);
-            return;
-        }
-        const neighbours = new Set(relation ? [relation.source, relation.target] : [id!]);
-        if (id === ABSOLUTE_CONTAINER_ID) neighbours.delete(id);
-        if (this.axes.organization === 'indra' && id && (id === ABSOLUTE_CONTAINER_ID || this.containers.some(container => container.id === id))) {
+        if (!this.selected) { this.view?.setFocusStyle?.(null); this.view?.setEmphasis(this.hovered ? new Set([this.hovered]) : null); return; }
+        const members = focusMembers(this.visible().nodes, this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested'), this.selected);
+        const communityOf = communityResolver(this.index.nodes);
+        const arcs = focusArcs(members, [...this.renderedRelations.values()], communityOf);
+        const emphasis = new Set([...members].filter(id => this.rendered.has(id)));
+        if (this.axes.organization === 'indra') {
             const byId = new Map(this.index.nodes.map(node => [node.id, node]));
-            for (const visible of this.visible().nodes) {
-                let cursor: V2Node | undefined = visible;
-                while (cursor?.parent) {
-                    if (cursor.parent === id) { neighbours.add(visible.id); break; }
-                    cursor = byId.get(cursor.parent);
-                }
-                if (id === ABSOLUTE_CONTAINER_ID) neighbours.add(visible.id);
-            }
+            let cursor = byId.get(this.selected);
+            while (cursor?.parent) { emphasis.add(cursor.parent); cursor = byId.get(cursor.parent); }
         }
-        for (const edge of this.renderedRelations.values())
-            if (edge.source === id || edge.target === id) {
-                neighbours.add(edge.source);
-                neighbours.add(edge.target);
-            }
-        this.view?.setEmphasis(neighbours);
+        this.view?.setFocusStyle?.({ members: emphasis, arcs: arcs.relevant, bridges: arcs.bridges });
+        this.view?.setEmphasis(emphasis);
     }
     private edgeTooltip(target: {
         kind: 'node' | 'edge';
@@ -800,8 +864,8 @@ export class V2Page {
         this.userMovedSinceFit = false;
         this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
     }
-    async reset() { this.noteCameraIntent(); this.selected = null; this.view?.select(null); this.renderPanel(); this.programmaticCamera(); await this.view?.resetCamera(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
-    async frame(id: string) { this.noteCameraIntent(); this.programmaticCamera(); await this.view?.frame([id]); this.programmaticCamera(); }
+    async reset() { this.noteCameraIntent(); this.selected = null; this.neighbourhoodDepth = null; this.neighbourhoodBefore = null; this.neighbourhoodCamera = null; this.view?.select(null); this.updateEmphasis(); this.syncFocusControls(); this.renderPanel(); this.programmaticCamera(); await this.view?.resetCamera(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
+    async frame(id: string) { this.noteCameraIntent(); this.programmaticCamera(); const members = focusMembers(this.visible().nodes, this.index.edges, id); const ids = [...members].filter(member => this.rendered.has(member)); await (this.view?.frameFocus?.(ids.length ? ids : [id]) ?? this.view?.frame(ids.length ? ids : [id])); this.programmaticCamera(); }
     camera() {
         return this.view?.camera() ?? null;
     }
@@ -885,6 +949,7 @@ export class V2Page {
         // stay budgeted summaries, so a wheel step there can no longer add hundreds of nodes.
         if (this.lod !== 'near')
             return;
+        if (this.selected) return;
         const witness = this.view.witness();
         const rect = witness.visibleRect;
         const candidates: { id: string; distance: number }[] = [];
@@ -922,6 +987,8 @@ export class V2Page {
         return { mode: 'v2', digest: this.manifest.digest, counts: this.manifest.counts };
     }
     witness() {
+        const members = this.selected ? focusMembers(this.visible().nodes, this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested'), this.selected) : new Set<string>();
+        const arcs = focusArcs(members, [...this.renderedRelations.values()], communityResolver(this.index.nodes));
         return {
             ...this.view?.witness(),
             layoutSource: this.layoutSource,
@@ -942,6 +1009,13 @@ export class V2Page {
             dataset: this.dataset(),
             disclosure: this.disclosure(),
             capMessage: this.capMessage,
+            focus: this.selected ? {
+                id: this.selected,
+                members: [...members].filter(id => this.rendered.has(id)).sort(),
+                dimmed: [...this.rendered].filter(id => !members.has(id)).sort(),
+                bridges: [...arcs.bridges].sort(),
+                neighbourhood: this.neighbourhoodDepth ? { depth: this.neighbourhoodDepth, nodes: [...this.rendered].sort(), arcs: [...this.renderedRelations.keys()].sort() } : null,
+            } : null,
             relations: [...this.renderedRelations.values()].map(edge => ({
                 id: edge.id, source: edge.source, target: edge.target,
                 type: edge.type, class: edge.class, count: edge.count,

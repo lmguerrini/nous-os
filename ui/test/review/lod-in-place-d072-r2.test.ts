@@ -65,7 +65,8 @@ const fakeElement = (hidden = false) => {
 };
 const elements = new Map<string, ReturnType<typeof fakeElement>>();
 for (const [id, hidden] of [["status", false], ["error", true], ["counter", false], ["render-root", false],
-  ["details", false], ["focus-chip", true], ["back", false], ["v2-undo", false], ["v2-redo", false], ["v2-cap", false]] as const)
+  ["details", false], ["focus-chip", true], ["back", false], ["v2-undo", false], ["v2-redo", false], ["v2-cap", false],
+  ["expand", false], ["projection-focus", false], ["fullscreen-focus", false]] as const)
   elements.set(id, fakeElement(hidden));
 Object.assign(globalThis, {
   WebGL2RenderingContext: { BOOL: 1, BYTE: 2, UNSIGNED_BYTE: 3, SHORT: 4, UNSIGNED_SHORT: 5, INT: 6, UNSIGNED_INT: 7, FLOAT: 8 },
@@ -265,4 +266,30 @@ test("a disclosure change still remounts, with the drawn edge set named at mount
   assert.equal(destroyCount, 1);
   assert.ok(mountInputs[1]!.visibleEdgeIds instanceof Set);
   assert.ok(page.witness().lod.nodes.rendered > 8, "the expansion's conversations are part of the mounted subset");
+});
+
+test("focus neighbourhood switches at depths one and two, then restores the exact rendered set in place", async () => {
+  resetRecording();
+  const page = makePage(true);
+  await page.refresh();
+  (page as unknown as { detailCache: Map<string, Record<string, unknown>> }).detailCache.set('conversation:0', {});
+  const disclosed = page.disclosure().visible;
+  await page.select('conversation:0');
+  const beforeNodes = [...(page as unknown as { rendered: Set<string> }).rendered].sort();
+  const beforeArcs = page.witness().relations.map(edge => edge.id).sort();
+  assert.equal(page.disclosure().visible, disclosed, 'selection never expands disclosure');
+  await page.setNeighbourhood(1);
+  const one = page.witness().focus?.neighbourhood;
+  assert.equal(one?.depth, 1);
+  assert(one.nodes.length < beforeNodes.length);
+  await page.setNeighbourhood(2);
+  const two = page.witness().focus?.neighbourhood;
+  assert.equal(two?.depth, 2);
+  assert(two.nodes.length >= one.nodes.length);
+  await page.setNeighbourhood(null);
+  assert.deepEqual([...(page as unknown as { rendered: Set<string> }).rendered].sort(), beforeNodes);
+  assert.deepEqual(page.witness().relations.map(edge => edge.id).sort(), beforeArcs);
+  assert.equal(mountCount, 1, 'the mode never remounts the disclosed scene');
+  await page.select('conversation:0');
+  assert.equal(page.selectedId, null, 'reselecting the same item exits focus');
 });

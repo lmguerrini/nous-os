@@ -210,12 +210,14 @@ export const createProductView: CreateProductView = async (input) => {
   let three: Render3fRendererHandle | null = null;
   let selected: string | null = null;
   let emphasis: ReadonlySet<string> | null = null;
+  let focusStyle: { members: ReadonlySet<string>; arcs: ReadonlySet<string>; bridges: ReadonlySet<string> } | null = null;
   let hover: { kind: "node" | "edge"; id: string; x: number; y: number } | null = null;
   const morphologyInteraction: {
     hoverId: string | null; focusIds: ReadonlySet<string> | null; labelDiscs: readonly CanvasDisc[] | null; containerColor: string | null;
     /** D-072 P1a: the shared passes read both fields — "moving" makes the container/morphology
      * pass draw its reduced frame, "separate" leaves the travelling highlights to the overlay. */
     quality: RenderQuality; flowLayer: "inline" | "separate";
+    dimFocus?: { members: ReadonlySet<string>; arcs: ReadonlySet<string>; bridges: ReadonlySet<string> } | null;
   } = { hoverId: null, focusIds: null, labelDiscs: null, containerColor: null, quality: "full", flowLayer: "separate" };
   const redrawMorphology = () => (container.querySelector("canvas[data-morphology-canvas]") as
     (HTMLCanvasElement & { __morphRedraw?: () => void }) | null)?.__morphRedraw?.();
@@ -449,7 +451,7 @@ export const createProductView: CreateProductView = async (input) => {
     // placement puts it, and the DOM label pass suppresses the same container's node label in
     // exactly those cases (and allows it otherwise), so a pearl never carries two names. The
     // interaction must be the same object state the canvas layer uses, so both agree on the LOD.
-    const containerInteraction = { hoverId: morphologyInteraction.hoverId, focusIds: morphologyInteraction.focusIds };
+    const containerInteraction = { hoverId: morphologyInteraction.hoverId, focusIds: morphologyInteraction.focusIds, dimFocus: focusStyle };
     const pathById = new Map<string, MorphologyContainerPath>();
     if (axes.organization === "indra" && layoutContainers) {
       for (const path of buildContainerGeometry(axes.morphology, layoutContainers)) pathById.set(path.id, path);
@@ -524,6 +526,7 @@ export const createProductView: CreateProductView = async (input) => {
       // the panel or another label).
       const tier1 = reason === "hover" || reason === "selected"
         || (axes.organization === "flat" && reason === "domain");
+      if (focusStyle && !focusStyle.members.has(id) && !tier1) continue;
       // While the camera moves only tier 1 stays named; the others return with the full pass.
       if (moving && !tier1) continue;
       candidates.push({
@@ -1272,7 +1275,7 @@ export const createProductView: CreateProductView = async (input) => {
     cameraWatchRunning: () => cameraWatch.running,
     marks: () => scheduleMarks.list(),
   };
-  async function frameIds(ids: readonly string[], anchorFirst: boolean) {
+  async function frameIds(ids: readonly string[], anchorFirst: boolean, marginPx = 32, fill = 0.9) {
     // The framing belongs to the renderer mounted now; a remount during the animation must not receive a camera
     // interpolated in another renderer's convention.
     const current = handle;
@@ -1304,9 +1307,9 @@ export const createProductView: CreateProductView = async (input) => {
     const solved = solveFraming(current, {
       points,
       rect: localRect(),
-      marginPx: 32,
+      marginPx,
       anchorFirst: anchorFirst && points.length > 1,
-      fill: 0.9,
+      fill,
     });
     const final = solved.camera;
     if (!validCamera(final)) {
@@ -1418,7 +1421,14 @@ export const createProductView: CreateProductView = async (input) => {
       three?.setEmphasis(ids);
       labelPass();
     },
+    setFocusStyle(style) {
+      focusStyle = style;
+      morphologyInteraction.dimFocus = style;
+      redrawMorphology();
+      labelPass();
+    },
     frame: (ids) => frameIds(ids, true),
+    frameFocus: (ids) => frameIds(ids, false, 60, 0.78),
     fit: () => frameIds([...visible], false),
     witness() {
       if (!handle) throw new Error("view destroyed");

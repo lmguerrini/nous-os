@@ -141,6 +141,8 @@ export type SelectNodesInput = {
   readonly pinned: ReadonlySet<string>;
   /** The node or domain the reading is about; drives the near-level neighbourhood. */
   readonly focus: string | null;
+  /** Visible members of the selected aggregate, admitted before ordinary LOD fill. */
+  readonly priority?: ReadonlySet<string>;
   readonly adjacency: ReadonlyMap<string, readonly string[]>;
   readonly communityOf: (id: string) => string;
 };
@@ -177,6 +179,7 @@ export function selectNodes(input: SelectNodesInput): LodNodeSelection {
   };
   for (const id of [...input.pinned].sort(compare)) add(id, true);
   for (const node of [...input.nodes].filter(node => node.level === 1).sort((a, b) => compare(a.id, b.id))) add(node.id);
+  for (const node of [...input.nodes].filter(node => input.priority?.has(node.id)).sort((a, b) => b.importance - a.importance || compare(a.id, b.id))) add(node.id);
   if (input.level === "near" && input.focus && byId.has(input.focus)) {
     add(input.focus);
     const seen = new Set([input.focus]);
@@ -270,6 +273,8 @@ export type SelectArcsInput = {
   readonly pinned: ReadonlySet<string>;
   /** The focus node; its relations come right after the pinned ones and are never hidden. */
   readonly focus: string | null;
+  /** Focus's strongest bridges and internal relations before ordinary LOD fill. */
+  readonly priority?: readonly string[];
   readonly communityOf: (id: string) => string;
   /** True whenever the reading is not attested-only. */
   readonly keepExploratory: boolean;
@@ -295,6 +300,7 @@ export function selectArcs(input: SelectArcsInput): readonly string[] {
   if (input.focus !== null)
     for (const arc of [...input.arcs].sort((a, b) => compare(a.id, b.id)))
       if (incident(arc)) take(arc.id, true);
+  for (const id of input.priority ?? []) take(id);
   const isBridge = (arc: LodArcInfo): boolean => input.communityOf(arc.source) !== input.communityOf(arc.target);
   const byWeight = (a: LodArcInfo, b: LodArcInfo) => b.count - a.count || compare(a.id, b.id);
   const bridges: LodArcInfo[] = [];
@@ -338,6 +344,79 @@ export function selectArcs(input: SelectArcsInput): readonly string[] {
  * no-separator CLDR default would print «1200» where the grouped form is required. */
 export function formatCount(value: number): string {
   return new Intl.NumberFormat("it-IT", { useGrouping: "always" }).format(value);
+}
+
+/** Selection semantics over the disclosed graph. This never changes disclosure. */
+export function focusMembers(
+  nodes: readonly { id: string; level: number; parent: string | null; domains?: readonly string[] }[],
+  edges: readonly { source: string; target: string }[], id: string,
+): Set<string> {
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  const selected = byId.get(id);
+  if (!selected) {
+    const edge = edges.find(edge => (edge as { id?: string }).id === id);
+    return new Set(edge ? [edge.source, edge.target] : []);
+  }
+  const members = new Set([id]);
+  if (selected.level === 1 || selected.level === 3) {
+    for (const node of nodes) {
+      let parent = node.parent;
+      while (parent) {
+        if (parent === id) { members.add(node.id); break; }
+        parent = byId.get(parent)?.parent ?? null;
+      }
+      if (selected.level === 1 && node.domains?.includes(id)) members.add(node.id);
+    }
+  } else {
+    for (const edge of edges) if (edge.source === id || edge.target === id) {
+      members.add(edge.source); members.add(edge.target);
+    }
+    for (const node of nodes) if (node.parent === id) members.add(node.id);
+    if (selected.parent) members.add(selected.parent);
+  }
+  return members;
+}
+
+export type FocusArc = { id: string; source: string; target: string; count?: number; class?: string };
+export function focusArcs(members: ReadonlySet<string>, arcs: readonly FocusArc[], communityOf: (id: string) => string) {
+  const inside = new Set<string>();
+  const crossing: FocusArc[] = [];
+  for (const arc of arcs) {
+    const source = members.has(arc.source), target = members.has(arc.target);
+    if (source && target) inside.add(arc.id);
+    else if (source || target) crossing.push(arc);
+  }
+  const bridges = crossing.filter(arc => communityOf(arc.source) !== communityOf(arc.target))
+    .sort((a, b) => (b.count ?? 1) - (a.count ?? 1) || compare(a.id, b.id)).slice(0, 5);
+  return { inside, bridges: new Set(bridges.map(arc => arc.id)),
+    relevant: new Set([...inside, ...crossing.filter(arc => communityOf(arc.source) === communityOf(arc.target)).map(arc => arc.id)]) };
+}
+
+export function focusNeighbourhood(
+  seed: ReadonlySet<string>, nodes: readonly { id: string; parent: string | null }[],
+  arcs: readonly FocusArc[], depth: 1 | 2,
+): { nodes: Set<string>; arcs: Set<string> } {
+  const allowed = new Set(nodes.map(node => node.id));
+  const links = new Map<string, Set<string>>();
+  const link = (a: string, b: string) => {
+    if (!allowed.has(a) || !allowed.has(b)) return;
+    (links.get(a) ?? links.set(a, new Set()).get(a)!).add(b);
+    (links.get(b) ?? links.set(b, new Set()).get(b)!).add(a);
+  };
+  for (const arc of arcs) link(arc.source, arc.target);
+  for (const node of nodes) if (node.parent) link(node.id, node.parent);
+  const visited = new Set([...seed].filter(id => allowed.has(id)));
+  let frontier = [...visited];
+  for (let hop = 0; hop < depth; hop++) {
+    const next: string[] = [];
+    for (const id of frontier) for (const neighbour of links.get(id) ?? [])
+      if (!visited.has(neighbour)) { visited.add(neighbour); next.push(neighbour); }
+    frontier = next;
+  }
+  const shownArcs = new Set(arcs.filter(arc => visited.has(arc.source) && visited.has(arc.target)).map(arc => arc.id));
+  for (const node of nodes) if (node.parent && visited.has(node.id) && visited.has(node.parent))
+    shownArcs.add(`contains:${node.id}`);
+  return { nodes: visited, arcs: shownArcs };
 }
 
 /** What the camera does after a refresh rebuilds the view behind the same page. Pure.

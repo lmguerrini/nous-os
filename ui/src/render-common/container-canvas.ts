@@ -161,6 +161,7 @@ function circleTable(segments: number): CircleTable {
 export type ContainerInteraction = {
   readonly hoverId?: string | null;
   readonly focusIds?: ReadonlySet<string> | null;
+  readonly dimFocus?: { readonly members: ReadonlySet<string> } | null;
   /**
    * The pearl/soma disc set the review's label pass placed its collision with, shared through the
    * presentation interaction object so the canvas title pass and the DOM label pass avoid one and
@@ -607,6 +608,7 @@ export function drawContainers(
   // Limb stroke styles vary only by (ink, level): one string per level per draw, not per sphere.
   const limbStyles = new Map<number, string>();
   for (const container of containersInDrawOrder(containers).sorted) {
+    context.globalAlpha = interaction?.dimFocus && !interaction.dimFocus.members.has(container.id) ? 0.15 : 1;
     if (projection === "3d") {
       drawSphere(context, container, project, ink, interaction, bounds, cache, limbStyles);
     } else {
@@ -630,6 +632,7 @@ export function drawContainers(
       context.stroke();
     }
   }
+  context.globalAlpha = 1;
   setDash(context, []);
 
   /** A radial gradient in unit space (radius 1 around the origin), cached per context and key: the
@@ -843,6 +846,7 @@ export function placeContainerTitles(
   const placements: ContainerTitlePlacement[] = [];
   const boxes: { left: number; right: number; top: number; bottom: number }[] = [];
   for (const container of containersInDrawOrder(containers).sorted) {
+    if (interaction?.dimFocus && !interaction.dimFocus.members.has(container.id) && container.level > 1) continue;
     const rect = containerTitleRect(container, project, bounds, projection, interaction, discs, measure, cache);
     if (!rect) continue;
     const box = { left: rect.left - 3, top: rect.top, right: rect.left + rect.width + 3, bottom: rect.top + rect.height };
