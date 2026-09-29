@@ -5,6 +5,7 @@ import { buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
 import { DENSE_SCENE_THRESHOLD, drawMorphologyCanvas } from "#render-common/morphology-canvas.ts";
 import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
 import Sigma from "sigma";
+import { MultiDirectedGraph } from "graphology";
 import { createEdgeCompoundProgram, NodeCircleProgram } from "sigma/rendering";
 import type { NodeProgramType } from "sigma/rendering";
 import type { CameraState, EdgeDisplayData, NodeDisplayData, RenderParams } from "sigma/types";
@@ -30,6 +31,9 @@ import {
   resolveRenderOptions,
   resolveLabelIds,
   selectedProvenanceForVisualState,
+  prepareProjection2d,
+  projection2dVisibilityKey,
+  projection2dRevisionAction,
 } from "#render2d/model.ts";
 import type {
   LabelPlacementCandidate,
@@ -37,7 +41,9 @@ import type {
   RenderModel,
   RenderNodeAttributes,
   RenderOptions,
+  Projection2dScene,
 } from "#render2d/model.ts";
+import type { PickResult, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec2 } from "../projection/contract-types.ts";
 
 /** This reports one live glow footprint and does not expose graph semantics. */
 export type RenderNodeGlowWitness = {
@@ -1242,5 +1248,191 @@ function copyFramingBox(box: RenderFramingBox): { readonly x: [number, number]; 
   return {
     x: [box.x[0], box.x[1]],
     y: [box.y[0], box.y[1]],
+  };
+}
+
+/** Opt-in B10a renderer. The legacy page continues to call mount() above. */
+export type Projection2dHandle = {
+  readonly dimension: '2d';
+  updateVisibleSubset(styled: StyledProjection, visibility: RenderVisibility): void;
+  pickAtPoint(position: Vec2): PickResult | null;
+  readCameraState(): CameraState;
+  readSurfaceWitness(): Readonly<{ nodeIds: readonly string[]; semanticEdgeIds: readonly string[]; visualRelationIds: readonly string[]; curveIds: readonly string[]; containerIds: readonly string[]; fieldIds: readonly string[] }>;
+  destroy(): void;
+};
+
+type ProjectionNodeAttributes = { x: number; y: number; size: number; color: string; label: string };
+type ProjectionEdgeAttributes = { size: number; color: string };
+const PROJECTION_PICK_RADIUS_PX = DEFAULT_CALIBRATION.filament.pickTolerancePx;
+const PROJECTION_NODE_RADIUS_PX = PROJECTION_PICK_RADIUS_PX * (2 + 1 / 2);
+
+function styleNumber(style: Readonly<Record<string, number | string>>, key: string, fallback: number): number {
+  const value = style[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+function styleColor(style: Readonly<Record<string, number | string>>, fallback: string): string {
+  const value = style.color;
+  return typeof value === 'string' && value.length > 0 ? value : fallback;
+}
+function projectionNodeAttributes(scene: Projection2dScene, id: string): ProjectionNodeAttributes {
+  const node = scene.nodes.get(id)!;
+  return { x: node.position.x, y: node.position.y, size: Math.max(1 / 2, styleNumber(node.style, 'size', PROJECTION_NODE_RADIUS_PX)),
+    color: styleColor(node.style, "#9bc8ed"), label: '' };
+}
+function projectionEdgeAttributes(scene: Projection2dScene, id: string): ProjectionEdgeAttributes {
+  const edge = scene.semanticEdges.get(id)!;
+  return { size: Math.max(1 / 2, styleNumber(edge.style, 'size', 1 + 1 / 2)),
+    color: styleColor(edge.style, edge.attestation === 'attested' ? "#729ebd" : "#ad8e6a") };
+}
+
+/** Mounts a typed projection once and diffs later visibility revisions on the same Sigma/camera. */
+export function mountProjection2d(
+  container: HTMLElement, snapshot: SemanticGraphSnapshot, styled: StyledProjection, visibility: RenderVisibility,
+): Projection2dHandle {
+  let scene = prepareProjection2d(snapshot, styled, visibility);
+  let contentKey = projection2dVisibilityKey(styled, visibility);
+  const graph = new MultiDirectedGraph<ProjectionNodeAttributes, ProjectionEdgeAttributes>();
+  for (const id of scene.nodes.keys()) graph.addNode(id, projectionNodeAttributes(scene, id));
+  for (const [id, edge] of scene.semanticEdges) graph.addEdgeWithKey(id, edge.source, edge.target, projectionEdgeAttributes(scene, id));
+  const sigma = new Sigma(graph, container, { enableEdgeEvents: true, renderLabels: false, renderEdgeLabels: false });
+  sigma.createCanvasContext('projection-visuals');
+  const canvas = sigma.getCanvases()['projection-visuals'];
+  if (canvas === undefined) throw new Error('projection canvas unavailable');
+  canvas.style.pointerEvents = 'none';
+  sigma.resize(true);
+  const context = canvas.getContext('2d');
+  const viewport = (point: Vec2) => sigma.graphToViewport(point);
+  const fieldPoint = (id: string): Vec2 | undefined => scene.nodes.get(id)?.position
+    ?? scene.containers.get(id)?.center2;
+  const line = (a: Vec2, b: Vec2): void => {
+    const start = viewport(a); const end = viewport(b);
+    context!.moveTo(start.x, start.y); context!.lineTo(end.x, end.y);
+  };
+  const draw = (): void => {
+    if (context === null) return;
+    const box = canvas.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return;
+    context.setTransform(canvas.width / box.width, 0, 0, canvas.height / box.height, 0, 0);
+    context.clearRect(0, 0, box.width, box.height);
+    context.lineWidth = 1 + 1 / 2;
+    for (const relation of scene.visualRelations.values()) {
+      const a = scene.nodes.get(relation.source)?.position;
+      const b = scene.nodes.get(relation.target)?.position;
+      if (a === undefined || b === undefined) continue;
+      context.strokeStyle = styleColor(scene.styled.visualStyle[relation.visualId] ?? {}, "#8fa8ac");
+      context.beginPath(); line(a, b); context.stroke();
+    }
+    for (const container of scene.containers.values()) {
+      context.strokeStyle = styleColor(scene.styled.visualStyle[container.visualId] ?? {}, "#7992a0");
+      context.beginPath();
+      if (container.boundary2 && container.boundary2.length > 1) {
+        const first = viewport(container.boundary2[0]!);
+        context.moveTo(first.x, first.y);
+        for (let i = 1; i < container.boundary2.length; i++) {
+          const p = viewport(container.boundary2[i]!); context.lineTo(p.x, p.y);
+        }
+        context.closePath();
+      } else if (container.center2 && container.radius !== undefined) {
+        const center = viewport(container.center2);
+        const rim = viewport({ x: container.center2.x + container.radius, y: container.center2.y });
+        context.arc(center.x, center.y, Math.hypot(rim.x - center.x, rim.y - center.y), 0, Math.PI * 2);
+      }
+      context.stroke();
+    }
+    for (const curve of scene.curves.values()) {
+      if (!curve.points2 || curve.points2.length < 2) continue;
+      context.strokeStyle = styleColor(scene.styled.visualStyle[curve.visualId] ?? {}, "#a0bad1");
+      context.beginPath();
+      const first = viewport(curve.points2[0]!); context.moveTo(first.x, first.y);
+      for (let i = 1; i < curve.points2.length; i++) {
+        const p = viewport(curve.points2[i]!); context.lineTo(p.x, p.y);
+      }
+      context.stroke();
+    }
+    for (const field of scene.fields.values()) {
+      context.fillStyle = styleColor(scene.styled.visualStyle[field.id] ?? {}, "#b8a4cb");
+      for (const id of field.sampleIds) {
+        const point = fieldPoint(id);
+        if (point === undefined) continue;
+        const p = viewport(point);
+        context.beginPath(); context.arc(p.x, p.y, 2 + 1 / 2, 0, Math.PI * 2); context.fill();
+      }
+    }
+  };
+  sigma.on('afterRender', draw);
+  draw();
+  const hitSegment = (p: Vec2, a: Vec2, b: Vec2, tolerance = PROJECTION_PICK_RADIUS_PX): boolean => {
+    const x = b.x - a.x; const y = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((p.x - a.x) * x + (p.y - a.y) * y) / (x * x + y * y || 1)));
+    return Math.hypot(p.x - a.x - t * x, p.y - a.y - t * y) <= tolerance;
+  };
+  const picking = sigma as unknown as { getNodeAtPosition(p: Vec2): string | null; getEdgeAtPoint(x: number, y: number): string | null };
+  return {
+    dimension: '2d',
+    updateVisibleSubset(nextStyled, nextVisibility): void {
+      const nextKey = projection2dVisibilityKey(nextStyled, nextVisibility);
+      const action = projection2dRevisionAction(scene.revision, contentKey, nextVisibility.revision, nextKey);
+      if (action !== 'apply') return;
+      const next = prepareProjection2d(snapshot, nextStyled, nextVisibility);
+      for (const id of graph.edges()) if (!next.semanticEdges.has(id)) graph.dropEdge(id);
+      for (const id of graph.nodes()) if (!next.nodes.has(id)) graph.dropNode(id);
+      for (const id of next.nodes.keys()) {
+        const attributes = projectionNodeAttributes(next, id);
+        if (graph.hasNode(id)) graph.replaceNodeAttributes(id, attributes);
+        else graph.addNode(id, attributes);
+      }
+      for (const [id, edge] of next.semanticEdges) {
+        const attributes = projectionEdgeAttributes(next, id);
+        if (graph.hasEdge(id) && graph.source(id) === edge.source && graph.target(id) === edge.target)
+          graph.replaceEdgeAttributes(id, attributes);
+        else {
+          if (graph.hasEdge(id)) graph.dropEdge(id);
+          graph.addEdgeWithKey(id, edge.source, edge.target, attributes);
+        }
+      }
+      scene = next;
+      contentKey = nextKey;
+      sigma.refresh();
+      draw();
+    },
+    pickAtPoint(position): PickResult | null {
+      const node = picking.getNodeAtPosition(position);
+      if (node && scene.nodes.has(node)) return { kind: 'node', id: node };
+      const edge = picking.getEdgeAtPoint(position.x, position.y);
+      if (edge && scene.semanticEdges.has(edge)) return { kind: 'semantic-edge', id: edge };
+      for (const relation of scene.visualRelations.values()) {
+        const a = scene.nodes.get(relation.source)?.position;
+        const b = scene.nodes.get(relation.target)?.position;
+        if (a && b && hitSegment(position, viewport(a), viewport(b)))
+          return { kind: 'visual-relation', visualId: relation.visualId };
+      }
+      for (const curve of scene.curves.values()) if (curve.points2) {
+        for (let i = 1; i < curve.points2.length; i++)
+          if (hitSegment(position, viewport(curve.points2[i - 1]!), viewport(curve.points2[i]!)))
+            return { kind: 'curve', visualId: curve.visualId };
+      }
+      for (const field of scene.fields.values()) for (const id of field.sampleIds) {
+        const point = fieldPoint(id);
+        if (point && Math.hypot(position.x - viewport(point).x, position.y - viewport(point).y) <= PROJECTION_PICK_RADIUS_PX)
+          return { kind: 'field', visualId: field.id };
+      }
+      for (const container of scene.containers.values()) {
+        if (container.center2 && container.radius !== undefined) {
+          const center = viewport(container.center2);
+          const rim = viewport({ x: container.center2.x + container.radius, y: container.center2.y });
+          if (Math.abs(Math.hypot(position.x - center.x, position.y - center.y) - Math.hypot(rim.x - center.x, rim.y - center.y)) <= PROJECTION_PICK_RADIUS_PX)
+            return { kind: 'container', visualId: container.visualId };
+        }
+        if (container.boundary2) for (let i = 0; i < container.boundary2.length; i++)
+          if (hitSegment(position, viewport(container.boundary2[i]!), viewport(container.boundary2[(i + 1) % container.boundary2.length]!)))
+            return { kind: 'container', visualId: container.visualId };
+      }
+      return null;
+    },
+    readCameraState: () => sigma.getCamera().getState(),
+    readSurfaceWitness: () => ({ nodeIds: graph.nodes(), semanticEdgeIds: graph.edges(),
+      visualRelationIds: [...scene.visualRelations.keys()], curveIds: [...scene.curves.keys()],
+      containerIds: [...scene.containers.keys()], fieldIds: [...scene.fields.keys()] }),
+    destroy(): void { sigma.off('afterRender', draw); sigma.kill(); },
   };
 }

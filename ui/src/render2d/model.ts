@@ -28,6 +28,8 @@ import type { VisualState } from "#engine/visual-state.ts";
 import { filamentGeometry, sampleFilament } from "#render2d/geometry.ts";
 import type { FilamentGeometry } from "#render2d/geometry.ts";
 import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
+import { validateRenderVisibility } from "../projection/contract.ts";
+import type { ProjectionResult, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec2, VisualContainer, VisualCurve, VisualRelation, MathematicalField } from "../projection/contract-types.ts";
 
 /** This is one Sigma node payload and does not retain opaque semantic content. */
 export type RenderNodeAttributes = {
@@ -124,6 +126,79 @@ export type RenderModel = {
   /** This records the engine-view fields read while this model was built and does not expose semantic values. */
   readonly engineAccessTrace: EngineAccessTrace;
 };
+
+/** Typed projection scene. Source edges and structural visuals never share an edge carrier. */
+export type Projection2dScene = {
+  readonly digest: string;
+  readonly revision: number;
+  readonly nodes: ReadonlyMap<string, { readonly position: Vec2; readonly style: Readonly<Record<string, number | string>> }>;
+  readonly semanticEdges: ReadonlyMap<string, { readonly source: string; readonly target: string; readonly attestation: 'attested' | 'exploratory'; readonly style: Readonly<Record<string, number | string>> }>;
+  readonly visualRelations: ReadonlyMap<string, VisualRelation>;
+  readonly curves: ReadonlyMap<string, VisualCurve>;
+  readonly containers: ReadonlyMap<string, VisualContainer>;
+  readonly fields: ReadonlyMap<string, MathematicalField>;
+  readonly styled: StyledProjection;
+  readonly visibility: RenderVisibility;
+};
+
+/** Validates the six independent classes before any Sigma/canvas mutation. */
+export function prepareProjection2d(
+  snapshot: SemanticGraphSnapshot, styled: StyledProjection, visibility: RenderVisibility,
+): Projection2dScene {
+  const result: ProjectionResult = styled.projection;
+  if (result.determinism.snapshotDigest !== snapshot.digest) throw new Error('projection snapshot mismatch');
+  validateRenderVisibility(result, visibility, snapshot);
+  if (result.positions3 !== undefined || (result.coordinateState.kind === 'coordinates' && result.positions2 === undefined)) {
+    throw new Error('2D renderer requires 2D coordinates');
+  }
+  const positions = result.positions2 ?? {};
+  const nodes = new Map<string, { position: Vec2; style: Readonly<Record<string, number | string>> }>();
+  for (const id of visibility.nodeIds) {
+    const position = positions[id];
+    if (position === undefined) throw new Error(`visible node has no 2D position: ${id}`);
+    nodes.set(id, { position, style: styled.nodeStyle[id] ?? {} });
+  }
+  const sourceEdges = new Map(snapshot.edges.map(edge => [edge.id, edge]));
+  const semanticEdges = new Map<string, { source: string; target: string; attestation: 'attested' | 'exploratory'; style: Readonly<Record<string, number | string>> }>();
+  for (const id of visibility.semanticEdgeIds) {
+    const edge = sourceEdges.get(id);
+    if (edge === undefined) throw new Error(`unknown source edge: ${id}`);
+    semanticEdges.set(id, { source: edge.source, target: edge.target, attestation: edge.attestation, style: styled.edgeStyle[id] ?? {} });
+  }
+  const select = <T extends { readonly visualId: string }>(items: readonly T[], ids: ReadonlySet<string>): ReadonlyMap<string, T> =>
+    new Map(items.filter(item => ids.has(item.visualId)).map(item => [item.visualId, item]));
+  return {
+    digest: result.determinism.resultDigest, revision: visibility.revision, nodes, semanticEdges,
+    visualRelations: select(result.visualRelations, visibility.visualRelationIds),
+    curves: select(result.curves, visibility.curveIds),
+    containers: select(result.containers, visibility.containerIds),
+    fields: new Map(result.fields.filter(item => visibility.fieldIds.has(item.id)).map(item => [item.id, item])),
+    styled, visibility,
+  };
+}
+
+/** Stable content key for equal-revision conflict detection; set iteration order is irrelevant. */
+export function projection2dVisibilityKey(styled: StyledProjection, visibility: RenderVisibility): string {
+  const ids = (set: ReadonlySet<string>) => [...set].sort();
+  return JSON.stringify([
+    visibility.projectionResultDigest, visibility.revision, visibility.density,
+    ids(visibility.levelIds), ids(visibility.nodeIds), ids(visibility.semanticEdgeIds),
+    ids(visibility.visualRelationIds), ids(visibility.curveIds), ids(visibility.containerIds), ids(visibility.fieldIds),
+    styled.nodeStyle, styled.edgeStyle, styled.visualStyle,
+  ]);
+}
+
+/** Revision handling is independent of Sigma and runs before any graph mutation. */
+export function projection2dRevisionAction(
+  currentRevision: number, currentKey: string, nextRevision: number, nextKey: string,
+): 'stale' | 'same' | 'apply' {
+  if (nextRevision < currentRevision) return 'stale';
+  if (nextRevision === currentRevision) {
+    if (nextKey !== currentKey) throw new Error('equal projection visibility revision changed content');
+    return 'same';
+  }
+  return 'apply';
+}
 
 /** This is one screen-space label candidate and does not create a visual node. */
 export type LabelPlacementCandidate = {
