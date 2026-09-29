@@ -9,7 +9,7 @@ import { projectRelations } from './v2-relations.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
-import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, normalizeDensity, refreshCameraAction, safeSelectNodes, selectArcs } from './lod.ts';
+import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, normalizeDensity, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
 import { lodRefreshDue } from './render-schedule.ts';
 import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
 import { labelBudgetOf } from './labels.ts';
@@ -788,7 +788,17 @@ export class V2Page {
         }
     }
     private updateEmphasis() {
-        if (!this.selected) { this.view?.setFocusStyle?.(null); this.view?.setEmphasis(this.hovered ? new Set([this.hovered]) : null); return; }
+        if (!this.selected) {
+            this.view?.setFocusStyle?.(null);
+            const resting = this.hovered || this.hoveredEdge ? restingEmphasis({
+                hovered: this.hovered, hoveredEdge: this.hoveredEdge,
+                relations: this.renderedRelations, nodes: this.visible().nodes,
+                containerIds: new Set(this.containers.map(container => container.id)),
+                organization: this.axes.organization, absoluteContainerId: ABSOLUTE_CONTAINER_ID,
+            }) : null;
+            this.view?.setEmphasis(resting);
+            return;
+        }
         const members = focusMembers(this.visible().nodes, this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested'), this.selected);
         const communityOf = communityResolver(this.index.nodes);
         const arcs = focusArcs(members, [...this.renderedRelations.values()], communityOf);

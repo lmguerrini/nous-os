@@ -385,6 +385,40 @@ export function focusMembers(
   return members;
 }
 
+/** The pre-focus resting/hover emphasis. A hover is transient and must not become F7 focus. */
+export function restingEmphasis(input: {
+  readonly hovered: string | null;
+  readonly hoveredEdge: string | null;
+  readonly relations: ReadonlyMap<string, { source: string; target: string }>;
+  readonly nodes: readonly { id: string; parent: string | null }[];
+  readonly containerIds: ReadonlySet<string>;
+  readonly organization: "flat" | "indra";
+  readonly absoluteContainerId: string;
+}): Set<string> | null {
+  const id = input.hovered;
+  const relation = input.relations.get(input.hoveredEdge ?? "") ?? input.relations.get(id ?? "");
+  if (!id && !relation) return null;
+  const neighbours = new Set(relation ? [relation.source, relation.target] : [id!]);
+  if (id === input.absoluteContainerId) neighbours.delete(id);
+  if (input.organization === "indra" && id && (id === input.absoluteContainerId || input.containerIds.has(id))) {
+    const byId = new Map(input.nodes.map(node => [node.id, node]));
+    for (const visible of input.nodes) {
+      let cursor: { id: string; parent: string | null } | undefined = visible;
+      while (cursor?.parent) {
+        if (cursor.parent === id) { neighbours.add(visible.id); break; }
+        cursor = byId.get(cursor.parent);
+      }
+      if (id === input.absoluteContainerId) neighbours.add(visible.id);
+    }
+  }
+  for (const edge of input.relations.values())
+    if (edge.source === id || edge.target === id) {
+      neighbours.add(edge.source);
+      neighbours.add(edge.target);
+    }
+  return neighbours;
+}
+
 export type FocusArc = { id: string; source: string; target: string; count?: number; class?: string };
 export function focusArcs(members: ReadonlySet<string>, arcs: readonly FocusArc[], communityOf: (id: string) => string) {
   const inside = new Set<string>();

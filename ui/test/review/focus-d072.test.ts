@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { focusArcs, focusMembers, focusNeighbourhood, selectArcs, selectNodes } from '../../src/review/lod.ts';
+import { focusArcs, focusMembers, focusNeighbourhood, restingEmphasis, selectArcs, selectNodes } from '../../src/review/lod.ts';
 import { focusArcOpacity, focusNodeOpacity } from '../../src/render-common/morphology-canvas.ts';
+import { labelCandidateKind } from '../../src/review/labels.ts';
 
 const nodes = [
   { id: 'domain:a', level: 1, parent: null, domains: [] },
@@ -80,4 +81,40 @@ test('focus priority remains inside the density budget and does not expand discl
   assert.equal(result.rendered.length, 5);
   assert(result.rendered.includes('proposal:a') && result.rendered.includes('proposal:b'));
   assert.deepEqual(available.map(node => node.id), before);
+});
+
+test('resting Indra labels retain pre-F7 candidates in 2D and 3D without selected focus', () => {
+  const fixture = [
+    { id: 'domain:amber', type: 'domain', parent: null, v2: { level: 1 } },
+    { id: 'project:amber', type: 'connection', parent: 'domain:amber', v2: { level: 2 } },
+    { id: 'conversation:amber', type: 'conversation', parent: 'project:amber', v2: { level: 3 } },
+    { id: 'proposal:amber', type: 'candidate', parent: 'conversation:amber', v2: { level: 4 } },
+    { id: 'domain:blue', type: 'domain', parent: null, v2: { level: 1 } },
+  ] as const;
+  const relations = new Map([['bridge:amber', { source: 'proposal:amber', target: 'domain:blue' }]]);
+  const resting = restingEmphasis({ hovered: null, hoveredEdge: null, relations, nodes: fixture,
+    containerIds: new Set(['domain:amber', 'project:amber']), organization: 'indra', absoluteContainerId: 'all' });
+  assert.equal(resting, null, 'no selection and no hover must leave F7 focus inactive');
+  const hovered = restingEmphasis({ hovered: 'project:amber', hoveredEdge: null, relations, nodes: fixture,
+    containerIds: new Set(['domain:amber', 'project:amber']), organization: 'indra', absoluteContainerId: 'all' });
+  assert.deepEqual([...hovered!].sort(), ['conversation:amber', 'project:amber', 'proposal:amber']);
+  for (const projection of ['2d', '3d'] as const) {
+    const candidates = (neighbours: ReadonlySet<string> | null, focusMembers: ReadonlySet<string> | null) =>
+      fixture.flatMap(node => {
+        const kind = labelCandidateKind({ id: node.id, node, selected: false, hovered: false,
+          labels: true, neighbour: neighbours?.has(node.id) ?? false, overview: true, close: false,
+          organization: 'indra', projection, focusMembers, moving: false });
+        return kind ? [[node.id, kind.reason]] : [];
+      });
+    assert.deepEqual(candidates(resting, null), [
+      ['domain:amber', 'domain'], ['project:amber', 'main'], ['domain:blue', 'domain'],
+    ], `${projection}: quiet overview candidates`);
+    assert.deepEqual(candidates(hovered, null), [
+      ['domain:amber', 'domain'], ['project:amber', 'neighbour'],
+      ['conversation:amber', 'neighbour'], ['proposal:amber', 'neighbour'], ['domain:blue', 'domain'],
+    ], `${projection}: transient container hover restores descendants without selected focus`);
+    assert.deepEqual(candidates(hovered, new Set(['project:amber', 'conversation:amber'])), [
+      ['project:amber', 'neighbour'], ['conversation:amber', 'neighbour'],
+    ], `${projection}: selected F7 focus still filters to members`);
+  }
 });

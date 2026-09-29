@@ -20,6 +20,39 @@ export type LabelCandidate = {
 };
 export type PlacedLabel = { id: string; text: string; reason: LabelReason; rect: ViewportRect };
 
+/** Candidate policy before screen occlusion, title claims and collision placement. */
+export function labelCandidateKind(input: {
+  readonly id: string;
+  readonly node: { readonly type: string; readonly v2?: { readonly level?: number } };
+  readonly selected: boolean;
+  readonly hovered: boolean;
+  readonly labels: boolean;
+  readonly neighbour: boolean;
+  readonly overview: boolean;
+  readonly close: boolean;
+  readonly organization: "flat" | "indra";
+  readonly projection: "2d" | "3d";
+  readonly focusMembers: ReadonlySet<string> | null;
+  readonly moving: boolean;
+}): { reason: LabelReason; tier1: boolean } | null {
+  let reason: LabelReason | null = null;
+  if (input.hovered) reason = "hover";
+  else if (input.selected) reason = "selected";
+  else if (!input.labels) return null;
+  else if (input.neighbour) reason = "neighbour";
+  else if (input.node.type === "domain") reason = "domain";
+  else if (input.node.type === "connection" || input.node.v2?.level === 2) reason = "main";
+  else if (!input.overview && !(input.organization === "indra" && input.projection === "3d")
+    && (input.node.type === "canon" || input.node.type === "candidate" || input.node.type === "conversation")) reason = "zoom";
+  else if (input.close) reason = "zoom";
+  if (!reason) return null;
+  const tier1 = reason === "hover" || reason === "selected"
+    || (input.organization === "flat" && reason === "domain");
+  if (input.focusMembers && !input.focusMembers.has(input.id) && !tier1) return null;
+  if (input.moving && !tier1) return null;
+  return { reason, tier1 };
+}
+
 /** One projected obstacle a label must stay clear of: a pearl or soma disc (centre and radius). A
  * disc carrying the candidate's own id is skipped for that candidate: the label places itself by
  * its anchor radius, so its own (possibly enlarged) disc never rejects it. */

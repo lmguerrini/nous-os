@@ -13,7 +13,7 @@ import { framingShellRingPoints } from "./framing-shell.ts";
 import { adaptReviewExport, restrictAnchors, subgraph } from "./product-adapter.ts";
 import { placeDynamic } from "./live-placement.ts";
 import { relaxDepth } from "./depth.ts";
-import { LABEL_BUDGET, disambiguateLabels, footprintDisc, occludedAnchors, placeLabels, shortLabelWithEllipsis } from "./labels.ts";
+import { LABEL_BUDGET, disambiguateLabels, footprintDisc, labelCandidateKind, occludedAnchors, placeLabels, shortLabelWithEllipsis } from "./labels.ts";
 import type { DepthSample } from "./labels.ts";
 import { encodingOf, SEMANTIC_COLOUR, standingOf } from "./presentation.ts";
 import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
@@ -509,31 +509,13 @@ export const createProductView: CreateProductView = async (input) => {
       // A container whose canvas title is drawn carries no second name (its own node label waits).
       if (pathById.has(id) && !chosen && !hovered && titledContainerIds.has(id))
         continue;
-      let reason: "hover" | "selected" | "neighbour" | "domain" | "main" | "zoom" | null = null;
-      if (hovered) reason = "hover";
-      else if (chosen) reason = "selected";
-      else if (!axes.labels) continue;
-      else if (neighbours.has(id)) reason = "neighbour";
-      else if (node.type === "domain") reason = "domain";
-      else if (node.type === "connection") reason = "main";
-      // Projects, works and systems of the v2 hierarchy are named in the overview next to the domains.
-      else if ((node.v2 as { level?: number } | undefined)?.level === 2) reason = "main";
-      // In Indra 3D the pearls already carry their titles; inner nodes are named only when the camera is close.
-      else if (!overview && !(axes.organization === "indra" && axes.projection === "3d")
-        && (node.type === "canon" || node.type === "candidate" || node.type === "conversation"))
-        reason = "zoom";
-      else if (close) reason = "zoom";
-      if (!reason) continue;
+      const kind = labelCandidateKind({ id, node, selected: chosen, hovered, labels: axes.labels,
+        neighbour: neighbours.has(id), overview, close, organization: axes.organization,
+        projection: axes.projection, focusMembers: focusStyle?.members ?? null, moving });
+      if (!kind) continue;
+      const { reason, tier1 } = kind;
       const text = input.text(id);
       fullText.set(id, text.full);
-      // Tier 1, the rule: a domain name in Flat, the selected or focused node, and the
-      // hovered node — always named, even boxed in among pearls (never under their own node,
-      // the panel or another label).
-      const tier1 = reason === "hover" || reason === "selected"
-        || (axes.organization === "flat" && reason === "domain");
-      if (focusStyle && !focusStyle.members.has(id) && !tier1) continue;
-      // While the camera moves only tier 1 stays named; the others return with the full pass.
-      if (moving && !tier1) continue;
       candidates.push({
         id,
         text: input.v2Prepared ? text.short : chosen || hovered ? text.full : text.short,
