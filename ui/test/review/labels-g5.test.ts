@@ -218,6 +218,19 @@ test("DOM label truncation: a page-cut short title ends with «…» on a word b
   assert.ok(charWidth(cut) <= 180);
 });
 
+test("width-fit labels split only a lone oversized token and remove dangling function words", () => {
+  const measure = (text: string) => [...text].length * 10;
+  assert.equal(shortLabelWithEllipsis({
+    short: "Synthetic Art per Creatività", full: "Synthetic Art per Creatività", maxWidth: 210, measure,
+  }), "Synthetic Art…");
+  assert.equal(shortLabelWithEllipsis({
+    short: "Synthetic Art per", full: "Synthetic Art per un archivio inventato", maxWidth: 400, measure,
+  }), "Synthetic Art…");
+  assert.equal(shortLabelWithEllipsis({
+    short: "ExtraordinarilyLongInventedToken", full: "ExtraordinarilyLongInventedToken", maxWidth: 120, measure,
+  }), "Extraordina…");
+});
+
 test("the « · +N» suffix survives every truncation path (pure helpers and canvas titles)", () => {
   const keep = (text: string, maxWidth: number) => ellipsizeTextKeepCount(text, maxWidth, charWidth);
   assert.equal(keep("NousOS", 100), "NousOS");

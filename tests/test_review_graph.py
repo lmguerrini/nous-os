@@ -6,7 +6,7 @@ import io
 import gzip
 import pytest
 
-from nous_os.review_graph import assign_display_labels, build, encoded, label_phrase, short, shorten_title
+from nous_os.review_graph import _with_ellipsis, assign_display_labels, build, encoded, label_phrase, short, shorten_title
 from nous_os.graph_review import serve_graph
 
 
@@ -63,7 +63,7 @@ def test_build_determinism_and_provenance(tmp_path):
     assert any(e["type"] == "classified_in" for e in index["edges"])
     labels = {n["id"]: n["display_label"] for n in index["nodes"]}
     assert labels == {n["id"]: n["display_label"] for n in json.loads((tmp_path / "second/index.json").read_text())["nodes"]}
-    assert first["display_labels"]["rule"] == "d072-display-label/5"
+    assert first["display_labels"]["rule"] == "d072-display-label/6"
     assert first["display_labels"]["map_sha256"] == hashlib.sha256(encoded(labels)).hexdigest()
     assert all(label and len(label) <= 40 for label in labels.values())
     assert all(not label.casefold().startswith(("messaggio del fondatore", "il fondatore", "senza titolo"))
@@ -101,6 +101,25 @@ def test_title_first_and_formula_fallback():
 ])
 def test_shortening_steps(title, expected):
     assert shorten_title(title) == expected
+
+
+@pytest.mark.parametrize("ending", """
+e ed o od di del dello della dei degli delle a al allo alla ai agli alle da dal dalla in nel nella nei
+con su sul sulla per tra fra come durante il lo la i gli le un uno una che non
+and or of for to the a an with on in at by from as into via
+""".split())
+def test_shortening_drops_trailing_function_words_before_ellipsis(ending):
+    label = _with_ellipsis(f"Imaginary ceramic garden archive {ending},", 40)
+    assert label.endswith("…")
+    assert label[-2] not in ",;:!?·•|—–-"
+    assert label[:-1].split()[-1].casefold().strip(".,;:!?·•|—–-") not in {
+        "e", "ed", "o", "od", "di", "del", "dello", "della", "dei", "degli", "delle", "a", "al", "allo", "alla", "ai", "agli", "alle",
+        "da", "dal", "dalla", "in", "nel", "nella", "nei", "con", "su", "sul", "sulla", "per", "tra", "fra", "come", "durante",
+        "il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "che", "non", "and", "or", "of", "for", "to", "the", "an", "with", "on", "at", "by", "from", "as", "into", "via",
+    }
+    assert len(label[:-1].split()) >= 3 or len(label[:-1]) >= 12
+    assert len(label) <= 40
+    assert _with_ellipsis(f"Imaginary ceramic garden archive {ending},", 40) == label
 
 
 @pytest.mark.parametrize("token", [

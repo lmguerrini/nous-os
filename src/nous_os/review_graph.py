@@ -11,7 +11,7 @@ import re
 import unicodedata
 
 SCHEMA = "nousos.review-graph/2"
-DISPLAY_LABEL_RULE = "d072-display-label/5"
+DISPLAY_LABEL_RULE = "d072-display-label/6"
 DOMAINS = ("atlasfield", "forge", "quillmap", "orchardline", "showcase", "dossier", "qrs", "meridian")
 SPECIFICITY = ("orchardline", "quillmap", "qrs", "forge", "dossier", "showcase", "atlasfield", "meridian")
 KIND_WEIGHT = {"DECISION": 2.0, "CONCEPT": 1.6, "REQUIREMENT": 1.4, "RELATIONSHIP": 1.4,
@@ -116,12 +116,41 @@ def label_phrase(value: str, cap: int = 40) -> str:
         return ""
     if len(value) > cap:
         boundary = value[:cap + 1].rsplit(" ", 1)[0]
-        value = boundary if boundary and len(boundary) <= cap else value[:cap - 1] + "…"
+        value = boundary if boundary and len(boundary) <= cap else _with_ellipsis(value[:cap - 1], cap)
     value = re.sub(r"(?:\s+(?:about|and|or|of|for|to|the|a|an|di|del|della|dei|per|e|o|il|la|un|una))+$", "", value, flags=re.I)
     return _clean_display_label(value.rstrip(" ,;:–—-"))
 
 
 LABEL_STOP_WORDS = frozenset("il lo la i gli le un una uno del dello della dei degli delle nel nello nella the a an of".split())
+
+DISPLAY_TRAILING_FUNCTION_WORDS = frozenset("""
+e ed o od di del dello della dei degli delle a al allo alla ai agli alle da dal dalla in nel nella nei
+con su sul sulla per tra fra come durante il lo la i gli le un uno una che non
+and or of for to the a an with on in at by from as into via
+""".split())
+
+
+def _ellipsis_prefix(value: str) -> str:
+    """Remove punctuation and repeatedly discard a function word stranded before an ellipsis."""
+    words = value.rstrip(" ,;:!?·•|—–-").split()
+    while (words and words[-1].strip(".,;:!?·•|—–-") != "AI"
+           and words[-1].casefold().strip(".,;:!?·•|—–-") in DISPLAY_TRAILING_FUNCTION_WORDS):
+        words.pop()
+    return " ".join(words).rstrip(" ,;:!?·•|—–-")
+
+
+def _with_ellipsis(value: str, cap: int) -> str:
+    prefix = _ellipsis_prefix(value)
+    if not prefix:
+        return "…" if cap > 0 else ""
+    while len(prefix) + 1 > cap:
+        words = prefix.split()
+        if len(words) <= 1:
+            prefix = prefix[:max(0, cap - 1)].rstrip(" ,;:!?·•|—–-")
+            break
+        words.pop()
+        prefix = _ellipsis_prefix(" ".join(words))
+    return (prefix + "…")[:cap]
 
 
 def formula_title(value: str) -> bool:
@@ -169,13 +198,13 @@ def shorten_title(value: str, cap: int = 40) -> str:
     while len(fit) > 2 and len(" ".join(fit)) > cap - 1:
         fit.pop()
     if len(" ".join(fit)) <= cap - 1:
-        return _clean_display_label(" ".join(fit).rstrip(" ,;:!?.") + "…")
-    fallback = " ".join(fit[:2]).rstrip(" ,;:") + "…"
+        return _clean_display_label(_with_ellipsis(" ".join(fit), cap))
+    fallback = _with_ellipsis(" ".join(fit), cap)
     if len(fallback) <= cap:
         return _clean_display_label(fallback)
     # A punctuation-joined token can be longer than the full label cap. Keep
     # the ellipsis inside the cap even when there is no usable word boundary.
-    return _clean_display_label(value[:cap - 1] + "…")
+    return _clean_display_label(_with_ellipsis(value[:cap - 1], cap))
 
 
 def assign_display_labels(items: list[dict], source: dict[str, str], parents: dict[str, dict]) -> None:

@@ -1,7 +1,7 @@
 import type { LabelReason, ViewportRect } from "./view-contract.ts";
 import { normalizeDensity } from "./lod.ts";
 import type { Density } from "./lod.ts";
-import { ellipsizeText, ellipsizeTextKeepCount, readableTruncatedText, stripTrailingSeparators } from "../render-common/container-canvas.ts";
+import { ellipsizeTextKeepCount, readableTruncatedText, stripTrailingSeparators } from "../render-common/container-canvas.ts";
 export type LabelCandidate = {
   id: string;
   text: string;
@@ -113,8 +113,10 @@ export function footprintDisc(
 /** The suffix a container title or label carries when its node holds hidden children (« · +12»). */
 const COUNT_SUFFIX = /\s·\s\+\d+$/;
 const TRAILING_FUNCTION_WORDS = new Set([
-  "e", "ed", "o", "di", "del", "della", "dei", "per", "con", "il", "lo", "la", "i", "gli", "le", "un", "una", "a",
-  "and", "or", "of", "for", "to", "the", "an",
+  "e", "ed", "o", "od", "di", "del", "dello", "della", "dei", "degli", "delle", "a", "al", "allo", "alla", "ai", "agli", "alle",
+  "da", "dal", "dalla", "in", "nel", "nella", "nei", "con", "su", "sul", "sulla", "per", "tra", "fra", "come", "durante",
+  "il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "che", "non",
+  "and", "or", "of", "for", "to", "the", "a", "an", "with", "on", "in", "at", "by", "from", "as", "into", "via",
 ]);
 
 /** Remove an incomplete join from the visible end of a title before adding its ellipsis. */
@@ -122,6 +124,7 @@ function trimDanglingEllipsisTail(text: string): string {
   const words = text.trimEnd().split(/\s+/);
   while (words.length) {
     const last = words[words.length - 1]!.replace(/[.,;:!?·•|—–-]+$/u, "");
+    if (last === "AI") break;
     if (!TRAILING_FUNCTION_WORDS.has(last.toLocaleLowerCase("it"))) break;
     words.pop();
   }
@@ -151,10 +154,29 @@ export function shortLabelWithEllipsis(input: {
   const suffix = input.short.match(COUNT_SUFFIX)?.[0] ?? "";
   const head = suffix ? input.short.slice(0, input.short.length - suffix.length) : input.short;
   const fullHead = input.full.replace(COUNT_SUFFIX, "");
+  const fit = (text: string, width: number): string => {
+    if (input.measure(text) <= width) return text;
+    const words = text.trim().split(/\s+/u);
+    for (let count = words.length - 1; count > 0; count -= 1) {
+      const kept = stripTrailingSeparators(words.slice(0, count).join(" "));
+      if (kept && input.measure(`${kept}…`) <= width) return cleanEllipsis(`${kept}…`);
+    }
+    // Only a lone oversized token may be split inside the token.
+    if (words.length === 1) {
+      const chars = [...words[0]!];
+      for (let count = chars.length - 1; count > 0; count -= 1) {
+        const kept = stripTrailingSeparators(chars.slice(0, count).join(""));
+        if (kept && input.measure(`${kept}…`) <= width) return cleanEllipsis(`${kept}…`);
+      }
+    }
+    return "…";
+  };
   // A prepared short title can omit an interior word. Resolve such aliases from the full title
   // so the same node does not acquire a different truncation when its view path changes.
   if (head && !fullHead.startsWith(head)) {
-    return cleanEllipsis(ellipsizeTextKeepCount(`${fullHead}${suffix}`, input.maxWidth, input.measure));
+    const budget = suffix ? input.maxWidth - input.measure(suffix) : input.maxWidth;
+    const name = fit(fullHead, budget);
+    return cleanEllipsis(`${name}${suffix}`);
   }
   let name = head.trimEnd();
   const cut = fullHead.length > name.length && fullHead.startsWith(name);
@@ -168,8 +190,8 @@ export function shortLabelWithEllipsis(input: {
   const text = suffix ? `${name}${suffix}` : name;
   if (input.measure(text) <= input.maxWidth) return cleanEllipsis(text);
   const budget = input.maxWidth - input.measure(suffix);
-  if (suffix && budget > input.measure("…")) return cleanEllipsis(`${ellipsizeText(name, budget, input.measure)}${suffix}`);
-  return cleanEllipsis(ellipsizeText(name, input.maxWidth, input.measure));
+  if (suffix && budget > input.measure("…")) return cleanEllipsis(`${fit(name, budget)}${suffix}`);
+  return cleanEllipsis(fit(name, input.maxWidth));
 }
 
 /** Re-exported so the DOM label path and its tests share one word-boundary ellipsis. */

@@ -1066,9 +1066,13 @@ export class V2Page {
             button.className = 'relation';
             const conversations = this.index.nodes.filter(n => n.level === 3 && n.domains.includes(domain.id.replace(/^domain:/, ''))).length;
             const domainName = displayLabel(domain);
-            const visibleName = shortLabelWithEllipsis({ short: domainName, full: domainName, maxWidth: 180,
-                measure: text => text.split(/\s+/).reduce((sum, word) => sum + word.length * 6.96 + 5, 0) });
-            button.textContent = `${visibleName} · ${conversations} conversazioni`;
+            const name = document.createElement('span');
+            name.className = 'v2-overview-name';
+            name.textContent = domainName;
+            const count = document.createElement('span');
+            count.className = 'v2-overview-count';
+            count.textContent = ` · ${conversations} conversazioni`;
+            button.replaceChildren(name, count);
             button.onclick = () => { void this.select(domain.id); };
             overview.append(button);
         }
