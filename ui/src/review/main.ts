@@ -30,6 +30,7 @@ import type { PopoverStack, SurfaceBinding } from "./popover.ts";
 import type { GraphManifest } from "./graph-v2.ts";
 import { normalizeDensity } from "./lod.ts";
 import type { Density } from "./lod.ts";
+import { GIZMO_IDLE_GRACE_MS, gizmoShouldRun } from "./gizmo-schedule.ts";
 
 const get = <T extends Element>(id: string): T => {
   const item = document.getElementById(id);
@@ -405,6 +406,7 @@ async function mount() {
   status.textContent = debug ? "Grafo pronto · vista tecnica" : "Grafo pronto";
 }
 function select(id: string): Promise<void> {
+  requestGizmoUpdate();
   if (v2) return v2.select(id);
   return enqueue(async () => {
     if (!data) return;
@@ -453,6 +455,7 @@ function clearSelection(): Promise<void> { return enqueue(async () => {
   updateSummary();
 }); }
 function reset(): Promise<void> {
+  requestGizmoUpdate();
   if (v2) { focusMode=false; appearance = resetAppearance(); syncAppearanceControls(); return v2.setAppearance(appearance).then(() => v2!.reset()); }
   return enqueue(async () => {
     if (!stack) return;
@@ -469,6 +472,7 @@ function reset(): Promise<void> {
   });
 }
 function fit(): Promise<void> {
+  requestGizmoUpdate();
   if (v2) return v2.fit();
   return enqueue(async () => {
     await view?.fit();
@@ -476,6 +480,8 @@ function fit(): Promise<void> {
   });
 }
 function setAxes(partial: Partial<Axes>): Promise<void> {
+  if (partial.projection === "2d") stopGizmoUpdate();
+  else requestGizmoUpdate();
   if (v2) { axes = {...axes,...partial}; syncCustomColours();
     for(const axis of ["projection","morphology","organization","reading"] as const)
       document.querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`).forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.value===axes[axis])));
@@ -518,7 +524,7 @@ function toggleFocus(): Promise<void> { if(v2){focusMode=!focusMode;return v2.se
   }
   updateButtons();
 }); }
-function viewPreset(name: ViewPreset | "reset"): Promise<void> { if (v2) { if (name === "reset") return v2.reset(); v2.viewPreset(name); return Promise.resolve(); } return enqueue(async () => {
+function viewPreset(name: ViewPreset | "reset"): Promise<void> { requestGizmoUpdate(); if (v2) { if (name === "reset") return v2.reset(); v2.viewPreset(name); return Promise.resolve(); } return enqueue(async () => {
   if (axes.projection !== "3d") return;
   if (name === "reset") await view?.resetCamera();
   else view?.viewPreset(name);
@@ -989,7 +995,23 @@ syncPresetList();
 syncPanel();
 refreshFlowLegends();
 axes = { ...axes, colour: paletteName(readLocal(storage, "d069.palette", "bw")) };
+let gizmoFrame: number | null = null;
+let gizmoKeepAliveUntilMs = 0;
+function cameraWatchRunning(): boolean {
+  return Boolean((globalThis as typeof globalThis & { __d072?: { cameraWatchRunning?: () => boolean } }).__d072?.cameraWatchRunning?.());
+}
+function stopGizmoUpdate(): void {
+  if (gizmoFrame !== null) cancelAnimationFrame(gizmoFrame);
+  gizmoFrame = null;
+}
+function requestGizmoUpdate(): void {
+  if (axes.projection !== "3d") { stopGizmoUpdate(); return; }
+  gizmoKeepAliveUntilMs = performance.now() + GIZMO_IDLE_GRACE_MS;
+  if (gizmoFrame === null) gizmoFrame = requestAnimationFrame(updateGizmo);
+}
 function updateGizmo(): void {
+  gizmoFrame = null;
+  if (axes.projection !== "3d") return;
   const pose = v2 ? v2.camera() : view?.camera();
   if (pose && axes.projection === "3d") {
     const delta = pose.target.map((value, i) => value - pose.position[i]!);
@@ -1009,10 +1031,24 @@ function updateGizmo(): void {
       button.style.left = `${Math.max(0, Math.min(88, x - 12))}px`; button.style.top = `${Math.max(0, Math.min(88, y - 12))}px`;
     }
   }
-  requestAnimationFrame(updateGizmo);
+  const watching = cameraWatchRunning();
+  if (watching) gizmoKeepAliveUntilMs = performance.now() + GIZMO_IDLE_GRACE_MS;
+  if (gizmoShouldRun({ projection: axes.projection, cameraWatchRunning: watching,
+    nowMs: performance.now(), keepAliveUntilMs: gizmoKeepAliveUntilMs }))
+    gizmoFrame = requestAnimationFrame(updateGizmo);
 }
-requestAnimationFrame(updateGizmo);
-window.setInterval(() => v2?.tickZoom(), 250);
+requestGizmoUpdate();
+for (const eventName of ["pointerdown", "pointermove", "pointerup", "pointercancel", "wheel", "keydown", "keyup"] as const)
+  viewport.addEventListener(eventName, requestGizmoUpdate, { passive: eventName === "wheel" });
+const tickZoomCost = { calls: 0, totalMs: 0, maxMs: 0 };
+window.setInterval(() => {
+  const start = performance.now();
+  v2?.tickZoom();
+  const duration = performance.now() - start;
+  tickZoomCost.calls++;
+  tickZoomCost.totalMs += duration;
+  tickZoomCost.maxMs = Math.max(tickZoomCost.maxMs, duration);
+}, 250);
 const api = {
   ready: Promise.resolve(),
   dataset: () => v2?.dataset() ?? {mode:"export",digest:data?.export_digest ?? null,counts:null},
@@ -1046,6 +1082,7 @@ const api = {
   get focusMode() { return focusMode; },
   camera: () => v2?.camera() ?? view?.camera() ?? null,
   cameraState: () => v2?.cameraState() ?? view?.readCamera() ?? null,
+  tickZoomCost: () => ({ ...tickZoomCost, meanMs: tickZoomCost.calls ? tickZoomCost.totalMs / tickZoomCost.calls : 0 }),
   viewPreset,
   fullscreen,
   appearance: () => ({ ...appearance }),
