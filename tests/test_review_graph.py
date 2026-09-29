@@ -63,7 +63,7 @@ def test_build_determinism_and_provenance(tmp_path):
     assert any(e["type"] == "classified_in" for e in index["edges"])
     labels = {n["id"]: n["display_label"] for n in index["nodes"]}
     assert labels == {n["id"]: n["display_label"] for n in json.loads((tmp_path / "second/index.json").read_text())["nodes"]}
-    assert first["display_labels"]["rule"] == "d072-display-label/4"
+    assert first["display_labels"]["rule"] == "d072-display-label/5"
     assert first["display_labels"]["map_sha256"] == hashlib.sha256(encoded(labels)).hexdigest()
     assert all(label and len(label) <= 40 for label in labels.values())
     assert all(not label.casefold().startswith(("messaggio del fondatore", "il fondatore", "senza titolo"))
@@ -125,6 +125,26 @@ def test_shortening_cap_property_for_deterministic_strings():
     for value in ("Short invented title", "A compact garden label", "Synthetic archive"):
         assert shorten_title(value) == value
         assert label_phrase(value) == value
+
+
+def test_shortening_removes_orphan_delimiters_and_keeps_balanced_quotes():
+    cases = (
+        ("Invented words for a synthetic garden archive with many later details ”", "”"),
+        ("«Imaginary archive words describe a synthetic garden with extra details", "«"),
+        ("Invented garden archive (synthetic botanical detail without a closing mark", "("),
+    )
+    for value, orphan in cases:
+        for shorten in (shorten_title, label_phrase):
+            result = shorten(value)
+            assert orphan not in result
+            assert len(result) <= 40
+            assert shorten(value) == result
+
+    balanced = "An “imaginary garden” archive with synthetic botanical details beyond the limit"
+    for shorten in (shorten_title, label_phrase):
+        result = shorten(balanced)
+        assert "“imaginary garden”" in result
+        assert len(result) <= 40
 
 
 def test_names_qualifiers_and_sibling_collisions():

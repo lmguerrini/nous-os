@@ -11,7 +11,7 @@ import re
 import unicodedata
 
 SCHEMA = "nousos.review-graph/2"
-DISPLAY_LABEL_RULE = "d072-display-label/4"
+DISPLAY_LABEL_RULE = "d072-display-label/5"
 DOMAINS = ("atlasfield", "forge", "quillmap", "orchardline", "showcase", "dossier", "qrs", "meridian")
 SPECIFICITY = ("orchardline", "quillmap", "qrs", "forge", "dossier", "showcase", "atlasfield", "meridian")
 KIND_WEIGHT = {"DECISION": 2.0, "CONCEPT": 1.6, "REQUIREMENT": 1.4, "RELATIONSHIP": 1.4,
@@ -70,6 +70,36 @@ def canvas_title(value: str) -> str:
     return value.strip(" -–—·:| ")
 
 
+def _clean_display_label(value: str) -> str:
+    """Remove unmatched display delimiters and punctuation stranded before a cut."""
+    pairs = {'“': '”', '‘': '’', '«': '»', '(': ')', '[': ']'}
+    closers = {close: opening for opening, close in pairs.items()}
+    unmatched: set[int] = set()
+    stack: list[tuple[str, int]] = []
+    quote_counts = {'"': 0, '“': 0, '”': 0, '‘': 0, '’': 0, '«': 0, '»': 0}
+    for index, char in enumerate(value):
+        if char in quote_counts:
+            quote_counts[char] += 1
+        if char in pairs:
+            stack.append((char, index))
+        elif char in closers:
+            if stack and stack[-1][0] == closers[char]:
+                stack.pop()
+            else:
+                unmatched.add(index)
+    unmatched.update(index for _, index in stack)
+    for opening, close in pairs.items():
+        if opening in '“‘«' and quote_counts[opening] != quote_counts[close]:
+            unmatched.update(i for i, char in enumerate(value) if char in (opening, close))
+    if quote_counts['"'] % 2:
+        unmatched.update(i for i, char in enumerate(value) if char == '"')
+    value = ''.join(char for index, char in enumerate(value) if index not in unmatched)
+    value = re.sub(r"\s+", " ", value).strip()
+    if value.endswith("…"):
+        value = value[:-1].rstrip(" ,;:.!?–—-") + "…"
+    return re.sub(r"\s+", " ", value).strip()
+
+
 def label_phrase(value: str, cap: int = 40) -> str:
     """Compact source words for display only; never used as a canonical title."""
     value = canvas_title(value).strip(" \"'«»“”‘’…")
@@ -88,7 +118,7 @@ def label_phrase(value: str, cap: int = 40) -> str:
         boundary = value[:cap + 1].rsplit(" ", 1)[0]
         value = boundary if boundary and len(boundary) <= cap else value[:cap - 1] + "…"
     value = re.sub(r"(?:\s+(?:about|and|or|of|for|to|the|a|an|di|del|della|dei|per|e|o|il|la|un|una))+$", "", value, flags=re.I)
-    return value.rstrip(" ,;:–—-")
+    return _clean_display_label(value.rstrip(" ,;:–—-"))
 
 
 LABEL_STOP_WORDS = frozenset("il lo la i gli le un una uno del dello della dei degli delle nel nello nella the a an of".split())
@@ -107,6 +137,7 @@ def shorten_title(value: str, cap: int = 40) -> str:
     value = re.sub(r"\s+", " ", value or "").strip()
     if cap <= 0:
         return ""
+    value = _clean_display_label(value)
     if len(value) <= cap:
         return value
     lead = re.match(r"^(?:messaggio del fondatore\s*:\s*|il fondatore\s+|the founder\s+)", value, re.I)
@@ -115,36 +146,36 @@ def shorten_title(value: str, cap: int = 40) -> str:
         if value:
             value = value[0].upper() + value[1:]
         if len(value) <= cap:
-            return value
+            return _clean_display_label(value)
     without_parens = re.sub(r"\s*\([^()]*\)", "", value).strip()
     if len(without_parens.split()) >= 2:
         value = without_parens
     if len(value) <= cap:
-        return value
+        return _clean_display_label(value)
     head = re.split(r"\s+[—–]\s+|:\s+", value, maxsplit=1)[0].strip()
     content_words = [w for w in head.split() if w.casefold().strip(".,;:!?«»") not in LABEL_STOP_WORDS]
     if len(content_words) >= 3:
         value = head
     if len(value) <= cap:
-        return value
+        return _clean_display_label(value)
     words = value.split()
     reduced = " ".join(w for w in words if w.casefold().strip(".,;:!?«»") not in LABEL_STOP_WORDS)
     if len(reduced.split()) >= 2:
         value = reduced
     if len(value) <= cap:
-        return value
+        return _clean_display_label(value)
     # Word boundaries also protect hyphenated code tokens such as CAP-07 and EC-A/B/C/E.
     fit = [w for w in value.split() if w]
     while len(fit) > 2 and len(" ".join(fit)) > cap - 1:
         fit.pop()
     if len(" ".join(fit)) <= cap - 1:
-        return " ".join(fit).rstrip(" ,;:") + "…"
+        return _clean_display_label(" ".join(fit).rstrip(" ,;:!?.") + "…")
     fallback = " ".join(fit[:2]).rstrip(" ,;:") + "…"
     if len(fallback) <= cap:
-        return fallback
+        return _clean_display_label(fallback)
     # A punctuation-joined token can be longer than the full label cap. Keep
     # the ellipsis inside the cap even when there is no usable word boundary.
-    return value[:cap - 1] + "…"
+    return _clean_display_label(value[:cap - 1] + "…")
 
 
 def assign_display_labels(items: list[dict], source: dict[str, str], parents: dict[str, dict]) -> None:
