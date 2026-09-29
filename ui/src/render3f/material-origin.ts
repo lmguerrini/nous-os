@@ -32,6 +32,7 @@ const MATERIAL_SETTER_NAMES = new Set([
 ]);
 const GOVERNED_DEPTH_NAMES = governedDepthNames();
 const HEX_COLOUR_PATTERN = /#[\da-f]{3,8}\b/iu;
+const TYPE_ONLY_RENDERER_IMPORTS = new Set(["../projection/contract-types.ts"]);
 
 const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["aggregate-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts"])],
@@ -93,9 +94,10 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#render3f/state.ts",
     "#scene/index.ts",
     "#scene/contract.ts",
+    "../projection/contract-types.ts",
   ])],
   ["node-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts"])],
-  ["picking.ts", new Set(["#engine/contract.ts", "#scene/contract.ts"])],
+  ["picking.ts", new Set(["#engine/contract.ts", "#scene/contract.ts", "../projection/contract-types.ts"])],
   ["resources.ts", new Set(["three", "#engine/renderer-handle.ts"])],
   ["shader-contract.ts", new Set()],
   ["state.ts", new Set([
@@ -244,11 +246,19 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
       "updateNodeProjectionUniforms",
       "updateNodeRenderResources",
     ])],
-    ["#render3f/picking.ts", new Set(["ScenePicker"])],
+    ["#render3f/picking.ts", new Set([
+      "ScenePicker",
+      "TypedProjectionPicker",
+      "Render3fTypedInput",
+      "TypedPoint",
+      "TypedProjectionGeometry",
+      "TypedSegment",
+    ])],
     ["#render3f/resources.ts", new Set(["ResourceRegistry"])],
     ["#render3f/state.ts", new Set(["CameraScenes", "LiveSceneState"])],
     ["#scene/index.ts", new Set(["buildScene"])],
     ["#scene/contract.ts", new Set(["SCENE_PERMILLE_QUANTUM", "Scene", "SceneNode"])],
+    ["../projection/contract-types.ts", new Set(["PickResult"])],
   ])],
   ["node-material.ts", new Map([
     ["three", new Set(["*"])],
@@ -258,6 +268,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
   ["picking.ts", new Map([
     ["#engine/contract.ts", new Set(["Coordinates"])],
     ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE", "Scene", "SceneEdge", "SceneNode"])],
+    ["../projection/contract-types.ts", new Set(["PickResult", "RenderVisibility", "StyledProjection"])],
   ])],
   ["resources.ts", new Map([
     ["three", new Set(["*"])],
@@ -484,7 +495,10 @@ function scannerToken(
 function assertRendererImports(source: RendererSource, tokens: readonly SourceToken[]): void {
   const actual = importedModules(tokens);
   for (const imported of actual) {
-    if (imported.includes("..") || !ALLOWED_RENDERER_IMPORTS.has(imported)) {
+    const approvedTypeOnlyImport = TYPE_ONLY_RENDERER_IMPORTS.has(imported)
+      && isTypeOnlyImport(tokens, imported);
+    if ((imported.includes("..") && !approvedTypeOnlyImport)
+      || (!ALLOWED_RENDERER_IMPORTS.has(imported) && !approvedTypeOnlyImport)) {
       throw new TypeError(`${source.name} imports visual policy outside renderer allow-list: ${imported}`);
     }
   }
@@ -503,6 +517,48 @@ function assertRendererImports(source: RendererSource, tokens: readonly SourceTo
       `${source.name} renderer import allow-list drift: missing=${missing.join(",") || "none"}; added=${added.join(",") || "none"}`,
     );
   }
+}
+
+/** The projection contract is data-only at the type level; runtime paths remain forbidden. */
+function isTypeOnlyImport(tokens: readonly SourceToken[], moduleName: string): boolean {
+  let found = false;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const kind = tokens[index]?.kind;
+    if (kind === SyntaxKind.ExportKeyword) {
+      const from = findImportFrom(tokens, index + 1);
+      if (from !== undefined && tokens[from + 1]?.value === moduleName) return false;
+      continue;
+    }
+    if (kind !== SyntaxKind.ImportKeyword) {
+      if (isTokenValue(tokens[index], "require")
+        && tokens[index + 1]?.kind === SyntaxKind.OpenParenToken
+        && tokens[index + 2]?.kind === SyntaxKind.StringLiteral
+        && tokens[index + 2]?.value === moduleName) {
+        return false;
+      }
+      continue;
+    }
+    const next = tokens[index + 1];
+    if (next?.kind === SyntaxKind.StringLiteral) {
+      if (next.value === moduleName) return false;
+      continue;
+    }
+    if (next?.kind === SyntaxKind.OpenParenToken) {
+      if (tokens[index + 2]?.kind === SyntaxKind.StringLiteral && tokens[index + 2]?.value === moduleName) {
+        return false;
+      }
+      continue;
+    }
+    const from = findImportFrom(tokens, index + 1);
+    if (from === undefined || tokens[from + 1]?.value !== moduleName) {
+      continue;
+    }
+    found = true;
+    if (next?.kind !== SyntaxKind.TypeKeyword) {
+      return false;
+    }
+  }
+  return found;
 }
 
 function assertRendererImportSymbols(source: RendererSource, tokens: readonly SourceToken[]): void {

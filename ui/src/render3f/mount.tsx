@@ -52,6 +52,9 @@ import {
   updateNodeRenderResources,
 } from "#render3f/node-material.ts";
 import { ScenePicker } from "#render3f/picking.ts";
+import { TypedProjectionPicker } from "#render3f/picking.ts";
+import type { Render3fTypedInput, TypedPoint, TypedProjectionGeometry, TypedSegment } from "#render3f/picking.ts";
+import type { PickResult } from "../projection/contract-types.ts";
 import { ResourceRegistry } from "#render3f/resources.ts";
 import { LiveSceneState } from "#render3f/state.ts";
 import type { CameraScenes } from "#render3f/state.ts";
@@ -114,7 +117,9 @@ export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountin
   /** D-072 R2: swaps the drawn level-of-detail subset in place — the scene, its picking surface and
    * the camera are untouched; only the distinct overlay's geometry snapshot and style lookups move.
    * A no-op when no distinct overlay is mounted. */
-  updateVisibleSubset(update: DistinctSubsetUpdate): void;
+  updateVisibleSubset(update: DistinctSubsetUpdate | Render3fTypedInput): void;
+  /** Discriminated pick on the typed projection path. */
+  pickAtPosition(position: { readonly x: number; readonly y: number }): PickResult | null;
   readReviewWindows(): readonly { id: string; members: readonly string[]; center: Coordinates; radius: number }[];
   isWorldPointVisible(point: Coordinates): boolean;
 };
@@ -138,6 +143,7 @@ export function mount(
   framingBox?: Render3fFramingBox,
   initialVisualState?: VisualState,
   suppliedAnchors?: ReadonlyMap<string, Coordinates>,
+  typedInput?: Render3fTypedInput,
 ): Render3fRendererHandle {
   const dimensions = containerDimensions(container);
   const devicePixelRatio = requiredDevicePixelRatio();
@@ -237,7 +243,7 @@ export function mount(
   updateField(renderer, live.scene);
 
   const labels = new LabelOverlayController(container);
-  const distinct = options.presentation?.morphologyLanguage === "distinct"
+  let distinct = typedInput === undefined && options.presentation?.morphologyLanguage === "distinct"
     ? mountDistinctOverlay(container, live.scene, options.morphology, options.presentation, (point) => ({
       ...rig.graphToViewport(point), scale: rig.sizeScaleAt(point),
     }))
@@ -258,6 +264,15 @@ export function mount(
       return rig.readProjectionState().filamentSizeScale;
     },
   });
+  let typedPicker = typedInput === undefined ? null : new TypedProjectionPicker(
+    typedInput, point => rig.graphToViewport(point),
+  );
+  const typedLayer = createTypedProjectionLayer(live.scene);
+  threeScene.add(typedLayer.group);
+  if (typedPicker) {
+    world.visible = false;
+    typedLayer.update(typedPicker.geometry);
+  }
   let emphasisIds = options.presentation?.emphasisIds ?? null;
   let destroyed = false;
   let labelTimer: ReturnType<typeof setTimeout> | undefined;
@@ -285,6 +300,14 @@ export function mount(
     });
   };
   const updateLabels = (): void => {
+    if (typedPicker) {
+      labels.update({ ...live.scene, nodes: [], edges: [], aggregates: [], selectedLabelIds: [] }, {
+        project: point => rig.graphToViewport(point),
+        nodeOffsetPx: () => 0,
+        nodeSizeScale: () => 1,
+      });
+      return;
+    }
     labels.update(live.scene, {
       project(point: Coordinates): { readonly x: number; readonly y: number } {
         return rig.graphToViewport(point);
@@ -305,7 +328,7 @@ export function mount(
     if (labelTimer !== undefined) clearTimeout(labelTimer);
     labelTimer = setTimeout(() => { if (!destroyed) updateLabels(); }, 160);
     renderer.render(threeScene, rig.camera);
-    distinct?.draw();
+    if (!typedPicker) distinct?.draw();
   };
   const syncCameraState = (): void => {
     currentState = createVisualState(visualGraph, {
@@ -347,6 +370,7 @@ export function mount(
     fiberStore = fiberRoot.render(<WorldLayer world={world} />);
     fiberStore.setState({ camera: rig.camera });
     threeScene.add(world);
+    threeScene.add(typedLayer.group);
     rig.resize(dimensions.width, dimensions.height, renderPixelRatio(live.scene, devicePixelRatio));
     renderFrame();
   });
@@ -400,9 +424,11 @@ export function mount(
     retainedSceneReferences.clear();
     retainedSceneReferences.add(scenes.orthographic);
     retainedSceneReferences.add(scenes.perspective);
-    updateNodeRenderResources(nodeResources, live.buffers.nodes);
-    updateFilamentRenderResources(filamentResources, live.buffers.filaments);
-    distinct?.setScene(live.scene);
+    if (!typedPicker) {
+      updateNodeRenderResources(nodeResources, live.buffers.nodes);
+      updateFilamentRenderResources(filamentResources, live.buffers.filaments);
+    }
+    if (!typedPicker) distinct?.setScene(live.scene);
     rig.setWorldFramingSubjects(sceneCameraFramingSubjects(live.scene));
     picker.replaceScene(live.scene);
     updateField(renderer, live.scene);
@@ -411,12 +437,40 @@ export function mount(
 
   return {
     setAppearance(appearance: AppearanceOptions): void { distinct?.setAppearance(appearance); },
-    updateVisibleSubset(update: DistinctSubsetUpdate): void { distinct?.updateVisibleSubset(update); },
+    updateVisibleSubset(update: DistinctSubsetUpdate | Render3fTypedInput): void {
+      if (!("styled" in update)) {
+        if (typedPicker) throw new TypeError("Legacy subset cannot replace typed 3D visibility");
+        distinct?.updateVisibleSubset(update);
+        return;
+      }
+      if (typedPicker === null) {
+        const next = new TypedProjectionPicker(update, point => rig.graphToViewport(point));
+        typedPicker = next;
+        distinct?.destroy();
+        distinct = null;
+        world.visible = false;
+        typedLayer.update(next.geometry);
+        updateLabels();
+        renderFrame();
+      } else if (typedPicker.update(update)) {
+        typedLayer.update(typedPicker.geometry);
+        updateLabels();
+        renderFrame();
+      }
+    },
+    pickAtPosition(position): PickResult | null {
+      if (typedPicker) return typedPicker.pick(position);
+      const node = picker.pickNodeAtPosition(position);
+      if (node !== null) return { kind: "node", id: node };
+      const edge = picker.pickEdgeAtPoint(position.x, position.y);
+      return edge === null ? null : { kind: "semantic-edge", id: edge };
+    },
     setEmphasis(ids: ReadonlySet<string> | null): void {
       emphasisIds = ids;
       applyMaterialState(currentState.selectedId, currentState.focusedId);
     },
     readReviewWindows() {
+      if (typedPicker) return [];
       return live.scene.aggregates.map((window) => ({
         id: window.id, members: window.members, center: window.center, radius: window.radius,
       }));
@@ -482,27 +536,60 @@ export function mount(
       return live.scene.selectedProvenance;
     },
     readSurfaceWitness(): SurfaceWitness {
+      if (typedPicker) {
+        const incidence: Record<string, { readonly source: string; readonly target: string }> = {};
+        for (const edge of typedPicker.semanticIncidence) incidence[edge.id] = { source: edge.source, target: edge.target };
+        return {
+          nodeIds: typedPicker.geometry.nodes.map(node => node.pick.kind === "node" ? node.pick.id : ""),
+          edgeIds: typedPicker.semanticIncidence.map(edge => edge.id), incidence,
+        };
+      }
       return live.readSurfaceWitness();
     },
     readNodeFootprintWitnesses(ids?: ReadonlySet<string>): readonly NodeFootprintWitness[] {
+      if (typedPicker) return typedPicker.geometry.nodes.flatMap(node => {
+        if (node.pick.kind !== "node" || (ids && !ids.has(node.pick.id))) return [];
+        return [{ id: node.pick.id, viewportCenter: rig.graphToViewport(node.position),
+          coreRadiusPx: 4.5, haloRadiusPx: 4.5 }];
+      });
       return readNodeFootprints(live, rig, ids);
     },
     readRelationGeometryWitnesses(): readonly RelationGeometryWitness[] {
+      if (typedPicker) return typedPicker.geometry.semanticEdges.map(segment => ({
+        id: segment.pick.kind === "semantic-edge" ? segment.pick.id : "",
+        source: segment.source,
+        controlPoint: { x: (segment.source.x + segment.target.x) / 2,
+          y: (segment.source.y + segment.target.y) / 2,
+          z: (segment.source.z + segment.target.z) / 2 },
+        target: segment.target, pickTolerancePx: 5, minimumDeviceWidthPx: 1,
+        widthStartPx: 1, widthEndPx: 1,
+      }));
       return live.readRelationGeometryWitnesses(readSceneHeldByPicker(picker));
     },
     readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[] {
       return rig.projectFramingSubjects();
     },
     readWorldAnchorWitnesses(ids?: ReadonlySet<string>): readonly WorldAnchorWitness[] {
+      if (typedPicker) return typedPicker.geometry.nodes.flatMap(node =>
+        node.pick.kind === "node" && (!ids || ids.has(node.pick.id))
+          ? [{ id: node.pick.id, position: node.position }] : []);
       return live.readWorldAnchorWitnesses(ids);
     },
     readLayoutPassCount(): number {
       return live.readLayoutPassCount();
     },
     pickNodeAtPosition(position: { readonly x: number; readonly y: number }): string | null {
+      if (typedPicker) {
+        const pick = typedPicker.pick(position);
+        return pick?.kind === "node" ? pick.id : null;
+      }
       return picker.pickNodeAtPosition(position);
     },
     pickEdgeAtPoint(x: number, y: number): string | null {
+      if (typedPicker) {
+        const pick = typedPicker.pick({ x, y });
+        return pick?.kind === "semantic-edge" ? pick.id : null;
+      }
       return picker.pickEdgeAtPoint(x, y);
     },
     readRetainedResources(): RetainedResourceWitness {
@@ -527,6 +614,7 @@ export function mount(
       detachInteractions();
       labels.destroy();
       distinct?.destroy();
+      typedLayer.dispose();
       fiberRoot.unmount();
       registry.disposeAll();
       renderer.dispose();
@@ -539,6 +627,83 @@ export function mount(
 
 function WorldLayer({ world }: { readonly world: THREE.Group }): ReactElement {
   return <primitive object={world} />;
+}
+
+/** Six independent GPU collections. Updating attributes keeps the group, renderer, and camera alive. */
+function createTypedProjectionLayer(scene: Scene): {
+  readonly group: THREE.Group;
+  update(geometry: TypedProjectionGeometry): void;
+  dispose(): void;
+} {
+  const group = new THREE.Group();
+  const tokenColor = (name: "text" | "edge" | "peak" | "textMuted" | "surface"): THREE.Color => {
+    const channel = tokenToSrgb(scene.tokens[name], scene.tokenEncoding);
+    return new THREE.Color().setRGB(channel.red, channel.green, channel.blue);
+  };
+  const points = (color: THREE.Color, size: number): THREE.Points => {
+    const object = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({
+      color, size, sizeAttenuation: false, depthTest: true,
+    }));
+    object.frustumCulled = false;
+    group.add(object);
+    return object;
+  };
+  const lines = (color: THREE.Color): THREE.LineSegments => {
+    const object = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({
+      color, depthTest: true,
+    }));
+    object.frustumCulled = false;
+    group.add(object);
+    return object;
+  };
+  const nodePoints = points(tokenColor("text"), 9);
+  const semanticLines = lines(tokenColor("edge"));
+  const structuralLines = lines(tokenColor("peak"));
+  const curveLines = lines(tokenColor("textMuted"));
+  const containerLines = lines(tokenColor("surface"));
+  const fieldPoints = points(tokenColor("peak"), 4);
+  const previousValues = new Map<THREE.Points | THREE.LineSegments, readonly number[]>();
+  const write = (object: THREE.Points | THREE.LineSegments, values: readonly number[]): void => {
+    const previous = previousValues.get(object);
+    if (previous?.length === values.length && previous.every((value, index) => value === values[index])) return;
+    object.geometry.setAttribute("position", new THREE.Float32BufferAttribute(values, 3));
+    object.geometry.setDrawRange(0, values.length / 3);
+    object.geometry.attributes.position!.needsUpdate = true;
+    previousValues.set(object, values);
+  };
+  const pointValues = (items: readonly TypedPoint[]): number[] => {
+    const values: number[] = [];
+    for (const item of items) values.push(item.position.x, item.position.y, item.position.z);
+    return values;
+  };
+  const segmentValues = (items: readonly TypedSegment[]): number[] => {
+    const values: number[] = [];
+    for (const item of items) values.push(
+      item.source.x, item.source.y, item.source.z, item.target.x, item.target.y, item.target.z,
+    );
+    return values;
+  };
+  return {
+    group,
+    update(geometry): void {
+      write(nodePoints, pointValues(geometry.nodes));
+      write(semanticLines, segmentValues(geometry.semanticEdges));
+      write(structuralLines, segmentValues(geometry.visualRelations));
+      write(curveLines, segmentValues(geometry.curves));
+      write(containerLines, segmentValues(geometry.containers));
+      write(fieldPoints, pointValues(geometry.fields));
+    },
+    dispose(): void {
+      for (const child of group.children) {
+        if (child instanceof THREE.Points || child instanceof THREE.LineSegments) {
+          child.geometry.dispose();
+          (child.material as THREE.Material).dispose();
+        }
+      }
+      previousValues.clear();
+      group.removeFromParent();
+    },
+  };
 }
 
 function scenesForState(

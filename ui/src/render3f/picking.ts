@@ -1,4 +1,5 @@
 import type { Coordinates } from "#engine/contract.ts";
+import type { PickResult, RenderVisibility, StyledProjection } from "../projection/contract-types.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import type { Scene, SceneEdge, SceneNode } from "#scene/contract.ts";
 
@@ -74,6 +75,194 @@ export class ScenePicker {
     }
     return null;
   }
+}
+
+/** Source incidence is supplied separately from visual relations; no visual ID is an edge ID. */
+export type ProjectionSemanticEdge = Readonly<{ id: string; source: string; target: string }>;
+export type Render3fTypedInput = Readonly<{
+  styled: StyledProjection;
+  visibility: RenderVisibility;
+  semanticEdges: readonly ProjectionSemanticEdge[];
+}>;
+export type TypedPoint = Readonly<{ pick: PickResult; position: Coordinates }>;
+export type TypedSegment = Readonly<{ pick: PickResult; source: Coordinates; target: Coordinates }>;
+export type TypedProjectionGeometry = Readonly<{
+  nodes: readonly TypedPoint[];
+  semanticEdges: readonly TypedSegment[];
+  visualRelations: readonly TypedSegment[];
+  curves: readonly TypedSegment[];
+  containers: readonly TypedSegment[];
+  fields: readonly TypedPoint[];
+}>;
+
+const codepoint = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
+
+/** Validates every mask class against its own collection before any GPU or picker mutation. */
+export function buildTypedProjectionGeometry(input: Render3fTypedInput): TypedProjectionGeometry {
+  const { styled, visibility, semanticEdges } = input;
+  const result = styled.projection;
+  if (visibility.projectionResultDigest !== result.determinism.resultDigest) {
+    throw new TypeError("3D visibility result digest mismatch");
+  }
+  if (!Number.isSafeInteger(visibility.revision) || visibility.revision < 0 ||
+      !Number.isFinite(visibility.density) || visibility.density < 0) {
+    throw new TypeError("Invalid 3D visibility revision or density");
+  }
+  const positions = result.positions3;
+  if (result.coordinateState.kind === "no-coordinates") {
+    if (positions !== undefined || result.loadedNodeIds.length !== 0) throw new TypeError("Invalid no-coordinate result");
+  } else if (positions === undefined) {
+    throw new TypeError("3D projection has no 3D coordinates");
+  }
+  const positionFor = (id: string): Coordinates => {
+    const point = positions?.[id];
+    if (point === undefined || ![point.x, point.y, point.z].every(Number.isFinite)) {
+      throw new TypeError(`3D position unavailable: ${id}`);
+    }
+    return point;
+  };
+  const check = (name: string, selected: ReadonlySet<string>, allowed: ReadonlySet<string>): void => {
+    for (const id of selected) if (!allowed.has(id)) throw new TypeError(`Unknown ${name}: ${id}`);
+  };
+  const loaded = new Set(result.loadedNodeIds);
+  check("node", visibility.nodeIds, loaded);
+  check("level", visibility.levelIds, new Set(result.levels.map(level => level.id)));
+  const domainEdges = new Set(result.domainEdgeIds);
+  const semanticById = new Map(semanticEdges.map(edge => [edge.id, edge]));
+  if (semanticById.size !== semanticEdges.length) throw new TypeError("Duplicate semantic edge ID");
+  check("semantic edge", visibility.semanticEdgeIds, domainEdges);
+  for (const id of visibility.semanticEdgeIds) if (!semanticById.has(id)) throw new TypeError(`Missing semantic incidence: ${id}`);
+  const visualById = new Map(result.visualRelations.map(relation => [relation.visualId, relation]));
+  const curveById = new Map(result.curves.map(curve => [curve.visualId, curve]));
+  const containerById = new Map(result.containers.map(container => [container.visualId, container]));
+  const fieldById = new Map(result.fields.map(field => [field.id, field]));
+  check("visual relation", visibility.visualRelationIds, new Set(visualById.keys()));
+  check("curve", visibility.curveIds, new Set(curveById.keys()));
+  check("container", visibility.containerIds, new Set(containerById.keys()));
+  check("field", visibility.fieldIds, new Set(fieldById.keys()));
+  const nodes = [...visibility.nodeIds].sort(codepoint).map(id => ({ pick: { kind: "node", id } as const, position: positionFor(id) }));
+  const edgeSegment = (pick: PickResult, source: string, target: string): TypedSegment => {
+    if (!visibility.nodeIds.has(source) || !visibility.nodeIds.has(target)) {
+      throw new TypeError("Visible 3D relation has hidden endpoint");
+    }
+    return { pick, source: positionFor(source), target: positionFor(target) };
+  };
+  const edges = [...visibility.semanticEdgeIds].sort(codepoint).map(id => {
+    const edge = semanticById.get(id)!;
+    return edgeSegment({ kind: "semantic-edge", id }, edge.source, edge.target);
+  });
+  const visuals = [...visibility.visualRelationIds].sort(codepoint).map(visualId => {
+    const relation = visualById.get(visualId)!;
+    if (relation.semantic !== false || !visualId.startsWith("visual:") || domainEdges.has(visualId) ||
+        visibility.nodeIds.has(visualId) || (relation.kind === "lifted-route" && relation.underlyingEdgeIds.length === 0) ||
+        relation.underlyingEdgeIds.some(id => !domainEdges.has(id))) {
+      throw new TypeError(`Invalid 3D visual relation: ${visualId}`);
+    }
+    return edgeSegment({ kind: "visual-relation", visualId }, relation.source, relation.target);
+  });
+  const curves: TypedSegment[] = [];
+  for (const visualId of [...visibility.curveIds].sort(codepoint)) {
+    const curve = curveById.get(visualId)!;
+    if (curve.visualRelationId && !visualById.has(curve.visualRelationId)) {
+      throw new TypeError(`Curve has unknown visual relation: ${visualId}`);
+    }
+    if (!curve.points3) throw new TypeError(`3D curve has no 3D points: ${visualId}`);
+    for (let i = 1; i < curve.points3.length; i++) {
+      if (![curve.points3[i - 1]!.x, curve.points3[i - 1]!.y, curve.points3[i - 1]!.z,
+        curve.points3[i]!.x, curve.points3[i]!.y, curve.points3[i]!.z].every(Number.isFinite)) {
+        throw new TypeError(`3D curve has nonfinite point: ${visualId}`);
+      }
+      curves.push({ pick: { kind: "curve", visualId }, source: curve.points3[i - 1]!, target: curve.points3[i]! });
+    }
+  }
+  const containers: TypedSegment[] = [];
+  for (const visualId of [...visibility.containerIds].sort(codepoint)) {
+    const container = containerById.get(visualId)!;
+    if (!container.center3 || ![container.center3.x, container.center3.y, container.center3.z, container.radius].every(
+      value => value !== undefined && Number.isFinite(value),
+    ) || !(container.radius && container.radius > 0)) {
+      throw new TypeError(`3D container lacks center or radius: ${visualId}`);
+    }
+    const { center3: c, radius: r } = container;
+    // Three great circles make the sphere boundary visible from every standard camera preset.
+    for (let axis = 0; axis < 3; axis++) for (let i = 0; i < 32; i++) {
+      const at = (step: number): Coordinates => {
+        const a = step * Math.PI / 16;
+        return axis === 0 ? { x: c.x, y: c.y + r * Math.cos(a), z: c.z + r * Math.sin(a) }
+          : axis === 1 ? { x: c.x + r * Math.cos(a), y: c.y, z: c.z + r * Math.sin(a) }
+            : { x: c.x + r * Math.cos(a), y: c.y + r * Math.sin(a), z: c.z };
+      };
+      containers.push({ pick: { kind: "container", visualId }, source: at(i), target: at(i + 1) });
+    }
+  }
+  const fields: TypedPoint[] = [];
+  for (const visualId of [...visibility.fieldIds].sort(codepoint)) {
+    const field = fieldById.get(visualId)!;
+    for (const sampleId of field.sampleIds) if (positions?.[sampleId] !== undefined) {
+      fields.push({ pick: { kind: "field", visualId }, position: positionFor(sampleId) });
+    }
+  }
+  return { nodes, semanticEdges: edges, visualRelations: visuals, curves, containers, fields };
+}
+
+/** Revision acceptance is host-local; equal revisions must describe equal geometry and masks. */
+export class TypedProjectionPicker {
+  private input: Render3fTypedInput;
+  private geometryValue: TypedProjectionGeometry;
+  private fingerprint: string;
+  private readonly project: PickingProjection["project"];
+  constructor(input: Render3fTypedInput, project: PickingProjection["project"]) {
+    this.geometryValue = buildTypedProjectionGeometry(input);
+    this.input = input;
+    this.fingerprint = typedFingerprint(input);
+    this.project = project;
+  }
+  get geometry(): TypedProjectionGeometry { return this.geometryValue; }
+  get visibility(): RenderVisibility { return this.input.visibility; }
+  get semanticIncidence(): readonly ProjectionSemanticEdge[] {
+    return this.input.semanticEdges.filter(edge => this.input.visibility.semanticEdgeIds.has(edge.id));
+  }
+  update(input: Render3fTypedInput): boolean {
+    if (input.visibility.revision < this.input.visibility.revision) return false;
+    const fingerprint = typedFingerprint(input);
+    if (input.visibility.revision === this.input.visibility.revision) {
+      if (fingerprint !== this.fingerprint) throw new TypeError("Conflicting equal 3D visibility revision");
+      return false;
+    }
+    const next = buildTypedProjectionGeometry(input);
+    this.input = input;
+    this.geometryValue = next;
+    this.fingerprint = fingerprint;
+    return true;
+  }
+  pick(position: { readonly x: number; readonly y: number }): PickResult | null {
+    for (const point of this.geometryValue.fields) if (distance(position, this.project(point.position)) <= 5) return point.pick;
+    for (const point of this.geometryValue.nodes) if (distance(position, this.project(point.position)) <= 8) return point.pick;
+    for (const segments of [this.geometryValue.visualRelations, this.geometryValue.semanticEdges,
+      this.geometryValue.curves, this.geometryValue.containers]) {
+      for (const segment of segments) if (segmentDistance(position, this.project(segment.source), this.project(segment.target)) <= 5) return segment.pick;
+    }
+    return null;
+  }
+}
+
+function typedFingerprint(input: Render3fTypedInput): string {
+  const { styled, visibility, semanticEdges } = input;
+  const sorted = (set: ReadonlySet<string>) => [...set].sort(codepoint);
+  return JSON.stringify([styled.projection.determinism.resultDigest, styled.projection,
+    sorted(visibility.levelIds), visibility.density, sorted(visibility.nodeIds),
+    sorted(visibility.semanticEdgeIds), sorted(visibility.visualRelationIds), sorted(visibility.curveIds),
+    sorted(visibility.containerIds), sorted(visibility.fieldIds),
+    [...semanticEdges].sort((a, b) => codepoint(a.id, b.id))]);
+}
+
+function distance(a: { readonly x: number; readonly y: number }, b: { readonly x: number; readonly y: number }): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+function segmentDistance(p: { readonly x: number; readonly y: number }, a: { readonly x: number; readonly y: number }, b: { readonly x: number; readonly y: number }): number {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const t = dx * dx + dy * dy === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy)));
+  return distance(p, { x: a.x + t * dx, y: a.y + t * dy });
 }
 
 /** This measures one point against a resolved filament path and does not choose a picking tolerance. */

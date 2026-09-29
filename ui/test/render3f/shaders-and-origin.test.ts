@@ -344,6 +344,43 @@ test("material origin rejects a visual-policy import outside the exact allow-lis
     output,
     "visual-import.ts imports visual policy outside renderer allow-list: #scene/rendered-state.ts",
   );
+  const runtimeContractOutput = observedFailure(
+    "material projection-contract runtime-import control",
+    () => assertNoRendererMaterialLiterals([{
+      name: "projection-runtime-import.ts",
+      source: "import { PickResult } from \"../projection/contract-types.ts\";",
+    }]),
+    /projection-runtime-import\.ts imports visual policy outside renderer allow-list: \.\.\/projection\/contract-types\.ts/,
+  );
+  assert.equal(
+    runtimeContractOutput,
+    "projection-runtime-import.ts imports visual policy outside renderer allow-list: ../projection/contract-types.ts",
+  );
+  const mixedContractOutput = observedFailure(
+    "material projection-contract mixed-import control",
+    () => assertNoRendererMaterialLiterals([{
+      name: "projection-mixed-import.ts",
+      source: "import { type PickResult, runtimePolicy } from \"../projection/contract-types.ts\";",
+    }]),
+    /projection-mixed-import\.ts imports visual policy outside renderer allow-list: \.\.\/projection\/contract-types\.ts/,
+  );
+  assert.equal(
+    mixedContractOutput,
+    "projection-mixed-import.ts imports visual policy outside renderer allow-list: ../projection/contract-types.ts",
+  );
+  const typePlusRequireOutput = observedFailure(
+    "material projection-contract require-evasion control",
+    () => assertNoRendererMaterialLiterals([{
+      name: "projection-type-plus-require.ts",
+      source: "import type { PickResult } from \"../projection/contract-types.ts\";\n"
+        + "const policy = require(\"../projection/contract-types.ts\");",
+    }]),
+    /projection-type-plus-require\.ts imports visual policy outside renderer allow-list: \.\.\/projection\/contract-types\.ts/,
+  );
+  assert.equal(
+    typePlusRequireOutput,
+    "projection-type-plus-require.ts imports visual policy outside renderer allow-list: ../projection/contract-types.ts",
+  );
   const widenedOutput = observedFailure(
     "material widened-import control",
     () => assertNoRendererMaterialLiterals([{
@@ -531,7 +568,7 @@ function observedFailure(label: string, operation: () => void, expected: RegExp)
 }
 
 // The thirteen evasion forms — seven depth, six material. Each was run against the controls before they were hardened; the five
-// marked below passed straight through. An auditor later found further escapes in adjacent controls;
+// marked below passed straight through. A reviewer later found further escapes in adjacent controls;
 // this table is the set that was demonstrated here, not a claim that no other form exists. The first of those is the serious one: the interleaved
 // attribute buffers write depth as `array[offset + 2] = value`, so the control that was supposed to
 // keep semantics out of depth had never inspected the statement form this renderer actually uses.
