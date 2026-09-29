@@ -36,6 +36,7 @@ import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "../engine/morph
 import { drawFlowLayer } from "../render-common/morphology-canvas.ts";
 import type { DistinctSubsetUpdate, MorphologyCanvasStyle } from "../render-common/morphology-canvas.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect, VisibleSubsetUpdate } from "./view-contract.ts";
+import { NATURAL_ORGANIZATION } from "./view-contract.ts";
 import {
   CAMERA_STILLNESS_MS,
   MovingLabelPassSchedule,
@@ -52,9 +53,10 @@ import {
 } from "./render-schedule.ts";
 import type { RenderQuality } from "./render-schedule.ts";
 import type {
-  Dimension, PickResult, ProjectionResult, RenderVisibility, SemanticEdge, SemanticGraphSnapshot,
+  Dimension, NaturalArrangement, PickResult, ProjectionResult, RenderVisibility, SemanticEdge, SemanticGraphSnapshot,
   StyledProjection, VisualRelation,
 } from "../projection/contract-types.ts";
+import { resolveNaturalArrangement } from "../projection/natural-bridge.ts";
 import { validatePickResult, validateRenderVisibility, validateSemanticEdgeCarriers } from "../projection/contract.ts";
 import { structuralVisualPresentation } from "../engine/presentation-options.ts";
 import type { StructuralVisualPresentation } from "../engine/presentation-options.ts";
@@ -255,7 +257,136 @@ function finitePoint(point: Coordinates): boolean {
   return Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z);
 }
 
+/**
+ * D-073 C6: the arrangement a live view resolved, or null for Indra. Natural's explicit arrangement
+ * — never the current style — decides both placement carryover and camera carryover, so one function
+ * names both: a producer that never resolved one selects its morphology's creation-time default
+ * here, exactly the once-only rule the saved-view reader applies at read time.
+ */
+export function resolvedViewArrangement(axes: Axes): NaturalArrangement | null {
+  return axes.organization === "indra" ? null : resolveNaturalArrangement(axes.morphology, axes.arrangement);
+}
+
+/** D-073 C6: the arrangement-qualified camera key plus the pre-arrangement key it replaces. */
+export type ProductCameraKey = Readonly<{
+  /** `${projection}/natural/${arrangement}` for Natural, `${projection}/indra` for Indra. */
+  readonly key: string;
+  /** The D-072 form `${projection}/${organization}`: Indra's own key, Natural's replay source. */
+  readonly legacyKey: string;
+  /** True only for Natural, whose legacy key can still hold a camera the new key never met. */
+  readonly replaysLegacy: boolean;
+}>;
+
+/**
+ * D-073 C6: the product camera key. D-072 keyed the camera by projection and organization alone, so
+ * every Natural arrangement shared one entry; with the arrangement explicit the key is qualified by
+ * the resolved arrangement, and camera carryover follows arrangement continuity, never the currently
+ * selected morphology. The legacy spelling stays as the replay source, so a camera recorded before
+ * the arrangement axis existed still replays instead of being silently dropped.
+ */
+export function productCameraKey(axes: Axes): ProductCameraKey {
+  if (axes.organization === "indra") {
+    const key = `${axes.projection}/indra`;
+    return { key, legacyKey: key, replaysLegacy: false };
+  }
+  return {
+    key: `${axes.projection}/${NATURAL_ORGANIZATION}/${resolveNaturalArrangement(axes.morphology, axes.arrangement)}`,
+    legacyKey: `${axes.projection}/${axes.organization}`,
+    replaysLegacy: true,
+  };
+}
+
+/**
+ * D-073 C6: reads the camera for the current key, replaying the legacy entry under the new key when
+ * only that exists — an old camera recorded before the arrangement axis replays under the new key
+ * and is promoted there, so later lookups read the new key directly and a save cannot fork the two.
+ * The mounted fit ratio the label tiers read replays with it. These are the view's own maps and
+ * nothing else; no renderer state is touched.
+ */
+export function replayProductCamera(
+  cameras: Map<string, VisualStateCamera>,
+  fitRatio: Map<string, number>,
+  keys: ProductCameraKey,
+): VisualStateCamera | undefined {
+  const saved = cameras.get(keys.key);
+  if (saved !== undefined) return saved;
+  if (!keys.replaysLegacy) return undefined;
+  const legacy = cameras.get(keys.legacyKey);
+  if (legacy === undefined) return undefined;
+  cameras.set(keys.key, legacy);
+  const legacyRatio = fitRatio.get(keys.legacyKey);
+  if (legacyRatio !== undefined && !fitRatio.has(keys.key)) fitRatio.set(keys.key, legacyRatio);
+  return legacy;
+}
+
+/**
+ * D-073 C6: records a camera under the current key and, for Natural, mirrors it into the legacy key,
+ * so the entry an arrangement never visited stays the view's most recent Natural camera — which an
+ * explicit fit or reset replaces for every later replay, never a stale pre-fit camera. An optional
+ * mounted fit ratio commits the same way.
+ */
+export function commitProductCamera(
+  cameras: Map<string, VisualStateCamera>,
+  fitRatio: Map<string, number>,
+  keys: ProductCameraKey,
+  camera: VisualStateCamera,
+  fittedRatio?: number,
+): void {
+  cameras.set(keys.key, camera);
+  if (fittedRatio !== undefined) fitRatio.set(keys.key, fittedRatio);
+  if (keys.replaysLegacy) {
+    cameras.set(keys.legacyKey, camera);
+    if (fittedRatio !== undefined) fitRatio.set(keys.legacyKey, fittedRatio);
+  }
+}
+
+/**
+ * D-073 C6: forgets the camera of the current key together with its legacy mirror, so an explicit
+ * reset refits on remount instead of replaying the very camera it deleted.
+ */
+export function forgetProductCamera(
+  cameras: Map<string, VisualStateCamera>,
+  fitRatio: Map<string, number>,
+  keys: ProductCameraKey,
+): void {
+  cameras.delete(keys.key);
+  fitRatio.delete(keys.key);
+  if (keys.replaysLegacy) {
+    cameras.delete(keys.legacyKey);
+    fitRatio.delete(keys.legacyKey);
+  }
+}
+
+/**
+ * D-073 C6: refuses an arrangement on the Indra view with the same rule the saved-view register
+ * applies, so the closed axis vocabulary gains no in-memory spelling.
+ */
+export function assertNaturalArrangementAxis(axes: Axes): void {
+  if (axes.organization === "indra" && axes.arrangement !== undefined) {
+    throw new TypeError("ViewInput.axes.arrangement is only valid for the Natural view [arrangement-requires-natural]");
+  }
+}
+
+/**
+ * D-073 C6: whether an axes change must remount. The D-072 field comparison plus one term: a changed
+ * resolved Natural arrangement changes the positions, so it remounts, while a style switch that keeps
+ * the arrangement resolved restyles the same scene and the camera carries over through the map.
+ */
+export function productViewRemountsAxes(previous: Axes, next: Axes): boolean {
+  const oldDepth = previous.organization === "flat" && previous.projection === "3d";
+  const newDepth = next.organization === "flat" && next.projection === "3d";
+  return previous.projection !== next.projection
+    || previous.morphology !== next.morphology
+    || previous.organization !== next.organization
+    || previous.colour !== next.colour
+    || previous.reading !== next.reading
+    || oldDepth !== newDepth
+    || resolvedViewArrangement(previous) !== resolvedViewArrangement(next);
+}
+
 export const createProductView: CreateProductView = async (input) => {
+  // D-073 C6: the arrangement axis is Natural-only at every entry point, creation included.
+  assertNaturalArrangementAxis(input.axes);
   const prepared = input.v2Prepared ?? adaptReviewExport(input.data);
   const base = (input.v2Prepared ? undefined : anchorBaseline.get(input.data.export_digest)) ?? {
     flat: prepared.flatAnchors, indra: prepared.indraAnchors,
@@ -494,7 +625,13 @@ export const createProductView: CreateProductView = async (input) => {
     return { left: r.left + local.left, top: r.top + local.top, width: local.width, height: local.height };
   };
   const graph = () => subgraph(axes.organization === "indra" ? prepared.indraGraph : prepared.flatGraph, visible);
-  const cameraKey = () => `${axes.projection}/${axes.organization}`;
+  // D-073 C6: the camera key is arrangement-qualified for Natural (see productCameraKey). Reads go
+  // through the legacy replay, writes mirror back so an explicit fit becomes the replay source, and
+  // the two maps above are the only state any of this touches.
+  const cameraKeys = () => productCameraKey(axes);
+  const restoreSavedCamera = () => replayProductCamera(cameras, fitRatio, cameraKeys());
+  const commitCamera = (camera: VisualStateCamera, fittedRatio?: number) =>
+    commitProductCamera(cameras, fitRatio, cameraKeys(), camera, fittedRatio);
   // D-072 R3 (X9): the coarse tier-1 check behind the moving pass early-out. It must be cheap and
   // conservative: labels on and a Flat organization with at least one visible domain means domain
   // names may place; hover and selection are read directly. A false "candidates" only costs one
@@ -542,7 +679,7 @@ export const createProductView: CreateProductView = async (input) => {
     morphologyInteraction.containerColor = palette.container;
     const bounds = localRect();
     const camera = handle.readCameraState();
-    const fitted = fitRatio.get(cameraKey()) ?? camera.ratio;
+    const fitted = fitRatio.get(cameraKeys().key) ?? camera.ratio;
     const overview = camera.ratio >= fitted * 0.6;
     const close = camera.ratio < fitted * 0.25;
     const neighbours = emphasis ?? new Set<string>();
@@ -1123,7 +1260,7 @@ export const createProductView: CreateProductView = async (input) => {
     }
     if (selected && (visible.has(selected) || drawnEdgeIds.has(selected)))
       handle.setSelection(selected);
-    const saved = cameras.get(cameraKey());
+    const saved = restoreSavedCamera();
     if (saved && validCamera(saved)) handle.restoreCameraState(saved);
     else {
       if (three && input.v2Prepared) handle.restoreCameraState({ ...handle.readCameraState(), orbit: defaultObliqueOrbit() } as ReviewCameraState);
@@ -1146,8 +1283,10 @@ export const createProductView: CreateProductView = async (input) => {
         anchorFirst: false,
         fill: 0.92,
       });
-      fitRatio.set(cameraKey(), handle.readCameraState().ratio);
-      cameras.set(cameraKey(), handle.readCameraState());
+      // D-073 C6: a solved fit commits under the arrangement-qualified key and mirrors into the
+      // legacy one, so this camera is what a later arrangement switch replays.
+      const settled = handle.readCameraState();
+      commitCamera(settled, settled.ratio);
     }
     // The mounted camera (any restored or solved framing included) is the watch loop's baseline:
     // only changes from here on are motion.
@@ -1158,7 +1297,7 @@ export const createProductView: CreateProductView = async (input) => {
   }
   function saveCamera() {
     const camera = handle?.readCameraState();
-    if (camera && validCamera(camera)) cameras.set(cameraKey(), camera);
+    if (camera && validCamera(camera)) commitCamera(camera);
   }
   /** D-072 R2: apply one level-of-detail subset change in place. Everything the drawing shows is
    * rebuilt through buildDrawnScene — the same derivation a remount of this subset would run — and
@@ -1525,7 +1664,9 @@ export const createProductView: CreateProductView = async (input) => {
     }
     if (handle !== current) return;
     current.restoreCameraState(final);
-    cameras.set(cameraKey(), final);
+    // D-073 C6: the explicit framing lands under the current key and its legacy mirror, so it — not
+    // some older camera — is what a later replay offers.
+    commitCamera(final);
     // The programmatic framing has landed: nothing further will move the camera, so quality
     // returns to full now — the closing label pass below draws the full set, and secondary labels
     // return with the fit itself rather than through the stillness delay and the idle settle.
@@ -1535,20 +1676,14 @@ export const createProductView: CreateProductView = async (input) => {
   return {
     async setAxes(next) {
       const old = axes;
+      // D-073 C6: the merged axes are validated before they are applied, so an arrangement on the
+      // Indra view is refused without leaving the view on half-migrated axes.
+      const merged: Axes = { ...axes, ...next };
+      assertNaturalArrangementAxis(merged);
       saveCamera();
-      axes = { ...axes, ...next };
-      const oldDepth = old.organization === "flat" && old.projection === "3d";
-      const newDepth = axes.organization === "flat" && axes.projection === "3d";
-      if (
-        old.projection === axes.projection &&
-        old.morphology === axes.morphology &&
-        old.organization === axes.organization &&
-        old.colour === axes.colour &&
-        old.reading === axes.reading &&
-        oldDepth === newDepth
-      ) {
-        labelPass();
-      } else mount();
+      axes = merged;
+      if (!productViewRemountsAxes(old, axes)) labelPass();
+      else mount();
     },
     async setVisible(ids) {
       saveCamera();
@@ -1571,7 +1706,9 @@ export const createProductView: CreateProductView = async (input) => {
       handle.restoreCameraState(state as VisualStateCamera); noteCameraMotion(); labelPass();
     } },
     async resetCamera() {
-      cameras.delete(cameraKey());
+      // D-073 C6: an explicit reset forgets both spellings, so the remount refits instead of
+      // replaying back the camera it just deleted.
+      forgetProductCamera(cameras, fitRatio, cameraKeys());
       mount();
     },
     select(id) {
