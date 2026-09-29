@@ -112,6 +112,29 @@ export function footprintDisc(
 
 /** The suffix a container title or label carries when its node holds hidden children (« · +12»). */
 const COUNT_SUFFIX = /\s·\s\+\d+$/;
+const TRAILING_FUNCTION_WORDS = new Set([
+  "e", "ed", "o", "di", "del", "della", "dei", "per", "con", "il", "lo", "la", "i", "gli", "le", "un", "una", "a",
+  "and", "or", "of", "for", "to", "the", "an",
+]);
+
+/** Remove an incomplete join from the visible end of a title before adding its ellipsis. */
+function trimDanglingEllipsisTail(text: string): string {
+  const words = text.trimEnd().split(/\s+/);
+  while (words.length) {
+    const last = words[words.length - 1]!.replace(/[.,;:!?·•|—–-]+$/u, "");
+    if (!TRAILING_FUNCTION_WORDS.has(last.toLocaleLowerCase("it"))) break;
+    words.pop();
+  }
+  return words.join(" ").replace(/[\s.,;:!?·•|—–-]+$/u, "");
+}
+
+function cleanEllipsis(text: string): string {
+  const index = text.lastIndexOf("…");
+  if (index < 0) return text;
+  const before = trimDanglingEllipsisTail(text.slice(0, index));
+  // The viewer's established minimum is four visible characters before an ellipsis.
+  return [...before].length >= 4 ? `${before}…${text.slice(index + 1)}` : text;
+}
 
 /**
  * One short label's final text. A short title the page cut out of the full title is marked with
@@ -131,7 +154,7 @@ export function shortLabelWithEllipsis(input: {
   // A prepared short title can omit an interior word. Resolve such aliases from the full title
   // so the same node does not acquire a different truncation when its view path changes.
   if (head && !fullHead.startsWith(head)) {
-    return ellipsizeTextKeepCount(`${fullHead}${suffix}`, input.maxWidth, input.measure);
+    return cleanEllipsis(ellipsizeTextKeepCount(`${fullHead}${suffix}`, input.maxWidth, input.measure));
   }
   let name = head.trimEnd();
   const cut = fullHead.length > name.length && fullHead.startsWith(name);
@@ -143,10 +166,10 @@ export function shortLabelWithEllipsis(input: {
     else name = `${head.trimEnd()}…`;
   }
   const text = suffix ? `${name}${suffix}` : name;
-  if (input.measure(text) <= input.maxWidth) return text;
+  if (input.measure(text) <= input.maxWidth) return cleanEllipsis(text);
   const budget = input.maxWidth - input.measure(suffix);
-  if (suffix && budget > input.measure("…")) return `${ellipsizeText(name, budget, input.measure)}${suffix}`;
-  return ellipsizeText(input.short, input.maxWidth, input.measure);
+  if (suffix && budget > input.measure("…")) return cleanEllipsis(`${ellipsizeText(name, budget, input.measure)}${suffix}`);
+  return cleanEllipsis(ellipsizeText(name, input.maxWidth, input.measure));
 }
 
 /** Re-exported so the DOM label path and its tests share one word-boundary ellipsis. */

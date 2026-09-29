@@ -14,6 +14,7 @@ import {
   EDGE_CATEGORY_SET,
   FLOW_HALO_ALPHA,
   FLOW_HALO_WIDTH_MULTIPLIER,
+  FLOW_HEAD_MAX_SIZE_PX,
   FLOW_PULSE_WIDTH_MULTIPLIER,
   FLOW_STATIC_CORE_ALPHA,
   flowTailLengthPx,
@@ -1090,7 +1091,7 @@ function flowHeadSprite(color: string, widthPx: number, dpr: number): CanvasImag
   const key = `${color}|${widthBucket}|${density}`;
   const cached = flowHeadSprites.get(key);
   if (cached) return cached;
-  const diameter = Math.max(18, Math.ceil(widthBucket * 7));
+  const diameter = Math.min(FLOW_HEAD_MAX_SIZE_PX, Math.max(18, Math.ceil(widthBucket * 7)));
   const canvas = typeof OffscreenCanvas !== "undefined"
     ? new OffscreenCanvas(Math.ceil(diameter * density), Math.ceil(diameter * density))
     : typeof document !== "undefined" ? document.createElement("canvas") : null;
@@ -1227,7 +1228,8 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
     const width = trail.paint.widthAt((trail.paint.points.length - 1) / 2) * FLOW_PULSE_WIDTH_MULTIPLIER;
     const sprite = flowHeadSprite(trail.paint.color, width, dpr);
     if (!sprite) continue;
-    const diameter = Math.max(18, Math.ceil(Math.max(1, Math.min(8, Math.round(width * 2) / 2)) * 7));
+    const diameter = Math.min(FLOW_HEAD_MAX_SIZE_PX,
+      Math.max(18, Math.ceil(Math.max(1, Math.min(8, Math.round(width * 2) / 2)) * 7)));
     context.globalAlpha = previousAlpha * peak * Math.min(1, trail.head / 14);
     context.drawImage(sprite, head.x - diameter / 2, head.y - diameter / 2, diameter, diameter);
   }

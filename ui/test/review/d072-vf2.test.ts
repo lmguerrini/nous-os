@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { flowHeadAlpha, flowHeadPositionPx, flowHighlightAlpha, flowTailLengthPx } from "#render-common/flow.ts";
+import { FLOW_HEAD_CORE_ALPHA_RATIO, FLOW_HEAD_MAX_ALPHA, FLOW_HEAD_MAX_SIZE_PX, flowHeadAlpha, flowHeadPositionPx, flowHighlightAlpha, flowTailLengthPx } from "#render-common/flow.ts";
+import { STELLAR_CORE_MIN_ALPHA } from "#render-common/morphology-canvas.ts";
 import { stellarIndra3dNodeRadiusPx } from "#engine/morphology-contract.ts";
 import { readableTruncatedText } from "#render-common/container-canvas.ts";
 import { placeLabels, shortLabelWithEllipsis } from "../../src/review/labels.ts";
@@ -18,6 +19,25 @@ test("flow head advances toward the target and its tail follows projected arc le
   }
   assert.equal(flowHeadAlpha(0.6), 0.56);
   assert.equal(flowHeadAlpha(0), 0);
+});
+
+test("flow head peak and cached sprite size stay below the Stellar hub core", () => {
+  assert.ok(FLOW_HEAD_MAX_ALPHA <= STELLAR_CORE_MIN_ALPHA * FLOW_HEAD_CORE_ALPHA_RATIO);
+  assert.ok(flowHeadAlpha(1) <= STELLAR_CORE_MIN_ALPHA * FLOW_HEAD_CORE_ALPHA_RATIO);
+  assert.equal(FLOW_HEAD_MAX_SIZE_PX, 18);
+});
+
+test("short title truncation drops dangling Italian and English function words", () => {
+  const measure = (text: string) => [...text].length * 7;
+  const italian = shortLabelWithEllipsis({ short: "Principali materiali intrinseci e",
+    full: "Principali materiali intrinseci e costruttivi", maxWidth: 230, measure });
+  const english = shortLabelWithEllipsis({ short: "Streams for data and",
+    full: "Streams for data and more", maxWidth: 145, measure });
+  assert.equal(italian, "Principali materiali intrinseci…");
+  assert.equal(english, "Streams for data…");
+  assert.ok(!/(?:\b(?:e|ed|o|di|del|della|dei|per|con|il|lo|la|i|gli|le|un|una|a|and|or|of|for|to|the|an))…$/iu.test(italian));
+  assert.ok(!/(?:\b(?:e|ed|o|di|del|della|dei|per|con|il|lo|la|i|gli|le|un|una|a|and|or|of|for|to|the|an))…$/iu.test(english));
+  assert.ok([...italian.slice(0, -1)].length >= 4 && [...english.slice(0, -1)].length >= 4);
 });
 
 test("degenerate truncations are hidden and a full title resolves omitted middle words", () => {

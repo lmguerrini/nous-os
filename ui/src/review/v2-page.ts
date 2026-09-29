@@ -12,7 +12,7 @@ import type { V2Index, V2Node } from './v2-core.ts';
 import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, manualExpansionTiers, normalizeDensity, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
 import { lodRefreshDue } from './render-schedule.ts';
 import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
-import { formatLabelCounts, labelBudgetOf } from './labels.ts';
+import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labels.ts';
 import { createProductView } from './product-view.ts';
 import { appendFlowLegend } from './legend.ts';
 import { buildNodePanel, buildRelationPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
@@ -1065,7 +1065,10 @@ export class V2Page {
             const button = document.createElement('button');
             button.className = 'relation';
             const conversations = this.index.nodes.filter(n => n.level === 3 && n.domains.includes(domain.id.replace(/^domain:/, ''))).length;
-            button.textContent = `${displayLabel(domain)} · ${conversations} conversazioni`;
+            const domainName = displayLabel(domain);
+            const visibleName = shortLabelWithEllipsis({ short: domainName, full: domainName, maxWidth: 180,
+                measure: text => text.split(/\s+/).reduce((sum, word) => sum + word.length * 6.96 + 5, 0) });
+            button.textContent = `${visibleName} · ${conversations} conversazioni`;
             button.onclick = () => { void this.select(domain.id); };
             overview.append(button);
         }
