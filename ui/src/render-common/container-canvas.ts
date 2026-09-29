@@ -280,6 +280,19 @@ export function stripTrailingSeparators(text: string): string {
   return text.replace(TRAILING_SEPARATORS, "");
 }
 
+/** Italian and English function words a shortened text must not end on before its «…». */
+const ELLIPSIS_FUNCTION_WORDS = new Set([
+  "e", "ed", "o", "od", "di", "del", "dello", "della", "dei", "degli", "delle", "a", "al", "allo", "alla", "ai", "agli", "alle",
+  "da", "dal", "dalla", "in", "nel", "nella", "nei", "con", "su", "sul", "sulla", "per", "tra", "fra", "come", "durante",
+  "il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "che", "non",
+  "and", "or", "of", "for", "to", "the", "an", "with", "on", "at", "by", "from", "as", "into", "via",
+]);
+function endsOnFunctionWord(text: string): boolean {
+  const last = text.split(/\s+/).pop() ?? "";
+  // «AI» is a word here, not the Italian preposition «ai».
+  return last !== "AI" && ELLIPSIS_FUNCTION_WORDS.has(last.toLocaleLowerCase("it"));
+}
+
 /** A text that does not fit is cut on a word boundary and ends with «…»; the complete text stays in
  * the tooltip. A cut never lands right after a separator. Pure: the caller supplies the width
  * function. */
@@ -289,6 +302,8 @@ export function ellipsizeText(text: string, maxWidth: number, measure: (text: st
   for (let count = words.length - 1; count > 0; count -= 1) {
     const kept = stripTrailingSeparators(words.slice(0, count).join(" "));
     if (!kept) continue;
+    // A cut never ends on a function word («… V1 e…», «… Building with…»): fewer words read better.
+    if (endsOnFunctionWord(kept)) continue;
     const candidate = `${kept}…`;
     if (measure(candidate) <= maxWidth) return candidate;
   }
