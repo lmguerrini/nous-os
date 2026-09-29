@@ -36,19 +36,24 @@ const lod = (page: Page) => page.evaluate(() => {
 const renderedIds = (page: Page) => page.evaluate(() =>
   Object.keys((window as any).__d067.witness().nodeViewport ?? {}).sort()) as Promise<string[]>;
 
-/** Disclose enough of the graph that every node budget binds: expand each domain, then its projects. */
-const disclose = async (page: Page) => {
-  const ids = await page.evaluate(() => (window as any).__d067.disclosure().nodes
-    .filter((node: { level: number }) => node.level === 1)
-    .map((node: { id: string }) => node.id));
-  for (const id of ids) await page.evaluate((domain) => (window as any).__d067.expand(domain), id);
-  for (let round = 0; round < 2; round += 1) {
-    const projects = await page.evaluate(() => (window as any).__d067.disclosure().nodes
-      .filter((node: { level: number }) => node.level === 2)
-      .slice(0, 6)
-      .map((node: { id: string }) => node.id));
-    for (const id of projects) await page.evaluate((project) => (window as any).__d067.expand(project), id);
-  }
+/** Reach the V2 cap like capture_d072's `reach`: domains first, largest conversations next. */
+const disclose = async (page: Page, target = 850) => {
+  await page.evaluate(async (limit) => {
+    const api = (window as any).__d067;
+    const domains = api.disclosure().nodes.filter((node: { level: number }) => node.level === 1);
+    for (const domain of domains) {
+      if (api.disclosure().visible >= limit) break;
+      try { await api.expand(domain.id); } catch { /* capped or already unavailable */ }
+    }
+    const index = await (await fetch('/api/graph/index')).json();
+    const conversations = index.nodes.filter((node: { level: number }) => node.level === 3)
+      .sort((a: any, b: any) => (b.counts?.descendants || 0) - (a.counts?.descendants || 0));
+    for (const conversation of conversations) {
+      const state = api.disclosure();
+      if (state.visible >= limit || (state.capped && state.visible >= 850)) break;
+      try { await api.reveal(conversation.id); await api.expand(conversation.id); } catch { /* continue to the next candidate */ }
+    }
+  }, target);
 };
 
 /** One wheel notch; the level is evaluated on a 250 ms page tick, so settle before reading.
@@ -70,12 +75,13 @@ const notch = async (page: Page, direction: 1 | -1, settle = 400) => {
 /** render-schedule.ts defers level refresh by LOD_REFRESH_IDLE_MS (300 ms), observed on the
  * page's 250 ms zoom tick. Poll after a crossing sequence because one notch's 400 ms settle
  * can finish before both scheduling intervals have elapsed. */
-const waitForLevel = async (page: Page, expected: string) => {
-  const deadline = Date.now() + 2000;
+const waitForLevel = async (page: Page, expected: string, timeout = 3000) => {
+  const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     if ((await lod(page)).level === expected) return;
     await page.waitForTimeout(50);
   }
+  throw new Error(`LOD level did not become ${expected} within ${timeout} ms`);
 };
 
 test("D-072 each density keeps its node, arc and label budgets", async ({ page }, testInfo) => {
@@ -84,6 +90,7 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
     projection: "2d", organization: "flat", reading: "attested", morphology: "stellar",
   }));
   await disclose(page);
+  await waitForLevel(page, 'far');
   await page.waitForTimeout(1100); // the page holds zoom reveals briefly after a refresh
 
   // The explicit set L1 pins beyond the budget: the selection's path, the hovered focus, and
@@ -108,11 +115,15 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
     const witness = await lod(page);
     const budget = BUDGETS[density as keyof typeof BUDGETS];
     expect(witness.density, `density setting took effect`).toBe(density);
-    expect(witness.nodes.available, "the disclosed set is large enough to bind the budgets").toBeGreaterThan(budget.nodes);
+    if (density !== 'complete')
+      expect(witness.nodes.available, `${density}: disclosed set binds the node budget`).toBeGreaterThan(budget.nodes);
     // The budget binds on the unpinned fill; pinned children of manual expansions are accounted
     // for explicitly, so the rule is testable rather than an invisible exception.
     expect(witness.nodes.pinned, `${density}: the pinned set is counted`).toBeGreaterThan(0);
     expect(witness.nodes.rendered, `${density}: nodes ≤ ${budget.nodes} + pinned`).toBeLessThanOrEqual(budget.nodes + witness.nodes.pinned);
+    if (density === 'complete')
+      expect(witness.nodes.rendered, 'complete: every available node fits within its 850 node budget')
+        .toBeGreaterThanOrEqual(Math.min(witness.nodes.available, budget.nodes));
     for (const id of witness.nodes.pinnedIds)
       expect(allowedPinned.has(id), `${density}: pinned ${id} is an expansion child or an expanded node`).toBe(true);
     expect(witness.arcs.rendered, `${density}: arcs ≤ ${budget.arcs} + pinned`).toBeLessThanOrEqual(budget.arcs + witness.arcs.pinned);
@@ -154,7 +165,7 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
   // The budget also has to bind on a disclosed set built without any manual expansion — semantic
   // zoom alone. The reload left the disclosure history empty, so nothing is pinned by hand here.
   await page.evaluate(() => (window as any).__d067.fit());
-  await page.waitForTimeout(1700); // fit suppresses zoom reveals for 1.5 s
+  await waitForLevel(page, 'far');
   const initial = await lod(page);
   let steps = 0;
   let level = initial.level;
@@ -192,7 +203,7 @@ test("D-072 zoom levels have hysteresis: a notch of jitter changes nothing, cros
     projection: "2d", organization: "flat", reading: "attested", morphology: "stellar",
   }));
   await page.evaluate(() => (window as any).__d067.fit());
-  await page.waitForTimeout(1700); // fit suppresses zoom reveals for 1.5 s
+  await waitForLevel(page, 'far');
 
   const trace: { step: string; level: string; rendered: number }[] = [];
   const record = async (step: string) => {
@@ -253,7 +264,7 @@ test("D-072 zoom levels have hysteresis: a notch of jitter changes nothing, cros
   expect(witness.level, "deep zoom reaches the near level").toBe("near");
 
   await page.evaluate(() => (window as any).__d067.fit());
-  await page.waitForTimeout(1700);
+  await waitForLevel(page, 'far');
   witness = await record("refit");
   expect(witness.level, "the refit returns to far").toBe("far");
   await writeFile(testInfo.outputPath("lod-hysteresis.json"), JSON.stringify(trace, null, 2));

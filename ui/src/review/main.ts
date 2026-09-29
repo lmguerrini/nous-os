@@ -939,10 +939,9 @@ const performanceOverlay = performanceSurface ? mountPerformanceOverlay(performa
 if (performanceSurface && performanceOpener) surfaceBindings.push({ id: "performance", surface: performanceSurface,
   openers: [performanceOpener], readOpen: () => !performanceSurface.hidden,
   writeOpen: open => { performanceSurface.hidden = !open; performanceOverlay?.setOpen(open); } });
-surfaceStack = bindSurfaces(surfaceBindings);
+surfaceStack = bindSurfaces(surfaceBindings, () => Boolean(v2?.selectedId), () => { void v2?.exitFocus(); });
 surfaceStack.subscribe(() => requestAnimationFrame(updateInsets));
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && v2?.selectedId) { event.preventDefault(); void v2.exitFocus(); return; }
   if (event.key.toLowerCase() === "p" && !(event.target instanceof HTMLInputElement)) togglePanel();
   if (event.key.toLowerCase() === "t" && fullscreen() && !(event.target instanceof HTMLInputElement)) get<HTMLButtonElement>("fullscreen-collapse").click();
 });

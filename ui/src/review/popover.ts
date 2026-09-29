@@ -20,15 +20,34 @@ export class PopoverStack {
   }
 }
 
+export type EscapeAction = { type: 'close'; id: string } | { type: 'exit-focus' } | { type: 'default' };
+
+/** Resolve Escape once: topmost transient surface, then focus/neighbourhood, then page defaults. */
+export function escapeAction(
+  opened: readonly string[], transientIds: ReadonlySet<string>, focusActive: boolean,
+): EscapeAction {
+  for (let index = opened.length - 1; index >= 0; index -= 1) {
+    const id = opened[index];
+    if (id === undefined) continue;
+    if (transientIds.has(id)) return { type: 'close', id };
+  }
+  return focusActive ? { type: 'exit-focus' } : { type: 'default' };
+}
+
 export type SurfaceBinding = {
   id: string; surface: HTMLElement; openers: HTMLElement[];
   readOpen: () => boolean; writeOpen: (open: boolean) => void;
   canClose?: () => boolean;
 };
 
-export function bindSurfaces(bindings: SurfaceBinding[]): PopoverStack {
+export function bindSurfaces(
+  bindings: SurfaceBinding[],
+  focusActive: () => boolean = () => false,
+  exitFocus: () => void = () => undefined,
+): PopoverStack {
   const stack = new PopoverStack();
   const byId = new Map(bindings.map(binding => [binding.id, binding]));
+  const transientIds = new Set(bindings.map(binding => binding.id).filter(id => id !== 'panel'));
   const sync = (binding: SurfaceBinding) => {
     const open = stack.isOpen(binding.id);
     if (binding.readOpen() !== open) binding.writeOpen(open);
@@ -60,8 +79,19 @@ export function bindSurfaces(bindings: SurfaceBinding[]): PopoverStack {
   }
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
-    const closed = stack.closeTop(id => byId.get(id)?.canClose?.() ?? true);
-    if (closed) { event.preventDefault(); event.stopImmediatePropagation(); }
+    // Escape precedence is transient surface, focus/neighbourhood, then today's page behaviour.
+    const action = escapeAction(stack.order(), transientIds, focusActive());
+    if (action.type === 'close') {
+      // The transient may sit below the side panel in the stack: close it by id, not by position.
+      if (byId.get(action.id)?.canClose?.() ?? true) stack.set(action.id, false);
+      event.preventDefault(); event.stopImmediatePropagation();
+    } else if (action.type === 'exit-focus') {
+      event.preventDefault(); event.stopImmediatePropagation(); exitFocus();
+    } else {
+      // Nothing transient and no focus: the topmost remaining surface (the side panel) closes.
+      const closed = stack.closeTop(id => byId.get(id)?.canClose?.() ?? true);
+      if (closed) { event.preventDefault(); event.stopImmediatePropagation(); }
+    }
   }, true);
   return stack;
 }

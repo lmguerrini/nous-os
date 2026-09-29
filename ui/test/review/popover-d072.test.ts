@@ -1,6 +1,17 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { PopoverStack } from '../../src/review/popover.ts';
+import { escapeAction, PopoverStack } from '../../src/review/popover.ts';
+
+test('D072 Escape gives the topmost transient surface precedence over focus, then page defaults', () => {
+  const transient = new Set(['appearance', 'filter-menu', 'more-menu', 'advanced', 'performance']);
+  assert.deepEqual(escapeAction(['panel', 'more-menu', 'performance'], transient, true),
+    { type: 'close', id: 'performance' });
+  assert.deepEqual(escapeAction(['panel'], transient, true), { type: 'exit-focus' });
+  assert.deepEqual(escapeAction([], transient, false), { type: 'default' });
+  // The side panel above a transient never shadows it; with no focus the panel is next.
+  assert.deepEqual(escapeAction(['more-menu', 'panel'], transient, true), { type: 'close', id: 'more-menu' });
+  assert.deepEqual(escapeAction(['panel'], transient, false), { type: 'default' });
+});
 
 test('D072 popovers toggle and Escape closes the topmost while preserving active state', () => {
   const stack = new PopoverStack();
