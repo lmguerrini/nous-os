@@ -69,6 +69,14 @@ export const FLOW_HEAD_SPEED_PX_S = 90;
 export const FLOW_HEAD_PX = 9;
 /** Total reach of the fading tail behind the head, in px (head included). */
 export const FLOW_TAIL_PX = 46;
+/** A visible trail follows 16% of the projected arc, with a 24 px floor. */
+export function flowTailLengthPx(arcLengthPx: number): number {
+  return Math.max(24, arcLengthPx * 0.16);
+}
+/** Peak opacity on the separate layer at the default intensity. */
+export function flowHeadAlpha(intensity: number): number {
+  return 0.9 * Math.min(1, Math.max(0, intensity) / 0.6);
+}
 /** The restart fade-in covers this much head travel, in px. */
 export const FLOW_RESTART_FADE_PX = 14;
 
@@ -93,12 +101,12 @@ const smoothstep = (t: number): number => {
  * head (the wrapped tail draining past the target counts as behind), and scaled by the restart
  * fade-in while the head has just re-entered the source. Pure.
  */
-export function flowHighlightAlpha(atPx: number, headPx: number, cyclePx: number, intensity: number): number {
+export function flowHighlightAlpha(atPx: number, headPx: number, cyclePx: number, intensity: number, tailPx = FLOW_TAIL_PX): number {
   if (!(intensity > 0) || !(cyclePx > 0)) return 0;
   let behind = headPx - atPx;
   if (behind < 0) behind += cyclePx;
-  if (behind > FLOW_TAIL_PX) return 0;
-  const fade = behind <= FLOW_HEAD_PX ? 1 : 1 - smoothstep((behind - FLOW_HEAD_PX) / (FLOW_TAIL_PX - FLOW_HEAD_PX));
+  if (behind > tailPx) return 0;
+  const fade = behind <= FLOW_HEAD_PX ? 1 : 1 - smoothstep((behind - FLOW_HEAD_PX) / (tailPx - FLOW_HEAD_PX));
   const fadeIn = Math.min(1, Math.max(0, headPx) / FLOW_RESTART_FADE_PX);
   return Math.min(1, Math.max(0, intensity)) * fade * fadeIn;
 }

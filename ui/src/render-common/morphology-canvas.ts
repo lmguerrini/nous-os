@@ -16,7 +16,8 @@ import {
   FLOW_HALO_WIDTH_MULTIPLIER,
   FLOW_PULSE_WIDTH_MULTIPLIER,
   FLOW_STATIC_CORE_ALPHA,
-  FLOW_TAIL_PX,
+  flowTailLengthPx,
+  flowHeadAlpha,
   flowHeadPositionPx,
   flowHighlightAlpha,
   flowMotionAllowedNow,
@@ -1036,17 +1037,38 @@ function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePa
  * uniform screen speed, restart fade-in (D-072 V13). Draws strokes only, in the caller's composite. */
 function drawEdgeTravellingHighlight(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   elapsedMilliseconds: number, speed: number, intensity: number): void {
-  const { points, cumulative, totalPx, color, alpha, widthAt } = paint;
-  const cycle = totalPx + FLOW_TAIL_PX;
+  const { points, cumulative, totalPx, color, widthAt } = paint;
+  const tailPx = flowTailLengthPx(totalPx);
+  const cycle = totalPx + tailPx;
   const head = flowHeadPositionPx(elapsedMilliseconds, speed, cycle);
+  const trailStart = Math.max(0, head - tailPx);
+  const trailEnd = Math.min(totalPx, head);
+  if (trailEnd <= trailStart) return;
+  const peak = flowHeadAlpha(intensity);
+  const stepPx = Math.max(4, tailPx / 12);
   for (let i = 0; i < points.length - 1; i++) {
-    const mid = (cumulative[i]! + cumulative[i + 1]!) / 2;
-    const highlight = flowHighlightAlpha(mid, head, cycle, intensity);
-    if (highlight <= 0.004) continue;
-    context.strokeStyle = rgba(color, clamp(alpha * highlight, 0, 1));
-    context.lineWidth = widthAt(i + 0.5) * FLOW_PULSE_WIDTH_MULTIPLIER;
-    context.beginPath(); context.moveTo(points[i]!.x, points[i]!.y); context.lineTo(points[i + 1]!.x, points[i + 1]!.y);
-    context.stroke();
+    const from = Math.max(trailStart, cumulative[i]!);
+    const to = Math.min(trailEnd, cumulative[i + 1]!);
+    const length = cumulative[i + 1]! - cumulative[i]!;
+    if (to <= from || length <= 0) continue;
+    const subdivisions = Math.ceil((to - from) / stepPx);
+    for (let part = 0; part < subdivisions; part++) {
+      const start = from + (to - from) * part / subdivisions;
+      const end = from + (to - from) * (part + 1) / subdivisions;
+      const alpha = peak * flowHighlightAlpha((start + end) / 2, head, cycle, 1, tailPx);
+      if (alpha <= 0.004) continue;
+      const a = (start - cumulative[i]!) / length, b = (end - cumulative[i]!) / length;
+      const x0 = points[i]!.x, y0 = points[i]!.y;
+      const dx = points[i + 1]!.x - x0, dy = points[i + 1]!.y - y0;
+      const width = widthAt(i + 0.5) * FLOW_PULSE_WIDTH_MULTIPLIER;
+      // A soft, contained glow beneath the bright core. Neither pass inherits the faint base alpha.
+      context.strokeStyle = rgba(color, alpha * 0.22);
+      context.lineWidth = width * 2.1;
+      context.beginPath(); context.moveTo(x0 + dx * a, y0 + dy * a); context.lineTo(x0 + dx * b, y0 + dy * b); context.stroke();
+      context.strokeStyle = rgba(color, alpha);
+      context.lineWidth = width;
+      context.beginPath(); context.moveTo(x0 + dx * a, y0 + dy * a); context.lineTo(x0 + dx * b, y0 + dy * b); context.stroke();
+    }
   }
 }
 

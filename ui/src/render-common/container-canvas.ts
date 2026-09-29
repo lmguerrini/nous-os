@@ -316,6 +316,13 @@ export function ellipsizeTextKeepCount(text: string, maxWidth: number, measure: 
   return `${ellipsizeText(text.slice(0, text.length - suffix.length), budget, measure)}${suffix}`;
 }
 
+/** Tiny truncations carry no useful name, even when they retain a count suffix. */
+export function readableTruncatedText(text: string): boolean {
+  const title = text.replace(/\s·\s\+\d+$/, "").trim();
+  const before = title.includes("…") ? title.slice(0, title.indexOf("…")) : title;
+  return !title.includes("…") || [...before.trim()].length >= 4;
+}
+
 function containerSelected(container: MorphologyContainerPath, interaction: ContainerInteraction | undefined): boolean {
   return interaction?.hoverId === container.id || (interaction?.focusIds?.has(container.id) ?? false);
 }
@@ -538,6 +545,7 @@ export function containerTitleRect(
   cache?: ContainerFrameCache,
 ): { readonly left: number; readonly top: number; readonly width: number; readonly height: number } | null {
   if (!container.title) return null;
+  if (!readableTruncatedText(containerTitleLayout(container.title, measure, container.level).text)) return null;
   // In 3D titles return with full quality after motion. The 2D moving rule remains level ≤ 1.
   if (interaction?.quality === "moving" && (projection === "3d" || container.level > 1)) return null;
   if (projection === "3d") {

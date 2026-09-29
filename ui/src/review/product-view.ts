@@ -14,7 +14,7 @@ import { adaptReviewExport, restrictAnchors, subgraph } from "./product-adapter.
 import { placeDynamic } from "./live-placement.ts";
 import { relaxDepth } from "./depth.ts";
 import { LABEL_BUDGET, disambiguateLabels, footprintDisc, labelCandidateKind, occludedAnchors, placeLabels, shortLabelWithEllipsis } from "./labels.ts";
-import type { DepthSample } from "./labels.ts";
+import type { DepthSample, LabelRim } from "./labels.ts";
 import { encodingOf, SEMANTIC_COLOUR, standingOf } from "./presentation.ts";
 import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
 import { buildMorphologyGeometry } from "../engine/morphology-geometry.ts";
@@ -32,7 +32,7 @@ import { buildContainerGeometry } from "../engine/container-geometry.ts";
 import type { MorphologyContainerPath } from "../engine/container-geometry.ts";
 import { containerSphereLOD, containerTitleFont, placeContainerTitles, projectedWorldScale } from "../render-common/container-canvas.ts";
 import type { CanvasDisc } from "../render-common/container-canvas.ts";
-import { MORPHOLOGY_CONTRACT } from "../engine/morphology-contract.ts";
+import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "../engine/morphology-contract.ts";
 import { drawFlowLayer } from "../render-common/morphology-canvas.ts";
 import type { DistinctSubsetUpdate, MorphologyCanvasStyle } from "../render-common/morphology-canvas.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect, VisibleSubsetUpdate } from "./view-contract.ts";
@@ -574,8 +574,18 @@ export const createProductView: CreateProductView = async (input) => {
     // panels — and so do the drawn container titles: titles and node labels are placed by one
     // shared collision set.
     const reserved: ViewportRect[] = titlePlacements.map(placement => ({
-      left: placement.left, top: placement.top, width: placement.width, height: placement.height,
+      left: placement.left - 4, top: placement.top - 4, width: placement.width + 8, height: placement.height + 8,
     }));
+    const rims: LabelRim[] = [];
+    if (axes.organization === "indra" && !moving) for (const path of pathById.values()) {
+      const center = project(path.center);
+      const worldRadius = axes.projection === "2d" ? path.radius2d ?? path.radius : path.radius;
+      const radius = worldRadius * projectedWorldScale(path.center, worldRadius, project);
+      if (!Number.isFinite(center.x) || !Number.isFinite(center.y) || !Number.isFinite(radius)) continue;
+      if (axes.projection === "3d" && !containerSphereLOD(path.level, path.open !== false,
+        morphologyInteraction.focusIds?.has(path.id) ?? false, radius)) continue;
+      rims.push({ x: center.x, y: center.y, radius });
+    }
     const hostRect = container.getBoundingClientRect();
     for (const overlay of [document.getElementById("appearance-panel"), document.getElementById("gizmo"), document.getElementById("panel-edge-toggle")]) {
       if (!overlay || overlay.hidden) continue;
@@ -606,7 +616,7 @@ export const createProductView: CreateProductView = async (input) => {
     // placement; the absolute LABEL_BUDGET stays only as the default for callers that say nothing.
     // D-072 R2: an in-place density change moves the allowance with the subset.
     const allowance = labelBudgetNow ?? LABEL_BUDGET;
-    const next = placeLabels(labelled, bounds, measured, reserved, allowance, discs);
+    const next = placeLabels(labelled, bounds, measured, reserved, allowance, discs, rims);
     const rect = container.getBoundingClientRect();
     placed = next.map((label) => ({
       ...label,
@@ -868,6 +878,10 @@ export const createProductView: CreateProductView = async (input) => {
               // shrinks to a small hollow marker. A closed `+N` container keeps its own pearl, because
               // below the sphere LOD the pearl is all that carries it.
               ...(openContainers.has(node.id) ? { radiusPx: INDRA_CONTAINER_MARKER_PX, haloPermille: 0, glyph: "hollow" as const } : {}),
+              ...(axes.morphology === "stellar" && axes.organization === "indra" && axes.projection === "3d"
+                ? { radiusPx: stellarIndra3dNodeRadiusPx(openContainers.has(node.id) ? INDRA_CONTAINER_MARKER_PX
+                  : v2Encoded?.radiusPx ?? encoding.corePermille * 8 / SCENE_PERMILLE_SCALE,
+                  axes.morphology, axes.organization, axes.projection) } : {}),
               ...(input.v2Prepared && axes.colour === "bw" ? { tintSrgb: (() => { const level = (node.v2 as import("./v2-core.ts").V2Node).level; const gray = level <= 2 ? 0.88 : level <= 4 ? 0.7 : 0.56; return [gray, gray, gray] as const; })() }
                 : input.v2Prepared && axes.colour !== "bw" ? {tintSrgb:hexRgb(v2CategoryColour(node.v2 as import("./v2-core.ts").V2Node,palette,axes.colour==='custom'?input.v2Colours:undefined))}
                 : axes.colour === "semantic" ? { tintSrgb: SEMANTIC_COLOUR[standingOf(node, input.data)] }

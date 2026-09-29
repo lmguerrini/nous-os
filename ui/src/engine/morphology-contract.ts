@@ -1,5 +1,13 @@
 import type { Morphology } from "#engine/morphology.ts";
 
+/** Core-size adjustment for Stellar pearls inside the 3D Indra shells. */
+export const STELLAR_INDRA_3D_NODE_SCALE = 0.65;
+export function stellarIndra3dNodeRadiusPx(radius: number, morphology: Morphology,
+  organization: "flat" | "indra", projection: "2d" | "3d"): number {
+  return radius * (morphology === "stellar" && organization === "indra" && projection === "3d"
+    ? STELLAR_INDRA_3D_NODE_SCALE : 1);
+}
+
 /** Projection-independent geometry and material vocabulary for the three review morphologies. */
 export type MorphologyGeometryContract = {
   readonly node: { readonly shape: "sphere" | "soma" | "junction"; readonly scale: number; readonly maxRadiusPx: number; readonly brightness: readonly [number, number] };

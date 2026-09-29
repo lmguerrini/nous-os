@@ -139,7 +139,7 @@ function projectedLabels(scene: Scene, projection: LabelProjection): readonly Pr
   for (const node of scene.nodes) {
     const candidate = node.labelCandidacy;
     const sceneOrder = selectedOrder.get(node.id);
-    if (candidate === null || sceneOrder === undefined) {
+    if (candidate === null || sceneOrder === undefined || !readableText(candidate.text)) {
       continue;
     }
     const center = projection.project(node.position);
@@ -155,7 +155,7 @@ function projectedLabels(scene: Scene, projection: LabelProjection): readonly Pr
   for (const edge of scene.edges) {
     const candidate = edge.labelCandidacy;
     const sceneOrder = selectedOrder.get(edge.id);
-    if (candidate === null || sceneOrder === undefined) {
+    if (candidate === null || sceneOrder === undefined || !readableText(candidate.text)) {
       continue;
     }
     const midpoint = requiredItem(edge.path, Math.floor(edge.path.length / bisectionDivisor()), `relation ${edge.id} label midpoint`);
@@ -175,6 +175,13 @@ function projectedLabels(scene: Scene, projection: LabelProjection): readonly Pr
   return labels.sort(compareScreenLabelPriority);
 }
 
+/** Mirrors the canvas and review placement rule without adding visual-policy imports to this renderer. */
+function readableText(text: string): boolean {
+  const title = text.replace(/\s·\s\+\d+$/, "").trim();
+  const before = title.includes("…") ? title.slice(0, title.indexOf("…")) : title;
+  return !title.includes("…") || [...before.trim()].length >= 4;
+}
+
 /**
  * Places a relation label clear of every node's drawn extent, not merely clear of the first one.
  *
@@ -184,7 +191,7 @@ function projectedLabels(scene: Scene, projection: LabelProjection): readonly Pr
  *
  * The first repair computed one clearance from the original position and applied it downward, once,
  * without rechecking. That moved the label off the node it was on and **onto an adjacent one**, which
- * an auditor found in the perspective capture. So this searches instead: it offers candidate offsets
+ * a reviewer found in the perspective capture. So this searches instead: it offers candidate offsets
  * outward in both directions and returns the first that clears EVERY node, rather than assuming one
  * displacement is enough. Vertical only, because a relation label is centred on its midpoint and
  * sliding it along the filament would move it toward one endpoint and misreport which relation it

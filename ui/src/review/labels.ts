@@ -1,7 +1,7 @@
 import type { LabelReason, ViewportRect } from "./view-contract.ts";
 import { normalizeDensity } from "./lod.ts";
 import type { Density } from "./lod.ts";
-import { ellipsizeText, ellipsizeTextKeepCount, stripTrailingSeparators } from "../render-common/container-canvas.ts";
+import { ellipsizeText, ellipsizeTextKeepCount, readableTruncatedText, stripTrailingSeparators } from "../render-common/container-canvas.ts";
 export type LabelCandidate = {
   id: string;
   text: string;
@@ -19,6 +19,10 @@ export type LabelCandidate = {
   tier1?: boolean;
 };
 export type PlacedLabel = { id: string; text: string; reason: LabelReason; rect: ViewportRect };
+export type LabelRim = { readonly x: number; readonly y: number; readonly radius: number };
+
+/** A truncation must retain four visible title characters before the ellipsis. */
+export const readableLabelText = readableTruncatedText;
 
 /** Candidate policy before screen occlusion, title claims and collision placement. */
 export function labelCandidateKind(input: {
@@ -117,6 +121,11 @@ export function shortLabelWithEllipsis(input: {
   const suffix = input.short.match(COUNT_SUFFIX)?.[0] ?? "";
   const head = suffix ? input.short.slice(0, input.short.length - suffix.length) : input.short;
   const fullHead = input.full.replace(COUNT_SUFFIX, "");
+  // A prepared short title can omit an interior word. Resolve such aliases from the full title
+  // so the same node does not acquire a different truncation when its view path changes.
+  if (head && !fullHead.startsWith(head)) {
+    return ellipsizeTextKeepCount(`${fullHead}${suffix}`, input.maxWidth, input.measure);
+  }
   let name = head.trimEnd();
   const cut = fullHead.length > name.length && fullHead.startsWith(name);
   if (cut) {
@@ -233,6 +242,7 @@ export function placeLabels(
   reserved: readonly ViewportRect[] = [],
   budget: number = Number.POSITIVE_INFINITY,
   discs: readonly LabelDisc[] = [],
+  rims: readonly LabelRim[] = [],
 ): PlacedLabel[] {
   const placed: PlacedLabel[] = [];
   const cellSize = 64;
@@ -291,12 +301,26 @@ export function placeLabels(
     }
     return false;
   };
+  const crossesRim = (rect: ViewportRect): boolean => rims.some(rim => {
+    if (!(rim.radius > 0) || !Number.isFinite(rim.radius)) return false;
+    const nearestX = Math.min(Math.max(rim.x, rect.left), rect.left + rect.width);
+    const nearestY = Math.min(Math.max(rim.y, rect.top), rect.top + rect.height);
+    const minimum = Math.hypot(nearestX - rim.x, nearestY - rim.y);
+    const farthest = Math.max(
+      Math.hypot(rect.left - rim.x, rect.top - rim.y),
+      Math.hypot(rect.left + rect.width - rim.x, rect.top - rim.y),
+      Math.hypot(rect.left - rim.x, rect.top + rect.height - rim.y),
+      Math.hypot(rect.left + rect.width - rim.x, rect.top + rect.height - rim.y),
+    );
+    return minimum <= rim.radius + 3 && farthest >= rim.radius - 3;
+  });
   const priority = { hover: 6, selected: 5, neighbour: 4, domain: 3, main: 2, zoom: 1 };
   for (const c of [...candidates].sort(
     (a, b) => (b.tier1 === true ? 1 : 0) - (a.tier1 === true ? 1 : 0)
       || priority[b.reason] - priority[a.reason] || b.priority - a.priority || a.id.localeCompare(b.id),
   )) {
     if (placed.length >= budget) break;
+    if (!readableLabelText(c.text)) continue;
     if (c.x < bounds.left || c.y < bounds.top || c.x > bounds.left + bounds.width || c.y > bounds.top + bounds.height)
       continue;
     const size = measure(c.text, c.full ? 280 : 180, c.reason === "selected" ? 2 : c.full ? 8 : 1);
@@ -305,15 +329,19 @@ export function placeLabels(
     // An anchor disc that covers the viewport places its label near the anchor point instead of
     // throwing it off-screen: the selection stays named at any zoom.
     const radius = rawRadius >= span ? 0 : rawRadius;
-    const attempts = radius > 0 && c.reason !== "hover"
+    const attempts = (radius > 0 && c.reason !== "hover"
       ? [...discOffsets(radius), ...discOffsets(radius + LABEL_SECOND_RING_PX)]
-      : c.reason === "hover" ? [[12, 12], [-12, 12], [12, -12], [-12, -12], ...positions] : positions;
+      : c.reason === "hover" ? [[12, 12], [-12, 12], [12, -12], [-12, -12], ...positions] : positions)
+      .map(([x, y]) => [x, y] as [number, number]);
     const rectAt = (dx: number, dy: number): ViewportRect => ({
       left: c.x + dx + (dx < 0 ? -size.width : 0),
       top: c.y + dy + (dy < 0 ? -size.height : 0),
       width: size.width,
       height: size.height,
     });
+    // Preserve the existing anchor preference among clear slots. A straddling slot is considered
+    // only after every clear slot has been tried.
+    attempts.sort((a, b) => Number(crossesRim(rectAt(a[0]!, a[1]!))) - Number(crossesRim(rectAt(b[0]!, b[1]!))));
     // The hard constraints no tier may ever bend: inside the visible rect, clear of the anchor's
     // own disc, and over no placed label or reserved rect (the Aspetto panel).
     const admissible = (rect: ViewportRect): boolean => {
