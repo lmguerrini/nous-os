@@ -209,10 +209,30 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
   await page.evaluate(() => (window as any).__d067.fit());
   await waitForLevel(page, 'far');
   const initial = await lod(page);
-  await zoomUntilNear(page, "semantic zoom alone reaches the near level");
-  // Stay deep a while: the near level's progressive disclosure adds nodes on its own tick.
-  await notch(page, 1, 350);
-  await page.waitForTimeout(3000);
+  const near = await zoomUntilNear(page, "semantic zoom alone reaches the near level");
+  // Near-level disclosure needs a decreasing camera ratio across consecutive 250 ms ticks.
+  // Nudge in one notch at a time and give each notch up to a second to disclose more nodes.
+  const levelTrace = [...near.trace];
+  const counts = [initial.nodes.available];
+  let available = initial.nodes.available;
+  for (let i = 0; i < 25 && available <= initial.nodes.available; i += 1) {
+    await notch(page, 1, 0);
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      const observed = await lod(page);
+      available = observed.nodes.available;
+      if (levelTrace.at(-1) !== observed.level) levelTrace.push(observed.level);
+      if (available > initial.nodes.available) break;
+      await page.waitForTimeout(50);
+    }
+    counts.push(available);
+  }
+  if (available <= initial.nodes.available) {
+    const camera = await page.evaluate(() => (window as any).__d067.cameraState());
+    const ratio = camera && typeof camera === "object" ? camera.ratio : undefined;
+    expect(available, `semantic zoom disclosed nodes on its own; zoom ratio=${String(ratio)}, level trace=${levelTrace.join(" -> ")}, counts=${counts.join(" -> ")}`)
+      .toBeGreaterThan(initial.nodes.available);
+  }
   // Leave the canvas before forcing a refresh, so no hover pins anything.
   await page.mouse.move(1, 1);
   await page.waitForTimeout(300);
