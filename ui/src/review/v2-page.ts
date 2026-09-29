@@ -63,6 +63,15 @@ export type SearchHit = {
     title: string;
     match_field: string;
 };
+/** A confirmation belongs to the exact camera intent that scheduled it. */
+export function confirmFitDue(state: {
+    readonly scheduledEpoch: number;
+    readonly currentEpoch: number;
+    readonly userMoved: boolean;
+    readonly anyOutside: boolean;
+}): boolean {
+    return state.scheduledEpoch === state.currentEpoch && !state.userMoved && state.anyOutside;
+}
 export class V2Page {
     readonly history = new DisclosureHistory();
     readonly index: V2Index;
@@ -114,6 +123,8 @@ export class V2Page {
     private lastFitCamera: ReturnType<ProductView['readCamera']> = null;
     /** Set by the user's own camera gestures; an automatic refit only happens while it is false. */
     private userMovedSinceFit = false;
+    private cameraIntentEpoch = 0;
+    private confirmFitTimer: number | null = null;
     private auto = new Set<string>();
     private zoomOn = true;
     private overviewRatio: number | null = null;
@@ -137,7 +148,12 @@ export class V2Page {
         this.selectLod = deps.safeSelect ?? safeSelectNodes;
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
-            root.addEventListener(type, () => { this.userMovedSinceFit = true; }, { passive: true });
+            root.addEventListener(type, () => { this.userMovedSinceFit = true; this.noteCameraIntent(); }, { passive: true });
+        root?.addEventListener('keydown', event => {
+            if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+            this.userMovedSinceFit = true;
+            this.noteCameraIntent();
+        });
         for (const n of index.nodes)
             if (n.level === 1 && index.nodes.some(child => child.level === 2 && child.parent === n.id))
                 this.history.state.expanded.add(n.id);
@@ -410,14 +426,17 @@ export class V2Page {
             }
             if (cameraAction === "restore") {
                 try {
+                    this.noteCameraIntent();
                     this.programmaticCamera(); this.view.restoreCamera(old);
                 }
                 catch {
+                    this.noteCameraIntent();
                     this.programmaticCamera(); await this.view.fit(); this.programmaticCamera();
                     this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
                     this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
                 }
             } else if (cameraAction === "refit") {
+                this.noteCameraIntent();
                 this.programmaticCamera(); await this.view.fit(); this.programmaticCamera();
                 this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
                 this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
@@ -506,6 +525,7 @@ export class V2Page {
         await this.view?.frame([id]);
     }
     async select(id: string) {
+        this.noteCameraIntent();
         this.suppressZoomUntil = performance.now() + 900;
         this.selected = id;
         this.view?.select(id);
@@ -706,13 +726,14 @@ export class V2Page {
     }
     async setPalette(value: PaletteValues) { this.palette = value; await this.refresh(); }
     async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
-    async fit() { this.programmaticCamera(); await this.view?.fit(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
-    async reset() { this.selected = null; this.view?.select(null); this.renderPanel(); this.programmaticCamera(); await this.view?.resetCamera(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
-    async frame(id: string) { this.programmaticCamera(); await this.view?.frame([id]); this.programmaticCamera(); }
+    async fit() { this.noteCameraIntent(); this.programmaticCamera(); await this.view?.fit(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
+    async reset() { this.noteCameraIntent(); this.selected = null; this.view?.select(null); this.renderPanel(); this.programmaticCamera(); await this.view?.resetCamera(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
+    async frame(id: string) { this.noteCameraIntent(); this.programmaticCamera(); await this.view?.frame([id]); this.programmaticCamera(); }
     camera() {
         return this.view?.camera() ?? null;
     }
-    viewPreset(name: Parameters<ProductView['viewPreset']>[0]) { this.userMovedSinceFit = true; this.view?.viewPreset(name); }
+    cameraState() { return this.view?.readCamera() ?? null; }
+    viewPreset(name: Parameters<ProductView['viewPreset']>[0]) { this.noteCameraIntent(); this.userMovedSinceFit = true; this.view?.viewPreset(name); }
     setInsets(value: Parameters<ProductView['setInsets']>[0]) { this.view?.setInsets(value); }
     setSemanticZoom(on: boolean) {
         this.zoomOn = on;
@@ -727,15 +748,25 @@ export class V2Page {
     private confirmFit(view: ProductView, attempt = 0): void {
         // The side panel can change the canvas width after the fit (its column follows its content), so check again a
         // few times while the view settles.
-        window.setTimeout(() => {
-            if (view !== this.view || this.userMovedSinceFit) return;
+        if (this.confirmFitTimer !== null) clearTimeout(this.confirmFitTimer);
+        const scheduledEpoch = this.cameraIntentEpoch;
+        this.confirmFitTimer = window.setTimeout(() => {
+            this.confirmFitTimer = null;
+            if (view !== this.view || scheduledEpoch !== this.cameraIntentEpoch || this.userMovedSinceFit) return;
             const witness = view.witness();
             const rect = witness.visibleRect;
             const outside = Object.values(witness.nodeViewport).some(point => !(point.x >= rect.left - 1 && point.x <= rect.left + rect.width + 1
                 && point.y >= rect.top - 1 && point.y <= rect.top + rect.height + 1));
-            if (!outside) return;
-            void this.fit().then(() => { if (attempt < 2) this.confirmFit(view, attempt + 1); });
+            if (!confirmFitDue({ scheduledEpoch, currentEpoch: this.cameraIntentEpoch, userMoved: this.userMovedSinceFit, anyOutside: outside })) return;
+            const refit = this.fit();
+            const refitEpoch = this.cameraIntentEpoch;
+            void refit.then(() => { if (attempt < 2 && refitEpoch === this.cameraIntentEpoch) this.confirmFit(view, attempt + 1); });
         }, 700);
+    }
+    private noteCameraIntent(): void {
+        this.cameraIntentEpoch++;
+        if (this.confirmFitTimer !== null) clearTimeout(this.confirmFitTimer);
+        this.confirmFitTimer = null;
     }
     /** A camera move the page makes itself is never read as the user zooming in: re-baseline and hold reveals briefly. */
     private programmaticCamera(): void {

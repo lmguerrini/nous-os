@@ -165,6 +165,8 @@ export function flowLayerShouldRun(state: {
 let flowNowMilliseconds = 0;
 let flowMotionAllowed = false;
 let flowAnimatedEdges = 0;
+let flowMotionOwner: object | null = null;
+const legacyFlowOwner = {};
 
 export function flowNow(): number {
   return flowNowMilliseconds;
@@ -175,8 +177,24 @@ export function setFlowNow(milliseconds: number): void {
 export function flowMotionAllowedNow(): boolean {
   return flowMotionAllowed;
 }
-export function setFlowMotionAllowed(allowed: boolean): void {
+/** The most recent view claim owns the shared motion flag until it releases it. */
+export function claimFlowMotion(owner: object, allowed: boolean): void {
+  if (flowMotionOwner !== owner) flowAnimatedEdges = 0;
+  flowMotionOwner = owner;
   flowMotionAllowed = allowed;
+}
+export function releaseFlowMotion(owner: object): void {
+  if (flowMotionOwner !== owner) return;
+  flowMotionOwner = null;
+  flowMotionAllowed = false;
+  flowAnimatedEdges = 0;
+}
+export function ownsFlowMotion(owner: object): boolean {
+  return flowMotionOwner === owner;
+}
+/** Compatibility for direct canvas tests; product views use owner claims. */
+export function setFlowMotionAllowed(allowed: boolean): void {
+  claimFlowMotion(legacyFlowOwner, allowed);
 }
 export function flowAnimatedEdgeCount(): number {
   return flowAnimatedEdges;

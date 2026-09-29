@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 /** Wait for two consecutive animation frames with the same camera pose. */
 export async function waitForCameraRest(page: Page, timeoutMs = 2500): Promise<void> {
   await page.evaluate(async (timeout) => {
-    const camera = () => JSON.stringify((window as any).__d067.camera());
+    const camera = () => JSON.stringify([(window as any).__d067.camera(), (window as any).__d067.cameraState()]);
     const start = performance.now();
     let previous = camera();
     let stillFrames = 0;

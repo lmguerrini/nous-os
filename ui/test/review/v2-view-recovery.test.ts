@@ -33,7 +33,7 @@ const bundled = await build({
     resolveDir: dirname(fileURLToPath(pageSource)),
     sourcefile: "d072-r1-v2-page-entry.ts",
     loader: "ts",
-    contents: `import { V2Page, resetMountFailureLog } from ${JSON.stringify(fileURLToPath(pageSource))};\nexport { V2Page, resetMountFailureLog };`,
+    contents: `import { V2Page, resetMountFailureLog, confirmFitDue } from ${JSON.stringify(fileURLToPath(pageSource))};\nexport { V2Page, resetMountFailureLog, confirmFitDue };`,
   },
 });
 writeFileSync(bundlePath, bundled.outputFiles[0]!.text);
@@ -79,8 +79,16 @@ Object.assign(globalThis, {
   },
   window: { matchMedia: () => ({ matches: false }), setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), addEventListener() { } },
 });
-const { V2Page: V2PageClass, resetMountFailureLog } =
+const { V2Page: V2PageClass, resetMountFailureLog, confirmFitDue } =
   await import(pathToFileURL(bundlePath).href) as typeof import("../../src/review/v2-page.ts");
+
+test("fit confirmation only runs for the camera intent that scheduled it", () => {
+  const due = { scheduledEpoch: 4, currentEpoch: 4, userMoved: false, anyOutside: true };
+  assert.equal(confirmFitDue(due), true);
+  assert.equal(confirmFitDue({ ...due, currentEpoch: 5 }), false, "selection or preset superseded the fit");
+  assert.equal(confirmFitDue({ ...due, userMoved: true }), false);
+  assert.equal(confirmFitDue({ ...due, anyOutside: false }), false);
+});
 
 /** An invented fixture: 2 domains → 6 projects → 200 conversations, every name invented. */
 function fixtureIndex(): V2Index {

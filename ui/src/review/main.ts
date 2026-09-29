@@ -1036,6 +1036,7 @@ const api = {
   get projection() { return axes.projection; },
   get focusMode() { return focusMode; },
   camera: () => v2?.camera() ?? view?.camera() ?? null,
+  cameraState: () => v2?.cameraState() ?? view?.readCamera() ?? null,
   viewPreset,
   fullscreen,
   appearance: () => ({ ...appearance }),

@@ -57,7 +57,9 @@ import {
   flowLayerFrameDue,
   flowLayerResumeAlpha,
   flowLayerShouldRun,
-  setFlowMotionAllowed,
+  claimFlowMotion,
+  ownsFlowMotion,
+  releaseFlowMotion,
   setFlowNow,
 } from "#render-common/flow.ts";
 
@@ -307,10 +309,12 @@ export const createProductView: CreateProductView = async (input) => {
     flowLoop.raf = 0;
     flowLoop.running = false;
   };
+  const flowOwner = {};
   let flowFlag: boolean | null = null;
   const syncFlowLoop = () => {
+    if (destroyed) return;
     const allowed = flowAnimatesNow();
-    setFlowMotionAllowed(allowed);
+    claimFlowMotion(flowOwner, allowed);
     if (allowed !== flowFlag) {
       // The base pass flips between the overlay-owned highlights and the static cue: repaint it
       // once so an exploratory reading never shows both or neither.
@@ -1093,11 +1097,11 @@ export const createProductView: CreateProductView = async (input) => {
   (globalThis as typeof globalThis & { __d071?: unknown }).__d071 = {
     flow: {
       // Test/measurement hooks for the browser checks.
-      now: (milliseconds: number) => { setFlowNow(milliseconds); drawFlowOverlay(performance.now(), true); },
+      now: (milliseconds: number) => { if (ownsFlowMotion(flowOwner)) { setFlowNow(milliseconds); drawFlowOverlay(performance.now(), true); } },
       animatedEdges: () => flowAnimatedEdgeCount(),
       motionAllowed: () => flowAnimatesNow(),
       frameCostMs: () => flowLoop.frameCostMs,
-      setMotion: (enabled: boolean) => { flowMotion = enabled; syncFlowLoop(); },
+      setMotion: (enabled: boolean) => { if (!destroyed) { flowMotion = enabled; syncFlowLoop(); } },
     },
   };
   // D-072 P1a test hooks: the quality state, the measured flow-layer cadence, and whether the
@@ -1304,7 +1308,7 @@ export const createProductView: CreateProductView = async (input) => {
     destroy() {
       destroyed = true;
       stopFlowLoop();
-      setFlowMotionAllowed(false);
+      releaseFlowMotion(flowOwner);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       if (resolutionTimer !== undefined) clearTimeout(resolutionTimer);
       if (cameraLabelIdle !== null && typeof cancelIdleCallback === "function") cancelIdleCallback(cameraLabelIdle);
