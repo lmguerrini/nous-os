@@ -18,7 +18,7 @@
  * otherwise distort); importance is generally not band-limited and is never silently upgraded. */
 
 import type { SpectralGraph } from './adjacency.ts';
-import { solveDenseSymmetricEigen } from './dense.ts';
+import { DENSE_DEFAULT_MAX_N, solveDenseSymmetricEigen } from './dense.ts';
 import type { Eigenbasis, GraphSignal } from './signals.ts';
 
 export const HOLOGRAPHIC_RECOVERY_VERSION = 'holographic-recovery-v1';
@@ -31,7 +31,9 @@ export const RECOVERY_ENERGY_FLOOR = 1e-12;
 export type RecoveryClaim = 'exact-bandlimited-recovery' | 'least-squares-estimate' | 'ridge-estimate';
 
 export interface RecoveryOptions {
-  /** Band limit k: the first k modes of the basis (zero cluster included). */
+  /** Band limit k: the first k modes of the basis (zero cluster included). Capped at the
+   * dense Gram ceiling DENSE_DEFAULT_MAX_N: the k x k normal-equation Gram matrix is
+   * diagonalised by the dense reference eigensolver. */
   readonly bandlimit: number;
   /** Ridge lambda >= 0; 0 by default. */
   readonly ridge?: number;
@@ -130,6 +132,12 @@ export function recoverBandlimitedSignal(
   const k = options.bandlimit;
   if (!Number.isInteger(k) || k < 1 || k > basis.count) {
     fail(`bandlimit ${String(k)} must be an integer between 1 and ${String(basis.count)}`);
+  }
+  if (k > DENSE_DEFAULT_MAX_N) {
+    fail(
+      `bandlimit ${String(k)} exceeds the dense Gram ceiling ${String(DENSE_DEFAULT_MAX_N)}; ` +
+        `the ${String(k)}x${String(k)} normal-equation Gram matrix is diagonalised by the dense reference eigensolver, which refuses orders above ${String(DENSE_DEFAULT_MAX_N)}`,
+    );
   }
   const ridge = options.ridge ?? 0;
   if (!(ridge >= 0) || !Number.isFinite(ridge)) fail(`ridge ${String(ridge)} must be finite and nonnegative`);

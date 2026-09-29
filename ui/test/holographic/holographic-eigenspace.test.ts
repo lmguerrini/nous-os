@@ -7,12 +7,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildSpectralGraph, type SpectralGraph } from '../../src/holographic/adjacency.ts';
+import { DENSE_SYMMETRIC_SOLVER_VERSION } from '../../src/holographic/dense.ts';
 import {
   spectralGeometry,
   type SpectralGeometryCoordinates,
   type SpectralGeometryOutcome,
   type SpectralGeometryRefusal,
 } from '../../src/holographic/geometry.ts';
+import { LANCZOS_SOLVER_VERSION } from '../../src/holographic/lanczos.ts';
 import { combineGraphs, completeGraph, cycleGraph, pathGraph, starGraph, weakBridgeGraph } from './fixtures.ts';
 
 const SNAPSHOT = 'a1e-fixture-snapshot-digest-00000000000000000000000000000000000000000000000000000000000000';
@@ -212,6 +214,38 @@ test('the Lanczos backend reproduces the dense P3 geometry and refuses identical
   }
   const refused = refusal(spectralGeometry(graph, options('3d', { backend: 'lanczos' })));
   assert.equal(refused.code, 'insufficient-rank');
+});
+
+test('the default backend follows the dense cap: path 172 solves dense, path 173 solves Lanczos, explicit dense above the cap refuses typed', () => {
+  // Path Laplacian spectrum: lambda_k = 2 - 2 cos(pi k / n), k = 0..n-1 (analytic).
+  const p172 = coordinates(spectralGeometry(pathGraph(172), options('2d')));
+  assert.equal(p172.solver.backend, 'dense');
+  assert.equal(p172.solver.solverVersion, DENSE_SYMMETRIC_SOLVER_VERSION);
+  assert.equal(p172.clusters.length, 2);
+  assert.ok(Math.abs(p172.clusters[0]!.eigenvalueMin - (2 - 2 * Math.cos(Math.PI / 172))) <= 1e-8);
+  assert.ok(Math.abs(p172.clusters[1]!.eigenvalueMin - (2 - 2 * Math.cos((2 * Math.PI) / 172))) <= 1e-8);
+  assert.deepEqual([...p172.loadedNodeIds], [...p172.nodeIds]);
+
+  const p173 = coordinates(spectralGeometry(pathGraph(173), options('2d')));
+  assert.equal(p173.solver.backend, 'lanczos');
+  assert.equal(p173.solver.solverVersion, LANCZOS_SOLVER_VERSION);
+  assert.equal(p173.clusters.length, 2);
+  assert.ok(Math.abs(p173.clusters[0]!.eigenvalueMin - (2 - 2 * Math.cos(Math.PI / 173))) <= 1e-8);
+  assert.ok(Math.abs(p173.clusters[1]!.eigenvalueMin - (2 - 2 * Math.cos((2 * Math.PI) / 173))) <= 1e-8);
+  assert.deepEqual([...p173.loadedNodeIds], [...p173.nodeIds]);
+
+  // An explicit dense request above the cap is the typed solver-failure state, never a throw.
+  const refused = refusal(spectralGeometry(pathGraph(173), options('2d', { backend: 'dense' })));
+  assert.equal(refused.code, 'solver-failure');
+  assert.equal(refused.solver.backend, 'dense');
+  assert.equal(refused.solver.solverVersion, DENSE_SYMMETRIC_SOLVER_VERSION);
+  assert.match(refused.message, /the dense backend refused: holographic-dense: refuses n=173 > maxN=172/);
+  assert.deepEqual([...refused.loadedNodeIds], []);
+  assert.equal(refused.eigenvalues.length, 0);
+  assert.ok(!('positions2' in refused) && !('positions3' in refused));
+  const repeat = refusal(spectralGeometry(pathGraph(173), options('2d', { backend: 'dense' })));
+  assert.equal(repeat.code, refused.code);
+  assert.equal(repeat.resultDigest, refused.resultDigest);
 });
 
 test('the geometry explanation carries the full inspector witness', () => {

@@ -15,12 +15,16 @@
  * group sub-sector must satisfy `L/L_random <= 0.5` against the 16 seeded shuffle baselines
  * `SHA-256(domainDigest / groupId / seed)`, else a typed `edge-locality-refusal` carries the
  * measured ratio. No membership is ever invented or moved. Pure deterministic module; the
- * eigen backend is the integrated Jacobi solver `jacobi-cyclic-v1`.
+ * Fiedler eigen backend is size-routed by the dense.ts size policy: the dense Jacobi solver `jacobi-cyclic-v1` for residual orders of at most
+ * DENSE_DEFAULT_MAX_N = 172, and the bounded thick-restart Lanczos solver
+ * `thick-restart-lanczos-fullreorth-v1` above that ceiling, whose residual, orthogonality and
+ * sign checks feed the same witness fields.
  */
 import type { Digest, EdgeAttestation, EdgeId, NodeId } from '../projection/contract-types.ts';
 import { digestPayload } from '../engine/digest.ts';
-import { buildSpectralGraph, type SpectralEdge } from '../holographic/adjacency.ts';
-import { DENSE_SYMMETRIC_SOLVER_VERSION, denseLaplacian, solveDenseSymmetricEigen } from '../holographic/dense.ts';
+import { buildSpectralGraph, type SpectralEdge, type SpectralGraph } from '../holographic/adjacency.ts';
+import { DENSE_DEFAULT_MAX_N, DENSE_SYMMETRIC_SOLVER_VERSION, denseLaplacian, solveDenseSymmetricEigen } from '../holographic/dense.ts';
+import { LANCZOS_SOLVER_VERSION, solveSpectrum } from '../holographic/lanczos.ts';
 import { largestEntryIndex } from '../holographic/linear-algebra.ts';
 import { circularAngleDelta } from './inverse-rays.ts';
 import { potentialForRank } from './parameters.ts';
@@ -37,6 +41,23 @@ export const EDGE_LOCALITY_SEED_COUNT = 16;
 export const FIEDLER_TIE_TOLERANCE = 1e-10;
 /** Fiedler entries rounded to this grid are order ties, resolved by codepoint ID. */
 export const FIEDLER_ENTRY_ROUNDING = 1e-12;
+/** Residual orders of at most this value use the dense Jacobi backend; larger orders use the
+ * bounded Lanczos backend (the dense.ts size policy: dense never silently at 850). */
+export const FIEDLER_DENSE_CEILING = DENSE_DEFAULT_MAX_N;
+/** Deterministic seed material of the Fractal Lanczos Fiedler route. */
+export const FIEDLER_LANCZOS_SEED = 'fractal-fiedler-lanczos-v1';
+/** Absolute residual budget demanded of the Lanczos Fiedler columns; the solver receives it
+ * relative to max(1, ||L||_2 Gershgorin bound), matching the record witness gate 1e-10. */
+export const FIEDLER_LANCZOS_ABSOLUTE_RESIDUAL_BUDGET = 1e-10;
+/** Orthogonality defect budget demanded of the Lanczos Fiedler columns. */
+export const FIEDLER_LANCZOS_ORTHOGONALITY_BUDGET = 1e-9;
+/** Nontrivial modes the Fiedler route requests: exactly lambda2 and lambda3 for the tie check. */
+export const FIEDLER_LANCZOS_MODES = 2;
+/** Krylov restart size of the Fiedler route: the largest projected order the dense route
+ * accepts inside Lanczos (its projected problem is dense-solved). The solver's measured
+ * default 96 stalls on the 697-node record path (0/2 modes after 8 restarts); 172 converges
+ * in 5 restarts there. */
+export const FIEDLER_LANCZOS_RESTART_SIZE = DENSE_DEFAULT_MAX_N;
 /** Domain cap that also bounds the admissible community count. */
 export const FRACTAL_DOMAIN_NODE_CAP = 850;
 const SECTOR_GUARD_CAP = 1e-3;
@@ -422,22 +443,103 @@ function chooseCandidateOrder(
   return best!;
 }
 
+/** Optional knobs of the locality order. Production callers omit them; tests use
+ * `lanczosMaxRestarts` to exercise the documented nonconvergence BFS fallback deterministically. */
+export interface FiedlerLocalityOptions {
+  /** Caps the Lanczos restarts of the above-ceiling route; 0 forces the documented refusal. */
+  readonly lanczosMaxRestarts?: number;
+}
+
+interface FiedlerEigenSolve {
+  readonly lambda2: number;
+  readonly lambda3: number;
+  /** Fiedler vector over the codepoint-sorted member order. */
+  readonly column: Float64Array;
+  readonly sweeps: number | null;
+  readonly maxAbsResidual: number | null;
+  readonly orthogonalityDefect: number | null;
+}
+
+interface FiedlerNonconvergence {
+  readonly nonconverged: true;
+  readonly restartsUsed: number;
+}
+
+/**
+ * Second eigenpair of the induced Laplacian, size-routed per the dense.ts size policy: the
+ * dense Jacobi solver for orders of at most FIEDLER_DENSE_CEILING = 172 (refusals propagate),
+ * the bounded thick-restart Lanczos solver above it with k = 2 modes, restart size 172 and the
+ * absolute residual / orthogonality budgets. The Lanczos route re-verifies its residual and
+ * orthogonality against the budgets and reports a nonconvergence instead of a degraded pair.
+ */
+function solveFiedlerPair(graph: SpectralGraph, options: FiedlerLocalityOptions): FiedlerEigenSolve | FiedlerNonconvergence {
+  const nodeCount = graph.size;
+  if (nodeCount <= FIEDLER_DENSE_CEILING) {
+    const solution = solveDenseSymmetricEigen(denseLaplacian(graph));
+    return {
+      lambda2: solution.eigenvalues[1]!,
+      lambda3: nodeCount >= 3 ? solution.eigenvalues[2]! : Number.POSITIVE_INFINITY,
+      column: Float64Array.from(solution.eigenvectors.subarray(nodeCount, 2 * nodeCount)),
+      sweeps: solution.sweeps,
+      maxAbsResidual: solution.maxAbsResidual,
+      orthogonalityDefect: solution.orthogonalityDefect,
+    };
+  }
+  const tolerance = FIEDLER_LANCZOS_ABSOLUTE_RESIDUAL_BUDGET / Math.max(1, graph.spectralNormBound);
+  const outcome = solveSpectrum(graph, {
+    k: FIEDLER_LANCZOS_MODES,
+    restartSize: FIEDLER_LANCZOS_RESTART_SIZE,
+    tolerance,
+    orthogonalityTolerance: FIEDLER_LANCZOS_ORTHOGONALITY_BUDGET,
+    seed: FIEDLER_LANCZOS_SEED,
+    ...(options.lanczosMaxRestarts === undefined ? {} : { maxRestarts: options.lanczosMaxRestarts }),
+  });
+  if (outcome.kind === 'refusal') return { nonconverged: true, restartsUsed: outcome.restartsUsed };
+  const zeroModes = outcome.zeroModes;
+  const residuals = outcome.residuals;
+  let maxAbsResidual = 0;
+  for (let index = zeroModes; index < residuals.length; index += 1) {
+    maxAbsResidual = Math.max(maxAbsResidual, residuals[index]!);
+  }
+  // Residual and orthogonality checks on the returned Fiedler pair; a breach is a reported
+  // nonconvergence, never a silently degraded witness.
+  if (!(outcome.relativeResidualMax <= tolerance) ||
+    !(outcome.orthogonalityDefect <= FIEDLER_LANCZOS_ORTHOGONALITY_BUDGET) ||
+    !(maxAbsResidual <= FIEDLER_LANCZOS_ABSOLUTE_RESIDUAL_BUDGET)) {
+    return { nonconverged: true, restartsUsed: outcome.restartsUsed };
+  }
+  return {
+    lambda2: outcome.eigenvalues[zeroModes]!,
+    lambda3: outcome.eigenvalues[zeroModes + 1]!,
+    column: Float64Array.from(outcome.eigenvectors.subarray(zeroModes * nodeCount, (zeroModes + 1) * nodeCount)),
+    sweeps: outcome.restartsUsed,
+    maxAbsResidual,
+    orthogonalityDefect: outcome.orthogonalityDefect,
+  };
+}
+
 /**
  * G5.1 deterministic locality order of a residual set: Fiedler-vector order of the induced
  * subgraph, sign fixed by the largest-magnitude entry with ID ties; entries rounded to 1e-12
  * are order ties by ID. A disconnected residual or a tied Fiedler value (lambda3 - lambda2 <=
- * 1e-10) falls back to the highest-importance BFS. A singleton needs no eigensolve.
+ * 1e-10) falls back to the highest-importance BFS. A singleton needs no eigensolve. The
+ * eigenpair comes from the dense solver at or below FIEDLER_DENSE_CEILING = 172 nodes and from
+ * the bounded Lanczos solver above it; a Lanczos nonconvergence also uses the G5.1 BFS
+ * fallback, witnessed as method 'bfs-fallback' with componentCount 1 and no tie flag (the
+ * refusal is named by the missing eigenvalues and the Lanczos solver version).
  */
 export function fiedlerLocalityOrder(
   members: readonly { id: NodeId; importance: number }[],
   edges: readonly { source: NodeId; target: NodeId }[],
+  options: FiedlerLocalityOptions = {},
 ): Readonly<{ order: readonly NodeId[]; witness: FiedlerOrderWitness }> {
   const sortedMembers = [...members].sort((a, b) => codepointCompare(a.id, b.id));
   const nodeCount = sortedMembers.length;
+  const solverVersion = nodeCount <= FIEDLER_DENSE_CEILING ? DENSE_SYMMETRIC_SOLVER_VERSION : LANCZOS_SOLVER_VERSION;
   const emptyWitness: FiedlerOrderWitness = {
     method: 'none', nodeCount: 0, componentCount: 0, lambda2: null, lambda3: null, eigenGap: null,
     tiedFiedlerValue: false, pivotNodeId: null, sweeps: null, maxAbsResidual: null, orthogonalityDefect: null,
-    solverVersion: DENSE_SYMMETRIC_SOLVER_VERSION,
+    solverVersion,
   };
   if (nodeCount === 0) return { order: [], witness: emptyWitness };
   const memberSet = new Set(sortedMembers.map((member) => member.id));
@@ -478,14 +580,26 @@ export function fiedlerLocalityOrder(
   const spectralEdges: SpectralEdge[] = edges.map((edge, index) => ({
     id: `fiedler-${index}`, source: edge.source, target: edge.target, directed: false, attestation: 'attested',
   }));
-  let solution: ReturnType<typeof solveDenseSymmetricEigen>;
+  let eigen: FiedlerEigenSolve;
   try {
-    solution = solveDenseSymmetricEigen(denseLaplacian(buildSpectralGraph({ nodeIds: sortedMembers.map((member) => member.id), edges: spectralEdges })));
+    const graph = buildSpectralGraph({ nodeIds: sortedMembers.map((member) => member.id), edges: spectralEdges });
+    const solved = solveFiedlerPair(graph, options);
+    if ('nonconverged' in solved) {
+      // The bounded Lanczos route could not converge within its budget: the G5.1 BFS fallback
+      // orders the residual exactly as specified, and the witness says so (no eigenvalues,
+      // no tie flag, connected, Lanczos backend).
+      const { order } = localityBfsOrder(sortedMembers, adjacency);
+      return {
+        order,
+        witness: { ...emptyWitness, method: 'bfs-fallback', nodeCount, componentCount: 1, sweeps: solved.restartsUsed },
+      };
+    }
+    eigen = solved;
   } catch (error) {
     throw new Error(`fractal-assignment: Fiedler backend refused n=${nodeCount}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const lambda2 = solution.eigenvalues[1]!;
-  const lambda3 = nodeCount >= 3 ? solution.eigenvalues[2]! : Number.POSITIVE_INFINITY;
+  const lambda2 = eigen.lambda2;
+  const lambda3 = eigen.lambda3;
   const eigenGap = lambda3 - lambda2;
   if (Number.isFinite(lambda3) && eigenGap <= FIEDLER_TIE_TOLERANCE) {
     const { order, componentCount } = localityBfsOrder(sortedMembers, adjacency);
@@ -493,13 +607,13 @@ export function fiedlerLocalityOrder(
       order,
       witness: {
         ...emptyWitness, method: 'bfs-fallback', nodeCount, componentCount, lambda2, lambda3, eigenGap,
-        tiedFiedlerValue: true, sweeps: solution.sweeps, maxAbsResidual: solution.maxAbsResidual,
-        orthogonalityDefect: solution.orthogonalityDefect,
+        tiedFiedlerValue: true, sweeps: eigen.sweeps, maxAbsResidual: eigen.maxAbsResidual,
+        orthogonalityDefect: eigen.orthogonalityDefect,
       },
     };
   }
   const graphIds = sortedMembers.map((member) => member.id);
-  const column = Float64Array.from(solution.eigenvectors.subarray(nodeCount, 2 * nodeCount));
+  const column = eigen.column;
   const pivot = largestEntryIndex(column, FIEDLER_TIE_TOLERANCE);
   const pivotNodeId = graphIds[pivot]!;
   const sign = column[pivot]! < 0 ? -1 : 1;
@@ -512,8 +626,8 @@ export function fiedlerLocalityOrder(
     order,
     witness: {
       ...emptyWitness, method: 'fiedler', nodeCount, componentCount: 1, lambda2, lambda3, eigenGap,
-      pivotNodeId, sweeps: solution.sweeps, maxAbsResidual: solution.maxAbsResidual,
-      orthogonalityDefect: solution.orthogonalityDefect,
+      pivotNodeId, sweeps: eigen.sweeps, maxAbsResidual: eigen.maxAbsResidual,
+      orthogonalityDefect: eigen.orthogonalityDefect,
     },
   };
 }

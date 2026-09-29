@@ -23,6 +23,10 @@ import {
 import { invertExternalPoint } from '../../src/fractal/inverse-rays.ts';
 import { cxAbs } from '../../src/fractal/botcher.ts';
 import { potentialForRank, potentialRangeForCount } from '../../src/fractal/parameters.ts';
+import { buildSpectralGraph } from '../../src/holographic/adjacency.ts';
+import { DENSE_BENCHMARK_OPT_IN, DENSE_SYMMETRIC_SOLVER_VERSION, denseLaplacian, solveDenseSymmetricEigen } from '../../src/holographic/dense.ts';
+import { LANCZOS_SOLVER_VERSION } from '../../src/holographic/lanczos.ts';
+import { largestEntryIndex } from '../../src/holographic/linear-algebra.ts';
 
 /** Recorded fixture constants. */
 const RECORD_C = -0.04976470588235294;
@@ -270,7 +274,10 @@ test('all-leaf Fiedler witness matches the record eigenvalues and pivot', () => 
   assert.ok(witness.eigenGap! > FIEDLER_TIE_TOLERANCE);
   assert.ok(witness.maxAbsResidual! <= 1e-10);
   assert.ok(witness.orthogonalityDefect! <= 1e-9);
-  assert.equal(witness.solverVersion, 'jacobi-cyclic-v1');
+  // 697 residual nodes exceed the 172-node dense ceiling: the bounded Lanczos backend carries
+  // the same record witness, with its restart count in place of the Jacobi sweep count.
+  assert.equal(witness.solverVersion, LANCZOS_SOLVER_VERSION);
+  assert.ok(witness.sweeps! >= 0 && witness.sweeps! <= 8, `restarts ${witness.sweeps}`);
 });
 
 test('all-leaf locality, retention and radial spread meet the G5 gates', () => {
@@ -607,6 +614,82 @@ test('Fiedler order known answers: path spectrum, pivot and fallbacks', () => {
   assert.equal(fallback.order[0], 'b1');
   assert.equal(fallback.order[1], 'b2');
   assert.ok(fallback.order.indexOf('a2') < fallback.order.indexOf('a1'));
+});
+
+test('Fiedler route follows the dense cap: 172 dense, 173 and above Lanczos', () => {
+  const pathOf = (count: number) => {
+    const members = Array.from({ length: count }, (unused, i) => ({ id: `q${String(i).padStart(3, '0')}`, importance: i }));
+    const edges = Array.from({ length: count - 1 }, (unused, i) => ({ source: `q${String(i).padStart(3, '0')}`, target: `q${String(i + 1).padStart(3, '0')}` }));
+    return { members, edges };
+  };
+  const atCeilingParts = pathOf(172);
+  const atCeiling = fiedlerLocalityOrder(atCeilingParts.members, atCeilingParts.edges);
+  assert.equal(atCeiling.witness.method, 'fiedler');
+  assert.equal(atCeiling.witness.solverVersion, DENSE_SYMMETRIC_SOLVER_VERSION);
+  assert.ok(Math.abs(atCeiling.witness.lambda2! - (2 - 2 * Math.cos(Math.PI / 172))) <= 1e-9);
+  assert.ok(Math.abs(atCeiling.witness.lambda3! - (2 - 2 * Math.cos((2 * Math.PI) / 172))) <= 1e-9);
+  assert.ok(atCeiling.witness.maxAbsResidual! <= 1e-10);
+  assert.ok(atCeiling.witness.orthogonalityDefect! <= 1e-9);
+  const aboveCeilingParts = pathOf(173);
+  const aboveCeiling = fiedlerLocalityOrder(aboveCeilingParts.members, aboveCeilingParts.edges);
+  assert.equal(aboveCeiling.witness.method, 'fiedler');
+  assert.equal(aboveCeiling.witness.solverVersion, LANCZOS_SOLVER_VERSION);
+  assert.ok(Math.abs(aboveCeiling.witness.lambda2! - (2 - 2 * Math.cos(Math.PI / 173))) <= 1e-9, `lambda2 ${aboveCeiling.witness.lambda2}`);
+  assert.ok(Math.abs(aboveCeiling.witness.lambda3! - (2 - 2 * Math.cos((2 * Math.PI) / 173))) <= 1e-9, `lambda3 ${aboveCeiling.witness.lambda3}`);
+  assert.ok(aboveCeiling.witness.maxAbsResidual! <= 1e-10, `residual ${aboveCeiling.witness.maxAbsResidual}`);
+  assert.ok(aboveCeiling.witness.orthogonalityDefect! <= 1e-9, `defect ${aboveCeiling.witness.orthogonalityDefect}`);
+  // Same G5.1 sign rule and monotone path order on both sides of the ceiling.
+  const order = aboveCeiling.order;
+  const forward = order.every((id, index) => id === `q${String(index).padStart(3, '0')}`);
+  const backward = order.every((id, index) => id === `q${String(order.length - 1 - index).padStart(3, '0')}`);
+  assert.ok(forward || backward, 'Lanczos Fiedler order is a monotone path order');
+});
+
+test('above the ceiling the Lanczos Fiedler route agrees with the opt-in dense reference', () => {
+  // 200-node path: the production route is Lanczos; the dense reference is solved explicitly
+  // through the named benchmark opt-in (the only sanctioned dense route above 172).
+  const count = 200;
+  const members = Array.from({ length: count }, (unused, i) => ({ id: `q${String(i).padStart(3, '0')}`, importance: i }));
+  const edges = Array.from({ length: count - 1 }, (unused, i) => ({ source: `q${String(i).padStart(3, '0')}`, target: `q${String(i + 1).padStart(3, '0')}` }));
+  const { order, witness } = fiedlerLocalityOrder(members, edges);
+  assert.equal(witness.solverVersion, LANCZOS_SOLVER_VERSION);
+  const graph = buildSpectralGraph({
+    nodeIds: members.map((member) => member.id),
+    edges: edges.map((edge, index) => ({ id: `ref-${index}`, source: edge.source, target: edge.target, directed: false, attestation: 'attested' as const })),
+  });
+  const reference = solveDenseSymmetricEigen(denseLaplacian(graph), { maxN: count, benchmarkOptIn: DENSE_BENCHMARK_OPT_IN });
+  assert.ok(Math.abs(witness.lambda2! - reference.eigenvalues[1]!) <= 1e-9, `lambda2 ${witness.lambda2} vs ${reference.eigenvalues[1]}`);
+  assert.ok(Math.abs(witness.lambda3! - reference.eigenvalues[2]!) <= 1e-9, `lambda3 ${witness.lambda3} vs ${reference.eigenvalues[2]}`);
+  // Same pivot and the identical G5.1 order derived from the reference eigenvector.
+  const column = Float64Array.from(reference.eigenvectors.subarray(count, 2 * count));
+  const pivot = largestEntryIndex(column, FIEDLER_TIE_TOLERANCE);
+  const sign = column[pivot]! < 0 ? -1 : 1;
+  assert.equal(witness.pivotNodeId, members[pivot]!.id);
+  const referenceOrder = members
+    .map((member, index) => ({ id: member.id, key: Math.round(column[index]! * sign * 1e12) }))
+    .sort((a, b) => a.key - b.key || codepointCompare(a.id, b.id))
+    .map((entry) => entry.id);
+  assert.deepEqual([...order], referenceOrder);
+});
+
+test('a Lanczos nonconvergence uses the G5.1 BFS fallback and says so in the witness', () => {
+  const count = 200;
+  const members = Array.from({ length: count }, (unused, i) => ({ id: `q${String(i).padStart(3, '0')}`, importance: i }));
+  const edges = Array.from({ length: count - 1 }, (unused, i) => ({ source: `q${String(i).padStart(3, '0')}`, target: `q${String(i + 1).padStart(3, '0')}` }));
+  const fallback = fiedlerLocalityOrder(members, edges, { lanczosMaxRestarts: 0 });
+  assert.equal(fallback.witness.method, 'bfs-fallback');
+  // Connected, untied, Lanczos backend, no eigenvalues: the witness names the nonconvergence.
+  assert.equal(fallback.witness.componentCount, 1);
+  assert.equal(fallback.witness.tiedFiedlerValue, false);
+  assert.equal(fallback.witness.solverVersion, LANCZOS_SOLVER_VERSION);
+  assert.equal(fallback.witness.lambda2, null);
+  assert.equal(fallback.witness.lambda3, null);
+  assert.equal(fallback.witness.maxAbsResidual, null);
+  assert.equal(fallback.witness.sweeps, 0);
+  // G5.1 BFS exactly: restart at the highest importance (the path end), neighbors by ID.
+  const backward = fallback.order.every((id, index) => id === `q${String(count - 1 - index).padStart(3, '0')}`);
+  const forward = fallback.order.every((id, index) => id === `q${String(index).padStart(3, '0')}`);
+  assert.ok(forward || backward, 'fallback order is the highest-importance BFS path order');
 });
 
 test('helpers: circular edge median with wraparound and radial spread quartiles', () => {

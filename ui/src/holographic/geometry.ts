@@ -3,8 +3,10 @@
  *
  * Domain node IDs are sorted by codepoint and connected components are ordered by smallest
  * ID (both fixed by holographic/adjacency.ts). The symmetric Laplacian is solved with the
- * dense reference solver (small graphs, exact ||L||_2 from lambda_max) or the bounded
- * restarted Lanczos solver (Gershgorin norm estimate). Eigenvalues ascend and are clustered:
+ * dense reference solver (default up to DENSE_DEFAULT_MAX_N = 172 nodes, exact ||L||_2 from
+ * lambda_max) or the bounded restarted Lanczos solver (default above 172, Gershgorin norm
+ * estimate); an explicit dense request above the dense ceiling returns the typed
+ * solver-failure outcome with the dense refusal message instead of throwing. Eigenvalues ascend and are clustered:
  * adjacent values within tau = 1e-8 max(1, ||L||_2, |lambda_i|, |lambda_{i+1}|) share a
  * cluster, a gap to either neighbouring cluster must exceed 4 tau, and the whole
  * zero-eigenvalue cluster is skipped. Whole nonzero clusters are included in increasing
@@ -26,7 +28,7 @@
 import { digestPayload } from '../engine/digest.ts';
 import type { Dimension, Digest, Explanation, NodeId, Vec2, Vec3 } from '../projection/contract-types.ts';
 import type { SpectralGraph } from './adjacency.ts';
-import { DENSE_SYMMETRIC_SOLVER_VERSION, denseLaplacian, solveDenseSymmetricEigen } from './dense.ts';
+import { DENSE_DEFAULT_MAX_N, DENSE_SYMMETRIC_SOLVER_VERSION, denseLaplacian, solveDenseSymmetricEigen, type DenseEigenSolution } from './dense.ts';
 import { LANCZOS_SOLVER_VERSION, solveSpectrum, type LanczosOptions } from './lanczos.ts';
 import { largestEntryIndex, modifiedGramSchmidtTwice, norm2, orthogonalityDefect } from './linear-algebra.ts';
 
@@ -42,8 +44,9 @@ export const EIGENSPACE_RESIDUAL_TOLERANCE = 1e-8;
 export const GEOMETRY_SIGN_TIE_TOLERANCE = 1e-10;
 export const COORDINATE_QUANTIZATION = 1e-10;
 export const EIGENVALUE_DIGEST_QUANTIZATION = 1e-10;
-/** Graphs at or below this order use the dense reference backend by default. */
-export const GEOMETRY_DENSE_DEFAULT_MAX_N = 200;
+/** Graphs at or below this order use the dense reference backend by default. Derived from
+ * the dense solver's own ceiling (dense.ts size policy): the literal lives there only. */
+export const GEOMETRY_DENSE_DEFAULT_MAX_N = DENSE_DEFAULT_MAX_N;
 
 export type SpectralBackend = 'dense' | 'lanczos';
 export type GeometryRefusalCode = 'ambiguous-eigenspace' | 'insufficient-rank' | 'solver-failure';
@@ -135,7 +138,19 @@ type SolveAttempt =
 
 function solveOnce(graph: SpectralGraph, backend: SpectralBackend, lanczos: LanczosOptions | undefined): SolveAttempt {
   if (backend === 'dense') {
-    const solution = solveDenseSymmetricEigen(denseLaplacian(graph));
+    // A dense refusal above DENSE_DEFAULT_MAX_N (and any other dense refusal) is a typed
+    // solver failure, never an escaping throw; no benchmark opt-in exists in production code.
+    let solution: DenseEigenSolution;
+    try {
+      solution = solveDenseSymmetricEigen(denseLaplacian(graph));
+    } catch (error) {
+      return {
+        kind: 'solver-failure',
+        message: `the dense backend refused: ${error instanceof Error ? error.message : String(error)}`,
+        solverVersion: DENSE_SYMMETRIC_SOLVER_VERSION,
+        relativeResidualMax: null,
+      };
+    }
     const lambdaMax = solution.n > 0 ? solution.eigenvalues[solution.n - 1]! : 0;
     return {
       kind: 'solved',

@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { denseLaplacian, solveDenseSymmetricEigen, type DenseSymmetricMatrix } from '../../src/holographic/dense.ts';
+import {
+  DENSE_BENCHMARK_MAX_N,
+  DENSE_BENCHMARK_OPT_IN,
+  DENSE_DEFAULT_MAX_N,
+  denseLaplacian,
+  solveDenseSymmetricEigen,
+  type DenseSymmetricMatrix,
+} from '../../src/holographic/dense.ts';
 import { buildSpectralGraph } from '../../src/holographic/adjacency.ts';
 import { cycleGraph, completeGraph, noiseVector, pathGraph, ringLatticeGraph, starGraph } from './fixtures.ts';
 
@@ -137,4 +144,59 @@ test('oversize, nonfinite and nonconverging inputs are refused', () => {
   assert.throws(() => solveDenseSymmetricEigen(nonfinite), /nonfinite matrix entries/);
   assert.throws(() => solveDenseSymmetricEigen(matrix, { sweepLimit: 0 }), /nonconvergence after 0 sweeps/);
   assert.throws(() => solveDenseSymmetricEigen({ n: 2, values: new Float64Array(3) }), /does not match n=2/);
+});
+
+test('the dense fallback ceiling is 172: a plain call refuses anything larger', () => {
+  assert.equal(DENSE_DEFAULT_MAX_N, 172);
+  // One node over the ceiling already refuses with the default options.
+  const ceiling = denseLaplacian(ringLatticeGraph(173, 'dense-ceiling', 2));
+  assert.throws(() => solveDenseSymmetricEigen(ceiling), /refuses n=173 > maxN=172/);
+  assert.throws(() => solveDenseSymmetricEigen(ceiling), /use the Lanczos solver/);
+  // At the ceiling itself the plain call still solves (the benchmarked 172-node fallback).
+  const at172 = solveDenseSymmetricEigen(denseLaplacian(ringLatticeGraph(172, 'dense-ceiling-172', 2)));
+  assert.equal(at172.n, 172);
+  assert.ok(at172.maxAbsResidual <= 1e-10);
+});
+
+test('the 850-node disclosure cap is refused without the named benchmark opt-in', () => {
+  const disclosure = denseLaplacian(ringLatticeGraph(850, 'dense-disclosure', 3));
+  // Plain call: the prohibited silent dense 850 route must refuse.
+  assert.throws(() => solveDenseSymmetricEigen(disclosure), /refuses n=850 > maxN=172/);
+  assert.throws(() => solveDenseSymmetricEigen(disclosure), /use the Lanczos solver/);
+  // An explicit larger maxN alone does not help: the named opt-in is required.
+  assert.throws(
+    () => solveDenseSymmetricEigen(disclosure, { maxN: 850 }),
+    /exceeds the dense fallback ceiling 172; the dense route above 172 is reserved/,
+  );
+  assert.throws(
+    () => solveDenseSymmetricEigen(disclosure, { maxN: 850 }),
+    /requires benchmarkOptIn=dense-benchmark-reference-v1/,
+  );
+  // A mistyped opt-in token is not the named opt-in.
+  assert.throws(
+    () => solveDenseSymmetricEigen(disclosure, { maxN: 850, benchmarkOptIn: 'dense-benchmark-reference-v0' as typeof DENSE_BENCHMARK_OPT_IN }),
+    /requires benchmarkOptIn=dense-benchmark-reference-v1/,
+  );
+  // Even with the opt-in the benchmark ceiling binds.
+  assert.throws(
+    () => solveDenseSymmetricEigen(disclosure, { maxN: DENSE_BENCHMARK_MAX_N + 1, benchmarkOptIn: DENSE_BENCHMARK_OPT_IN }),
+    /exceeds the benchmark ceiling 1024 even with the opt-in/,
+  );
+});
+
+test('the named benchmark opt-in unlocks the reference route above the ceiling', () => {
+  // The opt-in is the separately benchmarked reference route: an explicit maxN above 172
+  // solves only with the exact named token. Kept small here so the default gate stays fast;
+  // the real 172/850 benchmark measurements live in lanczos.test.ts behind
+  // RUN_SPECTRAL_BENCHMARK. A wrong sweep limit still refuses after the opt-in.
+  const graph = ringLatticeGraph(200, 'dense-opt-in', 2);
+  const matrix = denseLaplacian(graph);
+  const solution = solveDenseSymmetricEigen(matrix, { maxN: 200, benchmarkOptIn: DENSE_BENCHMARK_OPT_IN });
+  assert.equal(solution.n, 200);
+  assert.ok(solution.maxAbsResidual <= 1e-10);
+  assert.ok(solution.orthogonalityDefect <= 1e-12);
+  assert.throws(
+    () => solveDenseSymmetricEigen(matrix, { maxN: 200, sweepLimit: 0, benchmarkOptIn: DENSE_BENCHMARK_OPT_IN }),
+    /nonconvergence after 0 sweeps/,
+  );
 });

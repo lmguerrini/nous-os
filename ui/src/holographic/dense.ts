@@ -1,13 +1,27 @@
 /** D-073 tranche F, row F3 — dense symmetric eigensolver, the reference for small graphs. Cyclic Jacobi with plane rotations: simple,
  * numerically very accurate and fully deterministic; cost O(n^3) per sweep, reported honestly.
- * The solver refuses oversize or nonconverging inputs instead of silently degrading. */
+ * The solver refuses oversize or nonconverging inputs instead of silently degrading.
+ *
+ * Size policy:
+ * the dense route is a separately benchmarked fallback for graphs of at most
+ * DENSE_DEFAULT_MAX_N = 172 nodes, never a silent substitute at the 850-node disclosure cap.
+ * A plain call therefore refuses n > 172. Solving a larger n is reserved to the reference
+ * benchmarks and requires BOTH an explicit maxN and the named opt-in DENSE_BENCHMARK_OPT_IN
+ * (bounded by DENSE_BENCHMARK_MAX_N); production callers above the ceiling must use the
+ * bounded Lanczos solver instead. */
 
 import type { SpectralGraph } from './adjacency.ts';
 import { createMatrix, dot, frobeniusNorm, identityMatrix, largestEntryIndex, norm2 } from './linear-algebra.ts';
 
 export const DENSE_SYMMETRIC_SOLVER_VERSION = 'jacobi-cyclic-v1';
-export const DENSE_DEFAULT_MAX_N = 1024;
+/** The dense fallback ceiling: a plain call refuses any larger order. */
+export const DENSE_DEFAULT_MAX_N = 172;
 export const DENSE_DEFAULT_SWEEP_LIMIT = 64;
+/** The largest order the named benchmark opt-in may authorize. */
+export const DENSE_BENCHMARK_MAX_N = 1024;
+/** Named opt-in token: the only way to solve n > DENSE_DEFAULT_MAX_N. Reserved for the
+ * separately benchmarked reference tests; production callers must use Lanczos above 172. */
+export const DENSE_BENCHMARK_OPT_IN = 'dense-benchmark-reference-v1' as const;
 
 /** Symmetric n x n matrix, column-major, both triangles stored. */
 export interface DenseSymmetricMatrix {
@@ -18,6 +32,9 @@ export interface DenseSymmetricMatrix {
 export interface DenseEigenOptions {
   readonly maxN?: number;
   readonly sweepLimit?: number;
+  /** Must equal DENSE_BENCHMARK_OPT_IN to authorize any maxN above DENSE_DEFAULT_MAX_N.
+   * Named so a silent large dense route cannot be constructed by accident. */
+  readonly benchmarkOptIn?: typeof DENSE_BENCHMARK_OPT_IN;
 }
 
 export interface DenseEigenSolution {
@@ -68,7 +85,22 @@ export function solveDenseSymmetricEigen(matrix: DenseSymmetricMatrix, options: 
   const maxN = options.maxN ?? DENSE_DEFAULT_MAX_N;
   const sweepLimit = options.sweepLimit ?? DENSE_DEFAULT_SWEEP_LIMIT;
   if (!Number.isInteger(n) || n < 0) fail(`invalid order ${n}`);
-  if (n > maxN) fail(`refuses n=${n} > maxN=${maxN}; the dense solver is the reference for small graphs`);
+  if (maxN > DENSE_DEFAULT_MAX_N && options.benchmarkOptIn !== DENSE_BENCHMARK_OPT_IN) {
+    fail(
+      `maxN=${maxN} exceeds the dense fallback ceiling ${DENSE_DEFAULT_MAX_N}; the dense route above ${DENSE_DEFAULT_MAX_N} is ` +
+        `reserved to the separately benchmarked reference tests and requires benchmarkOptIn=${DENSE_BENCHMARK_OPT_IN}; ` +
+        'production callers must use the Lanczos solver',
+    );
+  }
+  if (maxN > DENSE_BENCHMARK_MAX_N) {
+    fail(`maxN=${maxN} exceeds the benchmark ceiling ${DENSE_BENCHMARK_MAX_N} even with the opt-in`);
+  }
+  if (n > maxN) {
+    fail(
+      `refuses n=${n} > maxN=${maxN}; the dense solver is the benchmarked fallback for graphs of at most ` +
+        `${DENSE_DEFAULT_MAX_N} nodes (use the Lanczos solver above that ceiling)`,
+    );
+  }
   if (matrix.values.length !== n * n) fail(`values length ${matrix.values.length} does not match n=${n}`);
   for (const value of matrix.values) {
     if (!Number.isFinite(value)) fail('refuses nonfinite matrix entries');

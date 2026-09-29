@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildSpectralGraph } from '../../src/holographic/adjacency.ts';
-import { denseLaplacian, solveDenseSymmetricEigen } from '../../src/holographic/dense.ts';
+import { DENSE_BENCHMARK_OPT_IN, denseLaplacian, solveDenseSymmetricEigen } from '../../src/holographic/dense.ts';
 import { lanczosRestartSize, solveSpectrum, type LanczosConverged, type LanczosOutcome, type LanczosRefusal } from '../../src/holographic/lanczos.ts';
 import { largestEntryIndex } from '../../src/holographic/linear-algebra.ts';
 import { cycleGraph, combineGraphs, completeGraph, pathGraph, ringLatticeGraph, starGraph, weakBridgeGraph } from './fixtures.ts';
@@ -283,7 +283,9 @@ function projectorAgreement(result: LanczosConverged, dense: ReturnType<typeof s
 /** Set RUN_SPECTRAL_BENCHMARK=1 to measure the solver at the D-065 slice scale (172) and the
  * disclosure cap (850), including the dense reference cost. The 850-node fixture is a sparse
  * degree-8 ring (D-065-like attestation density), the regime that motivated the measured
- * r = max(2k + 8, 96) default. Not part of the default gate. */
+ * r = max(2k + 8, 96) default. Not part of the default gate. The dense reference above the
+ * 172-node fallback ceiling is the separately benchmarked route, so it passes the explicit
+ * maxN and the named opt-in DENSE_BENCHMARK_OPT_IN. */
 test('benchmark: 172- and 850-node solver measurements', { skip: !process.env.RUN_SPECTRAL_BENCHMARK }, () => {
   for (const [label, nodeCount, chords] of [['172', 172, 3], ['850', 850, 3]] as const) {
     const graph = ringLatticeGraph(nodeCount, `bench-${label}`, chords);
@@ -293,7 +295,10 @@ test('benchmark: 172- and 850-node solver measurements', { skip: !process.env.RU
     assert.ok(outcome.relativeResidualMax <= 1e-8);
     assert.ok(outcome.orthogonalityDefect <= 1e-8);
     assert.ok(outcome.restartsUsed <= 8);
-    const dense = solveDenseSymmetricEigen(denseLaplacian(graph));
+    const dense = solveDenseSymmetricEigen(denseLaplacian(graph), {
+      maxN: nodeCount,
+      benchmarkOptIn: DENSE_BENCHMARK_OPT_IN,
+    });
     const scale = Math.max(1, dense.eigenvalues[dense.n - 1]!);
     let worstEigenvalueGap = 0;
     for (let index = 0; index < outcome.eigenvalues.length; index += 1) {

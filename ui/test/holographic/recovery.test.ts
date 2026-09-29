@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { denseLaplacian, solveDenseSymmetricEigen } from '../../src/holographic/dense.ts';
+import { DENSE_BENCHMARK_OPT_IN, DENSE_DEFAULT_MAX_N, denseLaplacian, solveDenseSymmetricEigen } from '../../src/holographic/dense.ts';
 import { recoverBandlimitedSignal, type RecoveryOutcome } from '../../src/holographic/recovery.ts';
 import { eigenbasisFromDense, syntheticSignal, type Eigenbasis } from '../../src/holographic/signals.ts';
 import type { SpectralGraph } from '../../src/holographic/adjacency.ts';
@@ -129,6 +129,28 @@ test('invalid inputs refuse loudly', () => {
   assert.throws(() => recoverBandlimitedSignal(graph, basis, x, [3], { bandlimit: 2 }));
   assert.throws(() => recoverBandlimitedSignal(graph, basis, x, [0, 2], { bandlimit: 2, ridge: -1 }));
   assert.throws(() => recoverBandlimitedSignal(graph, basis, Float64Array.from([1, Number.NaN, -1]), [0, 2], { bandlimit: 2 }));
+});
+
+test('a bandlimit above the dense Gram ceiling is refused in argument validation', () => {
+  // The 173-node complete basis is legitimate, but its k = 173 Gram matrix exceeds the dense
+  // reference eigensolver's ceiling, so production recovery must refuse before diagonalising.
+  const graph = pathGraph(173);
+  const basis = eigenbasisFromDense(
+    solveDenseSymmetricEigen(denseLaplacian(graph), { maxN: 173, benchmarkOptIn: DENSE_BENCHMARK_OPT_IN }),
+  );
+  assert.ok(basis.count === 173 && basis.complete);
+  const x = noiseVector(graph.size, 'recovery-gram-ceiling');
+  assert.throws(
+    () => recoverBandlimitedSignal(graph, basis, x, [0, 1, 2], { bandlimit: 173 }),
+    /bandlimit 173 exceeds the dense Gram ceiling 172/,
+  );
+  // The ceiling itself remains admissible: k = 172 over a full sample solves its Gram system
+  // (the path's clustered high modes make it a genuine least-squares solve, not an exact claim).
+  const allNodes = Array.from({ length: graph.size }, (_unused, index) => index);
+  const atCeiling = recoverBandlimitedSignal(graph, basis, x, allNodes, { bandlimit: DENSE_DEFAULT_MAX_N });
+  assert.ok(atCeiling.kind === 'recovered');
+  assert.equal(atCeiling.rank, DENSE_DEFAULT_MAX_N);
+  assert.equal(atCeiling.claim, 'least-squares-estimate');
 });
 
 test('the held-out metrics match their definitions on the P3 fixture', () => {
