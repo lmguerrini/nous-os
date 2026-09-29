@@ -9,8 +9,10 @@ import type { VisualGraph } from "#engine/contract.ts";
 import { MOTION_GRAMMARS, STILL } from "#engine/motion-grammar.ts";
 import { ATOMIC, HOLOGRAPHIC, SCALE_TOPOLOGIES } from "#engine/scale-topology.ts";
 import {
+  ARRANGEMENTS,
   VISUAL_STATE_FIELD_REGISTER,
   VISUAL_STATE_VALIDATION_RULES,
+  arrangementForMorphology,
   assertVisualState,
   assertVisualStateFieldRegister,
   createVisualState,
@@ -19,6 +21,7 @@ import {
   serializeVisualState,
 } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateValidationRule } from "#engine/visual-state.ts";
+import { defaultNaturalArrangement, resolveNaturalArrangement } from "../../src/projection/natural-bridge.ts";
 
 /** This reads one fixture graph and does not manufacture view-state ids. */
 function graph(): VisualGraph {
@@ -90,7 +93,7 @@ test("VisualState has a pinned view-only register and round-trips exactly", () =
   const original = createVisualState(visualGraph, state(visualGraph));
   assert.deepEqual(VISUAL_STATE_FIELD_REGISTER, {
     state: ["selectedId", "focusedId", "camera", "cameraKind", "morphology", "organization", "palette", "temperature", "theme", "lodBand", "reducedMotion"],
-    optionalState: ["hueAnchorDegrees", "scaleTopology", "motionGrammar"],
+    optionalState: ["hueAnchorDegrees", "scaleTopology", "motionGrammar", "arrangement"],
     camera: ["x", "y", "angle", "ratio", "bounds"],
     bounds: ["x", "y"],
   });
@@ -99,24 +102,76 @@ test("VisualState has a pinned view-only register and round-trips exactly", () =
   assert.equal("hueAnchorDegrees" in original, false, "a state built without hueAnchorDegrees must not gain the key");
   assert.equal("scaleTopology" in original, false, "a state built without scaleTopology must not gain the key");
   assert.equal("motionGrammar" in original, false, "a state built without motionGrammar must not gain the key");
+  assert.equal("arrangement" in original, false, "a state built without arrangement must not gain the key");
   assert.equal("graph" in original, false);
   assert.equal("semantic" in original, false);
 });
 
-test("saved VisualState fixtures migrate legacy flat to Natural and write only Natural", () => {
+test("saved VisualState fixtures migrate legacy flat to Natural with an explicit arrangement and write only Natural", () => {
   const visualGraph = graph();
   const base = state(visualGraph);
   const legacyFixture = JSON.stringify({ ...base, organization: "flat" });
   const restoredLegacy = deserializeSavedVisualState(visualGraph, legacyFixture);
   assert.equal(restoredLegacy.organization, "natural");
-  assert.equal(JSON.parse(serializeVisualState(restoredLegacy)).organization, "natural");
+  // The fixture's legacy morphology (neural) selects the arrangement exactly once, at read time.
+  assert.equal(restoredLegacy.arrangement, "network");
+  assert.equal("arrangement" in restoredLegacy, true, "the migrated state carries the arrangement explicitly");
+  const legacyWire = JSON.parse(serializeVisualState(restoredLegacy));
+  assert.equal(legacyWire.organization, "natural");
+  assert.equal(legacyWire.arrangement, "network");
   assert.equal(serializeVisualState(restoredLegacy), serializeVisualState(deserializeSavedVisualState(visualGraph, legacyFixture)));
+  // Old camera coordinates ride through the migration untouched.
+  assert.deepEqual(restoredLegacy.camera, base.camera);
+  // Double-run determinism: reading and writing again is byte-identical.
+  assert.equal(serializeVisualState(restoredLegacy), serializeVisualState(deserializeSavedVisualState(visualGraph, serializeVisualState(restoredLegacy))));
 
   const naturalFixture = JSON.stringify({ ...base, organization: "natural" });
   const restoredNatural = deserializeSavedVisualState(visualGraph, naturalFixture);
   assert.equal(restoredNatural.organization, "natural");
-  assert.equal(serializeVisualState(restoredNatural), naturalFixture);
+  assert.equal(restoredNatural.arrangement, "network", "an arrangement-less saved Natural state also resolves once from its morphology");
   assert.equal(JSON.parse(serializeVisualState(restoredNatural)).organization, "natural");
+  assert.equal(JSON.parse(serializeVisualState(restoredNatural)).arrangement, "network");
+
+  const explicitFixture = JSON.stringify({ ...base, organization: "natural", arrangement: "constellation" });
+  const restoredExplicit = deserializeSavedVisualState(visualGraph, explicitFixture);
+  assert.equal(restoredExplicit.arrangement, "constellation");
+  assert.equal(serializeVisualState(restoredExplicit), explicitFixture, "an explicit arrangement round-trips byte-identically");
+});
+
+test("a legacy morphology selects its arrangement once, and a later style switch cannot change it", () => {
+  const visualGraph = graph();
+  const base = state(visualGraph);
+  for (const [morphology, arrangement] of [["stellar", "constellation"], ["neural", "network"], ["mycelium", "mycelium"]] as const) {
+    const restored = deserializeSavedVisualState(visualGraph, JSON.stringify({ ...base, morphology, organization: "flat" }));
+    assert.equal(restored.arrangement, arrangement);
+  }
+  // Once resolved, the arrangement is explicit state: switching the morphology style keeps it.
+  const restored = deserializeSavedVisualState(visualGraph, JSON.stringify({ ...base, morphology: "neural", organization: "flat" }));
+  const restyled = createVisualState(visualGraph, { ...restored, morphology: "stellar" });
+  assert.equal(restyled.arrangement, "network");
+  assert.equal(JSON.parse(serializeVisualState(restyled)).arrangement, "network");
+});
+
+test("VisualState arrangement is the arrangement axis the Natural bridge resolves, never a second vocabulary", () => {
+  assert.deepEqual([...ARRANGEMENTS], ["constellation", "network", "mycelium"]);
+  for (const morphology of ["stellar", "neural", "mycelium"] as const) {
+    assert.equal(arrangementForMorphology(morphology), defaultNaturalArrangement(morphology));
+    assert.equal(arrangementForMorphology(morphology), resolveNaturalArrangement(morphology));
+  }
+  const carried = { ...state(graph()), organization: "flat" as const, arrangement: "mycelium" as const };
+  const original = createVisualState(graph(), carried);
+  assert.equal(original.arrangement, "mycelium");
+  assert.deepEqual(Object.keys(original).sort(), [...VISUAL_STATE_FIELD_REGISTER.state, "arrangement"].sort());
+  const restored = deserializeVisualState(graph(), serializeVisualState(original));
+  // The wire form is canonical: a live Flat producer's state reads back as Natural, arrangement intact.
+  assert.equal(restored.organization, "natural");
+  assert.equal(restored.arrangement, "mycelium");
+  assert.deepEqual({ ...restored, organization: "flat" }, original);
+  // An explicit arrangement wins over the morphology's creation-time default.
+  const explicitOverStyle = serializeVisualState({ ...state(graph()), organization: "flat", morphology: "stellar", arrangement: "mycelium" });
+  assert.equal(explicitOverStyle.includes('"arrangement":"mycelium"'), true);
+  // A live Flat producer that never resolved an arrangement gets the morphology's creation-time default on the wire.
+  assert.equal(JSON.parse(serializeVisualState({ ...state(graph()), organization: "flat", morphology: "mycelium" })).arrangement, "mycelium");
 });
 
 test("VisualState carries scaleTopology only when a producer supplies it, and round-trips it exactly", () => {
@@ -247,6 +302,8 @@ test("VisualState refuses every validator-owned rule through every validating as
     { name: "VisualState hue anchor out of range", value: { ...valid, hueAnchorDegrees: 360 }, rule: VISUAL_STATE_VALIDATION_RULES.hueAnchorRange, message: /VisualState\.hueAnchorDegrees must be an integer degree in \[0, 360\)/ },
     { name: "VisualState scaleTopology vocabulary", value: { ...valid, scaleTopology: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.scaleTopologyVocabulary, message: /VisualState\.scaleTopology is outside its closed vocabulary/ },
     { name: "VisualState motionGrammar vocabulary", value: { ...valid, motionGrammar: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.motionGrammarVocabulary, message: /VisualState\.motionGrammar is outside its closed vocabulary/ },
+    { name: "VisualState arrangement vocabulary", value: { ...valid, arrangement: "outside" }, rule: VISUAL_STATE_VALIDATION_RULES.arrangementVocabulary, message: /VisualState\.arrangement is outside its closed vocabulary/ },
+    { name: "VisualState arrangement on Indra", value: { ...valid, arrangement: "constellation" }, rule: VISUAL_STATE_VALIDATION_RULES.arrangementRequiresNatural, message: /VisualState\.arrangement is only valid for the Natural view/ },
   ];
   const directConstruction: ConstructionRoute = { name: "direct construction", refuse: (input, value) => { createVisualState(input, value); } };
   const deserialisation: ConstructionRoute = { name: "deserialisation", refuse: (input, value) => { deserializeVisualState(input, JSON.stringify(value)); } };

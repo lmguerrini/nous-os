@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ALL_TIME_POSITION,
+  BOOKMARK_ARRANGEMENTS,
   BOOKMARK_FIELD_REGISTER,
   BOOKMARK_VALIDATION_RULES,
   BOTH_VISIBILITY,
   GRAPH_VISIBILITY,
+  LEGACY_VIEW_ORGANIZATION,
+  NATURAL_VIEW_ORGANIZATION,
   TIMELINE_VISIBILITY,
   VISIBILITY_MODES,
   assertBookmark,
@@ -72,8 +75,48 @@ test("Bookmark visibility covers exactly timeline, graph, and both", () => {
 test("Bookmark field register is pinned", () => {
   assert.deepEqual(BOOKMARK_FIELD_REGISTER, {
     state: ["temporalPosition", "governedTargetId", "viewState", "title", "note", "visibility"],
+    optionalState: ["view"],
+    view: ["organization"],
+    optionalView: ["arrangement"],
     camera: ["x", "y", "angle", "ratio"],
   });
+  assert.deepEqual([...BOOKMARK_ARRANGEMENTS], ["constellation", "network", "mycelium"]);
+  assert.equal(LEGACY_VIEW_ORGANIZATION, "flat");
+  assert.equal(NATURAL_VIEW_ORGANIZATION, "natural");
+});
+
+test("a Bookmark without a view stays exactly as it was, because the view identity is producer-optional", () => {
+  const original = loadBookmark(nonDefaultBookmark());
+  assert.equal("view" in original, false);
+  assert.deepEqual(deserializeBookmark(serializeBookmark(original)), original);
+});
+
+test("a Bookmark view identity carries Natural plus an explicit arrangement, or Indra with none", () => {
+  const natural = loadBookmark({ ...nonDefaultBookmark(), view: { organization: "natural", arrangement: "network" } });
+  assert.deepEqual(natural.view, { organization: "natural", arrangement: "network" });
+  assert.deepEqual(deserializeBookmark(serializeBookmark(natural)), natural);
+
+  const indra = loadBookmark({ ...nonDefaultBookmark(), view: { organization: "indra" } });
+  assert.deepEqual(indra.view, { organization: "indra" });
+  assert.deepEqual(deserializeBookmark(serializeBookmark(indra)), indra);
+
+  const arrangementless = loadBookmark({ ...nonDefaultBookmark(), view: { organization: "natural" } });
+  assert.deepEqual(arrangementless.view, { organization: "natural" });
+});
+
+test("a legacy flat Bookmark view migrates to Natural without inventing an arrangement or moving the camera", () => {
+  const legacy = { ...nonDefaultBookmark(), view: { organization: "flat" } };
+  const restored = deserializeBookmark(JSON.stringify(legacy));
+  assert.deepEqual(restored.view, { organization: "natural" }, "old Flat in, Natural out, and no arrangement invented for a record with no morphology");
+  assert.deepEqual(restored.viewState, legacy.viewState, "the bookmarked camera is preserved byte for byte");
+  assert.equal(serializeBookmark(restored).includes('"flat"'), false, "the wire never carries the legacy spelling");
+
+  const legacyWithArrangement = { ...nonDefaultBookmark(), view: { organization: "flat", arrangement: "mycelium" } };
+  const restoredExplicit = deserializeBookmark(JSON.stringify(legacyWithArrangement));
+  assert.deepEqual(restoredExplicit.view, { organization: "natural", arrangement: "mycelium" }, "an arrangement a legacy view already carried survives the migration");
+
+  // The live validator still refuses the legacy spelling: only the migration reader accepts it.
+  assert.throws(() => loadBookmark(legacy), /Bookmark\.view\.organization is outside its closed vocabulary \[closed-vocabulary\]/);
 });
 
 type RefusalCase = {
@@ -107,6 +150,10 @@ test("Bookmark refuses every validator-owned rule through every validating asser
     { name: "title blank", value: { ...valid, title: "   " }, rule: BOOKMARK_VALIDATION_RULES.titleRequired, message: /Bookmark\.title must be a non-empty string/ },
     { name: "note wrong type", value: { ...valid, note: 7 }, rule: BOOKMARK_VALIDATION_RULES.noteType, message: /Bookmark\.note must be a string/ },
     { name: "visibility vocabulary", value: { ...valid, visibility: "outside" }, rule: BOOKMARK_VALIDATION_RULES.closedVocabulary, message: /Bookmark\.visibility is outside its closed vocabulary/ },
+    { name: "view organization vocabulary", value: { ...valid, view: { organization: "orbifold" } }, rule: BOOKMARK_VALIDATION_RULES.closedVocabulary, message: /Bookmark\.view\.organization is outside its closed vocabulary/ },
+    { name: "view arrangement vocabulary", value: { ...valid, view: { organization: "natural", arrangement: "lattice" } }, rule: BOOKMARK_VALIDATION_RULES.closedVocabulary, message: /Bookmark\.view\.arrangement is outside its closed vocabulary/ },
+    { name: "view field extension", value: { ...valid, view: { organization: "natural", surprise: true } }, rule: BOOKMARK_VALIDATION_RULES.fieldRegister, message: /Bookmark\.view fields do not match the pinned register/ },
+    { name: "view arrangement on Indra", value: { ...valid, view: { organization: "indra", arrangement: "network" } }, rule: BOOKMARK_VALIDATION_RULES.viewArrangementScope, message: /Bookmark\.view\.arrangement is only valid for the Natural view/ },
   ];
   const covered = [...new Set(invalidCases.map((refusalCase) => refusalCase.rule))].sort();
   assert.deepEqual(covered, [...Object.values(BOOKMARK_VALIDATION_RULES)].sort(), "every validator-owned rule must have an isolated refusal case");

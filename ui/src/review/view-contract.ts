@@ -5,12 +5,15 @@
  * levels and the debug mode. The product view owns pixels: it drives the product's own Sigma and
  * R3F renderers over the real review export, places readable labels and frames what the page asks
  * for inside the part of the canvas a person can actually see. Neither side re-derives the other's
- * state, so every axis below stays separate: projection, morphology, organization and colour.
+ * state, so every axis below stays separate: projection, morphology, organization, arrangement and
+ * colour.
  */
 import type { ReviewExport } from "./model.ts";
 import type { AppearanceOptions } from "../engine/presentation-options.ts";
 import type { ViewPreset } from "../render3f/camera.tsx";
 import type { PaletteValues } from "./palette.ts";
+import type { NaturalArrangement } from "../projection/contract-types.ts";
+import { defaultNaturalArrangement } from "../projection/natural-bridge.ts";
 
 /** How the scene is looked at. */
 export type Projection = "2d" | "3d";
@@ -18,8 +21,22 @@ export type Projection = "2d" | "3d";
 /** How relations and nodes are drawn; the same graph and the same knowledge state in every case. */
 export type Morphology = "stellar" | "neural" | "mycelium";
 
-/** How the scene is arranged; Indra draws real membership windows, never new relations. */
+/**
+ * How the scene is arranged; Indra draws real membership windows, never new relations. `flat` is the
+ * legacy in-memory spelling of the Natural placement, retained by the live engine vocabulary until
+ * its migration: every saved form reads it as legacy input and no serialization writes it.
+ */
 export type Organization = "flat" | "indra";
+
+/** The saved-view organization vocabulary: Natural under its canonical name, or Indra. */
+export type SavedOrganization = "natural" | "indra";
+
+/**
+ * How Natural places nodes: an explicit projection input, never the current style. A morphology
+ * selects an arrangement only once, when a legacy saved view without one is read; a later style
+ * switch restyles the same positions.
+ */
+export type Arrangement = NaturalArrangement;
 
 /** Black and white is the default; semantic colour is an optional reading aid. */
 export type Colour = "bw" | "warm" | "earth" | "gems" | "night" | "semantic" | "amber" | "old-gold" | "ochre" | "copper" | "alchemical-red" | "warm-twilight" | "sepia" | "brace" | "miele" | "custom";
@@ -32,6 +49,8 @@ export type Axes = {
   readonly colour: Colour;
   readonly labels: boolean;
   readonly reading: Reading;
+  /** Explicit Natural arrangement; absent means unresolved (Indra never carries one). */
+  readonly arrangement?: Arrangement;
 };
 
 export const DEFAULT_AXES: Axes = {
@@ -42,6 +61,159 @@ export const DEFAULT_AXES: Axes = {
   labels: true,
   reading: "attested",
 };
+
+/**
+ * Runtime twins of the axes unions, closed at compile time by exhaustive records: a missing or extra
+ * entry is a type error, so the vocabulary cannot drift from the types it mirrors.
+ */
+const PROJECTION_INDEX: Record<Projection, true> = { "2d": true, "3d": true };
+const MORPHOLOGY_INDEX: Record<Morphology, true> = { stellar: true, neural: true, mycelium: true };
+const ORGANIZATION_INDEX: Record<SavedOrganization, true> = { natural: true, indra: true };
+const ARRANGEMENT_INDEX: Record<Arrangement, true> = { constellation: true, network: true, mycelium: true };
+const READING_INDEX: Record<Reading, true> = { attested: true, exploratory: true, combined: true };
+const COLOUR_INDEX: Record<Colour, true> = {
+  bw: true, warm: true, earth: true, gems: true, night: true, semantic: true, amber: true, "old-gold": true,
+  ochre: true, copper: true, "alchemical-red": true, "warm-twilight": true, sepia: true, brace: true, miele: true, custom: true,
+};
+
+/** This is the closed saved-view vocabulary register and does not accept an unknown view id. */
+export const SAVED_AXES_VOCABULARIES = {
+  projection: Object.keys(PROJECTION_INDEX) as readonly Projection[],
+  morphology: Object.keys(MORPHOLOGY_INDEX) as readonly Morphology[],
+  organization: Object.keys(ORGANIZATION_INDEX) as readonly SavedOrganization[],
+  arrangement: Object.keys(ARRANGEMENT_INDEX) as readonly Arrangement[],
+  reading: Object.keys(READING_INDEX) as readonly Reading[],
+  colour: Object.keys(COLOUR_INDEX) as readonly Colour[],
+} as const;
+
+/**
+ * The saved wire form of the view axes: exactly the registered axes fields, with Natural under its
+ * canonical name plus an explicit arrangement, and never an arrangement on Indra.
+ */
+export type SavedViewAxes = {
+  readonly projection: Projection;
+  readonly morphology: Morphology;
+  readonly organization: SavedOrganization;
+  readonly colour: Colour;
+  readonly labels: boolean;
+  readonly reading: Reading;
+  readonly arrangement?: Arrangement;
+};
+
+/** Legacy spellings a saved view may still carry: `flat` reads as Natural. */
+export const LEGACY_ORGANIZATION = "flat";
+
+/** The canonical Natural name on the wire. */
+export const NATURAL_ORGANIZATION: SavedOrganization = "natural";
+
+/**
+ * Serializes the view axes to the saved wire form: old Flat in the producer becomes Natural plus an
+ * explicit arrangement out; an arrangement a producer never resolved is chosen once from the
+ * morphology here, exactly as at request creation. The key order is the register order, so repeated
+ * serialization of the same axes is byte-identical.
+ */
+export function serializeAxes(axes: Axes): string {
+  return JSON.stringify(savedAxesRecord(axes));
+}
+
+/** This builds the canonical saved record and does not mutate or retain the live axes. */
+export function savedAxesRecord(axes: Axes): SavedViewAxes {
+  if (axes.organization === "indra") {
+    if (axes.arrangement !== undefined) {
+      throw new TypeError("ViewInput.axes.arrangement is only valid for the Natural view [arrangement-requires-natural]");
+    }
+    return {
+      projection: axes.projection,
+      morphology: axes.morphology,
+      organization: "indra",
+      colour: axes.colour,
+      labels: axes.labels,
+      reading: axes.reading,
+    };
+  }
+  return {
+    projection: axes.projection,
+    morphology: axes.morphology,
+    organization: NATURAL_ORGANIZATION,
+    colour: axes.colour,
+    labels: axes.labels,
+    reading: axes.reading,
+    arrangement: axes.arrangement ?? defaultNaturalArrangement(axes.morphology),
+  };
+}
+
+/**
+ * Parses a saved view: legacy `flat` (and pre-arrangement Natural) comes in, Natural plus an
+ * explicit arrangement goes out in memory — the arrangement a legacy morphology selects is resolved
+ * once, here, so a later style switch cannot change it. The field register stays closed and every
+ * unknown view id is refused.
+ */
+export function parseSavedAxes(serialized: string): Axes {
+  let value: unknown;
+  try {
+    value = JSON.parse(serialized) as unknown;
+  } catch {
+    throw new TypeError("Saved axes serialization is not valid JSON");
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("Saved axes must be an object");
+  }
+  assertSavedAxesFields(value as Record<string, unknown>);
+  const record = value as Record<string, unknown>;
+  assertVocabulary(record.projection, SAVED_AXES_VOCABULARIES.projection, "projection");
+  assertVocabulary(record.morphology, SAVED_AXES_VOCABULARIES.morphology, "morphology");
+  assertVocabulary(record.colour, SAVED_AXES_VOCABULARIES.colour, "colour");
+  assertVocabulary(record.reading, SAVED_AXES_VOCABULARIES.reading, "reading");
+  if (typeof record.labels !== "boolean") {
+    throw new TypeError("Saved axes.labels must be boolean [labels-boolean]");
+  }
+  const organization = record.organization;
+  if (organization === LEGACY_ORGANIZATION || organization === NATURAL_ORGANIZATION) {
+    const arrangement = record.arrangement === undefined
+      ? undefined
+      : (assertVocabulary(record.arrangement, SAVED_AXES_VOCABULARIES.arrangement, "arrangement"), record.arrangement as Arrangement);
+    // The saved form is canonical (`natural`); the live page vocabulary still spells Natural as the
+    // legacy `flat` until the engine-vocabulary migration, and serialization writes `natural` back.
+    return {
+      projection: record.projection as Projection,
+      morphology: record.morphology as Morphology,
+      organization: "flat",
+      colour: record.colour as Colour,
+      labels: record.labels as boolean,
+      reading: record.reading as Reading,
+      arrangement: arrangement ?? defaultNaturalArrangement(record.morphology as Morphology),
+    };
+  }
+  if (organization !== "indra") {
+    throw new TypeError("Saved axes.organization is outside its closed vocabulary [closed-vocabulary]");
+  }
+  if (record.arrangement !== undefined) {
+    throw new TypeError("Saved axes.arrangement is only valid for the Natural view [arrangement-requires-natural]");
+  }
+  return {
+    projection: record.projection as Projection,
+    morphology: record.morphology as Morphology,
+    organization: "indra",
+    colour: record.colour as Colour,
+    labels: record.labels as boolean,
+    reading: record.reading as Reading,
+  };
+}
+
+function assertSavedAxesFields(record: Record<string, unknown>): void {
+  const allowed = new Set<string>([...VIEW_INPUT_FIELD_REGISTER.axes, ...VIEW_INPUT_FIELD_REGISTER.optionalAxes]);
+  const keys = Reflect.ownKeys(record);
+  if (VIEW_INPUT_FIELD_REGISTER.axes.some((key) => !Object.prototype.hasOwnProperty.call(record, key))
+    || keys.some((key) => typeof key !== "string" || !allowed.has(key))) {
+    throw new TypeError("Saved axes fields do not match the pinned register [field-register]");
+  }
+}
+
+function assertVocabulary<T extends string>(value: unknown, choices: readonly T[], name: string): asserts value is T {
+  if (typeof value !== "string" || !choices.includes(value as T)) {
+    throw new TypeError(`Saved axes.${name} is outside its closed vocabulary [closed-vocabulary]`);
+  }
+}
 
 /**
  * The readable node families of the main mode. The seven export types keep their full coding in the
@@ -163,6 +335,8 @@ export const VIEW_INPUT_FIELD_REGISTER = {
   ],
   optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "flowMotion", "appearance", "customPalette", "labelBudget"],
   axes: ["projection", "morphology", "organization", "colour", "labels", "reading"],
+  /** Producer-optional axes: the explicit Natural arrangement, absent until a producer resolves it. */
+  optionalAxes: ["arrangement"],
   insets: ["top", "right", "bottom", "left"],
   events: ["onPick", "onDoublePick", "onHover"],
   optionalEvents: ["onDoublePick"],
@@ -173,7 +347,7 @@ export function assertViewInputFieldRegister(value: unknown): asserts value is V
   const optionalInput = new Set<string>(VIEW_INPUT_FIELD_REGISTER.optionalInput);
   assertExactFields(value, "ViewInput", VIEW_INPUT_FIELD_REGISTER.input.filter((key) => !optionalInput.has(key)), VIEW_INPUT_FIELD_REGISTER.optionalInput);
   const input = value as Record<string, unknown>;
-  assertExactFields(input.axes, "ViewInput.axes", VIEW_INPUT_FIELD_REGISTER.axes);
+  assertExactFields(input.axes, "ViewInput.axes", VIEW_INPUT_FIELD_REGISTER.axes, VIEW_INPUT_FIELD_REGISTER.optionalAxes);
   assertExactFields(input.insets, "ViewInput.insets", VIEW_INPUT_FIELD_REGISTER.insets);
   const optionalEvents = new Set<string>(VIEW_INPUT_FIELD_REGISTER.optionalEvents);
   assertExactFields(input.events, "ViewInput.events", VIEW_INPUT_FIELD_REGISTER.events.filter((key) => !optionalEvents.has(key)), VIEW_INPUT_FIELD_REGISTER.optionalEvents);

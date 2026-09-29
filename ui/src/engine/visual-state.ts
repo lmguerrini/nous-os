@@ -13,6 +13,7 @@ import { SCALE_TOPOLOGIES } from "#engine/scale-topology.ts";
 import type { ScaleTopology } from "#engine/scale-topology.ts";
 import { ALL_PALETTES, TEMPERATURES, THEMES, isHueAnchorDegrees } from "#engine/tokens.ts";
 import type { Palette, Temperature, Theme } from "#engine/tokens.ts";
+import type { NaturalArrangement } from "../projection/contract-types.ts";
 
 /** This is the serialisable camera record and does not retain a renderer instance. */
 export type VisualStateCamera = {
@@ -38,9 +39,13 @@ export type VisualStateCamera = {
  * current baseline, rather than materialising a default value here. `motionGrammar` is the same kind
  * of producer-optional field again, for the same reason, one axis later: every existing VisualState
  * producer that predates the motion axis keeps constructing a valid state without it, and its absence
- * means Still, motion's own baseline, rather than materialising a default value here. Animation phase
- * is deliberately absent from this type: it is a render input, not governed state, so it is never
- * carried, validated, serialised, or digested here.
+ * means Still, motion's own baseline, rather than materialising a default value here. `arrangement`
+ * is the same kind of producer-optional field once more: the explicit Natural arrangement, absent
+ * from every VisualState producer that predates the views extension. Its absence means unresolved,
+ * never a silent default in memory — the saved-state reader resolves a legacy morphology's
+ * arrangement exactly once at read time, and serialization always writes it explicitly for Natural.
+ * Animation phase is deliberately absent from this type: it is a render input, not governed state,
+ * so it is never carried, validated, serialised, or digested here.
  */
 export type VisualState = {
   readonly selectedId: string | null;
@@ -57,6 +62,7 @@ export type VisualState = {
   readonly hueAnchorDegrees?: number;
   readonly scaleTopology?: ScaleTopology;
   readonly motionGrammar?: MotionGrammar;
+  readonly arrangement?: NaturalArrangement;
 };
 
 /** Saved state uses the view name; `flat` is accepted only by the migration reader. */
@@ -79,7 +85,7 @@ export const VISUAL_STATE_FIELD_REGISTER = {
     "lodBand",
     "reducedMotion",
   ],
-  optionalState: ["hueAnchorDegrees", "scaleTopology", "motionGrammar"],
+  optionalState: ["hueAnchorDegrees", "scaleTopology", "motionGrammar", "arrangement"],
   camera: ["x", "y", "angle", "ratio", "bounds"],
   bounds: ["x", "y"],
 } as const;
@@ -98,6 +104,8 @@ export const VISUAL_STATE_VALIDATION_RULES = {
   accentHueRequiresAnchor: "accent-hue-requires-anchor",
   scaleTopologyVocabulary: "scale-topology-vocabulary",
   motionGrammarVocabulary: "motion-grammar-vocabulary",
+  arrangementVocabulary: "arrangement-vocabulary",
+  arrangementRequiresNatural: "arrangement-requires-natural",
 } as const;
 
 /** This names one VisualState validator rule and does not name a construction route. */
@@ -107,6 +115,20 @@ const MORPHOLOGIES = [STELLAR.id, NEURAL.id, MYCELIUM.id] as const;
 const NATURAL = "natural" as const;
 const ORGANIZATIONS = [FLAT, NATURAL, INDRA] as const;
 const LOD_BANDS = [MACRO, MESO, MICRO] as const;
+
+/** The closed Natural arrangement vocabulary, shared by validation, migration and serialization. */
+export const ARRANGEMENTS = ["constellation", "network", "mycelium"] as const;
+
+/**
+ * This maps a legacy morphology to the arrangement it selects exactly once, when a saved state that
+ * predates the arrangement axis is read, and does not keep deriving it on later style switches. It
+ * mirrors `defaultNaturalArrangement` in `#projection/natural-bridge.ts` (the review layer's single
+ * source); the engine layer takes no runtime dependency on the projection layer, and the test pins
+ * the two together so they cannot drift.
+ */
+export function arrangementForMorphology(morphology: Morphology): NaturalArrangement {
+  return morphology === STELLAR.id ? "constellation" : morphology === NEURAL.id ? "network" : "mycelium";
+}
 
 /** This constructs validated view state and does not retain a VisualGraph reference. */
 export function createVisualState(graph: VisualGraph, value: unknown): VisualState {
@@ -139,21 +161,44 @@ export function createVisualState(graph: VisualGraph, value: unknown): VisualSta
   // "accent-hue", and validated scaleTopology and motionGrammar only if present); an explicit
   // `undefined` is never written, so a legacy caller's state round-trips through serialisation with
   // the exact key set it came in with, byte-identical to before any of the three fields existed.
+  // arrangement follows the same rule: carried exactly when the producer supplied one.
   const withHueAnchor = state.hueAnchorDegrees === undefined ? base : { ...base, hueAnchorDegrees: state.hueAnchorDegrees };
   const withScaleTopology = state.scaleTopology === undefined ? withHueAnchor : { ...withHueAnchor, scaleTopology: state.scaleTopology };
-  return state.motionGrammar === undefined ? withScaleTopology : { ...withScaleTopology, motionGrammar: state.motionGrammar };
+  const withMotionGrammar = state.motionGrammar === undefined ? withScaleTopology : { ...withScaleTopology, motionGrammar: state.motionGrammar };
+  return state.arrangement === undefined ? withMotionGrammar : { ...withMotionGrammar, arrangement: state.arrangement };
 }
 
 /** This serialises validated view state and does not include graph contents. */
 export function serializeVisualState(state: VisualState | SavedVisualState): string {
   assertVisualStateFieldRegister(state);
-  // `flat` is retained by live renderer producers until tranche C, while saved state already uses
-  // the canonical view name. Never emit the legacy spelling on the wire.
-  const canonical = state.organization === FLAT ? { ...state, organization: NATURAL } : state;
+  const organization: unknown = state.organization;
+  if (organization !== FLAT && organization !== NATURAL && organization !== INDRA) {
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.closedVocabulary, "VisualState.organization is outside its closed vocabulary");
+  }
+  // `flat` is retained by live renderer producers until the engine-vocabulary migration, while saved
+  // state already uses the canonical view name. Never emit the legacy spelling on the wire, and never
+  // a Natural entry without its explicit arrangement: a producer that never resolved one gets the
+  // arrangement its morphology selects at request creation, the same once-only rule the reader applies.
+  if (state.organization === INDRA) {
+    if (state.arrangement !== undefined) {
+      throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.arrangementRequiresNatural, "VisualState.arrangement is only valid for the Natural view");
+    }
+    return JSON.stringify(state);
+  }
+  assertArrangementValue(state.arrangement);
+  if (state.arrangement === undefined && !MORPHOLOGIES.includes(state.morphology)) {
+    // Never derive an arrangement from a morphology the closed vocabulary refuses.
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.closedVocabulary, "VisualState.morphology is outside its closed vocabulary");
+  }
+  const canonical = {
+    ...state,
+    organization: NATURAL,
+    arrangement: state.arrangement ?? arrangementForMorphology(state.morphology),
+  };
   return JSON.stringify(canonical);
 }
 
-/** This reads the saved-state schema, migrates `flat`, and validates graph ids. */
+/** This reads the saved-state schema, migrates `flat`, resolves a legacy arrangement exactly once, and validates graph ids. */
 export function deserializeSavedVisualState(graph: VisualGraph, serialized: string): SavedVisualState {
   let value: unknown;
   try {
@@ -163,9 +208,18 @@ export function deserializeSavedVisualState(graph: VisualGraph, serialized: stri
   }
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
     const record = value as Record<string, unknown>;
+    let migrated = record;
     if (record.organization === FLAT) {
-      value = { ...record, organization: NATURAL };
+      migrated = { ...record, organization: NATURAL };
     }
+    // A legacy saved view (pre-arrangement `flat`, or the intermediate `natural` without one) selects
+    // its arrangement from the morphology exactly once, here; later style switches cannot change it,
+    // and the old camera coordinates ride through untouched until an explicit fit or reprojection.
+    if (migrated.organization === NATURAL && migrated.arrangement === undefined
+      && typeof migrated.morphology === "string" && MORPHOLOGIES.includes(migrated.morphology as Morphology)) {
+      migrated = { ...migrated, arrangement: arrangementForMorphology(migrated.morphology as Morphology) };
+    }
+    value = migrated;
   }
   return createVisualState(graph, value) as SavedVisualState;
 }
@@ -203,7 +257,21 @@ export function assertVisualState(graph: VisualGraph, value: unknown): asserts v
   assertHueAnchorDegrees(state.palette, state.hueAnchorDegrees);
   assertScaleTopology(state.scaleTopology);
   assertMotionGrammar(state.motionGrammar);
+  assertArrangementValue(state.arrangement);
+  if (state.arrangement !== undefined && state.organization === INDRA) {
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.arrangementRequiresNatural, "VisualState.arrangement is only valid for the Natural view");
+  }
   assertCamera(state.camera);
+}
+
+/** This validates a present arrangement against its closed vocabulary and does not require its presence, matching the scaleTopology and motionGrammar precedent. */
+function assertArrangementValue(value: unknown): void {
+  if (value === undefined) {
+    return;
+  }
+  if (typeof value !== "string" || !ARRANGEMENTS.includes(value as NaturalArrangement)) {
+    throw visualStateValidationError(VISUAL_STATE_VALIDATION_RULES.arrangementVocabulary, "VisualState.arrangement is outside its closed vocabulary");
+  }
 }
 
 /** This requires a hue anchor exactly when the palette is `accent-hue`, and otherwise validates only its range if a caller happens to carry one anyway (harmless: resolveTokens itself ignores it for every other palette). */

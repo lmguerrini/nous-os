@@ -3,9 +3,10 @@
  * any epistemic authority: a Bookmark is never canonical knowledge, is never read by
  * `#adapter/projection.ts` or `#scene/build.ts`, and its existence must never be mistaken for truth,
  * governed importance, or an algorithmic ranking signal. It is bounded on purpose to exactly the six
- * fields below — a temporal position, an optional reference to a governed element, a portable view
- * snapshot, a human title and note, and where it should be offered — and this module builds no storage
- * for it: a future application capability decides where a Bookmark lives and how it is listed.
+ * fields below plus one producer-optional view identity — a temporal position, an optional reference
+ * to a governed element, a portable view snapshot, a human title and note, where it should be
+ * offered, and which saved view it returns to — and this module builds no storage for it: a future
+ * application capability decides where a Bookmark lives and how it is listed.
  *
  * Like `#engine/control-state.ts`, this is storage- and transport-agnostic: `validateBookmark` /
  * `assertBookmark` reject an impossible shape, `normalizeBookmark` is idempotent, and
@@ -14,6 +15,8 @@
  * so there is nothing for it to resolve into. Restoring the view it names, and any highlighting of its
  * governed target, is wiring left to the capability that builds the application.
  */
+import type { NaturalArrangement } from "../projection/contract-types.ts";
+
 export type Bookmark = {
   readonly temporalPosition: string;
   readonly governedTargetId: string | null;
@@ -21,6 +24,19 @@ export type Bookmark = {
   readonly title: string;
   readonly note: string;
   readonly visibility: VisibilityMode;
+  readonly view?: BookmarkView;
+};
+
+/**
+ * This is the saved-view identity a Bookmark may carry: the canonical view name and, for Natural, an
+ * explicit arrangement. A legacy Bookmark that predates the views extension has no `view` at all, and
+ * a legacy `flat` spelling is accepted only by the migration reader. A Bookmark records no morphology,
+ * so a legacy `flat` view is migrated without inventing an arrangement: the restoring capability
+ * resolves one once, exactly as the saved-visual-state reader does for its own legacy states.
+ */
+export type BookmarkView = {
+  readonly organization: "natural" | "indra";
+  readonly arrangement?: NaturalArrangement;
 };
 
 /**
@@ -46,9 +62,21 @@ export const VISIBILITY_MODES = [TIMELINE_VISIBILITY, GRAPH_VISIBILITY, BOTH_VIS
 /** This is the all-time sentinel `Bookmark.temporalPosition` may carry, matching `#engine/temporal.ts`'s own `allTimeMembership().instant`, the resting state Temporal Playback enters from and returns to. */
 export const ALL_TIME_POSITION = "all-time" as const;
 
+/** This is the legacy view spelling only the Bookmark migration reader accepts, never the wire. */
+export const LEGACY_VIEW_ORGANIZATION = "flat" as const;
+
+/** This is the canonical Natural view name a Bookmark's view identity writes. */
+export const NATURAL_VIEW_ORGANIZATION = "natural" as const;
+
+/** This is the closed arrangement vocabulary a Natural Bookmark view may declare. */
+export const BOOKMARK_ARRANGEMENTS = ["constellation", "network", "mycelium"] as const;
+
 /** This is the complete pinned Bookmark field register and does not permit an unpinned or extension field anywhere in the tree. */
 export const BOOKMARK_FIELD_REGISTER = {
   state: ["temporalPosition", "governedTargetId", "viewState", "title", "note", "visibility"],
+  optionalState: ["view"],
+  view: ["organization"],
+  optionalView: ["arrangement"],
   camera: ["x", "y", "angle", "ratio"],
 } as const;
 
@@ -62,6 +90,7 @@ export const BOOKMARK_VALIDATION_RULES = {
   titleRequired: "title-required",
   noteType: "note-type",
   closedVocabulary: "closed-vocabulary",
+  viewArrangementScope: "view-arrangement-scope",
 } as const;
 
 /** This names one Bookmark validator rule and does not name a construction route. */
@@ -69,7 +98,7 @@ export type BookmarkValidationRule = typeof BOOKMARK_VALIDATION_RULES[keyof type
 
 /** This is the validate stage's assertion: the complete set of impossible Bookmark shapes this module refuses, each with a message naming what was wrong. */
 export function assertBookmark(value: unknown): asserts value is Bookmark {
-  assertExactFields(value, "Bookmark", BOOKMARK_FIELD_REGISTER.state);
+  assertExactFields(value, "Bookmark", BOOKMARK_FIELD_REGISTER.state, BOOKMARK_FIELD_REGISTER.optionalState);
   const bookmark = value as Record<string, unknown>;
   assertTemporalPosition(bookmark.temporalPosition);
   assertGovernedTargetId(bookmark.governedTargetId);
@@ -77,6 +106,22 @@ export function assertBookmark(value: unknown): asserts value is Bookmark {
   assertTitle(bookmark.title);
   assertNote(bookmark.note);
   assertChoice(bookmark.visibility, VISIBILITY_MODES, "Bookmark.visibility");
+  if (bookmark.view !== undefined) {
+    assertBookmarkView(bookmark.view);
+  }
+}
+
+/** This validates a present view identity against its closed register and vocabulary, and does not require its presence. */
+function assertBookmarkView(value: unknown): void {
+  assertExactFields(value, "Bookmark.view", BOOKMARK_FIELD_REGISTER.view, BOOKMARK_FIELD_REGISTER.optionalView);
+  const view = value as Record<string, unknown>;
+  assertChoice(view.organization, [NATURAL_VIEW_ORGANIZATION, "indra"] as const, "Bookmark.view.organization");
+  if (view.arrangement !== undefined) {
+    assertChoice(view.arrangement, BOOKMARK_ARRANGEMENTS, "Bookmark.view.arrangement");
+    if (view.organization !== NATURAL_VIEW_ORGANIZATION) {
+      throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.viewArrangementScope, "Bookmark.view.arrangement is only valid for the Natural view");
+    }
+  }
 }
 
 /** This is the validate stage as a returning function rather than an assertion, for a caller that prefers a typed result over a type-guard. */
@@ -100,17 +145,28 @@ export function loadBookmark(value: unknown): Bookmark {
 
 /** This is the serialize/export stage and does not normalize its input first, matching `#engine/visual-state.ts`'s own `serializeVisualState` precedent: a caller who wants a canonical wire form calls `normalizeBookmark` before this. */
 export function serializeBookmark(bookmark: Bookmark): string {
-  assertExactFields(bookmark, "Bookmark", BOOKMARK_FIELD_REGISTER.state);
+  assertExactFields(bookmark, "Bookmark", BOOKMARK_FIELD_REGISTER.state, BOOKMARK_FIELD_REGISTER.optionalState);
   return JSON.stringify(bookmark);
 }
 
-/** This is deserialize-then-load: JSON parse, then the full load stage (validate, normalize). */
+/** This is deserialize-then-load: JSON parse, legacy view migration, then the full load stage (validate, normalize). */
 export function deserializeBookmark(serialized: string): Bookmark {
   let value: unknown;
   try {
     value = JSON.parse(serialized) as unknown;
   } catch {
     throw new TypeError("Bookmark serialization is not valid JSON");
+  }
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (typeof record.view === "object" && record.view !== null && !Array.isArray(record.view)) {
+      const view = record.view as Record<string, unknown>;
+      if (view.organization === LEGACY_VIEW_ORGANIZATION) {
+        // Old Flat in, Natural out; an arrangement already carried stays, and none is invented for a
+        // record that never had one — a Bookmark holds no morphology to select it.
+        value = { ...record, view: { ...view, organization: NATURAL_VIEW_ORGANIZATION } };
+      }
+    }
   }
   return loadBookmark(value);
 }
@@ -169,7 +225,7 @@ function assertChoice<T extends string>(value: unknown, choices: readonly T[], p
   }
 }
 
-function assertExactFields(value: unknown, path: string, fields: readonly string[]): void {
+function assertExactFields(value: unknown, path: string, fields: readonly string[], optionalFields: readonly string[] = []): void {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.fieldRegister, `${path} must be an object`);
   }
@@ -185,9 +241,9 @@ function assertExactFields(value: unknown, path: string, fields: readonly string
     }
     actual.push(field);
   }
-  const expected = new Set(fields);
+  const allowed = new Set([...fields, ...optionalFields]);
   const missing = fields.some((field) => !actual.includes(field));
-  const extra = actual.some((field) => !expected.has(field));
+  const extra = actual.some((field) => !allowed.has(field));
   if (missing || extra) {
     throw bookmarkValidationError(BOOKMARK_VALIDATION_RULES.fieldRegister, `${path} fields do not match the pinned register`);
   }

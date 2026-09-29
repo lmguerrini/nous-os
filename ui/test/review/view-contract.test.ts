@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DEFAULT_AXES, VIEW_INPUT_FIELD_REGISTER, assertViewInputFieldRegister } from "../../src/review/view-contract.ts";
+import {
+  DEFAULT_AXES,
+  LEGACY_ORGANIZATION,
+  NATURAL_ORGANIZATION,
+  SAVED_AXES_VOCABULARIES,
+  VIEW_INPUT_FIELD_REGISTER,
+  assertViewInputFieldRegister,
+  parseSavedAxes,
+  savedAxesRecord,
+  serializeAxes,
+} from "../../src/review/view-contract.ts";
+import { defaultNaturalArrangement, resolveNaturalArrangement } from "../../src/projection/natural-bridge.ts";
+import { PALETTES } from "../../src/review/palette.ts";
 
 function inputFixture(): Record<string, unknown> {
   return {
@@ -15,6 +27,7 @@ test("ViewInput has an exact envelope, axes, insets, and event register", () => 
     input: ["container", "data", "v2Prepared", "v2Colours", "layoutContainers", "visibleNodeIds", "visibleEdgeIds", "axes", "insets", "text", "events", "reducedMotion", "flowMotion", "appearance", "customPalette", "labelBudget"],
     optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "flowMotion", "appearance", "customPalette", "labelBudget"],
     axes: ["projection", "morphology", "organization", "colour", "labels", "reading"],
+    optionalAxes: ["arrangement"],
     insets: ["top", "right", "bottom", "left"],
     events: ["onPick", "onDoublePick", "onHover"],
     optionalEvents: ["onDoublePick"],
@@ -27,4 +40,92 @@ test("ViewInput has an exact envelope, axes, insets, and event register", () => 
   assert.throws(() => assertViewInputFieldRegister({ ...inputFixture(), axes: { ...DEFAULT_AXES, surprise: true } }), /ViewInput\.axes fields do not match the pinned register/);
   assert.throws(() => assertViewInputFieldRegister({ ...inputFixture(), insets: { top: 0, right: 0, bottom: 0, left: 0, surprise: 1 } }), /ViewInput\.insets fields do not match the pinned register/);
   assert.throws(() => assertViewInputFieldRegister({ ...inputFixture(), events: { onPick() {}, onHover() {}, surprise() {} } }), /ViewInput\.events fields do not match the pinned register/);
+  // The arrangement is the one producer-optional axes field: present or absent, never a surprise.
+  assert.doesNotThrow(() => assertViewInputFieldRegister({ ...inputFixture(), axes: { ...DEFAULT_AXES, arrangement: "constellation" } }));
 });
+
+test("the saved-view vocabulary register is closed and stays pinned to the live unions", () => {
+  assert.deepEqual(SAVED_AXES_VOCABULARIES, {
+    projection: ["2d", "3d"],
+    morphology: ["stellar", "neural", "mycelium"],
+    organization: ["natural", "indra"],
+    arrangement: ["constellation", "network", "mycelium"],
+    reading: ["attested", "exploratory", "combined"],
+    colour: ["bw", "warm", "earth", "gems", "night", "semantic", "amber", "old-gold", "ochre", "copper", "alchemical-red", "warm-twilight", "sepia", "brace", "miele", "custom"],
+  });
+  // The colour vocabulary cannot drift from the palette table it names.
+  assert.deepEqual([...Object.keys(PALETTES)].sort(), [...SAVED_AXES_VOCABULARIES.colour.filter((colour) => colour !== "custom")].sort());
+  assert.equal(LEGACY_ORGANIZATION, "flat");
+  assert.equal(NATURAL_ORGANIZATION, "natural");
+});
+
+test("old Flat saved axes come in; Natural plus an explicit arrangement goes out", () => {
+  const legacy = '{"projection":"2d","morphology":"stellar","organization":"flat","colour":"bw","labels":true,"reading":"attested"}';
+  const parsed = parseSavedAxes(legacy);
+  assert.equal(savedOrganizationOf(parsed), "natural");
+  assert.equal(parsed.arrangement, "constellation", "the legacy morphology selects the arrangement once, at read time");
+  const wire = JSON.parse(serializeAxes(parsed));
+  assert.equal(wire.organization, "natural");
+  assert.equal(wire.arrangement, "constellation");
+  assert.equal(serializeAxes(parsed), serializeAxes(parseSavedAxes(serializeAxes(parsed))), "the migration is a fixed point");
+  // Double-run determinism: repeated serialization of the same axes is byte-identical.
+  assert.equal(serializeAxes(parsed), serializeAxes(parsed));
+
+  const legacyNatural = '{"projection":"3d","morphology":"mycelium","organization":"natural","colour":"sepia","labels":false,"reading":"combined"}';
+  const parsedNatural = parseSavedAxes(legacyNatural);
+  assert.equal(savedOrganizationOf(parsedNatural), "natural");
+  assert.equal(parsedNatural.arrangement, "mycelium", "a pre-arrangement Natural saved view resolves once from its morphology too");
+  assert.equal(JSON.parse(serializeAxes(parsedNatural)).arrangement, "mycelium");
+});
+
+test("an explicit arrangement round-trips exactly and wins over the style's creation-time default", () => {
+  const explicit = '{"projection":"2d","morphology":"stellar","organization":"natural","colour":"bw","labels":true,"reading":"attested","arrangement":"network"}';
+  const parsed = parseSavedAxes(explicit);
+  assert.equal(parsed.arrangement, "network");
+  assert.deepEqual(JSON.parse(serializeAxes(parsed)), JSON.parse(explicit));
+  assert.equal(serializeAxes(parsed), explicit, "an explicit arrangement round-trips byte-identically");
+});
+
+test("Indra saved views carry no arrangement, on the wire and in memory", () => {
+  const indra = '{"projection":"2d","morphology":"stellar","organization":"indra","colour":"bw","labels":true,"reading":"attested"}';
+  const parsed = parseSavedAxes(indra);
+  assert.equal(parsed.organization, "indra");
+  assert.equal(parsed.arrangement, undefined);
+  assert.equal("arrangement" in parsed, false);
+  assert.deepEqual(JSON.parse(serializeAxes(parsed)), JSON.parse(indra));
+  assert.throws(() => parseSavedAxes('{"projection":"2d","morphology":"stellar","organization":"indra","colour":"bw","labels":true,"reading":"attested","arrangement":"network"}'), /arrangement is only valid for the Natural view \[arrangement-requires-natural\]/);
+  assert.throws(() => serializeAxes({ ...DEFAULT_AXES, organization: "indra", arrangement: "network" }), /arrangement is only valid for the Natural view \[arrangement-requires-natural\]/);
+});
+
+test("the live default axes serialize as Natural plus the Stellar default arrangement", () => {
+  const record = savedAxesRecord(DEFAULT_AXES);
+  assert.equal(record.organization, "natural");
+  assert.equal(record.arrangement, "constellation");
+  assert.deepEqual(Object.keys(record), [...VIEW_INPUT_FIELD_REGISTER.axes, "arrangement"]);
+  const parsed = parseSavedAxes(serializeAxes(DEFAULT_AXES));
+  assert.deepEqual(parsed, { ...DEFAULT_AXES, organization: "flat", arrangement: "constellation" });
+  for (const morphology of ["stellar", "neural", "mycelium"] as const) {
+    assert.equal(savedAxesRecord({ ...DEFAULT_AXES, morphology }).arrangement, defaultNaturalArrangement(morphology));
+    assert.equal(savedAxesRecord({ ...DEFAULT_AXES, morphology }).arrangement, resolveNaturalArrangement(morphology));
+  }
+});
+
+test("saved axes parsing keeps the register closed and rejects every unknown view id", () => {
+  const valid = '{"projection":"2d","morphology":"stellar","organization":"natural","colour":"bw","labels":true,"reading":"attested","arrangement":"constellation"}';
+  assert.throws(() => parseSavedAxes("not JSON"), /Saved axes serialization is not valid JSON/);
+  assert.throws(() => parseSavedAxes("[]"), /Saved axes must be an object/);
+  assert.throws(() => parseSavedAxes('{"projection":"2d","morphology":"stellar","organization":"natural","colour":"bw","labels":true}'), /Saved axes fields do not match the pinned register \[field-register\]/);
+  assert.throws(() => parseSavedAxes(`${valid.slice(0, -1)},"surprise":true}`), /Saved axes fields do not match the pinned register \[field-register\]/);
+  assert.throws(() => parseSavedAxes('{"projection":"4d","morphology":"stellar","organization":"natural","colour":"bw","labels":true,"reading":"attested"}'), /Saved axes\.projection is outside its closed vocabulary \[closed-vocabulary\]/);
+  assert.throws(() => parseSavedAxes('{"projection":"2d","morphology":"fungal","organization":"natural","colour":"bw","labels":true,"reading":"attested"}'), /Saved axes\.morphology is outside its closed vocabulary \[closed-vocabulary\]/);
+  assert.throws(() => parseSavedAxes('{"projection":"2d","morphology":"stellar","organization":"orbifold","colour":"bw","labels":true,"reading":"attested"}'), /Saved axes\.organization is outside its closed vocabulary \[closed-vocabulary\]/);
+  assert.throws(() => parseSavedAxes('{"projection":"2d","morphology":"stellar","organization":"natural","colour":"neon","labels":true,"reading":"attested"}'), /Saved axes\.colour is outside its closed vocabulary \[closed-vocabulary\]/);
+  assert.throws(() => parseSavedAxes('{"projection":"2d","morphology":"stellar","organization":"natural","colour":"bw","labels":true,"reading":"rumoured"}'), /Saved axes\.reading is outside its closed vocabulary \[closed-vocabulary\]/);
+  assert.throws(() => parseSavedAxes('{"projection":"2d","morphology":"stellar","organization":"natural","colour":"bw","labels":"yes","reading":"attested"}'), /Saved axes\.labels must be boolean \[labels-boolean\]/);
+  assert.throws(() => parseSavedAxes(`${valid.slice(0, -1).replace('"arrangement":"constellation"', '"arrangement":"lattice"')}}`), /Saved axes\.arrangement is outside its closed vocabulary \[closed-vocabulary\]/);
+});
+
+/** This reads the in-memory organization under the saved vocabulary, where the live page still spells Natural as the legacy `flat`. */
+function savedOrganizationOf(axes: { readonly organization: string }): string {
+  return axes.organization === "indra" ? "indra" : "natural";
+}
