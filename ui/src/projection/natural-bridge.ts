@@ -1,6 +1,6 @@
 /** Natural is the D-072 Flat placement, selected by an explicit arrangement. */
 import { computeLayout } from '../review/layout-v2.ts';
-import type { LayoutEdge, LayoutNode, Point3 } from '../review/layout-v2.ts';
+import type { LayoutEdge, LayoutNode, LayoutResult, Point3 } from '../review/layout-v2.ts';
 import { applyExpansion, canonicalize } from '../review/volume.ts';
 import { projectRelations } from '../review/v2-relations.ts';
 import type { V2Node } from '../review/v2-core.ts';
@@ -15,9 +15,41 @@ export const NATURAL_LAYOUT_VERSION = 'd072-layout-v2';
 export const NATURAL_NUMERIC_BACKEND_VERSION = 'javascript-number-v1';
 export const NATURAL_PROJECTION_VERSION = 'natural-bridge-v1';
 
-const layoutMorphology: Readonly<Record<NaturalArrangement, 'stellar' | 'neural' | 'mycelium'>> = {
-  constellation: 'stellar', network: 'neural', mycelium: 'mycelium',
-};
+/** Which D-072 placement branch an arrangement selects: the tuned Stellar constellation packing or the organic Neural/Mycelium layout. */
+export type NaturalLayoutBranch = 'flat-stellar' | 'flat-organic';
+
+/** One pinned row of the arrangement-to-existing-branch table. */
+export type NaturalArrangementDispatch = Readonly<{
+  readonly arrangement: NaturalArrangement;
+  /** The legacy layout vocabulary has no `natural`; the bridge adapts the arrangement to it. */
+  readonly legacyOrganization: 'flat';
+  readonly legacyMorphology: 'stellar' | 'neural' | 'mycelium';
+  readonly layoutBranch: NaturalLayoutBranch;
+  /** Every Flat branch of the pinned D-072 head reports this `LayoutResult.source`. */
+  readonly layoutSource: 'flat-community';
+}>;
+
+/**
+ * The arrangement-to-existing-branch table, pinned against the verified D-072 integration head:
+ * `computeLayout` dispatch (`src/review/layout-v2.ts:886-888`) sends organization `flat` to the
+ * `flat` branch (`:240-244`), which selects `flatStellar` (`:601-704`) for morphology `stellar`
+ * and the organic `flat2d`/`flat3d` branches otherwise. The explicit arrangement — never the
+ * current style — picks the row; a style switch can only restyle the same positions.
+ */
+export const NATURAL_ARRANGEMENT_LAYOUT_DISPATCH: Readonly<Record<NaturalArrangement, NaturalArrangementDispatch>> = Object.freeze({
+  constellation: Object.freeze({
+    arrangement: 'constellation', legacyOrganization: 'flat', legacyMorphology: 'stellar',
+    layoutBranch: 'flat-stellar', layoutSource: 'flat-community',
+  }),
+  network: Object.freeze({
+    arrangement: 'network', legacyOrganization: 'flat', legacyMorphology: 'neural',
+    layoutBranch: 'flat-organic', layoutSource: 'flat-community',
+  }),
+  mycelium: Object.freeze({
+    arrangement: 'mycelium', legacyOrganization: 'flat', legacyMorphology: 'mycelium',
+    layoutBranch: 'flat-organic', layoutSource: 'flat-community',
+  }),
+});
 
 /** Called once when a request is created. A later style switch keeps the resolved arrangement. */
 export function defaultNaturalArrangement(style: 'stellar' | 'neural' | 'mycelium'): NaturalArrangement {
@@ -29,6 +61,27 @@ export function resolveNaturalArrangement(
   style: 'stellar' | 'neural' | 'mycelium', arrangement?: NaturalArrangement,
 ): NaturalArrangement {
   return arrangement ?? defaultNaturalArrangement(style);
+}
+
+/** Where a resolved arrangement came from: carried explicitly on the request, or defaulted from the style once at request creation. */
+export type NaturalArrangementDefaultSource = 'explicit' | 'morphology-default';
+
+/** The resolved arrangement with the provenance the inspector displays: value, default source and layout version. */
+export type ResolvedNaturalArrangement = Readonly<{
+  readonly arrangement: NaturalArrangement;
+  readonly source: NaturalArrangementDefaultSource;
+  readonly layoutVersion: string;
+}>;
+
+/** Resolves the arrangement together with its default source, so a saved request and the inspector can show why it resolved. */
+export function resolveNaturalArrangementWithSource(
+  style: 'stellar' | 'neural' | 'mycelium', arrangement?: NaturalArrangement,
+): ResolvedNaturalArrangement {
+  return {
+    arrangement: resolveNaturalArrangement(style, arrangement),
+    source: arrangement === undefined ? 'morphology-default' : 'explicit',
+    layoutVersion: NATURAL_LAYOUT_VERSION,
+  };
 }
 
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
@@ -45,7 +98,8 @@ function assertRequest(snapshot: SemanticGraphSnapshot, request: ProjectionReque
     throw new Error('Natural snapshot mismatch');
   if (!domain.domainDigest || domain.nodeIds.length > domain.maxNodes || domain.nodeIds.length > 850 || request.requestedLevelId)
     throw new Error('Natural requires a bounded, fully loaded domain');
-  if (parameters.layoutVersion !== NATURAL_LAYOUT_VERSION || !Object.hasOwn(layoutMorphology, parameters.arrangement))
+  if (parameters.layoutVersion !== NATURAL_LAYOUT_VERSION
+    || !Object.hasOwn(NATURAL_ARRANGEMENT_LAYOUT_DISPATCH, parameters.arrangement))
     throw new Error('Unsupported Natural layout version or arrangement');
   if (parameters.dimension !== '2d' && parameters.dimension !== '3d') throw new Error('Unsupported Natural dimension');
   if (!['attested-essential', 'exploratory-essential', 'combined-essential'].includes(parameters.layoutRelationPolicy))
@@ -64,6 +118,21 @@ function assertRequest(snapshot: SemanticGraphSnapshot, request: ProjectionReque
     if (!ids.has(id) || ![point.x, point.y, point.z].every(Number.isFinite))
       throw new Error('Natural continuity anchor is outside the domain or nonfinite');
   }
+}
+
+/**
+ * Enforces the pinned dispatch at runtime: the legacy layout must report the pinned source, and
+ * only `flatStellar` returns a `communities` array, so a style leaking into placement (or any
+ * future re-routing of an arrangement to a different branch) fails loudly instead of silently
+ * moving the tuned coordinates.
+ */
+function assertPinnedDispatch(
+  arrangement: NaturalArrangement, dispatch: NaturalArrangementDispatch, layout: LayoutResult,
+): void {
+  if (layout.source !== dispatch.layoutSource)
+    throw new Error(`Natural arrangement ${arrangement} left the pinned D-072 layout branch`);
+  if (Array.isArray(layout.communities) !== (dispatch.layoutBranch === 'flat-stellar'))
+    throw new Error(`Natural arrangement ${arrangement} dispatched to the wrong D-072 layout branch`);
 }
 
 function legacyNodes(snapshot: SemanticGraphSnapshot, selected: ReadonlySet<string>): LayoutNode[] {
@@ -118,9 +187,11 @@ export const naturalProjection: MathematicalProjection<'natural'> = {
     }));
     const previous = parameters.continuityAnchors
       ? new Map(Object.entries(parameters.continuityAnchors).sort(([a], [b]) => compare(a, b))) : undefined;
-    const layout = computeLayout({ nodes, edges, organization: 'flat',
-      morphology: layoutMorphology[parameters.arrangement], projection: parameters.dimension,
+    const dispatch = NATURAL_ARRANGEMENT_LAYOUT_DISPATCH[parameters.arrangement];
+    const layout = computeLayout({ nodes, edges, organization: dispatch.legacyOrganization,
+      morphology: dispatch.legacyMorphology, projection: parameters.dimension,
       ...(previous === undefined ? {} : { previous }) });
+    assertPinnedDispatch(parameters.arrangement, dispatch, layout);
     if (layout.positions.size !== domain.nodeIds.length) throw new Error('Natural layout omitted a domain node');
     const expanded = parameters.dimension === '3d'
       ? applyExpansion(canonicalize(layout.positions), {

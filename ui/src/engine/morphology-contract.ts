@@ -1,9 +1,11 @@
 import type { Morphology } from "#engine/morphology.ts";
+import type { Organization } from "#engine/organization.ts";
 
 /** Core-size adjustment for Stellar pearls inside the 3D Indra shells. */
 export const STELLAR_INDRA_3D_NODE_SCALE = 0.65;
+/** Style-only path: the scale reads the morphology style and the canonical organization name, accepting the legacy `flat` alias of `natural` with identical pixels. */
 export function stellarIndra3dNodeRadiusPx(radius: number, morphology: Morphology,
-  organization: "flat" | "indra", projection: "2d" | "3d"): number {
+  organization: Organization, projection: "2d" | "3d"): number {
   return radius * (morphology === "stellar" && organization === "indra" && projection === "3d"
     ? STELLAR_INDRA_3D_NODE_SCALE : 1);
 }
@@ -17,7 +19,8 @@ export type MorphologyGeometryContract = {
   readonly terminals: "point" | "soma" | "fine-tip";
   readonly hover: { readonly radiusMultiplier: number; readonly brightnessMultiplier: number };
   readonly focus: { readonly radiusMultiplier: number; readonly brightnessMultiplier: number };
-  readonly organizations: readonly ["flat", "indra"];
+  /** Canonical organization vocabulary each style draws under; the legacy `flat` alias of `natural` is accepted at runtime, never listed. */
+  readonly organizations: readonly ["natural", "indra"];
 };
 
 export const MORPHOLOGY_CONTRACT: Readonly<Record<Morphology, MorphologyGeometryContract>> = {
@@ -33,7 +36,7 @@ export const MORPHOLOGY_CONTRACT: Readonly<Record<Morphology, MorphologyGeometry
     edge: { path: "straight", amplitude: [0, 0], periods: [0, 0], taper: [1, 1], widthVariation: 0 },
     branching: "individual", terminals: "point",
     hover: { radiusMultiplier: 1.2, brightnessMultiplier: 1.2 }, focus: { radiusMultiplier: 1.3, brightnessMultiplier: 1.3 },
-    organizations: ["flat", "indra"],
+    organizations: ["natural", "indra"],
   },
   neural: {
     node: { shape: "soma", scale: 0.85, maxRadiusPx: 11, brightness: [0.64, 1] },
@@ -47,7 +50,7 @@ export const MORPHOLOGY_CONTRACT: Readonly<Record<Morphology, MorphologyGeometry
     edge: { path: "soft-curve", amplitude: [0.06, 0.14], periods: [0, 0], taper: [2.4, 2.2], widthVariation: 0.3 },
     branching: "topological", terminals: "soma",
     hover: { radiusMultiplier: 1.15, brightnessMultiplier: 1.2 }, focus: { radiusMultiplier: 1.25, brightnessMultiplier: 1.3 },
-    organizations: ["flat", "indra"],
+    organizations: ["natural", "indra"],
   },
   mycelium: {
     node: { shape: "junction", scale: 0.48, maxRadiusPx: 5, brightness: [0.55, 0.9] },
@@ -55,6 +58,6 @@ export const MORPHOLOGY_CONTRACT: Readonly<Record<Morphology, MorphologyGeometry
     edge: { path: "wave", amplitude: [0.04, 0.055], periods: [1.5, 1.5], taper: [0.8, 0.55], widthVariation: 0.45 },
     branching: "shared-trunks", terminals: "fine-tip",
     hover: { radiusMultiplier: 1.2, brightnessMultiplier: 1.2 }, focus: { radiusMultiplier: 1.3, brightnessMultiplier: 1.3 },
-    organizations: ["flat", "indra"],
+    organizations: ["natural", "indra"],
   },
 };

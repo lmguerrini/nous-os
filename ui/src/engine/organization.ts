@@ -3,14 +3,34 @@ import type { Coordinates, EngineGraph } from "#engine/contract.ts";
 import { aggregateDiscs, aggregateMemberships, layoutAnchors } from "#engine/layout.ts";
 import type { LayoutAnchors } from "#engine/layout.ts";
 
-/** This is an organization mode and does not change graph membership. */
-export type Organization = "flat" | "indra";
+/** This is the canonical organization vocabulary and does not change graph membership: `natural` names the continuous mode the legacy spelling called `flat`. */
+export type CanonicalOrganization = "natural" | "indra";
 
-/** This is the default organization and does not imply absence of aggregates. */
-export const FLAT: Organization = "flat";
+/** This is the legacy `flat` spelling of NATURAL, accepted at every organization input while tranche C migrates producers and never written by new engine results. */
+export type LegacyOrganization = "flat";
+
+/** This is an organization mode and does not change graph membership: the canonical names plus the accepted legacy alias. */
+export type Organization = CanonicalOrganization | LegacyOrganization;
+
+/** This is the canonical continuous organization and does not imply absence of aggregates. */
+export const NATURAL: CanonicalOrganization = "natural";
+
+/** This is the legacy spelling of NATURAL, kept for existing callers; accept it in inputs, never emit it in results. */
+export const FLAT: LegacyOrganization = "flat";
 
 /** This is the aggregate-window organization and does not create nested groups. */
-export const INDRA: Organization = "indra";
+export const INDRA: CanonicalOrganization = "indra";
+
+/** This normalizes the accepted legacy alias to the canonical vocabulary and refuses every spelling outside the closed register. */
+export function normalizeOrganization(organization: string): CanonicalOrganization {
+  if (organization === NATURAL || organization === INDRA) {
+    return organization;
+  }
+  if (organization === FLAT) {
+    return NATURAL;
+  }
+  throw new TypeError(`organization is outside its closed vocabulary: ${organization}`);
+}
 
 /** This is one world-space rectangle and does not establish screen bounds. */
 export type Bounds = {
@@ -32,17 +52,17 @@ export type AggregateWindow = {
 
 /** This is an organization result and does not add, remove, or reorder graph elements. */
 export type OrganizationResult = {
-  readonly organization: Organization;
+  readonly organization: CanonicalOrganization;
   readonly nodeIds: readonly string[];
   readonly edgeIds: readonly string[];
   readonly windows: readonly AggregateWindow[];
   readonly rejectionBounds: readonly { readonly id: string; readonly bounds: Bounds }[];
 };
 
-/** This renders no aggregate windows and does not conceal aggregate nodes or edges. */
-export function flatOrganization(graph: EngineGraph, anchors: LayoutAnchors = layoutAnchors(graph)): OrganizationResult {
+/** This renders no aggregate windows and does not conceal aggregate nodes or edges. Canonical entry point of the continuous organization: the result carries NATURAL, never the legacy spelling. */
+export function naturalOrganization(graph: EngineGraph, anchors: LayoutAnchors = layoutAnchors(graph)): OrganizationResult {
   return {
-    organization: FLAT,
+    organization: NATURAL,
     nodeIds: graph.nodes.map((node) => node.id),
     edgeIds: graph.edges.map((edge) => edge.id),
     windows: [],
@@ -54,6 +74,11 @@ export function flatOrganization(graph: EngineGraph, anchors: LayoutAnchors = la
       return { id: node.id, bounds: pointBounds(anchor) };
     }),
   };
+}
+
+/** Legacy alias of `naturalOrganization` for callers still on the old vocabulary; the returned result is identical and canonical. */
+export function flatOrganization(graph: EngineGraph, anchors: LayoutAnchors = layoutAnchors(graph)): OrganizationResult {
+  return naturalOrganization(graph, anchors);
 }
 
 /** This renders one-level discs over real members and does not treat rejection as containment. */

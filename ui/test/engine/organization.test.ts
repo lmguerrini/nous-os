@@ -7,12 +7,16 @@ import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import type { EngineGraph } from "#engine/contract.ts";
 import { aggregateMemberships, layoutAnchors } from "#engine/layout.ts";
 import {
+  FLAT,
   INDRA,
+  NATURAL,
   assertIndraLayout,
   assertIndraOrganization,
   flatOrganization,
   indraLayout,
   indraOrganization,
+  naturalOrganization,
+  normalizeOrganization,
   rejectionBoundsDisjointFromWindows,
 } from "#engine/organization.ts";
 
@@ -52,7 +56,7 @@ test("Indra reserves disjoint discs before placing members and non-members, on t
   // never came close enough to overlap under the old N-linear disc radius or
   // the corrected sqrt(member count) one, so a passing suite here proved
   // nothing about cross-community disc separation. indra-community-windows.json
-  // is the fixture on which discs actually overlapped (auditor-measured: 6
+  // is the fixture on which discs actually overlapped (measured: 6
   // pairwise overlaps, 8 nodes geometrically inside a window they were not a
   // governed member of) before aggregateDiscs' region placement was corrected
   // to keep every community's own discs clear of every other community's.
@@ -307,3 +311,21 @@ function requiredNodeAnchor(anchors: ReadonlyMap<string, { readonly x: number; r
   }
   return anchor;
 }
+
+test("natural is canonical: the legacy flat alias normalizes to it and new results never carry the legacy spelling", () => {
+  const visualGraph = graph();
+  assert.equal(normalizeOrganization("flat"), NATURAL);
+  assert.equal(normalizeOrganization(FLAT), NATURAL);
+  assert.equal(normalizeOrganization("natural"), NATURAL);
+  assert.equal(normalizeOrganization("indra"), INDRA);
+  assert.throws(() => normalizeOrganization("organic"), TypeError);
+  const natural = naturalOrganization(visualGraph);
+  const legacy = flatOrganization(visualGraph);
+  assert.deepEqual(legacy, natural);
+  assert.equal(natural.organization, NATURAL);
+  assert.notEqual(natural.organization, FLAT);
+  assert.equal(natural.windows.length, 0);
+  assert.equal(natural.nodeIds.length, visualGraph.nodes.length);
+  assert.equal(natural.edgeIds.length, visualGraph.edges.length);
+  assert.throws(() => assertIndraOrganization(visualGraph, natural), TypeError);
+});

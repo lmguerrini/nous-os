@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildMorphologyGeometry, type MorphologySegment } from "#engine/morphology-geometry.ts";
-import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
+import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "#engine/morphology-contract.ts";
+import { FLAT, NATURAL } from "#engine/organization.ts";
 import type { Coordinates } from "#engine/contract.ts";
 
 const nodes = [
@@ -98,4 +99,19 @@ test("Mycelium keeps a visible, regular wave on short links", () => {
 test("geometry is deterministic", () => {
   for (const morphology of ["stellar", "neural", "mycelium"] as const)
     assert.deepEqual(buildMorphologyGeometry(morphology, nodes, edges, colony), buildMorphologyGeometry(morphology, nodes, edges, colony));
+});
+
+test("organizations vocabulary is canonical natural/indra and the style-only path accepts the legacy flat alias", () => {
+  for (const morphology of ["stellar", "neural", "mycelium"] as const) {
+    assert.deepEqual(MORPHOLOGY_CONTRACT[morphology]!.organizations, ["natural", "indra"]);
+  }
+  assert.equal(stellarIndra3dNodeRadiusPx(12, "stellar", FLAT, "3d"), 12);
+  assert.equal(stellarIndra3dNodeRadiusPx(12, "stellar", NATURAL, "3d"), 12);
+  assert.equal(
+    stellarIndra3dNodeRadiusPx(12, "stellar", "natural", "3d"),
+    stellarIndra3dNodeRadiusPx(12, "stellar", "flat", "3d"),
+  );
+  assert.ok(Math.abs(stellarIndra3dNodeRadiusPx(12, "stellar", "indra", "3d") - 12 * 0.65) < 1e-9);
+  assert.equal(stellarIndra3dNodeRadiusPx(12, "neural", "indra", "3d"), 12);
+  assert.equal(stellarIndra3dNodeRadiusPx(12, "stellar", "indra", "2d"), 12);
 });
