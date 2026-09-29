@@ -43,6 +43,7 @@ const words: Record<string, string> = {
     user: 'fondatore', assistant: 'assistente',
 };
 const term = (s: string | undefined) => s ? words[s] ?? s.toLocaleLowerCase('it') : '';
+const CAMERA_NAVIGATION_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 /** D-072 R1: the log-once guard for a failed view remount. The user reads the status notice,
  * the console keeps a single record of the first cause — a condition to fix, not to narrate. */
 let mountFailureLogged = false;
@@ -151,6 +152,7 @@ export class V2Page {
             root.addEventListener(type, () => { this.userMovedSinceFit = true; this.noteCameraIntent(); }, { passive: true });
         root?.addEventListener('keydown', event => {
             if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+            if (!CAMERA_NAVIGATION_KEYS.has(event.key)) return;
             this.userMovedSinceFit = true;
             this.noteCameraIntent();
         });
@@ -431,18 +433,26 @@ export class V2Page {
                 }
                 catch {
                     this.noteCameraIntent();
-                    this.programmaticCamera(); await this.view.fit(); this.programmaticCamera();
-                    this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
-                    this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
+                    const fitEpoch = this.cameraIntentEpoch;
+                    this.programmaticCamera(); await this.view.fit();
+                    if (fitEpoch === this.cameraIntentEpoch) {
+                        this.programmaticCamera();
+                        this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
+                        this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
+                    }
                 }
             } else if (cameraAction === "refit") {
                 this.noteCameraIntent();
-                this.programmaticCamera(); await this.view.fit(); this.programmaticCamera();
-                this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
-                this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
-                this.confirmFit(this.view);
+                const fitEpoch = this.cameraIntentEpoch;
+                this.programmaticCamera(); await this.view.fit();
+                if (fitEpoch === this.cameraIntentEpoch) {
+                    this.programmaticCamera();
+                    this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
+                    this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
+                    this.confirmFit(this.view, fitEpoch);
+                }
             }
-            if (!old) this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
+            if (!old) { this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false; }
             if (this.overviewRatio === null) {
                 const camera = this.view.readCamera() as {
                     ratio?: number;
@@ -726,7 +736,17 @@ export class V2Page {
     }
     async setPalette(value: PaletteValues) { this.palette = value; await this.refresh(); }
     async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
-    async fit() { this.noteCameraIntent(); this.programmaticCamera(); await this.view?.fit(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
+    async fit() {
+        this.noteCameraIntent();
+        const fitEpoch = this.cameraIntentEpoch;
+        this.programmaticCamera();
+        await this.view?.fit();
+        if (fitEpoch !== this.cameraIntentEpoch) return;
+        this.programmaticCamera();
+        this.lastFitCamera = this.view?.readCamera() ?? null;
+        this.userMovedSinceFit = false;
+        this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
+    }
     async reset() { this.noteCameraIntent(); this.selected = null; this.view?.select(null); this.renderPanel(); this.programmaticCamera(); await this.view?.resetCamera(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
     async frame(id: string) { this.noteCameraIntent(); this.programmaticCamera(); await this.view?.frame([id]); this.programmaticCamera(); }
     camera() {
@@ -745,11 +765,10 @@ export class V2Page {
     get semanticZoomEnabled() { return this.zoomOn; }
     /** After an automatic refit, check once that every visible node landed in view (the panel and insets can settle
      * after the fit) and refit a single time if not, unless the user has taken the camera meanwhile. */
-    private confirmFit(view: ProductView, attempt = 0): void {
+    private confirmFit(view: ProductView, scheduledEpoch: number, attempt = 0): void {
         // The side panel can change the canvas width after the fit (its column follows its content), so check again a
         // few times while the view settles.
         if (this.confirmFitTimer !== null) clearTimeout(this.confirmFitTimer);
-        const scheduledEpoch = this.cameraIntentEpoch;
         this.confirmFitTimer = window.setTimeout(() => {
             this.confirmFitTimer = null;
             if (view !== this.view || scheduledEpoch !== this.cameraIntentEpoch || this.userMovedSinceFit) return;
@@ -760,7 +779,7 @@ export class V2Page {
             if (!confirmFitDue({ scheduledEpoch, currentEpoch: this.cameraIntentEpoch, userMoved: this.userMovedSinceFit, anyOutside: outside })) return;
             const refit = this.fit();
             const refitEpoch = this.cameraIntentEpoch;
-            void refit.then(() => { if (attempt < 2 && refitEpoch === this.cameraIntentEpoch) this.confirmFit(view, attempt + 1); });
+            void refit.then(() => { if (attempt < 2 && refitEpoch === this.cameraIntentEpoch) this.confirmFit(view, refitEpoch, attempt + 1); });
         }, 700);
     }
     private noteCameraIntent(): void {

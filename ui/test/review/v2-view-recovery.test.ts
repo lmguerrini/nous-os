@@ -43,6 +43,7 @@ writeFileSync(bundlePath, bundled.outputFiles[0]!.text);
 const fakeElement = (hidden = false) => {
   const el = {
     children: [] as unknown[], style: {} as Record<string, string>, dataset: {} as Record<string, string>,
+    listeners: new Map<string, Array<(event: { key: string; target: object }) => void>>(),
     parent: null as { children: unknown[] } | null,
     textContent: "", hidden,
     className: "", title: "", id: "", disabled: false, onclick: null as null | (() => void),
@@ -59,13 +60,20 @@ const fakeElement = (hidden = false) => {
       this.parent = null;
     },
     getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; },
-    addEventListener() { }, setAttribute() { }, toggleAttribute() { },
+    addEventListener(type: string, listener: (event: { key: string; target: object }) => void) {
+      const listeners = this.listeners.get(type) ?? [];
+      listeners.push(listener);
+      this.listeners.set(type, listeners);
+    },
+    dispatchKey(key: string) { for (const listener of this.listeners.get('keydown') ?? []) listener({ key, target: {} }); },
+    setAttribute() { }, toggleAttribute() { },
   };
   return el;
 };
 const elements = new Map<string, ReturnType<typeof fakeElement>>();
 for (const [id, hidden] of [["status", false], ["error", true], ["counter", false], ["render-root", false],
-  ["details", false], ["focus-chip", true], ["back", false], ["v2-undo", false], ["v2-redo", false], ["v2-cap", false]] as const)
+  ["details", false], ["focus-chip", true], ["back", false], ["v2-undo", false], ["v2-redo", false], ["v2-cap", false],
+  ["expand", false], ["projection-focus", false], ["fullscreen-focus", false]] as const)
   elements.set(id, fakeElement(hidden));
 Object.assign(globalThis, {
   WebGL2RenderingContext: { BOOL: 1, BYTE: 2, UNSIGNED_BYTE: 3, SHORT: 4, UNSIGNED_SHORT: 5, INT: 6, UNSIGNED_INT: 7, FLOAT: 8 },
@@ -78,6 +86,8 @@ Object.assign(globalThis, {
     body: fakeElement(),
   },
   window: { matchMedia: () => ({ matches: false }), setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), addEventListener() { } },
+  HTMLInputElement: class HTMLInputElement {},
+  HTMLTextAreaElement: class HTMLTextAreaElement {},
 });
 const { V2Page: V2PageClass, resetMountFailureLog, confirmFitDue } =
   await import(pathToFileURL(bundlePath).href) as typeof import("../../src/review/v2-page.ts");
@@ -170,6 +180,120 @@ function makePage(deps: V2PageDeps = {}, discloseConversations = false): V2Page 
         (page as unknown as { auto: Set<string> }).auto.add(n.id);
   return page;
 }
+
+function deferredFitView() {
+  let releaseFit: (() => void) | null = null;
+  let fitStarted: (() => void) | null = null;
+  const started = new Promise<void>(resolve => { fitStarted = resolve; });
+  let camera = 'initial';
+  let fitCalls = 0;
+  let witnessCalls = 0;
+  const createView: CreateProductView = async input => {
+    const created = await fakeCreateView(input);
+    created.readCamera = () => ({ ratio: camera === 'initial' ? 1 : camera === 'overview' ? 2 : 4, focus: camera }) as ReturnType<ProductView['readCamera']>;
+    created.fit = async () => {
+      fitCalls++;
+      camera = 'overview';
+      fitStarted?.();
+      await new Promise<void>(resolve => { releaseFit = resolve; });
+    };
+    created.frame = async () => { camera = 'selection'; };
+    const witness = created.witness.bind(created);
+    created.witness = () => {
+      witnessCalls++;
+      return { ...witness(), nodeViewport: { outside: { x: 900, y: 300 } } };
+    };
+    return created;
+  };
+  return { createView, started, release: () => { assert.ok(releaseFit); releaseFit(); },
+    camera: () => camera, fitCalls: () => fitCalls, witnessCalls: () => witnessCalls };
+}
+
+function captureConfirmations() {
+  const browserWindow = globalThis.window as typeof window;
+  const original = browserWindow.setTimeout;
+  const confirmations: Array<() => void> = [];
+  browserWindow.setTimeout = ((callback: TimerHandler, delay?: number) => {
+    if (delay === 700) { confirmations.push(callback as () => void); return 999_999; }
+    return original(callback, delay);
+  }) as typeof window.setTimeout;
+  return { confirmations, restore: () => { browserWindow.setTimeout = original; } };
+}
+
+test("a refit resolved after selection cannot schedule confirmation or replace the selection camera", async () => {
+  failMounts = false;
+  const fake = deferredFitView();
+  const page = makePage({ createView: fake.createView });
+  const timers = captureConfirmations();
+  try {
+    await page.refresh();
+    const before = (page as unknown as { lastFitCamera: unknown }).lastFitCamera;
+    const refresh = page.setAxes({ projection: '3d' });
+    await fake.started;
+    const cache = (page as unknown as { detailCache: Map<string, Record<string, unknown>> }).detailCache;
+    cache.set('domain:alfa', {});
+    await page.select('domain:alfa');
+    assert.equal(fake.camera(), 'selection');
+    (page as unknown as { userMovedSinceFit: boolean }).userMovedSinceFit = true;
+    fake.release();
+    await refresh;
+    assert.equal(timers.confirmations.length, 0);
+    assert.equal(fake.fitCalls(), 1);
+    assert.equal(fake.camera(), 'selection');
+    assert.deepEqual((page as unknown as { lastFitCamera: unknown }).lastFitCamera, before);
+    assert.equal((page as unknown as { userMovedSinceFit: boolean }).userMovedSinceFit, true);
+    assert.equal((page as unknown as { overviewRatio: number }).overviewRatio, 1);
+  } finally { timers.restore(); }
+});
+
+test("an uninterrupted refit schedules and performs one confirmation", async () => {
+  failMounts = false;
+  const fake = deferredFitView();
+  const page = makePage({ createView: fake.createView });
+  const timers = captureConfirmations();
+  try {
+    await page.refresh();
+    const refresh = page.setAxes({ projection: '3d' });
+    await fake.started;
+    fake.release();
+    await refresh;
+    assert.equal(timers.confirmations.length, 1);
+    assert.equal((page as unknown as { overviewRatio: number }).overviewRatio, 2);
+    const before = fake.witnessCalls();
+    timers.confirmations[0]!();
+    assert.equal(fake.witnessCalls(), before + 1, 'the confirmation inspected the fitted view once');
+    assert.equal(fake.fitCalls(), 2, 'an outside node triggers its one permitted refit');
+  } finally { timers.restore(); }
+});
+
+test("an explicit fit resolved after selection keeps the newer camera baseline", async () => {
+  failMounts = false;
+  const fake = deferredFitView();
+  const page = makePage({ createView: fake.createView });
+  await page.refresh();
+  const before = (page as unknown as { lastFitCamera: unknown }).lastFitCamera;
+  const fitting = page.fit();
+  await fake.started;
+  const cache = (page as unknown as { detailCache: Map<string, Record<string, unknown>> }).detailCache;
+  cache.set('domain:alfa', {});
+  await page.select('domain:alfa');
+  fake.release();
+  await fitting;
+  assert.equal(fake.camera(), 'selection');
+  assert.deepEqual((page as unknown as { lastFitCamera: unknown }).lastFitCamera, before);
+  assert.equal((page as unknown as { overviewRatio: number }).overviewRatio, 1);
+});
+
+test("only camera navigation keys mark user camera motion", () => {
+  const page = makePage();
+  const root = elements.get('render-root')!;
+  const epoch = (page as unknown as { cameraIntentEpoch: number }).cameraIntentEpoch;
+  root.dispatchKey('Enter');
+  assert.equal((page as unknown as { cameraIntentEpoch: number }).cameraIntentEpoch, epoch);
+  root.dispatchKey('ArrowLeft');
+  assert.equal((page as unknown as { cameraIntentEpoch: number }).cameraIntentEpoch, epoch + 1);
+  assert.equal((page as unknown as { userMovedSinceFit: boolean }).userMovedSinceFit, true);
+});
 
 test("a failing mount keeps the old view: no destroy, labels unchanged, a notice not the banner", async () => {
   resetMountFailureLog();
