@@ -81,6 +81,28 @@ export type LodArcInfo = {
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
+/** Explicit disclosure tiers, computed only over nodes actually available after the cap. */
+export function manualExpansionTiers(
+  nodes: readonly LodNodeInfo[], manualOrder: readonly string[], pageSize: number,
+): { pinnedContainers: Set<string>; pinnedChildren: string[]; priorityChildren: string[] } {
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  const children = new Map<string, LodNodeInfo[]>();
+  for (const node of nodes) if (node.parent && byId.has(node.parent))
+    (children.get(node.parent) ?? children.set(node.parent, []).get(node.parent)!).push(node);
+  const ranked = (a: LodNodeInfo, b: LodNodeInfo) => b.importance - a.importance || compare(a.id, b.id);
+  for (const list of children.values()) list.sort(ranked);
+  const order = [...new Set(manualOrder)].filter(id => byId.has(id));
+  const latest = order.at(-1);
+  const pinnedChildren = (latest ? children.get(latest) ?? [] : []).slice(0, pageSize).map(node => node.id);
+  const pinned = new Set(pinnedChildren);
+  const priorityChildren: string[] = [];
+  const seen = new Set(pinnedChildren);
+  for (const id of order.slice(0, -1).toReversed())
+    for (const node of children.get(id) ?? [])
+      if (!seen.has(node.id)) { seen.add(node.id); priorityChildren.push(node.id); }
+  return { pinnedContainers: new Set(order), pinnedChildren, priorityChildren };
+}
+
 /** The community of a node: its level-1 ancestor (itself for a domain). Pure, memoized; the
  * resolver walks the declared parent chain only and falls back to the node itself. */
 export function communityResolver(
@@ -136,13 +158,12 @@ export type SelectNodesInput = {
   readonly nodes: readonly LodNodeInfo[];
   readonly level: LodLevel;
   readonly budget: number;
-  /** The explicit set: the selection with its parents, the hovered focus, and every child of a
-   * node the user expanded by hand. Kept even when the budget is tight. */
+  /** Selection path, hover, expanded containers, and at most one page of recent children. */
   readonly pinned: ReadonlySet<string>;
   /** The node or domain the reading is about; drives the near-level neighbourhood. */
   readonly focus: string | null;
-  /** Visible members of the selected aggregate, admitted before ordinary LOD fill. */
-  readonly priority?: ReadonlySet<string>;
+  /** Visible focus or earlier-expansion members, admitted within the budget in caller order. */
+  readonly priority?: ReadonlySet<string> | readonly string[];
   readonly adjacency: ReadonlyMap<string, readonly string[]>;
   readonly communityOf: (id: string) => string;
 };
@@ -157,9 +178,10 @@ export type LodNodeSelection = {
 /** Choose the nodes actually rendered from the available (disclosed) set.
  *
  * Structural role first, then importance, ids as the only tie-breaker:
- * 1. the explicit set (selection with its parents, focus, children of a manual expansion);
- * 2. the domains, which anchor every level;
- * 3. near only: the focus neighbourhood, two hops;
+ * 1. the explicit set (selection path, hover, expanded containers, recent children);
+ * 2. earlier expansion children and focus members within the budget;
+ * 3. the domains, which anchor every level;
+ * 4. near only: the focus neighbourhood, two hops;
  * 4. the aggregate tier (level 2) by importance;
  * 5. far: hubs by relation degree; intermediate and near: the principal nodes of each
  *    community, round-robin by importance so no community hogs the budget.
@@ -178,8 +200,11 @@ export function selectNodes(input: SelectNodesInput): LodNodeSelection {
     rendered.push(id);
   };
   for (const id of [...input.pinned].sort(compare)) add(id, true);
+  const priority = input.priority instanceof Set
+    ? [...input.priority].sort((a, b) => (byId.get(b)?.importance ?? 0) - (byId.get(a)?.importance ?? 0) || compare(a, b))
+    : input.priority ?? [];
+  for (const id of priority) add(id);
   for (const node of [...input.nodes].filter(node => node.level === 1).sort((a, b) => compare(a.id, b.id))) add(node.id);
-  for (const node of [...input.nodes].filter(node => input.priority?.has(node.id)).sort((a, b) => b.importance - a.importance || compare(a.id, b.id))) add(node.id);
   if (input.level === "near" && input.focus && byId.has(input.focus)) {
     add(input.focus);
     const seen = new Set([input.focus]);
@@ -268,10 +293,9 @@ export const EXPLORATORY_RESERVE_SHARE = 0.35;
 export type SelectArcsInput = {
   readonly arcs: readonly LodArcInfo[];
   readonly budget: number;
-  /** Arc ids always kept: the selected relation, the contains path of the selection, the arcs a
-   * manual expansion opened. */
+  /** Arc ids always kept: selected relation, selection path, and recent pinned children. */
   readonly pinned: ReadonlySet<string>;
-  /** The focus node; its relations come right after the pinned ones and are never hidden. */
+  /** The focus node; its relations are ranked within the budget. */
   readonly focus: string | null;
   /** Focus's strongest bridges and internal relations before ordinary LOD fill. */
   readonly priority?: readonly string[];
@@ -280,20 +304,17 @@ export type SelectArcsInput = {
   readonly keepExploratory: boolean;
 };
 
-/** Ids admitted outside the arc budget: explicit pins and every relation incident to focus. */
+/** Ids admitted outside the arc budget: explicit pins only. */
 export function forcedArcIds(input: Pick<SelectArcsInput, "arcs" | "pinned" | "focus">): readonly string[] {
   const forced = new Set<string>();
   const available = new Set(input.arcs.map(arc => arc.id));
   for (const id of [...input.pinned].sort(compare)) if (available.has(id)) forced.add(id);
-  if (input.focus !== null)
-    for (const arc of [...input.arcs].sort((a, b) => compare(a.id, b.id)))
-      if (arc.source === input.focus || arc.target === input.focus) forced.add(arc.id);
   return [...forced];
 }
 
 /** Choose the arcs actually drawn. Priority order, deterministic within each tier (count
- * descending, then id): 1. selected or focus; 2. bridges between communities; 3. attested by
- * weight; 4. exploratory — kept visible within the budget whenever the reading shows them, at
+ * descending, then id): 1. explicit pins; 2. expansion/focus priority and focus incidents;
+ * 3. bridges between communities; 4. attested by weight; 5. exploratory — kept visible within the budget whenever the reading shows them, at
  * which point the lowest-priority non-bridge attested arcs give way. */
 export function selectArcs(input: SelectArcsInput): readonly string[] {
   const byId = new Map(input.arcs.map(arc => [arc.id, arc]));
@@ -309,6 +330,7 @@ export function selectArcs(input: SelectArcsInput): readonly string[] {
     input.focus !== null && (arc.source === input.focus || arc.target === input.focus);
   for (const id of forcedArcIds(input)) take(id, true);
   for (const id of input.priority ?? []) take(id);
+  for (const arc of [...input.arcs].filter(incident).sort((a, b) => b.count - a.count || compare(a.id, b.id))) take(arc.id);
   const isBridge = (arc: LodArcInfo): boolean => input.communityOf(arc.source) !== input.communityOf(arc.target);
   const byWeight = (a: LodArcInfo, b: LodArcInfo) => b.count - a.count || compare(a.id, b.id);
   const bridges: LodArcInfo[] = [];
@@ -325,6 +347,7 @@ export function selectArcs(input: SelectArcsInput): readonly string[] {
   exploratory.sort(byWeight);
   for (const arc of [...bridges, ...attested, ...exploratory]) take(arc.id);
   if (input.keepExploratory) {
+    const priority = new Set(input.priority ?? []);
     const available = input.arcs.filter(arc => arc.class === "exploratory").length;
     const target = Math.min(available, Math.floor(input.budget * EXPLORATORY_RESERVE_SHARE));
     const pending = exploratory.filter(arc => !kept.has(arc.id));
@@ -332,7 +355,7 @@ export function selectArcs(input: SelectArcsInput): readonly string[] {
       let victim = -1;
       for (let index = chosen.length - 1; index >= 0; index--) {
         const arc = byId.get(chosen[index]!)!;
-        if (arc.class === "attested" && !isBridge(arc) && !input.pinned.has(arc.id) && !incident(arc)) {
+        if (arc.class === "attested" && !isBridge(arc) && !input.pinned.has(arc.id) && !priority.has(arc.id) && !incident(arc)) {
           victim = index;
           break;
         }

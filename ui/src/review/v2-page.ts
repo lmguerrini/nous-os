@@ -9,7 +9,7 @@ import { projectRelations } from './v2-relations.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
-import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, normalizeDensity, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
+import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, manualExpansionTiers, normalizeDensity, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
 import { lodRefreshDue } from './render-schedule.ts';
 import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
 import { labelBudgetOf } from './labels.ts';
@@ -297,17 +297,24 @@ export class V2Page {
             );
             const communityOf = communityResolver(this.index.nodes);
             const adjacency = adjacencyOf(disclosed.nodes, this.index.edges);
-            const pinned = this.pinnedNodeIds();
+            const tiers = manualExpansionTiers(
+                disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
+                this.history.state.manualOrder, V2_PAGE,
+            );
+            const pinned = this.pinnedNodeIds(tiers);
             // D-072 R1: a selection failure keeps the last mounted selection verbatim
             // (`safeSelectNodes`), so the drawing never loses its node set — or its labels.
             const focusPriority = this.selected ? focusMembers(disclosed.nodes, this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested'), this.selected) : null;
+            const byImportance = new Map(disclosed.nodes.map(node => [node.id, node.importance.value]));
+            const priority = [...tiers.priorityChildren, ...[...(focusPriority ?? [])]
+                .sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
             const selection = this.selectLod({
                 nodes: disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
                 level: this.lod,
                 budget: budget.nodes,
                 pinned,
                 focus: active,
-                ...(focusPriority ? { priority: focusPriority } : {}),
+                priority,
                 adjacency,
                 communityOf,
             }, this.lastNodeSelection);
@@ -329,9 +336,9 @@ export class V2Page {
             const arcSelectionInput = {
                 arcs: pool.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, class: edge.class, count: edge.count })),
                 budget: budget.arcs,
-                pinned: this.pinnedArcIds(),
+                pinned: this.pinnedArcIds(tiers),
                 focus: active,
-                priority: focusArcPriority,
+                priority: [...tiers.priorityChildren.map(id => `contains:${id}`), ...focusArcPriority],
                 communityOf,
                 keepExploratory: this.axes.reading !== 'attested',
             };
@@ -340,8 +347,9 @@ export class V2Page {
             if (this.neighbourhoodDepth) shown = pool.edges;
             else if (this.restoreNeighbourhood && this.neighbourhoodBefore) shown = this.neighbourhoodBefore.arcs;
             this.restoreNeighbourhood = false;
-            // D-072 FixA: pinned accounting. L1 keeps the explicit set (selection path, hovered,
-            // children of manual expansions) even beyond the budget, by design — so the budget
+            // D-072 L2: only the latest page of explicit children exceeds the budget; earlier
+            // expansion children compete inside it. The witness records the actual forced ids.
+            // The budget
             // binds on the unpinned fill and the witness says how many nodes the pins added.
             const pinnedRendered = [...pinned].filter(id => renderedIds.has(id)).sort();
             const pinnedArcsRendered = shown.map(edge => edge.id).filter(id => forcedArcSet.has(id)).sort();
@@ -605,7 +613,7 @@ export class V2Page {
                 child = byId.get(child.parent);
             }
             this.auto.clear();
-            this.history.change(state => { state.expanded = new Set(ancestors); for (const key of [...state.pages.keys()])
+            this.history.change(state => { state.expanded = new Set(ancestors); state.manualOrder = state.manualOrder.filter(id => state.expanded.has(id)); for (const key of [...state.pages.keys()])
                 if (!ancestors.includes(key))
                     state.pages.delete(key); });
         }
@@ -727,10 +735,8 @@ export class V2Page {
     }
     get densitySetting() { return this.density; }
     get lodLevel() { return this.lod; }
-    /** The explicit set of nodes no budget may drop: the selection with its whole parent path,
-     * the hovered focus, and every child of a node the user expanded by hand («Espandi»,
-     * «Mostra altri», reveal) — auto expansions by semantic zoom are not part of it. */
-    private pinnedNodeIds(): Set<string> {
+    /** The selection path, hover, explicit containers and newest bounded child page. */
+    private pinnedNodeIds(tiers: ReturnType<typeof manualExpansionTiers>): Set<string> {
         const byId = new Map(this.index.nodes.map(n => [n.id, n]));
         const pinned = new Set<string>();
         const addPath = (id: string) => {
@@ -746,17 +752,12 @@ export class V2Page {
             addPath(this.selected);
         if (this.hovered)
             pinned.add(this.hovered);
-        for (const id of this.history.state.expanded) {
-            pinned.add(id);
-            for (const node of this.index.nodes)
-                if (node.parent === id)
-                    pinned.add(node.id);
-        }
+        for (const id of tiers.pinnedContainers) pinned.add(id);
+        for (const id of tiers.pinnedChildren) pinned.add(id);
         return pinned;
     }
-    /** Arc ids no budget may drop: the selected relation, the contains arcs along the selection's
-     * parent path, and the contains arcs a manual expansion opened. */
-    private pinnedArcIds(): Set<string> {
+    /** Selected relation, selected path and containment arcs to the newest pinned children. */
+    private pinnedArcIds(tiers: ReturnType<typeof manualExpansionTiers>): Set<string> {
         const pinned = new Set<string>();
         const addPath = (id: string) => {
             let cursor = this.index.nodes.find(n => n.id === id);
@@ -772,10 +773,7 @@ export class V2Page {
             pinned.add(this.selected);
             addPath(this.selected);
         }
-        for (const id of this.history.state.expanded)
-            for (const node of this.index.nodes)
-                if (node.parent === id)
-                    pinned.add(`contains:${node.id}`);
+        for (const id of tiers.pinnedChildren) pinned.add(`contains:${id}`);
         return pinned;
     }
     /** Labels actually placed by the view in its last pass. */
@@ -985,6 +983,7 @@ export class V2Page {
         const shown = this.visible();
         return {
             expanded: [...this.history.state.expanded],
+            manualOrder: [...this.history.state.manualOrder],
             visible: shown.nodes.length,
             nodes: shown.nodes.map(node => ({ id: node.id, level: node.level, parent: node.parent })),
             counts: shown.counts,

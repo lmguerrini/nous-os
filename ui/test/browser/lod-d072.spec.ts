@@ -72,6 +72,39 @@ const notch = async (page: Page, direction: 1 | -1, settle = 400) => {
   await page.waitForTimeout(settle);
 };
 
+/** Zoom in four-notch groups, giving the deferred LOD refresh up to three seconds after each
+ * group. The level trace distinguishes a missed refresh from a camera that stopped zooming. */
+const zoomUntilNear = async (page: Page, assertion: string) => {
+  const trace: string[] = [];
+  let level = (await lod(page)).level;
+  trace.push(level);
+  let notches = 0;
+  while (level !== "near" && notches < 40) {
+    const groupSize = Math.min(4, 40 - notches);
+    for (let i = 0; i < groupSize; i += 1) await notch(page, 1, 0);
+    notches += groupSize;
+
+    const previous = level;
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const observed = (await lod(page)).level;
+      if (observed !== level) {
+        level = observed;
+        trace.push(level);
+        if (level === "near") break;
+      }
+      if (level !== previous) break;
+      await page.waitForTimeout(50);
+    }
+  }
+  if (level !== "near") {
+    const camera = await page.evaluate(() => (window as any).__d067.cameraState());
+    const ratio = camera && typeof camera === "object" ? camera.ratio : undefined;
+    expect(level, `${assertion}; zoom ratio=${String(ratio)}, level trace=${trace.join(" -> ")}`).toBe("near");
+  }
+  return { level, trace };
+};
+
 /** render-schedule.ts defers level refresh by LOD_REFRESH_IDLE_MS (300 ms), observed on the
  * page's 250 ms zoom tick. Poll after a crossing sequence because one notch's 400 ms settle
  * can finish before both scheduling intervals have elapsed. */
@@ -90,22 +123,25 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
     projection: "2d", organization: "flat", reading: "attested", morphology: "stellar",
   }));
   await disclose(page);
-  await waitForLevel(page, 'far');
-  await page.waitForTimeout(1100); // the page holds zoom reveals briefly after a refresh
+  await page.mouse.move(1, 1);
+  const focused = await page.evaluate(() => (window as any).__d067.witness().focus?.id as string | undefined);
+  if (focused) await page.evaluate(id => (window as any).__d067.select(id), focused);
+  await page.waitForTimeout(1100);
 
-  // The explicit set L1 pins beyond the budget: the selection's path, the hovered focus, and
-  // every child of a node expanded by hand. This spec selects and hovers nothing, so the pins
-  // here are exactly the expansion structure it built itself.
+  // The newest manual expansion contributes at most one page of pinned children.
   const disclosureState = await page.evaluate(() => {
     const state = (window as any).__d067.disclosure();
     return {
-      expanded: state.expanded as string[],
+      manualOrder: state.manualOrder as string[],
       nodes: state.nodes as Array<{ id: string; parent?: string }>,
+      visible: state.visible as number,
     };
   });
-  const allowedPinned = new Set<string>(disclosureState.expanded);
-  for (const node of disclosureState.nodes)
-    if (node.parent && disclosureState.expanded.includes(node.parent)) allowedPinned.add(node.id);
+  expect(disclosureState.visible, "manual disclosure reaches the cap").toBeGreaterThanOrEqual(800);
+  expect(disclosureState.manualOrder.length, "manual expansions were recorded").toBeGreaterThan(1);
+  const latest = disclosureState.manualOrder.at(-1)!;
+  const latestChildren = disclosureState.nodes.filter(node => node.parent === latest).map(node => node.id);
+  const allowedPinned = new Set<string>([...disclosureState.manualOrder, ...latestChildren]);
 
   const results: Record<string, LodWitness & { panel: string }> = {};
   const order = ["essential", "balanced", "complete", "balanced"] as const;
@@ -117,25 +153,24 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
     expect(witness.density, `density setting took effect`).toBe(density);
     if (density !== 'complete')
       expect(witness.nodes.available, `${density}: disclosed set binds the node budget`).toBeGreaterThan(budget.nodes);
-    // The budget binds on the unpinned fill; pinned children of manual expansions are accounted
-    // for explicitly, so the rule is testable rather than an invisible exception.
-    expect(witness.nodes.pinned, `${density}: the pinned set is counted`).toBeGreaterThan(0);
+    expect(witness.nodes.pinned, `${density}: explicit pins are bounded`)
+      .toBeLessThanOrEqual(60 + disclosureState.manualOrder.length);
     expect(witness.nodes.rendered, `${density}: nodes ≤ ${budget.nodes} + pinned`).toBeLessThanOrEqual(budget.nodes + witness.nodes.pinned);
     if (density === 'complete')
       expect(witness.nodes.rendered, 'complete: every available node fits within its 850 node budget')
         .toBeGreaterThanOrEqual(Math.min(witness.nodes.available, budget.nodes));
     for (const id of witness.nodes.pinnedIds)
-      expect(allowedPinned.has(id), `${density}: pinned ${id} is an expansion child or an expanded node`).toBe(true);
+      expect(allowedPinned.has(id), `${density}: pinned ${id} is a manual container or newest child`).toBe(true);
+    const drawn = new Set(await renderedIds(page));
+    for (const id of latestChildren)
+      expect(drawn.has(id), `${density}: newest child ${id} is visible`).toBe(true);
     expect(witness.arcs.rendered, `${density}: arcs ≤ ${budget.arcs} + pinned`).toBeLessThanOrEqual(budget.arcs + witness.arcs.pinned);
+    if (density !== "complete")
+      expect(witness.arcs.available, `${density}: disclosed arcs bind the arc budget`).toBeGreaterThan(budget.arcs);
     expect(witness.arcs.pinned, `${density}: forced arcs are counted`).toBe(witness.arcs.pinnedIds.length);
-    const pinnedNodes = new Set([...allowedPinned, ...witness.nodes.pinnedIds]);
-    const renderedRelations = new Map((witness.relations ?? []).map(arc => [arc.id, arc]));
-    for (const id of witness.arcs.pinnedIds) {
-      const arc = renderedRelations.get(id);
-      const selectedRelation = witness.focus?.id === id;
-      expect(selectedRelation || (!!arc && (pinnedNodes.has(arc.source) || pinnedNodes.has(arc.target))),
-        `${density}: pinned arc ${id} is incident to a pinned/expanded node or is the selected relation`).toBe(true);
-    }
+    const allowedArcs = new Set(latestChildren.map(id => `contains:${id}`));
+    for (const id of witness.arcs.pinnedIds)
+      expect(allowedArcs.has(id), `${density}: pinned arc ${id} contains a newest child`).toBe(true);
     // The per-density label allowance is the page's own truth and the view honours it at draw
     // time (FixA: product-view places labels within ViewInput.labelBudget).
     expect(witness.labels.available, `${density}: label allowance`).toBe(budget.labels);
@@ -151,8 +186,15 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
       results[density] = { ...witness, panel: panel.replace(/\n/g, " | ") };
   }
 
-  // Completa shows strictly more than Essenziale when the budget binds.
-  expect(results.complete!.nodes.rendered, "completa renders more nodes than essenziale").toBeGreaterThan(results.essential!.nodes.rendered);
+  // The same unpinned available set binds both smaller budgets, so rendering follows density.
+  expect(results.essential!.nodes.available, "essential has more available nodes than its budget")
+    .toBeGreaterThan(BUDGETS.essential.nodes);
+  expect(results.balanced!.nodes.available, "balanced has more available nodes than its budget")
+    .toBeGreaterThan(BUDGETS.balanced.nodes);
+  expect(results.essential!.nodes.rendered, "essenziale renders fewer nodes than bilanciata")
+    .toBeLessThan(results.balanced!.nodes.rendered);
+  expect(results.balanced!.nodes.rendered, "bilanciata renders fewer nodes than completa")
+    .toBeLessThan(results.complete!.nodes.rendered);
 
   // The selector reflects the state, and the choice survives a reload.
   await page.click('#density-control button[data-density="essential"]');
@@ -167,14 +209,7 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
   await page.evaluate(() => (window as any).__d067.fit());
   await waitForLevel(page, 'far');
   const initial = await lod(page);
-  let steps = 0;
-  let level = initial.level;
-  while (level !== "near" && steps < 40) {
-    await notch(page, 1, 350);
-    level = (await lod(page)).level;
-    steps += 1;
-  }
-  expect(level, "semantic zoom alone reaches the near level").toBe("near");
+  await zoomUntilNear(page, "semantic zoom alone reaches the near level");
   // Stay deep a while: the near level's progressive disclosure adds nodes on its own tick.
   await notch(page, 1, 350);
   await page.waitForTimeout(3000);
@@ -195,6 +230,41 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
   await writeFile(testInfo.outputPath("lod-budgets.json"), JSON.stringify(results, null, 2));
   console.log(`D-072 budgets: ${Object.entries(results).map(([name, cell]) =>
     `${name} nodes ${cell.nodes.rendered}/${cell.nodes.available} arcs ${cell.arcs.rendered}/${cell.arcs.available} labels ${cell.labels.rendered}/${cell.labels.available}`).join(" | ")}`);
+});
+
+test("D-072 manual expansion pins are included in node budget accounting", async ({ page }) => {
+  await ready(page);
+  await page.evaluate(() => (window as any).__d067.setAxes({
+    projection: "2d", organization: "flat", reading: "attested", morphology: "stellar",
+  }));
+  const candidate = await page.evaluate(() => {
+    const api = (window as any).__d067;
+    return api.disclosure().nodes.find((node: { level: number }) => node.level === 1)?.id;
+  });
+  expect(candidate, "a top-level node is available to expand").toBeTruthy();
+  await page.evaluate(async id => (window as any).__d067.expand(id), candidate);
+  const second = await page.evaluate(() => {
+    const api = (window as any).__d067;
+    return api.disclosure().nodes.find((node: { level: number }) => node.level === 2)?.id;
+  });
+  expect(second, "a child node is available for a second manual expansion").toBeTruthy();
+  await page.evaluate(async id => (window as any).__d067.expand(id), second);
+  await page.waitForTimeout(1100);
+
+  const state = await page.evaluate(() => (window as any).__d067.disclosure());
+  const expanded = new Set<string>(state.manualOrder);
+  const justified = new Set<string>(expanded);
+  const latest = state.manualOrder.at(-1);
+  for (const node of state.nodes)
+    if (node.parent === latest) justified.add(node.id);
+  await page.evaluate(() => (window as any).__d067.setDensity("essential"));
+  await page.waitForTimeout(1100);
+  const witness = await lod(page);
+  expect(witness.nodes.pinned, "manual expansion contributes accounted pins").toBeGreaterThan(0);
+  expect(witness.nodes.rendered, "manual pins are added to the node budget")
+    .toBeLessThanOrEqual(BUDGETS.essential.nodes + witness.nodes.pinned);
+  for (const id of witness.nodes.pinnedIds)
+    expect(justified.has(id), `pinned ${id} is a manual container or newest child`).toBe(true);
 });
 
 test("D-072 zoom levels have hysteresis: a notch of jitter changes nothing, crossing a band does", async ({ page }, testInfo) => {

@@ -19,6 +19,8 @@ export type V2Index = {
 export type DisclosureState = {
     expanded: Set<string>;
     pages: Map<string, number>;
+    /** Oldest to newest explicit expansion; initial open domains are absent. */
+    manualOrder: string[];
 };
 export type V2Visible = {
     nodes: V2Node[];
@@ -27,8 +29,8 @@ export type V2Visible = {
     capped: boolean;
     counts: Record<number, number>;
 };
-const copy = (s: DisclosureState): DisclosureState => ({ expanded: new Set(s.expanded), pages: new Map(s.pages) });
-export const emptyDisclosure = (): DisclosureState => ({ expanded: new Set(), pages: new Map() });
+const copy = (s: DisclosureState): DisclosureState => ({ expanded: new Set(s.expanded), pages: new Map(s.pages), manualOrder: [...s.manualOrder] });
+export const emptyDisclosure = (): DisclosureState => ({ expanded: new Set(), pages: new Map(), manualOrder: [] });
 export function v2Visible(index: V2Index, state: DisclosureState, auto: ReadonlySet<string> = new Set(), cap = V2_CAP): V2Visible {
     const byId = new Map(index.nodes.map(n => [n.id, n]));
     const children = new Map<string, V2Node[]>();
@@ -74,9 +76,12 @@ export class DisclosureHistory {
     private past: DisclosureState[] = [];
     private future: DisclosureState[] = [];
     change(fn: (s: DisclosureState) => void) { this.past.push(copy(this.state)); this.future = []; fn(this.state); }
-    expand(id: string) { this.change(s => { s.expanded.add(id); if (!s.pages.has(id))
+    private static recent(s: DisclosureState, id: string) {
+        s.manualOrder = [...s.manualOrder.filter(value => value !== id), id];
+    }
+    expand(id: string) { this.change(s => { s.expanded.add(id); DisclosureHistory.recent(s, id); if (!s.pages.has(id))
         s.pages.set(id, V2_PAGE); }); }
-    more(id: string) { this.change(s => { s.expanded.add(id); s.pages.set(id, (s.pages.get(id) ?? V2_PAGE) + V2_PAGE); }); }
+    more(id: string) { this.change(s => { s.expanded.add(id); DisclosureHistory.recent(s, id); s.pages.set(id, (s.pages.get(id) ?? V2_PAGE) + V2_PAGE); }); }
     collapse(id: string, index: V2Index) {
         this.change(s => {
             const descendants = new Set([id]);
@@ -93,6 +98,7 @@ export class DisclosureHistory {
                 s.expanded.delete(value);
                 s.pages.delete(value);
             }
+            s.manualOrder = s.manualOrder.filter(value => !descendants.has(value));
         });
     }
     reveal(id: string, index: V2Index) {
@@ -106,6 +112,7 @@ export class DisclosureHistory {
                 if (!parent)
                     break;
                 s.expanded.add(parent.id);
+                DisclosureHistory.recent(s, parent.id);
                 if (parent.level === 3) {
                     const siblings = index.nodes.filter(n => n.parent === parent.id).sort((a, b) => a.id.localeCompare(b.id));
                     s.pages.set(parent.id, Math.max(s.pages.get(parent.id) ?? V2_PAGE, Math.ceil((siblings.findIndex(n => n.id === (child!).id) + 1) / V2_PAGE) * V2_PAGE));

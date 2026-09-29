@@ -9,6 +9,7 @@ import {
   formatCount,
   forcedArcIds,
   lodLevelFromZoom,
+  manualExpansionTiers,
   LOD_ENTER_INTERMEDIATE,
   LOD_ENTER_NEAR,
   LOD_EXIT_INTERMEDIATE,
@@ -22,6 +23,7 @@ import type { LodArcInfo, LodNodeInfo } from "../../src/review/lod.ts";
 import { DENSITY_LABEL_BUDGETS, LABEL_BUDGET, labelBudgetOf } from "../../src/review/labels.ts";
 import { computeLayout } from "../../src/review/layout-v2.ts";
 import type { LayoutEdge, LayoutNode } from "../../src/review/layout-v2.ts";
+import { DisclosureHistory, V2_PAGE } from "../../src/review/v2-core.ts";
 
 /** A synthetic two-domain review graph, deterministic and small enough to read:
  *  d0, d1 (domains) → p* (projects) → c* (conversations) → k* (concepts), ids hierarchical. */
@@ -193,9 +195,9 @@ test("arc priority order: selected and focus, bridges, attested by weight, explo
   assert.ok(!exploratory.includes("inner-light"), "the lightest non-bridge attested arc gave way");
 });
 
-test("explicit expansions and the selection are always kept, even beyond the budget", () => {
+test("an explicit pinned set and selection path survive a tight budget", () => {
   const fixture = buildFixture(2, 3, 6, 5);
-  // The user expanded d0-p0 by hand: its children stay visible at a tiny budget.
+  // The selector keeps the caller's explicit pins; the page bounds that caller set separately.
   const expandedChildren = new Set(fixture.nodes.filter(n => n.parent === "d0-p0").map(n => n.id));
   const selected = "d0-p0-c1-k2";
   const ancestors = ["d0", "d0-p0", "d0-p0-c1"];
@@ -218,7 +220,7 @@ test("explicit expansions and the selection are always kept, even beyond the bud
   for (const id of arcPinned) assert.ok(arcs.includes(id), `${id} must stay drawn`);
 });
 
-test("forced arcs are exposed and accounted beyond the budget", () => {
+test("only explicit arc pins are forced beyond the budget", () => {
   const arcs: LodArcInfo[] = [
     { id: "pinned-path", source: "root", target: "expanded", class: "attested", count: 1 },
     { id: "expanded-child", source: "expanded", target: "child", class: "attested", count: 1 },
@@ -235,10 +237,64 @@ test("forced arcs are exposed and accounted beyond the budget", () => {
     keepExploratory: false,
   };
   const forced = forcedArcIds(input);
-  assert.deepEqual(forced, ["expanded-child", "pinned-path", "focus-in", "focus-out"]);
+  assert.deepEqual(forced, ["expanded-child", "pinned-path"]);
   const selected = selectArcs(input);
-  assert.deepEqual(selected, forced, "all forced arcs survive even though they exceed the budget");
-  assert.equal(selected.length, 4);
+  assert.deepEqual(selected, forced, "only explicit pins survive beyond the budget");
+  assert.equal(selected.length, 2);
+});
+
+test("twenty manual expansions pin one page and prioritize earlier children", () => {
+  const fixture = buildFixture(4, 4, 10, 8);
+  const history = new DisclosureHistory();
+  const parents = fixture.nodes.filter(node => node.level === 3).slice(0, 20).map(node => node.id);
+  for (const id of parents) history.expand(id);
+  const tiers = manualExpansionTiers(fixture.nodes, history.state.manualOrder, V2_PAGE);
+  const selected = `${parents[0]}-k0`;
+  const path = [selected, parents[0]!, parents[0]!.slice(0, parents[0]!.lastIndexOf("-")), parents[0]!.slice(0, 2)];
+  const pins = new Set([...tiers.pinnedContainers, ...tiers.pinnedChildren, ...path]);
+  assert.ok(pins.size <= V2_PAGE + parents.length + path.length);
+  assert.deepEqual(tiers.pinnedChildren, fixture.nodes.filter(node => node.parent === parents.at(-1))
+    .sort((a, b) => b.importance - a.importance || a.id.localeCompare(b.id)).map(node => node.id));
+  const sizes: number[] = [];
+  for (const density of DENSITIES) {
+    const budget = DENSITY_BUDGETS[density].nodes;
+    const chosen = selectNodes(baseInput(fixture, "intermediate", budget, { pinned: pins, priority: tiers.priorityChildren }));
+    const rendered = new Set(chosen.rendered);
+    sizes.push(rendered.size);
+    assert.ok(rendered.size <= budget + pins.size);
+    for (const id of tiers.pinnedChildren) assert.ok(rendered.has(id), `recent child ${id}`);
+    for (const id of tiers.priorityChildren.slice(0, Math.max(0, budget - pins.size)))
+      assert.ok(rendered.has(id), `earlier child ${id} leads the fill`);
+    const pool = fixture.arcs.filter(arc => rendered.has(arc.source) && rendered.has(arc.target));
+    const arcPins = new Set(tiers.pinnedChildren.map(id => `contains:${id}`));
+    const arcs = selectArcs({ arcs: pool, budget: DENSITY_BUDGETS[density].arcs, pinned: arcPins,
+      focus: null, priority: tiers.priorityChildren.map(id => `contains:${id}`),
+      communityOf: fixture.communityOf, keepExploratory: false });
+    assert.ok(arcs.length <= DENSITY_BUDGETS[density].arcs + arcPins.size);
+    for (const id of arcPins) assert.ok(arcs.includes(id), `recent arc ${id}`);
+    const earlierAvailable = tiers.priorityChildren.map(id => `contains:${id}`)
+      .filter(id => pool.some(arc => arc.id === id));
+    for (const id of earlierAvailable.slice(0, Math.max(0, DENSITY_BUDGETS[density].arcs - arcPins.size)))
+      assert.ok(arcs.includes(id), `earlier arc ${id} leads the fill`);
+  }
+  assert.ok(sizes[0]! < sizes[1]! && sizes[1]! < sizes[2]!, `strict density sizes: ${sizes}`);
+  assert.deepEqual(sizes, [150, 400, 850]);
+  history.undo();
+  assert.equal(history.state.manualOrder.at(-1), parents.at(-2));
+  history.redo();
+  assert.equal(history.state.manualOrder.at(-1), parents.at(-1));
+});
+
+test("the newest expansion pins at most sixty children by importance then id", () => {
+  const parent: LodNodeInfo = { id: "container", level: 3, parent: null, importance: 1 };
+  const children: LodNodeInfo[] = Array.from({ length: 80 }, (_, i) => ({
+    id: `child-${String(i).padStart(2, "0")}`, level: 4, parent: parent.id,
+    importance: i % 2,
+  }));
+  const tiers = manualExpansionTiers([parent, ...children.toReversed()], [parent.id], V2_PAGE);
+  const expected = [...children].sort((a, b) => b.importance - a.importance || a.id.localeCompare(b.id)).slice(0, V2_PAGE);
+  assert.deepEqual(tiers.pinnedChildren, expected.map(node => node.id));
+  assert.deepEqual(tiers.priorityChildren, []);
 });
 
 test("the near level shows the focus neighbourhood before global principals", () => {
