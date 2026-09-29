@@ -18,7 +18,7 @@ import type { SceneCameraRequest } from "#scene/contract.ts";
  */
 
 const cameraSource = new URL("../../src/render3f/camera.tsx", import.meta.url);
-const output = join(dirname(fileURLToPath(import.meta.url)), "../../dist/evidence/d071-camera.mjs");
+const output = join(dirname(fileURLToPath(import.meta.url)), "../../dist/evidence/d071-camera-dolly.mjs");
 mkdirSync(dirname(output), { recursive: true });
 writeFileSync(output, transformSync(readFileSync(cameraSource, "utf8"), { loader: "tsx", format: "esm" }).code);
 Object.assign(globalThis, { WebGL2RenderingContext: { BOOL: 1, BYTE: 2, UNSIGNED_BYTE: 3, SHORT: 4,

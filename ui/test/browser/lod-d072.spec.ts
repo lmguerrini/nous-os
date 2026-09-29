@@ -50,11 +50,11 @@ const disclose = async (page: Page) => {
  * A level change rebuilds the view, and for a moment no canvas exists at all — the box is
  * polled until the new view mounts instead of crashing on the recreation window. */
 const notch = async (page: Page, direction: 1 | -1, settle = 400) => {
-  const canvas = page.locator("#viewport canvas").first();
-  let box = await canvas.boundingBox();
+  const viewport = page.locator("#viewport");
+  let box = await viewport.boundingBox();
   for (let attempt = 0; !box && attempt < 100; attempt += 1) {
     await page.waitForTimeout(50);
-    box = await canvas.boundingBox();
+    box = await viewport.boundingBox();
   }
   if (!box) throw new Error("the viewport canvas never came back after the refresh");
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
