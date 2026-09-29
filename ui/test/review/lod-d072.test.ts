@@ -7,6 +7,7 @@ import {
   DENSITY_BUDGETS,
   EXPLORATORY_RESERVE_SHARE,
   formatCount,
+  forcedArcIds,
   lodLevelFromZoom,
   LOD_ENTER_INTERMEDIATE,
   LOD_ENTER_NEAR,
@@ -215,6 +216,29 @@ test("explicit expansions and the selection are always kept, even beyond the bud
     keepExploratory: false,
   });
   for (const id of arcPinned) assert.ok(arcs.includes(id), `${id} must stay drawn`);
+});
+
+test("forced arcs are exposed and accounted beyond the budget", () => {
+  const arcs: LodArcInfo[] = [
+    { id: "pinned-path", source: "root", target: "expanded", class: "attested", count: 1 },
+    { id: "expanded-child", source: "expanded", target: "child", class: "attested", count: 1 },
+    { id: "focus-in", source: "focus", target: "other-a", class: "attested", count: 1 },
+    { id: "focus-out", source: "other-b", target: "focus", class: "attested", count: 1 },
+    { id: "ordinary", source: "other-a", target: "other-b", class: "attested", count: 20 },
+  ];
+  const input = {
+    arcs,
+    budget: 1,
+    pinned: new Set(["pinned-path", "expanded-child", "missing"]),
+    focus: "focus",
+    communityOf: (_id: string) => "one",
+    keepExploratory: false,
+  };
+  const forced = forcedArcIds(input);
+  assert.deepEqual(forced, ["expanded-child", "pinned-path", "focus-in", "focus-out"]);
+  const selected = selectArcs(input);
+  assert.deepEqual(selected, forced, "all forced arcs survive even though they exceed the budget");
+  assert.equal(selected.length, 4);
 });
 
 test("the near level shows the focus neighbourhood before global principals", () => {

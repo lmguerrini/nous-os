@@ -15,7 +15,9 @@ type LodWitness = {
   level: string;
   density: string;
   nodes: { rendered: number; available: number; pinned: number; pinnedIds: string[] };
-  arcs: { rendered: number; available: number };
+  arcs: { rendered: number; available: number; pinned: number; pinnedIds: string[] };
+  relations?: Array<{ id: string; source: string; target: string }>;
+  focus?: { id?: string } | null;
   labels: { rendered: number; available: number };
 };
 
@@ -25,7 +27,10 @@ const ready = async (page: Page) => {
   await expect(page.locator("#status")).toContainText("Grafo pronto");
 };
 
-const lod = (page: Page) => page.evaluate(() => (window as any).__d067.witness().lod) as Promise<LodWitness>;
+const lod = (page: Page) => page.evaluate(() => {
+  const witness = (window as any).__d067.witness();
+  return { ...witness.lod, relations: witness.relations, focus: witness.focus };
+}) as Promise<LodWitness>;
 
 /** The rendered node set, as the view draws it. */
 const renderedIds = (page: Page) => page.evaluate(() =>
@@ -60,6 +65,17 @@ const notch = async (page: Page, direction: 1 | -1, settle = 400) => {
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
   await page.mouse.wheel(0, -direction * 120);
   await page.waitForTimeout(settle);
+};
+
+/** render-schedule.ts defers level refresh by LOD_REFRESH_IDLE_MS (300 ms), observed on the
+ * page's 250 ms zoom tick. Poll after a crossing sequence because one notch's 400 ms settle
+ * can finish before both scheduling intervals have elapsed. */
+const waitForLevel = async (page: Page, expected: string) => {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    if ((await lod(page)).level === expected) return;
+    await page.waitForTimeout(50);
+  }
 };
 
 test("D-072 each density keeps its node, arc and label budgets", async ({ page }, testInfo) => {
@@ -99,7 +115,16 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
     expect(witness.nodes.rendered, `${density}: nodes ≤ ${budget.nodes} + pinned`).toBeLessThanOrEqual(budget.nodes + witness.nodes.pinned);
     for (const id of witness.nodes.pinnedIds)
       expect(allowedPinned.has(id), `${density}: pinned ${id} is an expansion child or an expanded node`).toBe(true);
-    expect(witness.arcs.rendered, `${density}: arcs ≤ ${budget.arcs}`).toBeLessThanOrEqual(budget.arcs);
+    expect(witness.arcs.rendered, `${density}: arcs ≤ ${budget.arcs} + pinned`).toBeLessThanOrEqual(budget.arcs + witness.arcs.pinned);
+    expect(witness.arcs.pinned, `${density}: forced arcs are counted`).toBe(witness.arcs.pinnedIds.length);
+    const pinnedNodes = new Set([...allowedPinned, ...witness.nodes.pinnedIds]);
+    const renderedRelations = new Map((witness.relations ?? []).map(arc => [arc.id, arc]));
+    for (const id of witness.arcs.pinnedIds) {
+      const arc = renderedRelations.get(id);
+      const selectedRelation = witness.focus?.id === id;
+      expect(selectedRelation || (!!arc && (pinnedNodes.has(arc.source) || pinnedNodes.has(arc.target))),
+        `${density}: pinned arc ${id} is incident to a pinned/expanded node or is the selected relation`).toBe(true);
+    }
     // The per-density label allowance is the page's own truth and the view honours it at draw
     // time (FixA: product-view places labels within ViewInput.labelBudget).
     expect(witness.labels.available, `${density}: label allowance`).toBe(budget.labels);
@@ -107,6 +132,7 @@ test("D-072 each density keeps its node, arc and label budgets", async ({ page }
     const panel = await page.locator("#v2-controls").innerText();
     expect(panel, `${density}: the panel names the node budget`).toContain("Nodi");
     expect(panel, `${density}: the panel names the arc budget`).toContain("Archi");
+    expect(panel, `${density}: the arc line reports its pinned count`).toContain("fissati");
     expect(panel, `${density}: the panel shows the available wording`).toContain("disponibili");
     expect(panel, `${density}: the panel names the density`).toContain(
       density === "essential" ? "Essenziale" : density === "balanced" ? "Bilanciata" : "Completa");
@@ -192,6 +218,8 @@ test("D-072 zoom levels have hysteresis: a notch of jitter changes nothing, cros
     witness = await record(`in-${steps}`);
     steps += 1;
   }
+  if (witness.level === "far") await waitForLevel(page, "intermediate");
+  witness = await record("settled-intermediate");
   expect(witness.level, "zooming in crosses into intermediate").toBe("intermediate");
   const intermediate = await renderedIds(page);
 
@@ -209,6 +237,8 @@ test("D-072 zoom levels have hysteresis: a notch of jitter changes nothing, cros
     witness = await record(`out-${steps}`);
     steps += 1;
   }
+  if (witness.level === "intermediate") await waitForLevel(page, "far");
+  witness = await record("settled-far");
   expect(witness.level, "zooming out past the band returns to far").toBe("far");
 
   // And on: enough notches reach the near level, where the focus neighbourhood leads.
@@ -218,6 +248,8 @@ test("D-072 zoom levels have hysteresis: a notch of jitter changes nothing, cros
     witness = await record(`deep-${steps}`);
     steps += 1;
   }
+  if (witness.level !== "near") await waitForLevel(page, "near");
+  witness = await record("settled-near");
   expect(witness.level, "deep zoom reaches the near level").toBe("near");
 
   await page.evaluate(() => (window as any).__d067.fit());

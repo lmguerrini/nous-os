@@ -280,6 +280,17 @@ export type SelectArcsInput = {
   readonly keepExploratory: boolean;
 };
 
+/** Ids admitted outside the arc budget: explicit pins and every relation incident to focus. */
+export function forcedArcIds(input: Pick<SelectArcsInput, "arcs" | "pinned" | "focus">): readonly string[] {
+  const forced = new Set<string>();
+  const available = new Set(input.arcs.map(arc => arc.id));
+  for (const id of [...input.pinned].sort(compare)) if (available.has(id)) forced.add(id);
+  if (input.focus !== null)
+    for (const arc of [...input.arcs].sort((a, b) => compare(a.id, b.id)))
+      if (arc.source === input.focus || arc.target === input.focus) forced.add(arc.id);
+  return [...forced];
+}
+
 /** Choose the arcs actually drawn. Priority order, deterministic within each tier (count
  * descending, then id): 1. selected or focus; 2. bridges between communities; 3. attested by
  * weight; 4. exploratory — kept visible within the budget whenever the reading shows them, at
@@ -296,10 +307,7 @@ export function selectArcs(input: SelectArcsInput): readonly string[] {
   };
   const incident = (arc: LodArcInfo): boolean =>
     input.focus !== null && (arc.source === input.focus || arc.target === input.focus);
-  for (const id of [...input.pinned].sort(compare)) take(id, true);
-  if (input.focus !== null)
-    for (const arc of [...input.arcs].sort((a, b) => compare(a.id, b.id)))
-      if (incident(arc)) take(arc.id, true);
+  for (const id of forcedArcIds(input)) take(id, true);
   for (const id of input.priority ?? []) take(id);
   const isBridge = (arc: LodArcInfo): boolean => input.communityOf(arc.source) !== input.communityOf(arc.target);
   const byWeight = (a: LodArcInfo, b: LodArcInfo) => b.count - a.count || compare(a.id, b.id);

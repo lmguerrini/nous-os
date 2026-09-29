@@ -9,7 +9,7 @@ import { projectRelations } from './v2-relations.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
-import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, formatCount, lodLevelFromZoom, normalizeDensity, refreshCameraAction, safeSelectNodes, selectArcs } from './lod.ts';
+import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, normalizeDensity, refreshCameraAction, safeSelectNodes, selectArcs } from './lod.ts';
 import { lodRefreshDue } from './render-schedule.ts';
 import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
 import { labelBudgetOf } from './labels.ts';
@@ -102,7 +102,7 @@ export class V2Page {
     private lod: LodLevel = 'far';
     /** The subset of the disclosed set the LOD actually hands to the view. */
     private rendered = new Set<string>();
-    private lodCounts = { nodes: { rendered: 0, available: 0, pinned: 0, pinnedIds: [] as string[] }, arcs: { rendered: 0, available: 0 } };
+    private lodCounts = { nodes: { rendered: 0, available: 0, pinned: 0, pinnedIds: [] as string[] }, arcs: { rendered: 0, available: 0, pinned: 0, pinnedIds: [] as string[] } };
     private detailCache = new Map<string, Record<string, unknown>>();
     private positions = new Map<string, Point3>();
     /** Un-expanded layout positions, the deterministic base for `previous`. */
@@ -326,7 +326,7 @@ export class V2Page {
                 ...pool.edges.filter(edge => focusRelations.relevant.has(edge.id))
                     .sort((a, b) => b.count - a.count || a.id.localeCompare(b.id)).map(edge => edge.id),
             ] : [];
-            let shown = selectArcs({
+            const arcSelectionInput = {
                 arcs: pool.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, class: edge.class, count: edge.count })),
                 budget: budget.arcs,
                 pinned: this.pinnedArcIds(),
@@ -334,7 +334,9 @@ export class V2Page {
                 priority: focusArcPriority,
                 communityOf,
                 keepExploratory: this.axes.reading !== 'attested',
-            }).map(id => pool.byId.get(id)!).filter(edge => edge);
+            };
+            const forcedArcSet = new Set(forcedArcIds(arcSelectionInput));
+            let shown = selectArcs(arcSelectionInput).map(id => pool.byId.get(id)!).filter(edge => edge);
             if (this.neighbourhoodDepth) shown = pool.edges;
             else if (this.restoreNeighbourhood && this.neighbourhoodBefore) shown = this.neighbourhoodBefore.arcs;
             this.restoreNeighbourhood = false;
@@ -342,9 +344,10 @@ export class V2Page {
             // children of manual expansions) even beyond the budget, by design — so the budget
             // binds on the unpinned fill and the witness says how many nodes the pins added.
             const pinnedRendered = [...pinned].filter(id => renderedIds.has(id)).sort();
+            const pinnedArcsRendered = shown.map(edge => edge.id).filter(id => forcedArcSet.has(id)).sort();
             const nextLodCounts = {
                 nodes: { rendered: renderedIds.size, available: ids.size, pinned: pinnedRendered.length, pinnedIds: pinnedRendered },
-                arcs: { rendered: shown.length, available: availableArcs.total },
+                arcs: { rendered: shown.length, available: availableArcs.total, pinned: pinnedArcsRendered.length, pinnedIds: pinnedArcsRendered },
             };
             const nextRenderedRelations = new Map(shown.map(edge => [edge.id, edge]));
             const nextArcTotal = availableArcs.total;
@@ -1052,8 +1055,8 @@ export class V2Page {
         // disponibili · Archi 400 di 3.900». Nodes and arcs are what the LOD actually draws
         // against what the current disclosure makes available; labels are drawn against the
         // density's allowance.
-        line(controls, 'Nodi', `${formatCount(this.lodCounts.nodes.rendered)} di ${formatCount(this.lodCounts.nodes.available)} disponibili`);
-        line(controls, 'Archi', `${formatCount(this.lodCounts.arcs.rendered)} di ${formatCount(this.lodCounts.arcs.available)}`);
+        line(controls, 'Nodi', `${formatCount(this.lodCounts.nodes.rendered)} di ${formatCount(this.lodCounts.nodes.available)} disponibili · ${formatCount(this.lodCounts.nodes.pinned)} fissati`);
+        line(controls, 'Archi', `${formatCount(this.lodCounts.arcs.rendered)} di ${formatCount(this.lodCounts.arcs.available)} disponibili · ${formatCount(this.lodCounts.arcs.pinned)} fissati`);
         line(controls, 'Etichette', `${formatCount(this.labelCount())} di ${formatCount(labelBudgetOf(this.density))}`);
         line(controls, 'Densità', { essential: 'Essenziale', balanced: 'Bilanciata', complete: 'Completa' }[this.density]);
         line(controls, 'Grafo', `${formatCount(this.index.nodes.filter(n => n.level !== 5).length)} nodi · limite ${V2_CAP}`);
@@ -1097,8 +1100,8 @@ export class V2Page {
         if (this.selected === ABSOLUTE_CONTAINER_ID) {
             const h = document.createElement('h2'); h.textContent = 'NousOS'; host.append(h);
             line(host, 'Domini', shown.nodes.filter(node => node.level === 1).length);
-            line(host, 'Nodi', `${formatCount(this.lodCounts.nodes.rendered)} di ${formatCount(this.lodCounts.nodes.available)} disponibili`);
-            line(host, 'Archi', `${formatCount(this.lodCounts.arcs.rendered)} di ${formatCount(this.lodCounts.arcs.available)} disponibili`);
+            line(host, 'Nodi', `${formatCount(this.lodCounts.nodes.rendered)} di ${formatCount(this.lodCounts.nodes.available)} disponibili · ${formatCount(this.lodCounts.nodes.pinned)} fissati`);
+            line(host, 'Archi', `${formatCount(this.lodCounts.arcs.rendered)} di ${formatCount(this.lodCounts.arcs.available)} disponibili · ${formatCount(this.lodCounts.arcs.pinned)} fissati`);
             return;
         }
         if (!this.selected) {
