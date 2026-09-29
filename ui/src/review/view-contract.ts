@@ -155,6 +155,41 @@ export type ViewInput = {
   readonly labelBudget?: number;
 };
 
+/** Exact own-property register for the renderer input envelope; optional entries may be absent. */
+export const VIEW_INPUT_FIELD_REGISTER = {
+  input: [
+    "container", "data", "v2Prepared", "v2Colours", "layoutContainers", "visibleNodeIds", "visibleEdgeIds",
+    "axes", "insets", "text", "events", "reducedMotion", "flowMotion", "appearance", "customPalette", "labelBudget",
+  ],
+  optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "flowMotion", "appearance", "customPalette", "labelBudget"],
+  axes: ["projection", "morphology", "organization", "colour", "labels", "reading"],
+  insets: ["top", "right", "bottom", "left"],
+  events: ["onPick", "onDoublePick", "onHover"],
+  optionalEvents: ["onDoublePick"],
+} as const;
+
+/** Rejects unknown/missing envelope fields and does not inspect graph data or renderer-owned objects. */
+export function assertViewInputFieldRegister(value: unknown): asserts value is ViewInput {
+  const optionalInput = new Set<string>(VIEW_INPUT_FIELD_REGISTER.optionalInput);
+  assertExactFields(value, "ViewInput", VIEW_INPUT_FIELD_REGISTER.input.filter((key) => !optionalInput.has(key)), VIEW_INPUT_FIELD_REGISTER.optionalInput);
+  const input = value as Record<string, unknown>;
+  assertExactFields(input.axes, "ViewInput.axes", VIEW_INPUT_FIELD_REGISTER.axes);
+  assertExactFields(input.insets, "ViewInput.insets", VIEW_INPUT_FIELD_REGISTER.insets);
+  const optionalEvents = new Set<string>(VIEW_INPUT_FIELD_REGISTER.optionalEvents);
+  assertExactFields(input.events, "ViewInput.events", VIEW_INPUT_FIELD_REGISTER.events.filter((key) => !optionalEvents.has(key)), VIEW_INPUT_FIELD_REGISTER.optionalEvents);
+}
+
+function assertExactFields(value: unknown, path: string, required: readonly string[], optional: readonly string[] = []): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError(`${path} fields do not match the pinned register`);
+  }
+  const allowed = new Set([...required, ...optional]);
+  const keys = Reflect.ownKeys(value);
+  if (required.some((key) => !Object.prototype.hasOwnProperty.call(value, key)) || keys.some((key) => typeof key !== "string" || !allowed.has(key))) {
+    throw new TypeError(`${path} fields do not match the pinned register`);
+  }
+}
+
 /** One in-place level-of-detail change (D-072 R2): the new drawn node subset, the new drawn
  * relations (records for every drawn edge, in the page's own lifted form), and the Indra
  * containers mapped for that subset. The disclosed set, the arrangement and every axis are

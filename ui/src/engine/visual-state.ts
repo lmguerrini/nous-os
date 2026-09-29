@@ -59,6 +59,11 @@ export type VisualState = {
   readonly motionGrammar?: MotionGrammar;
 };
 
+/** Saved state uses the view name; `flat` is accepted only by the migration reader. */
+export type SavedVisualState = Omit<VisualState, "organization"> & {
+  readonly organization: "natural" | "indra";
+};
+
 /** This is the complete literal VisualState field register and does not permit extension fields; `optionalState` names the fields a producer may omit entirely. */
 export const VISUAL_STATE_FIELD_REGISTER = {
   state: [
@@ -99,7 +104,8 @@ export const VISUAL_STATE_VALIDATION_RULES = {
 export type VisualStateValidationRule = typeof VISUAL_STATE_VALIDATION_RULES[keyof typeof VISUAL_STATE_VALIDATION_RULES];
 
 const MORPHOLOGIES = [STELLAR.id, NEURAL.id, MYCELIUM.id] as const;
-const ORGANIZATIONS = [FLAT, INDRA] as const;
+const NATURAL = "natural" as const;
+const ORGANIZATIONS = [FLAT, NATURAL, INDRA] as const;
 const LOD_BANDS = [MACRO, MESO, MICRO] as const;
 
 /** This constructs validated view state and does not retain a VisualGraph reference. */
@@ -139,20 +145,34 @@ export function createVisualState(graph: VisualGraph, value: unknown): VisualSta
 }
 
 /** This serialises validated view state and does not include graph contents. */
-export function serializeVisualState(state: VisualState): string {
+export function serializeVisualState(state: VisualState | SavedVisualState): string {
   assertVisualStateFieldRegister(state);
-  return JSON.stringify(state);
+  // `flat` is retained by live renderer producers until tranche C, while saved state already uses
+  // the canonical view name. Never emit the legacy spelling on the wire.
+  const canonical = state.organization === FLAT ? { ...state, organization: NATURAL } : state;
+  return JSON.stringify(canonical);
 }
 
-/** This deserialises and validates view state against the graph whose ids it may name. */
-export function deserializeVisualState(graph: VisualGraph, serialized: string): VisualState {
+/** This reads the saved-state schema, migrates `flat`, and validates graph ids. */
+export function deserializeSavedVisualState(graph: VisualGraph, serialized: string): SavedVisualState {
   let value: unknown;
   try {
     value = JSON.parse(serialized) as unknown;
   } catch {
     throw new TypeError("VisualState serialization is not valid JSON");
   }
-  return createVisualState(graph, value);
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (record.organization === FLAT) {
+      value = { ...record, organization: NATURAL };
+    }
+  }
+  return createVisualState(graph, value) as SavedVisualState;
+}
+
+/** Compatibility signature for existing renderer clients; the runtime organization is canonical saved state. */
+export function deserializeVisualState(graph: VisualGraph, serialized: string): VisualState {
+  return deserializeSavedVisualState(graph, serialized) as VisualState;
 }
 
 /** This refuses fields outside the VisualState register and does not read graph semantics. */

@@ -14,6 +14,7 @@ import {
   assertVisualState,
   assertVisualStateFieldRegister,
   createVisualState,
+  deserializeSavedVisualState,
   deserializeVisualState,
   serializeVisualState,
 } from "#engine/visual-state.ts";
@@ -100,6 +101,22 @@ test("VisualState has a pinned view-only register and round-trips exactly", () =
   assert.equal("motionGrammar" in original, false, "a state built without motionGrammar must not gain the key");
   assert.equal("graph" in original, false);
   assert.equal("semantic" in original, false);
+});
+
+test("saved VisualState fixtures migrate legacy flat to Natural and write only Natural", () => {
+  const visualGraph = graph();
+  const base = state(visualGraph);
+  const legacyFixture = JSON.stringify({ ...base, organization: "flat" });
+  const restoredLegacy = deserializeSavedVisualState(visualGraph, legacyFixture);
+  assert.equal(restoredLegacy.organization, "natural");
+  assert.equal(JSON.parse(serializeVisualState(restoredLegacy)).organization, "natural");
+  assert.equal(serializeVisualState(restoredLegacy), serializeVisualState(deserializeSavedVisualState(visualGraph, legacyFixture)));
+
+  const naturalFixture = JSON.stringify({ ...base, organization: "natural" });
+  const restoredNatural = deserializeSavedVisualState(visualGraph, naturalFixture);
+  assert.equal(restoredNatural.organization, "natural");
+  assert.equal(serializeVisualState(restoredNatural), naturalFixture);
+  assert.equal(JSON.parse(serializeVisualState(restoredNatural)).organization, "natural");
 });
 
 test("VisualState carries scaleTopology only when a producer supplies it, and round-trips it exactly", () => {
