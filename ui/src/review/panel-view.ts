@@ -2,6 +2,8 @@ import { compactDisplayLabel, displayLabel } from './graph-v2.ts';
 import type { GraphEdge } from './graph-v2.ts';
 import type { V2Node } from './v2-core.ts';
 import type { LiftedRelation } from './v2-relations.ts';
+import type { PickResult, ProjectionResult, RenderVisibility, VisualContainer, VisualRelation } from '../projection/contract-types.ts';
+import { sourceRelationWording, structuralRelationWording } from './presentation.ts';
 import { ABSOLUTE_CONTAINER_ID } from './layout-v2.ts';
 
 export function focusChipLabel(id: string | null, nodes: readonly V2Node[], relations: ReadonlyMap<string, Pick<LiftedRelation, 'source' | 'target'>>): string {
@@ -192,6 +194,75 @@ export function buildRelationPanel(edge: GraphEdge | LiftedRelation, nodes: Read
     why: why || undefined, direction: `${left} ${edge.directed ? '→' : '↔'} ${right}`, directionMeaning: edge.directed ? `Il collegamento parte da ${left} e arriva a ${right}.` : 'Il collegamento vale in entrambe le direzioni.',
     confidence, evidence, evidenceSummary: evidence.length ? `${evidence.length} ${evidence.length === 1 ? 'evidenza' : 'evidenze'} da ${conversationCount} ${conversationCount === 1 ? 'conversazione' : 'conversazioni'}` : '0 evidenze dirette consultabili',
     sources, groups: [], technical: { id: edge.id, type: edge.type, class: edge.class, underlying } };
+}
+
+/** Typed projection entry point for source relations. Its argument is an original GraphEdge only. */
+export function buildSourceRelationPanel(edge: GraphEdge, nodes: ReadonlyMap<string, V2Node>, resolver: EvidenceResolver = createEvidenceResolver(nodes)): PanelModel {
+  const model = buildRelationPanel(edge, nodes, resolver);
+  model.type = 'Relazione sorgente';
+  model.technical = { ...(asRecord(model.technical)), sourceWording: sourceRelationWording(edge), sourceEdgeId: edge.id };
+  return model;
+}
+
+const structuralKindLabel = (kind: VisualRelation['kind']): string => ({
+  'co-membership': 'Co-appartenenza',
+  'synthetic-containment': 'Contenimento strutturale',
+  'lifted-route': 'Percorso visuale',
+} as const)[kind];
+
+/**
+ * Resolve a renderer pick only against its typed projection result. Structural visuals get their
+ * own panel model; they never pass through source-edge evidence, attestation or confidence copy.
+ */
+export function buildStructuralPickPanel(
+  pick: PickResult,
+  projection: ProjectionResult,
+  visibility: RenderVisibility,
+  nodes: ReadonlyMap<string, V2Node>,
+): PanelModel {
+  if (visibility.projectionResultDigest !== projection.determinism.resultDigest)
+    throw new Error('Structural pick visibility belongs to a different projection result.');
+  if (pick.kind === 'visual-relation') {
+    if (!visibility.visualRelationIds.has(pick.visualId)) throw new Error(`Visual relation pick is not visible: ${pick.visualId}`);
+    const relation = projection.visualRelations.find(item => item.visualId === pick.visualId);
+    if (!relation) throw new Error(`Visual relation pick is absent from projection: ${pick.visualId}`);
+    if (relation.semantic !== false) throw new Error(`Visual relation must remain non-semantic: ${pick.visualId}`);
+    if (relation.kind === 'lifted-route') throw new Error('Lifted routes must be opened through their original source edges.');
+    const left = nodes.get(relation.source), right = nodes.get(relation.target);
+    const leftLabel = left ? displayLabel(left) : 'Elemento di origine';
+    const rightLabel = right ? displayLabel(right) : 'Elemento collegato';
+    const label = structuralKindLabel(relation.kind);
+    const structuralRelation = relation as VisualRelation & Readonly<{ kind: 'co-membership' | 'synthetic-containment' }>;
+    const explanation = structuralRelationWording(structuralRelation);
+    const sourceEdges = [...relation.underlyingEdgeIds].sort();
+    return {
+      title: `${leftLabel} ↔ ${rightLabel}`, type: label, badge: 'Non semantica',
+      synthesis: explanation, why: explanation,
+      evidence: [], evidenceSummary: undefined, sources: [], groups: [],
+      technical: {
+        visualId: relation.visualId, kind: relation.kind, semantic: false,
+        underlyingEdgeIds: sourceEdges, count: relation.count, explanationId: relation.explanationId,
+        provenance: sourceEdges.length ? { sourceEdgeIds: sourceEdges, note: 'Record sorgente separati dalla visualizzazione.' } : undefined,
+      },
+    };
+  }
+  if (pick.kind === 'container') {
+    if (!visibility.containerIds.has(pick.visualId)) throw new Error(`Container pick is not visible: ${pick.visualId}`);
+    const container = projection.containers.find(item => item.visualId === pick.visualId);
+    if (!container) throw new Error(`Container pick is absent from projection: ${pick.visualId}`);
+    return buildStructuralContainerPanel(container);
+  }
+  throw new Error(`Pick kind ${pick.kind} is not a structural panel target.`);
+}
+
+function buildStructuralContainerPanel(container: VisualContainer): PanelModel {
+  const explanation = 'Contenitore geometrico della proiezione; non è un nodo o una relazione semantica.';
+  return {
+    title: `Contenitore · ${container.memberCount} elementi`, type: 'Contenitore visuale', badge: 'Non semantico',
+    synthesis: explanation, why: explanation, evidence: [], sources: [], groups: [],
+    technical: { visualId: container.visualId, shape: container.shape, memberCount: container.memberCount,
+      sourceCommunityId: container.sourceCommunityId, levelId: container.levelId, semantic: false },
+  };
 }
 
 export function renderSelection(host: HTMLElement, model: PanelModel, onRelation: (id: string) => void): void {

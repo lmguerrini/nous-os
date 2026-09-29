@@ -225,6 +225,13 @@ function updatePanel() {
   legend.className = "legend";
   legendSection.append(legend);
   renderLegend(legend, axes.colour, debug, axes.reading);
+  // Reserved mount point for B8's typed visual-relation picks. It stays absent from the visible
+  // interface until a RenderVisibility/ProjectionResult path supplies structural IDs.
+  const structuralPickControls = document.createElement("div");
+  structuralPickControls.id = "structural-pick-controls";
+  structuralPickControls.className = "legend structural-pick-controls";
+  structuralPickControls.hidden = true;
+  legendSection.append(structuralPickControls);
   details.append(legendSection);
   appendFlowLegend(details, activePalette());
 }

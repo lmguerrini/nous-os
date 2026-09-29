@@ -10,6 +10,8 @@
  */
 import type { ReviewExport, ReviewNode, NodeType } from "./model.ts";
 import type { FamilyId } from "./view-contract.ts";
+import type { GraphEdge } from "./graph-v2.ts";
+import type { VisualRelation } from "../projection/contract-types.ts";
 
 export const FAMILY_OF: Readonly<Record<NodeType, FamilyId>> = {
   domain: "aggregate",
@@ -54,6 +56,28 @@ export const RELATION_TEXT = {
   meaning: "Ogni linea è una relazione registrata nell'export, con la sua attestazione (revisione, citazione, contesto, inventario, canone).",
   why: "Linee sottili e monocrome: la provenienza si legge nel pannello, non dal colore.",
 } as const;
+
+export const SOURCE_RELATION_TEXT = {
+  name: "Arco sorgente originale",
+  meaning: "Questa relazione è un arco originale del grafo sorgente; la visualizzazione non cambia attestazione o provenance.",
+} as const;
+
+export const STRUCTURAL_RELATION_TEXT = {
+  name: "Visualizzazioni strutturali · non semantiche",
+  meaning: "Co-appartenenza e contenimento sono visualizzazioni strutturali: non sono relazioni sorgente e non sono attestate.",
+} as const;
+
+/** Source wording is deliberately keyed by an original graph edge, never by a visual relation. */
+export function sourceRelationWording(edge: GraphEdge): string {
+  return `${SOURCE_RELATION_TEXT.name} · ${edge.type} · ${edge.class === "attested" ? "attestato" : "esplorativo"}`;
+}
+
+/** Structural copy accepts only the frozen non-semantic visual relation variant. */
+export function structuralRelationWording(relation: VisualRelation & Readonly<{ kind: "co-membership" | "synthetic-containment" }>): string {
+  return relation.kind === "co-membership"
+    ? `${STRUCTURAL_RELATION_TEXT.name}. ${relation.count} conversazioni in comune; visualizzazione non semantica e non attestata.`
+    : `${STRUCTURAL_RELATION_TEXT.name}. Contenimento derivato dalla struttura; visualizzazione non semantica e non attestata.`;
+}
 
 export const SPATIAL_NOTICE = "La vicinanza nello spazio non è una relazione.";
 

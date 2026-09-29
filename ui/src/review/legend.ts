@@ -7,9 +7,20 @@ import {
   SEMANTIC_COLOUR,
   SPATIAL_NOTICE,
   STANDING_TEXT,
+  STRUCTURAL_RELATION_TEXT,
+  structuralRelationWording,
 } from "./presentation.ts";
 import type { FamilyId, Colour, Reading } from "./view-contract.ts";
 import type { PaletteValues } from "./palette.ts";
+import type { PickResult, ProjectionResult, RenderVisibility, VisualRelation } from "../projection/contract-types.ts";
+type StructuralVisualRelation = VisualRelation & Readonly<{ kind: 'co-membership' | 'synthetic-containment' }>;
+type VisualRelationPick = PickResult & Readonly<{ kind: 'visual-relation'; visualId: string }>;
+export function visibleStructuralRelations(projection: ProjectionResult, visibility: RenderVisibility): StructuralVisualRelation[] {
+  if (visibility.projectionResultDigest !== projection.determinism.resultDigest) return [];
+  return projection.visualRelations.filter((relation): relation is StructuralVisualRelation =>
+    visibility.visualRelationIds.has(relation.visualId) && relation.semantic === false &&
+    (relation.kind === 'co-membership' || relation.kind === 'synthetic-containment'));
+}
 function rgb(values: readonly number[]) {
   return `rgb(${values.map((n) => Math.round(n * 255)).join(",")})`;
 }
@@ -62,6 +73,41 @@ export function renderLegend(host: HTMLElement, colour: Colour, debug: boolean, 
       }
   }
   add(SPATIAL_NOTICE);
+}
+
+/** Mount the new projection legend and structural-pick controls only when typed visual relations exist. */
+export function renderTypedStructuralLegend(
+  host: HTMLElement,
+  projection: ProjectionResult,
+  visibility: RenderVisibility,
+  onPick?: (pick: VisualRelationPick) => void,
+): void {
+  host.replaceChildren();
+  host.hidden = true;
+  const structural = visibleStructuralRelations(projection, visibility);
+  if (!structural.length) return;
+  host.hidden = false;
+  const notice = document.createElement('p');
+  notice.textContent = STRUCTURAL_RELATION_TEXT.name;
+  notice.title = STRUCTURAL_RELATION_TEXT.meaning;
+  host.append(notice);
+  for (const relation of structural) {
+    const row = document.createElement('div');
+    row.className = 'structural-visual-legend-entry';
+    const text = document.createElement('span');
+    text.textContent = structuralRelationWording(relation);
+    row.append(text);
+    if (onPick) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.pickKind = 'visual-relation';
+      button.textContent = 'Apri pannello strutturale';
+      button.setAttribute('aria-label', `Apri pannello strutturale: ${relation.visualId}`);
+      button.addEventListener('click', () => onPick({ kind: 'visual-relation', visualId: relation.visualId }));
+      row.append(button);
+    }
+    host.append(row);
+  }
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";

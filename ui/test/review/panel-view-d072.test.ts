@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { buildNodePanel, buildRelationPanel, createEvidenceResolver, epistemicLabel, initialEvidence, panelSectionOrder } from '../../src/review/panel-view.ts';
+import { buildNodePanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, epistemicLabel, initialEvidence, panelSectionOrder } from '../../src/review/panel-view.ts';
 import type { GraphEdge } from '../../src/review/graph-v2.ts';
 import type { V2Node } from '../../src/review/v2-core.ts';
+import type { ProjectionResult, RenderVisibility } from '../../src/projection/contract-types.ts';
 
 const node = (id: string, kind: string, title: string, level: 1 | 2 | 3 | 4 = 1): V2Node => ({
   id, kind, title, display_label: title, title_full: title, level, parent: null, parents: [], domains: [],
@@ -87,4 +88,23 @@ test('D072 relation citations inherit the conversation on their own side', () =>
   assert.deepEqual(model.evidence.map(item => item.source), ['Dialogo sinistro', 'Dialogo destro']);
   assert.deepEqual(model.evidence.map(item => item.date), ['1 gennaio 2026', '2 gennaio 2026']);
   assert.deepEqual(model.evidence.map(item => item.speaker), ['Fonte citata', 'Fonte citata']);
+});
+
+test('typed structural picks use a non-semantic panel and keep source IDs in separate technical provenance', () => {
+  const visual = { visualId: 'visual:relation:co:a:b', kind: 'co-membership' as const, semantic: false as const,
+    source: a.id, target: b.id, underlyingEdgeIds: ['edge-z', 'edge-a'], count: 4, explanationId: 'explain:co' };
+  const projection = { determinism: { resultDigest: 'result-a' }, visualRelations: [visual], containers: [] } as unknown as ProjectionResult;
+  const visibility = { projectionResultDigest: 'result-a', visualRelationIds: new Set([visual.visualId]), containerIds: new Set<string>() } as unknown as RenderVisibility;
+  const model = buildStructuralPickPanel({ kind: 'visual-relation', visualId: visual.visualId }, projection, visibility, nodes);
+  assert.equal(model.badge, 'Non semantica');
+  assert.equal(model.type, 'Co-appartenenza');
+  assert.match(model.synthesis, /non semantica/);
+  assert.match(model.synthesis, /non attestata/);
+  assert.deepEqual(model.evidence, []);
+  assert.deepEqual(model.sources, []);
+  assert.deepEqual((model.technical as { provenance: { sourceEdgeIds: string[] } }).provenance.sourceEdgeIds, ['edge-a', 'edge-z']);
+  assert.throws(() => buildStructuralPickPanel({ kind: 'visual-relation', visualId: 'missing' }, projection, visibility, nodes), /not visible/);
+  assert.throws(() => buildStructuralPickPanel({ kind: 'semantic-edge', id: 'edge-a' }, projection, visibility, nodes), /not a structural panel target/);
+  assert.throws(() => buildStructuralPickPanel({ kind: 'visual-relation', visualId: visual.visualId }, projection,
+    { ...visibility, projectionResultDigest: 'stale' } as RenderVisibility, nodes), /different projection/);
 });
