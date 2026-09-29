@@ -112,13 +112,19 @@ test('VF1 absolute Indra focus, relation chip and search result retain the selec
   await expect(page.locator('#selection-focus-chip')).toContainText('NousOS');
 
   await page.evaluate(() => (window as any).__d067.setAxes({ organization: 'flat', reading: 'exploratory' }));
-  const relation = await page.evaluate(() => {
-    const w = (window as any).__d067.witness();
-    const edge = w.relations.find((item: any) => item.class === 'exploratory');
-    const nodes = new Map(w.disclosure.nodes.map((item: any) => [item.id, item]));
-    return edge && { id: edge.id,
-      source: (nodes.get(edge.source) as any)?.display_label ?? (nodes.get(edge.source) as any)?.title,
-      target: (nodes.get(edge.target) as any)?.display_label ?? (nodes.get(edge.target) as any)?.title };
+  const relation = await page.evaluate(async () => {
+    const api = (window as any).__d067;
+    const witness = api.witness();
+    const disclosed = new Set(api.disclosure().nodes.map((item: any) => item.id));
+    const index = await (await fetch('/api/graph/index')).json();
+    const nodes = new Map(index.nodes
+      .filter((item: any) => disclosed.has(item.id))
+      .map((item: any) => [item.id, item.display_label ?? item.title]));
+    // witness().relations contains the relations currently rendered by the scene. Prefer an
+    // exploratory lifted relation when the current reading exposes one.
+    const edges = witness.relations.filter((item: any) => disclosed.has(item.source) && disclosed.has(item.target));
+    const edge = edges.find((item: any) => item.class === 'exploratory' && item.type === 'exploratory_lift') ?? edges[0];
+    return edge && { id: edge.id, source: nodes.get(edge.source), target: nodes.get(edge.target) };
   });
   expect(relation?.source).toBeTruthy();
   expect(relation?.target).toBeTruthy();
