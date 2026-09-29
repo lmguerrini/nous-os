@@ -5,10 +5,19 @@ import type { CommunityInfo, LayoutContainer, Point3 } from './layout-v2.ts';
 import { applyExpansion, canonicalize, equilibrate, formatVolumeProportions, volumeStats, VOLUME_READOUT_HELP } from './volume.ts';
 import type { Expansion } from './volume.ts';
 import { adaptV2 } from './v2-adapter.ts';
-import { projectRelations } from './v2-relations.ts';
+import { projectRelations, projectTypedRelations } from './v2-relations.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
-import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
+import { DisclosureHistory, italianDate, nodeRadius, projectionPick, projectionVisibility, semanticZoom, typedV2Path, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
+import type { TypedPathStep } from './v2-relations.ts';
+import type { AnalyticalDomain, NaturalArrangement, PickResult, ProjectionResult, ProjectionRenderer, RawJson, RecursiveLevel, RenderVisibility, SemanticGraphSnapshot, StyledProjection, VisualRelation } from '../projection/contract-types.ts';
+import { selectAnalyticalDomain } from '../projection/domain.ts';
+import { ProjectionRegistry } from '../projection/registry.ts';
+import { naturalProjection, NATURAL_LAYOUT_VERSION, resolveNaturalArrangement } from '../projection/natural-bridge.ts';
+import { projectLegacyIndra } from '../projection/legacy-indra.ts';
+import type { LegacyIndraProjectionResult } from '../projection/legacy-indra.ts';
+import { validateRenderVisibility } from '../projection/contract.ts';
+import { canonicalRawJson } from '../projection/normalize.ts';
 import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, manualExpansionTiers, normalizeDensity, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
 import { lodRefreshDue } from './render-schedule.ts';
 import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
@@ -58,7 +67,71 @@ export function resetMountFailureLog(): void {
 export type V2PageDeps = {
     readonly createView?: CreateProductView;
     readonly safeSelect?: typeof safeSelectNodes;
+    /** Opt-in B8 path; absent is the unchanged D-072 page. */
+    readonly projectionPipeline?: ProjectionPipelineInput;
 };
+export interface ProjectionPageRenderer extends ProjectionRenderer {
+    onPick(handler: (pick: PickResult | null, shiftKey: boolean) => void): void;
+    onHover(handler: (pick: PickResult | null, x: number, y: number) => void): void;
+}
+/** B10c supplies the renderer/style bridge; B10d supplies the structural panel entry. */
+export interface ProjectionPipelineInput {
+    snapshot(): Promise<SemanticGraphSnapshot> | SemanticGraphSnapshot;
+    createRenderer(host: HTMLElement, dimension: '2d' | '3d'): ProjectionPageRenderer;
+    style(result: ProjectionResult, snapshot: SemanticGraphSnapshot): StyledProjection;
+    styleLegacy(result: LegacyIndraProjectionResult, snapshot: SemanticGraphSnapshot, domain: AnalyticalDomain,
+        relations: readonly VisualRelation[]): StyledProjection;
+    loadLevel?(level: Extract<RecursiveLevel, { loaded: false }>, snapshot: SemanticGraphSnapshot,
+        domain: AnalyticalDomain): Promise<StyledProjection>;
+    panel: { show(host: HTMLElement, pick: PickResult, result: ProjectionResult, snapshot: SemanticGraphSnapshot,
+        pathStep?: TypedPathStep): void };
+}
+
+/** Reject missing, out-of-domain and nonfinite coordinates before either typed renderer sees them. */
+export function assertPageProjection(result: ProjectionResult, domain: AnalyticalDomain, dimension: '2d' | '3d'): void {
+    if (result.determinism.domainDigest !== domain.domainDigest || result.determinism.snapshotDigest !== domain.snapshotDigest)
+        throw new Error('Stale projection result');
+    if (result.domainNodeIds.length !== domain.nodeIds.length || result.domainNodeIds.some((id, i) => id !== domain.nodeIds[i]))
+        throw new Error('Projection domain mismatch');
+    if (result.domainEdgeIds.length !== domain.edgeIds.length || result.domainEdgeIds.some((id, i) => id !== domain.edgeIds[i]))
+        throw new Error('Projection induced edges mismatch');
+    if (result.coordinateState.kind !== 'coordinates') throw new Error(`Projection has no coordinates: ${result.coordinateState.code}`);
+    const positions = dimension === '2d' ? result.positions2 : result.positions3;
+    if (!positions || (dimension === '2d' ? result.positions3 : result.positions2)) throw new Error('Projection dimension mismatch');
+    const loaded = new Set(result.loadedNodeIds);
+    if (loaded.size !== result.loadedNodeIds.length || [...loaded].some(id => !domain.nodeIds.includes(id)))
+        throw new Error('Projection loaded nodes outside domain');
+    if (Object.keys(positions).length !== loaded.size) throw new Error('Projection coordinate count mismatch');
+    for (const id of loaded) {
+        const point = positions[id];
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) ||
+            (dimension === '3d' && !Number.isFinite((point as { z?: number }).z)))
+            throw new Error(`Missing or invalid projection coordinate: ${id}`);
+    }
+    if (Object.keys(positions).some(id => !loaded.has(id))) throw new Error('Out-of-domain projection coordinate');
+}
+export function assertCurrentLevelToken(level: RecursiveLevel, snapshot: SemanticGraphSnapshot,
+    domain: AnalyticalDomain, result: ProjectionResult): void {
+    if (level.loaded || level.loadToken.snapshotDigest !== snapshot.digest ||
+        level.loadToken.domainDigest !== domain.domainDigest ||
+        level.loadToken.projectionId !== result.determinism.algorithmId ||
+        level.loadToken.parameterHash !== result.determinism.parameterHash || level.loadToken.levelId !== level.id)
+        throw new Error('Stale projection level token');
+}
+export function assertPageSnapshotIndex(index: V2Index, snapshot: SemanticGraphSnapshot): void {
+    const sourceNodes = index.nodes.filter(node => node.level !== 5);
+    if (sourceNodes.length !== snapshot.rawLedger.nodes.length || index.edges.length !== snapshot.rawLedger.edges.length)
+        throw new Error('Page source index and projection snapshot differ');
+    for (let i = 0; i < sourceNodes.length; i++)
+        if (canonicalRawJson(sourceNodes[i] as unknown as RawJson) !== snapshot.rawLedger.nodes[i]?.canonicalJson)
+            throw new Error('Page source node differs from projection snapshot');
+    for (let i = 0; i < index.edges.length; i++)
+        if (canonicalRawJson(index.edges[i] as unknown as RawJson) !== snapshot.rawLedger.edges[i]?.canonicalJson)
+            throw new Error('Page source edge differs from projection snapshot');
+    const materialized = new Set(snapshot.nodes.filter(node => node.sourceKind === 'detail-passage').map(node => node.id));
+    for (const node of index.nodes) if (node.level === 5 && !materialized.has(node.id))
+        throw new Error('Page passage is absent from projection snapshot');
+}
 export type SearchHit = {
     id: string;
     level: number;
@@ -154,6 +227,20 @@ export class V2Page {
     private capMessage = false;
     private pointerDown = false;
     private hoverNeedsMove = false;
+    private readonly projectionInput: ProjectionPipelineInput | undefined;
+    private readonly projectionRegistry: ProjectionRegistry | null;
+    private projectionRenderer: ProjectionPageRenderer | null = null;
+    private projectionHost: HTMLElement | null = null;
+    private projectionResult: ProjectionResult | null = null;
+    private projectionSnapshot: SemanticGraphSnapshot | null = null;
+    private projectionDomain: AnalyticalDomain | null = null;
+    private projectionVisibility: RenderVisibility | null = null;
+    private projectionRevision = 0;
+    private projectionEpoch = 0;
+    private typedSelection: PickResult | null = null;
+    private typedWhyResult: ReturnType<typeof typedV2Path> = null;
+    private naturalArrangement: NaturalArrangement | null = null;
+    private typedNaturalCache: { raw: ProjectionResult; result: ProjectionResult } | null = null;
     constructor(manifest: GraphManifest, index: V2Index, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
         this.manifest = manifest;
         this.index = index;
@@ -164,6 +251,14 @@ export class V2Page {
         this.density = normalizeDensity(density);
         this.createView = deps.createView ?? createProductView;
         this.selectLod = deps.safeSelect ?? safeSelectNodes;
+        this.projectionInput = deps.projectionPipeline;
+        this.projectionRegistry = this.projectionInput ? new ProjectionRegistry() : null;
+        if (this.projectionRegistry) {
+            this.projectionRegistry.register(naturalProjection);
+            this.projectionRegistry.register({ id: 'indra-legacy', version: 'layout-v2/indra-recursive',
+                project: (_snapshot, request: { parameters: { input: Parameters<typeof projectLegacyIndra>[0] } }) =>
+                    projectLegacyIndra(request.parameters.input) });
+        }
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
             root.addEventListener(type, () => { this.userMovedSinceFit = true; this.noteCameraIntent(); }, { passive: true });
@@ -181,13 +276,13 @@ export class V2Page {
             if (n.level === 1 && index.nodes.some(child => child.level === 2 && child.parent === n.id))
                 this.history.state.expanded.add(n.id);
     }
-    static async load(manifest: GraphManifest, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced'): Promise<V2Page> {
+    static async load(manifest: GraphManifest, axes: Axes, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}): Promise<V2Page> {
         element('status').textContent = 'Caricamento del grafo\u2026 indice';
         const response = await fetch('/api/graph/index');
         if (!response.ok)
             throw new Error(`Indice del grafo: HTTP ${response.status}`);
         const index = validateIndex(await response.json());
-        const page = new V2Page(manifest, { nodes: index.nodes, edges: index.edges }, axes, appearance, palette, colours, density);
+        const page = new V2Page(manifest, { nodes: index.nodes, edges: index.edges }, axes, appearance, palette, colours, density, deps);
         await page.refresh();
         return page;
     }
@@ -207,6 +302,187 @@ export class V2Page {
         });
     }
     private visible() { return v2Visible(this.index, this.history.state, this.auto); }
+    /** B9 owns relation identity. Rehash the B5 result after replacing its temporary relation IDs. */
+    private async withTypedRelations(raw: ProjectionResult, relations: readonly VisualRelation[]): Promise<ProjectionResult> {
+        const oldIds = new Set(raw.visualRelations.map(item => item.explanationId));
+        const explanations = Object.fromEntries(Object.entries(raw.explanations).filter(([id]) => !oldIds.has(id)));
+        for (const relation of relations) explanations[relation.explanationId] = {
+            elementId: relation.visualId, elementKind: 'visual-relation',
+            summary: relation.kind === 'lifted-route' ? 'Percorso visuale di relazioni sorgente' : 'Struttura visuale',
+            sourceIds: relation.underlyingEdgeIds, parameterIds: ['layoutRelationPolicy'],
+            ...(relation.kind === 'lifted-route' ? {} : { limitation: 'Nessuna relazione sorgente implicata dalla struttura' }),
+        };
+        const { resultDigest: _oldDigest, ...metadata } = raw.determinism;
+        const payload = { ...raw, visualRelations: relations, explanations,
+            lod: { ...raw.lod, priorityByVisualRelationId: {}, maxVisibleVisualRelations: relations.length } };
+        const bytes = new TextEncoder().encode(canonicalRawJson({ ...payload, determinism: metadata } as unknown as RawJson));
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        const resultDigest = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+        return { ...payload, determinism: { ...metadata, resultDigest } };
+    }
+    private async refreshProjection(epoch: number): Promise<void> {
+        const input = this.projectionInput!;
+        const registry = this.projectionRegistry!;
+        const snapshot = await input.snapshot();
+        assertPageSnapshotIndex(this.index, snapshot);
+        const disclosed = this.visible();
+        const domain = selectAnalyticalDomain(snapshot, disclosed.nodes.map(node => node.id));
+        const typedRelations = projectTypedRelations(this.index.nodes, this.index.edges, new Set(domain.nodeIds),
+            this.axes.reading, this.axes.organization, 'essential').visualRelations;
+        const dimension = this.axes.projection;
+        let styled: StyledProjection;
+        let arrangementToCommit: NaturalArrangement | null = null;
+        if (this.axes.organization === 'flat') {
+            const arrangement = this.naturalArrangement ?? resolveNaturalArrangement(this.axes.morphology);
+            arrangementToCommit = arrangement;
+            const request = { id: 'natural' as const, snapshotDigest: snapshot.digest, domain,
+                parameters: { dimension, arrangement,
+                    layoutVersion: NATURAL_LAYOUT_VERSION,
+                    layoutRelationPolicy: this.axes.reading === 'attested' ? 'attested-essential' as const
+                        : this.axes.reading === 'exploratory' ? 'exploratory-essential' as const : 'combined-essential' as const,
+                    volumeExpansion: { x: this.appearance.expandX, y: this.appearance.expandY, z: this.appearance.expandZ } } };
+            const outcome = await registry.project<ProjectionResult>('natural', snapshot, request);
+            const cached = this.typedNaturalCache;
+            const typed = cached?.raw === outcome.result ? cached.result
+                : await this.withTypedRelations(outcome.result, typedRelations);
+            this.typedNaturalCache = { raw: outcome.result, result: typed };
+            styled = input.style(typed, snapshot);
+            if (styled.projection !== typed) throw new Error('Morphology replaced the projection result');
+        } else {
+            const ids = new Set(domain.nodeIds);
+            const relations = projectRelations(this.index.nodes, this.index.edges, ids,
+                this.axes.reading, 'indra', 'essential').edges;
+            const layoutInput: Parameters<typeof projectLegacyIndra>[0] = {
+                nodes: disclosed.nodes.map(node => ({ id: node.id, level: node.level,
+                    parent: node.parent, size: node.size, domains: node.domains,
+                    hiddenDescendants: disclosed.hidden.get(node.id) ?? 0 })),
+                edges: relations.map(edge => ({ id: edge.id, source: edge.source,
+                    target: edge.target, class: edge.class })),
+                morphology: this.axes.morphology, projection: dimension, expandZ: this.appearance.expandZ,
+            };
+            const outcome = await registry.project<LegacyIndraProjectionResult>('indra-legacy', snapshot,
+                { snapshotDigest: snapshot.digest, domain,
+                    parameters: { dimension, input: layoutInput } });
+            if (outcome.result.positions.size !== domain.nodeIds.length) throw new Error('Legacy Indra omitted a domain node');
+            for (const id of domain.nodeIds) {
+                const point = outcome.result.positions.get(id);
+                if (!point || ![point.x, point.y, point.z].every(Number.isFinite))
+                    throw new Error(`Legacy Indra missing coordinate: ${id}`);
+            }
+            if ([...outcome.result.positions.keys()].some(id => !ids.has(id)))
+                throw new Error('Legacy Indra coordinate outside domain');
+            const legacyStyled = input.styleLegacy(outcome.result, snapshot, domain, typedRelations);
+            styled = { ...legacyStyled, projection: await this.withTypedRelations(legacyStyled.projection, typedRelations) };
+        }
+        if (epoch !== this.projectionEpoch) return;
+        const result = styled.projection;
+        assertPageProjection(result, domain, dimension);
+        if (result.fullLedger.snapshotDigest !== snapshot.digest ||
+            result.fullLedger.canonicalBytesDigest !== snapshot.rawLedger.canonicalBytesDigest)
+            throw new Error('Projection lost its source ledger');
+        const ratios = { essential: 0.35, balanced: 0.7, complete: 1 } as const;
+        const visibility = projectionVisibility(result, snapshot, this.projectionRevision + 1,
+            ratios[this.density]);
+        validateRenderVisibility(result, visibility, snapshot);
+        if (this.projectionRenderer?.dimension === dimension) {
+            this.projectionRenderer.updateVisibleSubset(styled, visibility);
+        } else {
+            const host = document.createElement('div');
+            host.className = 'view-host';
+            Object.assign(host.style, { position: 'absolute', inset: '0' });
+            element('render-root').append(host);
+            let renderer: ProjectionPageRenderer;
+            try {
+                renderer = input.createRenderer(host, dimension);
+                renderer.onPick((pick, shiftKey) => this.handleProjectionPick(pick, shiftKey));
+                renderer.onHover((pick, x, y) => this.projectionTooltip(pick, x, y));
+                renderer.mount(styled, visibility);
+            } catch (error) { host.remove(); throw error; }
+            this.projectionRenderer?.destroy();
+            this.projectionHost?.remove();
+            this.projectionRenderer = renderer;
+            this.projectionHost = host;
+        }
+        this.projectionRevision = visibility.revision;
+        this.projectionResult = result;
+        this.projectionSnapshot = snapshot;
+        this.projectionDomain = domain;
+        this.projectionVisibility = visibility;
+        if (arrangementToCommit) this.naturalArrangement = arrangementToCommit;
+        this.rendered = new Set(visibility.nodeIds);
+        this.renderPanel();
+        element('status').textContent = 'Grafo pronto';
+    }
+    private handleProjectionPick(pick: PickResult | null, shiftKey: boolean): void {
+        const result = this.projectionResult;
+        if (!pick || !result) { this.typedSelection = null; this.selected = null; this.renderPanel(); return; }
+        projectionPick(result, pick);
+        if (!this.isVisibleProjectionPick(pick)) return;
+        if (pick.kind === 'node' || pick.kind === 'semantic-edge') {
+            const id = pick.id;
+            if (shiftKey && pick.kind === 'node' && this.selected && this.selected !== id)
+                this.why(this.selected, id);
+            else { this.typedSelection = pick; this.selected = id; this.renderPanel(); }
+        } else {
+            this.typedSelection = pick;
+            this.selected = pick.visualId;
+            this.renderPanel();
+        }
+    }
+    private projectionTooltip(pick: PickResult | null, x: number, y: number): void {
+        const tip = document.getElementById('v2-edge-tooltip') ?? document.createElement('div');
+        if (!tip.id) { tip.id = 'v2-edge-tooltip'; document.body.append(tip); }
+        if (!pick || !this.projectionResult) { tip.hidden = true; return; }
+        projectionPick(this.projectionResult, pick);
+        if (!this.isVisibleProjectionPick(pick)) { tip.hidden = true; return; }
+        if (pick.kind === 'node') { tip.hidden = true; return; }
+        const relation = pick.kind === 'visual-relation'
+            ? this.projectionResult.visualRelations.find(item => item.visualId === pick.visualId) : null;
+        tip.textContent = relation
+            ? relation.kind === 'co-membership' ? `${relation.count} conversazioni in comune · struttura visuale`
+                : relation.underlyingEdgeIds.length ? `Percorso visuale · ${relation.underlyingEdgeIds.length} relazioni sorgente`
+                    : 'Struttura visuale · nessuna relazione sorgente'
+            : pick.kind === 'semantic-edge' ? 'Relazione sorgente' : 'Elemento visuale strutturale';
+        tip.hidden = false;
+        tip.style.left = `${Math.min(innerWidth - 220, x + 12)}px`;
+        tip.style.top = `${Math.min(innerHeight - 35, y + 12)}px`;
+    }
+    private isVisibleProjectionPick(pick: PickResult): boolean {
+        const mask = this.projectionVisibility;
+        if (!mask) return false;
+        switch (pick.kind) {
+            case 'node': return mask.nodeIds.has(pick.id);
+            case 'semantic-edge': return mask.semanticEdgeIds.has(pick.id);
+            case 'visual-relation': return mask.visualRelationIds.has(pick.visualId);
+            case 'container': return mask.containerIds.has(pick.visualId);
+            case 'curve': return mask.curveIds.has(pick.visualId);
+            case 'field': return mask.fieldIds.has(pick.visualId);
+        }
+    }
+    /** A finite level revision keeps the mounted host. The token must belong to the current result. */
+    async loadProjectionLevel(levelId: string): Promise<void> {
+        const result = this.projectionResult, snapshot = this.projectionSnapshot, domain = this.projectionDomain;
+        const renderer = this.projectionRenderer, loader = this.projectionInput?.loadLevel;
+        if (!result || !snapshot || !domain || !renderer || !loader) throw new Error('Projection level loading unavailable');
+        const level = result.levels.find(item => item.id === levelId);
+        if (!level || level.loaded) throw new Error('Projection level is not unopened');
+        assertCurrentLevelToken(level, snapshot, domain, result);
+        const epoch = this.projectionEpoch;
+        const styled = await loader(level, snapshot, domain);
+        if (epoch !== this.projectionEpoch || this.projectionResult !== result ||
+            this.projectionDomain !== domain || this.projectionSnapshot !== snapshot)
+            throw new Error('Stale projection level token');
+        assertPageProjection(styled.projection, domain, renderer.dimension);
+        const ratios = { essential: 0.35, balanced: 0.7, complete: 1 } as const;
+        const visibility = projectionVisibility(styled.projection, snapshot, this.projectionRevision + 1,
+            ratios[this.density]);
+        renderer.updateVisibleSubset(styled, visibility);
+        this.projectionRevision = visibility.revision;
+        this.projectionResult = styled.projection;
+        this.projectionVisibility = visibility;
+        this.rendered = new Set(visibility.nodeIds);
+        this.renderPanel();
+    }
     private async detail(id: string) {
         let found = this.detailCache.get(id);
         if (found)
@@ -246,7 +522,9 @@ export class V2Page {
     refresh(): Promise<void> {
         if (this.hoverRefreshTimer) { clearTimeout(this.hoverRefreshTimer); this.hoverRefreshTimer = null; }
         this.refreshPending++;
+        const projectionEpoch = ++this.projectionEpoch;
         return this.run(async () => {
+            if (this.projectionInput) { await this.refreshProjection(projectionEpoch); return; }
             this.suppressZoomUntil = performance.now() + 900;
             const disclosed = this.visible();
             const ids = new Set(disclosed.nodes.map(n => n.id));
@@ -728,6 +1006,12 @@ export class V2Page {
     why(a: string, b: string) {
         this.whyRequest = [a, b];
         const ids = new Set(this.visible().nodes.map(node => node.id));
+        if (this.projectionInput) {
+            this.typedWhyResult = typedV2Path(this.index, a, b, ids);
+            this.whyResult = null;
+            this.renderPanel();
+            return this.typedWhyResult;
+        }
         this.whyResult = v2Path(this.index, a, b, ids);
         this.renderPanel();
         return this.whyResult;
@@ -1133,6 +1417,11 @@ export class V2Page {
         selectionHeading.id = 'selection-heading';
         selectionHeading.textContent = 'Selezione';
         host.append(selectionHeading);
+        if (this.projectionInput && this.typedSelection && this.projectionResult && this.projectionSnapshot &&
+            this.typedSelection.kind !== 'node' && this.typedSelection.kind !== 'semantic-edge') {
+            this.projectionInput.panel.show(host, this.typedSelection, this.projectionResult, this.projectionSnapshot);
+            return;
+        }
         if (this.selected === ABSOLUTE_CONTAINER_ID) {
             const h = document.createElement('h2'); h.textContent = 'NousOS'; host.append(h);
             line(host, 'Domini', shown.nodes.filter(node => node.level === 1).length);
@@ -1164,7 +1453,27 @@ export class V2Page {
         } else if (e) {
             renderSelection(host, buildRelationPanel(e, byId, createEvidenceResolver(byId)), id => { void this.select(id); });
         }
-        if (this.whyRequest && !this.whyResult) {
+        if (this.projectionInput && this.typedWhyResult?.steps.length && this.projectionResult && this.projectionSnapshot) {
+            const path = document.createElement('section'); path.className = 'selection-section';
+            const heading = document.createElement('h3'); heading.textContent = 'Percorso tra i nodi'; path.append(heading);
+            for (const step of this.typedWhyResult.steps) {
+                const button = document.createElement('button'); button.className = 'relation';
+                button.textContent = step.kind === 'semantic-edge' ? 'Relazione sorgente' :
+                    step.relation.kind === 'synthetic-containment' ? 'Gerarchia visuale · nessuna relazione sorgente' :
+                        'Percorso visuale strutturale';
+                button.onclick = () => {
+                    if (step.kind === 'semantic-edge') {
+                        this.typedSelection = { kind: 'semantic-edge', id: step.edge.id };
+                        this.selected = step.edge.id;
+                        this.renderPanel();
+                    }
+                    else this.projectionInput!.panel.show(host, { kind: 'visual-relation', visualId: step.relation.visualId },
+                        this.projectionResult!, this.projectionSnapshot!, step);
+                };
+                path.append(button);
+            }
+            host.append(path);
+        } else if (this.whyRequest && !(this.projectionInput ? this.typedWhyResult : this.whyResult)) {
             const p = document.createElement('p');
             p.textContent = 'Nessun percorso fra questi nodi nel grafo caricato.';
             host.append(p);

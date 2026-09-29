@@ -1,5 +1,9 @@
 import type { GraphEdge, GraphIndex, GraphNode } from './graph-v2.ts';
 import type { Reading } from './view-contract.ts';
+import type { PickResult, ProjectionResult, RenderVisibility, SemanticGraphSnapshot } from '../projection/contract-types.ts';
+import { typedPathSteps } from './v2-relations.ts';
+import type { TypedPathStep } from './v2-relations.ts';
+import { validatePickResult, validateRenderVisibility } from '../projection/contract.ts';
 /** Visible-node cap: each disclosure step still rebuilds the renderer, and on the reference M1 Max a step stays under
  * about 5 s up to this size (measured curve in the D-069 dataset report). */
 export const V2_CAP = 850;
@@ -190,6 +194,45 @@ export function v2Path(index: V2Index, a: string, b: string, visible?: ReadonlyS
         nodes.unshift(p.from);
     }
     return { nodes, edges };
+}
+/** A path's hierarchy hops are structural visuals, never fabricated source edges. */
+export function typedV2Path(index: V2Index, a: string, b: string, visible: ReadonlySet<string>):
+    { nodes: readonly string[]; steps: readonly TypedPathStep[] } | null {
+    const path = v2Path(index, a, b, visible);
+    return path && { nodes: path.nodes, steps: typedPathSteps(path.edges) };
+}
+
+export function projectionPick(result: ProjectionResult, pick: PickResult): PickResult {
+    validatePickResult(result, pick);
+    return pick;
+}
+
+/** Derive all six visibility classes from one immutable result. Density only changes this mask. */
+export function projectionVisibility(
+    result: ProjectionResult, snapshot: SemanticGraphSnapshot, revision: number, density: number,
+    visibleNodes: ReadonlySet<string> = new Set(result.loadedNodeIds),
+): RenderVisibility {
+    if (!Number.isFinite(density) || density < 0 || density > 1) throw new Error('Invalid projection density');
+    const take = (ids: readonly string[], priorities: Readonly<Record<string, number | undefined>>, maximum: number) =>
+        new Set(ids.slice().sort((a, b) => (priorities[b] ?? 0) - (priorities[a] ?? 0) || (a < b ? -1 : a > b ? 1 : 0))
+            .slice(0, Math.min(maximum, Math.ceil(maximum * density))));
+    const nodeIds = take(result.loadedNodeIds.filter(id => visibleNodes.has(id)), result.lod.priorityByNodeId, result.lod.maxVisibleNodes);
+    const semanticEdges = new Map(snapshot.edges.map(edge => [edge.id, edge]));
+    const semanticEdgeIds = take(result.domainEdgeIds.filter(id => {
+        const edge = semanticEdges.get(id);
+        return !!edge && nodeIds.has(edge.source) && nodeIds.has(edge.target);
+    }), result.lod.priorityBySemanticEdgeId, result.lod.maxVisibleSemanticEdges);
+    const visualRelationIds = take(result.visualRelations.filter(relation => nodeIds.has(relation.source) && nodeIds.has(relation.target))
+        .map(relation => relation.visualId), result.lod.priorityByVisualRelationId, result.lod.maxVisibleVisualRelations);
+    const curveIds = take(result.curves.filter(curve => !curve.visualRelationId || visualRelationIds.has(curve.visualRelationId))
+        .map(curve => curve.visualId), result.lod.priorityByCurveId, result.lod.maxVisibleCurves);
+    const containerIds = take(result.containers.map(container => container.visualId), result.lod.priorityByContainerId, result.lod.maxVisibleContainers);
+    const fieldIds = take(result.fields.map(field => field.id), result.lod.priorityByFieldId, result.lod.maxVisibleFields);
+    const visibility: RenderVisibility = { projectionResultDigest: result.determinism.resultDigest, revision,
+        levelIds: new Set(result.levels.filter(level => level.loaded).map(level => level.id)), density,
+        nodeIds, semanticEdgeIds, visualRelationIds, curveIds, containerIds, fieldIds };
+    validateRenderVisibility(result, visibility, snapshot);
+    return visibility;
 }
 export const nodeRadius = (n: Pick<V2Node, 'level' | 'size'>, nodeScale = 1): number => Math.max(3, Math.min(18, ({ 1: 11, 2: 9, 3: 7, 4: 5, 5: 3.5 }[n.level] + n.size * ({ 1: 5, 2: 4, 3: 3, 4: 2.5, 5: 1.5 }[n.level])) * nodeScale));
 export const semanticZoom = (level: number, radiusPx: number): boolean => level < 4 && radiusPx >= ({ 1: 30, 2: 25, 3: 20, 4: Infinity, 5: Infinity } as Record<number, number>)[level]!;
