@@ -2,6 +2,7 @@ import { assertVisualGraphFieldRegister, createRenderedStateCarrier, createSeman
 import type { Coordinates, VisualGraph } from '../engine/contract.ts';
 import type { GraphEdge } from './graph-v2.ts';
 import type { LiftedRelation } from './v2-relations.ts';
+import type { VisualRelation } from '../projection/contract-types.ts';
 import type { ReviewEdge, ReviewExport, ReviewNode } from './model.ts';
 import type { AdaptedReview } from './product-adapter.ts';
 import type { V2Node } from './v2-core.ts';
@@ -11,12 +12,46 @@ import type { Point3 } from './layout-v2.ts';
 
 export type V2RenderData = ReviewExport & { v2: true };
 
-export function adaptV2(
+/** New bridge: only original source edges enter ReviewEdge/VisualGraph.edges. */
+export function adaptV2Typed(
+  nodes: readonly V2Node[], semanticEdges: readonly GraphEdge[],
+  visualRelations: readonly VisualRelation[], positions: ReadonlyMap<string, Point3>, digest: string,
+): ReturnType<typeof adaptV2> & { visualRelations: readonly VisualRelation[] } {
+  const nodeIds = new Set(nodes.map(node => node.id));
+  const semanticIds = new Set<string>();
+  for (const edge of semanticEdges) {
+    if ('lifted' in edge || edge.id.startsWith('lift:') || edge.id.startsWith('co:') ||
+        edge.id.startsWith('contains:') || edge.type === 'co_membership' ||
+        !nodeIds.has(edge.source) || !nodeIds.has(edge.target) || semanticIds.has(edge.id)) {
+      throw new Error(`Expected an original induced semantic edge: ${edge.id}`);
+    }
+    semanticIds.add(edge.id);
+  }
+  const visualIds = new Set<string>();
+  for (const relation of visualRelations) {
+    if (relation.semantic !== false || !relation.visualId.startsWith('visual:') ||
+        !['lifted-route', 'co-membership', 'synthetic-containment'].includes(relation.kind) ||
+        visualIds.has(relation.visualId) || semanticIds.has(relation.visualId) || nodeIds.has(relation.visualId) ||
+        !nodeIds.has(relation.source) || !nodeIds.has(relation.target) ||
+        new Set(relation.underlyingEdgeIds).size !== relation.underlyingEdgeIds.length ||
+        (relation.kind === 'lifted-route' && relation.underlyingEdgeIds.length === 0)) {
+      throw new Error(`Invalid visual relation: ${relation.visualId}`);
+    }
+    visualIds.add(relation.visualId);
+  }
+  return { ...adaptV2(nodes, semanticEdges, positions, digest), visualRelations };
+}
+
+function adaptLegacyV2(
   nodes: readonly V2Node[],
   edges: readonly (GraphEdge | LiftedRelation)[],
   positions: ReadonlyMap<string, Point3>,
   digest: string,
 ): { data: V2RenderData; prepared: AdaptedReview } {
+  // A typed structural visual must never enter either semantic adapter collection.
+  if (edges.some(edge => (edge as unknown as Partial<VisualRelation>).semantic === false)) {
+    throw new Error('VisualRelation cannot be adapted as a ReviewEdge');
+  }
   const renderedNodes: ReviewNode[] = nodes.map(node => ({
     id: node.id,
     type: node.level <= 3 ? node.level === 1 ? 'domain' : 'conversation'
@@ -97,6 +132,14 @@ export function adaptV2(
       indraAnchors: anchors,
     },
   };
+}
+
+/** Temporary page compatibility: B8/B10 replace legacy projected arcs with adaptV2Typed. */
+export function adaptV2(
+  nodes: readonly V2Node[], edges: readonly (GraphEdge | LiftedRelation)[],
+  positions: ReadonlyMap<string, Point3>, digest: string,
+): { data: V2RenderData; prepared: AdaptedReview } {
+  return adaptLegacyV2(nodes, edges, positions, digest);
 }
 
 export function v2Encoding(node: V2Node, scale: number) {

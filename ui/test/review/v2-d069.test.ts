@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { adaptV2, v2Encoding } from '../../src/review/v2-adapter.ts';
+import { adaptV2, adaptV2Typed, v2Encoding } from '../../src/review/v2-adapter.ts';
+import type { VisualRelation } from '../../src/projection/contract-types.ts';
 import { DisclosureHistory, italianDate, nodeRadius, semanticZoom, v2Path, v2Reading, v2Visible } from '../../src/review/v2-core.ts';
 import type { V2Index, V2Node } from '../../src/review/v2-core.ts';
 import type { GraphEdge } from '../../src/review/graph-v2.ts';
@@ -22,6 +23,26 @@ test('v2 adapter maps real hierarchy families, classes and glyphs',()=>{
   assert.equal(v2Encoding(a!,1).glyph,'filled');
   assert.equal(v2Encoding({...a!,status:'overlay'},1).glyph,'hollow');
   assert.equal(v2Encoding(passage,1).glyph,'hollow');
+});
+test('typed adapter carries empty-underlying structural visuals outside ReviewEdge and semantic graph',()=>{
+  const shown=[root,conversation,a!,b!];
+  const positions=new Map(shown.map((n,i)=>[n.id,{x:i,y:i,z:i}] as const));
+  const visuals:VisualRelation[]=[
+    {visualId:'visual:co:one',kind:'co-membership',semantic:false,source:a!.id,target:b!.id,
+      underlyingEdgeIds:[],count:2,explanationId:'visual:co:one'},
+    {visualId:'visual:contains:one',kind:'synthetic-containment',semantic:false,source:conversation.id,target:a!.id,
+      underlyingEdgeIds:[],count:1,explanationId:'visual:contains:one'},
+  ];
+  const result=adaptV2Typed(shown,edges.slice(0,1),visuals,positions,'synthetic');
+  assert.deepEqual(result.visualRelations,visuals);
+  assert.deepEqual(result.data.edges.map(edge=>edge.id),['attested']);
+  assert.deepEqual(result.prepared.flatGraph.edges.map(edge=>edge.id),['attested']);
+  assert.deepEqual(result.prepared.indraGraph.edges.map(edge=>edge.id),['attested']);
+  for(const visual of visuals){
+    assert.equal(result.prepared.originals.has(visual.visualId),false);
+    assert.equal(result.data.edges.some(edge=>edge.id===visual.visualId),false);
+    assert.throws(()=>adaptV2(shown,[visual as unknown as GraphEdge],positions,'synthetic'),/VisualRelation/);
+  }
 });
 test('radii are bounded across size and appearance scale',()=>{
   for(const level of [1,2,3,4,5] as const)for(const size of [0,0.5,1])for(const scale of [0.4,1,2.5]){

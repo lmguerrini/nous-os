@@ -1,6 +1,7 @@
 import type { GraphEdge } from './graph-v2.ts';
 import type { V2Node } from './v2-core.ts';
 import type { Reading } from './view-contract.ts';
+import type { VisualRelation } from '../projection/contract-types.ts';
 
 export type LiftedRelation = GraphEdge & {
   count: number;
@@ -14,6 +15,30 @@ export type RelationProjection = {
   byId: ReadonlyMap<string, LiftedRelation>;
   total: number;
 };
+/** Source records and display geometry have separate identities and collections. */
+export type TypedRelationProjection = {
+  semanticEdges: readonly GraphEdge[];
+  visualRelations: readonly VisualRelation[];
+  total: number;
+};
+export type TypedPathStep =
+  | Readonly<{ kind: 'semantic-edge'; edge: GraphEdge }>
+  | Readonly<{ kind: 'visual-relation'; relation: VisualRelation }>;
+
+/** Classify v2Path's temporary synthetic hierarchy steps before any new panel/pick consumes them. */
+export function typedPathSteps(steps: readonly (GraphEdge | {
+  class: 'attested'; type: 'contains'; source: string; target: string;
+})[]): TypedPathStep[] {
+  return steps.map(step => {
+    if ('id' in step) return { kind: 'semantic-edge', edge: step };
+    const visualId = `visual:relation:contains:${step.target}`;
+    return { kind: 'visual-relation', relation: {
+      visualId, kind: 'synthetic-containment', semantic: false,
+      source: step.source, target: step.target, underlyingEdgeIds: [],
+      count: 1, explanationId: visualId,
+    } };
+  });
+}
 export const INDRA_ESSENTIAL_ARC_CAP = 160;
 
 /** Indra recedes its semantic arcs so the nested shells stay legible. Non-selected arcs are strongly
@@ -38,6 +63,43 @@ export function visibleAncestor(id: string, visible: ReadonlySet<string>, nodes:
 
 const pair = (a: string, b: string) => a < b ? [a, b] as const : [b, a] as const;
 const width = (count: number) => Math.min(3.4, 0.7 + Math.log2(count + 1) * 0.42);
+const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+
+/** Typed output for the projection/render bridge. Original semantic records are never rewritten. */
+export function projectTypedRelations(
+  nodes: readonly V2Node[], edges: readonly GraphEdge[], visible: ReadonlySet<string>,
+  reading: Reading, organization: 'flat' | 'indra', detail: RelationDetail = 'essential',
+  active: string | null = null,
+): TypedRelationProjection {
+  const legacy = projectRelations(nodes, edges, visible, reading, organization, detail, active);
+  const semanticEdges = edges.filter(edge => visible.has(edge.source) && visible.has(edge.target) &&
+    (reading !== 'attested' || edge.class === 'attested'));
+  const sourceIds = new Set(edges.map(edge => edge.id));
+  const nodeIds = new Set(nodes.map(node => node.id));
+  if (sourceIds.size !== edges.length) throw new Error('Duplicate source edge ID');
+  const visualRelations: VisualRelation[] = legacy.edges.map(relation => {
+    const kind: VisualRelation['kind'] = relation.type === 'co_membership' ? 'co-membership'
+      : relation.type === 'contains' ? 'synthetic-containment' : 'lifted-route';
+    // Legacy presentation folds only its first matching arc into a co-membership chord.
+    // The typed record must still identify every original contributor to that chord.
+    const contributors = kind === 'co-membership' ? [
+      ...relation.underlying,
+      ...legacy.edges.filter(other => other !== relation && other.class === 'attested' &&
+        other.source === relation.source && other.target === relation.target &&
+        other.type !== 'contains').flatMap(other => other.underlying),
+    ] : relation.underlying;
+    const underlyingEdgeIds = [...new Set(contributors.map(edge => edge.id))].sort(compare);
+    if (underlyingEdgeIds.some(id => !sourceIds.has(id)) ||
+        (kind === 'lifted-route' && underlyingEdgeIds.length === 0)) {
+      throw new Error(`Invalid underlying source edges for ${relation.id}`);
+    }
+    const visualId = `visual:relation:${relation.id}`;
+    if (sourceIds.has(visualId) || nodeIds.has(visualId)) throw new Error(`Visual ID collides with source: ${visualId}`);
+    return { visualId, kind, semantic: false, source: relation.source, target: relation.target,
+      underlyingEdgeIds, count: relation.count, explanationId: visualId };
+  });
+  return { semanticEdges, visualRelations, total: legacy.total };
+}
 
 /** One co-membership chord per visible domain pair, counted by conversation. */
 export function coMembership(nodes: readonly V2Node[], visible: ReadonlySet<string>): LiftedRelation[] {
@@ -62,7 +124,7 @@ export function coMembership(nodes: readonly V2Node[], visible: ReadonlySet<stri
   });
 }
 
-export function projectRelations(
+function projectLegacyRelations(
   nodes: readonly V2Node[], edges: readonly GraphEdge[], visible: ReadonlySet<string>,
   reading: Reading, organization: 'flat' | 'indra', detail: RelationDetail = 'essential',
   active: string | null = null,
@@ -117,4 +179,13 @@ export function projectRelations(
   }
   const byId = new Map(projected.map(edge => [edge.id, edge]));
   return { edges: projected, byId, total };
+}
+
+/** Temporary shape for v2-page and the legacy Natural coordinate bridge. */
+export function projectRelations(
+  nodes: readonly V2Node[], edges: readonly GraphEdge[], visible: ReadonlySet<string>,
+  reading: Reading, organization: 'flat' | 'indra', detail: RelationDetail = 'essential',
+  active: string | null = null,
+): RelationProjection {
+  return projectLegacyRelations(nodes, edges, visible, reading, organization, detail, active);
 }
