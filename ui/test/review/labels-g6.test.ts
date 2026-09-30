@@ -34,10 +34,7 @@ const overlapsDisc = (
   return (disc.x - nearestX) ** 2 + (disc.y - nearestY) ** 2 < (disc.radius + 1) ** 2;
 };
 
-test("tier 1: a domain boxed in by pearls keeps its name, never over its own disc", () => {
-  // The G6 defect shape: a domain hub sits among its children, its slots boxed in — the tier-2
-  // rule would drop it; tier 1 must place it (requirement: legible above a pearl, never under its
-  // own node, the panel or another label).
+test("tier 1: a domain boxed in by pearls does not cover another glyph", () => {
   const own = { x: 300, y: 200, radius: 12 };
   const cage = [
     ...ring(300, 200, 28, 10, 24),
@@ -50,12 +47,7 @@ test("tier 1: a domain boxed in by pearls keeps its name, never over its own dis
   const tier2 = placeLabels([tierTwo], bounds, fixedMeasure, [], Number.POSITIVE_INFINITY, cage);
   assert.equal(tier2.length, 0, "a boxed-in tier-2 label is still dropped");
   const placed = placeLabels([candidate], bounds, fixedMeasure, [], Number.POSITIVE_INFINITY, cage);
-  assert.equal(placed.length, 1, "a boxed-in tier-1 domain keeps its label");
-  const rect = placed[0]!.rect;
-  assert.ok(rect.left >= bounds.left && rect.top >= bounds.top
-    && rect.left + rect.width <= bounds.left + bounds.width
-    && rect.top + rect.height <= bounds.top + bounds.height, "tier 1 stays inside the visible rect");
-  assert.ok(!overlapsDisc(rect, own), "tier 1 never sits over its own disc");
+  assert.equal(placed.length, 0, "a caged domain cannot be printed over a pearl");
   // The reserved rects (the Aspetto panel) are honoured by the fallback too.
   const panel = { left: 900, top: 0, width: 200, height: 750 };
   const withPanel = placeLabels(
@@ -63,11 +55,13 @@ test("tier 1: a domain boxed in by pearls keeps its name, never over its own dis
     bounds, fixedMeasure, [panel], Number.POSITIVE_INFINITY,
     ring(820, 200, 28, 10, 24),
   );
-  assert.equal(withPanel.length, 1, "tier 1 places beside the reserved panel");
-  assert.ok(!overlapsRect(withPanel[0]!.rect, panel), "tier 1 never sits under the panel");
+  for (const label of withPanel) {
+    assert.ok(!overlapsRect(label.rect, panel), "tier 1 never sits under the panel");
+    assert.ok(!overlapsDisc(label.rect, own), "tier 1 never sits over its own disc");
+  }
 });
 
-test("tier 2 never overlaps tier 1, and two boxed-in domains never overlap each other", () => {
+test("tier 2 never overlaps tier 1, and boxed-in domains do not occupy pearls", () => {
   // No discs: a tier-2 label sharing the tier-1's anchor still places, but never on it.
   const sameSpot: LabelCandidate[] = [
     { id: "selected", text: "Selezionato", reason: "selected", x: 300, y: 200, priority: 9, radius: 12, tier1: true },
@@ -76,8 +70,7 @@ test("tier 2 never overlaps tier 1, and two boxed-in domains never overlap each 
   const free = placeLabels(sameSpot, bounds, fixedMeasure);
   assert.equal(free.length, 2, JSON.stringify(free));
   assert.ok(!overlapsRect(free[0]!.rect, free[1]!.rect), "tier 2 moves off the tier-1 label");
-  // Caged domains near one another: both placed (tier 1 first), never over each other; the
-  // boxed-in tier-2 is dropped, never pushed over a tier-1 name.
+  // Caged domains near one another are dropped when no clear connected position remains.
   const cage = [
     ...ring(300, 200, 28, 10, 24),
     ...ring(300, 200, 44, 10, 26),
@@ -90,8 +83,8 @@ test("tier 2 never overlaps tier 1, and two boxed-in domains never overlap each 
   ];
   const placed = placeLabels(candidates, bounds, fixedMeasure, [], Number.POSITIVE_INFINITY, cage);
   const ids = placed.map(label => label.id);
-  assert.ok(ids.includes("domain:a"), `domain a placed: ${JSON.stringify(ids)}`);
-  assert.ok(ids.includes("domain:b"), `domain b placed: ${JSON.stringify(ids)}`);
+  assert.ok(!ids.includes("domain:a"), `domain a covers a pearl: ${JSON.stringify(ids)}`);
+  assert.ok(!ids.includes("domain:b"), `domain b covers a pearl: ${JSON.stringify(ids)}`);
   assert.ok(!ids.includes("inner:x"), "the boxed-in tier-2 label is dropped");
   for (let a = 0; a < placed.length; a++)
     for (let b = a + 1; b < placed.length; b++)

@@ -36,7 +36,7 @@ test('labels choose a rim-clear slot and survive when every slot straddles Indra
   assert.equal(blocked.length, 1);
   const tier2 = placeLabels([{ ...candidate, tier1: false }], bounds, measure, [], 40, [],
     Array.from({ length: 80 }, (_, radius) => ({ x: 100, y: 100, radius: radius + 1 })));
-  assert.equal(tier2.length, 1, 'a resting label survives when rims alone block every slot');
+  assert.equal(tier2.length, 0, 'a resting label does not cross every blocked rim');
 });
 
 test('title count is explicit and the shared node title is the same in canvas and panel', () => {
