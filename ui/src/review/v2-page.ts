@@ -543,6 +543,8 @@ export class V2Page {
     /** `resultDigest|levelId` of the levels the assembly refused to open for a result: never requested again. */
     private readonly refusedLevels = new Map<string, { readonly code: string; readonly detail: string }>();
     private readonly rootProjectionRefusals = new Map<string, { readonly code: string; readonly detail: string }>();
+    /** A requested open level refused while its own root result was still available to display. */
+    private readonly indraRequestedLevelRefusals = new Map<string, { readonly levelId: string; readonly code: string; readonly detail: string }>();
     private projectionPending = false;
     /** The refresh that raised the pending state: only it, or none, lowers it, so a superseded one never hides a newer one's. */
     private projectionPendingEpoch = -1;
@@ -1014,6 +1016,9 @@ export class V2Page {
         dimension: Dimension): Promise<{ readonly result: ProjectionResult; readonly request: ProjectionRequest<'indras-pearls'>;
             readonly levelId: string | null } | null> {
         if (epoch !== this.projectionEpoch) return null;
+        // A requested-level refusal belongs to this Indra request only. Clear before starting it,
+        // including when the new request will produce the same root digest as the previous one.
+        this.indraRequestedLevelRefusals.clear();
         const refusalKey = `${snapshot.digest}|${domain.domainDigest}|indras-pearls|${dimension}`;
         const remembered = this.rootProjectionRefusals.get(refusalKey);
         if (remembered !== undefined) {
@@ -1026,16 +1031,25 @@ export class V2Page {
             if (epoch !== this.projectionEpoch) return null;
             const request = this.indraRequestFor(snapshot, domain, dimension);
             let levelId = this.indraOpen?.domainDigest === domain.domainDigest ? this.indraOpen.levelId : null;
+            const requestedLevelId = levelId;
             let result: ProjectionResult;
+            let requestedLevelRefusal: { readonly code: string; readonly detail: string } | null = null;
             try {
                 result = await this.runProjection<'indras-pearls'>(snapshot, levelId === null ? request : { ...request, requestedLevelId: levelId });
             } catch (error) {
-                // A pearl that cannot be reopened for this request returns the view to the root.
-                if (levelId === null || projectionRefusalOf(error) === null) throw error;
+                // A refused saved level returns to the view's own root, while keeping the refusal
+                // attached to that displayed result so the replacement is visible to the user.
+                const refusal = projectionRefusalOf(error);
+                if (levelId === null || refusal === null) throw error;
+                requestedLevelRefusal = refusal;
                 levelId = null;
                 result = await this.runProjection<'indras-pearls'>(snapshot, request);
             }
             if (epoch !== this.projectionEpoch) return null;
+            if (requestedLevelRefusal !== null && requestedLevelId !== null) {
+                this.indraRequestedLevelRefusals.set(`${result.determinism.resultDigest}|${requestedLevelId}`,
+                    { levelId: requestedLevelId, ...requestedLevelRefusal });
+            }
             const state = result.coordinateState;
             if (state.kind === 'no-coordinates') {
                 this.showProjectionRefusal("Indra's Pearls", { code: state.code,
@@ -1220,8 +1234,15 @@ export class V2Page {
         const result = this.projectionResult;
         if (!result) return '';
         const refused = this.refusedLevelsOf(result);
+        const requestedRefusals = this.indraRequestedLevelRefusalsOf(result);
         return indraDisclosureLine(result, this.axes.projection)
+            + requestedRefusals.map(refusal => ` \u00B7 livello richiesto ${refusal.levelId} rifiutato [${refusal.code}]: ${refusal.detail}`).join('')
             + (refused.length ? ` \u00B7 ${refused.length} livelli non aperti [${refused[0]!.code}]: ${refused[0]!.detail}` : '');
+    }
+    private indraRequestedLevelRefusalsOf(result: ProjectionResult) {
+        const prefix = `${result.determinism.resultDigest}|`;
+        return [...this.indraRequestedLevelRefusals].filter(([key]) => key.startsWith(prefix))
+            .map(([, refusal]) => refusal).sort((left, right) => left.levelId < right.levelId ? -1 : left.levelId > right.levelId ? 1 : 0);
     }
     private refusedLevelsOf(result: ProjectionResult): { readonly levelId: string; readonly code: string; readonly detail: string }[] {
         const prefix = `${result.determinism.resultDigest}|`;
@@ -1622,6 +1643,8 @@ export class V2Page {
             openLevelId: this.indraOpen?.levelId ?? null,
             unopenedLevels: result ? result.levels.filter(level => isLazyLevel(result, level)).map(level => level.id).sort() : [],
             refusedLevels: result ? this.refusedLevelsOf(result) : [],
+            requestedLevelRefusals: result?.determinism.algorithmId === 'indras-pearls'
+                ? this.indraRequestedLevelRefusalsOf(result) : [],
         };
     }
     /** What the Holographic controls show: the drawn channel, the witness region, the focus and the
@@ -2546,6 +2569,8 @@ export class V2Page {
         const merged: PageAxes = { ...this.axes, ...normalizeAxesInput(value) };
         if (merged.organization !== this.axes.organization && !this.supportsOrganization(merged.organization))
             throw new Error(`View is not registered: ${merged.organization}`);
+        if (this.axes.organization === 'indra' && merged.organization !== 'indra')
+            this.indraRequestedLevelRefusals.clear();
         // D-073: the arrangement axis is Natural-only — the merged Indra or Fractal view drops it,
         // exactly like the main entry point's appliedAxes, so the axes the page keeps and hands to
         // the product view never carry an arrangement outside Natural. The Natural arrangement
@@ -2860,6 +2885,23 @@ export class V2Page {
         const host = element('details');
         host.replaceChildren();
         const shown = this.visible();
+        const projectionResult = this.projectionResult;
+        if (projectionResult?.determinism.algorithmId === 'indras-pearls') {
+            const refusals = this.indraRequestedLevelRefusalsOf(projectionResult);
+            if (refusals.length > 0) {
+                const disclosure = document.createElement('section');
+                disclosure.id = 'indra-requested-level-refusal';
+                const heading = document.createElement('h3');
+                heading.textContent = 'Livello Indra richiesto non aperto';
+                disclosure.append(heading);
+                for (const refusal of refusals) {
+                    const explanation = document.createElement('p');
+                    explanation.textContent = `Livello ${refusal.levelId} rifiutato [${refusal.code}]: ${refusal.detail}. È mostrato il livello radice.`;
+                    disclosure.append(explanation);
+                }
+                host.append(disclosure);
+            }
+        }
         const overview = document.createElement('section');
         overview.id = 'v2-overview';
         const oh = document.createElement('h3');

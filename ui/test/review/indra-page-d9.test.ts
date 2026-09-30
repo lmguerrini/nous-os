@@ -234,10 +234,12 @@ async function typedPage(options: { axes?: Record<string, unknown>; client?: Pro
 
 type ProjectionRecord = { enabled: boolean; resultDigest: string | null; algorithm: string | null; organization: string;
   cameraKey: string | null; pending: boolean; refusal: { code: string; detail: string } | null; openLevelId: string | null;
-  unopenedLevels: string[]; refusedLevels: { levelId: string; code: string; detail: string }[]; domainDigest: string | null };
+  unopenedLevels: string[]; refusedLevels: { levelId: string; code: string; detail: string }[]; domainDigest: string | null;
+  requestedLevelRefusals: { levelId: string; code: string; detail: string }[] };
 const recordOf = (page: V2Page) => (page.witness() as unknown as { projection: ProjectionRecord }).projection;
 const internals = (page: V2Page) => page as unknown as { projectionResult: ProjectionResult | null; indraRequest: unknown;
-  lod: string; selected: string | null; typedSelection: PickResult | null };
+  lod: string; selected: string | null; typedSelection: PickResult | null;
+  indraRequestedLevelRefusals: Map<string, { levelId: string; code: string; detail: string }> };
 const resultOf = (page: V2Page) => internals(page).projectionResult;
 const statusText = () => elements.get('status')!.textContent;
 const until = async (condition: () => boolean, label: string) => {
@@ -314,6 +316,82 @@ test('typed worker root refusals resolve setAxes, are disclosed, and are not req
     await page.setAxes({ organization });
     assert.equal(calls, 1, `${organization} reuses the remembered typed refusal`);
   }
+});
+
+test('a refused saved Indra level is disclosed beside the displayed root and recorded in the witness', async () => {
+  const inner = spyClient();
+  let refuseSavedLevel = false;
+  const client: ProjectionWorkerClient = {
+    get backend() { return inner.backend; }, get isIdle() { return inner.isIdle; },
+    project(request) {
+      if (refuseSavedLevel && request.requestedLevelId !== undefined) {
+        return Promise.reject(new ProjectionClientError('projection-refusal', 'worker typed refusal', {
+          failure: { code: 'projection-refusal', refusal: 'indra', refusalCode: 'level-not-found', detail: 'livello salvato non disponibile' },
+        }));
+      }
+      return inner.project(request);
+    },
+    cancel: slot => inner.cancel(slot), dispose: () => inner.dispose(),
+  };
+  const { page, trace } = await typedPage({ client, axes: { organization: 'indra' } });
+  const initial = resultOf(page)!;
+  const requestedLevelId = lazyOf(initial)[0]!.id;
+  await page.loadProjectionLevel(requestedLevelId, '2d/indra');
+  assert.equal(recordOf(page).openLevelId, requestedLevelId);
+
+  refuseSavedLevel = true;
+  await page.refresh();
+
+  const root = resultOf(page)!;
+  assert.equal(recordOf(page).openLevelId, null, 'the view displays its own root after the saved level refuses');
+  assert.equal(trace.mounts, 1, 'the existing Indra renderer remains mounted for the root result');
+  assert.ok(trace.updates.length > 0, 'the root result reaches the renderer');
+  assert.ok(statusText().includes(`livello richiesto ${requestedLevelId} rifiutato [level-not-found]`));
+  const disclosure = textOf(elements.get('details')!);
+  assert.ok(disclosure.includes(`Livello ${requestedLevelId} rifiutato [level-not-found]`));
+  assert.match(disclosure, /È mostrato il livello radice/);
+  assert.deepEqual(recordOf(page).requestedLevelRefusals,
+    [{ levelId: requestedLevelId, code: 'level-not-found', detail: 'livello salvato non disponibile' }]);
+  assert.equal(internals(page).indraRequestedLevelRefusals.size, 1, 'the current request owns the only refusal entry');
+  assert.equal(root.coordinateState.kind, 'coordinates');
+
+  const rootDigest = root.determinism.resultDigest;
+  const requestsBeforeRefresh = inner.requests.length;
+  await page.refresh();
+  const sameRoot = resultOf(page)!;
+  assert.equal(sameRoot.determinism.resultDigest, rootDigest, 'the later request returns the same root result');
+  assert.equal(inner.requests.length, requestsBeforeRefresh + 1);
+  assert.equal(inner.requests.at(-1)!.requestedLevelId, undefined, 'the later request asks for the root only');
+  assert.doesNotMatch(statusText(), /livello richiesto .* rifiutato/);
+  assert.doesNotMatch(textOf(elements.get('details')!), /Livello .* rifiutato/);
+  assert.deepEqual(recordOf(page).requestedLevelRefusals, [], 'the witness lists no refusal for the new display');
+  assert.equal(internals(page).indraRequestedLevelRefusals.size, 0, 'the previous request entry was discarded');
+  refuseSavedLevel = false;
+  await page.loadProjectionLevel(requestedLevelId, '2d/indra');
+  refuseSavedLevel = true;
+  await page.refresh();
+  assert.ok(internals(page).indraRequestedLevelRefusals.size <= 1, 'the map is bounded by the latest request');
+  await page.setAxes({ organization: 'natural' });
+  assert.equal(internals(page).indraRequestedLevelRefusals.size, 0, 'leaving Indra clears its request disclosure');
+});
+
+test('a refused Indra root still clears a previously mounted typed renderer', async () => {
+  const inner = spyClient();
+  const client: ProjectionWorkerClient = {
+    get backend() { return inner.backend; }, get isIdle() { return inner.isIdle; },
+    project(request) {
+      if (request.projectionId === 'indras-pearls') return Promise.reject(new ProjectionClientError('projection-refusal',
+        'worker typed refusal', { failure: { code: 'projection-refusal', refusal: 'indra', refusalCode: 'invalid-request', detail: 'fixture root refusal' } }));
+      return inner.project(request);
+    },
+    cancel: slot => inner.cancel(slot), dispose: () => inner.dispose(),
+  };
+  const { page, trace } = await typedPage({ client });
+  assert.equal(trace.mounts, 1, 'Natural has a mounted typed renderer before switching');
+  await page.setAxes({ organization: 'indra' });
+  assert.equal(trace.destroys, 1, 'the old renderer is cleared on root refusal');
+  assert.equal((page as unknown as { projectionRenderer: unknown }).projectionRenderer, null);
+  assert.match(statusText(), /proiezione rifiutata \[invalid-request\]/);
 });
 
 test('generic worker errors still reject setAxes', async () => {
