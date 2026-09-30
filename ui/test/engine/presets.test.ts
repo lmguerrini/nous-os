@@ -183,7 +183,7 @@ test("a preset that leaked into node identity would be caught, not silently acce
 
 // atmospheric and accessibility raise salience.maxNodeSizePx, which raises
 // enforceMinimumScreenPairwiseSeparation's CSS-pixel separation floor
-// (ui/src/engine/layout.ts). On Flat organization, the governed
+// (ui/src/engine/layout.ts). On Natural organization, the governed
 // indra-portal-windows.json fixture packs 12-13 real members into one aggregate
 // disc tightly enough that the default floor (16px) just barely converges within
 // the layout's fixed correction-pass budget; a preset-raised floor (17px
@@ -191,7 +191,7 @@ test("a preset that leaked into node identity would be caught, not silently acce
 // "layout cannot meet the CSS-pixel pairwise separation floor" for those two
 // presets, in that one organization, on that one fixture, for all three
 // morphologies -- 6 of this suite's 252 combinations. Only discovery-at-question
-// under Indra organization was ever built under a preset before this, so Flat
+// under Indra organization was ever built under a preset before this, so Natural
 // and the community-scale Indra fixtures were never exercised here. This test
 // is the fix's own regression control: run against the pre-fix layout.ts it
 // reproduces exactly those six failures and no others.

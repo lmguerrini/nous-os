@@ -5,7 +5,7 @@ test.skip(process.env.D071_BROWSER !== '1', 'Set D071_BROWSER=1 and serve the re
 
 type LabelWitness = { id: string; reason: string; rect: { left: number; top: number; width: number; height: number } };
 
-/** One Flat view's label audit: every domain named, no overlaps, nothing outside the visible
+/** One Natural view's label audit: every domain named, no overlaps, nothing outside the visible
  * rect, under the panel or over its own node disc. */
 const audit = () => {
   const w = (window as any).__d067.witness();
@@ -47,14 +47,14 @@ const audit = () => {
   return { domains: domainIds.size, domainLabels: named.length, missing, overlaps, outside, underPanel, ownDisc, labels: labels.length };
 };
 
-test('D-071 G6 Flat names every domain in 2D and 3D, and no label sits under a pearl, the panel or another label', async ({ page }) => {
+test('D-071 G6 Natural names every domain in 2D and 3D, and no label sits under a pearl, the panel or another label', async ({ page }) => {
   await page.goto(url);
   await page.evaluate(() => (window as any).__d067.ready);
 
   for (const projection of ['2d', '3d'] as const) {
     for (const morphology of ['stellar', 'neural', 'mycelium'] as const) {
       await page.evaluate(
-        ([p, m]) => (window as any).__d067.setAxes({ projection: p, organization: 'flat', morphology: m, reading: 'attested', labels: true }),
+        ([p, m]) => (window as any).__d067.setAxes({ projection: p, organization: 'natural', morphology: m, reading: 'attested', labels: true }),
         [projection, morphology] as const,
       );
       // Let the camera settle and its 160 ms label debounce run, as the G3 spec does.

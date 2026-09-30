@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { digestPayload } from '../../src/engine/digest.ts';
 import { assignFractalSectors, codepointCompare } from '../../src/fractal/assignment.ts';
 import type { FractalCommunitySector } from '../../src/fractal/assignment.ts';
 import { certifyFractalDynamics, fractalContractParameters } from '../../src/fractal/parameters.ts';
@@ -13,21 +14,82 @@ import { comparisonLedger } from './fractal-natural-comparison-fixture.ts';
 
 const SEEDS = Array.from({ length: 16 }, (_, index) => 0xD073E100 + index);
 const LOCALITY_LIMIT = 0.5;
+const LOCALITY_DIAGNOSTIC_TOLERANCE = 0.1;
 const codepointSorted = (values: readonly string[]) => [...values].sort(codepointCompare);
 
 function permuteSnapshot(snapshot: SemanticGraphSnapshot): SemanticGraphSnapshot {
   return { ...snapshot, nodes: [...snapshot.nodes].reverse(), edges: [...snapshot.edges].reverse() };
 }
 
-function maxFractalLocality(result: ProjectionResult): number {
-  const rows = result.diagnostics.filter(row => row.code.startsWith('fractal:edge-locality:')
-    && typeof row.value === 'number');
-  assert.ok(rows.length > 0, 'Fractal reports eligible locality rows');
-  for (const row of rows) {
-    assert.equal(row.acceptable, true, row.code);
-    assert.ok((row.value as number) <= LOCALITY_LIMIT, `${row.code} ratio ${row.value}`);
+function circularMedian(pairs: readonly (readonly [string, string])[], angleOf: ReadonlyMap<string, number>): number {
+  const deltas = pairs.map(([source, target]) => {
+    const delta = Math.abs(angleOf.get(source)! - angleOf.get(target)!);
+    return Math.min(delta, 2 * Math.PI - delta);
+  }).sort((a, b) => a - b);
+  const middle = Math.floor(deltas.length / 2);
+  return deltas.length % 2 ? deltas[middle]! : (deltas[middle - 1]! + deltas[middle]!) / 2;
+}
+
+/** Independent Fractal metric from mapped positions; the only shared primitive is canonical hashing. */
+function fractalCommunityRatios(snapshot: SemanticGraphSnapshot, result: ProjectionResult,
+  communities: ReturnType<typeof deriveFractalCommunities>, sectors: readonly FractalCommunitySector[], domainDigest: string) {
+  const positions = result.positions2!;
+  const groups: { id: string; members: readonly string[] }[] = [];
+  for (const sector of sectors) {
+    const community = communities.communities.find(row => row.communityId === sector.communityId)!;
+    groups.push({ id: sector.communityId, members: community.memberNodeIds });
+    for (const subSector of sector.allocation?.groupSubSectors ?? []) {
+      groups.push({ id: subSector.childId, members: subSector.memberNodeIds });
+    }
   }
-  return Math.max(...rows.map(row => row.value as number));
+  const measured: { id: string; ratio: number }[] = [];
+  for (const group of groups) {
+    const members = codepointSorted(group.members);
+    if (members.length < 3) continue;
+    const memberSet = new Set(members);
+    const pairs = snapshot.edges.filter(edge => edge.attestation === 'attested'
+      && memberSet.has(edge.source) && memberSet.has(edge.target))
+      .map(edge => [edge.source, edge.target] as const);
+    if (pairs.length === 0) continue;
+    const angleOf = new Map(members.map(id => {
+      const point = positions[id]!;
+      return [id, Math.atan2(point.y, point.x)] as const;
+    }));
+    const observed = circularMedian(pairs, angleOf);
+    const slots = [...angleOf.values()].sort((a, b) => a - b);
+    let baselineTotal = 0;
+    for (let seed = 0; seed < 16; seed += 1) {
+      const permutation = [...members];
+      for (let index = permutation.length - 1; index >= 1; index -= 1) {
+        const word = Number.parseInt(digestPayload(['sha256-fisher-yates-v1', domainDigest, group.id, seed, index]).slice(0, 8), 16);
+        const swap = Math.floor((word / 4294967296) * (index + 1));
+        [permutation[index], permutation[swap]] = [permutation[swap]!, permutation[index]!];
+      }
+      const shuffledAngles = new Map(permutation.map((id, slot) => [id, slots[slot]!]));
+      baselineTotal += circularMedian(pairs, shuffledAngles);
+    }
+    const baseline = baselineTotal / 16;
+    assert.ok(baseline > 0, `${group.id} Fractal baseline is positive`);
+    measured.push({ id: group.id, ratio: observed / baseline });
+  }
+  assert.ok(measured.length > 0, 'Fractal context includes eligible communities');
+  return measured;
+}
+
+function assertFractalLocality(result: ProjectionResult, ratios: readonly { id: string; ratio: number }[]): number {
+  const diagnostics = result.diagnostics.filter(row => row.code.startsWith('fractal:edge-locality:'));
+  const expected = new Map(ratios.map(row => [row.id, row.ratio]));
+  const eligibleDiagnostics = diagnostics.filter(row => typeof row.value === 'number');
+  assert.equal(eligibleDiagnostics.length, expected.size, 'Fractal has one numeric diagnostic per independently eligible group');
+  for (const row of eligibleDiagnostics) {
+    const independent = expected.get(row.code.slice('fractal:edge-locality:'.length));
+    assert.notEqual(independent, undefined, `${row.code} has an independent measurement`);
+    assert.equal(row.acceptable, true, row.code);
+    assert.ok(Math.abs((row.value as number) - independent!) <= LOCALITY_DIAGNOSTIC_TOLERANCE,
+      `${row.code} diagnostic ${row.value} matches independent ratio ${independent} within ${LOCALITY_DIAGNOSTIC_TOLERANCE}`);
+    assert.ok(independent! <= LOCALITY_LIMIT, `${row.code} independent ratio ${independent}`);
+  }
+  return Math.max(...ratios.map(row => row.ratio));
 }
 
 function median(values: readonly number[]): number {
@@ -199,7 +261,8 @@ test('Fractal and Natural preserve one semantic graph across 16 seeded synthetic
       assert.ok(mappedAngle >= sector.interval.left - 0.01 && mappedAngle <= sector.interval.right + 0.01,
         `mapped ray for ${id} remains within its contiguous community sector`);
     }
-    const fractalMax = maxFractalLocality(fractal);
+    const fractalRatios = fractalCommunityRatios(snapshot, fractal, derivation, assignment.sectors, domain.domainDigest);
+    const fractalMax = assertFractalLocality(fractal, fractalRatios);
     const naturalMax = Math.max(...naturalCommunityRatios(snapshot, natural));
     rows.push({ seed, communities: derivation.communities.length, fractalMax, naturalMax });
     assert.deepEqual(Buffer.from(canonicalSourceBytes(input)), before, `seed ${seed} source ledger bytes unchanged`);

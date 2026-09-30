@@ -222,9 +222,7 @@ for (const view of views) {
         await installCanvasDashProbe(page);
         const errors = await ready(page);
         const button = page.locator(`header [data-axis="organization"] [data-value="${view.button}"]`).first();
-        if (view.button === 'holographic' && !(await button.isVisible().catch(() => false))) {
-          test.skip(true, 'Holographic control is unregistered/absent from this build.');
-        }
+        await expect(button, `${view.button} is a registered organization control`).toBeVisible();
         const fixedArrangement = view.button === 'natural' ? { arrangement: 'constellation' } : {};
         await axes(page, { projection: dimension, organization: view.button, morphology, reading: 'attested', ...fixedArrangement });
         const projection = await waitForProjection(page, view.button);

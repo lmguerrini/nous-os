@@ -295,7 +295,7 @@ test('the typed page fills the structural controls and a pick reaches the visual
   assert.ok(controls, 'the controls exist under the typed pipeline');
   assert.equal(controls.hidden, false);
   const pick = buttons(controls)[0];
-  assert.ok(pick, 'the flat view lists a structural relation');
+  assert.ok(pick, 'the Natural view lists a structural relation');
   assert.equal(pick.dataset.pickKind, 'visual-relation');
   pick.listeners.get('click')!();
   assert.equal(trace.panels.length, 1);

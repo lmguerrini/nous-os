@@ -185,7 +185,7 @@ test("Indra depth remains readable after disclosing a large proposal page", () =
   }
 });
 
-test("Flat 2D stays planar while Flat 3D becomes a real volume", () => {
+test("Natural 2D stays planar while Natural 3D becomes a real volume", () => {
   const input = fixture(500);
   const planar = computeLayout(input);
   assert.equal(planar.source, "flat-community");
@@ -279,7 +279,7 @@ test("Stellar communities keep a void of at least 1.5× the mean cluster radius 
   }
 });
 
-test("morphology owns its Flat layout: switching Stellar→Neural changes positions and switching back restores them exactly", () => {
+test("morphology owns its Natural layout: switching Stellar→Neural changes positions and switching back restores them exactly", () => {
   const roots: LayoutNode[] = Array.from({ length: 8 }, (_, i) => ({ id: `c${i}`, level: 1 as const, parent: null, size: 0.9, domains: [] }));
   const nodes: LayoutNode[] = [...roots];
   const edges: LayoutEdge[] = [];
@@ -295,7 +295,7 @@ test("morphology owns its Flat layout: switching Stellar→Neural changes positi
   const stellar = computeLayout({ ...base, morphology: 'stellar' });
   const neural = computeLayout({ ...base, morphology: 'neural' });
   const mycelium = computeLayout({ ...base, morphology: 'mycelium' });
-  // Each morphology owns its own Flat layout; the Stellar cluster positions must not leak into Neural
+  // Each morphology owns its own Natural layout; the Stellar cluster positions must not leak into Neural
   // or Mycelium (the organic layouts).
   assert.notDeepEqual(stellar.positions, neural.positions);
   assert.notDeepEqual(stellar.positions, mycelium.positions);
@@ -360,7 +360,7 @@ test("2500 visible nodes stay within layout budgets", () => {
 });
 
 
-test("Flat forms organic communities distinct from recursive Indra", () => {
+test("Natural forms organic communities distinct from recursive Indra", () => {
   const input = fixture(350);
   const flat = computeLayout(input);
   const indra = computeLayout({ ...input, organization: "indra" });
@@ -642,7 +642,7 @@ test("degree-weighted clearance keeps determinism, exact morphology switching an
   }
 });
 
-test("Stellar Flat coordinates are byte-identical to the pre-clearance digests", () => {
+test("Stellar Natural coordinates are byte-identical to the pre-clearance digests", () => {
   const fixtureInput = hubFixture();
   const serialize = (positions: ReadonlyMap<string, Point3>) =>
     [...positions].map(([id, p]) => `${id}@${p.x.toFixed(6)},${p.y.toFixed(6)},${p.z.toFixed(6)}`).join(";");

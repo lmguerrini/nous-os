@@ -128,7 +128,7 @@ test("D-071 switching morphology recomputes Flat positions and switching back re
   const mycelium = await bbox();
   await page.evaluate(() => (window as any).__d067.setAxes({ morphology: "stellar" }));
   const stellarAgain = await bbox();
-  // Each morphology owns its own Flat layout; switching back to Stellar restores it exactly.
+  // Each morphology owns its own Natural layout; switching back to Stellar restores it exactly.
   expect(neural).not.toEqual(stellar);
   expect(mycelium).not.toEqual(stellar);
   expect(stellarAgain).toEqual(stellar);

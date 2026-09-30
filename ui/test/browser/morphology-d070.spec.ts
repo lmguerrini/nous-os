@@ -43,7 +43,7 @@ const dilate = (mask: number[]) => {
   return out;
 };
 
-// D-071 gives Flat 3D its own volumetric embedding, so the 3D front view no longer reproduces the 2D plane; the shared
+// D-071 gives Natural 3D its own volumetric embedding, so the 3D front view no longer reproduces the 2D plane; the shared
 // morphology grammar is proven by the pure contract tests. This check keeps the front view rendering and records the overlap.
 for (const morphology of morphologies) test(`D-071 ${morphology}: 3D front view renders the morphology (overlap recorded)`, async ({ page }, testInfo) => {
   await page.goto(process.env.D070_URL ?? "http://127.0.0.1:8767/");
