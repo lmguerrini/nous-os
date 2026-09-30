@@ -1,6 +1,6 @@
 # Manuale delle viste
 
-Le viste si scelgono nell’asse **Organizzazione**. **Natural**, **Indra’s Pearls**, **Fractal** e **Holographic (sperimentale)** sono proiezioni alternative dello stesso dominio dichiarato: cambiano le coordinate e gli elementi derivati visibili, non il grafo sorgente. La proiezione analitica lavora sul dominio divulgato (fino a 850 nodi); l’identità e la provenienza del registro sorgente restano separate.
+Le viste si scelgono nell’asse **Organizzazione**. **Natural**, **Indra’s Pearls**, **Fractal** e **Holographic** sono proiezioni alternative dello stesso dominio dichiarato: cambiano le coordinate e gli elementi derivati visibili, non il grafo sorgente. La proiezione analitica lavora sul dominio divulgato (fino a 850 nodi); l’identità e la provenienza del registro sorgente restano separate. Holographic è sperimentale: il suggerimento del pulsante dichiara «Vista sperimentale: coordinate spettrali, nessuna affermazione topologica»; lo stato e la spiegazione ripetono questa limitazione.
 
 ## Impostazioni condivise
 
@@ -11,6 +11,8 @@ Le viste si scelgono nell’asse **Organizzazione**. **Natural**, **Indra’s Pe
 ## Natural
 
 Natural conserva i layout D-069…D-072. L’**arrangiamento** dichiarato — `constellation`, `network` o `mycelium` — governa le posizioni; lo stile morfologico ne sceglie solo il valore predefinito. Il readout nell’intestazione indica arrangiamento, se esplicito o derivato dallo stile, e versione del layout. Lo stesso arrangiamento produce la stessa disposizione con tutti e tre gli stili.
+
+Con la pipeline tipizzata disattivata, il layout disegnato è quello D-072 e segue la morfologia: se non hai scelto un arrangiamento, ogni cambio di morfologia ne applica il valore predefinito. Anche un arrangiamento salvato nell’URL o nella vista che coincide con il predefinito della morfologia è considerato derivato. Un arrangiamento diverso è una scelta esplicita e viene mantenuto. Con `#projection=natural`, l’arrangiamento viene risolto una volta e resta uguale quando cambi stile.
 
 In 2D si legge il layout planare esistente; in 3D quello volumetrico esistente. Il tasto **Natural** usa la pipeline tipizzata quando si apre la pagina con `#projection=natural`. Senza quel flag resta attivo il percorso D-072 predefinito.
 
@@ -26,9 +28,13 @@ Fractal associa il potenziale/importanza dei nodi al raggio e l’appartenenza c
 
 Zoom e focus possono rivelare i livelli comunitari pigramente. L’apertura segue il token del livello e lascia invariata la camera; il limite o il rifiuto di un livello compare nella linea di stato. I picks su nodo, relazione, contenitore o curva aprono una scheda di spiegazione della proiezione con testimone numerico e limiti dichiarati.
 
-## Holographic (sperimentale)
+## Holographic
 
-Questa vista usa modi a bassa frequenza del laplaciano degli archi attestati per coordinate e campi derivati. Se la geometria è ammessa, nel pannello **Dettagli** scegli:
+Questa vista sperimentale usa modi a bassa frequenza del laplaciano degli archi attestati per coordinate e campi derivati, senza affermare proprietà topologiche. Le coordinate sono calcolate per componente con i modi di Koren `v = D^-1/2 u`; la stessa base spettrale è usata per geometria, calore e testimoni di ricostruzione. Le componenti vengono disposte in modo deterministico. Per autospazi degeneri, la regola canonica del proiettore sceglie assi deterministici che restano autovettori effettivi; se il cluster non è isolabile, il probe è ambiguo o insufficiente, o il solver non supera i controlli numerici, le coordinate sono rifiutate e non compare un layout sostitutivo.
+
+Quando più nodi hanno coordinate coincidenti o vicine entro la tolleranza dichiarata, un anello deterministico li separa solo sullo schermo. Gli identificativi determinano l’ordine; il testimone e la spiegazione conservano le coordinate spettrali esatte. Lo scostamento non cambia i risultati spettrali.
+
+Se la geometria è ammessa, nel pannello **Dettagli** scegli:
 
 - **Canale del campo**: ad esempio il segnale misurato o il calore diffuso a un tempo `t`;
 - **Regione della testimonianza**: comunità o componente per cui leggere il test di ricostruzione;
@@ -46,7 +52,7 @@ Selezionare un nodo o un arco sorgente mostra la relativa informazione. Un pick 
 - **Natural · arrangiamento · origine · versione**: arrangiamento effettivo o predefinito e versione del layout.
 - **Vista Indra’s Pearls**: genere Schottky e margine di separazione, oppure impaccamento di ripiego e relativo codice; dichiara che la geometria è derivata. In 3D specifica le semisfere.
 - **Vista Fractal**: `p`, `c`, raggi inversi e geometria derivata; in 3D specifica il sollevamento scalare.
-- **Vista Holographic**: badge sperimentale, coordinate spettrali e assenza di affermazione topologica, poi regioni ricostruite/rifiutate, quante battono la baseline globale, errore relativo mediano e geometria derivata. In 3D specifica le tre coordinate spettrali.
+- **Vista Holographic**: stato sperimentale, coordinate spettrali e assenza di affermazione topologica, poi regioni ricostruite/rifiutate, quante battono la baseline globale, errore relativo mediano e geometria derivata. In 3D specifica le tre coordinate spettrali.
 - **Calcolo della proiezione in corso**: il calcolo analitico non è terminato.
 - **Proiezione rifiutata [codice]**: la richiesta non ha prodotto coordinate; la linea indica il motivo e nessuna posizione rifiutata viene disegnata.
 - **Livelli non aperti [codice]**: l’espansione richiesta è stata rifiutata da un limite o token; i livelli chiusi rimangono senza coordinate.
