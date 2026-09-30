@@ -641,12 +641,13 @@ test('caps are enforced and witnessed: depth cap, word cap and the total level b
   const atCap = capped.levels.find(level => level.depth === 1)!;
   await assert.rejects(indrasPearlsProjection.project(fx.snapshot, { ...depthOne, requestedLevelId: atCap.id }), /depth-cap-exceeded/);
 
-  // Word cap: six depth-1 words exceed a cap of five (refused); a cap of six admits depth 2 to no pearl, and the 30 words of depth 2 exceed it (witnessed).
+  // Word cap: six depth-1 words exceed a cap of five (refused); a cap of six materialises the six pearls and no promise (witnessed).
   await assert.rejects(indrasPearlsProjection.project(fx.snapshot, withParameters(fx.request, { maxWords: 5 })), /word-cap-exceeded/);
   const sixWords = withParameters(fx.request, { maxWords: 6 });
   const tight = await indrasPearlsProjection.project(fx.snapshot, sixWords);
   assert.equal(tight.levels.filter(level => level.depth > 0).length, 6);
-  assert.equal(tight.diagnostics.find(item => item.code === 'indra:word-cap-pearls')!.value, 6);
+  assert.equal(tight.diagnostics.find(item => item.code === 'indra:stub-levels-omitted')!.value, fullNonRoot - 6);
+  assert.equal(tight.diagnostics.find(item => item.code === 'indra:materialised-words')!.value, 6);
   assert.equal(tight.diagnostics.find(item => item.code === 'indra:word-capacity:depth-1')!.value, 6);
   assert.equal(tight.diagnostics.find(item => item.code === 'indra:level-count')!.value, 6);
   assert.doesNotThrow(() => validateProjectionResult(tight, { ...cappedContext, request: sixWords }));
@@ -906,4 +907,94 @@ test('a domain with too few hierarchy children uses the labelled fallback packin
   for (const child of nested) {
     assert.ok(Math.hypot(child.center2!.x - parent.center2!.x, child.center2!.y - parent.center2!.y) + child.radius! <= parent.radius! + 1e-9);
   }
+});
+
+const GENUS_FOUR_COMMUNITIES: readonly CommunitySpec[] = [
+  { id: 'a', children: 4, leavesPerChild: 6 },
+  { id: 'b', children: 4, leavesPerChild: 5 },
+  { id: 'c', children: 3, leavesPerChild: 5 },
+  { id: 'd', children: 3, leavesPerChild: 4 },
+  { id: 'e', children: 2, leavesPerChild: 4 },
+  { id: 'f', children: 2, leavesPerChild: 3 },
+  { id: 'g', children: 2, leavesPerChild: 2 },
+  { id: 'h', children: 1, leavesPerChild: 3 },
+  { id: 'i', children: 1, leavesPerChild: 2 },
+];
+
+let genusFourPromise: Promise<Fixture> | undefined;
+function genusFourFixture(): Promise<Fixture> {
+  genusFourPromise ??= makeFixture(GENUS_FOUR_COMMUNITIES);
+  return genusFourPromise;
+}
+
+test('lazy opening reaches depth 3 at genus 4 although the whole depth exceeds maxWords', async () => {
+  const fx = await genusFourFixture();
+  const request = withParameters(fx.request, { maxDepth: 3, maxWords: 200 });
+  const first = await indrasPearlsProjection.project(fx.snapshot, request);
+  assert.equal(first.diagnostics.find(item => item.code === 'indra:genus')!.value, 4);
+  assert.equal(first.diagnostics.find(item => item.code === 'indra:word-count:depth-1')!.value, 8);
+  const openStep = async (levelId: string, expectDepth: number): Promise<{ result: ProjectionResult; request: IndraRequest }> => {
+    const step: IndraRequest = { ...request, requestedLevelId: levelId };
+    const result = await indrasPearlsProjection.project(fx.snapshot, step);
+    const context = await validationContext(fx, result, step);
+    assert.doesNotThrow(() => validateProjectionResult(result, context));
+    assert.deepEqual(result.loadedNodeIds, fx.domain.nodeIds);
+    const levels = new Map(result.levels.map(level => [level.id, level]));
+    assert.equal(levels.get(levelId)!.loaded, false, 'the opened pearl is an aggregate promise');
+    const children = levels.get(levelId)!.childLevelIds.map(id => levels.get(id)!);
+    assert.ok(children.length >= 2 && children.every(child => child.loaded && child.depth === expectDepth));
+    const childMembers = children.flatMap(child => [...loadedMembers(child)]).sort(compareCodepointIds);
+    assert.deepEqual(childMembers, [...context.witnesses.levels[levelId]!.memberNodeIds], 'children conserve the opened pearl');
+    // Materialised words stay far below the cap while the theoretical depth-3 count is 392.
+    const materialised = Number(result.diagnostics.find(item => item.code === 'indra:materialised-words')!.value);
+    assert.ok(materialised < 200);
+    for (const child of children) {
+      const container = result.containers.find(item => item.visualId === indraContainerId(keyOfLevelId(child.id)))!;
+      const parent = result.containers.find(item => item.visualId === container.parentVisualId)!;
+      assert.ok(planeDiscContains({ center: cx(parent.center2!.x, parent.center2!.y), radius: parent.radius! }, { center: cx(container.center2!.x, container.center2!.y), radius: container.radius! }));
+      for (const id of loadedMembers(child)) {
+        const point = result.positions2![id]!;
+        assert.ok(Math.hypot(point.x - container.center2!.x, point.y - container.center2!.y) < container.radius!);
+      }
+    }
+    return { result, request: step };
+  };
+  const depthOne = first.levels.filter(level => level.depth === 1).reduce((best, level) => level.memberCount > best.memberCount ? level : best);
+  const one = await openStep(depthOne.id, 2);
+  const openable = one.result.levels.filter(level => level.depth === 2 && level.loaded).reduce((best, level) => level.memberCount > best.memberCount ? level : best);
+  assert.ok(openable.memberCount >= 2);
+  const two = await openStep(openable.id, 3);
+  assert.equal(two.result.diagnostics.find(item => item.code === 'indra:word-capacity:depth-3')!.value, 392);
+  assert.equal(two.result.diagnostics.find(item => item.code === 'indra:materialised-words')!.value, two.result.levels.filter(level => level.depth > 0).length);
+  // The depth-2 stub of the first result opens through its own load token (a finding on a large dataset).
+  const token = first.levels.find(level => level.depth === 2 && !level.loaded)!;
+  if (token.loaded) assert.fail('expected a promise');
+  const viaToken = await indraRequestForLevelToken(fx.snapshot, request, token.loadToken);
+  await assert.doesNotReject(indrasPearlsProjection.project(fx.snapshot, viaToken));
+  // maxDepth stays hard: depth-3 pearls cannot open.
+  const depthThree = two.result.levels.find(level => level.depth === 3 && level.loaded)!;
+  await assert.rejects(indrasPearlsProjection.project(fx.snapshot, { ...request, requestedLevelId: depthThree.id }), /depth-cap-exceeded/);
+  // Determinism: repeat and permuted snapshot arrays give the identical depth-3 digest.
+  const repeat = await indrasPearlsProjection.project(fx.snapshot, two.request);
+  assert.equal(repeat.determinism.resultDigest, two.result.determinism.resultDigest);
+  const permuted = { ...fx.snapshot, nodes: [...fx.snapshot.nodes].reverse(), edges: [...fx.snapshot.edges].reverse() } as SemanticGraphSnapshot;
+  const permutedResult = await indrasPearlsProjection.project(permuted, two.request);
+  assert.equal(permutedResult.determinism.resultDigest, two.result.determinism.resultDigest);
+});
+
+test('a single opened pearl whose materialised words exceed a small maxWords is refused with a typed error', async () => {
+  const fx = await genusFourFixture();
+  const request = withParameters(fx.request, { maxDepth: 3, maxWords: 9 });
+  const first = await indrasPearlsProjection.project(fx.snapshot, request);
+  assert.equal(first.levels.filter(level => level.depth > 0).length, 8, 'the eight root pearls fit, promises are omitted and witnessed');
+  assert.ok(Number(first.diagnostics.find(item => item.code === 'indra:stub-levels-omitted')!.value) > 0);
+  const heavy = first.levels.filter(level => level.depth === 1).reduce((best, level) => level.memberCount > best.memberCount ? level : best);
+  const error = await indrasPearlsProjection.project(fx.snapshot, { ...request, requestedLevelId: heavy.id }).catch((caught: unknown) => caught);
+  assert.ok(error instanceof IndraProjectionRefusal);
+  assert.equal((error as IndraProjectionRefusal).code, 'word-cap-exceeded');
+  // The same pearl opens once the cap admits the materialised set.
+  const roomy = withParameters(fx.request, { maxDepth: 3, maxWords: 30 });
+  await assert.doesNotReject(indrasPearlsProjection.project(fx.snapshot, { ...roomy, requestedLevelId: heavy.id }));
+  // maxDepth 1 refuses any opening.
+  await assert.rejects(indrasPearlsProjection.project(fx.snapshot, { ...withParameters(fx.request, { maxDepth: 1 }), requestedLevelId: heavy.id }), /depth-cap-exceeded/);
 });

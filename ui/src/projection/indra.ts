@@ -36,7 +36,7 @@ import {
   packFallbackNestedSpheres,
 } from '../indra/geometry3d.ts';
 import {
-  LEVELS_VERSION, loadChildLevels, planLevelDepth, ROOT_LEVEL_ID, levelIdForWord, unloadedLevelStub,
+  LEVELS_VERSION, loadChildLevels, ROOT_LEVEL_ID, levelIdForWord, unloadedLevelStub,
   type LevelLoadToken, type LazyLevelOptions,
 } from '../indra/levels.ts';
 import {
@@ -772,12 +772,12 @@ export const indrasPearlsProjection: MathematicalProjection<'indras-pearls'> = {
       { code: 'indra:max-depth', value: parameters.maxDepth, acceptable: true },
       { code: 'indra:max-words', value: parameters.maxWords, acceptable: true },
       { code: 'indra:level-count', value: levelTotal, acceptable: levelTotal <= parameters.maxWords },
+      { code: 'indra:materialised-words', value: levelTotal, acceptable: levelTotal <= parameters.maxWords },
       { code: 'indra:loaded-level-count', value: loadedLevels.length, acceptable: true },
       { code: 'indra:unloaded-level-count', value: levels.length - loadedLevels.length - 1, acceptable: true },
       ...[...depthCounts.entries()].sort(([left], [right]) => left - right).flatMap(([depth, count]) => [
         { code: `indra:word-count:depth-${depth}`, value: count, acceptable: true } as const,
-        { code: `indra:word-capacity:depth-${depth}`, value: reducedWordCount(genus, depth),
-          acceptable: planLevelDepth(genus, depth, levelOptions).kind === 'planned' } as const,
+        { code: `indra:word-capacity:depth-${depth}`, value: reducedWordCount(genus, depth), acceptable: true } as const,
       ]),
       { code: 'indra:stub-levels-omitted', value: omittedStubLevels, acceptable: true },
       { code: 'indra:depth-cap-pearls', value: depthCapPearls, acceptable: true },

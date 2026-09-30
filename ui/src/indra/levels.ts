@@ -1,7 +1,8 @@
 /** Finite lazy Indra levels with caps, a digest-keyed cache and cancellation (D-073 row D5).
  *
  * Cost/cache/LOD: work is bounded by a depth limit D, a
- * maximum word count 2g(2g-1)^(d-1) per depth and a node budget; levels load on demand, cache
+ * maximum word count for the words a load materialises (the 2g(2g-1)^(d-1) words of a depth are
+ * a theoretical figure, never materialised at once) and a node budget; levels load on demand, cache
  * per (snapshot digest, domain digest, parameters, level id) and unopened descendants keep only
  * identity/count metadata with no coordinates. Loading a level materialises the reduced-word
  * children of one parent word through the D4 assignment, so every loaded level carries the real
@@ -13,7 +14,7 @@ import {
   type AssignmentMember, type CrossEdgeLedgerEntry, type InducedEdgeRecord, type PearlAssignment, type ReducedWord,
 } from './assignment.ts';
 
-export const LEVELS_VERSION = 'indra-levels-v1';
+export const LEVELS_VERSION = 'indra-levels-v2';
 export const LEVEL_PROJECTION_ID = 'indras-pearls';
 
 export const ROOT_LEVEL_ID = 'indra-level-0-root';
@@ -56,6 +57,32 @@ export function planLevelDepth(genus: number, depth: number, options: Pick<LazyL
   const wordCount = reducedWordCount(genus, depth);
   if (wordCount > options.maxWords) {
     return { kind: 'refusal', code: 'word-cap-exceeded', message: `depth ${depth} needs ${wordCount} reduced words, above the cap ${options.maxWords}`, witness: { depth, wordCount, maxWords: options.maxWords } };
+  }
+  return { kind: 'planned', wordCount };
+}
+
+/**
+ * Lazy per-pearl bounds for materialising the children of one parent at `childDepth`: the depth
+ * cap is hard, and the words actually materialised (the 2g letters at depth 1, the 2g-1 reduced
+ * extensions of one pearl deeper) must fit the word cap. The theoretical depth-wide count of
+ * `planLevelDepth` is a witness figure only; it never blocks opening one pearl.
+ */
+export function planChildLevel(genus: number, childDepth: number, options: Pick<LazyLevelOptions, 'maxDepth' | 'maxWords'>): LevelPlan {
+  if (!Number.isInteger(genus) || genus < 2) {
+    return { kind: 'refusal', code: 'invalid-genus', message: `genus must be an integer >= 2, received ${genus}`, witness: { genus } };
+  }
+  if (!Number.isInteger(childDepth) || childDepth < 1) {
+    return { kind: 'refusal', code: 'invalid-depth', message: `depth must be a positive integer, received ${childDepth}`, witness: { depth: childDepth } };
+  }
+  if (!Number.isInteger(options.maxDepth) || options.maxDepth < 1) {
+    return { kind: 'refusal', code: 'invalid-depth', message: `maxDepth must be a positive integer, received ${options.maxDepth}`, witness: { maxDepth: options.maxDepth } };
+  }
+  if (childDepth > options.maxDepth) {
+    return { kind: 'refusal', code: 'depth-cap-exceeded', message: `depth ${childDepth} exceeds the depth cap ${options.maxDepth}`, witness: { depth: childDepth, maxDepth: options.maxDepth } };
+  }
+  const wordCount = childDepth === 1 ? 2 * genus : 2 * genus - 1;
+  if (wordCount > options.maxWords) {
+    return { kind: 'refusal', code: 'word-cap-exceeded', message: `one pearl at depth ${childDepth} materialises ${wordCount} reduced words, above the cap ${options.maxWords}`, witness: { depth: childDepth, wordCount, maxWords: options.maxWords } };
   }
   return { kind: 'planned', wordCount };
 }
@@ -208,7 +235,7 @@ export function loadChildLevels(request: LevelLoadRequest): LevelLoadOutcome {
     };
   }
   const childDepth = (request.parentWord?.length ?? 0) + 1;
-  const plan = planLevelDepth(options.genus, childDepth, options);
+  const plan = planChildLevel(options.genus, childDepth, options);
   if (plan.kind === 'refusal') return plan;
   const cached = request.cache?.get(request.token);
   if (cached !== undefined) {
@@ -242,7 +269,7 @@ export function loadChildLevels(request: LevelLoadRequest): LevelLoadOutcome {
     };
   }
   const { pearls, crossEdges } = assignmentOutcome.assignment;
-  const grandChildPlan = planLevelDepth(options.genus, childDepth + 1, options);
+  const grandChildPlan = planChildLevel(options.genus, childDepth + 1, options);
   const levels: RecursiveLevel[] = [];
   for (let index = 0; index < pearls.length; index += 1) {
     const pearl = pearls[index] as PearlAssignment;

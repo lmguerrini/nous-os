@@ -513,26 +513,18 @@ test('the near band opens the focused pearl level after level to the cap; a cap 
   assert.equal(recordOf(page).openLevelId, opened);
 });
 
-test('a word cap of the group is a real refusal of a level, disclosed and never repeated', async () => {
-  // Four paired discs (genus 4) make 392 reduced words at depth three, above the page cap of 200.
+test('a genus-4 pearl opens under the page word cap because only the opened pearl is materialised', async () => {
+  // Four paired discs (genus 4) have 392 reduced words at depth three, but one opening materialises only 2g-1 = 7 of them
+  // (indra-levels-v2). The word cap is exercised at the assembly level (indra-projection.test.ts, levels.test.ts); the page cap
+  // of 200 therefore no longer refuses, and the depth cap is covered by the test above.
   const client = spyClient();
   const { page, trace } = await typedPage({ client, index: fractalIndex(), axes: { organization: 'indra' } });
-  const root = resultOf(page)!;
-  const home = root.levels.find(level => level.loaded && level.memberNodeIds.includes('n:a:g1:c05'))!;
   trace.pick!({ kind: 'node', id: 'n:a:g1:c05' }, false);
-  await until(() => recordOf(page).refusedLevels.length > 0, 'the word cap refusal is recorded');
-  const refused = recordOf(page).refusedLevels;
-  assert.ok(refused.every(item => item.code === 'word-cap-exceeded'));
-  assert.ok(refused.some(item => home.childLevelIds.includes(item.levelId)));
-  assert.match(statusText(), new RegExp(`${refused.length} livelli non aperti \\[word-cap-exceeded\\]: `));
+  await until(() => recordOf(page).openLevelId !== null, 'the pearl opens');
+  assert.ok(recordOf(page).refusedLevels.every(item => item.code !== 'word-cap-exceeded'), 'no word-cap refusal');
+  assert.doesNotMatch(statusText(), /\[word-cap-exceeded\]/);
   assert.match(statusText(), /^Vista Indra's Pearls/);
-  assert.equal(recordOf(page).openLevelId, null, 'nothing opened');
-  assert.equal(recordOf(page).refusal, null, 'the mounted result is untouched');
-  const asked = client.requests.length;
-  trace.pick!({ kind: 'node', id: 'n:a:g1:c05' }, false);
-  trace.pick!({ kind: 'node', id: 'n:a:g1:c06' }, false);
-  await new Promise(resolve => setTimeout(resolve, 60));
-  assert.equal(client.requests.length, asked, 'a refused depth is not requested again for the same result');
+  assert.equal(recordOf(page).refusal, null, 'the mounted result is a real opened level');
 });
 
 test('a refresh keeps the open pearl; a changed disclosure returns to the root; leaving the view forgets it', async () => {

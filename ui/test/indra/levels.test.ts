@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { makeLetter, type AssignmentMember, type InducedEdgeRecord } from '../../src/indra/assignment.ts';
 import {
   ROOT_LEVEL_ID, createLazyLevelCache, levelIdForWord, levelTokenKey, loadChildLevels,
-  planLevelDepth, unloadedLevelStub, type LevelLoadToken,
+  planChildLevel, planLevelDepth, unloadedLevelStub, type LevelLoadToken,
 } from '../../src/indra/levels.ts';
 
 function member(id: string, primaryParentId: string | null, importance: number): AssignmentMember {
@@ -53,6 +53,29 @@ test('level planning enforces genus, depth and the word-count cap', () => {
   const badMaxDepth = planLevelDepth(2, 1, { maxDepth: 0, maxWords: 100 });
   assert.equal(badMaxDepth.kind, 'refusal');
   if (badMaxDepth.kind === 'refusal') assert.equal(badMaxDepth.code, 'invalid-depth');
+});
+
+test('lazy planning counts the words one pearl materialises, never the whole depth', () => {
+  const options = { maxDepth: 3, maxWords: 200 };
+  assert.deepEqual(planChildLevel(4, 1, options), { kind: 'planned', wordCount: 8 });
+  assert.deepEqual(planChildLevel(4, 2, options), { kind: 'planned', wordCount: 7 });
+  assert.deepEqual(planChildLevel(4, 3, options), { kind: 'planned', wordCount: 7 });
+  // The whole of depth 3 (8 * 7 * 7 = 392 words) is above the cap, yet one pearl opens.
+  const theoretical = planLevelDepth(4, 3, options);
+  assert.equal(theoretical.kind, 'refusal');
+  const depthCap = planChildLevel(4, 4, options);
+  assert.equal(depthCap.kind, 'refusal');
+  if (depthCap.kind === 'refusal') assert.equal(depthCap.code, 'depth-cap-exceeded');
+  const wordCap = planChildLevel(4, 2, { maxDepth: 3, maxWords: 6 });
+  assert.equal(wordCap.kind, 'refusal');
+  if (wordCap.kind === 'refusal') {
+    assert.equal(wordCap.code, 'word-cap-exceeded');
+    assert.equal(wordCap.witness.wordCount, 7);
+  }
+  const rootCap = planChildLevel(4, 1, { maxDepth: 3, maxWords: 7 });
+  assert.equal(rootCap.kind, 'refusal');
+  assert.equal(planChildLevel(1, 1, options).kind, 'refusal');
+  assert.equal(planChildLevel(2, 0, options).kind, 'refusal');
 });
 
 test('the root load materialises the four depth-1 pearls as contract levels', () => {
@@ -150,7 +173,7 @@ test('node budget and cap refusals surface before any assignment work', () => {
     members,
     edges,
     childIds: null,
-    options: { ...OPTIONS, maxWords: 10 },
+    options: { ...OPTIONS, maxWords: 2 },
   });
   assert.equal(wordCap.kind, 'refusal');
   if (wordCap.kind === 'refusal') assert.equal(wordCap.code, 'word-cap-exceeded');
