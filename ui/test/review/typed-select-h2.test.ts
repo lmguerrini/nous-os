@@ -10,6 +10,7 @@ import { fractalProjection } from '../../src/projection/fractal.ts';
 import { holographicProjection } from '../../src/projection/holographic.ts';
 import { indrasPearlsProjection } from '../../src/projection/indra.ts';
 import { createProjectionWorkerClient } from '../../src/projection/worker-client.ts';
+import { prepareProjection2d } from '../../src/render2d/model.ts';
 import type { ProjectionClientRequest, ProjectionWorkerClient } from '../../src/projection/worker-client.ts';
 import type { PickResult, ProjectionResult, RenderVisibility, SemanticGraphSnapshot, StyledProjection, VisualRelation } from '../../src/projection/contract-types.ts';
 import type { GraphManifest } from '../../src/review/graph-v2.ts';
@@ -279,6 +280,68 @@ test('the typed witness counts the arcs of a mounted result exactly and never ab
   assert.equal(lod.nodes.available, result.domainNodeIds.length, 'the node count is exact in the same way');
   // Every relation of this fixture lies inside the domain, so a hidden node count changes nothing here; the pure test above pins the exclusion.
   assert.equal(lod.arcs.available, result.visualRelations.length);
+});
+
+test('the typed drawn route witness names only lines and glyphs in the committed mask', async () => {
+  const { page, trace, snapshot } = await typedPage({ axes: { organization: 'indra' } });
+  await page.setDensity('essential');
+  const mask = trace.updates.at(-1)!;
+  const record = (globalThis.window as typeof window & { __d074: { revealWitness: () => {
+    renderedNodeIds: string[]; edges: { drawn: { id: string; from: { id: string }; to: { id: string } }[] };
+    invariant: { ok: boolean };
+  } } }).__d074.revealWitness();
+  assert.equal(record.invariant.ok, true);
+  assert.deepEqual(record.renderedNodeIds, [...mask.nodeIds].sort());
+  for (const edge of record.edges.drawn) {
+    assert.ok(mask.semanticEdgeIds.has(edge.id) || mask.visualRelationIds.has(edge.id));
+    assert.ok(mask.nodeIds.has(edge.from.id));
+    assert.ok(mask.nodeIds.has(edge.to.id));
+  }
+  const scene = prepareProjection2d(snapshot, trace.styles.at(-1)!, mask);
+  assert.equal(scene.visualRelations.size, mask.visualRelationIds.size);
+});
+
+test('typed node LOD routes hidden endpoints to visible aggregate glyphs', async () => {
+  const { page, trace, snapshot, index } = await typedPage({ axes: { organization: 'indra' } });
+  const internal = page as unknown as {
+    selectLod: (...args: unknown[]) => { rendered: string[]; dropped: string[] };
+    typedLodVisibility: (styled: StyledProjection, snapshot: SemanticGraphSnapshot,
+      disclosed: readonly V2Node[], active: string | null, revision: number) => {
+        displayStyled: StyledProjection; visibility: RenderVisibility;
+        route: { drawn: { from: { kind: string }; to: { kind: string } }[] };
+      };
+  };
+  internal.selectLod = () => ({ rendered: index.nodes.filter(node => node.level === 1).map(node => node.id), dropped: [] });
+  const lod = internal.typedLodVisibility(trace.styles[0]!, snapshot, index.nodes, null, 100);
+  assert.ok([...lod.visibility.visualRelationIds].some(id => id.startsWith('visual:d074:')));
+  assert.ok(lod.route.drawn.some(edge => edge.from.kind === 'aggregate' || edge.to.kind === 'aggregate'));
+  const scene = prepareProjection2d(snapshot, lod.displayStyled, lod.visibility);
+  assert.equal(scene.visualRelations.size, lod.visibility.visualRelationIds.size);
+});
+
+test('a settled typed camera sample admits descendants and updates the same renderer host', async () => {
+  const { page, trace } = await typedPage({ axes: { organization: 'indra' }, expand: false });
+  const before = page.disclosure().visible;
+  const internal = page as unknown as {
+    selected: string; overviewRatio: number; lastZoomRatio: number;
+    cameraChangedAt: number; suppressZoomUntil: number;
+  };
+  internal.selected = 'n:a:01';
+  internal.overviewRatio = 1;
+  internal.lastZoomRatio = 0.25;
+  internal.cameraChangedAt = performance.now() - 1000;
+  internal.suppressZoomUntil = 0;
+  trace.ratio = 0.25;
+  page.tickZoom();
+  await page.refresh();
+  const record = (globalThis.window as typeof window & { __d074: { revealWitness: () => {
+    nodes: { disclosed: number }; focus: { clusterId: string | null }; invariant: { ok: boolean };
+  } } }).__d074.revealWitness();
+  assert.ok(record.nodes.disclosed > before);
+  assert.equal(record.focus.clusterId, 'n:a');
+  assert.equal(record.invariant.ok, true);
+  assert.equal(trace.mounts, 1);
+  assert.ok(trace.updates.length > 0);
 });
 
 test("Indra's Pearls: selecting a node the result draws opens the explanation card, provenance apart, the source card below, and emphasises the node", async () => {

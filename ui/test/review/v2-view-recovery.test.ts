@@ -414,3 +414,35 @@ test("a first-load mount failure keeps its blocking error: there is no view to k
   assert.equal(page.witness().lod.labels.rendered, 0);
   assert.equal(elements.get("error")!.hidden, false, "the blocking banner is shown when nothing can be kept");
 });
+
+test("a settled camera sample admits a focused page and publishes only represented relations", async () => {
+  failMounts = false;
+  const page = makePage();
+  await page.refresh();
+  const internal = page as unknown as {
+    selected: string | null; suppressZoomUntil: number; lastZoomRatio: number;
+    cameraChangedAt: number; overviewRatio: number; autoPageCounts: Map<string, number>;
+  };
+  internal.selected = "project:alfa:0";
+  internal.overviewRatio = 1;
+  internal.lastZoomRatio = 0.5;
+  internal.cameraChangedAt = performance.now() - 1000;
+  internal.suppressZoomUntil = 0;
+  view(page).readCamera = () => ({ ratio: 0.5 }) as ReturnType<ProductView['readCamera']>;
+  page.tickZoom();
+  await page.refresh();
+  const record = (globalThis.window as typeof window & { __d074: { revealWitness: () => {
+    revision: number; nodes: { disclosed: number }; renderedNodeIds: string[];
+    edges: { drawn: { from: { id: string }; to: { id: string } }[] };
+    aggregates: { id: string }[]; invariant: { ok: boolean };
+  } } }).__d074.revealWitness();
+  assert.ok(internal.autoPageCounts.get("project:alfa:0"));
+  assert.ok(record.nodes.disclosed > 8);
+  assert.ok(record.revision > 0);
+  assert.equal(record.invariant.ok, true);
+  const represented = new Set([...record.renderedNodeIds, ...record.aggregates.map(item => item.id)]);
+  for (const edge of record.edges.drawn) {
+    assert.ok(represented.has(edge.from.id));
+    assert.ok(represented.has(edge.to.id));
+  }
+});

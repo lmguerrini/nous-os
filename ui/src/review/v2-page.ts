@@ -1,4 +1,8 @@
 import { styleProjection } from '../render-common/projection-style.ts';
+import { emptyRevealState, stepReveal } from './reveal-controller.ts';
+import type { RevealState } from './reveal-controller.ts';
+import { buildRevealWitness, routeRelationsAfterLOD } from './relation-routing.ts';
+import type { RouteResult, RouteRelation, RevealWitnessInput } from './relation-routing.ts';
 import { displayLabel, presentationText, validateIndex } from './graph-v2.ts';
 import type { GraphManifest } from './graph-v2.ts';
 import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
@@ -502,6 +506,16 @@ export class V2Page {
     private cameraIntentEpoch = 0;
     private confirmFitTimer: number | null = null;
     private auto = new Set<string>();
+    private autoPageCounts = new Map<string, number>();
+    private revealState: RevealState = emptyRevealState();
+    private revealCamera = { zoom: 1, band: 'far' as RevealState['band'], settled: true };
+    private revealRevision = 0;
+    private revealDrawnKey = '';
+    private lastRevealSampleKey = '';
+    private revealRoute: RouteResult | null = null;
+    private routePickById = new Map<string, PickResult>();
+    private revealRecord: ReturnType<typeof buildRevealWitness> | null = null;
+    private cursor: { x: number; y: number } | null = null;
     private zoomOn = true;
     private overviewRatio: number | null = null;
     private suppressZoomUntil = 0;
@@ -621,6 +635,14 @@ export class V2Page {
         for (const n of index.nodes)
             if (n.level === 1 && index.nodes.some(child => child.level === 2 && child.parent === n.id))
                 this.history.state.expanded.add(n.id);
+        root?.addEventListener('pointermove', event => {
+            const rect = root.getBoundingClientRect();
+            this.cursor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+        }, { passive: true });
+        root?.addEventListener('pointerleave', () => { this.cursor = null; }, { passive: true });
+        if (typeof window === 'object' && window !== null)
+            (window as typeof window & { __d074?: { revealWitness: () => unknown } }).__d074 =
+                { revealWitness: () => this.revealRecord };
     }
     static async load(manifest: GraphManifest, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}): Promise<V2Page> {
         element('status').textContent = 'Caricamento del grafo\u2026 indice';
@@ -647,7 +669,120 @@ export class V2Page {
             throw e;
         });
     }
-    private visible() { return v2Visible(this.index, this.history.state, this.auto); }
+    private visible() {
+        const pages = new Map<string, number>([...this.auto].map(id => [id, V2_PAGE]));
+        for (const [id, count] of this.autoPageCounts) pages.set(id, count);
+        return v2Visible(this.index, this.history.state, pages);
+    }
+    private routeNodes() {
+        return this.index.nodes.map(node => ({ id: node.id, parent: node.parent, level: node.level,
+            ...(node.level === 4 ? { passageCount: node.counts.passages } : {}) }));
+    }
+    private focusedRenderPriority(disclosed: readonly V2Node[]): string[] {
+        const cluster = this.revealState.focusClusterId;
+        if (!cluster) return [];
+        const byId = new Map(this.index.nodes.map(node => [node.id, node]));
+        const inside = (id: string) => {
+            let node = byId.get(id);
+            const seen = new Set<string>();
+            while (node && !seen.has(node.id)) {
+                if (node.id === cluster) return true;
+                seen.add(node.id);
+                node = node.parent ? byId.get(node.parent) : undefined;
+            }
+            return false;
+        };
+        const eligible = new Set(disclosed.filter(node => inside(node.id)).map(node => node.id));
+        return [...this.rendered].filter(id => eligible.has(id)).concat(
+            [...eligible].filter(id => !this.rendered.has(id)).sort((a, b) =>
+                (byId.get(a)?.level ?? 0) - (byId.get(b)?.level ?? 0) || a.localeCompare(b)));
+    }
+    private publishReveal(route: RouteResult, rendered: ReadonlySet<string>,
+        exclusions?: RevealWitnessInput['exclusions']): void {
+        const disclosed = new Set(this.visible().nodes.map(node => node.id));
+        const focus = this.revealState.focusClusterId;
+        const byId = new Map(this.index.nodes.map(node => [node.id, node]));
+        const inFocus = (id: string) => {
+            let node = byId.get(id);
+            const seen = new Set<string>();
+            while (node && !seen.has(node.id)) {
+                if (node.id === focus) return true;
+                seen.add(node.id);
+                node = node.parent ? byId.get(node.parent) : undefined;
+            }
+            return false;
+        };
+        const drawnKey = [this.axes.organization, this.axes.projection,
+            [...rendered].sort().join('|'), route.drawn.map(edge => `${edge.id}:${edge.from.id}:${edge.to.id}:${edge.count}`).join('|'),
+            route.aggregates.map(item => `${item.id}:${item.memberCount}`).join('|'), route.derivedCurves].join('\u00b7');
+        if (drawnKey !== this.revealDrawnKey) { this.revealDrawnKey = drawnKey; this.revealRevision++; }
+        const input: RevealWitnessInput = {
+            revision: this.revealRevision, camera: this.revealCamera,
+            focus: { clusterId: focus, source: this.revealState.focusSource, epoch: this.revealState.epoch },
+            nodes: this.routeNodes(), disclosedIds: disclosed, renderedNodeIds: rendered,
+            revealableInFocus: focus ? this.index.nodes.filter(node => inFocus(node.id) && !rendered.has(node.id)).length : 0,
+            nodeBudget: DENSITY_BUDGETS[this.density].nodes, route,
+            openParentIds: new Set([...this.history.state.expanded, ...this.auto]),
+            ...(exclusions ? { exclusions } : {}),
+        };
+        this.revealRoute = route;
+        this.revealRecord = buildRevealWitness(input);
+    }
+    /** Settled samples alone may change disclosure; an already mounted camera supplies the positions. */
+    private sampleReveal(zoom: number, settled: boolean): boolean {
+        const sampleKey = `${zoom}|${this.cursor?.x ?? ''}|${this.cursor?.y ?? ''}|${this.selected ?? ''}|${this.cameraKey()}`;
+        if (settled && sampleKey === this.lastRevealSampleKey) return false;
+        if (settled) this.lastRevealSampleKey = sampleKey;
+        if (this.auto.size && !this.revealState.admissions.length && !this.autoPageCounts.size) {
+            this.autoPageCounts = new Map([...this.auto].map(id => [id, V2_PAGE]));
+            const byId = new Map(this.index.nodes.map(node => [node.id, node]));
+            this.revealState = { ...this.revealState, admissions: [...this.auto].map((parentId, order) => {
+                let node = byId.get(parentId);
+                while (node?.parent && byId.has(node.parent)) node = byId.get(node.parent);
+                return { parentId, count: V2_PAGE, threshold: -1, clusterId: node?.id ?? parentId, order };
+            }) };
+        }
+        const root = document.getElementById('render-root');
+        const width = root?.clientWidth ?? 1, height = root?.clientHeight ?? 1;
+        const positions = new Map<string, { x: number; y: number; radius?: number }>();
+        const byId = new Map(this.index.nodes.map(node => [node.id, node]));
+        if (this.view) {
+            const witness = this.view.witness();
+            for (const [id, point] of Object.entries(witness.nodeViewport))
+                positions.set(id, { x: point.x, y: point.y,
+                    radius: byId.has(id) ? nodeRadius(byId.get(id)!, this.appearance.nodeScale) : 12 });
+        } else if (this.projectionResult) {
+            const points = (this.axes.projection === '2d' ? this.projectionResult.positions2 : this.projectionResult.positions3) ?? {};
+            const available = this.visible().nodes.map(node => ({ id: node.id, point: points[node.id] })).filter(item => item.point);
+            const xs = available.map(item => item.point!.x), ys = available.map(item => item.point!.y);
+            const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+            for (const item of available) positions.set(item.id, {
+                x: width * (0.1 + 0.8 * (item.point!.x - minX) / Math.max(1, maxX - minX)),
+                y: height * (0.1 + 0.8 * (item.point!.y - minY) / Math.max(1, maxY - minY)), radius: 12,
+            });
+        }
+        const decision = stepReveal({ index: this.index, disclosure: this.history.state, zoom, settled,
+            cursor: this.cursor, selectionId: this.selected, focusId: this.projectionFocus(),
+            viewport: { x: 0, y: 0, width, height }, positions, previous: this.revealState });
+        this.revealState = decision.state;
+        this.revealCamera = { zoom, band: decision.band, settled };
+        const changed = [...decision.auto].some(([id, count]) => this.autoPageCounts.get(id) !== count) ||
+            [...this.autoPageCounts.keys()].some(id => !decision.auto.has(id));
+        if (!changed && this.revealRoute) this.publishReveal(this.revealRoute, this.rendered);
+        this.autoPageCounts = new Map(decision.auto);
+        this.auto = new Set(decision.auto.keys());
+        if (decision.passageRequests.length) for (const id of decision.passageRequests)
+            void this.passages(id).then(() => {
+                const after = stepReveal({ index: this.index, disclosure: this.history.state, zoom, settled: true,
+                    cursor: this.cursor, selectionId: this.selected, focusId: this.projectionFocus(),
+                    viewport: { x: 0, y: 0, width, height }, positions, previous: this.revealState });
+                this.revealState = after.state;
+                this.autoPageCounts = new Map(after.auto);
+                this.auto = new Set(after.auto.keys());
+                void this.refresh();
+            });
+        return changed;
+    }
     /** B9 owns relation identity. Rehash the B5 result after replacing its temporary relation IDs. */
     /** The `?projection=natural` browser harness: a read-only diagnostic hook beside the
      * `witness().projection` record, exactly what ui/test/browser/projection-b.spec.ts reads. */
@@ -851,10 +986,10 @@ export class V2Page {
             ? this.projectionRenderer : null;
         if (!mounted) { this.lod = 'far'; this.pendingLod = null; }
         // D-073 C8b: the six-class revision follows the legacy semantic LOD (level, density budgets).
-        const lod = this.typedLodVisibility(result, snapshot, disclosed.nodes, active, this.projectionRevision + 1);
+        const lod = this.typedLodVisibility(styled, snapshot, disclosed.nodes, active, this.projectionRevision + 1);
         const visibility = lod.visibility;
         if (mounted) {
-            mounted.updateVisibleSubset(styled, visibility);
+            mounted.updateVisibleSubset(lod.displayStyled, visibility);
         } else {
             const host = document.createElement('div');
             host.className = 'view-host';
@@ -865,7 +1000,7 @@ export class V2Page {
                 renderer = input.createRenderer(host, dimension);
                 renderer.onPick((pick, shiftKey) => this.handleProjectionPick(pick, shiftKey));
                 renderer.onHover((pick, x, y) => this.projectionTooltip(pick, x, y));
-                renderer.mount(styled, visibility);
+                renderer.mount(lod.displayStyled, visibility);
             } catch (error) { host.remove(); throw error; }
             this.projectionRenderer?.destroy();
             this.projectionHost?.remove();
@@ -899,6 +1034,8 @@ export class V2Page {
             this.overviewRatio = camera?.ratio ?? 1;
         }
         this.rendered = new Set(visibility.nodeIds);
+        this.publishReveal(lod.route, this.rendered);
+        this.routePickById = lod.pickMap;
         this.lodCounts = lod.counts;
         this.lastNodeSelection = lod.selection;
         this.dropHiddenTypedSelection();
@@ -1217,6 +1354,9 @@ export class V2Page {
         this.retireLegacyView();
         this.fractalRefusal = refusal;
         this.rendered = new Set();
+        this.publishReveal(routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: new Set(),
+            renderedNodeIds: this.rendered, relations: [], budget: DENSITY_BUDGETS[this.density].arcs }),
+            this.rendered, Object.fromEntries(this.index.nodes.map(node => [node.id, 'projection-refusal' as const])));
         this.lodCounts = { nodes: { rendered: 0, available: 0, pinned: 0, pinnedIds: [] },
             arcs: { rendered: 0, available: 0, pinned: 0, pinnedIds: [] } };
         // A refused analytic result keeps its position-free fields explained beside the refusal.
@@ -1346,6 +1486,7 @@ export class V2Page {
         this.projectionSnapshot = null;
         this.projectionDomain = null;
         this.projectionVisibility = null;
+        this.routePickById.clear();
         this.typedSelection = null;
         this.typedWhyResult = null;
         this.mountedCameraKey = null;
@@ -1422,8 +1563,9 @@ export class V2Page {
      * for the visual relations and the semantic edges — and only ever narrows the result: the
      * coordinates, the digest and the source graph are untouched. Curves follow their relation;
      * containers and fields are kept whole. */
-    private typedLodVisibility(result: ProjectionResult, snapshot: SemanticGraphSnapshot,
+    private typedLodVisibility(styled: StyledProjection, snapshot: SemanticGraphSnapshot,
         allDisclosed: readonly V2Node[], active: string | null, revision: number) {
+        const result = styled.projection;
         const budget = DENSITY_BUDGETS[this.density];
         const communityOf = communityResolver(this.index.nodes);
         // A Holographic focus on a region discloses only that region's members to the level of detail.
@@ -1434,33 +1576,78 @@ export class V2Page {
         const pinned = this.pinnedNodeIds(tiers);
         const focusPriority = this.selected ? this.focusMembers(this.selected, disclosed as V2Node[]) : null;
         const byImportance = new Map(infos.map(node => [node.id, node.importance]));
-        const priority = [...tiers.priorityChildren, ...[...(focusPriority ?? [])]
-            .sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
+        const priority = [...tiers.priorityChildren, ...this.focusedRenderPriority(disclosed),
+            ...[...(focusPriority ?? [])].sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
         const selection = this.selectLod({
             nodes: infos, level: this.lod, budget: budget.nodes, pinned, focus: active, priority,
             adjacency: adjacencyOf(disclosed as V2Node[], this.index.edges), communityOf,
         }, this.lastNodeSelection);
         const base = projectionVisibility(result, snapshot, revision, 1, new Set(selection.rendered));
         const edgeClass = new Map(this.index.edges.map(edge => [edge.id, edge.class]));
-        const semanticById = new Map(snapshot.edges.map(edge => [edge.id, edge]));
-        const semanticIds = new Set(selectArcs({
-            arcs: [...base.semanticEdgeIds].map(id => ({ id, source: semanticById.get(id)!.source,
-                target: semanticById.get(id)!.target, class: edgeClass.get(id) ?? 'attested' as const, count: 1 })),
-            budget: budget.arcs, pinned: new Set(this.selected ? [this.selected] : []), focus: active,
-            communityOf, keepExploratory: this.axes.reading !== 'attested',
-        }));
-        const arcInput = {
-            arcs: result.visualRelations.filter(relation => base.nodeIds.has(relation.source) && base.nodeIds.has(relation.target))
-                .map(relation => ({ id: relation.visualId, source: relation.source, target: relation.target,
-                    class: edgeClass.get(relation.underlyingEdgeIds[0] ?? '') ?? 'attested' as const, count: relation.count })),
-            budget: budget.arcs,
-            pinned: new Set([...[...this.pinnedArcIds(tiers)].map(id => `visual:relation:${id}`),
-                ...(this.selected ? [this.selected] : [])]),
-            focus: active,
-            priority: tiers.priorityChildren.map(id => `visual:relation:contains:${id}`),
-            communityOf, keepExploratory: this.axes.reading !== 'attested',
-        };
-        const visualRelationIds = new Set(selectArcs(arcInput));
+        const routeRelations: RouteRelation[] = [
+            ...snapshot.edges.filter(edge => result.domainEdgeIds.includes(edge.id) &&
+                (this.axes.reading !== 'attested' || edgeClass.get(edge.id) !== 'exploratory'))
+                .map(edge => ({ id: edge.id, channel: 'semantic' as const, source: edge.source,
+                    target: edge.target, class: edgeClass.get(edge.id) ?? 'attested' as const,
+                    type: 'semantic', count: 1 })),
+            ...result.visualRelations.map(relation => ({ id: relation.visualId, channel: 'visual' as const,
+                source: relation.source, target: relation.target,
+                class: edgeClass.get(relation.underlyingEdgeIds[0] ?? '') ?? 'attested' as const,
+                type: relation.kind, count: relation.count, explanationId: relation.explanationId,
+                sourceEdgeIds: relation.underlyingEdgeIds })),
+        ];
+        const routed = routeRelationsAfterLOD({ nodes: this.routeNodes(),
+            disclosedIds: new Set(allDisclosed.map(node => node.id)), renderedNodeIds: base.nodeIds,
+            relations: routeRelations, budget: budget.arcs, focusId: active,
+            pinnedRelationIds: new Set(this.selected ? [this.selected] : []),
+            derivedCurveIds: [...base.curveIds] });
+        const sourceById = new Map(routeRelations.map(relation => [relation.id, relation]));
+        const synthetic: VisualRelation[] = [];
+        const pickMap = new Map<string, PickResult>();
+        const routedDrawn = routed.drawn.map(edge => {
+            if (edge.sourceRelationIds.length === 1 && edge.from.kind === 'node' && edge.to.kind === 'node')
+                return edge;
+            const id = `visual:d074:${edge.id}`;
+            const underlyingEdgeIds = [...new Set(edge.sourceRelationIds.flatMap(sourceId => {
+                const source = sourceById.get(sourceId);
+                return source?.channel === 'semantic' ? [sourceId] : source?.sourceEdgeIds ?? [];
+            }))];
+            synthetic.push({ visualId: id, semantic: false, source: edge.from.id, target: edge.to.id,
+                kind: underlyingEdgeIds.length ? 'lifted-route' : 'co-membership', underlyingEdgeIds,
+                count: edge.count, explanationId: `explanation:${id}` });
+            const first = edge.sourceRelationIds[0]!;
+            pickMap.set(id, sourceById.get(first)?.channel === 'semantic'
+                ? { kind: 'semantic-edge', id: first } : { kind: 'visual-relation', visualId: first });
+            return { ...edge, id, channel: 'lifted' as const };
+        });
+        const displayResult: ProjectionResult = synthetic.length ? { ...result,
+            visualRelations: [...result.visualRelations, ...synthetic],
+            explanations: { ...result.explanations, ...Object.fromEntries(synthetic.map(item =>
+                [item.explanationId, { elementId: item.visualId, elementKind: 'visual-relation' as const,
+                    summary: 'Percorso visuale aggregato', sourceIds: item.underlyingEdgeIds,
+                    parameterIds: ['layoutRelationPolicy'] }])) },
+            lod: { ...result.lod, maxVisibleVisualRelations: result.visualRelations.length + synthetic.length },
+        } : result;
+        const syntheticStyle = synthetic.length ? this.styleTypedProjection(displayResult, snapshot).visualStyle : {};
+        const displayStyled: StyledProjection = synthetic.length ? { ...styled, projection: displayResult,
+            visualStyle: { ...styled.visualStyle, ...Object.fromEntries(synthetic.map(item =>
+                [item.visualId, syntheticStyle[item.visualId] ?? {}])) } } : styled;
+        let semanticCount = 0, visualCount = 0;
+        const droppedByClass: string[] = [];
+        const drawn = routedDrawn.filter(edge => {
+            if (edge.channel === 'semantic') {
+                if (semanticCount >= result.lod.maxVisibleSemanticEdges) { droppedByClass.push(edge.id); return false; }
+                semanticCount++;
+            } else {
+                if (visualCount >= displayResult.lod.maxVisibleVisualRelations) { droppedByClass.push(edge.id); return false; }
+                visualCount++;
+            }
+            return true;
+        });
+        const route: RouteResult = { ...routed, drawn,
+            suppressed: [...routed.suppressed, ...droppedByClass.map(id => ({ id, cause: 'line-budget' as const }))] };
+        const semanticIds = new Set(drawn.filter(edge => edge.channel === 'semantic').map(edge => edge.id));
+        const visualRelationIds = new Set(drawn.filter(edge => edge.channel !== 'semantic').map(edge => edge.id));
         const curveIds = new Set([...base.curveIds].filter(id => {
             const curve = result.curves.find(item => item.visualId === id);
             return !curve?.visualRelationId || visualRelationIds.has(curve.visualRelationId);
@@ -1468,23 +1655,26 @@ export class V2Page {
         const visibility: RenderVisibility = { ...base, semanticEdgeIds: semanticIds, visualRelationIds, curveIds,
             fieldIds: this.holographicFieldIds(result, base.fieldIds),
             density: result.loadedNodeIds.length ? base.nodeIds.size / result.loadedNodeIds.length : 1 };
-        validateRenderVisibility(result, visibility, snapshot);
+        validateRenderVisibility(displayResult, visibility, snapshot);
         const pinnedNodes = [...pinned].filter(id => visibility.nodeIds.has(id)).sort();
-        const forced = new Set(forcedArcIds(arcInput));
-        const pinnedArcs = [...visualRelationIds].filter(id => forced.has(id)).sort();
+        const pinnedArcs = [...visualRelationIds].filter(id => id === this.selected).sort();
         const counts = {
             nodes: { rendered: visibility.nodeIds.size, available: result.domainNodeIds.length,
                 pinned: pinnedNodes.length, pinnedIds: pinnedNodes },
             arcs: { rendered: visualRelationIds.size, available: availableVisualRelationCount(result),
                 pinned: pinnedArcs.length, pinnedIds: pinnedArcs },
         };
-        return { visibility, counts, selection };
+        return { visibility, counts, selection, route, displayStyled, pickMap };
     }
     private handleProjectionPick(pick: PickResult | null, shiftKey: boolean): void {
         const result = this.projectionResult;
         if (!pick || !result) { this.typedSelection = null; this.selected = null; this.renderPanel(); return; }
+        const routedPickVisible = pick.kind === 'visual-relation' &&
+            this.projectionVisibility?.visualRelationIds.has(pick.visualId) === true &&
+            this.routePickById.has(pick.visualId);
+        if (pick.kind === 'visual-relation') pick = this.routePickById.get(pick.visualId) ?? pick;
         projectionPick(result, pick);
-        if (!this.isVisibleProjectionPick(pick)) return;
+        if (!routedPickVisible && !this.isVisibleProjectionPick(pick)) return;
         this.indraLeftFocus = null;
         if (pick.kind === 'node' || pick.kind === 'semantic-edge') {
             const id = pick.id;
@@ -1521,6 +1711,14 @@ export class V2Page {
         const tip = document.getElementById('v2-edge-tooltip') ?? document.createElement('div');
         if (!tip.id) { tip.id = 'v2-edge-tooltip'; document.body.append(tip); }
         if (!pick || !this.projectionResult) { tip.hidden = true; return; }
+        if (pick.kind === 'visual-relation' && this.routePickById.has(pick.visualId)) {
+            const route = this.revealRoute?.drawn.find(edge => edge.id === pick.visualId);
+            tip.textContent = route ? `Percorso visuale · ${route.count} relazioni` : 'Percorso visuale';
+            tip.hidden = !this.projectionVisibility?.visualRelationIds.has(pick.visualId);
+            tip.style.left = `${Math.min(innerWidth - 220, x + 12)}px`;
+            tip.style.top = `${Math.min(innerHeight - 35, y + 12)}px`;
+            return;
+        }
         projectionPick(this.projectionResult, pick);
         if (!this.isVisibleProjectionPick(pick)) { tip.hidden = true; return; }
         if (pick.kind === 'node') { tip.hidden = true; return; }
@@ -1609,14 +1807,16 @@ export class V2Page {
             this.projectionDomain !== domain || this.projectionSnapshot !== snapshot)
             throw new Error('Stale projection level token');
         assertPageProjection(styled.projection, domain, renderer.dimension);
-        const lod = this.typedLodVisibility(styled.projection, snapshot, this.visible().nodes,
+        const lod = this.typedLodVisibility(styled, snapshot, this.visible().nodes,
             this.projectionFocus(), this.projectionRevision + 1);
         const visibility = lod.visibility;
-        renderer.updateVisibleSubset(this.withSelectionEmphasis(styled), visibility);
+        renderer.updateVisibleSubset(this.withSelectionEmphasis(lod.displayStyled), visibility);
         this.projectionRevision = visibility.revision;
         this.projectionResult = styled.projection;
         this.projectionVisibility = visibility;
         this.rendered = new Set(visibility.nodeIds);
+        this.publishReveal(lod.route, this.rendered);
+        this.routePickById = lod.pickMap;
         this.lodCounts = lod.counts;
         this.lastNodeSelection = lod.selection;
         // The pearl the view is opened to, when this level names one: the panel below offers its exit.
@@ -1828,6 +2028,8 @@ export class V2Page {
             focus: this.selected ? this.focusMembers(this.selected) : null,
             palette: this.palette,
             nodeScale: this.appearance.nodeScale,
+            edgeWidth: this.appearance.edgeWidth,
+            curvature: this.appearance.curvature,
             reading: this.axes.reading,
         });
     }
@@ -2012,8 +2214,8 @@ export class V2Page {
             // (`safeSelectNodes`), so the drawing never loses its node set — or its labels.
             const focusPriority = this.selected ? this.focusMembers(this.selected, disclosed.nodes) : null;
             const byImportance = new Map(disclosed.nodes.map(node => [node.id, node.importance.value]));
-            const priority = [...tiers.priorityChildren, ...[...(focusPriority ?? [])]
-                .sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
+            const priority = [...tiers.priorityChildren, ...this.focusedRenderPriority(disclosed.nodes),
+                ...[...(focusPriority ?? [])].sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
             const selection = this.selectLod({
                 nodes: disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
                 level: this.lod,
@@ -2029,36 +2231,26 @@ export class V2Page {
                 const allowed = this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested');
                 renderedIds = focusNeighbourhood(focusPriority, disclosed.nodes, allowed, this.neighbourhoodDepth).nodes;
             } else if (this.restoreNeighbourhood && this.neighbourhoodBefore) renderedIds = new Set(this.neighbourhoodBefore.nodes);
-            const pool = projectRelations(
-                this.index.nodes, this.index.edges, renderedIds, this.axes.reading,
-                organization, this.relationDetail, active,
-            );
-            const focusRelations = focusPriority ? focusArcs(focusPriority, pool.edges, communityOf) : null;
-            const focusArcPriority = focusRelations ? [
-                ...focusRelations.bridges,
-                ...pool.edges.filter(edge => focusRelations.relevant.has(edge.id))
-                    .sort((a, b) => b.count - a.count || a.id.localeCompare(b.id)).map(edge => edge.id),
-            ] : [];
-            const arcSelectionInput = {
-                arcs: pool.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, class: edge.class, count: edge.count })),
-                budget: budget.arcs,
-                pinned: this.pinnedArcIds(tiers),
-                focus: active,
-                priority: [...tiers.priorityChildren.map(id => `contains:${id}`), ...focusArcPriority],
-                communityOf,
-                keepExploratory: this.axes.reading !== 'attested',
-            };
-            const forcedArcSet = new Set(forcedArcIds(arcSelectionInput));
-            let shown = selectArcs(arcSelectionInput).map(id => pool.byId.get(id)!).filter(edge => edge);
-            if (this.neighbourhoodDepth) shown = pool.edges;
-            else if (this.restoreNeighbourhood && this.neighbourhoodBefore) shown = this.neighbourhoodBefore.arcs;
+            const routedInput: RouteRelation[] = availableArcs.edges.map(edge => ({
+                id: edge.id, channel: 'lifted', source: edge.source, target: edge.target,
+                class: edge.class, type: edge.type, count: edge.count,
+                sourceEdgeIds: edge.underlying.map(item => item.id),
+            }));
+            const route = routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
+                renderedNodeIds: renderedIds, relations: routedInput, budget: budget.arcs,
+                focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
+            const relationById = new Map(availableArcs.edges.map(edge => [edge.id, edge]));
+            let shown: LiftedRelation[] = route.drawn.map(edge => {
+                const originals = edge.sourceRelationIds.map(id => relationById.get(id)).filter((item): item is LiftedRelation => !!item);
+                const base = originals[0]!;
+                return { ...base, id: edge.id, source: edge.from.id, target: edge.to.id,
+                    count: edge.count, underlying: originals.flatMap(item => item.underlying),
+                    lifted: base.lifted || edge.from.kind === 'aggregate' || edge.to.kind === 'aggregate' || originals.length > 1,
+                    width: Math.max(0.65, Math.sqrt(edge.count)) };
+            });
             this.restoreNeighbourhood = false;
-            // D-072 L2: only the latest page of explicit children exceeds the budget; earlier
-            // expansion children compete inside it. The witness records the actual forced ids.
-            // The budget
-            // binds on the unpinned fill and the witness says how many nodes the pins added.
             const pinnedRendered = [...pinned].filter(id => renderedIds.has(id)).sort();
-            const pinnedArcsRendered = shown.map(edge => edge.id).filter(id => forcedArcSet.has(id)).sort();
+            const pinnedArcsRendered = shown.map(edge => edge.id).filter(id => this.pinnedArcIds(tiers).has(id)).sort();
             const nextLodCounts = {
                 nodes: { rendered: renderedIds.size, available: ids.size, pinned: pinnedRendered.length, pinnedIds: pinnedRendered },
                 arcs: { rendered: shown.length, available: availableArcs.total, pinned: pinnedArcsRendered.length, pinnedIds: pinnedArcsRendered },
@@ -2112,6 +2304,7 @@ export class V2Page {
                     this.rendered = renderedIds;
                     this.lodCounts = nextLodCounts;
                     this.renderedRelations = nextRenderedRelations;
+                    this.publishReveal(route, renderedIds);
                     this.arcTotal = nextArcTotal;
                     this.containers = nextContainers;
                     this.previousVisible = renderedIds;
@@ -2202,6 +2395,7 @@ export class V2Page {
             this.rendered = renderedIds;
             this.lodCounts = nextLodCounts;
             this.renderedRelations = nextRenderedRelations;
+            this.publishReveal(route, renderedIds);
             this.arcTotal = nextArcTotal;
             this.containers = nextContainers;
             this.layoutSource = nextLayoutSource;
@@ -2322,6 +2516,9 @@ export class V2Page {
                 child = byId.get(child.parent);
             }
             this.auto.clear();
+            this.autoPageCounts.clear();
+            this.revealState = emptyRevealState(this.revealCamera.zoom);
+            this.lastRevealSampleKey = '';
             this.history.change(state => { state.expanded = new Set(ancestors); state.manualOrder = state.manualOrder.filter(id => state.expanded.has(id)); for (const key of [...state.pages.keys()])
                 if (!ancestors.includes(key))
                     state.pages.delete(key); });
@@ -2335,6 +2532,7 @@ export class V2Page {
         this.noteCameraIntent();
         this.suppressZoomUntil = performance.now() + 900;
         this.selected = id;
+        this.sampleReveal(this.revealCamera.zoom, true);
         // The previous canvas pick no longer describes the selection; the refresh adopts the new one.
         if (this.typedActive()) this.typedSelection = null;
         this.neighbourhoodDepth = null;
@@ -2368,6 +2566,7 @@ export class V2Page {
         if (this.neighbourhoodBefore) this.restoreNeighbourhood = true;
         this.neighbourhoodDepth = null;
         this.selected = null;
+        this.sampleReveal(this.revealCamera.zoom, true);
         if (this.typedActive()) this.typedSelection = null;
         this.view?.select(null);
         await this.refresh();
@@ -2631,6 +2830,9 @@ export class V2Page {
         this.zoomOn = on;
         if (!on) {
             this.auto.clear();
+            this.autoPageCounts.clear();
+            this.revealState = emptyRevealState(this.revealCamera.zoom);
+            this.lastRevealSampleKey = '';
             void this.refresh();
         }
     }
@@ -2690,42 +2892,20 @@ export class V2Page {
         const zoom = Math.max(0.1, (this.overviewRatio ?? ratio) / ratio);
         const next = lodLevelFromZoom(zoom, this.lod);
         this.pendingLod = next === this.lod ? null : next;
-        if (this.pendingLod !== null && lodRefreshDue({
-            nowMs: performance.now(),
-            pending: true,
-            lastCameraChangeMs: this.cameraChangedAt,
-        })) {
+        const settled = lodRefreshDue({ nowMs: performance.now(), pending: true,
+            lastCameraChangeMs: this.cameraChangedAt });
+        const changed = settled ? this.sampleReveal(zoom, true) : false;
+        if (!settled) {
+            this.revealCamera = { zoom, band: this.revealState.band, settled: false };
+            if (this.revealRoute) this.publishReveal(this.revealRoute, this.rendered);
+        }
+        if (this.pendingLod !== null && settled) {
             this.lod = this.pendingLod;
             this.pendingLod = null;
             void this.refresh();
             return;
         }
-        if (this.pendingLod !== null)
-            return;
-        if (ratio >= previous * 0.995)
-            return;
-        // Progressive disclosure on zoom now belongs to the near level only: intermediate and far
-        // stay budgeted summaries, so a wheel step there can no longer add hundreds of nodes.
-        if (this.lod !== 'near')
-            return;
-        if (this.selected) return;
-        const witness = this.view.witness();
-        const rect = witness.visibleRect;
-        const candidates: { id: string; distance: number }[] = [];
-        for (const n of this.visible().nodes)
-            if (n.level < 4 && !this.history.state.expanded.has(n.id) && !this.auto.has(n.id)) {
-                const p = witness.nodeViewport[n.id];
-                if (!p || p.x < rect.left || p.x > rect.left + rect.width || p.y < rect.top || p.y > rect.top + rect.height)
-                    continue;
-                const zoom = Math.max(0.1, (this.overviewRatio ?? ratio) / ratio);
-                if (semanticZoom(n.level, nodeRadius(n, this.appearance.nodeScale) * zoom))
-                    candidates.push({ id: n.id, distance: Math.hypot(p.x - rect.left - rect.width / 2, p.y - rect.top - rect.height / 2) });
-            }
-        candidates.sort((a, b) => a.distance - b.distance || a.id.localeCompare(b.id));
-        if (candidates[0]) {
-            this.auto.add(candidates[0].id);
-            void this.refresh();
-        }
+        if (changed) void this.refresh();
     }
     /** D-073 C4: the typed pipeline's share of `tickZoom`. The mounted renderer reports the live
      * camera ratio (Sigma's camera state in 2D, the rig's visual state camera in 3D); the same
@@ -2750,15 +2930,20 @@ export class V2Page {
         const zoom = Math.max(0.1, (this.overviewRatio ?? ratio) / ratio);
         const next = lodLevelFromZoom(zoom, this.lod);
         this.pendingLod = next === this.lod ? null : next;
-        if (this.pendingLod !== null && lodRefreshDue({
-            nowMs: performance.now(),
-            pending: true,
-            lastCameraChangeMs: this.cameraChangedAt,
-        })) {
+        const settled = lodRefreshDue({ nowMs: performance.now(), pending: true,
+            lastCameraChangeMs: this.cameraChangedAt });
+        const changed = settled ? this.sampleReveal(zoom, true) : false;
+        if (!settled) {
+            this.revealCamera = { zoom, band: this.revealState.band, settled: false };
+            if (this.revealRoute) this.publishReveal(this.revealRoute, this.rendered);
+        }
+        if (this.pendingLod !== null && settled) {
             this.lod = this.pendingLod;
             this.pendingLod = null;
             void this.refresh();
+            return;
         }
+        if (changed) void this.refresh();
     }
     disclosure() {
         const shown = this.visible();
