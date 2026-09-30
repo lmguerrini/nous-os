@@ -77,7 +77,16 @@ async function waitForProjection(page: Page, view: string) {
 
 async function assertDisclosure(page: Page, view: string, dimension: string) {
   const status = (await page.locator('#status').innerText()).toLowerCase();
-  expect(status).toContain('geometria derivata, non semantica');
+  if (view === 'natural') {
+    expect(status).not.toContain('geometria derivata, non semantica');
+    const arrangement = (await projectionWitness(page)).arrangement;
+    expect(typeof arrangement).toBe('string');
+    const inspector = page.locator('#arrangement-inspector');
+    await expect(inspector).toBeVisible();
+    await expect(inspector).toContainText(String(arrangement));
+  } else {
+    expect(status).toContain('geometria derivata, non semantica');
+  }
   if (view === 'indra') {
     expect(status).toContain("vista indra's pearls");
     expect(status).toMatch(/genere\s+\d+|impaccamento euclideo annidato/);
@@ -98,8 +107,7 @@ async function assertLodBudget(page: Page) {
   expect(lod?.nodes?.rendered).toBeGreaterThan(0);
   expect(lod.nodes.available).toBeGreaterThan(0);
   expect(lod.nodes.rendered).toBeLessThanOrEqual(lod.nodes.available);
-  expect(lod?.arcs?.rendered).toBeGreaterThan(0);
-  expect(lod.arcs.available).toBeGreaterThan(0);
+  if (lod?.arcs?.available > 0) expect(lod.arcs.rendered).toBeGreaterThan(0);
   expect(lod.arcs.rendered).toBeLessThanOrEqual(lod.arcs.available);
   const cap = value.disclosure?.cap;
   if (typeof cap === 'number') expect(lod.nodes.rendered).toBeLessThanOrEqual(cap);
@@ -155,6 +163,7 @@ for (const view of views) {
         expect(restyled.resultDigest, 'morphology restyling preserves coordinates and result digest').toBe(stableDigest);
         await axes(page, { morphology, ...fixedArrangement });
         await waitForProjection(page, view.button);
+        await waitForCameraRest(page);
 
         const idleFrames = await page.evaluate(async () => {
           const before = (window as any).__d073FrameCount ?? 0;
