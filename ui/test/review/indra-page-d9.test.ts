@@ -180,7 +180,8 @@ async function snapshotFor(index: V2Index): Promise<SemanticGraphSnapshot> {
 }
 
 type Trace = { mounts: number; updates: RenderVisibility[]; destroys: number; ratio: number; dimensions: string[];
-  pick: ((pick: PickResult | null, shiftKey: boolean) => void) | null; shown: PickResult[] };
+  pick: ((pick: PickResult | null, shiftKey: boolean) => void) | null; shown: PickResult[];
+  lastVisibility?: RenderVisibility };
 type SpyClient = ProjectionWorkerClient & { requests: ProjectionClientRequest[]; gate: (() => Promise<void> | undefined) | null };
 
 /** A client that records every request and answers it with the real main-thread host (the worker fallback). */
@@ -212,8 +213,8 @@ async function typedPage(options: { axes?: Record<string, unknown>; client?: Pro
     snapshot: () => snapshot,
     createRenderer: (_host, dimension): ProjectionPageRenderer => ({
       dimension, onPick(handler) { trace.pick = handler; }, onHover() {},
-      mount() { trace.mounts++; trace.dimensions.push(dimension); },
-      updateVisibleSubset(_styled, visibility) { trace.updates.push(visibility); },
+      mount(_styled, visibility) { trace.mounts++; trace.dimensions.push(dimension); trace.lastVisibility = visibility; },
+      updateVisibleSubset(_styled, visibility) { trace.updates.push(visibility); trace.lastVisibility = visibility; },
       readCameraState: () => ({ ratio: trace.ratio }),
       destroy() { trace.destroys++; },
     }),
@@ -954,13 +955,21 @@ test('projectionRefusalOf recognises the typed refusals, thrown or carried by th
   assert.equal(projectionRefusalOf('invalid-request'), null);
 });
 
-const kindsOf = (result: ProjectionResult) => ({
-  node: { kind: 'node' as const, id: result.loadedNodeIds[0]! },
-  container: result.containers[0] && { kind: 'container' as const, visualId: result.containers[0].visualId },
-  curve: result.curves[0] && { kind: 'curve' as const, visualId: result.curves[0].visualId },
-  field: result.fields[0] && { kind: 'field' as const, visualId: result.fields[0].id },
-  'visual-relation': result.visualRelations[0] && { kind: 'visual-relation' as const, visualId: result.visualRelations[0].visualId },
-});
+const kindsOf = (result: ProjectionResult, visibility: RenderVisibility) => {
+  const firstVisible = (ids: readonly string[], visible: ReadonlySet<string>) => ids.find(id => visible.has(id));
+  const node = firstVisible(result.loadedNodeIds, visibility.nodeIds);
+  const container = firstVisible(result.containers.map(item => item.visualId), visibility.containerIds);
+  const curve = firstVisible(result.curves.map(item => item.visualId), visibility.curveIds);
+  const field = firstVisible(result.fields.map(item => item.id), visibility.fieldIds);
+  const relation = firstVisible(result.visualRelations.map(item => item.visualId), visibility.visualRelationIds);
+  return {
+    node: node === undefined ? undefined : { kind: 'node' as const, id: node },
+    container: container === undefined ? undefined : { kind: 'container' as const, visualId: container },
+    curve: curve === undefined ? undefined : { kind: 'curve' as const, visualId: curve },
+    field: field === undefined ? undefined : { kind: 'field' as const, visualId: field },
+    'visual-relation': relation === undefined ? undefined : { kind: 'visual-relation' as const, visualId: relation },
+  };
+};
 
 test('typed picks of a Fractal and an Indra result open the explanation card of their own result, with provenance apart', async () => {
   const seenKinds = new Set<string>();
@@ -969,7 +978,20 @@ test('typed picks of a Fractal and an Indra result open the explanation card of 
     const { page, trace } = await typedPage({ client: spyClient(), index, axes: { organization } });
     const result = resultOf(page)!;
     assert.equal(result.determinism.algorithmId, organization === 'fractal' ? 'fractal' : 'indras-pearls');
-    for (const [kind, pick] of Object.entries(kindsOf(result))) {
+    const visibility = trace.lastVisibility!;
+    const picks = kindsOf(result, visibility);
+    if (organization === 'fractal') {
+      assert.notEqual(picks.container?.visualId, result.containers[0]?.visualId,
+        'the giant outer container is present in the result but omitted from the current mask');
+      assert.match(picks.curve?.visualId ?? '', /inverse-branch:/, 'the visible Fractal guide is an inverse branch');
+      assert.match(picks['visual-relation']?.visualId ?? '', /visual:fractal:route:/,
+        'the visible Fractal relation is a counted cross-aggregate route');
+      const route = result.visualRelations.find(item => item.visualId === picks['visual-relation']?.visualId)!;
+      assert.equal(route.count, route.underlyingEdgeIds.length, 'the route keeps its source-edge count');
+      assert.deepEqual(result.explanations[route.visualId]!.sourceIds, route.underlyingEdgeIds,
+        'the route explanation names its source edges as provenance');
+    }
+    for (const [kind, pick] of Object.entries(picks)) {
       if (!pick) continue;
       seenKinds.add(kind);
       trace.shown.length = 0;
