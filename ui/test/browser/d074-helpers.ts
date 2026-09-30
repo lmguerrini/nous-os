@@ -34,11 +34,13 @@ export async function stable(page: Page): Promise<Witness> {
       const witness = api.revealWitness();
       const signature = JSON.stringify([witness.revision, witness.camera, witness.focus, witness.levels, witness.nodes, witness.renderedNodeIds, witness.aggregates, witness.edges]);
       matches = signature === previous ? matches + 1 : 0;
-      if (matches >= 2) return witness;
+      // The camera tick needs 300 ms without movement before it can admit a page.
+      // Five equal samples span at least 400 ms and include the resulting refresh.
+      if (matches >= 4 && witness.camera.settled) return witness;
       previous = signature;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    return api.revealWitness();
+    throw new Error('No settled reveal witness became stable');
   });
 }
 
@@ -90,6 +92,7 @@ export function descendantIds(page: Page, clusterId: string): Promise<string[]> 
 }
 
 export async function focusedRendered(page: Page, witness: Witness): Promise<number> {
+  if (Number.isFinite(witness.nodes.renderedInFocus)) return witness.nodes.renderedInFocus!;
   const clusterId = witness.focus.clusterId;
   if (!clusterId) return 0;
   const descendants = new Set(await descendantIds(page, clusterId));

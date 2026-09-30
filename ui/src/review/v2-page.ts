@@ -852,7 +852,7 @@ export class V2Page {
     /** The camera of a typed renderer belongs to one dimension and one view; another view's camera is never reused. */
     private cameraKey(): string {
         return `${this.axes.projection}/${this.axes.organization === 'fractal' ? 'fractal' : this.axes.organization === 'holographic' ? 'holographic'
-            : this.indraPearlsView() ? 'indra' : 'natural'}`;
+            : this.axes.organization === 'indra' ? 'indra' : 'natural'}`;
     }
     private async withTypedRelations(raw: ProjectionResult, relations: readonly VisualRelation[]): Promise<ProjectionResult> {
         const oldIds = new Set(raw.visualRelations.map(item => item.explanationId));

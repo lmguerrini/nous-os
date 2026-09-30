@@ -913,12 +913,16 @@ test('recursive Indra is primary, Indra’s Pearls requires its flag, and the le
   assert.equal((page as unknown as { projectionClient: unknown }).projectionClient !== undefined, true);
   await page.setAxes({ organization: 'indra' });
   assert.equal(trace.mounts, 0, 'the ordinary Indra uses the recursive product renderer');
+  assert.equal((page as unknown as { cameraKey(): string }).cameraKey(), '2d/indra',
+    'ordinary Indra keeps its own camera identity');
   assert.equal(counts.axes.at(-1), 'indra');
   assert.equal('projection' in (page.witness() as object), false);
   await page.setAxes({ organization: 'natural' });
   assert.equal(counts.mounts, 3, 'Natural remounts the product view after switching organizations');
   assert.equal(statusText(), 'Grafo pronto');
   assert.equal('projection' in (page.witness() as object), false);
+  await page.setAxes({ organization: 'indra', projection: '3d' });
+  assert.equal((page as unknown as { cameraKey(): string }).cameraKey(), '3d/indra');
 
   const pearls = make({ fractalPipeline: input, experimental: true });
   assert.equal((pearls as unknown as { legacyIndra: boolean }).legacyIndra, false);

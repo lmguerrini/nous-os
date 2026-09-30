@@ -31,8 +31,11 @@ test('ordinary Indra is recursive, draws relations at fit, and uses round pearl 
     const background = [image.data[0]!, image.data[1]!, image.data[2]!] as [number, number, number];
     const samples = Object.entries(positions as Record<string, { x: number; y: number; radius?: number }>)
       .filter(([id, p]) => witness.renderedNodeIds.includes(id) && !containerIds.has(id) && Number.isFinite(p.x) && (p.radius ?? 0) >= 4)
-      .sort((a, b) => (b[1].radius ?? 0) - (a[1].radius ?? 0)).slice(0, 12);
+      .sort((a, b) => (b[1].radius ?? 0) - (a[1].radius ?? 0)).slice(0, 30);
     expect(samples.length, 'nodeViewport exposes sampleable rendered glyphs').toBeGreaterThan(0);
+    const drawnGlyphs = Object.entries(positions as Record<string, { x: number; y: number; radius?: number }>)
+      .filter(([id, p]) => witness.renderedNodeIds.includes(id) && !containerIds.has(id) && Number.isFinite(p.x) && Number.isFinite(p.y));
+    let checked = 0;
     for (const [id, node] of samples) {
       // nodeViewport points are page coordinates; the screenshot starts at the #viewport box. The glyph's own
       // radius places the diagonal samples outside a disc (1.16 r from the centre) but inside a square of half-side r.
@@ -40,12 +43,22 @@ test('ordinary Indra is recursive, draws relations at fit, and uses round pearl 
       const cy = node.y - viewport!.y;
       const radius = Math.max(4, node.radius ?? 6);
       const center = rasterHasInk(image.data, image.width, image.height, cx, cy, background);
-      const diagonal = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([dx, dy]) => rasterHasInk(image.data, image.width, image.height, cx + dx! * radius * 0.82, cy + dy! * radius * 0.82, background));
+      const diagonal = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([dx, dy]) => {
+        const x = node.x + dx! * radius * 0.82, y = node.y + dy! * radius * 0.82;
+        // A neighbour's disc can ink this corner even when this glyph is round.
+        if (drawnGlyphs.some(([otherId, other]) => otherId !== id &&
+          Math.hypot(x - other.x, y - other.y) <= Math.max(4, other.radius ?? 6))) return null;
+        return rasterHasInk(image.data, image.width, image.height, x - viewport!.x, y - viewport!.y, background);
+      }).filter((value): value is boolean => value !== null);
       const cardinal = [[-1, 0], [1, 0], [0, -1], [0, 1]].map(([dx, dy]) => rasterHasInk(image.data, image.width, image.height, cx + dx! * radius * 0.82, cy + dy! * radius * 0.82, background));
       expect(center, `${projection} node ${id} has a rendered center`).toBe(true);
+      if (diagonal.length < 3) continue;
+      checked++;
       expect(diagonal.filter(Boolean).length, `${projection} node ${id} has clear rounded corners`).toBeLessThanOrEqual(2);
       expect(cardinal.filter(Boolean).length, `${projection} node ${id} has a rounded perimeter`).toBeGreaterThanOrEqual(2);
+      if (checked === 12) break;
     }
+    expect(checked, `${projection} includes a glyph with at least three unoccluded corners`).toBeGreaterThan(0);
     if (projection === '2d') {
       const container = (geometry.containers as { id: string; radius: number }[]).find(item => item.id === 'domain:qrs');
       expect(container?.radius).toBeGreaterThan(0);
