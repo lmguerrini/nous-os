@@ -354,7 +354,11 @@ test('the default pipeline builds its snapshot from the page index and styles wi
   assert.equal(alfa.color, '#f0f0f0', 'the aggregate palette colour');
   assert.equal(typeof alfa.size, 'number');
   assert.ok(Number.isFinite(alfa.size as number));
-  assert.deepEqual(styled.edgeStyle['source-edge']!.color, '#729ebd');
+  // The typed views take the product look (projection-style.ts): no heavy blue fan, the attested edge follows the palette.
+  const edgeColour = styled.edgeStyle['source-edge']!.color;
+  assert.equal(typeof edgeColour, 'string');
+  assert.notEqual(edgeColour, '#729ebd', 'edges no longer use the basic heavy blue');
+  assert.ok(styled.visualStyle['projection:style'], 'the style scope reaches the renderers');
   assert.ok(styled.visualStyle['visual:natural:source-edge'], 'structural visuals carry a presentation entry');
   assert.strictEqual(styled.projection, projected, 'style never replaces the result');
 });

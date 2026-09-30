@@ -1,3 +1,4 @@
+import { styleProjection } from './projection-style.ts';
 import { displayLabel, presentationText, validateIndex } from './graph-v2.ts';
 import type { GraphManifest } from './graph-v2.ts';
 import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
@@ -1744,34 +1745,18 @@ export class V2Page {
         };
     }
     /** The default pipeline's style bridge: presentation only, never part of the result digest. */
-    private styleTypedProjection(result: ProjectionResult, _snapshot: SemanticGraphSnapshot): StyledProjection {
-        const byId = new Map(this.index.nodes.map(node => [node.id, node]));
-        const nodeStyle: Record<string, Readonly<Record<string, number | string>>> = {};
-        for (const id of result.loadedNodeIds) {
-            const node = byId.get(id);
-            nodeStyle[id] = node
-                ? { color: v2CategoryColour(node, this.palette, this.v2Colours),
-                    size: nodeRadius(node, this.appearance.nodeScale) }
-                : { color: '#9bc8ed', size: 5 };
-        }
-        const edgeStyle: Record<string, Readonly<Record<string, number | string>>> = {};
-        const edgeById = new Map(this.index.edges.map(edge => [edge.id, edge]));
-        for (const id of result.domainEdgeIds) {
-            const edge = edgeById.get(id);
-            edgeStyle[id] = { color: edge?.class === 'exploratory' ? '#ad8e6a' : '#729ebd',
-                size: edge?.class === 'exploratory' ? 1 : 1.5 };
-        }
-        const visualStyle: Record<string, Readonly<Record<string, number | string>>> = {};
-        for (const relation of result.visualRelations) {
-            const presentation = structuralVisualPresentation(relation);
-            visualStyle[relation.visualId] = { color: '#8fa8ac',
-                opacityPermille: presentation.opacityPermille, widthPermille: presentation.widthPermille };
-        }
-        for (const container of result.containers)
-            visualStyle[container.visualId] = { color: '#7992a0' };
-        for (const curve of result.curves) visualStyle[curve.visualId] = { color: '#a0bad1' };
-        for (const field of result.fields) visualStyle[field.id] = { color: '#b8a4cb' };
-        return { projection: result, nodeStyle, edgeStyle, visualStyle };
+    /** The typed views take the product look from `styleProjection`: morphology, density, level, the selection's focus
+     * members, palette, node scale and reading; coordinates never change with the style. */
+    private styleTypedProjection(result: ProjectionResult, snapshot: SemanticGraphSnapshot): StyledProjection {
+        return styleProjection(result, snapshot, {
+            morphology: this.axes.morphology,
+            density: this.density,
+            lodLevel: this.lod,
+            focus: this.selected ? this.focusMembers(this.selected) : null,
+            palette: this.palette,
+            nodeScale: this.appearance.nodeScale,
+            reading: this.axes.reading,
+        });
     }
     /** The default pipeline's legacy-Indra bridge: one typed result assembled from the verified
      * layout output, styled by the same presentation maps. */
