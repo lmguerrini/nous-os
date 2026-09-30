@@ -597,7 +597,7 @@ test("Blob worker start: a fake Worker constructor receives a blob URL and the c
 });
 
 test("worker entry: installs on a worker-like scope and registers available projections", async () => {
-  assert.deepEqual(PROJECTION_WORKER_ENTRY_PROJECTIONS.map(projection => projection.id), ["natural", "fractal", "indras-pearls"]);
+  assert.deepEqual(PROJECTION_WORKER_ENTRY_PROJECTIONS.map(projection => projection.id), ["natural", "fractal", "indras-pearls", "holographic"]);
   assert.equal("DedicatedWorkerGlobalScope" in globalThis, false, "Node is not a dedicated worker: no self-install");
   assert.equal("onmessage" in globalThis, false);
   const state = deferredProjection();

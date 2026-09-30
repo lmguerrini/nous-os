@@ -18,10 +18,21 @@ test('the header rows wrap and the status line can shrink', () => {
   assert.doesNotMatch(header, /style="[^"]*width:\s*\d{4,}px/);
 });
 
-test('the organization axis has the three views and Indra has no control of its own besides its view button', () => {
+test('the organization axis has the four views and Indra has no control of its own besides its view button', () => {
   const axis = header.slice(header.indexOf('data-axis="organization"'), header.indexOf('data-axis="reading"'));
-  assert.deepEqual([...axis.matchAll(/data-value="([a-z]+)"/g)].map(match => match[1]), ['natural', 'indra', 'fractal']);
+  assert.deepEqual([...axis.matchAll(/data-value="([a-z]+)"/g)].map(match => match[1]), ['natural', 'indra', 'fractal', 'holographic']);
   assert.equal([...header.matchAll(/data-value="indra"/g)].length, 1, 'one Indra button in the header');
   assert.doesNotMatch(header, /id="[^"]*(pearl|indra)[^"]*"/i, 'no Indra-specific toolbar control');
   assert.match(axis, /data-value="indra" title="Indra's Pearls[^"]*"/);
+});
+
+test('Holographic adds one hidden, experimental-labelled view button and no toolbar control of its own', () => {
+  const axis = header.slice(header.indexOf('data-axis="organization"'), header.indexOf('data-axis="reading"'));
+  assert.match(axis, /<button data-value="holographic" hidden title="[^"]*">Holographic \(sperimentale\)<\/button>/);
+  assert.equal([...header.matchAll(/data-value="holographic"/g)].length, 1, 'one Holographic button in the header');
+  assert.doesNotMatch(header, /id="[^"]*(holographic|spectral|witness)[^"]*"/i, 'the analytic controls live in the details column, not the header');
+  assert.doesNotMatch(header, /<select[^>]*(channel|region|canale|regione)/i);
+  const fullscreen = html.slice(html.indexOf('id="fullscreen-bar"'), html.indexOf('id="fullscreen-legend"'));
+  assert.equal([...fullscreen.matchAll(/data-value="holographic"/g)].length, 1, 'the fullscreen bar mirrors the view button');
+  assert.match(html, /\.header-top,\.axes,\.tools,\.axis \{[^}]*flex-wrap:\s*wrap/, 'the wrapping rules that make the longer button fit at 1024-1920 px are still there');
 });

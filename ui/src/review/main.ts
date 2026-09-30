@@ -1,9 +1,8 @@
 import { humanLabel, initialState, searchNode, shortHumanLabel, visibleGraph } from "./model.ts";
 import type { ReviewExport, ReviewNode } from "./model.ts";
 import { createProductView } from "./product-view.ts";
-import { DEFAULT_AXES, normalizeAxesInput, parseSavedAxes, savedAxesRecord, serializeAxes } from "./view-contract.ts";
+import { DEFAULT_AXES, normalizeAxesInput, parseSavedAxes, resolveArrangementReadout, savedAxesRecord, savedExplicitArrangement, serializeAxes } from "./view-contract.ts";
 import type { Axes, AxesInput, PageAxes, ProductView, ViewWitness } from "./view-contract.ts";
-import { resolveNaturalArrangementWithSource } from "../projection/natural-bridge.ts";
 import type { ResolvedNaturalArrangement } from "../projection/natural-bridge.ts";
 import { FAMILY_OF, standingOf } from "./presentation.ts";
 import { FocusStack } from "./focus-stack.ts";
@@ -25,7 +24,7 @@ import { mount2d } from "./view2d.ts";
 import { mount3d } from "./view3d.ts";
 import { LiveGraph } from "./live-graph.ts";
 import type { LiveFragment } from "./live-graph.ts";
-import { V2Page, projectionRefusalOf } from "./v2-page.ts";
+import { V2Page, projectionFlagEnabled, projectionRefusalOf } from "./v2-page.ts";
 import { bindSurfaces } from "./popover.ts";
 import { mountPerformanceOverlay } from "./perf-overlay.ts";
 import type { PopoverStack, SurfaceBinding } from "./popover.ts";
@@ -81,6 +80,8 @@ let operation = Promise.resolve();
 const errors: string[] = [];
 const VIEW_STORAGE_KEY = "d073.view";
 const VIEW_URL_PARAMETER = "view";
+/** Whether the page draws Natural through the typed pipeline (`#projection=natural`); off, the legacy layout is drawn. */
+const typedPipelineFlag = projectionFlagEnabled(location.search, location.hash);
 const MORPHOLOGY_LABELS = { stellar: "Stellar", neural: "Neural", mycelium: "Mycelium" } as const;
 function readViewSource(raw: string): { axes: PageAxes; explicitArrangement: boolean } | null {
   try {
@@ -114,29 +115,31 @@ export function rewriteViewHash(hash: string, serializedAxes: string): string {
 const initialUrlView = readUrlView();
 const initialView = initialUrlView ?? readStoredView();
 if (initialView) axes = initialView.axes;
-else axes = { ...DEFAULT_AXES, arrangement: resolveNaturalArrangementWithSource(DEFAULT_AXES.morphology).arrangement };
+else axes = { ...DEFAULT_AXES, arrangement: resolveArrangementReadout(null, DEFAULT_AXES.morphology, typedPipelineFlag).arrangement };
 let resolvedArrangement: ResolvedNaturalArrangement | null = axes.organization === "natural"
-  ? resolveNaturalArrangementWithSource(axes.morphology, initialView?.explicitArrangement === true ? axes.arrangement : undefined)
+  ? resolveArrangementReadout(null, axes.morphology, typedPipelineFlag,
+    initialView?.explicitArrangement === true ? savedExplicitArrangement(axes.arrangement, axes.morphology, typedPipelineFlag) : undefined)
   : null;
 function appliedAxes(partial: Partial<PageAxes>): PageAxes {
   const next: PageAxes = { ...axes, ...partial };
   if (next.organization !== "natural") {
     return { projection: next.projection, morphology: next.morphology, organization: next.organization, colour: next.colour, labels: next.labels, reading: next.reading };
   }
-  if (partial.arrangement !== undefined) resolvedArrangement = resolveNaturalArrangementWithSource(next.morphology, partial.arrangement);
-  if (resolvedArrangement === null) resolvedArrangement = resolveNaturalArrangementWithSource(next.morphology);
-  return next.arrangement === undefined ? { ...next, arrangement: resolvedArrangement.arrangement } : next;
+  // The readout follows the layout drawn: without the typed pipeline that layout follows the morphology.
+  resolvedArrangement = resolveArrangementReadout(resolvedArrangement, next.morphology, typedPipelineFlag, partial.arrangement);
+  return next.arrangement === resolvedArrangement.arrangement ? next : { ...next, arrangement: resolvedArrangement.arrangement };
 }
-/** The export path draws with the product renderers, which know Natural and Indra only: Fractal is a distilled-graph view. */
+/** The export path draws with the product renderers, which know Natural and Indra only: Fractal and Holographic are distilled-graph views. */
 function productAxes(value: PageAxes = axes): Axes {
-  if (value.organization === "fractal") throw new Error("La vista Fractal richiede il grafo distillato");
+  if (value.organization === "fractal" || value.organization === "holographic") throw new Error(`La vista ${viewLabel(value.organization)} richiede il grafo distillato`);
   return { ...value, organization: value.organization };
 }
 function productPartial(value: Partial<PageAxes>): Partial<Axes> {
   const { organization, ...rest } = value;
-  if (organization === "fractal") throw new Error("La vista Fractal richiede il grafo distillato");
+  if (organization === "fractal" || organization === "holographic") throw new Error(`La vista ${viewLabel(organization)} richiede il grafo distillato`);
   return organization === undefined ? rest : { ...rest, organization };
 }
+const viewLabel = (organization: "fractal" | "holographic") => organization === "fractal" ? "Fractal" : "Holographic";
 function writeViewUrl(): void {
   try {
     const params = new URLSearchParams(location.search);
@@ -570,8 +573,8 @@ function fit(): Promise<void> {
 }
 function setAxes(input: AxesInput): Promise<void> {
   const partial = normalizeAxesInput(input);
-  if (partial.organization === "fractal" && !v2?.supportsOrganization("fractal"))
-    return Promise.reject(new Error("La vista Fractal non è disponibile per questo grafo"));
+  if ((partial.organization === "fractal" || partial.organization === "holographic") && !v2?.supportsOrganization(partial.organization))
+    return Promise.reject(new Error(`La vista ${viewLabel(partial.organization)} non è disponibile per questo grafo`));
   axes = appliedAxes(partial);
   persistView();
   syncArrangementInspector();
@@ -1226,8 +1229,9 @@ async function load() {
     v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours, density);
     v2.setFlowMotion(flowMotion);
     // A view button exists only when its projection is registered: no dead control.
-    document.querySelectorAll<HTMLButtonElement>('[data-axis="organization"] button[data-value="fractal"]')
-      .forEach((button) => { button.hidden = !v2!.supportsOrganization("fractal"); });
+    for (const organization of ["fractal", "holographic"] as const)
+      document.querySelectorAll<HTMLButtonElement>(`[data-axis="organization"] button[data-value="${organization}"]`)
+        .forEach((button) => { button.hidden = !v2!.supportsOrganization(organization); });
     get<HTMLElement>("v2-controls-top").hidden = false;
     get<HTMLElement>("density-control").hidden = false;
     get<HTMLElement>("v2-relation-control").hidden = false;
@@ -1245,8 +1249,8 @@ async function load() {
   if (!payload || typeof payload !== "object" || !("schema" in payload) || payload.schema !== "nousos-graph-review-1")
     throw new Error("Formato export non valido");
   data = payload as ReviewExport;
-  if (axes.organization === "fractal") {
-    errors.push("Vista Fractal rifiutata: richiede il grafo distillato");
+  if (axes.organization === "fractal" || axes.organization === "holographic") {
+    errors.push(`Vista ${viewLabel(axes.organization)} rifiutata: richiede il grafo distillato`);
     axes = appliedAxes({ organization: "natural" });
     persistView();
     syncArrangementInspector();

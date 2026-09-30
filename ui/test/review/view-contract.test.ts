@@ -13,12 +13,15 @@ import {
   normalizeFullAxesInput,
   normalizeOrganizationInput,
   parseSavedAxes,
+  resolveArrangementReadout,
   savedAxesRecord,
+  savedExplicitArrangement,
   serializeAxes,
 } from "../../src/review/view-contract.ts";
 import type { PageAxes } from "../../src/review/view-contract.ts";
-import { defaultNaturalArrangement, naturalProjection, resolveNaturalArrangement } from "../../src/projection/natural-bridge.ts";
+import { defaultNaturalArrangement, naturalProjection, resolveNaturalArrangement, resolveNaturalArrangementWithSource } from "../../src/projection/natural-bridge.ts";
 import { fractalProjection } from "../../src/projection/fractal.ts";
+import { holographicProjection } from "../../src/projection/holographic.ts";
 import { indrasPearlsProjection } from "../../src/projection/indra.ts";
 import { PALETTES } from "../../src/review/palette.ts";
 
@@ -56,7 +59,7 @@ test("the saved-view vocabulary register is closed and stays pinned to the live 
   assert.deepEqual(SAVED_AXES_VOCABULARIES, {
     projection: ["2d", "3d"],
     morphology: ["stellar", "neural", "mycelium"],
-    organization: ["natural", "indra", "fractal"],
+    organization: ["natural", "indra", "fractal", "holographic"],
     arrangement: ["constellation", "network", "mycelium"],
     reading: ["attested", "exploratory", "combined"],
     colour: ["bw", "warm", "earth", "gems", "night", "semantic", "amber", "old-gold", "ochre", "copper", "alchemical-red", "warm-twilight", "sepia", "brace", "miele", "custom"],
@@ -150,10 +153,28 @@ test("Fractal saved views round-trip byte-identically and keep no Natural arrang
   assert.throws(() => serializeAxes({ ...parsed, arrangement: "network" }), /arrangement is only valid for the Natural view \[arrangement-requires-natural\]/);
 });
 
-test("the organization vocabulary refuses every value outside natural, indra, fractal and the flat read alias", () => {
-  for (const good of ["natural", "indra", "fractal"] as const) assert.equal(normalizeOrganizationInput(good), good);
+const HOLOGRAPHIC_AXES = '{"projection":"3d","morphology":"mycelium","organization":"holographic","colour":"amber","labels":true,"reading":"exploratory"}';
+
+test("Holographic saved views round-trip byte-identically and keep no Natural arrangement", () => {
+  const parsed = parseSavedAxes(HOLOGRAPHIC_AXES);
+  assert.equal(parsed.organization, "holographic");
+  assert.equal("arrangement" in parsed, false);
+  assert.equal(serializeAxes(parsed), HOLOGRAPHIC_AXES, "the wire form is the register order, without an arrangement");
+  assert.equal(serializeAxes(parseSavedAxes(serializeAxes(parsed))), HOLOGRAPHIC_AXES, "the round trip is a fixed point");
+  assert.deepEqual(Object.keys(savedAxesRecord(parsed)), [...VIEW_INPUT_FIELD_REGISTER.axes]);
+  const url = new URLSearchParams();
+  url.set("view", serializeAxes(parsed));
+  assert.equal(serializeAxes(parseSavedAxes(new URLSearchParams(url.toString()).get("view")!)), HOLOGRAPHIC_AXES);
+  assert.throws(() => parseSavedAxes(HOLOGRAPHIC_AXES.replace("}", ',"arrangement":"network"}')), /arrangement is only valid for the Natural view \[arrangement-requires-natural\]/);
+  assert.throws(() => serializeAxes({ ...parsed, arrangement: "network" }), /arrangement is only valid for the Natural view \[arrangement-requires-natural\]/);
+  assert.deepEqual(ORGANIZATION_PROJECTIONS.holographic, { projectionId: "holographic", typed: "always" });
+  assert.equal(ORGANIZATION_PROJECTIONS.holographic.projectionId, holographicProjection.id, "the mapped id is the registered assembly's own");
+});
+
+test("the organization vocabulary refuses every value outside natural, indra, fractal, holographic and the flat read alias", () => {
+  for (const good of ["natural", "indra", "fractal", "holographic"] as const) assert.equal(normalizeOrganizationInput(good), good);
   assert.equal(normalizeOrganizationInput(LEGACY_ORGANIZATION), "natural", "the flat read alias is unchanged");
-  for (const bad of ["Fractal", "FRACTAL", "fractal ", "holographic", "indras-pearls", "julia", "", undefined, null, 3]) {
+  for (const bad of ["Fractal", "FRACTAL", "fractal ", "Holographic", "holographic ", "spectral", "indras-pearls", "julia", "", undefined, null, 3]) {
     assert.throws(() => normalizeOrganizationInput(bad), /organization is outside its closed vocabulary/, String(bad));
     if (typeof bad === "string" && bad !== "")
       assert.throws(() => parseSavedAxes(FRACTAL_AXES.replace('"fractal"', JSON.stringify(bad))), /Saved axes\.organization is outside its closed vocabulary \[closed-vocabulary\]/, bad);
@@ -161,7 +182,9 @@ test("the organization vocabulary refuses every value outside natural, indra, fr
   assert.deepEqual(normalizeAxesInput({ organization: "fractal", projection: "2d" }), { organization: "fractal", projection: "2d" });
   const fractal: PageAxes = normalizeFullAxesInput({ ...DEFAULT_AXES, organization: "fractal" });
   assert.equal(fractal.organization, "fractal");
-  assert.throws(() => normalizeAxesInput({ organization: "holographic" as never }), /closed vocabulary/);
+  assert.throws(() => normalizeAxesInput({ organization: "spectral" as never }), /closed vocabulary/);
+  assert.deepEqual(normalizeAxesInput({ organization: "holographic", projection: "3d" }), { organization: "holographic", projection: "3d" });
+  assert.equal(normalizeFullAxesInput({ ...DEFAULT_AXES, organization: "holographic" }).organization, "holographic");
 });
 
 test("a Natural saved view with an arrangement is not disturbed by the Fractal value", () => {
@@ -186,3 +209,42 @@ test("every view of the organization axis names the projection that serves it an
 function savedOrganizationOf(axes: { readonly organization: string }): string {
   return axes.organization === "indra" ? "indra" : "natural";
 }
+
+test("with the pipeline off the arrangement readout follows the morphology unless the arrangement was set explicitly", () => {
+  let readout = resolveArrangementReadout(null, "stellar", false);
+  assert.deepEqual(readout, resolveNaturalArrangementWithSource("stellar"));
+  assert.equal(readout.arrangement, "constellation");
+  const walked: string[] = [];
+  for (const morphology of ["neural", "mycelium", "stellar"] as const) {
+    readout = resolveArrangementReadout(readout, morphology, false);
+    walked.push(`${morphology}:${readout.arrangement}:${readout.source}`);
+  }
+  assert.deepEqual(walked, ["neural:network:morphology-default", "mycelium:mycelium:morphology-default", "stellar:constellation:morphology-default"],
+    "each morphology change re-derives the arrangement the legacy layout actually draws");
+  // An explicit arrangement is kept through every morphology change, pipeline off.
+  let explicit = resolveArrangementReadout(readout, "stellar", false, "network");
+  assert.deepEqual(explicit, resolveNaturalArrangementWithSource("stellar", "network"));
+  for (const morphology of ["neural", "mycelium", "stellar"] as const) {
+    explicit = resolveArrangementReadout(explicit, morphology, false);
+    assert.deepEqual([explicit.arrangement, explicit.source], ["network", "explicit"], morphology);
+  }
+  // A later explicit choice replaces it; the readout then names the new value.
+  assert.equal(resolveArrangementReadout(explicit, "neural", false, "constellation").arrangement, "constellation");
+});
+
+test("with the pipeline on the arrangement resolved once is kept through a morphology change", () => {
+  const first = resolveArrangementReadout(null, "stellar", true);
+  assert.equal(first.arrangement, "constellation");
+  const later = resolveArrangementReadout(first, "mycelium", true);
+  assert.equal(later, first, "a style switch restyles the same positions: the resolved arrangement is the same object");
+  assert.equal(resolveArrangementReadout(first, "mycelium", true, "network").arrangement, "network");
+});
+
+test("a saved arrangement is a choice only when it differs from the morphology default, and only with the pipeline off", () => {
+  assert.equal(savedExplicitArrangement(undefined, "stellar", false), undefined);
+  assert.equal(savedExplicitArrangement("constellation", "stellar", false), undefined, "the derived value a saved view always records");
+  assert.equal(savedExplicitArrangement("network", "stellar", false), "network");
+  assert.equal(savedExplicitArrangement("constellation", "stellar", true), "constellation", "with the pipeline on the saved value is the request");
+  for (const morphology of ["stellar", "neural", "mycelium"] as const)
+    assert.equal(savedExplicitArrangement(defaultNaturalArrangement(morphology), morphology, false), undefined, morphology);
+});

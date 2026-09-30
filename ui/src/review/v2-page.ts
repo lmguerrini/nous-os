@@ -18,6 +18,8 @@ import { certifyFractalDynamics, fractalContractParameters } from '../fractal/pa
 import { naturalProjection, NATURAL_LAYOUT_VERSION, resolveNaturalArrangement } from '../projection/natural-bridge.ts';
 import { projectLegacyIndra } from '../projection/legacy-indra.ts';
 import { INDRA_EXPAND_Z_RANGE, INDRA_GENERATOR_POLICY, IndraProjectionRefusal, indraRequestForLevelToken, indrasPearlsProjection } from '../projection/indra.ts';
+import { HOLOGRAPHIC_MAX_EIGEN_TOLERANCE, HOLOGRAPHIC_MAX_MODES, HOLOGRAPHIC_MAX_RESTARTS, HOLOGRAPHIC_STATED_BASELINE, holographicProjection } from '../projection/holographic.ts';
+import { EIGENSPACE_POLICY_VERSION } from '../holographic/geometry.ts';
 import { createProjectionWorkerClient } from '../projection/worker-client.ts';
 import type { ProjectionParametersPayload } from '../projection/worker-protocol.ts';
 import type { ProjectionWorkerClient } from '../projection/worker-client.ts';
@@ -114,6 +116,24 @@ export const INDRA_PAGE_MAX_DEPTH = 3;
 export const INDRA_PAGE_MAX_WORDS = 200;
 /** The Schottky separation margin the page asks for; the status line discloses it. */
 export const INDRA_PAGE_TOLERANCE = 0.02;
+/** The approved request policy of the Holographic view: the measured importance signal, heat fields at
+ * two diffusion times, no ridge, and the solver envelope of the contract (k = min(24, n - 1), restart
+ * size min(n, max(2k + 8, 64)), tolerance 1e-8, at most eight restarts). */
+export const HOLOGRAPHIC_PAGE_SIGNAL_ID = 'importance';
+export const HOLOGRAPHIC_PAGE_HEAT_TIMES: readonly number[] = [0.5, 2];
+export const HOLOGRAPHIC_PAGE_RIDGE = 0;
+export const HOLOGRAPHIC_PAGE_MIN_NODES = 2;
+/** The explanation id prefix of a region's reconstruction witness in a Holographic result. */
+export const HOLOGRAPHIC_RECONSTRUCTION_PREFIX = 'visual:holographic:reconstruction:';
+export function holographicPageParameters(nodeCount: number, dimension: Dimension): ProjectionRequest<'holographic'>['parameters'] {
+    if (!Number.isInteger(nodeCount) || nodeCount < HOLOGRAPHIC_PAGE_MIN_NODES)
+        throw new RangeError(`Holographic needs at least ${HOLOGRAPHIC_PAGE_MIN_NODES} nodes, got ${nodeCount}`);
+    const modes = Math.min(HOLOGRAPHIC_MAX_MODES, nodeCount - 1);
+    return { dimension, modes, restartSize: Math.min(nodeCount, Math.max(2 * modes + 8, 64)),
+        maxRestarts: HOLOGRAPHIC_MAX_RESTARTS, eigenTolerance: HOLOGRAPHIC_MAX_EIGEN_TOLERANCE,
+        eigenspacePolicyVersion: EIGENSPACE_POLICY_VERSION, heatTimes: HOLOGRAPHIC_PAGE_HEAT_TIMES,
+        ridge: HOLOGRAPHIC_PAGE_RIDGE, signalId: HOLOGRAPHIC_PAGE_SIGNAL_ID };
+}
 /** The 3D typed layer owns the whole scene; the engine graph underneath stays empty and valid. */
 function emptyTypedVisualGraph(): VisualGraph {
     return {
@@ -184,16 +204,84 @@ export function fractalDisclosureLine(result: ProjectionResult, dimension: Dimen
     return `Vista Fractal \u00B7 posizioni derivate dai raggi esterni inversi di ${dynamics} \u00B7 geometria derivata, non semantica`
         + (dimension === '3d' ? ' \u00B7 3D: altezza = potenziale esterno (sollevamento scalare)' : '');
 }
-/** The two typed views whose results carry an explanation for every element they draw. */
-function explainingAlgorithm(result: Pick<ProjectionResult, 'determinism'>): boolean {
-    return result.determinism.algorithmId === 'fractal' || result.determinism.algorithmId === 'indras-pearls';
+/** The error-model headline of a Holographic result, read from its diagnostics: how many regions were
+ * reconstructed, how many beat the stated baseline, and the median held-out error. */
+export function holographicErrorHeadline(result: Pick<ProjectionResult, 'diagnostics'>): string {
+    const diagnostic = (code: string) => result.diagnostics.find(item => item.code === code)?.value;
+    const regions = diagnostic('region-count'), recovered = diagnostic('region-recovered-count');
+    const refused = diagnostic('region-refused-count'), beats = diagnostic('region-beats-stated-baseline-count');
+    if (typeof regions !== 'number' || typeof recovered !== 'number' || typeof refused !== 'number' || typeof beats !== 'number')
+        return "modello d'errore non registrato";
+    const median = diagnostic('error-model-median-held-out-relative-error');
+    return `modello d'errore: ${recovered} regioni su ${regions} ricostruite (${refused} rifiutate) \u00B7 ${beats} battono la baseline ${HOLOGRAPHIC_STATED_BASELINE}`
+        + ` \u00B7 ${typeof median === 'number' ? `errore relativo mediano ${Number(median.toPrecision(3))}` : 'errore relativo mediano non disponibile'}`;
 }
-/** Whether a pick of this result opens an explanation card: every structural pick of a Fractal or Indra's
- * Pearls result does; a node or source edge does when the result explains it. */
+/** The status line of a Holographic view: that it is experimental, that its positions are spectral
+ * coordinates of the attested graph (derived geometry, no topology claim), and the error-model headline. */
+export function holographicDisclosureLine(result: ProjectionResult, dimension: Dimension): string {
+    return 'Vista Holographic \u00B7 sperimentale \u00B7 coordinate spettrali (modi a bassa frequenza del laplaciano degli archi attestati)'
+        + ' \u00B7 nessuna affermazione topologica \u00B7 ' + holographicErrorHeadline(result)
+        + ' \u00B7 geometria derivata, non semantica' + (dimension === '3d' ? ' \u00B7 3D: tre coordinate spettrali' : '');
+}
+/** The field channels of a Holographic result, in result order, with the label the channel control shows. */
+export function holographicChannelsOf(result: Pick<ProjectionResult, 'fields'>): readonly { readonly id: string; readonly label: string }[] {
+    return result.fields.map(field => {
+        const heat = /^visual:holographic:heat:\d+$/.test(field.id) ? /@t=(.+)$/.exec(field.units)?.[1] : undefined;
+        const signal = /^visual:holographic:signal:(.+)$/.exec(field.id)?.[1];
+        return { id: field.id, label: heat !== undefined ? `Calore diffuso \u00B7 t=${heat}` : signal !== undefined ? `Segnale misurato \u00B7 ${signal}` : field.id };
+    });
+}
+/** The regions whose reconstruction witness a Holographic result explains, by id, in codepoint order. */
+export function holographicRegionsOf(result: Pick<ProjectionResult, 'explanations'>): readonly string[] {
+    return Object.keys(result.explanations).filter(id => id.startsWith(HOLOGRAPHIC_RECONSTRUCTION_PREFIX))
+        .map(id => id.slice(HOLOGRAPHIC_RECONSTRUCTION_PREFIX.length)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+/** The domain nodes of a region: those declaring the source community, or for a derived component
+ * (`component:` and its smallest node) the attested-edge connected component of that node. Null when
+ * the region names no domain node. */
+export function holographicRegionMembers(result: Pick<ProjectionResult, 'domainNodeIds'>, snapshot: SemanticGraphSnapshot,
+    regionId: string): ReadonlySet<string> | null {
+    const domain = new Set(result.domainNodeIds);
+    const component = 'component:';
+    if (regionId.startsWith(component)) {
+        const seed = regionId.slice(component.length);
+        if (!domain.has(seed)) return null;
+        const neighbours = new Map<string, string[]>();
+        for (const edge of snapshot.edges) {
+            if (edge.attestation !== 'attested' || !domain.has(edge.source) || !domain.has(edge.target)) continue;
+            (neighbours.get(edge.source) ?? neighbours.set(edge.source, []).get(edge.source)!).push(edge.target);
+            (neighbours.get(edge.target) ?? neighbours.set(edge.target, []).get(edge.target)!).push(edge.source);
+        }
+        const members = new Set([seed]);
+        const queue = [seed];
+        for (let head = 0; head < queue.length; head++)
+            for (const next of neighbours.get(queue[head]!) ?? [])
+                if (!members.has(next)) { members.add(next); queue.push(next); }
+        return members;
+    }
+    const members = new Set(snapshot.nodes.filter(node => domain.has(node.id) && node.communityIds.includes(regionId)).map(node => node.id));
+    return members.size === 0 ? null : members;
+}
+/** The typed views whose results carry explanations for the elements they draw. */
+function explainingAlgorithm(result: Pick<ProjectionResult, 'determinism'>): boolean {
+    return result.determinism.algorithmId === 'fractal' || result.determinism.algorithmId === 'indras-pearls'
+        || result.determinism.algorithmId === 'holographic';
+}
+/** Whether a pick of this result opens an explanation card: every structural pick of a Fractal, Indra's
+ * Pearls or Holographic result does; a node or source edge does when the result explains it. */
 export function projectionExplainsPick(result: ProjectionResult, pick: PickResult): boolean {
     if (!explainingAlgorithm(result)) return false;
     if (pick.kind === 'node' || pick.kind === 'semantic-edge') return result.explanations[pick.id] !== undefined;
     return true;
+}
+/** The arcs a typed result makes available: the visual relations whose two endpoints are both available
+ * (domain) nodes. Exact, like the node count: a relation with an endpoint outside the domain is not counted. */
+export function availableVisualRelationCount(result: Pick<ProjectionResult, 'domainNodeIds' | 'visualRelations'>): number {
+    const available = new Set(result.domainNodeIds);
+    let count = 0;
+    for (const relation of result.visualRelations)
+        if (available.has(relation.source) && available.has(relation.target)) count++;
+    return count;
 }
 /** A genuinely lazy level: a promise (`loaded: false`, with its load token) whose children are missing or
  * themselves unloaded. A promise whose child levels are all present and loaded in the same result is
@@ -446,6 +534,16 @@ export class V2Page {
     private indraOpen: { readonly levelId: string; readonly domainDigest: string } | null = null;
     /** The selection a pearl was left under: it does not open that pearl again until it is picked anew. */
     private indraLeftFocus: string | null = null;
+    /** A Holographic result that refused its coordinates: nothing is drawn, but the position-free
+     * fields and region witnesses it carries are still explained in the details column. */
+    private holographicRefused: { readonly result: ProjectionResult; readonly snapshot: SemanticGraphSnapshot;
+        readonly visibility: RenderVisibility } | null = null;
+    /** The field channel the Holographic view draws and the region whose witness its panel shows;
+     * null takes the first of the current result. A choice the result no longer offers is ignored. */
+    private holographicChannel: string | null = null;
+    private holographicRegion: string | null = null;
+    /** The Holographic view is restricted to the members of the chosen region. */
+    private holographicFocus = false;
     /** The camera key (dimension and view) of the mounted typed renderer: its camera belongs to it. */
     private mountedCameraKey: string | null = null;
     constructor(manifest: GraphManifest, index: V2Index, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
@@ -471,6 +569,7 @@ export class V2Page {
                     projectLegacyIndra(request.parameters.input) });
         if (!this.projectionRegistry.has('fractal')) this.projectionRegistry.register(fractalProjection);
         if (!this.projectionRegistry.has('indras-pearls')) this.projectionRegistry.register(indrasPearlsProjection);
+        if (!this.projectionRegistry.has('holographic')) this.projectionRegistry.register(holographicProjection);
         if (this.projectionInput) this.installProjectionWitnessHook();
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
@@ -548,15 +647,17 @@ export class V2Page {
         }
         return this.projectionInput;
     }
-    /** The organization the product view draws; Fractal never reaches it. */
+    /** The organization the product view draws; Fractal and Holographic never reach it. */
     private legacyOrganization(): Organization {
         const { organization } = this.axes;
-        if (organization === 'fractal') throw new Error('Fractal is only served by the typed projection pipeline');
+        if (organization === 'fractal' || organization === 'holographic')
+            throw new Error(`${organization === 'fractal' ? 'Fractal' : 'Holographic'} is only served by the typed projection pipeline`);
         return organization;
     }
     /** The camera of a typed renderer belongs to one dimension and one view; another view's camera is never reused. */
     private cameraKey(): string {
-        return `${this.axes.projection}/${this.axes.organization === 'fractal' ? 'fractal' : this.indraPearlsView() ? 'indra' : 'natural'}`;
+        return `${this.axes.projection}/${this.axes.organization === 'fractal' ? 'fractal' : this.axes.organization === 'holographic' ? 'holographic'
+            : this.indraPearlsView() ? 'indra' : 'natural'}`;
     }
     private async withTypedRelations(raw: ProjectionResult, relations: readonly VisualRelation[]): Promise<ProjectionResult> {
         const oldIds = new Set(raw.visualRelations.map(item => item.explanationId));
@@ -595,7 +696,7 @@ export class V2Page {
         const active = this.projectionFocus();
         const organization = this.axes.organization;
         const pearls = this.indraPearlsView();
-        const typedRelations = organization === 'fractal' || pearls ? [] : projectTypedRelations(this.index.nodes, this.index.edges,
+        const typedRelations = organization === 'fractal' || organization === 'holographic' || pearls ? [] : projectTypedRelations(this.index.nodes, this.index.edges,
             new Set(domain.nodeIds), this.axes.reading, organization, this.relationDetail, active).visualRelations;
         const dimension = this.axes.projection;
         let styled: StyledProjection;
@@ -656,6 +757,11 @@ export class V2Page {
             styled = input.style(outcome.result, snapshot);
             if (styled.projection !== outcome.result) throw new Error('Morphology replaced the projection result');
             fractalRequestToCommit = outcome.request;
+        } else if (organization === 'holographic') {
+            const outcome = await this.projectHolographic(epoch, snapshot, domain, dimension);
+            if (outcome === null) return;
+            styled = input.style(outcome.result, snapshot);
+            if (styled.projection !== outcome.result) throw new Error('Morphology replaced the projection result');
         } else if (pearls) {
             const outcome = await this.projectIndra(epoch, snapshot, domain, dimension);
             if (outcome === null) return;
@@ -698,6 +804,7 @@ export class V2Page {
         if (epoch !== this.projectionEpoch) return;
         const result = styled.projection;
         assertPageProjection(result, domain, dimension);
+        styled = this.withSelectionEmphasis(styled);
         if (result.fullLedger.snapshotDigest !== snapshot.digest ||
             result.fullLedger.canonicalBytesDigest !== snapshot.rawLedger.canonicalBytesDigest)
             throw new Error('Projection lost its source ledger');
@@ -743,6 +850,7 @@ export class V2Page {
         this.projectionVisibility = visibility;
         this.fractalRequest = fractalRequestToCommit;
         this.fractalRefusal = null;
+        this.holographicRefused = null;
         this.indraRequest = indraToCommit?.request ?? null;
         this.indraOpen = indraToCommit?.levelId ? { levelId: indraToCommit.levelId, domainDigest: domain.domainDigest } : null;
         if (arrangementToCommit) this.naturalArrangement = arrangementToCommit;
@@ -760,9 +868,28 @@ export class V2Page {
         this.lodCounts = lod.counts;
         this.lastNodeSelection = lod.selection;
         this.dropHiddenTypedSelection();
+        this.adoptSelectedNode();
         this.renderPanel();
         element('status').textContent = this.typedStatusLine();
         this.openTypedLevels();
+    }
+    /** A selection that did not come from a canvas pick (a search result, a list, a programmatic call)
+     * reaches the typed explanation the way a pick does: a selected node the result draws becomes the
+     * typed selection. A node outside the result, or not drawn, stays a page selection. */
+    private adoptSelectedNode(): void {
+        const result = this.projectionResult, id = this.selected;
+        if (this.typedSelection !== null || result === null || id === null || !result.loadedNodeIds.includes(id)) return;
+        const pick: PickResult = { kind: 'node', id };
+        if (this.isVisibleProjectionPick(pick)) this.typedSelection = pick;
+    }
+    /** The selected node, drawn brighter and larger by the typed renderer: presentation only, it
+     * never enters the result or moves the camera. */
+    private withSelectionEmphasis(styled: StyledProjection): StyledProjection {
+        const id = this.selected;
+        const base = id === null ? undefined : styled.nodeStyle[id];
+        if (id === null || base === undefined || !styled.projection.loadedNodeIds.includes(id)) return styled;
+        const size = typeof base.size === 'number' ? base.size : 5;
+        return { ...styled, nodeStyle: { ...styled.nodeStyle, [id]: { ...base, color: this.palette.selection, size: size * 1.6 } } };
     }
     /** The request behind a Fractal view: the certified dynamics of the disclosed domain, derived from
      * the same stable features the assembly recertifies (community count, node count, attested
@@ -826,7 +953,7 @@ export class V2Page {
     /** Runs one Fractal or Indra's Pearls projection: through the projection client (the worker, or
      * its main-thread fallback) so the page stays responsive, or through the registry the page was
      * given. A request the client cancelled because a newer refresh superseded it rejects as cancelled. */
-    private async runProjection<I extends 'fractal' | 'indras-pearls'>(
+    private async runProjection<I extends 'fractal' | 'indras-pearls' | 'holographic'>(
         snapshot: SemanticGraphSnapshot, request: ProjectionRequest<I>): Promise<ProjectionResult> {
         const client = this.workerClient();
         if (client === null) return (await this.projectionRegistry.project<ProjectionResult>(request.id, snapshot, request)).result;
@@ -837,13 +964,14 @@ export class V2Page {
     }
     private workerClient(): ProjectionWorkerClient | null {
         if (this.projectionClient === undefined)
-            this.projectionClient = createProjectionWorkerClient({ fallbackProjections: [fractalProjection, indrasPearlsProjection] });
+            this.projectionClient = createProjectionWorkerClient({ fallbackProjections: [fractalProjection, indrasPearlsProjection, holographicProjection] });
         return this.projectionClient;
     }
     /** A newer refresh supersedes any projection still computing: its result would be dropped anyway. */
     private cancelProjectionWork(): void {
         this.projectionClient?.cancel('fractal');
         this.projectionClient?.cancel('indras-pearls');
+        this.projectionClient?.cancel('holographic');
     }
     /** The request behind an Indra's Pearls view: the approved generator policy over the disclosed
      * domain, three levels deep. A domain outside 1..cap is refused here with the assembly's own code. */
@@ -902,6 +1030,40 @@ export class V2Page {
                 this.showProjectionRefusal("Indra's Pearls", refusal);
             }
             return null;
+        } finally {
+            if (this.projectionPendingEpoch === epoch) this.setProjectionPending(false);
+        }
+    }
+    /** Requests the Holographic projection of the disclosed domain through the projection client with
+     * the approved parameters. Null means the refresh was superseded, or the coordinates were refused:
+     * the typed refusal is then on screen, with the fields the refused result still explains, instead of
+     * a drawing. Any other failure propagates. */
+    private async projectHolographic(epoch: number, snapshot: SemanticGraphSnapshot, domain: AnalyticalDomain,
+        dimension: Dimension): Promise<{ readonly result: ProjectionResult } | null> {
+        if (epoch !== this.projectionEpoch) return null;
+        if (domain.nodeIds.length < HOLOGRAPHIC_PAGE_MIN_NODES || domain.nodeIds.length > V2_CAP) {
+            this.showProjectionRefusal('Holographic', { code: 'invalid-request',
+                detail: `domain size ${domain.nodeIds.length} outside ${HOLOGRAPHIC_PAGE_MIN_NODES}..${V2_CAP}` });
+            return null;
+        }
+        this.setProjectionPending(true, 'Holographic', epoch);
+        try {
+            await afterPaint();
+            if (epoch !== this.projectionEpoch) return null;
+            const request: ProjectionRequest<'holographic'> = { id: 'holographic', snapshotDigest: snapshot.digest, domain,
+                parameters: holographicPageParameters(domain.nodeIds.length, dimension) };
+            const result = await this.runProjection<'holographic'>(snapshot, request);
+            if (epoch !== this.projectionEpoch) return null;
+            const state = result.coordinateState;
+            if (state.kind === 'no-coordinates') {
+                this.showProjectionRefusal('Holographic', { code: state.code,
+                    detail: result.explanations[state.explanationId]?.summary ?? state.code }, { result, snapshot });
+                return null;
+            }
+            return { result };
+        } catch (error) {
+            if (isCancelledProjection(error) && epoch !== this.projectionEpoch) return null;
+            throw error;
         } finally {
             if (this.projectionPendingEpoch === epoch) this.setProjectionPending(false);
         }
@@ -1000,14 +1162,19 @@ export class V2Page {
     }
     /** A typed view cannot be drawn: the canvas is cleared (no other view's picture stays under
      * its label) and the typed refusal is shown as such. */
-    private showProjectionRefusal(view: string, refusal: { readonly code: string; readonly detail: string }): void {
+    private showProjectionRefusal(view: string, refusal: { readonly code: string; readonly detail: string },
+        analytic?: { readonly result: ProjectionResult; readonly snapshot: SemanticGraphSnapshot }): void {
         this.retireTypedRenderer();
         this.retireLegacyView();
         this.fractalRefusal = refusal;
         this.rendered = new Set();
         this.lodCounts = { nodes: { rendered: 0, available: 0, pinned: 0, pinnedIds: [] },
             arcs: { rendered: 0, available: 0, pinned: 0, pinnedIds: [] } };
-        element('status').textContent = `Vista ${view} \u00B7 proiezione rifiutata [${refusal.code}]: ${refusal.detail} \u00B7 nessuna posizione mostrata`;
+        // A refused analytic result keeps its position-free fields explained beside the refusal.
+        this.holographicRefused = analytic === undefined ? null
+            : { ...analytic, visibility: projectionVisibility(analytic.result, analytic.snapshot, 1, 1) };
+        element('status').textContent = `Vista ${view} \u00B7 proiezione rifiutata [${refusal.code}]: ${refusal.detail} \u00B7 nessuna posizione mostrata`
+            + (analytic === undefined ? '' : ` \u00B7 sperimentale \u00B7 i campi senza posizione restano spiegati nel pannello \u00B7 ${holographicErrorHeadline(analytic.result)}`);
         this.renderPanel();
     }
     /** The disclosure of the mounted Fractal result, plus the levels the assembly refused to open. */
@@ -1023,6 +1190,7 @@ export class V2Page {
         const result = this.projectionResult;
         if (result?.determinism.algorithmId === 'fractal') return this.fractalStatusLine();
         if (result?.determinism.algorithmId === 'indras-pearls') return this.indraStatusLine();
+        if (result?.determinism.algorithmId === 'holographic') return holographicDisclosureLine(result, this.axes.projection);
         return 'Grafo pronto';
     }
     /** The disclosure of the mounted Indra's Pearls result, plus the levels the assembly refused to open. */
@@ -1108,6 +1276,7 @@ export class V2Page {
     private retireTypedRenderer(): void {
         this.fractalRequest = null;
         this.fractalRefusal = null;
+        this.holographicRefused = null;
         this.indraRequest = null;
         this.indraOpen = null;
         this.indraLeftFocus = null;
@@ -1147,6 +1316,45 @@ export class V2Page {
             this.selected = null;
         }
     }
+    /** The result the Holographic controls act on: the mounted one, or the refused one whose fields are
+     * still explained; null in any other view. */
+    private holographicAnalytic(): { readonly result: ProjectionResult; readonly snapshot: SemanticGraphSnapshot;
+        readonly visibility: RenderVisibility; readonly refused: boolean } | null {
+        const mounted = this.projectionResult;
+        if (mounted?.determinism.algorithmId === 'holographic' && this.projectionSnapshot && this.projectionVisibility)
+            return { result: mounted, snapshot: this.projectionSnapshot, visibility: this.projectionVisibility, refused: false };
+        return this.holographicRefused === null ? null : { ...this.holographicRefused, refused: true };
+    }
+    /** The field channel and the region a Holographic result shows: the user's choice while the result
+     * still offers it, else the first channel and the first region. */
+    private holographicChoice(result: ProjectionResult): { readonly channel: string | null; readonly region: string | null } {
+        const channels = holographicChannelsOf(result), regions = holographicRegionsOf(result);
+        return { channel: channels.find(item => item.id === this.holographicChannel)?.id ?? channels[0]?.id ?? null,
+            region: regions.find(id => id === this.holographicRegion) ?? regions[0] ?? null };
+    }
+    /** The members of the region a Holographic focus restricts the view to, or null while no focus applies. */
+    private holographicFocusMembers(result: ProjectionResult, snapshot: SemanticGraphSnapshot): ReadonlySet<string> | null {
+        if (!this.holographicFocus || result.determinism.algorithmId !== 'holographic') return null;
+        const { region } = this.holographicChoice(result);
+        return region === null ? null : holographicRegionMembers(result, snapshot, region);
+    }
+    /** A Holographic view draws one field channel at a time: the chosen one among the visible fields. */
+    private holographicFieldIds(result: ProjectionResult, visible: ReadonlySet<string>): ReadonlySet<string> {
+        if (result.determinism.algorithmId !== 'holographic') return visible;
+        const { channel } = this.holographicChoice(result);
+        return new Set([...visible].filter(id => id === channel));
+    }
+    /** Lands a changed Holographic choice on the mounted host without a new projection: the mask and the
+     * drawn channel are revised on the same host and camera. A refused result has nothing to redraw. */
+    private reviseHolographicMask(): void {
+        const result = this.projectionResult, snapshot = this.projectionSnapshot, domain = this.projectionDomain;
+        const renderer = this.projectionRenderer;
+        if (!result || !snapshot || !domain || !renderer || result.determinism.algorithmId !== 'holographic') { this.renderPanel(); return; }
+        const styled = this.typedPipeline().style(result, snapshot);
+        if (styled.projection !== result) throw new Error('Morphology replaced the projection result');
+        this.commitLevelResult(styled, result, snapshot, domain, renderer, this.mountedCameraKey, this.projectionEpoch);
+        element('status').textContent = this.typedStatusLine();
+    }
     /** The legacy-style focus source: the selected relation's source node, the selection, the hover. */
     private projectionFocus(): string | null {
         return this.renderedRelations.get(this.selected ?? '')?.source
@@ -1159,9 +1367,12 @@ export class V2Page {
      * coordinates, the digest and the source graph are untouched. Curves follow their relation;
      * containers and fields are kept whole. */
     private typedLodVisibility(result: ProjectionResult, snapshot: SemanticGraphSnapshot,
-        disclosed: readonly V2Node[], active: string | null, revision: number) {
+        allDisclosed: readonly V2Node[], active: string | null, revision: number) {
         const budget = DENSITY_BUDGETS[this.density];
         const communityOf = communityResolver(this.index.nodes);
+        // A Holographic focus on a region discloses only that region's members to the level of detail.
+        const focusRegion = this.holographicFocusMembers(result, snapshot);
+        const disclosed = focusRegion === null ? allDisclosed : allDisclosed.filter(node => focusRegion.has(node.id));
         const infos = disclosed.map(node => ({ id: node.id, level: node.level, parent: node.parent, importance: node.importance.value }));
         const tiers = manualExpansionTiers(infos, this.history.state.manualOrder, V2_PAGE);
         const pinned = this.pinnedNodeIds(tiers);
@@ -1199,6 +1410,7 @@ export class V2Page {
             return !curve?.visualRelationId || visualRelationIds.has(curve.visualRelationId);
         }));
         const visibility: RenderVisibility = { ...base, semanticEdgeIds: semanticIds, visualRelationIds, curveIds,
+            fieldIds: this.holographicFieldIds(result, base.fieldIds),
             density: result.loadedNodeIds.length ? base.nodeIds.size / result.loadedNodeIds.length : 1 };
         validateRenderVisibility(result, visibility, snapshot);
         const pinnedNodes = [...pinned].filter(id => visibility.nodeIds.has(id)).sort();
@@ -1207,7 +1419,7 @@ export class V2Page {
         const counts = {
             nodes: { rendered: visibility.nodeIds.size, available: result.domainNodeIds.length,
                 pinned: pinnedNodes.length, pinnedIds: pinnedNodes },
-            arcs: { rendered: visualRelationIds.size, available: result.visualRelations.length,
+            arcs: { rendered: visualRelationIds.size, available: availableVisualRelationCount(result),
                 pinned: pinnedArcs.length, pinnedIds: pinnedArcs },
         };
         return { visibility, counts, selection };
@@ -1233,6 +1445,13 @@ export class V2Page {
     /** A provenance link of an explanation card: its source record is selected on its own. A source the
      * result draws and the mask shows becomes the typed selection; any other is selected as a page node. */
     private openProvenanceSource(sourceId: string): void {
+        // The provenance of a reconstruction witness names its region, which is not a page node.
+        const analytic = this.holographicAnalytic();
+        if (analytic !== null && holographicRegionsOf(analytic.result).includes(sourceId)) {
+            this.holographicRegion = sourceId;
+            this.renderPanel();
+            return;
+        }
         const result = this.projectionResult;
         const pick: PickResult | null = result === null ? null
             : result.loadedNodeIds.includes(sourceId) ? { kind: 'node', id: sourceId }
@@ -1336,7 +1555,7 @@ export class V2Page {
         const lod = this.typedLodVisibility(styled.projection, snapshot, this.visible().nodes,
             this.projectionFocus(), this.projectionRevision + 1);
         const visibility = lod.visibility;
-        renderer.updateVisibleSubset(styled, visibility);
+        renderer.updateVisibleSubset(this.withSelectionEmphasis(styled), visibility);
         this.projectionRevision = visibility.revision;
         this.projectionResult = styled.projection;
         this.projectionVisibility = visibility;
@@ -1346,6 +1565,7 @@ export class V2Page {
         // The pearl the view is opened to, when this level names one: the panel below offers its exit.
         if (open !== undefined) this.indraOpen = open === null ? null : { levelId: open, domainDigest: domain.domainDigest };
         this.dropHiddenTypedSelection();
+        this.adoptSelectedNode();
         this.renderPanel();
     }
     /** The read-only diagnostic record `window.__d073.projectionWitness()` and `witness().projection`
@@ -1366,10 +1586,21 @@ export class V2Page {
             cameraKey: this.mountedCameraKey,
             pending: this.projectionPending,
             refusal: this.fractalRefusal,
+            holographic: this.holographicWitness(),
             openLevelId: this.indraOpen?.levelId ?? null,
             unopenedLevels: result ? result.levels.filter(level => isLazyLevel(result, level)).map(level => level.id).sort() : [],
             refusedLevels: result ? this.refusedLevelsOf(result) : [],
         };
+    }
+    /** What the Holographic controls show: the drawn channel, the witness region, the focus and the
+     * choices the result offers; null outside the Holographic view. */
+    private holographicWitness() {
+        const analytic = this.holographicAnalytic();
+        if (analytic === null) return null;
+        const choice = this.holographicChoice(analytic.result);
+        return { channel: choice.channel, region: choice.region, focus: this.holographicFocus,
+            channels: holographicChannelsOf(analytic.result).map(item => item.id), regions: holographicRegionsOf(analytic.result),
+            coordinatesRefused: analytic.refused, drawnFieldIds: analytic.refused ? [] : [...analytic.visibility.fieldIds].sort() };
     }
     /** D-073 C4: the default `ProjectionPipelineInput` behind `?projection=natural`, built from the
      * existing projection modules — the same registry the injected pipeline uses, the real typed
@@ -1597,6 +1828,20 @@ export class V2Page {
             explanations: {}, diagnostics: [], coordinateState: { kind: 'coordinates' },
         };
         return this.styleTypedProjection(result, snapshot);
+    }
+    /** A selected node the typed view does not explain says why instead of showing nothing: it lies
+     * outside the analytical domain of the view, or inside it but not drawn now. */
+    private appendOutsideDomainNotice(host: HTMLElement): void {
+        const result = this.projectionResult, id = this.selected;
+        if (!this.typedActive() || !result || id === null || this.typedSelection !== null) return;
+        if (!this.index.nodes.some(node => node.id === id)) return;
+        const note = document.createElement('p');
+        note.id = 'projection-outside-domain';
+        note.setAttribute('role', 'status');
+        note.textContent = result.domainNodeIds.includes(id)
+            ? 'Questo nodo non \u00E8 disegnato in questa vista: nessuna spiegazione della proiezione per ora.'
+            : `Questo nodo \u00E8 fuori dal dominio analitico di questa vista (${result.domainNodeIds.length} nodi): nessuna spiegazione della proiezione.`;
+        host.append(note);
     }
     private async detail(id: string) {
         let found = this.detailCache.get(id);
@@ -2032,6 +2277,8 @@ export class V2Page {
         this.noteCameraIntent();
         this.suppressZoomUntil = performance.now() + 900;
         this.selected = id;
+        // The previous canvas pick no longer describes the selection; the refresh adopts the new one.
+        if (this.typedActive()) this.typedSelection = null;
         this.neighbourhoodDepth = null;
         this.neighbourhoodBefore = null;
         this.view?.select(id);
@@ -2063,6 +2310,7 @@ export class V2Page {
         if (this.neighbourhoodBefore) this.restoreNeighbourhood = true;
         this.neighbourhoodDepth = null;
         this.selected = null;
+        if (this.typedActive()) this.typedSelection = null;
         this.view?.select(null);
         await this.refresh();
         if (restoreCamera) this.view?.restoreCamera(restoreCamera);
@@ -2305,7 +2553,7 @@ export class V2Page {
         this.userMovedSinceFit = false;
         this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
     }
-    async reset() { this.noteCameraIntent(); this.selected = null; this.neighbourhoodDepth = null; this.neighbourhoodBefore = null; this.neighbourhoodCamera = null; this.view?.select(null); this.updateEmphasis(); this.syncFocusControls(); this.renderPanel(); this.programmaticCamera(); await this.view?.resetCamera(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
+    async reset() { this.noteCameraIntent(); this.selected = null; if (this.typedActive()) this.typedSelection = null; this.neighbourhoodDepth = null; this.neighbourhoodBefore = null; this.neighbourhoodCamera = null; this.view?.select(null); this.updateEmphasis(); this.syncFocusControls(); this.renderPanel(); this.programmaticCamera(); await this.view?.resetCamera(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
     async frame(id: string) { this.noteCameraIntent(); this.programmaticCamera(); const members = focusMembers(this.visible().nodes, this.index.edges, id); const ids = [...members].filter(member => this.rendered.has(member)); await (this.view?.frameFocus?.(ids.length ? ids : [id]) ?? this.view?.frame(ids.length ? ids : [id])); this.programmaticCamera(); }
     camera() {
         return this.view?.camera() ?? this.projectionRenderer?.readCameraPose?.() ?? null;
@@ -2505,6 +2753,85 @@ export class V2Page {
         };
     }
     get selectedId() { return this.selected; }
+    private holographicSelect(id: string, label: string, options: readonly { readonly value: string; readonly label: string }[],
+        current: string | null, choose: (value: string) => void): HTMLElement {
+        const wrapper = document.createElement('label');
+        wrapper.style.display = 'block';
+        wrapper.append(document.createTextNode(`${label} `));
+        const select = document.createElement('select');
+        select.id = id;
+        select.title = label;
+        select.setAttribute('aria-label', label);
+        select.style.maxWidth = '100%';
+        for (const option of options) {
+            const item = document.createElement('option');
+            item.value = option.value;
+            item.textContent = option.label;
+            select.append(item);
+        }
+        select.value = current ?? '';
+        select.onchange = () => {
+            choose(select.value);
+            void this.run(async () => { this.reviseHolographicMask(); }).catch(() => { });
+        };
+        wrapper.append(select);
+        return wrapper;
+    }
+    /** The compact analytic controls of the Holographic view, in the details column: the field channel
+     * that is drawn, the region whose reconstruction witness the panel shows, and the focus on it. */
+    private appendHolographicControls(host: HTMLElement): void {
+        const analytic = this.holographicAnalytic();
+        if (analytic === null) return;
+        const { result, snapshot } = analytic;
+        const choice = this.holographicChoice(result);
+        const section = document.createElement('section');
+        section.id = 'holographic-controls';
+        const heading = document.createElement('h3');
+        heading.textContent = 'Analisi Holographic \u00B7 sperimentale';
+        section.append(heading);
+        const channels = holographicChannelsOf(result), regions = holographicRegionsOf(result);
+        if (channels.length > 0)
+            section.append(this.holographicSelect('holographic-channel', 'Canale del campo',
+                channels.map(item => ({ value: item.id, label: item.label })), choice.channel, value => { this.holographicChannel = value; }));
+        if (regions.length > 0)
+            section.append(this.holographicSelect('holographic-region', 'Regione della testimonianza',
+                regions.map(id => ({ value: id, label: id })), choice.region, value => { this.holographicRegion = value; }));
+        const members = analytic.refused || choice.region === null ? null : holographicRegionMembers(result, snapshot, choice.region);
+        const focus = document.createElement('button');
+        focus.id = 'holographic-focus';
+        focus.textContent = this.holographicFocus ? 'Esci dal focus sulla regione' : 'Focus sulla regione';
+        focus.title = 'Mostra solo i nodi della regione scelta';
+        focus.setAttribute('aria-pressed', String(this.holographicFocus));
+        focus.disabled = members === null;
+        focus.onclick = () => {
+            this.holographicFocus = !this.holographicFocus;
+            void this.run(async () => { this.reviseHolographicMask(); }).catch(() => { });
+        };
+        section.append(focus);
+        host.append(section);
+    }
+    /** The explanation cards of the Holographic analysis, apart from the source card of a pick: the
+     * refusal of a refused result with its explained channel, and the reconstruction witness of the
+     * chosen region. Provenance stays in the card's own section. */
+    private appendHolographicCards(host: HTMLElement): void {
+        const analytic = this.holographicAnalytic();
+        if (analytic === null) return;
+        const { result, visibility } = analytic;
+        const choice = this.holographicChoice(result);
+        const card = (id: string, pick: PickResult, undrawn: boolean) => {
+            const box = document.createElement('section');
+            box.id = id;
+            renderSelection(box, buildProjectionExplanationPanel(pick, result, visibility, { undrawn }),
+                sourceId => this.openProvenanceSource(sourceId));
+            host.append(box);
+        };
+        if (result.coordinateState.kind === 'no-coordinates')
+            card('holographic-refusal', { kind: 'field', visualId: result.coordinateState.explanationId }, false);
+        if (analytic.refused && choice.channel !== null)
+            card('holographic-channel-card', { kind: 'field', visualId: choice.channel }, true);
+        if (choice.region !== null)
+            card('holographic-witness', { kind: 'field', visualId: `${HOLOGRAPHIC_RECONSTRUCTION_PREFIX}${choice.region}` }, true);
+    }
     private renderPanel() {
         const host = element('details');
         host.replaceChildren();
@@ -2567,6 +2894,7 @@ export class V2Page {
             controls.append(leave);
         }
         host.append(controls);
+        this.appendHolographicControls(host);
         const search = document.createElement('section');
         search.id = 'v2-results';
         const head = document.createElement('h3');
@@ -2609,6 +2937,8 @@ export class V2Page {
         selectionHeading.id = 'selection-heading';
         selectionHeading.textContent = 'Selezione';
         host.append(selectionHeading);
+        this.appendHolographicCards(host);
+        this.appendOutsideDomainNotice(host);
         if (this.typedActive() && this.projectionInput && this.typedSelection && this.projectionResult && this.projectionSnapshot) {
             const pick = this.typedSelection;
             const structural = pick.kind !== 'node' && pick.kind !== 'semantic-edge';

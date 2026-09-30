@@ -13,7 +13,8 @@ import type { AppearanceOptions } from "../engine/presentation-options.ts";
 import type { ViewPreset } from "../render3f/camera.tsx";
 import type { PaletteValues } from "./palette.ts";
 import type { NaturalArrangement } from "../projection/contract-types.ts";
-import { defaultNaturalArrangement } from "../projection/natural-bridge.ts";
+import { defaultNaturalArrangement, resolveNaturalArrangementWithSource } from "../projection/natural-bridge.ts";
+import type { ResolvedNaturalArrangement } from "../projection/natural-bridge.ts";
 import type { RegisteredProjectionId } from "../projection/registry.ts";
 
 /** How the scene is looked at. */
@@ -31,13 +32,14 @@ export type Morphology = "stellar" | "neural" | "mycelium";
 export type Organization = "natural" | "indra";
 
 /**
- * The page-level view on the organization axis: the product organizations plus Fractal, which has
- * no product-renderer drawing of its own and is only ever served by the typed projection pipeline.
- * The vocabulary grows additively as each projection assembly is registered.
+ * The page-level view on the organization axis: the product organizations plus Fractal and the
+ * experimental Holographic view, which have no product-renderer drawing of its own and are only ever
+ * served by the typed projection pipeline. The vocabulary grows additively as each projection
+ * assembly is registered.
  */
-export type ViewOrganization = Organization | "fractal";
+export type ViewOrganization = Organization | "fractal" | "holographic";
 
-/** The saved-view organization vocabulary: Natural under its canonical name, Indra or Fractal. */
+/** The saved-view organization vocabulary: Natural under its canonical name, Indra, Fractal or Holographic. */
 export type SavedOrganization = ViewOrganization;
 
 /**
@@ -80,7 +82,7 @@ export const DEFAULT_AXES: Axes = {
  */
 const PROJECTION_INDEX: Record<Projection, true> = { "2d": true, "3d": true };
 const MORPHOLOGY_INDEX: Record<Morphology, true> = { stellar: true, neural: true, mycelium: true };
-const ORGANIZATION_INDEX: Record<SavedOrganization, true> = { natural: true, indra: true, fractal: true };
+const ORGANIZATION_INDEX: Record<SavedOrganization, true> = { natural: true, indra: true, fractal: true, holographic: true };
 const ARRANGEMENT_INDEX: Record<Arrangement, true> = { constellation: true, network: true, mycelium: true };
 const READING_INDEX: Record<Reading, true> = { attested: true, exploratory: true, combined: true };
 const COLOUR_INDEX: Record<Colour, true> = {
@@ -100,7 +102,7 @@ export const SAVED_AXES_VOCABULARIES = {
 
 /**
  * The saved wire form of the view axes: exactly the registered axes fields, with Natural under its
- * canonical name plus an explicit arrangement, and never an arrangement on Indra or Fractal.
+ * canonical name plus an explicit arrangement, and never an arrangement outside Natural.
  */
 export type SavedViewAxes = {
   readonly projection: Projection;
@@ -130,7 +132,7 @@ export const LEGACY_INDRA_PROJECTION_ID: RegisteredProjectionId = "indra-legacy"
  * What serves each view of the organization axis: the registered projection and whether the typed
  * pipeline is engaged for it. Natural uses the typed pipeline only when the page asks for it (the
  * `projection=natural` hash flag or an injected pipeline); Indra (Indra's Pearls) and Fractal are
- * always served by their registered typed projection. The verified legacy Indra adapter stays
+ * always served by their registered typed projection, as is the experimental Holographic view. The verified legacy Indra adapter stays
  * registered as `LEGACY_INDRA_PROJECTION_ID`, reachable only through the explicit `indra=legacy`
  * hash flag. The record is exhaustive, so a new view cannot be added without saying what serves it.
  */
@@ -141,15 +143,16 @@ export const ORGANIZATION_PROJECTIONS: Readonly<Record<ViewOrganization, {
   natural: { projectionId: "natural", typed: "flag" },
   indra: { projectionId: "indras-pearls", typed: "always" },
   fractal: { projectionId: "fractal", typed: "always" },
+  holographic: { projectionId: "holographic", typed: "always" },
 };
 
 /**
  * Reads an organization at an entry point (saved view, storage, URL, bookmark, hook argument): the
  * legacy `flat` alias becomes Natural here and every other spelling outside the closed vocabulary is
- * refused, so the live path only ever sees `natural`, `indra` or `fractal`.
+ * refused, so the live path only ever sees `natural`, `indra`, `fractal` or `holographic`.
  */
 export function normalizeOrganizationInput(value: unknown): ViewOrganization {
-  if (value === "natural" || value === "indra" || value === "fractal") return value;
+  if (value === "natural" || value === "indra" || value === "fractal" || value === "holographic") return value;
   if (value === LEGACY_ORGANIZATION) return NATURAL_ORGANIZATION;
   throw new TypeError(`organization is outside its closed vocabulary: ${String(value)}`);
 }
@@ -174,6 +177,37 @@ export function normalizeAxesInput(value: AxesInput): Partial<PageAxes> {
 }
 
 /**
+ * The arrangement the page's readout describes. With the typed pipeline off the layout that is drawn
+ * is the legacy one, which follows the morphology, so an arrangement the user did not set is derived
+ * again from the current morphology on every change; with the pipeline on, the arrangement resolved
+ * once is kept (a style switch restyles the same positions). An explicit arrangement is always kept.
+ */
+export function resolveArrangementReadout(
+  previous: ResolvedNaturalArrangement | null,
+  morphology: Morphology,
+  pipeline: boolean,
+  explicit?: Arrangement,
+): ResolvedNaturalArrangement {
+  if (explicit !== undefined) return resolveNaturalArrangementWithSource(morphology, explicit);
+  if (previous === null || (!pipeline && previous.source !== "explicit")) return resolveNaturalArrangementWithSource(morphology);
+  return previous;
+}
+
+/**
+ * The explicit arrangement of a saved view that carries one. A saved view always records its
+ * arrangement, so with the pipeline off (where the morphology draws the layout) a saved arrangement
+ * equal to the morphology's own default is the derived one, not a choice.
+ */
+export function savedExplicitArrangement(
+  arrangement: Arrangement | undefined,
+  morphology: Morphology,
+  pipeline: boolean,
+): Arrangement | undefined {
+  if (arrangement === undefined) return undefined;
+  return !pipeline && arrangement === defaultNaturalArrangement(morphology) ? undefined : arrangement;
+}
+
+/**
  * Serializes the view axes to the saved wire form: old Flat in the producer becomes Natural plus an
  * explicit arrangement out; an arrangement a producer never resolved is chosen once from the
  * morphology here, exactly as at request creation. The key order is the register order, so repeated
@@ -185,7 +219,7 @@ export function serializeAxes(axes: PageAxes): string {
 
 /** This builds the canonical saved record and does not mutate or retain the live axes. */
 export function savedAxesRecord(axes: PageAxes): SavedViewAxes {
-  if (axes.organization === "indra" || axes.organization === "fractal") {
+  if (axes.organization === "indra" || axes.organization === "fractal" || axes.organization === "holographic") {
     if (axes.arrangement !== undefined) {
       throw new TypeError("ViewInput.axes.arrangement is only valid for the Natural view [arrangement-requires-natural]");
     }
@@ -249,7 +283,7 @@ export function parseSavedAxes(serialized: string): PageAxes {
       arrangement: arrangement ?? defaultNaturalArrangement(record.morphology as Morphology),
     };
   }
-  if (organization !== "indra" && organization !== "fractal") {
+  if (organization !== "indra" && organization !== "fractal" && organization !== "holographic") {
     throw new TypeError("Saved axes.organization is outside its closed vocabulary [closed-vocabulary]");
   }
   if (record.arrangement !== undefined) {

@@ -270,22 +270,30 @@ export function buildStructuralPickPanel(
   throw new Error(`Pick kind ${pick.kind} is not a structural panel target.`);
 }
 
-/** Build an inspector model only from an explanation emitted by the selected projection. */
+/**
+ * Build an inspector model only from an explanation emitted by the selected projection. `undrawn`
+ * asks for the explanation of an analytic element the result carries but does not draw (a field
+ * channel the mask leaves out, a reconstruction witness, a field of a refused result): it needs no
+ * visibility, and a refused result then still explains that element beside its own refusal.
+ */
 export function buildProjectionExplanationPanel(
   pick: PickResult,
   projection: ProjectionResult,
   visibility: RenderVisibility,
+  options: Readonly<{ undrawn?: boolean }> = {},
 ): PanelModel {
   if (visibility.projectionResultDigest !== projection.determinism.resultDigest)
     throw new Error('Projection explanation visibility belongs to a different result.');
 
   const pickId = pick.kind === 'node' || pick.kind === 'semantic-edge' ? pick.id : pick.visualId;
   const refusal = projection.coordinateState.kind === 'no-coordinates' ? projection.coordinateState : undefined;
-  const id = refusal?.explanationId ?? pickId;
+  const undrawn = options.undrawn === true;
+  const explainsRefusal = refusal !== undefined && !undrawn;
+  const id = explainsRefusal ? refusal.explanationId : pickId;
   const explanation = projection.explanations[id];
   if (!explanation) throw new Error(`Projection explanation is absent: ${id}`);
   if (explanation.elementId !== id) throw new Error(`Projection explanation key mismatch: ${id}`);
-  if (!refusal && explanation.elementKind !== pick.kind)
+  if (!explainsRefusal && explanation.elementKind !== pick.kind)
     throw new Error(`Projection explanation kind mismatch for ${id}: ${explanation.elementKind} vs ${pick.kind}`);
 
   const visible = pick.kind === 'node' ? visibility.nodeIds.has(pick.id)
@@ -294,7 +302,7 @@ export function buildProjectionExplanationPanel(
         : pick.kind === 'container' ? visibility.containerIds.has(pick.visualId)
           : pick.kind === 'curve' ? visibility.curveIds.has(pick.visualId)
             : visibility.fieldIds.has(pick.visualId);
-  if (!refusal && !visible) throw new Error(`Projection pick is not visible: ${pickId}`);
+  if (!refusal && !undrawn && !visible) throw new Error(`Projection pick is not visible: ${pickId}`);
 
   const derived = explanation.elementKind === 'visual-relation' || explanation.elementKind === 'container'
     || explanation.elementKind === 'curve' || explanation.elementKind === 'field';
@@ -309,8 +317,8 @@ export function buildProjectionExplanationPanel(
     ? projection.visualRelations?.find(item => item.visualId === id) : undefined;
   return {
     title, type: relation ? structuralKindLabel(relation.kind) : 'Spiegazione della proiezione',
-    badge: refusal ? 'Nessuna coordinata' : derived ? 'Derivato · non attestato' : 'Proiezione',
-    ...(!refusal && derived ? { epistemic: derivedWording(explanation.elementKind) } : {}),
+    badge: explainsRefusal ? 'Nessuna coordinata' : derived ? 'Derivato · non attestato' : 'Proiezione',
+    ...(!explainsRefusal && derived ? { epistemic: derivedWording(explanation.elementKind) } : {}),
     synthesis: explanation.summary,
     evidence: [], sources: [], groups: [],
     projectionExplanation: explanation,

@@ -1,10 +1,11 @@
 /** D-073 F10 (made generic): the dedicated projection worker entry. `npm run build:review` bundles
  * this module in a first esbuild pass and embeds the bundle as text in `review.js` (the review
  * servers serve only `/`, `/index.html` and `/review.js`, so no separate worker file exists); the
- * client starts it through a Blob URL. Holographic registers here when its assembly (F11) lands. */
+ * client starts it through a Blob URL. */
 
 import type { MathematicalProjection } from "./contract-types.ts";
 import { fractalProjection } from "./fractal.ts";
+import { holographicProjection } from "./holographic.ts";
 import { indrasPearlsProjection } from "./indra.ts";
 import { naturalProjection } from "./natural-bridge.ts";
 import { ProjectionWorkerHost } from "./worker-host.ts";
@@ -16,7 +17,7 @@ export interface ProjectionWorkerEntryScope {
 
 /** Pure projection implementations available to the standalone worker today. Future views add
  * their projection to this list when their assembly lands; the host itself remains id-generic. */
-export const PROJECTION_WORKER_ENTRY_PROJECTIONS: readonly MathematicalProjection<any>[] = [naturalProjection, fractalProjection, indrasPearlsProjection];
+export const PROJECTION_WORKER_ENTRY_PROJECTIONS: readonly MathematicalProjection<any>[] = [naturalProjection, fractalProjection, indrasPearlsProjection, holographicProjection];
 
 export function installProjectionWorkerEntry(
   scope: ProjectionWorkerEntryScope,

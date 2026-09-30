@@ -303,7 +303,7 @@ test('an out-of-register or unregistered view is refused', async () => {
   const { page } = await typedPage({ registry });
   assert.equal(page.supportsOrganization('fractal'), true);
   assert.equal(page.supportsOrganization('natural'), true);
-  await assert.rejects(page.setAxes({ organization: 'holographic' as never }), /closed vocabulary/);
+  await assert.rejects(page.setAxes({ organization: 'spectral' as never }), /closed vocabulary/);
   registry.unregister('fractal');
   assert.equal(page.supportsOrganization('fractal'), false, 'no dead control for a projection that is not registered');
   await assert.rejects(page.setAxes({ organization: 'fractal' }), /View is not registered: fractal/);
