@@ -213,9 +213,9 @@ export const naturalProjection: MathematicalProjection<'natural'> = {
     const visuals = visualRelations(relations);
     const explanations = Object.fromEntries(visuals.map(relation => [relation.explanationId, {
       elementId: relation.visualId, elementKind: 'visual-relation' as const,
-      summary: relation.kind === 'lifted-route' ? 'Legacy Flat relation route' : 'Structural layout relation',
+      summary: relation.kind === 'lifted-route' ? 'Percorso sollevato del layout Natural di D-072' : 'Relazione strutturale del layout',
       sourceIds: relation.underlyingEdgeIds, parameterIds: ['arrangement', 'layoutRelationPolicy'],
-      ...(relation.kind === 'lifted-route' ? {} : { limitation: 'Visual structure; not a source relation' }),
+      ...(relation.kind === 'lifted-route' ? {} : { limitation: 'Struttura visiva; non è una relazione della fonte' }),
     }]));
     const payload = {
       fullLedger: { snapshotDigest: snapshot.digest, canonicalBytesDigest: snapshot.rawLedger.canonicalBytesDigest,
