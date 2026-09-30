@@ -60,6 +60,9 @@ import type { PickResult, RenderVisibility, SemanticGraphSnapshot, StyledProject
 import { createProjectionVisualsLayer } from "#render-common/projection-visuals-layer.ts";
 import type { ProjectionVisualsMorphology } from "#render-common/projection-visuals-layer.ts";
 
+/** Sigma multiplies its camera ratio by this factor for each wheel notch. */
+export const TWO_D_ZOOMING_RATIO = 1 + 1 / (2 * 2);
+
 /** This reports one live glow footprint and does not expose graph semantics. */
 export type RenderNodeGlowWitness = {
   readonly id: string;
@@ -312,6 +315,7 @@ export function mount(
     edgeLabelSize: calibration.labels.edgeLabelSizePx,
     labelColor: { attribute: "labelColor", color: requiredTokenColor(model, "text") },
     edgeLabelColor: { attribute: "labelColor", color: requiredTokenColor(model, "textMuted") },
+    zoomingRatio: TWO_D_ZOOMING_RATIO,
     zIndex: true,
     enableEdgeEvents: true,
   });
@@ -1517,7 +1521,8 @@ export function mountProjection2d(
   const graph = new MultiDirectedGraph<ProjectionNodeAttributes, ProjectionEdgeAttributes>();
   for (const id of scene.nodes.keys()) graph.addNode(id, projectionNodeAttributes(scene, id));
   for (const [id, edge] of scene.semanticEdges) graph.addEdgeWithKey(id, edge.source, edge.target, projectionEdgeAttributes(scene, id));
-  const sigma = new Sigma(graph, container, { enableEdgeEvents: true, renderLabels: false, renderEdgeLabels: false });
+  const sigma = new Sigma(graph, container, { enableEdgeEvents: true, renderLabels: false, renderEdgeLabels: false,
+    zoomingRatio: TWO_D_ZOOMING_RATIO });
   suppressSigmaAutomaticPicking(sigma as unknown as Sigma);
   // Sigma otherwise renormalizes its graph coordinates whenever disclosure adds a node.
   // Keep the mount's world frame fixed while the graph changes in place.

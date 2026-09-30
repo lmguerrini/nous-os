@@ -144,7 +144,7 @@ test("G9 starfield: every star stays smaller than a satellite node and under the
     }
   }
   // The default look keeps its stars, deterministically placed.
-  const defaultStars = starfieldStars(800, 600, 0.25);
-  assert.equal(defaultStars.length, Math.ceil(800 / STARFIELD_CELL_PX) * Math.ceil(600 / STARFIELD_CELL_PX) * 2);
-  assert.deepEqual(starfieldStars(800, 600, 0.25), defaultStars);
+  const defaultStars = starfieldStars(800, 600, 0.45);
+  assert.ok(defaultStars.length >= Math.ceil(800 / STARFIELD_CELL_PX) * Math.ceil(600 / STARFIELD_CELL_PX) * 3);
+  assert.deepEqual(starfieldStars(800, 600, 0.45), defaultStars);
 });

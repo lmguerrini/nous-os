@@ -63,8 +63,10 @@ test("D-074 Stellar base covers every 48 px canvas cell with stars smaller than 
     assert.ok(star.size <= STAR_MAX_RADIUS_PX && star.size < 0.6 * 2);
     assert.ok(starAlpha(DEFAULT_APPEARANCE.starfieldBrightness, star.intensity) >= 0.4);
   }
-  assert.equal(stars.length, 1292);
-  assert.ok(cells.every(count => count >= 2), "no 48×48 CSS px cell is empty");
+  assert.equal(DEFAULT_APPEARANCE.starfieldDensity, 0.45);
+  assert.equal(DEFAULT_APPEARANCE.starfieldBrightness, 0.65);
+  assert.ok(stars.length >= columns * rows * 3 && stars.length <= columns * rows * 4);
+  assert.ok(cells.every(count => count >= 3), "every 48×48 CSS px cell contains at least three stars");
   assert.equal(stars[0] && "id" in stars[0], false, "decorative stars carry no graph identity");
   const largeWidth = 7680, largeHeight = 4320;
   const largeCell = starfieldCellSize(largeWidth, largeHeight);

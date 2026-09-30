@@ -7,7 +7,7 @@ const STARFIELD_SEED = 0x5f3759df;
 
 /** Upper bound on how many stars are ever drawn, whatever the density or area. */
 export const STARFIELD_MAX_STARS = 8000;
-/** Two stars in every 48 px square at the default 0.25 density. The smallest Stellar graph
+/** Density determines 3–4 stars in every 48 px square at the default 0.45 density. The smallest Stellar graph
  * core is 2 px in radius, so a base star stays at most 0.6× that radius. */
 export const STARFIELD_CELL_PX = 48;
 /** Keep at least two base stars in every cell even on displays larger than 4K. */
