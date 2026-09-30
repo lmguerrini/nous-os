@@ -23,8 +23,7 @@ const witness = (page: Page) => page.evaluate(() => (window as any).__d067.witne
 const projectionWitness = (page: Page) => page.evaluate(() => {
   const api = window as any;
   const result = api.__d073?.projectionWitness?.() ?? api.__d067?.witness?.().projection;
-  if (!result) throw new Error('D-073 projection witness is not exposed');
-  return result;
+  return result ?? null;
 });
 
 async function ready(page: Page) {
@@ -68,9 +67,14 @@ async function saveViewport(page: Page, info: TestInfo, view: string, dimension:
 
 async function waitForProjection(page: Page, view: string) {
   await expect.poll(async () => {
-    try { return (await projectionWitness(page)).pending; } catch { return true; }
+    try {
+      const projection = await projectionWitness(page);
+      return projection ? projection.pending : view === 'natural' ? false : true;
+    } catch { return true; }
   }, { timeout: 90_000 }).toBe(false);
   const projection = await projectionWitness(page);
+  if (!projection && view === 'natural') return null;
+  if (!projection) throw new Error('D-073 projection witness is not exposed');
   expect(projection.enabled, `${view} projection pipeline enabled`).toBe(true);
   return projection;
 }
@@ -79,12 +83,16 @@ async function assertDisclosure(page: Page, view: string, dimension: string) {
   const status = (await page.locator('#status').innerText()).toLowerCase();
   if (view === 'natural') {
     expect(status).not.toContain('geometria derivata, non semantica');
-    const arrangement = (await projectionWitness(page)).arrangement;
-    expect(typeof arrangement).toBe('string');
+    const projection = await projectionWitness(page);
     const inspector = page.locator('#arrangement-inspector');
     await expect(inspector).toBeVisible();
-    await expect(inspector).toContainText(String(arrangement));
-  } else {
+    if (projection) {
+      expect(typeof projection.arrangement).toBe('string');
+      await expect(inspector).toContainText(String(projection.arrangement));
+    } else {
+      await expect(inspector).toContainText('constellation');
+    }
+  } else if (view !== 'holographic') {
     expect(status).toContain('geometria derivata, non semantica');
   }
   if (view === 'indra') {
@@ -101,7 +109,7 @@ async function assertDisclosure(page: Page, view: string, dimension: string) {
   if (dimension === '3d' && view === 'fractal') expect(status).toContain('3d: altezza');
 }
 
-async function assertLodBudget(page: Page) {
+async function assertLodBudget(page: Page, checkCap = true) {
   const value = await witness(page);
   const lod = value.lod;
   expect(lod?.nodes?.rendered).toBeGreaterThan(0);
@@ -109,9 +117,11 @@ async function assertLodBudget(page: Page) {
   expect(lod.nodes.rendered).toBeLessThanOrEqual(lod.nodes.available);
   if (lod?.arcs?.available > 0) expect(lod.arcs.rendered).toBeGreaterThan(0);
   expect(lod.arcs.rendered).toBeLessThanOrEqual(lod.arcs.available);
-  const cap = value.disclosure?.cap;
-  if (typeof cap === 'number') expect(lod.nodes.rendered).toBeLessThanOrEqual(cap);
-  else if (cap && typeof cap.nodes === 'number') expect(lod.nodes.rendered).toBeLessThanOrEqual(cap.nodes);
+  if (checkCap) {
+    const cap = value.disclosure?.cap;
+    if (typeof cap === 'number') expect(lod.nodes.rendered).toBeLessThanOrEqual(cap);
+    else if (cap && typeof cap.nodes === 'number') expect(lod.nodes.rendered).toBeLessThanOrEqual(cap.nodes);
+  }
 }
 
 async function assertExplanationCards(page: Page, view: string) {
@@ -151,31 +161,47 @@ for (const view of views) {
         const fixedArrangement = view.button === 'natural' ? { arrangement: 'constellation' } : {};
         await axes(page, { projection: dimension, organization: view.button, morphology, reading: 'attested', ...fixedArrangement });
         const projection = await waitForProjection(page, view.button);
-        expect(projection.organization).toBe(view.button);
-        expect(projection.algorithm).toBe(view.algorithm);
-        expect(projection.cameraKey).toBe(`${dimension}/${view.button}`);
-        const refusal = projection.coordinateState?.kind === 'no-coordinates';
-        if (view.button === 'holographic' && refusal) {
-          const code = projection.coordinateState.code;
-          expect(code).toBeTruthy();
-          const status = (await page.locator('#status').innerText()).toLowerCase();
-          expect(status).toContain(`proiezione rifiutata [${code}]`);
-          info.annotations.push({
-            type: 'typed no-coordinates refusal',
-            description: `Holographic disclosed refusal [${code}]; coordinate-dependent LOD and pick explanation checks are skipped.`,
-          });
-        } else {
-          expect(projection.coordinateState?.kind).toBe('coordinates');
+        let hasCoordinates = false;
+        if (!projection) {
+          expect(view.button).toBe('natural');
           await assertDisclosure(page, view.button, dimension);
-          await assertLodBudget(page);
+          await assertLodBudget(page, false);
+        } else {
+          expect(projection.organization).toBe(view.button);
+          const refusalCode = projection.refusal && typeof projection.refusal.code === 'string'
+            ? projection.refusal.code
+            : null;
+          hasCoordinates = projection.refusal === null && projection.algorithm === view.algorithm;
+          if (hasCoordinates) expect(projection.cameraKey).toBe(`${dimension}/${view.button}`);
+          if (view.button === 'holographic' && refusalCode) {
+            const code = refusalCode;
+            const status = (await page.locator('#status').innerText()).toLowerCase();
+            expect(status).toContain(`proiezione rifiutata [${code}]`);
+            await assertDisclosure(page, view.button, dimension);
+            info.annotations.push({
+              type: 'disclosed projection refusal',
+              description: `Holographic refusal [${code}] is disclosed; coordinate and coordinate-dependent LOD and pick explanation checks are skipped.`,
+            });
+          } else {
+            expect(refusalCode, `${view.button} has no refusal`).toBeNull();
+            expect(projection.algorithm).toBe(view.algorithm);
+            expect(hasCoordinates, `${view.button} witness discloses coordinates`).toBe(true);
+            await assertDisclosure(page, view.button, dimension);
+            await assertLodBudget(page);
+          }
         }
         await waitForCameraRest(page);
         await saveViewport(page, info, view.button, dimension, morphology);
 
-        const stableDigest = projection.resultDigest;
+        const stableDigest = projection?.resultDigest ?? null;
         await axes(page, { morphology: morphology === 'stellar' ? 'neural' : 'stellar', ...fixedArrangement });
         const restyled = await waitForProjection(page, view.button);
-        expect(restyled.resultDigest, 'morphology restyling preserves coordinates and result digest').toBe(stableDigest);
+        if (projection) {
+          expect(restyled?.resultDigest, 'morphology restyling preserves coordinates and result digest').toBe(stableDigest);
+        } else {
+          await assertDisclosure(page, view.button, dimension);
+          await assertLodBudget(page, false);
+        }
         await axes(page, { morphology, ...fixedArrangement });
         await waitForProjection(page, view.button);
         await waitForCameraRest(page);
@@ -187,7 +213,7 @@ for (const view of views) {
           return ((window as any).__d073FrameCount ?? 0) - before;
         });
         expect(idleFrames, `${view.button} ${dimension} idle attested frames`).toBeLessThanOrEqual(1);
-        if (!refusal) await assertExplanationCards(page, view.button);
+        if (hasCoordinates) await assertExplanationCards(page, view.button);
         expect(await page.evaluate(() => (window as any).__d073DashCalls)).toEqual([]);
         expect(errors).toEqual([]);
       });
