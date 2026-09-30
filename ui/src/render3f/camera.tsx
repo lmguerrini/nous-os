@@ -106,6 +106,7 @@ export function perspectivePanVector(orientation: THREE.Quaternion, deltaX: numb
 export class CameraRig {
   private readonly orthographic = new THREE.OrthographicCamera();
   private readonly perspective = new THREE.PerspectiveCamera();
+  private readonly wheelProjection = new THREE.Vector3();
   private kindValue: CameraKind;
   private stateValue: ReviewCameraState;
   private requestValue: SceneCameraRequest;
@@ -222,6 +223,14 @@ export class CameraRig {
     };
   }
 
+  /** Project through the live draw camera into caller-owned wheel-picking scratch. */
+  projectToViewportInto(point: Coordinates, out: { x: number; y: number }): boolean {
+    const clip = this.wheelProjection.set(point.x, point.y, point.z).project(this.camera);
+    out.x = (clip.x + scalarCount()) * this.widthCssPx / bisectionDivisor();
+    out.y = (scalarCount() - clip.y) * this.heightCssPx / bisectionDivisor();
+    return this.kindValue === ORTHOGRAPHIC || (clip.z >= -scalarCount() && clip.z <= scalarCount());
+  }
+
   /** This reports shader projection factors from the live cameras and does not update a material. */
   readProjectionState(): CameraProjectionState {
     const orthographicSizeScale = scalarCount() / DEFAULT_SETTINGS.zoomToSizeRatioFunction(this.stateValue.ratio);
@@ -249,6 +258,22 @@ export class CameraRig {
     const pointView = new THREE.Vector3(point.x, point.y, point.z).applyMatrix4(this.perspective.matrixWorldInverse);
     return Math.max(-target.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE)
       / Math.max(-pointView.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
+  }
+
+  /** Drawn node scale for wheel picking, without constructing a camera target or view point. */
+  wheelNodeSizeScaleAt(point: Coordinates): number {
+    if (this.kindValue === ORTHOGRAPHIC) {
+      return scalarCount() / DEFAULT_SETTINGS.zoomToSizeRatioFunction(this.stateValue.ratio);
+    }
+    const view = this.perspective.matrixWorldInverse.elements;
+    const target = this.perspective.position;
+    const depth = -(view[2] * (point.x - target.x)
+      + view[6] * (point.y - target.y) + view[10] * (point.z - target.z));
+    const span = Math.max(this.stateValue.bounds.x[1] - this.stateValue.bounds.x[0],
+      this.stateValue.bounds.y[1] - this.stateValue.bounds.y[0]);
+    const reference = span * this.stateValue.ratio * Math.SQRT2;
+    return Math.max(reference, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE)
+      / Math.max(depth, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
   }
 
   /** This projects resolved framing subjects with their live screen-space drawn extents. */
@@ -303,8 +328,8 @@ export class CameraRig {
 
   /** This applies calibrated zoom, holding the world point below an optional cursor in place. */
   zoomBy(deltaYCssPx: number, cursorXCssPx?: number, cursorYCssPx?: number,
-    hoveredNode?: Coordinates): void {
-    const depthPoint = this.kindValue !== ORTHOGRAPHIC && hoveredNode &&
+    hoveredNode?: Coordinates, orthographicNodeDepth = false): void {
+    const depthPoint = (this.kindValue !== ORTHOGRAPHIC || orthographicNodeDepth) && hoveredNode &&
       Number.isFinite(hoveredNode.x) && Number.isFinite(hoveredNode.y) && Number.isFinite(hoveredNode.z)
       ? new THREE.Vector3(hoveredNode.x, hoveredNode.y, hoveredNode.z) : undefined;
     const anchor = cursorXCssPx === undefined || cursorYCssPx === undefined
@@ -350,8 +375,14 @@ export class CameraRig {
         graphDimensions(this.stateValue.bounds), DEFAULT_SETTINGS.stagePadding, true);
       const normalized = multiplyVec2(inverse, { x: clipX, y: clipY });
       const position = createNormalizationFunction(copyMutableBounds(this.stateValue.bounds)).inverse(normalized);
-      return new THREE.Vector3(position.x - target.x, position.y - target.y, 0)
-        .applyQuaternion(cameraOrbit(this.stateValue)).add(target);
+      const orbit = cameraOrbit(this.stateValue);
+      const point = new THREE.Vector3(position.x - target.x, position.y - target.y, 0)
+        .applyQuaternion(orbit).add(target);
+      if (depthPoint) {
+        const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(orbit);
+        point.addScaledVector(normal, depthPoint.clone().sub(target).dot(normal));
+      }
+      return point;
     }
     const rayPoint = new THREE.Vector3(clipX, clipY, 0.5).unproject(this.perspective);
     const direction = rayPoint.sub(this.perspective.position).normalize();
@@ -433,6 +464,7 @@ export function attachCameraInteractions(
   canvas: HTMLCanvasElement,
   rig: CameraRig,
   changed: () => void,
+  resolveNodeAnchor?: (xCssPx: number, yCssPx: number) => Coordinates | undefined,
 ): () => void {
   let pointerId: number | null = null;
   let lastX = 0;
@@ -474,11 +506,13 @@ export function attachCameraInteractions(
     const deltaY = event.deltaY * (event.deltaMode === 1 ? 16
       : event.deltaMode === 2 ? rect.height : 1);
     const x = event.clientX - rect.left, y = event.clientY - rect.top;
-    const hovered = (canvas as HTMLCanvasElement & { __reviewHoveredNode?: Coordinates }).__reviewHoveredNode;
+    const hovered = resolveNodeAnchor ? undefined
+      : (canvas as HTMLCanvasElement & { __reviewHoveredNode?: Coordinates }).__reviewHoveredNode;
     const screen = hovered && rig.graphToViewport(hovered);
-    const anchor = screen && Math.hypot(screen.x - x, screen.y - y) <= 32
-      ? hovered : rig.nodeAnchorAtViewport(x, y);
-    rig.zoomBy(deltaY, x, y, anchor);
+    const anchor = resolveNodeAnchor ? resolveNodeAnchor(x, y)
+      : screen && Math.hypot(screen.x - x, screen.y - y) <= 32
+        ? hovered : rig.nodeAnchorAtViewport(x, y);
+    rig.zoomBy(deltaY, x, y, anchor, resolveNodeAnchor !== undefined);
     changed();
   };
   const contextMenu = (event: MouseEvent): void => event.preventDefault();

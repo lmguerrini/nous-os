@@ -8,6 +8,8 @@ import * as THREE from "three";
 import { ORTHOGRAPHIC, PERSPECTIVE } from "#engine/camera-kind.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
 import type { SceneCameraRequest } from "#scene/contract.ts";
+import { ScenePicker } from "#render3f/picking.ts";
+import { resolvedScene } from "./support.ts";
 
 const source = new URL("../../src/render3f/camera.tsx", import.meta.url);
 const output = join(dirname(fileURLToPath(import.meta.url)), "../../dist/evidence/d074-camera-interactions.mjs");
@@ -69,6 +71,90 @@ test('perspective wheel keeps the hovered off-plane hub at its screen position',
     detach();
   }
 });
+
+test('typed orthographic wheel retains its target-plane anchor', () => {
+  const hub = { x: 150, y: -110, z: 180 };
+  const rig = makeRig(ORTHOGRAPHIC);
+  const expected = makeRig(ORTHOGRAPHIC);
+  const fixture = canvasFixture();
+  (fixture.canvas as HTMLCanvasElement & { __reviewHoveredNode?: typeof hub }).__reviewHoveredNode = hub;
+  const detach = attachCameraInteractions(fixture.canvas, rig, () => {});
+  const cursor = rig.graphToViewport(hub);
+  fixture.fire('wheel', { clientX: cursor.x + 40, clientY: cursor.y + 30,
+    deltaY: -120, deltaMode: 0 });
+  expected.zoomBy(-120, cursor.x, cursor.y);
+  assert.deepEqual(rig.readCameraState(), expected.readCameraState());
+  detach();
+});
+
+for (const kind of [PERSPECTIVE, ORTHOGRAPHIC] as const) {
+  test(`${kind} product wheel picks the live off-plane pearl for three notches`, () => {
+    const hub = { x: 150, y: -110, z: 180 };
+    const base = resolvedScene();
+    const node = base.nodes[0];
+    assert.ok(node);
+    const companion = { x: -150, y: 110, z: -180 };
+    const subjects = [
+      { id: 'node:hub', position: hub, extentCssPx: 24, sizeMode: 'node' as const },
+      { id: 'node:companion', position: companion, extentCssPx: 8, sizeMode: 'node' as const },
+    ];
+    const scene = { ...base, nodes: [{ ...node, id: 'hub', position: hub,
+      radiusPx: 18, haloRadiusPx: 24, minimumCoreDeviceRadiusPx: 2 },
+      { ...node, id: 'companion', position: companion,
+        radiusPx: 6, haloRadiusPx: 8, minimumCoreDeviceRadiusPx: 2 }],
+      edges: [], aggregates: [], selectedLabelIds: [] };
+    const rig = makeRig(kind, 1, subjects);
+    rig.orbitBy(180, 90);
+    const picker = new ScenePicker(scene, {
+      project: point => rig.graphToViewport(point),
+      projectInto: (point, out) => rig.projectToViewportInto(point, out),
+      nodeRadiusPx: value => value.radiusPx * rig.sizeScaleAt(value.position),
+      nodeFootprintRadiusPx: value => Math.max(value.haloRadiusPx * rig.wheelNodeSizeScaleAt(value.position),
+        value.minimumCoreDeviceRadiusPx),
+      filamentSizeScale: () => rig.readProjectionState().filamentSizeScale,
+    });
+    const fixture = canvasFixture();
+    const detach = attachCameraInteractions(fixture.canvas, rig, () => {},
+      (x, y) => picker.nodeAnchorAtPosition(x, y));
+    const cursor = rig.graphToViewport(hub);
+    for (let notch = 0; notch < 3; notch++) {
+      assert.equal(picker.nodeAnchorAtPosition(cursor.x, cursor.y), hub);
+      fixture.fire('wheel', { clientX: cursor.x + 40, clientY: cursor.y + 30,
+        deltaY: -360, deltaMode: 0 });
+      const after = rig.graphToViewport(hub);
+      assert.ok(Math.hypot(after.x - cursor.x, after.y - cursor.y) <= 2,
+        `${kind} product hub drifted at notch ${notch}: ${JSON.stringify({ cursor, after })}`);
+    }
+    detach();
+  });
+
+  test(`${kind} product wheel uses the target plane when no node is under the cursor`, () => {
+    const hub = { x: 150, y: -110, z: 180 };
+    const base = resolvedScene();
+    const node = base.nodes[0];
+    assert.ok(node);
+    const scene = { ...base, nodes: [{ ...node, position: hub }],
+      edges: [], aggregates: [], selectedLabelIds: [] };
+    const rig = makeRig(kind);
+    const expected = makeRig(kind);
+    const picker = new ScenePicker(scene, {
+      project: point => rig.graphToViewport(point),
+      projectInto: (point, out) => rig.projectToViewportInto(point, out),
+      nodeRadiusPx: value => value.radiusPx * rig.sizeScaleAt(value.position),
+      filamentSizeScale: () => rig.readProjectionState().filamentSizeScale,
+    });
+    const cursor = { x: 100, y: 100 };
+    assert.equal(picker.nodeAnchorAtPosition(cursor.x, cursor.y), undefined);
+    const fixture = canvasFixture();
+    const detach = attachCameraInteractions(fixture.canvas, rig, () => {},
+      (x, y) => picker.nodeAnchorAtPosition(x, y));
+    fixture.fire('wheel', { clientX: cursor.x + 40, clientY: cursor.y + 30,
+      deltaY: -120, deltaMode: 0 });
+    expected.zoomBy(-120, cursor.x, cursor.y);
+    assert.deepEqual(rig.readCameraState(), expected.readCameraState());
+    detach();
+  });
+}
 
 for (const kind of [ORTHOGRAPHIC, PERSPECTIVE] as const) {
   test(`${kind} first wheel step from an out-of-range fit does not jump to the calibration limit`, () => {

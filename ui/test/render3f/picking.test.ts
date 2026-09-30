@@ -37,6 +37,43 @@ test("node picking uses the same resolved core radius as the visual geometry", (
   );
 });
 
+test("wheel anchoring reads the current drawn pearl and its halo without a stale scene copy", () => {
+  const scene = resolvedScene();
+  const source = requiredItem(scene.nodes, 0, "wheel anchor node");
+  const first = { ...source, position: { x: 30, y: 40, z: 90 }, radiusPx: 5, haloRadiusPx: 16 };
+  const second = { ...first, position: { x: 130, y: 40, z: -90 } };
+  const projection: PickingProjection = {
+    ...IDENTITY_PROJECTION,
+    nodeFootprintRadiusPx(node) { return node.haloRadiusPx; },
+  };
+  const picker = new ScenePicker(singleNodeScene(scene, first), projection);
+  assert.equal(picker.pickNodeAtPosition({ x: 42, y: 40 }), null, "the regular core pick remains unchanged");
+  assert.equal(picker.nodeAnchorAtPosition(42, 40), first.position, "the drawn halo supplies a wheel anchor");
+  picker.replaceScene(singleNodeScene(scene, second));
+  assert.equal(picker.nodeAnchorAtPosition(42, 40), undefined);
+  assert.equal(picker.nodeAnchorAtPosition(142, 40), second.position);
+});
+
+test("wheel anchoring ignores invisible and clipped pearls", () => {
+  const scene = resolvedScene();
+  const source = requiredItem(scene.nodes, 0, "wheel anchor node");
+  const visible = { ...source, id: "visible", position: { x: 30, y: 40, z: 90 },
+    opacityPermille: 1, stackingPriority: 1 };
+  const transparent = { ...source, id: "transparent", position: { x: 30, y: 40, z: 180 },
+    opacityPermille: 0, stackingPriority: 3 };
+  const clipped = { ...source, id: "clipped", position: { x: 30, y: 40, z: -180 },
+    opacityPermille: 1, stackingPriority: 2 };
+  const picker = new ScenePicker({ ...scene, nodes: [visible, transparent, clipped] }, {
+    ...IDENTITY_PROJECTION,
+    projectInto(point, out) {
+      out.x = point.x;
+      out.y = point.y;
+      return point.z > 0;
+    },
+  });
+  assert.equal(picker.nodeAnchorAtPosition(30, 40), visible.position);
+});
+
 test("filament picking follows the resolved path and consumes its supplied tolerance", () => {
   const scene = resolvedScene();
   const edge = requiredItem(scene.edges, 0, "picking relation");

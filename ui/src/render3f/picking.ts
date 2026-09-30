@@ -19,7 +19,9 @@ const RADIANS_PER_TURN = Math.PI * 2;
 /** This is the live projection surface used by CPU picking and does not retain a camera implementation. */
 export type PickingProjection = {
   project(point: Coordinates): { readonly x: number; readonly y: number };
+  projectInto?(point: Coordinates, out: { x: number; y: number }): boolean;
   nodeRadiusPx(node: SceneNode): number;
+  nodeFootprintRadiusPx?(node: SceneNode): number;
   filamentSizeScale(): number;
 };
 
@@ -27,6 +29,7 @@ export type PickingProjection = {
 export class ScenePicker {
   private sceneValue: Scene;
   private readonly projection: PickingProjection;
+  private readonly wheelProjection = { x: 0, y: 0 };
 
   /** This retains resolved picking geometry and does not allocate a render target. */
   constructor(scene: Scene, projection: PickingProjection) {
@@ -50,6 +53,28 @@ export class ScenePicker {
    */
   get scene(): Scene {
     return this.sceneValue;
+  }
+
+  /** Resolve a wheel anchor from the live drawn nodes, including their visible pearl/halo extent. */
+  nodeAnchorAtPosition(x: number, y: number): Coordinates | undefined {
+    let best: SceneNode | undefined;
+    for (const node of this.sceneValue.nodes) {
+      if (node.opacityPermille <= 0) continue;
+      if (this.projection.projectInto) {
+        if (!this.projection.projectInto(node.position, this.wheelProjection)) continue;
+      }
+      else {
+        const projected = this.projection.project(node.position);
+        this.wheelProjection.x = projected.x;
+        this.wheelProjection.y = projected.y;
+      }
+      const radius = this.projection.nodeFootprintRadiusPx?.(node) ?? this.projection.nodeRadiusPx(node);
+      if (!(radius > 0)) continue;
+      const dx = x - this.wheelProjection.x, dy = y - this.wheelProjection.y;
+      if (dx * dx + dy * dy > radius * radius) continue;
+      if (!best || compareStackingPriority(node, best) > 0) best = node;
+    }
+    return best?.position;
   }
 
   /** This returns the topmost visible core at one viewport point and does not inspect node semantics. */

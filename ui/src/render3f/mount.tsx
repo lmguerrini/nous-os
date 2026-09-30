@@ -272,8 +272,16 @@ export function mount(
     project(point: Coordinates): { readonly x: number; readonly y: number } {
       return rig.graphToViewport(point);
     },
+    projectInto(point: Coordinates, out: { x: number; y: number }): boolean {
+      return rig.projectToViewportInto(point, out);
+    },
     nodeRadiusPx(node: SceneNode): number {
       return node.radiusPx * rig.sizeScaleAt(node.position);
+    },
+    nodeFootprintRadiusPx(node: SceneNode): number {
+      const scale = rig.wheelNodeSizeScaleAt(node.position);
+      return Math.max(node.haloRadiusPx * scale,
+        Math.max(node.radiusPx * scale, node.minimumCoreDeviceRadiusPx) + node.haloCoreGapPx * scale);
     },
     filamentSizeScale(): number {
       return rig.readProjectionState().filamentSizeScale;
@@ -440,7 +448,8 @@ export function mount(
     }
     renderFrame();
   };
-  const detachInteractions = attachCameraInteractions(canvas, rig, syncCameraState);
+  const detachInteractions = attachCameraInteractions(canvas, rig, syncCameraState,
+    typedPicker ? undefined : (x, y) => picker.nodeAnchorAtPosition(x, y));
   const renderWhileFiberConfigures = (): void => {
     if (destroyed || fiberStore !== undefined) {
       return;
