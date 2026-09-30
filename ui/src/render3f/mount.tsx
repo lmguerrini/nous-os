@@ -36,6 +36,8 @@ import { tokenToSrgb } from "#render3f/buffers.ts";
 import { mountDistinctOverlay } from "#render3f/distinct-overlay.ts";
 import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
 import { DENSE_SCENE_THRESHOLD } from "#render-common/morphology-canvas.ts";
+import { createProjectionVisualsLayer } from "#render-common/projection-visuals-layer.ts";
+import type { ProjectionVisualsLayer, ProjectionVisualsMorphology } from "#render-common/projection-visuals-layer.ts";
 import {
   createAggregateRenderResources,
   updateAggregateProjectionUniforms,
@@ -55,6 +57,9 @@ import { ScenePicker } from "#render3f/picking.ts";
 import { TypedProjectionPicker } from "#render3f/picking.ts";
 import type { Render3fTypedInput, TypedPoint, TypedProjectionGeometry, TypedSegment } from "#render3f/picking.ts";
 import type { PickResult } from "../projection/contract-types.ts";
+
+/** How long the camera must be still before the derived geometry returns to full quality. */
+const DERIVED_STILL_MS = 200;
 import { ResourceRegistry } from "#render3f/resources.ts";
 import { LiveSceneState } from "#render3f/state.ts";
 import type { CameraScenes } from "#render3f/state.ts";
@@ -114,6 +119,8 @@ export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountin
   readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[];
   setEmphasis(ids: ReadonlySet<string> | null): void;
   setAppearance(options: AppearanceOptions): void;
+  /** Appearance of the derived geometry (containers, curves, field rings) of a typed projection; never moves it. */
+  setDerivedMorphology(morphology: ProjectionVisualsMorphology): void;
   /** D-072 R2: swaps the drawn level-of-detail subset in place — the scene, its picking surface and
    * the camera are untouched; only the distinct overlay's geometry snapshot and style lookups move.
    * A no-op when no distinct overlay is mounted. */
@@ -269,9 +276,25 @@ export function mount(
   );
   const typedLayer = createTypedProjectionLayer(live.scene);
   threeScene.add(typedLayer.group);
+  // Containers, curves and field rings of a typed projection are one 2D canvas layer over the WebGL canvas,
+  // projected through the live camera. It redraws with every frame and drops to the moving quality while
+  // the camera moves; the restore timer exists only after a camera change, so an idle page schedules nothing.
+  let visuals: ProjectionVisualsLayer | null = null;
+  let derivedMorphology: ProjectionVisualsMorphology = "stellar";
+  let visualsStillTimer: ReturnType<typeof setTimeout> | undefined;
+  const acceptVisuals = (input: Render3fTypedInput): void => {
+    if (visuals === null) {
+      visuals = createProjectionVisualsLayer(container, "3d",
+        point => ({ ...rig.graphToViewport(point), scale: rig.sizeScaleAt(point) }), { morphology: derivedMorphology });
+      visuals.mount(input);
+      const labelLayer = container.querySelector("[data-render3f-labels]");
+      if (labelLayer && visuals.canvas) labelLayer.before(visuals.canvas);
+    } else visuals.updateVisibleSubset(input);
+  };
   if (typedPicker) {
     world.visible = false;
     typedLayer.update(typedPicker.geometry);
+    acceptVisuals(typedInput!);
   }
   let emphasisIds = options.presentation?.emphasisIds ?? null;
   let destroyed = false;
@@ -329,8 +352,17 @@ export function mount(
     labelTimer = setTimeout(() => { if (!destroyed) updateLabels(); }, 160);
     renderer.render(threeScene, rig.camera);
     if (!typedPicker) distinct?.draw();
+    visuals?.draw();
   };
   const syncCameraState = (): void => {
+    if (visuals) {
+      visuals.setQuality("moving", false);
+      if (visualsStillTimer !== undefined) clearTimeout(visualsStillTimer);
+      visualsStillTimer = setTimeout(() => {
+        visualsStillTimer = undefined;
+        if (!destroyed) visuals?.setQuality("full");
+      }, DERIVED_STILL_MS);
+    }
     currentState = createVisualState(visualGraph, {
       ...currentState,
       camera: engineCamera(rig.readCameraState()),
@@ -437,6 +469,10 @@ export function mount(
 
   return {
     setAppearance(appearance: AppearanceOptions): void { distinct?.setAppearance(appearance); },
+    setDerivedMorphology(morphology: ProjectionVisualsMorphology): void {
+      derivedMorphology = morphology;
+      visuals?.setMorphology(morphology);
+    },
     updateVisibleSubset(update: DistinctSubsetUpdate | Render3fTypedInput): void {
       if (!("styled" in update)) {
         if (typedPicker) throw new TypeError("Legacy subset cannot replace typed 3D visibility");
@@ -450,16 +486,18 @@ export function mount(
         distinct = null;
         world.visible = false;
         typedLayer.update(next.geometry);
+        acceptVisuals(update);
         updateLabels();
         renderFrame();
       } else if (typedPicker.update(update)) {
         typedLayer.update(typedPicker.geometry);
+        acceptVisuals(update);
         updateLabels();
         renderFrame();
       }
     },
     pickAtPosition(position): PickResult | null {
-      if (typedPicker) return typedPicker.pick(position);
+      if (typedPicker) return typedPicker.pickPrimary(position) ?? visuals?.pickAt(position) ?? null;
       const node = picker.pickNodeAtPosition(position);
       if (node !== null) return { kind: "node", id: node };
       const edge = picker.pickEdgeAtPoint(position.x, position.y);
@@ -580,14 +618,14 @@ export function mount(
     },
     pickNodeAtPosition(position: { readonly x: number; readonly y: number }): string | null {
       if (typedPicker) {
-        const pick = typedPicker.pick(position);
+        const pick = typedPicker.pickPrimary(position);
         return pick?.kind === "node" ? pick.id : null;
       }
       return picker.pickNodeAtPosition(position);
     },
     pickEdgeAtPoint(x: number, y: number): string | null {
       if (typedPicker) {
-        const pick = typedPicker.pick({ x, y });
+        const pick = typedPicker.pickPrimary({ x, y });
         return pick?.kind === "semantic-edge" ? pick.id : null;
       }
       return picker.pickEdgeAtPoint(x, y);
@@ -606,10 +644,12 @@ export function mount(
     },
     destroy(): void {
       if (labelTimer !== undefined) clearTimeout(labelTimer);
+      if (visualsStillTimer !== undefined) clearTimeout(visualsStillTimer);
       if (destroyed) {
         return;
       }
       destroyed = true;
+      visuals?.destroy();
       resizeObserver.disconnect();
       detachInteractions();
       labels.destroy();
@@ -629,14 +669,16 @@ function WorldLayer({ world }: { readonly world: THREE.Group }): ReactElement {
   return <primitive object={world} />;
 }
 
-/** Six independent GPU collections. Updating attributes keeps the group, renderer, and camera alive. */
+/** Three independent GPU collections: nodes, source edges and structural relations. The derived geometry
+ * (containers, curves, field rings) is the projection visuals layer's. Updating attributes keeps the group,
+ * renderer, and camera alive. */
 function createTypedProjectionLayer(scene: Scene): {
   readonly group: THREE.Group;
   update(geometry: TypedProjectionGeometry): void;
   dispose(): void;
 } {
   const group = new THREE.Group();
-  const tokenColor = (name: "text" | "edge" | "peak" | "textMuted" | "surface"): THREE.Color => {
+  const tokenColor = (name: "text" | "edge" | "peak"): THREE.Color => {
     const channel = tokenToSrgb(scene.tokens[name], scene.tokenEncoding);
     return new THREE.Color().setRGB(channel.red, channel.green, channel.blue);
   };
@@ -659,9 +701,6 @@ function createTypedProjectionLayer(scene: Scene): {
   const nodePoints = points(tokenColor("text"), 9);
   const semanticLines = lines(tokenColor("edge"));
   const structuralLines = lines(tokenColor("peak"));
-  const curveLines = lines(tokenColor("textMuted"));
-  const containerLines = lines(tokenColor("surface"));
-  const fieldPoints = points(tokenColor("peak"), 4);
   const previousValues = new Map<THREE.Points | THREE.LineSegments, readonly number[]>();
   const write = (object: THREE.Points | THREE.LineSegments, values: readonly number[]): void => {
     const previous = previousValues.get(object);
@@ -689,9 +728,6 @@ function createTypedProjectionLayer(scene: Scene): {
       write(nodePoints, pointValues(geometry.nodes));
       write(semanticLines, segmentValues(geometry.semanticEdges));
       write(structuralLines, segmentValues(geometry.visualRelations));
-      write(curveLines, segmentValues(geometry.curves));
-      write(containerLines, segmentValues(geometry.containers));
-      write(fieldPoints, pointValues(geometry.fields));
     },
     dispose(): void {
       for (const child of group.children) {

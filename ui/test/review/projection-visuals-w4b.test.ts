@@ -15,7 +15,7 @@ import {
 import type { ProjectionVisualsDrawStats, ProjectionVisualsMorphology } from '#render-common/container-canvas.ts';
 import { classColors, epistemicColors } from '../../src/review/model.ts';
 import { validatePickResult } from '../../src/projection/contract.ts';
-import { buildTypedProjectionGeometry } from '../../src/render3f/picking.ts';
+import { buildTypedProjectionGeometry, TypedProjectionPicker } from '../../src/render3f/picking.ts';
 import type { Dimension, ProjectionResult, RenderVisibility, Vec3 } from '../../src/projection/contract-types.ts';
 import {
   buildFractalFixture, buildVisualsFixture, fractalResult, fullVisibility, holographicResult, indraResult,
@@ -420,11 +420,38 @@ test('3D never throws on a contract container shape: real Fractal regions and In
     }
     assert.ok(picked > 0, `${name}: some containers are picked directly`);
   }
-  // The Indra sphere path of the existing typed 3D geometry keeps working on the real result.
-  const indra = await caseNamed('indra-3d');
-  const typed = buildTypedProjectionGeometry({ styled: { projection: indra.result, nodeStyle: {}, edgeStyle: {}, visualStyle: {} },
-    visibility: { ...fullVisibility(indra.result), semanticEdgeIds: new Set<string>() }, semanticEdges: [] });
-  assert.ok(typed.containers.length > 0);
+});
+
+test('the typed 3D geometry and picker accept every contract container shape of the real Fractal and Indra results', async () => {
+  for (const name of ['fractal-3d', 'indra-3d'] as const) {
+    const item = await caseNamed(name);
+    const input = { styled: { projection: item.result, nodeStyle: {}, edgeStyle: {}, visualStyle: {} },
+      visibility: { ...fullVisibility(item.result), semanticEdgeIds: new Set<string>() }, semanticEdges: [] };
+    const geometry = buildTypedProjectionGeometry(input);
+    assert.equal(geometry.nodes.length, item.result.loadedNodeIds.length, name);
+    const containers = new Set(geometry.containers.map(segment => segment.pick.kind === 'container' ? segment.pick.visualId : ''));
+    assert.deepEqual([...containers].sort(), item.result.containers.map(c => c.visualId).sort(), `${name}: every container has segments`);
+    const { project } = projectorFor(item.result, '3d');
+    const picker = new TypedProjectionPicker(input, project);
+    // A region closes its boundary; a sphere is three great circles.
+    for (const container of item.result.containers) {
+      const segments = geometry.containers.filter(segment => segment.pick.kind === 'container' && segment.pick.visualId === container.visualId);
+      assert.equal(segments.length, container.boundary3 ? container.boundary3.length : 96, `${name}: ${container.visualId}`);
+      const first = segments[0]!;
+      const at = project({ x: (first.source.x + first.target.x) / 2, y: (first.source.y + first.target.y) / 2, z: (first.source.z + first.target.z) / 2 });
+      const pick = picker.pick(at);
+      assert.ok(pick !== null);
+      validatePickResult(item.result, pick);
+    }
+    const nodeId = item.result.loadedNodeIds[0]!;
+    const nodeAt = project(item.result.positions3![nodeId]!);
+    assert.deepEqual(picker.pickPrimary(nodeAt), { kind: 'node', id: nodeId });
+    // The derived classes belong to the projection visuals layer: the primary pick never returns them.
+    const container = item.result.containers[0]!;
+    const corner = container.boundary3?.[0] ?? { x: container.center3!.x + container.radius!, y: container.center3!.y, z: container.center3!.z };
+    const kind = picker.pickPrimary(project(corner))?.kind;
+    assert.ok(kind === undefined || kind === 'node' || kind === 'semantic-edge' || kind === 'visual-relation');
+  }
 });
 
 test('every contract container shape has a 2D and 3D form: circle, sphere, region and contour', async () => {

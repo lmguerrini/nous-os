@@ -44,6 +44,8 @@ import type {
   Projection2dScene,
 } from "#render2d/model.ts";
 import type { PickResult, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec2 } from "../projection/contract-types.ts";
+import { createProjectionVisualsLayer } from "#render-common/projection-visuals-layer.ts";
+import type { ProjectionVisualsMorphology } from "#render-common/projection-visuals-layer.ts";
 
 /** This reports one live glow footprint and does not expose graph semantics. */
 export type RenderNodeGlowWitness = {
@@ -1257,6 +1259,8 @@ export type Projection2dHandle = {
   updateVisibleSubset(styled: StyledProjection, visibility: RenderVisibility): void;
   pickAtPoint(position: Vec2): PickResult | null;
   readCameraState(): CameraState;
+  /** Appearance of the derived geometry (containers, curves, field rings); never moves it. */
+  setDerivedMorphology(morphology: ProjectionVisualsMorphology): void;
   readSurfaceWitness(): Readonly<{ nodeIds: readonly string[]; semanticEdgeIds: readonly string[]; visualRelationIds: readonly string[]; curveIds: readonly string[]; containerIds: readonly string[]; fieldIds: readonly string[] }>;
   destroy(): void;
 };
@@ -1302,8 +1306,6 @@ export function mountProjection2d(
   sigma.resize(true);
   const context = canvas.getContext('2d');
   const viewport = (point: Vec2) => sigma.graphToViewport(point);
-  const fieldPoint = (id: string): Vec2 | undefined => scene.nodes.get(id)?.position
-    ?? scene.containers.get(id)?.center2;
   const line = (a: Vec2, b: Vec2): void => {
     const start = viewport(a); const end = viewport(b);
     context!.moveTo(start.x, start.y); context!.lineTo(end.x, end.y);
@@ -1322,44 +1324,15 @@ export function mountProjection2d(
       context.strokeStyle = styleColor(scene.styled.visualStyle[relation.visualId] ?? {}, "#8fa8ac");
       context.beginPath(); line(a, b); context.stroke();
     }
-    for (const container of scene.containers.values()) {
-      context.strokeStyle = styleColor(scene.styled.visualStyle[container.visualId] ?? {}, "#7992a0");
-      context.beginPath();
-      if (container.boundary2 && container.boundary2.length > 1) {
-        const first = viewport(container.boundary2[0]!);
-        context.moveTo(first.x, first.y);
-        for (let i = 1; i < container.boundary2.length; i++) {
-          const p = viewport(container.boundary2[i]!); context.lineTo(p.x, p.y);
-        }
-        context.closePath();
-      } else if (container.center2 && container.radius !== undefined) {
-        const center = viewport(container.center2);
-        const rim = viewport({ x: container.center2.x + container.radius, y: container.center2.y });
-        context.arc(center.x, center.y, Math.hypot(rim.x - center.x, rim.y - center.y), 0, Math.PI * 2);
-      }
-      context.stroke();
-    }
-    for (const curve of scene.curves.values()) {
-      if (!curve.points2 || curve.points2.length < 2) continue;
-      context.strokeStyle = styleColor(scene.styled.visualStyle[curve.visualId] ?? {}, "#a0bad1");
-      context.beginPath();
-      const first = viewport(curve.points2[0]!); context.moveTo(first.x, first.y);
-      for (let i = 1; i < curve.points2.length; i++) {
-        const p = viewport(curve.points2[i]!); context.lineTo(p.x, p.y);
-      }
-      context.stroke();
-    }
-    for (const field of scene.fields.values()) {
-      context.fillStyle = styleColor(scene.styled.visualStyle[field.id] ?? {}, "#b8a4cb");
-      for (const id of field.sampleIds) {
-        const point = fieldPoint(id);
-        if (point === undefined) continue;
-        const p = viewport(point);
-        context.beginPath(); context.arc(p.x, p.y, 2 + 1 / 2, 0, Math.PI * 2); context.fill();
-      }
-    }
   };
-  sigma.on('afterRender', draw);
+  // Containers, curves and field rings are the shared derived-geometry layer; this canvas keeps the structural relations.
+  const visuals = createProjectionVisualsLayer(container, '2d', point => {
+    const p = sigma.graphToViewport(point);
+    return { x: p.x, y: p.y, scale: sigma.scaleSize(1) };
+  });
+  visuals.mount({ styled, visibility });
+  const redraw = (): void => { draw(); visuals.draw(); };
+  sigma.on('afterRender', redraw);
   draw();
   const hitSegment = (p: Vec2, a: Vec2, b: Vec2, tolerance = PROJECTION_PICK_RADIUS_PX): boolean => {
     const x = b.x - a.x; const y = b.y - a.y;
@@ -1392,6 +1365,7 @@ export function mountProjection2d(
       }
       scene = next;
       contentKey = nextKey;
+      visuals.updateVisibleSubset({ styled: nextStyled, visibility: nextVisibility });
       sigma.refresh();
       draw();
     },
@@ -1406,33 +1380,13 @@ export function mountProjection2d(
         if (a && b && hitSegment(position, viewport(a), viewport(b)))
           return { kind: 'visual-relation', visualId: relation.visualId };
       }
-      for (const curve of scene.curves.values()) if (curve.points2) {
-        for (let i = 1; i < curve.points2.length; i++)
-          if (hitSegment(position, viewport(curve.points2[i - 1]!), viewport(curve.points2[i]!)))
-            return { kind: 'curve', visualId: curve.visualId };
-      }
-      for (const field of scene.fields.values()) for (const id of field.sampleIds) {
-        const point = fieldPoint(id);
-        if (point && Math.hypot(position.x - viewport(point).x, position.y - viewport(point).y) <= PROJECTION_PICK_RADIUS_PX)
-          return { kind: 'field', visualId: field.id };
-      }
-      for (const container of scene.containers.values()) {
-        if (container.center2 && container.radius !== undefined) {
-          const center = viewport(container.center2);
-          const rim = viewport({ x: container.center2.x + container.radius, y: container.center2.y });
-          if (Math.abs(Math.hypot(position.x - center.x, position.y - center.y) - Math.hypot(rim.x - center.x, rim.y - center.y)) <= PROJECTION_PICK_RADIUS_PX)
-            return { kind: 'container', visualId: container.visualId };
-        }
-        if (container.boundary2) for (let i = 0; i < container.boundary2.length; i++)
-          if (hitSegment(position, viewport(container.boundary2[i]!), viewport(container.boundary2[(i + 1) % container.boundary2.length]!)))
-            return { kind: 'container', visualId: container.visualId };
-      }
-      return null;
+      return visuals.pickAt(position);
     },
     readCameraState: () => sigma.getCamera().getState(),
     readSurfaceWitness: () => ({ nodeIds: graph.nodes(), semanticEdgeIds: graph.edges(),
       visualRelationIds: [...scene.visualRelations.keys()], curveIds: [...scene.curves.keys()],
       containerIds: [...scene.containers.keys()], fieldIds: [...scene.fields.keys()] }),
-    destroy(): void { sigma.off('afterRender', draw); sigma.kill(); },
+    setDerivedMorphology: morphology => visuals.setMorphology(morphology),
+    destroy(): void { sigma.off('afterRender', redraw); visuals.destroy(); sigma.kill(); },
   };
 }

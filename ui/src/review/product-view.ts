@@ -30,9 +30,8 @@ import type { ReviewCameraState } from "../render3f/camera.tsx";
 import { defaultObliqueOrbit, resolvedNodeBounds } from "../render3f/camera.tsx";
 import { buildContainerGeometry } from "../engine/container-geometry.ts";
 import type { MorphologyContainerPath } from "../engine/container-geometry.ts";
-import { buildProjectionVisuals, containerSphereLOD, containerTitleFont, drawProjectionVisuals, pickProjectionVisuals, placeContainerTitles, projectedWorldScale } from "../render-common/container-canvas.ts";
-import type { CanvasDisc, ProjectionVisualsDrawStats, ProjectionVisualsGeometry, ProjectionVisualsMorphology } from "../render-common/container-canvas.ts";
-import { projection2dRevisionAction, projection2dVisibilityKey } from "../render2d/model.ts";
+import { containerSphereLOD, containerTitleFont, placeContainerTitles, projectedWorldScale } from "../render-common/container-canvas.ts";
+import type { CanvasDisc } from "../render-common/container-canvas.ts";
 import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "../engine/morphology-contract.ts";
 import { drawFlowLayer } from "../render-common/morphology-canvas.ts";
 import type { DistinctSubsetUpdate, MorphologyCanvasStyle } from "../render-common/morphology-canvas.ts";
@@ -179,95 +178,8 @@ export function mountProductProjection(
   };
 }
 
-/** Maps a world point to the host's CSS pixels; `scale` sizes node-channel rings like the host sizes nodes. */
-export type ProjectionVisualsProjector = (point: Coordinates) => { readonly x: number; readonly y: number; readonly scale?: number };
-
-/** A `ProductProjectionRenderer` for the derived geometry of a projection (containers, curves, field channels). */
-export type ProjectionVisualsLayer = ProductProjectionRenderer & {
-  draw(): void;
-  setMorphology(morphology: ProjectionVisualsMorphology): void;
-  setQuality(quality: "full" | "moving"): void;
-  setEmphasis(visualId: string | null): void;
-  /** What the last draw traced, for the browser checks. */
-  readWitness(): Readonly<{ revision: number; containerIds: readonly string[]; curveIds: readonly string[];
-    fieldIds: readonly string[]; undrawnFieldIds: readonly string[]; drawn: Readonly<ProjectionVisualsDrawStats> }>;
-};
-
-/**
- * The derived-geometry layer of the typed pipeline, one transparent canvas over the host. It draws only
- * on mount, on an accepted visibility revision and on the host's `draw()` (a camera change), so an idle
- * page costs nothing. The morphology style and the drawing quality change how the geometry is drawn;
- * coordinates come from the result alone.
- */
-export function createProjectionVisualsLayer(
-  host: HTMLElement, dimension: Dimension, project: ProjectionVisualsProjector,
-  initial: Readonly<{ morphology?: ProjectionVisualsMorphology; quality?: "full" | "moving" }> = {},
-): ProjectionVisualsLayer {
-  let canvas: HTMLCanvasElement | null = null;
-  let context: CanvasRenderingContext2D | null = null;
-  let geometry: ProjectionVisualsGeometry | null = null;
-  let revision = -1;
-  let contentKey = "";
-  let morphology = initial.morphology ?? "stellar";
-  let quality = initial.quality ?? "full";
-  let emphasisId: string | null = null;
-  let destroyed = false;
-  let blank = true;
-  const drawn: ProjectionVisualsDrawStats = { containers: 0, curves: 0, fields: 0, strokes: 0 };
-  const viewport = { width: 0, height: 0 };
-  const accept = (input: ProductProjectionInput): void => {
-    geometry = buildProjectionVisuals(input.styled.projection, input.visibility, dimension);
-    revision = input.visibility.revision;
-    contentKey = projection2dVisibilityKey(input.styled, input.visibility);
-  };
-  const draw = (): void => {
-    if (destroyed || !canvas || !context || !geometry) return;
-    const empty = geometry.containers.length + geometry.curves.length + geometry.fields.length === 0;
-    if (empty && blank) return;
-    const box = canvas.getBoundingClientRect();
-    if (box.width <= 0 || box.height <= 0) return;
-    const width = Math.max(1, Math.round(box.width * devicePixelRatio));
-    const height = Math.max(1, Math.round(box.height * devicePixelRatio));
-    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
-    context.setTransform(canvas.width / box.width, 0, 0, canvas.height / box.height, 0, 0);
-    context.clearRect(0, 0, box.width, box.height);
-    drawn.containers = 0; drawn.curves = 0; drawn.fields = 0; drawn.strokes = 0;
-    blank = empty;
-    if (empty) return;
-    viewport.width = box.width; viewport.height = box.height;
-    drawProjectionVisuals(context, geometry, project, { morphology, quality, viewport, emphasisId }, drawn);
-  };
-  return {
-    dimension,
-    mount(input) {
-      if (destroyed) throw new Error("projection visuals layer destroyed");
-      if (canvas) throw new Error("projection visuals layer already mounted");
-      canvas = document.createElement("canvas");
-      canvas.dataset.projectionVisuals = dimension;
-      Object.assign(canvas.style, { position: "absolute", inset: "0", width: "100%", height: "100%", pointerEvents: "none" });
-      host.append(canvas);
-      context = canvas.getContext("2d");
-      accept(input);
-      draw();
-    },
-    updateVisibleSubset(input) {
-      if (destroyed) throw new Error("projection visuals layer destroyed");
-      const action = projection2dRevisionAction(revision, contentKey, input.visibility.revision, projection2dVisibilityKey(input.styled, input.visibility));
-      if (action !== "apply") return;
-      accept(input);
-      draw();
-    },
-    pickAt: position => !destroyed && geometry ? pickProjectionVisuals(geometry, project, position) : null,
-    draw,
-    setMorphology(next) { if (next !== morphology) { morphology = next; draw(); } },
-    setQuality(next) { if (next !== quality) { quality = next; draw(); } },
-    setEmphasis(next) { if (next !== emphasisId) { emphasisId = next; draw(); } },
-    readWitness: () => ({ revision, containerIds: geometry?.containers.map(item => item.id) ?? [],
-      curveIds: geometry?.curves.map(item => item.id) ?? [], fieldIds: geometry?.fields.map(item => item.id) ?? [],
-      undrawnFieldIds: geometry?.undrawnFieldIds ?? [], drawn: { ...drawn } }),
-    destroy() { if (!destroyed) { destroyed = true; canvas?.remove(); canvas = null; context = null; geometry = null; } },
-  };
-}
+export { createProjectionVisualsLayer } from "../render-common/projection-visuals-layer.ts";
+export type { ProjectionVisualsLayer, ProjectionVisualsProjector } from "../render-common/projection-visuals-layer.ts";
 
 /** On-screen radius of an Indra container's own marker; the container ring carries the node. */
 const INDRA_CONTAINER_MARKER_PX = 2.5;

@@ -234,3 +234,19 @@ test('teardown is idempotent and removes the canvas; a destroyed layer refuses u
   assert.equal(dom.ops.clears, clears);
   assert.throws(() => layer.mount({} as never), /destroyed/);
 });
+
+test('the moving quality is applied without a second draw and lightens the next frame; the canvas is exposed and released', async () => {
+  const { dom, layer, host } = await mountRig('indra3');
+  assert.ok(layer.canvas !== null);
+  const fullStrokes = layer.readWitness().drawn.strokes;
+  const clears = dom.ops.clears;
+  layer.setQuality('moving', false);
+  assert.equal(dom.ops.clears, clears, 'setQuality(…, false) leaves the redraw to the host camera tick');
+  layer.draw();
+  assert.equal(dom.ops.clears, clears + 1);
+  assert.ok(layer.readWitness().drawn.strokes < fullStrokes, 'a moving frame omits the meridians');
+  layer.setQuality('full');
+  assert.equal(layer.readWitness().drawn.strokes, fullStrokes);
+  host.destroy();
+  assert.equal(layer.canvas, null);
+});

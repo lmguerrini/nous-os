@@ -178,21 +178,36 @@ export function buildTypedProjectionGeometry(input: Render3fTypedInput): TypedPr
   const containers: TypedSegment[] = [];
   for (const visualId of [...visibility.containerIds].sort(codepoint)) {
     const container = containerById.get(visualId)!;
+    const pick: PickResult = { kind: "container", visualId };
+    if (container.shape === "region" || container.shape === "contour") {
+      // A region closes its sampled boundary; a contour stays an open polyline.
+      const boundary = container.boundary3;
+      if (!boundary || boundary.length < (container.shape === "region" ? 3 : 2)) {
+        throw new TypeError(`3D ${container.shape} lacks a boundary: ${visualId}`);
+      }
+      for (const point of boundary) {
+        if (![point.x, point.y, point.z].every(Number.isFinite)) throw new TypeError(`3D ${container.shape} has nonfinite point: ${visualId}`);
+      }
+      const last = container.shape === "region" ? boundary.length : boundary.length - 1;
+      for (let i = 0; i < last; i++) containers.push({ pick, source: boundary[i]!, target: boundary[(i + 1) % boundary.length]! });
+      continue;
+    }
     if (!container.center3 || ![container.center3.x, container.center3.y, container.center3.z, container.radius].every(
       value => value !== undefined && Number.isFinite(value),
     ) || !(container.radius && container.radius > 0)) {
       throw new TypeError(`3D container lacks center or radius: ${visualId}`);
     }
     const { center3: c, radius: r } = container;
-    // Three great circles make the sphere boundary visible from every standard camera preset.
-    for (let axis = 0; axis < 3; axis++) for (let i = 0; i < 32; i++) {
+    // A circle is one ring; a sphere is three great circles, so its boundary shows from every standard camera preset.
+    const axes = container.shape === "circle" ? 1 : 3;
+    for (let axis = 0; axis < axes; axis++) for (let i = 0; i < 32; i++) {
       const at = (step: number): Coordinates => {
         const a = step * Math.PI / 16;
-        return axis === 0 ? { x: c.x, y: c.y + r * Math.cos(a), z: c.z + r * Math.sin(a) }
+        return axis === 0 && axes === 3 ? { x: c.x, y: c.y + r * Math.cos(a), z: c.z + r * Math.sin(a) }
           : axis === 1 ? { x: c.x + r * Math.cos(a), y: c.y, z: c.z + r * Math.sin(a) }
             : { x: c.x + r * Math.cos(a), y: c.y + r * Math.sin(a), z: c.z };
       };
-      containers.push({ pick: { kind: "container", visualId }, source: at(i), target: at(i + 1) });
+      containers.push({ pick, source: at(i), target: at(i + 1) });
     }
   }
   const fields: TypedPoint[] = [];
@@ -234,6 +249,15 @@ export class TypedProjectionPicker {
     this.geometryValue = next;
     this.fingerprint = fingerprint;
     return true;
+  }
+  /** Nodes, then structural relations, then source edges: the classes this picker owns outright. The
+   * derived geometry (containers, curves, field rings) is picked by the projection visuals layer. */
+  pickPrimary(position: { readonly x: number; readonly y: number }): PickResult | null {
+    for (const point of this.geometryValue.nodes) if (distance(position, this.project(point.position)) <= 8) return point.pick;
+    for (const segments of [this.geometryValue.visualRelations, this.geometryValue.semanticEdges]) {
+      for (const segment of segments) if (segmentDistance(position, this.project(segment.source), this.project(segment.target)) <= 5) return segment.pick;
+    }
+    return null;
   }
   pick(position: { readonly x: number; readonly y: number }): PickResult | null {
     for (const point of this.geometryValue.fields) if (distance(position, this.project(point.position)) <= 5) return point.pick;
