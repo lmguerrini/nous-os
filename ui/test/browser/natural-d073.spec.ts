@@ -85,10 +85,48 @@ test('D-073 a legacy flat URL view loads as Natural with its arrangement resolve
   expect(loaded.axes.morphology).toBe('neural');
   expect(loaded.view).toMatchObject({ organization: 'natural', arrangement: 'network' });
   await setAxes(page, { morphology: 'stellar' });
-  expect((await pageState(page)).view).toMatchObject({ organization: 'natural', arrangement: 'network', morphology: 'stellar' });
+  const restyled = await pageState(page);
+  expect(restyled.axes).toMatchObject({ organization: 'natural', arrangement: 'constellation', morphology: 'stellar' });
+  expect(restyled.view).toMatchObject({ organization: 'natural', arrangement: 'constellation', morphology: 'stellar' });
   expect(JSON.parse(await hashView(page)).organization).toBe('natural');
+  expect(JSON.parse(await hashView(page)).arrangement).toBe('constellation');
   await expectNoLegacySpelling(page);
   expect(errors).toEqual([]);
+});
+
+test('D-073 a legacy flat URL view resolves its arrangement once when the Natural pipeline is on', async ({ page }) => {
+  const errors = await ready(page, `${url}#projection=natural&view=${encodeURIComponent(LEGACY_VIEW)}`);
+  const loaded = await pageState(page);
+  expect(loaded.axes.organization).toBe('natural');
+  expect(loaded.axes.morphology).toBe('neural');
+  expect(loaded.view).toMatchObject({ organization: 'natural', arrangement: 'network' });
+  await setAxes(page, { morphology: 'stellar' });
+  const restyled = await pageState(page);
+  expect(restyled.axes).toMatchObject({ organization: 'natural', arrangement: 'network', morphology: 'stellar' });
+  expect(restyled.view).toMatchObject({ organization: 'natural', arrangement: 'network', morphology: 'stellar' });
+  expect(JSON.parse(await hashView(page)).organization).toBe('natural');
+  expect(JSON.parse(await hashView(page)).arrangement).toBe('network');
+  await expectNoLegacySpelling(page);
+  expect(errors).toEqual([]);
+});
+
+test('D-073 an explicit arrangement in a legacy flat URL view is kept in both Natural modes', async ({ page }) => {
+  const legacyViewWithExplicitArrangement = JSON.stringify({ ...JSON.parse(LEGACY_VIEW), arrangement: 'network' });
+  for (const target of [
+    `${url}#view=${encodeURIComponent(legacyViewWithExplicitArrangement)}`,
+    `${url}#projection=natural&view=${encodeURIComponent(legacyViewWithExplicitArrangement)}`,
+  ]) {
+    const errors = await ready(page, target);
+    const loaded = await pageState(page);
+    expect(loaded.view).toMatchObject({ organization: 'natural', arrangement: 'network', morphology: 'neural' });
+    await setAxes(page, { morphology: 'stellar' });
+    const restyled = await pageState(page);
+    expect(restyled.axes).toMatchObject({ organization: 'natural', arrangement: 'network', morphology: 'stellar' });
+    expect(restyled.view).toMatchObject({ organization: 'natural', arrangement: 'network', morphology: 'stellar' });
+    expect(JSON.parse(await hashView(page)).arrangement).toBe('network');
+    await expectNoLegacySpelling(page);
+    expect(errors).toEqual([]);
+  }
 });
 
 test('D-073 a legacy flat stored view loads as Natural and is rewritten only as natural', async ({ page }) => {
