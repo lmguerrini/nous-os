@@ -334,6 +334,21 @@ test('the projection witness, camera bridge and tick read the mounted typed rend
   assert.equal((page.witness() as { lod: { level: string } }).lod.level, 'far');
 });
 
+test('typed 2D and 3D mounts report placed label IDs synchronously while density budget stays available', async () => {
+  for (const dimension of ['2d', '3d'] as const) {
+    let placed: readonly string[] = ['placed-a', 'placed-b'];
+    const { page } = await typedPage(fixtureIndex(), { projection: dimension }, {
+      dimension, mount() {}, updateVisibleSubset() {}, destroy() {},
+      onPick() {}, onHover() {},
+      readPlacedLabelIds: () => placed,
+    });
+    const labels = () => (page.witness() as { lod: { labels: { rendered: number; available: number } } }).lod.labels;
+    assert.deepEqual(labels(), { rendered: 2, available: 60 }, `${dimension} reports the mounted overlay IDs`);
+    placed = ['placed-c'];
+    assert.deepEqual(labels(), { rendered: 1, available: 60 }, `${dimension} reads the latest pass without requesting a frame`);
+  }
+});
+
 test('the default pipeline builds its snapshot from the page index and styles without touching the digest', async () => {
   const index = fixtureIndex();
   const page = new Page(MANIFEST, index, AXES, APPEARANCE, PALETTE, {}, 'complete', { useDefaultPipeline: true });

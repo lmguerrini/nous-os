@@ -1268,6 +1268,8 @@ export type Projection2dHandle = {
   updateVisibleSubset(styled: StyledProjection, visibility: RenderVisibility): void;
   pickAtPoint(position: Vec2): PickResult | null;
   readCameraState(): CameraState;
+  /** IDs placed by the most recent typed label pass; reading them schedules no render. */
+  readPlacedLabelIds(): readonly string[];
   /** Appearance of the derived geometry (containers, curves, field rings); never moves it. */
   setDerivedMorphology(morphology: ProjectionVisualsMorphology): void;
   readSurfaceWitness(): Readonly<{ nodeIds: readonly string[]; semanticEdgeIds: readonly string[]; visualRelationIds: readonly string[]; curveIds: readonly string[]; containerIds: readonly string[]; fieldIds: readonly string[] }>;
@@ -1565,6 +1567,7 @@ export function mountProjection2d(
       return visuals.pickAt(position);
     },
     readCameraState: () => sigma.getCamera().getState(),
+    readPlacedLabelIds: () => labels.readLabelIds(),
     readSurfaceWitness: () => ({ nodeIds: graph.nodes(), semanticEdgeIds: graph.edges(),
       visualRelationIds: [...scene.visualRelations.keys()], curveIds: [...scene.curves.keys()],
       containerIds: [...scene.containers.keys()], fieldIds: [...scene.fields.keys()] }),

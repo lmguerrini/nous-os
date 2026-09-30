@@ -115,6 +115,8 @@ export type Render3fOptions = {
 /** This exposes renderer-owned framing witnesses without widening the shared renderer handle. */
 export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountingRendererHandle & {
   readReviewCameraPose(): { position: number[]; target: number[]; up: number[]; fov: number };
+  /** IDs placed by the most recent typed label pass; reading them schedules no render. */
+  readPlacedLabelIds(): readonly string[];
   setReviewViewPreset(name: "fronte" | "retro" | "sinistra" | "destra" | "alto" | "basso"): void;
   /** This copies the picker-held resolved relation geometry and does not rebuild scene geometry. */
   readRelationGeometryWitnesses(): readonly RelationGeometryWitness[];
@@ -510,6 +512,7 @@ export function mount(
   };
 
   return {
+    readPlacedLabelIds(): readonly string[] { return typedLabelOverlay?.readLabelIds() ?? []; },
     setAppearance(appearance: AppearanceOptions): void { distinct?.setAppearance(appearance); },
     setDerivedMorphology(morphology: ProjectionVisualsMorphology): void {
       derivedMorphology = morphology;

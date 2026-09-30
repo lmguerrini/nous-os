@@ -334,6 +334,8 @@ export interface ProjectionPageRenderer extends ProjectionRenderer {
     /** The 3D pose shape the gizmo reads (`main.ts`); only the 3D adapter can supply it. */
     readonly readCameraPose?: () => { readonly position: number[]; readonly target: number[];
         readonly up: number[]; readonly fov: number } | null;
+    /** IDs placed by the current typed renderer pass, read without scheduling another frame. */
+    readonly readPlacedLabelIds?: () => readonly string[];
 }
 /** B10c supplies the renderer/style bridge; B10d supplies the structural panel entry. */
 export interface ProjectionPipelineInput {
@@ -1670,6 +1672,7 @@ export class V2Page {
                         },
                         updateVisibleSubset(styled, visibility) { handle?.updateVisibleSubset(styled, visibility); },
                         readCameraState: () => handle?.readCameraState() ?? null,
+                        readPlacedLabelIds: () => handle?.readPlacedLabelIds() ?? [],
                         destroy() { handle?.destroy(); handle = null; },
                     };
                 }
@@ -1705,6 +1708,7 @@ export class V2Page {
                     updateVisibleSubset(styled, visibility) { handle?.updateVisibleSubset(typedInput(styled, visibility)); },
                     readCameraState: () => handle?.readCameraState() ?? null,
                     readCameraPose: () => handle?.readReviewCameraPose() ?? null,
+                    readPlacedLabelIds: () => handle?.readPlacedLabelIds() ?? [],
                     destroy() { handle?.destroy(); handle = null; },
                 };
             },
@@ -2423,6 +2427,10 @@ export class V2Page {
     }
     /** Labels actually placed by the view in its last pass. */
     private labelCount(): number {
+        if (this.typedActive()) {
+            try { return this.projectionRenderer?.readPlacedLabelIds?.().length ?? 0; }
+            catch { return 0; }
+        }
         try {
             return this.view?.witness().labels.length ?? 0;
         }
@@ -2431,6 +2439,8 @@ export class V2Page {
         }
     }
     private titleCount(): number {
+        // The typed label pass places labels only; it does not place product container titles.
+        if (this.typedActive()) return 0;
         try { return this.view?.witness().titleCount ?? 0; }
         catch { return 0; }
     }
