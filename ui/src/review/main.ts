@@ -340,7 +340,7 @@ function updatePanel() {
   structuralPickControls.hidden = true;
   legendSection.append(structuralPickControls);
   details.append(legendSection);
-  appendFlowLegend(details, activePalette());
+  appendFlowLegend(details, activePalette(), axes.organization === "indra" ? "indra" : "natural");
 }
 let liveQuery = "";
 async function liveSearch(query: string, limit = 10): Promise<LiveFragment[]> {
@@ -606,6 +606,7 @@ function setAxes(input: AxesInput): Promise<void> {
   if ((partial.organization === "fractal" || partial.organization === "holographic") && !v2?.supportsOrganization(partial.organization))
     return Promise.reject(new Error(`La vista ${viewLabel(partial.organization)} non è disponibile per questo grafo`));
   axes = appliedAxes(partial);
+  refreshFlowLegends();
   persistView();
   syncArrangementInspector();
   if (partial.projection === "2d") stopGizmoUpdate();
@@ -773,10 +774,11 @@ function activePalette(): PaletteValues {
  * the fullscreen one and any panel section — re-renders on each palette change. */
 function refreshFlowLegends(): void {
   const palette = activePalette();
+  const organization = axes.organization === "indra" ? "indra" : "natural";
   const fullscreen = get<HTMLElement>("fullscreen-legend");
-  renderFlowLegend(fullscreen, palette);
+  renderFlowLegend(fullscreen, palette, organization);
   for (const host of document.querySelectorAll<HTMLElement>(".flow-legend"))
-    if (host !== fullscreen) renderFlowLegend(host, palette);
+    if (host !== fullscreen) renderFlowLegend(host, palette, organization);
 }
 function syncCustomColours(): void {
   refreshFlowLegends();

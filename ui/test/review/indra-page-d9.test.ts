@@ -258,6 +258,20 @@ const cardsText = (element: FakeElement): string =>
   element.className === 'selection-card' ? textOf(element) : element.children.map(cardsText).join(' ');
 const lazyOf = (result: ProjectionResult) => result.levels.filter(level => isLazyLevel(result, level));
 
+test('the panel legend shows the Indra reading only while Indra is active', async () => {
+  const { page } = await typedPage();
+  const panelText = () => textOf(elements.get('details')!);
+  const countExplanation = () => panelText().split('Come leggere Indra').length - 1;
+
+  assert.equal(countExplanation(), 0, 'Natural starts without the Indra explanation');
+  await page.setAxes({ organization: 'indra' });
+  assert.equal(countExplanation(), 1, 'Indra adds exactly one explanation to the panel legend');
+  await page.setAxes({ organization: 'natural' });
+  assert.equal(countExplanation(), 0, 'switching back to Natural removes the explanation');
+  await page.setAxes({ organization: 'indra' });
+  assert.equal(countExplanation(), 1, 'switching to Indra again rebuilds the legend without duplication');
+});
+
 test('selecting Indra requests the root through the typed pipeline and discloses the construction', async () => {
   const client = spyClient();
   const { page, trace } = await typedPage({ client });

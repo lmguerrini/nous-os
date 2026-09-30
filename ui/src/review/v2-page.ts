@@ -3176,7 +3176,7 @@ export class V2Page {
             search.append(button);
         }
         host.append(search);
-        appendFlowLegend(host, this.palette);
+        appendFlowLegend(host, this.palette, this.axes.organization === 'indra' ? 'indra' : 'natural');
         // D-073 B8/B10e: the typed pipeline's structural pick controls. The legend owns its own
         // visibility (hidden until a structural relation is actually visible); without the flag the
         // element stays absent, exactly as the off-path browser check expects.
