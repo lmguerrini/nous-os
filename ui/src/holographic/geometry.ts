@@ -21,7 +21,8 @@
  * refuses), then modified Gram-Schmidt is applied twice against every previously chosen
  * column, and each column's sign is fixed so its largest-absolute entry (ties by smallest
  * node ID) is positive. Rank deficiency after 4n probes, a projector drift over 1e-8 under a
- * repeat solve, or a failed residual/orthogonality check refuses with a typed code. The
+ * standalone repeat solve, or a failed residual/orthogonality check refuses with a typed code.
+ * A projection-owned spectrum is independently checked and reused without a repeat solve. The
  * canonical columns are quantised to 1e-10 before the result digest; every refusal returns
  * empty loaded IDs and no positions, never a fallback layout. */
 
@@ -31,8 +32,9 @@ import type { SpectralGraph } from './adjacency.ts';
 import { DENSE_DEFAULT_MAX_N, DENSE_SYMMETRIC_SOLVER_VERSION, denseLaplacian, solveDenseSymmetricEigen, type DenseEigenSolution } from './dense.ts';
 import { LANCZOS_SOLVER_VERSION, solveSpectrum, type LanczosOptions } from './lanczos.ts';
 import { largestEntryIndex, modifiedGramSchmidtTwice, norm2, orthogonalityDefect } from './linear-algebra.ts';
+import type { Eigenbasis } from './signals.ts';
 
-export const SPECTRAL_GEOMETRY_VERSION = 'holographic-geometry-v1';
+export const SPECTRAL_GEOMETRY_VERSION = 'holographic-geometry-v2';
 export const EIGENSPACE_POLICY_VERSION = 'projector-probe-v1';
 export const CLUSTER_RELATIVE_TOLERANCE = 1e-8;
 export const CLUSTER_GAP_FACTOR = 4;
@@ -58,6 +60,10 @@ export interface SpectralGeometryOptions {
   readonly backend?: SpectralBackend;
   /** Passed to the Lanczos backend; the seed defaults to the domain digest. */
   readonly lanczos?: LanczosOptions;
+  /** A projection-owned spectrum, already checked by its solver. Geometry independently
+   * checks its residuals and orthogonality and uses it without another eigensolve. */
+  readonly validatedBasis?: Eigenbasis;
+  readonly priorSolverFailure?: string;
 }
 
 export interface GeometryClusterWitness {
@@ -348,7 +354,45 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
   const lanczos: LanczosOptions = { ...options.lanczos, seed: options.lanczos?.seed ?? options.domainDigest };
   const zeroThreshold = CLUSTER_RELATIVE_TOLERANCE * Math.max(1, graph.spectralNormBound);
 
-  const attempt = solveOnce(graph, backend, lanczos);
+  if (options.priorSolverFailure !== undefined) {
+    return solverFailureState(graph, options, backend, {
+      message: options.priorSolverFailure,
+      solverVersion: backend === 'dense' ? DENSE_SYMMETRIC_SOLVER_VERSION : LANCZOS_SOLVER_VERSION,
+      relativeResidualMax: null,
+    }, zeroThreshold);
+  }
+  let attempt: SolveAttempt;
+  if (options.validatedBasis !== undefined) {
+    const basis = options.validatedBasis;
+    let worst = 0;
+    const scale = Math.max(1, graph.spectralNormBound);
+    if (basis.n !== n || basis.count < graph.componentCount ||
+        basis.eigenvalues.length !== basis.count || basis.eigenvectors.length !== n * basis.count) {
+      return solverFailureState(graph, options, backend, {
+        message: 'the supplied spectrum has incompatible dimensions', solverVersion: basis.algorithmVersion, relativeResidualMax: null,
+      }, zeroThreshold);
+    }
+    const columns: Float64Array[] = [];
+    for (let mode = 0; mode < basis.count; mode += 1) {
+      const vector = basis.eigenvectors.subarray(mode * n, (mode + 1) * n);
+      const product = graph.applyLaplacian(vector);
+      for (let row = 0; row < n; row += 1) product[row] = product[row]! - basis.eigenvalues[mode]! * vector[row]!;
+      worst = Math.max(worst, norm2(product) / scale);
+      columns.push(vector);
+    }
+    const defect = orthogonalityDefect(columns);
+    if (worst > EIGENSPACE_RESIDUAL_TOLERANCE || defect > EIGENSPACE_RESIDUAL_TOLERANCE) {
+      return solverFailureState(graph, options, backend, {
+        message: `the supplied spectrum failed geometry validation (relative residual ${worst}, orthogonality ${defect})`,
+        solverVersion: basis.algorithmVersion, relativeResidualMax: worst,
+      }, zeroThreshold);
+    }
+    attempt = { kind: 'solved', solved: {
+      eigenvalues: basis.eigenvalues, eigenvectors: basis.eigenvectors, count: basis.count,
+      solverVersion: basis.algorithmVersion, normEstimate: graph.spectralNormBound,
+      relativeResidualMax: worst, orthogonalityDefect: defect,
+    } };
+  } else attempt = solveOnce(graph, backend, lanczos);
   if (attempt.kind === 'solver-failure') {
     return solverFailureState(graph, options, backend, attempt, zeroThreshold);
   }
@@ -499,30 +543,33 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
 
   // Residual, orthogonality and repeat-solve projector checks on the assembled geometry.
   const residualScale = Math.max(1, solved.normEstimate);
+  let checkedColumn = 0;
   for (const [ordinalOffset, cluster] of retained.entries()) {
-    const column = chosen[ordinalOffset]!;
-    const action = applyClusterEigenvalueAction(solved, cluster, column);
-    const product = graph.applyLaplacian(column);
-    for (let index = 0; index < n; index += 1) product[index] = product[index]! - action[index]!;
-    if (norm2(product) > EIGENSPACE_RESIDUAL_TOLERANCE * residualScale) {
-      return refuse(
-        'solver-failure',
-        `a geometry column of cluster ${String(firstNonzero + ordinalOffset)} failed its eigenspace residual check (${norm2(product).toExponential(3)} > ${String(EIGENSPACE_RESIDUAL_TOLERANCE)} scale)`,
-        boundaryTolerance(solved, cluster.start),
-      );
+    for (let local = cluster.start; local < cluster.end; local += 1) {
+      const column = chosen[checkedColumn++]!;
+      const action = applyClusterEigenvalueAction(solved, cluster, column);
+      const product = graph.applyLaplacian(column);
+      for (let index = 0; index < n; index += 1) product[index] = product[index]! - action[index]!;
+      if (norm2(product) > EIGENSPACE_RESIDUAL_TOLERANCE * residualScale) {
+        return refuse(
+          'solver-failure',
+          `a geometry column of cluster ${String(firstNonzero + ordinalOffset)} failed its eigenspace residual check (${norm2(product).toExponential(3)} > ${String(EIGENSPACE_RESIDUAL_TOLERANCE)} scale)`,
+          boundaryTolerance(solved, cluster.start),
+        );
+      }
     }
   }
   const defect = orthogonalityDefect(chosen);
   if (defect > EIGENSPACE_RESIDUAL_TOLERANCE) {
     return refuse('solver-failure', `geometry column orthogonality defect ${defect.toExponential(3)} exceeds ${String(EIGENSPACE_RESIDUAL_TOLERANCE)}`, zeroThreshold);
   }
-  const repeatAttempt = solveOnce(graph, backend, lanczos);
-  if (repeatAttempt.kind === 'solver-failure') {
-    return solverFailureState(graph, options, backend, repeatAttempt, zeroThreshold);
+  let drift: number | null = options.validatedBasis === undefined ? 0 : null;
+  if (options.validatedBasis === undefined) {
+    const repeatAttempt = solveOnce(graph, backend, lanczos);
+    if (repeatAttempt.kind === 'solver-failure') return solverFailureState(graph, options, backend, repeatAttempt, zeroThreshold);
+    for (const cluster of retained) drift = Math.max(drift!, projectorDrift(solved, repeatAttempt.solved, cluster));
   }
-  let drift = 0;
-  for (const cluster of retained) drift = Math.max(drift, projectorDrift(solved, repeatAttempt.solved, cluster));
-  if (drift > REPEAT_PROJECTOR_TOLERANCE) {
+  if (drift !== null && drift > REPEAT_PROJECTOR_TOLERANCE) {
     return refuse('solver-failure', `the repeat solve moved a retained projector by ${drift.toExponential(3)} > ${String(REPEAT_PROJECTOR_TOLERANCE)}`, zeroThreshold);
   }
 
@@ -613,7 +660,7 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
         probeOrdinals: formatList(witnesses.flatMap((witness) => witness.probeOrdinals)),
         relativeResidualMax: solved.relativeResidualMax,
         orthogonalityDefect: solved.orthogonalityDefect,
-        repeatProjectorDrift: drift,
+        repeatProjectorDrift: drift ?? 'not repeated: projection-owned validated basis',
         quantization: '1e-10',
         resultDigest,
       },

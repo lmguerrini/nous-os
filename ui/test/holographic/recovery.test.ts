@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DENSE_BENCHMARK_OPT_IN, DENSE_DEFAULT_MAX_N, denseLaplacian, solveDenseSymmetricEigen } from '../../src/holographic/dense.ts';
-import { recoverBandlimitedSignal, type RecoveryOutcome } from '../../src/holographic/recovery.ts';
+import { recoverBandlimitedSignal, recoverStableBandlimit, type RecoveryOutcome } from '../../src/holographic/recovery.ts';
 import { eigenbasisFromDense, syntheticSignal, type Eigenbasis } from '../../src/holographic/signals.ts';
 import type { SpectralGraph } from '../../src/holographic/adjacency.ts';
 import { noiseVector, pathGraph, ringLatticeGraph } from './fixtures.ts';
@@ -71,6 +71,26 @@ test('P3: a one-endpoint sample is rank-deficient and refuses exact recovery', (
   const ridged = recoverBandlimitedSignal(graph, basis, signal, [0], { bandlimit: 2, ridge: 0.5 });
   assert.ok(ridged.kind === 'refusal', 'a ridge cannot buy rank');
   assert.equal(ridged.code, 'rank-deficient');
+});
+
+test('the stable band rule selects by sample rank and condition, independently of held-out values', () => {
+  const graph = pathGraph(3);
+  const basis = denseBasis(graph);
+  const smooth = Float64Array.from([5, 3, 1]);
+  const alteredHeldOut = Float64Array.from([5, 3, 100]);
+  const samples = [0, 1];
+  const first = recoverStableBandlimit(graph, basis, smooth, samples, { maxBandlimit: 3, maxCondition: 30 });
+  const second = recoverStableBandlimit(graph, basis, alteredHeldOut, samples, { maxBandlimit: 3, maxCondition: 30 });
+  assert.equal(first.kind, 'recovered');
+  assert.equal(second.kind, 'recovered');
+  assert.equal(first.bandlimit, 2);
+  assert.equal(second.bandlimit, 2);
+  if (first.kind === 'recovered' && second.kind === 'recovered') {
+    assert.ok(first.conditionNumber! <= 30);
+    assert.ok(first.heldOut.relativeError! < second.heldOut.relativeError!);
+  }
+  const strict = recoverStableBandlimit(graph, basis, smooth, samples, { maxBandlimit: 3, maxCondition: 1 });
+  assert.equal(strict.bandlimit, 1);
 });
 
 test('a non-band-limited signal is recovered with an explicit held-out error and no exact claim', () => {

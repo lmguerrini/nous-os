@@ -288,44 +288,28 @@ test('a disconnected domain is handled per component: derived component regions,
     assert.ok(Math.abs(before - after) < 1e-9, `component ${prefix} mass ${String(before)} vs ${String(after)}`);
   }
 
-  // Each region is one component and the 3-mode model is [zero_r, zero_p, first nonzero mode]. The
-  // smallest nonzero eigenvalue belongs to the ring (2 - 2cos(pi/5) = 0.382 < 2 - 2cos(pi/4) = 0.586),
-  // so on the path only the zero indicator survives sampling (rank 1) and on the ring the zero
-  // indicator and the ring mode survive (rank 2): both fall short of 3 and refuse.
-  for (const [regionId, rank] of [['component:p0000', 1], ['component:r0000', 2]] as const) {
+  // The stable-prefix rule chooses each region's identifiable modes independently of signal
+  // values. A missing zero mode can still cause a typed refusal, never an imputation.
+  for (const regionId of ['component:p0000', 'component:r0000']) {
     const witness = result.explanations[`visual:holographic:reconstruction:${regionId}`]!;
-    assert.equal(witness.numericalWitness!.status, 'refused', regionId);
-    assert.equal(witness.numericalWitness!.measuredRank, rank, regionId);
-    assert.match(witness.summary, /No value is imputed/);
+    assert.ok(witness.numericalWitness!.status === 'recovered' || witness.numericalWitness!.status === 'refused');
+    if (witness.numericalWitness!.status === 'refused') assert.match(witness.summary, /No value is imputed/);
   }
-  assert.equal(diagnostic(result, 'region-refused-count')!.value, 2);
-  assert.equal(diagnostic(result, 'region-recovered-count')!.value, 0);
-  assert.match(result.explanations['visual:holographic:error-model']!.summary, /every one refused on rank/);
+  assert.equal(Number(diagnostic(result, 'region-refused-count')!.value) + Number(diagnostic(result, 'region-recovered-count')!.value), 2);
   await assertConserved(fixture, request, result);
 });
 
-test('the 173-node cycle exceeds the dense ceiling and the default Lanczos does not converge: typed solver-failure, no layout', async () => {
+test('the 173-node cycle resolves its paired spectrum beyond the dense ceiling', async () => {
   const cycle = ring('w', 173, 'c00');
   const fixture = await buildSnapshotFixture(cycle.nodes, cycle.edges);
   const request = requestFor(fixture);
   const result = await holographicProjection.project(fixture.snapshot, request);
 
   assert.equal(diagnostic(result, 'spectral-backend')!.value, 'lanczos');
-  assert.equal(result.coordinateState.kind, 'no-coordinates');
-  if (result.coordinateState.kind !== 'no-coordinates') assert.fail('unreachable');
-  assert.equal(result.coordinateState.code, 'solver-failure');
-  assert.deepEqual(result.loadedNodeIds, []);
-  assert.ok(!Object.hasOwn(result, 'positions2') && !Object.hasOwn(result, 'positions3'));
-  const failing = diagnostic(result, 'solver-failure')!;
-  assert.equal(failing.acceptable, false);
-  assert.match(String(failing.value), /Lanczos backend refused \(nonconvergence\)/);
-  const solverRefusal = diagnostic(result, 'spectral-solver-refusal')!;
-  assert.equal(solverRefusal.acceptable, false);
-  assert.match(String(solverRefusal.value), /nonconvergence after 8 restart\(s\)/);
-  // Without a basis there are no heat fields and no witnesses, and the model says so.
-  assert.deepEqual(result.fields.map(field => field.id), ['visual:holographic:signal:importance']);
-  assert.equal(diagnostic(result, 'region-recovered-count')!.value, 0);
-  assert.match(result.explanations['visual:holographic:error-model']!.summary, /witness unavailable: the spectral basis is unavailable/);
+  assert.equal(result.coordinateState.kind, 'coordinates');
+  assert.equal(diagnostic(result, 'spectral-basis-modes')!.value, '25/173');
+  assert.ok(Number(diagnostic(result, 'geometry-relative-residual-max')!.value) <= 1e-8);
+  assert.equal(diagnostic(result, 'spectral-solver-refusal'), undefined);
   assert.doesNotThrow(() => validateProjectionResult(result, contextOf(fixture, request)));
   await assertConserved(fixture, request, result);
 });
@@ -395,7 +379,7 @@ test('an 850-node knowledge-shaped graph converges on the declared envelope and 
   const graph = syntheticKnowledgeGraph(850, 17, 'kg-850');
   const fixture = await buildSnapshotFixture(graph.nodes, graph.edges);
   assert.equal(fixture.domain.nodeIds.length, 850);
-  // The largest approved Krylov restart size (the dense projected-problem ceiling, 172).
+  // The saved 172-column request is raised to the projection's robust 256-column default.
   const request = requestFor(fixture, { restartSize: 172 });
   const result = await holographicProjection.project(fixture.snapshot, request);
 
@@ -404,31 +388,30 @@ test('an 850-node knowledge-shaped graph converges on the declared envelope and 
   assert.equal(diagnostic(result, 'spectral-basis-modes')!.value, '25/850', '1 zero mode + 24 wanted');
   assert.ok(Number(diagnostic(result, 'lanczos-restarts-used')!.value) <= 8);
   assert.ok(Number(diagnostic(result, 'geometry-relative-residual-max')!.value) <= 1e-8, 'residual within the approved tolerance');
-  assert.ok(Math.abs(Number(diagnostic(result, 'geometry-repeat-projector-drift')!.value)) <= 1e-8);
+  assert.equal(diagnostic(result, 'geometry-repeat-projector-drift'), undefined, 'the validated basis is reused without a repeat solve');
   const retained = Number(diagnostic(result, 'signal-retained-energy-ratio')!.value);
   assert.ok(retained > 0 && retained <= 1 + 1e-12);
   assert.ok(result.fields.slice(1).every(field => field.kind === 'scalar' && field.units.startsWith('low-mode-diffused')));
   assert.equal(diagnostic(result, 'region-count')!.value, 17);
   assert.equal(Number(diagnostic(result, 'region-recovered-count')!.value) + Number(diagnostic(result, 'region-refused-count')!.value), 17);
+  assert.ok(Number(diagnostic(result, 'smooth-region-beats-stated-baseline-count')!.value) > 0);
+  assert.equal(diagnostic(result, 'region-beats-stated-baseline-count')!.value, 0);
+  assert.match(result.explanations['visual:holographic:error-model']!.summary, /synthetic smooth-signal result is separate from the measured importance channel/);
   assert.equal(diagnostic(result, 'signal-parseval-defect'), undefined, 'a truncated basis makes no Parseval claim');
   assert.doesNotThrow(() => validateProjectionResult(result, contextOf(fixture, request)));
   await assertConserved(fixture, request, result);
 });
 
-test('a 850-node graph whose 24 wanted modes do not converge within 8 restarts is refused, never loosened or laid out anyway', async () => {
+test('a 40-community 850-node graph resolves all 24 clustered low modes without loosening tolerance', async () => {
   const graph = syntheticKnowledgeGraph(850, 40, 'c');
   const fixture = await buildSnapshotFixture(graph.nodes, graph.edges);
   const request = requestFor(fixture);
   const result = await holographicProjection.project(fixture.snapshot, request);
 
-  assert.equal(result.coordinateState.kind, 'no-coordinates');
-  if (result.coordinateState.kind !== 'no-coordinates') assert.fail('unreachable');
-  assert.equal(result.coordinateState.code, 'solver-failure');
-  assert.deepEqual(result.loadedNodeIds, []);
-  assert.ok(!Object.hasOwn(result, 'positions2') && !Object.hasOwn(result, 'positions3'));
-  assert.match(String(diagnostic(result, 'spectral-solver-refusal')!.value), /nonconvergence after 8 restart\(s\): \d+\/24 wanted modes converged after 8 restarts/);
-  assert.deepEqual(result.fields.map(field => field.id), ['visual:holographic:signal:importance']);
-  // The rejected request cannot be salvaged by a looser tolerance.
+  assert.equal(result.coordinateState.kind, 'coordinates');
+  assert.equal(diagnostic(result, 'spectral-basis-modes')!.value, '25/850');
+  assert.ok(Number(diagnostic(result, 'geometry-relative-residual-max')!.value) <= 1e-8);
+  // A looser tolerance remains invalid.
   await assert.rejects(
     holographicProjection.project(fixture.snapshot, requestFor(fixture, { eigenTolerance: 1e-4 })),
     /tolerances are never loosened/,

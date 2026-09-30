@@ -15,18 +15,23 @@
  * signal (measured projection residual) with full column rank and lambda = 0, with the
  * held-out residual witnessed at the full signal scale (the reported relative error keeps
  * the epsilon-floored formula, which a numerically zero held-out truth would
- * otherwise distort); importance is generally not band-limited and is never silently upgraded. */
+ * otherwise distort); importance is generally not band-limited and is never silently upgraded.
+ * The projection selects the largest prefix with full numerical rank and sample condition
+ * at most 30, before looking at held-out values. */
 
 import type { SpectralGraph } from './adjacency.ts';
 import { DENSE_DEFAULT_MAX_N, solveDenseSymmetricEigen } from './dense.ts';
 import type { Eigenbasis, GraphSignal } from './signals.ts';
 
-export const HOLOGRAPHIC_RECOVERY_VERSION = 'holographic-recovery-v1';
+export const HOLOGRAPHIC_RECOVERY_VERSION = 'holographic-recovery-v2';
 export const RECOVERY_BASELINE_GLOBAL_MEAN = 'global-mean-v1';
 export const RECOVERY_BASELINE_LOCAL_NEIGHBOUR = 'local-neighbour-weighted-fallback-mean-v1';
 export const RECOVERY_DEFAULT_RANK_TOLERANCE = 1e-10;
 export const RECOVERY_DEFAULT_CLAIM_TOLERANCE = 1e-8;
 export const RECOVERY_ENERGY_FLOOR = 1e-12;
+/** Fixed before looking at signal values or held-out errors. The cap limits amplification
+ * of sample noise and floating-point error in the local inverse problem. */
+export const RECOVERY_MAX_SAMPLE_CONDITION = 30;
 
 export type RecoveryClaim = 'exact-bandlimited-recovery' | 'least-squares-estimate' | 'ridge-estimate';
 
@@ -104,6 +109,38 @@ export interface RecoveryRefusal {
 }
 
 export type RecoveryOutcome = RecoveryResult | RecoveryRefusal;
+
+/** Choose the largest stable prefix of low modes using sampled geometry alone. Since adding
+ * a column cannot increase the smallest singular value or decrease the largest one, the
+ * first rank or condition failure ends the search. A failed first mode remains a refusal.
+ * No held-out value participates in model selection. */
+export function recoverStableBandlimit(
+  graph: SpectralGraph,
+  basis: Eigenbasis,
+  signal: GraphSignal | Float64Array,
+  sampleIndices: readonly number[],
+  options: Readonly<{ maxBandlimit: number; ridge?: number; maxCondition?: number }>,
+): RecoveryOutcome {
+  const cap = Math.min(options.maxBandlimit, basis.count, sampleIndices.length, DENSE_DEFAULT_MAX_N);
+  if (!Number.isInteger(options.maxBandlimit) || cap < 1) fail('maxBandlimit must allow at least one sampled mode');
+  const maxCondition = options.maxCondition ?? RECOVERY_MAX_SAMPLE_CONDITION;
+  if (!Number.isFinite(maxCondition) || maxCondition < 1) fail('maxCondition must be finite and at least one');
+  let acceptedBandlimit = 0;
+  let firstFailedBandlimit = 0;
+  // The probe has no signal values. Only its rank and singular-value condition are used;
+  // the measured signal and its complement are read once, after k is fixed.
+  const samplingProbe = new Float64Array(graph.size);
+  for (let k = 1; k <= cap; k += 1) {
+    const outcome = recoverBandlimitedSignal(graph, basis, samplingProbe, sampleIndices,
+      { bandlimit: k, ...(options.ridge === undefined ? {} : { ridge: options.ridge }) });
+    if (outcome.kind === 'refusal') { firstFailedBandlimit = k; break; }
+    if (outcome.conditionNumber !== null && outcome.conditionNumber > maxCondition) break;
+    acceptedBandlimit = k;
+  }
+  return recoverBandlimitedSignal(graph, basis, signal, sampleIndices,
+    { bandlimit: acceptedBandlimit || firstFailedBandlimit || 1,
+      ...(options.ridge === undefined ? {} : { ridge: options.ridge }) });
+}
 
 function fail(message: string): never {
   throw new Error(`holographic-recovery: ${message}`);

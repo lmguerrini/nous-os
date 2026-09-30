@@ -5,6 +5,7 @@ import { DENSE_BENCHMARK_OPT_IN, DENSE_DEFAULT_MAX_N, denseLaplacian, solveDense
 import { lanczosRestartSize, solveSpectrum, type LanczosConverged, type LanczosOutcome, type LanczosRefusal } from '../../src/holographic/lanczos.ts';
 import { largestEntryIndex } from '../../src/holographic/linear-algebra.ts';
 import { cycleGraph, combineGraphs, completeGraph, pathGraph, ringLatticeGraph, starGraph, weakBridgeGraph } from './fixtures.ts';
+import { syntheticKnowledgeGraph } from './projection-fixtures.ts';
 
 const SQRT1_2 = Math.SQRT1_2;
 const SQRT1_6 = 1 / Math.sqrt(6);
@@ -260,22 +261,15 @@ test('invalid options refuse as invalid-input', () => {
   assert.equal(refusal(solveSpectrum(graph, { restartSize: 2 })).code, 'invalid-input');
 });
 
-/** Negative control: a connected 174-node graph with
- * restartSize 173 used to reach the dense solver at n = 173 (above its default ceiling) and
- * throw; it must instead refuse typed, naming both numbers, identically on every repeat. */
-test('a restart size above the dense ceiling refuses typed instead of reaching the dense solver', () => {
+/** Projected Householder QL is independent of the 172-node dense reference ceiling. */
+test('a 173-column projected problem solves beyond the dense reference ceiling', () => {
   const graph = pathGraph(DENSE_DEFAULT_MAX_N + 2); // connected: effective order 173
-  const refused = refusal(solveSpectrum(graph, { seed: 'ceiling', restartSize: DENSE_DEFAULT_MAX_N + 1 }));
-  assert.equal(refused.code, 'restart-size-above-dense-ceiling');
-  assert.ok(refused.message.includes(`restartSize ${String(DENSE_DEFAULT_MAX_N + 1)}`), refused.message);
-  assert.ok(refused.message.includes(`DENSE_DEFAULT_MAX_N = ${String(DENSE_DEFAULT_MAX_N)}`), refused.message);
-  assert.equal(refused.restartsUsed, 0);
-  assert.deepEqual([...refused.cycles], []);
-  assert.equal(refused.componentCount, 1);
-  const repeat = refusal(solveSpectrum(graph, { seed: 'ceiling', restartSize: DENSE_DEFAULT_MAX_N + 1 }));
-  assert.equal(repeat.code, refused.code);
-  assert.equal(repeat.message, refused.message);
-  assert.equal(repeat.requestedModes, refused.requestedModes);
+  const result = converged(solveSpectrum(graph, { seed: 'ceiling', restartSize: DENSE_DEFAULT_MAX_N + 1 }));
+  assert.equal(result.restartSize, 173);
+  assert.ok(result.relativeResidualMax <= 1e-8);
+  assert.ok(result.orthogonalityDefect <= 1e-8);
+  const repeat = converged(solveSpectrum(graph, { seed: 'ceiling', restartSize: DENSE_DEFAULT_MAX_N + 1 }));
+  assert.deepEqual([...repeat.eigenvalues], [...result.eigenvalues]);
 });
 
 test('a restart size at the dense ceiling still solves: the 174-node path matches its analytic spectrum', () => {
@@ -291,25 +285,49 @@ test('a restart size at the dense ceiling still solves: the 174-node path matche
   }
 });
 
-test('a large k whose default restart size exceeds the dense ceiling refuses typed; the boundary k still solves', () => {
+test('a large k is solved beyond the dense reference ceiling while an impossible projected size refuses typed', () => {
   const graph = pathGraph(DENSE_DEFAULT_MAX_N + 2); // effective order 173
   const oversizedK = (DENSE_DEFAULT_MAX_N - 8) / 2 + 1; // 2k + 8 = 174 > 172
   assert.ok(lanczosRestartSize(graph.size - graph.componentCount, oversizedK) > DENSE_DEFAULT_MAX_N);
-  const refused = refusal(solveSpectrum(graph, { seed: 'ceiling-k', k: oversizedK }));
-  assert.equal(refused.code, 'restart-size-above-dense-ceiling');
-  assert.ok(refused.message.includes('the default restart size'), refused.message);
-  assert.ok(refused.message.includes(String(DENSE_DEFAULT_MAX_N + 1)), refused.message);
-  assert.ok(refused.message.includes(`DENSE_DEFAULT_MAX_N = ${String(DENSE_DEFAULT_MAX_N)}`), refused.message);
-  assert.equal(refused.requestedModes, oversizedK);
-  const repeat = refusal(solveSpectrum(graph, { seed: 'ceiling-k', k: oversizedK }));
-  assert.equal(repeat.code, refused.code);
-  assert.equal(repeat.message, refused.message);
+  const large = converged(solveSpectrum(graph, { seed: 'ceiling-k', k: oversizedK }));
+  assert.equal(large.requestedModes, oversizedK);
+  assert.ok(large.relativeResidualMax <= 1e-8);
   // The largest k whose default restart lands exactly on the ceiling is still served.
   const boundaryK = (DENSE_DEFAULT_MAX_N - 8) / 2;
   const boundary = converged(solveSpectrum(graph, { seed: 'ceiling-k-boundary', k: boundaryK }));
-  assert.equal(boundary.restartSize, DENSE_DEFAULT_MAX_N);
+  assert.equal(boundary.restartSize, graph.size - graph.componentCount);
   assert.equal(boundary.requestedModes, boundaryK);
   assert.ok(boundary.relativeResidualMax <= 1e-8);
+  const capped = refusal(solveSpectrum(pathGraph(514), { restartSize: 513 }));
+  assert.equal(capped.code, 'projected-size-above-cap');
+  assert.match(capped.message, /Householder QL memory cap 512/);
+});
+
+test('five clustered 850-node knowledge shapes satisfy direct residual and orthogonality witnesses', () => {
+  for (const [communities, seed] of [[17, 'a'], [8, 'b'], [30, 'c'], [40, 'd'], [17, 'e']] as const) {
+    const shape = syntheticKnowledgeGraph(850, communities, seed);
+    const graph = buildSpectralGraph({
+      nodeIds: shape.nodes.map(node => node.id),
+      edges: shape.edges.map(edge => ({ ...edge, directed: false, attestation: 'attested' as const })),
+    });
+    const result = converged(solveSpectrum(graph, { k: 24, tolerance: 1e-8, seed: `shape-${communities}-${seed}` }));
+    assert.equal(result.requestedModes, 24);
+    assert.ok(result.relativeResidualMax <= 1e-8, `${communities} communities residual`);
+    assert.ok(result.orthogonalityDefect <= 1e-8, `${communities} communities orthogonality`);
+  }
+});
+
+test('paired cycle eigenvalues remain resolved at 173 and 850 nodes', () => {
+  for (const n of [173, 850]) {
+    const result = converged(solveSpectrum(cycleGraph(n), { seed: `cycle-${n}` }));
+    assert.ok(result.relativeResidualMax <= 1e-8);
+    assert.ok(result.orthogonalityDefect <= 1e-8);
+    for (let mode = 1; mode <= 24; mode += 1) {
+      const frequency = Math.ceil(mode / 2);
+      const expected = 2 - 2 * Math.cos(2 * Math.PI * frequency / n);
+      assert.ok(Math.abs(result.eigenvalues[mode]! - expected) <= 1e-8, `cycle ${n}, mode ${mode}`);
+    }
+  }
 });
 
 /** Tied eigenspaces are only defined up to rotation, so the cluster projector is compared. */
@@ -335,7 +353,7 @@ function projectorAgreement(result: LanczosConverged, dense: ReturnType<typeof s
 /** Set RUN_SPECTRAL_BENCHMARK=1 to measure the solver at the D-065 slice scale (172) and the
  * disclosure cap (850), including the dense reference cost. The 850-node fixture is a sparse
  * degree-8 ring (D-065-like attestation density), the regime that motivated the measured
- * r = max(2k + 8, 96) default. Not part of the default gate. The dense reference above the
+ * r = max(2k + 8, 256) default. Not part of the default gate. The dense reference above the
  * 172-node fallback ceiling is the separately benchmarked route, so it passes the explicit
  * maxN and the named opt-in DENSE_BENCHMARK_OPT_IN. */
 test('benchmark: 172- and 850-node solver measurements', { skip: !process.env.RUN_SPECTRAL_BENCHMARK }, () => {
@@ -370,11 +388,10 @@ test('benchmark: 172- and 850-node solver measurements', { skip: !process.env.RU
 
 /** The default envelope must hold at the disclosure cap without tuning: the sparse degree-4
  * ring (2 chords per node) and the pure cycle — the two most clustered connected topologies
- * available — both converge within r = max(2k + 8, 96) and 8 restarts. The r floor is a
- * measured default (see lanczosRestartSize): the degree-8 ring at 850 nodes stalls at
- * r = 64 for seed-dependent subsets of its 24-mode cluster. */
+ * available — both converge within r = max(2k + 8, 256) and 8 restarts. The pure cycle
+ * uses its certified Fourier branch so both copies of every low eigenvalue are retained. */
 test('envelope: clustered spectra at the disclosure cap converge under the default envelope', { skip: !process.env.RUN_SPECTRAL_BENCHMARK }, () => {
-  assert.equal(lanczosRestartSize(849, 24), 96);
+  assert.equal(lanczosRestartSize(849, 24), 256);
   for (const graph of [ringLatticeGraph(850, 'envelope-sparse', 2), cycleGraph(850)]) {
     const outcome = solveSpectrum(graph, { seed: 'envelope-850' });
     const converged = outcome.kind === 'converged';

@@ -20,9 +20,9 @@
 
 import type { Explanation, NodeId } from '../projection/contract-types.ts';
 import type { RecoveryClaim, RecoveryOutcome } from './recovery.ts';
-import { RECOVERY_BASELINE_GLOBAL_MEAN, RECOVERY_DEFAULT_CLAIM_TOLERANCE } from './recovery.ts';
+import { RECOVERY_BASELINE_GLOBAL_MEAN, RECOVERY_DEFAULT_CLAIM_TOLERANCE, RECOVERY_MAX_SAMPLE_CONDITION } from './recovery.ts';
 
-export const HOLOGRAPHIC_EXPLAIN_VERSION = 'holographic-explain-v1';
+export const HOLOGRAPHIC_EXPLAIN_VERSION = 'holographic-explain-v2';
 /** The stated baseline every improvement claim is measured against. */
 export const EXPLAIN_STATED_BASELINE = RECOVERY_BASELINE_GLOBAL_MEAN;
 /** The verbatim limitation attached to every reconstruction explanation. */
@@ -135,6 +135,8 @@ export interface HolographicErrorModel {
   readonly beatsStatedBaselineCount: number;
   readonly comparedCount: number;
   readonly anyExactClaim: boolean;
+  readonly exactCount: number;
+  readonly medianBeatingHeldOutRelativeError: number | null;
   readonly limitation: string;
   readonly summary: string;
 }
@@ -146,6 +148,8 @@ export function holographicErrorModel(witnesses: readonly RegionReconstructionWi
   const medianImprovement = median(improvements);
   const worstImprovement = improvements.length > 0 ? Math.min(...improvements) : null;
   const beatsCount = recovered.filter(witness => witness.beatsStatedBaseline === true).length;
+  const beatingErrors = recovered.filter(witness => witness.beatsStatedBaseline === true)
+    .map(witness => witness.heldOutRelativeError).filter((value): value is number => value !== null);
   const comparedCount = recovered.filter(witness => witness.beatsStatedBaseline !== null).length;
   const summary =
     witnesses.length === 0
@@ -170,6 +174,8 @@ export function holographicErrorModel(witnesses: readonly RegionReconstructionWi
     beatsStatedBaselineCount: beatsCount,
     comparedCount,
     anyExactClaim: recovered.some(witness => witness.exact === true),
+    exactCount: recovered.filter(witness => witness.exact === true).length,
+    medianBeatingHeldOutRelativeError: median(beatingErrors),
     limitation: EXPLAIN_NO_TOPOLOGY_CLAIM,
     summary,
   };
@@ -186,7 +192,7 @@ export function regionReconstructionExplanation(witness: RegionReconstructionWit
         `Region ${witness.regionId} (${witness.regionKind}, ${String(witness.memberCount)} sampled nodes) refused band-limited recovery: ` +
         `${witness.refusalMessage ?? 'rank-deficient'}. No value is imputed and no claim is made.`,
       sourceIds: [witness.regionId],
-      parameterIds: [`bandlimit=${String(witness.bandlimit)}`, `ridge=${String(witness.ridge)}`, EXPLAIN_STATED_BASELINE],
+      parameterIds: [`bandlimit=${String(witness.bandlimit)}`, `ridge=${String(witness.ridge)}`, `max-sample-condition=${RECOVERY_MAX_SAMPLE_CONDITION}`, EXPLAIN_STATED_BASELINE],
       numericalWitness: {
         status: 'refused',
         refusalCode: witness.refusalCode ?? 'rank-deficient',
@@ -205,7 +211,7 @@ export function regionReconstructionExplanation(witness: RegionReconstructionWit
       `${format(witness.heldOutRelativeError)} (MAE ${format(witness.heldOutMae)}) against the stated global-mean baseline ` +
       `${format(witness.statedBaselineRelativeError)}; improvement ${format(witness.improvementOverStatedBaseline)}.`,
     sourceIds: [witness.regionId],
-    parameterIds: [`bandlimit=${String(witness.bandlimit)}`, `ridge=${String(witness.ridge)}`, EXPLAIN_STATED_BASELINE],
+    parameterIds: [`bandlimit=${String(witness.bandlimit)}`, `ridge=${String(witness.ridge)}`, `max-sample-condition=${RECOVERY_MAX_SAMPLE_CONDITION}`, EXPLAIN_STATED_BASELINE],
     numericalWitness: {
       status: 'recovered',
       claim: witness.claim ?? 'estimate',
@@ -229,16 +235,16 @@ export function regionReconstructionExplanation(witness: RegionReconstructionWit
 /** The aggregate explanation shown when the error model itself is inspected. */
 export function errorModelExplanation(
   model: HolographicErrorModel,
-  context: Readonly<{ signalId: string; bandlimit: number; ridge: number; regionPolicy: string; unavailableReason?: string }>,
+  context: Readonly<{ signalId: string; bandlimit: number; ridge: number; regionPolicy: string; unavailableReason?: string; smoothModel?: HolographicErrorModel }>,
 ): Explanation {
   return {
     elementId: 'visual:holographic:error-model',
     elementKind: 'field',
     summary: context.unavailableReason === undefined
-      ? model.summary
+      ? `${model.summary} Each region uses the largest sampled low-mode prefix with full numerical rank and sample-matrix condition at most ${RECOVERY_MAX_SAMPLE_CONDITION}, selected before held-out values are read.${context.smoothModel === undefined ? '' : ` Declared constant-plus-first-nonzero-mode test signal: ${context.smoothModel.recoveredCount}/${context.smoothModel.regionCount} recovered, ${context.smoothModel.beatsStatedBaselineCount}/${context.smoothModel.comparedCount} beat the same baseline, ${context.smoothModel.exactCount} were exact band-limited recoveries, median held-out relative error across all regions ${format(context.smoothModel.medianHeldOutRelativeError)} and among wins ${format(context.smoothModel.medianBeatingHeldOutRelativeError)}. This synthetic smooth-signal result is separate from the measured ${context.signalId} channel.`}`
       : `Holographic reconstruction witness unavailable: ${context.unavailableReason}. No reconstruction claim is made. No topology claim is made.`,
     sourceIds: [],
-    parameterIds: [`signal=${context.signalId}`, `bandlimit=${String(context.bandlimit)}`,
+    parameterIds: [`signal=${context.signalId}`, `bandlimit=${String(context.bandlimit)}`, `max-sample-condition=${RECOVERY_MAX_SAMPLE_CONDITION}`,
       `ridge=${String(context.ridge)}`, `regions=${context.regionPolicy}`, model.statedBaseline],
     numericalWitness: {
       statedBaseline: model.statedBaseline,
@@ -252,6 +258,14 @@ export function errorModelExplanation(
       medianImprovementOverStatedBaseline: model.medianImprovementOverStatedBaseline ?? 'n/a',
       worstImprovementOverStatedBaseline: model.worstImprovementOverStatedBaseline ?? 'n/a',
       anyExactClaim: model.anyExactClaim,
+      exactCount: model.exactCount,
+      ...(context.smoothModel === undefined ? {} : {
+        smoothRecoveredCount: context.smoothModel.recoveredCount,
+        smoothBeatsStatedBaselineCount: context.smoothModel.beatsStatedBaselineCount,
+        smoothExactCount: context.smoothModel.exactCount,
+        smoothMedianHeldOutRelativeError: context.smoothModel.medianHeldOutRelativeError ?? 'n/a',
+        smoothMedianBeatingHeldOutRelativeError: context.smoothModel.medianBeatingHeldOutRelativeError ?? 'n/a',
+      }),
     },
     limitation: EXPLAIN_NO_TOPOLOGY_CLAIM,
   };

@@ -5,7 +5,7 @@
  * domain (<= 850 nodes; the full source ledger is conserved untouched):
  *   1. attested adjacency A, degree/Laplacian and the component ledger
  *      (holographic/adjacency.ts); exploratory edges stay a separate channel;
- *   2. the spectral eigenbasis for signals — the dense reference solver up to
+ *   2. one validated spectral eigenbasis for geometry and signals — dense up to
  *      DENSE_DEFAULT_MAX_N = 172 nodes, the bounded restarted Lanczos solver above
  *      (the declared backend policy; a solver refusal is reported, never loosened);
  *   3. canonical spectral 2D/3D geometry under the `projector-probe-v1` policy
@@ -13,8 +13,9 @@
  *      eigenspace, insufficient rank or solver failure is carried through verbatim —
  *      never a substitute layout;
  *   4. the measured scalar node signal (source importance) with provenance digest,
- *      heat-diffused fields for the requested times, and per-region rank-checked
- *      band-limited reconstruction witnesses with the stated global-mean baseline
+ *      heat-diffused fields for the requested times, and per-region rank/condition-selected
+ *      reconstruction witnesses for the measured feature and a declared smooth test signal
+ *      with the stated global-mean baseline
  *      (holographic/explain.ts — no topology claim);
  *   5. a complete ProjectionResult: exactly one dimensional position map on success;
  *      on refusal empty loadedNodeIds, neither map and no positioned visuals, while the
@@ -31,12 +32,12 @@ import {
   DENSE_DEFAULT_MAX_N, DENSE_SYMMETRIC_SOLVER_VERSION, denseLaplacian, solveDenseSymmetricEigen,
 } from '../holographic/dense.ts';
 import { EIGENSPACE_POLICY_VERSION, spectralGeometry } from '../holographic/geometry.ts';
-import { LANCZOS_SOLVER_VERSION, solveSpectrum, type LanczosOutcome } from '../holographic/lanczos.ts';
+import { LANCZOS_SOLVER_VERSION, lanczosRestartSize, solveSpectrum, type LanczosOutcome } from '../holographic/lanczos.ts';
 import { applyHeat, contractionRatio, isFiniteField } from '../holographic/heat.ts';
-import { recoverBandlimitedSignal } from '../holographic/recovery.ts';
+import { recoverBandlimitedSignal, recoverStableBandlimit, RECOVERY_MAX_SAMPLE_CONDITION } from '../holographic/recovery.ts';
 import {
   eigenbasisFromDense, eigenbasisFromLanczos, featureSignal, fourierCoefficients,
-  parsevalDefect, retainedEnergy, signalEnergy, type Eigenbasis, type GraphSignal,
+  parsevalDefect, retainedEnergy, signalEnergy, syntheticSignal, type Eigenbasis, type GraphSignal,
 } from '../holographic/signals.ts';
 import {
   errorModelExplanation, holographicErrorModel, regionReconstructionExplanation,
@@ -49,7 +50,7 @@ import type {
   ProjectionParameters, ProjectionRequest, ProjectionResult, RawJson, SemanticGraphSnapshot,
 } from './contract-types.ts';
 
-export const HOLOGRAPHIC_PROJECTION_VERSION = 'holographic-projection-v1';
+export const HOLOGRAPHIC_PROJECTION_VERSION = 'holographic-projection-v2';
 export const HOLOGRAPHIC_NUMERIC_BACKEND_VERSION = 'javascript-number-v1';
 /** The experimental flag every Holographic result carries in diagnostics. */
 export const HOLOGRAPHIC_EXPERIMENTAL_FLAG = 'holographic-experimental';
@@ -157,7 +158,9 @@ function solveEigenbasis(graph: SpectralGraph, parameters: HolographicParameters
   }
   const outcome: LanczosOutcome = solveSpectrum(graph, {
     k: parameters.modes,
-    restartSize: parameters.restartSize,
+    // The saved request size is a lower bound for this view; the projection resolves it
+    // against the measured robust default before its single solve.
+    restartSize: Math.max(parameters.restartSize, lanczosRestartSize(graph.size - graph.componentCount, parameters.modes)),
     maxRestarts: parameters.maxRestarts,
     tolerance: parameters.eigenTolerance,
     seed: 'holographic-projection-basis-v1',
@@ -260,6 +263,8 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
       dimension: parameters.dimension,
       snapshotDigest: snapshot.digest,
       domainDigest: domain.domainDigest,
+      backend: solved.backend,
+      ...(solved.basis === null ? { priorSolverFailure: solved.refusal ?? 'the spectral basis is unavailable' } : { validatedBasis: solved.basis }),
       lanczos: {
         k: parameters.modes,
         restartSize: parameters.restartSize,
@@ -315,14 +320,28 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
       : Math.max(1, Math.min(parameters.modes + graph.componentCount, solved.basis.count, DENSE_DEFAULT_MAX_N));
     const regionPlan = regionDescriptors(snapshot, graph);
     const witnesses: RegionReconstructionWitness[] = [];
+    const smoothWitnesses: RegionReconstructionWitness[] = [];
     if (solved.basis !== null && bandlimit >= 1) {
+      const smoothValues = new Float64Array(graph.size).fill(1);
+      if (solved.basis.count > graph.componentCount) {
+        const offset = graph.componentCount * graph.size;
+        for (let node = 0; node < graph.size; node += 1)
+          smoothValues[node] = smoothValues[node]! + Math.sqrt(graph.size) * solved.basis.eigenvectors[offset + node]!;
+      }
+      const smooth = syntheticSignal(graph.nodeIds, smoothValues, 'declared-constant-plus-first-nonzero-mode');
       for (const region of regionPlan.regions) {
-        const outcome = recoverBandlimitedSignal(graph, solved.basis, signal,
-          region.memberNodeIds.map(id => graph.indexOf.get(id)!), { bandlimit, ridge: parameters.ridge });
-        witnesses.push(regionReconstructionWitness(region, outcome, { bandlimit, ridge: parameters.ridge }));
+        const samples = region.memberNodeIds.map(id => graph.indexOf.get(id)!);
+        const outcome = recoverStableBandlimit(graph, solved.basis, signal, samples,
+          { maxBandlimit: bandlimit, ridge: parameters.ridge });
+        witnesses.push(regionReconstructionWitness(region, outcome, { bandlimit: outcome.bandlimit, ridge: parameters.ridge }));
+        const smoothOutcome = recoverBandlimitedSignal(graph, solved.basis, smooth, samples,
+          { bandlimit: outcome.bandlimit, ridge: parameters.ridge });
+        smoothWitnesses.push(regionReconstructionWitness(region, smoothOutcome,
+          { bandlimit: outcome.bandlimit, ridge: parameters.ridge }));
       }
     }
     const model = holographicErrorModel(witnesses);
+    const smoothModel = holographicErrorModel(smoothWitnesses);
     await abortBarrier(request.abort);
 
     // Explanations: geometry witness, the error model, the signal, per-region reconstructions.
@@ -330,7 +349,7 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
     const explanations: Record<string, Explanation> = {
       [geometry.explanation.elementId]: geometry.explanation,
       'visual:holographic:error-model': errorModelExplanation(model, {
-        signalId: parameters.signalId, bandlimit, ridge: parameters.ridge, regionPolicy: regionPlan.policy,
+        signalId: parameters.signalId, bandlimit, ridge: parameters.ridge, regionPolicy: regionPlan.policy, smoothModel,
         ...(solved.basis === null ? { unavailableReason: `the spectral basis is unavailable (${solved.refusal ?? 'no solve'})` } : {}),
       }),
       [signalFieldId]: {
@@ -367,6 +386,8 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
       { code: 'region-recovered-count', value: model.recoveredCount, acceptable: true },
       { code: 'region-refused-count', value: model.refusedCount, acceptable: true },
       { code: 'region-beats-stated-baseline-count', value: model.beatsStatedBaselineCount, acceptable: true },
+      { code: 'region-band-condition-cap', value: RECOVERY_MAX_SAMPLE_CONDITION, acceptable: true },
+      { code: 'smooth-region-beats-stated-baseline-count', value: smoothModel.beatsStatedBaselineCount, acceptable: true },
       { code: 'error-model-median-held-out-relative-error',
         value: model.medianHeldOutRelativeError === null ? 'n/a' : model.medianHeldOutRelativeError, acceptable: true },
       { code: 'error-model-any-exact-claim', value: model.anyExactClaim ? 'yes' : 'no', acceptable: true },

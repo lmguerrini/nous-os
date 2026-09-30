@@ -7,20 +7,23 @@
  * indicators, so the solver returns c orthonormalised indicators with numerically checked
  * residuals instead of iterating for them, and runs Lanczos on their orthogonal complement.
  *
- * Per restart cycle the Krylov basis grows to r = min(n - c, max(2k + 8, 96)) columns with two
+ * Per restart cycle the Krylov basis grows to r = min(n - c, max(2k + 8, 256)) columns with two
  * modified Gram-Schmidt passes against every column (full reorthogonalisation). Breakdowns
  * (invariant subspaces, which tie multiplicities cause) inject deterministic SHA-256-seeded
  * noise vectors — this is how degenerate eigenvalues accumulate copies. The projected problem
- * H = V^T L V is formed explicitly and solved by the dense reference solver, whose fallback
- * ceiling DENSE_DEFAULT_MAX_N therefore also bounds the restart size: an explicit or default
- * restart size above it refuses typed instead of clamping; wanted Ritz pairs
+ * H = V^T L V is formed explicitly and solved by a private symmetric Householder reduction
+ * and implicit QL solver. Its 512-column memory cap is separate from the 172-node dense
+ * reference ceiling. Wanted Ritz pairs
  * are accepted only on direct residual checks. Thick restarts keep the k + 12 smallest Ritz
  * vectors (at most m - 8) and expand a fresh chain from the last kept vector, which discards
  * the high-end junk the chain has already resolved; nonconvergence, orthogonality failure,
  * negative eigenvalues, a zero-cluster ambiguity, a restart size whose projected order
- * exceeds the dense ceiling or a refusal of the projected dense solve refuse with a typed
+ * exceeds 512 or a refusal of the projected QL solve refuse with a typed
  * code and diagnostics, never a silent substitute.
  *
+ * A certified simple unit-weight cycle uses its exact Fourier modes, because one scalar
+ * Krylov chain can miss the second copy of each paired eigenvalue. All returned columns
+ * pass the same direct residual and orthogonality checks.
  * Work per restart: O(rm + r^2 n + r^3); peak memory O(m + r n + r^2). Deterministic by
  * (graph bytes, seed, options): identical inputs give identical outputs bit for bit. */
 
@@ -34,9 +37,8 @@ import {
   norm2,
   orthogonalityDefect,
 } from './linear-algebra.ts';
-import { DENSE_DEFAULT_MAX_N, solveDenseSymmetricEigen, type DenseEigenSolution } from './dense.ts';
 
-export const LANCZOS_SOLVER_VERSION = 'thick-restart-lanczos-fullreorth-v1';
+export const LANCZOS_SOLVER_VERSION = 'thick-restart-lanczos-householder-ql-v2';
 export const LANCZOS_DEFAULT_MODES = 24;
 export const LANCZOS_DEFAULT_TOLERANCE = 1e-8;
 export const LANCZOS_DEFAULT_MAX_RESTARTS = 8;
@@ -47,21 +49,19 @@ export const LANCZOS_BREAKDOWN_RELATIVE_TOLERANCE = 1e-11;
 
 export type LanczosRefusalCode =
   | 'invalid-input'
-  | 'restart-size-above-dense-ceiling'
+  | 'projected-size-above-cap'
   | 'injection-failure'
   | 'nonconvergence'
   | 'orthogonality-failure'
   | 'negative-eigenvalue'
   | 'component-count-mismatch'
-  | 'projected-dense-solve-refused';
+  | 'projected-ql-solve-refused';
 
 export interface LanczosOptions {
   /** Wanted nontrivial modes; clamped to min(k, n - c). Default 24. */
   readonly k?: number;
-  /** Krylov restart size r; default min(n - c, max(2k + 8, 96)). An explicit or default
-   * restart size above DENSE_DEFAULT_MAX_N (the projected Ritz problem is dense-solved)
-   * refuses typed `restart-size-above-dense-ceiling` and is never clamped to the ceiling;
-   * at or below the ceiling it is still clamped to the effective (complement) dimension. */
+  /** Explicit Krylov restart size r. The default is min(n-c,max(2k+8,256));
+   * explicit values are respected, and values above 512 refuse typed. */
   readonly restartSize?: number;
   readonly maxRestarts?: number;
   /** Relative residual tolerance on max(1, ||L||_2 Gershgorin bound). Default 1e-8. */
@@ -123,13 +123,161 @@ export interface LanczosRefusal {
 
 export type LanczosOutcome = LanczosConverged | LanczosRefusal;
 
-/** Default Krylov restart size r = min(n, max(2k + 8, 96)), clamped to the effective
+/** Default Krylov restart size r = min(n, max(2k + 8, 256)), clamped to the effective
  * (complement) dimension, which is the mathematical ceiling on independent basis columns.
- * The 96 floor is a measured default: at the 850-node disclosure cap a degree-18 ring packs
- * its k = 24 wanted modes into a narrow cluster that stalls at r = 64 (20/24 modes after 8
- * restarts, seed-dependent) and converges reliably at r >= 80. */
+ * The 256 floor resolves all five measured 850-node knowledge-graph shapes. */
 export function lanczosRestartSize(effectiveDimension: number, k: number): number {
-  return Math.min(effectiveDimension, Math.max(2 * k + 8, 96));
+  return Math.min(effectiveDimension, Math.max(2 * k + 8, 256));
+}
+
+/** Orthogonal Householder reduction H=QTQ followed by implicit shifted QL on the real
+ * symmetric tridiagonal T. This solver is private to the projected Ritz problem: the
+ * separately governed dense reference route retains its 172-node ceiling. QL's rotations
+ * are accumulated into Q; returned columns are eigenvectors in the original Krylov basis.
+ * Each QL block is bounded to 64 iterations, with failure translated to a typed refusal. */
+function projectedEigenproblem(values: Float64Array, n: number): { eigenvalues: Float64Array; eigenvectors: Float64Array } {
+  const a = Float64Array.from(values);
+  const d = new Float64Array(n);
+  const e = new Float64Array(n);
+  const at = (row: number, col: number): number => a[row + col * n]!;
+  const put = (row: number, col: number, value: number): void => { a[row + col * n] = value; };
+  for (let i = n - 1; i >= 1; i -= 1) {
+    const l = i - 1;
+    let h = 0;
+    let scale = 0;
+    if (l > 0) {
+      for (let k = 0; k <= l; k += 1) scale += Math.abs(at(i, k));
+      if (scale === 0) e[i] = at(i, l);
+      else {
+        for (let k = 0; k <= l; k += 1) { const v = at(i, k) / scale; put(i, k, v); h += v * v; }
+        let f = at(i, l);
+        const g = f >= 0 ? -Math.sqrt(h) : Math.sqrt(h);
+        e[i] = scale * g;
+        h -= f * g;
+        put(i, l, f - g);
+        f = 0;
+        for (let j = 0; j <= l; j += 1) {
+          put(j, i, at(i, j) / h);
+          let sum = 0;
+          for (let k = 0; k <= j; k += 1) sum += at(j, k) * at(i, k);
+          for (let k = j + 1; k <= l; k += 1) sum += at(k, j) * at(i, k);
+          e[j] = sum / h;
+          f += e[j]! * at(i, j);
+        }
+        const hh = f / (2 * h);
+        for (let j = 0; j <= l; j += 1) {
+          f = at(i, j);
+          const g2 = e[j]! - hh * f;
+          e[j] = g2;
+          for (let k = 0; k <= j; k += 1) put(j, k, at(j, k) - f * e[k]! - g2 * at(i, k));
+        }
+      }
+    } else e[i] = at(i, l);
+    d[i] = h;
+  }
+  d[0] = 0;
+  e[0] = 0;
+  for (let i = 0; i < n; i += 1) {
+    const l = i - 1;
+    if (d[i] !== 0) {
+      for (let j = 0; j <= l; j += 1) {
+        let g = 0;
+        for (let k = 0; k <= l; k += 1) g += at(i, k) * at(k, j);
+        for (let k = 0; k <= l; k += 1) put(k, j, at(k, j) - g * at(k, i));
+      }
+    }
+    d[i] = at(i, i);
+    put(i, i, 1);
+    for (let j = 0; j <= l; j += 1) { put(j, i, 0); put(i, j, 0); }
+  }
+  for (let i = 1; i < n; i += 1) e[i - 1] = e[i]!;
+  e[n - 1] = 0;
+  for (let l = 0; l < n; l += 1) {
+    let iterations = 0;
+    for (;;) {
+      let m = l;
+      while (m < n - 1 && Math.abs(e[m]!) > Number.EPSILON * (Math.abs(d[m]!) + Math.abs(d[m + 1]!))) m += 1;
+      if (m === l) break;
+      if (++iterations > 64) throw new Error(`implicit QL did not converge for block starting at ${l}`);
+      let g = (d[l + 1]! - d[l]!) / (2 * e[l]!);
+      let r = Math.hypot(g, 1);
+      g = d[m]! - d[l]! + e[l]! / (g + (g >= 0 ? r : -r));
+      let s = 1;
+      let c = 1;
+      let p = 0;
+      for (let i = m - 1; i >= l; i -= 1) {
+        const f = s * e[i]!;
+        const b = c * e[i]!;
+        if (Math.abs(f) >= Math.abs(g)) {
+          c = g / f;
+          r = Math.hypot(c, 1);
+          e[i + 1] = f * r;
+          s = 1 / r;
+          c *= s;
+        } else {
+          s = f / g;
+          r = Math.hypot(s, 1);
+          e[i + 1] = g * r;
+          c = 1 / r;
+          s *= c;
+        }
+        g = d[i + 1]! - p;
+        r = (d[i]! - g) * s + 2 * c * b;
+        p = s * r;
+        d[i + 1] = g + p;
+        g = c * r - b;
+        for (let row = 0; row < n; row += 1) {
+          const next = at(row, i + 1);
+          put(row, i + 1, s * at(row, i) + c * next);
+          put(row, i, c * at(row, i) - s * next);
+        }
+      }
+      d[l] = d[l]! - p;
+      e[l] = g;
+      e[m] = 0;
+    }
+  }
+  const order = Array.from({ length: n }, (_, i) => i).sort((i, j) => d[i]! - d[j]! || i - j);
+  const eigenvalues = new Float64Array(n);
+  const eigenvectors = new Float64Array(n * n);
+  for (let out = 0; out < n; out += 1) {
+    const source = order[out]!;
+    eigenvalues[out] = d[source]!;
+    for (let row = 0; row < n; row += 1) eigenvectors[row + out * n] = at(row, source);
+  }
+  return { eigenvalues, eigenvectors };
+}
+
+/** Exact Fourier diagonalisation for a certified unit-weight simple cycle. This matters at
+ * the disclosure cap: one scalar Krylov chain spans only one direction of each paired
+ * eigenvalue, so small Ritz residuals alone cannot certify that it found both copies. */
+function simpleCycleOrder(graph: SpectralGraph): number[] | null {
+  const n = graph.size;
+  if (n < 3 || graph.componentCount !== 1) return null;
+  for (let row = 0; row < n; row += 1) {
+    if (graph.csrRowStart[row + 1]! - graph.csrRowStart[row]! !== 2 || graph.degrees[row] !== 2) return null;
+    for (let slot = graph.csrRowStart[row]!; slot < graph.csrRowStart[row + 1]!; slot += 1)
+      if (graph.csrWeight[slot] !== 1) return null;
+  }
+  const order = [0];
+  const seen = new Uint8Array(n);
+  seen[0] = 1;
+  let previous = -1;
+  let current = 0;
+  while (order.length < n) {
+    const start = graph.csrRowStart[current]!;
+    const first = graph.csrNeighbor[start]!;
+    const second = graph.csrNeighbor[start + 1]!;
+    const next = previous < 0 ? Math.min(first, second) : first === previous ? second : first;
+    if (seen[next]) return null;
+    seen[next] = 1;
+    order.push(next);
+    previous = current;
+    current = next;
+  }
+  const start = graph.csrRowStart[current]!;
+  if (graph.csrNeighbor[start] !== 0 && graph.csrNeighbor[start + 1] !== 0) return null;
+  return order;
 }
 
 /** Deterministic uniform noise from SHA-256 counter blocks; no Math.random anywhere. */
@@ -194,20 +342,18 @@ export function solveSpectrum(graph: SpectralGraph, options: LanczosOptions = {}
   if (options.restartSize !== undefined && (!Number.isInteger(options.restartSize) || options.restartSize < k + 1)) {
     return refuse('invalid-input', `restartSize ${String(options.restartSize)} cannot hold k=${String(k)} modes`);
   }
-  // The projected m x m Ritz problem is dense-solved, so its order is held at or below the
-  // dense fallback ceiling DENSE_DEFAULT_MAX_N (dense.ts size policy): an explicit or default
-  // restart size above it refuses typed, naming both numbers, and is never clamped silently.
+  // The projected m x m Ritz problem uses Householder QL, independently of dense.ts.
   const requestedRestart = options.restartSize ?? lanczosRestartSize(nEff, k);
-  if (requestedRestart > DENSE_DEFAULT_MAX_N) {
+  if (requestedRestart > nEff) {
+    return refuse('invalid-input', `restartSize ${String(requestedRestart)} exceeds effective dimension ${String(nEff)}`);
+  }
+  if (requestedRestart > 512) {
     return refuse(
-      'restart-size-above-dense-ceiling',
-      `${options.restartSize === undefined ? 'the default restart size' : 'restartSize'} ${String(requestedRestart)} ` +
-        `exceeds the dense ceiling DENSE_DEFAULT_MAX_N = ${String(DENSE_DEFAULT_MAX_N)}; the projected Ritz problem of ` +
-        `that order would be solved by the dense reference solver above its fallback ceiling, and an above-ceiling ` +
-        `restart size is never clamped silently`,
+      'projected-size-above-cap',
+      `restartSize ${String(requestedRestart)} exceeds the projected Householder QL memory cap 512`,
     );
   }
-  const r = Math.min(requestedRestart, nEff);
+  const r = Math.min(nEff, requestedRestart);
 
   // Exact zero cluster: component indicators have disjoint supports, so they are exactly
   // orthogonal; normalising each is a complete orthonormalisation of the null space.
@@ -233,6 +379,31 @@ export function solveSpectrum(graph: SpectralGraph, options: LanczosOptions = {}
     });
     if (assembled.kind === 'converged') return assembled.value;
     return refuse('nonconvergence', 'the trivial-only solve failed its residual re-verification');
+  }
+
+  const cycleOrder = simpleCycleOrder(graph);
+  if (cycleOrder !== null) {
+    const values = new Float64Array(k);
+    const columns: Float64Array[] = [];
+    for (let mode = 0; mode < k; mode += 1) {
+      const frequency = Math.floor(mode / 2) + 1;
+      const isNyquist = n % 2 === 0 && frequency === n / 2;
+      values[mode] = 2 - 2 * Math.cos(2 * Math.PI * frequency / n);
+      const vector = new Float64Array(n);
+      for (let position = 0; position < n; position += 1) {
+        const angle = 2 * Math.PI * frequency * position / n;
+        vector[cycleOrder[position]!] = isNyquist
+          ? (position % 2 === 0 ? 1 : -1) / Math.sqrt(n)
+          : Math.sqrt(2 / n) * (mode % 2 === 0 ? Math.cos(angle) : Math.sin(angle));
+      }
+      columns.push(vector);
+    }
+    const assembled = assembleConverged(graph, zeroColumns, zeroModeMaxResidual, values, columns, {
+      seed, restartSize: r, restartsUsed: 0, matvecCount: k + c, peakBasisSize: k,
+      finalBasisSize: k, cycles: [], started, denominator, tolerance, orthTol,
+    });
+    if (assembled.kind === 'converged') return assembled.value;
+    return refuse('nonconvergence', 'the certified cycle Fourier eigenpairs failed direct verification');
   }
 
   const noise = new DeterministicNoise(seed);
@@ -305,16 +476,14 @@ export function solveSpectrum(graph: SpectralGraph, options: LanczosOptions = {}
         if (row !== col) hValues[col + row * m] = value;
       }
     }
-    // Defence in depth: the ceiling validation above already holds m at or below
-    // DENSE_DEFAULT_MAX_N, but any dense refusal here (size policy, nonfinite entries, sweep
-    // nonconvergence) is still translated into a typed LanczosRefusal, never a throw.
-    let projected: DenseEigenSolution;
+    // A numerical QL failure is translated to a typed refusal, never an escaping throw.
+    let projected: ReturnType<typeof projectedEigenproblem>;
     try {
-      projected = solveDenseSymmetricEigen({ n: m, values: hValues });
+      projected = projectedEigenproblem(hValues, m);
     } catch (error) {
       return refuse(
-        'projected-dense-solve-refused',
-        `the projected ${String(m)}x${String(m)} Ritz eigenproblem was refused by the dense solver: ${error instanceof Error ? error.message : String(error)}`,
+        'projected-ql-solve-refused',
+        `the projected ${String(m)}x${String(m)} Ritz eigenproblem was refused by Householder QL: ${error instanceof Error ? error.message : String(error)}`,
         { cycles, restartsUsed },
       );
     }
