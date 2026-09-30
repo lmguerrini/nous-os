@@ -101,6 +101,88 @@ export type RenderPickingSurface = {
   readonly minEdgeThickness: number;
 };
 
+/** The review page owns hover and click picking. Sigma's private captor listeners otherwise
+ * read the WebGL picking buffers on every move, press, release and wheel event as well. Keep
+ * the captors themselves attached so panning, zooming and touch camera gestures still work. */
+export function suppressSigmaAutomaticPicking(sigma: Sigma): void {
+  type Listener = (...args: never[]) => void;
+  type Captor = { off(event: string, listener: Listener): unknown };
+  const hooked = sigma as unknown as {
+    activeListeners: Record<string, Listener>;
+    getMouseCaptor(): Captor;
+    getTouchCaptor(): Captor;
+  };
+  const mouse = hooked.getMouseCaptor();
+  const touch = hooked.getTouchCaptor();
+  for (const [event, name] of [
+    ["mousemove", "handleMove"], ["mousedown", "handleDown"], ["mouseup", "handleUp"],
+    ["wheel", "handleWheel"], ["click", "handleClick"], ["rightClick", "handleRightClick"],
+    ["doubleClick", "handleDoubleClick"],
+  ] as const) mouse.off(event, hooked.activeListeners[name]!);
+  for (const [event, name] of [
+    ["touchdown", "handleDown"], ["touchdown", "handleMove"], ["touchup", "handleUp"],
+    ["touchmove", "handleMove"], ["tap", "handleClick"], ["doubletap", "handleDoubleClick"],
+  ] as const) touch.off(event, hooked.activeListeners[name]!);
+}
+
+/** A synchronous click path and a coalesced hover path over the same picker. */
+export function createPointerPickGate<T>(
+  pick: (position: Vec2) => T | null,
+  deliverHover: (position: Vec2, result: T | null) => void,
+  cameraMoving: () => boolean,
+  requestFrame: (callback: FrameRequestCallback) => number = requestAnimationFrame,
+  cancelFrame: (id: number) => void = cancelAnimationFrame,
+): {
+  move(position: Vec2): void; press(position: Vec2): void; release(position: Vec2): void;
+  cancel(): void; leave(): void; click(position: Vec2): T | null | undefined;
+  hoverResult(): T | null; dragged(): boolean; destroy(): void;
+} {
+  let pressed: Vec2 | null = null;
+  let didDrag = false;
+  let latest: Vec2 | null = null;
+  let hover: T | null = null;
+  let frame = 0;
+  const schedule = () => {
+    if (frame || latest === null || pressed !== null) return;
+    frame = requestFrame(() => {
+      frame = 0;
+      if (pressed !== null || latest === null) return;
+      if (cameraMoving()) { schedule(); return; }
+      const position = latest;
+      latest = null;
+      hover = pick(position);
+      deliverHover(position, hover);
+    });
+  };
+  const move = (position: Vec2) => {
+    if (pressed !== null) {
+      if (Math.hypot(position.x - pressed.x, position.y - pressed.y) > PROJECTION_CLICK_DRAG_TOLERANCE_PX) didDrag = true;
+      return;
+    }
+    latest = position;
+    schedule();
+  };
+  const leave = () => { latest = null; hover = null; if (frame) cancelFrame(frame); frame = 0; };
+  return {
+    move,
+    press(position) { leave(); pressed = position; didDrag = false; },
+    release(position) {
+      if (pressed !== null && Math.hypot(position.x - pressed.x, position.y - pressed.y) > PROJECTION_CLICK_DRAG_TOLERANCE_PX) didDrag = true;
+      pressed = null;
+    },
+    cancel() { leave(); pressed = null; didDrag = true; },
+    leave,
+    click(position) {
+      if (didDrag) { didDrag = false; return undefined; }
+      pressed = null;
+      return pick(position);
+    },
+    hoverResult: () => hover,
+    dragged: () => didDrag,
+    destroy: leave,
+  };
+}
+
 /** This is one mounted renderer and does not retain an independent graph copy. */
 export type RenderHandle = {
   readonly model: RenderModel;
@@ -108,6 +190,7 @@ export type RenderHandle = {
   setAppearance(options: AppearanceOptions): void;
   graphToViewport(point: Coordinates): { readonly x: number; readonly y: number };
   readCameraState(): RenderCameraState;
+  isCameraAnimating(): boolean;
   restoreCameraState(state: RenderCameraState): void;
   /** This reports the serialisable view state and does not expose graph semantics. */
   readVisualState(): VisualState;
@@ -229,6 +312,7 @@ export function mount(
     zIndex: true,
     enableEdgeEvents: true,
   });
+  suppressSigmaAutomaticPicking(sigma);
   const picking = sigma as unknown as {
     getNodeAtPosition(position: { readonly x: number; readonly y: number }): string | null;
     getEdgeAtPoint(x: number, y: number): string | null;
@@ -337,6 +421,9 @@ export function mount(
     },
     readCameraState(): RenderCameraState {
       return readCameraState(sigma);
+    },
+    isCameraAnimating(): boolean {
+      return sigma.getCamera().isAnimated();
     },
     restoreCameraState(state: RenderCameraState): void {
       restoreCameraState(sigma, state);
@@ -1286,6 +1373,7 @@ type ProjectionNodeAttributes = { x: number; y: number; size: number; color: str
 type ProjectionEdgeAttributes = { size: number; color: string };
 const PROJECTION_PICK_RADIUS_PX = DEFAULT_CALIBRATION.filament.pickTolerancePx;
 const PROJECTION_NODE_RADIUS_PX = PROJECTION_PICK_RADIUS_PX * (2 + 1 / 2);
+const PROJECTION_CLICK_DRAG_TOLERANCE_PX = PROJECTION_PICK_RADIUS_PX * (2 + 1 / 2);
 
 function styleNumber(style: Readonly<Record<string, number | string>>, key: string, fallback: number): number {
   const value = style[key];
@@ -1388,6 +1476,7 @@ export function mountProjection2d(
   for (const id of scene.nodes.keys()) graph.addNode(id, projectionNodeAttributes(scene, id));
   for (const [id, edge] of scene.semanticEdges) graph.addEdgeWithKey(id, edge.source, edge.target, projectionEdgeAttributes(scene, id));
   const sigma = new Sigma(graph, container, { enableEdgeEvents: true, renderLabels: false, renderEdgeLabels: false });
+  suppressSigmaAutomaticPicking(sigma as unknown as Sigma);
   // Sigma otherwise renormalizes its graph coordinates whenever disclosure adds a node.
   // Keep the mount's world frame fixed while the graph changes in place.
   const framePoints = Object.values(styled.projection.positions2 ?? {}).filter((point): point is Vec2 => !!point);
@@ -1542,6 +1631,61 @@ export function mountProjection2d(
     return Math.hypot(p.x - a.x - t * x, p.y - a.y - t * y) <= tolerance;
   };
   const picking = sigma as unknown as { getNodeAtPosition(p: Vec2): string | null; getEdgeAtPoint(x: number, y: number): string | null };
+  const pickNow = (position: Vec2): PickResult | null => {
+    const node = picking.getNodeAtPosition(position);
+    if (node && scene.nodes.has(node)) return { kind: 'node', id: node };
+    const edge = picking.getEdgeAtPoint(position.x, position.y);
+    if (edge && scene.semanticEdges.has(edge)) return { kind: 'semantic-edge', id: edge };
+    for (const relation of scene.visualRelations.values()) {
+      const a = scene.nodes.get(relation.source)?.position;
+      const b = scene.nodes.get(relation.target)?.position;
+      if (a && b && hitSegment(position, viewport(a), viewport(b)))
+        return { kind: 'visual-relation', visualId: relation.visualId };
+    }
+    return visuals.pickAt(position);
+  };
+  const localPointer = (event: PointerEvent): Vec2 => {
+    const bounds = container.getBoundingClientRect();
+    return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+  };
+  let replayingHover = false;
+  let handlingHoverMove = false;
+  let handlingClick = false;
+  let latestClient = { x: 0, y: 0 };
+  const hoverGate = createPointerPickGate(pickNow, () => {
+    replayingHover = true;
+    try {
+      container.dispatchEvent(new PointerEvent('pointermove', {
+        bubbles: true, clientX: latestClient.x, clientY: latestClient.y,
+      }));
+    } finally { replayingHover = false; }
+  }, () => sigma.getCamera().isAnimated());
+  const onPointerMoveCapture = (event: PointerEvent) => {
+    if (replayingHover) return;
+    latestClient = { x: event.clientX, y: event.clientY };
+    handlingHoverMove = true;
+    hoverGate.move(localPointer(event));
+    queueMicrotask(() => { handlingHoverMove = false; });
+  };
+  const onPointerDownCapture = (event: PointerEvent) => hoverGate.press(localPointer(event));
+  const onPointerUpCapture = (event: PointerEvent) => hoverGate.release(localPointer(event));
+  const onPointerCancelCapture = () => hoverGate.cancel();
+  const onClickCapture = (event: MouseEvent) => {
+    if (hoverGate.dragged()) {
+      hoverGate.cancel();
+      event.stopImmediatePropagation();
+      return;
+    }
+    handlingClick = true;
+    queueMicrotask(() => { handlingClick = false; });
+  };
+  const onPointerLeaveCapture = () => hoverGate.leave();
+  container.addEventListener('pointermove', onPointerMoveCapture, true);
+  container.addEventListener('pointerdown', onPointerDownCapture, true);
+  container.addEventListener('pointerup', onPointerUpCapture, true);
+  container.addEventListener('pointercancel', onPointerCancelCapture, true);
+  container.addEventListener('pointerleave', onPointerLeaveCapture, true);
+  container.addEventListener('click', onClickCapture, true);
   return {
     dimension: '2d',
     updateVisibleSubset(nextStyled, nextVisibility): void {
@@ -1581,17 +1725,9 @@ export function mountProjection2d(
       redraw();
     },
     pickAtPoint(position): PickResult | null {
-      const node = picking.getNodeAtPosition(position);
-      if (node && scene.nodes.has(node)) return { kind: 'node', id: node };
-      const edge = picking.getEdgeAtPoint(position.x, position.y);
-      if (edge && scene.semanticEdges.has(edge)) return { kind: 'semantic-edge', id: edge };
-      for (const relation of scene.visualRelations.values()) {
-        const a = scene.nodes.get(relation.source)?.position;
-        const b = scene.nodes.get(relation.target)?.position;
-        if (a && b && hitSegment(position, viewport(a), viewport(b)))
-          return { kind: 'visual-relation', visualId: relation.visualId };
-      }
-      return visuals.pickAt(position);
+      if (replayingHover || handlingHoverMove) return hoverGate.hoverResult();
+      if (handlingClick) return hoverGate.click(position) ?? null;
+      return pickNow(position);
     },
     graphToViewport: point => sigma.graphToViewport(point),
     readCameraState: () => sigma.getCamera().getState(),
@@ -1601,6 +1737,13 @@ export function mountProjection2d(
       containerIds: [...scene.containers.keys()], fieldIds: [...scene.fields.keys()] }),
     setDerivedMorphology: morphology => visuals.setMorphology(morphology),
     destroy(): void {
+      hoverGate.destroy();
+      container.removeEventListener('pointermove', onPointerMoveCapture, true);
+      container.removeEventListener('pointerdown', onPointerDownCapture, true);
+      container.removeEventListener('pointerup', onPointerUpCapture, true);
+      container.removeEventListener('pointercancel', onPointerCancelCapture, true);
+      container.removeEventListener('pointerleave', onPointerLeaveCapture, true);
+      container.removeEventListener('click', onClickCapture, true);
       sigma.off('afterRender', redraw);
       sigma.off('resize', collapseLayer);
       labels.destroy();

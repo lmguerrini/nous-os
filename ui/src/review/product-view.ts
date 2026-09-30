@@ -1093,6 +1093,7 @@ export const createProductView: CreateProductView = async (input) => {
     } else if (qualityGovernor.poll(now) === "full") onQualityFull(now);
     if (!cameraWatchShouldRun({ nowMs: now, lastChangeMs: cameraWatch.lastChangeMs, pressed: pressedAt !== null, motionUntilMs: cameraWatch.motionUntilMs })) {
       cameraWatch.running = false;
+      scheduleHoverPick();
       return;
     }
     frameId = requestAnimationFrame(cameraWatchTick);
@@ -1474,7 +1475,7 @@ export const createProductView: CreateProductView = async (input) => {
     }
     return closest?.id ?? null;
   }
-  function pick(p: { x: number; y: number }) {
+  function pick(p: { x: number; y: number }, includeEdges = true) {
     if (!handle) return null;
     const node = handle.pickNodeAtPosition(p);
     if (node && (!lodMode || visible.has(node))) return { kind: "node" as const, id: node };
@@ -1505,23 +1506,38 @@ export const createProductView: CreateProductView = async (input) => {
       }
       if (closest) return { kind: 'node' as const, id: closest.id };
     }
+    if (!includeEdges) return null;
     const edge = lodMode ? drawnEdgeAtPoint(p) : handle.pickEdgeAtPoint(p.x, p.y);
     return edge ? { kind: "edge" as const, id: edge } : null;
   }
-  const onMove = (event: PointerEvent) => {
-    // A pressed pointer owns the orbit. Picking under its early drag samples can rebuild the
-    // 3D scene and issue a second label pass in the same frame; hover resumes on release.
-    if (pressedAt !== null) return;
-    const p = pointer(event);
-    cancelAnimationFrame(hoverFrame);
+  let pendingHoverEvent: PointerEvent | null = null;
+  const cameraAnimating = () => Boolean(sigma?.isCameraAnimating()) ||
+    (cameraWatch.running && morphologyInteraction.quality === "moving");
+  function scheduleHoverPick() {
+    if (hoverFrame || pendingHoverEvent === null || pressedAt !== null || destroyed) return;
+    if (cameraAnimating()) return;
     hoverFrame = requestAnimationFrame(() => {
-      const target = pick(p);
+      hoverFrame = 0;
+      if (pressedAt !== null || destroyed || cameraAnimating()) return;
+      const event = pendingHoverEvent;
+      pendingHoverEvent = null;
+      if (!event) return;
+      const p = pointer(event);
+      const target = pick(p, Boolean(input.v2Prepared));
       hover = target ? { ...target, ...p } : null;
       morphologyInteraction.hoverId = hover?.id ?? null;
       redrawMorphology();
       input.events.onHover(hover ? { ...hover, x: event.clientX, y: event.clientY } : null);
       labelPass();
     });
+  }
+  const onMove = (event: PointerEvent) => {
+    if (pressedAt !== null) {
+      if (Math.hypot(event.clientX - pressedAt.x, event.clientY - pressedAt.y) > CLICK_DRAG_TOLERANCE_PX) dragged = true;
+      return;
+    }
+    pendingHoverEvent = event;
+    scheduleHoverPick();
   };
   // A drag that orbits or pans ends with a click on the same canvas; it must not select what happens
   // to lie under the pointer when the drag stops.
@@ -1529,19 +1545,29 @@ export const createProductView: CreateProductView = async (input) => {
     "#fullscreen-bar, #appearance-panel, #gizmo, #toast, #focus-chip, #details",
   ));
   let pressedAt: { x: number; y: number } | null = null;
+  let dragged = false;
   const onPress = (event: PointerEvent) => {
     if (overControl(event.target)) return;
     cancelAnimationFrame(hoverFrame);
+    hoverFrame = 0;
+    pendingHoverEvent = null;
     pressedAt = { x: event.clientX, y: event.clientY };
+    dragged = false;
     // A press may become a drag: the camera watch loop starts observing from the press, not from
     // the first camera change.
     noteCameraMotion();
   };
+  const onRelease = (event: PointerEvent) => {
+    if (pressedAt !== null && Math.hypot(event.clientX - pressedAt.x, event.clientY - pressedAt.y) > CLICK_DRAG_TOLERANCE_PX) dragged = true;
+    pressedAt = null;
+  };
+  const onCancel = () => { pressedAt = null; dragged = true; pendingHoverEvent = null; };
   const onClick = (event: MouseEvent) => {
     if (overControl(event.target)) return;
     const moved = pressedAt === null ? 0 : Math.hypot(event.clientX - pressedAt.x, event.clientY - pressedAt.y);
     pressedAt = null;
-    if (moved > CLICK_DRAG_TOLERANCE_PX) return;
+    if (dragged || moved > CLICK_DRAG_TOLERANCE_PX) { dragged = false; return; }
+    dragged = false;
     const r = container.getBoundingClientRect();
     const target = pick({ x: event.clientX - r.left, y: event.clientY - r.top });
     input.events.onPick(target ? {...target, shiftKey:event.shiftKey} : null);
@@ -1554,6 +1580,9 @@ export const createProductView: CreateProductView = async (input) => {
     if (target?.kind === "node") input.events.onDoublePick?.(target);
   };
   const onLeave = () => {
+    cancelAnimationFrame(hoverFrame);
+    hoverFrame = 0;
+    pendingHoverEvent = null;
     hover = null;
     morphologyInteraction.hoverId = null;
     redrawMorphology();
@@ -1562,6 +1591,8 @@ export const createProductView: CreateProductView = async (input) => {
   };
   container.addEventListener("pointermove", onMove);
   container.addEventListener("pointerdown", onPress);
+  container.addEventListener("pointerup", onRelease);
+  container.addEventListener("pointercancel", onCancel);
   container.addEventListener("click", onClick);
   container.addEventListener("dblclick", onDoubleClick);
   container.addEventListener("pointerleave", onLeave);
@@ -1837,6 +1868,8 @@ export const createProductView: CreateProductView = async (input) => {
       cancelAnimationFrame(movingLabelFrame);
       container.removeEventListener("pointermove", onMove);
       container.removeEventListener("pointerdown", onPress);
+      container.removeEventListener("pointerup", onRelease);
+      container.removeEventListener("pointercancel", onCancel);
       container.removeEventListener("click", onClick);
       container.removeEventListener("dblclick", onDoubleClick);
       container.removeEventListener("pointerleave", onLeave);
