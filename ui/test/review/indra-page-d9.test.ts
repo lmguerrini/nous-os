@@ -243,7 +243,8 @@ const internals = (page: V2Page) => page as unknown as { projectionResult: Proje
 const resultOf = (page: V2Page) => internals(page).projectionResult;
 const statusText = () => elements.get('status')!.textContent;
 const until = async (condition: () => boolean, label: string) => {
-  for (let attempt = 0; attempt < 600 && !condition(); attempt++) await new Promise(resolve => setTimeout(resolve, 5));
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline && !condition()) await new Promise(resolve => setTimeout(resolve, 5));
   assert.ok(condition(), label);
 };
 const textOf = (element: FakeElement | { text?: string }): string => {

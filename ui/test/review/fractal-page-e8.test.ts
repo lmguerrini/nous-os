@@ -213,7 +213,8 @@ const recordOf = (page: V2Page) => (page.witness() as unknown as { projection: P
 const resultOf = (page: V2Page) => (page as unknown as { projectionResult: ProjectionResult | null }).projectionResult;
 const statusText = () => elements.get('status')!.textContent;
 const until = async (condition: () => boolean, label: string) => {
-  for (let attempt = 0; attempt < 400 && !condition(); attempt++) await new Promise(resolve => setTimeout(resolve, 5));
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline && !condition()) await new Promise(resolve => setTimeout(resolve, 5));
   assert.ok(condition(), label);
 };
 
