@@ -2,6 +2,12 @@
 
 Le viste proiettano un dominio analitico esplicito fino a 850 nodi. Il registro semantico completo rimane distinto. Un rifiuto numerico produce uno stato tipizzato senza coordinate; non viene sostituito da un layout casuale o da una geometria di ripiego non dichiarata. Le soglie sotto sono limiti implementati o risultati misurati, non promesse di prestazione universali.
 
+## Controlli, morfologie ed etichette
+
+I controlli 3D condividono lo stesso handler in tutte le organizzazioni: trascinamento sinistro per orbitare, rotella per zoom ancorato al cursore, trascinamento destro/centrale o Shift+sinistro per pan. È navigazione senza inerzia. Il campo stellare è decorativo e deterministico; la polvere degli hub è un accento più tenue. Le morfologie cambiano solo la resa. I nodi predefiniti sono piccoli e i cursori di dimensione, spessore degli archi e curvatura agiscono sui parametri d’aspetto.
+
+Il posizionatore condiviso restituisce riquadri non sovrapposti, ancorati ai nodi, e segmenti guida per le etichette spostate; i nomi di dominio non vengono esclusi dal budget delle etichette secondarie. Limite d’integrazione a questo commit: il product view non disegna i segmenti guida e le etichette del renderer 3D tipizzato non passano per lo stesso posizionatore. Non si può quindi estendere la garanzia dei segmenti guida e della collisione comune a tutti i renderer.
+
 ## Natural
 
 Natural riusa i layout esistenti: non offre un nuovo solver di stress. La pipeline tipizzata è attivata con `#projection=natural`; senza flag il percorso D-072 resta quello predefinito. L’arrangiamento è Natural-only e deve essere `constellation`, `network` o `mycelium`; uno sconosciuto è rifiutato alla normalizzazione e una disposizione Flat legacy è letta solo come alias migrato. La vista non ha codici di rifiuto numerico propri documentati: gli errori di input seguono il contratto `ViewInput`.
@@ -22,7 +28,7 @@ Fonti: `ui/src/review/v2-page.ts` (`INDRA_PAGE_MAX_DEPTH=3`, `INDRA_PAGE_MAX_WOR
 
 ## Fractal (sperimentale)
 
-Disponibile solo con `#experimental=fractal`; senza opt-in le richieste ricadono su Natural.
+Disponibile solo con `#experimental=fractal`; senza opt-in le richieste ricadono su Natural. Fractal aggiunge guide certificate dai rami inversi, conteggi di profondità e percorsi visuali aggregati che mantengono i relativi ID sorgente. Questi sono elementi derivati, non archi sorgente.
 
 
 - Il dominio massimo è 850; `p` deve essere 2 o 3, i parametri devono corrispondere alla dinamica certificata, la partizione comunitaria deve essere valida e ogni nodo deve ricevere una coordinata. Non si accettano caricamenti parziali di livello.
@@ -30,6 +36,11 @@ Disponibile solo con `#experimental=fractal`; senza opt-in le richieste ricadono
 - Il residuo dei raggi inversi e il confronto di livello devono rispettare la tolleranza dei parametri (gate di qualifica `1e-6`); un salto di ramo non valido, dinamica non certificata o residuo eccessivo produce `uncertified-dynamics`, `inverse-ray-failed` o rifiuto di parametri. La dispersione radiale IQR/mediana deve essere almeno **0.15** (`radial-spread-refusal`). Nessun nodo può essere perso: la ritenzione mappata richiesta è 100%.
 - La qualifica sintetica a 850 nodi ha misurato residuo inverso massimo `9.972e-12`, residuo regioni `9.908e-12`, residuo equipotenziali `1.258e-12`, IQR radiale/mediana `0.766643`; 11 insiemi ammissibili hanno superato la località. Sono qualifiche di quei dati e commit, non garanzia per ogni grafo; una comunità a clique può essere rifiutata perché nessun ordine soddisfa il limite.
 - La vista 3D è un sollevamento scalare del potenziale esterno, non un frattale spaziale. Il routing Mycelium e i dendriti Neurali possono rendere più difficile leggere settori e raggi.
+- Le curve di ramificazione inversa sono guide derivate finite, non traiettorie di nodi o relazioni semantiche. I percorsi tra aggregati sono relazioni visuali conteggiate con i loro archi sorgente elencati; i renderer attuali tracciano segmenti rettilinei tra rappresentanti, perciò un percorso lungo non segue ancora una catena di aggregati né garantisce l’evitamento di settori.
+
+## Rivelazione progressiva e instradamento degli archi
+
+> **Segnaposto — in lavorazione.** Il controller di rivelazione, l’instradamento degli archi e il relativo testimone sono in integrazione; i rispettivi limiti e comportamenti verranno documentati dopo la verifica del codice integrato.
 
 Fonti: `ui/src/fractal/assignment.ts` (`EDGE_LOCALITY_RATIO_LIMIT`, G5.1 e Fiedler), `ui/src/projection/fractal.ts` (cap, convalida e codici di rifiuto).
 

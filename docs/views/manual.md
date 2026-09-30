@@ -1,68 +1,57 @@
 # Manuale delle viste
 
-Le viste si scelgono nell’asse **Organizzazione**. **Natural** e **Indra** sono le opzioni ordinarie; Indra usa la disposizione ricorsiva D-071/D-072, con perle circolari e figli impaccati per importanza e discendenti nascosti. **Indra’s Pearls · Möbius/Schottky**, **Fractal** e **Holographic** sono sperimentali e compaiono solo con il rispettivo opt-in. Tutte sono viste dello stesso dominio dichiarato: cambiano coordinate ed elementi derivati visibili, non il grafo sorgente. La proiezione analitica lavora sul dominio divulgato (fino a 850 nodi); identità e provenienza del registro sorgente restano separate.
+Le viste si scelgono nell’asse **Organizzazione**. **Natural** e **Indra** sono le opzioni ordinarie: Indra usa la disposizione ricorsiva D-071/D-072. **Indra’s Pearls · Möbius/Schottky** e **Fractal** sono sperimentali; **Holographic** resta sospesa e compare solo con il proprio opt-in sperimentale. Le viste condividono il dominio dichiarato: coordinate, stile e geometrie derivate non cambiano identità o relazioni del grafo sorgente. Le proiezioni analitiche usano il dominio divulgato, fino a 850 nodi.
 
-## Impostazioni condivise
+## Controlli e impostazioni condivise
 
-- **2D / 3D** cambia la proiezione geometrica e la camera. Indra mantiene le perle circolari in 2D e sferiche in 3D; Indra’s Pearls sperimentale aggiunge semisfere Möbius/Schottky, Fractal solleva il potenziale esterno come altezza scalare e Holographic usa tre coordinate spettrali quando disponibili. Non interpretare queste geometrie come relazioni sorgente.
-- **Stellare, Neurale, Micelio** sono stili grafici, non algoritmi di disposizione. Stellare usa corpi stellari e aloni; Neurale usa somi e dendriti; Micelio instrada i collegamenti in tronchi condivisi. Possono cambiare la leggibilità degli archi o dei contorni, ma non la proiezione matematica né la semantica dei dati.
-- **Densità** (Essenziale, Bilanciata, Completa) regola quanti nodi, archi ed etichette sono disegnati. Lo zoom semantico sceglie il livello di dettaglio (livelli del grafo 1–5) in base all’inquadratura; avvicinarsi può rendere visibili i passaggi più profondi. Il focus evidenzia i membri pertinenti e attenua il resto senza spostarlo. I contatori nell’area dei dettagli indicano elementi disegnati e disponibili.
+- **2D / 3D** cambia la proiezione geometrica. In 3D, trascina con il tasto sinistro per ruotare; la rotella ingrandisce o riduce puntando verso il cursore; trascina con il tasto destro o centrale, oppure con **Shift + tasto sinistro**, per traslare. Gli stessi controlli valgono per Natural, Indra e le viste sperimentali.
+- **Stellare, Neurale, Micelio** cambiano la forma grafica e non l’organizzazione semantica. **Dimensione nodi**, **Spessore archi** e **Curvatura** regolano la resa; **Densità** (Essenziale, Bilanciata, Completa) regola quanti elementi sono visibili. Lo zoom semantico può rivelare livelli più profondi. Il focus evidenzia i membri pertinenti senza spostarli.
+- Il pannello **Dettagli** riporta gli elementi disegnati e disponibili. Selezione e focus non trasformano gli elementi derivati in relazioni sorgente.
+
+## Morfologie
+
+- **Stellare** combina un campo uniforme di stelle decorative, deterministico, con polvere più tenue concentrata intorno agli hub come accento. Questi elementi non sono nodi e non hanno identificativi o relazioni.
+- **Neurale** usa somi compatti e filamenti con rastremazione verso entrambi gli estremi e larghezza intermedia più sottile. Gli archi raggiungono il bordo del soma.
+- **Micelio** disegna collegamenti continui e ondulati, con giunzioni condivise solo nei nodi reali.
+
+I nodi predefiniti sono più piccoli; i controlli di dimensione e larghezza permettono di ingrandirli o ridurli. Le morfologie sono stili, non nuovi layout o topologie.
 
 ## Natural
 
-Natural conserva i layout D-069…D-072. L’**arrangiamento** dichiarato — `constellation`, `network` o `mycelium` — governa le posizioni; lo stile morfologico ne sceglie solo il valore predefinito. Il readout nell’intestazione indica arrangiamento, se esplicito o derivato dallo stile, e versione del layout. Lo stesso arrangiamento produce la stessa disposizione con tutti e tre gli stili.
+Natural conserva i layout D-069…D-072. L’arrangiamento dichiarato — `constellation`, `network` o `mycelium` — governa le posizioni; la morfologia fornisce soltanto il valore iniziale. L’arrangiamento esplicito resta invariato quando si cambia morfologia.
 
-Con la pipeline tipizzata disattivata, il layout disegnato è quello D-072 e segue la morfologia: se non hai scelto un arrangiamento, ogni cambio di morfologia ne applica il valore predefinito. Anche un arrangiamento salvato nell’URL o nella vista che coincide con il predefinito della morfologia è considerato derivato. Un arrangiamento diverso è una scelta esplicita e viene mantenuto. Con `#projection=natural`, l’arrangiamento viene risolto una volta e resta uguale quando cambi stile.
-
-In 2D si legge il layout planare esistente; in 3D quello volumetrico esistente. Il tasto **Natural** usa la pipeline tipizzata quando si apre la pagina con `#projection=natural`. Senza quel flag resta attivo il percorso D-072 predefinito.
+In 2D si legge il layout planare esistente, in 3D quello volumetrico. `#projection=natural` apre la pipeline tipizzata; senza quel flag resta attivo il percorso prodotto D-072.
 
 ## Indra
 
-Indra è la disposizione ricorsiva D-071/D-072 e resta la scelta ordinaria in 2D e 3D. Ogni nodo gerarchico è una perla: il raggio combina importanza e discendenti nascosti, i figli vengono impaccati tangenti dentro il genitore e la profondità z è deterministica per identificativo. Gli archi mostrati sono relazioni sorgente con entrambi gli estremi disponibili. `#indra=legacy` resta un alias innocuo del percorso predefinito.
+**Indra** è l’organizzazione ricorsiva primaria D-071/D-072, in 2D e 3D. Ogni nodo gerarchico è rappresentato da una perla; i figli sono impaccati nel genitore in modo deterministico. Gli archi visibili restano relazioni sorgente con estremi disponibili. `#indra=legacy` è un alias del percorso legacy ricorsivo e non seleziona Indra’s Pearls.
 
 ## Indra’s Pearls · Möbius/Schottky (sperimentale)
 
-Aggiungi `indra-pearls` alla lista `#experimental=` (per esempio `#experimental=indra-pearls,fractal`) per mostrare questa opzione separata. Selezionandola, l’URL registra `#indra=pearls`; la selezione ordinaria **Indra** torna al percorso ricorsivo. La vista organizza i nodi in perle gerarchiche mediante mappe di Möbius verificate. In 2D le perle sono dischi annidati/disgiunti; in 3D i dischi hanno semisfere di testimonianza. Se la costruzione Schottky non è certificabile, la pagina dichiara l’impaccamento euclideo annidato di ripiego: non è un gruppo Schottky. La richiesta della pagina è limitata a 3 livelli e 200 parole.
+Aggiungi `indra-pearls` alla lista `#experimental=` (per esempio `#experimental=indra-pearls,fractal`) per rendere disponibile questa opzione distinta. Selezionandola, l’URL registra `#indra=pearls`; la selezione **Indra** continua a indicare l’organizzazione ricorsiva primaria.
 
-Seleziona una perla o porta lo zoom/focus al suo livello per **aprirla**: la pagina carica pigramente i figli e mostra il sottografo indotto reale. L’apertura usa un token legato a risultato e livello, e non rifà l’inquadratura. Per **uscire**, usa il controllo per lasciare la perla e tornare al genitore/radice; anche il ritorno conserva la camera. Le perle ancora chiuse mostrano identità e conteggio, non coordinate. Un limite di profondità o parole appare come livello non aperto con codice e motivo. `#indra=legacy` seleziona invece l’adattatore Indra legacy verificato, cioè il percorso della vista prodotto D-072.
+La variante tipizzata costruisce perle gerarchiche mediante mappe di Möbius certificate. In 2D sono dischi, in 3D semisfere di testimonianza. Se la costruzione Schottky non è certificabile, viene dichiarato il ripiego euclideo annidato, che non è un gruppo Schottky. La pagina limita la richiesta a tre livelli e 200 parole. L’apertura pigra mostra i figli e il sottografo indotto; le perle chiuse mostrano identità e conteggio senza coordinate.
 
 ## Fractal (sperimentale)
 
-Fractal compare solo con `#experimental=fractal`; una richiesta salvata o URL senza il flag carica Natural e mostra un avviso una tantum. Fractal associa il potenziale/importanza dei nodi al raggio e l’appartenenza comunitaria all’angolo attraverso raggi esterni inversi della dinamica certificata. La linea di stato mostra i parametri `p` e `c`; in 3D l’altezza è il potenziale esterno sollevato, non una dinamica frattale tridimensionale.
+Fractal compare solo con `#experimental=fractal`. Associa il potenziale/importanza dei nodi al raggio e le comunità a settori angolari, usando guide certificate ottenute dai rami inversi della dinamica. Mostra le guide di ramificazione inversa e i percorsi aggregati conteggiati come geometrie derivate; non sono archi sorgente. In 3D l’altezza è un sollevamento scalare del potenziale, non una dinamica frattale tridimensionale.
 
-Zoom e focus possono rivelare i livelli comunitari pigramente. L’apertura segue il token del livello e lascia invariata la camera; il limite o il rifiuto di un livello compare nella linea di stato. I picks su nodo, relazione, contenitore o curva aprono una scheda di spiegazione della proiezione con testimone numerico e limiti dichiarati.
+La vista espone testimonianze numeriche della certificazione e dei percorsi. È sperimentale: i controlli di zoom e i limiti di calcolo possono lasciare livelli o geometrie non disponibili.
 
-## Holographic
+## Holographic (sperimentale e sospesa)
 
-Holographic compare solo con `holographic` nella lista comma-separated `#experimental=` (per esempio `#experimental=holographic,fractal`). Una vista salvata o URL senza il flag carica Natural e mostra un avviso una tantum.
+Holographic resta sospesa nell’interfaccia ordinaria. `holographic` nella lista `#experimental=` la rende disponibile come vista sperimentale. In assenza del flag, richieste salvate o URL che la selezionano ricadono su Natural con un avviso una tantum.
 
-Questa vista sperimentale usa modi a bassa frequenza del laplaciano degli archi attestati per coordinate e campi derivati, senza affermare proprietà topologiche. Le coordinate sono calcolate per componente con i modi di Koren `v = D^-1/2 u`; la stessa base spettrale è usata per geometria, calore e testimoni di ricostruzione. Le componenti vengono disposte in modo deterministico. Per autospazi degeneri, la regola canonica del proiettore sceglie assi deterministici che restano autovettori effettivi; se il cluster non è isolabile, il probe è ambiguo o insufficiente, o il solver non supera i controlli numerici, le coordinate sono rifiutate e non compare un layout sostitutivo.
+## Etichette, picks e provenienza
 
-Il calcolo passa al worker dedicato quando il browser lo rende disponibile; il client usa invece il thread principale se non può avviare il worker, nel qual caso il calcolo lo occupa.
+Le etichette vengono collocate vicino al proprio nodo e il posizionatore evita sovrapposizioni tra riquadri e pannelli riservati. I nomi di dominio hanno priorità e non vengono scartati dal budget di densità. Il posizionatore calcola una linea guida per le etichette spostate; il livello prodotto attuale non la disegna ancora. Alcune etichette secondarie possono non essere mostrate quando lo spazio è limitato.
 
-Quando più nodi hanno coordinate coincidenti o vicine entro la tolleranza dichiarata, un anello deterministico li separa solo sullo schermo. Gli identificativi determinano l’ordine; il testimone e la spiegazione conservano le coordinate spettrali esatte. Lo scostamento non cambia i risultati spettrali.
+Selezionare un nodo o un arco sorgente mostra la relativa informazione. Un pick su una relazione visuale, un contenitore, una curva o un campo apre la spiegazione dell’elemento derivato. Provenienza e relazioni sorgente restano distinguibili da inferenze e geometria: una curva, un contenitore o un percorso conteggiato non diventa un arco attestato.
 
-Se la geometria è ammessa, nel pannello **Dettagli** scegli:
+## Rivelazione progressiva e instradamento degli archi
 
-- **Canale del campo**: ad esempio il segnale misurato o il calore diffuso a un tempo `t`;
-- **Regione della testimonianza**: comunità o componente per cui leggere il test di ricostruzione;
-- **Focus sulla regione**: limita l’inquadratura ai membri della regione; premi di nuovo **Esci dal focus sulla regione** per tornare all’insieme.
-
-Un pick apre una scheda con spiegazione, parametri, residui e limiti. La provenienza è una sezione separata: i collegamenti aprono i record sorgente e non fanno parte della spiegazione geometrica. La scheda di ricostruzione distingue unicità di campionamento, ricostruzione esatta di un segnale band-limitato e prestazioni sul segnale misurato; non afferma che siano ricostruiti grafo, provenienza o verità.
-
-## Picks, schede e provenienza
-
-Selezionare un nodo o un arco sorgente mostra la relativa informazione. Un pick strutturale (relazione visuale, contenitore, curva o campo) apre la spiegazione del risultato che lo ha prodotto ed è marcato come derivato/non semantico. Le relazioni sorgente, i contributori e la provenienza mantengono una sezione distinta dalle inferenze e dalla geometria. Una spiegazione non trasforma una curva, un contenitore o una ricostruzione in un arco attestato.
+> **Segnaposto — in lavorazione.** Sezione riservata alla descrizione del controller di rivelazione, dell’instradamento degli archi e del relativo testimone. Sarà completata dopo l’integrazione di questi componenti.
 
 ## Linea di stato
 
-- **Grafo pronto**: Natural nel percorso prodotto D-072; non è un rapporto di calcolo analitico.
-- **Natural · arrangiamento · origine · versione**: arrangiamento effettivo o predefinito e versione del layout.
-- **Vista Indra’s Pearls**: genere Schottky e margine di separazione, oppure impaccamento di ripiego e relativo codice; dichiara che la geometria è derivata. In 3D specifica le semisfere.
-- **Vista Fractal**: `p`, `c`, raggi inversi e geometria derivata; in 3D specifica il sollevamento scalare.
-- **Vista Holographic**: stato sperimentale, coordinate spettrali e assenza di affermazione topologica, poi regioni ricostruite/rifiutate, quante battono la baseline globale, errore relativo mediano e geometria derivata. In 3D specifica le tre coordinate spettrali.
-- **Calcolo della proiezione in corso**: il calcolo analitico non è terminato.
-- **Proiezione rifiutata [codice]**: la richiesta non ha prodotto coordinate; la linea indica il motivo e nessuna posizione rifiutata viene disegnata.
-- **Livelli non aperti [codice]**: l’espansione richiesta è stata rifiutata da un limite o token; i livelli chiusi rimangono senza coordinate.
-
-Fonti implementative: `ui/src/review/v2-page.ts` (stato, controlli e flussi), `ui/src/review/main.ts` (readout Natural e attivazione pipeline), `ui/src/review/projection-style.ts` (stili), `ui/src/review/panel-view.ts` (picks e spiegazioni).
+La linea di stato riporta l’organizzazione e, per le proiezioni sperimentali, i parametri, l’esito della geometria derivata o il codice e il motivo del rifiuto. Una richiesta rifiutata non viene disegnata con coordinate inventate.
