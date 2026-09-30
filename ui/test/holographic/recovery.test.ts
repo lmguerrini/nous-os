@@ -4,8 +4,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DENSE_BENCHMARK_OPT_IN, DENSE_DEFAULT_MAX_N, denseLaplacian, solveDenseSymmetricEigen } from '../../src/holographic/dense.ts';
-import { recoverBandlimitedSignal, recoverStableBandlimit, type RecoveryOutcome } from '../../src/holographic/recovery.ts';
-import { eigenbasisFromDense, syntheticSignal, type Eigenbasis } from '../../src/holographic/signals.ts';
+import { recoverBandlimitedSignal, recoverStableBandlimit, recoverStructuralSignals, type RecoveryOutcome } from '../../src/holographic/recovery.ts';
+import { bandlimitedCommunityIndicator, eigenbasisFromDense, syntheticSignal, type Eigenbasis } from '../../src/holographic/signals.ts';
 import type { SpectralGraph } from '../../src/holographic/adjacency.ts';
 import { noiseVector, pathGraph, ringLatticeGraph } from './fixtures.ts';
 
@@ -91,6 +91,50 @@ test('the stable band rule selects by sample rank and condition, independently o
   }
   const strict = recoverStableBandlimit(graph, basis, smooth, samples, { maxBandlimit: 3, maxCondition: 1 });
   assert.equal(strict.bandlimit, 1);
+});
+
+test('P3 structural coordinates and a heat-diffused community indicator recover on a uniqueness set', () => {
+  const graph = pathGraph(3);
+  const basis = denseBasis(graph);
+  const coordinate = basis.eigenvectors.slice(3, 6);
+  const community = bandlimitedCommunityIndicator(basis, [0], 2, 1);
+  const result = recoverStructuralSignals(basis, [0, 1], 2, [
+    { id: 'coordinate', values: coordinate }, { id: 'community', values: community },
+  ]);
+  assert.equal(result.status, 'recovered');
+  assert.equal(result.rank, 2);
+  assert.ok(result.conditionNumber! < 30);
+  for (const target of result.targets) {
+    assert.ok(target.bandlimitedRelativeResidual < 1e-12);
+    assert.ok(target.heldOutRelativeError! < 1e-12);
+  }
+  const failed = recoverStructuralSignals(basis, [0], 2, [{ id: 'coordinate', values: coordinate }]);
+  assert.equal(failed.status, 'rank-deficient');
+  assert.equal(failed.rank, 1);
+  assert.deepEqual(failed.targets, []);
+});
+
+test('C8 paired low modes and two community heat scales recover exactly; held-out changes cannot choose a band', () => {
+  const graph = ringLatticeGraph(8, 'cycle-structural', 1);
+  const basis = denseBasis(graph);
+  const samples = [0, 1, 2, 4];
+  const original = bandlimitedCommunityIndicator(basis, [0, 1], 3, 0.5);
+  const longHeat = bandlimitedCommunityIndicator(basis, [0, 1], 3, 2);
+  const chosen = recoverStableBandlimit(graph, basis, original, samples, { maxBandlimit: 3 });
+  const changed = Float64Array.from(original);
+  changed[5] = changed[5]! + 100;
+  const changedOutcome = recoverStableBandlimit(graph, basis, changed, samples, { maxBandlimit: 3 });
+  assert.equal(chosen.bandlimit, changedOutcome.bandlimit);
+  assert.equal(chosen.bandlimit, 3);
+  const structural = recoverStructuralSignals(basis, samples, 3, [
+    { id: 'short', values: original }, { id: 'long', values: longHeat },
+  ]);
+  assert.equal(structural.status, 'recovered');
+  assert.equal(structural.rank, 3);
+  for (const target of structural.targets) {
+    assert.ok(target.bandlimitedRelativeResidual < 1e-12);
+    assert.ok(target.heldOutRelativeError! < 1e-11);
+  }
 });
 
 test('a non-band-limited signal is recovered with an explicit held-out error and no exact claim', () => {

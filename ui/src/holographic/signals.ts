@@ -199,6 +199,25 @@ export function reconstructSignal(basis: Eigenbasis, coefficients: Float64Array,
   return reconstructed;
 }
 
+/** Heat-diffused source-community indicator restricted to the chosen stable band.
+ * This is a graph-derived structural probe, never a measured node attribute. */
+export function bandlimitedCommunityIndicator(
+  basis: Eigenbasis, memberIndices: readonly number[], bandlimit: number, time = 1,
+): Float64Array {
+  if (!Number.isInteger(bandlimit) || bandlimit < 1 || bandlimit > basis.count || !Number.isFinite(time) || time < 0)
+    fail('invalid community indicator band or heat time');
+  const members = new Set(memberIndices);
+  if (members.size !== memberIndices.length || [...members].some(index => !Number.isInteger(index) || index < 0 || index >= basis.n))
+    fail('invalid community indicator members');
+  const coefficients = new Float64Array(bandlimit);
+  for (let mode = 0; mode < bandlimit; mode += 1) {
+    let coefficient = 0;
+    for (const index of members) coefficient += basis.eigenvectors[mode * basis.n + index]!;
+    coefficients[mode] = coefficient * Math.exp(-time * basis.eigenvalues[mode]!);
+  }
+  return reconstructSignal(basis, coefficients);
+}
+
 export function signalEnergy(x: Float64Array): number {
   let sum = 0;
   for (const value of x) sum += value * value;

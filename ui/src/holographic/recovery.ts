@@ -110,6 +110,106 @@ export interface RecoveryRefusal {
 
 export type RecoveryOutcome = RecoveryResult | RecoveryRefusal;
 
+/** A shared sampling inverse for several structural signals. The band is selected separately
+ * from P_S U_k; target values are read only after that choice. One Gram eigensolve serves
+ * every coordinate and community signal, without another graph eigensolve. */
+export interface StructuralTargetError {
+  readonly id: string;
+  readonly heldOutRelativeError: number | null;
+  readonly heldOutResidualNorm: number | null;
+  readonly signalNorm: number;
+  readonly bandlimitedRelativeResidual: number;
+}
+
+export interface StructuralRecovery {
+  readonly bandlimit: number;
+  readonly rank: number;
+  readonly conditionNumber: number | null;
+  readonly status: 'recovered' | 'rank-deficient';
+  readonly targets: readonly StructuralTargetError[];
+}
+
+export function recoverStructuralSignals(
+  basis: Eigenbasis,
+  sampleIndices: readonly number[],
+  bandlimit: number,
+  targets: readonly Readonly<{ id: string; values: Float64Array }>[],
+  ridge = 0,
+): StructuralRecovery {
+  const { n } = basis;
+  const k = bandlimit;
+  if (!Number.isInteger(k) || k < 1 || k > basis.count || k > DENSE_DEFAULT_MAX_N)
+    fail('invalid structural bandlimit');
+  if (!Number.isFinite(ridge) || ridge < 0) fail('invalid structural ridge');
+  const samples = [...sampleIndices].sort((a, b) => a - b);
+  if (samples.length === 0 || samples.some((s, i) => !Number.isInteger(s) || s < 0 || s >= n || (i > 0 && s === samples[i - 1])))
+    fail('invalid structural sample set');
+  const gram = new Float64Array(k * k);
+  for (let j = 0; j < k; j += 1) for (let i = j; i < k; i += 1) {
+    let sum = 0;
+    for (const s of samples) sum += basis.eigenvectors[j * n + s]! * basis.eigenvectors[i * n + s]!;
+    gram[i + j * k] = sum;
+    gram[j + i * k] = sum;
+  }
+  const decomposition = solveDenseSymmetricEigen({ n: k, values: gram });
+  const sigmaMax = Math.sqrt(Math.max(0, decomposition.eigenvalues[k - 1]!));
+  const threshold = sigmaMax * RECOVERY_DEFAULT_RANK_TOLERANCE;
+  let rank = 0;
+  let sigmaMin = Number.POSITIVE_INFINITY;
+  for (const eigenvalue of decomposition.eigenvalues) {
+    const sigma = Math.sqrt(Math.max(0, eigenvalue));
+    if (sigma > threshold) { rank += 1; sigmaMin = Math.min(sigmaMin, sigma); }
+  }
+  const conditionNumber = rank > 0 ? sigmaMax / sigmaMin : null;
+  if (rank < k) return { bandlimit: k, rank, conditionNumber, status: 'rank-deficient', targets: [] };
+  const measured: StructuralTargetError[] = [];
+  const mask = new Uint8Array(n);
+  for (const s of samples) mask[s] = 1;
+  for (const target of targets) {
+    const values = target.values;
+    if (values.length !== n || values.some(value => !Number.isFinite(value))) fail('invalid structural target');
+    const rhs = new Float64Array(k);
+    const fullCoefficients = new Float64Array(k);
+    let fullEnergy = 0;
+    for (let node = 0; node < n; node += 1) fullEnergy += values[node]! ** 2;
+    for (let mode = 0; mode < k; mode += 1) {
+      const offset = mode * n;
+      for (const s of samples) rhs[mode] = rhs[mode]! + basis.eigenvectors[offset + s]! * values[s]!;
+      for (let node = 0; node < n; node += 1) fullCoefficients[mode] = fullCoefficients[mode]! + basis.eigenvectors[offset + node]! * values[node]!;
+    }
+    const coefficients = new Float64Array(k);
+    for (let mode = 0; mode < k; mode += 1) {
+      let projected = 0;
+      for (let j = 0; j < k; j += 1) projected += decomposition.eigenvectors[j + mode * k]! * rhs[j]!;
+      const weight = projected / (decomposition.eigenvalues[mode]! + ridge);
+      for (let j = 0; j < k; j += 1) coefficients[j] = coefficients[j]! + weight * decomposition.eigenvectors[j + mode * k]!;
+    }
+    let heldError = 0;
+    let heldEnergy = 0;
+    let bandError = 0;
+    for (let node = 0; node < n; node += 1) {
+      let reconstructed = 0;
+      let projected = 0;
+      for (let mode = 0; mode < k; mode += 1) {
+        const u = basis.eigenvectors[mode * n + node]!;
+        reconstructed += u * coefficients[mode]!;
+        projected += u * fullCoefficients[mode]!;
+      }
+      bandError += (values[node]! - projected) ** 2;
+      if (!mask[node]) {
+        heldError += (values[node]! - reconstructed) ** 2;
+        heldEnergy += values[node]! ** 2;
+      }
+    }
+    measured.push({ id: target.id,
+      heldOutRelativeError: samples.length === n ? null : Math.sqrt(heldError) / Math.max(Math.sqrt(heldEnergy), RECOVERY_ENERGY_FLOOR),
+      heldOutResidualNorm: samples.length === n ? null : Math.sqrt(heldError),
+      signalNorm: Math.sqrt(fullEnergy),
+      bandlimitedRelativeResidual: Math.sqrt(bandError) / Math.max(Math.sqrt(fullEnergy), RECOVERY_ENERGY_FLOOR) });
+  }
+  return { bandlimit: k, rank, conditionNumber, status: 'recovered', targets: measured };
+}
+
 /** Choose the largest stable prefix of low modes using sampled geometry alone. Since adding
  * a column cannot increase the smallest singular value or decrease the largest one, the
  * first rank or condition failure ends the search. A failed first mode remains a refusal.

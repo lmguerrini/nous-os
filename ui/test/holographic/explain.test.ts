@@ -140,7 +140,7 @@ test('an empty or all-refused region set makes no reconstruction claim', () => {
 test('every explanation carries the stated baseline and the verbatim no-topology limitation', () => {
   const witnesses = [exactWitness(), meanEquivalentWitness(), refusedWitness()];
   const explanations = [
-    ...witnesses.map(regionReconstructionExplanation),
+    ...witnesses.map(witness => regionReconstructionExplanation(witness)),
     errorModelExplanation(holographicErrorModel(witnesses), { signalId: 'importance', bandlimit: 2, ridge: 0, regionPolicy: 'source-community-v1' }),
   ];
   for (const explanation of explanations) {

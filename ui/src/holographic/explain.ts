@@ -22,12 +22,73 @@ import type { Explanation, NodeId } from '../projection/contract-types.ts';
 import type { RecoveryClaim, RecoveryOutcome } from './recovery.ts';
 import { RECOVERY_BASELINE_GLOBAL_MEAN, RECOVERY_DEFAULT_CLAIM_TOLERANCE, RECOVERY_MAX_SAMPLE_CONDITION } from './recovery.ts';
 
-export const HOLOGRAPHIC_EXPLAIN_VERSION = 'holographic-explain-v2';
+export const HOLOGRAPHIC_EXPLAIN_VERSION = 'holographic-explain-v3';
 /** The stated baseline every improvement claim is measured against. */
 export const EXPLAIN_STATED_BASELINE = RECOVERY_BASELINE_GLOBAL_MEAN;
 /** The verbatim limitation attached to every reconstruction explanation. */
 export const EXPLAIN_NO_TOPOLOGY_CLAIM =
-  'No topology claim is made: the reconstruction concerns the measured scalar signal only — a sampled region recovers a low-frequency approximation of that signal within the measured error. It says nothing about nodes, edges, communities, provenance or truth, and a reconstructed signal is never a recovered semantic edge.';
+  'No topology claim is made: spectral coordinates and community indicators are derived structural signals, while importance is a measured node attribute. Recovering these signals does not recover source nodes, edges, provenance or truth; a reconstructed signal is never a recovered semantic edge.';
+
+export interface StructuralRegionWitness {
+  readonly regionId: string;
+  readonly bandlimit: number;
+  readonly rank: number;
+  readonly conditionNumber: number | null;
+  readonly uniquenessSet: boolean;
+  readonly reason: string | null;
+  readonly embeddingRelativeErrors: readonly (number | null)[];
+  readonly embeddingBandResiduals: readonly number[];
+  readonly communityRelativeErrors: readonly (number | null)[];
+  readonly communityBandResidualMax: number | null;
+  readonly exactEmbedding: boolean;
+  readonly exactCommunities: boolean;
+}
+
+export interface StructuralErrorModel {
+  readonly regionCount: number;
+  readonly uniquenessCount: number;
+  readonly uniquenessFraction: number | null;
+  readonly exactEmbeddingCount: number;
+  readonly exactCommunitiesCount: number;
+  readonly nonUniqueRegions: readonly Readonly<{ regionId: string; reason: string }> [];
+  readonly unrecoveredEmbeddingRegions: readonly Readonly<{ regionId: string; reason: string }> [];
+  readonly medianEmbeddingRelativeError: number | null;
+  readonly medianCommunityRelativeError: number | null;
+}
+
+function structureNumbers(structure: StructuralRegionWitness | undefined): Record<string, string | number | boolean> {
+  if (structure === undefined) return {};
+  return {
+    structuralBandlimit: structure.bandlimit, structuralRank: structure.rank,
+    structuralConditionNumber: structure.conditionNumber ?? 'n/a',
+    uniquenessSet: structure.uniquenessSet, structuralReason: structure.reason ?? 'sampling condition met',
+    exactEmbedding: structure.exactEmbedding, exactCommunities: structure.exactCommunities,
+    embeddingRelativeErrors: structure.embeddingRelativeErrors.map(format).join(', '),
+    embeddingBandResiduals: structure.embeddingBandResiduals.map(value => value.toExponential(3)).join(', '),
+    communityRelativeErrors: structure.communityRelativeErrors.map(format).join(', '),
+    communityBandResidualMax: structure.communityBandResidualMax ?? 'n/a',
+    ...Object.fromEntries(structure.embeddingRelativeErrors.map((value, index) => [`embeddingRelativeError${String(index)}`, value ?? 'n/a'])),
+    ...Object.fromEntries(structure.embeddingBandResiduals.map((value, index) => [`embeddingBandResidual${String(index)}`, value])),
+    ...Object.fromEntries(structure.communityRelativeErrors.map((value, index) => [`communityRelativeError${String(index)}`, value ?? 'n/a'])),
+  };
+}
+
+export function structuralErrorModel(witnesses: readonly StructuralRegionWitness[]): StructuralErrorModel {
+  const errors = (select: (w: StructuralRegionWitness) => readonly (number | null)[]) =>
+    witnesses.flatMap(select).filter((x): x is number => x !== null);
+  const embedding = errors(w => w.embeddingRelativeErrors);
+  const community = errors(w => w.communityRelativeErrors);
+  const uniquenessCount = witnesses.filter(w => w.uniquenessSet).length;
+  return {
+    regionCount: witnesses.length, uniquenessCount,
+    uniquenessFraction: witnesses.length ? uniquenessCount / witnesses.length : null,
+    exactEmbeddingCount: witnesses.filter(w => w.exactEmbedding).length,
+    exactCommunitiesCount: witnesses.filter(w => w.exactCommunities).length,
+    nonUniqueRegions: witnesses.filter(w => !w.uniquenessSet).map(w => ({ regionId: w.regionId, reason: w.reason ?? 'rank or condition failure' })),
+    unrecoveredEmbeddingRegions: witnesses.filter(w => !w.exactEmbedding).map(w => ({ regionId: w.regionId, reason: w.reason ?? 'embedding complement error exceeds numerical precision' })),
+    medianEmbeddingRelativeError: median(embedding), medianCommunityRelativeError: median(community),
+  };
+}
 
 export type RegionKind = 'community' | 'derived-component';
 
@@ -182,7 +243,9 @@ export function holographicErrorModel(witnesses: readonly RegionReconstructionWi
 }
 
 /** The per-region inspector explanation with its full numerical witness. */
-export function regionReconstructionExplanation(witness: RegionReconstructionWitness): Explanation {
+export function regionReconstructionExplanation(
+  witness: RegionReconstructionWitness, structure?: StructuralRegionWitness, realHeat?: RegionReconstructionWitness,
+): Explanation {
   const elementId = `visual:holographic:reconstruction:${witness.regionId}`;
   if (witness.status === 'refused') {
     return {
@@ -190,7 +253,8 @@ export function regionReconstructionExplanation(witness: RegionReconstructionWit
       elementKind: 'field',
       summary:
         `Region ${witness.regionId} (${witness.regionKind}, ${String(witness.memberCount)} sampled nodes) refused band-limited recovery: ` +
-        `${witness.refusalMessage ?? 'rank-deficient'}. No value is imputed and no claim is made.`,
+        `${witness.refusalMessage ?? 'rank-deficient'}. No value is imputed and no claim is made.` +
+        (structure === undefined ? '' : ` Structural band ${String(structure.bandlimit)}: ${structure.reason ?? 'sampling condition met'}.`),
       sourceIds: [witness.regionId],
       parameterIds: [`bandlimit=${String(witness.bandlimit)}`, `ridge=${String(witness.ridge)}`, `max-sample-condition=${RECOVERY_MAX_SAMPLE_CONDITION}`, EXPLAIN_STATED_BASELINE],
       numericalWitness: {
@@ -199,6 +263,8 @@ export function regionReconstructionExplanation(witness: RegionReconstructionWit
         memberCount: witness.memberCount,
         bandlimit: witness.bandlimit,
         measuredRank: witness.rank ?? 'n/a',
+        ...structureNumbers(structure),
+        ...(realHeat === undefined ? {} : { realHeatStatus: realHeat.status }),
       },
       limitation: EXPLAIN_NO_TOPOLOGY_CLAIM,
     };
@@ -209,7 +275,11 @@ export function regionReconstructionExplanation(witness: RegionReconstructionWit
     summary:
       `Region ${witness.regionId} (${witness.regionKind}, ${String(witness.memberCount)} sampled nodes): held-out relative error ` +
       `${format(witness.heldOutRelativeError)} (MAE ${format(witness.heldOutMae)}) against the stated global-mean baseline ` +
-      `${format(witness.statedBaselineRelativeError)}; improvement ${format(witness.improvementOverStatedBaseline)}.`,
+      `${format(witness.statedBaselineRelativeError)}; improvement ${format(witness.improvementOverStatedBaseline)}.` +
+      (structure === undefined ? '' : ` Structural band ${String(structure.bandlimit)} has rank ${String(structure.rank)}, condition ${format(structure.conditionNumber)}; ` +
+        `embedding complement error ${structure.embeddingRelativeErrors.map(format).join(', ')}, community-signal median ${format(median(structure.communityRelativeErrors.filter((x): x is number => x !== null)))}. ` +
+        `${structure.reason ?? 'Sampling is unique for this band.'}`) +
+      (realHeat === undefined ? '' : ` Measured heat-of-importance complement error ${format(realHeat.heldOutRelativeError)}; baseline ${format(realHeat.statedBaselineRelativeError)}.`),
     sourceIds: [witness.regionId],
     parameterIds: [`bandlimit=${String(witness.bandlimit)}`, `ridge=${String(witness.ridge)}`, `max-sample-condition=${RECOVERY_MAX_SAMPLE_CONDITION}`, EXPLAIN_STATED_BASELINE],
     numericalWitness: {
@@ -227,6 +297,12 @@ export function regionReconstructionExplanation(witness: RegionReconstructionWit
       localNeighbourBaselineRelativeError: witness.localNeighbourBaselineRelativeError ?? 'n/a',
       improvementOverStatedBaseline: witness.improvementOverStatedBaseline ?? 'n/a',
       beatsStatedBaseline: witness.beatsStatedBaseline ?? 'n/a',
+      ...structureNumbers(structure),
+      ...(realHeat === undefined ? {} : {
+        realHeatHeldOutRelativeError: realHeat.heldOutRelativeError ?? 'n/a',
+        realHeatStatedBaselineRelativeError: realHeat.statedBaselineRelativeError ?? 'n/a',
+        realHeatBeatsStatedBaseline: realHeat.beatsStatedBaseline ?? 'n/a',
+      }),
     },
     limitation: EXPLAIN_NO_TOPOLOGY_CLAIM,
   };
@@ -235,13 +311,14 @@ export function regionReconstructionExplanation(witness: RegionReconstructionWit
 /** The aggregate explanation shown when the error model itself is inspected. */
 export function errorModelExplanation(
   model: HolographicErrorModel,
-  context: Readonly<{ signalId: string; bandlimit: number; ridge: number; regionPolicy: string; unavailableReason?: string; smoothModel?: HolographicErrorModel }>,
+  context: Readonly<{ signalId: string; bandlimit: number; ridge: number; regionPolicy: string; unavailableReason?: string; smoothModel?: HolographicErrorModel; realHeatModel?: HolographicErrorModel; realHeatTime?: number; structure?: StructuralErrorModel }>,
 ): Explanation {
   return {
     elementId: 'visual:holographic:error-model',
     elementKind: 'field',
     summary: context.unavailableReason === undefined
-      ? `${model.summary} Each region uses the largest sampled low-mode prefix with full numerical rank and sample-matrix condition at most ${RECOVERY_MAX_SAMPLE_CONDITION}, selected before held-out values are read.${context.smoothModel === undefined ? '' : ` Declared constant-plus-first-nonzero-mode test signal: ${context.smoothModel.recoveredCount}/${context.smoothModel.regionCount} recovered, ${context.smoothModel.beatsStatedBaselineCount}/${context.smoothModel.comparedCount} beat the same baseline, ${context.smoothModel.exactCount} were exact band-limited recoveries, median held-out relative error across all regions ${format(context.smoothModel.medianHeldOutRelativeError)} and among wins ${format(context.smoothModel.medianBeatingHeldOutRelativeError)}. This synthetic smooth-signal result is separate from the measured ${context.signalId} channel.`}`
+      ? `${model.summary} Each region uses the largest sampled low-mode prefix with full numerical rank and sample-matrix condition at most ${RECOVERY_MAX_SAMPLE_CONDITION}, selected before held-out values are read.${context.structure === undefined ? '' : ` Structural witness: ${context.structure.uniquenessCount}/${context.structure.regionCount} regions (${format(context.structure.uniquenessFraction)}) are uniqueness sets for their chosen band; ${context.structure.exactEmbeddingCount} reconstruct the displayed embedding and ${context.structure.exactCommunitiesCount} reconstruct band-limited heat-diffused community indicators to numerical precision. Non-unique regions: ${context.structure.nonUniqueRegions.map(item => `${item.regionId} (${item.reason})`).join('; ') || 'none'}. Embedding failures: ${context.structure.unrecoveredEmbeddingRegions.map(item => `${item.regionId} (${item.reason})`).join('; ') || 'none'}. Median complement relative errors: embedding ${format(context.structure.medianEmbeddingRelativeError)}, community ${format(context.structure.medianCommunityRelativeError)}.`}${context.smoothModel === undefined ? '' : ` Declared constant-plus-first-nonzero-mode test signal: ${context.smoothModel.recoveredCount}/${context.smoothModel.regionCount} recovered, ${context.smoothModel.beatsStatedBaselineCount}/${context.smoothModel.comparedCount} beat the same baseline, ${context.smoothModel.exactCount} were exact band-limited recoveries, median held-out relative error across all regions ${format(context.smoothModel.medianHeldOutRelativeError)} and among wins ${format(context.smoothModel.medianBeatingHeldOutRelativeError)}. This synthetic smooth-signal result is separate from the measured ${context.signalId} channel.`}`
+      + (context.realHeatModel === undefined ? '' : ` Measured heat-diffused ${context.signalId} at t=${String(context.realHeatTime ?? 1)}: ${context.realHeatModel.recoveredCount}/${context.realHeatModel.regionCount} recovered, ${context.realHeatModel.beatsStatedBaselineCount}/${context.realHeatModel.comparedCount} beat the global-mean baseline; median held-out relative error ${format(context.realHeatModel.medianHeldOutRelativeError)}. This remains a measured attribute channel, not the band-limited community structural probe.`)
       : `Holographic reconstruction witness unavailable: ${context.unavailableReason}. No reconstruction claim is made. No topology claim is made.`,
     sourceIds: [],
     parameterIds: [`signal=${context.signalId}`, `bandlimit=${String(context.bandlimit)}`, `max-sample-condition=${RECOVERY_MAX_SAMPLE_CONDITION}`,
@@ -259,6 +336,22 @@ export function errorModelExplanation(
       worstImprovementOverStatedBaseline: model.worstImprovementOverStatedBaseline ?? 'n/a',
       anyExactClaim: model.anyExactClaim,
       exactCount: model.exactCount,
+      ...(context.realHeatModel === undefined ? {} : {
+        realHeatTime: context.realHeatTime ?? 1,
+        realHeatRecoveredCount: context.realHeatModel.recoveredCount,
+        realHeatBeatsStatedBaselineCount: context.realHeatModel.beatsStatedBaselineCount,
+        realHeatMedianHeldOutRelativeError: context.realHeatModel.medianHeldOutRelativeError ?? 'n/a',
+      }),
+      ...(context.structure === undefined ? {} : {
+        structuralUniquenessCount: context.structure.uniquenessCount,
+        structuralUniquenessFraction: context.structure.uniquenessFraction ?? 'n/a',
+        structuralExactEmbeddingCount: context.structure.exactEmbeddingCount,
+        structuralExactCommunitiesCount: context.structure.exactCommunitiesCount,
+        structuralNonUniqueRegions: context.structure.nonUniqueRegions.map(item => `${item.regionId}: ${item.reason}`).join('; ') || 'none',
+        structuralUnrecoveredEmbeddingRegions: context.structure.unrecoveredEmbeddingRegions.map(item => `${item.regionId}: ${item.reason}`).join('; ') || 'none',
+        structuralMedianEmbeddingRelativeError: context.structure.medianEmbeddingRelativeError ?? 'n/a',
+        structuralMedianCommunityRelativeError: context.structure.medianCommunityRelativeError ?? 'n/a',
+      }),
       ...(context.smoothModel === undefined ? {} : {
         smoothRecoveredCount: context.smoothModel.recoveredCount,
         smoothBeatsStatedBaselineCount: context.smoothModel.beatsStatedBaselineCount,

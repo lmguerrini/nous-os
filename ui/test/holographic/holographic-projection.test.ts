@@ -82,7 +82,8 @@ test('a small connected domain yields a complete contract-valid 2D result from t
   assert.equal(diagnostic(result, 'component-count')!.value, 1);
   assert.equal(diagnostic(result, 'exploratory-edge-count')!.value, 0);
   assert.equal(diagnostic(result, 'spectral-basis-modes')!.value, '36/36');
-  assert.ok(result.diagnostics.every(item => item.acceptable), 'no failing diagnostic on a healthy solve');
+  assert.ok(result.diagnostics.filter(item => !item.code.startsWith('structural-region:')).every(item => item.acceptable),
+    'solver diagnostics remain healthy; structural sample failures are measured separately');
   // A complete basis satisfies Parseval: the measured defect is roundoff.
   assert.ok(Math.abs(Number(diagnostic(result, 'signal-parseval-defect')!.value)) < 1e-9);
   assert.ok(Number(diagnostic(result, 'signal-retained-energy-ratio')!.value) <= 1 + 1e-12);
@@ -296,6 +297,10 @@ test('a disconnected domain is handled per component: derived component regions,
     if (witness.numericalWitness!.status === 'refused') assert.match(witness.summary, /No value is imputed/);
   }
   assert.equal(Number(diagnostic(result, 'region-refused-count')!.value) + Number(diagnostic(result, 'region-recovered-count')!.value), 2);
+  assert.ok(Number(diagnostic(result, 'structural-uniqueness-fraction')!.value) < 1,
+    'a component missing the first zero mode is not a uniqueness set even for k=1');
+  assert.match(String(result.explanations['visual:holographic:error-model']!.numericalWitness!.structuralNonUniqueRegions),
+    /sample matrix rank 0\/1/);
   await assertConserved(fixture, request, result);
 });
 
@@ -396,7 +401,25 @@ test('an 850-node knowledge-shaped graph converges on the declared envelope and 
   assert.equal(Number(diagnostic(result, 'region-recovered-count')!.value) + Number(diagnostic(result, 'region-refused-count')!.value), 17);
   assert.ok(Number(diagnostic(result, 'smooth-region-beats-stated-baseline-count')!.value) > 0);
   assert.equal(diagnostic(result, 'region-beats-stated-baseline-count')!.value, 0);
+  assert.equal(diagnostic(result, 'real-heat-region-beats-stated-baseline-count')!.value, 0);
+  assert.equal(diagnostic(result, 'structural-uniqueness-fraction')!.value, 1);
+  assert.equal(diagnostic(result, 'structural-exact-embedding-count')!.value, 1);
+  assert.equal(diagnostic(result, 'structural-exact-community-count')!.value, 17);
+  assert.ok(Number(diagnostic(result, 'structural-median-community-relative-error')!.value) < 1e-12);
+  assert.ok(Number(diagnostic(result, 'structural-median-embedding-relative-error')!.value) > 1);
+  const structuralModel = result.explanations['visual:holographic:error-model']!.numericalWitness!;
+  assert.equal(structuralModel.structuralUniquenessCount, 17);
+  assert.equal(structuralModel.structuralExactEmbeddingCount, 1);
+  assert.match(String(structuralModel.structuralUnrecoveredEmbeddingRegions), /c00/);
+  for (const index of [0, 8, 16]) {
+    const regionId = `c${String(index).padStart(2, '0')}`;
+    const witness = result.explanations[`visual:holographic:reconstruction:${regionId}`]!.numericalWitness!;
+    assert.equal(witness.uniquenessSet, true);
+    assert.equal(witness.exactCommunities, true);
+    assert.equal(diagnostic(result, `structural-region:${regionId}:rank`)!.value, witness.structuralRank);
+  }
   assert.match(result.explanations['visual:holographic:error-model']!.summary, /synthetic smooth-signal result is separate from the measured importance channel/);
+  assert.match(result.explanations['visual:holographic:error-model']!.summary, /Measured heat-diffused importance/);
   assert.equal(diagnostic(result, 'signal-parseval-defect'), undefined, 'a truncated basis makes no Parseval claim');
   assert.doesNotThrow(() => validateProjectionResult(result, contextOf(fixture, request)));
   await assertConserved(fixture, request, result);
@@ -411,6 +434,10 @@ test('a 40-community 850-node graph resolves all 24 clustered low modes without 
   assert.equal(result.coordinateState.kind, 'coordinates');
   assert.equal(diagnostic(result, 'spectral-basis-modes')!.value, '25/850');
   assert.ok(Number(diagnostic(result, 'geometry-relative-residual-max')!.value) <= 1e-8);
+  assert.equal(diagnostic(result, 'structural-uniqueness-fraction')!.value, 1);
+  assert.equal(diagnostic(result, 'structural-exact-embedding-count')!.value, 0);
+  assert.equal(diagnostic(result, 'structural-exact-community-count')!.value, 40);
+  assert.equal(diagnostic(result, 'real-heat-region-beats-stated-baseline-count')!.value, 1);
   // A looser tolerance remains invalid.
   await assert.rejects(
     holographicProjection.project(fixture.snapshot, requestFor(fixture, { eigenTolerance: 1e-4 })),

@@ -34,15 +34,15 @@ import {
 import { EIGENSPACE_POLICY_VERSION, spectralGeometry } from '../holographic/geometry.ts';
 import { LANCZOS_SOLVER_VERSION, lanczosRestartSize, solveSpectrum, type LanczosOutcome } from '../holographic/lanczos.ts';
 import { applyHeat, contractionRatio, isFiniteField } from '../holographic/heat.ts';
-import { recoverBandlimitedSignal, recoverStableBandlimit, RECOVERY_MAX_SAMPLE_CONDITION } from '../holographic/recovery.ts';
+import { recoverBandlimitedSignal, recoverStableBandlimit, recoverStructuralSignals, RECOVERY_DEFAULT_CLAIM_TOLERANCE, RECOVERY_MAX_SAMPLE_CONDITION } from '../holographic/recovery.ts';
 import {
-  eigenbasisFromDense, eigenbasisFromLanczos, featureSignal, fourierCoefficients,
+  bandlimitedCommunityIndicator, eigenbasisFromDense, eigenbasisFromLanczos, featureSignal, fourierCoefficients,
   parsevalDefect, retainedEnergy, signalEnergy, syntheticSignal, type Eigenbasis, type GraphSignal,
 } from '../holographic/signals.ts';
 import {
-  errorModelExplanation, holographicErrorModel, regionReconstructionExplanation,
+  errorModelExplanation, holographicErrorModel, regionReconstructionExplanation, structuralErrorModel,
   regionReconstructionWitness, EXPLAIN_NO_TOPOLOGY_CLAIM, EXPLAIN_STATED_BASELINE,
-  type RegionDescriptor, type RegionReconstructionWitness,
+  type RegionDescriptor, type RegionReconstructionWitness, type StructuralRegionWitness,
 } from '../holographic/explain.ts';
 import { canonicalRawJson } from './normalize.ts';
 import type {
@@ -50,7 +50,7 @@ import type {
   ProjectionParameters, ProjectionRequest, ProjectionResult, RawJson, SemanticGraphSnapshot,
 } from './contract-types.ts';
 
-export const HOLOGRAPHIC_PROJECTION_VERSION = 'holographic-projection-v2';
+export const HOLOGRAPHIC_PROJECTION_VERSION = 'holographic-projection-v3';
 export const HOLOGRAPHIC_NUMERIC_BACKEND_VERSION = 'javascript-number-v1';
 /** The experimental flag every Holographic result carries in diagnostics. */
 export const HOLOGRAPHIC_EXPERIMENTAL_FLAG = 'holographic-experimental';
@@ -321,7 +321,11 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
     const regionPlan = regionDescriptors(snapshot, graph);
     const witnesses: RegionReconstructionWitness[] = [];
     const smoothWitnesses: RegionReconstructionWitness[] = [];
+    const realHeatWitnesses: RegionReconstructionWitness[] = [];
+    const structuralWitnesses: StructuralRegionWitness[] = [];
     if (solved.basis !== null && bandlimit >= 1) {
+      const realHeatTime = parameters.heatTimes.find(time => time > 0) ?? 1;
+      const realHeat = applyHeat(solved.basis, realHeatTime, signal.values);
       const smoothValues = new Float64Array(graph.size).fill(1);
       if (solved.basis.count > graph.componentCount) {
         const offset = graph.componentCount * graph.size;
@@ -338,10 +342,45 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
           { bandlimit: outcome.bandlimit, ridge: parameters.ridge });
         smoothWitnesses.push(regionReconstructionWitness(region, smoothOutcome,
           { bandlimit: outcome.bandlimit, ridge: parameters.ridge }));
+        const realHeatOutcome = recoverBandlimitedSignal(graph, solved.basis, realHeat, samples,
+          { bandlimit: outcome.bandlimit, ridge: parameters.ridge });
+        realHeatWitnesses.push(regionReconstructionWitness(region, realHeatOutcome,
+          { bandlimit: outcome.bandlimit, ridge: parameters.ridge }));
+        const targets: { id: string; values: Float64Array }[] = [];
+        if (geometry.kind === 'coordinates') for (let axis = 0; axis < geometry.axes; axis += 1)
+          targets.push({ id: `embedding-axis-${String(axis)}`,
+            values: geometry.coordinates.slice(axis * graph.size, (axis + 1) * graph.size) });
+        for (const time of [0.5, 2])
+          targets.push({ id: `community-heat-${String(time)}`,
+            values: bandlimitedCommunityIndicator(solved.basis, samples, outcome.bandlimit, time) });
+        const recoveredStructure = recoverStructuralSignals(solved.basis, samples, outcome.bandlimit, targets, parameters.ridge);
+        const embedding = recoveredStructure.targets.filter(target => target.id.startsWith('embedding-axis-'));
+        const community = recoveredStructure.targets.filter(target => target.id.startsWith('community-heat-'));
+        const exact = (target: (typeof recoveredStructure.targets)[number]): boolean =>
+          target.bandlimitedRelativeResidual <= RECOVERY_DEFAULT_CLAIM_TOLERANCE &&
+          (target.heldOutRelativeError === null || target.heldOutRelativeError <= RECOVERY_DEFAULT_CLAIM_TOLERANCE ||
+            (target.heldOutResidualNorm !== null && target.heldOutResidualNorm <= RECOVERY_DEFAULT_CLAIM_TOLERANCE * Math.max(target.signalNorm, 1e-12)));
+        const uniquenessSet = recoveredStructure.status === 'recovered' &&
+          recoveredStructure.conditionNumber !== null && recoveredStructure.conditionNumber <= RECOVERY_MAX_SAMPLE_CONDITION;
+        const exactEmbedding = uniquenessSet && parameters.ridge === 0 && geometry.kind === 'coordinates' && embedding.every(exact);
+        const exactCommunities = uniquenessSet && parameters.ridge === 0 && community.every(exact);
+        const reason = !uniquenessSet ? `sample matrix rank ${String(recoveredStructure.rank)}/${String(outcome.bandlimit)} or condition exceeds ${String(RECOVERY_MAX_SAMPLE_CONDITION)}`
+          : geometry.kind !== 'coordinates' ? 'no displayed embedding coordinates'
+            : !exactEmbedding ? 'chosen stable band does not fully contain the displayed embedding, or ridge introduces bias'
+              : parameters.ridge !== 0 ? 'ridge introduces bias' : null;
+        structuralWitnesses.push({ regionId: region.regionId, bandlimit: outcome.bandlimit,
+          rank: recoveredStructure.rank, conditionNumber: recoveredStructure.conditionNumber,
+          uniquenessSet, reason, exactEmbedding, exactCommunities,
+          embeddingRelativeErrors: embedding.map(target => target.heldOutRelativeError),
+          embeddingBandResiduals: embedding.map(target => target.bandlimitedRelativeResidual),
+          communityRelativeErrors: community.map(target => target.heldOutRelativeError),
+          communityBandResidualMax: community.length ? Math.max(...community.map(target => target.bandlimitedRelativeResidual)) : null });
       }
     }
     const model = holographicErrorModel(witnesses);
     const smoothModel = holographicErrorModel(smoothWitnesses);
+    const realHeatModel = holographicErrorModel(realHeatWitnesses);
+    const structureModel = structuralErrorModel(structuralWitnesses);
     await abortBarrier(request.abort);
 
     // Explanations: geometry witness, the error model, the signal, per-region reconstructions.
@@ -349,7 +388,8 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
     const explanations: Record<string, Explanation> = {
       [geometry.explanation.elementId]: geometry.explanation,
       'visual:holographic:error-model': errorModelExplanation(model, {
-        signalId: parameters.signalId, bandlimit, ridge: parameters.ridge, regionPolicy: regionPlan.policy, smoothModel,
+        signalId: parameters.signalId, bandlimit, ridge: parameters.ridge, regionPolicy: regionPlan.policy, smoothModel, realHeatModel,
+        realHeatTime: parameters.heatTimes.find(time => time > 0) ?? 1, structure: structureModel,
         ...(solved.basis === null ? { unavailableReason: `the spectral basis is unavailable (${solved.refusal ?? 'no solve'})` } : {}),
       }),
       [signalFieldId]: {
@@ -368,7 +408,9 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
     };
     Object.assign(explanations, heatExplanations);
     for (const witness of witnesses) {
-      const explanation = regionReconstructionExplanation(witness);
+      const explanation = regionReconstructionExplanation(witness,
+        structuralWitnesses.find(item => item.regionId === witness.regionId),
+        realHeatWitnesses.find(item => item.regionId === witness.regionId));
       explanations[explanation.elementId] = explanation;
     }
 
@@ -388,10 +430,29 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
       { code: 'region-beats-stated-baseline-count', value: model.beatsStatedBaselineCount, acceptable: true },
       { code: 'region-band-condition-cap', value: RECOVERY_MAX_SAMPLE_CONDITION, acceptable: true },
       { code: 'smooth-region-beats-stated-baseline-count', value: smoothModel.beatsStatedBaselineCount, acceptable: true },
+      { code: 'real-heat-region-beats-stated-baseline-count', value: realHeatModel.beatsStatedBaselineCount, acceptable: true },
+      { code: 'real-heat-median-held-out-relative-error', value: realHeatModel.medianHeldOutRelativeError ?? 'n/a', acceptable: true },
+      { code: 'structural-uniqueness-count', value: structureModel.uniquenessCount, acceptable: true },
+      { code: 'structural-uniqueness-fraction', value: structureModel.uniquenessFraction ?? 'n/a', acceptable: true },
+      { code: 'structural-exact-embedding-count', value: structureModel.exactEmbeddingCount, acceptable: true },
+      { code: 'structural-exact-community-count', value: structureModel.exactCommunitiesCount, acceptable: true },
+      { code: 'structural-median-embedding-relative-error', value: structureModel.medianEmbeddingRelativeError ?? 'n/a', acceptable: true },
+      { code: 'structural-median-community-relative-error', value: structureModel.medianCommunityRelativeError ?? 'n/a', acceptable: true },
       { code: 'error-model-median-held-out-relative-error',
         value: model.medianHeldOutRelativeError === null ? 'n/a' : model.medianHeldOutRelativeError, acceptable: true },
       { code: 'error-model-any-exact-claim', value: model.anyExactClaim ? 'yes' : 'no', acceptable: true },
     ];
+    for (const witness of structuralWitnesses) {
+      const prefix = `structural-region:${witness.regionId}:`;
+      diagnostics.push(
+        { code: `${prefix}band`, value: witness.bandlimit, acceptable: true },
+        { code: `${prefix}rank`, value: witness.rank, acceptable: witness.uniquenessSet },
+        { code: `${prefix}condition`, value: witness.conditionNumber ?? 'n/a', acceptable: witness.uniquenessSet },
+        { code: `${prefix}embedding-error`, value: witness.embeddingRelativeErrors.map(value => value === null ? 'n/a' : value.toExponential(3)).join(','), acceptable: witness.exactEmbedding },
+        { code: `${prefix}community-error`, value: witness.communityRelativeErrors.map(value => value === null ? 'n/a' : value.toExponential(3)).join(','), acceptable: witness.exactCommunities },
+        { code: `${prefix}reason`, value: witness.reason ?? 'sampling condition met', acceptable: witness.uniquenessSet },
+      );
+    }
     if (regionPlan.nodesWithoutRegion > 0)
       diagnostics.push({ code: 'nodes-without-region', value: regionPlan.nodesWithoutRegion, acceptable: true });
     if (solved.basis !== null)
