@@ -172,7 +172,9 @@ function separateCoincidentNodes(
         if (members.includes(id)) continue;
         nearest = Math.min(nearest, distance(center, coordinates.get(id)!));
       }
-      // A component with no distinct point uses its own display scale; no other group can be crossed.
+      // The radius is 10% of the nearest outside point's distance from this group's centroid,
+      // or 10% of the component extent when no outside point exists. This bounds each ring by
+      // that local distance, but centroid shifts mean rings from different groups may overlap.
       const radius = HOLOGRAPHIC_DISPLAY_RING_RADIUS_FRACTION * (Number.isFinite(nearest) ? nearest : extent);
       members.forEach((id, ordinal) => {
         const angle = 2 * Math.PI * ordinal / members.length;
