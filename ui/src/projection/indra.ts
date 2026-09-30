@@ -17,7 +17,8 @@
  * grandchild carries identity, count and a load token only. Visual relations are lifted routes
  * over real cross-pearl source edges (`semantic: false`); orbit curves are declared derived
  * geometry. Pure assembly: the snapshot is only read, never written; `request.abort` is
- * honoured at typed checkpoints.
+ * honoured at typed checkpoints. Level expansions are memoized in the bounded `INDRA_LEVEL_CACHE`
+ * LRU keyed by the full load token; the memoization never changes any output.
  */
 import { canonicalRawJson } from './normalize.ts';
 import {
@@ -36,8 +37,8 @@ import {
   packFallbackNestedSpheres,
 } from '../indra/geometry3d.ts';
 import {
-  LEVELS_VERSION, loadChildLevels, ROOT_LEVEL_ID, levelIdForWord, unloadedLevelStub,
-  type LevelLoadToken, type LazyLevelOptions,
+  createLazyLevelCache, LEVELS_VERSION, loadChildLevels, ROOT_LEVEL_ID, levelIdForWord, unloadedLevelStub,
+  type LazyLevelCache, type LevelLoadToken, type LazyLevelOptions,
 } from '../indra/levels.ts';
 import {
   mobiusApply, mobiusCompose, mobiusConditionFrobenius, MOBIUS_IDENTITY, type MobiusMatrix,
@@ -80,6 +81,15 @@ const INDRA_DOMAIN_NODE_CAP = 850;
 const ABORT_CHECK_INTERVAL = 64;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const CONTAINMENT_SLACK = 1e-9;
+
+/**
+ * Bounded LRU of level expansions, keyed by the full load token (levels version, projection id,
+ * snapshot digest, domain digest, parameter hash, level id). Pure memoization of a deterministic
+ * assembly step: only a fully completed load populates it (a cancelled or refused load never
+ * does), entries are never mutated downstream, and no output field depends on a hit or a miss,
+ * so the assembled result and its digest are byte-identical with or without the cache.
+ */
+export const INDRA_LEVEL_CACHE: LazyLevelCache = createLazyLevelCache();
 
 /** Typed refusal of the Indra projection: carries a machine-readable code and a deterministic detail. */
 export class IndraProjectionRefusal extends Error {
@@ -138,7 +148,10 @@ export interface PlaneDisc {
  * Exact image of a disc under a Moebius map that has no pole in the closed disc. With
  * f(z)=(az+b)/(cz+d), det = ad-bc, pole p=-d/c and q=center-p, the image is f(z)=a/c-det/(c^2 (z-p)),
  * whose inversion step sends the circle |z-p-q|=r to the circle of centre conj(q)/D and radius r/D
- * with D=|q|^2-r^2. An affine map (c=0) scales the radius by |a/d|.
+ * with D=|q|^2-r^2. An affine map (c=0) scales the radius by |a/d|. A disc whose image is not a
+ * finite disc is refused with the typed codes `pole-in-disc` (the pole lies in the closed disc) and
+ * `nonfinite-disc-image` (the inversion amplification overflows); both carry the
+ * `IndraProjectionRefusal` name so the page and the worker surface them as typed refusals.
  */
 export function mobiusImageOfDisc(matrix: MobiusMatrix, disc: PlaneDisc): PlaneDisc {
   const { a, b, c, d } = matrix;
@@ -150,13 +163,17 @@ export function mobiusImageOfDisc(matrix: MobiusMatrix, disc: PlaneDisc): PlaneD
   const pole = cxScale(cxDivide(d, c), -1);
   const q = cxSub(disc.center, pole);
   const denominator = cxAbs(q) * cxAbs(q) - disc.radius * disc.radius;
-  if (!(denominator > 0)) throw new RangeError(`the disc contains the pole of the map (|q|^2-r^2 = ${denominator})`);
+  if (!(denominator > 0)) {
+    throw new IndraProjectionRefusal('pole-in-disc',
+      `the disc of radius ${disc.radius} contains the pole of the map (|q|^2-r^2 = ${denominator})`);
+  }
   const cSquared = cxMul(c, c);
   const invertedCentre = cxScale(cxConjugate(q), 1 / denominator);
   const center = cxSub(cxDivide(a, c), cxMul(cxDivide(determinant, cSquared), invertedCentre));
   const radius = (cxAbs(determinant) / cxAbs(cSquared)) * (disc.radius / denominator);
   if (!Number.isFinite(radius) || !Number.isFinite(center.re) || !Number.isFinite(center.im)) {
-    throw new RangeError('the disc image is not finite');
+    throw new IndraProjectionRefusal('nonfinite-disc-image',
+      `the image of the disc under the map is not finite (radius ${radius}, centre (${center.re}, ${center.im}))`);
   }
   return { center, radius };
 }
@@ -413,6 +430,7 @@ export const indrasPearlsProjection: MathematicalProjection<'indras-pearls'> = {
       const outcome = loadChildLevels({
         token: tokenFor(parentLevelId), parentWord, members,
         edges: inducedEdgeIds.map(id => edgeRecords.get(id)!), childIds, options: levelOptions,
+        cache: INDRA_LEVEL_CACHE,
         ...(request.abort === undefined ? {} : { abort: request.abort }),
       });
       if (outcome.kind === 'cancelled') {

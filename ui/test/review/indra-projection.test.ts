@@ -19,7 +19,7 @@ import { validateProjectionResult, type ProjectionValidationContext } from '../.
 import { assertProjectionInvariants } from '../../src/projection/invariants.ts';
 import {
   indraContainerId, indraLiftedRouteId, indraOrbitCurveId, indraRequestForLevelToken, indrasPearlsProjection,
-  INDRA_DISPLAY_SCALE, INDRA_GENERATOR_POLICY, INDRA_PROJECTION_VERSION, IndraProjectionRefusal,
+  INDRA_DISPLAY_SCALE, INDRA_GENERATOR_POLICY, INDRA_LEVEL_CACHE, INDRA_PROJECTION_VERSION, IndraProjectionRefusal,
   mobiusImageOfDisc, parseIndraLevelId, pearlSlotOffset, planeDiscContains, schottkyPearlDisc,
   type IndraLoadToken,
 } from '../../src/projection/indra.ts';
@@ -401,9 +401,34 @@ test('mobiusImageOfDisc is the exact disc image: sampled circle points land on t
   // f(z) = (2 z + 1 + i) / i, so f(1) = (3 + i) / i = 1 - 3i and the radius scales by |2 / i| = 2.
   assert.ok(cxAbs(cxSub(affine.center, cx(1, -3))) < 1e-12);
   assert.ok(Math.abs(affine.radius - 6) < 1e-12);
-  // Negative control: a disc containing the pole of the map is refused, never inverted into an exterior.
+  // Negative control: a disc containing the pole of the map is refused typed, never inverted into an exterior.
   const pole = cx(-1, 0);
-  assert.throws(() => mobiusImageOfDisc(mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(1, 0)), { center: pole, radius: 0.5 }), /pole/);
+  const thrown = (call: () => unknown): unknown => { try { call(); } catch (error) { return error; } assert.fail('the call must throw'); };
+  const poleRefusal = thrown(() => mobiusImageOfDisc(mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(1, 0)), { center: pole, radius: 0.5 })) as IndraProjectionRefusal;
+  assert.ok(poleRefusal instanceof IndraProjectionRefusal);
+  assert.equal(poleRefusal.code, 'pole-in-disc');
+  assert.equal(poleRefusal.name, 'IndraProjectionRefusal');
+  assert.ok(!(poleRefusal instanceof RangeError), 'the refusal is not a plain RangeError');
+  // Negative control: a tangent disc (D = 0) is the same typed pole refusal, not a zero-radius image.
+  assert.throws(() => mobiusImageOfDisc(mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(1, 0)), { center: pole, radius: 1 }), /pole-in-disc/);
+});
+
+test('a disc image the inversion makes nonfinite is a typed refusal, never a bogus disc', () => {
+  // f(z) = z / (z + 1e-160) has its pole a hair outside the 1e-200 disc at the origin, but
+  // |q|^2 - r^2 = 1e-320 is so small that 1/D overflows: the image centre cannot be finite.
+  const extreme = mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(1e-160, 0));
+  let caught: unknown;
+  try { mobiusImageOfDisc(extreme, { center: cx(0, 0), radius: 1e-200 }); } catch (error) { caught = error; }
+  assert.ok(caught instanceof IndraProjectionRefusal, `the refusal is typed, got ${String(caught)}`);
+  assert.equal((caught as IndraProjectionRefusal).code, 'nonfinite-disc-image');
+  assert.equal((caught as IndraProjectionRefusal).name, 'IndraProjectionRefusal');
+  assert.ok(!(caught instanceof RangeError), 'the refusal is not a plain RangeError');
+  // Positive control: the same map on a disc far from the pole still yields a finite exact image.
+  const far = mobiusImageOfDisc(extreme, { center: cx(1, 0), radius: 0.25 });
+  assert.ok(Number.isFinite(far.radius) && far.radius > 0);
+  const farCentre = mobiusApply(extreme, cx(1, 0));
+  assert.equal(farCentre.kind, 'finite');
+  if (farCentre.kind === 'finite') assert.ok(cxAbs(cxSub(farCentre.value, far.center)) < far.radius);
 });
 
 test('schottky pearl discs are nested images of the paired discs and the letters partition the words', () => {
@@ -751,10 +776,13 @@ test('the validator rejects results that drop, duplicate or mis-assign a pearl m
 test('repeat requests and permuted snapshot arrays produce the identical result digest', async () => {
   const { snapshot, request } = await fixture();
   const first = await indrasPearlsProjection.project(snapshot, request);
+  // These witnesses recompute from scratch (the memoization has its own test below).
+  INDRA_LEVEL_CACHE.clear();
   const repeat = await indrasPearlsProjection.project(snapshot, request);
   assert.equal(repeat.determinism.resultDigest, first.determinism.resultDigest);
   assert.equal(repeat.determinism.parameterHash, first.determinism.parameterHash);
 
+  INDRA_LEVEL_CACHE.clear();
   const permutedSnapshot = {
     ...snapshot,
     nodes: [...snapshot.nodes].reverse(),
@@ -765,6 +793,7 @@ test('repeat requests and permuted snapshot arrays produce the identical result 
   assert.equal(permuted.determinism.resultDigest, first.determinism.resultDigest);
   assert.deepEqual(permuted.positions2, first.positions2);
   assert.deepEqual(permuted.levels, first.levels);
+  INDRA_LEVEL_CACHE.clear();
   const opened = { ...request, requestedLevelId: first.containers[0]!.levelId };
   assert.equal((await indrasPearlsProjection.project(permutedSnapshot, opened)).determinism.resultDigest,
     (await indrasPearlsProjection.project(snapshot, opened)).determinism.resultDigest);
@@ -779,6 +808,54 @@ test('repeat requests and permuted snapshot arrays produce the identical result 
   assert.equal(smallerResult.loadedNodeIds.length, first.loadedNodeIds.length - 1);
   const smallerContext = await validationContext(smaller, smallerResult);
   assert.doesNotThrow(() => validateProjectionResult(smallerResult, smallerContext));
+});
+
+test('the assembly memoizes level expansions in the bounded token-keyed LRU without changing results', async () => {
+  const fx = await fixture();
+  const opened: IndraRequest = { ...fx.request, requestedLevelId: (await indrasPearlsProjection.project(fx.snapshot, fx.request)).containers[0]!.levelId };
+  INDRA_LEVEL_CACHE.clear();
+  const first = await indrasPearlsProjection.project(fx.snapshot, opened);
+  const expansions = INDRA_LEVEL_CACHE.size;
+  assert.ok(expansions >= 2, `the run populated the level cache (${expansions} expansions)`);
+  // Keys are the full load tokens: the root and the opened level sit under their own keys.
+  const rootToken = { snapshotDigest: fx.snapshot.digest, domainDigest: fx.domain.domainDigest,
+    parameterHash: first.determinism.parameterHash, levelId: ROOT_LEVEL_ID };
+  assert.equal(INDRA_LEVEL_CACHE.has(rootToken), true);
+  assert.equal(INDRA_LEVEL_CACHE.has({ ...rootToken, levelId: opened.requestedLevelId! }), true);
+  assert.equal(INDRA_LEVEL_CACHE.has({ ...rootToken, levelId: ROOT_LEVEL_ID, snapshotDigest: 'other-snapshot' }), false, 'a foreign snapshot digest misses');
+  // The repeat run hits every expansion: nothing is added, and the result is byte-identical.
+  const second = await indrasPearlsProjection.project(fx.snapshot, opened);
+  assert.equal(INDRA_LEVEL_CACHE.size, expansions, 'every expansion of the repeat run hit the cache');
+  assert.equal(second.determinism.resultDigest, first.determinism.resultDigest, 'a fully cached run keeps the digest');
+  assert.deepEqual(second.levels, first.levels);
+  assert.deepEqual(second.positions2, first.positions2);
+  // Changed parameters hash to a different key: the run misses, recomputes and stays correct.
+  const other = await indrasPearlsProjection.project(fx.snapshot, withParameters(opened, { tolerance: 1e-5 }));
+  assert.notEqual(other.determinism.parameterHash, first.determinism.parameterHash);
+  assert.ok(INDRA_LEVEL_CACHE.size > expansions, 'changed parameters produce new keys');
+  assert.equal(INDRA_LEVEL_CACHE.has(rootToken), true, 'the old key survives as its own entry');
+  assert.ok(INDRA_LEVEL_CACHE.size <= 64, 'the LRU stays bounded');
+});
+
+test('an aborted run leaves the level cache sound and a later run matches the reference digest', async () => {
+  const fx = await fixture();
+  INDRA_LEVEL_CACHE.clear();
+  const reference = await indrasPearlsProjection.project(fx.snapshot, fx.request);
+  const reason = new Error('stop indra cache');
+  let reads = 0;
+  const counting = (limit: number): AbortSignal => ({
+    get aborted(): boolean { reads += 1; return reads > limit; },
+    reason,
+  }) as unknown as AbortSignal;
+  for (const limit of [0, 2, 5, 9, 14]) {
+    reads = 0;
+    await assert.rejects(indrasPearlsProjection.project(fx.snapshot, { ...fx.request, abort: counting(limit) }), /stop indra cache/, `limit ${limit}`);
+  }
+  // Whatever complete expansions the aborted runs left behind, a clean run replays the reference.
+  const after = await indrasPearlsProjection.project(fx.snapshot, fx.request);
+  assert.equal(after.determinism.resultDigest, reference.determinism.resultDigest);
+  assert.deepEqual(after.levels, reference.levels);
+  assert.deepEqual(after.positions2, reference.positions2);
 });
 
 test('request.abort is honoured between phases, including the last checkpoint before the digest', async () => {
