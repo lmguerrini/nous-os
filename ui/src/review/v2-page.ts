@@ -113,7 +113,7 @@ function legacyIndraFlagEnabled(): boolean {
 export const INDRA_PAGE_MAX_DEPTH = 3;
 export const INDRA_PAGE_MAX_WORDS = 200;
 /** The Schottky separation margin the page asks for; the status line discloses it. */
-export const INDRA_PAGE_TOLERANCE = 1e-6;
+export const INDRA_PAGE_TOLERANCE = 0.02;
 /** The 3D typed layer owns the whole scene; the engine graph underneath stays empty and valid. */
 function emptyTypedVisualGraph(): VisualGraph {
     return {
@@ -148,7 +148,11 @@ export function projectionRefusalOf(error: unknown): { readonly code: string; re
         return { code, detail: error.message.startsWith(prefix) ? error.message.slice(prefix.length) : error.message };
     }
     if (error.name !== 'ProjectionClientError') return null;
-    const failure = (error as Error & { failure?: { readonly code?: unknown; readonly message?: unknown } }).failure;
+    const failure = (error as Error & { failure?: { readonly code?: unknown; readonly message?: unknown;
+        readonly refusal?: unknown; readonly refusalCode?: unknown; readonly detail?: unknown } }).failure;
+    if (failure?.code === 'projection-refusal' && (failure.refusal === 'indra' || failure.refusal === 'fractal')
+        && typeof failure.refusalCode === 'string' && typeof failure.detail === 'string')
+        return { code: failure.refusalCode, detail: failure.detail };
     if (failure?.code !== 'projection-error' || typeof failure.message !== 'string') return null;
     const match = /^(?:fractal-projection|indras-pearls-projection): ([a-z][a-z0-9-]*): ([\s\S]*)$/.exec(failure.message);
     return match === null ? null : { code: match[1]!, detail: match[2]! };
@@ -428,6 +432,7 @@ export class V2Page {
     private fractalRefusal: { readonly code: string; readonly detail: string } | null = null;
     /** `resultDigest|levelId` of the levels the assembly refused to open for a result: never requested again. */
     private readonly refusedLevels = new Map<string, { readonly code: string; readonly detail: string }>();
+    private readonly rootProjectionRefusals = new Map<string, { readonly code: string; readonly detail: string }>();
     private projectionPending = false;
     /** The refresh that raised the pending state: only it, or none, lowers it, so a superseded one never hides a newer one's. */
     private projectionPendingEpoch = -1;
@@ -785,6 +790,12 @@ export class V2Page {
         dimension: Dimension): Promise<{ readonly result: ProjectionResult; readonly request: ProjectionRequest<'fractal'> } | null> {
         // A refresh superseded while queued never starts the assembly.
         if (epoch !== this.projectionEpoch) return null;
+        const refusalKey = `${snapshot.digest}|${domain.domainDigest}|fractal|${dimension}`;
+        const remembered = this.rootProjectionRefusals.get(refusalKey);
+        if (remembered !== undefined) {
+            this.showProjectionRefusal('Fractal', remembered);
+            return null;
+        }
         this.setProjectionPending(true, 'Fractal', epoch);
         try {
             await afterPaint();
@@ -803,7 +814,10 @@ export class V2Page {
             if (isCancelledProjection(error) && epoch !== this.projectionEpoch) return null;
             const refusal = projectionRefusalOf(error);
             if (refusal === null) throw error;
-            if (epoch === this.projectionEpoch) this.showProjectionRefusal('Fractal', refusal);
+            if (epoch === this.projectionEpoch) {
+                this.rootProjectionRefusals.set(refusalKey, refusal);
+                this.showProjectionRefusal('Fractal', refusal);
+            }
             return null;
         } finally {
             if (this.projectionPendingEpoch === epoch) this.setProjectionPending(false);
@@ -850,6 +864,12 @@ export class V2Page {
         dimension: Dimension): Promise<{ readonly result: ProjectionResult; readonly request: ProjectionRequest<'indras-pearls'>;
             readonly levelId: string | null } | null> {
         if (epoch !== this.projectionEpoch) return null;
+        const refusalKey = `${snapshot.digest}|${domain.domainDigest}|indras-pearls|${dimension}`;
+        const remembered = this.rootProjectionRefusals.get(refusalKey);
+        if (remembered !== undefined) {
+            this.showProjectionRefusal("Indra's Pearls", remembered);
+            return null;
+        }
         this.setProjectionPending(true, "Indra's Pearls", epoch);
         try {
             await afterPaint();
@@ -877,7 +897,10 @@ export class V2Page {
             if (isCancelledProjection(error) && epoch !== this.projectionEpoch) return null;
             const refusal = projectionRefusalOf(error);
             if (refusal === null) throw error;
-            if (epoch === this.projectionEpoch) this.showProjectionRefusal("Indra's Pearls", refusal);
+            if (epoch === this.projectionEpoch) {
+                this.rootProjectionRefusals.set(refusalKey, refusal);
+                this.showProjectionRefusal("Indra's Pearls", refusal);
+            }
             return null;
         } finally {
             if (this.projectionPendingEpoch === epoch) this.setProjectionPending(false);
@@ -940,6 +963,11 @@ export class V2Page {
         const opened = result.levels.find(item => item.id === open.levelId);
         if (!opened || opened.loaded) throw new Error('Stale projection level token');
         const parentId = opened.parentId === null || opened.parentId === ROOT_LEVEL_ID ? null : opened.parentId;
+        const refusedLevelId = parentId ?? opened.id;
+        if (this.refusedLevels.has(`${result.determinism.resultDigest}|${refusedLevelId}`)) {
+            element('status').textContent = this.typedStatusLine();
+            return;
+        }
         let target = request;
         if (parentId !== null) {
             const parent = result.levels.find(item => item.id === parentId);
@@ -948,7 +976,14 @@ export class V2Page {
             target = await indraRequestForLevelToken(snapshot, request, parent.loadToken);
         }
         const epoch = this.projectionEpoch;
-        const styled = this.typedPipeline().style(await this.runProjection<'indras-pearls'>(snapshot, target), snapshot);
+        let projected: ProjectionResult;
+        try {
+            projected = await this.runProjection<'indras-pearls'>(snapshot, target);
+        } catch (error) {
+            if (this.levelLoadOutcome(result.determinism.resultDigest, refusedLevelId, error)) return;
+            throw error;
+        }
+        const styled = this.typedPipeline().style(projected, snapshot);
         this.commitLevelResult(styled, result, snapshot, domain, renderer, cameraKey, epoch, parentId);
         this.indraLeftFocus = this.selected;
         element('status').textContent = this.typedStatusLine();
@@ -1271,8 +1306,19 @@ export class V2Page {
         if (!level || level.loaded) throw new Error('Projection level is not unopened');
         if (!isLazyLevel(result, level)) throw new Error('Projection level is already open');
         assertCurrentLevelToken(level, snapshot, domain, result);
+        const priorRefusal = this.refusedLevels.get(`${result.determinism.resultDigest}|${levelId}`);
+        if (priorRefusal !== undefined) {
+            element('status').textContent = this.typedStatusLine();
+            return;
+        }
         const epoch = this.projectionEpoch;
-        const styled = await loader(level, snapshot, domain);
+        let styled: StyledProjection;
+        try {
+            styled = await loader(level, snapshot, domain);
+        } catch (error) {
+            if (this.levelLoadOutcome(result.determinism.resultDigest, levelId, error)) return;
+            throw error;
+        }
         this.commitLevelResult(styled, result, snapshot, domain, renderer, cameraKey, epoch,
             styled.projection.determinism.algorithmId === 'indras-pearls' ? levelId : undefined);
         element('status').textContent = this.typedStatusLine();

@@ -25,7 +25,7 @@ import { mount2d } from "./view2d.ts";
 import { mount3d } from "./view3d.ts";
 import { LiveGraph } from "./live-graph.ts";
 import type { LiveFragment } from "./live-graph.ts";
-import { V2Page } from "./v2-page.ts";
+import { V2Page, projectionRefusalOf } from "./v2-page.ts";
 import { bindSurfaces } from "./popover.ts";
 import { mountPerformanceOverlay } from "./perf-overlay.ts";
 import type { PopoverStack, SurfaceBinding } from "./popover.ts";
@@ -584,7 +584,7 @@ function setAxes(input: AxesInput): Promise<void> {
     get<HTMLElement>("view-presets").hidden=axes.projection!=="3d";
     get<HTMLSelectElement>("palette").value=axes.colour;
     if (partial.colour) writeLocal(storage, "d069.palette", partial.colour);
-    return v2.setAxes(partial); }
+    return v2.setAxes(partial).catch(error => { if (projectionRefusalOf(error) !== null) return; throw error; }); }
   return enqueue(async () => {
     if (partial.projection && partial.projection !== "3d") { focusMode = false; focusCamera = null; }
     if (partial.colour) writeLocal(storage, "d069.palette", partial.colour);
@@ -1161,8 +1161,8 @@ const api = {
   search: (q: string) => v2?.search(q) ?? Promise.resolve([]),
   reveal: (id: string) => v2?.reveal(id) ?? Promise.resolve(),
   /** Indra's Pearls: opens a lazy pearl level (ids in `__d073.projectionWitness().unopenedLevels`) or leaves the open one, on the same camera. */
-  openPearl: (levelId: string) => v2?.loadProjectionLevel(levelId) ?? Promise.reject(new Error("Nessun grafo distillato caricato")),
-  leavePearl: () => v2?.leaveIndraPearl() ?? Promise.reject(new Error("Nessun grafo distillato caricato")),
+  openPearl: (levelId: string) => v2?.loadProjectionLevel(levelId).catch(error => { if (projectionRefusalOf(error) !== null) return; throw error; }) ?? Promise.reject(new Error("Nessun grafo distillato caricato")),
+  leavePearl: () => v2?.leaveIndraPearl().catch(error => { if (projectionRefusalOf(error) !== null) return; throw error; }) ?? Promise.reject(new Error("Nessun grafo distillato caricato")),
   why: (a: string,b: string) => v2?.why(a,b) ?? null,
   errors,
   state: () => ({

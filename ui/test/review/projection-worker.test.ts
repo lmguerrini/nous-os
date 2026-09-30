@@ -309,6 +309,40 @@ test("a projection that throws synchronously returns a typed error and releases 
   assert.equal(host.pendingTaskCount, 0);
 });
 
+test("Indra and Fractal refusals cross a fake worker port as typed refusal data", async () => {
+  for (const item of [
+    { id: "indras-pearls", name: "IndraProjectionRefusal", refusal: "indra", refusalCode: "word-cap-exceeded" },
+    { id: "fractal", name: "FractalProjectionRefusal", refusal: "fractal", refusalCode: "uncertified-dynamics" },
+  ] as const) {
+    const [clientPort, hostPort] = SyncPort.pair();
+    const host = new ProjectionWorkerHost({ postEvent: event => hostPort.postMessage(event), projections: [{
+      id: item.id as RegisteredProjectionId, version: "test-v1",
+      project() {
+        const error = new Error(`${item.id === "indras-pearls" ? "indras-pearls-projection" : "fractal-projection"}: ${item.refusalCode}: fixture detail`);
+        error.name = item.name;
+        Object.assign(error, { code: item.refusalCode });
+        throw error;
+      },
+    }] });
+    hostPort.addEventListener("message", event => host.handleCommand(event.data));
+    const client = createProjectionWorkerClient({ port: clientPort });
+    const snapshot = fakeSnapshot(`snap-${item.refusal}`);
+    await assert.rejects(client.project({
+      projectionId: item.id as RegisteredProjectionId, snapshot, domain: fakeDomain(snapshot.digest),
+      parameters: testParameters(),
+    }), error => {
+      assert.ok(error instanceof ProjectionClientError);
+      assert.equal(error.failure?.code, "projection-refusal");
+      assert.deepEqual(error.failure, {
+        code: "projection-refusal", refusal: item.refusal, refusalCode: item.refusalCode, detail: "fixture detail",
+      });
+      return true;
+    });
+    assert.equal(client.isIdle, true);
+    client.dispose();
+  }
+});
+
 test("a projection that throws AbortError without our signal reports cancellation, not failure", async () => {
   const state = deferredProjection();
   const { host, events } = recordHost([state.projection]);

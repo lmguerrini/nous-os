@@ -8,7 +8,7 @@ import { createSemanticSnapshot, normalizeRawLedger } from '../../src/projection
 import { ProjectionRegistry } from '../../src/projection/registry.ts';
 import { fractalProjection } from '../../src/projection/fractal.ts';
 import { indraRequestForLevelToken, indrasPearlsProjection, IndraProjectionRefusal } from '../../src/projection/indra.ts';
-import { createProjectionWorkerClient } from '../../src/projection/worker-client.ts';
+import { createProjectionWorkerClient, ProjectionClientError } from '../../src/projection/worker-client.ts';
 import type { ProjectionClientRequest, ProjectionWorkerClient } from '../../src/projection/worker-client.ts';
 import { ROOT_LEVEL_ID } from '../../src/indra/levels.ts';
 import type { PickResult, ProjectionResult, RenderVisibility, SemanticGraphSnapshot } from '../../src/projection/contract-types.ts';
@@ -269,6 +269,7 @@ test('selecting Indra requests the root through the typed pipeline and discloses
   assert.equal(request.parameters.dimension, '2d');
   assert.equal(request.parameters.maxDepth, 3);
   assert.equal(request.parameters.maxWords, 200);
+  assert.equal(request.parameters.tolerance, 0.02);
   assert.equal(request.parameters.generatorPolicy, 'ring-packing-v1');
   assert.equal(request.domain.nodeIds.length, 60, 'the disclosed domain is the request domain');
 
@@ -283,13 +284,75 @@ test('selecting Indra requests the root through the typed pipeline and discloses
 
   const status = statusText();
   assert.match(status, /Indra's Pearls/);
-  assert.match(status, /gruppo di Schottky di genere 3, margine di separazione 0\.000001/);
+  assert.match(status, /gruppo di Schottky di genere 3, margine di separazione 0\.02/);
   assert.match(status, /geometria derivata, non semantica/);
   assert.doesNotMatch(status, /3D/);
   assert.equal(status, indraDisclosureLine(result, '2d'));
   assert.equal(elements.get('render-root')!.attrs['aria-busy'], 'false');
   assert.ok(lazyOf(result).length > 0, 'the depth-two pearls are stubs');
   assert.equal(recordOf(page).openLevelId, null);
+});
+
+test('typed worker root refusals resolve setAxes, are disclosed, and are not requested again', async () => {
+  for (const [organization, projectionId, refusal, refusalCode] of [
+    ['indra', 'indras-pearls', 'indra', 'word-cap-exceeded'],
+    ['fractal', 'fractal', 'fractal', 'uncertified-dynamics'],
+  ] as const) {
+    const inner = spyClient();
+    let calls = 0;
+    const client: ProjectionWorkerClient = {
+      get backend() { return inner.backend; }, get isIdle() { return inner.isIdle; },
+      project(request) {
+        calls++;
+        const failure = { code: 'projection-refusal', refusal, refusalCode, detail: 'fixture refusal' } as const;
+        return Promise.reject(new ProjectionClientError('projection-refusal', 'worker typed refusal', { failure }));
+      },
+      cancel: slot => inner.cancel(slot), dispose: () => inner.dispose(),
+    };
+    const { page } = await typedPage({ client, axes: { organization } });
+    assert.match(statusText(), new RegExp(`proiezione rifiutata \\[${refusalCode}\\]: fixture refusal`));
+    await page.setAxes({ organization });
+    assert.equal(calls, 1, `${organization} reuses the remembered typed refusal`);
+  }
+});
+
+test('generic worker errors still reject setAxes', async () => {
+  const inner = spyClient();
+  const client: ProjectionWorkerClient = {
+    get backend() { return inner.backend; }, get isIdle() { return inner.isIdle; },
+    project() { return Promise.reject(new ProjectionClientError('projection-error', 'worker failed', {
+      failure: { code: 'projection-error', message: 'TypeError: fixture failure' },
+    })); },
+    cancel: slot => inner.cancel(slot), dispose: () => inner.dispose(),
+  };
+  const { page } = await typedPage({ client });
+  await assert.rejects(page.setAxes({ organization: 'indra' }), error => error instanceof ProjectionClientError
+    && error.failure?.code === 'projection-error');
+  assert.ok(elements.get('error')!.children.length > 0, 'the generic failure reaches the error panel');
+  elements.get('error')!.replaceChildren();
+});
+
+test('open and leave hooks resolve a worker refusal and do not request it again', async () => {
+  const inner = spyClient();
+  let levelCalls = 0;
+  const client: ProjectionWorkerClient = {
+    get backend() { return inner.backend; }, get isIdle() { return inner.isIdle; },
+    project(request) {
+      if (request.requestedLevelId !== undefined && ++levelCalls === 2) {
+        const failure = { code: 'projection-refusal', refusal: 'indra', refusalCode: 'word-cap-exceeded', detail: 'fixture word cap' } as const;
+        return Promise.reject(new ProjectionClientError('projection-refusal', 'worker typed refusal', { failure }));
+      }
+      return inner.project(request);
+    },
+    cancel: slot => inner.cancel(slot), dispose: () => inner.dispose(),
+  };
+  const { page } = await typedPage({ client, axes: { organization: 'indra' } });
+  await page.loadProjectionLevel(ROOT_STUB, '2d/indra');
+  await page.leaveIndraPearl('2d/indra');
+  assert.equal(levelCalls, 2);
+  assert.match(statusText(), /word-cap-exceeded/);
+  await page.leaveIndraPearl('2d/indra');
+  assert.equal(levelCalls, 2, 'the remembered leave refusal is not sent to the worker again');
 });
 
 test('the 3D disclosure names the hemisphere; the fallback packing is disclosed as such', async () => {
@@ -370,8 +433,8 @@ test('a stale token, a stale camera and a level that is not a lazy pearl are ref
   // A token of the result that another request minted: the assembly refuses it by name.
   const request = internals(page).indraRequest as { parameters: Record<string, unknown> };
   internals(page).indraRequest = { ...request, parameters: { ...request.parameters, tolerance: 1e-5 } };
-  await assert.rejects(page.loadProjectionLevel(ROOT_STUB, '2d/indra'),
-    (error: unknown) => projectionRefusalOf(error)?.code === 'stale-load-token');
+  await page.loadProjectionLevel(ROOT_STUB, '2d/indra');
+  assert.equal(client.requests.length, requests, 'a stale token is dropped before another projection request');
   internals(page).indraRequest = request;
   // A token whose snapshot is not the page's: refused before any request.
   const result = resultOf(page)!;
@@ -606,7 +669,7 @@ test('over a cloning message port the Fractal and Indra views, a level and a ref
   await page.leaveIndraPearl();
   assert.equal(recordOf(page).openLevelId === stub.id, false);
 
-  // A refusal crosses the wire as its message and is still shown as the typed refusal it is.
+  // A typed refusal crosses the cloning port as refusal data and appears in the page status.
   const refusing = await typedPage({ client, index: indraIndex() });
   await refusing.page.setAxes({ organization: 'fractal' });
   assert.equal(resultOf(refusing.page), null);

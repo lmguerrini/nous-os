@@ -172,10 +172,9 @@ export class ProjectionWorkerHost {
       this.#postEvent({ kind: "cancelled", requestId: task.requestId, slot: task.slot, supersededBy: null });
       return;
     }
-    this.#postEvent({
-      kind: "failure", requestId: task.requestId, slot: task.slot,
-      failure: { code: "projection-error", message: errorMessage(error) },
-    });
+    const refusal = projectionRefusalFailure(error);
+    this.#postEvent({ kind: "failure", requestId: task.requestId, slot: task.slot,
+      failure: refusal ?? { code: "projection-error", message: errorMessage(error) } });
   }
 
   #supersedeSlot(slot: string, supersededBy: string): void {
@@ -237,4 +236,17 @@ function isAbortError(error: unknown): boolean {
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/** Keep assembly refusals as structured data across structured clone. A lookalike message alone
+ * is insufficient: only the two typed refusal class names are accepted. */
+function projectionRefusalFailure(error: unknown): Extract<ProjectionWorkerFailure, { code: "projection-refusal" }> | null {
+  if (!(error instanceof Error)) return null;
+  const refusal = error.name === "IndraProjectionRefusal" ? "indra"
+    : error.name === "FractalProjectionRefusal" ? "fractal" : null;
+  const code = (error as Error & { readonly code?: unknown }).code;
+  if (refusal === null || typeof code !== "string" || !/^[a-z][a-z0-9-]*$/.test(code)) return null;
+  const prefix = `${refusal === "indra" ? "indras-pearls-projection" : "fractal-projection"}: ${code}: `;
+  return { code: "projection-refusal", refusal, refusalCode: code,
+    detail: error.message.startsWith(prefix) ? error.message.slice(prefix.length) : error.message };
 }

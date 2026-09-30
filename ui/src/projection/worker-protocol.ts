@@ -29,12 +29,13 @@ export type ProjectionWorkerFailure =
   | Readonly<{ code: "snapshot-digest-mismatch"; expected: Digest; actual: Digest }>
   | Readonly<{ code: "domain-snapshot-mismatch"; domainSnapshotDigest: Digest; snapshotDigest: Digest }>
   | Readonly<{ code: "invalid-parameters"; reason: string }>
+  | Readonly<{ code: "projection-refusal"; refusal: "indra" | "fractal"; refusalCode: string; detail: string }>
   | Readonly<{ code: "projection-error"; message: string }>
   | Readonly<{ code: "protocol-violation"; reason: string }>;
 
 export const PROJECTION_WORKER_FAILURE_CODES = [
   "unknown-projection", "unknown-snapshot", "snapshot-digest-mismatch", "domain-snapshot-mismatch",
-  "invalid-parameters", "projection-error", "protocol-violation",
+  "invalid-parameters", "projection-refusal", "projection-error", "protocol-violation",
 ] as const satisfies readonly ProjectionWorkerFailure["code"][];
 
 export type ProjectionWorkerProjectCommand = Readonly<{
@@ -160,6 +161,10 @@ export function parseProjectionWorkerEvent(message: unknown): ParsedProjectionWo
       const failure = message.failure;
       if (!isProtocolRecord(failure) || !PROJECTION_WORKER_FAILURE_CODES.includes(failure.code as ProjectionWorkerFailure["code"])) {
         return { ok: false, reason: "failure.failure must carry a known code" };
+      }
+      if (failure.code === "projection-refusal" &&
+        ((failure.refusal !== "indra" && failure.refusal !== "fractal") || !isProtocolText(failure.refusalCode) || typeof failure.detail !== "string")) {
+        return { ok: false, reason: "failure.failure must carry a typed projection refusal" };
       }
       if (message.requestId !== null && !isProtocolText(message.requestId)) return { ok: false, reason: "failure.requestId must be a non-empty string or null" };
       if (message.slot !== null && !isProtocolText(message.slot)) return { ok: false, reason: "failure.slot must be a non-empty string or null" };
