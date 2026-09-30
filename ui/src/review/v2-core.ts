@@ -8,6 +8,8 @@ import { validatePickResult, validateRenderVisibility } from '../projection/cont
  * about 5 s up to this size (measured curve in the D-069 dataset report). */
 export const V2_CAP = 850;
 export const V2_PAGE = 60;
+/** Legacy semantic zoom opens one bounded page; the reveal controller supplies cumulative pages. */
+export const V2_AUTO_PAGE = 150;
 /** Automatic disclosure can page independently of explicit/manual expansion. */
 export type AutoDisclosure = ReadonlySet<string> | ReadonlyMap<string, number>;
 export type V2Node = Omit<GraphNode, "level"> & {
@@ -39,7 +41,7 @@ const copy = (s: DisclosureState): DisclosureState => ({ expanded: new Set(s.exp
 export const emptyDisclosure = (): DisclosureState => ({ expanded: new Set(), pages: new Map(), manualOrder: [] });
 export function v2Visible(index: V2Index, state: DisclosureState, auto: AutoDisclosure = new Set(), cap = V2_CAP): V2Visible {
     const autoHas = (id: string) => auto.has(id);
-    const autoPage = (id: string) => auto instanceof Map ? auto.get(id) ?? V2_PAGE : V2_PAGE;
+    const autoPage = (id: string) => auto instanceof Map ? auto.get(id) ?? 0 : V2_AUTO_PAGE;
     const byId = new Map(index.nodes.map(n => [n.id, n]));
     const children = new Map<string, V2Node[]>();
     for (const n of index.nodes)
@@ -60,8 +62,9 @@ export function v2Visible(index: V2Index, state: DisclosureState, auto: AutoDisc
         const all = children.get(n.id) ?? [];
         if (state.expanded.has(n.id) || autoHas(n.id)) {
             const page = state.pages.get(n.id) ?? V2_PAGE;
-            // Semantic disclosure is one bounded page, including domains with many projects.
-            // Explicit expansion retains its normal complete level-1/2 behavior.
+            // Legacy semantic zoom opens at most 150 children. The reveal controller's map
+            // records cumulative bounded pages across settled thresholds. Explicit level-1/2
+            // expansion remains complete.
             const take = autoHas(n.id) && !state.expanded.has(n.id)
                 ? Math.min(autoPage(n.id), all.length)
                 : n.level === 3 || n.level === 4 ? Math.min(page, all.length) : all.length;
