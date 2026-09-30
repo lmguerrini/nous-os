@@ -86,7 +86,7 @@ export const DEFAULT_APPEARANCE: AppearanceOptions = {
   expandY: 1,
   expandZ: 1,
   starfieldDensity: 0.25,
-  starfieldBrightness: 0.35,
+  starfieldBrightness: 0.5,
   flowIntensity: 0.6,
   flowSpeed: 1,
 };

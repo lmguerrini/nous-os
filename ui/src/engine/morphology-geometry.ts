@@ -46,15 +46,36 @@ const normal = (a: Coordinates, b: Coordinates): Coordinates => {
 const cubic = (a: Coordinates, b: Coordinates, c: Coordinates, d: Coordinates, t: number): Coordinates =>
   add(add(mul(a, (1 - t) ** 3), mul(b, 3 * t * (1 - t) ** 2)), add(mul(c, 3 * t * t * (1 - t)), mul(d, t ** 3)));
 
+/** Split one sampled whole-edge curve. Adjacent parts share the exact sample at the join,
+ * including its tangent, and the width keys agree there. The path remains in the edge's chord
+ * corridor even when a colony centre lies far outside that chord. */
+function myceliumParts(edge: MorphologyEdgeInput, a: Coordinates, b: Coordinates,
+  curvature: number, branched: boolean): MorphologySegment[] {
+  const whole = segment(edge.id, edge.id, a, b, edge.width, edge.width, "mycelium", curvature);
+  if (!branched || whole.samples.length < 17) return [whole];
+  const samples = whole.samples.map(point => ({ ...point }));
+  const cuts = samples.length === 41 ? [0, 10, 20, 30, 40] : [0, 4, 8, 12, 16];
+  // A sampled polyline otherwise has a tiny corner at each cut even when its analytic wave is C1.
+  // Put the shared sample on its neighbours' chord, giving the raster path exactly one tangent.
+  for (const cut of cuts.slice(1, -1)) samples[cut] = mix(samples[cut - 1]!, samples[cut + 1]!, 0.5);
+  const widths = [0.5, 0.8, 1.15, 0.8, 0.5].map(factor => edge.width * factor);
+  return cuts.slice(0, -1).map((start, index) => {
+    const piece = samples.slice(start, cuts[index + 1]! + 1);
+    return { ...whole, id: `${edge.id}:${index}`, source: piece[0]!, target: piece[piece.length - 1]!,
+      control: piece[1]!, samples: piece, widthStart: widths[index]!, widthEnd: widths[index + 1]!,
+      widthMid: (widths[index]! + widths[index + 1]!) / 2 };
+  });
+}
+
 /** Neural dendrite/axon width factors: thick near each soma, thinnest at the mid-edge. */
-export const NEURAL_TAPER = { proximal: 1.7, mid: 0.5, distal: 0.85 } as const;
+export const NEURAL_TAPER = { proximal: 1.7, mid: 0.5, distal: 1.2 } as const;
 /** Mycelium wave bound: a visibility floor for tiny links and a hard cap so no arc leaves the field. */
 export const MYCELIUM_AMPLITUDE_MIN_PX = 2.5;
 export const MYCELIUM_AMPLITUDE_CAP_PX = 48;
 /** Bounded radial deviation of a soma outline away from its ellipse (fraction of the local radius).
  * Large somata reach the full bound; small somata are drawn with a scaled-down irregularity so the
  * organic shape stays visible at overview without deforming tiny cells. */
-export const SOMA_OUTLINE_MAX_RADIAL = 0.22;
+export const SOMA_OUTLINE_MAX_RADIAL = 0.12;
 
 const SOMA_OUTLINE_ORDERS = [2, 3, 4] as const;
 /** Deterministic per-node low-frequency outline harmonics, so no two somata are identical. */
@@ -62,7 +83,7 @@ export function somaOutlineHarmonics(id: string): readonly SomaOutlineHarmonic[]
   const seed = morphologyHash(id);
   return SOMA_OUTLINE_ORDERS.map((order, index) => {
     const raw = ((seed >>> (index * 8)) & 0xff) / 255;
-    return { order, amplitude: 0.03 + raw * 0.043, phase: ((seed >>> (index * 5)) % 6283) / 1000 };
+    return { order, amplitude: 0.012 + raw * 0.022, phase: ((seed >>> (index * 5)) % 6283) / 1000 };
   });
 }
 /** Radial outline deviation in [−SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL] at ellipse parameter angle θ. */
@@ -87,7 +108,7 @@ function somaAxis(node: MorphologyNodeInput, incident: readonly Coordinates[]): 
   const squareTrace = xx * xx + yy * yy + zz * zz + 2 * (xy * xy + xz * xz + yz * yz);
   const rest = 1 - lambda;
   const second = (rest + Math.sqrt(Math.max(0, 2 * (squareTrace - lambda * lambda) - rest * rest))) / 2;
-  return { axis, eccentricity: Math.min(1.9, Math.max(1.1, 1.1 + 0.8 * (lambda - second))) };
+  return { axis, eccentricity: Math.min(1.32, Math.max(1.04, 1.04 + 0.28 * (lambda - second))) };
 }
 function somaRadius(node: MorphologyNodeShape, direction: Coordinates): number {
   const alignment = dot(node.axis, direction);
@@ -118,7 +139,8 @@ function segment(id: string, edgeId: string, a: Coordinates, b: Coordinates, wid
     // Waviness is bounded relative to the link length (no gigantic arcs) and by a fixed pixel cap (nothing
     // leaves the field), with a small floor so even the shortest hyphae keep a visible, regular wave.
     const ratio = contract.amplitude[0] + (seed % 13) / 12 * (contract.amplitude[1] - contract.amplitude[0]);
-    const amplitude = Math.min(MYCELIUM_AMPLITUDE_CAP_PX, Math.max(MYCELIUM_AMPLITUDE_MIN_PX, ratio * length)) * curvature;
+    const planarLength = Math.hypot(target.x - source.x, target.y - source.y);
+    const amplitude = Math.min(MYCELIUM_AMPLITUDE_CAP_PX, Math.max(MYCELIUM_AMPLITUDE_MIN_PX, ratio * planarLength)) * curvature;
     const periods = contract.periods[0];
     const count = length < 45 ? 16 : 40;
     for (let i = 0; i <= count; i++) {
@@ -162,52 +184,14 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
         morphology, curvature, null, insetA, insetB, edge.width * NEURAL_TAPER.mid)] };
     }
     const sourceColony = colonyByNode.get(a.id), targetColony = colonyByNode.get(b.id);
-    if (targetColony?.id === a.id && norm(sub(a.position, targetColony.center)) > 1) {
-      return { id: edge.id, source: edge.source, target: edge.target, segments: [
-        segment(`${edge.id}:trunk`, edge.id, a.position, targetColony.center, edge.width * 1.1, edge.width * 1.35,
-          morphology, curvature, `${targetColony.id}:parent-trunk`),
-        segment(`${edge.id}:branch`, edge.id, targetColony.center, b.position, edge.width * 1.35, edge.width * 0.5,
-          morphology, curvature),
-      ] };
-    }
-    if (sourceColony?.id === b.id && norm(sub(b.position, sourceColony.center)) > 1) {
-      return { id: edge.id, source: edge.source, target: edge.target, segments: [
-        segment(`${edge.id}:branch`, edge.id, a.position, sourceColony.center, edge.width * 0.5, edge.width * 1.35,
-          morphology, curvature),
-        segment(`${edge.id}:trunk`, edge.id, sourceColony.center, b.position, edge.width * 1.35, edge.width * 1.1,
-          morphology, curvature, `${sourceColony.id}:parent-trunk`),
-      ] };
-    }
-    const colony = sourceColony;
-    if (!colony || colony.id !== colonyByNode.get(b.id)?.id) {
-      return { id: edge.id, source: edge.source, target: edge.target, segments: [segment(edge.id, edge.id, a.position, b.position, edge.width * 0.8, edge.width * 0.55, morphology, curvature)] };
-    }
-    const core = colony.center;
-    const aj = mix(a.position, core, 0.24), bj = mix(b.position, core, 0.24);
-    return { id: edge.id, source: edge.source, target: edge.target, segments: [
-      segment(`${edge.id}:a`, edge.id, a.position, aj, edge.width * 0.5, edge.width * 0.8, morphology, curvature),
-      segment(`${edge.id}:at`, edge.id, aj, core, edge.width * 0.8, edge.width * 1.15, morphology, curvature, `${colony.id}:${a.id}`),
-      segment(`${edge.id}:bt`, edge.id, core, bj, edge.width * 1.15, edge.width * 0.8, morphology, curvature, `${colony.id}:${b.id}`),
-      segment(`${edge.id}:b`, edge.id, bj, b.position, edge.width * 0.8, edge.width * 0.5, morphology, curvature),
-    ] };
+    const branched = Boolean(sourceColony && sourceColony.id === targetColony?.id);
+    return { id: edge.id, source: edge.source, target: edge.target,
+      segments: myceliumParts(edge, a.position, b.position, curvature, branched) };
   });
-  const usage = new Map<string, number>();
-  for (const edge of routed) for (const part of edge.segments) if (part.sharedKey) usage.set(part.sharedKey, (usage.get(part.sharedKey) ?? 0) + 1);
-  const seen = new Set<string>();
-  const drawnSegments: MorphologySegment[] = [];
-  const branchPoints: Coordinates[] = [];
-  const branchSeen = new Set<string>();
-  for (const edge of routed) for (const part of edge.segments) {
-    if (part.sharedKey && seen.has(part.sharedKey)) continue;
-    if (part.sharedKey) {
-      seen.add(part.sharedKey);
-      const load = 1 + 0.55 * Math.log2(usage.get(part.sharedKey) ?? 1);
-      drawnSegments.push({ ...part, widthStart: part.widthStart * load, widthEnd: part.widthEnd * load, widthMid: part.widthMid * load });
-      if (load > 1) for (const point of [part.source, part.target]) {
-        const key = `${point.x}:${point.y}:${point.z}`;
-        if (!branchSeen.has(key)) { branchSeen.add(key); branchPoints.push(point); }
-      }
-    } else drawnSegments.push(part);
-  }
+  const drawnSegments = routed.flatMap(edge => edge.segments);
+  // A junction is a real graph node with at least three incident edges; decorative markers never
+  // invent off-edge branch points or a colony-centre detour.
+  const branchPoints = morphology === "mycelium"
+    ? shaped.filter(node => node.degree >= 3).map(node => node.position) : [];
   return { morphology, nodes: shaped, edges: routed, drawnSegments, branchPoints, containers: buildContainerGeometry(morphology, containers), colonies };
 }

@@ -54,6 +54,7 @@ type GradientRecord = { kind: "radial" | "linear"; args: unknown[]; stops: { off
 function recordingContext(transforms = true) {
   const ops: Op[] = [];
   const gradients: GradientRecord[] = [];
+  const assignedColours: string[] = [];
   const gradientIds = new WeakMap<object, number>();
   let gradientSeq = 0;
   const styleSnapshot = (style: unknown): unknown =>
@@ -83,6 +84,13 @@ function recordingContext(transforms = true) {
     createRadialGradient(...args: unknown[]) { return makeGradient("radial", args); },
     createLinearGradient(...args: unknown[]) { return makeGradient("linear", args); },
   } as unknown as CanvasRenderingContext2D;
+  for (const property of ["fillStyle", "strokeStyle"] as const) {
+    let value: unknown = "";
+    Object.defineProperty(context, property, {
+      get: () => value,
+      set: (next: unknown) => { value = next; if (typeof next === "string") assignedColours.push(next); },
+    });
+  }
   Object.defineProperty(context, "globalCompositeOperation", {
     get: () => composite,
     set: (value: string) => { composite = value; ops.push({ op: "composite", args: [value] }); },
@@ -96,7 +104,7 @@ function recordingContext(transforms = true) {
       scale(...args: unknown[]) { ops.push({ op: "scale", args }); },
     });
   }
-  return { context, ops, gradients };
+  return { context, ops, gradients, assignedColours };
 }
 
 const project = (point: { readonly x: number; readonly y: number; readonly z: number }): ProjectedPoint =>
@@ -216,7 +224,7 @@ test("M1b dust: deterministic, within budget, inside the community disc, windows
     }
   }
   for (const alpha of STELLAR_DUST_BUCKET_ALPHAS)
-    assert.ok(alpha >= 0.25 && alpha <= 0.8, `bucket alpha ${alpha} outside 0.25–0.8`);
+    assert.ok(alpha >= 0.1 && alpha <= 0.28, `bucket alpha ${alpha} outside the subordinate accent window`);
 });
 
 test("M1b dust: the crowded budget shrinks every community together, never below zero", () => {
@@ -294,15 +302,15 @@ test("M1b cluster glow: one composed fill per community, centre alpha within the
 
 // ---------------------------------------------------------------- Stellar stars and arcs
 
-test("M1b stars: the core radius maps importance into 2–6 px (8 for hubs), never above the basis", () => {
+test("D-074 stars: the core radius maps importance into 2–5 px (6.5 for hubs)", () => {
   assert.equal(STELLAR_STAR_CORE_MIN_PX, 2);
-  // Regular nodes: the window is 2–6 whatever the importance basis.
+  // Regular nodes: the window is 2–5 whatever the importance basis.
   for (const basis of [2, 4, 6, 8, 10, 12]) {
     const core = stellarStarCoreRadiusPx(basis, 3);
     assert.ok(core >= STELLAR_STAR_CORE_MIN_PX && core <= STELLAR_STAR_CORE_MAX_PX, `basis ${basis} → ${core}`);
     assert.ok(core <= basis, "the drawn star never exceeds the pick-radius basis");
   }
-  // Hubs grow the window toward 8 px, smoothly between the two degree thresholds.
+  // Hubs grow the window toward 6.5 px, smoothly between the two degree thresholds.
   assert.equal(stellarStarCapRadiusPx(0), STELLAR_STAR_CORE_MAX_PX);
   assert.equal(stellarStarCapRadiusPx(8), STELLAR_STAR_CORE_MAX_PX);
   assert.equal(stellarStarCapRadiusPx(14), STELLAR_STAR_HUB_MAX_PX);
@@ -317,8 +325,8 @@ test("M1b stars: the core radius maps importance into 2–6 px (8 for hubs), nev
     assert.ok(core >= previous, "the mapping is monotone in the importance basis");
     previous = core;
   }
-  // The mapping is a draw-time compression only: the pick basis window is untouched.
-  assert.equal(MORPHOLOGY_CONTRACT.stellar.node.maxRadiusPx, 12);
+  // The morphology's rendered importance window is compact.
+  assert.equal(MORPHOLOGY_CONTRACT.stellar.node.maxRadiusPx, 10);
 });
 
 test("M1b stars: drawn cores are nearly opaque, halos stay ≤ 1.6× the core, discs mirror the star", () => {
@@ -361,7 +369,7 @@ test("M1b stars: drawn cores are nearly opaque, halos stay ≤ 1.6× the core, d
   for (const node of geometry.nodes) {
     const p = project(node.position);
     const key = `${p.x.toFixed(2)}:${p.y.toFixed(2)}`;
-    const basis = Math.max(2, Math.min(contract.node.maxRadiusPx, node.radius * 1 * scaleBasis));
+    const basis = Math.max(2, Math.min(contract.node.maxRadiusPx, node.radius * DEFAULT_APPEARANCE.nodeScale * scaleBasis));
     const expected = stellarStarCoreRadiusPx(basis, node.degree);
     const core = cores.get(key);
     assert.ok(core, `no core fill found for ${node.id}`);
@@ -618,5 +626,67 @@ test("M1b: a full Stellar draw mutates no scene data (dust and stars are present
   setFlowNow(123);
   drawMorphologyCanvas(context, geometry, project, style, appearance());
   assert.equal(JSON.stringify({ nodes: geometry.nodes, edges: geometry.edges, colonies: geometry.colonies }), before);
-  assert.equal(CONTRACT.stellar.node.maxRadiusPx, 12, "the pick basis window is unchanged");
+  assert.equal(CONTRACT.stellar.node.maxRadiusPx, 10, "the rendered basis is compact");
+});
+
+test("D-074 product morphology emits grayscale ink in bw for 2D and 3D", () => {
+  const fixture = stellarScene();
+  const grayStyle: MorphologyCanvasStyle = {
+    fieldColor: "rgb(5, 5, 5)",
+    nodes: new Map([...fixture.style.nodes].map(([id]) => [id, { color: "rgb(220, 220, 220)" }])),
+    edges: new Map([...fixture.style.edges].map(([id, value]) => [id, {
+      color: "rgb(175, 175, 175)", presentation: value.presentation,
+    }])),
+  };
+  for (const morphology of ["stellar", "neural", "mycelium"] as const) for (const projection of ["2d", "3d"] as const) {
+    const geometry = buildMorphologyGeometry(morphology, fixture.geometry.nodes, fixture.geometry.edges.map(edge => ({
+      id: edge.id, source: edge.source, target: edge.target, width: 1,
+    })), fixture.geometry.colonies);
+    const { context, gradients, assignedColours } = recordingContext();
+    drawMorphologyCanvas(context, geometry, project, grayStyle,
+      appearance({ starfieldDensity: 0.25, starfieldBrightness: 0.5, flowSpeed: 0 }), undefined, projection);
+    const colours = [...assignedColours, ...gradients.flatMap(gradient => gradient.stops.map(stop => stop.colour))];
+    assert.ok(colours.length > 0);
+    if (morphology === "stellar" && projection === "3d")
+      assert.ok(assignedColours.some(colour => colour.startsWith("rgba(255, 255, 255,")),
+        "the 3D product overlay draws the uniform white base field");
+    for (const colour of colours) {
+      const match = /^rgba?\((\d+), (\d+), (\d+)(?:, [\d.]+)?\)$/.exec(colour);
+      assert.ok(match, `${morphology}/${projection}: unexpected ink ${colour}`);
+      assert.equal(match[1], match[2], `${morphology}/${projection}: ${colour}`);
+      assert.equal(match[2], match[3], `${morphology}/${projection}: ${colour}`);
+    }
+  }
+});
+
+test("D-074 edge-width slider changes drawn widths across its 0.3–3 range", () => {
+  const nodes = [
+    { id: "a", position: { x: 0, y: 0, z: 0 }, radius: 5 },
+    { id: "b", position: { x: 120, y: 0, z: 0 }, radius: 4 },
+  ];
+  const edges = [{ id: "ab", source: "a", target: "b", width: 1.2 }];
+  const style: MorphologyCanvasStyle = {
+    fieldColor: "rgb(5, 5, 5)",
+    nodes: new Map(nodes.map(node => [node.id, { color: "rgb(220, 220, 220)" }])),
+    edges: new Map([["ab", { color: "rgb(180, 180, 180)", presentation: {
+      category: "attested" as const, opacityPermille: 1000, widthPermille: 1000,
+    } }]]),
+  };
+  for (const morphology of ["stellar", "neural", "mycelium"] as const) {
+    const geometry = buildMorphologyGeometry(morphology, nodes, edges);
+    const widths = [0.3, 1, 3].map(edgeWidth => {
+      const { context, ops } = recordingContext();
+      (globalThis as typeof globalThis & { __d070?: object }).__d070 = { hideNodes: true };
+      try {
+        drawMorphologyCanvas(context, geometry, project, style,
+          appearance({ edgeWidth, glow: 0, flowIntensity: 0 }));
+      } finally {
+        delete (globalThis as typeof globalThis & { __d070?: object }).__d070;
+      }
+      const first = ops.find(op => op.op === "moveTo");
+      assert.ok(first, `${morphology}: missing ribbon`);
+      return Math.abs(Number(first.args[1]) - 160) * 2;
+    });
+    assert.ok(widths[0]! < widths[1]! && widths[1]! < widths[2]!, `${morphology}: ${widths.join(" → ")}`);
+  }
 });

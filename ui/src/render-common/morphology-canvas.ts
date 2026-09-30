@@ -119,29 +119,16 @@ export function pearlHighlight(radiusPx: number): { readonly radiusPx: number; r
  * disappears at overview scale (audit: «spessi al nodo, rastremati a metà arco»). */
 export const NEURAL_EDGE_MID_MIN_PX = 0.6;
 
-/** Up to this soma degree a dendrite root keeps the contract's full soma/mid taper ratio. */
-export const NEURAL_TAPER_DEGREE_FULL = 4;
-/** The taper ratio never falls below this floor, so the rastremazione stays visible on every
- * dendrite however crowded the soma (audit: hub roots must stay separable, not uniform). */
-export const NEURAL_TAPER_RATIO_FLOOR = 1.3;
-
-/**
- * The soma-end/mid width ratio one end of a dendrite draws, from that end's own soma degree: the
- * full base ratio up to {@link NEURAL_TAPER_DEGREE_FULL}, then base/√(degree/4), floored at
- * {@link NEURAL_TAPER_RATIO_FLOOR}. Monotone in the degree, deterministic, pure.
- */
+/** Soma-end taper ratio is independent of degree: crowded hubs keep visible roots. */
 export function neuralSomaTaperRatio(baseRatio: number, degree: number): number {
-  if (!(degree > NEURAL_TAPER_DEGREE_FULL)) return baseRatio;
-  return Math.min(baseRatio,
-    Math.max(NEURAL_TAPER_RATIO_FLOOR, baseRatio / Math.sqrt(degree / NEURAL_TAPER_DEGREE_FULL)));
+  void degree;
+  return baseRatio;
 }
 
 /**
  * The drawn Neural width keyframes (same units as the inputs): the width at each soma end and at
- * mid-edge. The contract's taper gives the soma/mid ratio for the proximal and distal ends, each
- * capped by its own end's soma degree ({@link neuralSomaTaperRatio}), and the segment's larger end
- * width anchors the scale, so the profile keeps the edge's data-driven weight while the
- * rastremazione reads at overview scale and the roots of a hub stay separable (D-071 G11).
+ * mid-edge. The contract's taper applies at both ends regardless of degree; the segment's larger
+ * end width anchors the data-driven scale.
  */
 export function neuralTaperProfile(widthStart: number, widthEnd: number, taper: readonly [number, number] | readonly number[],
   degreeStart = 1, degreeEnd = 1) {
@@ -155,16 +142,10 @@ export function neuralTaperProfile(widthStart: number, widthEnd: number, taper: 
   return { start: mid * startRatio, mid, end: mid * endRatio };
 }
 
-/** A dendrite root loses at most this share of its alpha near a high-degree soma: the widths
- * already separate the roots, this keeps the residual stack of edges from re-merging as glow. */
-export const NEURAL_ROOT_ALPHA_FLOOR = 0.8;
-/** The on-screen reach of the root alpha fade, in pixels along the edge from each soma. */
-export const NEURAL_ROOT_FADE_PX = 10;
-/** The alpha factor of a dendrite's first pixels at a soma of the given degree: full up to
- * {@link NEURAL_TAPER_DEGREE_FULL}, then a gentle linear falloff to the floor. Pure. */
+/** Soma roots keep their full alpha at every degree. */
 export function neuralRootAlphaFactor(degree: number): number {
-  if (!(degree > NEURAL_TAPER_DEGREE_FULL)) return 1;
-  return Math.max(NEURAL_ROOT_ALPHA_FLOOR, 1 - 0.05 * (degree - NEURAL_TAPER_DEGREE_FULL));
+  void degree;
+  return 1;
 }
 
 /** Exact endpoint key of a drawn segment (world-space coordinates, never remultipplied). */
@@ -189,7 +170,7 @@ export function neuralEndpointSomata(geometry: MorphologyGeometry): ReadonlyMap<
   let maxRadius = 0;
   for (const node of geometry.nodes) maxRadius = Math.max(maxRadius, node.radius);
   // A cell of at least four max radii keeps every endpoint's own soma inside its 3×3 neighbourhood
-  // (the neural inset is bounded by the soma radius times its ≤1.9 eccentricity).
+  // (the neural inset is bounded by the soma radius times its ≤1.32 eccentricity).
   const cell = Math.max(NEURAL_HALO_DENSITY_CELL, 4 * maxRadius);
   const grid = new Map<string, MorphologyNodeShape[]>();
   for (const node of geometry.nodes) {
@@ -243,9 +224,9 @@ export function neuralEndpointDegrees(geometry: MorphologyGeometry): ReadonlyMap
   return degrees;
 }
 
-/** Deterministic per-soma elongation factor (±12%), driven by the id-hashed outline harmonics'
+/** Deterministic per-soma elongation factor (±4%), driven by the id-hashed outline harmonics'
  * phases, so the same ellipse template is never merely rotated across somata. */
-export const SOMA_ELONGATION_JITTER = 0.12;
+export const SOMA_ELONGATION_JITTER = 0.04;
 export function somaElongationFactor(harmonics: readonly SomaOutlineHarmonic[]): number {
   if (harmonics.length === 0) return 1;
   const weighted = harmonics.reduce((sum, harmonic, index) => sum + harmonic.phase * (index + 1), 0);
@@ -253,11 +234,11 @@ export function somaElongationFactor(harmonics: readonly SomaOutlineHarmonic[]):
 }
 
 /** The drawn elongation of one soma: the connection-driven eccentricity with the deterministic
- * per-node jitter, kept inside the geometry's 1.1–1.9 eccentricity bounds. A round soma (no local
+ * per-node jitter, kept inside the compact 1.04–1.32 eccentricity bounds. A round soma (no local
  * connections to orient it) is left exactly round. */
 export function somaDrawnElongation(eccentricity: number, harmonics: readonly SomaOutlineHarmonic[]): number {
   if (eccentricity <= 1) return eccentricity;
-  return clamp(eccentricity * somaElongationFactor(harmonics), Math.min(1.1, eccentricity), 1.9);
+  return clamp(eccentricity * somaElongationFactor(harmonics), Math.min(1.04, eccentricity), 1.32);
 }
 
 /** Small somata keep a scaled-down but stronger irregularity than before (floor 0.55 instead of
@@ -315,22 +296,22 @@ export function morphologyCoreAlphaFloor(morphology: Morphology): number {
 // ---------------------------------------------------------------- D-072 M1b star grammar
 //
 // A Stellar data node draws as a star of the plexus reference: a small, bright, nearly
-// opaque core whose size still follows the importance scale (the contract's 2–12 px window the
-// layout sizes into), compressed at draw time into the 2–6 px star window — up to 8 px where the
+// opaque core whose size still follows the importance scale (the contract's 2–10 px window the
+// layout sizes into), compressed at draw time into the 2–5 px star window — up to 6.5 px where the
 // node's degree marks it a domain hub. The pick radius is untouched: the pickers size from the
 // same pre-mapping basis (`radiusPx`/`node.radius`), so clicking never gets harder.
 
 /** Drawn core radius of a regular star, in CSS px: the importance scale compresses into this window. */
 export const STELLAR_STAR_CORE_MIN_PX = 2;
-export const STELLAR_STAR_CORE_MAX_PX = 6;
+export const STELLAR_STAR_CORE_MAX_PX = 5;
 /** The window grows toward this cap as the node's degree marks it a domain hub. */
-export const STELLAR_STAR_HUB_MAX_PX = 8;
-/** Degree at which the hub window starts growing, and at which it reaches the full 8 px. */
+export const STELLAR_STAR_HUB_MAX_PX = 6.5;
+/** Degree at which the hub window starts growing, and at which it reaches the full 6.5 px. */
 export const STELLAR_STAR_HUB_DEGREE = 8;
 export const STELLAR_STAR_HUB_FULL_DEGREE = 14;
 
-/** The star-core window of one degree: 6 px up to {@link STELLAR_STAR_HUB_DEGREE}, then a linear
- * rise to 8 px at {@link STELLAR_STAR_HUB_FULL_DEGREE}. Pure, monotone in the degree. */
+/** The star-core window of one degree: 5 px up to {@link STELLAR_STAR_HUB_DEGREE}, then a linear
+ * rise to 6.5 px at {@link STELLAR_STAR_HUB_FULL_DEGREE}. Pure, monotone in the degree. */
 export function stellarStarCapRadiusPx(degree: number): number {
   const rise = clamp((degree - STELLAR_STAR_HUB_DEGREE) / (STELLAR_STAR_HUB_FULL_DEGREE - STELLAR_STAR_HUB_DEGREE), 0, 1);
   return STELLAR_STAR_CORE_MAX_PX + (STELLAR_STAR_HUB_MAX_PX - STELLAR_STAR_CORE_MAX_PX) * rise;
@@ -422,7 +403,7 @@ export function stellarArcClasses(geometry: MorphologyGeometry): ReadonlyMap<str
  */
 export function drawStellarDust(context: CanvasRenderingContext2D, clusters: readonly StellarDustCluster[],
   project: (point: Coordinates) => ProjectedPoint, nodeColour: (hubId: string) => string | undefined,
-  width: number, height: number, density = 0.25, brightness = 0.35): void {
+  width: number, height: number, density = 0.25, brightness = 0.5): void {
   const fraction = stellarDustFraction(density);
   if (fraction === 0 || brightness <= 0) return;
   for (const cluster of clusters) {
@@ -441,7 +422,7 @@ export function drawStellarDust(context: CanvasRenderingContext2D, clusters: rea
     }
   }
 }
-const STELLAR_DUST_FALLBACK_COLOUR = "rgb(226, 230, 238)";
+const STELLAR_DUST_FALLBACK_COLOUR = "rgb(230, 230, 230)";
 
 /** D-072 M1b: the peak centre alpha of the per-community cluster glow. ≤ 0.06 by brief; one cached
  * radial sprite per (colour, alpha) serves every community, composed under translate + scale. */
@@ -891,13 +872,12 @@ export function selectAnimatedFlowEdges(geometry: MorphologyGeometry, style: Mor
 }
 
 /** Build the shared per-segment paints of one frame. Pure drawing input computation: no canvas
- * state is touched except the (context-provided) root-fade gradient builder left to the caller. */
+ * state is touched. */
 function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasStyle,
   project: (point: Coordinates) => ProjectedPoint, appearance: AppearanceOptions,
   contract: (typeof MORPHOLOGY_CONTRACT)[keyof typeof MORPHOLOGY_CONTRACT], projection: "2d" | "3d",
   somaFrames: ReadonlyMap<string, NeuralSomaFrame> | null): MorphologyEdgePaint[] {
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
-  const neuralDegrees = geometry.morphology === "neural" ? neuralEndpointDegrees(geometry) : null;
   const endpointSomata = somaFrames ? neuralEndpointSomata(geometry) : null;
   const stellarArcs = geometry.morphology === "stellar" ? stellarArcClasses(geometry) : null;
   const paints: MorphologyEdgePaint[] = [];
@@ -937,40 +917,36 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         points = [first, ...points.slice(1, -1), last];
       }
     }
-    // D-071 G11: each soma end's taper ratio is capped by that soma's degree, so the roots of a
-    // high-degree hub stay separable instead of overlapping into one luminous mass.
-    const [segmentStart, segmentEnd] = segmentEnds(part);
-    const startDegree = (segmentStart && neuralDegrees?.get(neuralEndpointKey(segmentStart))) ?? 1;
-    const endDegree = (segmentEnd && neuralDegrees?.get(neuralEndpointKey(segmentEnd))) ?? 1;
-    // D-071 G9: the Neural profile is anchored on the contract's taper ratios so the rastremazione
-    // survives the pixel floors at overview scale; the other morphologies keep their profiles.
+    // The Neural profile retains its full width at both soma ends, including high-degree hubs.
     const neuralTaper = geometry.morphology === "neural"
-      ? neuralTaperProfile(part.widthStart, part.widthEnd, contract.edge.taper, startDegree, endDegree) : null;
+      ? neuralTaperProfile(part.widthStart, part.widthEnd, contract.edge.taper) : null;
     const widthAt = (i: number) => {
       const t = i / (points.length - 1);
       const smooth = t * t * (3 - 2 * t);
       const variation = geometry.morphology === "mycelium" ? 1 + contract.edge.widthVariation * Math.sin(Math.PI * t) ** 2 * Math.cos(t * Math.PI * 4) : 1;
       // Fractional sample positions (the flow pulse asks for midpoints) read the nearest projected scale.
       const scaleAt = points[Math.min(points.length - 1, Math.max(0, Math.round(i)))]!.scale;
-      const factors = scaleAt * widthFactor * appearance.edgeWidth * (emphasis?.radiusMultiplier ?? 1) * variation;
+      const factors = scaleAt * widthFactor * (emphasis?.radiusMultiplier ?? 1) * variation;
       if (stellarArcs) {
         // D-072 M1b: the reference's arc grammar — intra arcs thin and discreet, bridges slightly
         // stronger; the data's own width modulates inside the class window (2D and 3D the same).
         const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
-        return stellarArcWidthPx(arcClass, profile * factors);
+        return clamp(stellarArcWidthPx(arcClass, profile * factors) * appearance.edgeWidth, 0.2, 4.5);
       }
       if (neuralTaper) {
         // Quadratic through the three keyframes: the mid width keeps a visible on-screen floor,
         // each soma end keeps the contract ratio above it, and the cap leaves room for the ratio.
         const somaRatio = Math.max(neuralTaper.start, neuralTaper.end) / neuralTaper.mid;
-        const mid = clamp(neuralTaper.mid * factors, NEURAL_EDGE_MID_MIN_PX, 16 / somaRatio);
+        const mid = clamp(neuralTaper.mid * factors * appearance.edgeWidth, NEURAL_EDGE_MID_MIN_PX, 16 / somaRatio);
         const start = mid * (neuralTaper.start / neuralTaper.mid);
         const end = mid * (neuralTaper.end / neuralTaper.mid);
-        const base = (1 - t) * (1 - t) * start + 2 * t * (1 - t) * (2 * mid - (start + end) / 2) + t * t * end;
+        const half = t <= 0.5 ? t * 2 : (t - 0.5) * 2;
+        const eased = half * half * (3 - 2 * half);
+        const base = t <= 0.5 ? start + (mid - start) * eased : mid + (end - mid) * eased;
         return clamp(base, NEURAL_EDGE_MID_MIN_PX, 16);
       }
       const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
-      return clamp(profile * factors, 0.5, 16);
+      return clamp(profile * factors * appearance.edgeWidth, 0.5, 16);
     };
     // D-072 V13: the base alpha of a line is constant across frames — presentation-derived factors
     // only. D-072 M1b: a Stellar arc's base alpha is its class window (intra faint, bridges near
@@ -989,26 +965,10 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
   return paints;
 }
 
-/** The exploratory halo ribbon and the constant base ribbon of one paint (D-071 G11 root fade kept:
- * within the first pixels of a high-degree soma the dendrite also loses a little alpha). With
- * `simple` (the `moving` frame of a neural geometry) the base is one stroked polyline at the mid
- * width — no taper keyframes, no root-fade gradient — while the exploratory halo ribbon above it
- * keeps the exploratory line recognisable. */
-function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
-  rootFadeStart: number, rootFadeEnd: number, gradientCapable: boolean, simple = false): void {
+/** The exploratory halo ribbon and constant-alpha base ribbon of one paint. The moving frame
+ * strokes one cheap polyline at the middle width; full quality draws the tapered ribbon. */
+function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint, simple = false): void {
   const { points, color, alpha } = paint;
-  const chordPx = Math.hypot(points[points.length - 1]!.x - points[0]!.x, points[points.length - 1]!.y - points[0]!.y);
-  const rootFadedFill = (edgeAlpha: number): string | CanvasGradient => {
-    if (rootFadeStart >= 1 && rootFadeEnd >= 1) return rgba(color, edgeAlpha);
-    if (!gradientCapable || chordPx <= 0) return rgba(color, edgeAlpha);
-    const gradient = context.createLinearGradient(points[0]!.x, points[0]!.y, points[points.length - 1]!.x, points[points.length - 1]!.y);
-    const reach = clamp(NEURAL_ROOT_FADE_PX / chordPx, 1e-4, 0.5);
-    gradient.addColorStop(0, rgba(color, clamp(edgeAlpha * rootFadeStart, 0, 1)));
-    gradient.addColorStop(reach, rgba(color, edgeAlpha));
-    gradient.addColorStop(1 - reach, rgba(color, edgeAlpha));
-    gradient.addColorStop(1, rgba(color, clamp(edgeAlpha * rootFadeEnd, 0, 1)));
-    return gradient;
-  };
   const fillRibbon = (widthAt: (i: number) => number): void => {
     const sides = points.map((point, i) => {
       const before = points[Math.max(0, i - 1)]!, after = points[Math.min(points.length - 1, i + 1)]!;
@@ -1024,7 +984,7 @@ function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePa
   };
   // Exploratory relations carry a slightly stronger halo, then the flow, over the same continuous base line.
   if (paint.category === "exploratory") {
-    context.fillStyle = rootFadedFill(clamp(paint.alpha * FLOW_HALO_ALPHA, 0, 1));
+    context.fillStyle = rgba(color, clamp(paint.alpha * FLOW_HALO_ALPHA, 0, 1));
     fillRibbon((i) => paint.widthAt(i) * FLOW_HALO_WIDTH_MULTIPLIER);
   }
   if (simple) {
@@ -1037,7 +997,7 @@ function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePa
     context.stroke();
     return;
   }
-  context.fillStyle = rootFadedFill(paint.alpha);
+  context.fillStyle = rgba(color, paint.alpha);
   fillRibbon(paint.widthAt);
 }
 
@@ -1198,7 +1158,7 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
         const reach = band === 0 ? trail.tail : trail.tail * 0.48;
         appendFlowTail(context, trail, Math.max(0, trail.head - reach), end);
       }
-      context.strokeStyle = band === 0 ? "rgb(178, 199, 235)" : "rgb(218, 230, 250)";
+      context.strokeStyle = band === 0 ? "rgb(192, 192, 192)" : "rgb(238, 238, 238)";
       context.lineWidth = band === 0 ? 6 : 2.8;
       context.globalAlpha = previousAlpha * peak * (band === 0 ? 0.22 : 0.48);
       context.stroke();
@@ -1311,8 +1271,6 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
   if (!testHook()?.hideEdges) {
     const gradientCapable = typeof context.createLinearGradient === "function";
     const paints = buildEdgePaints(geometry, style, project, appearance, contract, projection, somaFrames);
-    // D-071 G11: the soma degree at every dendrite end (memoised per geometry, world space).
-    const neuralDegrees = geometry.morphology === "neural" ? neuralEndpointDegrees(geometry) : null;
     const animatedEdges = selectAnimatedFlowEdges(geometry, style, project, bounds);
     const animating = flowMotionAllowedNow() && appearance.flowIntensity > 0 && appearance.flowSpeed > 0;
     const intensity = appearance.flowIntensity;
@@ -1322,14 +1280,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const now = flowNow();
     const inlineFlowPaints: MorphologyEdgePaint[] = [];
     for (const paint of paints) {
-      const [segmentStart, segmentEnd] = segmentEnds(paint.part);
-      const startDegree = (segmentStart && neuralDegrees?.get(neuralEndpointKey(segmentStart))) ?? 1;
-      const endDegree = (segmentEnd && neuralDegrees?.get(neuralEndpointKey(segmentEnd))) ?? 1;
-      // D-071 G11: within the first pixels of a high-degree soma the dendrite also loses a little
-      // alpha (deterministic, projected-length based, so 2D and 3D fade identically).
-      const rootFadeStart = neuralDegrees ? neuralRootAlphaFactor(startDegree) : 1;
-      const rootFadeEnd = neuralDegrees ? neuralRootAlphaFactor(endDegree) : 1;
-      drawEdgeBase(context, paint, rootFadeStart, rootFadeEnd, gradientCapable, moving && geometry.morphology === "neural");
+      drawEdgeBase(context, paint, moving && geometry.morphology === "neural");
       if (paint.category === "exploratory") {
         // "separate" leaves the travelling highlight to the dedicated overlay: nothing draws here,
         // so the lighter composite (and its restore) is skipped for that edge entirely.

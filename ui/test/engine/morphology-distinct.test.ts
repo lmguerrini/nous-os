@@ -41,14 +41,14 @@ test("D-069 Neural emits one bend, proximal taper and deterministic somata", () 
   assert.deepEqual(geometry, buildMorphologyGeometry("neural", nodes, edges, colony));
 });
 
-test("D-069 Mycelium shares trunks, branches and varies relation curvature", () => {
+test("D-074 Mycelium branches at graph nodes and varies relation curvature", () => {
   const geometry = buildMorphologyGeometry("mycelium", nodes, edges, colony);
   const metrics = morphologyMetrics(geometry);
-  assert(metrics.sharedTrunkLengthShare > 0);
+  assert.equal(metrics.sharedTrunkLengthShare, 0);
   assert(metrics.branchingPoints > 0);
   assert(metrics.taperVariance.some((value) => value > 0));
   assert(new Set(metrics.relationCurvatures).size > 1);
-  assert(geometry.drawnSegments.length < geometry.edges.reduce((sum, edge) => sum + edge.segments.length, 0));
+  assert.equal(geometry.drawnSegments.length, geometry.edges.reduce((sum, edge) => sum + edge.segments.length, 0));
 });
 
 test("D-069 layout hints are distinct without moving the supplied anchors", () => {

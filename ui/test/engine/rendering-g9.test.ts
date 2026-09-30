@@ -15,7 +15,7 @@ import {
   somaElongationFactor,
   somaIrregularityScale,
 } from "#render-common/morphology-canvas.ts";
-import { STARFIELD_MAX_STARS, STAR_MAX_ALPHA, STAR_MAX_RADIUS_PX, starAlpha, starfieldStars } from "#render-common/starfield.ts";
+import { STARFIELD_CELL_PX, STARFIELD_MAX_STARS, STAR_MAX_ALPHA, STAR_MAX_RADIUS_PX, starAlpha, starfieldStars } from "#render-common/starfield.ts";
 
 const std = (values: readonly number[]): number => {
   const mean = values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
@@ -96,20 +96,20 @@ test("G9 Neural somata: deterministic per-node elongation jitter within the geom
   // Deterministic: the id fixes the factor.
   for (const id of ids) assert.equal(somaElongationFactor(somaOutlineHarmonics(id)), somaElongationFactor(somaOutlineHarmonics(id)));
   // Varied: the verified "one rotated template" complaint required visible spread, not one value.
-  assert.ok(Math.max(...factors) - Math.min(...factors) >= 0.08, `span ${(Math.max(...factors) - Math.min(...factors)).toFixed(3)}`);
-  assert.ok(std(factors) > 0.03, `std ${std(factors).toFixed(3)}`);
-  for (const factor of factors) assert.ok(Math.abs(factor - 1) <= 0.12 + 1e-9, `${factor}`);
+  assert.ok(Math.max(...factors) - Math.min(...factors) >= 0.07, `span ${(Math.max(...factors) - Math.min(...factors)).toFixed(3)}`);
+  assert.ok(std(factors) > 0.01, `std ${std(factors).toFixed(3)}`);
+  for (const factor of factors) assert.ok(Math.abs(factor - 1) <= 0.04 + 1e-9, `${factor}`);
   // The drawn elongation stays inside the geometry's eccentricity bounds, and an isolated soma
   // (eccentricity 1, no local connections) is left round.
   for (const id of ids) {
     const harmonics = somaOutlineHarmonics(id);
-    assert.ok(somaDrawnElongation(1.5, harmonics) >= 1.1 - 1e-9 && somaDrawnElongation(1.5, harmonics) <= 1.9, id);
-    assert.ok(somaDrawnElongation(1.9, harmonics) <= 1.9, id);
+    assert.ok(somaDrawnElongation(1.25, harmonics) >= 1.04 - 1e-9 && somaDrawnElongation(1.25, harmonics) <= 1.32, id);
+    assert.ok(somaDrawnElongation(1.9, harmonics) <= 1.32, id);
     assert.equal(somaDrawnElongation(1, harmonics), 1);
   }
 });
 
-test("G9 Neural somata: stronger irregularity that still honours the ±0.22 radial bound", () => {
+test("D-074 Neural somata: organic irregularity stays within ±0.12", () => {
   assert.ok(SOMA_IRREGULARITY_BOOST > 1, "the drawn irregularity is boosted");
   assert.ok(SOMA_IRREGULARITY_MIN_SCALE >= 0.55, "small somata keep more of their irregularity than before");
   assert.equal(somaIrregularityScale(2), SOMA_IRREGULARITY_MIN_SCALE);
@@ -145,6 +145,6 @@ test("G9 starfield: every star stays smaller than a satellite node and under the
   }
   // The default look keeps its stars, deterministically placed.
   const defaultStars = starfieldStars(800, 600, 0.25);
-  assert.equal(defaultStars.length, Math.min(STARFIELD_MAX_STARS, Math.floor(0.25 * 800 * 600 * 0.0012)));
+  assert.equal(defaultStars.length, Math.ceil(800 / STARFIELD_CELL_PX) * Math.ceil(600 / STARFIELD_CELL_PX) * 2);
   assert.deepEqual(starfieldStars(800, 600, 0.25), defaultStars);
 });

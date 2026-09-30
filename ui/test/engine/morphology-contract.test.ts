@@ -73,17 +73,30 @@ test("Neural soma axis, eccentricity, topology and tangent", () => {
   }
 });
 
-test("Mycelium waves and varies width, with each shared trunk drawn once", () => {
+test("Mycelium keeps every sampled edge in its endpoint corridor with C1 width joins", () => {
   const geometry = buildMorphologyGeometry("mycelium", nodes, edges, colony);
-  for (const part of geometry.drawnSegments) if (Math.hypot(part.target.x - part.source.x, part.target.y - part.source.y) > 40) {
-    const d = descriptor(part);
-    assert.ok(d.inflections >= 2, JSON.stringify(d));
-    assert.ok(d.deviation >= 0.03 && d.deviation <= 0.06, JSON.stringify(d));
+  for (const edge of geometry.edges) {
+    const a = nodes.find(node => node.id === edge.source)!.position;
+    const b = nodes.find(node => node.id === edge.target)!.position;
+    const dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
+    for (const part of edge.segments) for (const point of part.samples) {
+      const t = ((point.x - a.x) * dx + (point.y - a.y) * dy) / (length * length);
+      const offset = Math.abs((point.x - a.x) * -dy + (point.y - a.y) * dx) / length;
+      assert.ok(t >= -1e-9 && t <= 1 + 1e-9, `${edge.id}: outside endpoint span`);
+      assert.ok(offset <= Math.max(2.5, 0.055 * length) + 1e-6, `${edge.id}: outside corridor`);
+    }
+    for (let index = 1; index < edge.segments.length; index++) {
+      const before = edge.segments[index - 1]!, after = edge.segments[index]!;
+      assert.deepEqual(before.samples.at(-1), after.samples[0]);
+      near(before.widthEnd, after.widthStart, 1e-9);
+      const p = before.samples.at(-2)!, j = before.samples.at(-1)!, q = after.samples[1]!;
+      const cross = (j.x - p.x) * (q.y - j.y) - (j.y - p.y) * (q.x - j.x);
+      const dot = (j.x - p.x) * (q.x - j.x) + (j.y - p.y) * (q.y - j.y);
+      assert.ok(Math.abs(Math.atan2(cross, dot)) < 1e-9, `${edge.id}: tangent break`);
+    }
   }
   assert.ok(geometry.drawnSegments.some(p => p.widthStart !== p.widthEnd));
-  const shared = geometry.drawnSegments.filter(p => p.sharedKey);
-  assert.equal(shared.length, new Set(shared.map(p => p.sharedKey)).size);
-  assert.ok(shared.length < geometry.edges.flatMap(e => e.segments).filter(p => p.sharedKey).length);
+  assert.ok(geometry.drawnSegments.every(p => p.sharedKey === null));
 });
 
 test("Mycelium keeps a visible, regular wave on short links", () => {

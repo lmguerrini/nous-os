@@ -3,6 +3,10 @@ import { test } from "node:test";
 import { buildMorphologyGeometry, MYCELIUM_AMPLITUDE_CAP_PX, NEURAL_TAPER, SOMA_OUTLINE_MAX_RADIAL, somaOutlineHarmonics, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
 import type { MorphologySegment } from "#engine/morphology-geometry.ts";
 import { starfieldStars, drawStarfield, STARFIELD_MAX_STARS } from "#render-common/starfield.ts";
+import { STARFIELD_CELL_PX, STAR_MAX_RADIUS_PX, starAlpha, starfieldCellSize } from "#render-common/starfield.ts";
+import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
+import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
+import { stellarStarCoreRadiusPx } from "#render-common/morphology-canvas.ts";
 
 const std = (values: readonly number[]): number => {
   const mean = values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
@@ -47,6 +51,51 @@ test("D-071 starfield is deterministic and zero density yields no stars", () => 
   assert.ok(calls.length > 0);
 });
 
+test("D-074 Stellar base covers every 48 px canvas cell with stars smaller than graph nodes", () => {
+  const width = 1600, height = 900;
+  const stars = starfieldStars(width, height, DEFAULT_APPEARANCE.starfieldDensity);
+  const columns = Math.ceil(width / STARFIELD_CELL_PX), rows = Math.ceil(height / STARFIELD_CELL_PX);
+  const cells = new Uint16Array(columns * rows);
+  for (const star of stars) {
+    const column = Math.floor(star.u * width / STARFIELD_CELL_PX);
+    const row = Math.floor(star.v * height / STARFIELD_CELL_PX);
+    cells[row * columns + column]!++;
+    assert.ok(star.size <= STAR_MAX_RADIUS_PX && star.size < 0.6 * 2);
+    assert.ok(starAlpha(DEFAULT_APPEARANCE.starfieldBrightness, star.intensity) >= 0.4);
+  }
+  assert.equal(stars.length, 1292);
+  assert.ok(cells.every(count => count >= 2), "no 48×48 CSS px cell is empty");
+  assert.equal(stars[0] && "id" in stars[0], false, "decorative stars carry no graph identity");
+  const largeWidth = 7680, largeHeight = 4320;
+  const largeCell = starfieldCellSize(largeWidth, largeHeight);
+  const largeColumns = Math.ceil(largeWidth / largeCell), largeRows = Math.ceil(largeHeight / largeCell);
+  const largeCells = new Uint16Array(largeColumns * largeRows);
+  for (const star of starfieldStars(largeWidth, largeHeight, DEFAULT_APPEARANCE.starfieldDensity)) {
+    const column = Math.floor(star.u * largeWidth / largeCell);
+    const row = Math.floor(star.v * largeHeight / largeCell);
+    largeCells[row * largeColumns + column]!++;
+  }
+  assert.ok(largeCell > STARFIELD_CELL_PX);
+  assert.ok(largeCells.every(count => count >= 2), "large canvases retain whole-field coverage under the cap");
+});
+
+test("D-074 default product radii are smaller, ordered by importance, and retain the node slider range", () => {
+  assert.equal(DEFAULT_APPEARANCE.nodeScale, 1);
+  const base = [3, 5, 9, 18];
+  const radii = (morphology: "stellar" | "neural" | "mycelium", slider: number) => base.map(value => {
+    const contract = MORPHOLOGY_CONTRACT[morphology];
+    const basis = Math.max(morphology === "mycelium" ? 1.3 : 2,
+      Math.min(contract.node.maxRadiusPx, value * slider * contract.node.scale));
+    return morphology === "stellar" ? stellarStarCoreRadiusPx(basis, 1) : basis;
+  });
+  for (const morphology of ["stellar", "neural", "mycelium"] as const) {
+    const defaults = radii(morphology, DEFAULT_APPEARANCE.nodeScale);
+    assert.ok(defaults.every((value, i) => i === 0 || value >= defaults[i - 1]!));
+    assert.ok(defaults.at(-1)! <= (morphology === "stellar" ? 5 : morphology === "neural" ? 9 : 4.5));
+    assert.ok(radii(morphology, 2.5)[1]! > radii(morphology, 0.4)[1]!);
+  }
+});
+
 test("D-071 Neural somata differ: eccentricity spread and bounded outline irregularity", () => {
   const nodes = [
     { id: "hub", position: { x: 0, y: 0, z: 0 }, radius: 7 },
@@ -76,7 +125,7 @@ test("D-071 Neural somata differ: eccentricity spread and bounded outline irregu
   assert.ok(fingerprints.size > 1);
 });
 
-test("D-071 Neural eccentricity spans 1.1–1.9 and the outline bound is 0.22", () => {
+test("D-074 Neural soma stays compact with bounded organic outline", () => {
   const collinear = buildMorphologyGeometry("neural", [
     { id: "hub", position: { x: 0, y: 0, z: 0 }, radius: 11 },
     { id: "e", position: { x: 100, y: 0, z: 0 }, radius: 4 },
@@ -85,17 +134,16 @@ test("D-071 Neural eccentricity spans 1.1–1.9 and the outline bound is 0.22", 
     { id: "he", source: "hub", target: "e", width: 2 },
     { id: "hw", source: "hub", target: "w", width: 2 },
   ]);
-  // Two collinear connections pull the soma into a long ellipse, at the top of the wider range.
-  assert.ok(collinear.nodes[0]!.eccentricity >= 1.8, `collinear eccentricity ${collinear.nodes[0]!.eccentricity}`);
-  assert.ok(collinear.nodes[0]!.eccentricity <= 1.9);
+  assert.ok(collinear.nodes[0]!.eccentricity >= 1.25, `collinear eccentricity ${collinear.nodes[0]!.eccentricity}`);
+  assert.ok(collinear.nodes[0]!.eccentricity <= 1.32);
   // Isolated somata stay round: no local connection to orient them.
   const isolated = buildMorphologyGeometry("neural", [{ id: "iso", position: { x: 0, y: 0, z: 0 }, radius: 6 }], []).nodes[0]!;
   assert.equal(isolated.eccentricity, 1);
-  assert.equal(SOMA_OUTLINE_MAX_RADIAL, 0.22);
+  assert.equal(SOMA_OUTLINE_MAX_RADIAL, 0.12);
   // The per-node harmonics can actually approach the bound (not just a tiny, invisible ripple).
   const harmonics = somaOutlineHarmonics("hub");
   const maxReach = harmonics.reduce((sum, harmonic) => sum + harmonic.amplitude, 0);
-  assert.ok(maxReach > 0.15, `harmonic reach ${maxReach.toFixed(3)}`);
+  assert.ok(maxReach > 0.05 && maxReach <= 0.12, `harmonic reach ${maxReach.toFixed(3)}`);
 });
 
 test("D-071 Neural taper: soma end is at least twice the mid-edge width", () => {
@@ -145,7 +193,7 @@ test("D-071 Mycelium edges do not self-intersect on synthetic edges", () => {
   }
 });
 
-test("D-071 Mycelium forks where three or more edges share a colony", () => {
+test("D-074 Mycelium branches at real graph junctions", () => {
   const nodes = [
     { id: "a", position: { x: 100, y: 0, z: 0 }, radius: 3 },
     { id: "b", position: { x: -50, y: 87, z: 0 }, radius: 3 },
@@ -155,9 +203,11 @@ test("D-071 Mycelium forks where three or more edges share a colony", () => {
     { id: "ab", source: "a", target: "b", width: 2 },
     { id: "ac", source: "a", target: "c", width: 2 },
     { id: "bc", source: "b", target: "c", width: 2 },
+    { id: "ad", source: "a", target: "d", width: 2 },
   ];
+  nodes.push({ id: "d", position: { x: 140, y: 80, z: 0 }, radius: 3 });
   const colony = [{ id: "col", members: nodes.map(node => node.id), center: { x: 0, y: 0, z: 0 } }];
   const geometry = buildMorphologyGeometry("mycelium", nodes, edges, colony);
-  assert.ok(geometry.branchPoints.length > 0, "expected forks near the shared colony core");
-  assert.ok(geometry.drawnSegments.some(part => part.sharedKey !== null));
+  assert.deepEqual(geometry.branchPoints, [nodes[0]!.position]);
+  assert.ok(geometry.drawnSegments.every(part => part.sharedKey === null));
 });

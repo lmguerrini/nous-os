@@ -6,7 +6,16 @@ import { morphologyHash } from "#engine/stable-hash.ts";
 const STARFIELD_SEED = 0x5f3759df;
 
 /** Upper bound on how many stars are ever drawn, whatever the density or area. */
-export const STARFIELD_MAX_STARS = 2200;
+export const STARFIELD_MAX_STARS = 8000;
+/** Two stars in every 48 px square at the default 0.25 density. The smallest Stellar graph
+ * core is 2 px in radius, so a base star stays at most 0.6× that radius. */
+export const STARFIELD_CELL_PX = 48;
+/** Keep at least two base stars in every cell even on displays larger than 4K. */
+export function starfieldCellSize(width: number, height: number): number {
+  let cell = STARFIELD_CELL_PX;
+  while (Math.ceil(width / cell) * Math.ceil(height / cell) * 2 > STARFIELD_MAX_STARS) cell += 1;
+  return cell;
+}
 
 /** Hard cap on every star's core radius, at any density or brightness: strictly below 0.6× the
  * 2 px on-screen floor of the smallest drawn Stellar satellite node, so no star can be read as a
@@ -47,14 +56,22 @@ export function starAlpha(brightness: number, intensity: number): number {
 export function starfieldStars(width: number, height: number, density: number): readonly StarfieldStar[] {
   if (!(density > 0) || !(width > 0) || !(height > 0)) return [];
   const random = mulberry32(STARFIELD_SEED);
-  const count = Math.min(STARFIELD_MAX_STARS, Math.floor(density * width * height * 0.0012));
+  const cell = starfieldCellSize(width, height);
+  const columns = Math.ceil(width / cell);
+  const rows = Math.ceil(height / cell);
+  const targetPerCell = Math.min(8, density * 8, STARFIELD_MAX_STARS / (columns * rows));
+  const perCell = Math.floor(targetPerCell);
+  const fractional = targetPerCell - perCell;
   const stars: StarfieldStar[] = [];
-  for (let index = 0; index < count; index += 1) {
-    // Most stars are faint single points; about one in twenty is a brighter, slightly larger star,
-    // as in a real sky — every size stays below the node-subordination cap.
-    const bright = random() < 0.05;
-    stars.push({ u: random(), v: random(), size: bright ? 1 + random() * 0.19 : 0.7 + random() * 0.3,
-      intensity: bright ? 0.75 + random() * 0.25 : 0.35 + random() * 0.45 });
+  for (let row = 0; row < rows; row++) for (let column = 0; column < columns; column++) {
+    const count = perCell + (random() < fractional ? 1 : 0);
+    for (let index = 0; index < count && stars.length < STARFIELD_MAX_STARS; index++) {
+      const bright = random() < 0.12;
+      const x = column * cell + random() * Math.min(cell, width - column * cell);
+      const y = row * cell + random() * Math.min(cell, height - row * cell);
+      stars.push({ u: x / width, v: y / height, size: bright ? 1 + random() * 0.19 : 0.7 + random() * 0.3,
+        intensity: bright ? 0.8 + random() * 0.2 : 0.5 + random() * 0.35 });
+    }
   }
   return stars;
 }
@@ -66,7 +83,7 @@ const starCache = new Map<string, readonly StarfieldStar[]>();
 
 /** `starfieldStars` behind a bounded cache keyed by its only inputs (width, height, density): a hit
  * can never serve a stale value, and the flow animation — which repaints this layer many times per
- * second — stops allocating up to 2200 star objects per frame. Pure values, so the cached array is
+ * second — stops allocating up to 8000 star objects per frame. Pure values, so the cached array is
  * shared read-only. Exposed for tests alongside the reset. */
 export function cachedStarfieldStars(width: number, height: number, density: number): readonly StarfieldStar[] {
   if (!(density > 0) || !(width > 0) || !(height > 0)) return [];
@@ -158,9 +175,9 @@ export const STELLAR_DUST_BUDGET = 900;
 /** Per-community window: a cluster reads as a gathered mass from 30 motes, and never denser than 150. */
 export const STELLAR_DUST_MIN_PER_CLUSTER = 30;
 export const STELLAR_DUST_MAX_PER_CLUSTER = 150;
-/** Drawn alpha per brightness bucket (0 dimmest … 2 brightest), inside the D-072 M1b window
- * 0.25–0.8; the brightest bucket stays a small share so dust never reads as a satellite node. */
-export const STELLAR_DUST_BUCKET_ALPHAS: readonly [number, number, number] = [0.28, 0.5, 0.75];
+/** Drawn alpha per brightness bucket (0 dimmest … 2 brightest). Dust is a lower-contrast
+ * community accent beneath the uniform base field. */
+export const STELLAR_DUST_BUCKET_ALPHAS: readonly [number, number, number] = [0.10, 0.18, 0.28];
 /** The default controls retain M1b's designed dust; lower density uses a stable prefix. */
 export function stellarDustFraction(density: number): number {
   return Math.max(0, Math.min(1, density / 0.25));
