@@ -1267,6 +1267,8 @@ export type Projection2dHandle = {
   readonly dimension: '2d';
   updateVisibleSubset(styled: StyledProjection, visibility: RenderVisibility): void;
   pickAtPoint(position: Vec2): PickResult | null;
+  /** Samples a node through the mounted Sigma camera at settle time. */
+  graphToViewport(point: Vec2): Vec2;
   readCameraState(): CameraState;
   /** IDs placed by the most recent typed label pass; reading them schedules no render. */
   readPlacedLabelIds(): readonly string[];
@@ -1382,6 +1384,14 @@ export function mountProjection2d(
   for (const id of scene.nodes.keys()) graph.addNode(id, projectionNodeAttributes(scene, id));
   for (const [id, edge] of scene.semanticEdges) graph.addEdgeWithKey(id, edge.source, edge.target, projectionEdgeAttributes(scene, id));
   const sigma = new Sigma(graph, container, { enableEdgeEvents: true, renderLabels: false, renderEdgeLabels: false });
+  // Sigma otherwise renormalizes its graph coordinates whenever disclosure adds a node.
+  // Keep the mount's world frame fixed while the graph changes in place.
+  const framePoints = Object.values(styled.projection.positions2 ?? {}).filter((point): point is Vec2 => !!point);
+  if (framePoints.length) {
+    const xs = framePoints.map(point => point.x), ys = framePoints.map(point => point.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    sigma.setCustomBBox({ x: [minX - 1, maxX + 1], y: [minY - 1, maxY + 1] });
+  }
   sigma.createCanvasContext('projection-visuals');
   const canvas = sigma.getCanvases()['projection-visuals'];
   if (canvas === undefined) throw new Error('projection canvas unavailable');
@@ -1579,6 +1589,7 @@ export function mountProjection2d(
       }
       return visuals.pickAt(position);
     },
+    graphToViewport: point => sigma.graphToViewport(point),
     readCameraState: () => sigma.getCamera().getState(),
     readPlacedLabelIds: () => labels.readLabelIds(),
     readSurfaceWitness: () => ({ nodeIds: graph.nodes(), semanticEdgeIds: graph.edges(),

@@ -1,5 +1,5 @@
 import { styleProjection } from '../render-common/projection-style.ts';
-import { emptyRevealState, stepReveal } from './reveal-controller.ts';
+import { emptyRevealState, revealClusterOf, stepReveal } from './reveal-controller.ts';
 import type { RevealState } from './reveal-controller.ts';
 import { buildRevealWitness, routeRelationsAfterLOD } from './relation-routing.ts';
 import type { RouteResult, RouteRelation, RevealWitnessInput } from './relation-routing.ts';
@@ -360,6 +360,8 @@ export interface ProjectionPageRenderer extends ProjectionRenderer {
     onHover(handler: (pick: PickResult | null, x: number, y: number) => void): void;
     /** The page's zoom-LOD tick reads the live camera ratio; absent on test fakes. */
     readonly readCameraState?: () => { readonly ratio: number } | null;
+    /** Read-only projection through the live renderer camera, sampled only at settle. */
+    readonly projectNode?: (point: Vec3) => { readonly x: number; readonly y: number } | null;
     /** The 3D pose shape the gizmo reads (`main.ts`); only the 3D adapter can supply it. */
     readonly readCameraPose?: () => { readonly position: number[]; readonly target: number[];
         readonly up: number[]; readonly fov: number } | null;
@@ -621,7 +623,7 @@ export class V2Page {
         if (this.projectionInput) this.installProjectionWitnessHook();
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
-            root.addEventListener(type, () => { this.userMovedSinceFit = true; this.noteCameraIntent(); }, { passive: true });
+            root.addEventListener(type, () => { this.userMovedSinceFit = true; this.noteCameraIntent(); }, { passive: true, capture: true });
         root?.addEventListener('pointerdown', () => { this.pointerDown = true; this.hoverNeedsMove = true; this.edgeTooltip(null); }, true);
         for (const type of ['pointerup', 'pointercancel'] as const)
             root?.addEventListener(type, () => { this.pointerDown = false; this.edgeTooltip(null); }, true);
@@ -638,7 +640,7 @@ export class V2Page {
         root?.addEventListener('pointermove', event => {
             const rect = root.getBoundingClientRect();
             this.cursor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-        }, { passive: true });
+        }, { passive: true, capture: true });
         root?.addEventListener('pointerleave', () => { this.cursor = null; }, { passive: true });
         if (typeof window === 'object' && window !== null)
             (window as typeof window & { __d074?: { revealWitness: () => unknown } }).__d074 =
@@ -682,17 +684,7 @@ export class V2Page {
         const cluster = this.revealState.focusClusterId;
         if (!cluster) return [];
         const byId = new Map(this.index.nodes.map(node => [node.id, node]));
-        const inside = (id: string) => {
-            let node = byId.get(id);
-            const seen = new Set<string>();
-            while (node && !seen.has(node.id)) {
-                if (node.id === cluster) return true;
-                seen.add(node.id);
-                node = node.parent ? byId.get(node.parent) : undefined;
-            }
-            return false;
-        };
-        const eligible = new Set(disclosed.filter(node => inside(node.id)).map(node => node.id));
+        const eligible = new Set(disclosed.filter(node => revealClusterOf(this.index, node.id) === cluster).map(node => node.id));
         return [...this.rendered].filter(id => eligible.has(id)).concat(
             [...eligible].filter(id => !this.rendered.has(id)).sort((a, b) =>
                 (byId.get(a)?.level ?? 0) - (byId.get(b)?.level ?? 0) || a.localeCompare(b)));
@@ -701,17 +693,7 @@ export class V2Page {
         exclusions?: RevealWitnessInput['exclusions']): void {
         const disclosed = new Set(this.visible().nodes.map(node => node.id));
         const focus = this.revealState.focusClusterId;
-        const byId = new Map(this.index.nodes.map(node => [node.id, node]));
-        const inFocus = (id: string) => {
-            let node = byId.get(id);
-            const seen = new Set<string>();
-            while (node && !seen.has(node.id)) {
-                if (node.id === focus) return true;
-                seen.add(node.id);
-                node = node.parent ? byId.get(node.parent) : undefined;
-            }
-            return false;
-        };
+        const inFocus = (id: string) => focus !== null && revealClusterOf(this.index, id) === focus;
         const drawnKey = [this.axes.organization, this.axes.projection,
             [...rendered].sort().join('|'), route.drawn.map(edge => `${edge.id}:${edge.from.id}:${edge.to.id}:${edge.count}`).join('|'),
             route.aggregates.map(item => `${item.id}:${item.memberCount}`).join('|'), route.derivedCurves].join('\u00b7');
@@ -721,6 +703,7 @@ export class V2Page {
             focus: { clusterId: focus, source: this.revealState.focusSource, epoch: this.revealState.epoch },
             nodes: this.routeNodes(), disclosedIds: disclosed, renderedNodeIds: rendered,
             revealableInFocus: focus ? this.index.nodes.filter(node => inFocus(node.id) && !rendered.has(node.id)).length : 0,
+            renderedInFocus: focus ? [...rendered].filter(inFocus).length : rendered.size,
             nodeBudget: DENSITY_BUDGETS[this.density].nodes, route,
             openParentIds: new Set([...this.history.state.expanded, ...this.auto]),
             ...(exclusions ? { exclusions } : {}),
@@ -751,15 +734,17 @@ export class V2Page {
             for (const [id, point] of Object.entries(witness.nodeViewport))
                 positions.set(id, { x: point.x, y: point.y,
                     radius: byId.has(id) ? nodeRadius(byId.get(id)!, this.appearance.nodeScale) : 12 });
-        } else if (this.projectionResult) {
+        } else if (this.projectionResult && this.projectionRenderer?.projectNode) {
             const points = (this.axes.projection === '2d' ? this.projectionResult.positions2 : this.projectionResult.positions3) ?? {};
-            const available = this.visible().nodes.map(node => ({ id: node.id, point: points[node.id] })).filter(item => item.point);
-            const xs = available.map(item => item.point!.x), ys = available.map(item => item.point!.y);
-            const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-            for (const item of available) positions.set(item.id, {
-                x: width * (0.1 + 0.8 * (item.point!.x - minX) / Math.max(1, maxX - minX)),
-                y: height * (0.1 + 0.8 * (item.point!.y - minY) / Math.max(1, maxY - minY)), radius: 12,
-            });
+            for (const node of this.visible().nodes) {
+                const point = points[node.id];
+                if (!point) continue;
+                const screen = this.projectionRenderer.projectNode({ x: point.x, y: point.y,
+                    z: 'z' in point && typeof point.z === 'number' ? point.z : 0 });
+                if (screen && Number.isFinite(screen.x) && Number.isFinite(screen.y))
+                    positions.set(node.id, { x: screen.x, y: screen.y,
+                        radius: Math.max(12, nodeRadius(node, this.appearance.nodeScale)) });
+            }
         }
         const decision = stepReveal({ index: this.index, disclosure: this.history.state, zoom, settled,
             cursor: this.cursor, selectionId: this.selected, focusId: this.projectionFocus(),
@@ -772,7 +757,7 @@ export class V2Page {
         this.autoPageCounts = new Map(decision.auto);
         this.auto = new Set(decision.auto.keys());
         if (decision.passageRequests.length) for (const id of decision.passageRequests)
-            void this.passages(id).then(() => {
+            void this.passages(id, this.index.nodes.filter(node => node.parent === id).length).then(() => {
                 const after = stepReveal({ index: this.index, disclosure: this.history.state, zoom, settled: true,
                     cursor: this.cursor, selectionId: this.selected, focusId: this.projectionFocus(),
                     viewport: { x: 0, y: 0, width, height }, positions, previous: this.revealState });
@@ -1585,8 +1570,7 @@ export class V2Page {
         const base = projectionVisibility(result, snapshot, revision, 1, new Set(selection.rendered));
         const edgeClass = new Map(this.index.edges.map(edge => [edge.id, edge.class]));
         const routeRelations: RouteRelation[] = [
-            ...snapshot.edges.filter(edge => result.domainEdgeIds.includes(edge.id) &&
-                (this.axes.reading !== 'attested' || edgeClass.get(edge.id) !== 'exploratory'))
+            ...snapshot.edges.filter(edge => result.domainEdgeIds.includes(edge.id))
                 .map(edge => ({ id: edge.id, channel: 'semantic' as const, source: edge.source,
                     target: edge.target, class: edgeClass.get(edge.id) ?? 'attested' as const,
                     type: 'semantic', count: 1 })),
@@ -1598,7 +1582,7 @@ export class V2Page {
         ];
         const routed = routeRelationsAfterLOD({ nodes: this.routeNodes(),
             disclosedIds: new Set(allDisclosed.map(node => node.id)), renderedNodeIds: base.nodeIds,
-            relations: routeRelations, budget: budget.arcs, focusId: active,
+            relations: routeRelations, reading: this.axes.reading, budget: budget.arcs, focusId: active,
             pinnedRelationIds: new Set(this.selected ? [this.selected] : []),
             derivedCurveIds: [...base.curveIds] });
         const sourceById = new Map(routeRelations.map(relation => [relation.id, relation]));
@@ -1941,6 +1925,7 @@ export class V2Page {
                         },
                         updateVisibleSubset(styled, visibility) { handle?.updateVisibleSubset(styled, visibility); },
                         readCameraState: () => handle?.readCameraState() ?? null,
+                        projectNode: point => handle?.graphToViewport(point) ?? null,
                         readPlacedLabelIds: () => handle?.readPlacedLabelIds() ?? [],
                         destroy() { handle?.destroy(); handle = null; },
                     };
@@ -1976,6 +1961,8 @@ export class V2Page {
                     },
                     updateVisibleSubset(styled, visibility) { handle?.updateVisibleSubset(typedInput(styled, visibility)); },
                     readCameraState: () => handle?.readCameraState() ?? null,
+                    projectNode: point => handle && handle.isWorldPointVisible(point)
+                        ? handle.graphToViewport(point) : null,
                     readCameraPose: () => handle?.readReviewCameraPose() ?? null,
                     readPlacedLabelIds: () => handle?.readPlacedLabelIds() ?? [],
                     destroy() { handle?.destroy(); handle = null; },
@@ -2236,8 +2223,14 @@ export class V2Page {
                 class: edge.class, type: edge.type, count: edge.count,
                 sourceEdgeIds: edge.underlying.map(item => item.id),
             }));
+            // The reading mask belongs to routing's audit as well as its drawing. Keep the
+            // source relations that the older projector omitted so each has a suppression cause.
+            if (this.axes.reading === 'attested') for (const edge of this.index.edges)
+                if (edge.class === 'exploratory')
+                    routedInput.push({ id: edge.id, channel: 'semantic', source: edge.source,
+                        target: edge.target, class: edge.class, type: edge.type, count: 1 });
             const route = routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
-                renderedNodeIds: renderedIds, relations: routedInput, budget: budget.arcs,
+                renderedNodeIds: renderedIds, relations: routedInput, reading: this.axes.reading, budget: budget.arcs,
                 focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
             const relationById = new Map(availableArcs.edges.map(edge => [edge.id, edge]));
             let shown: LiftedRelation[] = route.drawn.map(edge => {
@@ -2318,6 +2311,9 @@ export class V2Page {
                     element('focus-chip').hidden = !shown.some(e => e.class === 'exploratory');
                     if (added.length && this.positions.size > added.length)
                         this.pulse(added);
+                    // A subset revision kept the live camera. Do not quarantine the next
+                    // wheel step as if a programmatic fit had moved it.
+                    this.suppressZoomUntil = 0;
                     return;
                 }
                 // The view could not take the update in place: fall through and remount as before.
@@ -2418,7 +2414,9 @@ export class V2Page {
             if (cameraAction === "restore") {
                 try {
                     this.noteCameraIntent();
-                    this.programmaticCamera(); this.view.restoreCamera(old);
+                    this.view.restoreCamera(old);
+                    this.lastZoomRatio = (old as { ratio?: number } | null)?.ratio ?? this.lastZoomRatio;
+                    this.suppressZoomUntil = 0;
                 }
                 catch {
                     this.noteCameraIntent();
@@ -2897,7 +2895,6 @@ export class V2Page {
         const changed = settled ? this.sampleReveal(zoom, true) : false;
         if (!settled) {
             this.revealCamera = { zoom, band: this.revealState.band, settled: false };
-            if (this.revealRoute) this.publishReveal(this.revealRoute, this.rendered);
         }
         if (this.pendingLod !== null && settled) {
             this.lod = this.pendingLod;
@@ -2935,7 +2932,6 @@ export class V2Page {
         const changed = settled ? this.sampleReveal(zoom, true) : false;
         if (!settled) {
             this.revealCamera = { zoom, band: this.revealState.band, settled: false };
-            if (this.revealRoute) this.publishReveal(this.revealRoute, this.rendered);
         }
         if (this.pendingLod !== null && settled) {
             this.lod = this.pendingLod;

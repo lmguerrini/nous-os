@@ -31,6 +31,7 @@ export type RouteResult = Readonly<{
 export type RouteInput = Readonly<{
   nodes: readonly RouteNode[]; disclosedIds: ReadonlySet<string>; renderedNodeIds: ReadonlySet<string>;
   relations: readonly RouteRelation[]; budget: number; focusId?: string | null;
+  reading?: 'attested' | 'exploratory' | 'combined';
   pinnedRelationIds?: ReadonlySet<string>; fanDegree?: number;
   derivedCurveIds?: readonly string[];
 }>;
@@ -100,6 +101,9 @@ export function routeRelationsAfterLOD(input: RouteInput): RouteResult {
   const buckets = new Map<string, Bucket>();
   const suppressed: RouteSuppression[] = [];
   for (const relation of [...input.relations].sort((a, b) => cmp(a.id, b.id))) {
+    if (input.reading === 'attested' && relation.class === 'exploratory') {
+      suppressed.push({ id: relation.id, cause: 'reading-filter' }); continue;
+    }
     const from = nearestGlyph(relation.source), to = nearestGlyph(relation.target);
     if (!from || !to) { suppressed.push({ id: relation.id, cause: 'endpoint-unrepresented' }); continue; }
     if (from.id === to.id) { suppressed.push({ id: relation.id, cause: 'self-aggregate' }); continue; }
@@ -170,7 +174,7 @@ export type RevealWitnessInput = Readonly<{
   revision: number; camera: { zoom: number; band: RevealBand; settled: boolean };
   focus: { clusterId: string | null; source: RevealSource; epoch: number };
   nodes: readonly RouteNode[]; disclosedIds: ReadonlySet<string>; renderedNodeIds: ReadonlySet<string>;
-  revealableInFocus: number; nodeBudget: number; route: RouteResult;
+  revealableInFocus: number; renderedInFocus?: number; nodeBudget: number; route: RouteResult;
   disclosureBudget?: number; openParentIds?: ReadonlySet<string>;
   notLoadedIds?: readonly string[];
   exclusions?: Readonly<Record<string, ExclusionCause>>;
@@ -194,7 +198,8 @@ export function buildRevealWitness(input: RevealWitnessInput) {
     from: edge.from, to: edge.to, count: edge.count }));
   return { revision: input.revision, camera: input.camera, focus: input.focus, levels,
     nodes: { disclosed: input.disclosedIds.size, rendered: input.renderedNodeIds.size,
-      aggregateOnly: aggregates.length, revealableInFocus: input.revealableInFocus, budget: input.nodeBudget },
+      aggregateOnly: aggregates.length, renderedInFocus: input.renderedInFocus ?? input.renderedNodeIds.size,
+      revealableInFocus: input.revealableInFocus, budget: input.nodeBudget },
     renderedNodeIds: [...input.renderedNodeIds].sort(cmp), aggregates,
     edges: { drawn, budget: input.route.budget, suppressed: input.route.suppressed },
     exclusions, derivedCurves: input.route.derivedCurves,

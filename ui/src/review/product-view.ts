@@ -74,6 +74,12 @@ import {
   setFlowNow,
 } from "#render-common/flow.ts";
 
+/** Observe wheel motion before Sigma consumes its bubbling event. */
+export function captureWheelMotion(target: EventTarget, listener: EventListener): () => void {
+  target.addEventListener("wheel", listener, { passive: true, capture: true });
+  return () => target.removeEventListener("wheel", listener, true);
+}
+
 /** The opt-in product input keeps source edges and B9 visual IDs in separate collections. */
 /** Leaders occupy the same local viewport as labels and sit behind their text. */
 export function productLabelLeaders(labels: readonly PlacedLabel[], bounds: ViewportRect, ink: string): SVGSVGElement | null {
@@ -1566,7 +1572,7 @@ export const createProductView: CreateProductView = async (input) => {
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
     noteCameraMotion();
   };
-  container.addEventListener("wheel", onWheel, { passive: true });
+  const removeWheelMotion = captureWheelMotion(container, onWheel);
   container.addEventListener("keydown", onKeyNavigation);
   // A panel collapse or reopen changes the container's size while the camera state stays
   // byte-identical, so `followCamera` never re-runs the label pass and the labels keep the
@@ -1581,6 +1587,7 @@ export const createProductView: CreateProductView = async (input) => {
   try { mount(); }
   catch (error) {
     destroyed = true;
+    removeWheelMotion();
     resizeLabelObserver.disconnect();
     document.removeEventListener("visibilitychange", onVisibilityChange);
     if (resolutionTimer !== undefined) clearTimeout(resolutionTimer);
@@ -1833,7 +1840,7 @@ export const createProductView: CreateProductView = async (input) => {
       container.removeEventListener("click", onClick);
       container.removeEventListener("dblclick", onDoubleClick);
       container.removeEventListener("pointerleave", onLeave);
-      container.removeEventListener("wheel", onWheel);
+      removeWheelMotion();
       container.removeEventListener("keydown", onKeyNavigation);
       sigma?.destroy();
       three?.destroy();

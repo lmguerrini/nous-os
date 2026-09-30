@@ -58,6 +58,15 @@ test('mixed direct and lifted contributors retain the aggregate endpoint and det
   assert.equal(first.invariant.ok, true);
 });
 
+test('reading-filtered source relations remain accounted for as suppressions', () => {
+  const exploratory = { ...relation('exploratory', 'a-q', 'b-q'), class: 'exploratory' as const };
+  const result = routeRelationsAfterLOD({ ...base, reading: 'attested', relations: [exploratory,
+    relation('attested', 'a-q', 'b-q')] });
+  assert.deepEqual(result.suppressed, [{ id: 'exploratory', cause: 'reading-filter' }]);
+  assert.deepEqual(result.drawn.flatMap(edge => edge.sourceRelationIds), ['attested']);
+  assert.equal(result.invariant.ok, true);
+});
+
 test('unrepresented, collapsed self-pairs, line budget and fan-degree have explicit causes', () => {
   const result = routeRelationsAfterLOD({ ...base, relations: [
     relation('missing', 'unknown', 'b-q'), relation('self', 'a-q', 'a-s'),

@@ -32,6 +32,41 @@ export type RevealDecision = Readonly<{
 
 const cmp = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const distance = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
+type Hierarchy = { byId: Map<string, V2Node>; children: Map<string, V2Node[]>; cluster: Map<string, string> };
+const hierarchies = new WeakMap<V2Index, { count: number; value: Hierarchy }>();
+function hierarchy(index: V2Index): Hierarchy {
+  const cached = hierarchies.get(index);
+  if (cached?.count === index.nodes.length) return cached.value;
+  const byId = new Map(index.nodes.map(node => [node.id, node]));
+  const children = new Map<string, V2Node[]>(), cluster = new Map<string, string>();
+  for (const node of index.nodes) if (node.parent) {
+    const list = children.get(node.parent) ?? [];
+    list.push(node); children.set(node.parent, list);
+  }
+  for (const list of children.values()) list.sort((a, b) => cmp(a.id, b.id));
+  const clusterOf = (id: string): string | null => {
+    const known = cluster.get(id);
+    if (known) return known;
+    let node = byId.get(id); const path: string[] = [], seen = new Set<string>();
+    while (node && !seen.has(node.id)) {
+      path.push(node.id); seen.add(node.id);
+      if (node.level === 1) {
+        for (const member of path) cluster.set(member, node.id);
+        return node.id;
+      }
+      node = node.parent ? byId.get(node.parent) : undefined;
+    }
+    return null;
+  };
+  for (const node of index.nodes) clusterOf(node.id);
+  const value = { byId, children, cluster };
+  hierarchies.set(index, { count: index.nodes.length, value });
+  return value;
+}
+/** Cached primary-parent membership for the page's focus and witness accounting. */
+export function revealClusterOf(index: V2Index, id: string): string | null {
+  return hierarchy(index).cluster.get(id) ?? null;
+}
 export const emptyRevealState = (zoom = 1): RevealState => ({
   epoch: 0, focusClusterId: null, focusSource: null, lastZoom: zoom, band: 'far', tier: -1,
   admissions: [], pendingPassages: [],
@@ -55,21 +90,8 @@ export function autoPages(admissions: readonly RevealAdmission[]): Map<string, n
 export function stepReveal(input: RevealInput): RevealDecision {
   const cap = Math.max(1, Math.min(V2_CAP, Math.floor(input.cap ?? V2_CAP)));
   const page = Math.max(1, Math.min(V2_PAGE, Math.floor(input.pageSize ?? V2_PAGE)));
-  const byId = new Map(input.index.nodes.map(node => [node.id, node]));
-  const children = new Map<string, V2Node[]>();
-  for (const node of input.index.nodes) if (node.parent) {
-    const list = children.get(node.parent) ?? [];
-    list.push(node); children.set(node.parent, list);
-  }
-  for (const list of children.values()) list.sort((a, b) => cmp(a.id, b.id));
-  const clusterOf = (id: string): string | null => {
-    let node = byId.get(id); const seen = new Set<string>();
-    while (node && !seen.has(node.id)) {
-      if (node.level === 1) return node.id;
-      seen.add(node.id); node = node.parent ? byId.get(node.parent) : undefined;
-    }
-    return null;
-  };
+  const { byId, children, cluster } = hierarchy(input.index);
+  const clusterOf = (id: string): string | null => cluster.get(id) ?? null;
   const inside = (p: RevealPosition) => p.x >= input.viewport.x && p.x <= input.viewport.x + input.viewport.width &&
     p.y >= input.viewport.y && p.y <= input.viewport.y + input.viewport.height;
   const center = { x: input.viewport.x + input.viewport.width / 2, y: input.viewport.y + input.viewport.height / 2 };
@@ -78,18 +100,29 @@ export function stepReveal(input: RevealInput): RevealDecision {
   const placed = current.nodes.filter(node => {
     const p = input.positions.get(node.id); return p && inside(p);
   });
-  const nearest = (point: { x: number; y: number }, hit: boolean): V2Node | undefined =>
-    placed.filter(node => {
+  const nearest = (point: { x: number; y: number }, hit: boolean): V2Node | undefined => {
+    let best: V2Node | undefined, bestDistance = Infinity;
+    for (const node of placed) {
       const p = input.positions.get(node.id)!;
-      return !hit || distance(p, point) <= (p.radius ?? 12);
-    }).sort((a, b) => distance(input.positions.get(a.id)!, point) - distance(input.positions.get(b.id)!, point) || cmp(a.id, b.id))[0];
+      const d = distance(p, point);
+      if (hit && d > Math.max(32, p.radius ?? 12)) continue;
+      if (d < bestDistance || d === bestDistance && best && cmp(node.id, best.id) < 0) {
+        best = node; bestDistance = d;
+      }
+    }
+    return best;
+  };
   const cursorNode = input.cursor && nearest(input.cursor, true);
   const selected = input.selectionId && byId.has(input.selectionId) ? input.selectionId
     : input.focusId && byId.has(input.focusId) ? input.focusId : null;
   const centered = nearest(center, false);
+  const sticky = input.cursor && input.previous.focusClusterId &&
+    (input.zoom >= input.previous.lastZoom || input.zoom >= REVEAL_EXIT_THRESHOLDS[0])
+    ? input.previous.focusClusterId : null;
+  const cursorCluster = cursorNode ? clusterOf(cursorNode.id) : null;
   const anchor = cursorNode?.id ?? selected ?? centered?.id ?? null;
-  const source: RevealSource = cursorNode ? 'cursor' : selected ? 'selection' : centered ? 'viewport' : null;
-  const clusterId = anchor ? clusterOf(anchor) : null;
+  const source: RevealSource = cursorCluster || sticky && input.cursor ? 'cursor' : selected ? 'selection' : centered ? 'viewport' : null;
+  const clusterId = cursorCluster ?? sticky ?? (anchor ? clusterOf(anchor) : null);
   const epoch = input.previous.epoch + (clusterId !== input.previous.focusClusterId ? 1 : 0);
   const clusterOrder = [...new Set([
     clusterId,
@@ -143,13 +176,13 @@ export function stepReveal(input: RevealInput): RevealDecision {
     if (succeeds(candidate)) { admissions = candidate; evicted.push(...removed); }
   };
   const chooseParent = (threshold: number): V2Node | undefined => {
-    const maxLevel = threshold >= 4 ? 4 : threshold >= 2 ? 3 : 2;
+    const maxLevel = threshold >= 3 ? 4 : threshold >= 2 ? 3 : 2;
     const all = v2Visible(input.index, input.disclosure, autoPages(admissions), cap).nodes;
-    for (const cluster of clusterOrder) {
+    for (const cluster of clusterId ? [clusterId] : clusterOrder) {
       const candidates = all.filter(node => clusterOf(node.id) === cluster && node.level >= 2 && node.level <= maxLevel &&
         !input.disclosure.expanded.has(node.id) &&
         ((children.get(node.id)?.length ?? 0) > (autoPages(admissions).get(node.id) ?? 0) ||
-          (node.level === 4 && node.counts.passages > (children.get(node.id)?.length ?? 0))));
+          (node.level === 4 && !passages.has(node.id) && node.counts.passages > (children.get(node.id)?.length ?? 0))));
       candidates.sort((a, b) => {
         const pa = input.positions.get(a.id), pb = input.positions.get(b.id);
         const point = cluster === clusterId && input.cursor ? input.cursor : center;
@@ -160,23 +193,25 @@ export function stepReveal(input: RevealInput): RevealDecision {
     return undefined;
   };
   if (input.settled && Number.isFinite(input.zoom) && input.zoom > input.previous.lastZoom) {
-    for (let next = tier + 1; next < REVEAL_THRESHOLDS.length && input.zoom >= REVEAL_THRESHOLDS[next]!; next++) {
-      tier = next;
-      const parent = chooseParent(next);
-      if (!parent) continue;
+    // One admission per settled camera step, even if several numeric thresholds were crossed
+    // or no threshold was crossed inside a broad LOD band.
+    const reached = REVEAL_THRESHOLDS.reduce((last, threshold, index) => input.zoom >= threshold ? index : last, -1);
+    tier = Math.min(REVEAL_THRESHOLDS.length - 1, Math.max(tier + 1, reached));
+    const parent = chooseParent(tier);
+    if (parent) {
       const loaded = children.get(parent.id)?.length ?? 0;
       if (parent.level === 4 && parent.counts.passages > loaded &&
           (autoPages(admissions).get(parent.id) ?? 0) >= loaded) {
         if (!passages.has(parent.id)) requests.push(parent.id);
         passages.add(parent.id);
-      } else admit(next, parent);
+      } else admit(tier, parent);
     }
   }
   // A fetch completion can materialize its page at the same camera threshold.
   for (const id of [...passages]) if ((children.get(id)?.length ?? 0) > (autoPages(admissions).get(id) ?? 0)) {
     const parent = byId.get(id);
     const previousCount = autoPages(admissions).get(id) ?? 0;
-    if (parent && input.settled && tier >= 4) admit(tier, parent);
+    if (parent && input.settled) admit(tier, parent);
     if ((autoPages(admissions).get(id) ?? 0) > previousCount) passages.delete(id);
   }
   const auto = autoPages(admissions);

@@ -30,7 +30,7 @@ const advance = (index: V2Index, previous: RevealState, zoom: number, overrides:
   stepReveal({ index, disclosure, previous, zoom, settled: true, cursor: { x: 100, y: 100 },
     selectionId: null, focusId: null, positions, viewport, ...overrides });
 
-test('four settled inward thresholds monotonically admit the cursor cluster, with one page each', () => {
+test('settled inward steps admit levels 3 and 4, then request level 5', () => {
   const index = hierarchy();
   let state = emptyRevealState();
   let prior = new Set<string>();
@@ -39,13 +39,14 @@ test('four settled inward thresholds monotonically admit the cursor cluster, wit
     const result = advance(index, state, zoom, { pageSize: 2 });
     const focused = new Set(result.disclosedIds.filter(id => id.startsWith('a-')));
     for (const id of prior) assert.ok(focused.has(id), `${id} disappeared at ${zoom}`);
-    assert.ok(result.admittedIds.length > 0 && result.admittedIds.length <= 2);
+    if (zoom < 5) assert.ok(result.admittedIds.length > 0 && result.admittedIds.length <= 2);
+    else assert.deepEqual(result.passageRequests, ['a-c0-q0']);
     assert.equal(result.state.focusClusterId, 'a');
     assert.equal(result.state.focusSource, 'cursor');
     assert.equal(result.state.epoch, 1);
     sizes.push(focused.size); prior = focused; state = result.state;
   }
-  assert.deepEqual(sizes, [3, 5, 7, 9]);
+  assert.deepEqual(sizes, [3, 5, 7, 7]);
   assert.ok(prior.has('a-c0-q0'));
 });
 
@@ -80,20 +81,20 @@ test('budget evicts other-cluster automatic pages, retaining selected and manual
 test('deep threshold requests level-5 passages and later admits fetched children without another zoom', () => {
   const index = hierarchy();
   let state = emptyRevealState();
-  for (const zoom of [2, 2.7, 3.8, 5]) state = advance(index, state, zoom, { pageSize: 2 }).state;
-  const deep = advance(index, state, 6.6, { pageSize: 2 });
+  for (const zoom of [2, 2.7, 3.8]) state = advance(index, state, zoom, { pageSize: 2 }).state;
+  const deep = advance(index, state, 5, { pageSize: 2 });
   assert.deepEqual(deep.passageRequests, ['a-c0-q0']);
   assert.deepEqual(deep.state.pendingPassages, ['a-c0-q0']);
   const loaded = { ...index, nodes: [...index.nodes, node('passage-0', 5, 'a-c0-q0'), node('passage-1', 5, 'a-c0-q0')] };
-  const fetched = advance(loaded, deep.state, 6.6, { pageSize: 2 });
+  const fetched = advance(loaded, deep.state, 5, { pageSize: 2 });
   assert.deepEqual(fetched.passageRequests, []);
   assert.ok(fetched.disclosedIds.includes('passage-0'));
   assert.equal(fetched.state.pendingPassages.length, 0);
   assert.equal(v2Visible(loaded, disclosure, fetched.auto).counts[5], 2);
-  const nextPage = advance(loaded, fetched.state, 8.1, { pageSize: 2 });
+  const nextPage = advance(loaded, fetched.state, 6.6, { pageSize: 2 });
   assert.deepEqual(nextPage.passageRequests, ['a-c0-q0']);
   const complete = { ...loaded, nodes: [...loaded.nodes, node('passage-2', 5, 'a-c0-q0')] };
-  const last = advance(complete, nextPage.state, 8.1, { pageSize: 2 });
+  const last = advance(complete, nextPage.state, 6.6, { pageSize: 2 });
   assert.ok(last.disclosedIds.includes('passage-2'));
 });
 
@@ -104,4 +105,61 @@ test('unsettled camera samples do not consume a threshold', () => {
   assert.equal(moving.state.lastZoom, 1);
   const settled = advance(index, moving.state, 2);
   assert.ok(settled.admittedIds.length > 0);
+});
+
+test('live cursor projection wins over selection and viewport in both camera dimensions', () => {
+  const index = hierarchy();
+  for (const dimension of ['2d', '3d']) {
+    const projected = new Map(positions);
+    // These are already screen pixels from the mounted camera, including any pan or rotation.
+    if (dimension === '3d') {
+      projected.set('a-p', { x: 580, y: 280, radius: 22 });
+      projected.set('b-p', { x: 220, y: 150, radius: 22 });
+    }
+    const cursor = dimension === '3d' ? { x: 580, y: 280 } : { x: 100, y: 100 };
+    const result = advance(index, emptyRevealState(), 2, {
+      positions: projected, cursor, selectionId: 'b-p', focusId: 'b-c0',
+    });
+    assert.equal(result.state.focusSource, 'cursor');
+    assert.equal(result.state.focusClusterId, 'a');
+    assert.equal(result.state.epoch, 1);
+  }
+});
+
+test('inward zoom keeps the cursor focus epoch when the anchor leaves the viewport', () => {
+  const index = hierarchy();
+  const first = advance(index, emptyRevealState(), 2);
+  const movedProjection = new Map(positions);
+  movedProjection.set('a-p', { x: -100, y: -100, radius: 22 });
+  movedProjection.set('a', { x: -120, y: -100, radius: 22 });
+  const second = advance(index, first.state, 2.7, { positions: movedProjection });
+  assert.equal(second.state.focusClusterId, 'a');
+  assert.equal(second.state.focusSource, 'cursor');
+  assert.equal(second.state.epoch, first.state.epoch);
+});
+
+test('2D and 3D settled samples progress from sub-clusters through items to fetched passages', () => {
+  for (const dimension of ['2d', '3d']) {
+    const index = hierarchy();
+    const projected = new Map(positions);
+    if (dimension === '3d') projected.set('a-p', { x: 580, y: 280, radius: 22 });
+    const cursor = dimension === '3d' ? { x: 580, y: 280 } : { x: 100, y: 100 };
+    let state = emptyRevealState();
+    const counts: number[] = [];
+    let request: string | undefined;
+    for (const zoom of [2, 2.7, 3.8, 5]) {
+      const result = advance(index, state, zoom, { positions: projected, cursor, pageSize: 2 });
+      counts.push(result.disclosedIds.filter(id => id.startsWith('a-')).length);
+      request = result.passageRequests[0] ?? request;
+      assert.equal(result.state.focusClusterId, 'a');
+      assert.equal(result.state.epoch, 1);
+      state = result.state;
+    }
+    assert.ok(counts[1]! > counts[0]! && counts[2]! > counts[1]!);
+    assert.ok(request);
+    const loaded = { ...index, nodes: [...index.nodes, node(`${dimension}-passage`, 5, request!)] };
+    const fetched = advance(loaded, state, 5, { positions: projected, cursor, pageSize: 2 });
+    assert.ok(fetched.disclosedIds.includes(`${dimension}-passage`));
+    assert.equal(v2Visible(loaded, disclosure, fetched.auto).counts[5], 1);
+  }
 });
