@@ -73,6 +73,7 @@ Object.assign(globalThis, {
     createElementNS: fakeElement, createTextNode: (text: string) => ({ text }), body: fakeElement(),
   },
   window: { matchMedia: () => ({ matches: false }), addEventListener() {}, setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms) },
+  location: { hash: '#experimental=holographic' },
   HTMLInputElement: class HTMLInputElement {}, HTMLTextAreaElement: class HTMLTextAreaElement {},
   innerWidth: 800, innerHeight: 600,
 });
@@ -213,7 +214,7 @@ test('the approved parameters follow k = min(24, n - 1) and r = min(n, max(2k + 
   for (const bad of [1, 0, -3, 2.5, Number.NaN]) assert.throws(() => holographicPageParameters(bad, '2d'), /at least 2 nodes/);
 });
 
-test('selecting Holographic requests the approved parameters through the client and discloses the experimental view', async () => {
+test('the explicit hash flag registers Holographic and it requests the approved parameters', async () => {
   const client = spyClient();
   const { page, trace } = await typedPage({ client });
   assert.equal(page.supportsOrganization('holographic'), true, 'the button exists because the projection is registered');
@@ -248,6 +249,16 @@ test('selecting Holographic requests the approved parameters through the client 
   assert.ok(status.includes(` · ${holographicErrorHeadline(result)} · `), 'the headline is the one the diagnostics carry');
   assert.doesNotMatch(status, /3D/);
   assert.equal(elements.get('render-root')!.attrs['aria-busy'], 'false');
+});
+
+test('without the hash flag the Holographic projection is not registered', async () => {
+  (globalThis as { location: { hash: string } }).location.hash = '';
+  try {
+    const { page } = await typedPage();
+    assert.equal(page.supportsOrganization('holographic'), false);
+  } finally {
+    (globalThis as { location: { hash: string } }).location.hash = '#experimental=holographic';
+  }
 });
 
 test('3D requests its own dimension on a fresh camera key and discloses the third spectral coordinate', async () => {

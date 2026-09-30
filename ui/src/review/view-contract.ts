@@ -39,6 +39,16 @@ export type Organization = "natural" | "indra";
  */
 export type ViewOrganization = Organization | "fractal" | "holographic";
 
+/** Holographic requests fall back to Natural unless the URL explicitly opts into the experiment. */
+export function resolveExperimentalOrganization(value: ViewOrganization, holographicEnabled: boolean): {
+  readonly organization: ViewOrganization;
+  readonly notice: string | null;
+} {
+  return value === "holographic" && !holographicEnabled
+    ? { organization: "natural", notice: "Holographic è sospesa: caricata Natural. Per la vista sperimentale usa #experimental=holographic." }
+    : { organization: value, notice: null };
+}
+
 /** The saved-view organization vocabulary: Natural under its canonical name, Indra, Fractal or Holographic. */
 export type SavedOrganization = ViewOrganization;
 

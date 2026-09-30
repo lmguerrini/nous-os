@@ -7,6 +7,10 @@ test.skip(process.env.D073_BROWSER !== '1', 'Serve the D-073 review page with D0
 
 const baseUrl = process.env.D073_URL ?? 'http://127.0.0.1:8768/';
 const pipelineUrl = process.env.D073_PIPELINE_URL ?? `${baseUrl.split('#')[0]}#projection=natural`;
+const holographicEnabled = new URL(pipelineUrl, baseUrl).hash.slice(1).split('&').some(value => {
+  const [key, item] = value.split('=');
+  return decodeURIComponent(key ?? '') === 'experimental' && decodeURIComponent(item ?? '') === 'holographic';
+});
 const captureDir = process.env.D073_CAPTURE_DIR;
 const morphologies = ['stellar', 'neural', 'mycelium'] as const;
 const dimensions = ['2d', '3d'] as const;
@@ -219,6 +223,8 @@ for (const view of views) {
   for (const dimension of dimensions) {
     for (const morphology of morphologies) {
       test(`D-073 matrix ${view.button} ${dimension} ${morphology}`, async ({ page }, info) => {
+        test.skip(view.button === 'holographic' && !holographicEnabled,
+          'Holographic matrix cells are suspended and require #experimental=holographic.');
         await installCanvasDashProbe(page);
         const errors = await ready(page);
         const button = page.locator(`header [data-axis="organization"] [data-value="${view.button}"]`).first();

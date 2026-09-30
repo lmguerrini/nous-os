@@ -30,6 +30,8 @@ Zoom e focus possono rivelare i livelli comunitari pigramente. L’apertura segu
 
 ## Holographic
 
+Holographic è sospesa e non compare nei selettori ordinari. Resta disponibile solo aggiungendo `#experimental=holographic` all’URL; una vista salvata o un URL senza flag carica Natural e mostra un avviso.
+
 Questa vista sperimentale usa modi a bassa frequenza del laplaciano degli archi attestati per coordinate e campi derivati, senza affermare proprietà topologiche. Le coordinate sono calcolate per componente con i modi di Koren `v = D^-1/2 u`; la stessa base spettrale è usata per geometria, calore e testimoni di ricostruzione. Le componenti vengono disposte in modo deterministico. Per autospazi degeneri, la regola canonica del proiettore sceglie assi deterministici che restano autovettori effettivi; se il cluster non è isolabile, il probe è ambiguo o insufficiente, o il solver non supera i controlli numerici, le coordinate sono rifiutate e non compare un layout sostitutivo.
 
 Il calcolo passa al worker dedicato quando il browser lo rende disponibile; il client usa invece il thread principale se non può avviare il worker, nel qual caso il calcolo lo occupa.

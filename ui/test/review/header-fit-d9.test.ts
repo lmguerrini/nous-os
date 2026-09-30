@@ -18,9 +18,11 @@ test('the header rows wrap and the status line can shrink', () => {
   assert.doesNotMatch(header, /style="[^"]*width:\s*\d{4,}px/);
 });
 
-test('the organization axis has the four views and Indra has no control of its own besides its view button', () => {
+test('the ordinary organization selector has Natural, Indra and Fractal', () => {
   const axis = header.slice(header.indexOf('data-axis="organization"'), header.indexOf('data-axis="reading"'));
   assert.deepEqual([...axis.matchAll(/data-value="([a-z]+)"/g)].map(match => match[1]), ['natural', 'indra', 'fractal', 'holographic']);
+  assert.match(axis, /<button data-value="fractal" hidden/);
+  assert.match(axis, /<button data-value="holographic" hidden/);
   assert.equal([...header.matchAll(/data-value="indra"/g)].length, 1, 'one Indra button in the header');
   assert.doesNotMatch(header, /id="[^"]*(pearl|indra)[^"]*"/i, 'no Indra-specific toolbar control');
   assert.match(axis, /data-value="indra" title="Indra's Pearls[^"]*"/);
@@ -30,8 +32,8 @@ test('Holographic has a compact label, experimental title and no toolbar control
   const axis = header.slice(header.indexOf('data-axis="organization"'), header.indexOf('data-axis="reading"'));
   const holographicButton = /<button data-value="holographic" hidden title="([^"]*)">([^<]*)<\/button>/g;
   assert.deepEqual([...axis.matchAll(holographicButton)].map(([, title, label]) => ({ title, label })), [{
-    title: 'Vista sperimentale: coordinate spettrali, nessuna affermazione topologica',
-    label: 'Holographic',
+    title: 'Vista sperimentale Holographic: coordinate spettrali, nessuna affermazione topologica',
+    label: 'Holographic (sperimentale)',
   }]);
   assert.equal([...header.matchAll(/data-value="holographic"/g)].length, 1, 'one Holographic button in the header');
   assert.doesNotMatch(header, /id="[^"]*(holographic|spectral|witness)[^"]*"/i, 'the analytic controls live in the details column, not the header');
@@ -39,8 +41,8 @@ test('Holographic has a compact label, experimental title and no toolbar control
   const fullscreen = html.slice(html.indexOf('id="fullscreen-bar"'), html.indexOf('id="fullscreen-legend"'));
   assert.equal([...fullscreen.matchAll(/data-value="holographic"/g)].length, 1, 'the fullscreen bar mirrors the view button');
   assert.deepEqual([...fullscreen.matchAll(holographicButton)].map(([, title, label]) => ({ title, label })), [{
-    title: 'Vista sperimentale: coordinate spettrali, nessuna affermazione topologica',
-    label: 'Holographic',
+    title: 'Vista sperimentale Holographic: coordinate spettrali, nessuna affermazione topologica',
+    label: 'Holographic (sperimentale)',
   }]);
   assert.match(html, /\.header-top,\.axes,\.tools,\.axis \{[^}]*flex-wrap:\s*wrap/, 'the wrapping rules that make the longer button fit at 1024-1920 px are still there');
 });

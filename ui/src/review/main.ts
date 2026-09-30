@@ -1,7 +1,7 @@
 import { humanLabel, initialState, searchNode, shortHumanLabel, visibleGraph } from "./model.ts";
 import type { ReviewExport, ReviewNode } from "./model.ts";
 import { createProductView } from "./product-view.ts";
-import { DEFAULT_AXES, normalizeAxesInput, parseSavedAxes, resolveArrangementReadout, savedAxesRecord, savedExplicitArrangement, serializeAxes } from "./view-contract.ts";
+import { DEFAULT_AXES, normalizeAxesInput, parseSavedAxes, resolveArrangementReadout, resolveExperimentalOrganization, savedAxesRecord, savedExplicitArrangement, serializeAxes } from "./view-contract.ts";
 import type { Axes, AxesInput, PageAxes, ProductView, ViewWitness } from "./view-contract.ts";
 import type { ResolvedNaturalArrangement } from "../projection/natural-bridge.ts";
 import { FAMILY_OF, standingOf } from "./presentation.ts";
@@ -80,6 +80,16 @@ let operation = Promise.resolve();
 const errors: string[] = [];
 const VIEW_STORAGE_KEY = "d073.view";
 const VIEW_URL_PARAMETER = "view";
+/** Holographic is reachable only through this explicit hash flag. */
+const holographicExperimentalFlag = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : "").get("experimental") === "holographic";
+let holographicSuspensionNotice: string | null = null;
+let holographicSuspensionNoticeShown = false;
+let holographicInitialFallback = false;
+function showHolographicSuspensionNotice(): void {
+  if (!holographicSuspensionNotice || holographicSuspensionNoticeShown) return;
+  status.textContent = `${status.textContent} · ${holographicSuspensionNotice}`;
+  holographicSuspensionNoticeShown = true;
+}
 /** Whether the page draws Natural through the typed pipeline (`#projection=natural`); off, the legacy layout is drawn. */
 const typedPipelineFlag = projectionFlagEnabled(location.search, location.hash);
 const MORPHOLOGY_LABELS = { stellar: "Stellar", neural: "Neural", mycelium: "Mycelium" } as const;
@@ -113,7 +123,15 @@ export function rewriteViewHash(hash: string, serializedAxes: string): string {
   return `#${ordered.toString()}`;
 }
 const initialUrlView = readUrlView();
-const initialView = initialUrlView ?? readStoredView();
+const parsedInitialView = initialUrlView ?? readStoredView();
+const initialOrganization = parsedInitialView ? resolveExperimentalOrganization(parsedInitialView.axes.organization, holographicExperimentalFlag) : null;
+if (initialOrganization?.notice) {
+  holographicSuspensionNotice = initialOrganization.notice;
+  holographicInitialFallback = true;
+}
+const initialView = parsedInitialView && initialOrganization
+  ? { ...parsedInitialView, axes: { ...parsedInitialView.axes, organization: initialOrganization.organization } }
+  : parsedInitialView;
 if (initialView) axes = initialView.axes;
 else axes = { ...DEFAULT_AXES, arrangement: resolveArrangementReadout(null, DEFAULT_AXES.morphology, typedPipelineFlag).arrangement };
 let resolvedArrangement: ResolvedNaturalArrangement | null = axes.organization === "natural"
@@ -572,7 +590,15 @@ function fit(): Promise<void> {
   });
 }
 function setAxes(input: AxesInput): Promise<void> {
-  const partial = normalizeAxesInput(input);
+  let partial = normalizeAxesInput(input);
+  if (partial.organization === "holographic") {
+    const resolved = resolveExperimentalOrganization("holographic", holographicExperimentalFlag);
+    if (resolved.notice) {
+      partial = { ...partial, organization: resolved.organization };
+      holographicSuspensionNotice = resolved.notice;
+      if (v2 || data) showHolographicSuspensionNotice();
+    }
+  }
   if ((partial.organization === "fractal" || partial.organization === "holographic") && !v2?.supportsOrganization(partial.organization))
     return Promise.reject(new Error(`La vista ${viewLabel(partial.organization)} non è disponibile per questo grafo`));
   axes = appliedAxes(partial);
@@ -1240,6 +1266,8 @@ async function load() {
     syncCustomColours();
     get<HTMLElement>("notice").textContent = "Grafo distillato D-069";
     updateInsets();
+    if (holographicInitialFallback) persistView();
+    showHolographicSuspensionNotice();
     return;
   }
   if (probe.status !== 404) throw new Error(`Manifest del grafo: HTTP ${probe.status}`);
@@ -1271,6 +1299,8 @@ async function load() {
     get<HTMLSelectElement>("filter-domain").append(option);
   }
   await mount();
+  if (holographicInitialFallback) persistView();
+  showHolographicSuspensionNotice();
 }
 api.ready = load().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);

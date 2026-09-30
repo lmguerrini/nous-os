@@ -10,6 +10,7 @@ import {
   VIEW_INPUT_FIELD_REGISTER,
   assertViewInputFieldRegister,
   normalizeAxesInput,
+  resolveExperimentalOrganization,
   normalizeFullAxesInput,
   normalizeOrganizationInput,
   parseSavedAxes,
@@ -185,6 +186,17 @@ test("the organization vocabulary refuses every value outside natural, indra, fr
   assert.throws(() => normalizeAxesInput({ organization: "spectral" as never }), /closed vocabulary/);
   assert.deepEqual(normalizeAxesInput({ organization: "holographic", projection: "3d" }), { organization: "holographic", projection: "3d" });
   assert.equal(normalizeFullAxesInput({ ...DEFAULT_AXES, organization: "holographic" }).organization, "holographic");
+});
+
+test("without the experimental hash flag Holographic resolves to Natural with a notice", () => {
+  assert.deepEqual(resolveExperimentalOrganization("holographic", false), {
+    organization: "natural",
+    notice: "Holographic è sospesa: caricata Natural. Per la vista sperimentale usa #experimental=holographic.",
+  });
+});
+
+test("with the experimental hash flag Holographic remains available", () => {
+  assert.deepEqual(resolveExperimentalOrganization("holographic", true), { organization: "holographic", notice: null });
 });
 
 test("a Natural saved view with an arrangement is not disturbed by the Fractal value", () => {

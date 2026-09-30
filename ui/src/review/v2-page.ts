@@ -593,7 +593,9 @@ export class V2Page {
                     projectLegacyIndra(request.parameters.input) });
         if (!this.projectionRegistry.has('fractal')) this.projectionRegistry.register(fractalProjection);
         if (!this.projectionRegistry.has('indras-pearls')) this.projectionRegistry.register(indrasPearlsProjection);
-        if (!this.projectionRegistry.has('holographic')) this.projectionRegistry.register(holographicProjection);
+        const holographicEnabled = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : '').get('experimental') === 'holographic';
+        if (holographicEnabled && !this.projectionRegistry.has('holographic')) this.projectionRegistry.register(holographicProjection);
+        if (!holographicEnabled && this.projectionRegistry.has('holographic')) this.projectionRegistry.unregister('holographic');
         if (this.projectionInput) this.installProjectionWitnessHook();
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
