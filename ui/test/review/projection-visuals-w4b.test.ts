@@ -112,9 +112,12 @@ test('the three real assemblies give the containers, curves and fields the drawe
   assert.deepEqual([indra2!, indra3!].map(item => [item.result.containers.length, item.result.curves.length, item.result.fields.length]), [[6, 3, 0], [6, 3, 0]]);
   assert.deepEqual(indra2!.result.containers.map(c => c.shape), Array(6).fill('circle'));
   assert.deepEqual(indra3!.result.containers.map(c => c.shape), Array(6).fill('sphere'));
-  assert.deepEqual([fractal2!, fractal3!].map(item => [item.result.containers.length, item.result.curves.length, item.result.fields.length]), [[5, 3, 1], [5, 3, 1]]);
+  assert.deepEqual([fractal2!, fractal3!].map(item => [item.result.containers.length, item.result.curves.length, item.result.fields.length]), [[5, 17, 1], [5, 17, 1]]);
   assert.ok(fractal2!.result.containers.every(c => c.shape === 'region'));
-  assert.deepEqual([...new Set(fractal3!.result.curves.map(c => c.purpose))], ['field-contour']);
+  for (const item of [fractal2!, fractal3!]) {
+    assert.equal(item.result.curves.filter(c => c.purpose === 'field-contour').length, 3, 'certified equipotentials remain inspectable');
+    assert.equal(item.result.curves.filter(c => c.purpose === 'orbit').length, 14, 'P4 adds inverse-iteration branches');
+  }
   assert.deepEqual([holo!.result.containers.length, holo!.result.curves.length, holo!.result.fields.length], [0, 0, 3]);
 });
 
@@ -195,12 +198,12 @@ test('a sphere off the Indra boundary plane is a full sphere: exact limb at the 
   }
 });
 
-test('Fractal regions are closed loops through the sampled boundary; equipotentials are closed level sets', async () => {
+test('Fractal regions and equipotentials close; inverse-iteration branches remain open guides', async () => {
   for (const name of ['fractal-2d', 'fractal-3d'] as const) {
     const item = await caseNamed(name);
     const drawn = drawCase(item, fullVisibility(item.result));
     assert.equal(drawn.stats.containers, 5, name);
-    assert.equal(drawn.stats.curves, 3, name);
+    assert.equal(drawn.stats.curves, 17, name);
     const loops = strokedPaths(drawn.paths).filter(path => path.closed);
     assert.equal(loops.length, 8, `${name}: five regions and three contours close`);
     for (const container of item.result.containers) {
@@ -209,9 +212,15 @@ test('Fractal regions are closed loops through the sampled boundary; equipotenti
       const loop = loops.find(path => path.vertices.length === boundary.length && near(path.vertices[0]![0], first.x) && near(path.vertices[0]![1], first.y));
       assert.ok(loop, `${name}: region ${container.visualId}`);
     }
-    for (const curve of item.result.curves) {
+    for (const curve of item.result.curves.filter(curve => curve.purpose === 'field-contour')) {
       const points = (item.dimension === '2d' ? curve.points2 : curve.points3)!;
       assert.ok(loops.some(path => path.vertices.length === points.length), `${name}: ${curve.visualId}`);
+    }
+    for (const curve of item.result.curves.filter(curve => curve.purpose === 'orbit')) {
+      const points = (item.dimension === '2d' ? curve.points2 : curve.points3)!;
+      const first = drawn.project({ x: points[0]!.x, y: points[0]!.y, z: zOf(points[0]!) });
+      assert.ok(strokedPaths(drawn.paths).some(path => !path.closed && path.vertices.length === points.length
+        && near(path.vertices[0]![0], first.x) && near(path.vertices[0]![1], first.y)), `${name}: open branch ${curve.visualId}`);
     }
   }
 });
@@ -263,7 +272,7 @@ test('what is drawn follows the visibility revision: containers, curves and fiel
   assert.strictEqual(buildProjectionVisuals(item.result, reduced, '2d'), second.geometry);
   const restored = drawCase(item, { ...full, revision: 3 });
   assert.equal(restored.stats.containers, 5);
-  assert.equal(restored.stats.curves, 3);
+  assert.equal(restored.stats.curves, 17);
   assert.equal(restored.stats.fields, item.result.loadedNodeIds.length);
   assert.deepEqual(restored.paths.map(path => path.vertices), first.paths.map(path => path.vertices), 'the same mask draws the same coordinates');
 });

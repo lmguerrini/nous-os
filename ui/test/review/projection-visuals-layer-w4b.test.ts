@@ -24,13 +24,14 @@ await rm(scratch, { recursive: true, force: true });
 
 const VIEW = { width: 900, height: 640 };
 
-interface Ops { clears: number; strokes: number; dashes: unknown[][]; arcs: [number, number, number][]; widths: number[]; vertices: number }
+interface Ops { clears: number; strokes: number; dashes: unknown[][]; arcs: [number, number, number][]; widths: number[]; vertices: number; stars: number }
 function fakeDom() {
-  const ops: Ops = { clears: 0, strokes: 0, dashes: [], arcs: [], widths: [], vertices: 0 };
+  const ops: Ops = { clears: 0, strokes: 0, dashes: [], arcs: [], widths: [], vertices: 0, stars: 0 };
   const state = { removed: 0, created: 0, appended: 0, timers: 0, frames: 0 };
   const context = {
     lineWidth: 1, globalAlpha: 1, strokeStyle: '', fillStyle: '', lineCap: '', lineJoin: '',
     setTransform() {}, clearRect() { ops.clears += 1; }, setLineDash(pattern: unknown[]) { ops.dashes.push(pattern); },
+    fillRect() { ops.stars += 1; },
     beginPath() {}, closePath() {}, moveTo() { ops.vertices += 1; }, lineTo() { ops.vertices += 1; },
     arc(x: number, y: number, r: number) { ops.arcs.push([x, y, r]); }, fill() {},
     stroke() { ops.strokes += 1; ops.widths.push(context.lineWidth); },
@@ -88,19 +89,32 @@ function allRigs(): Promise<Record<string, Rig>> {
 }
 const styled = (result: ProjectionResult): StyledProjection => ({ projection: result, nodeStyle: {}, edgeStyle: {}, visualStyle: {} });
 
+/** Product mounts must obey the projection's class budgets. Fractal keeps its outer
+ * region and equipotentials inspectable, while the default reveal favours branches. */
+function budgetedVisibility(result: ProjectionResult): RenderVisibility {
+  const full = fullVisibility(result, 1);
+  const ranked = (ids: ReadonlySet<string>, priorities: Readonly<Partial<Record<string, number>>>, cap: number) =>
+    new Set([...ids].sort((a, b) => (priorities[b] ?? 0) - (priorities[a] ?? 0) || a.localeCompare(b)).slice(0, cap));
+  return { ...full,
+    semanticEdgeIds: ranked(full.semanticEdgeIds, result.lod.priorityBySemanticEdgeId, result.lod.maxVisibleSemanticEdges),
+    containerIds: ranked(full.containerIds, result.lod.priorityByContainerId, result.lod.maxVisibleContainers),
+    curveIds: ranked(full.curveIds, result.lod.priorityByCurveId, result.lod.maxVisibleCurves),
+  };
+}
+
 async function mountRig(name: string, morphology: 'stellar' | 'neural' | 'mycelium' = 'stellar') {
   const rig = (await allRigs())[name]!;
   const dom = fakeDom();
   const { project } = projectFor(rig.result, rig.dimension);
   const layer = product.createProjectionVisualsLayer(dom.host, rig.dimension, project, { morphology });
   const factories = { '2d': () => layer as ProductProjectionRenderer, '3d': () => layer as ProductProjectionRenderer };
-  const visibility = fullVisibility(rig.result, 1);
+  const visibility = budgetedVisibility(rig.result);
   const host = product.mountProductProjection(rig.dimension, styled(rig.result), visibility, rig.snapshot, factories);
   return { rig, dom, layer, host, project, visibility };
 }
 
 test('mounting draws the visible containers, curves and fields once and never schedules work', async () => {
-  const { rig, dom, layer, host } = await mountRig('fractal2');
+  const { rig, dom, layer, host, visibility } = await mountRig('fractal2');
   assert.equal(dom.state.created, 1);
   assert.equal(dom.state.appended, 1);
   assert.equal(dom.canvases[0]!.dataset.projectionVisuals, '2d');
@@ -108,13 +122,15 @@ test('mounting draws the visible containers, curves and fields once and never sc
   assert.equal(dom.canvases[0]!.width, VIEW.width * 2, 'the backing store follows the device pixel ratio');
   const witness = layer.readWitness();
   assert.equal(witness.revision, 1);
-  assert.deepEqual([...witness.containerIds].sort(), rig.result.containers.map(c => c.visualId).sort());
-  assert.deepEqual(witness.containerIds.slice(0, 2), ['visual:fractal:container:n:a', 'visual:fractal:container:n:b'], 'outer containers paint first');
-  assert.deepEqual(witness.curveIds, rig.result.curves.map(c => c.visualId).sort());
+  assert.deepEqual([...witness.containerIds].sort(), [...visibility.containerIds].sort());
+  assert.ok(witness.containerIds.every(id => visibility.containerIds.has(id)));
+  assert.deepEqual(witness.curveIds, [...visibility.curveIds].sort());
+  assert.ok(witness.curveIds.every(id => id.includes('inverse-branch')), 'P4 gives the self-similar branches the visible curve budget');
   assert.deepEqual(witness.fieldIds, rig.result.fields.map(f => f.id));
-  assert.deepEqual(witness.drawn, { containers: 5, curves: 3, fields: rig.result.loadedNodeIds.length, strokes: witness.drawn.strokes });
+  assert.deepEqual(witness.drawn, { containers: visibility.containerIds.size, curves: visibility.curveIds.size,
+    fields: rig.result.loadedNodeIds.length, strokes: witness.drawn.strokes });
   assert.equal(dom.ops.clears, 1);
-  for (const pattern of dom.ops.dashes) assert.deepEqual(pattern, [], 'no dashed stroke');
+  assert.ok(dom.ops.dashes.some(pattern => pattern.length > 0), 'derived branches remain visually distinct from relations');
   host.pickAt({ x: 1, y: 1 });
   assert.equal(dom.ops.clears, 1, 'picking does not draw');
   assert.equal(dom.state.timers + dom.state.frames, 0, 'the layer schedules nothing: an idle page costs zero');
@@ -187,11 +203,12 @@ test('picks are typed and pass the structural path only while visible', async ()
 
 test('3D picks on Indra hemispheres and Fractal boundaries route through the host', async () => {
   for (const name of ['indra3', 'fractal3']) {
-    const { rig, host, layer, project } = await mountRig(name);
+    const { rig, host, layer, project, visibility, dom } = await mountRig(name);
     const geometryContainers = layer.readWitness().containerIds;
-    assert.equal(geometryContainers.length, rig.result.containers.length);
+    assert.deepEqual([...geometryContainers].sort(), [...visibility.containerIds].sort());
+    assert.ok(dom.ops.stars > 0, 'Stellar draws a non-pickable screen-space background in 3D');
     let hits = 0;
-    for (const container of rig.result.containers) {
+    for (const container of rig.result.containers.filter(item => geometryContainers.includes(item.visualId))) {
       const sample = container.boundary3
         ? container.boundary3[Math.floor(container.boundary3.length / 3)]!
         : { x: container.center3!.x + container.radius!, y: container.center3!.y, z: container.center3!.z };

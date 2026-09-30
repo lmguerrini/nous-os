@@ -114,8 +114,6 @@ export function createProjectionVisualsLayer(
       if (input.visibility.revision < revision) return;
       if (input.visibility.revision === revision) {
         if (maskKey(input.visibility) !== contentKey) throw new Error("equal projection visibility revision changed content");
-        styled = input.styled;
-        draw();
         return;
       }
       accept(input);

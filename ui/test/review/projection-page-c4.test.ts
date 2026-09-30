@@ -390,7 +390,7 @@ test('the default pipeline builds its snapshot from the page index and styles wi
   const styled = input.style(resultFor(direct, domain), direct);
   const projected = styled.projection;
   const alfa = styled.nodeStyle['domain:alfa']!;
-  assert.equal(alfa.color, '#f0f0f0', 'the aggregate palette colour');
+  assert.equal(alfa.color, 'rgb(224, 224, 224)', 'the B&W preset gives aggregate nodes their level ink');
   assert.equal(typeof alfa.size, 'number');
   assert.ok(Number.isFinite(alfa.size as number));
   // The typed views take the product look (projection-style.ts): no heavy blue fan, the attested edge follows the palette.
