@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 import {
-  PROJECTION_VISUAL_APPEARANCE, PROJECTION_VISUAL_INK, PROJECTION_VISUAL_LEGEND,
+  PROJECTION_VISUAL_APPEARANCE, PROJECTION_VISUAL_LEGEND,
   buildProjectionVisuals, drawProjectionVisuals, pickProjectionVisuals,
 } from '#render-common/container-canvas.ts';
 import type { ProjectionVisualsDrawStats, ProjectionVisualsMorphology } from '#render-common/container-canvas.ts';
@@ -294,7 +294,7 @@ test('the drawing quality changes detail, never where a container or curve lies'
   assert.deepEqual(limbs(moving), limbs(full));
 });
 
-test('no stroke is dashed: every dash pattern set is empty, and the page hook counts zero dashed strokes', async () => {
+test('derived curves use a dash pattern distinct from container outlines', async () => {
   const hook = { dashed: 0, draws: 0 };
   (globalThis as typeof globalThis & { __indraContainers?: unknown }).__indraContainers = hook;
   try {
@@ -302,28 +302,47 @@ test('no stroke is dashed: every dash pattern set is empty, and the page hook co
       for (const morphology of MORPHOLOGIES) for (const quality of ['full', 'moving'] as const) {
         const drawn = drawCase(item, fullVisibility(item.result), morphology, quality);
         assert.ok(drawn.dashes.length >= 1);
-        for (const pattern of drawn.dashes) assert.deepEqual(pattern, []);
+        assert.ok(drawn.dashes.some(pattern => pattern.length === 0));
+        if (item.result.curves.length) assert.ok(drawn.dashes.some(pattern => pattern.length > 0));
       }
     }
   } finally { delete (globalThis as typeof globalThis & { __indraContainers?: unknown }).__indraContainers; }
   assert.ok(hook.draws >= 30, 'the hook saw the draws');
-  assert.equal(hook.dashed, 0);
+  assert.ok(hook.dashed > 0);
 });
 
-test('derived geometry has its own ink family, apart from every semantic edge class and structural relations', async () => {
-  const semantic = [...Object.values(classColors), ...Object.values(epistemicColors), '#729ebd', '#ad8e6a', '#8fa8ac', '#7992a0', '#a0bad1', '#b8a4cb'];
-  const inks = Object.values(PROJECTION_VISUAL_INK);
+test('the default derived legend is neutral and its paths stay within that ink family', async () => {
+  const semantic = [...Object.values(classColors), ...Object.values(epistemicColors), '#729ebd', '#ad8e6a'];
+  const inks = PROJECTION_VISUAL_LEGEND.map(entry => entry.colour);
   for (const ink of inks) assert.ok(!semantic.includes(ink), `${ink} collides with a semantic colour`);
   assert.deepEqual(PROJECTION_VISUAL_LEGEND.map(entry => entry.kind), ['container', 'curve', 'field']);
   assert.equal(new Set(PROJECTION_VISUAL_LEGEND.map(entry => entry.colour)).size, 3);
   for (const item of await allCases()) {
     const drawn = drawCase(item, fullVisibility(item.result));
-    const allowed = new Set<string>([PROJECTION_VISUAL_INK.container, PROJECTION_VISUAL_INK.curve]);
+    const allowed = new Set<string>(inks);
     for (const path of strokedPaths(drawn.paths)) for (const style of path.styles) {
       assert.ok(allowed.has(style) || /^rgb\(\d+, \d+, \d+\)$/.test(style), `${item.name}: stray stroke colour ${style}`);
       assert.ok(!semantic.includes(style), `${item.name}: ${style} is a semantic colour`);
     }
   }
+});
+
+test('derived containers, curves and field rings resolve their own palette records', async () => {
+  const item = await caseNamed('fractal-2d');
+  const visibility = fullVisibility(item.result);
+  const geometry = buildProjectionVisuals(item.result, visibility, item.dimension);
+  const { project } = projectorFor(item.result, item.dimension);
+  const { context, paths } = recorder();
+  const styles = Object.fromEntries([
+    ...geometry.containers.map(shape => [shape.id, { color: '#bda68c' }]),
+    ...geometry.curves.map(shape => [shape.id, { color: '#c8ad91' }]),
+    ...geometry.fields.map(shape => [shape.id, { color: '#dbc5ac' }]),
+  ]);
+  drawProjectionVisuals(context, geometry, project, { morphology: 'stellar', viewport: VIEW, styles });
+  const colors = new Set(strokedPaths(paths).flatMap(path => path.styles));
+  assert.ok(colors.has('#bda68c'));
+  assert.ok(colors.has('#c8ad91'));
+  assert.ok(colors.has('#dbc5ac'));
 });
 
 test('picks are typed and nearest-path: circles, region loops, curves and field rings (2D)', async () => {

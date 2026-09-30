@@ -17,6 +17,7 @@ import {
 import { buildStyleFixture } from "./support-style.ts";
 import { prepareProjection2d } from "#render2d/model.ts";
 import type { StyledProjection } from "../../src/projection/contract-types.ts";
+import { PALETTES } from "../../src/render-common/palette.ts";
 
 const unit = (gray: number) => `rgb(${Math.round(gray * 255)}, ${Math.round(gray * 255)}, ${Math.round(gray * 255)})`;
 
@@ -119,6 +120,28 @@ test("typed pass paints no heavy blue fan: bw palette ink is neutral, not the le
     { morphology: "stellar", density: "complete", lodLevel: "near", focus: null });
   for (const style of Object.values(styled.nodeStyle)) assert.notEqual(style.color, "#9bc8ed");
   for (const style of Object.values(styled.edgeStyle)) assert.notEqual(style.color, "#729ebd");
+});
+
+test("bw resolves every typed channel to achromatic ink and carries live width and curvature", () => {
+  const fixture = buildStyleFixture(6);
+  const result = { ...fixture.result,
+    curves: [{ visualId: "visual:curve:test" }], containers: [{ visualId: "visual:container:test" }],
+    fields: [{ id: "visual:field:test" }] } as unknown as typeof fixture.result;
+  const styled = styleProjection(result, fixture.snapshot, { morphology: "neural", density: "balanced",
+    lodLevel: "near", focus: null, palette: { ...PALETTES.bw }, edgeWidth: 2, curvature: 0.35 });
+  for (const collection of [styled.nodeStyle, styled.edgeStyle, styled.visualStyle]) {
+    for (const record of Object.values(collection)) for (const [key, value] of Object.entries(record)) {
+      if (key !== "color" && key !== "background" && key !== "selection" && key !== "star") continue;
+      if (typeof value !== "string") continue;
+      const hex = /^#([0-9a-f]{6})$/i.exec(value);
+      const channels = hex ? [0, 2, 4].map(i => parseInt(hex[1]!.slice(i, i + 2), 16))
+        : value.match(/\d+/g)?.slice(0, 3).map(Number) ?? [];
+      assert.equal(channels[0], channels[1], `${key}: ${value}`);
+      assert.equal(channels[1], channels[2], `${key}: ${value}`);
+    }
+  }
+  assert.equal(styled.edgeStyle["edge-0"]!.widthPermille, 2000);
+  assert.equal(readProjectionStyle(styled)?.curvature, 0.35);
 });
 
 test("the styled projection still satisfies the 2D scene contract (digest, coordinates, styles attached)", () => {

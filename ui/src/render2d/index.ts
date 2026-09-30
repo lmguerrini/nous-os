@@ -1325,7 +1325,7 @@ function projectionEdgeAttributes(scene: Projection2dScene, id: string): Project
  * per-node ink (colour, glyph, radius, alpha) and the per-edge presentation the style bridge
  * baked. Communities derive from the snapshot's own parent links, never from a new layout. */
 function projectionMorphologyPaint(
-  morphology: Morphology, scene: Projection2dScene, snapshot: SemanticGraphSnapshot,
+  morphology: Morphology, scene: Projection2dScene, snapshot: SemanticGraphSnapshot, curvature = DEFAULT_APPEARANCE.curvature,
 ): { geometry: MorphologyGeometry;
   nodeStyles: ReadonlyMap<string, { color: string; glyph: NodeGlyph | undefined; radiusPx: number; opacity: number }>;
   edgeStyles: ReadonlyMap<string, { color: string; presentation: EdgePresentation | undefined }> } {
@@ -1361,7 +1361,7 @@ function projectionMorphologyPaint(
     presentation: projectionEdgePresentation(edge.style, edge.attestation),
   }]));
   return {
-    geometry: buildMorphologyGeometry(morphology, nodes, edges, colonies, DEFAULT_APPEARANCE.curvature, []),
+    geometry: buildMorphologyGeometry(morphology, nodes, edges, colonies, curvature, []),
     nodeStyles,
     edgeStyles,
   };
@@ -1419,7 +1419,7 @@ export function mountProjection2d(
   visuals.mount({ styled, visibility });
   visuals.setMorphology(morphology);
   // The morphology canvas and the collapsed Sigma layers follow the distinct path's own plan.
-  let paint = projectionMorphologyPaint(morphology, scene, snapshot);
+  let paint = projectionMorphologyPaint(morphology, scene, snapshot, scope?.curvature);
   const morphologyCanvas = document.createElement('canvas');
   morphologyCanvas.dataset.morphologyCanvas = 'projection';
   Object.assign(morphologyCanvas.style, { position: 'absolute', inset: '0', width: "100%", height: "100%", pointerEvents: 'none' });
@@ -1475,7 +1475,10 @@ export function mountProjection2d(
       }
       return value;
     }, { fieldColor: scope?.background ?? "#050505", nodes: paint.nodeStyles, edges: paint.edgeStyles },
-      DEFAULT_APPEARANCE, undefined, '2d', nativeTier);
+      // The style's per-edge size already includes the live width multiplier; applying it again
+      // through AppearanceOptions would square the slider value.
+      { ...DEFAULT_APPEARANCE, curvature: scope?.curvature ?? DEFAULT_APPEARANCE.curvature },
+      undefined, '2d', nativeTier);
   };
   // The DOM label overlay: one placement pass per rendered frame, no timers, zero when idle.
   const labels = mountProjectionLabelOverlay(container);
@@ -1547,7 +1550,7 @@ export function mountProjection2d(
       morphology = nextMorphology;
       // One deterministic rebuild per applied revision (an expansion, never a frame): the engine
       // derives hub degree and colonies from the new subset, so nothing is patched in place.
-      paint = projectionMorphologyPaint(nextMorphology, next, snapshot);
+      paint = projectionMorphologyPaint(nextMorphology, next, snapshot, nextScope?.curvature);
       visuals.updateVisibleSubset({ styled: nextStyled, visibility: nextVisibility });
       visuals.setMorphology(nextMorphology);
       sigma.refresh();

@@ -393,6 +393,7 @@ export function mount(
       return;
     }
     updateProjection();
+    if (typedPicker && typedLayer.group.parent !== threeScene) threeScene.add(typedLayer.group);
     if (labelTimer !== undefined) clearTimeout(labelTimer);
     labelTimer = setTimeout(() => { if (!destroyed) updateLabels(); }, 160);
     renderer.render(threeScene, rig.camera);
@@ -402,10 +403,11 @@ export function mount(
   const syncCameraState = (): void => {
     if (visuals) {
       visuals.setQuality("moving", false);
+      typedLayer.setQuality("moving");
       if (visualsStillTimer !== undefined) clearTimeout(visualsStillTimer);
       visualsStillTimer = setTimeout(() => {
         visualsStillTimer = undefined;
-        if (!destroyed) visuals?.setQuality("full");
+        if (!destroyed) { visuals?.setQuality("full"); typedLayer.setQuality("full"); renderFrame(); }
       }, DERIVED_STILL_MS);
     }
     currentState = createVisualState(visualGraph, {

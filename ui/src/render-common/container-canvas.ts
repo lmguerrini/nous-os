@@ -3,6 +3,7 @@ import type { MorphologyContainerPath, ShellCircle } from "#engine/container-geo
 import type { Morphology } from "#engine/morphology.ts";
 import type { ProjectedPoint } from "#render-common/morphology-canvas.ts";
 import type { Dimension, MathematicalField, PickResult, ProjectionResult, RenderVisibility } from "../projection/contract-types.ts";
+import { PALETTES } from "./palette.ts";
 
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
 const dashHook = () => (globalThis as typeof globalThis & { __indraContainers?: { dashed: number; draws: number; limbs?: number | undefined; equators?: number | undefined; minEquatorFlatness?: number | undefined; nousosLimb?: { x: number; y: number; radiusPx: number } | undefined; quality?: "full" | "moving" | undefined } }).__indraContainers;
@@ -10,7 +11,7 @@ const bump = (hook: ReturnType<typeof dashHook>, key: "limbs" | "equators", valu
   if (hook) hook[key] = (hook[key] ?? 0) + value;
 };
 
-/** Continuous outlines only: a non-empty dash pattern would be recorded for the browser check. */
+/** Records the dash policy as well as applying it to the canvas. */
 function setDash(context: CanvasRenderingContext2D, pattern: number[]): void {
   const hook = dashHook();
   if (hook) {
@@ -985,11 +986,10 @@ export type ProjectionVisualsGeometry = {
 };
 
 /** Legend classes of the derived geometry, kept apart from every semantic edge class. */
-export const PROJECTION_VISUAL_INK = { container: "#5fc9b6", curve: "#b79cf0", fieldLow: "#3d5adb", fieldHigh: "#ffd166" } as const;
 export const PROJECTION_VISUAL_LEGEND: readonly Readonly<{ kind: "container" | "curve" | "field"; colour: string; label: string }>[] = [
-  { kind: "container", colour: PROJECTION_VISUAL_INK.container, label: "Contenitori derivati (non semantici)" },
-  { kind: "curve", colour: PROJECTION_VISUAL_INK.curve, label: "Curve derivate (non semantiche)" },
-  { kind: "field", colour: PROJECTION_VISUAL_INK.fieldHigh, label: "Campo scalare come canale del nodo" },
+  { kind: "container", colour: PALETTES.bw.container, label: "Contenitori derivati (non semantici)" },
+  { kind: "curve", colour: PALETTES.bw.concept, label: "Curve derivate (non semantiche)" },
+  { kind: "field", colour: PALETTES.bw.attested, label: "Campo scalare come canale del nodo" },
 ];
 
 /** Morphology changes only these drawing numbers; no coordinate depends on them. */
@@ -997,9 +997,9 @@ export const PROJECTION_VISUAL_APPEARANCE: Readonly<Record<ProjectionVisualsMorp
   containerWidth: number; containerAlpha: number; curveWidth: number; curveAlpha: number;
   haloWidth: number; haloAlpha: number; ringWidth: number; endpointDots: boolean;
 }>>> = {
-  stellar: { containerWidth: 1, containerAlpha: 0.7, curveWidth: 1.6, curveAlpha: 0.9, haloWidth: 0, haloAlpha: 0, ringWidth: 1.4, endpointDots: false },
-  neural: { containerWidth: 1.25, containerAlpha: 0.65, curveWidth: 1.3, curveAlpha: 0.85, haloWidth: 4, haloAlpha: 0.14, ringWidth: 1.8, endpointDots: true },
-  mycelium: { containerWidth: 0.8, containerAlpha: 0.55, curveWidth: 1, curveAlpha: 0.8, haloWidth: 2.5, haloAlpha: 0.1, ringWidth: 1.1, endpointDots: false },
+  stellar: { containerWidth: 0.8, containerAlpha: 0.45, curveWidth: 0.8, curveAlpha: 0.4, haloWidth: 0, haloAlpha: 0, ringWidth: 0.8, endpointDots: false },
+  neural: { containerWidth: 0.9, containerAlpha: 0.45, curveWidth: 0.8, curveAlpha: 0.4, haloWidth: 0, haloAlpha: 0, ringWidth: 0.9, endpointDots: false },
+  mycelium: { containerWidth: 0.7, containerAlpha: 0.4, curveWidth: 0.7, curveAlpha: 0.35, haloWidth: 0, haloAlpha: 0, ringWidth: 0.8, endpointDots: false },
 };
 
 const FIELD_BUCKETS = 8;
@@ -1184,6 +1184,8 @@ export type ProjectionVisualsDrawOptions = {
   readonly viewport?: { readonly width: number; readonly height: number };
   /** The hovered or selected visual id, drawn heavier. */
   readonly emphasisId?: string | null;
+  readonly styles?: Readonly<Record<string, Readonly<Record<string, number | string>>>>;
+  readonly selectionColor?: string;
 };
 export type ProjectionVisualsDrawStats = { containers: number; curves: number; fields: number; strokes: number };
 
@@ -1192,13 +1194,10 @@ const project3 = (project: ProjectionVisualsProject, x: number, y: number, z: nu
   scratch.x = x; scratch.y = y; scratch.z = z;
   return project(scratch);
 };
-const FIELD_LUT: readonly string[] = (() => {
-  const low = hexChannels(PROJECTION_VISUAL_INK.fieldLow)!, high = hexChannels(PROJECTION_VISUAL_INK.fieldHigh)!;
-  return Array.from({ length: FIELD_BUCKETS }, (_, bucket) => {
-    const t = bucket / (FIELD_BUCKETS - 1);
-    return `rgb(${low.map((channel, index) => Math.round(channel + (high[index]! - channel) * t)).join(", ")})`;
-  });
-})();
+const visualInk = (options: ProjectionVisualsDrawOptions, id: string, fallback: string): string => {
+  const color = options.styles?.[id]?.color;
+  return typeof color === "string" ? color : fallback;
+};
 const fieldRingPx = (level: number, ordinal: number, scale: number): number =>
   (FIELD_RING_BASE_PX + ordinal * FIELD_RING_STEP_PX + level * FIELD_RING_SPAN_PX) * scale;
 
@@ -1305,8 +1304,7 @@ function fieldScreenBuffers(count: number): typeof fieldScreen {
 }
 
 /**
- * Draws the visible containers, then the curves, then the field channel rings. Continuous strokes
- * only: the dash pattern is set empty once per call. Allocation free apart from the projector's
+ * Draws the visible containers, then derived dashed curves, then field channel rings. Allocation free apart from the projector's
  * own return values; nothing is scheduled, so an idle page costs nothing.
  */
 export function drawProjectionVisuals(
@@ -1322,7 +1320,8 @@ export function drawProjectionVisuals(
   sink.context = context; sink.stats = stats;
   for (const shape of geometry.containers) {
     const emphasised = options.emphasisId === shape.id;
-    sink.colour = PROJECTION_VISUAL_INK.container;
+    sink.colour = emphasised ? options.selectionColor ?? visualInk(options, shape.id, PALETTES.bw.container)
+      : visualInk(options, shape.id, PALETTES.bw.container);
     sink.width = appearance.containerWidth * (emphasised ? 1.6 : 1);
     sink.alpha = Math.min(1, appearance.containerAlpha + (emphasised ? 0.25 : 0));
     if (walkContainer(project, shape, quality, options.viewport, sink) && stats) stats.containers += 1;
@@ -1331,7 +1330,9 @@ export function drawProjectionVisuals(
     const count = curve.points.length / 3;
     if (count < 2) continue;
     const emphasised = options.emphasisId === curve.id;
-    const colour = PROJECTION_VISUAL_INK.curve;
+    const colour = emphasised ? options.selectionColor ?? visualInk(options, curve.id, PALETTES.bw.concept)
+      : visualInk(options, curve.id, PALETTES.bw.concept);
+    setDash(context, curve.purpose === "orbit" ? [2, 5] : [4, 5]);
     context.beginPath();
     for (let index = 0; index < count; index++) {
       const p = project3(project, curve.points[index * 3]!, curve.points[index * 3 + 1]!, curve.points[index * 3 + 2]!);
@@ -1356,6 +1357,7 @@ export function drawProjectionVisuals(
       context.arc(first.x, first.y, 2, 0, Math.PI * 2);
       context.fill();
     }
+    setDash(context, []);
   }
   for (const field of geometry.fields) {
     if (field.count === 0) continue;
@@ -1376,8 +1378,9 @@ export function drawProjectionVisuals(
         context.arc(x, y, radius, 0, Math.PI * 2);
       }
       if (!any) continue;
-      context.strokeStyle = FIELD_LUT[bucket]!;
-      context.globalAlpha = 0.3 + 0.6 * (bucket / (FIELD_BUCKETS - 1));
+      context.strokeStyle = options.emphasisId === field.id ? options.selectionColor ?? visualInk(options, field.id, PALETTES.bw.attested)
+        : visualInk(options, field.id, PALETTES.bw.attested);
+      context.globalAlpha = 0.08 + 0.3 * (bucket / (FIELD_BUCKETS - 1));
       context.stroke();
       if (stats) stats.strokes += 1;
     }

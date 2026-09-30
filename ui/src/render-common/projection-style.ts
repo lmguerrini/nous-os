@@ -17,7 +17,7 @@ import { ellipsizeText } from "./container-canvas.ts";
 import type { EdgeId, NodeId, ProjectionResult, SemanticGraphSnapshot, StyledProjection } from "../projection/contract-types.ts";
 import { labelBudgetOf, labelCandidateKind } from "./labels.ts";
 import type { LabelReason } from "./labels.ts";
-import { PALETTES, v2CategoryColour } from "./palette.ts";
+import { PALETTES, PALETTE_ROLES, v2CategoryColour } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
 type Density = "essential" | "balanced" | "complete";
 type LodLevel = "far" | "intermediate" | "near";
@@ -47,6 +47,9 @@ export type ProjectionStyleOptions = {
   readonly palette?: PaletteValues;
   /** The appearance node-scale multiplier (1 default). */
   readonly nodeScale?: number;
+  /** Live relation width and bend multipliers. */
+  readonly edgeWidth?: number;
+  readonly curvature?: number;
   /** The reading (combined default): attested relations read stronger inside an attested reading. */
   readonly reading?: ProjectionReading;
 };
@@ -173,6 +176,7 @@ export function styleProjection(
   result: ProjectionResult, snapshot: SemanticGraphSnapshot, options: ProjectionStyleOptions,
 ): StyledProjection {
   const palette = options.palette ?? PALETTES.bw;
+  const isBlackWhite = PALETTE_ROLES.every(role => palette[role] === PALETTES.bw[role]);
   const nodeScale = options.nodeScale ?? 1;
   const reading = options.reading ?? "combined";
   const focus = options.focus;
@@ -193,7 +197,7 @@ export function styleProjection(
   for (const id of result.loadedNodeIds) {
     const record = recordById.get(id) ?? null;
     if (record === null) {
-      nodeStyle[id] = { color: "#9bc8ed", size: 5, alpha: 1, glyph: "filled",
+      nodeStyle[id] = { color: palette.concept, size: 5, alpha: 1, glyph: "filled",
         label: "", labelFull: "", type: "candidate", level: 4, labelPriority: 0, tier1: 0, focusEligible: 1 };
       continue;
     }
@@ -206,7 +210,7 @@ export function styleProjection(
       : baseRadius;
     const halo = Math.round(baseRadius / 10 * 1000 * (crowded ? TYPED_HALO_CROWD_FACTOR : 1));
     const unit = typedNodeGrayUnit(level);
-    const colour = palette === PALETTES.bw
+    const colour = isBlackWhite
       ? rgbString(unit)
       : v2CategoryColour({ level, kind: record.kind, ...(status !== undefined ? { status } : {}) }, palette);
     const member = focus === null || focus.has(id);
@@ -244,14 +248,15 @@ export function styleProjection(
       alpha = sourceIn && targetIn ? Math.max(TYPED_FOCUS.arcMinimum, base)
         : sourceIn || targetIn ? TYPED_FOCUS.bridge : TYPED_FOCUS.outside;
     }
-    const colour = palette === PALETTES.bw ? rgbString(TYPED_EDGE_GRAY)
+    const colour = isBlackWhite ? rgbString(TYPED_EDGE_GRAY)
       : exploratory ? palette.exploratory : palette.attested;
+    const width = TYPED_EDGE_WIDTH * (options.edgeWidth ?? 1);
     edgeStyle[id] = {
       color: colour,
       alpha: Math.round(alpha * 1000) / 1000,
-      size: TYPED_EDGE_WIDTH,
+      size: width,
       opacityPermille: Math.round(alpha * SCENE_PERMILLE_SCALE),
-      widthPermille: Math.round(TYPED_EDGE_WIDTH * SCENE_PERMILLE_SCALE),
+      widthPermille: Math.round(width * SCENE_PERMILLE_SCALE),
       category: exploratory ? "exploratory" : "attested",
       source: edge?.source ?? "",
       target: edge?.target ?? "",
@@ -260,12 +265,13 @@ export function styleProjection(
   const visualStyle: Record<string, Readonly<Record<string, number | string>>> = {};
   for (const relation of result.visualRelations) {
     const presentation = structuralVisualPresentation(relation);
-    visualStyle[relation.visualId] = { color: "#8fa8ac",
-      opacityPermille: presentation.opacityPermille, widthPermille: presentation.widthPermille };
+    visualStyle[relation.visualId] = { color: palette.attested,
+      opacityPermille: presentation.opacityPermille,
+      widthPermille: Math.round(presentation.widthPermille * (options.edgeWidth ?? 1)) };
   }
-  for (const container of result.containers) visualStyle[container.visualId] = { color: "#7992a0" };
-  for (const curve of result.curves) visualStyle[curve.visualId] = { color: "#a0bad1" };
-  for (const field of result.fields) visualStyle[field.id] = { color: "#b8a4cb" };
+  for (const container of result.containers) visualStyle[container.visualId] = { color: palette.container };
+  for (const curve of result.curves) visualStyle[curve.visualId] = { color: palette.container, derived: "derived curve, not a relation" };
+  for (const field of result.fields) visualStyle[field.id] = { color: palette.concept };
   const density = normalizeDensity(options.density);
   visualStyle[PROJECTION_STYLE_SCOPE] = {
     morphology: options.morphology,
@@ -275,6 +281,10 @@ export function styleProjection(
     focusCount: focus?.size ?? 0,
     reading,
     background: palette.background,
+    selection: palette.selection,
+    star: palette.text,
+    edgeWidth: options.edgeWidth ?? 1,
+    curvature: options.curvature ?? 1,
   };
   return { projection: result, nodeStyle, edgeStyle, visualStyle };
 }
@@ -286,6 +296,10 @@ export type ProjectionStyleScope = {
   readonly lodLevel: LodLevel;
   readonly labelBudget: number;
   readonly background: string;
+  readonly selection: string;
+  readonly star: string;
+  readonly edgeWidth: number;
+  readonly curvature: number;
 };
 
 /** Reads the reserved scope record; null when the styled projection carries none (the basic
@@ -303,6 +317,10 @@ export function readProjectionStyle(styled: StyledProjection): ProjectionStyleSc
     morphology, density: normalizeDensity(scope.density), lodLevel,
     labelBudget: typeof budget === "number" && Number.isFinite(budget) && budget > 0 ? budget : 60,
     background: typeof background === "string" && background.length > 0 ? background : "#050505",
+    selection: typeof scope.selection === "string" ? scope.selection : PALETTES.bw.selection,
+    star: typeof scope.star === "string" ? scope.star : PALETTES.bw.text,
+    edgeWidth: typeof scope.edgeWidth === "number" ? scope.edgeWidth : 1,
+    curvature: typeof scope.curvature === "number" ? scope.curvature : 1,
   };
 }
 

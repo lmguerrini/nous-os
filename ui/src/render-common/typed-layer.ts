@@ -1,176 +1,187 @@
-/** D-073 W4f: the typed projection's GPU collections, shared shape for any renderer that hosts
- * THREE objects. Node points bucket by quantised (size, alpha) with per-vertex grey; source
- * edges bucket by (colour, alpha) attestation class; structural relations carry per-vertex
- * colours. Every colour and size arrives through the style records — this module owns no ink.
- *
- * It sits in render-common because both governed mounts reach it without the render3f source
- * tree growing a second drawing engine; render3f/picking.ts appears only as a type. */
+/** Batched typed 3D glyphs and morphology ribbons. All geometry is rebuilt on a visibility/style
+ * revision, never on a camera frame; the old revision is disposed before the new one is attached. */
 import * as THREE from "three";
+import { buildMorphologyGeometry, morphologyHash } from "#engine/morphology-geometry.ts";
+import type { MorphologySegment } from "#engine/morphology-geometry.ts";
+import { readProjectionStyle } from "./projection-style.ts";
 import type { StyledProjection } from "../projection/contract-types.ts";
 import type { TypedProjectionGeometry } from "#render3f/picking.ts";
 
-type TypedStyleRecord = Readonly<Record<string, number | string>>;
-type TypedPointBucket = { readonly object: THREE.Points; positions: number[]; colors: number[] };
-type TypedLineBucket = { readonly object: THREE.LineSegments; positions: number[] };
-type TypedColoredLineBucket = { readonly object: THREE.LineSegments; positions: number[]; colors: number[] };
-
+type Ink = { color: THREE.Color; alpha: number; width: number };
 export type TypedProjectionLayer = {
   readonly group: THREE.Group;
   update(geometry: TypedProjectionGeometry, styled: StyledProjection): void;
+  setQuality(quality: "full" | "moving"): void;
   dispose(): void;
 };
 
-/** One style-record colour as a working-space THREE colour; sRGB strings via setStyle, unknown
- * values fall back to the neutral grey the D-072 relation ink uses. */
-function typedThreeColor(color: number | string | undefined): THREE.Color {
-  if (typeof color === "string" && color.length > 0) {
-    try {
-      return new THREE.Color().setStyle(color);
-    } catch {
-      return new THREE.Color().setStyle("rgb(163, 163, 163)");
-    }
+const numeric = (value: number | string | undefined, fallback: number): number =>
+  typeof value === "number" && Number.isFinite(value) ? value : fallback;
+const colorOf = (value: number | string | undefined): THREE.Color => {
+  try { return new THREE.Color(typeof value === "string" ? value : "#a3a3a3"); }
+  catch { return new THREE.Color("#a3a3a3"); }
+};
+const alphaOf = (value: number): number => Math.max(0, Math.min(1, value));
+const inkOf = (style: Readonly<Record<string, number | string>> | undefined, visual: boolean): Ink => ({
+  color: colorOf(style?.color),
+  alpha: alphaOf(visual ? numeric(style?.opacityPermille, 1000) / 1000 : numeric(style?.alpha, 1)),
+  width: Math.max(0.1, visual ? numeric(style?.widthPermille, 1000) / 1000
+    : numeric(style?.size, numeric(style?.widthPermille, 1000) / 1000)),
+});
+
+/** Two triangles per sample interval. The three morphology widths are interpolated at both ends,
+ * so Neural ribbons retain the soma-mid-soma taper and Mycelium follows every curved sample. */
+export function typedRibbonVertices(segment: MorphologySegment, quality: "full" | "moving" = "full"): number[] {
+  const points = segment.samples;
+  const vertices: number[] = [];
+  const stride = quality === "moving" ? 4 : 1;
+  const point = (i: number) => points[Math.min(i, points.length - 1)]!;
+  const width = (t: number): number => t < 0.5
+    ? segment.widthStart + (segment.widthMid - segment.widthStart) * t * 2
+    : segment.widthMid + (segment.widthEnd - segment.widthMid) * (t - 0.5) * 2;
+  for (let i = 0; i < points.length - 1; i += stride) {
+    const j = Math.min(points.length - 1, i + stride);
+    const a = point(i), b = point(j);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const length = Math.hypot(dx, dy);
+    const nx = length > 1e-8 ? -dy / length : 1;
+    const ny = length > 1e-8 ? dx / length : 0;
+    const wa = width(i / (points.length - 1)) / 2, wb = width(j / (points.length - 1)) / 2;
+    const al = [a.x + nx * wa, a.y + ny * wa, a.z];
+    const ar = [a.x - nx * wa, a.y - ny * wa, a.z];
+    const bl = [b.x + nx * wb, b.y + ny * wb, b.z];
+    const br = [b.x - nx * wb, b.y - ny * wb, b.z];
+    vertices.push(...al, ...ar, ...bl, ...ar, ...br, ...bl);
   }
-  return new THREE.Color().setStyle("rgb(163, 163, 163)");
+  return vertices;
 }
 
-const TYPED_MAX_BUCKETS = 64;
-const TYPED_POINT_SIZE_FLOOR_PX = 1;
+function stellarArc(segment: MorphologySegment, curvature: number): MorphologySegment {
+  if (curvature <= 0 || segment.samples.length !== 2) return segment;
+  const a = segment.source, b = segment.target;
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const offset = Math.hypot(dx, dy) * Math.min(0.1, curvature * 0.08) * (morphologyHash(segment.edgeId) & 1 ? 1 : -1);
+  const length = Math.hypot(dx, dy) || 1;
+  const samples = Array.from({ length: 9 }, (_, index) => {
+    const t = index / 8;
+    return { x: a.x + dx * t - dy / length * offset * 4 * t * (1 - t),
+      y: a.y + dy * t + dx / length * offset * 4 * t * (1 - t), z: a.z + (b.z - a.z) * t };
+  });
+  return { ...segment, samples, path: "soft-curve" };
+}
 
-/** Buckets are keyed by the exact quantised (size, alpha) or (colour, alpha) pair, so the
- * collection count follows the style vocabulary rather than the node count; beyond the cap the
- * latest bucket absorbs the rest, which reads as the nearest class at a glance. */
 export function createTypedProjectionLayer(): TypedProjectionLayer {
   const group = new THREE.Group();
-  const clampAlpha = (value: number): number => Math.round(Math.min(1, Math.max(0, value)) * 100) / 100;
-  const pointBuckets = new Map<string, TypedPointBucket>();
-  const edgeBuckets = new Map<string, TypedLineBucket>();
-  let lastPointBucket: TypedPointBucket | null = null;
-  let lastEdgeBucket: TypedLineBucket | null = null;
-  const structural: TypedColoredLineBucket = (() => {
-    const object = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({
-      vertexColors: true, depthTest: true, transparent: true,
-    }));
-    object.frustumCulled = false;
-    group.add(object);
-    return { object, positions: [], colors: [] };
-  })();
-  const nodeBucket = (sizePx: number, alpha: number): TypedPointBucket => {
-    const key = `${sizePx}:${alpha.toFixed(2)}`;
-    const existing = pointBuckets.get(key);
-    if (existing) {
-      lastPointBucket = existing;
-      return existing;
+  const movingOnly = new Set<THREE.Object3D>();
+  let quality: "full" | "moving" = "full";
+  const clear = (): void => {
+    for (const child of [...group.children]) {
+      group.remove(child);
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        for (const material of materials) material.dispose();
+      }
     }
-    if (pointBuckets.size >= TYPED_MAX_BUCKETS && lastPointBucket) return lastPointBucket;
-    const object = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({
-      size: sizePx, sizeAttenuation: false, transparent: true, opacity: alpha,
-      vertexColors: true, depthTest: true,
-    }));
-    object.frustumCulled = false;
-    group.add(object);
-    const bucket: TypedPointBucket = { object, positions: [], colors: [] };
-    pointBuckets.set(key, bucket);
-    lastPointBucket = bucket;
-    return bucket;
+    movingOnly.clear();
   };
-  const edgeBucket = (color: THREE.Color, alpha: number): TypedLineBucket => {
-    const key = `${color.getHexString()}:${alpha.toFixed(2)}`;
-    const existing = edgeBuckets.get(key);
-    if (existing) {
-      lastEdgeBucket = existing;
-      return existing;
+  const addRibbons = (segments: readonly MorphologySegment[], inks: ReadonlyMap<string, Ink>,
+    role: "semantic" | "visual", morphology: string, curvature: number): void => {
+    const buckets = new Map<string, { ink: Ink; vertices: number[] }>();
+    for (const segment of segments) {
+      const ink = inks.get(segment.edgeId);
+      if (!ink || ink.alpha <= 0) continue;
+      const key = `${ink.color.getHexString()}:${ink.alpha}`;
+      let bucket = buckets.get(key);
+      if (!bucket) { bucket = { ink, vertices: [] }; buckets.set(key, bucket); }
+      bucket.vertices.push(...typedRibbonVertices(morphology === "stellar" ? stellarArc(segment, curvature) : segment));
     }
-    if (edgeBuckets.size >= TYPED_MAX_BUCKETS && lastEdgeBucket) return lastEdgeBucket;
-    const object = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({
-      color, transparent: true, opacity: alpha, depthTest: true,
-    }));
-    object.frustumCulled = false;
-    group.add(object);
-    const bucket: TypedLineBucket = { object, positions: [] };
-    edgeBuckets.set(key, bucket);
-    lastEdgeBucket = bucket;
-    return bucket;
+    for (const bucket of buckets.values()) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(bucket.vertices, 3));
+      geometry.setDrawRange(0, bucket.vertices.length / 3);
+      const material = new THREE.MeshBasicMaterial({
+        color: bucket.ink.color, transparent: true, opacity: bucket.ink.alpha,
+        depthTest: true, depthWrite: false, side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.name = `typed-${role}-morphology`;
+      mesh.frustumCulled = false;
+      group.add(mesh);
+      if (role === "visual") movingOnly.add(mesh);
+    }
   };
-  const previousPositions = new Map<THREE.BufferGeometry, readonly number[]>();
-  const previousColors = new Map<THREE.BufferGeometry, readonly number[]>();
-  const writePositions = (geometry: THREE.BufferGeometry, values: readonly number[]): void => {
-    const previous = previousPositions.get(geometry);
-    if (previous?.length === values.length && previous.every((value, index) => value === values[index])) return;
-    geometry.setAttribute("position", new THREE.Float32BufferAttribute(values, 3));
-    geometry.setDrawRange(0, values.length / 3);
-    geometry.attributes.position!.needsUpdate = true;
-    previousPositions.set(geometry, values);
-  };
-  const writeColors = (geometry: THREE.BufferGeometry, values: readonly number[]): void => {
-    const previous = previousColors.get(geometry);
-    if (previous?.length === values.length && previous.every((value, index) => value === values[index])) return;
-    geometry.setAttribute("color", new THREE.Float32BufferAttribute(values, 3));
-    geometry.attributes.color!.needsUpdate = true;
-    previousColors.set(geometry, values);
-  };
-  const styleOf = (record: Readonly<Record<string, Readonly<Record<string, number | string>>>>,
-    id: string | undefined): TypedStyleRecord | undefined => (id === undefined ? undefined : record[id]);
   return {
     group,
     update(geometry, styled): void {
-      for (const bucket of pointBuckets.values()) {
-        bucket.positions.length = 0;
-        bucket.colors.length = 0;
+      clear();
+      const scope = readProjectionStyle(styled);
+      const morphology = scope?.morphology ?? "stellar";
+      const curvature = scope?.curvature ?? 1;
+      const byId = new Map(geometry.nodes.flatMap(node =>
+        node.pick.kind === "node" ? [[node.pick.id, node.position] as const] : []));
+      const nodes = geometry.nodes.flatMap(node => node.pick.kind === "node"
+        ? [{ id: node.pick.id, position: node.position,
+          radius: numeric(styled.nodeStyle[node.pick.id]?.size, 5) }] : []);
+      // One sphere geometry and one draw call per opacity class. Instance colours retain the palette.
+      const nodeBuckets = new Map<number, typeof nodes>();
+      for (const node of nodes) {
+        const alpha = alphaOf(numeric(styled.nodeStyle[node.id]?.alpha, 1));
+        if (alpha <= 0) continue;
+        const list = nodeBuckets.get(alpha) ?? [];
+        list.push(node); nodeBuckets.set(alpha, list);
       }
-      for (const bucket of edgeBuckets.values()) bucket.positions.length = 0;
-      structural.positions.length = 0;
-      structural.colors.length = 0;
-      for (const point of geometry.nodes) {
-        if (point.pick.kind !== "node") continue;
-        const style = styleOf(styled.nodeStyle, point.pick.id);
-        const sizePx = Math.max(TYPED_POINT_SIZE_FLOOR_PX,
-          Math.round(typeof style?.size === "number" ? style.size : 5));
-        const alpha = clampAlpha(typeof style?.alpha === "number" ? style.alpha : 1);
-        const bucket = nodeBucket(sizePx, alpha);
-        bucket.positions.push(point.position.x, point.position.y, point.position.z);
-        const color = typedThreeColor(style?.color);
-        bucket.colors.push(color.r, color.g, color.b);
+      for (const [alpha, list] of nodeBuckets) {
+        const sphere = new THREE.SphereGeometry(1, 10, 8);
+        const material = new THREE.MeshBasicMaterial({ transparent: true, opacity: alpha,
+          depthTest: true, depthWrite: false });
+        const mesh = new THREE.InstancedMesh(sphere, material, list.length);
+        mesh.name = "typed-round-nodes";
+        mesh.frustumCulled = false;
+        const matrix = new THREE.Matrix4();
+        for (let i = 0; i < list.length; i++) {
+          const node = list[i]!;
+          matrix.makeScale(node.radius, node.radius, node.radius);
+          matrix.setPosition(node.position.x, node.position.y, node.position.z);
+          mesh.setMatrixAt(i, matrix);
+          mesh.setColorAt(i, colorOf(styled.nodeStyle[node.id]?.color));
+        }
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        group.add(mesh);
       }
+      const inputs: { id: string; source: string; target: string; width: number }[] = [];
+      const inks = new Map<string, Ink>();
+      const semantic = new Set<string>();
       for (const segment of geometry.semanticEdges) {
         if (segment.pick.kind !== "semantic-edge") continue;
-        const style = styleOf(styled.edgeStyle, segment.pick.id);
-        const alpha = clampAlpha(typeof style?.alpha === "number" ? style.alpha : 1);
-        const bucket = edgeBucket(typedThreeColor(style?.color), alpha);
-        bucket.positions.push(
-          segment.source.x, segment.source.y, segment.source.z,
-          segment.target.x, segment.target.y, segment.target.z,
-        );
+        const id = `semantic:${segment.pick.id}`;
+        const ink = inkOf(styled.edgeStyle[segment.pick.id], false);
+        const source = `${id}:source`, target = `${id}:target`;
+        byId.set(source, segment.source); byId.set(target, segment.target);
+        inputs.push({ id, source, target, width: ink.width }); inks.set(id, ink); semantic.add(id);
       }
       for (const segment of geometry.visualRelations) {
         if (segment.pick.kind !== "visual-relation") continue;
-        const style = styleOf(styled.visualStyle, segment.pick.visualId);
-        const color = typedThreeColor(style?.color);
-        structural.positions.push(
-          segment.source.x, segment.source.y, segment.source.z,
-          segment.target.x, segment.target.y, segment.target.z,
-        );
-        structural.colors.push(color.r, color.g, color.b, color.r, color.g, color.b);
+        const id = `visual:${segment.pick.visualId}`;
+        const ink = inkOf(styled.visualStyle[segment.pick.visualId], true);
+        const source = `${id}:source`, target = `${id}:target`;
+        byId.set(source, segment.source); byId.set(target, segment.target);
+        inputs.push({ id, source, target, width: ink.width }); inks.set(id, ink);
       }
-      for (const bucket of pointBuckets.values()) {
-        writePositions(bucket.object.geometry, bucket.positions);
-        writeColors(bucket.object.geometry, bucket.colors);
+      const edgeNodes = [...byId].map(([id, position]) => ({ id, position, radius: 1 }));
+      if (inputs.length) {
+        const shaped = buildMorphologyGeometry(morphology, edgeNodes, inputs, [], curvature);
+        addRibbons(shaped.drawnSegments.filter(item => semantic.has(item.edgeId)), inks, "semantic", morphology, curvature);
+        addRibbons(shaped.drawnSegments.filter(item => !semantic.has(item.edgeId)), inks, "visual", morphology, curvature);
       }
-      for (const bucket of edgeBuckets.values()) writePositions(bucket.object.geometry, bucket.positions);
-      writePositions(structural.object.geometry, structural.positions);
-      writeColors(structural.object.geometry, structural.colors);
+      for (const item of movingOnly) item.visible = quality === "full";
     },
-    dispose(): void {
-      for (const child of group.children) {
-        if (child instanceof THREE.Points || child instanceof THREE.LineSegments) {
-          child.geometry.dispose();
-          (child.material as THREE.Material).dispose();
-        }
-      }
-      pointBuckets.clear();
-      edgeBuckets.clear();
-      previousPositions.clear();
-      previousColors.clear();
-      group.removeFromParent();
+    setQuality(next): void {
+      if (quality === next) return;
+      quality = next;
+      for (const item of movingOnly) item.visible = next === "full";
     },
+    dispose(): void { clear(); group.removeFromParent(); },
   };
 }

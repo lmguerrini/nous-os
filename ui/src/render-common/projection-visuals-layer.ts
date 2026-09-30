@@ -2,6 +2,9 @@ import type { Coordinates } from "#engine/contract.ts";
 import { buildProjectionVisuals, drawProjectionVisuals, pickProjectionVisuals } from "#render-common/container-canvas.ts";
 import type { ProjectionVisualsDrawStats, ProjectionVisualsGeometry, ProjectionVisualsMorphology } from "#render-common/container-canvas.ts";
 import type { Dimension, PickResult, RenderVisibility, StyledProjection } from "../projection/contract-types.ts";
+import { readProjectionStyle } from "./projection-style.ts";
+import { cachedStarfieldStars, starAlpha } from "./starfield.ts";
+import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 
 /** Maps a world point to the host's CSS pixels; `scale` sizes node-channel rings like the host sizes nodes. */
 export type ProjectionVisualsProjector = (point: Coordinates) => { readonly x: number; readonly y: number; readonly scale?: number };
@@ -46,6 +49,7 @@ export function createProjectionVisualsLayer(
   let canvas: HTMLCanvasElement | null = null;
   let context: CanvasRenderingContext2D | null = null;
   let geometry: ProjectionVisualsGeometry | null = null;
+  let styled: StyledProjection | null = null;
   let revision = -1;
   let contentKey = "";
   let morphology = initial.morphology ?? "stellar";
@@ -57,12 +61,15 @@ export function createProjectionVisualsLayer(
   const viewport = { width: 0, height: 0 };
   const accept = (input: ProjectionVisualsInput): void => {
     geometry = buildProjectionVisuals(input.styled.projection, input.visibility, dimension);
+    styled = input.styled;
     revision = input.visibility.revision;
     contentKey = maskKey(input.visibility);
   };
   const draw = (): void => {
     if (destroyed || !canvas || !context || !geometry) return;
-    const empty = geometry.containers.length + geometry.curves.length + geometry.fields.length === 0;
+    const scope = styled ? readProjectionStyle(styled) : null;
+    const stars = dimension === "3d" && morphology === "stellar" && quality === "full";
+    const empty = geometry.containers.length + geometry.curves.length + geometry.fields.length === 0 && !stars;
     if (empty && blank) return;
     const box = canvas.getBoundingClientRect();
     if (box.width <= 0 || box.height <= 0) return;
@@ -75,7 +82,18 @@ export function createProjectionVisualsLayer(
     blank = empty;
     if (empty) return;
     viewport.width = box.width; viewport.height = box.height;
-    drawProjectionVisuals(context, geometry, project, { morphology, quality, viewport, emphasisId }, drawn);
+    if (stars) {
+      const ink = scope?.star ?? "#e8e8e8";
+      for (const star of cachedStarfieldStars(box.width, box.height, DEFAULT_APPEARANCE.starfieldDensity)) {
+        context.globalAlpha = starAlpha(DEFAULT_APPEARANCE.starfieldBrightness, star.intensity) * 0.55;
+        context.fillStyle = ink;
+        context.fillRect(star.u * box.width, star.v * box.height, star.size, star.size);
+      }
+      context.globalAlpha = 1;
+    }
+    drawProjectionVisuals(context, geometry, project, { morphology, quality, viewport, emphasisId,
+      ...(styled ? { styles: styled.visualStyle } : {}),
+      ...(scope ? { selectionColor: scope.selection } : {}) }, drawn);
   };
   return {
     dimension,
@@ -96,6 +114,8 @@ export function createProjectionVisualsLayer(
       if (input.visibility.revision < revision) return;
       if (input.visibility.revision === revision) {
         if (maskKey(input.visibility) !== contentKey) throw new Error("equal projection visibility revision changed content");
+        styled = input.styled;
+        draw();
         return;
       }
       accept(input);
@@ -109,6 +129,6 @@ export function createProjectionVisualsLayer(
     readWitness: () => ({ revision, containerIds: geometry?.containers.map(item => item.id) ?? [],
       curveIds: geometry?.curves.map(item => item.id) ?? [], fieldIds: geometry?.fields.map(item => item.id) ?? [],
       undrawnFieldIds: geometry?.undrawnFieldIds ?? [], drawn: { ...drawn } }),
-    destroy() { if (!destroyed) { destroyed = true; canvas?.remove(); canvas = null; context = null; geometry = null; } },
+    destroy() { if (!destroyed) { destroyed = true; canvas?.remove(); canvas = null; context = null; geometry = null; styled = null; } },
   };
 }
