@@ -10,6 +10,8 @@ import type { CreateProductView, ProductView } from "../../src/review/view-contr
 import type { GraphManifest } from "../../src/review/graph-v2.ts";
 import type { V2Index, V2Node } from "../../src/review/v2-core.ts";
 import type { V2Page, V2PageDeps } from "../../src/review/v2-page.ts";
+import { stepReveal, emptyRevealState } from "../../src/review/reveal-controller.ts";
+import { emptyDisclosure } from "../../src/review/v2-core.ts";
 
 /**
  * D-072 R1: a LOD refresh can never leave the page without its view or labels.
@@ -33,7 +35,7 @@ const bundled = await build({
     resolveDir: dirname(fileURLToPath(pageSource)),
     sourcefile: "d072-r1-v2-page-entry.ts",
     loader: "ts",
-    contents: `import { V2Page, resetMountFailureLog, confirmFitDue } from ${JSON.stringify(fileURLToPath(pageSource))};\nexport { V2Page, resetMountFailureLog, confirmFitDue };`,
+    contents: `import { V2Page, resetMountFailureLog, confirmFitDue, revealPointInRoot } from ${JSON.stringify(fileURLToPath(pageSource))};\nexport { V2Page, resetMountFailureLog, confirmFitDue, revealPointInRoot };`,
   },
 });
 writeFileSync(bundlePath, bundled.outputFiles[0]!.text);
@@ -89,7 +91,7 @@ Object.assign(globalThis, {
   HTMLInputElement: class HTMLInputElement {},
   HTMLTextAreaElement: class HTMLTextAreaElement {},
 });
-const { V2Page: V2PageClass, resetMountFailureLog, confirmFitDue } =
+const { V2Page: V2PageClass, resetMountFailureLog, confirmFitDue, revealPointInRoot } =
   await import(pathToFileURL(bundlePath).href) as typeof import("../../src/review/v2-page.ts");
 
 test("fit confirmation only runs for the camera intent that scheduled it", () => {
@@ -98,6 +100,38 @@ test("fit confirmation only runs for the camera intent that scheduled it", () =>
   assert.equal(confirmFitDue({ ...due, currentEpoch: 5 }), false, "selection or preset superseded the fit");
   assert.equal(confirmFitDue({ ...due, userMoved: true }), false);
   assert.equal(confirmFitDue({ ...due, anyOutside: false }), false);
+});
+
+test("reveal samples translate witness and typed screen points into the offset root frame", () => {
+  const root = { left: 200, top: 140 };
+  // Cursor positions are already root-relative; renderer positions arrive in page coordinates.
+  const cursor = { x: 300, y: 220 };
+  const hubPagePoint = { x: root.left + cursor.x, y: root.top + cursor.y };
+  const hub = revealPointInRoot(hubPagePoint, root);
+  assert.deepEqual(hub, cursor);
+  const index = fixtureIndex();
+  const disclosure = emptyDisclosure();
+  const positions = new Map([
+    ["domain:alfa", { ...hub, radius: 22 }],
+    // The old page-space value lands outside the root viewport and visually above the cursor.
+    ["domain:beta", { ...revealPointInRoot({ x: root.left + 300, y: root.top + 40 }, root), radius: 22 }],
+  ]);
+  const hit = stepReveal({ index, disclosure, zoom: 2, settled: true, cursor,
+    selectionId: null, focusId: null, viewport: { x: 0, y: 0, width: 600, height: 400 },
+    positions, previous: emptyRevealState() });
+  assert.equal(hit.state.focusClusterId, "domain:alfa", "the pointer on hub A focuses A, not the cluster above it");
+  assert.equal(hit.state.focusSource, "cursor");
+
+  // With no cursor, only points in the root's visible region participate in viewport priority.
+  const visibleCenter = revealPointInRoot({ x: root.left + 300, y: root.top + 200 }, root);
+  const outsideAbove = revealPointInRoot({ x: root.left + 300, y: root.top - 20 }, root);
+  const viewport = stepReveal({ index, disclosure, zoom: 2, settled: true, cursor: null,
+    selectionId: null, focusId: null, viewport: { x: 0, y: 0, width: 600, height: 400 },
+    positions: new Map([["domain:alfa", { ...visibleCenter, radius: 22 }], ["domain:beta", { ...outsideAbove, radius: 22 }]]),
+    previous: emptyRevealState() });
+  assert.equal(viewport.state.focusClusterId, "domain:alfa");
+  assert.equal(viewport.state.focusSource, "viewport");
+
 });
 
 /** An invented fixture: 2 domains → 6 projects → 200 conversations, every name invented. */

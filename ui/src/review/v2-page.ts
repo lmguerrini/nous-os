@@ -381,6 +381,12 @@ export interface ProjectionPipelineInput {
         pathStep?: TypedPathStep): void };
 }
 
+/** Convert page-space renderer points to the root-relative frame used by the live cursor and reveal viewport. */
+export function revealPointInRoot(point: { readonly x: number; readonly y: number },
+    root: Pick<DOMRect, 'left' | 'top'>): { x: number; y: number } {
+    return { x: point.x - root.left, y: point.y - root.top };
+}
+
 /** Reject missing, out-of-domain and nonfinite coordinates before either typed renderer sees them. */
 export function assertPageProjection(result: ProjectionResult, domain: AnalyticalDomain, dimension: '2d' | '3d'): void {
     if (result.determinism.domainDigest !== domain.domainDigest || result.determinism.snapshotDigest !== domain.snapshotDigest)
@@ -727,12 +733,13 @@ export class V2Page {
         }
         const root = document.getElementById('render-root');
         const width = root?.clientWidth ?? 1, height = root?.clientHeight ?? 1;
+        const rootRect = root?.getBoundingClientRect() ?? { left: 0, top: 0 };
         const positions = new Map<string, { x: number; y: number; radius?: number }>();
         const byId = new Map(this.index.nodes.map(node => [node.id, node]));
         if (this.view) {
             const witness = this.view.witness();
             for (const [id, point] of Object.entries(witness.nodeViewport))
-                positions.set(id, { x: point.x, y: point.y,
+                positions.set(id, { ...revealPointInRoot(point, rootRect),
                     radius: byId.has(id) ? nodeRadius(byId.get(id)!, this.appearance.nodeScale) : 12 });
         } else if (this.projectionResult && this.projectionRenderer?.projectNode) {
             const points = (this.axes.projection === '2d' ? this.projectionResult.positions2 : this.projectionResult.positions3) ?? {};
@@ -741,6 +748,8 @@ export class V2Page {
                 if (!point) continue;
                 const screen = this.projectionRenderer.projectNode({ x: point.x, y: point.y,
                     z: 'z' in point && typeof point.z === 'number' ? point.z : 0 });
+                // The typed renderers project into their host (Sigma and rig viewport coordinates); the host fills the
+                // root, so these points are already root-relative. Only the product witness reports page coordinates.
                 if (screen && Number.isFinite(screen.x) && Number.isFinite(screen.y))
                     positions.set(node.id, { x: screen.x, y: screen.y,
                         radius: Math.max(12, nodeRadius(node, this.appearance.nodeScale)) });
