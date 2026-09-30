@@ -287,12 +287,13 @@ export class CameraRig {
 
   /** Free trackball rotation around the current target for either projection. */
   orbitBy(deltaXCssPx: number, deltaYCssPx = 0): void {
-    const sensitivity = this.requestValue.kind === "perspective"
+    const orbitSensitivity = this.requestValue.kind === "perspective"
       ? this.requestValue.navigation.orbitSensitivityPermille / SCENE_PERMILLE_SCALE
       : scalarCount();
     const orbit = this.stateValue.orbit ?? [0, 0, 0, 1];
-    const q = arcballDrag(new THREE.Quaternion(...orbit), deltaXCssPx * sensitivity, deltaYCssPx * sensitivity, this.heightCssPx);
-    this.stateValue = { ...this.stateValue, orbit: [q.x, q.y, q.z, q.w] };
+    const nextOrbit = arcballDrag(new THREE.Quaternion(...orbit), deltaXCssPx * orbitSensitivity,
+      deltaYCssPx * orbitSensitivity, this.heightCssPx);
+    this.stateValue = { ...this.stateValue, orbit: [nextOrbit.x, nextOrbit.y, nextOrbit.z, nextOrbit.w] };
     this.updateCameras();
   }
 
