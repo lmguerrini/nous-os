@@ -189,6 +189,16 @@ test('four projection views preserve semantics and determinism in 2D and 3D', as
       await reject(duplicate, 'duplicated loaded member');
     }
   }
+  // The G6 convention now resolves tied clusters in the matrix above. Exercise the
+  // typed no-coordinate contract on a genuinely rank-deficient one-node domain.
+  const rankDomain = selectAnalyticalDomain(fx.snapshot, [fx.snapshot.nodes[0]!.id]);
+  const rankRequest = requestFor('holographic', '2d', fx.snapshot, rankDomain);
+  const rankResult = await holographicProjection.project(fx.snapshot, rankRequest as ProjectionRequest<'holographic'>);
+  assert.equal(rankResult.coordinateState.kind, 'no-coordinates');
+  if (rankResult.coordinateState.kind !== 'no-coordinates') assert.fail('unreachable');
+  assert.equal(rankResult.coordinateState.code, 'insufficient-rank');
+  assert.deepEqual(rankResult.loadedNodeIds, []);
+  refusalCount += 1;
   assert.ok(performance.now() - started < 30_000, `suite exceeded 30 s: ${(performance.now() - started).toFixed(1)} ms`);
   assert.ok(refusalCount > 0, 'matrix must exercise a typed no-coordinate refusal');
   assert.equal(requirementFailures.length, 0,

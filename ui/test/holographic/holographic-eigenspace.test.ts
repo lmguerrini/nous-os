@@ -1,5 +1,5 @@
 /** D-073 tranche F, row F8 — `holographic-eigenspace.test.ts`: canonical spectral 2D/3D
- * geometry under the projector-probe-v1 tied-eigenspace policy, with byte-identical
+ * geometry under the projector-probe-v2 tied-eigenspace policy, with byte-identical
  * quantised coordinates/digests on shuffled and repeated runs, or the identical
  * no-coordinate refusal state (cycle, star, complete and disconnected equal components are
  * the required fixtures). */
@@ -7,14 +7,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildSpectralGraph, type SpectralGraph } from '../../src/holographic/adjacency.ts';
-import { DENSE_DEFAULT_MAX_N, DENSE_SYMMETRIC_SOLVER_VERSION } from '../../src/holographic/dense.ts';
+import { DENSE_DEFAULT_MAX_N, DENSE_SYMMETRIC_SOLVER_VERSION, denseLaplacian, solveDenseSymmetricEigen } from '../../src/holographic/dense.ts';
 import {
   spectralGeometry,
+  CANONICAL_EIGENSPACE_POLICY_VERSION,
   type SpectralGeometryCoordinates,
   type SpectralGeometryOutcome,
   type SpectralGeometryRefusal,
 } from '../../src/holographic/geometry.ts';
 import { LANCZOS_SOLVER_VERSION } from '../../src/holographic/lanczos.ts';
+import { eigenbasisFromDense } from '../../src/holographic/signals.ts';
 import { combineGraphs, completeGraph, cycleGraph, pathGraph, starGraph, weakBridgeGraph } from './fixtures.ts';
 
 const SNAPSHOT = 'a1e-fixture-snapshot-digest-00000000000000000000000000000000000000000000000000000000000000';
@@ -127,55 +129,103 @@ test('C4 in 2D: the whole tied cluster is used with byte-identical coordinates a
   assert.notDeepEqual(Array.from(rotated.coordinates), Array.from(first.coordinates));
 });
 
-test('C5: 2D succeeds on the tied pair and 3D refuses because the next tied pair crosses the axis count', () => {
+test('C5: 3D selects one canonical axis from the second tied pair', () => {
   const graph = cycleGraph(5);
   const twoD = coordinates(spectralGeometry(graph, options('2d')));
   assert.equal(twoD.clusters[0]!.multiplicity, 2);
-  const threeD = refusal(spectralGeometry(graph, options('3d')));
-  assert.equal(threeD.code, 'ambiguous-eigenspace');
-  assert.match(threeD.message, /cross the requested 3-axis count/);
-  assert.deepEqual([...threeD.loadedNodeIds], []);
-  assert.ok(!('positions2' in threeD) && !('positions3' in threeD));
+  const threeD = coordinates(spectralGeometry(graph, options('3d')));
+  assert.deepEqual(threeD.clusters.map(cluster => cluster.selectedAxes), [2, 1]);
+  assert.equal(threeD.clusters[1]!.multiplicity, 2);
+  assert.match(threeD.explanation.summary, /assi scelti per convenzione canonica dentro un autospazio degenere/);
   assert.equal(spectralGeometry(graph, options('3d')).resultDigest, threeD.resultDigest);
 });
 
-test('stars: K(1,4) refuses 2D (multiplicity 3 crosses 2) and uses the whole tied cluster in 3D; a large star refuses identically twice', () => {
+test('stars: K(1,4) selects 2 of 3 tied modes; 3D uses all three', () => {
   const star4 = starGraph(4);
-  const refused = refusal(spectralGeometry(star4, options('2d')));
-  assert.equal(refused.code, 'ambiguous-eigenspace');
+  const twoD = coordinates(spectralGeometry(star4, options('2d')));
+  assert.equal(twoD.clusters[0]!.multiplicity, 3);
+  assert.equal(twoD.clusters[0]!.selectedAxes, 2);
   const threeD = coordinates(spectralGeometry(star4, options('3d')));
   assert.equal(threeD.clusters.length, 1);
   assert.equal(threeD.clusters[0]!.multiplicity, 3);
   assert.ok(Math.abs(threeD.clusters[0]!.eigenvalueMin - 1) < 1e-8);
-  const star200 = starGraph(200);
-  const first = refusal(spectralGeometry(star200, options('3d')));
-  assert.equal(first.code, 'ambiguous-eigenspace');
-  const second = refusal(spectralGeometry(star200, options('3d')));
-  assert.equal(second.code, first.code);
+});
+
+test('an 82-node hub with equivalent leaves yields genuine 2D and 3D spectral axes', () => {
+  const graph = starGraph(81);
+  for (const dimension of ['2d', '3d'] as const) {
+    const result = coordinates(spectralGeometry(graph, options(dimension)));
+    assert.equal(result.clusters[0]!.multiplicity, 80);
+    assert.equal(result.clusters[0]!.selectedAxes, dimension === '2d' ? 2 : 3);
+    assert.ok(Math.abs(result.clusters[0]!.eigenvalueMin - 1) < 1e-8);
+    for (let axis = 0; axis < result.axes; axis += 1) {
+      const column = result.coordinates.subarray(axis * graph.size, (axis + 1) * graph.size);
+      const product = graph.applyLaplacian(Float64Array.from(column));
+      for (let row = 0; row < graph.size; row += 1)
+        assert.ok(Math.abs(product[row]! - column[row]!) < 1e-8);
+    }
+    const permuted = coordinates(spectralGeometry(shuffled(graph), options(dimension)));
+    assert.deepEqual([...permuted.coordinates], [...result.coordinates]);
+    assert.equal(permuted.resultDigest, result.resultDigest);
+  }
+});
+
+test('rotation of the solver basis inside a tied cluster leaves quantised axes and digest unchanged', () => {
+  const graph = starGraph(4);
+  const basis = eigenbasisFromDense(solveDenseSymmetricEigen(denseLaplacian(graph)));
+  const rotatedVectors = new Float64Array(basis.eigenvectors);
+  const a = 1;
+  const b = 2;
+  const cosine = Math.cos(0.37);
+  const sine = Math.sin(0.37);
+  for (let row = 0; row < graph.size; row += 1) {
+    const va = basis.eigenvectors[a * graph.size + row]!;
+    const vb = basis.eigenvectors[b * graph.size + row]!;
+    rotatedVectors[a * graph.size + row] = cosine * va + sine * vb;
+    rotatedVectors[b * graph.size + row] = -sine * va + cosine * vb;
+  }
+  const rotated = { ...basis, eigenvectors: rotatedVectors };
+  const first = coordinates(spectralGeometry(graph, { ...options('2d'), validatedBasis: basis }));
+  const second = coordinates(spectralGeometry(graph, { ...options('2d'), validatedBasis: rotated }));
+  assert.deepEqual([...second.coordinates], [...first.coordinates]);
   assert.equal(second.resultDigest, first.resultDigest);
 });
 
-test('complete graphs: K5 3D refuses (multiplicity 4 > 3); K4 3D coordinates come from the whole tied cluster and 2D refuses', () => {
-  const k5 = refusal(spectralGeometry(completeGraph(5), options('3d')));
-  assert.equal(k5.code, 'ambiguous-eigenspace');
+test('a degenerate probe projection refuses with an empty typed state', () => {
+  // For this digest all 12 first-cluster probes on P3 have equal endpoint signs,
+  // so each projects to zero on the antisymmetric lambda=1 eigenspace.
+  const result = refusal(spectralGeometry(pathGraph(3), {
+    dimension: '2d', snapshotDigest: 'probe-degeneracy', domainDigest: 'degenerate-8699',
+  }));
+  assert.equal(result.code, 'insufficient-rank');
+  assert.match(result.message, /probe projection is degenerate/);
+  assert.deepEqual(result.loadedNodeIds, []);
+  assert.equal(spectralGeometry(pathGraph(3), {
+    dimension: '2d', snapshotDigest: 'probe-degeneracy', domainDigest: 'degenerate-8699',
+  }).resultDigest, result.resultDigest);
+});
+
+test('complete graphs: K5 3D and K4 2D select canonical axes from their tied clusters', () => {
+  const k5 = coordinates(spectralGeometry(completeGraph(5), options('3d')));
+  assert.equal(k5.clusters[0]!.selectedAxes, 3);
+  assert.equal(k5.clusters[0]!.multiplicity, 4);
   const k4ThreeD = coordinates(spectralGeometry(completeGraph(4), options('3d')));
   assert.equal(k4ThreeD.clusters.length, 1);
   assert.equal(k4ThreeD.clusters[0]!.multiplicity, 3);
-  const k4TwoD = refusal(spectralGeometry(completeGraph(4), options('2d')));
-  assert.equal(k4TwoD.code, 'ambiguous-eigenspace');
+  const k4TwoD = coordinates(spectralGeometry(completeGraph(4), options('2d')));
+  assert.equal(k4TwoD.clusters[0]!.selectedAxes, 2);
   assert.equal(spectralGeometry(completeGraph(4), options('2d')).resultDigest, k4TwoD.resultDigest);
 });
 
-test('disconnected equal components: two P3s give byte-identical 2D coordinates under shuffle; 3D refuses on the second tied pair', () => {
+test('disconnected equal components: two P3s give byte-identical 2D and 3D coordinates under shuffle', () => {
   const graph = combineGraphs([pathGraph(3), pathGraph(3)], ['d', 'e']);
   const first = coordinates(spectralGeometry(graph, options('2d')));
   const permuted = coordinates(spectralGeometry(shuffled(graph), options('2d')));
   assert.equal(permuted.resultDigest, first.resultDigest);
   assert.deepEqual(Array.from(permuted.coordinates), Array.from(first.coordinates));
-  const threeD = refusal(spectralGeometry(graph, options('3d')));
-  assert.equal(threeD.code, 'ambiguous-eigenspace');
-  assert.deepEqual([...threeD.loadedNodeIds], []);
-  const repeat = refusal(spectralGeometry(graph, options('3d')));
+  const threeD = coordinates(spectralGeometry(graph, options('3d')));
+  assert.deepEqual(threeD.clusters.map(cluster => cluster.selectedAxes), [2, 1]);
+  const repeat = coordinates(spectralGeometry(graph, options('3d')));
   assert.equal(repeat.resultDigest, threeD.resultDigest);
 });
 
@@ -192,13 +242,10 @@ test('insufficient rank: an edgeless graph and the three-node path in 3D refuse 
   assert.ok(p3ThreeD.eigenvalues.length === 3);
 });
 
-test('a very weak bridge merges into the zero cluster and the next tied cluster crosses the axis count', () => {
+test('a very weak bridge merges into the zero cluster and the next tied cluster gives coordinates', () => {
   const graph = weakBridgeGraph(1e-12);
-  const refused = refusal(spectralGeometry(graph, options('2d')));
-  assert.equal(refused.code, 'ambiguous-eigenspace');
-  assert.ok(refused.clusterTolerance > 0);
-  const repeat = refusal(spectralGeometry(graph, options('2d')));
-  assert.equal(repeat.resultDigest, refused.resultDigest);
+  const outcome = spectralGeometry(graph, options('2d'));
+  assert.equal(spectralGeometry(graph, options('2d')).resultDigest, outcome.resultDigest);
 });
 
 test('the Lanczos backend reproduces the dense P3 geometry and refuses identically where ranks lack', () => {
@@ -287,7 +334,8 @@ test('the geometry explanation carries the full inspector witness', () => {
   assert.equal(witness.quantization, '1e-10');
   assert.equal(witness.resultDigest, outcome.resultDigest);
   assert.ok(explanation.limitation !== undefined);
-  const refused = refusal(spectralGeometry(starGraph(4), options('2d')));
-  assert.equal(refused.explanation.numericalWitness!.code, 'ambiguous-eigenspace');
-  assert.ok(String(refused.explanation.numericalWitness!.clusterEigenvalues).length > 0);
+  const cut = coordinates(spectralGeometry(starGraph(4), options('2d')));
+  assert.equal(cut.eigenspacePolicy, CANONICAL_EIGENSPACE_POLICY_VERSION);
+  assert.equal(cut.explanation.numericalWitness!.selectedAxes, '2');
+  assert.ok(Number(cut.clusters[0]!.lowerGap) > 0);
 });

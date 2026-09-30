@@ -383,53 +383,33 @@ test('focus on a region draws only its members, keeps the host, and can be left'
   assert.equal(trace.updates.at(-1)!.nodeIds.size, 36, 'leaving the focus draws the whole domain again');
 });
 
-test('a typed no-coordinates refusal is disclosed with its code and the position-free fields are still explained', async () => {
+test('a 3D ring with a cut tied cluster is drawn with canonical spectral axes', async () => {
   const client = spyClient();
   const { page, trace } = await typedPage({ client, index: ringIndex(), axes: { projection: '3d', organization: 'holographic' } });
   assert.equal(client.requests.at(-1)!.parameters.dimension, '3d');
-  assert.equal(trace.mounts, 0, 'no drawing under the Holographic label');
-  assert.equal(resultOf(page), null);
-  const status = statusText();
-  assert.match(status, /^Vista Holographic · proiezione rifiutata \[ambiguous-eigenspace\]: /);
-  assert.match(status, /nessuna posizione mostrata/);
-  assert.match(status, /sperimentale/);
-  assert.match(status, /i campi senza posizione restano spiegati/);
-  assert.match(status, /modello d'errore: /);
-  assert.deepEqual(recordOf(page).refusal!.code, 'ambiguous-eigenspace');
+  assert.equal(trace.mounts, 1);
+  assert.equal(resultOf(page)!.coordinateState.kind, 'coordinates');
+  assert.match(resultOf(page)!.explanations['holographic-spectral-geometry']!.summary,
+    /assi scelti per convenzione canonica dentro un autospazio degenere/);
+  assert.equal(recordOf(page).refusal, null);
   const held = recordOf(page).holographic!;
-  assert.equal(held.coordinatesRefused, true);
-  assert.deepEqual(held.drawnFieldIds, []);
+  assert.equal(held.coordinatesRefused, false);
   assert.deepEqual(held.channels, [SIGNAL, 'visual:holographic:heat:0', 'visual:holographic:heat:1']);
   assert.deepEqual(held.regions, ['ring']);
-
-  // The refusal is a card of its own: the code, no coordinate claim, apart from any source card.
-  const refusal = byId('holographic-refusal')!;
-  assert.ok(refusal);
-  assert.match(textOf(refusal), /Nessuna coordinata/);
-  assert.match(textOf(refusal), /Stato delle coordinate/);
-  assert.match(textOf(refusal), /ambiguous-eigenspace · nessuna posizione assegnata/);
-  assert.match(textOf(refusal), /No spectral coordinates/);
-  // The position-free channel and region witness are explained beside it.
-  const channel = byId('holographic-channel-card')!;
-  assert.match(textOf(channel), /Measured scalar signal importance/);
-  assert.match(textOf(channel), /Derivato · non attestato/);
-  assert.doesNotMatch(textOf(channel), /Nessuna coordinata/, 'the channel card explains the channel, not the refusal');
+  assert.equal(byId('holographic-refusal'), null);
+  assert.ok(resultOf(page)!.fields.some(field => field.id === SIGNAL));
   assert.match(textOf(byId('holographic-witness')!), /Region ring \(community, 12 sampled nodes\)|Region ring \(community, 12 sampled nodes\) refused/);
-  // The controls stay, and a channel choice is remembered without any drawing.
   const select = byId('holographic-channel')!;
   await change(select, HEAT);
-  assert.match(textOf(byId('holographic-channel-card')!), /Heat-diffused importance at t=2/);
-  assert.equal(byId('holographic-focus')!.disabled, true, 'nothing to focus on without positions');
-  assert.equal(trace.mounts, 0);
-
-  // 2D of the same graph resolves the tie: the refusal is gone and the view is drawn.
+  assert.deepEqual(recordOf(page).holographic!.drawnFieldIds, [HEAT]);
+  assert.equal(byId('holographic-focus')!.disabled, false);
   await page.setAxes({ projection: '2d' });
   assert.equal(resultOf(page)!.determinism.algorithmId, 'holographic');
   assert.equal(recordOf(page).refusal, null);
   assert.equal(recordOf(page).holographic!.coordinatesRefused, false);
   assert.equal(byId('holographic-refusal'), null);
   assert.equal(byId('holographic-channel-card'), null);
-  assert.equal(trace.mounts, 1);
+  assert.equal(trace.mounts, 2);
 });
 
 test('picks of a field open the explanation card; a node keeps its source card and a hidden channel is not pickable', async () => {

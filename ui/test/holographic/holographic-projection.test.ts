@@ -214,28 +214,20 @@ test('exploratory edges stay a separate channel: they change neither the Laplaci
   assert.doesNotThrow(() => validateProjectionResult(mixedResult, contextOf(withExploratory, mixedRequest)));
 });
 
-test('a tied eigenspace is refused in 3D and resolved by the whole-cluster rule in 2D', async () => {
+test('a tied eigenspace supplies canonical axes in 3D and 2D', async () => {
   const cycle = ring('t', 12, 'c00');
   const fixture = await buildSnapshotFixture(cycle.nodes, cycle.edges);
 
-  // C12: the first nonzero cluster is the doubled pair (lambda_1 = lambda_11); 3 axes would split the next pair.
+  // C12: the first nonzero cluster is doubled; 3D selects one axis from the next pair.
   const request3 = requestFor(fixture, { dimension: '3d', modes: 4, restartSize: 8, heatTimes: [1] });
-  const refused = await holographicProjection.project(fixture.snapshot, request3);
-  assert.deepEqual(refused.coordinateState, {
-    kind: 'no-coordinates', code: 'ambiguous-eigenspace', explanationId: 'holographic-spectral-geometry',
-  });
-  assert.deepEqual(refused.loadedNodeIds, []);
-  assert.ok(!Object.hasOwn(refused, 'positions2') && !Object.hasOwn(refused, 'positions3'), 'no substitute layout');
-  assert.equal(refused.lod.maxVisibleNodes, 0);
-  const failing = diagnostic(refused, 'ambiguous-eigenspace')!;
-  assert.equal(failing.acceptable, false);
-  assert.match(String(failing.value), /a tied eigenspace is never split/);
-  assert.match(refused.explanations['holographic-spectral-geometry']!.summary, /^No spectral coordinates/);
-  // Position-free analytic fields stay visible with the failed metric.
-  assert.ok(refused.fields.some(field => field.id === 'visual:holographic:signal:importance'));
-  assert.ok(refused.fields.some(field => field.id === 'visual:holographic:heat:0'));
-  assert.doesNotThrow(() => validateProjectionResult(refused, contextOf(fixture, request3)));
-  await assertConserved(fixture, request3, refused);
+  const threeD = await holographicProjection.project(fixture.snapshot, request3);
+  assert.equal(threeD.coordinateState.kind, 'coordinates');
+  assert.equal(threeD.loadedNodeIds.length, 12);
+  assert.ok(Object.hasOwn(threeD, 'positions3'));
+  assert.match(threeD.explanations['holographic-spectral-geometry']!.summary, /assi scelti per convenzione canonica dentro un autospazio degenere/);
+  assert.equal(threeD.explanations['holographic-spectral-geometry']!.numericalWitness!.selectedAxes, '2,1');
+  assert.doesNotThrow(() => validateProjectionResult(threeD, contextOf(fixture, request3)));
+  await assertConserved(fixture, request3, threeD);
 
   // 2D: the doubled pair exactly fills two axes, so the cluster is included whole.
   const request2 = requestFor(fixture, { dimension: '2d', modes: 4, restartSize: 8, heatTimes: [1] });
@@ -252,17 +244,17 @@ test('a tied eigenspace is refused in 3D and resolved by the whole-cluster rule 
   assert.doesNotThrow(() => validateProjectionResult(resolved, contextOf(fixture, request2)));
 });
 
-test('two equal disconnected rings tie a four-fold eigenspace that 2D refuses instead of splitting', async () => {
+test('two equal disconnected rings tie a four-fold eigenspace that supplies two canonical axes', async () => {
   const a = ring('a', 6, null);
   const b = ring('b', 6, null);
   const fixture = await buildSnapshotFixture([...a.nodes, ...b.nodes], [...a.edges, ...b.edges]);
   const request = requestFor(fixture, { modes: 1, restartSize: 2, heatTimes: [1] });
   const result = await holographicProjection.project(fixture.snapshot, request);
   assert.equal(diagnostic(result, 'component-count')!.value, 2);
-  assert.equal(result.coordinateState.kind, 'no-coordinates');
-  if (result.coordinateState.kind !== 'no-coordinates') assert.fail('unreachable');
-  assert.equal(result.coordinateState.code, 'ambiguous-eigenspace');
-  assert.deepEqual(result.loadedNodeIds, []);
+  assert.equal(result.coordinateState.kind, 'coordinates');
+  assert.equal(result.loadedNodeIds.length, 12);
+  assert.equal(result.explanations['holographic-spectral-geometry']!.numericalWitness!.selectedAxes, '2');
+  assert.match(String(result.explanations['holographic-spectral-geometry']!.numericalWitness!.clusters), /1\.000000e\+0x4/);
   assert.doesNotThrow(() => validateProjectionResult(result, contextOf(fixture, request)));
 });
 

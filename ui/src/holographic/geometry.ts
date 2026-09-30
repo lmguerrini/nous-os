@@ -1,5 +1,5 @@
 /** D-073 tranche F, row F8 — spectral 2D/3D geometry under the deterministic tied-eigenspace
- * policy `projector-probe-v1`.
+ * policy `projector-probe-v2` (decision G6).
  *
  * Domain node IDs are sorted by codepoint and connected components are ordered by smallest
  * ID (both fixed by holographic/adjacency.ts). The symmetric Laplacian is solved with the
@@ -9,14 +9,14 @@
  * solver-failure outcome with the dense refusal message instead of throwing. Eigenvalues ascend and are clustered:
  * adjacent values within tau = 1e-8 max(1, ||L||_2, |lambda_i|, |lambda_{i+1}|) share a
  * cluster, a gap to either neighbouring cluster must exceed 4 tau, and the whole
- * zero-eigenvalue cluster is skipped. Whole nonzero clusters are included in increasing
- * order until their cumulative multiplicity equals the requested 2/3-axis count; crossing it
- * refuses `no-coordinates/ambiguous-eigenspace`, running out of nonzero modes refuses
- * `no-coordinates/insufficient-rank` — a cluster is never split.
+ * zero-eigenvalue cluster is skipped. Nonzero clusters are visited in increasing order;
+ * a cluster crossing the requested axis count contributes only the remaining axes from
+ * its full projector. A cluster must be isolated at both edges. Exhausting the available
+ * nonzero modes refuses `no-coordinates/insufficient-rank`.
  *
  * Each retained cluster contributes its orthogonal projector P = U U^T through SHA-256 probe
  * columns with entries +-1/sqrt(n) derived from (snapshotDigest, domainDigest, cluster
- * ordinal, probe ordinal, node ID, projector-probe-v1). The smallest probe ordinal whose
+ * ordinal, probe ordinal, node ID, projector-probe-v2). The smallest probe ordinal whose
  * reorthogonalised norm exceeds 1e-8 is chosen (a pivot within 1e-7 of that threshold
  * refuses), then modified Gram-Schmidt is applied twice against every previously chosen
  * column, and each column's sign is fixed so its largest-absolute entry (ties by smallest
@@ -34,8 +34,11 @@ import { LANCZOS_SOLVER_VERSION, solveSpectrum, type LanczosOptions } from './la
 import { largestEntryIndex, modifiedGramSchmidtTwice, norm2, orthogonalityDefect } from './linear-algebra.ts';
 import type { Eigenbasis } from './signals.ts';
 
-export const SPECTRAL_GEOMETRY_VERSION = 'holographic-geometry-v2';
+export const SPECTRAL_GEOMETRY_VERSION = 'holographic-geometry-v3';
+/** Request-schema identifier retained until the projection contract can be migrated. */
 export const EIGENSPACE_POLICY_VERSION = 'projector-probe-v1';
+/** Version of the actual canonical-axis rule, included in geometry and result digests. */
+export const CANONICAL_EIGENSPACE_POLICY_VERSION = 'projector-probe-v2';
 export const CLUSTER_RELATIVE_TOLERANCE = 1e-8;
 export const CLUSTER_GAP_FACTOR = 4;
 export const PROBE_ACCEPT_NORM = 1e-8;
@@ -71,6 +74,9 @@ export interface GeometryClusterWitness {
   readonly eigenvalueMin: number;
   readonly eigenvalueMax: number;
   readonly multiplicity: number;
+  readonly selectedAxes: number;
+  readonly lowerGap: number;
+  readonly upperGap: number | null;
   readonly probeOrdinals: readonly number[];
 }
 
@@ -219,7 +225,7 @@ function probeColumn(graph: SpectralGraph, clusterOrdinal: number, probeOrdinal:
   const column = new Float64Array(n);
   const scale = 1 / Math.sqrt(n);
   for (let index = 0; index < n; index += 1) {
-    const hex = digestPayload([snapshotDigest, domainDigest, EIGENSPACE_POLICY_VERSION, clusterOrdinal, probeOrdinal, graph.nodeIds[index]!]);
+    const hex = digestPayload([snapshotDigest, domainDigest, CANONICAL_EIGENSPACE_POLICY_VERSION, clusterOrdinal, probeOrdinal, graph.nodeIds[index]!]);
     column[index] = (parseInt(hex.slice(0, 1), 16) % 2 === 0 ? 1 : -1) * scale;
   }
   return column;
@@ -297,7 +303,7 @@ function solverFailureState(
   const axes = options.dimension === '2d' ? 2 : 3;
   const resultDigest = digestPayload([
     SPECTRAL_GEOMETRY_VERSION,
-    EIGENSPACE_POLICY_VERSION,
+    CANONICAL_EIGENSPACE_POLICY_VERSION,
     'no-coordinates',
     'solver-failure',
     options.snapshotDigest,
@@ -312,7 +318,7 @@ function solverFailureState(
     code: 'solver-failure',
     message: attempt.message,
     algorithmVersion: SPECTRAL_GEOMETRY_VERSION,
-    eigenspacePolicy: EIGENSPACE_POLICY_VERSION,
+    eigenspacePolicy: CANONICAL_EIGENSPACE_POLICY_VERSION,
     dimension: options.dimension,
     axes,
     nodeIds: graph.nodeIds,
@@ -333,7 +339,7 @@ function solverFailureState(
       elementKind: 'field',
       summary: `No spectral coordinates: ${attempt.message}`,
       sourceIds: [],
-      parameterIds: [options.snapshotDigest, options.domainDigest, EIGENSPACE_POLICY_VERSION],
+      parameterIds: [options.snapshotDigest, options.domainDigest, CANONICAL_EIGENSPACE_POLICY_VERSION],
       numericalWitness: {
         code: 'solver-failure',
         axes,
@@ -404,7 +410,7 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
     for (const value of solved.eigenvalues) eigenvaluesScaled.push(scaleEigenvalue(value));
     const resultDigest = digestPayload([
       SPECTRAL_GEOMETRY_VERSION,
-      EIGENSPACE_POLICY_VERSION,
+      CANONICAL_EIGENSPACE_POLICY_VERSION,
       'no-coordinates',
       code,
       options.snapshotDigest,
@@ -420,7 +426,7 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
       code,
       message,
       algorithmVersion: SPECTRAL_GEOMETRY_VERSION,
-      eigenspacePolicy: EIGENSPACE_POLICY_VERSION,
+      eigenspacePolicy: CANONICAL_EIGENSPACE_POLICY_VERSION,
       dimension: options.dimension,
       axes,
       nodeIds: graph.nodeIds,
@@ -441,7 +447,7 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
         elementKind: 'field',
         summary: `No spectral coordinates: ${message}`,
         sourceIds: [],
-        parameterIds: [options.snapshotDigest, options.domainDigest, EIGENSPACE_POLICY_VERSION],
+        parameterIds: [options.snapshotDigest, options.domainDigest, CANONICAL_EIGENSPACE_POLICY_VERSION],
         numericalWitness: {
           code,
           axes,
@@ -477,22 +483,29 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
         gapTolerance,
       );
     }
-    const multiplicity = cluster.end - cluster.start;
-    if (cumulative + multiplicity > axes) {
-      return refuse(
-        'ambiguous-eigenspace',
-        `including the whole eigenvalue cluster [${solved.eigenvalues[cluster.start]!.toExponential(3)}, ${solved.eigenvalues[cluster.end - 1]!.toExponential(3)}] of multiplicity ${String(multiplicity)} would cross the requested ${String(axes)}-axis count (${String(cumulative)} + ${String(multiplicity)}); a tied eigenspace is never split`,
-        boundaryTolerance(solved, cluster.start),
-      );
-    }
     retained.push(cluster);
-    cumulative += multiplicity;
-    if (cumulative === axes) break;
+    cumulative += Math.min(axes - cumulative, cluster.end - cluster.start);
+    if (cumulative === axes) {
+      if (cluster.end < solved.count) {
+        const upperGap = solved.eigenvalues[cluster.end]! - solved.eigenvalues[cluster.end - 1]!;
+        const upperTolerance = boundaryTolerance(solved, cluster.end);
+        if (upperGap <= CLUSTER_GAP_FACTOR * upperTolerance) {
+          return refuse('ambiguous-eigenspace',
+            `the upper gap ${upperGap.toExponential(3)} of the selected cluster does not exceed ${String(CLUSTER_GAP_FACTOR)} tau = ${(CLUSTER_GAP_FACTOR * upperTolerance).toExponential(3)}`,
+            upperTolerance);
+        }
+      } else if (solved.count < n) {
+        return refuse('ambiguous-eigenspace',
+          `the selected cluster ends at the last of ${String(solved.count)} partial-spectrum modes; its full multiplicity and upper gap cannot be certified`,
+          boundaryTolerance(solved, cluster.start));
+      }
+      break;
+    }
   }
   if (cumulative < axes) {
     return refuse(
       'insufficient-rank',
-      `only ${String(cumulative)} nonzero cluster dimensions are available for the requested ${String(axes)} axes${backend === 'lanczos' ? ` within the ${String(solved.count - graph.componentCount)} solved nontrivial modes` : ''}; whole clusters never split`,
+      `only ${String(cumulative)} nonzero cluster dimensions are available for the requested ${String(axes)} axes${backend === 'lanczos' ? ` within the ${String(solved.count - graph.componentCount)} solved nontrivial modes` : ''}`,
       zeroThreshold,
     );
   }
@@ -501,11 +514,13 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
   const chosen: Float64Array[] = [];
   const witnesses: GeometryClusterWitness[] = [];
   const probeOrdinalLimit = PROBE_LIMIT_FACTOR * n;
+  let selected = 0;
   for (const [ordinalOffset, cluster] of retained.entries()) {
     const clusterOrdinal = firstNonzero + ordinalOffset;
     const multiplicity = cluster.end - cluster.start;
+    const selectedAxes = Math.min(axes - selected, multiplicity);
     const probeOrdinals: number[] = [];
-    for (let probeOrdinal = 0; probeOrdinal < probeOrdinalLimit && probeOrdinals.length < multiplicity; probeOrdinal += 1) {
+    for (let probeOrdinal = 0; probeOrdinal < probeOrdinalLimit && probeOrdinals.length < selectedAxes; probeOrdinal += 1) {
       const probe = probeColumn(graph, clusterOrdinal, probeOrdinal, options.snapshotDigest, options.domainDigest);
       const candidate = projectThroughCluster(solved, cluster, probe);
       const norm = modifiedGramSchmidtTwice(candidate, chosen);
@@ -525,10 +540,10 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
       chosen.push(candidate);
       probeOrdinals.push(probeOrdinal);
     }
-    if (probeOrdinals.length < multiplicity) {
+    if (probeOrdinals.length < selectedAxes) {
       return refuse(
         'insufficient-rank',
-        `cluster ${String(clusterOrdinal)} produced only ${String(probeOrdinals.length)}/${String(multiplicity)} independent probe columns within ${String(probeOrdinalLimit)} probes; the projector rank is deficient`,
+        `cluster ${String(clusterOrdinal)} produced only ${String(probeOrdinals.length)}/${String(selectedAxes)} independent probe columns within ${String(probeOrdinalLimit)} probes; the probe projection is degenerate`,
         boundaryTolerance(solved, cluster.start),
       );
     }
@@ -537,15 +552,19 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
       eigenvalueMin: solved.eigenvalues[cluster.start]!,
       eigenvalueMax: solved.eigenvalues[cluster.end - 1]!,
       multiplicity,
+      selectedAxes,
+      lowerGap: solved.eigenvalues[cluster.start]! - solved.eigenvalues[clusters[clusterOrdinal - 1]!.end - 1]!,
+      upperGap: cluster.end < solved.count ? solved.eigenvalues[cluster.end]! - solved.eigenvalues[cluster.end - 1]! : null,
       probeOrdinals,
     });
+    selected += selectedAxes;
   }
 
   // Residual, orthogonality and repeat-solve projector checks on the assembled geometry.
   const residualScale = Math.max(1, solved.normEstimate);
   let checkedColumn = 0;
   for (const [ordinalOffset, cluster] of retained.entries()) {
-    for (let local = cluster.start; local < cluster.end; local += 1) {
+    for (let local = 0; local < witnesses[ordinalOffset]!.selectedAxes; local += 1) {
       const column = chosen[checkedColumn++]!;
       const action = applyClusterEigenvalueAction(solved, cluster, column);
       const product = graph.applyLaplacian(column);
@@ -600,7 +619,7 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
 
   const resultDigest = digestPayload([
     SPECTRAL_GEOMETRY_VERSION,
-    EIGENSPACE_POLICY_VERSION,
+    CANONICAL_EIGENSPACE_POLICY_VERSION,
     'coordinates',
     options.snapshotDigest,
     options.domainDigest,
@@ -614,6 +633,9 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
       scaleEigenvalue(witness.eigenvalueMin),
       scaleEigenvalue(witness.eigenvalueMax),
       witness.multiplicity,
+      witness.selectedAxes,
+      scaleEigenvalue(witness.lowerGap),
+      witness.upperGap === null ? null : scaleEigenvalue(witness.upperGap),
       witness.probeOrdinals,
     ]),
   ]);
@@ -623,7 +645,7 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
   return {
     kind: 'coordinates',
     algorithmVersion: SPECTRAL_GEOMETRY_VERSION,
-    eigenspacePolicy: EIGENSPACE_POLICY_VERSION,
+    eigenspacePolicy: CANONICAL_EIGENSPACE_POLICY_VERSION,
     dimension: options.dimension,
     axes,
     nodeIds: graph.nodeIds,
@@ -646,17 +668,19 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
       elementId: 'holographic-spectral-geometry',
       elementKind: 'field',
       summary:
-        `Canonical spectral ${options.dimension} geometry from ${String(witnesses.length)} whole eigenvalue cluster(s) ` +
-        `of the attested Laplacian (projector-probe-v1); coordinates are quantised to 1e-10 and orientation within a tied ` +
-        `eigenspace is fixed by digest-seeded probes, so it is a labelled convention, not measured semantics`,
+        `Canonical spectral ${options.dimension} geometry from ${String(witnesses.length)} isolated eigenvalue cluster(s) ` +
+        `of the attested Laplacian (${CANONICAL_EIGENSPACE_POLICY_VERSION}); assi scelti per convenzione canonica dentro un autospazio degenere. ` +
+        `Coordinates are quantised to 1e-10; probe orientation is a labelled convention, not measured semantics`,
       sourceIds: [],
-      parameterIds: [options.snapshotDigest, options.domainDigest, EIGENSPACE_POLICY_VERSION],
+      parameterIds: [options.snapshotDigest, options.domainDigest, CANONICAL_EIGENSPACE_POLICY_VERSION],
       numericalWitness: {
         axes,
         backend,
         solverVersion: solved.solverVersion,
         clusterTolerance: tolerance,
         clusters: formatList(witnesses.map((witness) => `${witness.eigenvalueMin.toExponential(6)}x${String(witness.multiplicity)}`)),
+        selectedAxes: formatList(witnesses.map((witness) => witness.selectedAxes)),
+        clusterGaps: formatList(witnesses.map((witness) => `${witness.lowerGap.toExponential(3)}/${witness.upperGap === null ? 'spectrum-end' : witness.upperGap.toExponential(3)}`)),
         probeOrdinals: formatList(witnesses.flatMap((witness) => witness.probeOrdinals)),
         relativeResidualMax: solved.relativeResidualMax,
         orthogonalityDefect: solved.orthogonalityDefect,

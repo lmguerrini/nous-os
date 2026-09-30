@@ -8,7 +8,7 @@
  *   2. one validated spectral eigenbasis for geometry and signals — dense up to
  *      DENSE_DEFAULT_MAX_N = 172 nodes, the bounded restarted Lanczos solver above
  *      (the declared backend policy; a solver refusal is reported, never loosened);
- *   3. canonical spectral 2D/3D geometry under the `projector-probe-v1` policy
+ *   3. canonical spectral 2D/3D geometry under the `projector-probe-v2` policy
  *      (holographic/geometry.ts), whose typed no-coordinate refusal on an ambiguous
  *      eigenspace, insufficient rank or solver failure is carried through verbatim —
  *      never a substitute layout;
@@ -50,7 +50,7 @@ import type {
   ProjectionParameters, ProjectionRequest, ProjectionResult, RawJson, SemanticGraphSnapshot,
 } from './contract-types.ts';
 
-export const HOLOGRAPHIC_PROJECTION_VERSION = 'holographic-projection-v3';
+export const HOLOGRAPHIC_PROJECTION_VERSION = 'holographic-projection-v4';
 export const HOLOGRAPHIC_NUMERIC_BACKEND_VERSION = 'javascript-number-v1';
 /** The experimental flag every Holographic result carries in diagnostics. */
 export const HOLOGRAPHIC_EXPERIMENTAL_FLAG = 'holographic-experimental';
@@ -96,6 +96,7 @@ function assertRequest(snapshot: SemanticGraphSnapshot, request: ProjectionReque
   if (request.id !== 'holographic' || request.snapshotDigest !== snapshot.digest || domain.snapshotDigest !== snapshot.digest)
     fail('snapshot mismatch');
   if (request.requestedLevelId !== undefined) fail('Holographic has no recursive levels; it loads its whole domain');
+  // The request schema still names v1; the result and digest disclose the v2 G6 rule.
   if (parameters.eigenspacePolicyVersion !== EIGENSPACE_POLICY_VERSION)
     fail(`unsupported eigenspace policy ${parameters.eigenspacePolicyVersion}`);
   if (parameters.dimension !== '2d' && parameters.dimension !== '3d') fail('unsupported dimension');
