@@ -1173,6 +1173,9 @@ export class V2Page {
             assertCurrentLevelToken(parent, snapshot, domain, result);
             target = await indraRequestForLevelToken(snapshot, request, parent.loadToken);
         }
+        // A disclosure belongs to the request that produced it. In-page navigation starts a
+        // different Indra request even when leaving will reproduce an earlier result digest.
+        this.indraRequestedLevelRefusals.clear();
         const epoch = this.projectionEpoch;
         let projected: ProjectionResult;
         try {
@@ -1573,6 +1576,7 @@ export class V2Page {
             element('status').textContent = this.typedStatusLine();
             return;
         }
+        if (result.determinism.algorithmId === 'indras-pearls') this.indraRequestedLevelRefusals.clear();
         const epoch = this.projectionEpoch;
         let styled: StyledProjection;
         try {
@@ -1606,7 +1610,10 @@ export class V2Page {
         this.lodCounts = lod.counts;
         this.lastNodeSelection = lod.selection;
         // The pearl the view is opened to, when this level names one: the panel below offers its exit.
-        if (open !== undefined) this.indraOpen = open === null ? null : { levelId: open, domainDigest: domain.domainDigest };
+        if (open !== undefined) {
+            this.indraRequestedLevelRefusals.clear();
+            this.indraOpen = open === null ? null : { levelId: open, domainDigest: domain.domainDigest };
+        }
         this.dropHiddenTypedSelection();
         this.adoptSelectedNode();
         this.renderPanel();

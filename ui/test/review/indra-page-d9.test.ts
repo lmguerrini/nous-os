@@ -376,6 +376,48 @@ test('a refused saved Indra level is disclosed beside the displayed root and rec
   assert.equal(internals(page).indraRequestedLevelRefusals.size, 0, 'leaving Indra clears its request disclosure');
 });
 
+test('an in-page Indra navigation clears a saved-level refusal before returning to the same root', async () => {
+  const inner = spyClient();
+  let refuseSavedLevel = false;
+  const client: ProjectionWorkerClient = {
+    get backend() { return inner.backend; }, get isIdle() { return inner.isIdle; },
+    project(request) {
+      if (refuseSavedLevel && request.requestedLevelId !== undefined) {
+        return Promise.reject(new ProjectionClientError('projection-refusal', 'worker typed refusal', {
+          failure: { code: 'projection-refusal', refusal: 'indra', refusalCode: 'level-not-found', detail: 'livello salvato non disponibile' },
+        }));
+      }
+      return inner.project(request);
+    },
+    cancel: slot => inner.cancel(slot), dispose: () => inner.dispose(),
+  };
+  const { page } = await typedPage({ client, axes: { organization: 'indra' } });
+  const firstLevelId = lazyOf(resultOf(page)!)[0]!.id;
+  await page.loadProjectionLevel(firstLevelId, '2d/indra');
+  refuseSavedLevel = true;
+  await page.refresh();
+
+  const refusedRoot = resultOf(page)!;
+  assert.equal(recordOf(page).openLevelId, null);
+  assert.deepEqual(recordOf(page).requestedLevelRefusals,
+    [{ levelId: firstLevelId, code: 'level-not-found', detail: 'livello salvato non disponibile' }]);
+  assert.ok(textOf(elements.get('details')!).includes(`Livello ${firstLevelId} rifiutato [level-not-found]`));
+
+  refuseSavedLevel = false;
+  const anotherLevelId = lazyOf(refusedRoot).find(level => level.id !== firstLevelId)?.id;
+  assert.ok(anotherLevelId, 'the fixture provides another level to open');
+  await page.loadProjectionLevel(anotherLevelId!, '2d/indra');
+  assert.equal(recordOf(page).openLevelId, anotherLevelId);
+  while (recordOf(page).openLevelId !== null) await page.leaveIndraPearl('2d/indra');
+
+  assert.equal(resultOf(page)!.determinism.resultDigest, refusedRoot.determinism.resultDigest,
+    'returning to the root reproduces the same projection digest');
+  assert.doesNotMatch(statusText(), /livello richiesto .* rifiutato/);
+  assert.doesNotMatch(textOf(elements.get('details')!), /Livello .* rifiutato/);
+  assert.deepEqual(recordOf(page).requestedLevelRefusals, [], 'the witness has no refusal for the new display');
+  assert.equal(internals(page).indraRequestedLevelRefusals.size, 0);
+});
+
 test('a refused Indra root still clears a previously mounted typed renderer', async () => {
   const inner = spyClient();
   const client: ProjectionWorkerClient = {
