@@ -116,6 +116,7 @@ test('D-073 an explicit arrangement in a legacy flat URL view is kept in both Na
     `${url}#view=${encodeURIComponent(legacyViewWithExplicitArrangement)}`,
     `${url}#projection=natural&view=${encodeURIComponent(legacyViewWithExplicitArrangement)}`,
   ]) {
+    await page.goto('about:blank');
     const errors = await ready(page, target);
     const loaded = await pageState(page);
     expect(loaded.axes).toMatchObject({ organization: 'natural', arrangement: 'mycelium', morphology: 'neural' });
