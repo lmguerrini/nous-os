@@ -72,6 +72,43 @@ export const HOLOGRAPHIC_REGION_POLICY_DERIVED_COMPONENTS = 'derived-components-
 /** The stated baseline and limitation text, re-exported for the panel seam (F9 view half). */
 export const HOLOGRAPHIC_STATED_BASELINE = EXPLAIN_STATED_BASELINE;
 export const HOLOGRAPHIC_NO_TOPOLOGY_CLAIM = EXPLAIN_NO_TOPOLOGY_CLAIM;
+
+/** Italian presentation of the G6/G7 geometry witness supplied by the solver. */
+function italianGeometryText(text: string): string {
+  return text
+    .replaceAll('Canonical spectral', 'Geometria spettrale canonica')
+    .replaceAll(' geometry from ', ' ricavata da ')
+    .replaceAll(' isolated eigenvalue cluster(s) ', ' gruppi di autovalori isolati ')
+    .replaceAll('Attested components have independent degree-normalised Laplacian spectra:', 'Le componenti attestate hanno spettri indipendenti del Laplaciano normalizzato per grado:')
+    .replaceAll('of the attested degree-normalised Laplacian', 'del Laplaciano normalizzato per grado sugli archi attestati')
+    .replaceAll('Koren coordinates', 'Coordinate di Koren')
+    .replaceAll('Koren v', 'Koren v')
+    .replaceAll('solve L v = lambda D v', 'soddisfano L v = λ D v')
+    .replaceAll('solves L v = lambda D v', 'soddisfa L v = λ D v')
+    .replaceAll('N = D^-1/2 L D^-1/2', 'N = D^-1/2 L D^-1/2')
+    .replaceAll('Each component is centred and scaled to unit maximum extent; coordinates are quantised to 1e-10', 'Ogni componente è centrata e scalata fino a un’estensione massima unitaria; le coordinate sono quantizzate a 1e-10')
+    .replaceAll('Components are packed by descending size then smallest ID,', 'Le componenti sono disposte per dimensione decrescente e poi per ID minimo,')
+    .replaceAll('in unit-wide x cells with a 0.5-unit gutter; each is centred and scaled to unit maximum extent.', 'in celle x di larghezza unitaria con un margine di 0.5 unità; ognuna è centrata e scalata fino a un’estensione massima unitaria.')
+    .replaceAll('Tied modes use', 'I modi degeneri seguono')
+    .replaceAll('assi scelti per convenzione canonica dentro un autospazio degenere.', 'gli assi sono scelti secondo una convenzione canonica all’interno di un autospazio degenere.')
+    .replaceAll('Each component is centred and scaled to unit maximum extent; coordinates are quantised to', 'Ogni componente è centrata e scalata fino a un’estensione massima unitaria; le coordinate sono quantizzate a')
+    .replaceAll('No spectral coordinates:', 'Coordinate spettrali non disponibili:')
+    .replaceAll('Component ', 'Componente ')
+    .replaceAll(' refused spectral coordinates:', ': coordinate spettrali rifiutate:');
+}
+
+function italianGeometryLimitation(text: string): string {
+  return text
+    .replace('Spectral coordinates are a visual projection of graph features; axis orientation inside a tied eigenspace follows the deterministic probe policy and carries no semantic-edge meaning.',
+      'Le coordinate spettrali sono una proiezione visiva delle caratteristiche del grafo; l’orientamento degli assi in un autospazio degenere segue la regola deterministica delle sonde e non attribuisce significato agli archi semantici.')
+    .replace('Packing and axis orientations are deterministic visual conventions; they do not add semantic edges.',
+      'La disposizione delle componenti e l’orientamento degli assi seguono convenzioni visive deterministiche; non aggiungono archi semantici.')
+    .replace('The eigensolver failed its convergence or orthogonality witness; no coordinate claim is made.',
+      'Il risolutore agli autovalori non ha soddisfatto i controlli di convergenza o ortogonalità; non si formula alcuna affermazione sulle coordinate.')
+    .replace('No position-dependent visual is defined in this state; no fallback layout exists.',
+      'In questo stato non è definito alcun elemento visivo dipendente dalla posizione e non esiste un layout sostitutivo.');
+}
+
 /** Final display-only adjustment for nodes with coincident spectral positions. */
 export const HOLOGRAPHIC_DISPLAY_OFFSET_VERSION = 'coincident-node-ring-v1';
 export const HOLOGRAPHIC_COINCIDENCE_RELATIVE_TOLERANCE = 1e-8;
@@ -347,7 +384,7 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
         heatExplanations[heatFieldId] = {
           elementId: heatFieldId,
           elementKind: 'field',
-          summary: `Heat-diffused ${parameters.signalId} at t=${String(time)} on the attested degree-normalised Laplacian: U exp(-t Lambda) U^T x over ${String(solved.basis.count)} of ${String(graph.size)} eigenmodes (${solved.basis.complete ? 'complete basis, exact semigroup' : 'retained low modes only'})`,
+          summary: `${parameters.signalId} diffuso col calore a t=${String(time)} sul Laplaciano normalizzato per grado degli archi attestati: U exp(-tλ) U^T x su ${String(solved.basis.count)} dei ${String(graph.size)} modi propri (${solved.basis.complete ? 'base completa, semigruppo esatto' : 'soltanto i modi bassi mantenuti'})`,
           sourceIds: [],
           parameterIds: [`signal=${parameters.signalId}`, `t=${String(time)}`, `backend=${solved.backend}`],
           numericalWitness: {
@@ -355,8 +392,8 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
             contractionRatio: ratio,
           },
           limitation: solved.basis.complete
-            ? 'Diffusion of the measured scalar signal along attested edges; no topology claim is made.'
-            : 'Only the retained low-frequency modes diffuse; the discarded high-frequency remainder of the signal is omitted, so this is a low-pass diffusion of the measured signal. No topology claim is made.',
+            ? 'Diffusione del segnale scalare misurato lungo gli archi attestati; non si formula alcuna affermazione sulla topologia.'
+            : 'La diffusione usa solo i modi a bassa frequenza mantenuti; la parte del segnale ad alta frequenza esclusa viene omessa. È quindi una diffusione passa-basso del segnale misurato. Non si formula alcuna affermazione sulla topologia.',
         };
       }
     }
@@ -413,10 +450,10 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
           recoveredStructure.conditionNumber !== null && recoveredStructure.conditionNumber <= RECOVERY_MAX_SAMPLE_CONDITION;
         const exactEmbedding = uniquenessSet && parameters.ridge === 0 && geometry.kind === 'coordinates' && embedding.every(exact);
         const exactCommunities = uniquenessSet && parameters.ridge === 0 && community.every(exact);
-        const reason = !uniquenessSet ? `sample matrix rank ${String(recoveredStructure.rank)}/${String(outcome.bandlimit)} or condition exceeds ${String(RECOVERY_MAX_SAMPLE_CONDITION)}`
-          : geometry.kind !== 'coordinates' ? 'no displayed embedding coordinates'
-            : !exactEmbedding ? 'chosen stable band does not fully contain the displayed embedding, or ridge introduces bias'
-              : parameters.ridge !== 0 ? 'ridge introduces bias' : null;
+        const reason = !uniquenessSet ? `rango della matrice di campionamento ${String(recoveredStructure.rank)}/${String(outcome.bandlimit)} o condizionamento superiore a ${String(RECOVERY_MAX_SAMPLE_CONDITION)}`
+          : geometry.kind !== 'coordinates' ? 'coordinate di embedding non disponibili'
+            : !exactEmbedding ? 'la banda stabile scelta non contiene interamente l’embedding mostrato oppure il ridge introduce distorsione'
+              : parameters.ridge !== 0 ? 'il ridge introduce distorsione' : null;
         structuralWitnesses.push({ regionId: region.regionId, bandlimit: outcome.bandlimit,
           rank: recoveredStructure.rank, conditionNumber: recoveredStructure.conditionNumber,
           uniquenessSet, reason, exactEmbedding, exactCommunities,
@@ -440,7 +477,7 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
       : null;
     const geometryExplanation: Explanation = display === null ? geometry.explanation : {
       ...geometry.explanation,
-      summary: `${geometry.explanation.summary}. Coincident-node display offsets use ${HOLOGRAPHIC_DISPLAY_OFFSET_VERSION}: coincidence tolerance ${String(HOLOGRAPHIC_COINCIDENCE_RELATIVE_TOLERANCE)} times component extent, then a ring of radius ${String(HOLOGRAPHIC_DISPLAY_RING_RADIUS_FRACTION)} times nearest distinct-point spacing; 3D rings lie in the plane orthogonal to the first view axis. Exact spectral coordinates remain available in the node-domain diagnostic.`,
+      summary: `${italianGeometryText(geometry.explanation.summary)}. Gli scostamenti visivi dei nodi coincidenti seguono ${HOLOGRAPHIC_DISPLAY_OFFSET_VERSION}: la tolleranza di coincidenza è ${String(HOLOGRAPHIC_COINCIDENCE_RELATIVE_TOLERANCE)} volte l’estensione della componente; poi si applica una circonferenza di raggio pari a ${String(HOLOGRAPHIC_DISPLAY_RING_RADIUS_FRACTION)} volte la distanza dal punto distinto più vicino. In 3D le circonferenze giacciono sul piano ortogonale al primo asse di vista. Le coordinate spettrali esatte restano disponibili nella diagnostica del dominio di nodi.`,
       parameterIds: [...geometry.explanation.parameterIds, HOLOGRAPHIC_DISPLAY_OFFSET_VERSION],
       numericalWitness: {
         ...geometry.explanation.numericalWitness,
@@ -451,16 +488,20 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
       },
     };
     const explanations: Record<string, Explanation> = {
-      [geometryExplanation.elementId]: geometryExplanation,
+      [geometryExplanation.elementId]: {
+        ...geometryExplanation,
+        summary: display === null ? italianGeometryText(geometry.explanation.summary) : geometryExplanation.summary,
+        limitation: italianGeometryLimitation(geometry.explanation.limitation ?? ''),
+      },
       'visual:holographic:error-model': errorModelExplanation(model, {
         signalId: parameters.signalId, bandlimit, ridge: parameters.ridge, regionPolicy: regionPlan.policy, smoothModel, realHeatModel,
         realHeatTime: parameters.heatTimes.find(time => time > 0) ?? 1, structure: structureModel,
-        ...(solved.basis === null ? { unavailableReason: `the spectral basis is unavailable (${solved.refusal ?? 'no solve'})` } : {}),
+        ...(solved.basis === null ? { unavailableReason: `la base spettrale non è disponibile (${solved.refusal ?? 'nessuna soluzione'})` } : {}),
       }),
       [signalFieldId]: {
         elementId: signalFieldId,
         elementKind: 'field',
-        summary: `Measured scalar signal ${parameters.signalId} (${HOLOGRAPHIC_SIGNAL_FEATURES[parameters.signalId]!}) over the ${String(graph.size)} domain nodes`,
+        summary: `Segnale scalare misurato ${parameters.signalId} (${HOLOGRAPHIC_SIGNAL_FEATURES[parameters.signalId]!}) sui ${String(graph.size)} nodi del dominio`,
         sourceIds: [],
         parameterIds: [`signal=${parameters.signalId}`, signal.provenance.digest],
         numericalWitness: {
@@ -468,7 +509,7 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
           nodeCount: signal.provenance.nodeCount, digest: signal.provenance.digest,
           digestQuantization: signal.provenance.digestQuantization,
         },
-        limitation: 'The signal is a measured source feature with recorded provenance, not knowledge content inferred from topology.',
+        limitation: 'Il segnale è una caratteristica misurata della fonte con provenienza registrata; non è conoscenza dedotta dalla topologia.',
       },
     };
     if (display !== null) for (const [id, offset] of display.offsets) {
@@ -529,7 +570,7 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
         { code: `${prefix}condition`, value: witness.conditionNumber ?? 'n/a', acceptable: witness.uniquenessSet },
         { code: `${prefix}embedding-error`, value: witness.embeddingRelativeErrors.map(value => value === null ? 'n/a' : value.toExponential(3)).join(','), acceptable: witness.exactEmbedding },
         { code: `${prefix}community-error`, value: witness.communityRelativeErrors.map(value => value === null ? 'n/a' : value.toExponential(3)).join(','), acceptable: witness.exactCommunities },
-        { code: `${prefix}reason`, value: witness.reason ?? 'sampling condition met', acceptable: witness.uniquenessSet },
+        { code: `${prefix}reason`, value: witness.reason ?? 'condizione di campionamento soddisfatta', acceptable: witness.uniquenessSet },
       );
     }
     if (regionPlan.nodesWithoutRegion > 0)

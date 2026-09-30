@@ -330,10 +330,10 @@ test('the region control shows the reconstruction witness of the chosen region w
 
   const card = () => byId('holographic-witness')!;
   assert.ok(card(), 'the witness card is shown for the default region');
-  assert.match(textOf(card()), /Region c00 \(community, 12 sampled nodes\)/);
+  assert.match(textOf(card()), /Regione c00 \(comunità, 12 nodi campionati\)/);
   assert.match(textOf(card()), /Derivato · non attestato/);
   assert.match(textOf(card()), /Sperimentale/);
-  assert.match(textOf(card()), /No topology claim is made/);
+  assert.match(textOf(card()), /Non si formula alcuna affermazione sulla topologia/);
   const provenance = findAll(card(), item => (item.className ?? '').split(' ').includes('projection-provenance'));
   assert.equal(provenance.length, 1, 'the region provenance is its own section');
   assert.deepEqual(findAll(provenance[0]!, item => item.className === 'projection-source-link').map(item => item.textContent), ['c00']);
@@ -342,8 +342,8 @@ test('the region control shows the reconstruction witness of the chosen region w
 
   await change(select, 'c02');
   assert.equal(recordOf(page).holographic!.region, 'c02');
-  assert.match(textOf(card()), /Region c02 \(community, 12 sampled nodes\)/);
-  assert.doesNotMatch(textOf(card()), /Region c00/);
+  assert.match(textOf(card()), /Regione c02 \(comunità, 12 nodi campionati\)/);
+  assert.doesNotMatch(textOf(card()), /Regione c00/);
   assert.equal(byId('holographic-region')!.value, 'c02');
 });
 
@@ -390,7 +390,7 @@ test('a 3D ring with a cut tied cluster is drawn with canonical spectral axes', 
   assert.equal(trace.mounts, 1);
   assert.equal(resultOf(page)!.coordinateState.kind, 'coordinates');
   assert.match(resultOf(page)!.explanations['holographic-spectral-geometry']!.summary,
-    /assi scelti per convenzione canonica dentro un autospazio degenere/);
+    /gli assi sono scelti secondo una convenzione canonica all’interno di un autospazio degenere/);
   assert.equal(recordOf(page).refusal, null);
   const held = recordOf(page).holographic!;
   assert.equal(held.coordinatesRefused, false);
@@ -398,7 +398,7 @@ test('a 3D ring with a cut tied cluster is drawn with canonical spectral axes', 
   assert.deepEqual(held.regions, ['ring']);
   assert.equal(byId('holographic-refusal'), null);
   assert.ok(resultOf(page)!.fields.some(field => field.id === SIGNAL));
-  assert.match(textOf(byId('holographic-witness')!), /Region ring \(community, 12 sampled nodes\)|Region ring \(community, 12 sampled nodes\) refused/);
+  assert.match(textOf(byId('holographic-witness')!), /Regione ring \(comunità, 12 nodi campionati\):/);
   const select = byId('holographic-channel')!;
   await change(select, HEAT);
   assert.deepEqual(recordOf(page).holographic!.drawnFieldIds, [HEAT]);
@@ -428,7 +428,7 @@ test('picks of a field open the explanation card; a node keeps its source card a
   assert.deepEqual(internals(page).typedSelection, { kind: 'field', visualId: SIGNAL });
   const text = textOf(details);
   assert.match(text, /Campo derivato/);
-  assert.match(text, /Measured scalar signal importance \(importance\.value\) over the 36 domain nodes/);
+  assert.match(text, /Segnale scalare misurato importance \(importance\.value\) sui 36 nodi del dominio/);
   assert.match(text, /Non semantico · non attestato/);
   assert.match(text, /Testimonianza numerica/);
   assert.match(text, /Sperimentale/);
@@ -444,7 +444,7 @@ test('picks of a field open the explanation card; a node keeps its source card a
   const last = cards().at(-1)!;
   assert.doesNotMatch(textOf(last), /Spiegazione della proiezione/);
   assert.match(textOf(last), new RegExp(`Titolo ${someNode}`), 'the last card is the source card of the node');
-  assert.match(textOf(cards()[0]!), /Region c00/, 'the region witness card stays apart above it');
+  assert.match(textOf(cards()[0]!), /Regione c00/, 'the region witness card stays apart above it');
   assert.equal(projectionExplainsPick(result, { kind: 'field', visualId: SIGNAL }), true);
 
   // Empty space clears.
@@ -510,7 +510,7 @@ test('selecting a node in Holographic emphasises it and keeps the source card; a
   const last = byClass('selection-card').at(-1)!;
   assert.match(textOf(last), new RegExp(`Titolo ${inside}`));
   assert.doesNotMatch(textOf(last), /Spiegazione della proiezione/);
-  assert.match(textOf(byClass('selection-card')[0]!), /Region c00/, 'the region witness card stays apart above the source card');
+  assert.match(textOf(byClass('selection-card')[0]!), /Regione c00/, 'the region witness card stays apart above the source card');
   assert.deepEqual(trace.styles.at(-1)!.nodeStyle[inside], { color: '#ffffff', size: 6.4 });
   assert.deepEqual(trace.styles.at(-1)!.nodeStyle['k0006'], { color: '#333333', size: 4 });
   assert.equal(trace.mounts, mounts);

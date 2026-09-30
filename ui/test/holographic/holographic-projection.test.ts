@@ -135,7 +135,7 @@ test('the fields are the measured importance signal and its heat diffusions, wit
     const expectedLimit = Math.sqrt(degrees.get(fixture.domain.nodeIds[index]!)! / volume) * weighted(expected) / Math.sqrt(volume);
     assert.ok(Math.abs(value - expectedLimit) < 1e-9, `long-time heat ${String(value)} vs ${String(expectedLimit)}`);
   });
-  assert.ok(result.explanations['visual:holographic:heat:1']!.summary.includes('complete basis'));
+  assert.ok(result.explanations['visual:holographic:heat:1']!.summary.includes('base completa, semigruppo esatto'));
 });
 
 test('coincident hub leaves receive deterministic non-overlapping display rings while exact spectral fields remain equal', async () => {
@@ -225,7 +225,7 @@ test('regions are the declared source communities and the error model matches an
   }
   assert.ok(checked >= 1);
   assert.equal(diagnostic(result, 'error-model-any-exact-claim')!.value, 'no');
-  assert.ok(result.explanations['visual:holographic:error-model']!.summary.includes('No topology claim is made'));
+  assert.ok(result.explanations['visual:holographic:error-model']!.summary.includes('Non si formula alcuna affermazione sulla topologia'));
 });
 
 test('repeat requests and permuted snapshot arrays produce the identical result digest; a changed signal does not', async () => {
@@ -289,7 +289,7 @@ test('a tied eigenspace supplies canonical axes in 3D and 2D', async () => {
   assert.equal(threeD.coordinateState.kind, 'coordinates');
   assert.equal(threeD.loadedNodeIds.length, 12);
   assert.ok(Object.hasOwn(threeD, 'positions3'));
-  assert.match(threeD.explanations['holographic-spectral-geometry']!.summary, /assi scelti per convenzione canonica dentro un autospazio degenere/);
+  assert.match(threeD.explanations['holographic-spectral-geometry']!.summary, /gli assi sono scelti secondo una convenzione canonica all’interno di un autospazio degenere/);
   assert.equal(threeD.explanations['holographic-spectral-geometry']!.numericalWitness!.selectedAxes, '2,1');
   assert.doesNotThrow(() => validateProjectionResult(threeD, contextOf(fixture, request3)));
   await assertConserved(fixture, request3, threeD);
@@ -305,7 +305,7 @@ test('a tied eigenspace supplies canonical axes in 3D and 2D', async () => {
   const ys = ids.map(id => resolved.positions2![id]!.y);
   assert.ok(Math.max(...xs) - Math.min(...xs) > 0);
   assert.ok(Math.max(...ys) - Math.min(...ys) > 0);
-  assert.match(resolved.explanations['holographic-spectral-geometry']!.summary, /degree-normalised Laplacian/);
+  assert.match(resolved.explanations['holographic-spectral-geometry']!.summary, /Laplaciano normalizzato per grado/);
   assert.doesNotThrow(() => validateProjectionResult(resolved, contextOf(fixture, request2)));
 });
 
@@ -356,7 +356,7 @@ test('a disconnected domain is handled per component: derived component regions,
   for (const regionId of ['component:p0000', 'component:r0000']) {
     const witness = result.explanations[`visual:holographic:reconstruction:${regionId}`]!;
     assert.ok(witness.numericalWitness!.status === 'recovered' || witness.numericalWitness!.status === 'refused');
-    if (witness.numericalWitness!.status === 'refused') assert.match(witness.summary, /No value is imputed/);
+    if (witness.numericalWitness!.status === 'refused') assert.match(witness.summary, /Nessun valore viene imputato/);
   }
   assert.equal(Number(diagnostic(result, 'region-refused-count')!.value) + Number(diagnostic(result, 'region-recovered-count')!.value), 2);
   assert.ok(Number(diagnostic(result, 'structural-uniqueness-fraction')!.value) <= 1);
@@ -478,8 +478,8 @@ test('an 850-node knowledge-shaped graph converges on the declared envelope and 
     assert.equal(witness.exactCommunities, true);
     assert.equal(diagnostic(result, `structural-region:${regionId}:rank`)!.value, witness.structuralRank);
   }
-  assert.match(result.explanations['visual:holographic:error-model']!.summary, /synthetic smooth-signal result is separate from the measured importance channel/);
-  assert.match(result.explanations['visual:holographic:error-model']!.summary, /Measured heat-diffused importance/);
+  assert.match(result.explanations['visual:holographic:error-model']!.summary, /Questo risultato su un segnale sintetico regolare è distinto dal canale misurato importance/);
+  assert.match(result.explanations['visual:holographic:error-model']!.summary, /importance misurato e diffuso col calore/);
   assert.equal(diagnostic(result, 'signal-parseval-defect'), undefined, 'a truncated basis makes no Parseval claim');
   assert.doesNotThrow(() => validateProjectionResult(result, contextOf(fixture, request)));
   await assertConserved(fixture, request, result);

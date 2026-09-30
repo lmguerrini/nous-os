@@ -27,7 +27,7 @@ export const HOLOGRAPHIC_EXPLAIN_VERSION = 'holographic-explain-v3';
 export const EXPLAIN_STATED_BASELINE = RECOVERY_BASELINE_GLOBAL_MEAN;
 /** The verbatim limitation attached to every reconstruction explanation. */
 export const EXPLAIN_NO_TOPOLOGY_CLAIM =
-  'No topology claim is made: spectral coordinates and community indicators are derived structural signals, while importance is a measured node attribute. Recovering these signals does not recover source nodes, edges, provenance or truth; a reconstructed signal is never a recovered semantic edge.';
+  'Non si formula alcuna affermazione sulla topologia: le coordinate spettrali e gli indicatori di comunità sono segnali strutturali derivati, mentre l’importanza è un attributo misurato del nodo. Ricostruire questi segnali non equivale a ricostruire nodi sorgente, archi, provenienza o verità; un segnale ricostruito non è mai un arco semantico recuperato.';
 
 /** Explanation attached only to nodes moved by the declared display de-coincidence rule. */
 export function coincidentNodeDisplayExplanation(
@@ -80,7 +80,7 @@ function structureNumbers(structure: StructuralRegionWitness | undefined): Recor
   return {
     structuralBandlimit: structure.bandlimit, structuralRank: structure.rank,
     structuralConditionNumber: structure.conditionNumber ?? 'n/a',
-    uniquenessSet: structure.uniquenessSet, structuralReason: structure.reason ?? 'sampling condition met',
+    uniquenessSet: structure.uniquenessSet, structuralReason: structure.reason ?? 'condizione di campionamento soddisfatta',
     exactEmbedding: structure.exactEmbedding, exactCommunities: structure.exactCommunities,
     embeddingRelativeErrors: structure.embeddingRelativeErrors.map(format).join(', '),
     embeddingBandResiduals: structure.embeddingBandResiduals.map(value => value.toExponential(3)).join(', '),
@@ -103,8 +103,8 @@ export function structuralErrorModel(witnesses: readonly StructuralRegionWitness
     uniquenessFraction: witnesses.length ? uniquenessCount / witnesses.length : null,
     exactEmbeddingCount: witnesses.filter(w => w.exactEmbedding).length,
     exactCommunitiesCount: witnesses.filter(w => w.exactCommunities).length,
-    nonUniqueRegions: witnesses.filter(w => !w.uniquenessSet).map(w => ({ regionId: w.regionId, reason: w.reason ?? 'rank or condition failure' })),
-    unrecoveredEmbeddingRegions: witnesses.filter(w => !w.exactEmbedding).map(w => ({ regionId: w.regionId, reason: w.reason ?? 'embedding complement error exceeds numerical precision' })),
+    nonUniqueRegions: witnesses.filter(w => !w.uniquenessSet).map(w => ({ regionId: w.regionId, reason: w.reason ?? 'rango insufficiente o condizionamento eccessivo' })),
+    unrecoveredEmbeddingRegions: witnesses.filter(w => !w.exactEmbedding).map(w => ({ regionId: w.regionId, reason: w.reason ?? 'l’errore sul complemento dell’embedding supera la precisione numerica' })),
     medianEmbeddingRelativeError: median(embedding), medianCommunityRelativeError: median(community),
   };
 }
@@ -198,7 +198,22 @@ function median(values: readonly number[]): number | null {
 }
 
 function format(value: number | null): string {
-  return value === null ? 'n/a' : value.toExponential(3);
+  return value === null ? 'n/d' : value.toExponential(3);
+}
+
+function italianRegionKind(kind: RegionKind): string {
+  return kind === 'community' ? 'comunità' : 'componente derivata';
+}
+
+function italianRefusalMessage(message: string): string {
+  return message
+    .replace('P_S U_k has rank', 'P_S U_k ha rango')
+    .replace('sigma_max =', 'sigma_max =')
+    .replace('threshold', 'soglia')
+    .replace('the samples cannot identify the', 'i campioni non identificano il modello a')
+    .replace('-mode model', ' modi')
+    .replace('so no recovery is claimed', 'quindi non si dichiara alcuna ricostruzione')
+    .replace(' even under the requested ridge', ' neppure con il ridge richiesto');
 }
 
 /** The aggregate error model: the honest distribution over every eligible region. */
@@ -233,14 +248,14 @@ export function holographicErrorModel(witnesses: readonly RegionReconstructionWi
   const comparedCount = recovered.filter(witness => witness.beatsStatedBaseline !== null).length;
   const summary =
     witnesses.length === 0
-      ? 'Holographic reconstruction witness: no eligible region was declared, so no part-to-whole measurement exists. No topology claim is made.'
+      ? 'Testimone di ricostruzione olografica: non è stata dichiarata alcuna regione idonea, quindi non esiste una misura parte-tutto. Non si formula alcuna affermazione sulla topologia.'
       : recovered.length === 0
-        ? `Holographic reconstruction witness: ${String(witnesses.length)} region(s) sampled and every one refused on rank; no reconstruction claim is made. No topology claim is made.`
-        : `Holographic reconstruction witness: ${String(recovered.length)}/${String(witnesses.length)} sampled regions recovered a band-limited model ` +
-          `(median held-out relative error ${format(median(heldOutErrors))}, worst ${format(heldOutErrors.length > 0 ? Math.max(...heldOutErrors) : null)}); ` +
-          `${String(beatsCount)}/${String(comparedCount)} beat the stated global-mean baseline ` +
-          `(median improvement ${format(medianImprovement)}, worst ${format(worstImprovement)}); ` +
-          `${String(witnesses.length - recovered.length)} region(s) refused on rank. ${EXPLAIN_NO_TOPOLOGY_CLAIM}`;
+        ? `Testimone di ricostruzione olografica: campionate ${String(witnesses.length)} regioni; tutte rifiutate per rango insufficiente. Non si formula alcuna affermazione di ricostruzione né sulla topologia.`
+        : `Testimone di ricostruzione olografica: modello a banda limitata ricostruito in ${String(recovered.length)}/${String(witnesses.length)} regioni campionate ` +
+          `(errore relativo mediano sui dati esclusi ${format(median(heldOutErrors))}, errore massimo ${format(heldOutErrors.length > 0 ? Math.max(...heldOutErrors) : null)}); ` +
+          `${String(beatsCount)}/${String(comparedCount)} superano la baseline dichiarata della media globale ` +
+          `(miglioramento mediano ${format(medianImprovement)}, minimo ${format(worstImprovement)}); ` +
+          `${String(witnesses.length - recovered.length)} regioni rifiutate per rango insufficiente. ${EXPLAIN_NO_TOPOLOGY_CLAIM}`;
   return {
     algorithmVersion: HOLOGRAPHIC_EXPLAIN_VERSION,
     statedBaseline: EXPLAIN_STATED_BASELINE,
@@ -271,9 +286,9 @@ export function regionReconstructionExplanation(
       elementId,
       elementKind: 'field',
       summary:
-        `Region ${witness.regionId} (${witness.regionKind}, ${String(witness.memberCount)} sampled nodes) refused band-limited recovery: ` +
-        `${witness.refusalMessage ?? 'rank-deficient'}. No value is imputed and no claim is made.` +
-        (structure === undefined ? '' : ` Structural band ${String(structure.bandlimit)}: ${structure.reason ?? 'sampling condition met'}.`),
+        `Regione ${witness.regionId} (${italianRegionKind(witness.regionKind)}, ${String(witness.memberCount)} nodi campionati): ricostruzione a banda limitata rifiutata: ` +
+        `${witness.refusalMessage === null ? 'rango insufficiente' : italianRefusalMessage(witness.refusalMessage)}. Nessun valore viene imputato e non si formula alcuna affermazione.` +
+        (structure === undefined ? '' : ` Banda strutturale ${String(structure.bandlimit)}: ${structure.reason ?? 'condizione di campionamento soddisfatta'}.`),
       sourceIds: [witness.regionId],
       parameterIds: [`bandlimit=${String(witness.bandlimit)}`, `ridge=${String(witness.ridge)}`, `max-sample-condition=${RECOVERY_MAX_SAMPLE_CONDITION}`, EXPLAIN_STATED_BASELINE],
       numericalWitness: {
@@ -292,13 +307,13 @@ export function regionReconstructionExplanation(
     elementId,
     elementKind: 'field',
     summary:
-      `Region ${witness.regionId} (${witness.regionKind}, ${String(witness.memberCount)} sampled nodes): held-out relative error ` +
-      `${format(witness.heldOutRelativeError)} (MAE ${format(witness.heldOutMae)}) against the stated global-mean baseline ` +
-      `${format(witness.statedBaselineRelativeError)}; improvement ${format(witness.improvementOverStatedBaseline)}.` +
-      (structure === undefined ? '' : ` Structural band ${String(structure.bandlimit)} has rank ${String(structure.rank)}, condition ${format(structure.conditionNumber)}; ` +
-        `embedding complement error ${structure.embeddingRelativeErrors.map(format).join(', ')}, community-signal median ${format(median(structure.communityRelativeErrors.filter((x): x is number => x !== null)))}. ` +
-        `${structure.reason ?? 'Sampling is unique for this band.'}`) +
-      (realHeat === undefined ? '' : ` Measured heat-of-importance complement error ${format(realHeat.heldOutRelativeError)}; baseline ${format(realHeat.statedBaselineRelativeError)}.`),
+      `Regione ${witness.regionId} (${italianRegionKind(witness.regionKind)}, ${String(witness.memberCount)} nodi campionati): errore relativo sui dati esclusi ` +
+      `${format(witness.heldOutRelativeError)} (MAE ${format(witness.heldOutMae)}) rispetto alla baseline dichiarata della media globale ` +
+      `${format(witness.statedBaselineRelativeError)}; miglioramento ${format(witness.improvementOverStatedBaseline)}.` +
+      (structure === undefined ? '' : ` La banda strutturale ${String(structure.bandlimit)} ha rango ${String(structure.rank)} e condizionamento ${format(structure.conditionNumber)}; ` +
+        `errore sul complemento dell’embedding ${structure.embeddingRelativeErrors.map(format).join(', ')}, mediana del segnale di comunità ${format(median(structure.communityRelativeErrors.filter((x): x is number => x !== null)))}. ` +
+        `${structure.reason ?? 'Il campionamento è un insieme di unicità per questa banda.'}`) +
+      (realHeat === undefined ? '' : ` Errore misurato sul complemento del calore diffuso dell’importanza ${format(realHeat.heldOutRelativeError)}; baseline ${format(realHeat.statedBaselineRelativeError)}.`),
     sourceIds: [witness.regionId],
     parameterIds: [`bandlimit=${String(witness.bandlimit)}`, `ridge=${String(witness.ridge)}`, `max-sample-condition=${RECOVERY_MAX_SAMPLE_CONDITION}`, EXPLAIN_STATED_BASELINE],
     numericalWitness: {
@@ -336,9 +351,9 @@ export function errorModelExplanation(
     elementId: 'visual:holographic:error-model',
     elementKind: 'field',
     summary: context.unavailableReason === undefined
-      ? `${model.summary} Each region uses the largest sampled low-mode prefix with full numerical rank and sample-matrix condition at most ${RECOVERY_MAX_SAMPLE_CONDITION}, selected before held-out values are read.${context.structure === undefined ? '' : ` Structural witness: ${context.structure.uniquenessCount}/${context.structure.regionCount} regions (${format(context.structure.uniquenessFraction)}) are uniqueness sets for their chosen band; ${context.structure.exactEmbeddingCount} reconstruct the displayed embedding and ${context.structure.exactCommunitiesCount} reconstruct band-limited heat-diffused community indicators to numerical precision. Non-unique regions: ${context.structure.nonUniqueRegions.map(item => `${item.regionId} (${item.reason})`).join('; ') || 'none'}. Embedding failures: ${context.structure.unrecoveredEmbeddingRegions.map(item => `${item.regionId} (${item.reason})`).join('; ') || 'none'}. Median complement relative errors: embedding ${format(context.structure.medianEmbeddingRelativeError)}, community ${format(context.structure.medianCommunityRelativeError)}.`}${context.smoothModel === undefined ? '' : ` Declared normalised zero-mode plus first-nonzero-mode test signal: ${context.smoothModel.recoveredCount}/${context.smoothModel.regionCount} recovered, ${context.smoothModel.beatsStatedBaselineCount}/${context.smoothModel.comparedCount} beat the same baseline, ${context.smoothModel.exactCount} were exact band-limited recoveries, median held-out relative error across all regions ${format(context.smoothModel.medianHeldOutRelativeError)} and among wins ${format(context.smoothModel.medianBeatingHeldOutRelativeError)}. This synthetic smooth-signal result is separate from the measured ${context.signalId} channel.`}`
-      + (context.realHeatModel === undefined ? '' : ` Measured heat-diffused ${context.signalId} at t=${String(context.realHeatTime ?? 1)}: ${context.realHeatModel.recoveredCount}/${context.realHeatModel.regionCount} recovered, ${context.realHeatModel.beatsStatedBaselineCount}/${context.realHeatModel.comparedCount} beat the global-mean baseline; median held-out relative error ${format(context.realHeatModel.medianHeldOutRelativeError)}. This remains a measured attribute channel, not the band-limited community structural probe.`)
-      : `Holographic reconstruction witness unavailable: ${context.unavailableReason}. No reconstruction claim is made. No topology claim is made.`,
+      ? `${model.summary} Per ogni regione si seleziona, prima di leggere i valori esclusi, il prefisso più ampio di modi bassi campionati con rango numerico pieno e condizionamento della matrice di campionamento non superiore a ${RECOVERY_MAX_SAMPLE_CONDITION}.${context.structure === undefined ? '' : ` Testimone strutturale: ${context.structure.uniquenessCount}/${context.structure.regionCount} regioni (${format(context.structure.uniquenessFraction)}) sono insiemi di unicità per la banda scelta; ${context.structure.exactEmbeddingCount} ricostruiscono l’embedding mostrato e ${context.structure.exactCommunitiesCount} ricostruiscono con precisione numerica gli indicatori di comunità diffusi col calore e limitati in banda. Regioni non uniche: ${context.structure.nonUniqueRegions.map(item => `${item.regionId} (${item.reason})`).join('; ') || 'nessuna'}. Ricostruzioni dell’embedding non riuscite: ${context.structure.unrecoveredEmbeddingRegions.map(item => `${item.regionId} (${item.reason})`).join('; ') || 'nessuna'}. Errori relativi mediani sul complemento: embedding ${format(context.structure.medianEmbeddingRelativeError)}, comunità ${format(context.structure.medianCommunityRelativeError)}.`}${context.smoothModel === undefined ? '' : ` Segnale di prova dichiarato, normalizzato, composto dal modo zero più il primo modo non nullo: ${context.smoothModel.recoveredCount}/${context.smoothModel.regionCount} regioni ricostruite, ${context.smoothModel.beatsStatedBaselineCount}/${context.smoothModel.comparedCount} superano la stessa baseline, ${context.smoothModel.exactCount} ricostruzioni a banda limitata esatte; errore relativo mediano sui dati esclusi in tutte le regioni ${format(context.smoothModel.medianHeldOutRelativeError)} e tra i casi migliori ${format(context.smoothModel.medianBeatingHeldOutRelativeError)}. Questo risultato su un segnale sintetico regolare è distinto dal canale misurato ${context.signalId}.`}`
+      + (context.realHeatModel === undefined ? '' : ` ${context.signalId} misurato e diffuso col calore a t=${String(context.realHeatTime ?? 1)}: ${context.realHeatModel.recoveredCount}/${context.realHeatModel.regionCount} regioni ricostruite; ${context.realHeatModel.beatsStatedBaselineCount}/${context.realHeatModel.comparedCount} superano la baseline della media globale; errore relativo mediano sui dati esclusi ${format(context.realHeatModel.medianHeldOutRelativeError)}. Resta un canale di attributi misurati, distinto dalla verifica strutturale delle comunità limitata in banda.`)
+      : `Testimone di ricostruzione olografica non disponibile: ${context.unavailableReason}. Non si formula alcuna affermazione di ricostruzione né sulla topologia.`,
     sourceIds: [],
     parameterIds: [`signal=${context.signalId}`, `bandlimit=${String(context.bandlimit)}`, `max-sample-condition=${RECOVERY_MAX_SAMPLE_CONDITION}`,
       `ridge=${String(context.ridge)}`, `regions=${context.regionPolicy}`, model.statedBaseline],

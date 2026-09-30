@@ -76,8 +76,8 @@ test('a rank-deficient region stays a refusal: measured rank, no error, no impro
     witness.localNeighbourBaselineRelativeError, witness.improvementOverStatedBaseline, witness.beatsStatedBaseline])
     assert.equal(value, null);
   const explanation = regionReconstructionExplanation(witness);
-  assert.match(explanation.summary, /refused band-limited recovery/);
-  assert.match(explanation.summary, /No value is imputed and no claim is made/);
+  assert.match(explanation.summary, /ricostruzione a banda limitata rifiutata/);
+  assert.match(explanation.summary, /Nessun valore viene imputato e non si formula alcuna affermazione/);
   assert.deepEqual(explanation.numericalWitness, {
     status: 'refused', refusalCode: 'rank-deficient', memberCount: 1, bandlimit: 2, measuredRank: 1,
   });
@@ -103,9 +103,9 @@ test('the aggregate model reports the honest distribution over recovered and ref
   // Only the mean-equivalent region has a ratio (the exact one is at the floor).
   assert.ok(Math.abs(model.medianImprovementOverStatedBaseline! - 1) < 1e-12);
   assert.ok(Math.abs(model.worstImprovementOverStatedBaseline! - 1) < 1e-12);
-  assert.match(model.summary, /2\/3 sampled regions recovered/);
-  assert.match(model.summary, /1\/2 beat the stated global-mean baseline/);
-  assert.match(model.summary, /1 region\(s\) refused on rank/);
+  assert.match(model.summary, /modello a banda limitata ricostruito in 2\/3 regioni campionate/);
+  assert.match(model.summary, /1\/2 superano la baseline dichiarata della media globale/);
+  assert.match(model.summary, /1 regioni rifiutate per rango insufficiente/);
 });
 
 test('the median of an odd count is the middle held-out error and a k=1 recovery never claims a gain', () => {
@@ -127,14 +127,14 @@ test('an empty or all-refused region set makes no reconstruction claim', () => {
   assert.equal(empty.medianHeldOutRelativeError, null);
   assert.equal(empty.medianImprovementOverStatedBaseline, null);
   assert.equal(empty.anyExactClaim, false);
-  assert.match(empty.summary, /no eligible region was declared, so no part-to-whole measurement exists/);
+  assert.match(empty.summary, /non è stata dichiarata alcuna regione idonea, quindi non esiste una misura parte-tutto/);
 
   const refused = holographicErrorModel([refusedWitness(), witnessFor([1, 0, -1], [2], 2, 'refused-2')]);
   assert.equal(refused.recoveredCount, 0);
   assert.equal(refused.refusedCount, 2);
   assert.equal(refused.beatsStatedBaselineCount, 0);
   assert.equal(refused.medianHeldOutRelativeError, null);
-  assert.match(refused.summary, /every one refused on rank; no reconstruction claim is made/);
+  assert.match(refused.summary, /tutte rifiutate per rango insufficiente\. Non si formula alcuna affermazione di ricostruzione/);
 });
 
 test('every explanation carries the stated baseline and the verbatim no-topology limitation', () => {
@@ -148,8 +148,8 @@ test('every explanation carries the stated baseline and the verbatim no-topology
     assert.ok(explanation.parameterIds.includes(RECOVERY_BASELINE_GLOBAL_MEAN), `${explanation.elementId} names the baseline`);
     assert.ok(explanation.elementId.startsWith('visual:holographic:'));
   }
-  assert.match(EXPLAIN_NO_TOPOLOGY_CLAIM, /^No topology claim is made/);
-  assert.match(EXPLAIN_NO_TOPOLOGY_CLAIM, /never a recovered semantic edge/);
+  assert.match(EXPLAIN_NO_TOPOLOGY_CLAIM, /^Non si formula alcuna affermazione sulla topologia/);
+  assert.match(EXPLAIN_NO_TOPOLOGY_CLAIM, /non è mai un arco semantico recuperato/);
   const recovered = regionReconstructionExplanation(exactWitness());
   assert.equal(recovered.numericalWitness!.statedBaseline, 'global-mean-v1');
   assert.equal(recovered.numericalWitness!.improvementOverStatedBaseline, 'n/a');
@@ -159,9 +159,9 @@ test('every explanation carries the stated baseline and the verbatim no-topology
   assert.ok(aggregate.parameterIds.includes('ridge=0.5'));
   assert.equal(aggregate.numericalWitness!.regionCount, 3);
   const unavailable = errorModelExplanation(holographicErrorModel([]), {
-    signalId: 'importance', bandlimit: 0, ridge: 0, regionPolicy: 'source-community-v1', unavailableReason: 'the spectral basis is unavailable',
+    signalId: 'importance', bandlimit: 0, ridge: 0, regionPolicy: 'source-community-v1', unavailableReason: 'la base spettrale non è disponibile',
   });
-  assert.match(unavailable.summary, /reconstruction witness unavailable: the spectral basis is unavailable\. No reconstruction claim is made/);
+  assert.match(unavailable.summary, /Testimone di ricostruzione olografica non disponibile: la base spettrale non è disponibile\. Non si formula alcuna affermazione di ricostruzione/);
   assert.equal(unavailable.limitation, EXPLAIN_NO_TOPOLOGY_CLAIM);
 });
 
