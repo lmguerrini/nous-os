@@ -332,8 +332,10 @@ export class CameraRig {
     const depthPoint = (this.kindValue !== ORTHOGRAPHIC || orthographicNodeDepth) && hoveredNode &&
       Number.isFinite(hoveredNode.x) && Number.isFinite(hoveredNode.y) && Number.isFinite(hoveredNode.z)
       ? new THREE.Vector3(hoveredNode.x, hoveredNode.y, hoveredNode.z) : undefined;
-    const anchor = cursorXCssPx === undefined || cursorYCssPx === undefined
-      ? undefined : this.worldPointAtViewport(cursorXCssPx, cursorYCssPx, depthPoint);
+    const nodeScreen = depthPoint && hoveredNode ? this.graphToViewport(hoveredNode) : undefined;
+    const anchorX = nodeScreen?.x ?? cursorXCssPx, anchorY = nodeScreen?.y ?? cursorYCssPx;
+    const anchor = anchorX === undefined || anchorY === undefined
+      ? undefined : this.worldPointAtViewport(anchorX, anchorY, depthPoint);
     const [sensitivityPermille, minimumPermille, maximumPermille] = this.requestValue.kind === "orthographic"
       ? [
           this.requestValue.navigation.zoomSensitivityPermille,
@@ -359,7 +361,7 @@ export class CameraRig {
     };
     this.updateCameras();
     if (anchor !== undefined) {
-      const shifted = this.worldPointAtViewport(cursorXCssPx!, cursorYCssPx!, depthPoint);
+      const shifted = this.worldPointAtViewport(anchorX!, anchorY!, depthPoint);
       this.translateTarget(anchor.sub(shifted));
       this.updateCameras();
     }
@@ -465,13 +467,17 @@ export function attachCameraInteractions(
   rig: CameraRig,
   changed: () => void,
   resolveNodeAnchor?: (xCssPx: number, yCssPx: number) => Coordinates | undefined,
-): () => void {
+): (() => void) & { resetWheelAnchor(): void } {
   let pointerId: number | null = null;
+  let wheelAnchor: Coordinates | undefined;
+  let wheelX = NaN, wheelY = NaN;
+  const resetWheelAnchor = (): void => { wheelAnchor = undefined; wheelX = NaN; wheelY = NaN; };
   let lastX = 0;
   let lastY = 0;
   let button = 0;
   let shift = false;
   const pointerDown = (event: PointerEvent): void => {
+    resetWheelAnchor();
     pointerId = event.pointerId;
     lastX = event.clientX;
     lastY = event.clientY;
@@ -480,6 +486,8 @@ export function attachCameraInteractions(
     canvas.setPointerCapture(event.pointerId);
   };
   const pointerMove = (event: PointerEvent): void => {
+    const rect = canvas.getBoundingClientRect();
+    if (Math.hypot(event.clientX - rect.left - wheelX, event.clientY - rect.top - wheelY) > 3) resetWheelAnchor();
     if (event.pointerId !== pointerId) {
       return;
     }
@@ -506,12 +514,18 @@ export function attachCameraInteractions(
     const deltaY = event.deltaY * (event.deltaMode === 1 ? 16
       : event.deltaMode === 2 ? rect.height : 1);
     const x = event.clientX - rect.left, y = event.clientY - rect.top;
+    if (Math.hypot(x - wheelX, y - wheelY) > 3) resetWheelAnchor();
     const hovered = resolveNodeAnchor ? undefined
       : (canvas as HTMLCanvasElement & { __reviewHoveredNode?: Coordinates }).__reviewHoveredNode;
     const screen = hovered && rig.graphToViewport(hovered);
-    const anchor = resolveNodeAnchor ? resolveNodeAnchor(x, y)
+    const anchor = wheelAnchor ?? (resolveNodeAnchor ? resolveNodeAnchor(x, y)
       : screen && Math.hypot(screen.x - x, screen.y - y) <= 32
-        ? hovered : rig.nodeAnchorAtViewport(x, y);
+        ? hovered : rig.nodeAnchorAtViewport(x, y));
+    if (anchor !== undefined && wheelAnchor === undefined) {
+      wheelAnchor = anchor;
+      wheelX = x;
+      wheelY = y;
+    }
     rig.zoomBy(deltaY, x, y, anchor, resolveNodeAnchor !== undefined);
     changed();
   };
@@ -522,14 +536,14 @@ export function attachCameraInteractions(
   canvas.addEventListener("pointercancel", pointerUp);
   canvas.addEventListener("wheel", wheel, { passive: false });
   canvas.addEventListener("contextmenu", contextMenu);
-  return (): void => {
+  return Object.assign((): void => {
     canvas.removeEventListener("pointerdown", pointerDown);
     canvas.removeEventListener("pointermove", pointerMove);
     canvas.removeEventListener("pointerup", pointerUp);
     canvas.removeEventListener("pointercancel", pointerUp);
     canvas.removeEventListener("wheel", wheel);
     canvas.removeEventListener("contextmenu", contextMenu);
-  };
+  }, { resetWheelAnchor });
 }
 
 /** This creates Sigma-compatible default camera state for explicit bounds and does not inspect graph contents. */

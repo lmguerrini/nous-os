@@ -42,6 +42,12 @@ test("typed 3D mask keeps six geometries and structural IDs separate from source
   assert.deepEqual(picker.pick({ x: 0, y: 50 }), { kind: "semantic-edge", id: "source:e" });
   assert.deepEqual(picker.pick({ x: 250, y: 0 }), { kind: "curve", visualId: "visual:curve:1" });
   assert.deepEqual(picker.pick({ x: 420, y: 0 }), { kind: "container", visualId: "visual:container:1" });
+  const projectInto = (position: { x: number; y: number; z: number }, out: { x: number; y: number }) => {
+    out.x = position.x; out.y = position.y; return true;
+  };
+  assert.equal(picker.nodeAnchorAtPosition(12, 0, projectInto, () => 2),
+    geometry.nodes[0]?.position, "a tiny typed node accepts a nearby wheel pointer");
+  assert.equal(picker.nodeAnchorAtPosition(700, 700, projectInto, () => 2), undefined);
 });
 
 test("typed 3D revision ignores stale, repeats equal, and updates loaded geometry on the same picker", () => {

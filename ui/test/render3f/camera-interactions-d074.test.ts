@@ -88,6 +88,72 @@ test('typed orthographic wheel retains its target-plane anchor', () => {
 });
 
 for (const kind of [PERSPECTIVE, ORTHOGRAPHIC] as const) {
+  test(`${kind} twelve wheel notches hold a small hub beside a still pointer`, () => {
+    const hub = { x: 150, y: -110, z: 180 };
+    const base = resolvedScene();
+    const source = base.nodes[0];
+    assert.ok(source);
+    const scene = { ...base, nodes: [{ ...source, position: hub, radiusPx: 2,
+      haloRadiusPx: 3, minimumCoreDeviceRadiusPx: 2 }], edges: [], aggregates: [], selectedLabelIds: [] };
+    const rig = makeRig(kind);
+    rig.orbitBy(180, 90);
+    const picker = new ScenePicker(scene, {
+      project: point => rig.graphToViewport(point),
+      projectInto: (point, out) => rig.projectToViewportInto(point, out),
+      nodeRadiusPx: node => node.radiusPx * rig.sizeScaleAt(node.position),
+      nodeFootprintRadiusPx: node => node.haloRadiusPx * rig.wheelNodeSizeScaleAt(node.position),
+      filamentSizeScale: () => 1,
+    });
+    const origin = rig.graphToViewport(hub);
+    const cursor = { x: origin.x + 12, y: origin.y };
+    assert.equal(picker.nodeAnchorAtPosition(cursor.x, cursor.y), hub);
+    const fixture = canvasFixture();
+    let picks = 0;
+    const detach = attachCameraInteractions(fixture.canvas, rig, () => {}, (x, y) => {
+      picks++;
+      return picker.nodeAnchorAtPosition(x, y);
+    });
+    for (let notch = 0; notch < 12; notch++) {
+      fixture.fire('wheel', { clientX: cursor.x + 40, clientY: cursor.y + 30, deltaY: -120, deltaMode: 0 });
+      const after = rig.graphToViewport(hub);
+      assert.ok(Math.hypot(after.x - origin.x, after.y - origin.y) <= 2,
+        `${kind} small hub drifted at notch ${notch}: ${JSON.stringify({ origin, after })}`);
+    }
+    assert.equal(picks, 1, 'a still pointer reuses the original node');
+    detach();
+  });
+
+  test(`${kind} moving the pointer re-picks and a view reset clears the wheel anchor`, () => {
+    const first = { x: 150, y: -110, z: 180 };
+    const second = { x: -150, y: 110, z: -180 };
+    const rig = makeRig(kind);
+    const fixture = canvasFixture();
+    const picked: typeof first[] = [];
+    const resolve = (x: number, y: number) => {
+      const candidate = [first, second].find(node => {
+        const screen = rig.graphToViewport(node);
+        return Math.hypot(x - screen.x, y - screen.y) < 15;
+      });
+      if (candidate) picked.push(candidate);
+      return candidate;
+    };
+    const detach = attachCameraInteractions(fixture.canvas, rig, () => {}, resolve);
+    const a = rig.graphToViewport(first);
+    fixture.fire('wheel', { clientX: a.x + 40, clientY: a.y + 30, deltaY: -120, deltaMode: 0 });
+    const b = rig.graphToViewport(second);
+    fixture.fire('pointermove', { pointerId: 99, clientX: b.x + 40, clientY: b.y + 30 });
+    fixture.fire('wheel', { clientX: b.x + 40, clientY: b.y + 30, deltaY: -120, deltaMode: 0 });
+    assert.deepEqual(picked, [first, second]);
+    detach.resetWheelAnchor();
+    fixture.fire('wheel', { clientX: b.x + 40, clientY: b.y + 30, deltaY: -120, deltaMode: 0 });
+    assert.deepEqual(picked, [first, second, second]);
+    fixture.fire('pointerdown', { pointerId: 7, clientX: b.x + 40, clientY: b.y + 30, button: 0, shiftKey: false });
+    fixture.fire('pointerup', { pointerId: 7, clientX: b.x + 40, clientY: b.y + 30 });
+    fixture.fire('wheel', { clientX: b.x + 40, clientY: b.y + 30, deltaY: -120, deltaMode: 0 });
+    assert.deepEqual(picked, [first, second, second, second], 'a drag start clears the held node');
+    detach();
+  });
+
   test(`${kind} product wheel picks the live off-plane pearl for three notches`, () => {
     const hub = { x: 150, y: -110, z: 180 };
     const base = resolvedScene();

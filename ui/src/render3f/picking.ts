@@ -55,9 +55,10 @@ export class ScenePicker {
     return this.sceneValue;
   }
 
-  /** Resolve a wheel anchor from the live drawn nodes, including their visible pearl/halo extent. */
+  /** Resolve the nearest drawn wheel anchor, allowing a small screen gap around tiny pearls. */
   nodeAnchorAtPosition(x: number, y: number): Coordinates | undefined {
     let best: SceneNode | undefined;
+    let bestDistance = Infinity;
     for (const node of this.sceneValue.nodes) {
       if (node.opacityPermille <= 0) continue;
       if (this.projection.projectInto) {
@@ -71,8 +72,12 @@ export class ScenePicker {
       const radius = this.projection.nodeFootprintRadiusPx?.(node) ?? this.projection.nodeRadiusPx(node);
       if (!(radius > 0)) continue;
       const dx = x - this.wheelProjection.x, dy = y - this.wheelProjection.y;
-      if (dx * dx + dy * dy > radius * radius) continue;
-      if (!best || compareStackingPriority(node, best) > 0) best = node;
+      const distance = Math.hypot(dx, dy);
+      if (distance > Math.max(15, radius + 3)) continue;
+      if (distance < bestDistance || (distance === bestDistance && best && compareStackingPriority(node, best) > 0)) {
+        best = node;
+        bestDistance = distance;
+      }
     }
     return best?.position;
   }
@@ -251,6 +256,7 @@ export class TypedProjectionPicker {
   private geometryValue: TypedProjectionGeometry;
   private fingerprint: string;
   private readonly project: PickingProjection["project"];
+  private readonly wheelProjection = { x: 0, y: 0 };
   constructor(input: Render3fTypedInput, project: PickingProjection["project"]) {
     this.geometryValue = buildTypedProjectionGeometry(input);
     this.input = input;
@@ -261,6 +267,24 @@ export class TypedProjectionPicker {
   get visibility(): RenderVisibility { return this.input.visibility; }
   get semanticIncidence(): readonly ProjectionSemanticEdge[] {
     return this.input.semanticEdges.filter(edge => this.input.visibility.semanticEdgeIds.has(edge.id));
+  }
+  /** Select a visible typed node for wheel depth, independently of relation picking. */
+  nodeAnchorAtPosition(x: number, y: number,
+    projectInto: (position: Coordinates, out: { x: number; y: number }) => boolean,
+    radiusAt: (id: string, position: Coordinates) => number): Coordinates | undefined {
+    let nearest: Coordinates | undefined;
+    let bestDistance = Infinity;
+    for (const point of this.geometryValue.nodes) {
+      if (point.pick.kind !== "node" || !projectInto(point.position, this.wheelProjection)) continue;
+      const wheelRadius = radiusAt(point.pick.id, point.position);
+      if (!(wheelRadius > 0)) continue;
+      const distance = Math.hypot(x - this.wheelProjection.x, y - this.wheelProjection.y);
+      if (distance <= Math.max(15, wheelRadius + 3) && distance < bestDistance) {
+        nearest = point.position;
+        bestDistance = distance;
+      }
+    }
+    return nearest;
   }
   update(input: Render3fTypedInput): boolean {
     if (input.visibility.revision < this.input.visibility.revision) return false;

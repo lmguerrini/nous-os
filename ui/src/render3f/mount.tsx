@@ -448,8 +448,15 @@ export function mount(
     }
     renderFrame();
   };
-  const detachInteractions = attachCameraInteractions(canvas, rig, syncCameraState,
-    typedPicker ? undefined : (x, y) => picker.nodeAnchorAtPosition(x, y));
+  const detachInteractions = attachCameraInteractions(canvas, rig, syncCameraState, (x, y) => {
+    if (!typedPicker) return picker.nodeAnchorAtPosition(x, y);
+    return typedPicker.nodeAnchorAtPosition(x, y,
+      (position, out) => rig.projectToViewportInto(position, out),
+      (id, position) => {
+        const size = currentStyled?.nodeStyle[id]?.size;
+        return (typeof size === "number" ? size : 5) * rig.wheelNodeSizeScaleAt(position);
+      });
+  });
   const renderWhileFiberConfigures = (): void => {
     if (destroyed || fiberStore !== undefined) {
       return;
@@ -561,6 +568,7 @@ export function mount(
         return;
       }
       if (typedPicker === null) {
+        detachInteractions.resetWheelAnchor();
         const next = new TypedProjectionPicker(update, point => rig.graphToViewport(point));
         typedPicker = next;
         distinct?.destroy();
@@ -577,6 +585,9 @@ export function mount(
         updateLabels();
         renderFrame();
       } else if (typedPicker.update(update)) {
+        if (currentStyled?.projection.determinism.resultDigest !== update.styled.projection.determinism.resultDigest) {
+          detachInteractions.resetWheelAnchor();
+        }
         currentStyled = update.styled;
         const nextScope = readProjectionStyle(update.styled);
         if (nextScope !== null) {
@@ -621,8 +632,9 @@ export function mount(
       return rig.readCameraState();
     },
     readReviewCameraPose() { return rig.readPose(); },
-    setReviewViewPreset(name) { rig.viewPreset(name); syncCameraState(); },
+    setReviewViewPreset(name) { detachInteractions.resetWheelAnchor(); rig.viewPreset(name); syncCameraState(); },
     restoreCameraState(state: VisualStateCamera): void {
+      detachInteractions.resetWheelAnchor();
       currentState = createVisualState(visualGraph, { ...currentState, camera: engineCamera(state) });
       rig.restoreCameraState(state);
       syncCameraState();
@@ -636,6 +648,7 @@ export function mount(
       return currentState;
     },
     setCameraKind(kind: CameraKind): void {
+      detachInteractions.resetWheelAnchor();
       live.setCameraKind(kind);
       rig.setCameraKind(kind, live.scene.camera);
       currentState = createVisualState(visualGraph, {

@@ -74,6 +74,18 @@ test("wheel anchoring ignores invisible and clipped pearls", () => {
   assert.equal(picker.nodeAnchorAtPosition(30, 40), visible.position);
 });
 
+test("wheel anchoring chooses the nearest tiny pearl within a screen gap and rejects empty space", () => {
+  const scene = resolvedScene();
+  const source = requiredItem(scene.nodes, 0, "wheel anchor node");
+  const first = { ...source, id: "first", position: { x: 30, y: 40, z: 90 }, radiusPx: 2, haloRadiusPx: 3 };
+  const second = { ...first, id: "second", position: { x: 50, y: 40, z: 90 } };
+  const picker = new ScenePicker({ ...scene, nodes: [first, second] }, {
+    ...IDENTITY_PROJECTION, nodeFootprintRadiusPx: () => 3,
+  });
+  assert.equal(picker.nodeAnchorAtPosition(42, 40), second.position);
+  assert.equal(picker.nodeAnchorAtPosition(300, 300), undefined);
+});
+
 test("filament picking follows the resolved path and consumes its supplied tolerance", () => {
   const scene = resolvedScene();
   const edge = requiredItem(scene.edges, 0, "picking relation");
