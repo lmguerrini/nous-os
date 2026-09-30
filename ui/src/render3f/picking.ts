@@ -185,7 +185,9 @@ export function buildTypedProjectionGeometry(input: Render3fTypedInput): TypedPr
     const relation = visualById.get(visualId)!;
     if (relation.semantic !== false || !visualId.startsWith("visual:") || domainEdges.has(visualId) ||
         visibility.nodeIds.has(visualId) || (relation.kind === "lifted-route" && relation.underlyingEdgeIds.length === 0) ||
-        relation.underlyingEdgeIds.some(id => !domainEdges.has(id))) {
+        // A routed overlay can lift an off-domain source edge to visible aggregates. Its
+        // provenance must still resolve to a real source incidence in this snapshot.
+        relation.underlyingEdgeIds.some(id => !domainEdges.has(id) && !semanticById.has(id))) {
       throw new TypeError(`Invalid 3D visual relation: ${visualId}`);
     }
     return edgeSegment({ kind: "visual-relation", visualId }, relation.source, relation.target);

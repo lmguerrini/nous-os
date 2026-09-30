@@ -170,6 +170,15 @@ export const ORGANIZATION_PROJECTIONS: Readonly<Record<ViewOrganization, {
   fractal: { projectionId: "fractal", typed: "always" },
   holographic: { projectionId: "holographic", typed: "always" },
 };
+/** The ordinary recursive Indra request is distinct from the gated Pearls projection. */
+export function requestedProjectionId(organization: ViewOrganization, recursiveIndra: boolean): RegisteredProjectionId {
+  return organization === 'indra' && recursiveIndra ? LEGACY_INDRA_PROJECTION_ID
+    : ORGANIZATION_PROJECTIONS[organization].projectionId;
+}
+
+export function indraSwitchNeedsReload(target: 'indra' | 'indra-pearls', pearlsSelected: boolean): boolean {
+  return target === 'indra-pearls' || pearlsSelected;
+}
 
 /**
  * Reads an organization at an entry point (saved view, storage, URL, bookmark, hook argument): the

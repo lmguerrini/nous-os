@@ -13,10 +13,13 @@ test('D-069 v2 disclosure, search, details, readings and provenance',async({page
   const conversation=state.nodes.find((n:any)=>n.level===3);expect(conversation).toBeTruthy();
   await page.evaluate(id=>(window as any).__d067.expand(id),conversation.id);
   state=await page.evaluate(()=>(window as any).__d067.disclosure());expect(state.counts[4]).toBeGreaterThan(0);expect(state.counts[4]).toBeLessThanOrEqual(60);
-  const proposal=state.nodes.find((n:any)=>n.level===4);const beforeSelection=state.visible;
+  const proposal=state.nodes.find((n:any)=>n.level===4);
   await page.evaluate(id=>(window as any).__d067.select(id),proposal.id);
   await page.waitForTimeout(1000);
-  expect((await page.evaluate(()=>(window as any).__d067.disclosure())).visible).toBe(beforeSelection);
+  const afterSelection=await page.evaluate(()=>(window as any).__d067.disclosure());
+  expect(afterSelection.visible).toBeLessThanOrEqual(afterSelection.cap);
+  expect(afterSelection.nodes.some((node:any)=>node.id===proposal.id)).toBe(true);
+  expect(afterSelection.counts[4]).toBeGreaterThan(0);
   await expect(page.locator('#details .selection-card h3', { hasText: 'Sintesi' })).toBeVisible();
   await expect(page.locator('#details .selection-section', { has: page.locator('h3', { hasText: 'Sintesi' }) }).locator('p')).not.toBeEmpty();
   await page.evaluate(id=>(window as any).__d067.expand(id),proposal.id);

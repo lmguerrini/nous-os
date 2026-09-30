@@ -1,5 +1,5 @@
 import { styleProjection } from '../render-common/projection-style.ts';
-import { emptyRevealState, revealClusterOf, stepReveal } from './reveal-controller.ts';
+import { emptyRevealState, focusOnlyReveal, revealClusterOf, stepReveal } from './reveal-controller.ts';
 import type { RevealState } from './reveal-controller.ts';
 import { buildRevealWitness, routeRelationsAfterLOD } from './relation-routing.ts';
 import type { RouteResult, RouteRelation, RevealWitnessInput } from './relation-routing.ts';
@@ -7,6 +7,7 @@ import { displayLabel, presentationText, validateIndex } from './graph-v2.ts';
 import type { GraphManifest } from './graph-v2.ts';
 import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
 import type { CommunityInfo, LayoutContainer, Point3 } from './layout-v2.ts';
+import { typedNodeViewport } from './typed-node-viewport.ts';
 import { applyExpansion, canonicalize, equilibrate, formatVolumeProportions, volumeStats, VOLUME_READOUT_HELP } from './volume.ts';
 import type { Expansion } from './volume.ts';
 import { adaptV2 } from './v2-adapter.ts';
@@ -48,7 +49,7 @@ import { buildNodePanel, buildProjectionExplanationPanel, buildRelationPanel, bu
 import type { V2Category } from './palette.ts';
 import { v2CategoryColour } from './palette.ts';
 import type { Axes, AxesInput, CreateProductView, ExperimentalOrganization, FullAxesInput, Organization, PageAxes, ProductView, ViewOrganization } from './view-contract.ts';
-import { LEGACY_INDRA_PROJECTION_ID, normalizeAxesInput, normalizeFullAxesInput, ORGANIZATION_PROJECTIONS, experimentalOrganizationsEnabled } from './view-contract.ts';
+import { LEGACY_INDRA_PROJECTION_ID, normalizeAxesInput, normalizeFullAxesInput, ORGANIZATION_PROJECTIONS, experimentalOrganizationsEnabled, requestedProjectionId } from './view-contract.ts';
 import type { AppearanceOptions } from '../engine/presentation-options.ts';
 import type { PaletteValues } from './palette.ts';
 const element = (id: string) => document.getElementById(id)!;
@@ -522,6 +523,7 @@ export class V2Page {
     private revealRevision = 0;
     private revealDrawnKey = '';
     private lastRevealSampleKey = '';
+    private pointerFocusTimer: number | null = null;
     private revealRoute: RouteResult | null = null;
     private routePickById = new Map<string, PickResult>();
     private revealRecord: ReturnType<typeof buildRevealWitness> | null = null;
@@ -632,7 +634,11 @@ export class V2Page {
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
             root.addEventListener(type, () => { this.userMovedSinceFit = true; this.noteCameraIntent(); }, { passive: true, capture: true });
-        root?.addEventListener('pointerdown', () => { this.pointerDown = true; this.hoverNeedsMove = true; this.edgeTooltip(null); }, true);
+        root?.addEventListener('pointerdown', () => {
+            this.pointerDown = true; this.hoverNeedsMove = true; this.edgeTooltip(null);
+            if (this.pointerFocusTimer !== null) window.clearTimeout(this.pointerFocusTimer);
+            this.pointerFocusTimer = null;
+        }, true);
         for (const type of ['pointerup', 'pointercancel'] as const)
             root?.addEventListener(type, () => { this.pointerDown = false; this.edgeTooltip(null); }, true);
         root?.addEventListener('pointermove', () => { if (!this.pointerDown) this.hoverNeedsMove = false; }, true);
@@ -648,8 +654,22 @@ export class V2Page {
         root?.addEventListener('pointermove', event => {
             const rect = root.getBoundingClientRect();
             this.cursor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+            if (this.pointerFocusTimer !== null) window.clearTimeout(this.pointerFocusTimer);
+            if (!this.pointerDown) this.pointerFocusTimer = window.setTimeout(() => {
+                this.pointerFocusTimer = null;
+                this.sampleReveal(this.revealCamera.zoom, true, true);
+                // Keep the same two settled samples required for a switch between clusters.
+                this.pointerFocusTimer = window.setTimeout(() => {
+                    this.pointerFocusTimer = null;
+                    this.sampleReveal(this.revealCamera.zoom, true, true);
+                }, 80);
+            }, 80);
         }, { passive: true, capture: true });
-        root?.addEventListener('pointerleave', () => { this.cursor = null; }, { passive: true });
+        root?.addEventListener('pointerleave', () => {
+            this.cursor = null;
+            if (this.pointerFocusTimer !== null) window.clearTimeout(this.pointerFocusTimer);
+            this.pointerFocusTimer = null;
+        }, { passive: true });
         if (typeof window === 'object' && window !== null)
             (window as typeof window & { __d074?: { revealWitness: () => unknown } }).__d074 =
                 { revealWitness: () => this.revealRecord };
@@ -725,11 +745,11 @@ export class V2Page {
         this.revealRecord = buildRevealWitness(input);
     }
     /** Settled samples alone may change disclosure; an already mounted camera supplies the positions. */
-    private sampleReveal(zoom: number, settled: boolean): boolean {
+    private sampleReveal(zoom: number, settled: boolean, focusOnly = false): boolean {
         const sampleKey = `${zoom}|${this.cursor?.x ?? ''}|${this.cursor?.y ?? ''}|${this.selected ?? ''}|${this.cameraKey()}`;
-        if (settled && sampleKey === this.lastRevealSampleKey) return false;
-        if (settled) this.lastRevealSampleKey = sampleKey;
-        if (this.auto.size && !this.revealState.admissions.length && !this.autoPageCounts.size) {
+        if (settled && !focusOnly && sampleKey === this.lastRevealSampleKey) return false;
+        if (settled && !focusOnly) this.lastRevealSampleKey = sampleKey;
+        if (!focusOnly && this.auto.size && !this.revealState.admissions.length && !this.autoPageCounts.size) {
             this.autoPageCounts = new Map([...this.auto].map(id => [id, V2_PAGE]));
             const byId = new Map(this.index.nodes.map(node => [node.id, node]));
             this.revealState = { ...this.revealState, admissions: [...this.auto].map((parentId, order) => {
@@ -765,6 +785,11 @@ export class V2Page {
         const decision = stepReveal({ index: this.index, disclosure: this.history.state, zoom, settled,
             cursor: this.cursor, selectionId: this.selected, focusId: this.projectionFocus(),
             viewport: { x: 0, y: 0, width, height }, positions, previous: this.revealState });
+        if (focusOnly) {
+            this.revealState = focusOnlyReveal(this.revealState, decision.state);
+            if (this.revealRoute) this.publishReveal(this.revealRoute, this.rendered);
+            return false;
+        }
         this.revealState = decision.state;
         this.revealCamera = { zoom, band: decision.band, settled };
         const changed = [...decision.auto].some(([id, count]) => this.autoPageCounts.get(id) !== count) ||
@@ -1834,7 +1859,7 @@ export class V2Page {
         const result = this.projectionResult;
         const refusedResult = this.holographicRefused?.result ?? null;
         const visibility = this.projectionVisibility;
-        const requestedAlgorithm = ORGANIZATION_PROJECTIONS[this.axes.organization].projectionId;
+        const requestedAlgorithm = requestedProjectionId(this.axes.organization, this.legacyIndraView());
         const coordinateResult = result ?? refusedResult;
         const coordinateState = this.projectionPending
             ? { kind: 'pending' as const }
@@ -3030,10 +3055,15 @@ export class V2Page {
     witness() {
         const members = this.selected ? this.focusMembers(this.selected) : new Set<string>();
         const arcs = focusArcs(members, [...this.renderedRelations.values()], communityResolver(this.index.nodes));
+        const typedPositions = this.projectionResult && this.projectionRenderer?.projectNode
+            ? typedNodeViewport((this.axes.projection === '2d' ? this.projectionResult.positions2 : this.projectionResult.positions3) ?? {},
+                this.rendered, point => this.projectionRenderer!.projectNode!(point),
+                this.projectionHost?.getBoundingClientRect() ?? { left: 0, top: 0 })
+            : {};
         return {
             ...this.view?.witness(),
             // The typed page keeps its own axes record; there is no product view to ask.
-            ...(this.view ? {} : { axes: this.axes }),
+            ...(this.view ? {} : { axes: this.axes, nodeViewport: typedPositions }),
             ...(this.typedActive() ? { projection: this.projectionWitnessRecord() } : {}),
             layoutSource: this.layoutSource,
             containers: this.containers,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { emptyRevealState, stepReveal } from '../../src/review/reveal-controller.ts';
+import { emptyRevealState, focusOnlyReveal, stepReveal } from '../../src/review/reveal-controller.ts';
 import type { RevealState } from '../../src/review/reveal-controller.ts';
 import { emptyDisclosure, v2Visible } from '../../src/review/v2-core.ts';
 import type { V2Node, V2Index } from '../../src/review/v2-core.ts';
@@ -124,6 +124,26 @@ test('live cursor projection wins over selection and viewport in both camera dim
     assert.equal(result.state.focusClusterId, 'a');
     assert.equal(result.state.epoch, 1);
   }
+});
+
+test('two stationary settled pointer samples confirm focus without admitting or compacting nodes', () => {
+  const index = hierarchy();
+  const initial = advance(index, emptyRevealState(), 2).state;
+  const elsewhere = { ...initial, focusClusterId: 'a', focusSource: 'viewport' as const };
+  const input = { index, disclosure, zoom: 2, settled: true, cursor: { x: 820, y: 100 },
+    selectionId: null, focusId: null, positions, viewport };
+  const first = stepReveal({ ...input, previous: elsewhere });
+  const pending = focusOnlyReveal(elsewhere, first.state);
+  assert.equal(pending.focusClusterId, 'a');
+  assert.equal(pending.pendingFocusClusterId, 'b');
+  const second = stepReveal({ ...input, previous: pending });
+  const confirmed = focusOnlyReveal(pending, second.state);
+  assert.equal(confirmed.focusClusterId, 'b');
+  assert.equal(confirmed.focusSource, 'cursor');
+  assert.equal(confirmed.epoch, elsewhere.epoch + 1);
+  assert.deepEqual(confirmed.admissions, elsewhere.admissions);
+  assert.equal(confirmed.lastZoom, elsewhere.lastZoom);
+  assert.equal(confirmed.tier, elsewhere.tier);
 });
 
 test('inward zoom keeps the cursor focus epoch when the anchor leaves the viewport', () => {

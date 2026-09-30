@@ -96,3 +96,18 @@ test("typed 3D refuses cross-class IDs, hidden endpoints, missing positions and 
   } } };
   assert.throws(() => buildTypedProjectionGeometry(missing), /position unavailable/);
 });
+
+test("routed visual overlays retain source provenance beyond the visible domain", () => {
+  const input = fixture();
+  const overlay = { visualId: 'visual:relation:lift:off-domain', semantic: false,
+    kind: 'lifted-route', source: 'a', target: 'b', underlyingEdgeIds: ['source:elsewhere'],
+    count: 1, explanationId: 'explanation:visual:relation:lift:off-domain' } as const;
+  const styled = { ...input.styled, projection: { ...input.styled.projection,
+    visualRelations: [...input.styled.projection.visualRelations, overlay] } };
+  const visibility = { ...input.visibility, visualRelationIds: set(overlay.visualId) };
+  const sourced = { styled, visibility, semanticEdges: [...input.semanticEdges,
+    { id: 'source:elsewhere', source: 'a', target: 'c' }] };
+  assert.equal(buildTypedProjectionGeometry(sourced).visualRelations.length, 1);
+  assert.throws(() => buildTypedProjectionGeometry({ ...sourced, semanticEdges: input.semanticEdges }),
+    /Invalid 3D visual relation/);
+});

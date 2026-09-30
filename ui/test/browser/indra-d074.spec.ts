@@ -23,9 +23,14 @@ test('ordinary Indra is recursive, draws relations at fit, and uses round pearl 
     const viewport = await page.locator('#viewport').boundingBox();
     expect(viewport).not.toBeNull();
     const positions = await page.evaluate(() => (window as any).__d067.witness().nodeViewport);
+    const geometry = await page.evaluate(() => {
+      const view = (window as any).__d067.witness();
+      return { containers: view.containers ?? [], positions: view.positions ?? {} };
+    });
+    const containerIds = new Set((geometry.containers as { id: string }[]).map(container => container.id));
     const background = [image.data[0]!, image.data[1]!, image.data[2]!] as [number, number, number];
     const samples = Object.entries(positions as Record<string, { x: number; y: number; radius?: number }>)
-      .filter(([id, p]) => witness.renderedNodeIds.includes(id) && Number.isFinite(p.x) && (p.radius ?? 0) >= 4)
+      .filter(([id, p]) => witness.renderedNodeIds.includes(id) && !containerIds.has(id) && Number.isFinite(p.x) && (p.radius ?? 0) >= 4)
       .sort((a, b) => (b[1].radius ?? 0) - (a[1].radius ?? 0)).slice(0, 12);
     expect(samples.length, 'nodeViewport exposes sampleable rendered glyphs').toBeGreaterThan(0);
     for (const [id, node] of samples) {
@@ -40,6 +45,25 @@ test('ordinary Indra is recursive, draws relations at fit, and uses round pearl 
       expect(center, `${projection} node ${id} has a rendered center`).toBe(true);
       expect(diagonal.filter(Boolean).length, `${projection} node ${id} has clear rounded corners`).toBeLessThanOrEqual(2);
       expect(cardinal.filter(Boolean).length, `${projection} node ${id} has a rounded perimeter`).toBeGreaterThanOrEqual(2);
+    }
+    if (projection === '2d') {
+      const container = (geometry.containers as { id: string; radius: number }[]).find(item => item.id === 'domain:qrs');
+      expect(container?.radius).toBeGreaterThan(0);
+      const entries = Object.entries(positions as Record<string, { x: number; y: number }>);
+      const world = geometry.positions as Record<string, { x: number; y: number }>;
+      const first = entries.find(([id]) => world[id]);
+      const second = entries.find(([id]) => world[id] && id !== first?.[0] &&
+        Math.hypot(world[id]!.x - world[first![0]]!.x, world[id]!.y - world[first![0]]!.y) > 1);
+      expect(first && second).toBeTruthy();
+      const scale = Math.hypot(second![1].x - first![1].x,
+        second![1].y - first![1].y) /
+        Math.hypot(world[second![0]]!.x - world[first![0]]!.x, world[second![0]]!.y - world[first![0]]!.y);
+      const pearl = (positions as Record<string, { x: number; y: number }>)['domain:qrs']!;
+      const cx = pearl.x - viewport!.x, cy = pearl.y - viewport!.y;
+      const drawnRadius = container!.radius * scale;
+      const diagonal = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([dx, dy]) =>
+        rasterHasInk(image.data, image.width, image.height, cx + dx! * drawnRadius * 0.82, cy + dy! * drawnRadius * 0.82, background));
+      expect(diagonal.filter(Boolean).length, 'domain:qrs container is sampled at its drawn radius').toBeLessThanOrEqual(2);
     }
   }
 });

@@ -73,6 +73,11 @@ export const emptyRevealState = (zoom = 1): RevealState => ({
   lastZoom: zoom, band: 'far', tier: -1,
   admissions: [], pendingPassages: [],
 });
+/** A stationary pointer may change focus after confirmation, but cannot spend a zoom admission. */
+export function focusOnlyReveal(previous: RevealState, sampled: RevealState): RevealState {
+  return { ...previous, focusClusterId: sampled.focusClusterId, focusSource: sampled.focusSource,
+    pendingFocusClusterId: sampled.pendingFocusClusterId, epoch: sampled.epoch };
+}
 export function revealBand(zoom: number, previous: RevealBand = 'far'): RevealBand {
   if (!Number.isFinite(zoom)) return previous;
   if (previous === 'deep' && zoom >= REVEAL_EXIT_THRESHOLDS[4]) return 'deep';

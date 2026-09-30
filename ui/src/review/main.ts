@@ -1,7 +1,7 @@
 import { humanLabel, initialState, searchNode, shortHumanLabel, visibleGraph } from "./model.ts";
 import type { ReviewExport, ReviewNode } from "./model.ts";
 import { createProductView } from "./product-view.ts";
-import { DEFAULT_AXES, experimentalOrganizationsEnabled, normalizeAxesInput, parseSavedAxes, resolveArrangementReadout, resolveExperimentalOrganization, savedAxesRecord, savedExplicitArrangement, serializeAxes } from "./view-contract.ts";
+import { DEFAULT_AXES, experimentalOrganizationsEnabled, indraSwitchNeedsReload, normalizeAxesInput, parseSavedAxes, resolveArrangementReadout, resolveExperimentalOrganization, savedAxesRecord, savedExplicitArrangement, serializeAxes } from "./view-contract.ts";
 import type { Axes, AxesInput, PageAxes, ProductView, ViewWitness } from "./view-contract.ts";
 import type { ResolvedNaturalArrangement } from "../projection/natural-bridge.ts";
 import { FAMILY_OF, standingOf } from "./presentation.ts";
@@ -861,6 +861,10 @@ for (const axis of ["projection", "morphology", "organization", "reading"] as co
   document.querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`).forEach((button) => {
     button.addEventListener("click", () => {
       if (axis === "organization" && (button.dataset.value === "indra" || button.dataset.value === "indra-pearls")) {
+        if (!indraSwitchNeedsReload(button.dataset.value as "indra" | "indra-pearls", indraPearlsSelected)) {
+          void setAxes({ organization: "indra" });
+          return;
+        }
         const params = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : "");
         const flags = new Set((params.get("experimental") ?? "").split(",").filter(Boolean));
         if (button.dataset.value === "indra-pearls") {
