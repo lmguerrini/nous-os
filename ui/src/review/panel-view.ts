@@ -215,8 +215,13 @@ export function buildSourceRelationPanel(edge: GraphEdge, nodes: ReadonlyMap<str
 const structuralKindLabel = (kind: VisualRelation['kind']): string => ({
   'co-membership': 'Co-appartenenza',
   'synthetic-containment': 'Contenimento strutturale',
-  'lifted-route': 'Percorso visuale',
+  'lifted-route': 'Percorso sollevato',
 } as const)[kind];
+
+/** The explicit non-semantic, non-attested wording of a derived element, in the gender of its kind. */
+const derivedWording = (kind: Explanation['elementKind']): string | undefined =>
+  kind === 'visual-relation' || kind === 'curve' ? 'Non semantica · non attestata'
+    : kind === 'container' || kind === 'field' ? 'Non semantico · non attestato' : undefined;
 
 /**
  * Resolve a renderer pick only against its typed projection result. Structural visuals get their
@@ -300,15 +305,19 @@ export function buildProjectionExplanationPanel(
           : explanation.elementKind === 'curve' ? 'Curva derivata'
             : 'Campo derivato';
   const experimental = projection.diagnostics.some(diagnostic => diagnostic.code === 'holographic-experimental');
+  const relation = explanation.elementKind === 'visual-relation'
+    ? projection.visualRelations?.find(item => item.visualId === id) : undefined;
   return {
-    title, type: 'Spiegazione della proiezione',
+    title, type: relation ? structuralKindLabel(relation.kind) : 'Spiegazione della proiezione',
     badge: refusal ? 'Nessuna coordinata' : derived ? 'Derivato · non attestato' : 'Proiezione',
+    ...(!refusal && derived ? { epistemic: derivedWording(explanation.elementKind) } : {}),
     synthesis: explanation.summary,
     evidence: [], sources: [], groups: [],
     projectionExplanation: explanation,
     projectionExperimental: experimental,
     projectionRefusal: refusal ? `${refusal.code} · nessuna posizione assegnata.` : undefined,
     technical: { elementId: explanation.elementId, elementKind: explanation.elementKind,
+      ...(relation ? { kind: relation.kind, semantic: false } : {}),
       resultDigest: projection.determinism.resultDigest, refusal: refusal ?? undefined },
   };
 }

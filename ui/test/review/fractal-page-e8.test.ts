@@ -511,7 +511,7 @@ test('fractalRefusalOf recognises only the assembly refusal', () => {
 });
 
 /** A minimal product view: the Natural pipeline-off path of the page. */
-function offPage(fractalInput?: ProjectionPipelineInput) {
+function offPage(fractalInput?: ProjectionPipelineInput, legacyIndra = false) {
   const counts = { mounts: 0, destroys: 0, axes: [] as string[] };
   const createView: CreateProductView = async input => {
     counts.mounts++;
@@ -529,14 +529,15 @@ function offPage(fractalInput?: ProjectionPipelineInput) {
     } as unknown as ProductView;
   };
   const page: V2Page = new Page(MANIFEST, fractalIndex(), AXES, APPEARANCE, PALETTE, {}, 'complete',
-    { createView, ...(fractalInput ? { fractalPipeline: fractalInput } : {}) });
+    { createView, ...(legacyIndra ? { legacyIndra } : {}), ...(fractalInput ? { fractalPipeline: fractalInput } : {}) });
   page.history.expand('n:a:g1');
   page.history.expand('n:a:g2');
   return { page, counts };
 }
 
 test('Natural without the typed pipeline is unchanged: the product view, no projection record', async () => {
-  const { page, counts } = offPage();
+  // Indra draws through the product view here only as the explicit legacy rollback (`#indra=legacy`).
+  const { page, counts } = offPage(undefined, true);
   await page.refresh();
   assert.equal(counts.mounts, 1);
   assert.deepEqual(counts.axes, ['natural']);

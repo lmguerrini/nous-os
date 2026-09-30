@@ -155,14 +155,14 @@ function styleLegacyEcho(legacy: { positions: ReadonlyMap<string, { x: number; y
 const pageInternals = (page: V2Page) => page as unknown as {
   projectionResult: ProjectionResult | null; projectionInput: ProjectionPipelineInput;
 };
-const typedPage = async (index: V2Index, axes: Partial<Axes> = {}, renderer?: ProjectionPageRenderer): Promise<{ page: V2Page; snapshot: SemanticGraphSnapshot; input: ProjectionPipelineInput }> => {
+const typedPage = async (index: V2Index, axes: Partial<Axes> = {}, renderer?: ProjectionPageRenderer, legacyIndra = false): Promise<{ page: V2Page; snapshot: SemanticGraphSnapshot; input: ProjectionPipelineInput }> => {
   const snapshot = await snapshotFor(index);
   const fake = fakePipeline(snapshot, renderer ?? {
     dimension: '2d', mount() {}, updateVisibleSubset() {}, destroy() {},
     onPick() {}, onHover() {},
   });
   const page = new Page(MANIFEST, index, { ...AXES, ...axes }, APPEARANCE, PALETTE, {}, 'complete',
-    { projectionPipeline: fake.input });
+    { projectionPipeline: fake.input, ...(legacyIndra ? { legacyIndra } : {}) });
   await page.refresh();
   return { page, snapshot, input: fake.input };
 };
@@ -176,7 +176,7 @@ test('audit 1: the typed indra branch reproduces the legacy hidden-count max-up 
     camera: () => null, witness: () => ({ axes: {}, visibleRect: { left: 0, top: 0, width: 800, height: 600 },
       nodeViewport: {}, labels: [] }),
   }) as unknown as ProductView;
-  const legacyPage = new Page(MANIFEST, index, { ...AXES, organization: 'indra' }, APPEARANCE, PALETTE, {}, 'complete', { createView });
+  const legacyPage = new Page(MANIFEST, index, { ...AXES, organization: 'indra' }, APPEARANCE, PALETTE, {}, 'complete', { createView, legacyIndra: true });
   await legacyPage.refresh();
   const legacyPositions = (legacyPage as unknown as { rawPositions: ReadonlyMap<string, { x: number; y: number; z: number }> }).rawPositions;
   assert.ok(legacyPositions);
@@ -184,7 +184,7 @@ test('audit 1: the typed indra branch reproduces the legacy hidden-count max-up 
   // descendant count exceeds its direct hidden-children count.
   assert.equal((legacyPage as unknown as { visible: () => { hidden: Map<string, number> } }).visible().hidden.get('project:alfa:0'), 3);
 
-  const { page } = await typedPage(index, { organization: 'indra' });
+  const { page } = await typedPage(index, { organization: 'indra' }, undefined, true);
   const typedPositions = pageInternals(page).projectionResult!.positions2!;
   assert.equal(Object.keys(typedPositions).length, legacyPositions.size, 'same disclosed domain');
   for (const [id, point] of legacyPositions) {

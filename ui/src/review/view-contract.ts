@@ -123,19 +123,23 @@ export type AxesInput = Partial<Omit<PageAxes, "organization">> & {
   readonly organization?: ViewOrganization | typeof LEGACY_ORGANIZATION;
 };
 
+/** The verified legacy Indra adapter, kept registered as the rollback of Indra's Pearls. */
+export const LEGACY_INDRA_PROJECTION_ID: RegisteredProjectionId = "indra-legacy";
+
 /**
  * What serves each view of the organization axis: the registered projection and whether the typed
- * pipeline is engaged for it. Natural and Indra use the typed pipeline only when the page asks for
- * it (the `projection=natural` hash flag or an injected pipeline); Fractal is always served by the
- * registered typed projection. The record is exhaustive, so a new view cannot be added without
- * saying what serves it.
+ * pipeline is engaged for it. Natural uses the typed pipeline only when the page asks for it (the
+ * `projection=natural` hash flag or an injected pipeline); Indra (Indra's Pearls) and Fractal are
+ * always served by their registered typed projection. The verified legacy Indra adapter stays
+ * registered as `LEGACY_INDRA_PROJECTION_ID`, reachable only through the explicit `indra=legacy`
+ * hash flag. The record is exhaustive, so a new view cannot be added without saying what serves it.
  */
 export const ORGANIZATION_PROJECTIONS: Readonly<Record<ViewOrganization, {
   readonly projectionId: RegisteredProjectionId;
   readonly typed: "flag" | "always";
 }>> = {
   natural: { projectionId: "natural", typed: "flag" },
-  indra: { projectionId: "indra-legacy", typed: "flag" },
+  indra: { projectionId: "indras-pearls", typed: "always" },
   fractal: { projectionId: "fractal", typed: "always" },
 };
 

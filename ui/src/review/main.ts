@@ -1160,6 +1160,9 @@ const api = {
   redo: () => v2?.redo() ?? Promise.resolve(),
   search: (q: string) => v2?.search(q) ?? Promise.resolve([]),
   reveal: (id: string) => v2?.reveal(id) ?? Promise.resolve(),
+  /** Indra's Pearls: opens a lazy pearl level (ids in `__d073.projectionWitness().unopenedLevels`) or leaves the open one, on the same camera. */
+  openPearl: (levelId: string) => v2?.loadProjectionLevel(levelId) ?? Promise.reject(new Error("Nessun grafo distillato caricato")),
+  leavePearl: () => v2?.leaveIndraPearl() ?? Promise.reject(new Error("Nessun grafo distillato caricato")),
   why: (a: string,b: string) => v2?.why(a,b) ?? null,
   errors,
   state: () => ({

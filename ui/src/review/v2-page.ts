@@ -17,6 +17,11 @@ import { deriveFractalCommunities, fractalCommunityLevelId, FractalProjectionRef
 import { certifyFractalDynamics, fractalContractParameters } from '../fractal/parameters.ts';
 import { naturalProjection, NATURAL_LAYOUT_VERSION, resolveNaturalArrangement } from '../projection/natural-bridge.ts';
 import { projectLegacyIndra } from '../projection/legacy-indra.ts';
+import { INDRA_EXPAND_Z_RANGE, INDRA_GENERATOR_POLICY, IndraProjectionRefusal, indraRequestForLevelToken, indrasPearlsProjection } from '../projection/indra.ts';
+import { createProjectionWorkerClient } from '../projection/worker-client.ts';
+import type { ProjectionParametersPayload } from '../projection/worker-protocol.ts';
+import type { ProjectionWorkerClient } from '../projection/worker-client.ts';
+import { ROOT_LEVEL_ID } from '../indra/levels.ts';
 import type { LegacyIndraProjectionResult } from '../projection/legacy-indra.ts';
 import { validateRenderVisibility } from '../projection/contract.ts';
 import { canonicalRawJson, createSemanticSnapshot, normalizeRawLedger } from '../projection/normalize.ts';
@@ -32,11 +37,11 @@ import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
 import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labels.ts';
 import { createProductView } from './product-view.ts';
 import { appendFlowLegend, renderTypedStructuralLegend } from './legend.ts';
-import { buildNodePanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
+import { buildNodePanel, buildProjectionExplanationPanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
 import type { V2Category } from './palette.ts';
 import { v2CategoryColour } from './palette.ts';
 import type { Axes, AxesInput, CreateProductView, FullAxesInput, Organization, PageAxes, ProductView, ViewOrganization } from './view-contract.ts';
-import { normalizeAxesInput, normalizeFullAxesInput, ORGANIZATION_PROJECTIONS } from './view-contract.ts';
+import { LEGACY_INDRA_PROJECTION_ID, normalizeAxesInput, normalizeFullAxesInput, ORGANIZATION_PROJECTIONS } from './view-contract.ts';
 import type { AppearanceOptions } from '../engine/presentation-options.ts';
 import type { PaletteValues } from './palette.ts';
 const element = (id: string) => document.getElementById(id)!;
@@ -87,6 +92,28 @@ function defaultPipelineEnabled(): boolean {
     if (typeof location !== 'object' || location === null) return false;
     return projectionFlagEnabled(location.search, location.hash);
 }
+/** The explicit rollback flag: `#indra=legacy` serves the Indra view with the verified legacy adapter
+ * instead of Indra's Pearls. No toolbar control sets it. */
+const INDRA_FLAG_PARAM = 'indra';
+export function indraLegacyFlagEnabled(search: string, hash: string): boolean {
+    try {
+        const queryEnabled = new URLSearchParams(search).get(INDRA_FLAG_PARAM) === 'legacy';
+        const hashEnabled = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash).get(INDRA_FLAG_PARAM) === 'legacy';
+        return hashEnabled || queryEnabled;
+    }
+    catch {
+        return false;
+    }
+}
+function legacyIndraFlagEnabled(): boolean {
+    if (typeof location !== 'object' || location === null) return false;
+    return indraLegacyFlagEnabled(location.search, location.hash);
+}
+/** The approved request policy of the Indra view: the root, three levels deep, at most 200 words. */
+export const INDRA_PAGE_MAX_DEPTH = 3;
+export const INDRA_PAGE_MAX_WORDS = 200;
+/** The Schottky separation margin the page asks for; the status line discloses it. */
+export const INDRA_PAGE_TOLERANCE = 1e-6;
 /** The 3D typed layer owns the whole scene; the engine graph underneath stays empty and valid. */
 function emptyTypedVisualGraph(): VisualGraph {
     return {
@@ -107,6 +134,43 @@ export function fractalRefusalOf(error: unknown): { readonly code: string; reado
     const prefix = `fractal-projection: ${code}: `;
     return { code, detail: error.message.startsWith(prefix) ? error.message.slice(prefix.length) : error.message };
 }
+/** A typed refusal of either typed assembly, whether thrown on this thread or reported by the
+ * projection worker (which can only carry its message): the machine-readable code and the
+ * deterministic detail, or null for any other error, which the caller must not treat as one. */
+export function projectionRefusalOf(error: unknown): { readonly code: string; readonly detail: string } | null {
+    const direct = fractalRefusalOf(error);
+    if (direct !== null) return direct;
+    if (!(error instanceof Error)) return null;
+    if (error.name === 'IndraProjectionRefusal') {
+        const code = (error as Error & { code?: unknown }).code;
+        if (typeof code !== 'string') return null;
+        const prefix = `indras-pearls-projection: ${code}: `;
+        return { code, detail: error.message.startsWith(prefix) ? error.message.slice(prefix.length) : error.message };
+    }
+    if (error.name !== 'ProjectionClientError') return null;
+    const failure = (error as Error & { failure?: { readonly code?: unknown; readonly message?: unknown } }).failure;
+    if (failure?.code !== 'projection-error' || typeof failure.message !== 'string') return null;
+    const match = /^(?:fractal-projection|indras-pearls-projection): ([a-z][a-z0-9-]*): ([\s\S]*)$/.exec(failure.message);
+    return match === null ? null : { code: match[1]!, detail: match[2]! };
+}
+/** A request the projection worker cancelled because a newer one superseded it. */
+function isCancelledProjection(error: unknown): boolean {
+    return error instanceof Error && error.name === 'ProjectionClientError'
+        && (error as Error & { code?: unknown }).code === 'cancelled';
+}
+/** The status line of an Indra's Pearls view: the construction behind the pearls (the certified
+ * Schottky group with its genus and separation margin, or the labelled fallback packing), and that
+ * the positions are derived geometry and never a semantic claim. */
+export function indraDisclosureLine(result: ProjectionResult, dimension: Dimension): string {
+    const diagnostic = (code: string) => result.diagnostics.find(item => item.code === code)?.value;
+    const mode = diagnostic('indra:geometry-mode');
+    const genus = diagnostic('indra:genus'), margin = diagnostic('indra:schottky-separation-margin');
+    const construction = mode === 'schottky' && typeof genus === 'number' && typeof margin === 'number'
+        ? `gruppo di Schottky di genere ${genus}, margine di separazione ${margin}`
+        : `impaccamento euclideo annidato, nessun gruppo di Schottky certificato [${String(diagnostic('indra:fallback-reason') ?? 'motivo non registrato').split(':')[0]}]`;
+    return `Vista Indra's Pearls \u00B7 ${construction} \u00B7 geometria derivata, non semantica`
+        + (dimension === '3d' ? ' \u00B7 3D: semisfera sul disco di ogni pearl' : '');
+}
 /** The status line of a Fractal view: which view this is, that its positions are derived geometry
  * (inverse external rays of the certified dynamics) and never a semantic claim, and the 3D limitation. */
 export function fractalDisclosureLine(result: ProjectionResult, dimension: Dimension): string {
@@ -115,6 +179,17 @@ export function fractalDisclosureLine(result: ProjectionResult, dimension: Dimen
     const dynamics = typeof p === 'number' && typeof c === 'number' ? `certificati p=${p}, c=${Number(c.toPrecision(4))}` : 'certificati';
     return `Vista Fractal \u00B7 posizioni derivate dai raggi esterni inversi di ${dynamics} \u00B7 geometria derivata, non semantica`
         + (dimension === '3d' ? ' \u00B7 3D: altezza = potenziale esterno (sollevamento scalare)' : '');
+}
+/** The two typed views whose results carry an explanation for every element they draw. */
+function explainingAlgorithm(result: Pick<ProjectionResult, 'determinism'>): boolean {
+    return result.determinism.algorithmId === 'fractal' || result.determinism.algorithmId === 'indras-pearls';
+}
+/** Whether a pick of this result opens an explanation card: every structural pick of a Fractal or Indra's
+ * Pearls result does; a node or source edge does when the result explains it. */
+export function projectionExplainsPick(result: ProjectionResult, pick: PickResult): boolean {
+    if (!explainingAlgorithm(result)) return false;
+    if (pick.kind === 'node' || pick.kind === 'semantic-edge') return result.explanations[pick.id] !== undefined;
+    return true;
 }
 /** A genuinely lazy level: a promise (`loaded: false`, with its load token) whose children are missing or
  * themselves unloaded. A promise whose child levels are all present and loaded in the same result is
@@ -151,6 +226,12 @@ export type V2PageDeps = {
     /** The pipeline a page that is not typed by default builds on its first Fractal selection;
      * absent, it is the same default pipeline the `?projection=natural` flag builds. */
     readonly fractalPipeline?: ProjectionPipelineInput;
+    /** Serves the Indra view with the legacy adapter, exactly as the `#indra=legacy` hash flag does. */
+    readonly legacyIndra?: boolean;
+    /** The client the Fractal and Indra projections run through; absent, the page starts its own
+     * (a worker when the review bundle embeds one, the main thread otherwise), unless it was given
+     * a registry, which then computes them directly. */
+    readonly projectionWorker?: ProjectionWorkerClient;
 };
 export interface ProjectionPageRenderer extends ProjectionRenderer {
     onPick(handler: (pick: PickResult | null, shiftKey: boolean) => void): void;
@@ -348,6 +429,18 @@ export class V2Page {
     /** `resultDigest|levelId` of the levels the assembly refused to open for a result: never requested again. */
     private readonly refusedLevels = new Map<string, { readonly code: string; readonly detail: string }>();
     private projectionPending = false;
+    /** The refresh that raised the pending state: only it, or none, lowers it, so a superseded one never hides a newer one's. */
+    private projectionPendingEpoch = -1;
+    /** The Indra view is served by the legacy adapter (`#indra=legacy`) instead of Indra's Pearls. */
+    private readonly legacyIndra: boolean;
+    /** The client the Fractal and Indra projections run through; null when a registry computes them directly. */
+    private projectionClient: ProjectionWorkerClient | null | undefined;
+    /** The root request behind the mounted Indra's Pearls result: a level load repeats it with a token. */
+    private indraRequest: ProjectionRequest<'indras-pearls'> | null = null;
+    /** The pearl level the mounted Indra result was opened to (null: the root), and the domain it belongs to. */
+    private indraOpen: { readonly levelId: string; readonly domainDigest: string } | null = null;
+    /** The selection a pearl was left under: it does not open that pearl again until it is picked anew. */
+    private indraLeftFocus: string | null = null;
     /** The camera key (dimension and view) of the mounted typed renderer: its camera belongs to it. */
     private mountedCameraKey: string | null = null;
     constructor(manifest: GraphManifest, index: V2Index, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
@@ -363,6 +456,8 @@ export class V2Page {
         this.typedByDefault = deps.projectionPipeline !== undefined || defaultPipelineEnabled() || deps.useDefaultPipeline === true;
         this.projectionInput = deps.projectionPipeline ?? (this.typedByDefault ? this.buildDefaultPipeline() : undefined);
         this.fractalPipeline = deps.fractalPipeline;
+        this.legacyIndra = deps.legacyIndra === true || legacyIndraFlagEnabled();
+        this.projectionClient = deps.projectionWorker ?? (deps.projectionRegistry !== undefined ? null : undefined);
         this.projectionRegistry = deps.projectionRegistry ?? new ProjectionRegistry();
         if (!this.projectionRegistry.has('natural')) this.projectionRegistry.register(naturalProjection);
         if (!this.projectionRegistry.has('indra-legacy'))
@@ -370,6 +465,7 @@ export class V2Page {
                 project: (_snapshot, request: { parameters: { input: Parameters<typeof projectLegacyIndra>[0] } }) =>
                     projectLegacyIndra(request.parameters.input) });
         if (!this.projectionRegistry.has('fractal')) this.projectionRegistry.register(fractalProjection);
+        if (!this.projectionRegistry.has('indras-pearls')) this.projectionRegistry.register(indrasPearlsProjection);
         if (this.projectionInput) this.installProjectionWitnessHook();
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
@@ -425,11 +521,19 @@ export class V2Page {
     /** Whether the current view is drawn by the typed pipeline: every view under the flag or an
      * injected pipeline, otherwise only the views the organization register marks as always typed. */
     private typedActive(): boolean {
-        return this.typedByDefault || ORGANIZATION_PROJECTIONS[this.axes.organization].typed === 'always';
+        return this.typedByDefault || (ORGANIZATION_PROJECTIONS[this.axes.organization].typed === 'always' && !this.legacyIndraView());
+    }
+    private legacyIndraView(): boolean {
+        return this.legacyIndra && this.axes.organization === 'indra';
+    }
+    /** Whether the current view is Indra's Pearls (the Indra view without the legacy rollback flag). */
+    private indraPearlsView(): boolean {
+        return this.axes.organization === 'indra' && !this.legacyIndra;
     }
     /** A view button exists only when its projection is registered: no dead control. */
     supportsOrganization(organization: ViewOrganization): boolean {
-        return this.projectionRegistry.has(ORGANIZATION_PROJECTIONS[organization].projectionId);
+        return this.projectionRegistry.has(organization === 'indra' && this.legacyIndra
+            ? LEGACY_INDRA_PROJECTION_ID : ORGANIZATION_PROJECTIONS[organization].projectionId);
     }
     /** The typed pipeline of a page that is not typed by default is built on its first Fractal use. */
     private typedPipeline(): ProjectionPipelineInput {
@@ -447,7 +551,7 @@ export class V2Page {
     }
     /** The camera of a typed renderer belongs to one dimension and one view; another view's camera is never reused. */
     private cameraKey(): string {
-        return `${this.axes.projection}/${this.axes.organization === 'fractal' ? 'fractal' : 'natural'}`;
+        return `${this.axes.projection}/${this.axes.organization === 'fractal' ? 'fractal' : this.indraPearlsView() ? 'indra' : 'natural'}`;
     }
     private async withTypedRelations(raw: ProjectionResult, relations: readonly VisualRelation[]): Promise<ProjectionResult> {
         const oldIds = new Set(raw.visualRelations.map(item => item.explanationId));
@@ -485,7 +589,8 @@ export class V2Page {
         // legacy-style focus source (selected relation, its source node, the selection, hover).
         const active = this.projectionFocus();
         const organization = this.axes.organization;
-        const typedRelations = organization === 'fractal' ? [] : projectTypedRelations(this.index.nodes, this.index.edges,
+        const pearls = this.indraPearlsView();
+        const typedRelations = organization === 'fractal' || pearls ? [] : projectTypedRelations(this.index.nodes, this.index.edges,
             new Set(domain.nodeIds), this.axes.reading, organization, this.relationDetail, active).visualRelations;
         const dimension = this.axes.projection;
         let styled: StyledProjection;
@@ -493,6 +598,7 @@ export class V2Page {
         let anchorKeyToCommit: string | null = null;
         let anchorsToCommit: Readonly<Record<string, Vec3>> | null = null;
         let fractalRequestToCommit: ProjectionRequest<'fractal'> | null = null;
+        let indraToCommit: { readonly request: ProjectionRequest<'indras-pearls'>; readonly levelId: string | null } | null = null;
         if (organization === 'natural') {
             const arrangement = this.resolvedNaturalArrangement();
             arrangementToCommit = arrangement;
@@ -545,6 +651,12 @@ export class V2Page {
             styled = input.style(outcome.result, snapshot);
             if (styled.projection !== outcome.result) throw new Error('Morphology replaced the projection result');
             fractalRequestToCommit = outcome.request;
+        } else if (pearls) {
+            const outcome = await this.projectIndra(epoch, snapshot, domain, dimension);
+            if (outcome === null) return;
+            styled = input.style(outcome.result, snapshot);
+            if (styled.projection !== outcome.result) throw new Error('Morphology replaced the projection result');
+            indraToCommit = { request: outcome.request, levelId: outcome.levelId };
         } else {
             const ids = new Set(domain.nodeIds);
             const relations = projectRelations(this.index.nodes, this.index.edges, ids,
@@ -626,6 +738,8 @@ export class V2Page {
         this.projectionVisibility = visibility;
         this.fractalRequest = fractalRequestToCommit;
         this.fractalRefusal = null;
+        this.indraRequest = indraToCommit?.request ?? null;
+        this.indraOpen = indraToCommit?.levelId ? { levelId: indraToCommit.levelId, domainDigest: domain.domainDigest } : null;
         if (arrangementToCommit) this.naturalArrangement = arrangementToCommit;
         if (anchorKeyToCommit !== null) {
             this.naturalAnchorState = { key: anchorKeyToCommit, anchors: anchorsToCommit };
@@ -642,8 +756,8 @@ export class V2Page {
         this.lastNodeSelection = lod.selection;
         this.dropHiddenTypedSelection();
         this.renderPanel();
-        element('status').textContent = organization === 'fractal' ? this.fractalStatusLine() : 'Grafo pronto';
-        if (organization === 'fractal') this.openFractalLevels();
+        element('status').textContent = this.typedStatusLine();
+        this.openTypedLevels();
     }
     /** The request behind a Fractal view: the certified dynamics of the disclosed domain, derived from
      * the same stable features the assembly recertifies (community count, node count, attested
@@ -671,48 +785,194 @@ export class V2Page {
         dimension: Dimension): Promise<{ readonly result: ProjectionResult; readonly request: ProjectionRequest<'fractal'> } | null> {
         // A refresh superseded while queued never starts the assembly.
         if (epoch !== this.projectionEpoch) return null;
-        this.setProjectionPending(true);
+        this.setProjectionPending(true, 'Fractal', epoch);
         try {
             await afterPaint();
             if (epoch !== this.projectionEpoch) return null;
             const request = this.fractalRequestFor(snapshot, domain, dimension);
-            const outcome = await this.projectionRegistry.project<ProjectionResult>('fractal', snapshot, request);
+            const result = await this.runProjection<'fractal'>(snapshot, request);
             if (epoch !== this.projectionEpoch) return null;
-            const state = outcome.result.coordinateState;
+            const state = result.coordinateState;
             if (state.kind === 'no-coordinates') {
-                this.showFractalRefusal({ code: state.code,
-                    detail: outcome.result.explanations[state.explanationId]?.summary ?? state.code });
+                this.showProjectionRefusal('Fractal', { code: state.code,
+                    detail: result.explanations[state.explanationId]?.summary ?? state.code });
                 return null;
             }
-            return { result: outcome.result, request };
+            return { result, request };
         } catch (error) {
-            const refusal = fractalRefusalOf(error);
+            if (isCancelledProjection(error) && epoch !== this.projectionEpoch) return null;
+            const refusal = projectionRefusalOf(error);
             if (refusal === null) throw error;
-            if (epoch === this.projectionEpoch) this.showFractalRefusal(refusal);
+            if (epoch === this.projectionEpoch) this.showProjectionRefusal('Fractal', refusal);
             return null;
         } finally {
-            if (epoch === this.projectionEpoch) this.setProjectionPending(false);
+            if (this.projectionPendingEpoch === epoch) this.setProjectionPending(false);
         }
+    }
+    /** Runs one Fractal or Indra's Pearls projection: through the projection client (the worker, or
+     * its main-thread fallback) so the page stays responsive, or through the registry the page was
+     * given. A request the client cancelled because a newer refresh superseded it rejects as cancelled. */
+    private async runProjection<I extends 'fractal' | 'indras-pearls'>(
+        snapshot: SemanticGraphSnapshot, request: ProjectionRequest<I>): Promise<ProjectionResult> {
+        const client = this.workerClient();
+        if (client === null) return (await this.projectionRegistry.project<ProjectionResult>(request.id, snapshot, request)).result;
+        const { abort: _abort, ...rest } = request;
+        return (await client.project({ projectionId: rest.id, snapshot, domain: rest.domain,
+            parameters: rest.parameters as ProjectionParametersPayload, slot: rest.id,
+            ...(rest.requestedLevelId === undefined ? {} : { requestedLevelId: rest.requestedLevelId }) })).result;
+    }
+    private workerClient(): ProjectionWorkerClient | null {
+        if (this.projectionClient === undefined)
+            this.projectionClient = createProjectionWorkerClient({ fallbackProjections: [fractalProjection, indrasPearlsProjection] });
+        return this.projectionClient;
+    }
+    /** A newer refresh supersedes any projection still computing: its result would be dropped anyway. */
+    private cancelProjectionWork(): void {
+        this.projectionClient?.cancel('fractal');
+        this.projectionClient?.cancel('indras-pearls');
+    }
+    /** The request behind an Indra's Pearls view: the approved generator policy over the disclosed
+     * domain, three levels deep. A domain outside 1..cap is refused here with the assembly's own code. */
+    private indraRequestFor(snapshot: SemanticGraphSnapshot, domain: AnalyticalDomain,
+        dimension: Dimension): ProjectionRequest<'indras-pearls'> {
+        if (domain.nodeIds.length === 0 || domain.nodeIds.length > V2_CAP)
+            throw new IndraProjectionRefusal('invalid-request', `domain size ${domain.nodeIds.length} outside 1..${V2_CAP}`);
+        const [lowest, highest] = INDRA_EXPAND_Z_RANGE;
+        return { id: 'indras-pearls', snapshotDigest: snapshot.digest, domain,
+            parameters: { dimension, maxDepth: INDRA_PAGE_MAX_DEPTH, maxWords: INDRA_PAGE_MAX_WORDS,
+                generatorPolicy: INDRA_GENERATOR_POLICY, tolerance: INDRA_PAGE_TOLERANCE,
+                expandZ: dimension === '3d' ? Math.min(highest, Math.max(lowest, this.appearance.expandZ)) : 1 } };
+    }
+    /** Requests the Indra's Pearls projection of the disclosed domain, opened to the pearl the view was
+     * left at when that pearl still exists for this domain, else at the root. Null means the refresh was
+     * superseded, or the assembly refused: a typed refusal is then on screen instead of a drawing. */
+    private async projectIndra(epoch: number, snapshot: SemanticGraphSnapshot, domain: AnalyticalDomain,
+        dimension: Dimension): Promise<{ readonly result: ProjectionResult; readonly request: ProjectionRequest<'indras-pearls'>;
+            readonly levelId: string | null } | null> {
+        if (epoch !== this.projectionEpoch) return null;
+        this.setProjectionPending(true, "Indra's Pearls", epoch);
+        try {
+            await afterPaint();
+            if (epoch !== this.projectionEpoch) return null;
+            const request = this.indraRequestFor(snapshot, domain, dimension);
+            let levelId = this.indraOpen?.domainDigest === domain.domainDigest ? this.indraOpen.levelId : null;
+            let result: ProjectionResult;
+            try {
+                result = await this.runProjection<'indras-pearls'>(snapshot, levelId === null ? request : { ...request, requestedLevelId: levelId });
+            } catch (error) {
+                // A pearl that cannot be reopened for this request returns the view to the root.
+                if (levelId === null || projectionRefusalOf(error) === null) throw error;
+                levelId = null;
+                result = await this.runProjection<'indras-pearls'>(snapshot, request);
+            }
+            if (epoch !== this.projectionEpoch) return null;
+            const state = result.coordinateState;
+            if (state.kind === 'no-coordinates') {
+                this.showProjectionRefusal("Indra's Pearls", { code: state.code,
+                    detail: result.explanations[state.explanationId]?.summary ?? state.code });
+                return null;
+            }
+            return { result, request, levelId };
+        } catch (error) {
+            if (isCancelledProjection(error) && epoch !== this.projectionEpoch) return null;
+            const refusal = projectionRefusalOf(error);
+            if (refusal === null) throw error;
+            if (epoch === this.projectionEpoch) this.showProjectionRefusal("Indra's Pearls", refusal);
+            return null;
+        } finally {
+            if (this.projectionPendingEpoch === epoch) this.setProjectionPending(false);
+        }
+    }
+    /** The loaded pearl the selection lives in: the level holding the selected node, or the level of the selected pearl. */
+    private indraFocusLevel(result: ProjectionResult): Extract<RecursiveLevel, { loaded: true }> | null {
+        const id = this.selected;
+        if (id === null || id === this.indraLeftFocus) return null;
+        const loaded = result.levels.filter((level): level is Extract<RecursiveLevel, { loaded: true }> => level.loaded);
+        const container = result.containers.find(item => item.visualId === id);
+        if (container !== undefined) return loaded.find(level => level.id === container.levelId) ?? null;
+        return loaded.find(level => level.memberNodeIds.includes(id)) ?? null;
+    }
+    /** The stub that opens the focused pearl: its largest genuinely lazy child level that was not refused. */
+    private indraLevelToOpen(result: ProjectionResult): Extract<RecursiveLevel, { loaded: false }> | null {
+        const focus = this.indraFocusLevel(result);
+        if (focus === null) return null;
+        const byId = new Map(result.levels.map(level => [level.id, level]));
+        const stubs = focus.childLevelIds.map(id => byId.get(id))
+            .filter((level): level is Extract<RecursiveLevel, { loaded: false }> => level !== undefined && isLazyLevel(result, level)
+                && !this.refusedLevels.has(`${result.determinism.resultDigest}|${level.id}`));
+        stubs.sort((left, right) => right.memberCount - left.memberCount || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+        return stubs[0] ?? null;
+    }
+    /** Focus on a pearl, or the near band inside one, opens it: the stub's level is requested with its
+     * token on the mounted host, so the camera stays. In the near band the next level follows until a
+     * cap refuses it; a refusal is disclosed once for the result it belongs to. */
+    private openIndraLevel(): void {
+        const result = this.projectionResult;
+        if (!result || result.determinism.algorithmId !== 'indras-pearls') return;
+        const cameraKey = this.mountedCameraKey, digest = result.determinism.resultDigest;
+        const stub = this.indraLevelToOpen(result);
+        if (cameraKey === null || stub === null) return;
+        void this.run(async () => {
+            const current = this.projectionResult;
+            const level = current?.levels.find(item => item.id === stub.id);
+            // Superseded meanwhile: the level is already open, or the result it belonged to is gone.
+            if (!current || !level || !isLazyLevel(current, level) || current.determinism.resultDigest !== digest) return;
+            try {
+                await this.loadProjectionLevel(stub.id, cameraKey);
+            } catch (error) {
+                if (this.levelLoadOutcome(digest, stub.id, error)) return;
+                throw error;
+            }
+            if (this.lod === 'near') this.openIndraLevel();
+        // `run` has already put the failure in the status line and the error panel before rethrowing.
+        }).catch(() => { });
+    }
+    /** Leaves the open pearl for its parent level (the root when it has none) on the mounted host: the
+     * camera is not refitted. The parent's own load token must belong to the current result. */
+    async leaveIndraPearl(expectedCameraKey?: string): Promise<void> {
+        const result = this.projectionResult, snapshot = this.projectionSnapshot, domain = this.projectionDomain;
+        const renderer = this.projectionRenderer, request = this.indraRequest, open = this.indraOpen;
+        if (!result || !snapshot || !domain || !renderer || !request || result.determinism.algorithmId !== 'indras-pearls')
+            throw new Error('Projection level leaving unavailable');
+        const cameraKey = this.mountedCameraKey;
+        if (expectedCameraKey !== undefined && expectedCameraKey !== cameraKey) throw new Error('Stale projection camera');
+        if (open === null) throw new Error('No pearl is open');
+        const opened = result.levels.find(item => item.id === open.levelId);
+        if (!opened || opened.loaded) throw new Error('Stale projection level token');
+        const parentId = opened.parentId === null || opened.parentId === ROOT_LEVEL_ID ? null : opened.parentId;
+        let target = request;
+        if (parentId !== null) {
+            const parent = result.levels.find(item => item.id === parentId);
+            if (!parent || parent.loaded) throw new Error('Stale projection level token');
+            assertCurrentLevelToken(parent, snapshot, domain, result);
+            target = await indraRequestForLevelToken(snapshot, request, parent.loadToken);
+        }
+        const epoch = this.projectionEpoch;
+        const styled = this.typedPipeline().style(await this.runProjection<'indras-pearls'>(snapshot, target), snapshot);
+        this.commitLevelResult(styled, result, snapshot, domain, renderer, cameraKey, epoch, parentId);
+        this.indraLeftFocus = this.selected;
+        element('status').textContent = this.typedStatusLine();
     }
     /** The visible pending state of a projection that computes: the status line says so and the
      * render root carries `aria-busy` and `data-projection-pending` until the result is committed. */
-    private setProjectionPending(pending: boolean): void {
+    private setProjectionPending(pending: boolean, view = 'Fractal', epoch = this.projectionEpoch): void {
         this.projectionPending = pending;
+        if (pending) this.projectionPendingEpoch = epoch;
         const root = element('render-root');
         root.setAttribute('aria-busy', String(pending));
         root.toggleAttribute('data-projection-pending', pending);
-        if (pending) element('status').textContent = 'Fractal \u00B7 calcolo della proiezione in corso\u2026';
+        if (pending) element('status').textContent = `${view} \u00B7 calcolo della proiezione in corso\u2026`;
     }
-    /** The Fractal view cannot be drawn: the canvas is cleared (no other view's picture stays under
-     * the Fractal label) and the typed refusal is shown as such. */
-    private showFractalRefusal(refusal: { readonly code: string; readonly detail: string }): void {
+    /** A typed view cannot be drawn: the canvas is cleared (no other view's picture stays under
+     * its label) and the typed refusal is shown as such. */
+    private showProjectionRefusal(view: string, refusal: { readonly code: string; readonly detail: string }): void {
         this.retireTypedRenderer();
         this.retireLegacyView();
         this.fractalRefusal = refusal;
         this.rendered = new Set();
         this.lodCounts = { nodes: { rendered: 0, available: 0, pinned: 0, pinnedIds: [] },
             arcs: { rendered: 0, available: 0, pinned: 0, pinnedIds: [] } };
-        element('status').textContent = `Vista Fractal \u00B7 proiezione rifiutata [${refusal.code}]: ${refusal.detail} \u00B7 nessuna posizione mostrata`;
+        element('status').textContent = `Vista ${view} \u00B7 proiezione rifiutata [${refusal.code}]: ${refusal.detail} \u00B7 nessuna posizione mostrata`;
         this.renderPanel();
     }
     /** The disclosure of the mounted Fractal result, plus the levels the assembly refused to open. */
@@ -721,6 +981,21 @@ export class V2Page {
         if (!result) return '';
         const refused = this.refusedLevelsOf(result);
         return fractalDisclosureLine(result, this.axes.projection)
+            + (refused.length ? ` \u00B7 ${refused.length} livelli non aperti [${refused[0]!.code}]: ${refused[0]!.detail}` : '');
+    }
+    /** The status line of the mounted typed view: Fractal and Indra's Pearls disclose their construction. */
+    private typedStatusLine(): string {
+        const result = this.projectionResult;
+        if (result?.determinism.algorithmId === 'fractal') return this.fractalStatusLine();
+        if (result?.determinism.algorithmId === 'indras-pearls') return this.indraStatusLine();
+        return 'Grafo pronto';
+    }
+    /** The disclosure of the mounted Indra's Pearls result, plus the levels the assembly refused to open. */
+    private indraStatusLine(): string {
+        const result = this.projectionResult;
+        if (!result) return '';
+        const refused = this.refusedLevelsOf(result);
+        return indraDisclosureLine(result, this.axes.projection)
             + (refused.length ? ` \u00B7 ${refused.length} livelli non aperti [${refused[0]!.code}]: ${refused[0]!.detail}` : '');
     }
     private refusedLevelsOf(result: ProjectionResult): { readonly levelId: string; readonly code: string; readonly detail: string }[] {
@@ -760,24 +1035,47 @@ export class V2Page {
             try {
                 await this.loadProjectionLevel(levelId, cameraKey);
             } catch (error) {
-                const refusal = fractalRefusalOf(error);
-                if (refusal !== null) {
-                    this.refusedLevels.set(`${digest}|${levelId}`, refusal);
-                    if (this.projectionResult?.determinism.resultDigest === digest)
-                        element('status').textContent = this.fractalStatusLine();
-                    return;
-                }
-                if (error instanceof Error && /^Stale projection (level token|camera)/.test(error.message)) return;
+                if (this.levelLoadOutcome(digest, levelId, error)) return;
                 throw error;
             }
             this.openFractalLevels();
         // `run` has already put the failure in the status line and the error panel before rethrowing.
         }).catch(() => { });
     }
+    /** Interprets a failed level load: a typed refusal is recorded once for the result it belonged to
+     * and disclosed; a stale token or camera, or a request the client cancelled, is dropped. Anything
+     * else is not an outcome of the load and returns false so that the caller reports it. */
+    private levelLoadOutcome(digest: string, levelId: string, error: unknown): boolean {
+        const refusal = projectionRefusalOf(error);
+        if (refusal?.code === 'stale-load-token') return true;
+        if (refusal !== null) {
+            this.refusedLevels.set(`${digest}|${levelId}`, refusal);
+            const current = this.projectionResult;
+            if (current?.determinism.resultDigest === digest) {
+                // A cap belongs to a depth, not to one word: every lazy level of that depth is refused alike.
+                const depth = current.levels.find(level => level.id === levelId)?.depth;
+                if (depth !== undefined && (refusal.code === 'depth-cap-exceeded' || refusal.code === 'word-cap-exceeded'))
+                    for (const level of current.levels)
+                        if (level.depth === depth && isLazyLevel(current, level)) this.refusedLevels.set(`${digest}|${level.id}`, refusal);
+                element('status').textContent = this.typedStatusLine();
+            }
+            return true;
+        }
+        if (isCancelledProjection(error)) return true;
+        return error instanceof Error && /^Stale projection (level token|camera)/.test(error.message);
+    }
+    private openTypedLevels(): void {
+        const algorithm = this.projectionResult?.determinism.algorithmId;
+        if (algorithm === 'fractal') this.openFractalLevels();
+        else if (algorithm === 'indras-pearls') this.openIndraLevel();
+    }
     /** Leaves the typed renderer behind (the page goes back to the product view, or shows a refusal). */
     private retireTypedRenderer(): void {
         this.fractalRequest = null;
         this.fractalRefusal = null;
+        this.indraRequest = null;
+        this.indraOpen = null;
+        this.indraLeftFocus = null;
         const renderer = this.projectionRenderer, host = this.projectionHost;
         if (!renderer && !host) return;
         if (this.typedSelection && this.typedSelection.kind !== 'node' && this.typedSelection.kind !== 'semantic-edge')
@@ -884,16 +1182,30 @@ export class V2Page {
         if (!pick || !result) { this.typedSelection = null; this.selected = null; this.renderPanel(); return; }
         projectionPick(result, pick);
         if (!this.isVisibleProjectionPick(pick)) return;
+        this.indraLeftFocus = null;
         if (pick.kind === 'node' || pick.kind === 'semantic-edge') {
             const id = pick.id;
             if (shiftKey && pick.kind === 'node' && this.selected && this.selected !== id)
                 this.why(this.selected, id);
-            else { this.typedSelection = pick; this.selected = id; this.renderPanel(); this.openFractalLevels(); }
+            else { this.typedSelection = pick; this.selected = id; this.renderPanel(); this.openTypedLevels(); }
         } else {
             this.typedSelection = pick;
             this.selected = pick.visualId;
             this.renderPanel();
+            if (result.determinism.algorithmId === 'indras-pearls') this.openIndraLevel();
         }
+    }
+    /** A provenance link of an explanation card: its source record is selected on its own. A source the
+     * result draws and the mask shows becomes the typed selection; any other is selected as a page node. */
+    private openProvenanceSource(sourceId: string): void {
+        const result = this.projectionResult;
+        const pick: PickResult | null = result === null ? null
+            : result.loadedNodeIds.includes(sourceId) ? { kind: 'node', id: sourceId }
+                : result.domainEdgeIds.includes(sourceId) ? { kind: 'semantic-edge', id: sourceId } : null;
+        if (pick === null || !this.isVisibleProjectionPick(pick)) { void this.select(sourceId, false); return; }
+        this.typedSelection = pick;
+        this.selected = sourceId;
+        this.renderPanel();
     }
     private projectionTooltip(pick: PickResult | null, x: number, y: number): void {
         const tip = document.getElementById('v2-edge-tooltip') ?? document.createElement('div');
@@ -925,19 +1237,25 @@ export class V2Page {
             case 'field': return mask.fieldIds.has(pick.visualId);
         }
     }
-    /** The loader of an unopened level: the pipeline's own, or for a Fractal result the registered
-     * assembly asked again for the same request with `requestedLevelId`. */
+    /** The loader of an unopened level: the pipeline's own, or for a Fractal result the assembly asked
+     * again for the same request with `requestedLevelId`, or for an Indra's Pearls result the request
+     * its level token names (a token of another snapshot, domain or parameter set is refused). */
     private levelLoader(result: ProjectionResult): ProjectionPipelineInput['loadLevel'] {
         const own = this.projectionInput?.loadLevel;
         if (own) return own;
-        const request = this.fractalRequest, input = this.projectionInput;
-        if (result.determinism.algorithmId !== 'fractal' || !request || !input) return undefined;
-        return async (level, snapshot, domain) => {
-            if (request.domain !== domain) throw new Error('Stale projection level token');
-            const outcome = await this.projectionRegistry.project<ProjectionResult>('fractal', snapshot,
-                { ...request, requestedLevelId: level.id });
-            return input.style(outcome.result, snapshot);
+        const input = this.projectionInput;
+        if (!input) return undefined;
+        const fractal = this.fractalRequest, indra = this.indraRequest;
+        if (result.determinism.algorithmId === 'fractal' && fractal) return async (level, snapshot, domain) => {
+            if (fractal.domain !== domain) throw new Error('Stale projection level token');
+            return input.style(await this.runProjection<'fractal'>(snapshot, { ...fractal, requestedLevelId: level.id }), snapshot);
         };
+        if (result.determinism.algorithmId === 'indras-pearls' && indra) return async (level, snapshot, domain) => {
+            if (indra.domain !== domain) throw new Error('Stale projection level token');
+            const request = await indraRequestForLevelToken(snapshot, indra, level.loadToken);
+            return input.style(await this.runProjection<'indras-pearls'>(snapshot, request), snapshot);
+        };
+        return undefined;
     }
     /** A finite level revision keeps the mounted host. The token must belong to the current result,
      * and a caller that names the camera key it read (dimension and view) is refused when another
@@ -955,6 +1273,15 @@ export class V2Page {
         assertCurrentLevelToken(level, snapshot, domain, result);
         const epoch = this.projectionEpoch;
         const styled = await loader(level, snapshot, domain);
+        this.commitLevelResult(styled, result, snapshot, domain, renderer, cameraKey, epoch,
+            styled.projection.determinism.algorithmId === 'indras-pearls' ? levelId : undefined);
+        element('status').textContent = this.typedStatusLine();
+    }
+    /** Lands a level revision on the mounted host: the camera is kept. The result the level was
+     * requested for, its domain and snapshot, the epoch and the camera key must all still be current. */
+    private commitLevelResult(styled: StyledProjection, result: ProjectionResult, snapshot: SemanticGraphSnapshot,
+        domain: AnalyticalDomain, renderer: ProjectionPageRenderer, cameraKey: string | null, epoch: number,
+        open?: string | null): void {
         if (cameraKey !== this.mountedCameraKey || cameraKey !== this.cameraKey()) throw new Error('Stale projection camera');
         if (epoch !== this.projectionEpoch || this.projectionResult !== result ||
             this.projectionDomain !== domain || this.projectionSnapshot !== snapshot)
@@ -970,9 +1297,10 @@ export class V2Page {
         this.rendered = new Set(visibility.nodeIds);
         this.lodCounts = lod.counts;
         this.lastNodeSelection = lod.selection;
+        // The pearl the view is opened to, when this level names one: the panel below offers its exit.
+        if (open !== undefined) this.indraOpen = open === null ? null : { levelId: open, domainDigest: domain.domainDigest };
         this.dropHiddenTypedSelection();
         this.renderPanel();
-        if (this.axes.organization === 'fractal') element('status').textContent = this.fractalStatusLine();
     }
     /** The read-only diagnostic record `window.__d073.projectionWitness()` and `witness().projection`
      * return under the flag — enabled, the current result digest, the resolved arrangement. */
@@ -992,6 +1320,7 @@ export class V2Page {
             cameraKey: this.mountedCameraKey,
             pending: this.projectionPending,
             refusal: this.fractalRefusal,
+            openLevelId: this.indraOpen?.levelId ?? null,
             unopenedLevels: result ? result.levels.filter(level => isLazyLevel(result, level)).map(level => level.id).sort() : [],
             refusedLevels: result ? this.refusedLevelsOf(result) : [],
         };
@@ -1109,6 +1438,11 @@ export class V2Page {
                     const visibility = page.projectionVisibility;
                     if (!visibility || visibility.projectionResultDigest !== result.determinism.resultDigest)
                         throw new Error('Structural panel visibility belongs to a different projection result.');
+                    if (explainingAlgorithm(result)) {
+                        renderSelection(host, buildProjectionExplanationPanel(pick, result, visibility),
+                            sourceId => page.openProvenanceSource(sourceId));
+                        return;
+                    }
                     if (pick.kind === 'curve' || pick.kind === 'field') {
                         const curve = pick.kind === 'curve' ? result.curves.find(item => item.visualId === pick.visualId) : undefined;
                         const field = pick.kind === 'field' ? result.fields.find(item => item.id === pick.visualId) : undefined;
@@ -1258,6 +1592,7 @@ export class V2Page {
         if (this.hoverRefreshTimer) { clearTimeout(this.hoverRefreshTimer); this.hoverRefreshTimer = null; }
         this.refreshPending++;
         const projectionEpoch = ++this.projectionEpoch;
+        this.cancelProjectionWork();
         return this.run(async () => {
             if (this.typedActive()) { await this.refreshProjection(projectionEpoch); return; }
             // Back on the product view: the typed renderer a Fractal view left behind is retired.
@@ -2177,6 +2512,14 @@ export class V2Page {
             button.onclick = () => { void action(); };
             controls.append(button);
         }
+        if (this.indraOpen !== null && this.projectionResult?.determinism.algorithmId === 'indras-pearls') {
+            const leave = document.createElement('button');
+            leave.id = 'indra-leave-pearl';
+            leave.textContent = 'Esci dal pearl';
+            leave.title = 'Torna al livello precedente senza ricentrare la camera';
+            leave.onclick = () => { void this.run(() => this.leaveIndraPearl()).catch(() => { }); };
+            controls.append(leave);
+        }
         host.append(controls);
         const search = document.createElement('section');
         search.id = 'v2-results';
@@ -2220,10 +2563,14 @@ export class V2Page {
         selectionHeading.id = 'selection-heading';
         selectionHeading.textContent = 'Selezione';
         host.append(selectionHeading);
-        if (this.typedActive() && this.projectionInput && this.typedSelection && this.projectionResult && this.projectionSnapshot &&
-            this.typedSelection.kind !== 'node' && this.typedSelection.kind !== 'semantic-edge') {
-            this.projectionInput.panel.show(host, this.typedSelection, this.projectionResult, this.projectionSnapshot);
-            return;
+        if (this.typedActive() && this.projectionInput && this.typedSelection && this.projectionResult && this.projectionSnapshot) {
+            const pick = this.typedSelection;
+            const structural = pick.kind !== 'node' && pick.kind !== 'semantic-edge';
+            // A Fractal or Indra's Pearls pick opens the explanation of its own result; a node or source
+            // edge keeps its source panel below it, so that provenance stays a separate card.
+            if (structural || projectionExplainsPick(this.projectionResult, pick))
+                this.projectionInput.panel.show(host, pick, this.projectionResult, this.projectionSnapshot);
+            if (structural) return;
         }
         if (this.selected === ABSOLUTE_CONTAINER_ID) {
             const h = document.createElement('h2'); h.textContent = 'NousOS'; host.append(h);

@@ -1,0 +1,27 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+/**
+ * The header must fit at 1024, 1280, 1440 and 1920 px (the ui-d070 check reads every header control's
+ * right edge). A browser measures that; this pins the markup and rules it depends on: the header rows
+ * wrap instead of overflowing, the status line, whose text grows with the disclosure of a typed view,
+ * can shrink and break inside a long token, and Indra's Pearls added no toolbar control.
+ */
+const html = readFileSync(new URL('../../review/index.html', import.meta.url), 'utf8');
+const header = html.slice(html.indexOf('<header>'), html.indexOf('</header>'));
+
+test('the header rows wrap and the status line can shrink', () => {
+  assert.match(html, /\.header-top,\.axes,\.tools,\.axis \{[^}]*flex-wrap:\s*wrap[^}]*min-width:\s*0/);
+  assert.match(html, /#status \{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/);
+  assert.match(html, /header \{[^}]*max-height:\s*34dvh[^}]*overflow:\s*auto/);
+  assert.doesNotMatch(header, /style="[^"]*width:\s*\d{4,}px/);
+});
+
+test('the organization axis has the three views and Indra has no control of its own besides its view button', () => {
+  const axis = header.slice(header.indexOf('data-axis="organization"'), header.indexOf('data-axis="reading"'));
+  assert.deepEqual([...axis.matchAll(/data-value="([a-z]+)"/g)].map(match => match[1]), ['natural', 'indra', 'fractal']);
+  assert.equal([...header.matchAll(/data-value="indra"/g)].length, 1, 'one Indra button in the header');
+  assert.doesNotMatch(header, /id="[^"]*(pearl|indra)[^"]*"/i, 'no Indra-specific toolbar control');
+  assert.match(axis, /data-value="indra" title="Indra's Pearls[^"]*"/);
+});

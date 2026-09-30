@@ -155,7 +155,7 @@ test('typed Indra branch receives the explicit legacy packing through the regist
     }, panel: { show() {} } };
   const page = new Page(manifest, index, { projection: '2d', morphology: 'stellar', organization: 'indra',
     colour: 'bw', labels: true, reading: 'attested' }, { expandX: 1, expandY: 1, expandZ: 1, nodeScale: 1 } as never,
-    {} as never, {}, 'complete', { projectionPipeline: input });
+    {} as never, {}, 'complete', { projectionPipeline: input, legacyIndra: true });
   await page.refresh();
   assert.equal(legacyCalls, 1);
   assert.equal(mounts, 1);

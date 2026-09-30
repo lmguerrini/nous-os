@@ -5,6 +5,7 @@
 
 import type { MathematicalProjection } from "./contract-types.ts";
 import { fractalProjection } from "./fractal.ts";
+import { indrasPearlsProjection } from "./indra.ts";
 import { naturalProjection } from "./natural-bridge.ts";
 import { ProjectionWorkerHost } from "./worker-host.ts";
 
@@ -15,7 +16,7 @@ export interface ProjectionWorkerEntryScope {
 
 /** Pure projection implementations available to the standalone worker today. Future views add
  * their projection to this list when their assembly lands; the host itself remains id-generic. */
-export const PROJECTION_WORKER_ENTRY_PROJECTIONS: readonly MathematicalProjection<any>[] = [naturalProjection, fractalProjection];
+export const PROJECTION_WORKER_ENTRY_PROJECTIONS: readonly MathematicalProjection<any>[] = [naturalProjection, fractalProjection, indrasPearlsProjection];
 
 export function installProjectionWorkerEntry(
   scope: ProjectionWorkerEntryScope,

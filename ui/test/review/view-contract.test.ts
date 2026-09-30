@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   DEFAULT_AXES,
+  LEGACY_INDRA_PROJECTION_ID,
   LEGACY_ORGANIZATION,
   NATURAL_ORGANIZATION,
   ORGANIZATION_PROJECTIONS,
@@ -18,6 +19,7 @@ import {
 import type { PageAxes } from "../../src/review/view-contract.ts";
 import { defaultNaturalArrangement, naturalProjection, resolveNaturalArrangement } from "../../src/projection/natural-bridge.ts";
 import { fractalProjection } from "../../src/projection/fractal.ts";
+import { indrasPearlsProjection } from "../../src/projection/indra.ts";
 import { PALETTES } from "../../src/review/palette.ts";
 
 function inputFixture(): Record<string, unknown> {
@@ -171,7 +173,10 @@ test("a Natural saved view with an arrangement is not disturbed by the Fractal v
 test("every view of the organization axis names the projection that serves it and how it is typed", () => {
   assert.deepEqual(Object.keys(ORGANIZATION_PROJECTIONS).sort(), [...SAVED_AXES_VOCABULARIES.organization].sort(), "no view without a mapping");
   assert.deepEqual(ORGANIZATION_PROJECTIONS.natural, { projectionId: "natural", typed: "flag" }, "Natural is typed only when the page asks for it");
-  assert.deepEqual(ORGANIZATION_PROJECTIONS.indra, { projectionId: "indra-legacy", typed: "flag" });
+  assert.deepEqual(ORGANIZATION_PROJECTIONS.indra, { projectionId: "indras-pearls", typed: "always" }, "Indra opens Indra's Pearls");
+  assert.equal(ORGANIZATION_PROJECTIONS.indra.projectionId, indrasPearlsProjection.id, "the mapped id is the registered assembly's own");
+  assert.equal(LEGACY_INDRA_PROJECTION_ID, "indra-legacy", "the legacy adapter stays the rollback, outside the register");
+  assert.notEqual(LEGACY_INDRA_PROJECTION_ID, ORGANIZATION_PROJECTIONS.indra.projectionId);
   assert.deepEqual(ORGANIZATION_PROJECTIONS.fractal, { projectionId: "fractal", typed: "always" });
   assert.equal(ORGANIZATION_PROJECTIONS.natural.projectionId, naturalProjection.id);
   assert.equal(ORGANIZATION_PROJECTIONS.fractal.projectionId, fractalProjection.id, "the mapped id is the registered assembly's own");
