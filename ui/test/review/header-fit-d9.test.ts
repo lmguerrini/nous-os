@@ -28,7 +28,7 @@ test('the organization axis has the four views and Indra has no control of its o
 
 test('Holographic has a compact label, experimental title and no toolbar control of its own', () => {
   const axis = header.slice(header.indexOf('data-axis="organization"'), header.indexOf('data-axis="reading"'));
-  const holographicButton = /<button data-value="holographic" hidden title="([^"]*)">([^<]*)<\/button>/;
+  const holographicButton = /<button data-value="holographic" hidden title="([^"]*)">([^<]*)<\/button>/g;
   assert.deepEqual([...axis.matchAll(holographicButton)].map(([, title, label]) => ({ title, label })), [{
     title: 'Vista sperimentale: coordinate spettrali, nessuna affermazione topologica',
     label: 'Holographic',
@@ -43,4 +43,9 @@ test('Holographic has a compact label, experimental title and no toolbar control
     label: 'Holographic',
   }]);
   assert.match(html, /\.header-top,\.axes,\.tools,\.axis \{[^}]*flex-wrap:\s*wrap/, 'the wrapping rules that make the longer button fit at 1024-1920 px are still there');
+});
+
+test('both tool menu panels are anchored to the right', () => {
+  assert.match(html, /#filter-menu \.menu-content\s*\{[^}]*right:\s*0[^}]*left:\s*auto/);
+  assert.match(html, /#more-menu \.menu-content\s*\{[^}]*right:\s*0[^}]*left:\s*auto/);
 });
