@@ -10,6 +10,8 @@ export type FilamentProjectionUniforms = {
   readonly resolutionDevicePx: readonly [number, number];
   readonly devicePixelRatio: number;
   readonly sizeScale: number;
+  readonly perspective?: boolean;
+  readonly referenceViewDepth?: number;
 };
 
 /** This owns one deterministic expanded-quad filament pass and does not retain scene objects. */
@@ -86,6 +88,7 @@ in vec3 a_color;
 in vec3 a_hotColor;
 in float a_opacityPermille;
 in vec4 a_widthsAndPicking;
+in vec4 a_neuralProfile;
 in vec4 a_minimumAndJunctionPermille;
 in vec4 a_sheathAndCorePermille;
 in vec4 a_hotAndWobble;
@@ -96,11 +99,16 @@ uniform mat4 projectionMatrix;
 uniform vec2 u_resolutionDevicePx;
 uniform float u_devicePixelRatio;
 uniform float u_sizeScale;
+uniform float u_neuralWidthPx;
+uniform float u_isPerspective;
+uniform float u_referenceViewDepth;
 uniform float u_permilleScale;
 flat out vec3 v_color;
 flat out vec3 v_hotColor;
 flat out float v_opacity;
 flat out vec4 v_widthsAndPicking;
+flat out vec4 v_neuralProfile;
+flat out vec2 v_neuralRadiiDevicePx;
 flat out vec4 v_minimumAndJunctionPermille;
 flat out vec4 v_sheathAndCorePermille;
 flat out vec4 v_hotAndWobble;
@@ -113,9 +121,11 @@ vec2 clipToDevice(vec4 clipPosition) {
   return ((clipPosition.xy / clipPosition.w) + 1.0) * u_resolutionDevicePx * 0.5;
 }
 void main() {
-  vec4 clipStart = projectionMatrix * modelViewMatrix * vec4(a_start, 1.0);
+  vec4 viewStart = modelViewMatrix * vec4(a_start, 1.0);
+  vec4 viewEnd = modelViewMatrix * vec4(a_end, 1.0);
+  vec4 clipStart = projectionMatrix * viewStart;
   vec4 clipControl = projectionMatrix * modelViewMatrix * vec4(a_control, 1.0);
-  vec4 clipEnd = projectionMatrix * modelViewMatrix * vec4(a_end, 1.0);
+  vec4 clipEnd = projectionMatrix * viewEnd;
   vec2 deviceStart = clipToDevice(clipStart);
   vec2 deviceControl = clipToDevice(clipControl);
   vec2 deviceEnd = clipToDevice(clipEnd);
@@ -133,11 +143,14 @@ void main() {
     a_widthsAndPicking.z * u_devicePixelRatio * 0.5,
     maximumBaseWidth * maximumWidthFactor * 0.5
   );
+  if (a_neuralProfile.w > 0.5) maximumBodyHalfWidth = 5.0 * u_devicePixelRatio;
   float materialExtent = max(
     maximumBodyHalfWidth * a_sheathAndCorePermille.x / u_permilleScale,
     maximumBodyHalfWidth + (a_widthsAndPicking.w * u_devicePixelRatio)
   );
   float medialExtent = chordLength * abs(a_hotAndWobble.z / u_permilleScale);
+  if (a_neuralProfile.w > 0.5) medialExtent = min(medialExtent,
+    clamp(u_neuralWidthPx, 0.3, 10.0) * u_devicePixelRatio * 5.0);
   float normalExtent = (curveOffset * 0.5) + medialExtent + materialExtent;
   float endpointExtent = mix(-materialExtent, materialExtent, position.x);
   vec2 chordPoint = mix(deviceStart, deviceEnd, position.x);
@@ -149,6 +162,13 @@ void main() {
   v_hotColor = a_hotColor;
   v_opacity = a_opacityPermille / u_permilleScale;
   v_widthsAndPicking = a_widthsAndPicking;
+  v_neuralProfile = a_neuralProfile;
+  float startScale = mix(u_sizeScale,
+    u_referenceViewDepth / max(-viewStart.z, u_referenceViewDepth / u_permilleScale), u_isPerspective);
+  float endScale = mix(u_sizeScale,
+    u_referenceViewDepth / max(-viewEnd.z, u_referenceViewDepth / u_permilleScale), u_isPerspective);
+  v_neuralRadiiDevicePx = vec2(clamp(a_neuralProfile.y * startScale, 2.0, 9.0),
+    clamp(a_neuralProfile.z * endScale, 2.0, 9.0)) * u_devicePixelRatio;
   v_minimumAndJunctionPermille = a_minimumAndJunctionPermille;
   v_sheathAndCorePermille = a_sheathAndCorePermille;
   v_hotAndWobble = a_hotAndWobble;
@@ -165,6 +185,8 @@ flat in vec3 v_color;
 flat in vec3 v_hotColor;
 flat in float v_opacity;
 flat in vec4 v_widthsAndPicking;
+flat in vec4 v_neuralProfile;
+flat in vec2 v_neuralRadiiDevicePx;
 flat in vec4 v_minimumAndJunctionPermille;
 flat in vec4 v_sheathAndCorePermille;
 flat in vec4 v_hotAndWobble;
@@ -176,6 +198,7 @@ flat in vec2 v_cpC;
 uniform vec2 u_resolutionDevicePx;
 uniform float u_devicePixelRatio;
 uniform float u_sizeScale;
+uniform float u_neuralWidthPx;
 uniform float u_permilleScale;
 out vec4 outputColor;
 ${FILAMENT_DISTANCE_GLSL}
@@ -216,8 +239,9 @@ float filamentMedialOffsetPx(float parameter, float span) {
   // That is the F22 shape exactly, a channel improving while the render got worse. Bounding the
   // excursion by the filament's own width keeps the meander fine at every span and every zoom, so
   // the irregularity reads as material character rather than as a waveform drawn over the graph.
-  float widthPx = mix(v_widthsAndPicking.x, v_widthsAndPicking.y, parameter)
-    * u_sizeScale * u_devicePixelRatio;
+  float widthPx = v_neuralProfile.w > 0.5
+    ? clamp(u_neuralWidthPx, 0.3, 10.0) * u_devicePixelRatio
+    : mix(v_widthsAndPicking.x, v_widthsAndPicking.y, parameter) * u_sizeScale * u_devicePixelRatio;
   float excursionPx = min(
     span * (v_hotAndWobble.z / u_permilleScale),
     max(widthPx, v_widthsAndPicking.z * u_devicePixelRatio) * MEDIAL_OFFSET_WIDTH_LIMIT
@@ -234,6 +258,17 @@ void main() {
     v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
     baseWidth * widthFactor * 0.5
   );
+  if (v_neuralProfile.w > 0.5) {
+    float ordinary = clamp(u_neuralWidthPx, 0.3, 10.0) * u_devicePixelRatio;
+    float startRadius = v_neuralRadiiDevicePx.x;
+    float endRadius = v_neuralRadiiDevicePx.y;
+    float startRoot = min(ordinary * 2.4, min(10.0 * u_devicePixelRatio, max(ordinary, startRadius * 1.8)));
+    float endRoot = min(ordinary * 2.4, min(10.0 * u_devicePixelRatio, max(ordinary, endRadius * 1.8)));
+    float startEase = 1.0 - smoothstep(0.0, 0.28, parameter);
+    float endEase = 1.0 - smoothstep(0.0, 0.28, 1.0 - parameter);
+    bodyHalfWidth = 0.5 * (ordinary + (startRoot - ordinary) * startEase
+      + (endRoot - ordinary) * endEase);
+  }
   float medialOffset = filamentMedialOffsetPx(parameter, length(v_cpC - v_cpA));
   float distance = abs(distanceSample.x - medialOffset);
   float feather = max(fwidth(distance), 1.0 / u_permilleScale);
@@ -279,6 +314,7 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
   geometry.setAttribute("a_hotColor", instanced(buffers.hotColorsSrgb, colorChannelCount()));
   geometry.setAttribute("a_opacityPermille", instanced(buffers.opacityPermille, scalarCount()));
   geometry.setAttribute("a_widthsAndPicking", instanced(buffers.widthsAndPicking, packedChannelCount()));
+  geometry.setAttribute("a_neuralProfile", instanced(buffers.neuralProfile, packedChannelCount()));
   geometry.setAttribute("a_minimumAndJunctionPermille", instanced(buffers.arcAndJunctionPermille, packedChannelCount()));
   geometry.setAttribute("a_sheathAndCorePermille", instanced(buffers.sheathAndCorePermille, packedChannelCount()));
   geometry.setAttribute("a_hotAndWobble", instanced(buffers.hotAndWobble, packedChannelCount()));
@@ -293,6 +329,9 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
       u_resolutionDevicePx: { value: new THREE.Vector2() },
       u_devicePixelRatio: { value: scalarCount() },
       u_sizeScale: { value: scalarCount() },
+      u_neuralWidthPx: { value: 1 },
+      u_isPerspective: { value: 0 },
+      u_referenceViewDepth: { value: 1 },
       u_permilleScale: { value: SCENE_PERMILLE_SCALE },
     },
     transparent: true,
@@ -315,6 +354,7 @@ export function updateFilamentRenderResources(resources: FilamentRenderResources
   copyAttribute(resources.geometry, "a_hotColor", buffers.hotColorsSrgb);
   copyAttribute(resources.geometry, "a_opacityPermille", buffers.opacityPermille);
   copyAttribute(resources.geometry, "a_widthsAndPicking", buffers.widthsAndPicking);
+  copyAttribute(resources.geometry, "a_neuralProfile", buffers.neuralProfile);
   copyAttribute(resources.geometry, "a_minimumAndJunctionPermille", buffers.arcAndJunctionPermille);
   copyAttribute(resources.geometry, "a_sheathAndCorePermille", buffers.sheathAndCorePermille);
   copyAttribute(resources.geometry, "a_hotAndWobble", buffers.hotAndWobble);
@@ -330,6 +370,13 @@ export function updateFilamentProjectionUniforms(
   requiredVectorUniform(material, "u_resolutionDevicePx").set(...values.resolutionDevicePx);
   requiredUniform(material, "u_devicePixelRatio").value = values.devicePixelRatio;
   requiredUniform(material, "u_sizeScale").value = values.sizeScale;
+  requiredUniform(material, "u_isPerspective").value = values.perspective ? 1 : 0;
+  requiredUniform(material, "u_referenceViewDepth").value = values.referenceViewDepth ?? 1;
+}
+
+/** Apply the live edge-width slider without rebuilding any relation buffer. */
+export function setFilamentNeuralWidthPx(material: THREE.RawShaderMaterial, widthPx: number): void {
+  requiredUniform(material, "u_neuralWidthPx").value = Math.max(0.3, Math.min(10, widthPx));
 }
 
 function copyAttribute(geometry: THREE.InstancedBufferGeometry, name: string, values: Float32Array): void {

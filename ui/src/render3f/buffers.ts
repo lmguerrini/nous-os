@@ -33,6 +33,8 @@ export type FilamentBuffers = {
   readonly hotColorsSrgb: Float32Array;
   readonly opacityPermille: Float32Array;
   readonly widthsAndPicking: Float32Array;
+  /** Ordinary width, endpoint soma radii, and Neural flag for the screen-space profile. */
+  readonly neuralProfile: Float32Array;
   readonly arcAndJunctionPermille: Float32Array;
   readonly sheathAndCorePermille: Float32Array;
   readonly hotAndWobble: Float32Array;
@@ -73,7 +75,7 @@ export type SrgbColor = {
 export function buildSceneBuffers(scene: Scene): SceneBuffers {
   return {
     nodes: buildNodeBuffers(scene.nodes, scene.tokenEncoding),
-    filaments: buildFilamentBuffers(scene.edges, scene.tokens.peak, scene.tokenEncoding),
+    filaments: buildFilamentBuffers(scene.edges, scene.tokens.peak, scene.tokenEncoding, scene.nodes),
     aggregates: buildAggregateBuffers(scene.aggregates, scene.tokenEncoding),
   };
 }
@@ -134,6 +136,7 @@ export function buildFilamentBuffers(
   edges: readonly SceneEdge[],
   hotToken: OklchToken,
   encoding: SceneTokenEncoding,
+  nodes: readonly SceneNode[] = [],
 ): FilamentBuffers {
   const ordered = [...edges].sort(compareStackingPriority);
   const startPositions = new Float32Array(ordered.length * coordinateCount());
@@ -143,6 +146,8 @@ export function buildFilamentBuffers(
   const hotColorsSrgb = new Float32Array(ordered.length * colorChannelCount());
   const opacityPermille = new Float32Array(ordered.length);
   const widthsAndPicking = new Float32Array(ordered.length * packedChannelCount());
+  const neuralProfile = new Float32Array(ordered.length * packedChannelCount());
+  const nodeRadii = new Map(nodes.map(node => [node.id, node.radiusPx]));
   const arcAndJunctionPermille = new Float32Array(ordered.length * packedChannelCount());
   const sheathAndCorePermille = new Float32Array(ordered.length * packedChannelCount());
   const hotAndWobble = new Float32Array(ordered.length * packedChannelCount());
@@ -167,6 +172,11 @@ export function buildFilamentBuffers(
       edge.minimumDeviceWidthPx,
       edge.pickTolerancePx,
     ]);
+    // The governed Neural material alone has a nonzero hot-mix channel in the default grammar.
+    // Carry its flag once per scene revision; shaders do no per-frame relation lookup.
+    writePacked(neuralProfile, edgeIndex, [edge.bodyWidthPx,
+      nodeRadii.get(edge.source) ?? 0, nodeRadii.get(edge.target) ?? 0,
+      edge.filament.hotMixPermille > 0 ? 1 : 0]);
     writePacked(arcAndJunctionPermille, edgeIndex, [
       edge.filament.minimumWidthFactorPermille,
       edge.filament.junctionStartPermille,
@@ -209,6 +219,7 @@ export function buildFilamentBuffers(
     hotColorsSrgb,
     opacityPermille,
     widthsAndPicking,
+    neuralProfile,
     arcAndJunctionPermille,
     sheathAndCorePermille,
     hotAndWobble,

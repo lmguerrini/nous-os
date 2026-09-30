@@ -47,6 +47,10 @@ test("filament buffers retain direct quadratic geometry, width floors, luminance
     assert.equal(packedAt(buffers.widthsAndPicking, index, 1), Math.fround(edge.widthEndPx));
     assert.equal(packedAt(buffers.widthsAndPicking, index, 2), Math.fround(edge.minimumDeviceWidthPx));
     assert.equal(packedAt(buffers.widthsAndPicking, index, 3), Math.fround(edge.pickTolerancePx));
+    assert.equal(packedAt(buffers.neuralProfile, index, 0), Math.fround(edge.bodyWidthPx));
+    assert.equal(packedAt(buffers.neuralProfile, index, 1), Math.fround(scene.nodes.find(node => node.id === edge.source)!.radiusPx));
+    assert.equal(packedAt(buffers.neuralProfile, index, 2), Math.fround(scene.nodes.find(node => node.id === edge.target)!.radiusPx));
+    assert.equal(packedAt(buffers.neuralProfile, index, 3), edge.filament.hotMixPermille > 0 ? 1 : 0);
     assert.equal(packedAt(buffers.phaseAndLuminancePermille, index, 1), edge.filament.luminanceStartPermille);
     assert.equal(packedAt(buffers.phaseAndLuminancePermille, index, 2), edge.filament.luminanceMidPermille);
     assert.equal(packedAt(buffers.phaseAndLuminancePermille, index, 3), edge.filament.luminanceEndPermille);

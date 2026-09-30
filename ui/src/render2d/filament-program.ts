@@ -26,6 +26,8 @@ const FILAMENT_UNIFORMS = [
   "u_wobbleAmplitude",
   "u_wobbleFrequency",
   "u_hotColor",
+  "u_neuralProfile",
+  "u_neuralWidthPx",
 ] as const;
 const COLOR_CHANNEL_COUNT = ["red", "green", "blue", "alpha"].length;
 const COLOR_BYTE_MAXIMUM = Number("255");
@@ -42,6 +44,9 @@ export type FilamentUniformMaterial = {
   readonly wobbleAmplitude: number;
   readonly wobbleFrequency: number;
   readonly hotColor?: string;
+  /** The distinct Neural shader reads these live values on each Sigma render. */
+  neuralProfile?: boolean;
+  neuralWidthPx?: number;
 };
 
 // Was the Stellar morphology's opacity, which holds the permille base by coincidence, not by meaning.
@@ -123,6 +128,7 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
         { name: "a_afterglowDecayPermille", size: 1, type: WebGLRenderingContext.FLOAT },
         { name: "a_materialWidths", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.FLOAT },
         { name: "a_materialVariation", size: MATERIAL_VARIATION_COMPONENT_COUNT, type: WebGLRenderingContext.FLOAT },
+        { name: "a_somaRadii", size: 2, type: WebGLRenderingContext.FLOAT },
         { name: "a_color", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
         { name: "a_id", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
       ],
@@ -172,6 +178,8 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     array[startIndex++] = edgeData.junctionEnd ?? 0;
     array[startIndex++] = edgeData.wobblePhase ?? 0;
     array[startIndex++] = edgeData.hotCore ?? 0;
+    array[startIndex++] = sourceData.size;
+    array[startIndex++] = targetData.size;
     array[startIndex++] = floatColor(edgeData.color);
     array[startIndex] = edgeIndex;
   }
@@ -190,6 +198,9 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     gl.uniform1f(programInfo.uniformLocations.u_sheathScale, uniformMaterial.sheathScale);
     gl.uniform1f(programInfo.uniformLocations.u_wobbleAmplitude, uniformMaterial.wobbleAmplitude);
     gl.uniform1f(programInfo.uniformLocations.u_wobbleFrequency, uniformMaterial.wobbleFrequency);
+    gl.uniform1f(programInfo.uniformLocations.u_neuralProfile,
+      (uniformMaterial.neuralProfile ?? uniformMaterial.hotMix > 0) ? 1 : 0);
+    gl.uniform1f(programInfo.uniformLocations.u_neuralWidthPx, uniformMaterial.neuralWidthPx ?? 1);
     if (!programInfo.isPicking) {
       gl.uniform1f(programInfo.uniformLocations.u_sheathAlpha, uniformMaterial.sheathAlpha);
       gl.uniform1f(programInfo.uniformLocations.u_coreScale, uniformMaterial.coreScale);
@@ -233,6 +244,7 @@ attribute float a_pickTolerance;
 attribute float a_propagationArcPosition;
 attribute float a_propagationContinuous;
 attribute float a_afterglowDecayPermille;
+attribute vec2 a_somaRadii;
 attribute vec4 a_materialWidths;
 attribute vec2 a_materialVariation;
 uniform mat3 u_matrix;
@@ -245,6 +257,8 @@ uniform float u_minimumWidthFactor;
 uniform float u_minimumBodyWidth;
 uniform float u_sheathScale;
 uniform float u_wobbleAmplitude;
+uniform float u_neuralProfile;
+uniform float u_neuralWidthPx;
 varying vec4 v_color;
 varying float v_thickness;
 varying float v_pickTolerance;
@@ -256,6 +270,7 @@ varying float v_propagationContinuous;
 varying float v_afterglowDecayPermille;
 varying vec4 v_materialWidths;
 varying vec2 v_materialVariation;
+varying vec2 v_somaRadii;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
@@ -284,17 +299,20 @@ void main() {
     abs(lengthDelta * a_curvature),
     abs(dot(viewportControl - ((viewportSource + viewportTarget) * 0.5), normal))
   );
-  float curveThickness = max(u_minEdgeThickness, a_thickness / u_sizeRatio);
+  float curveThickness = u_neuralProfile > 0.5
+    ? clamp(u_neuralWidthPx, 0.3, 10.0) : max(u_minEdgeThickness, a_thickness / u_sizeRatio);
   v_thickness = curveThickness * u_pixelRatio;
   v_pickTolerance = a_pickTolerance * u_pixelRatio;
   v_feather = u_feather;
   v_minimumBodyWidth = u_minimumBodyWidth * u_pixelRatio;
+  if (u_neuralProfile > 0.5) v_minimumBodyWidth = 0.0;
   v_arcFraction = a_current;
   v_propagationArcPosition = a_propagationArcPosition;
   v_propagationContinuous = a_propagationContinuous;
   v_afterglowDecayPermille = a_afterglowDecayPermille;
   v_materialWidths = a_materialWidths;
   v_materialVariation = a_materialVariation;
+  v_somaRadii = clamp(a_somaRadii / u_sizeRatio, 2.0, 9.0) * u_pixelRatio;
   v_cpA = viewportSource;
   v_cpB = viewportControl;
   v_cpC = viewportTarget;
@@ -302,6 +320,7 @@ void main() {
     u_minimumWidthFactor,
     max(a_materialWidths.x, a_materialWidths.y) + abs(u_wobbleAmplitude) + max(a_materialWidths.z, a_materialWidths.w)
   );
+  if (u_neuralProfile > 0.5) maximumWidthFactor = max(maximumWidthFactor, 10.0 / max(curveThickness, 0.3));
   float maximumBodyHalfWidth = v_thickness * 0.5 * maximumWidthFactor;
   maximumBodyHalfWidth = max(maximumBodyHalfWidth, v_minimumBodyWidth * 0.5);
   float maximumMaterialExtent = max(
@@ -353,6 +372,7 @@ varying float v_propagationContinuous;
 varying float v_afterglowDecayPermille;
 varying vec4 v_materialWidths;
 varying vec2 v_materialVariation;
+varying vec2 v_somaRadii;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
@@ -367,6 +387,8 @@ uniform float u_hotMix;
 uniform float u_hotAlpha;
 uniform float u_wobbleAmplitude;
 uniform float u_wobbleFrequency;
+uniform float u_neuralProfile;
+uniform float u_pixelRatio;
 uniform vec3 u_hotColor;
 ${FILAMENT_DISTANCE_FUNCTION}
 void main(void) {
@@ -382,6 +404,15 @@ void main(void) {
   float junction = v_materialWidths.z * max(0.0, 1.0 - curveT / 0.13)
     + v_materialWidths.w * max(0.0, 1.0 - (1.0 - curveT) / 0.13);
   float widthFactor = max(u_minimumWidthFactor, taper + wobble + junction);
+  if (u_neuralProfile > 0.5) {
+    float shoulder = 0.28;
+    float startEase = 1.0 - smoothstep(0.0, shoulder, curveT);
+    float endEase = 1.0 - smoothstep(0.0, shoulder, 1.0 - curveT);
+    float rootStart = min(v_thickness * 2.4, min(10.0 * u_pixelRatio, max(v_thickness, v_somaRadii.x * 1.8)));
+    float rootEnd = min(v_thickness * 2.4, min(10.0 * u_pixelRatio, max(v_thickness, v_somaRadii.y * 1.8)));
+    widthFactor = (v_thickness + (rootStart - v_thickness) * startEase
+      + (rootEnd - v_thickness) * endEase) / v_thickness;
+  }
   float halfThickness = 0.5 * v_thickness * widthFactor;
   halfThickness = max(halfThickness, v_minimumBodyWidth * 0.5);
   float distance = abs(distanceSample.x);

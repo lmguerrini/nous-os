@@ -3,7 +3,7 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { MorphologyContainerPath, MorphologyGeometry, MorphologyInput, MorphologyNodeShape, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
-import { SOMA_OUTLINE_MAX_RADIAL, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
+import { SOMA_OUTLINE_MAX_RADIAL, neuralScreenWidthAt, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
@@ -819,6 +819,32 @@ export type MorphologyEdgePaint = {
   readonly widthAt: (i: number) => number;
 };
 
+/** A projected C1 centre-line through the existing geometry samples. Work is bounded per
+ * original interval, even on long links, and only happens when the base layer repaints. */
+export function smoothNeuralCurve(anchors: readonly ProjectedPoint[]): ProjectedPoint[] {
+  if (anchors.length < 3) return [...anchors];
+  const result: ProjectedPoint[] = [anchors[0]!];
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const a = anchors[i]!, b = anchors[i + 1]!;
+    const before = anchors[Math.max(0, i - 1)]!, after = anchors[Math.min(anchors.length - 1, i + 2)]!;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const steps = Math.min(12, Math.max(2, Math.ceil(Math.hypot(dx, dy) / 18)));
+    const m0x = i === 0 ? dx : (b.x - before.x) * 0.5;
+    const m0y = i === 0 ? dy : (b.y - before.y) * 0.5;
+    const m1x = i + 1 === anchors.length - 1 ? dx : (after.x - a.x) * 0.5;
+    const m1y = i + 1 === anchors.length - 1 ? dy : (after.y - a.y) * 0.5;
+    for (let step = 1; step <= steps; step++) {
+      const t = step / steps, t2 = t * t, t3 = t2 * t;
+      const h00 = 2 * t3 - 3 * t2 + 1, h10 = t3 - 2 * t2 + t;
+      const h01 = -2 * t3 + 3 * t2, h11 = t3 - t2;
+      result.push({ x: h00 * a.x + h10 * m0x + h01 * b.x + h11 * m1x,
+        y: h00 * a.y + h10 * m0y + h01 * b.y + h11 * m1y,
+        scale: a.scale + (b.scale - a.scale) * t });
+    }
+  }
+  return result;
+}
+
 /** The exploratory relations of a geometry that may animate, prioritised and budget-capped exactly
  * as the inline pass has always done: visible only, selected and focus-adjacent first. Deterministic
  * in the inputs, so the main pass and the separate flow layer always agree. */
@@ -898,30 +924,41 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     // D-072 V5: each dendrite end moves onto the outline of the soma it leaves — the soma the node
     // pass is about to draw under it — overlapping the boundary, so soma and dendrites read as one
     // shape with no suspended-egg gap. Screen space, so 2D and 3D share the exact grammar.
+    let startRadius = 0, endRadius = 0;
     if (somaFrames && endpointSomata) {
       const [segmentStart, segmentEnd] = segmentEnds(part);
       const startSoma = segmentStart ? endpointSomata.get(neuralEndpointKey(segmentStart)) : undefined;
       const endSoma = segmentEnd ? endpointSomata.get(neuralEndpointKey(segmentEnd)) : undefined;
       const startFrame = startSoma ? somaFrames.get(startSoma.id) : undefined;
       const endFrame = endSoma ? somaFrames.get(endSoma.id) : undefined;
+      startRadius = startFrame?.radius ?? 0;
+      endRadius = endFrame?.radius ?? 0;
       if (startFrame || endFrame) {
         let first = points[0]!, last = points[points.length - 1]!;
         if (startFrame) {
-          const adjusted = neuralEdgeEndOnSoma(startFrame, first);
+          const adjusted = neuralEdgeEndOnSoma(startFrame, points[1]!);
           first = { x: adjusted.x, y: adjusted.y, scale: first.scale };
         }
         if (endFrame) {
-          const adjusted = neuralEdgeEndOnSoma(endFrame, last);
+          const adjusted = neuralEdgeEndOnSoma(endFrame, points[points.length - 2]!);
           last = { x: adjusted.x, y: adjusted.y, scale: last.scale };
         }
         points = [first, ...points.slice(1, -1), last];
       }
     }
+    if (geometry.morphology === "neural" && style.interaction?.quality !== "moving") points = smoothNeuralCurve(points);
+    const cumulative: number[] = [0];
+    for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1]! + Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y));
+    const totalPx = cumulative[cumulative.length - 1]! || 1;
     // The Neural profile retains its full width at both soma ends, including high-degree hubs.
-    const neuralTaper = geometry.morphology === "neural"
-      ? neuralTaperProfile(part.widthStart, part.widthEnd, contract.edge.taper) : null;
+    const neuralTaper = geometry.morphology === "neural";
     const widthAt = (i: number) => {
-      const t = i / (points.length - 1);
+      const index = Math.min(points.length - 1, Math.max(0, Math.floor(i)));
+      const fraction = Math.min(1, Math.max(0, i - index));
+      const t = neuralTaper
+        ? (cumulative[index]! + (index + 1 < cumulative.length
+          ? (cumulative[index + 1]! - cumulative[index]!) * fraction : 0)) / totalPx
+        : i / (points.length - 1);
       const smooth = t * t * (3 - 2 * t);
       const variation = geometry.morphology === "mycelium" ? 1 + contract.edge.widthVariation * Math.sin(Math.PI * t) ** 2 * Math.cos(t * Math.PI * 4) : 1;
       // Fractional sample positions (the flow pulse asks for midpoints) read the nearest projected scale.
@@ -934,16 +971,11 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         return clamp(stellarArcWidthPx(arcClass, profile * factors) * appearance.edgeWidth, 0.2, 4.5);
       }
       if (neuralTaper) {
-        // Quadratic through the three keyframes: the mid width keeps a visible on-screen floor,
-        // each soma end keeps the contract ratio above it, and the cap leaves room for the ratio.
-        const somaRatio = Math.max(neuralTaper.start, neuralTaper.end) / neuralTaper.mid;
-        const mid = clamp(neuralTaper.mid * factors * appearance.edgeWidth, NEURAL_EDGE_MID_MIN_PX, 16 / somaRatio);
-        const start = mid * (neuralTaper.start / neuralTaper.mid);
-        const end = mid * (neuralTaper.end / neuralTaper.mid);
-        const half = t <= 0.5 ? t * 2 : (t - 0.5) * 2;
-        const eased = half * half * (3 - 2 * half);
-        const base = t <= 0.5 ? start + (mid - start) * eased : mid + (end - mid) * eased;
-        return clamp(base, NEURAL_EDGE_MID_MIN_PX, 16);
+        // The slider sets the ordinary pixel width. Perspective changes the soma frame and
+        // centre-line only; it cannot turn the shaft into a zoom-scaled band.
+        const body = Math.max(0.3, appearance.edgeWidth * widthFactor
+          * (emphasis?.radiusMultiplier ?? 1));
+        return neuralScreenWidthAt(t, body, startRadius, endRadius, contract.edge.taper);
       }
       const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
       return clamp(profile * factors * appearance.edgeWidth, 0.5, 16);
@@ -958,15 +990,13 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         : Math.max(0.14, opacity * appearance.edgeOpacity * (emphasis?.brightnessMultiplier ?? 1))),
       0, 1);
     const alpha = focusArcOpacity(focus ?? null, part.edgeId, baseAlpha);
-    const cumulative: number[] = [0];
-    for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1]! + Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y));
-    paints.push({ part, edgeId: part.edgeId, category, points, cumulative, totalPx: cumulative[cumulative.length - 1]! || 1, color, alpha, widthAt });
+    paints.push({ part, edgeId: part.edgeId, category, points, cumulative, totalPx, color, alpha, widthAt });
   }
   return paints;
 }
 
 /** The exploratory halo ribbon and constant-alpha base ribbon of one paint. The moving frame
- * strokes one cheap polyline at the middle width; full quality draws the tapered ribbon. */
+ * strokes one cheap smooth path at the middle width; full quality draws the tapered ribbon. */
 function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint, simple = false): void {
   const { points, color, alpha } = paint;
   const fillRibbon = (widthAt: (i: number) => number): void => {
@@ -988,12 +1018,21 @@ function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePa
     fillRibbon((i) => paint.widthAt(i) * FLOW_HALO_WIDTH_MULTIPLIER);
   }
   if (simple) {
-    // One polyline stroke at the dendrite's mid width: the moving frame's cheap neural base.
+    // One curve stroke at the dendrite's mid width: the moving frame's cheap neural base.
     context.strokeStyle = rgba(color, alpha);
     context.lineWidth = paint.widthAt((points.length - 1) / 2);
     context.beginPath();
     context.moveTo(points[0]!.x, points[0]!.y);
-    for (const point of points.slice(1)) context.lineTo(point.x, point.y);
+    if (typeof context.quadraticCurveTo === "function" && points.length > 2) {
+      // The reduced frame keeps one stroke and the original anchor budget, while midpoint
+      // quadratics hide the decimated sample corners during camera motion.
+      for (let i = 1; i < points.length - 1; i++) {
+        const point = points[i]!, next = points[i + 1]!;
+        context.quadraticCurveTo(point.x, point.y, (point.x + next.x) * 0.5, (point.y + next.y) * 0.5);
+      }
+      const last = points[points.length - 1]!;
+      context.lineTo(last.x, last.y);
+    } else for (const point of points.slice(1)) context.lineTo(point.x, point.y);
     context.stroke();
     return;
   }

@@ -69,6 +69,23 @@ function myceliumParts(edge: MorphologyEdgeInput, a: Coordinates, b: Coordinates
 
 /** Neural dendrite/axon width factors: thick near each soma, thinnest at the mid-edge. */
 export const NEURAL_TAPER = { proximal: 1.7, mid: 0.5, distal: 1.2 } as const;
+/** Screen-space dendrite profile shared by both projected morphology renderers. The two
+ * smoothstep shoulders end before the middle, leaving a genuinely ordinary-width shaft. */
+export const NEURAL_TAPER_FRACTION = 0.28;
+export const NEURAL_ROOT_CAP_PX = 10;
+export function neuralScreenWidthAt(t: number, ordinaryPx: number, startSomaRadiusPx: number,
+  endSomaRadiusPx: number, taper: readonly [number, number] = [2.4, 2.4]): number {
+  const body = Math.min(NEURAL_ROOT_CAP_PX, Math.max(0, ordinaryPx));
+  const root = (radius: number, ratio: number) => radius > 0
+    ? Math.min(body * ratio, NEURAL_ROOT_CAP_PX, Math.max(body, radius * 1.8)) : body;
+  const start = root(startSomaRadiusPx, taper[0]);
+  const end = root(endSomaRadiusPx, taper[1]);
+  const ease = (u: number) => { const x = Math.max(0, Math.min(1, u)); return x * x * (3 - 2 * x); };
+  const position = Math.max(0, Math.min(1, t));
+  if (position < NEURAL_TAPER_FRACTION) return body + (start - body) * (1 - ease(position / NEURAL_TAPER_FRACTION));
+  if (position > 1 - NEURAL_TAPER_FRACTION) return body + (end - body) * (1 - ease((1 - position) / NEURAL_TAPER_FRACTION));
+  return body;
+}
 /** Mycelium wave bound: a visibility floor for tiny links and a hard cap so no arc leaves the field. */
 export const MYCELIUM_AMPLITUDE_MIN_PX = 2.5;
 export const MYCELIUM_AMPLITUDE_CAP_PX = 48;
