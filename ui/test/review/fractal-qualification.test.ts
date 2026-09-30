@@ -44,6 +44,7 @@ function witnessesFromHierarchy(snapshot: SemanticGraphSnapshot, domainIds: read
     membersByRoot.set(root, [...(membersByRoot.get(root) ?? []), id]);
   }
   const levels: Record<string, { memberNodeIds: readonly string[]; memberDigest: string }> = {};
+  const aggregateOf = new Map<string, string>();
   const add = (id: string, members: readonly string[]) => {
     const sorted = [...members].sort(codepointCompare);
     levels[id] = { memberNodeIds: sorted,
@@ -63,9 +64,22 @@ function witnessesFromHierarchy(snapshot: SemanticGraphSnapshot, domainIds: read
     if (groups.length) {
       const grouped = new Set(groups.flatMap(([, rows]) => rows));
       add(fractalResidualLevelId(root), members.filter(id => !grouped.has(id)));
+      for (const [childId, rows] of groups) for (const id of rows) aggregateOf.set(id, childId);
+      for (const id of members) if (!grouped.has(id)) aggregateOf.set(id, `${root}:residual`);
+    } else {
+      for (const id of members) aggregateOf.set(id, root);
     }
   }
-  return { levels, liftedRouteEdgeIds: {} };
+  const liftedRouteEdgeIds: Record<string, string[]> = {};
+  for (const edge of snapshot.edges) {
+    const a = aggregateOf.get(edge.source);
+    const b = aggregateOf.get(edge.target);
+    if (a === undefined || b === undefined || a === b) continue;
+    const pair = codepointCompare(a, b) <= 0 ? [a, b] : [b, a];
+    const id = `visual:fractal:route:${encodeURIComponent(JSON.stringify(pair))}`;
+    (liftedRouteEdgeIds[id] ??= []).push(edge.id);
+  }
+  return { levels, liftedRouteEdgeIds };
 }
 
 function localityMetrics(result: ProjectionResult) {
@@ -187,6 +201,11 @@ test('integrated Fractal qualifies the seeded 850-node cap, G5.1 hierarchy and d
     nodes: domain.nodeIds.length, giantCommunityNodes: FRACTAL_QUALIFICATION_GIANT_COUNT,
     attestedEdges: snapshot.edges.filter(edge => edge.attestation === 'attested').length,
     exploratoryEdges: snapshot.edges.filter(edge => edge.attestation === 'exploratory').length,
+    branchCounts: [1, 2, 3].map(depth => diagnostic(cold, `fractal:inverse-branch-count:depth-${depth}`)),
+    branchMeanLengths: [1, 2, 3].map(depth => diagnostic(cold, `fractal:inverse-branch-mean-length:depth-${depth}`)),
+    bundledEdgeShare: diagnostic(cold, 'fractal:bundled-edge-share'),
+    routeCount: diagnostic(cold, 'fractal:route-count'),
+    maxRouteLengthOverCanvasDiagonal: diagnostic(cold, 'fractal:max-route-length-over-canvas-diagonal'),
     residuals: { inverseRay: inverseResidual, levelAgreement, region: regionResidual,
       regionLevelAgreement: regionAgreement, equipotential: equipotentialResidual,
       equipotentialLevelAgreement: equipotentialAgreement },

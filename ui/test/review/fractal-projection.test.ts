@@ -203,7 +203,25 @@ async function validationContext(): Promise<ProjectionValidationContext> {
       addWitness(fractalResidualLevelId(communityId), structure.residualByCommunity.get(communityId)!);
     }
   }
-  return { snapshot, domain, request, witnesses: { levels, liftedRouteEdgeIds: {} } };
+  const aggregateOf = new Map<string, string>();
+  for (const [communityId, members] of structure.membersByCommunity) {
+    const groups = structure.groupChildrenByCommunity.get(communityId) ?? [];
+    const covered = new Set(groups.flatMap(group => group.members));
+    for (const group of groups) for (const id of group.members) aggregateOf.set(id, group.childId);
+    for (const id of members) if (!covered.has(id))
+      aggregateOf.set(id, groups.length ? `${communityId}:residual` : communityId);
+  }
+  const liftedRouteEdgeIds: Record<string, string[]> = {};
+  for (const edge of snapshot.edges) {
+    if (!domain.edgeIds.includes(edge.id)) continue;
+    const a = aggregateOf.get(edge.source)!;
+    const b = aggregateOf.get(edge.target)!;
+    if (a === b) continue;
+    const pair = codepointCompare(a, b) <= 0 ? [a, b] : [b, a];
+    const visualId = `visual:fractal:route:${encodeURIComponent(JSON.stringify(pair))}`;
+    (liftedRouteEdgeIds[visualId] ??= []).push(edge.id);
+  }
+  return { snapshot, domain, request, witnesses: { levels, liftedRouteEdgeIds } };
 }
 
 /** Access a level member list only after proving the level is loaded (union narrowing). */
@@ -312,14 +330,16 @@ test('fractal projection assembles a complete contract-valid 2D result from inve
   assert.ok(groupContainer.boundary2!.length >= 20);
 
   // Equipotentials exist only as declared derived curve geometry, never as edges or containers.
-  assert.equal(result.visualRelations.length, 0);
-  assert.equal(result.curves.length, 3);
-  for (const curve of result.curves) {
+  assert.equal(result.visualRelations.length, 2);
+  assert.equal(result.lod.maxVisibleSemanticEdges + result.visualRelations.reduce((sum, route) => sum + route.count, 0), domain.edgeIds.length);
+  assert.equal(result.curves.length, 3 + 2 + 4 + 8);
+  for (const curve of result.curves.filter(curve => curve.purpose === 'field-contour')) {
     assert.equal(curve.purpose, 'field-contour');
     assert.ok(curve.points2 !== undefined && curve.points2.length >= 24);
     assert.ok(!Object.hasOwn(curve, 'points3'));
     assert.ok(!Object.hasOwn(curve, 'visualRelationId'));
   }
+  assert.equal(result.curves.filter(curve => curve.purpose === 'orbit').length, 14);
   assert.deepEqual(result.domainEdgeIds, domain.edgeIds);
 
   // Scalar potential field over the whole domain with G from importance midranks.

@@ -4,8 +4,10 @@
  * Assembles a complete `ProjectionResult` from the certified dynamics and the tranche E1–E5
  * modules: node positions are the inverse Böttcher external-ray/equipotential images of the
  * certified `p, c` (never a ring mapping); community regions are containers bounded by the
- * sampled external rays/equipotentials of their sectors; equipotential circles appear only as
- * declared derived geometry (curves); the 3D height is the labelled scalar lift of `G`; the
+ * sampled external rays/equipotentials of their sectors. A finite p-way inverse-iteration tree
+ * is declared derived guide geometry, with equipotentials retained as hidden-by-default curves.
+ * Cross-aggregate source edges have counted, explicitly non-semantic lifted visual routes.
+ * The 3D height is the labelled scalar lift of `G`; the
  * level tree subdivides a giant community only through its real primary-hierarchy
  * sub-communities (G5.1: group children are levels, leaf children never are); explanations
  * come from the pure `fractal/explain.ts` model; diagnostics carry `p, c, G, theta, N`, the
@@ -21,6 +23,7 @@ import {
   type FractalSectorCommunity, type FractalSectorEdge, type FractalSectorNode, type FractalSectorResult,
 } from '../fractal/assignment.ts';
 import { BOTCHER_VERSION } from '../fractal/botcher.ts';
+import { FRACTAL_BRANCH_DEPTH, FRACTAL_BRANCH_PATTERN_VERSION, inverseBranchPattern } from '../fractal/branch-pattern.ts';
 import { DEFAULT_RESIDUAL_TOLERANCE, INVERSE_RAYS_VERSION, defaultInverseRayOptions, invertExternalPoint } from '../fractal/inverse-rays.ts';
 import {
   certifyFractalDynamics, fractalContractParameters, FRACTAL_POTENTIAL_FLOOR, FRACTAL_POTENTIAL_SPAN,
@@ -37,13 +40,13 @@ import { digestPayload } from '../engine/digest.ts';
 import type {
   Complex, Digest, EdgeId, Explanation, LodHints, MathematicalProjection, NodeId, ProjectionParameters,
   ProjectionRequest, ProjectionResult, RawJson, RecursiveLevel, SemanticGraphSnapshot, Vec2, Vec3,
-  VisualContainer, VisualCurve, MathematicalField,
+  VisualContainer, VisualCurve, MathematicalField, VisualRelation,
 } from './contract-types.ts';
 
-export const FRACTAL_PROJECTION_VERSION = 'fractal-projection-v1';
+export const FRACTAL_PROJECTION_VERSION = 'fractal-projection-v2';
 /** Consumed numeric modules, in evaluation order; enters the parameter hash and the level tokens. */
 export const FRACTAL_NUMERIC_BACKEND_VERSION =
-  `${BOTCHER_VERSION}/${INVERSE_RAYS_VERSION}/${FRACTAL_ASSIGNMENT_VERSION}/${DENSE_SYMMETRIC_SOLVER_VERSION}/${LANCZOS_SOLVER_VERSION}`;
+  `${BOTCHER_VERSION}/${INVERSE_RAYS_VERSION}/${FRACTAL_ASSIGNMENT_VERSION}/${DENSE_SYMMETRIC_SOLVER_VERSION}/${LANCZOS_SOLVER_VERSION}/${FRACTAL_BRANCH_PATTERN_VERSION}`;
 /** Importance source label: the v2 index importance value; materialized passages carry the derived zero. */
 export const FRACTAL_IMPORTANCE_POLICY = 'v2-importance-value-passage-zero-v1';
 /** Membership digest policy of the level tree. */
@@ -465,6 +468,23 @@ export const fractalProjection: MathematicalProjection<'fractal'> = {
 
     const sectorByCommunity = new Map(assignment.sectors.map(sector => [sector.communityId, sector]));
     const membersByCommunity = new Map(derivation.communities.map(community => [community.communityId, community.memberNodeIds]));
+    // Real hierarchy partition used only to group source edges. A lifted route retains every
+    // original edge ID and does not enter the semantic edge ledger.
+    const aggregateOf = new Map<NodeId, string>();
+    const representativeOf = new Map<string, NodeId>();
+    for (const sector of assignment.sectors) {
+      const groups = sector.allocation === null
+        ? [{ key: sector.communityId, members: membersByCommunity.get(sector.communityId)! }]
+        : [
+          ...sector.allocation.groupSubSectors.map(group => ({ key: group.childId, members: group.memberNodeIds })),
+          { key: `${sector.communityId}:residual`, members: sector.allocation.residualNodeIds },
+        ];
+      for (const group of groups) {
+        for (const id of group.members) aggregateOf.set(id, group.key);
+        representativeOf.set(group.key, [...group.members].sort((a, b) =>
+          (priorityByNodeId[b]! - priorityByNodeId[a]!) || codepointCompare(a, b))[0]!);
+      }
+    }
 
     for (const sector of assignment.sectors) {
       const members = membersByCommunity.get(sector.communityId)!;
@@ -562,9 +582,49 @@ export const fractalProjection: MathematicalProjection<'fractal'> = {
           maxLevelAgreement: regionMaxLevelAgreement, maxStepArgumentDelta: regionMaxStepDelta },
         aggregateOnly: sector.allocation !== null,
       });
-      priorityByContainerId[communityContainerId] = 1;
+      // The giant's full outer loop is retained for inspection but not selected by default:
+      // its actual child and residual regions provide the useful navigation landmarks.
+      priorityByContainerId[communityContainerId] = sector.allocation === null ? 1 : 0;
     }
     throwIfAborted(request.abort);
+
+    // Cross-aggregate edges are represented by a counted visual route; intra-aggregate
+    // source edges remain eligible as ordinary semantic edges.
+    const bundles = new Map<string, { first: string; second: string; edgeIds: EdgeId[] }>();
+    let localEdgeCount = 0;
+    for (const edge of domainEdges) {
+      const a = aggregateOf.get(edge.source)!;
+      const b = aggregateOf.get(edge.target)!;
+      if (a === b) {
+        localEdgeCount += 1;
+        priorityBySemanticEdgeId[edge.id] = 1 + priorityBySemanticEdgeId[edge.id]!;
+        continue;
+      }
+      priorityBySemanticEdgeId[edge.id] = -1;
+      const [first, second] = codepointCompare(a, b) <= 0 ? [a, b] : [b, a];
+      const key = JSON.stringify([first, second]);
+      const bundle = bundles.get(key);
+      if (bundle === undefined) bundles.set(key, { first, second, edgeIds: [edge.id] });
+      else bundle.edgeIds.push(edge.id);
+    }
+    const visualRelations: VisualRelation[] = [];
+    const priorityByVisualRelationId: Record<string, number> = {};
+    const largestBundle = Math.max(1, ...[...bundles.values()].map(bundle => bundle.edgeIds.length));
+    for (const [key, bundle] of [...bundles].sort(([a], [b]) => codepointCompare(a, b))) {
+      const visualId = `visual:fractal:route:${encodeURIComponent(key)}`;
+      const edgeIds = bundle.edgeIds.sort(codepointCompare);
+      visualRelations.push({ visualId, kind: 'lifted-route', semantic: false,
+        source: representativeOf.get(bundle.first)!, target: representativeOf.get(bundle.second)!,
+        underlyingEdgeIds: edgeIds, count: edgeIds.length, explanationId: visualId });
+      explanations[visualId] = {
+        elementId: visualId, elementKind: 'visual-relation',
+        summary: `Percorso derivato fra gli aggregati gerarchici ${bundle.first} e ${bundle.second}: ${edgeIds.length} archi sorgente originali; ogni arco conserva identità e attestazione nel registro semantico.`,
+        sourceIds: edgeIds, parameterIds: ['sector-locality-v2'],
+        numericalWitness: { sourceEdgeCount: edgeIds.length },
+        limitation: 'Il percorso aggrega visivamente gli archi; non è un arco sorgente né una nuova relazione semantica.',
+      };
+      priorityByVisualRelationId[visualId] = edgeIds.length / largestBundle;
+    }
 
     // Equipotential circles: declared derived geometry only, never containers and never edges.
     const curves: VisualCurve[] = [];
@@ -592,8 +652,48 @@ export const fractalProjection: MathematicalProjection<'fractal'> = {
         dynamics: { power: dynamics.power, c: dynamics.c, rayIterations: parameters.rayIterations },
         maxResidual: curveMaxResidual, maxLevelAgreement: curveMaxLevelAgreement,
       });
-      priorityByCurveId[curveId] = 0.5;
+      priorityByCurveId[curveId] = 0.01;
     }
+    const branchSeed = invertTarget(dynamics, potentialRange[1], Math.PI / 2, parameters);
+    const branches = inverseBranchPattern(branchSeed.z, dynamics.power, dynamics.c);
+    const branchLengths = new Map<number, number[]>();
+    for (const branch of branches) {
+      const curveId = `visual:fractal:curve:inverse-branch:${branch.word}`;
+      const parent = { x: scale * branch.parent.re, y: scale * branch.parent.im };
+      const child = { x: scale * branch.child.re, y: scale * branch.child.im };
+      const length = Math.hypot(parent.x - child.x, parent.y - child.y);
+      const lengths = branchLengths.get(branch.depth);
+      if (lengths === undefined) branchLengths.set(branch.depth, [length]);
+      else lengths.push(length);
+      curves.push({ visualId: curveId, purpose: 'orbit',
+        ...(parameters.dimension === '2d' ? { points2: [parent, child] } : {
+          points3: [
+            { ...parent, z: scale * potentialRange[1] / dynamics.power ** (branch.depth - 1) },
+            { ...child, z: scale * potentialRange[1] / dynamics.power ** branch.depth },
+          ],
+        }) });
+      explanations[curveId] = {
+        elementId: curveId, elementKind: 'curve',
+        summary: `Ramo inverso ${branch.word} di F_c(z)=z^${dynamics.power}+${dynamics.c}; guida matematica derivata, non arco sorgente.`,
+        sourceIds: [], parameterIds: ['fractal.p', 'fractal.c'],
+        numericalWitness: { depth: branch.depth, branchCountAtDepth: dynamics.power ** branch.depth, length },
+        limitation: 'La traiettoria mostra una preimmagine matematica; non afferma appartenenza, provenienza o relazione semantica.',
+      };
+      priorityByCurveId[curveId] = 1 - branch.depth / (FRACTAL_BRANCH_DEPTH + 1);
+    }
+    const branchMeanLength = (depth: number): number => {
+      const lengths = branchLengths.get(depth)!;
+      return lengths.reduce((sum, length) => sum + length, 0) / lengths.length;
+    };
+    const xs = Object.values(parameters.dimension === '2d' ? positions2 : positions3).map(point => point.x);
+    const ys = Object.values(parameters.dimension === '2d' ? positions2 : positions3).map(point => point.y);
+    const canvasDiagonal = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    const position = (id: string): Vec2 | Vec3 => parameters.dimension === '2d' ? positions2[id]! : positions3[id]!;
+    const maxRouteLength = Math.max(0, ...visualRelations.map(route => {
+      const a = position(route.source);
+      const b = position(route.target);
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }));
 
     const fields: readonly MathematicalField[] = [{
       id: FRACTAL_POTENTIAL_FIELD_ID, kind: 'scalar', domain: 'node', values: fieldValues,
@@ -643,6 +743,15 @@ export const fractalProjection: MathematicalProjection<'fractal'> = {
       { code: 'fractal:equipotential-max-residual', value: curveMaxResidual, acceptable: curveMaxResidual <= parameters.residualTolerance },
       { code: 'fractal:equipotential-max-level-agreement', value: curveMaxLevelAgreement, acceptable: curveMaxLevelAgreement <= DEFAULT_RESIDUAL_TOLERANCE },
       { code: 'fractal:ignored-non-giant-child-count', value: assignment.diagnostics.ignoredNonGiantChildCount, acceptable: true },
+      { code: 'fractal:bundled-edge-count', value: domainEdges.length - localEdgeCount, acceptable: true },
+      { code: 'fractal:bundled-edge-share', value: domainEdges.length === 0 ? 0 : (domainEdges.length - localEdgeCount) / domainEdges.length, acceptable: true },
+      { code: 'fractal:route-count', value: visualRelations.length, acceptable: true },
+      { code: 'fractal:inverse-branch-depth', value: FRACTAL_BRANCH_DEPTH, acceptable: true },
+      ...[1, 2, 3].flatMap(depth => [
+        { code: `fractal:inverse-branch-count:depth-${depth}`, value: dynamics.power ** depth, acceptable: true },
+        { code: `fractal:inverse-branch-mean-length:depth-${depth}`, value: branchMeanLength(depth), acceptable: true },
+      ]),
+      { code: 'fractal:max-route-length-over-canvas-diagonal', value: canvasDiagonal === 0 ? 0 : maxRouteLength / canvasDiagonal, acceptable: true },
       ...(parameters.dimension === '3d'
         ? [{ code: 'fractal:3d-scalar-lift', value: FRACTAL_EXPLAIN_3D_SCALAR_LIFT_LIMITATION, acceptable: true } as const]
         : []),
@@ -660,11 +769,12 @@ export const fractalProjection: MathematicalProjection<'fractal'> = {
       fullLedger: fullLedgerOf(snapshot),
       domainNodeIds: domain.nodeIds, domainEdgeIds: domain.edgeIds, loadedNodeIds: domain.nodeIds,
       ...(parameters.dimension === '2d' ? { positions2 } : { positions3 }),
-      containers, visualRelations: [], curves, levels, fields,
-      lod: { priorityByNodeId, priorityBySemanticEdgeId, priorityByVisualRelationId: {}, priorityByCurveId,
+      containers, visualRelations, curves, levels, fields,
+      lod: { priorityByNodeId, priorityBySemanticEdgeId, priorityByVisualRelationId, priorityByCurveId,
         priorityByContainerId, priorityByFieldId: { [FRACTAL_POTENTIAL_FIELD_ID]: 1 },
-        maxVisibleNodes: domain.nodeIds.length, maxVisibleSemanticEdges: domain.edgeIds.length,
-        maxVisibleVisualRelations: 0, maxVisibleCurves: curves.length, maxVisibleContainers: containers.length,
+        maxVisibleNodes: domain.nodeIds.length, maxVisibleSemanticEdges: localEdgeCount,
+        maxVisibleVisualRelations: visualRelations.length, maxVisibleCurves: branches.length,
+        maxVisibleContainers: containers.length - assignment.sectors.filter(sector => sector.allocation !== null).length,
         maxVisibleFields: fields.length, progressiveLevelIds: levels.filter(level => level.loaded).map(level => level.id) },
       explanations, diagnostics, coordinateState: { kind: 'coordinates' as const },
     };
