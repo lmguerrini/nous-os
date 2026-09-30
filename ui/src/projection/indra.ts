@@ -155,10 +155,11 @@ export interface PlaneDisc {
  */
 export function mobiusImageOfDisc(matrix: MobiusMatrix, disc: PlaneDisc): PlaneDisc {
   const { a, b, c, d } = matrix;
-  // Preserve the exact floating-point operation order (and hence existing result digests) when
-  // the original closed form has representable intermediates and a finite result.
+  // Decide whether the old formula is safe before forming either of its squares or 1/D.
+  // Normalizing by the largest input component makes this decision safe even when D itself
+  // would underflow, overflow, or be lost to cancellation. The conservative exponent window
+  // also keeps both squares and the reciprocal in the normal finite range.
   try {
-    const determinant = cxSub(cxMul(a, d), cxMul(b, c));
     if (cxAbs(c) === 0) {
       const ratio = cxDivide(a, d);
       const image = { center: cxDivide(cxAdd(cxMul(a, disc.center), b), d), radius: disc.radius * cxAbs(ratio) };
@@ -167,8 +168,16 @@ export function mobiusImageOfDisc(matrix: MobiusMatrix, disc: PlaneDisc): PlaneD
     } else {
       const pole = cxScale(cxDivide(d, c), -1);
       const q = cxSub(disc.center, pole);
-      const denominator = cxAbs(q) * cxAbs(q) - disc.radius * disc.radius;
-      if (denominator > 0 && Number.isFinite(denominator) && Number.isFinite(1 / denominator)) {
+      const scale = Math.max(Math.abs(q.re), Math.abs(q.im), Math.abs(disc.radius));
+      const normalizedQ = scale > 0 && Number.isFinite(scale) ? Math.hypot(q.re / scale, q.im / scale) : 0;
+      const normalizedRadius = scale > 0 && Number.isFinite(scale) ? disc.radius / scale : 0;
+      const normalizedDifference = (normalizedQ - normalizedRadius) * (normalizedQ + normalizedRadius);
+      const squaredExponent = 2 * Math.log2(scale) + Math.log2(normalizedDifference);
+      if (scale >= 2 ** -500 && scale <= 2 ** 500
+        && (disc.radius === 0 || disc.radius >= 2 ** -500)
+        && normalizedDifference > 1e-8 && squaredExponent > -1000 && squaredExponent < 1000) {
+        const determinant = cxSub(cxMul(a, d), cxMul(b, c));
+        const denominator = cxAbs(q) * cxAbs(q) - disc.radius * disc.radius;
         const cSquared = cxMul(c, c);
         const invertedCentre = cxScale(cxConjugate(q), 1 / denominator);
         const firstTerm = cxDivide(a, c);
@@ -178,7 +187,7 @@ export function mobiusImageOfDisc(matrix: MobiusMatrix, disc: PlaneDisc): PlaneD
         const cancellationScale = Math.max(cxAbs(firstTerm), cxAbs(secondTerm));
         if (Number.isFinite(radius) && Number.isFinite(center.re) && Number.isFinite(center.im)
           && (disc.radius === 0 || radius > 0)
-          && (cancellationScale === 0 || cxAbs(center) > 1e-8 * cancellationScale)) return { center, radius };
+          && (cancellationScale === 0 || cxAbs(center) > 1e-6 * cancellationScale)) return { center, radius };
       }
     }
   } catch (error) {

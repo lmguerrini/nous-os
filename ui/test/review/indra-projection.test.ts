@@ -21,16 +21,16 @@ import {
   indraContainerId, indraLiftedRouteId, indraOrbitCurveId, indraRequestForLevelToken, indrasPearlsProjection,
   INDRA_DISPLAY_SCALE, INDRA_GENERATOR_POLICY, INDRA_LEVEL_CACHE, INDRA_PROJECTION_VERSION, IndraProjectionRefusal,
   mobiusImageOfDisc, parseIndraLevelId, pearlSlotOffset, planeDiscContains, schottkyPearlDisc,
-  type IndraLoadToken,
+  type IndraLoadToken, type PlaneDisc,
 } from '../../src/projection/indra.ts';
 import {
   compareCodepointIds, enumerateReducedWords, pearlMemberDigest, reducedWordCount, wordKey,
   type ReducedWord,
 } from '../../src/indra/assignment.ts';
 import { levelIdForWord, ROOT_LEVEL_ID } from '../../src/indra/levels.ts';
-import { cx, cxAbs, cxSub } from '../../src/indra/complex.ts';
+import { cx, cxAbs, cxAdd, cxConjugate, cxDivide, cxMul, cxScale, cxSub } from '../../src/indra/complex.ts';
 import { halfSpaceHyperbolicDistance } from '../../src/indra/geometry3d.ts';
-import { mobiusApply, mobiusInverse, mobiusMatrix } from '../../src/indra/mobius.ts';
+import { mobiusApply, mobiusInverse, mobiusMatrix, type MobiusMatrix } from '../../src/indra/mobius.ts';
 import { buildSchottkyGroup, packPairedDiscsOnRing } from '../../src/indra/schottky.ts';
 import type {
   AnalyticalDomain, ProjectionRequest, ProjectionResult, RecursiveLevel, SemanticGraphSnapshot,
@@ -433,6 +433,9 @@ test('a tiny pole-free disc has a finite image even when the reciprocal of the o
   assert.ok(Math.abs((image.center.re + 1e-80) / 1e-80) < relativeTolerance);
   assert.equal(image.center.im, 0);
   assert.ok(Math.abs((image.radius - 1e-40) / 1e-40) < relativeTolerance);
+  assert.throws(() => preFixDiscImage(extreme, { center: cx(0, 0), radius: 1e-200 }),
+    (error: unknown) => error instanceof IndraProjectionRefusal && error.code === 'nonfinite-disc-image',
+    'f9abe89^ gave the different code on this valid tiny disc');
   const smaller = mobiusImageOfDisc(mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(1e-200, 0)),
     { center: cx(0, 0), radius: 1e-250 });
   assert.ok(Math.abs((smaller.center.re + 1e-100) / 1e-100) < relativeTolerance);
@@ -455,6 +458,150 @@ test('a tiny pole-free disc has a finite image even when the reciprocal of the o
   assert.throws(() => mobiusImageOfDisc(mobiusMatrix(cx(1e308, 0), cx(0, 0), cx(0, 0), cx(1, 0)),
     { center: cx(0, 0), radius: 2 }), (error: unknown) =>
     error instanceof IndraProjectionRefusal && error.code === 'nonfinite-disc-image');
+});
+
+// This is the exact operation order of f9abe89^:ui/src/projection/indra.ts.
+function preFixDiscImage(matrix: MobiusMatrix, disc: PlaneDisc): PlaneDisc {
+  const { a, b, c, d } = matrix;
+  const determinant = cxSub(cxMul(a, d), cxMul(b, c));
+  if (cxAbs(c) === 0) {
+    const ratio = cxDivide(a, d);
+    return { center: cxDivide(cxAdd(cxMul(a, disc.center), b), d), radius: disc.radius * cxAbs(ratio) };
+  }
+  const pole = cxScale(cxDivide(d, c), -1);
+  const q = cxSub(disc.center, pole);
+  const denominator = cxAbs(q) * cxAbs(q) - disc.radius * disc.radius;
+  if (!(denominator > 0)) throw new IndraProjectionRefusal('pole-in-disc', 'pre-fix pole');
+  const cSquared = cxMul(c, c);
+  const invertedCentre = cxScale(cxConjugate(q), 1 / denominator);
+  const center = cxSub(cxDivide(a, c), cxMul(cxDivide(determinant, cSquared), invertedCentre));
+  const radius = (cxAbs(determinant) / cxAbs(cSquared)) * (disc.radius / denominator);
+  if (!Number.isFinite(radius) || !Number.isFinite(center.re) || !Number.isFinite(center.im))
+    throw new IndraProjectionRefusal('nonfinite-disc-image', 'pre-fix nonfinite');
+  return { center, radius };
+}
+
+test('ordinary disc images preserve every pre-fix field bit for bit', () => {
+  const matrices = [
+    mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(2, 0)),
+    mobiusMatrix(cx(1, 0.2), cx(0.3, -0.2), cx(0.2, 0.1), cx(2, 0.4)),
+    mobiusMatrix(cx(2, 0.5), cx(-1, 0.25), cx(0, 0), cx(1, -0.5)),
+  ];
+  for (const matrix of matrices) for (const re of [-0.5, 0, 0.5]) for (const im of [-0.5, 0, 0.5])
+    for (const radius of [0.05, 0.1, 0.2]) {
+      const disc = { center: cx(re, im), radius };
+      const actual = mobiusImageOfDisc(matrix, disc);
+      const expected = preFixDiscImage(matrix, disc);
+      for (const field of ['re', 'im'] as const)
+        assert.ok(Object.is(actual.center[field], expected.center[field]), `${JSON.stringify(disc)} centre.${field}`);
+      assert.ok(Object.is(actual.radius, expected.radius), `${JSON.stringify(disc)} radius`);
+    }
+});
+
+// Generated with fractions.Fraction.
+// Each row is [d, input centre, input radius, exact-rational image centre, image radius].
+const RATIONAL_DISC_IMAGES: readonly (readonly [number, number, number, number, number])[] = [
+  [1e-300, 0.0, 1.0000000000000002e-304, -1.0000000100000004e-08, 0.00010000000100000003],
+  [1e-300, 0.0, 2.5e-301, -0.06666666666666667, 0.26666666666666666],
+  [1e-300, 0.0, 7.5e-301, -1.285714285714286, 1.7142857142857146],
+  [1e-300, 0.0, 9.99999999999e-301, -500004741798.0266, 500004741798.5266],
+  [1e-300, -5e-301, 4.999999999995e-301, -1000009483597.0532, 1000009483597.0532],
+  [1e-250, 0.0, 1.0000000000000001e-254, -1.0000000100000002e-08, 0.00010000000100000001],
+  [1e-250, 0.0, 2.5e-251, -0.06666666666666667, 0.26666666666666666],
+  [1e-250, 0.0, 7.5e-251, -1.2857142857142858, 1.7142857142857142],
+  [1e-250, 0.0, 9.99999999999e-251, -499992855540.9746, 499992855541.4746],
+  [1e-250, -5e-251, 4.999999999995e-251, -999985711082.9492, 999985711082.9492],
+  [1e-200, 0.0, 1e-204, -1.0000000100000002e-08, 0.00010000000100000001],
+  [1e-200, 0.0, 2.5e-201, -0.06666666666666667, 0.26666666666666666],
+  [1e-200, 0.0, 7.5e-201, -1.2857142857142858, 1.7142857142857142],
+  [1e-200, 0.0, 9.99999999999e-201, -500041001513.42786, 500041001513.92786],
+  [1e-200, -5e-201, 4.999999999995e-201, -1000082003027.8557, 1000082003027.8557],
+  [1e-160, 0.0, 1e-164, -1.00000001e-08, 0.000100000001],
+  [1e-160, 0.0, 2.5e-161, -0.06666666666666667, 0.26666666666666666],
+  [1e-160, 0.0, 7.5e-161, -1.2857142857142858, 1.7142857142857142],
+  [1e-160, 0.0, 9.99999999999e-161, -499973016243.04944, 499973016243.54944],
+  [1e-160, -5e-161, 4.999999999995e-161, -999946032487.0989, 999946032487.0989],
+  [1e-100, 0.0, 1.0000000000000001e-104, -1.0000000100000002e-08, 0.00010000000100000001],
+  [1e-100, 0.0, 2.5e-101, -0.06666666666666667, 0.26666666666666666],
+  [1e-100, 0.0, 7.5e-101, -1.2857142857142858, 1.7142857142857142],
+  [1e-100, 0.0, 9.999999999990001e-101, -500025459344.3576, 500025459344.8576],
+  [1e-100, -5e-101, 4.9999999999950004e-101, -1000050918689.7152, 1000050918689.7152],
+  [1e-50, 0.0, 1e-54, -1.0000000100000002e-08, 0.00010000000100000001],
+  [1e-50, 0.0, 2.5e-51, -0.06666666666666667, 0.26666666666666666],
+  [1e-50, 0.0, 7.5e-51, -1.2857142857142856, 1.714285714285714],
+  [1e-50, 0.0, 9.99999999999e-51, -499999010888.5423, 499999010889.0423],
+  [1e-50, -5e-51, 4.999999999995e-51, -999998021778.0846, 999998021778.0846],
+  [1.0, 0.0, 0.0001, -1.0000000100000002e-08, 0.00010000000100000001],
+  [1.0, 0.0, 0.25, -0.06666666666666667, 0.26666666666666666],
+  [1.0, 0.0, 0.75, -1.2857142857142858, 1.7142857142857142],
+  [1.0, 0.0, 0.999999999999, -500011061104.0014, 500011061104.5014],
+  [1.0, -0.5, 0.4999999999995, -1000022122209.0028, 1000022122209.0028],
+  [1e+50, 0.0, 1.0000000000000001e+46, -1.0000000100000002e-08, 0.00010000000100000001],
+  [1e+50, 0.0, 2.5e+49, -0.06666666666666667, 0.26666666666666666],
+  [1e+50, 0.0, 7.500000000000001e+49, -1.2857142857142858, 1.7142857142857142],
+  [1e+50, 0.0, 9.99999999999e+49, -499981813183.8907, 499981813184.3907],
+  [1e+50, -5e+49, 4.999999999995e+49, -999963626368.7814, 999963626368.7814],
+  [1e+100, 0.0, 1e+96, -1.0000000100000002e-08, 0.00010000000100000001],
+  [1e+100, 0.0, 2.5e+99, -0.06666666666666667, 0.26666666666666666],
+  [1e+100, 0.0, 7.500000000000001e+99, -1.285714285714286, 1.7142857142857146],
+  [1e+100, 0.0, 9.999999999990001e+99, -500054166452.3323, 500054166452.8323],
+  [1e+100, -5e+99, 4.999999999995001e+99, -1000108332905.6646, 1000108332905.6646],
+  [1e+160, 0.0, 1e+156, -1.00000001e-08, 0.00010000000100000001],
+  [1e+160, 0.0, 2.5e+159, -0.06666666666666667, 0.26666666666666666],
+  [1e+160, 0.0, 7.5e+159, -1.2857142857142854, 1.714285714285714],
+  [1e+160, 0.0, 9.99999999999e+159, -499973927312.02686, 499973927312.52686],
+  [1e+160, -5e+159, 4.999999999995e+159, -999947854625.0537, 999947854625.0537],
+  [1e+200, 0.0, 1e+196, -1.00000001e-08, 0.00010000000100000001],
+  [1e+200, 0.0, 2.5e+199, -0.06666666666666667, 0.26666666666666666],
+  [1e+200, 0.0, 7.5e+199, -1.2857142857142858, 1.7142857142857142],
+  [1e+200, 0.0, 9.99999999999e+199, -500050435207.5908, 500050435208.0908],
+  [1e+200, -5e+199, 4.999999999995e+199, -1000100870416.1816, 1000100870416.1816],
+  [1e+250, 0.0, 9.999999999999999e+245, -1.00000001e-08, 0.000100000001],
+  [1e+250, 0.0, 2.5e+249, -0.06666666666666667, 0.26666666666666666],
+  [1e+250, 0.0, 7.5e+249, -1.2857142857142858, 1.7142857142857142],
+  [1e+250, 0.0, 9.99999999999e+249, -500014653839.4487, 500014653839.9487],
+  [1e+250, -5e+249, 4.999999999995e+249, -1000029307679.8975, 1000029307679.8975],
+  [1e+300, 0.0, 1.0000000000000002e+296, -1.0000000100000004e-08, 0.00010000000100000001],
+  [1e+300, 0.0, 2.5e+299, -0.06666666666666667, 0.26666666666666666],
+  [1e+300, 0.0, 7.5e+299, -1.2857142857142858, 1.7142857142857142],
+  [1e+300, 0.0, 9.99999999999e+299, -499990564701.6485, 499990564702.1485],
+  [1e+300, -5e+299, 4.999999999995e+299, -999981129404.297, 999981129404.297],
+];
+
+test('rational reference sweep spans 1e-300 through 1e300 and near tangency', () => {
+  for (const [d, u, radius, expectedCentre, expectedRadius] of RATIONAL_DISC_IMAGES) {
+    const image = mobiusImageOfDisc(mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(d, 0)),
+      { center: cx(u, 0), radius });
+    const context = `d=${d}, u=${u}, r=${radius}`;
+    assert.ok(Number.isFinite(image.center.re) && Number.isFinite(image.center.im) && Number.isFinite(image.radius), context);
+    assert.equal(image.center.im, 0, context);
+    assert.ok(Math.abs(image.center.re - expectedCentre) <= 2e-11 * Math.max(Math.abs(expectedCentre), 1e-16),
+      `${context}: centre ${image.center.re} vs ${expectedCentre}`);
+    assert.ok(Math.abs(image.radius - expectedRadius) <= 2e-11 * Math.abs(expectedRadius),
+      `${context}: radius ${image.radius} vs ${expectedRadius}`);
+  }
+});
+
+test('interior and extreme-scale poles have the typed refusal', () => {
+  const cases = [
+    [1, 0, 1.5], // pole -1 is strictly inside
+    [1e-160, 0, 2e-160],
+    [1e160, 0, 2e160],
+    [1e-160, -0.5e-160, 0.75e-160],
+    [1e160, -0.5e160, 0.75e160],
+  ] as const;
+  for (const [d, u, radius] of cases) {
+    const matrix = mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(d, 0));
+    assert.throws(() => mobiusImageOfDisc(matrix, { center: cx(u, 0), radius }),
+      (error: unknown) => error instanceof IndraProjectionRefusal && error.code === 'pole-in-disc',
+      `pole at -${d} inside centre ${u}, radius ${radius}`);
+    assert.throws(() => preFixDiscImage(matrix, { center: cx(u, 0), radius }),
+      (error: unknown) => error instanceof IndraProjectionRefusal && error.code === 'pole-in-disc',
+      `f9abe89^ code for pole at -${d}`);
+  }
+  // f9abe89^ already returned pole-in-disc for all these negative controls and for the
+  // boundary case above. Its differing code is nonfinite-disc-image on the tiny valid
+  // disc (d=1e-160, r=1e-200) in the positive control above.
 });
 
 test('schottky pearl discs are nested images of the paired discs and the letters partition the words', () => {
@@ -802,6 +949,8 @@ test('the validator rejects results that drop, duplicate or mis-assign a pearl m
 test('repeat requests and permuted snapshot arrays produce the identical result digest', async () => {
   const { snapshot, request } = await fixture();
   const first = await indrasPearlsProjection.project(snapshot, request);
+  assert.equal(first.determinism.resultDigest, '268f7e327d5eff0646010d6102d0ba58e5741381ac52d2197b403e10d45fccc5',
+    'pre-f9abe89^ standard root fixture digest');
   // These witnesses recompute from scratch (the memoization has its own test below).
   INDRA_LEVEL_CACHE.clear();
   const repeat = await indrasPearlsProjection.project(snapshot, request);
@@ -821,6 +970,9 @@ test('repeat requests and permuted snapshot arrays produce the identical result 
   assert.deepEqual(permuted.levels, first.levels);
   INDRA_LEVEL_CACHE.clear();
   const opened = { ...request, requestedLevelId: first.containers[0]!.levelId };
+  assert.equal((await indrasPearlsProjection.project(snapshot, opened)).determinism.resultDigest,
+    '258a2269816f78505bccb7fca060dae3fa0148f0cf7c3a9e5fceea681aba556e',
+    'pre-f9abe89^ standard opened fixture digest');
   assert.equal((await indrasPearlsProjection.project(permutedSnapshot, opened)).determinism.resultDigest,
     (await indrasPearlsProjection.project(snapshot, opened)).determinism.resultDigest);
 
