@@ -29,9 +29,11 @@ test('ordinary Indra is recursive, draws relations at fit, and uses round pearl 
       .sort((a, b) => (b[1].radius ?? 0) - (a[1].radius ?? 0)).slice(0, 12);
     expect(samples.length, 'nodeViewport exposes sampleable rendered glyphs').toBeGreaterThan(0);
     for (const [id, node] of samples) {
-      const cx = node.x - viewport!.x;
-      const cy = node.y - viewport!.y;
-      const radius = Math.max(4, Math.min(node.radius ?? 6, 18));
+      // nodeViewport and the #viewport screenshot share one frame. The glyph's own radius places the diagonal
+      // samples outside a disc (1.16 r from the centre) but inside a square of half-side r.
+      const cx = node.x;
+      const cy = node.y;
+      const radius = Math.max(4, node.radius ?? 6);
       const center = rasterHasInk(image.data, image.width, image.height, cx, cy, background);
       const diagonal = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([dx, dy]) => rasterHasInk(image.data, image.width, image.height, cx + dx! * radius * 0.82, cy + dy! * radius * 0.82, background));
       const cardinal = [[-1, 0], [1, 0], [0, -1], [0, 1]].map(([dx, dy]) => rasterHasInk(image.data, image.width, image.height, cx + dx! * radius * 0.82, cy + dy! * radius * 0.82, background));
