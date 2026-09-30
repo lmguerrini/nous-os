@@ -5,7 +5,10 @@
  * `b(C)=min(pi/180, pi/C)`, `R=2pi-C b(C)`, `w_j=b(C)+R n_j/n` with the last right endpoint
  * forced to exactly `2pi` (correction refused above 1e-12); strictly internal member angles
  * through the guard `g_j=min(w_j/10,1e-3)`; the BFS/reversal/ID-tied-DFS candidate order scored
- * by the median shortest circular length of original attested intra-community edges; the 40/20/40
+ * by the median shortest circular length of original attested intra-community edges (communities
+ * outside the G5.1 typed allocation add the per-component Fiedler order, its reversal and a
+ * deterministic relocation/reversal refinement of the best candidate, all scored by the same
+ * median rule against the unchanged 0.5 gate; G5.1 group children keep the original three); the 40/20/40
  * slot split for communities of at least four members; and the G5.1 typed giant allocation whose
  * group sub-sectors come only from real primary-hierarchy children with at least two members,
  * while leaf children join the direct members in a residual span ordered by the Fiedler vector
@@ -30,8 +33,20 @@ import { circularAngleDelta } from './inverse-rays.ts';
 import { potentialForRank } from './parameters.ts';
 
 export const SECTOR_POLICY_VERSION = 'sector-locality-v2';
-export const FRACTAL_ASSIGNMENT_VERSION = 'fractal-assignment-v1';
-export const FRACTAL_ORDER_RULE_VERSION = 'bfs-reversal-dfs-median-v1';
+export const FRACTAL_ASSIGNMENT_VERSION = 'fractal-assignment-v2';
+export const FRACTAL_ORDER_RULE_VERSION = 'bfs-reversal-dfs-spectral-refined-median-v2';
+/** The unchanged BFS/reversal/DFS candidate rule that G5.1 group children keep. */
+export const FRACTAL_GROUP_CHILD_ORDER_RULE_VERSION = 'bfs-reversal-dfs-median-v1';
+/** Per-component Fiedler order candidate (components by size then minimum ID, G5.1 sign/tie rule). */
+export const SPECTRAL_ORDER_VERSION = 'component-fiedler-order-v1';
+/** Circular-order refinement: single-node relocation then segment reversal, first improvement. */
+export const ORDER_REFINEMENT_VERSION = 'circular-relocate-reverse-v1';
+/** Fixed pass cap of the refinement. */
+export const ORDER_REFINEMENT_MAX_PASSES = 8;
+/** Deterministic work cap of the refinement: total edge-length evaluations over all moves. */
+export const ORDER_REFINEMENT_WORK_BUDGET = 4_000_000;
+/** A total-length improvement below this is a tie, never an accepted move. */
+const ORDER_REFINEMENT_LENGTH_EPSILON = 1e-12;
 export const EDGE_LOCALITY_SEED_VERSION = 'sha256-fisher-yates-v1';
 /** Maximum accepted floating correction when the last sector right endpoint is set to exactly 2pi. */
 export const SECTOR_CORRECTION_TOLERANCE = 1e-12;
@@ -147,6 +162,8 @@ export interface FractalCommunitySector {
   readonly giant: boolean;
   readonly slotPolicy: 'uniform-midrank' | 'bfs-split-40-20-40';
   readonly order: readonly NodeId[];
+  /** Name of the order candidate the scoring rule selected; 'giant-allocation' for the typed giant. */
+  readonly orderCandidate: string;
   readonly allocation: FractalGiantAllocation | null;
 }
 
@@ -414,33 +431,224 @@ function compareIdSequences(a: readonly NodeId[], b: readonly NodeId[]): number 
 interface OrderChoice {
   readonly order: readonly NodeId[];
   readonly median: number | null;
+  readonly candidate: string;
+}
+
+/** Extension of the candidate set for communities outside the G5.1 typed allocation. */
+interface ExtendedCandidates {
+  readonly importanceOf: ReadonlyMap<NodeId, number>;
+}
+
+function connectedComponents(sortedMembers: readonly NodeId[], adjacency: Adjacency): NodeId[][] {
+  const seen = new Set<NodeId>();
+  const components: NodeId[][] = [];
+  for (const start of sortedMembers) {
+    if (seen.has(start)) continue;
+    seen.add(start);
+    const queue = [start];
+    let head = 0;
+    while (head < queue.length) {
+      for (const neighbor of adjacency.get(queue[head++]!) ?? []) {
+        if (!seen.has(neighbor)) {
+          seen.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+    }
+    components.push(queue.sort(codepointCompare));
+  }
+  return components;
+}
+
+/**
+ * Spectral candidate: connected components by size (largest first) then minimum ID, each laid out
+ * contiguously in its G5.1 Fiedler order (sign by the largest-magnitude entry, 1e-12 entry ties by
+ * ID; a tied Fiedler value or a Lanczos nonconvergence uses the G5.1 BFS fallback). Singletons and
+ * pairs need no eigensolve.
+ */
+export function communitySpectralOrder(
+  sortedMembers: readonly NodeId[],
+  adjacency: ReadonlyMap<NodeId, readonly NodeId[]>,
+  importanceOf: ReadonlyMap<NodeId, number>,
+): NodeId[] {
+  const components = connectedComponents(sortedMembers, adjacency)
+    .sort((a, b) => b.length - a.length || codepointCompare(a[0]!, b[0]!));
+  const order: NodeId[] = [];
+  for (const component of components) {
+    if (component.length <= 2) {
+      order.push(...component);
+      continue;
+    }
+    const edges: { source: NodeId; target: NodeId }[] = [];
+    for (const id of component) {
+      for (const neighbor of adjacency.get(id) ?? []) {
+        if (codepointCompare(id, neighbor) < 0) edges.push({ source: id, target: neighbor });
+      }
+    }
+    order.push(...fiedlerLocalityOrder(component.map((id) => ({ id, importance: importanceOf.get(id)! })), edges).order);
+  }
+  return order;
+}
+
+function lengthMedian(lengths: Float64Array): number | null {
+  const count = lengths.length;
+  if (count === 0) return null;
+  lengths.sort();
+  const middle = count >> 1;
+  return count % 2 === 1 ? lengths[middle]! : (lengths[middle - 1]! + lengths[middle]!) / 2;
+}
+
+/**
+ * Deterministic local refinement of a circular order. Each pass scans, in fixed position order,
+ * every single-node relocation of a node that has an intra-community edge and then every segment
+ * reversal, and takes the first move that lowers the median circular edge length, or keeps the
+ * median and lowers the total edge length. Passes stop at ORDER_REFINEMENT_MAX_PASSES, when a
+ * pass changes nothing, or when the edge-evaluation budget is spent; the median never rises.
+ */
+export function refineCircularOrder(
+  order: readonly NodeId[],
+  intraEdges: readonly (readonly [NodeId, NodeId])[],
+  slotAngles: readonly number[],
+  maxPasses: number = ORDER_REFINEMENT_MAX_PASSES,
+  workBudget: number = ORDER_REFINEMENT_WORK_BUDGET,
+): Readonly<{ order: readonly NodeId[]; median: number | null; passes: number; moves: number }> {
+  const count = order.length;
+  if (slotAngles.length !== count) throw new Error(`fractal-assignment: ${slotAngles.length} slot angles for ${count} members`);
+  const indexOf = new Map<NodeId, number>(order.map((id, position) => [id, position]));
+  const edgeA = new Int32Array(intraEdges.length);
+  const edgeB = new Int32Array(intraEdges.length);
+  const connected = new Uint8Array(count);
+  intraEdges.forEach(([u, v], index) => {
+    const a = indexOf.get(u);
+    const b = indexOf.get(v);
+    if (a === undefined || b === undefined) throw new Error(`fractal-assignment: refinement edge endpoint outside the order`);
+    edgeA[index] = a;
+    edgeB[index] = b;
+    connected[a] = 1;
+    connected[b] = 1;
+  });
+  const arrangement = Int32Array.from({ length: count }, (_, position) => position);
+  const position = Int32Array.from(arrangement);
+  const lengths = new Float64Array(intraEdges.length);
+  let work = 0;
+  const measure = (): { median: number; total: number } => {
+    let total = 0;
+    for (let edge = 0; edge < lengths.length; edge += 1) {
+      const length = circularAngleDelta(slotAngles[position[edgeA[edge]!]!]!, slotAngles[position[edgeB[edge]!]!]!);
+      lengths[edge] = length;
+      total += length;
+    }
+    work += lengths.length;
+    return { median: lengthMedian(lengths)!, total };
+  };
+  const setPositions = (from: number, to: number): void => {
+    for (let slot = from; slot <= to; slot += 1) position[arrangement[slot]!] = slot;
+  };
+  const relocate = (from: number, to: number): void => {
+    const node = arrangement[from]!;
+    if (to > from) arrangement.copyWithin(from, from + 1, to + 1);
+    else arrangement.copyWithin(to + 1, to, from);
+    arrangement[to] = node;
+    setPositions(Math.min(from, to), Math.max(from, to));
+  };
+  if (intraEdges.length === 0 || count < 2) return { order: [...order], median: null, passes: 0, moves: 0 };
+  let current = measure();
+  const better = (candidate: { median: number; total: number }): boolean =>
+    candidate.median < current.median ||
+    (candidate.median === current.median && candidate.total < current.total - ORDER_REFINEMENT_LENGTH_EPSILON);
+  let moves = 0;
+  let passes = 0;
+  while (passes < maxPasses && work < workBudget) {
+    passes += 1;
+    const before = moves;
+    for (let from = 0; from < count && work < workBudget; from += 1) {
+      if (!connected[arrangement[from]!]) continue;
+      for (let to = 0; to < count && work < workBudget; to += 1) {
+        if (to === from) continue;
+        relocate(from, to);
+        const candidate = measure();
+        if (better(candidate)) {
+          current = candidate;
+          moves += 1;
+          break;
+        }
+        relocate(to, from);
+      }
+    }
+    for (let low = 0; low < count - 1 && work < workBudget; low += 1) {
+      for (let high = low + 1; high < count && work < workBudget; high += 1) {
+        arrangement.subarray(low, high + 1).reverse();
+        setPositions(low, high);
+        const candidate = measure();
+        if (better(candidate)) {
+          current = candidate;
+          moves += 1;
+        } else {
+          arrangement.subarray(low, high + 1).reverse();
+          setPositions(low, high);
+        }
+      }
+    }
+    if (moves === before) break;
+  }
+  return { order: Array.from(arrangement, (slot) => order[slot]!), median: current.median, passes, moves };
+}
+
+interface NamedCandidate {
+  readonly name: string;
+  readonly order: readonly NodeId[];
+}
+
+/** Score candidates by median circular edge length; ties by the serialized ID sequence, exactly
+ * the "existing candidate-order rule". */
+function scoreCandidates(
+  candidates: readonly NamedCandidate[],
+  intraEdges: readonly (readonly [NodeId, NodeId])[],
+  slotT: (rank: number, count: number) => number,
+  place: (slot: number) => number,
+): OrderChoice {
+  let best: OrderChoice | null = null;
+  for (const candidate of candidates) {
+    const count = candidate.order.length;
+    const angleOf = new Map<NodeId, number>();
+    candidate.order.forEach((id, rank) => angleOf.set(id, place(slotT(rank, count))));
+    const median = circularEdgeMedian(intraEdges, angleOf);
+    if (best === null || (median !== null && best.median === null) ||
+      (median !== null && best.median !== null && median < best.median) ||
+      (((median === null && best.median === null) || (median !== null && best.median !== null && median === best.median)) &&
+        compareIdSequences(candidate.order, best.order) < 0)) {
+      best = { order: candidate.order, median, candidate: candidate.name };
+    }
+  }
+  return best!;
 }
 
 /** Score the BFS, reversal and ID-tied DFS candidates by median circular edge length; ties by
- * the serialized ID sequence, exactly the "existing candidate-order rule". */
+ * the serialized ID sequence, exactly the "existing candidate-order rule". With `extension`
+ * (communities outside the G5.1 typed allocation) the per-component Fiedler order and its
+ * reversal join the candidates, and the best candidate is refined and rescored by the same rule. */
 function chooseCandidateOrder(
   sortedMembers: readonly NodeId[],
   adjacency: Adjacency,
   intraEdges: readonly (readonly [NodeId, NodeId])[],
   slotT: (rank: number, count: number) => number,
   place: (slot: number) => number,
+  extension?: ExtendedCandidates,
 ): OrderChoice {
   const count = sortedMembers.length;
   const bfs = communityBfsOrder(sortedMembers, adjacency);
-  const candidates: readonly NodeId[][] = [bfs, [...bfs].reverse(), communityDfsOrder(sortedMembers, adjacency)];
-  let best: OrderChoice | null = null;
-  for (const candidate of candidates) {
-    const angleOf = new Map<NodeId, number>();
-    candidate.forEach((id, rank) => angleOf.set(id, place(slotT(rank, count))));
-    const median = circularEdgeMedian(intraEdges, angleOf);
-    if (best === null || (median !== null && best.median === null) ||
-      (median !== null && best.median !== null && median < best.median) ||
-      (((median === null && best.median === null) || (median !== null && best.median !== null && median === best.median)) &&
-        compareIdSequences(candidate, best.order) < 0)) {
-      best = { order: candidate, median };
-    }
-  }
-  return best!;
+  const candidates: NamedCandidate[] = [
+    { name: 'bfs', order: bfs },
+    { name: 'bfs-reversed', order: [...bfs].reverse() },
+    { name: 'dfs', order: communityDfsOrder(sortedMembers, adjacency) },
+  ];
+  if (extension === undefined) return scoreCandidates(candidates, intraEdges, slotT, place);
+  const spectral = communitySpectralOrder(sortedMembers, adjacency, extension.importanceOf);
+  candidates.push({ name: 'spectral', order: spectral }, { name: 'spectral-reversed', order: [...spectral].reverse() });
+  const best = scoreCandidates(candidates, intraEdges, slotT, place);
+  const slotAngles = Array.from({ length: count }, (_, rank) => place(slotT(rank, count)));
+  const refined = refineCircularOrder(best.order, intraEdges, slotAngles);
+  return scoreCandidates([...candidates, { name: `refined-${best.candidate}`, order: refined.order }], intraEdges, slotT, place);
 }
 
 /** Optional knobs of the locality order. Production callers omit them; tests use
@@ -894,6 +1102,7 @@ export function assignFractalSectors(input: FractalSectorInput): FractalSectorRe
         giant: true,
         slotPolicy: 'uniform-midrank',
         order,
+        orderCandidate: 'giant-allocation',
         allocation: {
           communityId: community.communityId,
           innerInterval: { left: innerLeft, right: residualRight, width: innerWidth },
@@ -918,15 +1127,26 @@ export function assignFractalSectors(input: FractalSectorInput): FractalSectorRe
     const slotPolicy = members.length >= 4 ? 'bfs-split-40-20-40' : 'uniform-midrank';
     const slotT = members.length >= 4 ? splitSlotT : uniformMidrankT;
     const innerWidth = interval.width - 2 * guard;
-    const choice = chooseCandidateOrder(
-      members,
-      adjacency,
-      intraEdges,
-      slotT,
-      (slot) => interval.left + guard + slot * innerWidth,
-    );
+    let choice: OrderChoice;
+    try {
+      choice = chooseCandidateOrder(
+        members,
+        adjacency,
+        intraEdges,
+        slotT,
+        (slot) => interval.left + guard + slot * innerWidth,
+        { importanceOf },
+      );
+    } catch (error) {
+      return {
+        kind: 'failure',
+        code: 'fiedler-solver-refused',
+        detail: error instanceof Error ? error.message : String(error),
+        groupId: community.communityId,
+      };
+    }
     choice.order.forEach((id, rank) => pushTarget(id, community.communityId, interval.left + guard + slotT(rank, members.length) * innerWidth, undefined));
-    sectors.push({ communityId: community.communityId, interval, guard, giant: isGiant, slotPolicy, order: choice.order, allocation: null });
+    sectors.push({ communityId: community.communityId, interval, guard, giant: isGiant, slotPolicy, order: choice.order, orderCandidate: choice.candidate, allocation: null });
     const communityFailure = scoreLocality(community.communityId, 'community', members, intraEdges);
     if (communityFailure !== null) return communityFailure;
   }
