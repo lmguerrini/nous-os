@@ -61,7 +61,8 @@ test('an Indra disclosure refresh calls the one-shot camera anchor once at the o
   const createView: CreateProductView = async input => {
     const positions = input.v2Prepared!.indraAnchors;
     mounts.push({ positions });
-    const screen = (id: string) => { const p = positions.get(id)!; return { x: 400 + p.x, y: 300 + p.y, radius: 12 }; };
+    const screen = (id: string) => { const p = positions.get(id)!; return { x: id === 'domain:a' ? 400 + (mounts.length > 1 ? 25 : 0) : 100 + p.x,
+      y: id === 'domain:a' ? 300 : 100 + p.y, radius: 12 }; };
     return {
       readCamera: () => ({ x: 0.5, y: 0.5, ratio: 1 }), restoreCamera() {},
       keepNodeAt(id: string, point: { x: number; y: number }) { kept.push({ id, point }); return true; },
@@ -78,10 +79,54 @@ test('an Indra disclosure refresh calls the one-shot camera anchor once at the o
     colour: 'bw', labels: true, reading: 'attested' }, appearance, palette, {}, 'complete', { createView });
   await page.refresh();
   const first = mounts[0]!.positions.get('domain:a')!;
-  (page as unknown as { cursor: { x: number; y: number } }).cursor = { x: 400 + first.x, y: 300 + first.y };
+  (page as unknown as { cursor: { x: number; y: number } }).cursor = { x: 400, y: 300 };
   page.history.expand('project:a:1');
   await page.refresh();
   assert.equal(mounts.length, 2);
   assert.notDeepEqual(mounts[1]!.positions.get('domain:a'), first, 'the reveal repacks the domain');
-  assert.deepEqual(kept, [{ id: 'domain:a', point: { x: 400 + first.x, y: 300 + first.y, radius: 12 } }]);
+  assert.deepEqual(kept, [{ id: 'domain:a', point: { x: 400, y: 300, radius: 12 } }]);
 });
+
+for (const moved of [true, false]) {
+  test(`a Natural 3D disclosure ${moved ? 'restores' : 'does not compensate an unchanged'} anchor`, async () => {
+    const kept: { id: string; point: { x: number; y: number } }[] = [];
+    let mount = 0;
+    let anchorOffset = 0;
+    const createView: CreateProductView = async () => {
+      const thisMount = ++mount;
+      const screen = (id: string) => ({
+        x: (id === 'domain:a' ? 400 + (thisMount > 1 ? anchorOffset : 0) : 100),
+        y: id === 'domain:a' ? 300 : 100,
+        radius: 12,
+      });
+      return {
+        readCamera: () => ({ x: 0.5, y: 0.5, ratio: 1 }), restoreCamera() {},
+        keepNodeAt(id: string, point: { x: number; y: number }) {
+          kept.push({ id, point });
+          anchorOffset = 0;
+          return true;
+        },
+        witness: () => ({ axes: { projection: '3d', organization: 'natural' }, cameraKind: 'perspective',
+          visibleRect: { left: 0, top: 0, width: 800, height: 600 },
+          nodeViewport: Object.fromEntries(index.nodes.map(item => [item.id, screen(item.id)])),
+          positions: {}, selected: null, emphasised: [], windows: [], labels: [],
+          depth: { zMin: 0, zMax: 0, zStd: 0 }, anchorsSource: 'v2-layout', palette: 'bw' }),
+        destroy() {}, async fit() {}, async frame() {}, async resetCamera() {}, select() {}, setEmphasis() {},
+        setInsets() {}, setFlowMotion() {}, async setAxes() {}, async setVisible() {}, async setAppearance() {},
+        async setPalette() {}, viewPreset() {}, camera: () => null,
+      } as unknown as ProductView;
+    };
+    const page = new V2Page(manifest, index, { projection: '3d', morphology: 'stellar', organization: 'natural',
+      colour: 'bw', labels: true, reading: 'attested' }, appearance, palette, {}, 'complete', { createView });
+    await page.refresh();
+    (page as unknown as { cursor: { x: number; y: number } }).cursor = { x: 400, y: 300 };
+    page.history.expand('project:a:1');
+    anchorOffset = moved ? 24 : 0;
+    await page.refresh();
+    assert.equal(mount, 2, 'the disclosure mounts the updated Natural 3D view');
+    if (moved) {
+      assert.deepEqual(kept, [{ id: 'domain:a', point: { x: 400, y: 300, radius: 12 } }]);
+      assert.deepEqual({ x: 400 + anchorOffset, y: 300 }, { x: 400, y: 300 }, 'keepNodeAt restores the old screen point');
+    } else assert.deepEqual(kept, []);
+  });
+}

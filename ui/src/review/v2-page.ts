@@ -493,6 +493,8 @@ export class V2Page {
     /** The disclosed ids + arrangement + morphology of the last refresh. Unchanged means a density
      * or level refresh: the same scene, so the camera is restored and never refit. */
     private lastSceneKey = '';
+    /** The disclosure state of the last committed product refresh, including manual layout opens. */
+    private lastDisclosureKey = '';
     /** D-072 R1: the last LOD selection the page actually mounted — what a failing selection
      * keeps verbatim (`safeSelectNodes` fallback), retired only by a successful mount. */
     private lastNodeSelection: LodNodeSelection | null = null;
@@ -681,6 +683,11 @@ export class V2Page {
         const pages = new Map<string, number>([...this.auto].map(id => [id, V2_PAGE]));
         for (const [id, count] of this.autoPageCounts) pages.set(id, count);
         return v2Visible(this.index, this.history.state, pages);
+    }
+    private disclosureKey() {
+        const state = this.history.state;
+        return JSON.stringify({ expanded: [...state.expanded].sort(),
+            pages: [...state.pages].sort(([a], [b]) => a.localeCompare(b)), manualOrder: state.manualOrder });
     }
     private routeNodes() {
         return this.index.nodes.map(node => ({ id: node.id, parent: node.parent, level: node.level,
@@ -2301,6 +2308,8 @@ export class V2Page {
             const adapted = adaptV2(disclosed.nodes, shown, next, this.manifest.digest);
             const added = [...renderedIds].filter(id => !this.previousVisible.has(id));
             const old = this.view?.readCamera();
+            const disclosureChanged = this.disclosureKey() !== this.lastDisclosureKey
+                || ids.size !== this.positions.size || [...ids].some(id => !this.positions.has(id));
             const indraLayoutMoved = organization === 'indra' && [...next].some(([id, point]) => {
                 const before = this.positions.get(id);
                 return before && (before.x !== point.x || before.y !== point.y || before.z !== point.z);
@@ -2329,6 +2338,7 @@ export class V2Page {
                     // The same commit a successful mount makes, minus everything a remount owns
                     // (positions, camera bookkeeping, layout keys — the scene did not change).
                     this.rendered = renderedIds;
+                    this.lastDisclosureKey = this.disclosureKey();
                     this.lodCounts = nextLodCounts;
                     this.renderedRelations = nextRenderedRelations;
                     this.publishReveal(route, renderedIds);
@@ -2365,10 +2375,11 @@ export class V2Page {
             const sceneKey = `${arrangement}|${this.axes.morphology}|${[...ids].sort().join('|')}`;
             const sceneUnchanged = !!old && sceneKey === this.lastSceneKey;
             const keep = old && arrangement === this.lastArrangement;
-            // Indra repacks its parent and siblings when disclosure changes. Capture a point on
-            // the still-mounted view before the replacement takes its new layout.
+            // A disclosure can move a node in any product layout (Natural 3D recalculates its
+            // depth volume; Indra repacks recursively). Capture one screen point before replacing
+            // the layout, then compensate only if that node actually moved on screen.
             let anchor: { id: string; point: { x: number; y: number } } | null = null;
-            if (indraLayoutMoved && old && keep && this.view) {
+            if (disclosureChanged && old && keep && this.view) {
                 const witness = this.view.witness();
                 const rootRect = element('render-root').getBoundingClientRect();
                 const cursor = this.cursor && { x: this.cursor.x + rootRect.left, y: this.cursor.y + rootRect.top };
@@ -2436,6 +2447,7 @@ export class V2Page {
             this.layoutProjection = projection;
             this.canonicalPositions = nextCanonicalPositions;
             this.positions = next;
+            this.lastDisclosureKey = this.disclosureKey();
             this.communities = nextCommunities;
             this.rendered = renderedIds;
             this.lodCounts = nextLodCounts;
@@ -2464,8 +2476,12 @@ export class V2Page {
                 try {
                     this.noteCameraIntent();
                     this.view.restoreCamera(old);
-                    if (anchor) (this.view as ProductView & { keepNodeAt?: (id: string, point: { x: number; y: number }) => boolean })
-                        .keepNodeAt?.(anchor.id, anchor.point);
+                    if (anchor) {
+                        const after = this.view.witness().nodeViewport[anchor.id];
+                        if (after && Math.hypot(after.x - anchor.point.x, after.y - anchor.point.y) > 1)
+                            (this.view as ProductView & { keepNodeAt?: (id: string, point: { x: number; y: number }) => boolean })
+                                .keepNodeAt?.(anchor.id, anchor.point);
+                    }
                     this.lastZoomRatio = (old as { ratio?: number } | null)?.ratio ?? this.lastZoomRatio;
                     this.suppressZoomUntil = 0;
                 }
