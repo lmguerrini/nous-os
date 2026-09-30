@@ -30,6 +30,16 @@ import type { FilamentGeometry } from "#render2d/geometry.ts";
 import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
 import { validateRenderVisibility } from "../projection/contract.ts";
 import type { ProjectionResult, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec2, VisualContainer, VisualCurve, VisualRelation, MathematicalField } from "../projection/contract-types.ts";
+import { disambiguateLabels, footprintDisc, placeLabels, shortLabelWithEllipsis } from "../review/labels.ts";
+import type { LabelCandidate, LabelDisc, PlacedLabel } from "../review/labels.ts";
+import type { LabelReason, ViewportRect } from "../review/view-contract.ts";
+import { TYPED_LABEL_DOM } from "../review/projection-style.ts";
+
+// The style bridge is the review layer's own module; the governed mounts (render2d/index.ts,
+// render3f/mount.tsx) reach it only through this re-export, keeping one bridge and one boundary.
+export { readProjectionStyle, typedLabelKind, typedLabelTexts, typedRgbaColor } from "../review/projection-style.ts";
+export { TYPED_LABEL_CAMERA } from "../review/projection-style.ts";
+export type { ProjectionStyleScope } from "../review/projection-style.ts";
 
 /** This is one Sigma node payload and does not retain opaque semantic content. */
 export type RenderNodeAttributes = {
@@ -882,4 +892,170 @@ function propagationDistance(elapsedMilliseconds: number, calibration: Calibrati
 /** This normalises travelled distance to the sampled arc and does not use vertex index spacing. */
 function normalisedPropagationPosition(travelledDistance: number, length: number): number {
   return length === 0 ? 1 : Math.max(0, Math.min(travelledDistance / length, 1));
+}
+
+// ---------------------------------------------------------------- typed projection labels
+
+/** One projected label anchor of a typed projection: policy metadata from the style bridge plus
+ * the renderer's live screen position and footprint radius. */
+export type ProjectionLabelCandidate = {
+  readonly id: string;
+  /** The short (page-truncated) display label; `full` stays in the tooltip, as the product pass. */
+  readonly text: string;
+  readonly full: string;
+  readonly reason: LabelReason;
+  readonly tier1: boolean;
+  readonly priority: number;
+  readonly x: number;
+  readonly y: number;
+  readonly radiusPx: number;
+};
+
+export type ProjectionLabelOverlayInput = {
+  readonly candidates: readonly ProjectionLabelCandidate[];
+  readonly bounds: ViewportRect;
+  /** The density label allowance; absent keeps the absolute product ceiling. */
+  readonly budget?: number;
+};
+
+/** The empty viewport rectangle, used to idle the shared label overlay without a measured host. */
+export const EMPTY_LABEL_BOUNDS: ViewportRect = { left: 0, top: 0, width: 0, height: 0 };
+
+/** The product label DOM styling, shared by the typed mounts in both dimensions. */
+export type ProjectionLabelOverlay = {
+  /** One full placement pass: ellipsize, disambiguate, place against discs and budget, repaint. */
+  update(input: ProjectionLabelOverlayInput): number;
+  readCount(): number;
+  readLabelIds(): readonly string[];
+  destroy(): void;
+};
+
+const PROJECTION_LABEL_FONT_PX = TYPED_LABEL_DOM.fontPx;
+const PROJECTION_LABEL_LINE_PX = TYPED_LABEL_DOM.linePx;
+const PROJECTION_LABEL_TEXT = "#e8e8e8";
+const PROJECTION_LABEL_EMPHASIS = "#ffffff";
+/** One lazily created measure surface per document; tests without a DOM use the text estimator. */
+let projectionLabelMeasureContext: CanvasRenderingContext2D | null | undefined;
+function projectionLabelMeasure(): CanvasRenderingContext2D | null {
+  if (projectionLabelMeasureContext !== undefined) return projectionLabelMeasureContext;
+  projectionLabelMeasureContext = typeof document === "undefined"
+    ? null
+    : document.createElement("canvas").getContext("2d");
+  return projectionLabelMeasureContext;
+}
+
+/** Mounts the product label DOM layer over one renderer host. No timers: it repaints only when
+ * the host calls `update`, so an idle page draws nothing and schedules nothing. */
+export function mountProjectionLabelOverlay(host: HTMLElement): ProjectionLabelOverlay {
+  const layer = document.createElement("div");
+  layer.dataset.projectionLabels = "true";
+  Object.assign(layer.style, {
+    position: "absolute",
+    inset: "0",
+    overflow: "hidden",
+    pointerEvents: "none",
+  });
+  host.append(layer);
+  let placedIds: readonly string[] = [];
+  const singleLineWidth = (text: string): number => {
+    const context = projectionLabelMeasure();
+    if (context) context.font = `${PROJECTION_LABEL_FONT_PX}px Arial`;
+    return text.split(/\s+/)
+      .reduce((sum, word) => sum
+        + (context?.measureText(word).width ?? word.length * PROJECTION_LABEL_FONT_PX * TYPED_LABEL_DOM.widthFactor)
+        + TYPED_LABEL_DOM.wordPadPx, 0);
+  };
+  const measured = (text: string, maxWidth: number, maxLines: number) => {
+    const context = projectionLabelMeasure();
+    if (context) context.font = `${PROJECTION_LABEL_FONT_PX}px Arial`;
+    const words = text.split(/\s+/);
+    let lines = 1;
+    let width = 0;
+    let current = 0;
+    for (const word of words) {
+      const wordWidth = (context?.measureText(word).width
+        ?? word.length * PROJECTION_LABEL_FONT_PX * TYPED_LABEL_DOM.widthFactor) + TYPED_LABEL_DOM.wordPadPx;
+      if (current + wordWidth > maxWidth && current > 0 && lines < maxLines) {
+        width = Math.max(width, current);
+        current = 0;
+        lines++;
+      }
+      current += wordWidth;
+    }
+    width = Math.min(maxWidth, Math.max(width, current));
+    return { width: Math.max(TYPED_LABEL_DOM.minWidthPx, width + TYPED_LABEL_DOM.boxPadPx),
+      height: lines * PROJECTION_LABEL_LINE_PX + PROJECTION_LABEL_LINE_PX / 2 };
+  };
+  const elementFor = (label: PlacedLabel, full: string): HTMLDivElement => {
+    const element = document.createElement("div");
+    element.dataset.projectionLabelId = label.id;
+    if (full.length > 0) element.title = full;
+    Object.assign(element.style, {
+      position: "absolute",
+      left: `${label.rect.left}px`,
+      top: `${label.rect.top}px`,
+      width: `${label.rect.width}px`,
+      height: `${label.rect.height}px`,
+      boxSizing: "border-box",
+      padding: "4px 6px",
+      font: `${PROJECTION_LABEL_FONT_PX}px/${PROJECTION_LABEL_LINE_PX}px Arial`,
+      color: label.reason === "selected" ? PROJECTION_LABEL_EMPHASIS
+        : label.reason === "hover" ? PROJECTION_LABEL_EMPHASIS : PROJECTION_LABEL_TEXT,
+      background: label.reason === "hover" || label.reason === "selected" ? "rgba(10,10,10,.94)" : "rgba(10,10,10,.72)",
+      textShadow: "0 0 2px #000, 0 1px 2px #000",
+      borderRadius: "3px",
+      whiteSpace: "normal",
+      overflow: "hidden",
+    });
+    const lines = Math.max(1, Math.round((label.rect.height - PROJECTION_LABEL_LINE_PX / 2) / PROJECTION_LABEL_LINE_PX));
+    const text = document.createElement("span");
+    text.textContent = label.text;
+    text.style.setProperty("display", "-webkit-box");
+    text.style.setProperty("-webkit-box-orient", "vertical");
+    text.style.setProperty("-webkit-line-clamp", String(lines));
+    text.style.setProperty("overflow", "hidden");
+    element.append(text);
+    return element;
+  };
+  return {
+    update(input): number {
+      const fullText = new Map(input.candidates.map(candidate => [candidate.id, candidate.full]));
+      // The placed candidate carries the policy's own fields only: `full` (a boolean flag on the
+      // placement type) is never set here — the complete title stays in the tooltip map above.
+      const marked: LabelCandidate[] = input.candidates.map(candidate => ({
+        id: candidate.id,
+        text: shortLabelWithEllipsis({
+          short: candidate.text,
+          full: candidate.full.length > 0 ? candidate.full : candidate.text,
+          maxWidth: TYPED_LABEL_DOM.maxWidthPx,
+          measure: singleLineWidth,
+        }),
+        reason: candidate.reason,
+        x: candidate.x,
+        y: candidate.y,
+        priority: candidate.priority,
+        ...(candidate.tier1 ? { tier1: true } : {}),
+        ...(candidate.radiusPx > 0 ? { radius: candidate.radiusPx } : {}),
+      }));
+      const discs: LabelDisc[] = input.candidates.map(candidate =>
+        footprintDisc({ id: candidate.id, x: candidate.x, y: candidate.y, coreRadiusPx: candidate.radiusPx }));
+      const placed = placeLabels(
+        disambiguateLabels(marked),
+        input.bounds,
+        measured,
+        [],
+        input.budget ?? Number.POSITIVE_INFINITY,
+        discs,
+      );
+      placedIds = placed.map(label => label.id);
+      layer.replaceChildren(...placed.map(label => elementFor(label, fullText.get(label.id) ?? "")));
+      return placed.length;
+    },
+    readCount: () => placedIds.length,
+    readLabelIds: () => placedIds,
+    destroy(): void {
+      layer.remove();
+      placedIds = [];
+    },
+  };
 }

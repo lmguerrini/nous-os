@@ -22,7 +22,9 @@ import type { ScaleNavigationPath } from "#engine/scale-topology.ts";
 import type { Palette, Temperature, Theme } from "#engine/tokens.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
-import { SHIPPING_RENDER_DEFAULTS } from "#render2d/model.ts";
+import { EMPTY_LABEL_BOUNDS, SHIPPING_RENDER_DEFAULTS, mountProjectionLabelOverlay, readProjectionStyle, typedLabelKind, typedLabelTexts, TYPED_LABEL_CAMERA } from "#render2d/model.ts";
+import type { ProjectionLabelCandidate, ProjectionLabelOverlay } from "#render2d/model.ts";
+import { createTypedProjectionLayer } from "#render-common/typed-layer.ts";
 import {
   CameraRig,
   attachCameraInteractions,
@@ -55,8 +57,8 @@ import {
 } from "#render3f/node-material.ts";
 import { ScenePicker } from "#render3f/picking.ts";
 import { TypedProjectionPicker } from "#render3f/picking.ts";
-import type { Render3fTypedInput, TypedPoint, TypedProjectionGeometry, TypedSegment } from "#render3f/picking.ts";
-import type { PickResult } from "../projection/contract-types.ts";
+import type { Render3fTypedInput, TypedProjectionGeometry } from "#render3f/picking.ts";
+import type { PickResult, StyledProjection } from "../projection/contract-types.ts";
 
 /** How long the camera must be still before the derived geometry returns to full quality. */
 const DERIVED_STILL_MS = 200;
@@ -274,13 +276,20 @@ export function mount(
   let typedPicker = typedInput === undefined ? null : new TypedProjectionPicker(
     typedInput, point => rig.graphToViewport(point),
   );
-  const typedLayer = createTypedProjectionLayer(live.scene);
+  const typedLayer = createTypedProjectionLayer();
   threeScene.add(typedLayer.group);
   // Containers, curves and field rings of a typed projection are one 2D canvas layer over the WebGL canvas,
   // projected through the live camera. It redraws with every frame and drops to the moving quality while
   // the camera moves; the restore timer exists only after a camera change, so an idle page schedules nothing.
   let visuals: ProjectionVisualsLayer | null = null;
-  let derivedMorphology: ProjectionVisualsMorphology = "stellar";
+  // D-073 W4f: the typed path reads its whole-scene options (morphology, label budget) from the
+  // style bridge's reserved scope record, falling back to the engine defaults for the basic bridge.
+  let currentStyled: StyledProjection | null = typedInput?.styled ?? null;
+  const initialScope = currentStyled !== null ? readProjectionStyle(currentStyled) : null;
+  let derivedMorphology: ProjectionVisualsMorphology = initialScope?.morphology ?? "stellar";
+  let typedLabelBudget: number | undefined = initialScope?.labelBudget;
+  let typedLabelOverlay: ProjectionLabelOverlay | null = null;
+  let typedFittedCameraDistance: number | null = null;
   let visualsStillTimer: ReturnType<typeof setTimeout> | undefined;
   const acceptVisuals = (input: Render3fTypedInput): void => {
     if (visuals === null) {
@@ -293,7 +302,7 @@ export function mount(
   };
   if (typedPicker) {
     world.visible = false;
-    typedLayer.update(typedPicker.geometry);
+    typedLayer.update(typedPicker.geometry, typedInput!.styled);
     acceptVisuals(typedInput!);
   }
   let emphasisIds = options.presentation?.emphasisIds ?? null;
@@ -324,11 +333,44 @@ export function mount(
   };
   const updateLabels = (): void => {
     if (typedPicker) {
+      // The product controller stays idle on the typed path; the D-072 policy places names through
+      // the shared DOM overlay over the baked metadata (type, level, tier 1, focus eligibility).
       labels.update({ ...live.scene, nodes: [], edges: [], aggregates: [], selectedLabelIds: [] }, {
         project: point => rig.graphToViewport(point),
         nodeOffsetPx: () => 0,
         nodeSizeScale: () => 1,
       });
+      if (typedLabelOverlay === null) typedLabelOverlay = mountProjectionLabelOverlay(container);
+      const box = container.getBoundingClientRect();
+      if (box.width <= 0 || box.height <= 0) {
+        typedLabelOverlay.update({ candidates: [], bounds: EMPTY_LABEL_BOUNDS });
+        return;
+      }
+      const distance = rig.camera.position.length();
+      if (typedFittedCameraDistance === null) typedFittedCameraDistance = distance;
+      const overview = distance >= typedFittedCameraDistance * TYPED_LABEL_CAMERA.overviewRatio;
+      const close = distance < typedFittedCameraDistance * TYPED_LABEL_CAMERA.closeRatio;
+      const candidates: ProjectionLabelCandidate[] = [];
+      if (currentStyled !== null) {
+        const styled = currentStyled;
+        for (const point of typedPicker.geometry.nodes) {
+          if (point.pick.kind !== "node") continue;
+          const style = styled.nodeStyle[point.pick.id];
+          if (style === undefined) continue;
+          const screen = rig.graphToViewport(point.position);
+          const radiusPx = Math.max(0, (typeof style.size === "number" ? style.size : 5) * rig.sizeScaleAt(point.position));
+          const anchor = { id: point.pick.id, x: screen.x, y: screen.y, radiusPx, style };
+          const kind = typedLabelKind(anchor, { neighbours: emphasisIds, overview, close, projection: "3d" });
+          if (kind === null) continue;
+          const texts = typedLabelTexts(anchor);
+          if (texts.short.length === 0) continue;
+          candidates.push({ id: point.pick.id, text: texts.short, full: texts.full, reason: kind.reason,
+            tier1: kind.tier1, priority: typeof style.labelPriority === "number" ? style.labelPriority : 0,
+            x: screen.x, y: screen.y, radiusPx });
+        }
+      }
+      typedLabelOverlay.update({ candidates, bounds: { left: 0, top: 0, width: box.width, height: box.height },
+        ...(typedLabelBudget !== undefined ? { budget: typedLabelBudget } : {}) });
       return;
     }
     labels.update(live.scene, {
@@ -485,12 +527,25 @@ export function mount(
         distinct?.destroy();
         distinct = null;
         world.visible = false;
-        typedLayer.update(next.geometry);
+        currentStyled = update.styled;
+        const nextScope = readProjectionStyle(update.styled);
+        if (nextScope !== null) {
+          typedLabelBudget = nextScope.labelBudget;
+          derivedMorphology = nextScope.morphology;
+        }
+        typedLayer.update(next.geometry, update.styled);
         acceptVisuals(update);
         updateLabels();
         renderFrame();
       } else if (typedPicker.update(update)) {
-        typedLayer.update(typedPicker.geometry);
+        currentStyled = update.styled;
+        const nextScope = readProjectionStyle(update.styled);
+        if (nextScope !== null) {
+          typedLabelBudget = nextScope.labelBudget;
+          derivedMorphology = nextScope.morphology;
+          visuals?.setMorphology(nextScope.morphology);
+        }
+        typedLayer.update(typedPicker.geometry, update.styled);
         acceptVisuals(update);
         updateLabels();
         renderFrame();
@@ -649,6 +704,7 @@ export function mount(
         return;
       }
       destroyed = true;
+      typedLabelOverlay?.destroy();
       visuals?.destroy();
       resizeObserver.disconnect();
       detachInteractions();
@@ -667,79 +723,6 @@ export function mount(
 
 function WorldLayer({ world }: { readonly world: THREE.Group }): ReactElement {
   return <primitive object={world} />;
-}
-
-/** Three independent GPU collections: nodes, source edges and structural relations. The derived geometry
- * (containers, curves, field rings) is the projection visuals layer's. Updating attributes keeps the group,
- * renderer, and camera alive. */
-function createTypedProjectionLayer(scene: Scene): {
-  readonly group: THREE.Group;
-  update(geometry: TypedProjectionGeometry): void;
-  dispose(): void;
-} {
-  const group = new THREE.Group();
-  const tokenColor = (name: "text" | "edge" | "peak"): THREE.Color => {
-    const channel = tokenToSrgb(scene.tokens[name], scene.tokenEncoding);
-    return new THREE.Color().setRGB(channel.red, channel.green, channel.blue);
-  };
-  const points = (color: THREE.Color, size: number): THREE.Points => {
-    const object = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({
-      color, size, sizeAttenuation: false, depthTest: true,
-    }));
-    object.frustumCulled = false;
-    group.add(object);
-    return object;
-  };
-  const lines = (color: THREE.Color): THREE.LineSegments => {
-    const object = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({
-      color, depthTest: true,
-    }));
-    object.frustumCulled = false;
-    group.add(object);
-    return object;
-  };
-  const nodePoints = points(tokenColor("text"), 9);
-  const semanticLines = lines(tokenColor("edge"));
-  const structuralLines = lines(tokenColor("peak"));
-  const previousValues = new Map<THREE.Points | THREE.LineSegments, readonly number[]>();
-  const write = (object: THREE.Points | THREE.LineSegments, values: readonly number[]): void => {
-    const previous = previousValues.get(object);
-    if (previous?.length === values.length && previous.every((value, index) => value === values[index])) return;
-    object.geometry.setAttribute("position", new THREE.Float32BufferAttribute(values, 3));
-    object.geometry.setDrawRange(0, values.length / 3);
-    object.geometry.attributes.position!.needsUpdate = true;
-    previousValues.set(object, values);
-  };
-  const pointValues = (items: readonly TypedPoint[]): number[] => {
-    const values: number[] = [];
-    for (const item of items) values.push(item.position.x, item.position.y, item.position.z);
-    return values;
-  };
-  const segmentValues = (items: readonly TypedSegment[]): number[] => {
-    const values: number[] = [];
-    for (const item of items) values.push(
-      item.source.x, item.source.y, item.source.z, item.target.x, item.target.y, item.target.z,
-    );
-    return values;
-  };
-  return {
-    group,
-    update(geometry): void {
-      write(nodePoints, pointValues(geometry.nodes));
-      write(semanticLines, segmentValues(geometry.semanticEdges));
-      write(structuralLines, segmentValues(geometry.visualRelations));
-    },
-    dispose(): void {
-      for (const child of group.children) {
-        if (child instanceof THREE.Points || child instanceof THREE.LineSegments) {
-          child.geometry.dispose();
-          (child.material as THREE.Material).dispose();
-        }
-      }
-      previousValues.clear();
-      group.removeFromParent();
-    },
-  };
 }
 
 function scenesForState(

@@ -1,7 +1,9 @@
 import { mixTowardField } from "#engine/presentation-options.ts";
-import type { AppearanceOptions } from "#engine/presentation-options.ts";
+import type { AppearanceOptions, EdgeCategory, EdgePresentation, NodeGlyph } from "#engine/presentation-options.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import { buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
+import type { MorphologyGeometry } from "#engine/morphology-geometry.ts";
+import type { Morphology } from "#engine/morphology.ts";
 import { DENSE_SCENE_THRESHOLD, drawMorphologyCanvas } from "#render-common/morphology-canvas.ts";
 import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
 import Sigma from "sigma";
@@ -34,9 +36,16 @@ import {
   prepareProjection2d,
   projection2dVisibilityKey,
   projection2dRevisionAction,
+  mountProjectionLabelOverlay,
+  readProjectionStyle,
+  typedLabelKind,
+  typedLabelTexts,
+  typedRgbaColor,
+  TYPED_LABEL_CAMERA,
 } from "#render2d/model.ts";
 import type {
   LabelPlacementCandidate,
+  ProjectionLabelCandidate,
   RenderEdgeAttributes,
   RenderModel,
   RenderNodeAttributes,
@@ -1278,23 +1287,95 @@ function styleColor(style: Readonly<Record<string, number | string>>, fallback: 
   const value = style.color;
   return typeof value === 'string' && value.length > 0 ? value : fallback;
 }
+function styleAlpha(style: Readonly<Record<string, number | string>>, fallback: number): number {
+  return Math.min(1, Math.max(0, styleNumber(style, 'alpha', fallback)));
+}
+/** The product glyph grammar as the style bridge bakes it; anything else stays the engine default. */
+function projectionGlyph(style: Readonly<Record<string, number | string>>): NodeGlyph | undefined {
+  const value = style.glyph;
+  return value === 'filled' || value === 'ring' || value === 'double-ring' || value === 'hollow' ? value : undefined;
+}
+function projectionEdgeCategory(style: Readonly<Record<string, number | string>>, attestation: 'attested' | 'exploratory'): EdgeCategory {
+  const value = style.category;
+  return value === 'attested' || value === 'exploratory' || value === 'containment' ? value : attestation;
+}
+function projectionEdgePresentation(
+  style: Readonly<Record<string, number | string>>, attestation: 'attested' | 'exploratory',
+): EdgePresentation {
+  return {
+    category: projectionEdgeCategory(style, attestation),
+    opacityPermille: styleNumber(style, 'opacityPermille', SCENE_PERMILLE_SCALE),
+    widthPermille: styleNumber(style, 'widthPermille', SCENE_PERMILLE_SCALE),
+  };
+}
 function projectionNodeAttributes(scene: Projection2dScene, id: string): ProjectionNodeAttributes {
   const node = scene.nodes.get(id)!;
   return { x: node.position.x, y: node.position.y, size: Math.max(1 / 2, styleNumber(node.style, 'size', PROJECTION_NODE_RADIUS_PX)),
-    color: styleColor(node.style, "#9bc8ed"), label: '' };
+    color: typedRgbaColor(styleColor(node.style, "#9bc8ed"), styleAlpha(node.style, 1)), label: '' };
 }
 function projectionEdgeAttributes(scene: Projection2dScene, id: string): ProjectionEdgeAttributes {
   const edge = scene.semanticEdges.get(id)!;
   return { size: Math.max(1 / 2, styleNumber(edge.style, 'size', 1 + 1 / 2)),
-    color: styleColor(edge.style, edge.attestation === 'attested' ? "#729ebd" : "#ad8e6a") };
+    color: typedRgbaColor(styleColor(edge.style, edge.attestation === 'attested' ? "#729ebd" : "#ad8e6a"), styleAlpha(edge.style, 1)) };
 }
 
-/** Mounts a typed projection once and diffs later visibility revisions on the same Sigma/camera. */
+/** Everything the morphology canvas pass needs for one visible subset: the engine geometry, the
+ * per-node ink (colour, glyph, radius, alpha) and the per-edge presentation the style bridge
+ * baked. Communities derive from the snapshot's own parent links, never from a new layout. */
+function projectionMorphologyPaint(
+  morphology: Morphology, scene: Projection2dScene, snapshot: SemanticGraphSnapshot,
+): { geometry: MorphologyGeometry;
+  nodeStyles: ReadonlyMap<string, { color: string; glyph: NodeGlyph | undefined; radiusPx: number; opacity: number }>;
+  edgeStyles: ReadonlyMap<string, { color: string; presentation: EdgePresentation | undefined }> } {
+  const visible = new Set(scene.nodes.keys());
+  const parentById = new Map(snapshot.nodes.map(node => [node.id, node.parentId]));
+  const colonyMembers = new Map<string, string[]>();
+  const nodes = [...scene.nodes].map(([id, node]) => {
+    const parent = parentById.get(id);
+    const community = parent !== null && parent !== undefined && parent !== id && visible.has(parent) ? parent : id;
+    const members = colonyMembers.get(community);
+    if (members) members.push(id);
+    else colonyMembers.set(community, [id]);
+    return { id, position: { x: node.position.x, y: node.position.y, z: 0 }, radius: styleNumber(node.style, 'size', PROJECTION_NODE_RADIUS_PX) };
+  });
+  const positionById = new Map(nodes.map(node => [node.id, node.position]));
+  const colonies = [...colonyMembers].map(([id, members]) => {
+    const center = members.reduce(
+      (sum, member) => ({ x: sum.x + positionById.get(member)!.x, y: sum.y + positionById.get(member)!.y, z: 0 }),
+      { x: 0, y: 0, z: 0 },
+    );
+    return { id, members, center: { x: center.x / members.length, y: center.y / members.length, z: 0 } };
+  });
+  const edges = [...scene.semanticEdges].map(([id, edge]) =>
+    ({ id, source: edge.source, target: edge.target, width: styleNumber(edge.style, 'size', 1) }));
+  const nodeStyles = new Map([...scene.nodes].map(([id, node]) => [id, {
+    color: styleColor(node.style, "#9bc8ed"),
+    glyph: projectionGlyph(node.style),
+    radiusPx: styleNumber(node.style, 'size', PROJECTION_NODE_RADIUS_PX),
+    opacity: styleAlpha(node.style, 1),
+  }]));
+  const edgeStyles = new Map([...scene.semanticEdges].map(([id, edge]) => [id, {
+    color: styleColor(edge.style, edge.attestation === 'attested' ? "#729ebd" : "#ad8e6a"),
+    presentation: projectionEdgePresentation(edge.style, edge.attestation),
+  }]));
+  return {
+    geometry: buildMorphologyGeometry(morphology, nodes, edges, colonies, DEFAULT_APPEARANCE.curvature, []),
+    nodeStyles,
+    edgeStyles,
+  };
+}
+
+/** Mounts a typed projection once and diffs later visibility revisions on the same Sigma/camera.
+ * This worker's pass: Sigma keeps picking and camera; the product morphology canvas paints the structure, and
+ * the shared DOM overlay places labels under the density budget. No semantic value is derived here. */
 export function mountProjection2d(
   container: HTMLElement, snapshot: SemanticGraphSnapshot, styled: StyledProjection, visibility: RenderVisibility,
 ): Projection2dHandle {
   let scene = prepareProjection2d(snapshot, styled, visibility);
   let contentKey = projection2dVisibilityKey(styled, visibility);
+  let scope = readProjectionStyle(styled);
+  let morphology: Morphology = scope?.morphology ?? 'stellar';
+  let labelBudget = scope?.labelBudget;
   const graph = new MultiDirectedGraph<ProjectionNodeAttributes, ProjectionEdgeAttributes>();
   for (const id of scene.nodes.keys()) graph.addNode(id, projectionNodeAttributes(scene, id));
   for (const [id, edge] of scene.semanticEdges) graph.addEdgeWithKey(id, edge.source, edge.target, projectionEdgeAttributes(scene, id));
@@ -1316,14 +1397,17 @@ export function mountProjection2d(
     if (box.width <= 0 || box.height <= 0) return;
     context.setTransform(canvas.width / box.width, 0, 0, canvas.height / box.height, 0, 0);
     context.clearRect(0, 0, box.width, box.height);
-    context.lineWidth = 1 + 1 / 2;
     for (const relation of scene.visualRelations.values()) {
       const a = scene.nodes.get(relation.source)?.position;
       const b = scene.nodes.get(relation.target)?.position;
       if (a === undefined || b === undefined) continue;
-      context.strokeStyle = styleColor(scene.styled.visualStyle[relation.visualId] ?? {}, "#8fa8ac");
+      const record = scene.styled.visualStyle[relation.visualId] ?? {};
+      context.globalAlpha = Math.min(1, Math.max(0, styleNumber(record, 'opacityPermille', SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE));
+      context.lineWidth = Math.max(1 / 2 / 2, styleNumber(record, 'widthPermille', SCENE_PERMILLE_SCALE) / SCENE_PERMILLE_SCALE);
+      context.strokeStyle = styleColor(record, "#8fa8ac");
       context.beginPath(); line(a, b); context.stroke();
     }
+    context.globalAlpha = 1;
   };
   // Containers, curves and field rings are the shared derived-geometry layer; this canvas keeps the structural relations.
   const visuals = createProjectionVisualsLayer(container, '2d', point => {
@@ -1331,9 +1415,98 @@ export function mountProjection2d(
     return { x: p.x, y: p.y, scale: sigma.scaleSize(1) };
   });
   visuals.mount({ styled, visibility });
-  const redraw = (): void => { draw(); visuals.draw(); };
+  visuals.setMorphology(morphology);
+  // The morphology canvas and the collapsed Sigma layers follow the distinct path's own plan.
+  let paint = projectionMorphologyPaint(morphology, scene, snapshot);
+  const morphologyCanvas = document.createElement('canvas');
+  morphologyCanvas.dataset.morphologyCanvas = 'projection';
+  Object.assign(morphologyCanvas.style, { position: 'absolute', inset: '0', width: "100%", height: "100%", pointerEvents: 'none' });
+  // The mount types its Sigma over the projection attribute records; the canvas lookup only
+  // touches the layer registry, which is generic-independent.
+  requiredCanvas(sigma as unknown as Sigma, 'labels').before(morphologyCanvas);
+  const nativeTier = scene.nodes.size >= DENSE_SCENE_THRESHOLD;
+  const layerPolicy = distinctLayerPolicy({ nativeTier, nativeLabelsUsed: false });
+  const collapsed = layerPolicy.collapse
+    .map(id => sigma.getCanvases()[id])
+    .filter((item): item is HTMLCanvasElement => item !== undefined);
+  const previousDisplay = collapsed.map(item => item.style.display);
+  const previousBacking = collapsed.map(item => [item.width, item.height] as const);
+  const shrinkable = layerPolicy.shrinkBacking
+    .map(id => sigma.getCanvases()[id])
+    .filter((item): item is HTMLCanvasElement => item !== undefined);
+  const previousShrinkBacking = shrinkable.map(item => [item.width, item.height] as const);
+  const detached = layerPolicy.pickingOnly
+    .map(id => sigma.getCanvases()[id])
+    .filter((item): item is HTMLCanvasElement => item !== undefined);
+  const previousDetachedDisplay = detached.map(item => item.style.display);
+  const collapseLayer = (): void => {
+    for (const item of collapsed) {
+      item.style.display = 'none';
+      item.width = 1;
+      item.height = 1;
+    }
+    for (const item of shrinkable) {
+      item.width = 1;
+      item.height = 1;
+    }
+  };
+  collapseLayer();
+  sigma.on('resize', collapseLayer);
+  if (!nativeTier) for (const item of detached) item.style.display = 'none';
+  const morphologyContext = morphologyCanvas.getContext('2d');
+  const drawMorphology = (): void => {
+    if (!morphologyContext) return;
+    const box = morphologyCanvas.getBoundingClientRect();
+    const width = Math.max(1, Math.round(box.width * devicePixelRatio));
+    const height = Math.max(1, Math.round(box.height * devicePixelRatio));
+    if (morphologyCanvas.width !== width || morphologyCanvas.height !== height) {
+      morphologyCanvas.width = width;
+      morphologyCanvas.height = height;
+    }
+    const projected = new WeakMap<Coordinates, { x: number; y: number; scale: number }>();
+    drawMorphologyCanvas(morphologyContext, paint.geometry, point => {
+      let value = projected.get(point);
+      if (!value) {
+        const screen = sigma.graphToViewport(point);
+        value = { x: screen.x, y: screen.y, scale: sigma.scaleSize(1) };
+        projected.set(point, value);
+      }
+      return value;
+    }, { fieldColor: scope?.background ?? "#050505", nodes: paint.nodeStyles, edges: paint.edgeStyles },
+      DEFAULT_APPEARANCE, undefined, '2d', nativeTier);
+  };
+  // The DOM label overlay: one placement pass per rendered frame, no timers, zero when idle.
+  const labels = mountProjectionLabelOverlay(container);
+  let fittedRatio: number | null = null;
+  const labelPass = (): void => {
+    const box = container.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return;
+    const ratio = sigma.getCamera().getState().ratio;
+    if (fittedRatio === null) fittedRatio = ratio;
+    const overview = ratio >= fittedRatio * TYPED_LABEL_CAMERA.overviewRatio;
+    const close = ratio < fittedRatio * TYPED_LABEL_CAMERA.closeRatio;
+    const scale = sigma.scaleSize(1);
+    const candidates: ProjectionLabelCandidate[] = [];
+    for (const [id, node] of scene.nodes) {
+      const style = node.style as Readonly<Record<string, number | string>>;
+      const radiusPx = Math.max(0, styleNumber(style, 'size', PROJECTION_NODE_RADIUS_PX) * scale);
+      const screen = sigma.graphToViewport(node.position);
+      const anchor = { id, x: screen.x, y: screen.y, radiusPx, style };
+      const kind = typedLabelKind(anchor, { neighbours: null, overview, close, projection: '2d' });
+      if (kind === null) continue;
+      const texts = typedLabelTexts(anchor);
+      if (texts.short.length === 0) continue;
+      candidates.push({ id, text: texts.short, full: texts.full, reason: kind.reason, tier1: kind.tier1,
+        priority: styleNumber(style, 'labelPriority', 0), x: screen.x, y: screen.y, radiusPx });
+    }
+    labels.update({ candidates, bounds: { left: 0, top: 0, width: box.width, height: box.height },
+      ...(labelBudget !== undefined ? { budget: labelBudget } : {}) });
+  };
+  const redraw = (): void => { drawMorphology(); draw(); visuals.draw(); labelPass(); };
   sigma.on('afterRender', redraw);
+  drawMorphology();
   draw();
+  labelPass();
   const hitSegment = (p: Vec2, a: Vec2, b: Vec2, tolerance = PROJECTION_PICK_RADIUS_PX): boolean => {
     const x = b.x - a.x; const y = b.y - a.y;
     const t = Math.max(0, Math.min(1, ((p.x - a.x) * x + (p.y - a.y) * y) / (x * x + y * y || 1)));
@@ -1347,6 +1520,8 @@ export function mountProjection2d(
       const action = projection2dRevisionAction(scene.revision, contentKey, nextVisibility.revision, nextKey);
       if (action !== 'apply') return;
       const next = prepareProjection2d(snapshot, nextStyled, nextVisibility);
+      const nextScope = readProjectionStyle(nextStyled);
+      const nextMorphology = nextScope?.morphology ?? morphology;
       for (const id of graph.edges()) if (!next.semanticEdges.has(id)) graph.dropEdge(id);
       for (const id of graph.nodes()) if (!next.nodes.has(id)) graph.dropNode(id);
       for (const id of next.nodes.keys()) {
@@ -1365,9 +1540,16 @@ export function mountProjection2d(
       }
       scene = next;
       contentKey = nextKey;
+      scope = nextScope;
+      labelBudget = nextScope?.labelBudget ?? labelBudget;
+      morphology = nextMorphology;
+      // One deterministic rebuild per applied revision (an expansion, never a frame): the engine
+      // derives hub degree and colonies from the new subset, so nothing is patched in place.
+      paint = projectionMorphologyPaint(nextMorphology, next, snapshot);
       visuals.updateVisibleSubset({ styled: nextStyled, visibility: nextVisibility });
+      visuals.setMorphology(nextMorphology);
       sigma.refresh();
-      draw();
+      redraw();
     },
     pickAtPoint(position): PickResult | null {
       const node = picking.getNodeAtPosition(position);
@@ -1387,6 +1569,23 @@ export function mountProjection2d(
       visualRelationIds: [...scene.visualRelations.keys()], curveIds: [...scene.curves.keys()],
       containerIds: [...scene.containers.keys()], fieldIds: [...scene.fields.keys()] }),
     setDerivedMorphology: morphology => visuals.setMorphology(morphology),
-    destroy(): void { sigma.off('afterRender', redraw); visuals.destroy(); sigma.kill(); },
+    destroy(): void {
+      sigma.off('afterRender', redraw);
+      sigma.off('resize', collapseLayer);
+      labels.destroy();
+      collapsed.forEach((item, index) => {
+        item.style.display = previousDisplay[index] ?? '';
+        const backing = previousBacking[index];
+        if (backing) { item.width = backing[0]; item.height = backing[1]; }
+      });
+      shrinkable.forEach((item, index) => {
+        const backing = previousShrinkBacking[index];
+        if (backing) { item.width = backing[0]; item.height = backing[1]; }
+      });
+      detached.forEach((item, index) => { item.style.display = previousDetachedDisplay[index] ?? ''; });
+      morphologyCanvas.remove();
+      visuals.destroy();
+      sigma.kill();
+    },
   };
 }
