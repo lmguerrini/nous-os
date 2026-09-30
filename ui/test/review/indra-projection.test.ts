@@ -460,6 +460,33 @@ test('a tiny pole-free disc has a finite image even when the reciprocal of the o
     error instanceof IndraProjectionRefusal && error.code === 'nonfinite-disc-image');
 });
 
+test('zero, boundary and interior poles never pass non-finite inputs through the path logarithms', () => {
+  const cases = [
+    { label: 'zero disc at its pole', d: 0, radius: 0 },
+    { label: 'pole on the boundary', d: 1, radius: 1 },
+    { label: 'pole in the interior', d: 1, radius: 1.5 },
+  ] as const;
+  const originalLog2 = Math.log2;
+  let logCalls = 0;
+  Math.log2 = (value: number): number => {
+    assert.ok(Number.isFinite(value) && value > 0, `log2 argument ${value} must be positive and finite`);
+    const result = originalLog2(value);
+    assert.ok(Number.isFinite(result), `log2 result ${result} must be finite`);
+    logCalls += 1;
+    return result;
+  };
+  try {
+    for (const { label, d, radius } of cases) {
+      assert.throws(() => mobiusImageOfDisc(mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(d, 0)),
+        { center: cx(0, 0), radius }),
+      (error: unknown) => error instanceof IndraProjectionRefusal && error.code === 'pole-in-disc', label);
+    }
+    assert.ok(logCalls > 0, 'the guard observed logarithms in the scaled path');
+  } finally {
+    Math.log2 = originalLog2;
+  }
+});
+
 // This is the exact operation order of f9abe89^:ui/src/projection/indra.ts.
 function preFixDiscImage(matrix: MobiusMatrix, disc: PlaneDisc): PlaneDisc {
   const { a, b, c, d } = matrix;

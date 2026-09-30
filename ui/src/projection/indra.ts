@@ -172,22 +172,25 @@ export function mobiusImageOfDisc(matrix: MobiusMatrix, disc: PlaneDisc): PlaneD
       const normalizedQ = scale > 0 && Number.isFinite(scale) ? Math.hypot(q.re / scale, q.im / scale) : 0;
       const normalizedRadius = scale > 0 && Number.isFinite(scale) ? disc.radius / scale : 0;
       const normalizedDifference = (normalizedQ - normalizedRadius) * (normalizedQ + normalizedRadius);
-      const squaredExponent = 2 * Math.log2(scale) + Math.log2(normalizedDifference);
-      if (scale >= 2 ** -500 && scale <= 2 ** 500
+      if (Number.isFinite(scale) && scale >= 2 ** -500 && scale <= 2 ** 500
         && (disc.radius === 0 || disc.radius >= 2 ** -500)
-        && normalizedDifference > 1e-8 && squaredExponent > -1000 && squaredExponent < 1000) {
-        const determinant = cxSub(cxMul(a, d), cxMul(b, c));
-        const denominator = cxAbs(q) * cxAbs(q) - disc.radius * disc.radius;
-        const cSquared = cxMul(c, c);
-        const invertedCentre = cxScale(cxConjugate(q), 1 / denominator);
-        const firstTerm = cxDivide(a, c);
-        const secondTerm = cxMul(cxDivide(determinant, cSquared), invertedCentre);
-        const center = cxSub(firstTerm, secondTerm);
-        const radius = (cxAbs(determinant) / cxAbs(cSquared)) * (disc.radius / denominator);
-        const cancellationScale = Math.max(cxAbs(firstTerm), cxAbs(secondTerm));
-        if (Number.isFinite(radius) && Number.isFinite(center.re) && Number.isFinite(center.im)
-          && (disc.radius === 0 || radius > 0)
-          && (cancellationScale === 0 || cxAbs(center) > 1e-6 * cancellationScale)) return { center, radius };
+        && Number.isFinite(normalizedDifference) && normalizedDifference > 1e-8) {
+        // Both logarithm arguments are now positive and finite.
+        const squaredExponent = 2 * Math.log2(scale) + Math.log2(normalizedDifference);
+        if (squaredExponent > -1000 && squaredExponent < 1000) {
+          const determinant = cxSub(cxMul(a, d), cxMul(b, c));
+          const denominator = cxAbs(q) * cxAbs(q) - disc.radius * disc.radius;
+          const cSquared = cxMul(c, c);
+          const invertedCentre = cxScale(cxConjugate(q), 1 / denominator);
+          const firstTerm = cxDivide(a, c);
+          const secondTerm = cxMul(cxDivide(determinant, cSquared), invertedCentre);
+          const center = cxSub(firstTerm, secondTerm);
+          const radius = (cxAbs(determinant) / cxAbs(cSquared)) * (disc.radius / denominator);
+          const cancellationScale = Math.max(cxAbs(firstTerm), cxAbs(secondTerm));
+          if (Number.isFinite(radius) && Number.isFinite(center.re) && Number.isFinite(center.im)
+            && (disc.radius === 0 || radius > 0)
+            && (cancellationScale === 0 || cxAbs(center) > 1e-6 * cancellationScale)) return { center, radius };
+        }
       }
     }
   } catch (error) {
