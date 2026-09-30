@@ -132,6 +132,50 @@ async function assertExplanationCards(page: Page, view: string) {
   });
   expect(nodeId, 'a disclosed source node is available to pick').toBeTruthy();
   await page.evaluate(id => (window as any).__d067.select(id), nodeId);
+
+  const projection = await projectionWitness(page);
+  const sourceCard = view === 'holographic'
+    ? page.locator('#details .selection-card').filter({ hasNot: page.locator('.projection-provenance') }).last()
+    : page.locator('#details .selection-card').first();
+  await expect(sourceCard, `${view} keeps the selected source card`).toBeVisible();
+  if (view === 'natural' && !projection?.enabled) {
+    // With the typed pipeline off, Natural intentionally retains the D-072 source selection card.
+    return;
+  }
+
+  if (view === 'holographic') {
+    const structuralControls = page.locator('#structural-pick-controls');
+    await expect(structuralControls).toBeVisible();
+    await expect(structuralControls.locator('button[data-pick-kind="visual-relation"], button[data-pick-kind="container"]')).toHaveCount(0);
+    await expect(structuralControls.locator('[data-structural-empty]')).toBeVisible();
+
+    const region = page.locator('#holographic-region');
+    await expect(region).toBeVisible();
+    const regionOptions = await region.locator('option').count();
+    expect(regionOptions, 'Holographic offers at least one witness region').toBeGreaterThan(0);
+    await region.selectOption({ index: regionOptions > 1 ? 1 : 0 });
+    const witnessCard = page.locator('#holographic-witness .selection-card');
+    await expect(witnessCard).toBeVisible();
+    await expect(witnessCard.locator('.projection-provenance')).toBeVisible();
+    await expect(witnessCard).toContainText('Provenienza');
+
+    const channel = page.locator('#holographic-channel');
+    await expect(channel).toBeVisible();
+    const channelOptions = await channel.locator('option').count();
+    expect(channelOptions, 'Holographic exposes multiple drawable field channels').toBeGreaterThan(1);
+    const before = await projectionWitness(page);
+    const currentChannel = await channel.inputValue();
+    const nextChannel = await channel.locator('option').evaluateAll((options, current) =>
+      (options as HTMLOptionElement[]).find(option => option.value !== current)?.value ?? null, currentChannel);
+    expect(nextChannel).toBeTruthy();
+    await channel.selectOption(nextChannel!);
+    await expect.poll(async () => (await projectionWitness(page))?.holographic?.channel).toBe(nextChannel);
+    const after = await projectionWitness(page);
+    expect(after?.resultDigest, 'changing a Holographic channel does not create a new projection').toBe(before?.resultDigest);
+    expect(after?.holographic?.drawnFieldIds).not.toEqual(before?.holographic?.drawnFieldIds);
+    return;
+  }
+
   const card = page.locator('#details .selection-card')
     .filter({ has: page.locator('.projection-provenance') })
     .first();
@@ -141,11 +185,22 @@ async function assertExplanationCards(page: Page, view: string) {
 
   const derivedPick = page.locator('#structural-pick-controls button[data-pick-kind]').first();
   await expect(derivedPick, `${view} exposes a pick for a derived element`).toBeVisible();
+  const kind = await derivedPick.getAttribute('data-pick-kind');
   await derivedPick.click();
   await expect(card).toBeVisible();
-  await expect(card).toContainText('Perché');
+  const titles: Record<string, string> = {
+    'visual-relation': 'Relazione visuale derivata',
+    container: 'Contenitore derivato',
+    curve: 'Curva derivata',
+    field: 'Campo derivato',
+  };
+  expect(titles[kind ?? ''], `${view} pick kind has a derived card title`).toBeTruthy();
+  await expect(card.locator('h2')).toHaveText(titles[kind!]!);
+  await expect(card.locator('.selection-badge', { hasText: 'Derivato · non attestato' })).toBeVisible();
+  await expect(card.locator('h3', { hasText: 'Sintesi' })).toBeVisible();
+  await expect(card.locator('h3', { hasText: 'Perché' })).toHaveCount(0);
+  await expect(card).not.toContainText('relazione attestata');
   await expect(card.locator('.projection-provenance')).toBeVisible();
-  await expect(card.locator('.projection-witness, .projection-explanation')).toBeVisible();
 }
 
 for (const view of views) {
@@ -213,7 +268,7 @@ for (const view of views) {
           return ((window as any).__d073FrameCount ?? 0) - before;
         });
         expect(idleFrames, `${view.button} ${dimension} idle attested frames`).toBeLessThanOrEqual(1);
-        if (hasCoordinates) await assertExplanationCards(page, view.button);
+        if (hasCoordinates || view.button === 'natural') await assertExplanationCards(page, view.button);
         expect(await page.evaluate(() => (window as any).__d073DashCalls)).toEqual([]);
         expect(errors).toEqual([]);
       });
