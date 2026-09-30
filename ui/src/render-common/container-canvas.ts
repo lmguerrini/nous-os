@@ -2,6 +2,7 @@ import type { Coordinates } from "#engine/contract.ts";
 import type { MorphologyContainerPath, ShellCircle } from "#engine/container-geometry.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { ProjectedPoint } from "#render-common/morphology-canvas.ts";
+import type { Dimension, MathematicalField, PickResult, ProjectionResult, RenderVisibility } from "../projection/contract-types.ts";
 
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
 const dashHook = () => (globalThis as typeof globalThis & { __indraContainers?: { dashed: number; draws: number; limbs?: number | undefined; equators?: number | undefined; minEquatorFlatness?: number | undefined; nousosLimb?: { x: number; y: number; radiusPx: number } | undefined; quality?: "full" | "moving" | undefined } }).__indraContainers;
@@ -927,4 +928,557 @@ export function drawContainerTitles(
     context.fillStyle = `rgba(${ink}, ${clamp(0.95 - placement.level * 0.1, 0.5, 0.9)})`;
     context.fillText(text, placement.left, placement.top + 14, TITLE_MAX_WIDTH);
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// D-073 W4b: projection containers, curves and fields.
+//
+// One generic drawer for the derived geometry of any `ProjectionResult` (Indra pearls and orbits,
+// Fractal regions and equipotentials, Holographic fields), in 2D and 3D, restricted to the current
+// `RenderVisibility`. The geometry is built once per visibility revision from the result alone, so
+// the morphology style can only change how it is drawn, never where. Derived geometry has its own
+// ink family and is always drawn with continuous strokes.
+// ---------------------------------------------------------------------------------------------
+
+export type ProjectionVisualsMorphology = "stellar" | "neural" | "mycelium";
+export type ProjectionContainerForm = "circle" | "ring" | "sphere" | "hemisphere" | "loop" | "polyline";
+
+/** One visible container in world coordinates. `points` holds interleaved xyz for loops and polylines. */
+export type ProjectionContainerShape = {
+  readonly id: string;
+  readonly form: ProjectionContainerForm;
+  /** Parent-chain depth: outer containers paint first. */
+  readonly depth: number;
+  readonly memberCount: number;
+  readonly cx: number; readonly cy: number; readonly cz: number;
+  readonly radius: number;
+  readonly points: Float64Array;
+};
+export type ProjectionCurveShape = {
+  readonly id: string;
+  readonly purpose: string;
+  readonly closed: boolean;
+  /** Interleaved xyz. */
+  readonly points: Float64Array;
+};
+/** A field as a node channel: one drawn sample per visible carrier, level in [0, 1] within the whole field. */
+export type ProjectionFieldShape = {
+  readonly id: string;
+  readonly ordinal: number;
+  readonly kind: "scalar" | "complex";
+  readonly units: string;
+  readonly count: number;
+  readonly positions: Float64Array;
+  readonly levels: Float64Array;
+  readonly buckets: Uint8Array;
+};
+export type ProjectionVisualsGeometry = {
+  readonly resultDigest: string;
+  readonly revision: number;
+  readonly dimension: Dimension;
+  readonly containers: readonly ProjectionContainerShape[];
+  readonly curves: readonly ProjectionCurveShape[];
+  readonly fields: readonly ProjectionFieldShape[];
+  /** Visible fields whose carriers have no coordinates (domain `sample`): named, never drawn. */
+  readonly undrawnFieldIds: readonly string[];
+  readonly source: ProjectionResult;
+};
+
+/** Legend classes of the derived geometry, kept apart from every semantic edge class. */
+export const PROJECTION_VISUAL_INK = { container: "#5fc9b6", curve: "#b79cf0", fieldLow: "#3d5adb", fieldHigh: "#ffd166" } as const;
+export const PROJECTION_VISUAL_LEGEND: readonly Readonly<{ kind: "container" | "curve" | "field"; colour: string; label: string }>[] = [
+  { kind: "container", colour: PROJECTION_VISUAL_INK.container, label: "Contenitori derivati (non semantici)" },
+  { kind: "curve", colour: PROJECTION_VISUAL_INK.curve, label: "Curve derivate (non semantiche)" },
+  { kind: "field", colour: PROJECTION_VISUAL_INK.fieldHigh, label: "Campo scalare come canale del nodo" },
+];
+
+/** Morphology changes only these drawing numbers; no coordinate depends on them. */
+export const PROJECTION_VISUAL_APPEARANCE: Readonly<Record<ProjectionVisualsMorphology, Readonly<{
+  containerWidth: number; containerAlpha: number; curveWidth: number; curveAlpha: number;
+  haloWidth: number; haloAlpha: number; ringWidth: number; endpointDots: boolean;
+}>>> = {
+  stellar: { containerWidth: 1, containerAlpha: 0.7, curveWidth: 1.6, curveAlpha: 0.9, haloWidth: 0, haloAlpha: 0, ringWidth: 1.4, endpointDots: false },
+  neural: { containerWidth: 1.25, containerAlpha: 0.65, curveWidth: 1.3, curveAlpha: 0.85, haloWidth: 4, haloAlpha: 0.14, ringWidth: 1.8, endpointDots: true },
+  mycelium: { containerWidth: 0.8, containerAlpha: 0.55, curveWidth: 1, curveAlpha: 0.8, haloWidth: 2.5, haloAlpha: 0.1, ringWidth: 1.1, endpointDots: false },
+};
+
+const FIELD_BUCKETS = 8;
+const FIELD_RING_BASE_PX = 5;
+const FIELD_RING_SPAN_PX = 6;
+const FIELD_RING_STEP_PX = 3;
+const CONTAINER_SUBPIXEL_PX = 0.75;
+const PROJECTION_PICK_TOLERANCE_PX = 5;
+
+const codepointOrder = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
+const finiteAll = (...values: readonly number[]): boolean => values.every(Number.isFinite);
+
+type ResultShapes = {
+  readonly dimension: Dimension;
+  readonly depthById: ReadonlyMap<string, number>;
+  readonly containerById: ReadonlyMap<string, ProjectionContainerShape>;
+  readonly curveById: ReadonlyMap<string, ProjectionCurveShape>;
+  readonly levelsByField: ReadonlyMap<string, Float64Array>;
+  readonly fieldById: ReadonlyMap<string, MathematicalField>;
+};
+const shapesByResult = new WeakMap<ProjectionResult, ResultShapes>();
+const geometryByVisibility = new WeakMap<RenderVisibility, ProjectionVisualsGeometry>();
+
+function packPoints(points: readonly { readonly x: number; readonly y: number; readonly z?: number }[], what: string): Float64Array {
+  const packed = new Float64Array(points.length * 3);
+  for (let index = 0; index < points.length; index++) {
+    const point = points[index]!;
+    const z = point.z ?? 0;
+    if (!finiteAll(point.x, point.y, z)) throw new TypeError(`${what} has a nonfinite point`);
+    packed[index * 3] = point.x; packed[index * 3 + 1] = point.y; packed[index * 3 + 2] = z;
+  }
+  return packed;
+}
+
+function centroidOf(points: Float64Array): readonly [number, number, number] {
+  const count = points.length / 3;
+  let x = 0, y = 0, z = 0;
+  for (let index = 0; index < count; index++) { x += points[index * 3]!; y += points[index * 3 + 1]!; z += points[index * 3 + 2]!; }
+  return [x / count, y / count, z / count];
+}
+
+function buildResultShapes(result: ProjectionResult, dimension: Dimension): ResultShapes {
+  const hemispheres = result.determinism.algorithmId === "indras-pearls";
+  const parentById = new Map(result.containers.map(container => [container.visualId, container.parentVisualId]));
+  if (parentById.size !== result.containers.length) throw new TypeError("duplicate container visual id");
+  const depthById = new Map<string, number>();
+  const depthOf = (id: string, trail: Set<string>): number => {
+    const known = depthById.get(id);
+    if (known !== undefined) return known;
+    if (trail.has(id)) throw new TypeError(`container parent cycle at ${id}`);
+    trail.add(id);
+    const parent = parentById.get(id);
+    const depth = parent === null || parent === undefined || !parentById.has(parent) ? 0 : depthOf(parent, trail) + 1;
+    depthById.set(id, depth);
+    return depth;
+  };
+  const containerById = new Map<string, ProjectionContainerShape>();
+  for (const container of result.containers) {
+    const id = container.visualId;
+    const depth = depthOf(id, new Set());
+    const base = { id, depth, memberCount: container.memberCount };
+    const none = new Float64Array(0);
+    if (container.shape === "region" || container.shape === "contour") {
+      const boundary = dimension === "2d" ? container.boundary2 : container.boundary3;
+      const minimum = container.shape === "region" ? 3 : 2;
+      if (!boundary || boundary.length < minimum) throw new TypeError(`${dimension} ${container.shape} lacks a boundary: ${id}`);
+      const points = packPoints(boundary, `container ${id}`);
+      const [cx, cy, cz] = centroidOf(points);
+      containerById.set(id, { ...base, form: container.shape === "region" ? "loop" : "polyline", cx, cy, cz, radius: 0, points });
+      continue;
+    }
+    const radius = container.radius;
+    if (radius === undefined || !(radius > 0) || !Number.isFinite(radius)) throw new TypeError(`container lacks a radius: ${id}`);
+    if (dimension === "2d") {
+      const center = container.center2;
+      if (!center || !finiteAll(center.x, center.y)) throw new TypeError(`2D container lacks a centre: ${id}`);
+      containerById.set(id, { ...base, form: "circle", cx: center.x, cy: center.y, cz: 0, radius, points: none });
+      continue;
+    }
+    const center = container.center3;
+    if (!center || !finiteAll(center.x, center.y, center.z)) throw new TypeError(`3D container lacks a centre: ${id}`);
+    const onBoundaryPlane = hemispheres && Math.abs(center.z) <= 1e-9 * Math.max(1, radius);
+    const form: ProjectionContainerForm = container.shape === "circle" ? "ring" : onBoundaryPlane ? "hemisphere" : "sphere";
+    containerById.set(id, { ...base, form, cx: center.x, cy: center.y, cz: center.z, radius, points: none });
+  }
+  const curveById = new Map<string, ProjectionCurveShape>();
+  for (const curve of result.curves) {
+    const points = dimension === "2d" ? curve.points2 : curve.points3;
+    if (!points) throw new TypeError(`${dimension} curve has no ${dimension} points: ${curve.visualId}`);
+    curveById.set(curve.visualId, {
+      id: curve.visualId, purpose: curve.purpose,
+      // An equipotential is a level set: the assembly samples its loop without repeating the first point.
+      closed: curve.purpose === "field-contour" && points.length > 2, points: packPoints(points, `curve ${curve.visualId}`),
+    });
+  }
+  const levelsByField = new Map<string, Float64Array>();
+  const fieldById = new Map<string, MathematicalField>();
+  for (const field of result.fields) {
+    if (field.values.length !== field.sampleIds.length) throw new TypeError(`field ${field.id} values do not match its samples`);
+    const magnitudes = Float64Array.from(field.values as readonly (number | { readonly re: number; readonly im: number })[],
+      value => typeof value === "number" ? value : Math.hypot(value.re, value.im));
+    let low = Infinity, high = -Infinity;
+    for (const value of magnitudes) {
+      if (!Number.isFinite(value)) throw new TypeError(`field ${field.id} has a nonfinite value`);
+      low = Math.min(low, value); high = Math.max(high, value);
+    }
+    levelsByField.set(field.id, magnitudes.map(value => high > low ? (value - low) / (high - low) : 0.5));
+    fieldById.set(field.id, field);
+  }
+  return { dimension, depthById, containerById, curveById, levelsByField, fieldById };
+}
+
+/**
+ * The visible derived geometry of a projection for one visibility revision. Pure over its inputs:
+ * the same result and mask always give the same shapes, in codepoint order of their ids, and the
+ * shapes of a result are memoised so a new revision only selects among them.
+ */
+export function buildProjectionVisuals(result: ProjectionResult, visibility: RenderVisibility, dimension: Dimension): ProjectionVisualsGeometry {
+  const cached = geometryByVisibility.get(visibility);
+  if (cached && cached.source === result && cached.dimension === dimension) return cached;
+  if (visibility.projectionResultDigest !== result.determinism.resultDigest) throw new TypeError("visibility result digest mismatch");
+  const positions = dimension === "2d" ? result.positions2 : result.positions3;
+  if (result.coordinateState.kind === "no-coordinates") {
+    if (result.positions2 || result.positions3) throw new TypeError("refused projection has coordinates");
+  } else if (!positions || (dimension === "2d" ? !!result.positions3 : !!result.positions2)) {
+    throw new TypeError("projection dimension mismatch");
+  }
+  let shapes = shapesByResult.get(result);
+  if (shapes && shapes.dimension !== dimension) throw new TypeError("projection dimension mismatch");
+  if (!shapes) { shapes = buildResultShapes(result, dimension); shapesByResult.set(result, shapes); }
+  const sorted = (ids: ReadonlySet<string>): string[] => [...ids].sort(codepointOrder);
+  for (const id of visibility.containerIds) if (!shapes.containerById.has(id)) throw new TypeError(`Unknown container: ${id}`);
+  const containers = sorted(visibility.containerIds).map(id => shapes.containerById.get(id)!)
+    .sort((a, b) => a.depth - b.depth || codepointOrder(a.id, b.id));
+  const curves = sorted(visibility.curveIds).map(id => {
+    const curve = shapes.curveById.get(id);
+    if (!curve) throw new TypeError(`Unknown curve: ${id}`);
+    return curve;
+  });
+  const fields: ProjectionFieldShape[] = [];
+  const undrawnFieldIds: string[] = [];
+  for (const id of sorted(visibility.fieldIds)) {
+    const field = shapes.fieldById.get(id);
+    if (!field) throw new TypeError(`Unknown field: ${id}`);
+    if (field.domain === "sample") { undrawnFieldIds.push(id); continue; }
+    const levels = shapes.levelsByField.get(id)!;
+    const carried: number[] = [];
+    const at: number[] = [];
+    for (let index = 0; index < field.sampleIds.length; index++) {
+      const sampleId = field.sampleIds[index]!;
+      if (field.domain === "node") {
+        const point = visibility.nodeIds.has(sampleId) ? positions?.[sampleId] : undefined;
+        if (!point) continue;
+        at.push(point.x, point.y, (point as { readonly z?: number }).z ?? 0);
+      } else {
+        const region = visibility.containerIds.has(sampleId) ? shapes.containerById.get(sampleId) : undefined;
+        if (!region) continue;
+        at.push(region.cx, region.cy, region.cz);
+      }
+      carried.push(levels[index]!);
+    }
+    const count = carried.length;
+    fields.push({
+      id, ordinal: fields.length, kind: field.kind, units: field.units, count,
+      positions: Float64Array.from(at), levels: Float64Array.from(carried),
+      buckets: Uint8Array.from(carried, level => Math.min(FIELD_BUCKETS - 1, Math.floor(level * FIELD_BUCKETS))),
+    });
+  }
+  const geometry: ProjectionVisualsGeometry = {
+    resultDigest: result.determinism.resultDigest, revision: visibility.revision, dimension,
+    containers, curves, fields, undrawnFieldIds, source: result,
+  };
+  geometryByVisibility.set(visibility, geometry);
+  return geometry;
+}
+
+type ProjectionVisualsProject = (point: Coordinates) => { readonly x: number; readonly y: number; readonly scale?: number };
+export type ProjectionVisualsDrawOptions = {
+  readonly morphology: ProjectionVisualsMorphology;
+  readonly quality?: "full" | "moving";
+  /** The host size in CSS pixels; containers wholly outside it are not traced. */
+  readonly viewport?: { readonly width: number; readonly height: number };
+  /** The hovered or selected visual id, drawn heavier. */
+  readonly emphasisId?: string | null;
+};
+export type ProjectionVisualsDrawStats = { containers: number; curves: number; fields: number; strokes: number };
+
+const scratch = { x: 0, y: 0, z: 0 };
+const project3 = (project: ProjectionVisualsProject, x: number, y: number, z: number) => {
+  scratch.x = x; scratch.y = y; scratch.z = z;
+  return project(scratch);
+};
+const FIELD_LUT: readonly string[] = (() => {
+  const low = hexChannels(PROJECTION_VISUAL_INK.fieldLow)!, high = hexChannels(PROJECTION_VISUAL_INK.fieldHigh)!;
+  return Array.from({ length: FIELD_BUCKETS }, (_, bucket) => {
+    const t = bucket / (FIELD_BUCKETS - 1);
+    return `rgb(${low.map((channel, index) => Math.round(channel + (high[index]! - channel) * t)).join(", ")})`;
+  });
+})();
+const fieldRingPx = (level: number, ordinal: number, scale: number): number =>
+  (FIELD_RING_BASE_PX + ordinal * FIELD_RING_STEP_PX + level * FIELD_RING_SPAN_PX) * scale;
+
+/** Receives the screen paths of one container: the canvas draws them, the picker measures them. */
+interface ContainerPathSink {
+  begin(secondary: boolean): void;
+  point(x: number, y: number, first: boolean): void;
+  circle(x: number, y: number, radius: number): void;
+  end(closed: boolean): void;
+}
+
+/** Screen radius of a sphere: the mean of the two largest axis scales, allocation free. */
+function sphereScreenRadius(project: ProjectionVisualsProject, shape: ProjectionContainerShape): number {
+  const origin = project3(project, shape.cx, shape.cy, shape.cz);
+  const ox = origin.x, oy = origin.y;
+  const safe = Math.max(shape.radius, 1e-6);
+  const ax = project3(project, shape.cx + safe, shape.cy, shape.cz);
+  const fx = Math.hypot(ax.x - ox, ax.y - oy);
+  const ay = project3(project, shape.cx, shape.cy + safe, shape.cz);
+  const fy = Math.hypot(ay.x - ox, ay.y - oy);
+  const az = project3(project, shape.cx, shape.cy, shape.cz + safe);
+  const fz = Math.hypot(az.x - ox, az.y - oy);
+  return (fx + fy + fz - Math.min(fx, fy, fz)) / 2;
+}
+
+function tracePlane(
+  project: ProjectionVisualsProject, sink: ContainerPathSink, shape: ProjectionContainerShape,
+  plane: 0 | 1 | 2, table: CircleTable, last: number, secondary: boolean,
+): void {
+  sink.begin(secondary);
+  for (let index = 0; index <= last; index++) {
+    const c = table.cos[index]! * shape.radius, s = table.sin[index]! * shape.radius;
+    const p = plane === 0 ? project3(project, shape.cx + c, shape.cy + s, shape.cz)
+      : plane === 1 ? project3(project, shape.cx + c, shape.cy, shape.cz + s)
+        : project3(project, shape.cx, shape.cy + c, shape.cz + s);
+    sink.point(p.x, p.y, index === 0);
+  }
+  sink.end(last === table.cos.length - 1);
+}
+
+/**
+ * Walks the screen paths of one container. Circles and sphere limbs are exact circles at the
+ * projected radius; a hemisphere on the boundary plane is its equator plus two upper meridians;
+ * regions and contours follow their sampled boundary. Returns false when nothing is traced
+ * (sub-pixel or wholly outside the viewport).
+ */
+function walkContainer(
+  project: ProjectionVisualsProject, shape: ProjectionContainerShape, quality: "full" | "moving",
+  viewport: ProjectionVisualsDrawOptions["viewport"], sink: ContainerPathSink,
+): boolean {
+  if (shape.form === "loop" || shape.form === "polyline") {
+    sink.begin(false);
+    const count = shape.points.length / 3;
+    for (let index = 0; index < count; index++) {
+      const p = project3(project, shape.points[index * 3]!, shape.points[index * 3 + 1]!, shape.points[index * 3 + 2]!);
+      sink.point(p.x, p.y, index === 0);
+    }
+    sink.end(shape.form === "loop");
+    return true;
+  }
+  if (shape.form === "circle") {
+    const centre = project3(project, shape.cx, shape.cy, shape.cz);
+    const x = centre.x, y = centre.y;
+    const rim = project3(project, shape.cx + shape.radius, shape.cy, shape.cz);
+    const radius = Math.hypot(rim.x - x, rim.y - y);
+    if (radius < CONTAINER_SUBPIXEL_PX) return false;
+    if (viewport && (x + radius < 0 || y + radius < 0 || x - radius > viewport.width || y - radius > viewport.height)) return false;
+    sink.begin(false); sink.circle(x, y, radius); sink.end(false);
+    return true;
+  }
+  const radiusPx = sphereScreenRadius(project, shape);
+  if (radiusPx < CONTAINER_SUBPIXEL_PX) return false;
+  const centre = project3(project, shape.cx, shape.cy, shape.cz);
+  const x = centre.x, y = centre.y;
+  if (viewport && (x + radiusPx < 0 || y + radiusPx < 0 || x - radiusPx > viewport.width || y - radiusPx > viewport.height)) return false;
+  const tiny = radiusPx < CONTAINER_SPHERE_TINY_PX;
+  const table = circleTable(tiny ? MOVING_SPHERE_SEGMENTS : sphereSegmentsForQuality(radiusPx, quality));
+  const whole = table.cos.length - 1;
+  if (shape.form === "hemisphere") {
+    tracePlane(project, sink, shape, 0, table, whole, false);
+    if (!tiny && quality === "full") {
+      tracePlane(project, sink, shape, 1, table, whole / 2, true);
+      tracePlane(project, sink, shape, 2, table, whole / 2, true);
+    }
+    return true;
+  }
+  if (shape.form === "ring") { tracePlane(project, sink, shape, 0, table, whole, false); return true; }
+  sink.begin(false); sink.circle(x, y, radiusPx); sink.end(false);
+  if (!tiny && quality === "full") {
+    tracePlane(project, sink, shape, 0, table, whole, true);
+    tracePlane(project, sink, shape, 1, table, whole, true);
+    tracePlane(project, sink, shape, 2, table, whole, true);
+  }
+  return true;
+}
+
+const fieldScreen = { x: new Float64Array(0), y: new Float64Array(0), scale: new Float64Array(0) };
+function fieldScreenBuffers(count: number): typeof fieldScreen {
+  if (fieldScreen.x.length < count) {
+    const size = Math.max(count, fieldScreen.x.length * 2, 1024);
+    fieldScreen.x = new Float64Array(size); fieldScreen.y = new Float64Array(size); fieldScreen.scale = new Float64Array(size);
+  }
+  return fieldScreen;
+}
+
+/**
+ * Draws the visible containers, then the curves, then the field channel rings. Continuous strokes
+ * only: the dash pattern is set empty once per call. Allocation free apart from the projector's
+ * own return values; nothing is scheduled, so an idle page costs nothing.
+ */
+export function drawProjectionVisuals(
+  context: CanvasRenderingContext2D, geometry: ProjectionVisualsGeometry, project: ProjectionVisualsProject,
+  options: ProjectionVisualsDrawOptions, stats?: ProjectionVisualsDrawStats,
+): void {
+  const appearance = PROJECTION_VISUAL_APPEARANCE[options.morphology];
+  const quality = options.quality ?? "full";
+  setDash(context, []);
+  context.lineJoin = "round";
+  context.lineCap = "round";
+  const sink = canvasSink;
+  sink.context = context; sink.stats = stats;
+  for (const shape of geometry.containers) {
+    const emphasised = options.emphasisId === shape.id;
+    sink.colour = PROJECTION_VISUAL_INK.container;
+    sink.width = appearance.containerWidth * (emphasised ? 1.6 : 1);
+    sink.alpha = Math.min(1, appearance.containerAlpha + (emphasised ? 0.25 : 0));
+    if (walkContainer(project, shape, quality, options.viewport, sink) && stats) stats.containers += 1;
+  }
+  for (const curve of geometry.curves) {
+    const count = curve.points.length / 3;
+    if (count < 2) continue;
+    const emphasised = options.emphasisId === curve.id;
+    const colour = PROJECTION_VISUAL_INK.curve;
+    context.beginPath();
+    for (let index = 0; index < count; index++) {
+      const p = project3(project, curve.points[index * 3]!, curve.points[index * 3 + 1]!, curve.points[index * 3 + 2]!);
+      if (index === 0) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y);
+    }
+    if (curve.closed) context.closePath();
+    context.strokeStyle = colour;
+    if (appearance.haloWidth > 0 && quality === "full") {
+      context.globalAlpha = appearance.haloAlpha;
+      context.lineWidth = appearance.haloWidth;
+      context.stroke();
+      if (stats) stats.strokes += 1;
+    }
+    context.globalAlpha = Math.min(1, appearance.curveAlpha + (emphasised ? 0.1 : 0));
+    context.lineWidth = appearance.curveWidth * (emphasised ? 1.6 : 1);
+    context.stroke();
+    if (stats) { stats.strokes += 1; stats.curves += 1; }
+    if (appearance.endpointDots && !curve.closed && quality === "full") {
+      const first = project3(project, curve.points[0]!, curve.points[1]!, curve.points[2]!);
+      context.fillStyle = colour;
+      context.beginPath();
+      context.arc(first.x, first.y, 2, 0, Math.PI * 2);
+      context.fill();
+    }
+  }
+  for (const field of geometry.fields) {
+    if (field.count === 0) continue;
+    const screen = fieldScreenBuffers(field.count);
+    for (let index = 0; index < field.count; index++) {
+      const p = project3(project, field.positions[index * 3]!, field.positions[index * 3 + 1]!, field.positions[index * 3 + 2]!);
+      screen.x[index] = p.x; screen.y[index] = p.y; screen.scale[index] = p.scale ?? 1;
+    }
+    context.lineWidth = appearance.ringWidth * (options.emphasisId === field.id ? 1.6 : 1);
+    for (let bucket = 0; bucket < FIELD_BUCKETS; bucket++) {
+      let any = false;
+      for (let index = 0; index < field.count; index++) {
+        if (field.buckets[index] !== bucket) continue;
+        if (!any) { context.beginPath(); any = true; }
+        const x = screen.x[index]!, y = screen.y[index]!;
+        const radius = fieldRingPx(field.levels[index]!, field.ordinal, screen.scale[index]!);
+        context.moveTo(x + radius, y);
+        context.arc(x, y, radius, 0, Math.PI * 2);
+      }
+      if (!any) continue;
+      context.strokeStyle = FIELD_LUT[bucket]!;
+      context.globalAlpha = 0.3 + 0.6 * (bucket / (FIELD_BUCKETS - 1));
+      context.stroke();
+      if (stats) stats.strokes += 1;
+    }
+    if (stats) stats.fields += field.count;
+  }
+  context.globalAlpha = 1;
+  sink.context = null; sink.stats = undefined;
+}
+
+const canvasSink = {
+  context: null as CanvasRenderingContext2D | null,
+  stats: undefined as ProjectionVisualsDrawStats | undefined,
+  colour: "", width: 1, alpha: 1,
+  begin(secondary: boolean): void {
+    const context = this.context!;
+    context.beginPath();
+    context.strokeStyle = this.colour;
+    context.lineWidth = secondary ? this.width * 0.8 : this.width;
+    context.globalAlpha = secondary ? this.alpha * 0.45 : this.alpha;
+  },
+  point(x: number, y: number, first: boolean): void {
+    if (first) this.context!.moveTo(x, y); else this.context!.lineTo(x, y);
+  },
+  circle(x: number, y: number, radius: number): void {
+    this.context!.moveTo(x + radius, y);
+    this.context!.arc(x, y, radius, 0, Math.PI * 2);
+  },
+  end(closed: boolean): void {
+    if (closed) this.context!.closePath();
+    this.context!.stroke();
+    if (this.stats) this.stats.strokes += 1;
+  },
+};
+
+function segmentDistancePx(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay;
+  const length = dx * dx + dy * dy;
+  const t = length === 0 ? 0 : clamp(((px - ax) * dx + (py - ay) * dy) / length, 0, 1);
+  return Math.hypot(px - ax - t * dx, py - ay - t * dy);
+}
+
+/** Measures the screen paths against one pointer position; the nearest path distance wins. */
+function pickSink(px: number, py: number) {
+  let best = Infinity, startX = 0, startY = 0, lastX = 0, lastY = 0, started = false;
+  return {
+    get best(): number { return best; },
+    begin(): void { started = false; },
+    point(x: number, y: number, first: boolean): void {
+      if (first || !started) { startX = x; startY = y; started = true; }
+      else best = Math.min(best, segmentDistancePx(px, py, lastX, lastY, x, y));
+      lastX = x; lastY = y;
+    },
+    circle(x: number, y: number, radius: number): void { best = Math.min(best, Math.abs(Math.hypot(px - x, py - y) - radius)); },
+    end(closed: boolean): void {
+      if (closed && started) best = Math.min(best, segmentDistancePx(px, py, lastX, lastY, startX, startY));
+    },
+  };
+}
+
+/**
+ * The typed pick of the derived geometry at one screen position: curves first, then field
+ * channel rings, then container outlines; within a class the nearest path wins and equal
+ * distances fall to the lowest id. Containers are hit on the same paths the drawer traces,
+ * so a hit is always on a visible line (circles and regions, sphere limbs and great circles,
+ * hemisphere equators and meridians).
+ */
+export function pickProjectionVisuals(
+  geometry: ProjectionVisualsGeometry, project: ProjectionVisualsProject,
+  position: Readonly<{ x: number; y: number }>, tolerancePx = PROJECTION_PICK_TOLERANCE_PX,
+): PickResult | null {
+  let bestCurve: { id: string; distance: number } | null = null;
+  for (const curve of geometry.curves) {
+    const count = curve.points.length / 3;
+    let previous = project3(project, curve.points[0]!, curve.points[1]!, curve.points[2]!);
+    let ax = previous.x, ay = previous.y;
+    const firstX = ax, firstY = ay;
+    let distance = Infinity;
+    for (let index = 1; index < count; index++) {
+      previous = project3(project, curve.points[index * 3]!, curve.points[index * 3 + 1]!, curve.points[index * 3 + 2]!);
+      distance = Math.min(distance, segmentDistancePx(position.x, position.y, ax, ay, previous.x, previous.y));
+      ax = previous.x; ay = previous.y;
+    }
+    if (curve.closed && count > 2) distance = Math.min(distance, segmentDistancePx(position.x, position.y, ax, ay, firstX, firstY));
+    if (distance <= tolerancePx && (!bestCurve || distance < bestCurve.distance)) bestCurve = { id: curve.id, distance };
+  }
+  if (bestCurve) return { kind: "curve", visualId: bestCurve.id };
+  let bestField: { id: string; distance: number } | null = null;
+  for (const field of geometry.fields) {
+    for (let index = 0; index < field.count; index++) {
+      const p = project3(project, field.positions[index * 3]!, field.positions[index * 3 + 1]!, field.positions[index * 3 + 2]!);
+      const radius = fieldRingPx(field.levels[index]!, field.ordinal, p.scale ?? 1);
+      const distance = Math.abs(Math.hypot(position.x - p.x, position.y - p.y) - radius);
+      if (distance <= tolerancePx && (!bestField || distance < bestField.distance)) bestField = { id: field.id, distance };
+    }
+  }
+  if (bestField) return { kind: "field", visualId: bestField.id };
+  let bestContainer: { id: string; distance: number } | null = null;
+  for (const shape of geometry.containers) {
+    const sink = pickSink(position.x, position.y);
+    if (!walkContainer(project, shape, "full", undefined, sink)) continue;
+    if (sink.best <= tolerancePx && (!bestContainer || sink.best < bestContainer.distance)) bestContainer = { id: shape.id, distance: sink.best };
+  }
+  return bestContainer ? { kind: "container", visualId: bestContainer.id } : null;
 }
