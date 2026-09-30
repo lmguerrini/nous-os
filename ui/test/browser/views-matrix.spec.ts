@@ -129,7 +129,7 @@ async function assertExplanationCards(page: Page, view: string) {
     const api = (window as any).__d067;
     const candidates = api.disclosure?.()?.nodes ?? api.witness?.()?.disclosure?.nodes ?? [];
     const node = candidates[0];
-    return node ? { id: node.id, label: node.display_label ?? node.title } : null;
+    return node ? { id: node.id, label: node.display_label ?? node.title ?? node.id } : null;
   });
   expect(selectedNode, 'a disclosed source node is available to pick').toBeTruthy();
   await page.evaluate(id => (window as any).__d067.select(id), selectedNode!.id);
