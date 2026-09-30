@@ -125,21 +125,33 @@ async function assertLodBudget(page: Page, checkCap = true) {
 }
 
 async function assertExplanationCards(page: Page, view: string) {
-  const nodeId = await page.evaluate(() => {
+  const selectedNode = await page.evaluate(() => {
     const api = (window as any).__d067;
     const candidates = api.disclosure?.()?.nodes ?? api.witness?.()?.disclosure?.nodes ?? [];
-    return candidates[0]?.id ?? null;
+    const node = candidates[0];
+    return node ? { id: node.id, label: node.display_label ?? node.title } : null;
   });
-  expect(nodeId, 'a disclosed source node is available to pick').toBeTruthy();
-  await page.evaluate(id => (window as any).__d067.select(id), nodeId);
+  expect(selectedNode, 'a disclosed source node is available to pick').toBeTruthy();
+  await page.evaluate(id => (window as any).__d067.select(id), selectedNode!.id);
 
   const projection = await projectionWitness(page);
   const sourceCard = view === 'holographic'
     ? page.locator('#details .selection-card').filter({ hasNot: page.locator('.projection-provenance') }).last()
     : page.locator('#details .selection-card').first();
   await expect(sourceCard, `${view} keeps the selected source card`).toBeVisible();
-  if (view === 'natural' && !projection?.enabled) {
-    // With the typed pipeline off, Natural intentionally retains the D-072 source selection card.
+  if (view === 'natural') {
+    await expect(sourceCard).toContainText(selectedNode!.label);
+    await expect(sourceCard).not.toContainText('relazione attestata');
+
+    const structuralControls = page.locator('#structural-pick-controls');
+    const derivedPick = structuralControls.locator('button[data-pick-kind]').first();
+    const emptyState = structuralControls.locator('[data-structural-empty]');
+    if (await emptyState.isVisible().catch(() => false) || await derivedPick.count() === 0) return;
+
+    await derivedPick.click();
+    const derivedCard = page.locator('#details .selection-card').first();
+    await expect(derivedCard).toBeVisible();
+    await expect(derivedCard).not.toContainText('relazione attestata');
     return;
   }
 
