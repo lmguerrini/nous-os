@@ -1492,10 +1492,13 @@ export function mountProjection2d(
     const close = ratio < fittedRatio * TYPED_LABEL_CAMERA.closeRatio;
     const scale = sigma.scaleSize(1);
     const candidates: ProjectionLabelCandidate[] = [];
+    const discs: { id: string; x: number; y: number; radius: number }[] = [];
+    const rims: { x: number; y: number; radius: number }[] = [];
     for (const [id, node] of scene.nodes) {
       const style = node.style as Readonly<Record<string, number | string>>;
       const radiusPx = Math.max(0, styleNumber(style, 'size', PROJECTION_NODE_RADIUS_PX) * scale);
       const screen = sigma.graphToViewport(node.position);
+      discs.push({ id, x: screen.x, y: screen.y, radius: radiusPx + 2 });
       const anchor = { id, x: screen.x, y: screen.y, radiusPx, style };
       const kind = typedLabelKind(anchor, { neighbours: null, overview, close, projection: '2d' });
       if (kind === null) continue;
@@ -1504,7 +1507,14 @@ export function mountProjection2d(
       candidates.push({ id, text: texts.short, full: texts.full, reason: kind.reason, tier1: kind.tier1,
         priority: styleNumber(style, 'labelPriority', 0), x: screen.x, y: screen.y, radiusPx });
     }
-    labels.update({ candidates, bounds: { left: 0, top: 0, width: box.width, height: box.height },
+    for (const [, container] of scene.containers) {
+      if (!container.center2 || !(container.radius && container.radius > 0)) continue;
+      const center = sigma.graphToViewport(container.center2);
+      const outer = sigma.graphToViewport({ x: container.center2.x + container.radius, y: container.center2.y });
+      rims.push({ x: center.x, y: center.y, radius: Math.hypot(outer.x - center.x, outer.y - center.y) });
+    }
+    labels.update({ candidates, discs, rims, textColor: scope?.star ?? "#e8e8e8",
+      bounds: { left: 0, top: 0, width: box.width, height: box.height },
       ...(labelBudget !== undefined ? { budget: labelBudget } : {}) });
   };
   const redraw = (): void => { drawMorphology(); draw(); visuals.draw(); labelPass(); };

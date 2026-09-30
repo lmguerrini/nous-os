@@ -1,3 +1,26 @@
+import { placeLabels } from "#render-common/labels.ts";
+import type { LabelCandidate, LabelDisc, LabelRim, PlacedLabel, ViewportRect } from "#render-common/labels.ts";
+
+/** A settled 3D label pass uses the same bounded placer as the product and typed 2D layers. */
+export function placeScreenLabels(
+  candidates: readonly LabelCandidate[], bounds: ViewportRect,
+  measured: ReadonlyMap<string, { readonly width: number; readonly height: number }>,
+  discs: readonly LabelDisc[], rims: readonly LabelRim[], budget: number,
+): PlacedLabel[] {
+  const byText = new Map<string, { width: number; height: number }>();
+  for (const candidate of candidates) {
+    const size = measured.get(candidate.id);
+    if (!size) continue;
+    const previous = byText.get(candidate.text);
+    byText.set(candidate.text, { width: Math.max(previous?.width ?? 0, size.width),
+      height: Math.max(previous?.height ?? 0, size.height) });
+  }
+  return placeLabels(candidates, bounds, (text, maxWidth) => {
+    const size = byText.get(text);
+    return { width: Math.min(size?.width ?? text.length * 7, maxWidth), height: size?.height ?? 16 };
+  }, [], budget, discs, rims);
+}
+
 /** This is one measured scene-selected label and does not carry semantic selection policy. */
 export type ScreenLabelBounds = {
   readonly id: string;

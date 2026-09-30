@@ -40,6 +40,7 @@ import { mountDistinctOverlay } from "#render3f/distinct-overlay.ts";
 import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
 import { DENSE_SCENE_THRESHOLD } from "#render-common/morphology-canvas.ts";
 import { createProjectionVisualsLayer } from "#render-common/projection-visuals-layer.ts";
+import { projectedWorldScale } from "#render-common/container-canvas.ts";
 import type { ProjectionVisualsLayer, ProjectionVisualsMorphology } from "#render-common/projection-visuals-layer.ts";
 import {
   createAggregateRenderResources,
@@ -354,29 +355,44 @@ export function mount(
       const overview = distance >= typedFittedCameraDistance * TYPED_LABEL_CAMERA.overviewRatio;
       const close = distance < typedFittedCameraDistance * TYPED_LABEL_CAMERA.closeRatio;
       const candidates: ProjectionLabelCandidate[] = [];
+      const discs: { id: string; x: number; y: number; radius: number }[] = [];
+      const rims: { x: number; y: number; radius: number }[] = [];
       if (currentStyled !== null) {
         const styled = currentStyled;
         for (const point of typedPicker.geometry.nodes) {
           if (point.pick.kind !== "node") continue;
-          const style = styled.nodeStyle[point.pick.id];
-          if (style === undefined) continue;
+          const style = styled.nodeStyle[point.pick.id] ?? {};
           const screen = rig.graphToViewport(point.position);
           const radiusPx = Math.max(0, (typeof style.size === "number" ? style.size : 5) * rig.sizeScaleAt(point.position));
           const anchor = { id: point.pick.id, x: screen.x, y: screen.y, radiusPx, style };
-          const kind = typedLabelKind(anchor, { neighbours: emphasisIds, overview, close, projection: "3d" });
+          discs.push({ id: point.pick.id, x: screen.x, y: screen.y, radius: radiusPx + 2 });
+          const kind = typedLabelKind(anchor, { neighbours: style.type === "domain" ? null : emphasisIds,
+            overview, close, projection: "3d" });
           if (kind === null) continue;
           const texts = typedLabelTexts(anchor);
           if (texts.short.length === 0) continue;
           candidates.push({ id: point.pick.id, text: texts.short, full: texts.full, reason: kind.reason,
-            tier1: kind.tier1, priority: typeof style.labelPriority === "number" ? style.labelPriority : 0,
+            tier1: kind.tier1 || style.type === "domain", priority: typeof style.labelPriority === "number" ? style.labelPriority : 0,
             x: screen.x, y: screen.y, radiusPx });
         }
+        const visibleContainers = new Set(typedPicker.geometry.containers.flatMap(segment =>
+          segment.pick.kind === "container" ? [segment.pick.visualId] : []));
+        for (const container of styled.projection.containers) {
+          if (!visibleContainers.has(container.visualId) || !container.center3 || !(container.radius && container.radius > 0)) continue;
+          const center = rig.graphToViewport(container.center3);
+          rims.push({ x: center.x, y: center.y,
+            radius: container.radius * projectedWorldScale(container.center3, container.radius, point => rig.graphToViewport(point)) });
+        }
       }
-      typedLabelOverlay.update({ candidates, bounds: { left: 0, top: 0, width: box.width, height: box.height },
+      const ink = currentStyled === null ? undefined : readProjectionStyle(currentStyled)?.star;
+      typedLabelOverlay.update({ candidates, discs, rims,
+        ...(ink ? { textColor: ink } : {}),
+        bounds: { left: 0, top: 0, width: box.width, height: box.height },
         ...(typedLabelBudget !== undefined ? { budget: typedLabelBudget } : {}) });
       return;
     }
     labels.update(live.scene, {
+      bounds: { left: 0, top: 0, width: container.clientWidth, height: container.clientHeight },
       project(point: Coordinates): { readonly x: number; readonly y: number } {
         return rig.graphToViewport(point);
       },

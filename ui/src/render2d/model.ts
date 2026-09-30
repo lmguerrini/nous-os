@@ -30,8 +30,8 @@ import type { FilamentGeometry } from "#render2d/geometry.ts";
 import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
 import { validateRenderVisibility } from "../projection/contract.ts";
 import type { ProjectionResult, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec2, VisualContainer, VisualCurve, VisualRelation, MathematicalField } from "../projection/contract-types.ts";
-import { disambiguateLabels, footprintDisc, placeLabels, shortLabelWithEllipsis } from "#render-common/labels.ts";
-import type { LabelCandidate, LabelDisc, LabelReason, PlacedLabel, ViewportRect } from "#render-common/labels.ts";
+import { LABEL_BUDGET, disambiguateLabels, footprintDisc, placeLabels, shortLabelWithEllipsis } from "#render-common/labels.ts";
+import type { LabelCandidate, LabelDisc, LabelReason, LabelRim, PlacedLabel, ViewportRect } from "#render-common/labels.ts";
 import { TYPED_LABEL_DOM } from "#render-common/projection-style.ts";
 
 // Typed style and label policy live below both renderers; this re-export preserves the 2D model API.
@@ -912,6 +912,12 @@ export type ProjectionLabelCandidate = {
 export type ProjectionLabelOverlayInput = {
   readonly candidates: readonly ProjectionLabelCandidate[];
   readonly bounds: ViewportRect;
+  /** Every drawn node, including nodes without a label candidate. */
+  readonly discs?: readonly LabelDisc[];
+  /** Visible aggregate outlines, in viewport coordinates. */
+  readonly rims?: readonly LabelRim[];
+  /** Resolved palette text colour for names and their attachment lines. */
+  readonly textColor?: string;
   /** The density label allowance; absent keeps the absolute product ceiling. */
   readonly budget?: number;
 };
@@ -1035,18 +1041,42 @@ export function mountProjectionLabelOverlay(host: HTMLElement): ProjectionLabelO
         ...(candidate.tier1 ? { tier1: true } : {}),
         ...(candidate.radiusPx > 0 ? { radius: candidate.radiusPx } : {}),
       }));
-      const discs: LabelDisc[] = input.candidates.map(candidate =>
+      const discs: readonly LabelDisc[] = input.discs ?? input.candidates.map(candidate =>
         footprintDisc({ id: candidate.id, x: candidate.x, y: candidate.y, coreRadiusPx: candidate.radiusPx }));
       const placed = placeLabels(
         disambiguateLabels(marked),
         input.bounds,
         measured,
         [],
-        input.budget ?? Number.POSITIVE_INFINITY,
+        input.budget ?? LABEL_BUDGET,
         discs,
+        input.rims ?? [],
       );
       placedIds = placed.map(label => label.id);
-      layer.replaceChildren(...placed.map(label => elementFor(label, fullText.get(label.id) ?? "")));
+      const leaders = placed.filter(label => label.leader !== undefined);
+      const lines = leaders.length > 0 ? document.createElementNS("http://www.w3.org/2000/svg", "svg") : null;
+      if (lines) {
+        Object.assign(lines.style, { position: "absolute", inset: "0", width: "100%", height: "100%", pointerEvents: "none", overflow: "hidden" });
+        lines.setAttribute("viewBox", `0 0 ${input.bounds.width} ${input.bounds.height}`);
+        lines.dataset.projectionLabelLeaders = "true";
+        for (const label of leaders) {
+          const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+          line.setAttribute("x1", String(label.leader!.from.x));
+          line.setAttribute("y1", String(label.leader!.from.y));
+          line.setAttribute("x2", String(label.leader!.to.x));
+          line.setAttribute("y2", String(label.leader!.to.y));
+          line.setAttribute("stroke", input.textColor ?? PROJECTION_LABEL_TEXT);
+          line.setAttribute("stroke-width", "1");
+          line.setAttribute("stroke-opacity", "0.7");
+          lines.append(line);
+        }
+      }
+      const elements = placed.map(label => {
+        const element = elementFor(label, fullText.get(label.id) ?? "");
+        if (input.textColor) element.style.color = input.textColor;
+        return element;
+      });
+      layer.replaceChildren(...(lines ? [lines] : []), ...elements);
       return placed.length;
     },
     readCount: () => placedIds.length,

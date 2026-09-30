@@ -14,7 +14,7 @@ import { adaptReviewExport, restrictAnchors, subgraph } from "./product-adapter.
 import { placeDynamic } from "./live-placement.ts";
 import { relaxDepth } from "./depth.ts";
 import { LABEL_BUDGET, disambiguateLabels, footprintDisc, labelCandidateKind, occludedAnchors, placeLabels, shortLabelWithEllipsis } from "./labels.ts";
-import type { DepthSample, LabelRim } from "./labels.ts";
+import type { DepthSample, LabelRim, PlacedLabel } from "./labels.ts";
 import { encodingOf, SEMANTIC_COLOUR, standingOf } from "./presentation.ts";
 import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
 import { buildMorphologyGeometry } from "../engine/morphology-geometry.ts";
@@ -32,6 +32,7 @@ import { buildContainerGeometry } from "../engine/container-geometry.ts";
 import type { MorphologyContainerPath } from "../engine/container-geometry.ts";
 import { containerSphereLOD, containerTitleFont, placeContainerTitles, projectedWorldScale } from "../render-common/container-canvas.ts";
 import type { CanvasDisc } from "../render-common/container-canvas.ts";
+
 import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "../engine/morphology-contract.ts";
 import { drawFlowLayer } from "../render-common/morphology-canvas.ts";
 import type { DistinctSubsetUpdate, MorphologyCanvasStyle } from "../render-common/morphology-canvas.ts";
@@ -74,6 +75,27 @@ import {
 } from "#render-common/flow.ts";
 
 /** The opt-in product input keeps source edges and B9 visual IDs in separate collections. */
+/** Leaders occupy the same local viewport as labels and sit behind their text. */
+export function productLabelLeaders(labels: readonly PlacedLabel[], bounds: ViewportRect, ink: string): SVGSVGElement | null {
+  const displaced = labels.filter(label => label.leader !== undefined);
+  if (displaced.length === 0) return null;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.dataset.reviewLabelLeaders = "true";
+  svg.setAttribute("viewBox", `0 0 ${bounds.width} ${bounds.height}`);
+  Object.assign(svg.style, { position: "absolute", inset: "0", width: "100%", height: "100%", pointerEvents: "none", overflow: "hidden" });
+  for (const label of displaced) {
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", String(label.leader!.from.x));
+    line.setAttribute("y1", String(label.leader!.from.y));
+    line.setAttribute("x2", String(label.leader!.to.x));
+    line.setAttribute("y2", String(label.leader!.to.y));
+    line.setAttribute("stroke", ink);
+    line.setAttribute("stroke-width", "1");
+    line.setAttribute("stroke-opacity", "0.7");
+    svg.append(line);
+  }
+  return svg;
+}
 export type ProductProjectionInput = Readonly<{
   styled: StyledProjection;
   visibility: RenderVisibility;
@@ -642,7 +664,7 @@ export const createProductView: CreateProductView = async (input) => {
   const movingPassCandidates = (ids: ReadonlySet<string> = visible) => movingLabelPassHasCandidates({
     hoverId: hover?.kind === "node" ? hover.id : null,
     selectedId: selected,
-    flatDomains: axes.labels && axes.organization === "natural"
+    flatDomains: axes.labels
       && [...ids].some((id) => nodesById.get(id)?.type === "domain"),
   });
   function project(point: Coordinates) {
@@ -763,9 +785,9 @@ export const createProductView: CreateProductView = async (input) => {
       const chosen = selected === id;
       const hovered = hover?.kind === "node" && hover.id === id;
       // A label occluded by nearer geometry is hidden, except the selection and hover and the
-      // Flat domains (tier 1: a domain name is always placed, drawn above the geometry).
+      // Domain names (tier 1) remain visible above occluding geometry.
       if (occluded.has(id) && !chosen && !hovered
-        && !(axes.organization === "natural" && node.type === "domain")) continue;
+        && node.type !== "domain") continue;
       // A container whose canvas title is drawn carries no second name (its own node label waits).
       if (pathById.has(id) && !chosen && !hovered && titledContainerIds.has(id))
         continue;
@@ -822,7 +844,7 @@ export const createProductView: CreateProductView = async (input) => {
     };
     const density = appearance.labelDensity / DEFAULT_APPEARANCE.labelDensity;
     const limited = density >= 1 ? candidates : candidates.filter((candidate, index) =>
-      candidate.full || candidate.reason === "selected" || index < Math.round(candidates.length * density));
+      candidate.tier1 || candidate.full || index < Math.round(candidates.length * density));
     // Any floating overlay that covers part of the canvas (the Aspetto panel, the axis gizmo, the
     // panel edge tab) is reserved, so labels stay fully inside the visible area not covered by
     // panels — and so do the drawn container titles: titles and node labels are placed by one
@@ -881,7 +903,9 @@ export const createProductView: CreateProductView = async (input) => {
         height: label.rect.height,
       },
     }));
+    const leaderLayer = productLabelLeaders(next, bounds, palette.text);
     layer.replaceChildren(
+      ...(leaderLayer ? [leaderLayer] : []),
       ...next.map((label) => {
         const el = document.createElement("div");
         el.dataset.reviewLabelId = label.id;

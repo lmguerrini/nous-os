@@ -114,7 +114,8 @@ test('resting Indra labels retain pre-F7 candidates in 2D and 3D without selecte
       ['conversation:amber', 'neighbour'], ['proposal:amber', 'neighbour'], ['domain:blue', 'domain'],
     ], `${projection}: transient container hover restores descendants without selected focus`);
     assert.deepEqual(candidates(hovered, new Set(['project:amber', 'conversation:amber'])), [
-      ['project:amber', 'neighbour'], ['conversation:amber', 'neighbour'],
-    ], `${projection}: selected F7 focus still filters to members`);
+      ['domain:amber', 'domain'], ['project:amber', 'neighbour'],
+      ['conversation:amber', 'neighbour'], ['domain:blue', 'domain'],
+    ], `${projection}: focus filters optional names while tier-1 domains remain`);
   }
 });

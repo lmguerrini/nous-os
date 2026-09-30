@@ -15,6 +15,7 @@ class FakeElement {
   dataset: Record<string, string> = {};
   title = "";
   textContent = "";
+  readonly attributes: Record<string, string> = {};
   readonly style: Record<string, string> & { setProperty(key: string, value: string): void };
   constructor(tag: string) {
     this.tagName = tag;
@@ -48,11 +49,15 @@ class FakeElement {
   getContext(): null {
     return null;
   }
+  setAttribute(key: string, value: string): void { this.attributes[key] = value; }
 }
 
 // The overlay's document surface, installed once per test file: element creation only, no 2D
 // measure context, so the placement pass runs on the text estimator exactly as a headless host.
-(globalThis as { document?: unknown }).document = { createElement: (tag: string) => new FakeElement(tag) };
+(globalThis as { document?: unknown }).document = {
+  createElement: (tag: string) => new FakeElement(tag),
+  createElementNS: (_namespace: string, tag: string) => new FakeElement(tag),
+};
 const layerOf = (host: FakeElement): FakeElement => host.children[0] as FakeElement;
 const spanTexts = (host: FakeElement): readonly string[] =>
   layerOf(host).children.map(label => label.children[0]?.textContent ?? "");
@@ -134,4 +139,22 @@ test("destroy removes the overlay layer and leaves the host empty", () => {
   overlay.destroy();
   assert.equal(host.children.length, 0);
   assert.equal(overlay.readCount(), 0);
+});
+
+test("a label avoids a visible glyph which has no label candidate", () => {
+  const host = new FakeElement("div");
+  const overlay = mountProjectionLabelOverlay(host as unknown as HTMLElement);
+  const input = { candidates: [candidate("named", 100, 100, "Alpha")],
+    bounds: { left: 0, top: 0, width: 600, height: 400 }, budget: 1 };
+  overlay.update(input);
+  const baseline = layerOf(host).children.find(child => child.dataset.projectionLabelId === "named")!;
+  const foreign = { id: "unlabelled", x: Number.parseFloat(baseline.style.left!) + 10,
+    y: Number.parseFloat(baseline.style.top!) + 8, radius: 12 };
+  overlay.update({ ...input, discs: [{ id: "named", x: 100, y: 100, radius: 6 }, foreign] });
+  const moved = layerOf(host).children.find(child => child.dataset.projectionLabelId === "named")!;
+  const left = Number.parseFloat(moved.style.left!), top = Number.parseFloat(moved.style.top!);
+  const nearestX = Math.max(left, Math.min(foreign.x, left + Number.parseFloat(moved.style.width!)));
+  const nearestY = Math.max(top, Math.min(foreign.y, top + Number.parseFloat(moved.style.height!)));
+  assert.ok(Math.hypot(foreign.x - nearestX, foreign.y - nearestY) > foreign.radius,
+    "the label clears the visible label-less glyph");
 });
