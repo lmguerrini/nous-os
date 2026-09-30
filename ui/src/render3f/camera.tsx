@@ -208,7 +208,8 @@ export class CameraRig {
   /** This projects one world coordinate through the active live camera and does not alter it. */
   graphToViewport(point: Coordinates): { readonly x: number; readonly y: number } {
     if (this.kindValue === ORTHOGRAPHIC) {
-      const clip = orthographicClipPoint(point, this.stateValue, this.widthCssPx, this.heightCssPx);
+      const clip = orthographicClipPoint(orbitOrthographicPoint(point, this.stateValue, this.worldCenterZ),
+        this.stateValue, this.widthCssPx, this.heightCssPx);
       return {
         x: (clip.x + scalarCount()) * this.widthCssPx / bisectionDivisor(),
         y: (scalarCount() - clip.y) * this.heightCssPx / bisectionDivisor(),
@@ -265,23 +266,10 @@ export class CameraRig {
   panBy(deltaXCssPx: number, deltaYCssPx: number): void {
     const sensitivity = panSensitivity(this.requestValue) / SCENE_PERMILLE_SCALE;
     if (this.kindValue === ORTHOGRAPHIC) {
-      const inverse = matrixFromCamera(
-        this.stateValue,
-        viewportDimensions(this.widthCssPx, this.heightCssPx),
-        graphDimensions(this.stateValue.bounds),
-        DEFAULT_SETTINGS.stagePadding,
-        true,
-      );
-      const start = multiplyVec2(inverse, { x: 0, y: 0 });
-      const end = multiplyVec2(inverse, {
-        x: deltaXCssPx * bisectionDivisor() / this.widthCssPx,
-        y: -deltaYCssPx * bisectionDivisor() / this.heightCssPx,
-      });
-      this.stateValue = {
-        ...this.stateValue,
-        x: this.stateValue.x + ((start.x - end.x) * sensitivity),
-        y: this.stateValue.y + ((start.y - end.y) * sensitivity),
-      };
+      const start = this.worldPointAtViewport(this.widthCssPx / 2, this.heightCssPx / 2);
+      const end = this.worldPointAtViewport(this.widthCssPx / 2 + deltaXCssPx,
+        this.heightCssPx / 2 + deltaYCssPx);
+      this.translateTarget(start.sub(end).multiplyScalar(sensitivity));
     } else {
       const orbit = this.stateValue.orbit ?? [0, 0, 0, 1];
       const q = new THREE.Quaternion(...orbit);
@@ -297,20 +285,21 @@ export class CameraRig {
     this.updateCameras();
   }
 
-  /** Free trackball rotation around the current target. */
+  /** Free trackball rotation around the current target for either projection. */
   orbitBy(deltaXCssPx: number, deltaYCssPx = 0): void {
-    if (this.requestValue.kind !== "perspective") {
-      return;
-    }
-    const sensitivity = this.requestValue.navigation.orbitSensitivityPermille / SCENE_PERMILLE_SCALE;
+    const sensitivity = this.requestValue.kind === "perspective"
+      ? this.requestValue.navigation.orbitSensitivityPermille / SCENE_PERMILLE_SCALE
+      : scalarCount();
     const orbit = this.stateValue.orbit ?? [0, 0, 0, 1];
     const q = arcballDrag(new THREE.Quaternion(...orbit), deltaXCssPx * sensitivity, deltaYCssPx * sensitivity, this.heightCssPx);
     this.stateValue = { ...this.stateValue, orbit: [q.x, q.y, q.z, q.w] };
     this.updateCameras();
   }
 
-  /** This applies calibrated wheel zoom or dolly and does not alter the camera target. */
-  zoomBy(deltaYCssPx: number): void {
+  /** This applies calibrated zoom, holding the world point below an optional cursor in place. */
+  zoomBy(deltaYCssPx: number, cursorXCssPx?: number, cursorYCssPx?: number): void {
+    const anchor = cursorXCssPx === undefined || cursorYCssPx === undefined
+      ? undefined : this.worldPointAtViewport(cursorXCssPx, cursorYCssPx);
     const [sensitivityPermille, minimumPermille, maximumPermille] = this.requestValue.kind === "orthographic"
       ? [
           this.requestValue.navigation.zoomSensitivityPermille,
@@ -323,18 +312,54 @@ export class CameraRig {
           this.requestValue.navigation.maximumDollyPermille,
         ];
     const factor = wheelZoomFactor(deltaYCssPx, this.heightCssPx, sensitivityPermille);
+    // A deliberate fit can sit outside the calibrated navigation range. Keep its first wheel
+    // step proportional instead of snapping straight to the nearest configured limit.
+    const minimum = Math.min(minimumPermille / SCENE_PERMILLE_SCALE, this.stateValue.ratio);
+    const maximum = Math.max(maximumPermille / SCENE_PERMILLE_SCALE, this.stateValue.ratio);
     this.stateValue = {
       ...this.stateValue,
       ratio: Math.max(
-        minimumPermille / SCENE_PERMILLE_SCALE,
-        Math.min(maximumPermille / SCENE_PERMILLE_SCALE, this.stateValue.ratio * factor),
+        minimum,
+        Math.min(maximum, this.stateValue.ratio * factor),
       ),
     };
     this.updateCameras();
+    if (anchor !== undefined) {
+      const shifted = this.worldPointAtViewport(cursorXCssPx!, cursorYCssPx!);
+      this.translateTarget(anchor.sub(shifted));
+      this.updateCameras();
+    }
+  }
+
+  private worldPointAtViewport(xCssPx: number, yCssPx: number): THREE.Vector3 {
+    const clipX = xCssPx * bisectionDivisor() / this.widthCssPx - scalarCount();
+    const clipY = scalarCount() - yCssPx * bisectionDivisor() / this.heightCssPx;
+    const target = perspectiveTarget(this.stateValue, this.worldCenterZ);
+    if (this.kindValue === ORTHOGRAPHIC) {
+      const inverse = matrixFromCamera(this.stateValue,
+        viewportDimensions(this.widthCssPx, this.heightCssPx),
+        graphDimensions(this.stateValue.bounds), DEFAULT_SETTINGS.stagePadding, true);
+      const normalized = multiplyVec2(inverse, { x: clipX, y: clipY });
+      const position = createNormalizationFunction(copyMutableBounds(this.stateValue.bounds)).inverse(normalized);
+      return new THREE.Vector3(position.x - target.x, position.y - target.y, 0)
+        .applyQuaternion(cameraOrbit(this.stateValue)).add(target);
+    }
+    const rayPoint = new THREE.Vector3(clipX, clipY, 0.5).unproject(this.perspective);
+    const direction = rayPoint.sub(this.perspective.position).normalize();
+    const normal = target.clone().sub(this.perspective.position).normalize();
+    return this.perspective.position.clone().addScaledVector(direction,
+      target.clone().sub(this.perspective.position).dot(normal) / direction.dot(normal));
+  }
+
+  private translateTarget(delta: THREE.Vector3): void {
+    const target = perspectiveTarget(this.stateValue, this.worldCenterZ).add(delta);
+    const normalized = createNormalizationFunction(copyMutableBounds(this.stateValue.bounds))(target);
+    this.stateValue = { ...this.stateValue, x: normalized.x, y: normalized.y, targetZ: target.z };
   }
 
   private updateCameras(): void {
-    updateOrthographicCamera(this.orthographic, this.stateValue, this.widthCssPx, this.heightCssPx);
+    updateOrthographicCamera(this.orthographic, this.stateValue, this.widthCssPx, this.heightCssPx,
+      this.worldCenterZ);
     updatePerspectiveCamera(
       this.perspective,
       this.stateValue,
@@ -407,7 +432,7 @@ export function attachCameraInteractions(
     const deltaY = event.clientY - lastY;
     lastX = event.clientX;
     lastY = event.clientY;
-    if (rig.kind === ORTHOGRAPHIC || button !== 0 || shift) {
+    if (button !== 0 || shift || event.shiftKey) {
       rig.panBy(deltaX, deltaY);
     } else {
       rig.orbitBy(deltaX, deltaY);
@@ -422,7 +447,10 @@ export function attachCameraInteractions(
   };
   const wheel = (event: WheelEvent): void => {
     event.preventDefault();
-    rig.zoomBy(event.deltaY);
+    const rect = canvas.getBoundingClientRect();
+    const deltaY = event.deltaY * (event.deltaMode === 1 ? 16
+      : event.deltaMode === 2 ? rect.height : 1);
+    rig.zoomBy(deltaY, event.clientX - rect.left, event.clientY - rect.top);
     changed();
   };
   const contextMenu = (event: MouseEvent): void => event.preventDefault();
@@ -478,20 +506,35 @@ function updateOrthographicCamera(
   state: VisualStateCamera,
   widthCssPx: number,
   heightCssPx: number,
+  worldCenterZ: number,
 ): void {
-  const origin = orthographicClipPoint({ x: 0, y: 0, z: 0 }, state, widthCssPx, heightCssPx);
-  const xBasis = orthographicClipPoint({ x: scalarCount(), y: 0, z: 0 }, state, widthCssPx, heightCssPx);
-  const yBasis = orthographicClipPoint({ x: 0, y: scalarCount(), z: 0 }, state, widthCssPx, heightCssPx);
+  const project = (point: Coordinates) => orthographicClipPoint(
+    orbitOrthographicPoint(point, state, worldCenterZ), state, widthCssPx, heightCssPx);
+  const origin = project({ x: 0, y: 0, z: 0 });
+  const xBasis = project({ x: scalarCount(), y: 0, z: 0 });
+  const yBasis = project({ x: 0, y: scalarCount(), z: 0 });
+  const zBasis = project({ x: 0, y: 0, z: scalarCount() });
   camera.position.set(0, 0, 0);
   camera.rotation.set(0, 0, 0);
   camera.updateMatrixWorld(true);
   camera.projectionMatrix.set(
-    xBasis.x - origin.x, yBasis.x - origin.x, 0, origin.x,
-    xBasis.y - origin.y, yBasis.y - origin.y, 0, origin.y,
+    xBasis.x - origin.x, yBasis.x - origin.x, zBasis.x - origin.x, origin.x,
+    xBasis.y - origin.y, yBasis.y - origin.y, zBasis.y - origin.y, origin.y,
     0, 0, 0, 0,
     0, 0, 0, scalarCount(),
   );
   camera.projectionMatrixInverse.identity();
+}
+
+function cameraOrbit(state: VisualStateCamera): THREE.Quaternion {
+  return new THREE.Quaternion(...((state as ReviewCameraState).orbit ?? [0, 0, 0, 1]));
+}
+
+function orbitOrthographicPoint(point: Coordinates, state: VisualStateCamera, worldCenterZ: number): Coordinates {
+  const target = perspectiveTarget(state, worldCenterZ);
+  const rotated = new THREE.Vector3(point.x, point.y, point.z).sub(target)
+    .applyQuaternion(cameraOrbit(state).invert()).add(target);
+  return { x: rotated.x, y: rotated.y, z: rotated.z };
 }
 
 function orthographicClipPoint(
