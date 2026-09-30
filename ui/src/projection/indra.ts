@@ -150,27 +150,100 @@ export interface PlaneDisc {
  * whose inversion step sends the circle |z-p-q|=r to the circle of centre conj(q)/D and radius r/D
  * with D=|q|^2-r^2. An affine map (c=0) scales the radius by |a/d|. A disc whose image is not a
  * finite disc is refused with the typed codes `pole-in-disc` (the pole lies in the closed disc) and
- * `nonfinite-disc-image` (the inversion amplification overflows); both carry the
+ * `nonfinite-disc-image` (the final centre or radius is nonfinite); both carry the
  * `IndraProjectionRefusal` name so the page and the worker surface them as typed refusals.
  */
 export function mobiusImageOfDisc(matrix: MobiusMatrix, disc: PlaneDisc): PlaneDisc {
   const { a, b, c, d } = matrix;
-  const determinant = cxSub(cxMul(a, d), cxMul(b, c));
-  if (cxAbs(c) === 0) {
-    const ratio = cxDivide(a, d);
-    return { center: cxDivide(cxAdd(cxMul(a, disc.center), b), d), radius: disc.radius * cxAbs(ratio) };
+  // Preserve the exact floating-point operation order (and hence existing result digests) when
+  // the original closed form has representable intermediates and a finite result.
+  try {
+    const determinant = cxSub(cxMul(a, d), cxMul(b, c));
+    if (cxAbs(c) === 0) {
+      const ratio = cxDivide(a, d);
+      const image = { center: cxDivide(cxAdd(cxMul(a, disc.center), b), d), radius: disc.radius * cxAbs(ratio) };
+      if (Number.isFinite(image.radius) && Number.isFinite(image.center.re) && Number.isFinite(image.center.im)
+        && (disc.radius === 0 || cxAbs(a) === 0 || image.radius > 0)) return image;
+    } else {
+      const pole = cxScale(cxDivide(d, c), -1);
+      const q = cxSub(disc.center, pole);
+      const denominator = cxAbs(q) * cxAbs(q) - disc.radius * disc.radius;
+      if (denominator > 0 && Number.isFinite(denominator) && Number.isFinite(1 / denominator)) {
+        const cSquared = cxMul(c, c);
+        const invertedCentre = cxScale(cxConjugate(q), 1 / denominator);
+        const firstTerm = cxDivide(a, c);
+        const secondTerm = cxMul(cxDivide(determinant, cSquared), invertedCentre);
+        const center = cxSub(firstTerm, secondTerm);
+        const radius = (cxAbs(determinant) / cxAbs(cSquared)) * (disc.radius / denominator);
+        const cancellationScale = Math.max(cxAbs(firstTerm), cxAbs(secondTerm));
+        if (Number.isFinite(radius) && Number.isFinite(center.re) && Number.isFinite(center.im)
+          && (disc.radius === 0 || radius > 0)
+          && (cancellationScale === 0 || cxAbs(center) > 1e-8 * cancellationScale)) return { center, radius };
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
   }
-  const pole = cxScale(cxDivide(d, c), -1);
-  const q = cxSub(disc.center, pole);
-  const denominator = cxAbs(q) * cxAbs(q) - disc.radius * disc.radius;
-  if (!(denominator > 0)) {
+
+  // A common binary exponent keeps products such as det*r and |cu+d|^2 from underflowing
+  // before their quotient is taken. Mantissas stay near one; only the final values are rounded
+  // back to JavaScript numbers. For w=cu+d, t=cr/w and g=det*r/w^2, the image has centre
+  // f(u)-g*conj(t)/(1-|t|^2) and radius |g|/(1-|t|^2).
+  type Scaled = { readonly re: number; readonly im: number; readonly exponent: number };
+  const zero: Scaled = { re: 0, im: 0, exponent: 0 };
+  const normal = (re: number, im: number, exponent: number): Scaled => {
+    const magnitude = Math.max(Math.abs(re), Math.abs(im));
+    if (magnitude === 0) return zero;
+    const shift = Math.floor(Math.log2(magnitude));
+    const unit = 2 ** shift;
+    return { re: re / unit, im: im / unit, exponent: exponent + shift };
+  };
+  const scaled = (value: Complex): Scaled => normal(value.re, value.im, 0);
+  const add = (left: Scaled, right: Scaled): Scaled => {
+    if (left.re === 0 && left.im === 0) return right;
+    if (right.re === 0 && right.im === 0) return left;
+    const exponent = Math.max(left.exponent, right.exponent);
+    return normal(left.re * 2 ** (left.exponent - exponent) + right.re * 2 ** (right.exponent - exponent),
+      left.im * 2 ** (left.exponent - exponent) + right.im * 2 ** (right.exponent - exponent), exponent);
+  };
+  const negate = (value: Scaled): Scaled => ({ re: -value.re, im: -value.im, exponent: value.exponent });
+  const subtract = (left: Scaled, right: Scaled): Scaled => add(left, negate(right));
+  const multiply = (left: Scaled, right: Scaled): Scaled => {
+    const product = cxMul(left, right);
+    return normal(product.re, product.im, left.exponent + right.exponent);
+  };
+  const divide = (left: Scaled, right: Scaled): Scaled => {
+    const quotient = cxDivide(left, right);
+    return normal(quotient.re, quotient.im, left.exponent - right.exponent);
+  };
+  const absolute = (value: Scaled): Scaled => normal(Math.hypot(value.re, value.im), 0, value.exponent);
+  const number = (value: Scaled): number => value.re * 2 ** value.exponent;
+  const complex = (value: Scaled): Complex => {
+    const re = number(value), im = value.im * 2 ** value.exponent;
+    return { re: re === 0 ? 0 : re, im: im === 0 ? 0 : im };
+  };
+  const one = scaled({ re: 1, im: 0 });
+  const radiusInput = scaled({ re: disc.radius, im: 0 });
+  const sa = scaled(a), sb = scaled(b), sc = scaled(c), sd = scaled(d), su = scaled(disc.center);
+  const w = add(multiply(sc, su), sd);
+  const n = add(multiply(sa, su), sb);
+  const cr = multiply(sc, radiusInput);
+  const distanceFromPole = subtract(absolute(w), absolute(cr));
+  if (cxAbs(c) !== 0 && !(distanceFromPole.re > 0)) {
     throw new IndraProjectionRefusal('pole-in-disc',
-      `the disc of radius ${disc.radius} contains the pole of the map (|q|^2-r^2 = ${denominator})`);
+      `the disc of radius ${disc.radius} contains the pole of the map (|cu+d|-|c|r = ${number(distanceFromPole)})`);
   }
-  const cSquared = cxMul(c, c);
-  const invertedCentre = cxScale(cxConjugate(q), 1 / denominator);
-  const center = cxSub(cxDivide(a, c), cxMul(cxDivide(determinant, cSquared), invertedCentre));
-  const radius = (cxAbs(determinant) / cxAbs(cSquared)) * (disc.radius / denominator);
+  if (w.re === 0 && w.im === 0) {
+    throw new IndraProjectionRefusal('nonfinite-disc-image', 'the image of the disc under the map is not finite (zero denominator)');
+  }
+  const valueAtCentre = divide(n, w);
+  const determinant = subtract(multiply(sa, sd), multiply(sb, sc));
+  const g = divide(multiply(determinant, radiusInput), multiply(w, w));
+  const t = divide(cr, w);
+  const delta = cxAbs(c) === 0 ? one : multiply(divide(distanceFromPole, absolute(w)), add(one, divide(absolute(cr), absolute(w))));
+  const correction = divide(multiply(g, { re: t.re, im: -t.im, exponent: t.exponent }), delta);
+  const center = complex(subtract(valueAtCentre, correction));
+  const radius = number(divide(absolute(g), delta));
   if (!Number.isFinite(radius) || !Number.isFinite(center.re) || !Number.isFinite(center.im)) {
     throw new IndraProjectionRefusal('nonfinite-disc-image',
       `the image of the disc under the map is not finite (radius ${radius}, centre (${center.re}, ${center.im}))`);

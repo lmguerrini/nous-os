@@ -30,7 +30,7 @@ import {
 import { levelIdForWord, ROOT_LEVEL_ID } from '../../src/indra/levels.ts';
 import { cx, cxAbs, cxSub } from '../../src/indra/complex.ts';
 import { halfSpaceHyperbolicDistance } from '../../src/indra/geometry3d.ts';
-import { mobiusApply, mobiusMatrix } from '../../src/indra/mobius.ts';
+import { mobiusApply, mobiusInverse, mobiusMatrix } from '../../src/indra/mobius.ts';
 import { buildSchottkyGroup, packPairedDiscsOnRing } from '../../src/indra/schottky.ts';
 import type {
   AnalyticalDomain, ProjectionRequest, ProjectionResult, RecursiveLevel, SemanticGraphSnapshot,
@@ -385,12 +385,21 @@ test('mobiusImageOfDisc is the exact disc image: sampled circle points land on t
   const matrix = mobiusMatrix(cx(2, 1), cx(-1, 3), cx(0.5, -0.25), cx(1, 2));
   const disc = { center: cx(3, -2), radius: 0.75 };
   const image = mobiusImageOfDisc(matrix, disc);
+  const inverse = mobiusInverse(matrix);
+  const roundTrip = mobiusImageOfDisc(inverse, image);
+  assert.ok(cxAbs(cxSub(roundTrip.center, disc.center)) < 1e-10);
+  assert.ok(Math.abs(roundTrip.radius - disc.radius) < 1e-10);
   for (let index = 0; index < 64; index += 1) {
     const angle = (2 * Math.PI * index) / 64;
     const onCircle = cx(disc.center.re + disc.radius * Math.cos(angle), disc.center.im + disc.radius * Math.sin(angle));
     const mapped = mobiusApply(matrix, onCircle);
     assert.equal(mapped.kind, 'finite');
-    if (mapped.kind === 'finite') assert.ok(Math.abs(cxAbs(cxSub(mapped.value, image.center)) - image.radius) < 1e-9 * Math.max(1, image.radius));
+    if (mapped.kind === 'finite') {
+      assert.ok(Math.abs(cxAbs(cxSub(mapped.value, image.center)) - image.radius) < 1e-9 * Math.max(1, image.radius));
+      const restored = mobiusApply(inverse, mapped.value);
+      assert.equal(restored.kind, 'finite');
+      if (restored.kind === 'finite') assert.ok(cxAbs(cxSub(restored.value, onCircle)) < 1e-9);
+    }
   }
   // The interior maps to the interior: the image of the centre lies inside the image disc.
   const centreImage = mobiusApply(matrix, disc.center);
@@ -409,26 +418,43 @@ test('mobiusImageOfDisc is the exact disc image: sampled circle points land on t
   assert.equal(poleRefusal.code, 'pole-in-disc');
   assert.equal(poleRefusal.name, 'IndraProjectionRefusal');
   assert.ok(!(poleRefusal instanceof RangeError), 'the refusal is not a plain RangeError');
-  // Negative control: a tangent disc (D = 0) is the same typed pole refusal, not a zero-radius image.
-  assert.throws(() => mobiusImageOfDisc(mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(1, 0)), { center: pole, radius: 1 }), /pole-in-disc/);
+  // Negative control: the pole -1 is on the boundary of the disc centred at 0 with radius 1.
+  const boundaryRefusal = thrown(() => mobiusImageOfDisc(mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(1, 0)), { center: cx(0, 0), radius: 1 })) as IndraProjectionRefusal;
+  assert.ok(boundaryRefusal instanceof IndraProjectionRefusal);
+  assert.equal(boundaryRefusal.code, 'pole-in-disc');
 });
 
-test('a disc image the inversion makes nonfinite is a typed refusal, never a bogus disc', () => {
-  // f(z) = z / (z + 1e-160) has its pole a hair outside the 1e-200 disc at the origin, but
-  // |q|^2 - r^2 = 1e-320 is so small that 1/D overflows: the image centre cannot be finite.
+test('a tiny pole-free disc has a finite image even when the reciprocal of the old denominator overflows', () => {
+  // For f(z)=z/(z+d) on |z|<=r, centre=-r^2/(d^2-r^2), radius=d*r/(d^2-r^2).
+  // Here d=1e-160 and r=1e-200 give centre=-1e-80 and radius=1e-40.
   const extreme = mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(1e-160, 0));
-  let caught: unknown;
-  try { mobiusImageOfDisc(extreme, { center: cx(0, 0), radius: 1e-200 }); } catch (error) { caught = error; }
-  assert.ok(caught instanceof IndraProjectionRefusal, `the refusal is typed, got ${String(caught)}`);
-  assert.equal((caught as IndraProjectionRefusal).code, 'nonfinite-disc-image');
-  assert.equal((caught as IndraProjectionRefusal).name, 'IndraProjectionRefusal');
-  assert.ok(!(caught instanceof RangeError), 'the refusal is not a plain RangeError');
+  const image = mobiusImageOfDisc(extreme, { center: cx(0, 0), radius: 1e-200 });
+  const relativeTolerance = 1e-12;
+  assert.ok(Math.abs((image.center.re + 1e-80) / 1e-80) < relativeTolerance);
+  assert.equal(image.center.im, 0);
+  assert.ok(Math.abs((image.radius - 1e-40) / 1e-40) < relativeTolerance);
+  const smaller = mobiusImageOfDisc(mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(1e-200, 0)),
+    { center: cx(0, 0), radius: 1e-250 });
+  assert.ok(Math.abs((smaller.center.re + 1e-100) / 1e-100) < relativeTolerance);
+  assert.ok(Math.abs((smaller.radius - 1e-50) / 1e-50) < relativeTolerance);
+  // Even with a representable 1/D, subtracting near-equal centre terms would lose -1e-20.
+  const cancelled = mobiusImageOfDisc(mobiusMatrix(cx(1, 0), cx(0, 0), cx(1, 0), cx(1e-10, 0)),
+    { center: cx(0, 0), radius: 1e-20 });
+  assert.ok(Math.abs((cancelled.center.re + 1e-20) / 1e-20) < relativeTolerance);
+  assert.ok(Math.abs((cancelled.radius - 1e-10) / 1e-10) < relativeTolerance);
+  const affine = mobiusImageOfDisc(mobiusMatrix(cx(1e-300, 0), cx(0, 0), cx(0, 0), cx(1e300, 0)),
+    { center: cx(0, 0), radius: 1e308 });
+  assert.ok(Math.abs((affine.radius - 1e-292) / 1e-292) < relativeTolerance);
   // Positive control: the same map on a disc far from the pole still yields a finite exact image.
   const far = mobiusImageOfDisc(extreme, { center: cx(1, 0), radius: 0.25 });
   assert.ok(Number.isFinite(far.radius) && far.radius > 0);
   const farCentre = mobiusApply(extreme, cx(1, 0));
   assert.equal(farCentre.kind, 'finite');
   if (farCentre.kind === 'finite') assert.ok(cxAbs(cxSub(farCentre.value, far.center)) < far.radius);
+  // A truly overflowing final radius still carries the typed nonfinite refusal.
+  assert.throws(() => mobiusImageOfDisc(mobiusMatrix(cx(1e308, 0), cx(0, 0), cx(0, 0), cx(1, 0)),
+    { center: cx(0, 0), radius: 2 }), (error: unknown) =>
+    error instanceof IndraProjectionRefusal && error.code === 'nonfinite-disc-image');
 });
 
 test('schottky pearl discs are nested images of the paired discs and the letters partition the words', () => {
