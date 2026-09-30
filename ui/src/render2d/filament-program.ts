@@ -271,6 +271,7 @@ varying float v_afterglowDecayPermille;
 varying vec4 v_materialWidths;
 varying vec2 v_materialVariation;
 varying vec2 v_somaRadii;
+varying float v_neuralScale;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
@@ -313,6 +314,7 @@ void main() {
   v_materialWidths = a_materialWidths;
   v_materialVariation = a_materialVariation;
   v_somaRadii = clamp(a_somaRadii / u_sizeRatio, 2.0, 9.0) * u_pixelRatio;
+  v_neuralScale = 1.0 / u_sizeRatio;
   v_cpA = viewportSource;
   v_cpB = viewportControl;
   v_cpC = viewportTarget;
@@ -320,7 +322,8 @@ void main() {
     u_minimumWidthFactor,
     max(a_materialWidths.x, a_materialWidths.y) + abs(u_wobbleAmplitude) + max(a_materialWidths.z, a_materialWidths.w)
   );
-  if (u_neuralProfile > 0.5) maximumWidthFactor = max(maximumWidthFactor, 10.0 / max(curveThickness, 0.3));
+  if (u_neuralProfile > 0.5) maximumWidthFactor = max(maximumWidthFactor,
+    (v_neuralScale >= 1.75 ? 32.0 : 12.0) / max(curveThickness, 0.3));
   float maximumBodyHalfWidth = v_thickness * 0.5 * maximumWidthFactor;
   maximumBodyHalfWidth = max(maximumBodyHalfWidth, v_minimumBodyWidth * 0.5);
   float maximumMaterialExtent = max(
@@ -373,6 +376,7 @@ varying float v_afterglowDecayPermille;
 varying vec4 v_materialWidths;
 varying vec2 v_materialVariation;
 varying vec2 v_somaRadii;
+varying float v_neuralScale;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
 varying vec2 v_cpC;
@@ -391,6 +395,21 @@ uniform float u_neuralProfile;
 uniform float u_pixelRatio;
 uniform vec3 u_hotColor;
 ${FILAMENT_DISTANCE_FUNCTION}
+float neuralBranchCoverage(float radius, bool atStart, float span) {
+  if (v_neuralScale < 1.75 || radius < 5.0 * u_pixelRatio || span < radius * 6.0) return 0.0;
+  float t = radius * 1.8 / span;
+  if (!atStart) t = 1.0 - t;
+  vec2 anchor = mix(mix(v_cpA, v_cpB, t), mix(v_cpB, v_cpC, t), t);
+  vec2 tangent = normalize(mix(v_cpB - v_cpA, v_cpC - v_cpB, t));
+  vec2 normal = vec2(-tangent.y, tangent.x);
+  if (!atStart) tangent = -tangent;
+  float side = atStart ? 1.0 : -1.0;
+  vec2 arm = tangent * radius * 0.65 + normal * side * radius * 0.8;
+  float along = clamp(dot(gl_FragCoord.xy - anchor, arm) / max(dot(arm, arm), 0.001), 0.0, 1.0);
+  float distance = length(gl_FragCoord.xy - (anchor + arm * along));
+  float halfWidth = min(v_thickness * 0.175, 0.6 * u_pixelRatio);
+  return 1.0 - smoothstep(halfWidth - v_feather, halfWidth + v_feather, distance);
+}
 void main(void) {
   vec2 distanceSample;
   if (v_isStraight > 0.5) {
@@ -405,11 +424,15 @@ void main(void) {
     + v_materialWidths.w * max(0.0, 1.0 - (1.0 - curveT) / 0.13);
   float widthFactor = max(u_minimumWidthFactor, taper + wobble + junction);
   if (u_neuralProfile > 0.5) {
-    float shoulder = 0.28;
-    float startEase = 1.0 - smoothstep(0.0, shoulder, curveT);
-    float endEase = 1.0 - smoothstep(0.0, shoulder, 1.0 - curveT);
-    float rootStart = min(v_thickness * 2.4, min(10.0 * u_pixelRatio, max(v_thickness, v_somaRadii.x * 1.8)));
-    float rootEnd = min(v_thickness * 2.4, min(10.0 * u_pixelRatio, max(v_thickness, v_somaRadii.y * 1.8)));
+    float span = max(length(v_cpC - v_cpA), 1.0);
+    float startShoulder = min(0.28, min(48.0 * u_pixelRatio,
+      max(12.0 * u_pixelRatio, v_somaRadii.x * 2.5 + v_thickness * 3.0)) / span);
+    float endShoulder = min(0.28, min(48.0 * u_pixelRatio,
+      max(12.0 * u_pixelRatio, v_somaRadii.y * 2.5 + v_thickness * 3.0)) / span);
+    float startEase = 1.0 - smoothstep(0.0, startShoulder, curveT);
+    float endEase = 1.0 - smoothstep(0.0, endShoulder, 1.0 - curveT);
+    float rootStart = min(v_thickness * 2.4, min(12.0 * u_pixelRatio, max(v_thickness, v_somaRadii.x * 2.0)));
+    float rootEnd = min(v_thickness * 2.4, min(12.0 * u_pixelRatio, max(v_thickness, v_somaRadii.y * 2.0)));
     widthFactor = (v_thickness + (rootStart - v_thickness) * startEase
       + (rootEnd - v_thickness) * endEase) / v_thickness;
   }
@@ -425,9 +448,15 @@ void main(void) {
   }
   #else
   float sheathHalfThickness = halfThickness * u_sheathScale;
-  if (distance < sheathHalfThickness) {
+  float branchCoverage = 0.0;
+  if (u_neuralProfile > 0.5) {
+    float span = length(v_cpC - v_cpA);
+    branchCoverage = max(neuralBranchCoverage(v_somaRadii.x, true, span),
+      neuralBranchCoverage(v_somaRadii.y, false, span));
+  }
+  if (distance < sheathHalfThickness || branchCoverage > 0.0) {
     float sheathCoverage = 1.0 - smoothstep(sheathHalfThickness - v_feather, sheathHalfThickness, distance);
-    float bodyCoverage = distance < halfThickness ? 1.0 : 0.0;
+    float bodyCoverage = max(distance < halfThickness ? 1.0 : 0.0, branchCoverage * 0.55);
     float coreCoverage = distance < halfThickness * u_coreScale ? 1.0 : 0.0;
     float lightPosition = v_propagationContinuous > 0.5 ? v_propagationArcPosition : 1.0;
     float afterglowDecay = max(v_afterglowDecayPermille, 1.0) / ${SCENE_PERMILLE_SCALE.toFixed(1)};

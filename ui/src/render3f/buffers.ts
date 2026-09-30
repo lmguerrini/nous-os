@@ -1,5 +1,6 @@
 import type { Coordinates } from "#engine/contract.ts";
 import type { OklchToken } from "#engine/tokens.ts";
+import { morphologyHash } from "#engine/stable-hash.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import type { Scene, SceneAggregate, SceneEdge, SceneNode, SceneTokenEncoding } from "#scene/contract.ts";
 
@@ -15,6 +16,8 @@ export type NodeBuffers = {
   readonly haloIntensityPermille: Float32Array;
   readonly coreSharpnessPermille: Float32Array;
   readonly minimumCoreDeviceRadiiPx: Float32Array;
+  /** Neural flag and deterministic outline phase; geometric only. */
+  readonly somaShape: Float32Array;
   readonly haloStopOffsets: Float32Array;
   readonly haloStopAlphaMultipliers: Float32Array;
   readonly haloStopCounts: Float32Array;
@@ -74,14 +77,16 @@ export type SrgbColor = {
 /** This converts the complete scene into deterministic typed arrays and does not allocate renderer resources. */
 export function buildSceneBuffers(scene: Scene): SceneBuffers {
   return {
-    nodes: buildNodeBuffers(scene.nodes, scene.tokenEncoding),
+    nodes: buildNodeBuffers(scene.nodes, scene.tokenEncoding,
+      new Set(scene.edges.filter(edge => edge.filament.hotMixPermille > 0).flatMap(edge => [edge.source, edge.target]))),
     filaments: buildFilamentBuffers(scene.edges, scene.tokens.peak, scene.tokenEncoding, scene.nodes),
     aggregates: buildAggregateBuffers(scene.aggregates, scene.tokenEncoding),
   };
 }
 
 /** This converts resolved nodes into stable instanced attributes and does not recompute node material. */
-export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTokenEncoding): NodeBuffers {
+export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTokenEncoding,
+  neuralNodeIds: ReadonlySet<string> = new Set()): NodeBuffers {
   const ordered = [...nodes].sort(compareStackingPriority);
   const positions = new Float32Array(ordered.length * coordinateCount());
   const colorsSrgb = new Float32Array(ordered.length * colorChannelCount());
@@ -92,6 +97,7 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
   const haloIntensityPermille = new Float32Array(ordered.length);
   const coreSharpnessPermille = new Float32Array(ordered.length);
   const minimumCoreDeviceRadiiPx = new Float32Array(ordered.length);
+  const somaShape = new Float32Array(ordered.length * 2);
   const haloStopCount = ordered.reduce((maximum, node) => Math.max(maximum, node.haloAlphaStops.length), 0);
   const haloStopOffsets = new Float32Array(ordered.length * haloStopCount);
   const haloStopAlphaMultipliers = new Float32Array(ordered.length * haloStopCount);
@@ -106,6 +112,8 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
     haloIntensityPermille[index] = node.haloIntensityPermille;
     coreSharpnessPermille[index] = node.coreSharpnessPermille;
     minimumCoreDeviceRadiiPx[index] = node.minimumCoreDeviceRadiusPx;
+    somaShape[index * 2] = neuralNodeIds.has(node.id) ? 1 : 0;
+    somaShape[index * 2 + 1] = (morphologyHash(node.id) % 6283) / 1000;
     haloStopCounts[index] = node.haloAlphaStops.length;
     for (const [stopIndex, stop] of node.haloAlphaStops.entries()) {
       const offset = (index * haloStopCount) + stopIndex;
@@ -124,6 +132,7 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
     haloIntensityPermille,
     coreSharpnessPermille,
     minimumCoreDeviceRadiiPx,
+    somaShape,
     haloStopOffsets,
     haloStopAlphaMultipliers,
     haloStopCounts,

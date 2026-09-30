@@ -35,6 +35,7 @@ in float a_coreSharpnessPermille;
 in float a_minimumCoreDeviceRadiusPx;
 in float a_haloStopCount;
 in float a_instanceIndex;
+in vec2 a_somaShape;
 uniform mat4 modelViewMatrix;
 uniform mat4 projectionMatrix;
 uniform vec2 u_resolutionDevicePx;
@@ -52,6 +53,7 @@ flat out float v_haloIntensityPermille;
 flat out float v_coreSharpnessPermille;
 flat out int v_haloStopCount;
 flat out int v_instanceIndex;
+flat out vec2 v_somaShape;
 void main() {
   vec4 viewCenter = modelViewMatrix * vec4(a_worldPosition, 1.0);
   vec4 clipCenter = projectionMatrix * viewCenter;
@@ -72,10 +74,10 @@ void main() {
   float haloGapRadius = coreRadius + (a_haloCoreGapPx * sizeScale * u_devicePixelRatio);
   float haloRadius = max(requestedHaloRadius, haloGapRadius);
   vec2 corner = vec2((position.x * 2.0) - 1.0, position.y);
-  vec2 clipOffset = corner * haloRadius * 2.0 / u_resolutionDevicePx;
+  vec2 clipOffset = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.1 : 1.0) * 2.0 / u_resolutionDevicePx;
   gl_Position = clipCenter;
   gl_Position.xy += clipOffset * clipCenter.w;
-  v_localDevicePx = corner * haloRadius;
+  v_localDevicePx = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.1 : 1.0);
   v_color = a_color;
   v_coreRadiusDevicePx = coreRadius;
   v_haloRadiusDevicePx = haloRadius;
@@ -84,6 +86,7 @@ void main() {
   v_coreSharpnessPermille = a_coreSharpnessPermille;
   v_haloStopCount = int(a_haloStopCount);
   v_instanceIndex = int(a_instanceIndex);
+  v_somaShape = a_somaShape;
 }`;
 
 /** This composes a fuller-centred soft core with scene-sampled halo alpha and does not invent a bloom magnitude. */
@@ -97,6 +100,7 @@ flat in float v_haloIntensityPermille;
 flat in float v_coreSharpnessPermille;
 flat in int v_haloStopCount;
 flat in int v_instanceIndex;
+flat in vec2 v_somaShape;
 uniform sampler2D u_haloStops;
 uniform float u_permilleScale;
 out vec4 outputColor;
@@ -117,6 +121,13 @@ float sampledHaloAlpha(float offset) {
 }
 void main() {
   float radialDistance = length(v_localDevicePx);
+  if (v_somaShape.x > 0.5) {
+    float angle = atan(v_localDevicePx.y, v_localDevicePx.x);
+    float visibility = smoothstep(2.0, 7.0, v_coreRadiusDevicePx);
+    float outline = 1.0 + visibility * (0.05 * sin(3.0 * angle + v_somaShape.y)
+      + 0.03 * cos(4.0 * angle - v_somaShape.y));
+    radialDistance /= outline;
+  }
   // A GRADIENT core, weighted toward the centre — not a hard-edged disc. An anti-aliased disc was
   // tried and measured a fourteenfold better core-concentration ratio while making every node read
   // as a flat grey circle, which is precisely the identity this engine exists to replace. The
@@ -145,6 +156,7 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
   geometry.setAttribute("a_worldPosition", instanced(buffers.positions, coordinateCount()));
   geometry.setAttribute("a_color", instanced(buffers.colorsSrgb, colorChannelCount()));
   geometry.setAttribute("a_coreRadiusPx", instanced(buffers.coreRadiiPx, scalarCount()));
+  geometry.setAttribute("a_somaShape", instanced(buffers.somaShape, 2));
   geometry.setAttribute("a_haloRadiusPx", instanced(buffers.haloRadiiPx, scalarCount()));
   geometry.setAttribute("a_haloCoreGapPx", instanced(buffers.haloCoreGapsPx, scalarCount()));
   geometry.setAttribute("a_opacityPermille", instanced(buffers.opacityPermille, scalarCount()));
@@ -186,6 +198,7 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
 export function updateNodeRenderResources(resources: NodeRenderResources, buffers: NodeBuffers): void {
   copyAttribute(resources.geometry, "a_color", buffers.colorsSrgb);
   copyAttribute(resources.geometry, "a_coreRadiusPx", buffers.coreRadiiPx);
+  copyAttribute(resources.geometry, "a_somaShape", buffers.somaShape);
   copyAttribute(resources.geometry, "a_haloRadiusPx", buffers.haloRadiiPx);
   copyAttribute(resources.geometry, "a_haloCoreGapPx", buffers.haloCoreGapsPx);
   copyAttribute(resources.geometry, "a_opacityPermille", buffers.opacityPermille);

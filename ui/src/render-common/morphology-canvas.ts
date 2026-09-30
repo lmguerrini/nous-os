@@ -3,7 +3,7 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { MorphologyContainerPath, MorphologyGeometry, MorphologyInput, MorphologyNodeShape, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
-import { SOMA_OUTLINE_MAX_RADIAL, neuralScreenWidthAt, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
+import { SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralScreenWidthAt, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
@@ -817,6 +817,8 @@ export type MorphologyEdgePaint = {
   /** Constant base alpha of the line: presentation-derived only, never time-dependent (V13). */
   readonly alpha: number;
   readonly widthAt: (i: number) => number;
+  readonly detailStartPx: number;
+  readonly detailEndPx: number;
 };
 
 /** A projected C1 centre-line through the existing geometry samples. Work is bounded per
@@ -975,7 +977,7 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         // centre-line only; it cannot turn the shaft into a zoom-scaled band.
         const body = Math.max(0.3, appearance.edgeWidth * widthFactor
           * (emphasis?.radiusMultiplier ?? 1));
-        return neuralScreenWidthAt(t, body, startRadius, endRadius, contract.edge.taper);
+        return neuralScreenWidthAt(t, body, startRadius, endRadius, contract.edge.taper, totalPx);
       }
       const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
       return clamp(profile * factors * appearance.edgeWidth, 0.5, 16);
@@ -990,7 +992,9 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         : Math.max(0.14, opacity * appearance.edgeOpacity * (emphasis?.brightnessMultiplier ?? 1))),
       0, 1);
     const alpha = focusArcOpacity(focus ?? null, part.edgeId, baseAlpha);
-    paints.push({ part, edgeId: part.edgeId, category, points, cumulative, totalPx, color, alpha, widthAt });
+    paints.push({ part, edgeId: part.edgeId, category, points, cumulative, totalPx, color, alpha, widthAt,
+      detailStartPx: neuralTaper && neuralDetailVisible(points[0]!.scale, startRadius, totalPx) ? startRadius : 0,
+      detailEndPx: neuralTaper && neuralDetailVisible(points[points.length - 1]!.scale, endRadius, totalPx) ? endRadius : 0 });
   }
   return paints;
 }
@@ -1038,6 +1042,48 @@ function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePa
   }
   context.fillStyle = rgba(color, paint.alpha);
   fillRibbon(paint.widthAt);
+}
+
+/** One cosmetic offshoot per visible endpoint, rooted on a real relation. No geometry, ID or hit
+ * area is added to the graph; the close-up pass is bounded to a fixed stroke budget. */
+function drawNeuralDetail(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint, budget: number): number {
+  let drawn = 0;
+  for (let endpoint = 0; endpoint < 2; endpoint++) {
+    if (drawn >= budget) break;
+    const atStart = endpoint === 0;
+    const radius = atStart ? paint.detailStartPx : paint.detailEndPx;
+    if (radius <= 0) continue;
+    const distance = radius * 1.8;
+    let index = atStart ? 1 : paint.points.length - 2;
+    if (atStart) {
+      while (index < paint.points.length - 2 && paint.cumulative[index]! < distance) index++;
+    } else {
+      while (index > 1 && paint.totalPx - paint.cumulative[index]! < distance) index--;
+    }
+    const anchor = paint.points[index]!;
+    const before = paint.points[index - 1]!, after = paint.points[index + 1]!;
+    const length = Math.hypot(after.x - before.x, after.y - before.y) || 1;
+    const sign = (morphologyHash(paint.edgeId) & 1 ? 1 : -1) * (atStart ? 1 : -1);
+    const tx = (after.x - before.x) / length * (atStart ? 1 : -1);
+    const ty = (after.y - before.y) / length * (atStart ? 1 : -1);
+    const nx = -ty * sign, ny = tx * sign;
+    const previousAlpha = context.globalAlpha;
+    context.globalAlpha = previousAlpha * paint.alpha * 0.55;
+    context.strokeStyle = paint.color;
+    context.lineWidth = Math.min(paint.widthAt(index) * 0.35, 1.2);
+    context.lineCap = "round";
+    context.beginPath(); context.moveTo(anchor.x, anchor.y);
+    const tipX = anchor.x + tx * radius * 0.65 + nx * radius * 0.8;
+    const tipY = anchor.y + ty * radius * 0.65 + ny * radius * 0.8;
+    if (typeof context.quadraticCurveTo === "function") context.quadraticCurveTo(
+      anchor.x + tx * radius * 0.4 + nx * radius * 0.25,
+      anchor.y + ty * radius * 0.4 + ny * radius * 0.25, tipX, tipY);
+    else context.lineTo(tipX, tipY);
+    context.stroke();
+    context.globalAlpha = previousAlpha;
+    drawn++;
+  }
+  return drawn;
 }
 
 /** Fallback for contexts without image drawing (notably the small recording contexts in tests). */
@@ -1318,8 +1364,13 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     const inlineHighlights = (style.interaction?.flowLayer ?? "inline") === "inline";
     const now = flowNow();
     const inlineFlowPaints: MorphologyEdgePaint[] = [];
+    let neuralDetailStrokes = 0;
     for (const paint of paints) {
       drawEdgeBase(context, paint, moving && geometry.morphology === "neural");
+      if (!moving && !simplified && !testHook()?.hideNodes && geometry.morphology === "neural" && neuralDetailStrokes < 128
+        && (paint.detailStartPx > 0 || paint.detailEndPx > 0)) {
+        neuralDetailStrokes += drawNeuralDetail(context, paint, 128 - neuralDetailStrokes);
+      }
       if (paint.category === "exploratory") {
         // "separate" leaves the travelling highlight to the dedicated overlay: nothing draws here,
         // so the lighter composite (and its restore) is skipped for that edge entirely.

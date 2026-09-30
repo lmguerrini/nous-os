@@ -109,6 +109,7 @@ flat out float v_opacity;
 flat out vec4 v_widthsAndPicking;
 flat out vec4 v_neuralProfile;
 flat out vec2 v_neuralRadiiDevicePx;
+flat out vec2 v_neuralScale;
 flat out vec4 v_minimumAndJunctionPermille;
 flat out vec4 v_sheathAndCorePermille;
 flat out vec4 v_hotAndWobble;
@@ -123,6 +124,10 @@ vec2 clipToDevice(vec4 clipPosition) {
 void main() {
   vec4 viewStart = modelViewMatrix * vec4(a_start, 1.0);
   vec4 viewEnd = modelViewMatrix * vec4(a_end, 1.0);
+  float startScale = mix(u_sizeScale,
+    u_referenceViewDepth / max(-viewStart.z, u_referenceViewDepth / u_permilleScale), u_isPerspective);
+  float endScale = mix(u_sizeScale,
+    u_referenceViewDepth / max(-viewEnd.z, u_referenceViewDepth / u_permilleScale), u_isPerspective);
   vec4 clipStart = projectionMatrix * viewStart;
   vec4 clipControl = projectionMatrix * modelViewMatrix * vec4(a_control, 1.0);
   vec4 clipEnd = projectionMatrix * viewEnd;
@@ -143,11 +148,13 @@ void main() {
     a_widthsAndPicking.z * u_devicePixelRatio * 0.5,
     maximumBaseWidth * maximumWidthFactor * 0.5
   );
-  if (a_neuralProfile.w > 0.5) maximumBodyHalfWidth = 5.0 * u_devicePixelRatio;
+  if (a_neuralProfile.w > 0.5) maximumBodyHalfWidth = 6.0 * u_devicePixelRatio;
   float materialExtent = max(
     maximumBodyHalfWidth * a_sheathAndCorePermille.x / u_permilleScale,
     maximumBodyHalfWidth + (a_widthsAndPicking.w * u_devicePixelRatio)
   );
+  if (a_neuralProfile.w > 0.5 && max(startScale, endScale) >= 1.75)
+    materialExtent = max(materialExtent, 16.0 * u_devicePixelRatio);
   float medialExtent = chordLength * abs(a_hotAndWobble.z / u_permilleScale);
   if (a_neuralProfile.w > 0.5) medialExtent = min(medialExtent,
     clamp(u_neuralWidthPx, 0.3, 10.0) * u_devicePixelRatio * 5.0);
@@ -163,12 +170,9 @@ void main() {
   v_opacity = a_opacityPermille / u_permilleScale;
   v_widthsAndPicking = a_widthsAndPicking;
   v_neuralProfile = a_neuralProfile;
-  float startScale = mix(u_sizeScale,
-    u_referenceViewDepth / max(-viewStart.z, u_referenceViewDepth / u_permilleScale), u_isPerspective);
-  float endScale = mix(u_sizeScale,
-    u_referenceViewDepth / max(-viewEnd.z, u_referenceViewDepth / u_permilleScale), u_isPerspective);
   v_neuralRadiiDevicePx = vec2(clamp(a_neuralProfile.y * startScale, 2.0, 9.0),
     clamp(a_neuralProfile.z * endScale, 2.0, 9.0)) * u_devicePixelRatio;
+  v_neuralScale = vec2(startScale, endScale);
   v_minimumAndJunctionPermille = a_minimumAndJunctionPermille;
   v_sheathAndCorePermille = a_sheathAndCorePermille;
   v_hotAndWobble = a_hotAndWobble;
@@ -187,6 +191,7 @@ flat in float v_opacity;
 flat in vec4 v_widthsAndPicking;
 flat in vec4 v_neuralProfile;
 flat in vec2 v_neuralRadiiDevicePx;
+flat in vec2 v_neuralScale;
 flat in vec4 v_minimumAndJunctionPermille;
 flat in vec4 v_sheathAndCorePermille;
 flat in vec4 v_hotAndWobble;
@@ -248,6 +253,25 @@ float filamentMedialOffsetPx(float parameter, float span) {
   );
   return excursionPx * endpointEnvelope * wave;
 }
+float neuralBranchCoverage(float radius, float scale, bool atStart, float span) {
+  if (scale < 1.75 || radius < 5.0 * u_devicePixelRatio || span < radius * 6.0) return 0.0;
+  float t = radius * 1.8 / span;
+  if (!atStart) t = 1.0 - t;
+  vec2 anchor = mix(mix(v_cpA, v_cpB, t), mix(v_cpB, v_cpC, t), t);
+  vec2 tangent = normalize(mix(v_cpB - v_cpA, v_cpC - v_cpB, t));
+  vec2 normal = vec2(-tangent.y, tangent.x);
+  anchor += normal * filamentMedialOffsetPx(t, span);
+  if (!atStart) tangent = -tangent;
+  float side = atStart ? 1.0 : -1.0;
+  vec2 tip = anchor + tangent * radius * 0.65 + normal * side * radius * 0.8;
+  vec2 arm = tip - anchor;
+  float along = clamp(dot(gl_FragCoord.xy - anchor, arm) / max(dot(arm, arm), 0.001), 0.0, 1.0);
+  float distance = length(gl_FragCoord.xy - (anchor + arm * along));
+  float halfWidth = min(clamp(u_neuralWidthPx, 0.3, 10.0) * u_devicePixelRatio * 0.175,
+    0.6 * u_devicePixelRatio);
+  float feather = 0.75 * u_devicePixelRatio;
+  return 1.0 - smoothstep(halfWidth - feather, halfWidth + feather, distance);
+}
 void main() {
   vec2 distanceSample = filamentDistance(gl_FragCoord.xy, v_cpA, v_cpB, v_cpC);
   float parameter = distanceSample.y;
@@ -262,10 +286,15 @@ void main() {
     float ordinary = clamp(u_neuralWidthPx, 0.3, 10.0) * u_devicePixelRatio;
     float startRadius = v_neuralRadiiDevicePx.x;
     float endRadius = v_neuralRadiiDevicePx.y;
-    float startRoot = min(ordinary * 2.4, min(10.0 * u_devicePixelRatio, max(ordinary, startRadius * 1.8)));
-    float endRoot = min(ordinary * 2.4, min(10.0 * u_devicePixelRatio, max(ordinary, endRadius * 1.8)));
-    float startEase = 1.0 - smoothstep(0.0, 0.28, parameter);
-    float endEase = 1.0 - smoothstep(0.0, 0.28, 1.0 - parameter);
+    float startRoot = min(ordinary * 2.4, min(12.0 * u_devicePixelRatio, max(ordinary, startRadius * 2.0)));
+    float endRoot = min(ordinary * 2.4, min(12.0 * u_devicePixelRatio, max(ordinary, endRadius * 2.0)));
+    float span = max(length(v_cpC - v_cpA), 1.0);
+    float startShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
+      max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);
+    float endShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
+      max(12.0 * u_devicePixelRatio, endRadius * 2.5 + ordinary * 3.0)) / span);
+    float startEase = 1.0 - smoothstep(0.0, startShoulder, parameter);
+    float endEase = 1.0 - smoothstep(0.0, endShoulder, 1.0 - parameter);
     bodyHalfWidth = 0.5 * (ordinary + (startRoot - ordinary) * startEase
       + (endRoot - ordinary) * endEase);
   }
@@ -275,6 +304,13 @@ void main() {
   float sheathHalfWidth = bodyHalfWidth * v_sheathAndCorePermille.x / u_permilleScale;
   float sheathCoverage = 1.0 - smoothstep(sheathHalfWidth - feather, sheathHalfWidth + feather, distance);
   float bodyCoverage = 1.0 - smoothstep(bodyHalfWidth - feather, bodyHalfWidth + feather, distance);
+  float branchCoverage = 0.0;
+  if (v_neuralProfile.w > 0.5) {
+    float span = length(v_cpC - v_cpA);
+    branchCoverage = max(neuralBranchCoverage(v_neuralRadiiDevicePx.x, v_neuralScale.x, true, span),
+      neuralBranchCoverage(v_neuralRadiiDevicePx.y, v_neuralScale.y, false, span));
+    bodyCoverage = max(bodyCoverage, branchCoverage * 0.55);
+  }
   float coreHalfWidth = bodyHalfWidth * v_sheathAndCorePermille.z / u_permilleScale;
   float coreCoverage = 1.0 - smoothstep(coreHalfWidth - feather, coreHalfWidth + feather, distance);
   float propagationPosition = v_propagationPermille.x / u_permilleScale;
@@ -297,7 +333,7 @@ void main() {
   vec4 hot = vec4(hotColor * hotAlpha, hotAlpha);
   vec4 composed = body + sheath * (1.0 - body.a);
   composed = hot + composed * (1.0 - hot.a);
-  if (composed.a <= 0.0 || distance > sheathHalfWidth + feather) {
+  if (composed.a <= 0.0 || (distance > sheathHalfWidth + feather && branchCoverage <= 0.0)) {
     discard;
   }
   outputColor = composed;
