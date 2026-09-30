@@ -2,7 +2,7 @@ import { compactDisplayLabel, displayLabel } from './graph-v2.ts';
 import type { GraphEdge } from './graph-v2.ts';
 import type { V2Node } from './v2-core.ts';
 import type { LiftedRelation } from './v2-relations.ts';
-import type { PickResult, ProjectionResult, RenderVisibility, VisualContainer, VisualRelation } from '../projection/contract-types.ts';
+import type { Explanation, PickResult, ProjectionResult, RenderVisibility, VisualContainer, VisualRelation } from '../projection/contract-types.ts';
 import { sourceRelationWording, structuralRelationWording } from './presentation.ts';
 import { ABSOLUTE_CONTAINER_ID } from './layout-v2.ts';
 
@@ -30,9 +30,17 @@ export type PanelModel = {
   why?: string | undefined; direction?: string | undefined; directionMeaning?: string | undefined; confidence?: string | undefined;
   evidence: PanelEvidence[]; evidenceSummary?: string | undefined; sources: string[];
   groups: RelationGroup[]; technical: unknown;
+  projectionExplanation?: Explanation | undefined;
+  projectionExperimental?: boolean | undefined;
+  projectionRefusal?: string | undefined;
 };
 export function panelSectionOrder(model: PanelModel): string[] {
   return ['Sintesi', ...(model.why ? ['Perché è collegato?'] : []),
+    ...(model.projectionRefusal ? ['Stato delle coordinate'] : []),
+    ...(model.projectionExplanation?.numericalWitness ? ['Testimonianza numerica'] : []),
+    ...(model.projectionExplanation?.parameterIds.length ? ['Parametri'] : []),
+    ...(model.projectionExplanation?.limitation ? ['Limite'] : []),
+    ...(model.projectionExplanation?.sourceIds.length ? ['Provenienza'] : []),
     ...(model.direction ? ['Direzione'] : []), ...(model.confidence ? ['Confidenza'] : []),
     ...(model.evidenceSummary ? ['Evidenze'] : []), ...(model.groups.length ? ['Relazioni'] : []),
     'Dettagli tecnici / JSON'];
@@ -228,6 +236,7 @@ export function buildStructuralPickPanel(
     if (!relation) throw new Error(`Visual relation pick is absent from projection: ${pick.visualId}`);
     if (relation.semantic !== false) throw new Error(`Visual relation must remain non-semantic: ${pick.visualId}`);
     if (relation.kind === 'lifted-route') throw new Error('Lifted routes must be opened through their original source edges.');
+    if (projection.explanations?.[pick.visualId]) return buildProjectionExplanationPanel(pick, projection, visibility);
     const left = nodes.get(relation.source), right = nodes.get(relation.target);
     const leftLabel = left ? displayLabel(left) : 'Elemento di origine';
     const rightLabel = right ? displayLabel(right) : 'Elemento collegato';
@@ -250,9 +259,58 @@ export function buildStructuralPickPanel(
     if (!visibility.containerIds.has(pick.visualId)) throw new Error(`Container pick is not visible: ${pick.visualId}`);
     const container = projection.containers.find(item => item.visualId === pick.visualId);
     if (!container) throw new Error(`Container pick is absent from projection: ${pick.visualId}`);
+    if (projection.explanations?.[pick.visualId]) return buildProjectionExplanationPanel(pick, projection, visibility);
     return buildStructuralContainerPanel(container);
   }
   throw new Error(`Pick kind ${pick.kind} is not a structural panel target.`);
+}
+
+/** Build an inspector model only from an explanation emitted by the selected projection. */
+export function buildProjectionExplanationPanel(
+  pick: PickResult,
+  projection: ProjectionResult,
+  visibility: RenderVisibility,
+): PanelModel {
+  if (visibility.projectionResultDigest !== projection.determinism.resultDigest)
+    throw new Error('Projection explanation visibility belongs to a different result.');
+
+  const pickId = pick.kind === 'node' || pick.kind === 'semantic-edge' ? pick.id : pick.visualId;
+  const refusal = projection.coordinateState.kind === 'no-coordinates' ? projection.coordinateState : undefined;
+  const id = refusal?.explanationId ?? pickId;
+  const explanation = projection.explanations[id];
+  if (!explanation) throw new Error(`Projection explanation is absent: ${id}`);
+  if (explanation.elementId !== id) throw new Error(`Projection explanation key mismatch: ${id}`);
+  if (!refusal && explanation.elementKind !== pick.kind)
+    throw new Error(`Projection explanation kind mismatch for ${id}: ${explanation.elementKind} vs ${pick.kind}`);
+
+  const visible = pick.kind === 'node' ? visibility.nodeIds.has(pick.id)
+    : pick.kind === 'semantic-edge' ? visibility.semanticEdgeIds.has(pick.id)
+      : pick.kind === 'visual-relation' ? visibility.visualRelationIds.has(pick.visualId)
+        : pick.kind === 'container' ? visibility.containerIds.has(pick.visualId)
+          : pick.kind === 'curve' ? visibility.curveIds.has(pick.visualId)
+            : visibility.fieldIds.has(pick.visualId);
+  if (!refusal && !visible) throw new Error(`Projection pick is not visible: ${pickId}`);
+
+  const derived = explanation.elementKind === 'visual-relation' || explanation.elementKind === 'container'
+    || explanation.elementKind === 'curve' || explanation.elementKind === 'field';
+  const title = explanation.elementKind === 'node' ? 'Nodo · spiegazione della proiezione'
+    : explanation.elementKind === 'semantic-edge' ? 'Relazione sorgente · spiegazione della proiezione'
+      : explanation.elementKind === 'visual-relation' ? 'Relazione visuale derivata'
+        : explanation.elementKind === 'container' ? 'Contenitore derivato'
+          : explanation.elementKind === 'curve' ? 'Curva derivata'
+            : 'Campo derivato';
+  const experimental = projection.diagnostics.some(diagnostic => diagnostic.code === 'holographic-experimental');
+  return {
+    title, type: 'Spiegazione della proiezione',
+    badge: refusal ? 'Nessuna coordinata' : derived ? 'Derivato · non attestato' : 'Proiezione',
+    synthesis: explanation.summary,
+    evidence: [], sources: [], groups: [],
+    projectionExplanation: explanation,
+    projectionExperimental: experimental,
+    projectionRefusal: refusal ? `${refusal.code} · nessuna posizione assegnata.` : undefined,
+    technical: { elementId: explanation.elementId, elementKind: explanation.elementKind,
+      resultDigest: projection.determinism.resultDigest, refusal: refusal ?? undefined },
+  };
 }
 
 function buildStructuralContainerPanel(container: VisualContainer): PanelModel {
@@ -269,11 +327,37 @@ export function renderSelection(host: HTMLElement, model: PanelModel, onRelation
   const root = document.createElement('article'); root.className = 'selection-card';
   const title = document.createElement('h2'); title.textContent = model.title; title.title = model.fullTitle ?? model.title; root.append(title);
   const badges = document.createElement('div'); badges.className = 'selection-badges';
-  for (const label of [model.type, model.badge, model.epistemic].filter(Boolean)) { const badge = document.createElement('span'); badge.className = 'selection-badge'; badge.textContent = label!; badges.append(badge); }
+  for (const label of [model.type, model.badge, model.epistemic, ...(model.projectionExperimental ? ['Sperimentale'] : [])].filter(Boolean)) { const badge = document.createElement('span'); badge.className = 'selection-badge'; badge.textContent = label!; badges.append(badge); }
   root.append(badges);
   const section = (heading: string, content: string) => { if (!content) return; const box = document.createElement('section'); box.className = 'selection-section'; const h = document.createElement('h3'); h.textContent = heading; const p = document.createElement('p'); p.textContent = content; box.append(h, p); root.append(box); };
   section('Sintesi', model.synthesis);
   if (model.why) section('Perché è collegato?', model.why);
+  if (model.projectionRefusal) section('Stato delle coordinate', model.projectionRefusal);
+  if (model.projectionExplanation) {
+    const explanation = model.projectionExplanation;
+    if (explanation.numericalWitness) {
+      const box = document.createElement('section'); box.className = 'selection-section projection-witness';
+      const heading = document.createElement('h3'); heading.textContent = 'Testimonianza numerica'; box.append(heading);
+      const table = document.createElement('table');
+      for (const [key, value] of Object.entries(explanation.numericalWitness)) {
+        const row = document.createElement('tr'); const name = document.createElement('th'); name.scope = 'row'; name.textContent = key;
+        const cell = document.createElement('td'); cell.textContent = String(value); row.append(name, cell); table.append(row);
+      }
+      box.append(table); root.append(box);
+    }
+    if (explanation.parameterIds.length) section('Parametri', explanation.parameterIds.join(' · '));
+    if (explanation.limitation) section('Limite', explanation.limitation);
+    if (explanation.sourceIds.length) {
+      const box = document.createElement('section'); box.className = 'selection-section projection-provenance';
+      const heading = document.createElement('h3'); heading.textContent = 'Provenienza'; box.append(heading);
+      const note = document.createElement('p'); note.textContent = 'ID delle fonti collegate alla spiegazione; separati dalla geometria visuale.'; box.append(note);
+      for (const sourceId of explanation.sourceIds) {
+        const link = document.createElement('button'); link.type = 'button'; link.className = 'projection-source-link';
+        link.textContent = sourceId; link.onclick = () => onRelation(sourceId); box.append(link);
+      }
+      root.append(box);
+    }
+  }
   if (model.direction) section('Direzione', `${model.direction}. ${model.directionMeaning ?? ''}`);
   if (model.confidence) section('Confidenza', model.confidence);
   if (model.evidenceSummary) {
