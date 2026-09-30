@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { denseLaplacian, solveDenseSymmetricEigen } from '../../src/holographic/dense.ts';
 import {
   EXPLAIN_NO_TOPOLOGY_CLAIM, EXPLAIN_STATED_BASELINE, HOLOGRAPHIC_EXPLAIN_VERSION,
-  errorModelExplanation, holographicErrorModel, regionReconstructionExplanation, regionReconstructionWitness,
+  coincidentNodeDisplayExplanation, errorModelExplanation, holographicErrorModel, regionReconstructionExplanation, regionReconstructionWitness,
   type RegionDescriptor, type RegionReconstructionWitness,
 } from '../../src/holographic/explain.ts';
 import { RECOVERY_BASELINE_GLOBAL_MEAN, recoverBandlimitedSignal } from '../../src/holographic/recovery.ts';
@@ -172,4 +172,14 @@ test('a ridge recovery is labelled a ridge estimate, never an exact claim', () =
   assert.equal(witness.claim, 'ridge-estimate');
   assert.equal(witness.ridge, 0.25);
   assert.equal(holographicErrorModel([witness]).anyExactClaim, false);
+});
+
+test('coincident-node wording keeps exact spectral coordinates separate from display radius', () => {
+  const explanation = coincidentNodeDisplayExplanation('node-1', [0.125, -0.5], 0.025, 'coincident-node-ring-v1');
+  assert.equal(explanation.elementId, 'node-1');
+  assert.equal(explanation.elementKind, 'node');
+  assert.match(explanation.summary, /Posizione spettrale esatta \(0\.125, -0\.5\)/);
+  assert.match(explanation.summary, /spostamento di visualizzazione per nodi coincidenti: r=0\.0250000/);
+  assert.deepEqual(explanation.numericalWitness, { exactCoordinate: '(0.125, -0.5)', displayOffsetRadius: 0.025 });
+  assert.ok(explanation.parameterIds.includes('coincident-node-ring-v1'));
 });

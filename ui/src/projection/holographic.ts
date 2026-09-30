@@ -41,6 +41,7 @@ import {
 } from '../holographic/signals.ts';
 import {
   errorModelExplanation, holographicErrorModel, regionReconstructionExplanation, structuralErrorModel,
+  coincidentNodeDisplayExplanation,
   regionReconstructionWitness, EXPLAIN_NO_TOPOLOGY_CLAIM, EXPLAIN_STATED_BASELINE,
   type RegionDescriptor, type RegionReconstructionWitness, type StructuralRegionWitness,
 } from '../holographic/explain.ts';
@@ -50,7 +51,7 @@ import type {
   ProjectionParameters, ProjectionRequest, ProjectionResult, RawJson, SemanticGraphSnapshot,
 } from './contract-types.ts';
 
-export const HOLOGRAPHIC_PROJECTION_VERSION = 'holographic-projection-v5';
+export const HOLOGRAPHIC_PROJECTION_VERSION = 'holographic-projection-v6';
 export const HOLOGRAPHIC_NUMERIC_BACKEND_VERSION = 'javascript-number-v1';
 /** The experimental flag every Holographic result carries in diagnostics. */
 export const HOLOGRAPHIC_EXPERIMENTAL_FLAG = 'holographic-experimental';
@@ -71,12 +72,82 @@ export const HOLOGRAPHIC_REGION_POLICY_DERIVED_COMPONENTS = 'derived-components-
 /** The stated baseline and limitation text, re-exported for the panel seam (F9 view half). */
 export const HOLOGRAPHIC_STATED_BASELINE = EXPLAIN_STATED_BASELINE;
 export const HOLOGRAPHIC_NO_TOPOLOGY_CLAIM = EXPLAIN_NO_TOPOLOGY_CLAIM;
+/** Final display-only adjustment for nodes with coincident spectral positions. */
+export const HOLOGRAPHIC_DISPLAY_OFFSET_VERSION = 'coincident-node-ring-v1';
+export const HOLOGRAPHIC_COINCIDENCE_RELATIVE_TOLERANCE = 1e-8;
+export const HOLOGRAPHIC_DISPLAY_RING_RADIUS_FRACTION = 0.1;
 
 type HolographicParameters = ProjectionParameters['holographic'];
 type Diagnostic = Readonly<{ code: string; value: number | string; acceptable: boolean }>;
 
 function codepointOrder(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+type DisplayPoint = { x: number; y: number; z?: number };
+type DisplayOffset = Readonly<{ exact: readonly number[]; radius: number }>;
+
+function distance(a: readonly number[], b: readonly number[]): number {
+  let sum = 0;
+  for (let axis = 0; axis < a.length; axis += 1) sum += (a[axis]! - b[axis]!) ** 2;
+  return Math.sqrt(sum);
+}
+
+/** Applies the declared display-only ring rule after the spectral coordinates are final. */
+function separateCoincidentNodes(
+  graph: SpectralGraph,
+  dimension: '2d' | '3d',
+  exactPositions: Readonly<Partial<Record<NodeId, Readonly<{ x: number; y: number; z?: number }>>>>,
+): { positions: Readonly<Partial<Record<NodeId, DisplayPoint>>>; offsets: ReadonlyMap<NodeId, DisplayOffset>; groupCount: number } {
+  const positions: Record<NodeId, DisplayPoint> = {};
+  for (const id of graph.nodeIds) {
+    const point = exactPositions[id];
+    if (point === undefined) fail(`missing exact coordinate for ${id}`);
+    positions[id] = dimension === '2d' ? { x: point.x, y: point.y } : { x: point.x, y: point.y, z: point.z ?? 0 };
+  }
+  const offsets = new Map<NodeId, DisplayOffset>();
+  let groupCount = 0;
+  for (const component of graph.components) {
+    const ids = component.memberIndices.map(index => graph.nodeIds[index]!).sort(codepointOrder);
+    const coordinates = new Map(ids.map(id => {
+      const point = positions[id]!;
+      return [id, dimension === '2d' ? [point.x, point.y] : [point.x, point.y, point.z ?? 0]] as const;
+    }));
+    const extent = Math.max(...Array.from({ length: dimension === '2d' ? 2 : 3 }, (_v, axis) => {
+      const values = ids.map(id => coordinates.get(id)![axis]!);
+      return Math.max(...values) - Math.min(...values);
+    }));
+    const tolerance = HOLOGRAPHIC_COINCIDENCE_RELATIVE_TOLERANCE * extent;
+    const groups: string[][] = [];
+    for (const id of ids) {
+      const point = coordinates.get(id)!;
+      const group = groups.find(candidate => distance(point, coordinates.get(candidate[0]!)!) <= tolerance);
+      if (group === undefined) groups.push([id]); else group.push(id);
+    }
+    for (const members of groups) {
+      if (members.length < 2) continue;
+      groupCount += 1;
+      const dim = dimension === '2d' ? 2 : 3;
+      const center = Array.from({ length: dim }, (_v, axis) =>
+        members.reduce((sum, id) => sum + coordinates.get(id)![axis]!, 0) / members.length);
+      let nearest = Number.POSITIVE_INFINITY;
+      for (const id of ids) {
+        if (members.includes(id)) continue;
+        nearest = Math.min(nearest, distance(center, coordinates.get(id)!));
+      }
+      // A component with no distinct point uses its own display scale; no other group can be crossed.
+      const radius = HOLOGRAPHIC_DISPLAY_RING_RADIUS_FRACTION * (Number.isFinite(nearest) ? nearest : extent);
+      members.forEach((id, ordinal) => {
+        const angle = 2 * Math.PI * ordinal / members.length;
+        const point: DisplayPoint = dimension === '2d'
+          ? { x: center[0]! + radius * Math.cos(angle), y: center[1]! + radius * Math.sin(angle) }
+          : { x: center[0]!, y: center[1]! + radius * Math.cos(angle), z: center[2]! + radius * Math.sin(angle) };
+        positions[id] = point;
+        offsets.set(id, { exact: coordinates.get(id)!, radius });
+      });
+    }
+  }
+  return { positions, offsets, groupCount };
 }
 
 function fail(message: string): never {
@@ -363,8 +434,24 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
 
     // Explanations: geometry witness, the error model, the signal, per-region reconstructions.
     const signalFieldId = `visual:holographic:signal:${parameters.signalId}`;
+    const display = geometry.kind === 'coordinates'
+      ? separateCoincidentNodes(graph, parameters.dimension,
+        parameters.dimension === '2d' ? geometry.positions2! : geometry.positions3!)
+      : null;
+    const geometryExplanation: Explanation = display === null ? geometry.explanation : {
+      ...geometry.explanation,
+      summary: `${geometry.explanation.summary}. Coincident-node display offsets use ${HOLOGRAPHIC_DISPLAY_OFFSET_VERSION}: coincidence tolerance ${String(HOLOGRAPHIC_COINCIDENCE_RELATIVE_TOLERANCE)} times component extent, then a ring of radius ${String(HOLOGRAPHIC_DISPLAY_RING_RADIUS_FRACTION)} times nearest distinct-point spacing; 3D rings lie in the plane orthogonal to the first view axis. Exact spectral coordinates remain available in the node-domain diagnostic.`,
+      parameterIds: [...geometry.explanation.parameterIds, HOLOGRAPHIC_DISPLAY_OFFSET_VERSION],
+      numericalWitness: {
+        ...geometry.explanation.numericalWitness,
+        displayOffsetVersion: HOLOGRAPHIC_DISPLAY_OFFSET_VERSION,
+        coincidenceRelativeTolerance: HOLOGRAPHIC_COINCIDENCE_RELATIVE_TOLERANCE,
+        displayRingRadiusFraction: HOLOGRAPHIC_DISPLAY_RING_RADIUS_FRACTION,
+        coincidentGroupCount: display.groupCount,
+      },
+    };
     const explanations: Record<string, Explanation> = {
-      [geometry.explanation.elementId]: geometry.explanation,
+      [geometryExplanation.elementId]: geometryExplanation,
       'visual:holographic:error-model': errorModelExplanation(model, {
         signalId: parameters.signalId, bandlimit, ridge: parameters.ridge, regionPolicy: regionPlan.policy, smoothModel, realHeatModel,
         realHeatTime: parameters.heatTimes.find(time => time > 0) ?? 1, structure: structureModel,
@@ -384,6 +471,9 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
         limitation: 'The signal is a measured source feature with recorded provenance, not knowledge content inferred from topology.',
       },
     };
+    if (display !== null) for (const [id, offset] of display.offsets) {
+      explanations[id] = coincidentNodeDisplayExplanation(id, offset.exact, offset.radius, HOLOGRAPHIC_DISPLAY_OFFSET_VERSION);
+    }
     Object.assign(explanations, heatExplanations);
     for (const witness of witnesses) {
       const explanation = regionReconstructionExplanation(witness,
@@ -394,6 +484,17 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
 
     const diagnostics: Diagnostic[] = [
       { code: HOLOGRAPHIC_EXPERIMENTAL_FLAG, value: HOLOGRAPHIC_EXPERIMENTAL_LABEL, acceptable: true },
+      { code: 'display-offset-rule', value: HOLOGRAPHIC_DISPLAY_OFFSET_VERSION, acceptable: true },
+      { code: 'display-offset-coincidence-relative-tolerance', value: HOLOGRAPHIC_COINCIDENCE_RELATIVE_TOLERANCE, acceptable: true },
+      { code: 'display-offset-ring-radius-fraction', value: HOLOGRAPHIC_DISPLAY_RING_RADIUS_FRACTION, acceptable: true },
+      { code: 'display-offset-coincident-group-count', value: display?.groupCount ?? 0, acceptable: true },
+      ...(geometry.kind === 'coordinates' ? [{
+        code: 'node-domain-exact-spectral-coordinates',
+        value: JSON.stringify(Object.fromEntries(graph.nodeIds.map((id, index) => [
+          id, Array.from({ length: geometry.axes }, (_unused, axis) => geometry.coordinates[axis * graph.size + index]!),
+        ]))),
+        acceptable: true,
+      }] : []),
       { code: 'spectral-backend-policy', value: HOLOGRAPHIC_BACKEND_POLICY, acceptable: true },
       { code: 'spectral-backend', value: solved.backend, acceptable: true },
       { code: 'spectral-solver-version', value: solved.backend === 'dense' ? DENSE_SYMMETRIC_SOLVER_VERSION : LANCZOS_SOLVER_VERSION, acceptable: true },
@@ -494,7 +595,8 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
       return { ...payload, determinism: { ...determinismBase, resultDigest: await hash({ ...payload, determinism: determinismBase }) } };
     }
 
-    const { positions2, positions3 } = geometry;
+    const positions2 = parameters.dimension === '2d' ? display!.positions : undefined;
+    const positions3 = parameters.dimension === '3d' ? display!.positions as Readonly<Partial<Record<NodeId, import('./contract-types.ts').Vec3>>> : undefined;
     const dimensional = parameters.dimension === '2d'
       ? (positions2 === undefined ? fail('the geometry outcome lacks the 2D map') : { positions2 })
       : (positions3 === undefined ? fail('the geometry outcome lacks the 3D map') : { positions3 });

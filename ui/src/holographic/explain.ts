@@ -29,6 +29,25 @@ export const EXPLAIN_STATED_BASELINE = RECOVERY_BASELINE_GLOBAL_MEAN;
 export const EXPLAIN_NO_TOPOLOGY_CLAIM =
   'No topology claim is made: spectral coordinates and community indicators are derived structural signals, while importance is a measured node attribute. Recovering these signals does not recover source nodes, edges, provenance or truth; a reconstructed signal is never a recovered semantic edge.';
 
+/** Explanation attached only to nodes moved by the declared display de-coincidence rule. */
+export function coincidentNodeDisplayExplanation(
+  nodeId: NodeId,
+  exactCoordinates: readonly number[],
+  displayRadius: number,
+  ruleVersion: string,
+): Explanation {
+  const exact = `(${exactCoordinates.map(value => Number(value.toPrecision(12))).join(', ')})`;
+  return {
+    elementId: nodeId,
+    elementKind: 'node',
+    summary: `Posizione spettrale esatta ${exact}; spostamento di visualizzazione per nodi coincidenti: r=${displayRadius.toPrecision(6)}.`,
+    sourceIds: [nodeId],
+    parameterIds: [ruleVersion],
+    numericalWitness: { exactCoordinate: exact, displayOffsetRadius: displayRadius },
+    limitation: 'Lo spostamento serve solo a distinguere visivamente nodi coincidenti; le coordinate spettrali esatte sono conservate nella diagnostica del dominio di nodi.',
+  };
+}
+
 export interface StructuralRegionWitness {
   readonly regionId: string;
   readonly bandlimit: number;

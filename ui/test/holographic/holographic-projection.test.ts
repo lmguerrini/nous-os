@@ -10,7 +10,7 @@ import { validateProjectionResult, type ProjectionValidationContext } from '../.
 import type { MathematicalField, ProjectionRequest, ProjectionResult, SemanticGraphSnapshot } from '../../src/projection/contract-types.ts';
 import {
   HOLOGRAPHIC_BACKEND_POLICY, HOLOGRAPHIC_EXPERIMENTAL_FLAG, HOLOGRAPHIC_EXPERIMENTAL_LABEL,
-  HOLOGRAPHIC_PROJECTION_VERSION, holographicProjection,
+  HOLOGRAPHIC_DISPLAY_OFFSET_VERSION, HOLOGRAPHIC_PROJECTION_VERSION, holographicProjection,
 } from '../../src/projection/holographic.ts';
 import { assertProjectionInvariants } from '../../src/projection/invariants.ts';
 import { EXPLAIN_NO_TOPOLOGY_CLAIM } from '../../src/holographic/explain.ts';
@@ -104,7 +104,7 @@ test('the fields are the measured importance signal and its heat diffusions, wit
     'visual:holographic:signal:importance', 'visual:holographic:heat:0', 'visual:holographic:heat:1', 'visual:holographic:heat:2',
   ]);
   const [signal, heat0, heatHalf, heatLong] = result.fields;
-  for (const field of result.fields) {
+  for (const field of result.fields.slice(0, 4)) {
     if (field.kind !== 'scalar') assert.fail('every Holographic field is a scalar node field');
     assert.equal(field.domain, 'node');
     assert.deepEqual(field.sampleIds, fixture.domain.nodeIds);
@@ -136,6 +136,61 @@ test('the fields are the measured importance signal and its heat diffusions, wit
     assert.ok(Math.abs(value - expectedLimit) < 1e-9, `long-time heat ${String(value)} vs ${String(expectedLimit)}`);
   });
   assert.ok(result.explanations['visual:holographic:heat:1']!.summary.includes('complete basis'));
+});
+
+test('coincident hub leaves receive deterministic non-overlapping display rings while exact spectral fields remain equal', async () => {
+  const center = { id: 'hub-center', community: null, importance: 0.5 };
+  const leaves = Array.from({ length: 7 }, (_unused, index) => ({
+    id: `hub-leaf-${String(index)}`, community: null, importance: 0.2 + index / 10,
+  }));
+  const nodes = [center, ...leaves];
+  const edges = leaves.map((leaf, index) => ({ id: `hub-edge-${String(index)}`, source: center.id, target: leaf.id }));
+  const fixture = await buildSnapshotFixture(nodes, edges);
+  const request = requestFor(fixture, { modes: 3, restartSize: 5, heatTimes: [] });
+  const result = await holographicProjection.project(fixture.snapshot, request);
+  assert.equal(result.coordinateState.kind, 'coordinates');
+  const exactById = JSON.parse(String(diagnostic(result, 'node-domain-exact-spectral-coordinates')!.value)) as Record<string, number[]>;
+  const equalGroups = new Map<string, string[]>();
+  for (const leaf of leaves) {
+    const point = exactById[leaf.id]!;
+    const key = `${point[0]},${point[1]}`;
+    equalGroups.set(key, [...(equalGroups.get(key) ?? []), leaf.id]);
+  }
+  const coincidentIds = [...equalGroups.values()].sort((a, b) => b.length - a.length)[0]!;
+  assert.ok(coincidentIds.length >= 2, 'the hub fixture has spectrally coincident equivalent leaves');
+  const commonExact = exactById[coincidentIds[0]!]!;
+  for (const id of coincidentIds.slice(1)) assert.deepEqual(exactById[id], commonExact);
+  const displayPoints = coincidentIds.map(id => result.positions2![id]!);
+  assert.equal(new Set(displayPoints.map(point => `${point.x},${point.y}`)).size, coincidentIds.length);
+  const radii = displayPoints.map(point => Math.hypot(point.x - commonExact[0]!, point.y - commonExact[1]!));
+  assert.ok(radii.every(radius => Math.abs(radius - radii[0]!) < 1e-12));
+  const hub = result.positions2![center.id]!;
+  assert.ok(displayPoints.every(point => Math.hypot(point.x - hub.x, point.y - hub.y) > radii[0]!));
+  assert.equal(diagnostic(result, 'display-offset-rule')!.value, HOLOGRAPHIC_DISPLAY_OFFSET_VERSION);
+  for (const id of coincidentIds) {
+    const explanation = result.explanations[id]!;
+    assert.equal(explanation.elementKind, 'node');
+    assert.match(explanation.summary, /Posizione spettrale esatta/);
+    assert.match(explanation.summary, /spostamento di visualizzazione per nodi coincidenti/);
+  }
+  assert.ok(result.explanations['holographic-spectral-geometry']!.parameterIds.includes(HOLOGRAPHIC_DISPLAY_OFFSET_VERSION));
+
+  const repeat = await holographicProjection.project(fixture.snapshot, request);
+  assert.equal(repeat.determinism.resultDigest, result.determinism.resultDigest);
+  const permuted = await holographicProjection.project({
+    ...fixture.snapshot, nodes: [...fixture.snapshot.nodes].reverse(), edges: [...fixture.snapshot.edges].reverse(),
+  } as SemanticGraphSnapshot, request);
+  assert.equal(permuted.determinism.resultDigest, result.determinism.resultDigest);
+  assert.deepEqual(permuted.positions2, result.positions2);
+  assert.deepEqual(permuted.fields, result.fields);
+
+  const threeDRequest = requestFor(fixture, { modes: 4, restartSize: 6, dimension: '3d', heatTimes: [] });
+  const threeD = await holographicProjection.project(fixture.snapshot, threeDRequest);
+  const exact3D = JSON.parse(String(diagnostic(threeD, 'node-domain-exact-spectral-coordinates')!.value)) as Record<string, number[]>;
+  const ring3 = coincidentIds.map(id => threeD.positions3![id]!);
+  assert.ok(coincidentIds.every(id => exact3D[id]!.length === 3));
+  assert.ok(ring3.every(point => point.x === ring3[0]!.x), '3D display ring is orthogonal to the first (x) view axis');
+  assert.equal(new Set(ring3.map(point => `${point.y},${point.z}`)).size, coincidentIds.length);
 });
 
 test('regions are the declared source communities and the error model matches an independent baseline computation', async () => {
@@ -400,7 +455,8 @@ test('an 850-node knowledge-shaped graph converges on the declared envelope and 
   assert.equal(diagnostic(result, 'geometry-repeat-projector-drift'), undefined, 'the validated basis is reused without a repeat solve');
   const retained = Number(diagnostic(result, 'signal-retained-energy-ratio')!.value);
   assert.ok(retained > 0 && retained <= 1 + 1e-12);
-  assert.ok(result.fields.slice(1).every(field => field.kind === 'scalar' && field.units.startsWith('low-mode-diffused')));
+  assert.ok(result.fields.filter(field => field.id.startsWith('visual:holographic:heat:'))
+    .every(field => field.kind === 'scalar' && field.units.startsWith('low-mode-diffused')));
   assert.equal(diagnostic(result, 'region-count')!.value, 17);
   assert.equal(Number(diagnostic(result, 'region-recovered-count')!.value) + Number(diagnostic(result, 'region-refused-count')!.value), 17);
   assert.ok(Number(diagnostic(result, 'smooth-region-beats-stated-baseline-count')!.value) > 0);
