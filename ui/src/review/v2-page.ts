@@ -2301,6 +2301,10 @@ export class V2Page {
             const adapted = adaptV2(disclosed.nodes, shown, next, this.manifest.digest);
             const added = [...renderedIds].filter(id => !this.previousVisible.has(id));
             const old = this.view?.readCamera();
+            const indraLayoutMoved = organization === 'indra' && [...next].some(([id, point]) => {
+                const before = this.positions.get(id);
+                return before && (before.x !== point.x || before.y !== point.y || before.z !== point.z);
+            });
             // D-072 R2 (X8): a pure level-of-detail change — same disclosed set, arrangement, axes
             // and colours — is applied to the mounted view in place: no new renderer, no camera
             // loss, no remount spike. Everything above ran exactly as before (the layout over the
@@ -2310,7 +2314,7 @@ export class V2Page {
                 this.axes.reading, this.axes.colour, this.axes.labels, this.relationDetail,
                 JSON.stringify(this.appearance), JSON.stringify(this.palette), JSON.stringify(this.v2Colours),
                 [...ids].sort().join('|')].join('\u00B7');
-            if (this.view && this.view.updateVisibleSubset && lodKey === this.lastLodKey) {
+            if (this.view && this.view.updateVisibleSubset && lodKey === this.lastLodKey && !indraLayoutMoved) {
                 let applied = false;
                 try {
                     applied = this.view.updateVisibleSubset({
@@ -2361,6 +2365,21 @@ export class V2Page {
             const sceneKey = `${arrangement}|${this.axes.morphology}|${[...ids].sort().join('|')}`;
             const sceneUnchanged = !!old && sceneKey === this.lastSceneKey;
             const keep = old && arrangement === this.lastArrangement;
+            // Indra repacks its parent and siblings when disclosure changes. Capture a point on
+            // the still-mounted view before the replacement takes its new layout.
+            let anchor: { id: string; point: { x: number; y: number } } | null = null;
+            if (indraLayoutMoved && old && keep && this.view) {
+                const witness = this.view.witness();
+                const rootRect = element('render-root').getBoundingClientRect();
+                const cursor = this.cursor && { x: this.cursor.x + rootRect.left, y: this.cursor.y + rootRect.top };
+                const underPointer = cursor && Object.entries(witness.nodeViewport)
+                    .map(([id, point]) => ({ id, point, distance: Math.hypot(point.x - cursor.x, point.y - cursor.y) }))
+                    .filter(item => item.distance <= Math.max(12, item.point.radius ?? 0))
+                    .sort((a, b) => a.distance - b.distance)[0]?.id;
+                const id = [underPointer, this.revealState.focusClusterId, this.selected]
+                    .find(candidate => candidate && witness.nodeViewport[candidate] && next.has(candidate));
+                if (id) anchor = { id, point: witness.nodeViewport[id]! };
+            }
             // Comparing camera states misreads an unfinished fit animation as a user move; the gestures say it directly.
             const userMoved = !!old && this.userMovedSinceFit;
             const cameraAction = refreshCameraAction({ hasCamera: !!old, keep: !!keep, boundsChanged, userMoved, sceneUnchanged });
@@ -2441,10 +2460,12 @@ export class V2Page {
                     volumeRow.title = VOLUME_READOUT_HELP;
                 }
             }
-            if (cameraAction === "restore") {
+            if (cameraAction === "restore" || anchor) {
                 try {
                     this.noteCameraIntent();
                     this.view.restoreCamera(old);
+                    if (anchor) (this.view as ProductView & { keepNodeAt?: (id: string, point: { x: number; y: number }) => boolean })
+                        .keepNodeAt?.(anchor.id, anchor.point);
                     this.lastZoomRatio = (old as { ratio?: number } | null)?.ratio ?? this.lastZoomRatio;
                     this.suppressZoomUntil = 0;
                 }

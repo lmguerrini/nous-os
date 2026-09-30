@@ -286,6 +286,45 @@ function validCamera(camera: VisualStateCamera | undefined | null): camera is Vi
     && camera.ratio > 0;
 }
 
+type ScreenPoint = { readonly x: number; readonly y: number };
+type CameraPose = { readonly position: readonly number[]; readonly target: readonly number[]; readonly up: readonly number[] };
+
+/** Translate the camera in the anchor's view plane; sampling the live projector also covers
+ * Sigma's normalization, perspective depth, and the orthographic camera's current scale. */
+export function cameraStateKeepingAnchor(state: VisualStateCamera, anchor: Coordinates | null,
+  current: ScreenPoint, desired: ScreenPoint, projectPoint: (point: Coordinates) => ScreenPoint,
+  pose?: CameraPose): VisualStateCamera | null {
+  if (!anchor || !validCamera(state) || ![anchor.x, anchor.y, anchor.z, current.x, current.y, desired.x, desired.y]
+    .every(Number.isFinite)) return null;
+  const normalize = (v: readonly number[]) => {
+    const size = Math.hypot(...v);
+    return size > 0 ? v.map(n => n / size) : null;
+  };
+  const cross = (a: readonly number[], b: readonly number[]) =>
+    [a[1]! * b[2]! - a[2]! * b[1]!, a[2]! * b[0]! - a[0]! * b[2]!, a[0]! * b[1]! - a[1]! * b[0]!];
+  const forward = pose && normalize(pose.target.map((n, i) => n - pose.position[i]!));
+  const right = forward && pose ? normalize(cross(forward, pose.up)) : null;
+  const up = right && forward ? normalize(cross(right, forward)) : null;
+  if (pose && (!right || !up)) return null;
+  const basisX = right ?? [1, 0, 0], basisY = up ?? [0, 1, 0];
+  const shifted = (basis: readonly number[]): Coordinates => ({
+    x: anchor.x + basis[0]!, y: anchor.y + basis[1]!, z: anchor.z + basis[2]!,
+  });
+  const origin = projectPoint(anchor), px = projectPoint(shifted(basisX)), py = projectPoint(shifted(basisY));
+  const a = px.x - origin.x, b = py.x - origin.x, c = px.y - origin.y, d = py.y - origin.y;
+  const determinant = a * d - b * c;
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) return null;
+  const dx = current.x - desired.x, dy = current.y - desired.y;
+  const u = (d * dx - b * dy) / determinant, v = (a * dy - c * dx) / determinant;
+  const worldX = u * basisX[0]! + v * basisY[0]!;
+  const worldY = u * basisX[1]! + v * basisY[1]!;
+  const worldZ = u * basisX[2]! + v * basisY[2]!;
+  const span = Math.max(state.bounds.x[1] - state.bounds.x[0], state.bounds.y[1] - state.bounds.y[0]);
+  if (!(span > 0) || ![worldX, worldY, worldZ].every(Number.isFinite)) return null;
+  return { ...state, x: state.x + worldX / span, y: state.y + worldY / span,
+    ...(pose ? { targetZ: ((state as ReviewCameraState).targetZ ?? pose.target[2]!) + worldZ } : {}) };
+}
+
 function finitePoint(point: Coordinates): boolean {
   return Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z);
 }
@@ -1815,6 +1854,21 @@ export const createProductView: CreateProductView = async (input) => {
     restoreCamera(state) { if (handle && validCamera(state as VisualStateCamera)) {
       handle.restoreCameraState(state as VisualStateCamera); noteCameraMotion(); labelPass();
     } },
+    keepNodeAt(id: string, screenPoint: ScreenPoint) {
+      if (!handle || !visible.has(id)) return false;
+      const anchor = handle.readWorldAnchorWitnesses().find(item => item.id === id)?.position;
+      if (!anchor) return false;
+      const rect = container.getBoundingClientRect();
+      const current = project(anchor);
+      const desired = { x: screenPoint.x - rect.left, y: screenPoint.y - rect.top };
+      const state = handle.readCameraState();
+      const next = cameraStateKeepingAnchor(state, anchor, current, desired, project,
+        three?.readReviewCameraPose());
+      if (!next) return false;
+      handle.restoreCameraState(next);
+      noteCameraMotion(); labelPass();
+      return true;
+    },
     async resetCamera() {
       // D-073 C6: an explicit reset forgets both spellings, so the remount refits instead of
       // replaying back the camera it just deleted.
