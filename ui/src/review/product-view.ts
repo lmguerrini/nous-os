@@ -5,6 +5,8 @@ import type { GraphRendererHandle } from "../engine/renderer-handle.ts";
 import { DEFAULT_CALIBRATION } from "../engine/calibration.ts";
 import { SCENE_PERMILLE_SCALE } from "../scene/contract.ts";
 import { mount as mount2d } from "../render2d/index.ts";
+import { buildScreenPickIndex } from "../render2d/model.ts";
+import type { ScreenPickIndex, ScreenPickSegment } from "../render2d/model.ts";
 import type { RenderHandle } from "../render2d/index.ts";
 import { mount as mount3d } from "../render3f/mount.tsx";
 import type { Render3fRendererHandle } from "../render3f/mount.tsx";
@@ -34,7 +36,7 @@ import { containerSphereLOD, containerTitleFont, placeContainerTitles, projected
 import type { CanvasDisc } from "../render-common/container-canvas.ts";
 
 import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "../engine/morphology-contract.ts";
-import { drawFlowLayer } from "../render-common/morphology-canvas.ts";
+import { drawFlowLayer, stellarStarCoreRadiusPx } from "../render-common/morphology-canvas.ts";
 import type { DistinctSubsetUpdate, MorphologyCanvasStyle } from "../render-common/morphology-canvas.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect, VisibleSubsetUpdate } from "./view-contract.ts";
 import { NATURAL_ORGANIZATION } from "./view-contract.ts";
@@ -476,6 +478,7 @@ export const createProductView: CreateProductView = async (input) => {
   // The latest drawing the view handed its renderers; the LOD edge hit-test reads it. Kept in step
   // by mount() and updateVisibleSubset().
   let drawnGeometry: import("../engine/morphology-geometry.ts").MorphologyGeometry | null = null;
+  let screenPickIndex: ScreenPickIndex | null = null;
   let committedScene: ReturnType<typeof buildDrawnScene> | null = null;
   // D-072 R2: the marker bits (glyph, radiusPx) the renderers' style maps last saw, so an
   // in-place subset change can ship only the entries that actually flipped.
@@ -675,6 +678,38 @@ export const createProductView: CreateProductView = async (input) => {
   });
   function project(point: Coordinates) {
     return handle!.graphToViewport(point);
+  }
+  function rebuildScreenPickIndex() {
+    if (!sigma || !drawnGeometry || !committedScene) { screenPickIndex = null; return; }
+    const contract = MORPHOLOGY_CONTRACT[axes.morphology];
+    const scale = sigma.scaleSize(1);
+    const discs = drawnGeometry.nodes.flatMap(node => {
+      if (!visible.has(node.id)) return [];
+      const p = project(node.position);
+      const given = committedScene!.presentation.nodes.get(node.id)?.radiusPx ?? node.radius * appearance.nodeScale;
+      const basis = Math.min(contract.node.maxRadiusPx, Math.max(axes.morphology === "mycelium" ? 1.3 : 2,
+        given * scale * contract.node.scale));
+      const radius = axes.morphology === "stellar" ? stellarStarCoreRadiusPx(basis, node.degree) : basis;
+      return [{ id: node.id, x: p.x, y: p.y, radius: radius + 2 }];
+    });
+    const edges: ScreenPickSegment[] = [];
+    for (const part of drawnGeometry.drawnSegments) {
+      for (let i = 1; i < part.samples.length; i++) {
+        const a = project(part.samples[i - 1]!), b = project(part.samples[i]!);
+        edges.push({ id: part.edgeId, ax: a.x, ay: a.y, bx: b.x, by: b.y, tolerance: 7 });
+      }
+    }
+    const rims: ScreenPickSegment[] = [];
+    if (axes.organization === "indra" && layoutContainers) {
+      for (const outline of buildContainerGeometry(axes.morphology, layoutContainers)) {
+        const projected = outline.points.map(project);
+        for (let i = 1; i < projected.length; i++) {
+          const a = projected[i - 1]!, b = projected[i]!;
+          rims.push({ id: outline.id, ax: a.x, ay: a.y, bx: b.x, by: b.y, tolerance: 7 });
+        }
+      }
+    }
+    screenPickIndex = buildScreenPickIndex(discs, rims, edges, container.clientWidth, container.clientHeight);
   }
   /** D-072 R2: in LOD mode the mounted renderers witness every disclosed node, so every consumer
    * that means "what is drawn" filters through the drawn subset. */
@@ -1093,6 +1128,7 @@ export const createProductView: CreateProductView = async (input) => {
     } else if (qualityGovernor.poll(now) === "full") onQualityFull(now);
     if (!cameraWatchShouldRun({ nowMs: now, lastChangeMs: cameraWatch.lastChangeMs, pressed: pressedAt !== null, motionUntilMs: cameraWatch.motionUntilMs })) {
       cameraWatch.running = false;
+      rebuildScreenPickIndex();
       scheduleHoverPick();
       return;
     }
@@ -1325,6 +1361,7 @@ export const createProductView: CreateProductView = async (input) => {
     // The mounted camera (any restored or solved framing included) is the watch loop's baseline:
     // only changes from here on are motion.
     lastCamera = JSON.stringify(handle.readCameraState());
+    rebuildScreenPickIndex();
     labelPass();
     syncFlowLoop();
     scheduleMarks.record("mount", began, performance.now() - began);
@@ -1446,6 +1483,7 @@ export const createProductView: CreateProductView = async (input) => {
     drawnEdgeIds = nextEdgeIds;
     drawnGeometry = geometry;
     committedScene = nextScene;
+    rebuildScreenPickIndex();
     lastNodeMarks = nextNodeMarks;
     selected = nextSelection;
     for (const edge of records) edgesById.set(edge.id, edge);
@@ -1477,6 +1515,13 @@ export const createProductView: CreateProductView = async (input) => {
   }
   function pick(p: { x: number; y: number }, includeEdges = true) {
     if (!handle) return null;
+    if (sigma) {
+      const node = screenPickIndex?.nodeAt(p);
+      if (node) return { kind: "node" as const, id: node };
+      if (!includeEdges) return null;
+      const edge = screenPickIndex?.edgeAt(p);
+      return edge ? { kind: "edge" as const, id: edge } : null;
+    }
     const node = handle.pickNodeAtPosition(p);
     if (node && (!lodMode || visible.has(node))) return { kind: "node" as const, id: node };
     if (axes.organization === 'indra' && layoutContainers) {
@@ -1612,7 +1657,7 @@ export const createProductView: CreateProductView = async (input) => {
   // updated geometry.
   const resizeLabelObserver = new ResizeObserver(() => {
     if (destroyed) return;
-    requestAnimationFrame(() => { if (!destroyed) { sizeFlowCanvas(); labelPass(); } });
+    requestAnimationFrame(() => { if (!destroyed) { sizeFlowCanvas(); rebuildScreenPickIndex(); labelPass(); } });
   });
   resizeLabelObserver.observe(container);
   try { mount(); }

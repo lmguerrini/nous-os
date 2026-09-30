@@ -4,7 +4,8 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import { buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
 import type { MorphologyGeometry } from "#engine/morphology-geometry.ts";
 import type { Morphology } from "#engine/morphology.ts";
-import { DENSE_SCENE_THRESHOLD, drawMorphologyCanvas } from "#render-common/morphology-canvas.ts";
+import { DENSE_SCENE_THRESHOLD, drawMorphologyCanvas, stellarStarCoreRadiusPx } from "#render-common/morphology-canvas.ts";
+import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
 import Sigma from "sigma";
 import { MultiDirectedGraph } from "graphology";
@@ -42,6 +43,7 @@ import {
   typedLabelTexts,
   typedRgbaColor,
   TYPED_LABEL_CAMERA,
+  buildScreenPickIndex,
 } from "#render2d/model.ts";
 import type {
   LabelPlacementCandidate,
@@ -51,6 +53,8 @@ import type {
   RenderNodeAttributes,
   RenderOptions,
   Projection2dScene,
+  ScreenPickIndex,
+  ScreenPickSegment,
 } from "#render2d/model.ts";
 import type { PickResult, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec2 } from "../projection/contract-types.ts";
 import { createProjectionVisualsLayer } from "#render-common/projection-visuals-layer.ts";
@@ -291,9 +295,8 @@ export function mount(
   );
   const materialBindings = createLiveRelationMaterialBindings();
   const geometryBindings = createLiveRelationGeometryBindings();
-  // While the distinct morphology canvas covers the WebGL tiers, this switch keeps every
-  // program's picking pass (the framebuffer `getNodeAtPosition`/`getEdgeAtPoint` read) and
-  // stops only the invisible screen pass, whose full-DPR fill was pure cost.
+  // The distinct morphology canvas covers the WebGL tiers. Keep the compatibility picking
+  // buffer for renderer witnesses while suppressing the invisible full-DPR screen pass.
   const screenPaint = { enabled: true };
   const nativeLabelsUsed = activeOptions.presentation?.nativeLabels !== false;
   const edgeProgramClasses = {
@@ -314,8 +317,6 @@ export function mount(
   });
   suppressSigmaAutomaticPicking(sigma);
   const picking = sigma as unknown as {
-    getNodeAtPosition(position: { readonly x: number; readonly y: number }): string | null;
-    getEdgeAtPoint(x: number, y: number): string | null;
     readonly webGLContexts: {
       readonly edges: {
         readonly drawingBufferHeight: number;
@@ -408,14 +409,57 @@ export function mount(
     ? mountDistinctCanvas(sigma, model, activeOptions, screenPaint)
     : null;
   sigma.refresh();
+  let handlePickGeometry = activeOptions.presentation?.morphologyGeometry;
+  let handlePickIndex: ScreenPickIndex;
+  let handlePickFrame = '';
+  let handlePickSettleTimer: ReturnType<typeof setTimeout> | undefined;
+  const rebuildHandlePickIndex = () => {
+    if (handlePickSettleTimer !== undefined) { clearTimeout(handlePickSettleTimer); handlePickSettleTimer = undefined; }
+    const dimensions = sigma.getDimensions();
+    const discs = model.graph.nodes().sort((a, b) => model.graph.getNodeAttribute(a, 'zIndex') - model.graph.getNodeAttribute(b, 'zIndex'))
+      .map(id => {
+        const attributes = model.graph.getNodeAttributes(id);
+        const p = sigma.graphToViewport(attributes);
+        return { id, x: p.x, y: p.y, radius: sigma.scaleSize(attributes.size) + 2 };
+      });
+    const edges: ScreenPickSegment[] = [];
+    if (handlePickGeometry) {
+      for (const part of handlePickGeometry.drawnSegments) for (let i = 1; i < part.samples.length; i++) {
+        const a = sigma.graphToViewport(part.samples[i - 1]!), b = sigma.graphToViewport(part.samples[i]!);
+        edges.push({ id: part.edgeId, ax: a.x, ay: a.y, bx: b.x, by: b.y,
+          tolerance: calibration.filament.pickTolerancePx * (2 + 1) + 1 });
+      }
+    } else for (const id of model.graph.edges()) {
+      const a = sigma.graphToViewport(model.graph.getNodeAttributes(model.graph.source(id)));
+      const b = sigma.graphToViewport(model.graph.getNodeAttributes(model.graph.target(id)));
+      edges.push({ id, ax: a.x, ay: a.y, bx: b.x, by: b.y,
+        tolerance: model.graph.getEdgeAttribute(id, 'pickTolerancePx') });
+    }
+    handlePickIndex = buildScreenPickIndex(discs, [], edges, dimensions.width, dimensions.height);
+    handlePickFrame = JSON.stringify([sigma.getCamera().getState(), dimensions.width, dimensions.height]);
+  };
+  rebuildHandlePickIndex();
+  sigma.on('afterRender', () => {
+    const dimensions = sigma.getDimensions();
+    const frame = JSON.stringify([sigma.getCamera().getState(), dimensions.width, dimensions.height]);
+    if (frame !== handlePickFrame) {
+      if (handlePickSettleTimer !== undefined) clearTimeout(handlePickSettleTimer);
+      handlePickSettleTimer = setTimeout(() => { handlePickSettleTimer = undefined; rebuildHandlePickIndex(); }, 2 ** (2 + 2 + 2 + 1));
+    }
+  });
   return {
     model,
     setAppearance(appearance: AppearanceOptions): void {
       model.filamentMaterial.neuralWidthPx = appearance.edgeWidth;
       if (model.graph.order >= DENSE_SCENE_THRESHOLD) sigma.refresh();
       distinct?.setAppearance(appearance);
+      rebuildHandlePickIndex();
     },
-    updateVisibleSubset(update: DistinctSubsetUpdate): void { distinct?.updateVisibleSubset(update); },
+    updateVisibleSubset(update: DistinctSubsetUpdate): void {
+      distinct?.updateVisibleSubset(update);
+      handlePickGeometry = update.geometry;
+      rebuildHandlePickIndex();
+    },
     graphToViewport(point: Coordinates): { readonly x: number; readonly y: number } {
       return sigma.graphToViewport(point);
     },
@@ -553,10 +597,10 @@ export function mount(
       }
     },
     pickNodeAtPosition(position): string | null {
-      return picking.getNodeAtPosition(position);
+      return handlePickIndex.nodeAt(position);
     },
     pickEdgeAtPoint(x: number, y: number): string | null {
-      return picking.getEdgeAtPoint(x, y);
+      return handlePickIndex.edgeAt({ x, y });
     },
     readPickingSurface(): RenderPickingSurface {
       const { pixelRatio, downSizingRatio, sizeRatio, minEdgeThickness } = sigma.getRenderParams();
@@ -575,6 +619,7 @@ export function mount(
       return sigma.scaleSize(size);
     },
     destroy(): void {
+      if (handlePickSettleTimer !== undefined) clearTimeout(handlePickSettleTimer);
       distinct?.destroy();
       glow.destroy();
       windows.destroy();
@@ -590,7 +635,7 @@ export type ScreenPaintControl = { enabled: boolean };
 export type DistinctLayerPolicy = {
   /** Layers that never answer anything: display none, backing collapsed to one pixel. */
   readonly collapse: readonly string[];
-  /** WebGL picking surfaces: display none, full backing kept (readPixels divides by drawingBufferHeight). */
+  /** Compatibility WebGL picking surfaces: hidden, with their full backing retained. */
   readonly pickingOnly: readonly string[];
   /** The captor surface: stays visible for events, backing collapsed to one pixel. */
   readonly shrinkBacking: readonly string[];
@@ -849,10 +894,7 @@ function createObservedFilamentProgram(
       }
     }
 
-    // The picking pass Sigma's own render() interleaves with the screen pass, alone: the picking
-    // framebuffer geometry (down-sized from the same render params) is reproduced verbatim, so
-    // `getEdgeAtPoint` reads the pixels it always read while the hidden tier stops filling a
-    // full-DPR buffer nobody composites.
+    // Preserve Sigma's compatibility picking buffer while the hidden tier skips its screen pass.
     override render(params: RenderParams): void {
       if (screenPaint.enabled) {
         super.render(params);
@@ -1620,28 +1662,63 @@ export function mountProjection2d(
       bounds: { left: 0, top: 0, width: box.width, height: box.height },
       ...(labelBudget !== undefined ? { budget: labelBudget } : {}) });
   };
-  const redraw = (): void => { drawMorphology(); draw(); visuals.draw(); labelPass(); };
+  let semanticPickIndex: ScreenPickIndex | null = null;
+  let visualPickIndex: ScreenPickIndex | null = null;
+  let pickFrame = '';
+  let pickSettleTimer: ReturnType<typeof setTimeout> | undefined;
+  const rebuildPickIndex = (): void => {
+    if (pickSettleTimer !== undefined) { clearTimeout(pickSettleTimer); pickSettleTimer = undefined; }
+    const bounds = container.getBoundingClientRect();
+    const scale = sigma.scaleSize(1);
+    const contract = MORPHOLOGY_CONTRACT[morphology];
+    const discs = paint.geometry.nodes.map(node => {
+      const p = sigma.graphToViewport(node.position);
+      const given = paint.nodeStyles.get(node.id)?.radiusPx ?? node.radius;
+      const basis = Math.min(contract.node.maxRadiusPx, Math.max(2,
+        given * scale * contract.node.scale));
+      const radius = morphology === 'stellar' ? stellarStarCoreRadiusPx(basis, node.degree) : basis;
+      return { id: node.id, x: p.x, y: p.y, radius: radius + 2 };
+    });
+    const semantic: ScreenPickSegment[] = [];
+    for (const part of paint.geometry.drawnSegments) for (let i = 1; i < part.samples.length; i++) {
+      const a = sigma.graphToViewport(part.samples[i - 1]!);
+      const b = sigma.graphToViewport(part.samples[i]!);
+      semantic.push({ id: part.edgeId, ax: a.x, ay: a.y, bx: b.x, by: b.y,
+        tolerance: PROJECTION_PICK_RADIUS_PX + Math.max(0, part.widthMid * scale / 2) });
+    }
+    const relations: ScreenPickSegment[] = [];
+    for (const relation of scene.visualRelations.values()) {
+      const source = scene.nodes.get(relation.source)?.position;
+      const target = scene.nodes.get(relation.target)?.position;
+      if (!source || !target) continue;
+      const a = sigma.graphToViewport(source), b = sigma.graphToViewport(target);
+      relations.push({ id: relation.visualId, ax: a.x, ay: a.y, bx: b.x, by: b.y, tolerance: PROJECTION_PICK_RADIUS_PX });
+    }
+    semanticPickIndex = buildScreenPickIndex(discs, [], semantic, bounds.width, bounds.height);
+    visualPickIndex = buildScreenPickIndex([], [], relations, bounds.width, bounds.height);
+    pickFrame = JSON.stringify([sigma.getCamera().getState(), bounds.width, bounds.height]);
+  };
+  const redraw = (): void => {
+    drawMorphology(); draw(); visuals.draw(); labelPass();
+    const bounds = container.getBoundingClientRect();
+    const frame = JSON.stringify([sigma.getCamera().getState(), bounds.width, bounds.height]);
+    if (frame !== pickFrame) {
+      if (pickSettleTimer !== undefined) clearTimeout(pickSettleTimer);
+      pickSettleTimer = setTimeout(() => { pickSettleTimer = undefined; rebuildPickIndex(); }, 2 ** (2 + 2 + 2 + 1));
+    }
+  };
   sigma.on('afterRender', redraw);
   drawMorphology();
   draw();
   labelPass();
-  const hitSegment = (p: Vec2, a: Vec2, b: Vec2, tolerance = PROJECTION_PICK_RADIUS_PX): boolean => {
-    const x = b.x - a.x; const y = b.y - a.y;
-    const t = Math.max(0, Math.min(1, ((p.x - a.x) * x + (p.y - a.y) * y) / (x * x + y * y || 1)));
-    return Math.hypot(p.x - a.x - t * x, p.y - a.y - t * y) <= tolerance;
-  };
-  const picking = sigma as unknown as { getNodeAtPosition(p: Vec2): string | null; getEdgeAtPoint(x: number, y: number): string | null };
+  rebuildPickIndex();
   const pickNow = (position: Vec2): PickResult | null => {
-    const node = picking.getNodeAtPosition(position);
-    if (node && scene.nodes.has(node)) return { kind: 'node', id: node };
-    const edge = picking.getEdgeAtPoint(position.x, position.y);
-    if (edge && scene.semanticEdges.has(edge)) return { kind: 'semantic-edge', id: edge };
-    for (const relation of scene.visualRelations.values()) {
-      const a = scene.nodes.get(relation.source)?.position;
-      const b = scene.nodes.get(relation.target)?.position;
-      if (a && b && hitSegment(position, viewport(a), viewport(b)))
-        return { kind: 'visual-relation', visualId: relation.visualId };
-    }
+    const node = semanticPickIndex?.nodeAt(position);
+    if (node) return { kind: 'node', id: node };
+    const edge = semanticPickIndex?.edgeAt(position);
+    if (edge) return { kind: 'semantic-edge', id: edge };
+    const visual = visualPickIndex?.edgeAt(position);
+    if (visual) return { kind: 'visual-relation', visualId: visual };
     return visuals.pickAt(position);
   };
   const localPointer = (event: PointerEvent): Vec2 => {
@@ -1723,6 +1800,7 @@ export function mountProjection2d(
       visuals.setMorphology(nextMorphology);
       sigma.refresh();
       redraw();
+      rebuildPickIndex();
     },
     pickAtPoint(position): PickResult | null {
       if (replayingHover || handlingHoverMove) return hoverGate.hoverResult();
@@ -1737,6 +1815,7 @@ export function mountProjection2d(
       containerIds: [...scene.containers.keys()], fieldIds: [...scene.fields.keys()] }),
     setDerivedMorphology: morphology => visuals.setMorphology(morphology),
     destroy(): void {
+      if (pickSettleTimer !== undefined) clearTimeout(pickSettleTimer);
       hoverGate.destroy();
       container.removeEventListener('pointermove', onPointerMoveCapture, true);
       container.removeEventListener('pointerdown', onPointerDownCapture, true);

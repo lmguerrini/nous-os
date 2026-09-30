@@ -77,6 +77,74 @@ export type RenderEdgeAttributes = {
   readonly zIndex: number;
 };
 
+/** Screen-space geometry used by both 2D views. Input order is paint order. */
+export type ScreenPickDisc = { readonly id: string; readonly x: number; readonly y: number; readonly radius: number };
+export type ScreenPickSegment = { readonly id: string; readonly ax: number; readonly ay: number;
+  readonly bx: number; readonly by: number; readonly tolerance: number };
+export type ScreenPickIndex = {
+  nodeAt(point: { readonly x: number; readonly y: number }): string | null;
+  edgeAt(point: { readonly x: number; readonly y: number }): string | null;
+};
+
+/** One rebuild per drawn frame revision or settled camera, with constant-size pointer queries. */
+export function buildScreenPickIndex(
+  discs: readonly ScreenPickDisc[], rims: readonly ScreenPickSegment[], edges: readonly ScreenPickSegment[],
+  width: number, height: number,
+): ScreenPickIndex {
+  const cell = 2 ** (2 + 2 + 1);
+  const columns = Math.max(1, Math.ceil(width / cell));
+  const rows = Math.max(1, Math.ceil(height / cell));
+  const nodeCells = new Map<number, number[]>();
+  const rimCells = new Map<number, number[]>();
+  const edgeCells = new Map<number, number[]>();
+  const insert = (map: Map<number, number[]>, index: number, left: number, top: number, right: number, bottom: number) => {
+    if (![left, top, right, bottom].every(Number.isFinite) || right < 0 || bottom < 0 || left > width || top > height) return;
+    const x0 = Math.max(0, Math.floor(left / cell)), x1 = Math.min(columns - 1, Math.floor(right / cell));
+    const y0 = Math.max(0, Math.floor(top / cell)), y1 = Math.min(rows - 1, Math.floor(bottom / cell));
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const key = y * columns + x;
+      const list = map.get(key);
+      if (list) list.push(index); else map.set(key, [index]);
+    }
+  };
+  discs.forEach((d, i) => insert(nodeCells, i, d.x - d.radius, d.y - d.radius, d.x + d.radius, d.y + d.radius));
+  const indexSegments = (segments: readonly ScreenPickSegment[], map: Map<number, number[]>) => segments.forEach((s, i) =>
+    insert(map, i, Math.min(s.ax, s.bx) - s.tolerance, Math.min(s.ay, s.by) - s.tolerance,
+      Math.max(s.ax, s.bx) + s.tolerance, Math.max(s.ay, s.by) + s.tolerance));
+  indexSegments(rims, rimCells);
+  indexSegments(edges, edgeCells);
+  const entries = (map: Map<number, number[]>, point: { readonly x: number; readonly y: number }) => {
+    const x = Math.floor(point.x / cell), y = Math.floor(point.y / cell);
+    return x < 0 || y < 0 || x >= columns || y >= rows ? [] : map.get(y * columns + x) ?? [];
+  };
+  const distance = (point: { readonly x: number; readonly y: number }, s: ScreenPickSegment) => {
+    const dx = s.bx - s.ax, dy = s.by - s.ay;
+    const t = Math.max(0, Math.min(1, ((point.x - s.ax) * dx + (point.y - s.ay) * dy) / (dx * dx + dy * dy || 1)));
+    return Math.hypot(point.x - s.ax - t * dx, point.y - s.ay - t * dy);
+  };
+  const nearest = (segments: readonly ScreenPickSegment[], map: Map<number, number[]>, point: { readonly x: number; readonly y: number }) => {
+    let found: string | null = null, best = Infinity;
+    for (const i of entries(map, point)) {
+      const segment = segments[i]!;
+      const d = distance(point, segment);
+      if (d <= segment.tolerance && d < best) { best = d; found = segment.id; }
+    }
+    return found;
+  };
+  return {
+    nodeAt(point) {
+      // Later discs are painted over earlier ones. A rim answers only outside all discs.
+      const candidates = entries(nodeCells, point);
+      for (let i = candidates.length - 1; i >= 0; i--) {
+        const disc = discs[candidates[i]!]!;
+        if (Math.hypot(point.x - disc.x, point.y - disc.y) <= disc.radius) return disc.id;
+      }
+      return nearest(rims, rimCells, point);
+    },
+    edgeAt: point => nearest(edges, edgeCells, point),
+  };
+}
+
 /** This is the renderer input selection and does not choose a semantic graph. */
 export type RenderOptions = {
   readonly morphology: Morphology;
