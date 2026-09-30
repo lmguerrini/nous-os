@@ -1,7 +1,8 @@
 /** D-073 tranche F, row F7 — rank-checked band-limited recovery, the measurable
  * part-to-whole claim of the Holographic view.
  *
- * For a band limit k the model basis is U_k, the first k modes of L (zero cluster first).
+ * For a band limit k the model basis is U_k, the first k orthonormal modes of
+ * the projection's symmetric degree-normalised Laplacian N (zero cluster first).
  * Given samples x_S on a region S, solve
  *   a* = argmin_a || P_S U_k a - x_S ||_2^2 + lambda ||a||_2^2,   x* = U_k a*,
  * through the normal equations (Gram + lambda I) a = U_k^T P_S^T x_S, diagonalised by the

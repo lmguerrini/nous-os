@@ -282,3 +282,50 @@ export function buildSpectralGraph(input: SpectralGraphInput): SpectralGraph {
     quadraticForm,
   };
 }
+
+/** The symmetric normalised Laplacian N = I - D^-1/2 A D^-1/2. Isolates have
+ * a zero row. Its positive-degree connected blocks have spectrum in [0, 2]. */
+export function normalizedSpectralGraph(graph: SpectralGraph): SpectralGraph {
+  const inverseSqrt = Float64Array.from(graph.degrees, degree => degree > 0 ? 1 / Math.sqrt(degree) : 0);
+  const weights = new Float64Array(graph.csrWeight.length);
+  for (let row = 0; row < graph.size; row += 1)
+    for (let slot = graph.csrRowStart[row]!; slot < graph.csrRowStart[row + 1]!; slot += 1)
+      weights[slot] = graph.csrWeight[slot]! * inverseSqrt[row]! * inverseSqrt[graph.csrNeighbor[slot]!]!;
+  const applyLaplacian = (x: Float64Array): Float64Array => {
+    if (x.length !== graph.size) throw new Error('normalised Laplacian needs a domain vector');
+    const y = new Float64Array(graph.size);
+    for (let row = 0; row < graph.size; row += 1) {
+      if (graph.degrees[row] === 0) continue;
+      let value = x[row]!;
+      for (let slot = graph.csrRowStart[row]!; slot < graph.csrRowStart[row + 1]!; slot += 1)
+        value -= weights[slot]! * x[graph.csrNeighbor[slot]!]!;
+      y[row] = value;
+    }
+    return y;
+  };
+  return { ...graph, spectralNormBound: 2, csrWeight: weights, applyLaplacian,
+    applyAdjacency: (x: Float64Array): Float64Array => {
+      const laplacian = applyLaplacian(x);
+      return Float64Array.from(x, (value, index) => graph.degrees[index] === 0 ? 0 : value - laplacian[index]!);
+    },
+    quadraticForm: (x: Float64Array): number => {
+      const product = applyLaplacian(x);
+      return x.reduce((sum, value, index) => sum + value * product[index]!, 0);
+    },
+  };
+}
+
+/** Extract an attested component without introducing an edge into the source ledger. */
+export function spectralComponentGraph(graph: SpectralGraph, memberIndices: readonly number[]): SpectralGraph {
+  const selected = new Set(memberIndices);
+  const edges: SpectralEdge[] = [];
+  for (const row of memberIndices)
+    for (let slot = graph.csrRowStart[row]!; slot < graph.csrRowStart[row + 1]!; slot += 1) {
+      const neighbor = graph.csrNeighbor[slot]!;
+      if (neighbor > row && selected.has(neighbor)) edges.push({
+        id: `internal:${String(row)}:${String(neighbor)}`, source: graph.nodeIds[row]!, target: graph.nodeIds[neighbor]!,
+        directed: false, attestation: 'attested', weight: graph.csrWeight[slot]!,
+      });
+    }
+  return buildSpectralGraph({ nodeIds: memberIndices.map(index => graph.nodeIds[index]!), edges });
+}

@@ -1,40 +1,21 @@
-/** D-073 tranche F, row F8 — spectral 2D/3D geometry under the deterministic tied-eigenspace
- * policy `projector-probe-v2` (decision G6).
- *
- * Domain node IDs are sorted by codepoint and connected components are ordered by smallest
- * ID (both fixed by holographic/adjacency.ts). The symmetric Laplacian is solved with the
- * dense reference solver (default up to DENSE_DEFAULT_MAX_N = 172 nodes, exact ||L||_2 from
- * lambda_max) or the bounded restarted Lanczos solver (default above 172, Gershgorin norm
- * estimate); an explicit dense request above the dense ceiling returns the typed
- * solver-failure outcome with the dense refusal message instead of throwing. Eigenvalues ascend and are clustered:
- * adjacent values within tau = 1e-8 max(1, ||L||_2, |lambda_i|, |lambda_{i+1}|) share a
- * cluster, a gap to either neighbouring cluster must exceed 4 tau, and the whole
- * zero-eigenvalue cluster is skipped. Nonzero clusters are visited in increasing order;
- * a cluster crossing the requested axis count contributes only the remaining axes from
- * its full projector. A cluster must be isolated at both edges. Exhausting the available
- * nonzero modes refuses `no-coordinates/insufficient-rank`.
- *
- * Each retained cluster contributes its orthogonal projector P = U U^T through SHA-256 probe
- * columns with entries +-1/sqrt(n) derived from (snapshotDigest, domainDigest, cluster
- * ordinal, probe ordinal, node ID, projector-probe-v2). The smallest probe ordinal whose
- * reorthogonalised norm exceeds 1e-8 is chosen (a pivot within 1e-7 of that threshold
- * refuses), then modified Gram-Schmidt is applied twice against every previously chosen
- * column, and each column's sign is fixed so its largest-absolute entry (ties by smallest
- * node ID) is positive. Rank deficiency after 4n probes, a projector drift over 1e-8 under a
- * standalone repeat solve, or a failed residual/orthogonality check refuses with a typed code.
- * A projection-owned spectrum is independently checked and reused without a repeat solve. The
- * canonical columns are quantised to 1e-10 before the result digest; every refusal returns
- * empty loaded IDs and no positions, never a fallback layout. */
+/** G7 spectral 2D/3D geometry. Each attested component solves the symmetric
+ * normalised Laplacian N = D^-1/2 L D^-1/2; the orthonormal u eigenvectors are
+ * shared by heat and recovery, while the displayed Koren coordinates use
+ * v = D^-1/2 u, so L v = lambda D v. Components are centred, scaled to unit
+ * maximum extent, then packed by descending size and smallest ID with a 0.5
+ * gutter. The G6 projector-probe-v2 rule canonicalises tied eigenspaces before
+ * the degree conversion. Every failed numerical witness returns typed empty
+ * coordinates; no fallback layout is substituted. */
 
 import { digestPayload } from '../engine/digest.ts';
 import type { Dimension, Digest, Explanation, NodeId, Vec2, Vec3 } from '../projection/contract-types.ts';
-import type { SpectralGraph } from './adjacency.ts';
-import { DENSE_DEFAULT_MAX_N, DENSE_SYMMETRIC_SOLVER_VERSION, denseLaplacian, solveDenseSymmetricEigen, type DenseEigenSolution } from './dense.ts';
-import { LANCZOS_SOLVER_VERSION, solveSpectrum, type LanczosOptions } from './lanczos.ts';
+import { normalizedSpectralGraph, spectralComponentGraph, type SpectralGraph } from './adjacency.ts';
+import { DENSE_DEFAULT_MAX_N, DENSE_SYMMETRIC_SOLVER_VERSION, solveDenseSymmetricEigen, type DenseEigenSolution } from './dense.ts';
+import { LANCZOS_SOLVER_VERSION, lanczosRestartSize, solveSpectrum, type LanczosOptions } from './lanczos.ts';
 import { largestEntryIndex, modifiedGramSchmidtTwice, norm2, orthogonalityDefect } from './linear-algebra.ts';
-import type { Eigenbasis } from './signals.ts';
+import { eigenbasisFromDense, eigenbasisFromLanczos, type Eigenbasis } from './signals.ts';
 
-export const SPECTRAL_GEOMETRY_VERSION = 'holographic-geometry-v3';
+export const SPECTRAL_GEOMETRY_VERSION = 'holographic-geometry-v4';
 /** Request-schema identifier retained until the projection contract can be migrated. */
 export const EIGENSPACE_POLICY_VERSION = 'projector-probe-v1';
 /** Version of the actual canonical-axis rule, included in geometry and result digests. */
@@ -66,7 +47,11 @@ export interface SpectralGeometryOptions {
   /** A projection-owned spectrum, already checked by its solver. Geometry independently
    * checks its residuals and orthogonality and uses it without another eigensolve. */
   readonly validatedBasis?: Eigenbasis;
+  /** Local bases from the projection's single spectral solve, in component ledger order. */
+  readonly componentBases?: readonly Eigenbasis[];
   readonly priorSolverFailure?: string;
+  /** Internal component rank; public calls use the full requested dimension. */
+  readonly axisCount?: number;
 }
 
 export interface GeometryClusterWitness {
@@ -144,6 +129,100 @@ interface Cluster {
   readonly end: number;
 }
 
+function denseNormalized(graph: SpectralGraph): DenseEigenSolution {
+  const values = new Float64Array(graph.size * graph.size);
+  for (let row = 0; row < graph.size; row += 1) {
+    values[row + row * graph.size] = graph.degrees[row] === 0 ? 0 : 1;
+    for (let slot = graph.csrRowStart[row]!; slot < graph.csrRowStart[row + 1]!; slot += 1)
+      values[row + graph.csrNeighbor[slot]! * graph.size] = -graph.csrWeight[slot]!;
+  }
+  return solveDenseSymmetricEigen({ n: graph.size, values });
+}
+
+/** Lanczos assumes constant component indicators are exact zero modes. Conjugate N by
+ * a Householder map that sends the constant unit vector to sqrt(D)/sqrt(vol). The
+ * returned vectors are mapped back to N's Euclidean-orthonormal coordinates. */
+function normalizedLanczos(graph: SpectralGraph, options: LanczosOptions): ReturnType<typeof solveSpectrum> {
+  const n = graph.size;
+  const householder = new Float64Array(n);
+  const volume = graph.degrees.reduce((sum, degree) => sum + degree, 0);
+  if (volume > 0) {
+    for (let i = 0; i < n; i += 1) householder[i] = 1 / Math.sqrt(n) - Math.sqrt(graph.degrees[i]! / volume);
+    const length = norm2(householder);
+    if (length > 1e-14) for (let i = 0; i < n; i += 1) householder[i] = householder[i]! / length;
+    else householder.fill(0);
+  }
+  const transform = (x: Float64Array): Float64Array => {
+    let projection = 0;
+    for (let i = 0; i < n; i += 1) projection += householder[i]! * x[i]!;
+    const y = new Float64Array(n);
+    for (let i = 0; i < n; i += 1) y[i] = x[i]! - 2 * projection * householder[i]!;
+    return y;
+  };
+  const conjugated: SpectralGraph = { ...graph,
+    applyLaplacian: (x: Float64Array): Float64Array => transform(graph.applyLaplacian(transform(x))),
+  };
+  const outcome = solveSpectrum(conjugated, options);
+  if (outcome.kind === 'refusal') return outcome;
+  const eigenvectors = new Float64Array(outcome.eigenvectors.length);
+  for (let mode = 0; mode < outcome.eigenvalues.length; mode += 1)
+    eigenvectors.set(transform(outcome.eigenvectors.subarray(mode * n, (mode + 1) * n)), mode * n);
+  return { ...outcome, eigenvectors };
+}
+
+export interface NormalizedBasisSolve {
+  readonly basis: Eigenbasis | null;
+  readonly componentBases: readonly Eigenbasis[];
+  readonly backend: SpectralBackend;
+  readonly refusal: string | null;
+  readonly restartsUsed: number | null;
+}
+
+/** One solve per attested component. The merged orthonormal u basis serves heat and
+ * reconstruction; geometry converts these same u modes to Koren v = D^-1/2 u. */
+export function solveNormalizedComponentBases(graph: SpectralGraph, options: LanczosOptions): NormalizedBasisSolve {
+  const componentBases: Eigenbasis[] = [];
+  let backend: SpectralBackend = 'dense';
+  let restartsUsed: number | null = null;
+  for (const component of graph.components) {
+    const local = normalizedSpectralGraph(spectralComponentGraph(graph, component.memberIndices));
+    if (local.size <= DENSE_DEFAULT_MAX_N) {
+      componentBases.push(eigenbasisFromDense(denseNormalized(local)));
+    } else {
+      backend = 'lanczos';
+      const outcome = normalizedLanczos(local, {
+        ...options, k: Math.min(options.k ?? 24, local.size - 1),
+        restartSize: Math.min(local.size - 1, Math.max(options.restartSize ?? 0,
+          lanczosRestartSize(local.size - 1, options.k ?? 24), local.size >= 500 && (options.k ?? 24) >= 20 ? 320 : 0)),
+      });
+      if (outcome.kind === 'refusal') return { basis: null, componentBases: [], backend,
+        refusal: `lanczos ${outcome.code} after ${String(outcome.restartsUsed)} restart(s): ${outcome.message}`,
+        restartsUsed: outcome.restartsUsed };
+      restartsUsed = Math.max(restartsUsed ?? 0, outcome.restartsUsed);
+      componentBases.push(eigenbasisFromLanczos(outcome));
+    }
+  }
+  const entries: { component: number; mode: number; value: number }[] = [];
+  componentBases.forEach((basis, component) => {
+    for (let mode = 0; mode < basis.count; mode += 1)
+      entries.push({ component, mode, value: basis.eigenvalues[mode]! });
+  });
+  entries.sort((a, b) => (a.mode === 0 && b.mode !== 0 ? -1 : a.mode !== 0 && b.mode === 0 ? 1 : a.value - b.value)
+    || a.component - b.component || a.mode - b.mode);
+  const n = graph.size;
+  const eigenvalues = new Float64Array(entries.length);
+  const eigenvectors = new Float64Array(n * entries.length);
+  for (const [column, entry] of entries.entries()) {
+    const localBasis = componentBases[entry.component]!;
+    eigenvalues[column] = entry.value;
+    graph.components[entry.component]!.memberIndices.forEach((global, local) => {
+      eigenvectors[column * n + global] = localBasis.eigenvectors[entry.mode * localBasis.n + local]!;
+    });
+  }
+  return { basis: { algorithmVersion: componentBases.length === 1 ? componentBases[0]!.algorithmVersion : `${backend}-normalized-components-v1`, n, count: entries.length,
+    eigenvalues, eigenvectors, complete: entries.length === n }, componentBases, backend, refusal: null, restartsUsed };
+}
+
 type SolveAttempt =
   | { readonly kind: 'solved'; readonly solved: SolvedSpectrum }
   | { readonly kind: 'solver-failure'; readonly message: string; readonly solverVersion: string; readonly relativeResidualMax: number | null };
@@ -154,7 +233,7 @@ function solveOnce(graph: SpectralGraph, backend: SpectralBackend, lanczos: Lanc
     // solver failure, never an escaping throw; no benchmark opt-in exists in production code.
     let solution: DenseEigenSolution;
     try {
-      solution = solveDenseSymmetricEigen(denseLaplacian(graph));
+      solution = denseNormalized(graph);
     } catch (error) {
       return {
         kind: 'solver-failure',
@@ -177,7 +256,7 @@ function solveOnce(graph: SpectralGraph, backend: SpectralBackend, lanczos: Lanc
       },
     };
   }
-  const outcome = solveSpectrum(graph, lanczos);
+  const outcome = normalizedLanczos(graph, lanczos ?? {});
   if (outcome.kind === 'refusal') {
     return {
       kind: 'solver-failure',
@@ -222,6 +301,9 @@ function buildClusters(solved: SolvedSpectrum): Cluster[] {
 
 function probeColumn(graph: SpectralGraph, clusterOrdinal: number, probeOrdinal: number, snapshotDigest: Digest, domainDigest: Digest): Float64Array {
   const n = graph.size;
+  // The only nontrivial mode of a two-node component is fixed by ID order;
+  // Rademacher probes would miss it with probability 1/2 on every draw.
+  if (n === 2 && probeOrdinal === 0) return Float64Array.of(1 / Math.SQRT2, -1 / Math.SQRT2);
   const column = new Float64Array(n);
   const scale = 1 / Math.sqrt(n);
   for (let index = 0; index < n; index += 1) {
@@ -353,9 +435,9 @@ function solverFailureState(
   };
 }
 
-export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometryOptions): SpectralGeometryOutcome {
+function spectralGeometryBlock(graph: SpectralGraph, options: SpectralGeometryOptions): SpectralGeometryOutcome {
   const n = graph.size;
-  const axes = options.dimension === '2d' ? 2 : 3;
+  const axes = options.axisCount ?? (options.dimension === '2d' ? 2 : 3);
   const backend = options.backend ?? (n <= GEOMETRY_DENSE_DEFAULT_MAX_N ? 'dense' : 'lanczos');
   const lanczos: LanczosOptions = { ...options.lanczos, seed: options.lanczos?.seed ?? options.domainDigest };
   const zeroThreshold = CLUSTER_RELATIVE_TOLERANCE * Math.max(1, graph.spectralNormBound);
@@ -592,6 +674,21 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
     return refuse('solver-failure', `the repeat solve moved a retained projector by ${drift.toExponential(3)} > ${String(REPEAT_PROJECTOR_TOLERANCE)}`, zeroThreshold);
   }
 
+  // Koren coordinates v = D^-1/2 u. The component is centred by its axis
+  // midranges and scaled to unit maximum extent; this is a visual affine map
+  // applied after the genuine generalized eigensystem is solved.
+  const raw = chosen.map(column => Float64Array.from(column, (value, index) =>
+    graph.degrees[index]! > 0 ? value / Math.sqrt(graph.degrees[index]!) : 0));
+  let maxExtent = 0;
+  const centers: number[] = [];
+  for (const column of raw) {
+    const low = Math.min(...column);
+    const high = Math.max(...column);
+    centers.push((low + high) / 2);
+    maxExtent = Math.max(maxExtent, high - low);
+  }
+  const displayScale = maxExtent > 0 ? 1 / maxExtent : 1;
+
   // Fixed 1e-10 quantisation precedes the result digest.
   const coordinates = new Float64Array(n * axes);
   const grid: number[][] = [];
@@ -599,7 +696,7 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
     const column = chosen[axis]!;
     const axisGrid: number[] = [];
     for (let index = 0; index < n; index += 1) {
-      const units = Math.round(column[index]! / COORDINATE_QUANTIZATION);
+      const units = Math.round(((raw[axis]![index]! - centers[axis]!) * displayScale) / COORDINATE_QUANTIZATION);
       axisGrid.push(units);
       coordinates[index + axis * n] = units * COORDINATE_QUANTIZATION;
     }
@@ -610,10 +707,10 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
   const positions3: Partial<Record<NodeId, Vec3>> = {};
   for (let index = 0; index < n; index += 1) {
     const id = graph.nodeIds[index]!;
-    if (axes === 2) {
-      positions2[id] = { x: coordinates[index]!, y: coordinates[index + n]! };
+    if (options.dimension === '2d') {
+      positions2[id] = { x: coordinates[index]!, y: axes > 1 ? coordinates[index + n]! : 0 };
     } else {
-      positions3[id] = { x: coordinates[index]!, y: coordinates[index + n]!, z: coordinates[index + 2 * n]! };
+      positions3[id] = { x: coordinates[index]!, y: axes > 1 ? coordinates[index + n]! : 0, z: axes > 2 ? coordinates[index + 2 * n]! : 0 };
     }
   }
 
@@ -653,7 +750,7 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
     quantizationStep: COORDINATE_QUANTIZATION,
     clusterTolerance: tolerance,
     coordinates,
-    ...(axes === 2 ? { positions2 } : { positions3 }),
+    ...(options.dimension === '2d' ? { positions2 } : { positions3 }),
     clusters: witnesses,
     solver: {
       backend,
@@ -669,8 +766,9 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
       elementKind: 'field',
       summary:
         `Canonical spectral ${options.dimension} geometry from ${String(witnesses.length)} isolated eigenvalue cluster(s) ` +
-        `of the attested Laplacian (${CANONICAL_EIGENSPACE_POLICY_VERSION}); assi scelti per convenzione canonica dentro un autospazio degenere. ` +
-        `Coordinates are quantised to 1e-10; probe orientation is a labelled convention, not measured semantics`,
+        `of the attested degree-normalised Laplacian N = D^-1/2 L D^-1/2 (${CANONICAL_EIGENSPACE_POLICY_VERSION}); ` +
+        `Koren coordinates v = D^-1/2 u solve L v = lambda D v; assi scelti per convenzione canonica dentro un autospazio degenere. ` +
+        `Each component is centred and scaled to unit maximum extent; coordinates are quantised to 1e-10`,
       sourceIds: [],
       parameterIds: [options.snapshotDigest, options.domainDigest, CANONICAL_EIGENSPACE_POLICY_VERSION],
       numericalWitness: {
@@ -686,9 +784,108 @@ export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometry
         orthogonalityDefect: solved.orthogonalityDefect,
         repeatProjectorDrift: drift ?? 'not repeated: projection-owned validated basis',
         quantization: '1e-10',
+        normalization: 'N=D^-1/2 L D^-1/2; v=D^-1/2 u',
+        componentScale: displayScale,
         resultDigest,
       },
       limitation: 'Spectral coordinates are a visual projection of graph features; axis orientation inside a tied eigenspace follows the deterministic probe policy and carries no semantic-edge meaning.',
+    },
+  };
+}
+
+/** Components are ordered by descending size, then smallest codepoint node ID. Each
+ * occupies a unit-wide cell on x, with a 0.5-unit empty gutter. This ordering and
+ * spacing depend only on the attested analytical domain. */
+export function spectralGeometry(graph: SpectralGraph, options: SpectralGeometryOptions): SpectralGeometryOutcome {
+  if (options.priorSolverFailure !== undefined) {
+    const backend = options.backend ?? (graph.size <= DENSE_DEFAULT_MAX_N ? 'dense' : 'lanczos');
+    return solverFailureState(graph, options, backend, {
+      message: options.priorSolverFailure,
+      solverVersion: backend === 'dense' ? DENSE_SYMMETRIC_SOLVER_VERSION : LANCZOS_SOLVER_VERSION,
+      relativeResidualMax: null,
+    }, CLUSTER_RELATIVE_TOLERANCE * Math.max(1, graph.spectralNormBound));
+  }
+  if (graph.componentCount === 1)
+    return spectralGeometryBlock(normalizedSpectralGraph(graph), options);
+  const axes = options.dimension === '2d' ? 2 : 3;
+  const ordered = [...graph.components].sort((a, b) => b.memberIndices.length - a.memberIndices.length ||
+    (a.smallestNodeId < b.smallestNodeId ? -1 : a.smallestNodeId > b.smallestNodeId ? 1 : 0));
+  const coordinates = new Float64Array(graph.size * axes);
+  const clusters: GeometryClusterWitness[] = [];
+  const localDigests: string[] = [];
+  let relativeResidualMax = 0;
+  let orthogonality = 0;
+  let normEstimate = 0;
+  let solverVersion = '';
+  let backend: SpectralBackend = 'dense';
+  let tolerance = 0;
+  for (const [place, component] of ordered.entries()) {
+    const localGraph = spectralComponentGraph(graph, component.memberIndices);
+    const localAxes = Math.min(axes, localGraph.size - 1);
+    const center = place * 1.5;
+    if (localAxes === 0) {
+      coordinates[component.memberIndices[0]!] = center;
+      localDigests.push(`singleton:${component.smallestNodeId}`);
+      continue;
+    }
+    const local = spectralGeometryBlock(normalizedSpectralGraph(localGraph), {
+      ...options, axisCount: localAxes,
+      ...(options.componentBases === undefined ? {} : { validatedBasis: options.componentBases[component.index] }),
+      domainDigest: digestPayload([options.domainDigest, 'component', component.smallestNodeId]),
+    });
+    if (local.kind === 'no-coordinates') {
+      return { ...local, nodeIds: graph.nodeIds, resultDigest: digestPayload([
+        SPECTRAL_GEOMETRY_VERSION, options.domainDigest, 'component-refusal', component.smallestNodeId, local.resultDigest,
+      ]), explanation: { ...local.explanation,
+        summary: `Component ${component.smallestNodeId} refused spectral coordinates: ${local.message}`,
+      } };
+    }
+    localDigests.push(local.resultDigest);
+    clusters.push(...local.clusters);
+    relativeResidualMax = Math.max(relativeResidualMax, local.solver.relativeResidualMax ?? 0);
+    orthogonality = Math.max(orthogonality, local.solver.orthogonalityDefect ?? 0);
+    normEstimate = Math.max(normEstimate, local.solver.normEstimate);
+    if (solverVersion === '' || local.solver.backend === 'lanczos') solverVersion = local.solver.solverVersion;
+    backend = local.solver.backend === 'lanczos' ? 'lanczos' : backend;
+    tolerance = Math.max(tolerance, local.clusterTolerance);
+    for (const [localIndex, globalIndex] of component.memberIndices.entries()) {
+      coordinates[globalIndex] = Math.round((center + local.coordinates[localIndex]!) / COORDINATE_QUANTIZATION) * COORDINATE_QUANTIZATION;
+      for (let axis = 1; axis < axes; axis += 1)
+        coordinates[axis * graph.size + globalIndex] = axis < localAxes ? local.coordinates[axis * localGraph.size + localIndex]! : 0;
+    }
+  }
+  const positions2: Partial<Record<NodeId, Vec2>> = {};
+  const positions3: Partial<Record<NodeId, Vec3>> = {};
+  for (let index = 0; index < graph.size; index += 1) {
+    const id = graph.nodeIds[index]!;
+    const x = coordinates[index]!;
+    const y = coordinates[graph.size + index]!;
+    if (axes === 2) positions2[id] = { x, y };
+    else positions3[id] = { x, y, z: coordinates[2 * graph.size + index]! };
+  }
+  const resultDigest = digestPayload([SPECTRAL_GEOMETRY_VERSION, CANONICAL_EIGENSPACE_POLICY_VERSION,
+    options.snapshotDigest, options.domainDigest, options.dimension, 'size-desc-id-asc', 'gap=0.5',
+    ordered.map(component => component.smallestNodeId), localDigests,
+    Array.from(coordinates, value => Math.round(value / COORDINATE_QUANTIZATION))]);
+  return {
+    kind: 'coordinates', algorithmVersion: SPECTRAL_GEOMETRY_VERSION,
+    eigenspacePolicy: CANONICAL_EIGENSPACE_POLICY_VERSION, dimension: options.dimension,
+    axes, nodeIds: graph.nodeIds, loadedNodeIds: graph.nodeIds, quantizationStep: COORDINATE_QUANTIZATION,
+    clusterTolerance: tolerance, coordinates, ...(axes === 2 ? { positions2 } : { positions3 }),
+    clusters, solver: { backend, solverVersion, normEstimate, relativeResidualMax,
+      orthogonalityDefect: orthogonality, repeatProjectorDrift: options.componentBases === undefined ? 0 : null },
+    resultDigest,
+    explanation: {
+      elementId: 'holographic-spectral-geometry', elementKind: 'field',
+      summary: `Attested components have independent degree-normalised Laplacian spectra: N = D^-1/2 L D^-1/2, ` +
+        `Koren v = D^-1/2 u solves L v = lambda D v. Components are packed by descending size then smallest ID, ` +
+        `in unit-wide x cells with a 0.5-unit gutter; each is centred and scaled to unit maximum extent. ` +
+        `Tied modes use ${CANONICAL_EIGENSPACE_POLICY_VERSION}; assi scelti per convenzione canonica dentro un autospazio degenere.`,
+      sourceIds: [], parameterIds: [options.snapshotDigest, options.domainDigest, CANONICAL_EIGENSPACE_POLICY_VERSION],
+      numericalWitness: { axes, componentCount: ordered.length, order: ordered.map(component => component.smallestNodeId).join(','),
+        gap: 0.5, normalization: 'N=D^-1/2 L D^-1/2; v=D^-1/2 u',
+        selectedAxes: clusters.map(cluster => cluster.selectedAxes).join(','), resultDigest },
+      limitation: 'Packing and axis orientations are deterministic visual conventions; they do not add semantic edges.',
     },
   };
 }

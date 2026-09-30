@@ -29,15 +29,15 @@
 
 import { buildSpectralGraph, type SpectralEdge, type SpectralGraph } from '../holographic/adjacency.ts';
 import {
-  DENSE_DEFAULT_MAX_N, DENSE_SYMMETRIC_SOLVER_VERSION, denseLaplacian, solveDenseSymmetricEigen,
+  DENSE_DEFAULT_MAX_N, DENSE_SYMMETRIC_SOLVER_VERSION,
 } from '../holographic/dense.ts';
-import { EIGENSPACE_POLICY_VERSION, spectralGeometry } from '../holographic/geometry.ts';
-import { LANCZOS_SOLVER_VERSION, lanczosRestartSize, solveSpectrum, type LanczosOutcome } from '../holographic/lanczos.ts';
+import { EIGENSPACE_POLICY_VERSION, solveNormalizedComponentBases, spectralGeometry } from '../holographic/geometry.ts';
+import { LANCZOS_SOLVER_VERSION } from '../holographic/lanczos.ts';
 import { applyHeat, contractionRatio, isFiniteField } from '../holographic/heat.ts';
 import { recoverBandlimitedSignal, recoverStableBandlimit, recoverStructuralSignals, RECOVERY_DEFAULT_CLAIM_TOLERANCE, RECOVERY_MAX_SAMPLE_CONDITION } from '../holographic/recovery.ts';
 import {
-  bandlimitedCommunityIndicator, eigenbasisFromDense, eigenbasisFromLanczos, featureSignal, fourierCoefficients,
-  parsevalDefect, retainedEnergy, signalEnergy, syntheticSignal, type Eigenbasis, type GraphSignal,
+  bandlimitedCommunityIndicator, featureSignal, fourierCoefficients,
+  parsevalDefect, retainedEnergy, signalEnergy, syntheticSignal, type GraphSignal,
 } from '../holographic/signals.ts';
 import {
   errorModelExplanation, holographicErrorModel, regionReconstructionExplanation, structuralErrorModel,
@@ -50,13 +50,13 @@ import type {
   ProjectionParameters, ProjectionRequest, ProjectionResult, RawJson, SemanticGraphSnapshot,
 } from './contract-types.ts';
 
-export const HOLOGRAPHIC_PROJECTION_VERSION = 'holographic-projection-v4';
+export const HOLOGRAPHIC_PROJECTION_VERSION = 'holographic-projection-v5';
 export const HOLOGRAPHIC_NUMERIC_BACKEND_VERSION = 'javascript-number-v1';
 /** The experimental flag every Holographic result carries in diagnostics. */
 export const HOLOGRAPHIC_EXPERIMENTAL_FLAG = 'holographic-experimental';
 export const HOLOGRAPHIC_EXPERIMENTAL_LABEL = 'experimental-analytic-mode-v1';
 /** Dense reference up to 172 nodes, bounded Lanczos above; never a silent swap at 850. */
-export const HOLOGRAPHIC_BACKEND_POLICY = 'dense-leq-172-lanczos-above-v1';
+export const HOLOGRAPHIC_BACKEND_POLICY = 'per-component-dense-leq-172-lanczos-above-normalized-v1';
 export const HOLOGRAPHIC_MAX_DOMAIN_NODES = 850;
 /** k = min(24, n-1) policy of the approved solver envelope. */
 export const HOLOGRAPHIC_MAX_MODES = 24;
@@ -145,36 +145,6 @@ function spectralEdges(snapshot: SemanticGraphSnapshot, domainIds: ReadonlySet<N
     }));
 }
 
-interface BasisSolve {
-  readonly basis: Eigenbasis | null;
-  readonly backend: 'dense' | 'lanczos';
-  /** The Lanczos refusal message when the sparse backend refused; null otherwise. */
-  readonly refusal: string | null;
-  readonly restartsUsed: number | null;
-}
-
-function solveEigenbasis(graph: SpectralGraph, parameters: HolographicParameters): BasisSolve {
-  if (graph.size <= DENSE_DEFAULT_MAX_N) {
-    return { basis: eigenbasisFromDense(solveDenseSymmetricEigen(denseLaplacian(graph))), backend: 'dense', refusal: null, restartsUsed: null };
-  }
-  const outcome: LanczosOutcome = solveSpectrum(graph, {
-    k: parameters.modes,
-    // The saved request size is a lower bound for this view; the projection resolves it
-    // against the measured robust default before its single solve.
-    restartSize: Math.max(parameters.restartSize, lanczosRestartSize(graph.size - graph.componentCount, parameters.modes)),
-    maxRestarts: parameters.maxRestarts,
-    tolerance: parameters.eigenTolerance,
-    seed: 'holographic-projection-basis-v1',
-  });
-  if (outcome.kind === 'refusal') {
-    return {
-      basis: null, backend: 'lanczos', restartsUsed: outcome.restartsUsed,
-      refusal: `lanczos ${outcome.code} after ${String(outcome.restartsUsed)} restart(s): ${outcome.message}`,
-    };
-  }
-  return { basis: eigenbasisFromLanczos(outcome), backend: 'lanczos', refusal: null, restartsUsed: outcome.restartsUsed };
-}
-
 function measuredSignal(snapshot: SemanticGraphSnapshot, graph: SpectralGraph, signalId: string): GraphSignal {
   const featureKey = HOLOGRAPHIC_SIGNAL_FEATURES[signalId]!;
   const features: Partial<Record<NodeId, number>> = {};
@@ -256,7 +226,11 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
     await abortBarrier(request.abort);
 
     // Spectral basis for the analytic fields (declared backend policy, honest refusal).
-    const solved = solveEigenbasis(graph, parameters);
+    const solved = solveNormalizedComponentBases(graph, {
+      k: parameters.modes, restartSize: parameters.restartSize,
+      maxRestarts: parameters.maxRestarts, tolerance: parameters.eigenTolerance,
+      seed: 'holographic-projection-basis-v2',
+    });
     await abortBarrier(request.abort);
 
     // Canonical spectral geometry; its refusal is carried through, never replaced.
@@ -265,6 +239,7 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
       snapshotDigest: snapshot.digest,
       domainDigest: domain.domainDigest,
       backend: solved.backend,
+      componentBases: solved.componentBases,
       ...(solved.basis === null ? { priorSolverFailure: solved.refusal ?? 'the spectral basis is unavailable' } : { validatedBasis: solved.basis }),
       lanczos: {
         k: parameters.modes,
@@ -301,7 +276,7 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
         heatExplanations[heatFieldId] = {
           elementId: heatFieldId,
           elementKind: 'field',
-          summary: `Heat-diffused ${parameters.signalId} at t=${String(time)}: U exp(-t Lambda) U^T x over ${String(solved.basis.count)} of ${String(graph.size)} eigenmodes (${solved.basis.complete ? 'complete basis, exact semigroup' : 'retained low modes only'})`,
+          summary: `Heat-diffused ${parameters.signalId} at t=${String(time)} on the attested degree-normalised Laplacian: U exp(-t Lambda) U^T x over ${String(solved.basis.count)} of ${String(graph.size)} eigenmodes (${solved.basis.complete ? 'complete basis, exact semigroup' : 'retained low modes only'})`,
           sourceIds: [],
           parameterIds: [`signal=${parameters.signalId}`, `t=${String(time)}`, `backend=${solved.backend}`],
           numericalWitness: {
@@ -327,13 +302,15 @@ export const holographicProjection: MathematicalProjection<'holographic'> = {
     if (solved.basis !== null && bandlimit >= 1) {
       const realHeatTime = parameters.heatTimes.find(time => time > 0) ?? 1;
       const realHeat = applyHeat(solved.basis, realHeatTime, signal.values);
-      const smoothValues = new Float64Array(graph.size).fill(1);
+      const smoothValues = new Float64Array(graph.size);
+      for (let node = 0; node < graph.size; node += 1)
+        smoothValues[node] = Math.sqrt(graph.size) * solved.basis.eigenvectors[node]!;
       if (solved.basis.count > graph.componentCount) {
         const offset = graph.componentCount * graph.size;
         for (let node = 0; node < graph.size; node += 1)
           smoothValues[node] = smoothValues[node]! + Math.sqrt(graph.size) * solved.basis.eigenvectors[offset + node]!;
       }
-      const smooth = syntheticSignal(graph.nodeIds, smoothValues, 'declared-constant-plus-first-nonzero-mode');
+      const smooth = syntheticSignal(graph.nodeIds, smoothValues, 'declared-normalized-zero-plus-first-nonzero-mode');
       for (const region of regionPlan.regions) {
         const samples = region.memberNodeIds.map(id => graph.indexOf.get(id)!);
         const outcome = recoverStableBandlimit(graph, solved.basis, signal, samples,

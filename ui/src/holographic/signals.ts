@@ -1,6 +1,6 @@
 /** D-073 tranche F, row F5 — stable graph signals and the graph Fourier transform.
  *
- * For a real signal x over the domain nodes and the symmetric Laplacian L = U Lambda U^T
+ * For a real signal x over the domain nodes and a symmetric Laplacian B = U Lambda U^T
  * built in holographic/adjacency.ts, the graph Fourier coefficients are x_hat = U^T x and
  * the reconstruction from a mode subset is x* = U_sel x_hat_sel. With a complete orthonormal
  * basis Parseval holds exactly, ||x||_2^2 = sum_j x_hat_j^2; with a partial basis the
@@ -26,7 +26,8 @@ function fail(message: string): never {
   throw new Error(`holographic-signals: ${message}`);
 }
 
-/** Retained eigenpairs of L in the domain's sorted node order. `eigenvectors` is column-major
+/** Retained orthonormal eigenpairs of a symmetric Laplacian (L or its symmetric
+ * degree-normalised form N) in the domain's sorted node order. `eigenvectors` is column-major
  * n x count with column j the unit eigenvector of the ascending `eigenvalues[j]`. */
 export interface Eigenbasis {
   readonly algorithmVersion: string;
