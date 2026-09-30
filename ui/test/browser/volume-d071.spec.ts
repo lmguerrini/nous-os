@@ -5,6 +5,7 @@ test.skip(process.env.D071_BROWSER !== "1", "Set D071_BROWSER=1 and serve the re
 
 type Witness = {
   volume: { eigenvalues: [number, number, number]; ratios: { second: number; third: number } };
+  positions: Record<string, { x: number; y: number; z: number }>;
   nodeViewport: Record<string, { x: number; y: number }>;
   layoutStats?: { bbox: { x: [number, number]; y: [number, number]; z: [number, number] } };
   communities?: { id: string; center: { x: number; y: number; z: number }; radius: number; count: number }[];
@@ -136,6 +137,15 @@ test("D-071 switching morphology recomputes Flat positions and switching back re
 
 test("D-071 witness positions are identical after reload", async ({ page }) => {
   await ready(page);
+  const cleanUrl = new URL(url);
+  cleanUrl.hash = "";
+  await page.evaluate(() => {
+    localStorage.removeItem("d073.view");
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
+  });
+  await page.goto(cleanUrl.toString());
+  await page.evaluate(() => (window as any).__d067.ready);
+  await expect(page.locator("#status")).toContainText("Grafo pronto");
   await setFlat3d(page);
   await page.evaluate(() => (window as any).__d067.fit());
   const read = async () =>
@@ -143,8 +153,20 @@ test("D-071 witness positions are identical after reload", async ({ page }) => {
       const w = (window as any).__d067.witness();
       return {
         volume: w.volume.eigenvalues,
-        positions: Object.entries(w.nodeViewport)
-          .map(([id, point]) => [id, Math.round((point as { x: number; y: number }).x * 1e3) / 1e3, Math.round((point as { x: number; y: number }).y * 1e3) / 1e3])
+        positions: Object.entries(w.positions)
+          .map(([id, point]) => [
+            id,
+            Math.round((point as { x: number }).x * 1e3) / 1e3,
+            Math.round((point as { y: number }).y * 1e3) / 1e3,
+            Math.round((point as { z: number }).z * 1e3) / 1e3,
+          ])
+          .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+        nodeViewport: Object.entries(w.nodeViewport)
+          .map(([id, point]) => [
+            id,
+            Math.round((point as { x: number; y: number }).x * 1e3) / 1e3,
+            Math.round((point as { x: number; y: number }).y * 1e3) / 1e3,
+          ])
           .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
       };
     });
@@ -152,9 +174,24 @@ test("D-071 witness positions are identical after reload", async ({ page }) => {
   await page.reload();
   await page.evaluate(() => (window as any).__d067.ready);
   await expect(page.locator("#status")).toContainText("Grafo pronto");
+  await expect
+    .poll(async () => {
+      const after = await read();
+      return { volume: after.volume, positions: after.positions };
+    }, { timeout: 25000 })
+    .toEqual({ volume: before.volume, positions: before.positions });
+
+  // Repeat the same projection flow from a clean URL so reload does not restore a saved view.
+  await page.evaluate(() => {
+    localStorage.removeItem("d073.view");
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
+  });
+  await page.reload();
+  await page.evaluate(() => (window as any).__d067.ready);
+  await expect(page.locator("#status")).toContainText("Grafo pronto");
   await setFlat3d(page);
   await page.evaluate(() => (window as any).__d067.fit());
   await expect
-    .poll(read, { timeout: 25000 })
-    .toEqual(before);
+    .poll(async () => (await read()).nodeViewport, { timeout: 25000 })
+    .toEqual(before.nodeViewport);
 });
