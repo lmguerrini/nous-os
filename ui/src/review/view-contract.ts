@@ -39,14 +39,29 @@ export type Organization = "natural" | "indra";
  */
 export type ViewOrganization = Organization | "fractal" | "holographic";
 
-/** Holographic requests fall back to Natural unless the URL explicitly opts into the experiment. */
-export function resolveExperimentalOrganization(value: ViewOrganization, holographicEnabled: boolean): {
+export type ExperimentalOrganization = "holographic" | "indra-pearls" | "fractal";
+
+/** One comma-separated hash/query grammar for every opt-in organization. */
+export function experimentalOrganizationsEnabled(search: string, hash: string): ReadonlySet<ExperimentalOrganization> {
+  const values = new Set<ExperimentalOrganization>();
+  try {
+    for (const params of [new URLSearchParams(search), new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash)]) {
+      for (const item of (params.get("experimental") ?? "").split(",").map(value => value.trim())) {
+        if (item === "holographic" || item === "indra-pearls" || item === "fractal") values.add(item);
+      }
+    }
+  } catch { /* malformed input enables no experiment */ }
+  return values;
+}
+
+/** Requests for experimental organizations fall back unless their matching opt-in is present. */
+export function resolveExperimentalOrganization(value: ViewOrganization, flags: ReadonlySet<ExperimentalOrganization>): {
   readonly organization: ViewOrganization;
   readonly notice: string | null;
 } {
-  return value === "holographic" && !holographicEnabled
-    ? { organization: "natural", notice: "Holographic è sospesa: caricata Natural. Per la vista sperimentale usa #experimental=holographic." }
-    : { organization: value, notice: null };
+  if ((value === "fractal" || value === "holographic") && !flags.has(value))
+    return { organization: "natural", notice: `${value === "fractal" ? "Fractal" : "Holographic"} è una vista sperimentale: caricata Natural. Per abilitarla usa #experimental=${value}.` };
+  return { organization: value, notice: null };
 }
 
 /** The saved-view organization vocabulary: Natural under its canonical name, Indra, Fractal or Holographic. */
@@ -141,8 +156,8 @@ export const LEGACY_INDRA_PROJECTION_ID: RegisteredProjectionId = "indra-legacy"
 /**
  * What serves each view of the organization axis: the registered projection and whether the typed
  * pipeline is engaged for it. Natural uses the typed pipeline only when the page asks for it (the
- * `projection=natural` hash flag or an injected pipeline); Indra (Indra's Pearls) and Fractal are
- * always served by their registered typed projection, as is the experimental Holographic view. The verified legacy Indra adapter stays
+ * `projection=natural` hash flag or an injected pipeline); recursive Indra is served by the product
+ * renderer unless the experimental Indra's Pearls switch is selected. Indra's Pearls, Fractal and Holographic use registered typed projections only when opted in. The verified legacy Indra adapter stays
  * registered as `LEGACY_INDRA_PROJECTION_ID`, reachable only through the explicit `indra=legacy`
  * hash flag. The record is exhaustive, so a new view cannot be added without saying what serves it.
  */

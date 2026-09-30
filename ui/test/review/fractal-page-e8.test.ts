@@ -181,6 +181,7 @@ function spyRegistry(options: SpyOptions = {}): Spy {
 }
 
 async function typedPage(options: { registry?: ProjectionRegistry; axes?: Record<string, unknown> } = {}) {
+  (globalThis as any).location = { search: '', hash: '#experimental=fractal' };
   const index = fractalIndex();
   const snapshot = await snapshotFor(index);
   const trace: Trace = { mounts: 0, updates: [], destroys: 0, ratio: 1, cameraReads: 0, dimensions: [], pick: null };
@@ -513,6 +514,7 @@ test('fractalRefusalOf recognises only the assembly refusal', () => {
 
 /** A minimal product view: the Natural pipeline-off path of the page. */
 function offPage(fractalInput?: ProjectionPipelineInput, legacyIndra = false) {
+  (globalThis as any).location = { search: '', hash: fractalInput ? '#experimental=fractal' : '' };
   const counts = { mounts: 0, destroys: 0, axes: [] as string[] };
   const createView: CreateProductView = async input => {
     counts.mounts++;
@@ -537,7 +539,7 @@ function offPage(fractalInput?: ProjectionPipelineInput, legacyIndra = false) {
 }
 
 test('Natural without the typed pipeline is unchanged: the product view, no projection record', async () => {
-  // Indra draws through the product view here only as the explicit legacy rollback (`#indra=legacy`).
+  // Recursive Indra also uses the product view by default; the legacy hash remains an alias.
   const { page, counts } = offPage(undefined, true);
   await page.refresh();
   assert.equal(counts.mounts, 1);
@@ -546,7 +548,7 @@ test('Natural without the typed pipeline is unchanged: the product view, no proj
   await page.setAxes({ organization: 'indra' });
   assert.deepEqual(counts.axes, ['natural', 'indra']);
   assert.equal('projection' in (page.witness() as object), false);
-  assert.equal(page.supportsOrganization('fractal'), true);
+  assert.equal(page.supportsOrganization('fractal'), false, 'Fractal stays out of the registry without its experimental flag');
 });
 
 test('a page without the typed pipeline serves Fractal through it and returns to the product view for Natural', async () => {

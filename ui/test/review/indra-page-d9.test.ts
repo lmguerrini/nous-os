@@ -203,6 +203,7 @@ function spyClient(): SpyClient {
 
 async function typedPage(options: { axes?: Record<string, unknown>; client?: ProjectionWorkerClient; index?: V2Index;
   expand?: boolean; deps?: Record<string, unknown> } = {}) {
+  (globalThis as any).location = { search: '', hash: '#experimental=indra-pearls,fractal,holographic&indra=pearls' };
   const index = options.index ?? indraIndex();
   const snapshot = await snapshotFor(index);
   const trace: Trace = { mounts: 0, updates: [], destroys: 0, ratio: 1, dimensions: [], pick: null, shown: [] };
@@ -854,7 +855,7 @@ test('leaving the view while its projection computes cancels the computation', a
   client.dispose();
 });
 
-test('a page without the typed pipeline serves Indra through it, returns to the product view for Natural, and keeps the legacy rollback', async () => {
+test('recursive Indra is primary, Indra’s Pearls requires its flag, and the legacy hash aliases the primary', async () => {
   const index = indraIndex();
   const snapshot = await snapshotFor(index);
   const trace: Trace = { mounts: 0, updates: [], destroys: 0, ratio: 1, dimensions: [], pick: null, shown: [] };
@@ -882,8 +883,10 @@ test('a page without the typed pipeline serves Indra through it, returns to the 
     };
   };
   const make = (extra: Record<string, unknown>) => {
+    (globalThis as any).location = { search: '', hash: extra.experimental === true ? '#experimental=indra-pearls&indra=pearls' : '' };
+    const { experimental: _testOnly, ...deps } = extra;
     const page: V2Page = new Page(MANIFEST, indraIndex(), AXES as never, APPEARANCE, PALETTE, {}, 'complete',
-      { createView: createView as never, projectionWorker: spyClient(), ...extra });
+      { createView: createView as never, projectionWorker: spyClient(), ...deps });
     for (const node of index.nodes) if (node.level === 2) page.history.expand(node.id);
     return page;
   };
@@ -894,17 +897,23 @@ test('a page without the typed pipeline serves Indra through it, returns to the 
   assert.equal('projection' in (page.witness() as object), false, 'Natural without the flag reports no typed record');
   assert.equal((page as unknown as { projectionClient: unknown }).projectionClient !== undefined, true);
   await page.setAxes({ organization: 'indra' });
-  assert.equal(trace.mounts, 1, 'Indra is drawn by the typed renderer');
-  assert.equal(counts.destroys, 1, 'the product view it replaces is retired once the typed renderer is up');
-  assert.equal(recordOf(page).algorithm, 'indras-pearls');
-  assert.match(statusText(), /Vista Indra's Pearls/);
+  assert.equal(trace.mounts, 0, 'the ordinary Indra uses the recursive product renderer');
+  assert.equal(counts.axes.at(-1), 'indra');
+  assert.equal('projection' in (page.witness() as object), false);
   await page.setAxes({ organization: 'natural' });
-  assert.equal(trace.destroys, 1);
-  assert.equal(counts.mounts, 2, 'Natural is the product view again');
+  assert.equal(counts.mounts, 3, 'Natural remounts the product view after switching organizations');
   assert.equal(statusText(), 'Grafo pronto');
   assert.equal('projection' in (page.witness() as object), false);
 
-  // The explicit rollback: the product view draws the Indra organization, no typed record.
+  const pearls = make({ fractalPipeline: input, experimental: true });
+  assert.equal((pearls as unknown as { legacyIndra: boolean }).legacyIndra, false);
+  await pearls.refresh();
+  await pearls.setAxes({ organization: 'indra' });
+  assert.equal(trace.mounts, 1, 'the flagged variant uses the typed renderer');
+  assert.equal(recordOf(pearls).algorithm, 'indras-pearls');
+  assert.match(statusText(), /Vista Indra's Pearls/);
+
+  // The explicit alias keeps the recursive product renderer.
   const legacy = make({ legacyIndra: true });
   await legacy.refresh();
   const mounted = counts.mounts;

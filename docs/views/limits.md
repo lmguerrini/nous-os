@@ -8,7 +8,10 @@ Natural riusa i layout esistenti: non offre un nuovo solver di stress. La pipeli
 
 La gate Natural registra coordinate allineate al layout legacy in 11/11 fixture. La pipeline tipizzata è stata oracle-pinned e i test di permutazione sono entro `1e-9`. La profilazione pipeline-on era rinviata durante la gate Natural; questi dati non equivalgono a un benchmark complessivo corrente.
 
-## Indra’s Pearls
+## Indra e Indra’s Pearls sperimentale
+
+Indra ordinaria usa la disposizione ricorsiva del prodotto D-071/D-072. La variante tipizzata Möbius/Schottky richiede `#experimental=indra-pearls`; la selezione dell’opzione aggiunge `#indra=pearls`, mentre il solo flag non cambia Indra primaria. Fractal e Holographic richiedono analogamente `#experimental=fractal` e `#experimental=holographic`. I flag si combinano con virgole. Richieste a Fractal o Holographic senza il flag corrispondente caricano Natural e mostrano un avviso una tantum.
+
 
 - Il dominio è limitato a 850 nodi; il gruppo Schottky usa al massimo 4 coppie generatrici. Il margine di separazione della pagina è `0.02`; tolleranza ammessa al più `0.05`. Condizionamento di generatore/parola oltre `1e9`, dischi sovrapposti o tangenti, mappe esterne non valide e round-trip fuori soglia rifiutano la costruzione.
 - La pagina richiede al massimo 3 livelli e 200 parole (`v2-page.ts`); il contratto consente una profondità intera in `1..16`, rifiutando richieste oltre il massimo dichiarato con `depth-cap-exceeded`. Ogni espansione pigra deve stare nel budget di parole configurato: altrimenti `word-cap-exceeded`; il carico può anche rifiutare `node-budget-exceeded`, `invalid-parent-word`, `token-level-mismatch` o `assignment-refusal`. Un token obsoleto non apre un livello del risultato attuale. Un livello oltre `maxDepth` è rifiutato, non presentato come frontiera-leaf.
@@ -17,7 +20,10 @@ La gate Natural registra coordinate allineate al layout legacy in 11/11 fixture.
 
 Fonti: `ui/src/review/v2-page.ts` (`INDRA_PAGE_MAX_DEPTH=3`, `INDRA_PAGE_MAX_WORDS=200`, margine `0.02`), `ui/src/projection/indra.ts` (`INDRA_DOMAIN_NODE_CAP`, `INDRA_MAX_GENERATOR_PAIRS`, tolleranze, profondità e rifiuti), `ui/src/indra/levels.ts` (cap e codici di livello), `ui/src/indra/schottky.ts` (separazione e certificazione).
 
-## Fractal
+## Fractal (sperimentale)
+
+Disponibile solo con `#experimental=fractal`; senza opt-in le richieste ricadono su Natural.
+
 
 - Il dominio massimo è 850; `p` deve essere 2 o 3, i parametri devono corrispondere alla dinamica certificata, la partizione comunitaria deve essere valida e ogni nodo deve ricevere una coordinata. Non si accettano caricamenti parziali di livello.
 - Per G5(b), il rapporto di località degli archi per ogni comunità ammissibile e sottosettore richiesto non deve superare **0.5**, rispetto alle baseline deterministiche. Un valore superiore causa `edge-locality-refusal`; solver Fiedler rifiutato dà `fiedler-solver-refused`. Per il gigante oltre il 50% vale la regola G5.1: soltanto figli-gruppo reali con almeno due membri diventano sottosettori contigui, proporzionali alla dimensione; i figli foglia restano nell’intervallo residuo e seguono l’ordinamento di località deterministico.
@@ -29,7 +35,7 @@ Fonti: `ui/src/fractal/assignment.ts` (`EDGE_LOCALITY_RATIO_LIMIT`, G5.1 e Fiedl
 
 ## Holographic (sperimentale)
 
-Holographic è sospesa e non compare nei selettori ordinari. Si abilita solo con `#experimental=holographic`; richieste da viste salvate, URL o API senza flag caricano Natural e mostrano un avviso.
+Holographic è sperimentale e compare solo con `holographic` nella lista comma-separated `#experimental=`; richieste da viste salvate o URL senza il flag caricano Natural e mostrano un avviso una tantum.
 
 - La matrice spettrale usa archi attestati e un massimo dichiarato di 850 nodi. La decomposizione densa di riferimento è limitata a 172; oltre il default passa a Lanczos. Lanczos è limitato a 8 riavvii, 512 colonne proiettate e tolleranza residua predefinita `1e-8`; nonconvergenza, ortogonalità insufficiente o taglio non ammesso diventano rifiuti espliciti, non layout sostitutivi.
 - G6 usa `projector-probe-v1` come identificatore nello schema della richiesta; la regola geometrica canonica è `projector-probe-v2`. I cluster degeneri restano interi e i probe vengono proiettati nel sottospazio, ortogonalizzati due volte e orientati con una convenzione canonica del segno. Gli assi risultanti sono autovettori effettivi. Se il cluster richiesto non è isolabile, il pivot del probe è numericamente ambiguo, il rango dei probe è insufficiente o il solver non supera residuo, ortogonalità o stabilità del proiettore, la geometria rifiuta con `ambiguous-eigenspace`, `insufficient-rank` o `solver-failure`. In caso di rifiuto non vengono fornite coordinate e non si sostituisce un altro layout.

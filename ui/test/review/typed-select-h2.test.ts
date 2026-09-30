@@ -191,8 +191,12 @@ async function snapshotFor(index: V2Index): Promise<SemanticGraphSnapshot> {
 type Trace = { mounts: number; updates: RenderVisibility[]; styles: StyledProjection[]; destroys: number; ratio: number;
   pick: ((pick: PickResult | null, shiftKey: boolean) => void) | null };
 
-async function typedPage(options: { axes?: Record<string, unknown>; index?: V2Index; expand?: boolean } = {}) {
+async function typedPage(options: { axes?: Record<string, unknown>; index?: V2Index; expand?: boolean; experimental?: string } = {}) {
   const index = options.index ?? indraIndex();
+  const organization = options.axes?.organization;
+  (globalThis as any).location = {
+    search: '', hash: options.experimental ? `#experimental=${options.experimental}` : organization === 'indra' ? '#experimental=indra-pearls&indra=pearls' : organization === 'fractal' ? '#experimental=fractal' : '',
+  };
   const snapshot = await snapshotFor(index);
   const trace: Trace = { mounts: 0, updates: [], styles: [], destroys: 0, ratio: 1, pick: null };
   let pageRef: V2Page | null = null;
@@ -228,6 +232,19 @@ const textOf = (element: FakeElement | { text?: string }): string => {
 };
 const findAll = (root: FakeElement, test: (item: FakeElement) => boolean): FakeElement[] =>
   [root, ...(root.children ?? []).flatMap(child => findAll(child, test))].filter(item => item.id !== undefined && test(item));
+
+test('only the comma-listed experimental organization projections are exposed by the page registry', async () => {
+  const off = await typedPage({ axes: { organization: 'natural' } });
+  const offIds = (off.page as unknown as { projectionRegistry: ProjectionRegistry }).projectionRegistry.ids();
+  assert.equal(offIds.includes('indras-pearls'), false, 'pearls are not registered without their flag');
+  assert.equal(off.page.supportsOrganization('fractal'), false);
+  const enabled = await typedPage({ axes: { organization: 'natural' }, experimental: 'indra-pearls,fractal,holographic' });
+  const enabledIds = (enabled.page as unknown as { projectionRegistry: ProjectionRegistry }).projectionRegistry.ids();
+  assert.equal(enabledIds.includes('indras-pearls'), true);
+  assert.equal(enabled.page.supportsOrganization('indra'), true, 'the ordinary organization still has its primary adapter');
+  assert.equal(enabled.page.supportsOrganization('fractal'), true);
+  assert.equal(enabled.page.supportsOrganization('holographic'), true);
+});
 const byId = (id: string): FakeElement | null => findAll(elements.get('details')!, item => item.id === id)[0] ?? null;
 const byClass = (name: string): FakeElement[] => findAll(elements.get('details')!, item => (item.className ?? '').split(' ').includes(name));
 const cards = () => byClass('selection-card');
@@ -410,6 +427,7 @@ test('the Natural page without the typed pipeline selects exactly as before: no 
 });
 
 test('a relation with an endpoint outside the domain is not counted as an available arc', async () => {
+  (globalThis as any).location = { search: '', hash: '#experimental=indra-pearls&indra=pearls' };
   const index = indraIndex();
   const snapshot = await snapshotFor(index);
   // An assembly that hands the page one relation more than the domain can carry (an endpoint the domain does not hold).

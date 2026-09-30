@@ -1,7 +1,7 @@
 import { humanLabel, initialState, searchNode, shortHumanLabel, visibleGraph } from "./model.ts";
 import type { ReviewExport, ReviewNode } from "./model.ts";
 import { createProductView } from "./product-view.ts";
-import { DEFAULT_AXES, normalizeAxesInput, parseSavedAxes, resolveArrangementReadout, resolveExperimentalOrganization, savedAxesRecord, savedExplicitArrangement, serializeAxes } from "./view-contract.ts";
+import { DEFAULT_AXES, experimentalOrganizationsEnabled, normalizeAxesInput, parseSavedAxes, resolveArrangementReadout, resolveExperimentalOrganization, savedAxesRecord, savedExplicitArrangement, serializeAxes } from "./view-contract.ts";
 import type { Axes, AxesInput, PageAxes, ProductView, ViewWitness } from "./view-contract.ts";
 import type { ResolvedNaturalArrangement } from "../projection/natural-bridge.ts";
 import { FAMILY_OF, standingOf } from "./presentation.ts";
@@ -80,15 +80,16 @@ let operation = Promise.resolve();
 const errors: string[] = [];
 const VIEW_STORAGE_KEY = "d073.view";
 const VIEW_URL_PARAMETER = "view";
-/** Holographic is reachable only through this explicit hash flag. */
-const holographicExperimentalFlag = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : "").get("experimental") === "holographic";
-let holographicSuspensionNotice: string | null = null;
-let holographicSuspensionNoticeShown = false;
-let holographicInitialFallback = false;
-function showHolographicSuspensionNotice(): void {
-  if (!holographicSuspensionNotice || holographicSuspensionNoticeShown) return;
-  status.textContent = `${status.textContent} · ${holographicSuspensionNotice}`;
-  holographicSuspensionNoticeShown = true;
+const experimentalFlags = experimentalOrganizationsEnabled(location.search, location.hash);
+const indraPearlsSelected = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : location.hash).get("indra") === "pearls"
+  && experimentalFlags.has("indra-pearls");
+let experimentalSuspensionNotice: string | null = null;
+let experimentalSuspensionNoticeShown = false;
+let experimentalInitialFallback = false;
+function showExperimentalSuspensionNotice(): void {
+  if (!experimentalSuspensionNotice || experimentalSuspensionNoticeShown) return;
+  status.textContent = `${status.textContent} · ${experimentalSuspensionNotice}`;
+  experimentalSuspensionNoticeShown = true;
 }
 /** Whether the page draws Natural through the typed pipeline (`#projection=natural`); off, the legacy layout is drawn. */
 const typedPipelineFlag = projectionFlagEnabled(location.search, location.hash);
@@ -124,10 +125,10 @@ export function rewriteViewHash(hash: string, serializedAxes: string): string {
 }
 const initialUrlView = readUrlView();
 const parsedInitialView = initialUrlView ?? readStoredView();
-const initialOrganization = parsedInitialView ? resolveExperimentalOrganization(parsedInitialView.axes.organization, holographicExperimentalFlag) : null;
+const initialOrganization = parsedInitialView ? resolveExperimentalOrganization(parsedInitialView.axes.organization, experimentalFlags) : null;
 if (initialOrganization?.notice) {
-  holographicSuspensionNotice = initialOrganization.notice;
-  holographicInitialFallback = true;
+  experimentalSuspensionNotice = initialOrganization.notice;
+  experimentalInitialFallback = true;
 }
 const initialView = parsedInitialView && initialOrganization
   ? { ...parsedInitialView, axes: { ...parsedInitialView.axes, organization: initialOrganization.organization } }
@@ -211,7 +212,10 @@ function updateButtons() {
   for (const axis of ["projection", "morphology", "organization", "reading"] as const) {
     document
       .querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`)
-      .forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.value === axes[axis])));
+      .forEach((button) => button.setAttribute("aria-pressed", String(axis === "organization"
+        ? button.dataset.value === axes.organization && button.dataset.value !== "indra" || (button.dataset.value === "indra" && axes.organization === "indra" && !indraPearlsSelected)
+          || (button.dataset.value === "indra-pearls" && axes.organization === "indra" && indraPearlsSelected)
+        : button.dataset.value === axes[axis])));
   }
   get<HTMLButtonElement>("labels").setAttribute("aria-pressed", String(axes.labels));
   get<HTMLSelectElement>("palette").value = axes.colour;
@@ -591,12 +595,12 @@ function fit(): Promise<void> {
 }
 function setAxes(input: AxesInput): Promise<void> {
   let partial = normalizeAxesInput(input);
-  if (partial.organization === "holographic") {
-    const resolved = resolveExperimentalOrganization("holographic", holographicExperimentalFlag);
+  if (partial.organization === "holographic" || partial.organization === "fractal") {
+    const resolved = resolveExperimentalOrganization(partial.organization, experimentalFlags);
     if (resolved.notice) {
       partial = { ...partial, organization: resolved.organization };
-      holographicSuspensionNotice = resolved.notice;
-      if (v2 || data) showHolographicSuspensionNotice();
+      experimentalSuspensionNotice = resolved.notice;
+      if (v2 || data) showExperimentalSuspensionNotice();
     }
   }
   if ((partial.organization === "fractal" || partial.organization === "holographic") && !v2?.supportsOrganization(partial.organization))
@@ -608,7 +612,10 @@ function setAxes(input: AxesInput): Promise<void> {
   else requestGizmoUpdate();
   if (v2) { syncCustomColours();
     for(const axis of ["projection","morphology","organization","reading"] as const)
-      document.querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`).forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.value===axes[axis])));
+      document.querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`).forEach(button=>button.setAttribute("aria-pressed",String(axis === "organization"
+        ? button.dataset.value === axes.organization && button.dataset.value !== "indra" || (button.dataset.value === "indra" && axes.organization === "indra" && !indraPearlsSelected)
+          || (button.dataset.value === "indra-pearls" && axes.organization === "indra" && indraPearlsSelected)
+        : button.dataset.value===axes[axis])));
     get<HTMLElement>("gizmo").hidden=axes.projection!=="3d";
     get<HTMLElement>("view-presets").hidden=axes.projection!=="3d";
     get<HTMLSelectElement>("palette").value=axes.colour;
@@ -851,6 +858,19 @@ function readFilters(): Promise<void> {
 for (const axis of ["projection", "morphology", "organization", "reading"] as const)
   document.querySelectorAll<HTMLButtonElement>(`[data-axis="${axis}"] button[data-value]`).forEach((button) => {
     button.addEventListener("click", () => {
+      if (axis === "organization" && (button.dataset.value === "indra" || button.dataset.value === "indra-pearls")) {
+        const params = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : "");
+        const flags = new Set((params.get("experimental") ?? "").split(",").filter(Boolean));
+        if (button.dataset.value === "indra-pearls") {
+          flags.add("indra-pearls");
+          params.set("indra", "pearls");
+        } else params.delete("indra");
+        if (flags.size) params.set("experimental", [...flags].join(",")); else params.delete("experimental");
+        params.set(VIEW_URL_PARAMETER, serializeAxes(appliedAxes({ organization: "indra" })));
+        location.hash = params.toString();
+        location.reload();
+        return;
+      }
       void setAxes({ [axis]: button.dataset.value } as AxesInput);
     });
   });
@@ -1258,6 +1278,8 @@ async function load() {
     for (const organization of ["fractal", "holographic"] as const)
       document.querySelectorAll<HTMLButtonElement>(`[data-axis="organization"] button[data-value="${organization}"]`)
         .forEach((button) => { button.hidden = !v2!.supportsOrganization(organization); });
+    document.querySelectorAll<HTMLButtonElement>('[data-axis="organization"] button[data-value="indra-pearls"]')
+      .forEach((button) => { button.hidden = !experimentalFlags.has("indra-pearls") || !v2!.supportsOrganization("indra"); });
     get<HTMLElement>("v2-controls-top").hidden = false;
     get<HTMLElement>("density-control").hidden = false;
     get<HTMLElement>("v2-relation-control").hidden = false;
@@ -1266,8 +1288,8 @@ async function load() {
     syncCustomColours();
     get<HTMLElement>("notice").textContent = "Grafo distillato D-069";
     updateInsets();
-    if (holographicInitialFallback) persistView();
-    showHolographicSuspensionNotice();
+    if (experimentalInitialFallback) persistView();
+    showExperimentalSuspensionNotice();
     return;
   }
   if (probe.status !== 404) throw new Error(`Manifest del grafo: HTTP ${probe.status}`);
@@ -1299,8 +1321,8 @@ async function load() {
     get<HTMLSelectElement>("filter-domain").append(option);
   }
   await mount();
-  if (holographicInitialFallback) persistView();
-  showHolographicSuspensionNotice();
+  if (experimentalInitialFallback) persistView();
+  showExperimentalSuspensionNotice();
 }
 api.ready = load().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);

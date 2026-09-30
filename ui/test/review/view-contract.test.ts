@@ -11,6 +11,7 @@ import {
   assertViewInputFieldRegister,
   normalizeAxesInput,
   resolveExperimentalOrganization,
+  experimentalOrganizationsEnabled,
   normalizeFullAxesInput,
   normalizeOrganizationInput,
   parseSavedAxes,
@@ -189,14 +190,33 @@ test("the organization vocabulary refuses every value outside natural, indra, fr
 });
 
 test("without the experimental hash flag Holographic resolves to Natural with a notice", () => {
-  assert.deepEqual(resolveExperimentalOrganization("holographic", false), {
+  assert.deepEqual(resolveExperimentalOrganization("holographic", new Set()), {
     organization: "natural",
-    notice: "Holographic è sospesa: caricata Natural. Per la vista sperimentale usa #experimental=holographic.",
+    notice: "Holographic è una vista sperimentale: caricata Natural. Per abilitarla usa #experimental=holographic.",
   });
 });
 
-test("with the experimental hash flag Holographic remains available", () => {
-  assert.deepEqual(resolveExperimentalOrganization("holographic", true), { organization: "holographic", notice: null });
+test("the shared experimental grammar parses comma lists from hash or query", () => {
+  assert.deepEqual([...experimentalOrganizationsEnabled("", "#experimental=holographic,fractal,indra-pearls")].sort(),
+    ["fractal", "holographic", "indra-pearls"]);
+  assert.deepEqual([...experimentalOrganizationsEnabled("?experimental=fractal", "#experimental=holographic")].sort(),
+    ["fractal", "holographic"]);
+  assert.deepEqual([...experimentalOrganizationsEnabled("", "#experimental=Fractal,unknown")], []);
+});
+
+test("Fractal and Holographic fall back to Natural without their individual flags", () => {
+  for (const organization of ["fractal", "holographic"] as const) {
+    const result = resolveExperimentalOrganization(organization, new Set());
+    assert.equal(result.organization, "natural");
+    assert.match(result.notice ?? "", /vista sperimentale/);
+  }
+});
+
+test("experimental flags enable each opt-in view while recursive Indra remains the organization default", () => {
+  const enabled = experimentalOrganizationsEnabled("", "#experimental=fractal,indra-pearls,holographic");
+  assert.deepEqual(resolveExperimentalOrganization("holographic", enabled), { organization: "holographic", notice: null });
+  assert.deepEqual(resolveExperimentalOrganization("fractal", enabled), { organization: "fractal", notice: null });
+  assert.deepEqual(resolveExperimentalOrganization("indra", enabled), { organization: "indra", notice: null });
 });
 
 test("a Natural saved view with an arrangement is not disturbed by the Fractal value", () => {
@@ -208,10 +228,10 @@ test("a Natural saved view with an arrangement is not disturbed by the Fractal v
 test("every view of the organization axis names the projection that serves it and how it is typed", () => {
   assert.deepEqual(Object.keys(ORGANIZATION_PROJECTIONS).sort(), [...SAVED_AXES_VOCABULARIES.organization].sort(), "no view without a mapping");
   assert.deepEqual(ORGANIZATION_PROJECTIONS.natural, { projectionId: "natural", typed: "flag" }, "Natural is typed only when the page asks for it");
-  assert.deepEqual(ORGANIZATION_PROJECTIONS.indra, { projectionId: "indras-pearls", typed: "always" }, "Indra opens Indra's Pearls");
-  assert.equal(ORGANIZATION_PROJECTIONS.indra.projectionId, indrasPearlsProjection.id, "the mapped id is the registered assembly's own");
-  assert.equal(LEGACY_INDRA_PROJECTION_ID, "indra-legacy", "the legacy adapter stays the rollback, outside the register");
+  assert.deepEqual(ORGANIZATION_PROJECTIONS.indra, { projectionId: "indras-pearls", typed: "always" }, "the flagged variant remains registered under its projection id");
+  assert.equal(ORGANIZATION_PROJECTIONS.indra.projectionId, indrasPearlsProjection.id);
   assert.notEqual(LEGACY_INDRA_PROJECTION_ID, ORGANIZATION_PROJECTIONS.indra.projectionId);
+  assert.equal(LEGACY_INDRA_PROJECTION_ID, "indra-legacy", "the legacy adapter stays the rollback, outside the register");
   assert.deepEqual(ORGANIZATION_PROJECTIONS.fractal, { projectionId: "fractal", typed: "always" });
   assert.equal(ORGANIZATION_PROJECTIONS.natural.projectionId, naturalProjection.id);
   assert.equal(ORGANIZATION_PROJECTIONS.fractal.projectionId, fractalProjection.id, "the mapped id is the registered assembly's own");

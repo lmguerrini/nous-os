@@ -18,14 +18,15 @@ test('the header rows wrap and the status line can shrink', () => {
   assert.doesNotMatch(header, /style="[^"]*width:\s*\d{4,}px/);
 });
 
-test('the ordinary organization selector has Natural, Indra and Fractal', () => {
+test('the ordinary selector keeps recursive Indra primary and exposes experiments only when flagged', () => {
   const axis = header.slice(header.indexOf('data-axis="organization"'), header.indexOf('data-axis="reading"'));
-  assert.deepEqual([...axis.matchAll(/data-value="([a-z]+)"/g)].map(match => match[1]), ['natural', 'indra', 'fractal', 'holographic']);
-  assert.match(axis, /<button data-value="fractal" hidden/);
+  assert.deepEqual([...axis.matchAll(/data-value="([a-z-]+)"/g)].map(match => match[1]), ['natural', 'indra', 'indra-pearls', 'fractal', 'holographic']);
+  assert.match(axis, /<button data-value="indra-pearls" hidden[^>]*>Indra's Pearls · Möbius\/Schottky \(sperimentale\)/);
+  assert.match(axis, /<button data-value="fractal" hidden[^>]*>Fractal \(sperimentale\)/);
   assert.match(axis, /<button data-value="holographic" hidden/);
   assert.equal([...header.matchAll(/data-value="indra"/g)].length, 1, 'one Indra button in the header');
-  assert.doesNotMatch(header, /id="[^"]*(pearl|indra)[^"]*"/i, 'no Indra-specific toolbar control');
-  assert.match(axis, /data-value="indra" title="Indra's Pearls[^"]*"/);
+  assert.match(axis, /data-value="indra" title="Indra ricorsiva/);
+  assert.match(axis, /data-value="indra-pearls"[^>]*title="Indra's Pearls[^\"]*Möbius\/Schottky sperimentale/);
 });
 
 test('Holographic has a compact label, experimental title and no toolbar control of its own', () => {

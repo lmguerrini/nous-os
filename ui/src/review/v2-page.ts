@@ -43,8 +43,8 @@ import { appendFlowLegend, renderTypedStructuralLegend } from './legend.ts';
 import { buildNodePanel, buildProjectionExplanationPanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
 import type { V2Category } from './palette.ts';
 import { v2CategoryColour } from './palette.ts';
-import type { Axes, AxesInput, CreateProductView, FullAxesInput, Organization, PageAxes, ProductView, ViewOrganization } from './view-contract.ts';
-import { LEGACY_INDRA_PROJECTION_ID, normalizeAxesInput, normalizeFullAxesInput, ORGANIZATION_PROJECTIONS } from './view-contract.ts';
+import type { Axes, AxesInput, CreateProductView, ExperimentalOrganization, FullAxesInput, Organization, PageAxes, ProductView, ViewOrganization } from './view-contract.ts';
+import { LEGACY_INDRA_PROJECTION_ID, normalizeAxesInput, normalizeFullAxesInput, ORGANIZATION_PROJECTIONS, experimentalOrganizationsEnabled } from './view-contract.ts';
 import type { AppearanceOptions } from '../engine/presentation-options.ts';
 import type { PaletteValues } from './palette.ts';
 const element = (id: string) => document.getElementById(id)!;
@@ -95,6 +95,10 @@ function defaultPipelineEnabled(): boolean {
     if (typeof location !== 'object' || location === null) return false;
     return projectionFlagEnabled(location.search, location.hash);
 }
+function enabledExperimentalOrganizations() {
+    if (typeof location !== 'object' || location === null) return new Set<ExperimentalOrganization>();
+    return experimentalOrganizationsEnabled(location.search, location.hash);
+}
 /** The explicit rollback flag: `#indra=legacy` serves the Indra view with the verified legacy adapter
  * instead of Indra's Pearls. No toolbar control sets it. */
 const INDRA_FLAG_PARAM = 'indra';
@@ -109,8 +113,10 @@ export function indraLegacyFlagEnabled(search: string, hash: string): boolean {
     }
 }
 function legacyIndraFlagEnabled(): boolean {
-    if (typeof location !== 'object' || location === null) return false;
-    return indraLegacyFlagEnabled(location.search, location.hash);
+    if (typeof location !== 'object' || location === null) return true;
+    const hash = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : location.hash);
+    const selectedPearls = hash.get('indra') === 'pearls' && enabledExperimentalOrganizations().has('indra-pearls');
+    return indraLegacyFlagEnabled(location.search, location.hash) || !selectedPearls;
 }
 /** The approved request policy of the Indra view: the root, three levels deep, at most 200 words. */
 export const INDRA_PAGE_MAX_DEPTH = 3;
@@ -591,11 +597,13 @@ export class V2Page {
             this.projectionRegistry.register({ id: 'indra-legacy', version: 'layout-v2/indra-recursive',
                 project: (_snapshot, request: { parameters: { input: Parameters<typeof projectLegacyIndra>[0] } }) =>
                     projectLegacyIndra(request.parameters.input) });
-        if (!this.projectionRegistry.has('fractal')) this.projectionRegistry.register(fractalProjection);
-        if (!this.projectionRegistry.has('indras-pearls')) this.projectionRegistry.register(indrasPearlsProjection);
-        const holographicEnabled = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : '').get('experimental') === 'holographic';
-        if (holographicEnabled && !this.projectionRegistry.has('holographic')) this.projectionRegistry.register(holographicProjection);
-        if (!holographicEnabled && this.projectionRegistry.has('holographic')) this.projectionRegistry.unregister('holographic');
+        const experimental = enabledExperimentalOrganizations();
+        if (experimental.has('fractal') && !this.projectionRegistry.has('fractal')) this.projectionRegistry.register(fractalProjection);
+        if (!experimental.has('fractal') && this.projectionRegistry.has('fractal')) this.projectionRegistry.unregister('fractal');
+        if (experimental.has('indra-pearls') && !this.projectionRegistry.has('indras-pearls')) this.projectionRegistry.register(indrasPearlsProjection);
+        if (!experimental.has('indra-pearls') && this.projectionRegistry.has('indras-pearls')) this.projectionRegistry.unregister('indras-pearls');
+        if (experimental.has('holographic') && !this.projectionRegistry.has('holographic')) this.projectionRegistry.register(holographicProjection);
+        if (!experimental.has('holographic') && this.projectionRegistry.has('holographic')) this.projectionRegistry.unregister('holographic');
         if (this.projectionInput) this.installProjectionWitnessHook();
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)

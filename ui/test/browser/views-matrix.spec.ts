@@ -7,16 +7,17 @@ test.skip(process.env.D073_BROWSER !== '1', 'Serve the D-073 review page with D0
 
 const baseUrl = process.env.D073_URL ?? 'http://127.0.0.1:8768/';
 const pipelineUrl = process.env.D073_PIPELINE_URL ?? `${baseUrl.split('#')[0]}#projection=natural`;
-const holographicEnabled = new URL(pipelineUrl, baseUrl).hash.slice(1).split('&').some(value => {
-  const [key, item] = value.split('=');
-  return decodeURIComponent(key ?? '') === 'experimental' && decodeURIComponent(item ?? '') === 'holographic';
-});
+const experimentalFlags = new Set(new URLSearchParams(new URL(pipelineUrl, baseUrl).hash.slice(1)).get('experimental')?.split(',') ?? []);
+const fractalEnabled = experimentalFlags.has('fractal');
+const holographicEnabled = experimentalFlags.has('holographic');
+const indraPearlsEnabled = experimentalFlags.has('indra-pearls');
 const captureDir = process.env.D073_CAPTURE_DIR;
 const morphologies = ['stellar', 'neural', 'mycelium'] as const;
 const dimensions = ['2d', '3d'] as const;
 const views = [
   { button: 'natural', algorithm: 'natural' },
-  { button: 'indra', algorithm: 'indras-pearls' },
+  { button: 'indra', algorithm: 'indra-legacy' },
+  { button: 'indra-pearls', algorithm: 'indras-pearls' },
   { button: 'fractal', algorithm: 'fractal' },
   { button: 'holographic', algorithm: 'holographic' },
 ] as const;
@@ -225,30 +226,42 @@ for (const view of views) {
       test(`D-073 matrix ${view.button} ${dimension} ${morphology}`, async ({ page }, info) => {
         test.skip(view.button === 'holographic' && !holographicEnabled,
           'Holographic matrix cells are suspended and require #experimental=holographic.');
+        test.skip(view.button === 'fractal' && !fractalEnabled,
+          'Fractal matrix cells require #experimental=fractal.');
+        test.skip(view.button === 'indra-pearls' && !indraPearlsEnabled,
+          'Indra’s Pearls matrix cells require #experimental=indra-pearls.');
         await installCanvasDashProbe(page);
         const errors = await ready(page);
-        const button = page.locator(`header [data-axis="organization"] [data-value="${view.button}"]`).first();
+        const button = page.locator(`header [data-axis="organization"] [data-value="${view.button === 'indra-pearls' ? 'indra-pearls' : view.button}"]`).first();
         await expect(button, `${view.button} is a registered organization control`).toBeVisible();
         const fixedArrangement = view.button === 'natural' ? { arrangement: 'constellation' } : {};
-        await axes(page, { projection: dimension, organization: view.button, morphology, reading: 'attested', ...fixedArrangement });
+        if (view.button === 'indra-pearls') {
+          await button.click();
+          await page.evaluate(() => (window as any).__d067.ready);
+          await expect(page.locator('#status')).toContainText('Grafo pronto');
+          await axes(page, { projection: dimension, organization: 'indra', morphology, reading: 'attested' });
+        } else {
+          await axes(page, { projection: dimension, organization: view.button, morphology, reading: 'attested', ...fixedArrangement });
+        }
         const projection = await waitForProjection(page, view.button);
+        const viewOrganization = view.button === 'indra-pearls' ? 'indra' : view.button;
         let hasCoordinates = false;
         if (!projection) {
           expect(view.button).toBe('natural');
-          await assertDisclosure(page, view.button, dimension);
+          await assertDisclosure(page, viewOrganization, dimension);
           await assertLodBudget(page, false);
         } else {
-          expect(projection.organization).toBe(view.button);
+          expect(projection.organization).toBe(viewOrganization);
           const refusalCode = projection.refusal && typeof projection.refusal.code === 'string'
             ? projection.refusal.code
             : null;
           hasCoordinates = projection.refusal === null && projection.algorithm === view.algorithm;
-          if (hasCoordinates) expect(projection.cameraKey).toBe(`${dimension}/${view.button}`);
+          if (hasCoordinates) expect(projection.cameraKey).toBe(`${dimension}/${viewOrganization}`);
           if (view.button === 'holographic' && refusalCode) {
             const code = refusalCode;
             const status = (await page.locator('#status').innerText()).toLowerCase();
             expect(status).toContain(`proiezione rifiutata [${code}]`);
-            await assertDisclosure(page, view.button, dimension);
+            await assertDisclosure(page, viewOrganization, dimension);
             info.annotations.push({
               type: 'disclosed projection refusal',
               description: `Holographic refusal [${code}] is disclosed; coordinate and coordinate-dependent LOD and pick explanation checks are skipped.`,
@@ -257,7 +270,7 @@ for (const view of views) {
             expect(refusalCode, `${view.button} has no refusal`).toBeNull();
             expect(projection.algorithm).toBe(view.algorithm);
             expect(hasCoordinates, `${view.button} witness discloses coordinates`).toBe(true);
-            await assertDisclosure(page, view.button, dimension);
+            await assertDisclosure(page, viewOrganization, dimension);
             await assertLodBudget(page);
           }
         }
@@ -270,7 +283,7 @@ for (const view of views) {
         if (projection) {
           expect(restyled?.resultDigest, 'morphology restyling preserves coordinates and result digest').toBe(stableDigest);
         } else {
-          await assertDisclosure(page, view.button, dimension);
+          await assertDisclosure(page, viewOrganization, dimension);
           await assertLodBudget(page, false);
         }
         await axes(page, { morphology, ...fixedArrangement });
@@ -284,7 +297,7 @@ for (const view of views) {
           return ((window as any).__d073FrameCount ?? 0) - before;
         });
         expect(idleFrames, `${view.button} ${dimension} idle attested frames`).toBeLessThanOrEqual(1);
-        if (hasCoordinates || view.button === 'natural') await assertExplanationCards(page, view.button);
+        if (hasCoordinates || view.button === 'natural') await assertExplanationCards(page, viewOrganization);
         expect(await page.evaluate(() => (window as any).__d073DashCalls)).toEqual([]);
         expect(errors).toEqual([]);
       });

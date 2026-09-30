@@ -1,10 +1,10 @@
 # Manuale delle viste
 
-Le viste si scelgono nell’asse **Organizzazione**. **Natural**, **Indra’s Pearls**, **Fractal** e **Holographic** sono proiezioni alternative dello stesso dominio dichiarato: cambiano le coordinate e gli elementi derivati visibili, non il grafo sorgente. La proiezione analitica lavora sul dominio divulgato (fino a 850 nodi); l’identità e la provenienza del registro sorgente restano separate. Holographic è sperimentale: il suggerimento del pulsante dichiara «Vista sperimentale: coordinate spettrali, nessuna affermazione topologica»; lo stato e la spiegazione ripetono questa limitazione.
+Le viste si scelgono nell’asse **Organizzazione**. **Natural** e **Indra** sono le opzioni ordinarie; Indra usa la disposizione ricorsiva D-071/D-072, con perle circolari e figli impaccati per importanza e discendenti nascosti. **Indra’s Pearls · Möbius/Schottky**, **Fractal** e **Holographic** sono sperimentali e compaiono solo con il rispettivo opt-in. Tutte sono viste dello stesso dominio dichiarato: cambiano coordinate ed elementi derivati visibili, non il grafo sorgente. La proiezione analitica lavora sul dominio divulgato (fino a 850 nodi); identità e provenienza del registro sorgente restano separate.
 
 ## Impostazioni condivise
 
-- **2D / 3D** cambia la proiezione geometrica e la camera. Indra aggiunge in 3D semisfere sui dischi delle perle; Fractal solleva il potenziale esterno come altezza scalare; Holographic usa tre coordinate spettrali quando disponibili. Non interpretare queste geometrie come relazioni sorgente.
+- **2D / 3D** cambia la proiezione geometrica e la camera. Indra mantiene le perle circolari in 2D e sferiche in 3D; Indra’s Pearls sperimentale aggiunge semisfere Möbius/Schottky, Fractal solleva il potenziale esterno come altezza scalare e Holographic usa tre coordinate spettrali quando disponibili. Non interpretare queste geometrie come relazioni sorgente.
 - **Stellare, Neurale, Micelio** sono stili grafici, non algoritmi di disposizione. Stellare usa corpi stellari e aloni; Neurale usa somi e dendriti; Micelio instrada i collegamenti in tronchi condivisi. Possono cambiare la leggibilità degli archi o dei contorni, ma non la proiezione matematica né la semantica dei dati.
 - **Densità** (Essenziale, Bilanciata, Completa) regola quanti nodi, archi ed etichette sono disegnati. Lo zoom semantico sceglie il livello di dettaglio (livelli del grafo 1–5) in base all’inquadratura; avvicinarsi può rendere visibili i passaggi più profondi. Il focus evidenzia i membri pertinenti e attenua il resto senza spostarlo. I contatori nell’area dei dettagli indicano elementi disegnati e disponibili.
 
@@ -16,21 +16,25 @@ Con la pipeline tipizzata disattivata, il layout disegnato è quello D-072 e seg
 
 In 2D si legge il layout planare esistente; in 3D quello volumetrico esistente. Il tasto **Natural** usa la pipeline tipizzata quando si apre la pagina con `#projection=natural`. Senza quel flag resta attivo il percorso D-072 predefinito.
 
-## Indra’s Pearls
+## Indra
 
-La vista organizza i nodi in perle gerarchiche mediante mappe di Möbius verificate. In 2D le perle sono dischi annidati/disgiunti; in 3D i dischi hanno semisfere di testimonianza. Se la costruzione Schottky non è certificabile, la pagina dichiara l’impaccamento euclideo annidato di ripiego: non è un gruppo Schottky. La richiesta della pagina è limitata a 3 livelli e 200 parole.
+Indra è la disposizione ricorsiva D-071/D-072 e resta la scelta ordinaria in 2D e 3D. Ogni nodo gerarchico è una perla: il raggio combina importanza e discendenti nascosti, i figli vengono impaccati tangenti dentro il genitore e la profondità z è deterministica per identificativo. Gli archi mostrati sono relazioni sorgente con entrambi gli estremi disponibili. `#indra=legacy` resta un alias innocuo del percorso predefinito.
+
+## Indra’s Pearls · Möbius/Schottky (sperimentale)
+
+Aggiungi `indra-pearls` alla lista `#experimental=` (per esempio `#experimental=indra-pearls,fractal`) per mostrare questa opzione separata. Selezionandola, l’URL registra `#indra=pearls`; la selezione ordinaria **Indra** torna al percorso ricorsivo. La vista organizza i nodi in perle gerarchiche mediante mappe di Möbius verificate. In 2D le perle sono dischi annidati/disgiunti; in 3D i dischi hanno semisfere di testimonianza. Se la costruzione Schottky non è certificabile, la pagina dichiara l’impaccamento euclideo annidato di ripiego: non è un gruppo Schottky. La richiesta della pagina è limitata a 3 livelli e 200 parole.
 
 Seleziona una perla o porta lo zoom/focus al suo livello per **aprirla**: la pagina carica pigramente i figli e mostra il sottografo indotto reale. L’apertura usa un token legato a risultato e livello, e non rifà l’inquadratura. Per **uscire**, usa il controllo per lasciare la perla e tornare al genitore/radice; anche il ritorno conserva la camera. Le perle ancora chiuse mostrano identità e conteggio, non coordinate. Un limite di profondità o parole appare come livello non aperto con codice e motivo. `#indra=legacy` seleziona invece l’adattatore Indra legacy verificato, cioè il percorso della vista prodotto D-072.
 
-## Fractal
+## Fractal (sperimentale)
 
-Fractal associa il potenziale/importanza dei nodi al raggio e l’appartenenza comunitaria all’angolo attraverso raggi esterni inversi della dinamica certificata. La linea di stato mostra i parametri `p` e `c`; in 3D l’altezza è il potenziale esterno sollevato, non una dinamica frattale tridimensionale.
+Fractal compare solo con `#experimental=fractal`; una richiesta salvata o URL senza il flag carica Natural e mostra un avviso una tantum. Fractal associa il potenziale/importanza dei nodi al raggio e l’appartenenza comunitaria all’angolo attraverso raggi esterni inversi della dinamica certificata. La linea di stato mostra i parametri `p` e `c`; in 3D l’altezza è il potenziale esterno sollevato, non una dinamica frattale tridimensionale.
 
 Zoom e focus possono rivelare i livelli comunitari pigramente. L’apertura segue il token del livello e lascia invariata la camera; il limite o il rifiuto di un livello compare nella linea di stato. I picks su nodo, relazione, contenitore o curva aprono una scheda di spiegazione della proiezione con testimone numerico e limiti dichiarati.
 
 ## Holographic
 
-Holographic è sospesa e non compare nei selettori ordinari. Resta disponibile solo aggiungendo `#experimental=holographic` all’URL; una vista salvata o un URL senza flag carica Natural e mostra un avviso.
+Holographic compare solo con `holographic` nella lista comma-separated `#experimental=` (per esempio `#experimental=holographic,fractal`). Una vista salvata o URL senza il flag carica Natural e mostra un avviso una tantum.
 
 Questa vista sperimentale usa modi a bassa frequenza del laplaciano degli archi attestati per coordinate e campi derivati, senza affermare proprietà topologiche. Le coordinate sono calcolate per componente con i modi di Koren `v = D^-1/2 u`; la stessa base spettrale è usata per geometria, calore e testimoni di ricostruzione. Le componenti vengono disposte in modo deterministico. Per autospazi degeneri, la regola canonica del proiettore sceglie assi deterministici che restano autovettori effettivi; se il cluster non è isolabile, il probe è ambiguo o insufficiente, o il solver non supera i controlli numerici, le coordinate sono rifiutate e non compare un layout sostitutivo.
 
