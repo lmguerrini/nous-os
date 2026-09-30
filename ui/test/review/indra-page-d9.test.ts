@@ -812,6 +812,10 @@ test('projectionRefusalOf recognises the typed refusals, thrown or carried by th
     { name: 'ProjectionClientError', code: 'projection-error', failure: { code: 'projection-error', message } });
   assert.deepEqual(projectionRefusalOf(carried('indras-pearls-projection: level-not-found: 1-2 is empty')), { code: 'level-not-found', detail: '1-2 is empty' });
   assert.deepEqual(projectionRefusalOf(carried('fractal-projection: invalid-request: multi\nline detail')), { code: 'invalid-request', detail: 'multi\nline detail' });
+  assert.equal(projectionRefusalOf(carried('fractal-projection: made-up-refusal: coincidental text')), null,
+    'the legacy branch accepts only codes emitted by the named assembly');
+  assert.equal(projectionRefusalOf(carried('indras-pearls-projection: made-up-refusal: coincidental text')), null,
+    'an arbitrary pattern-shaped worker error remains a genuine error');
   assert.equal(projectionRefusalOf(carried('TypeError: x is undefined')), null);
   assert.equal(projectionRefusalOf(carried('other-projection: invalid-request: x')), null);
   assert.equal(projectionRefusalOf(new Error('indras-pearls-projection: invalid-request: a lookalike')), null, 'a plain error is never a refusal');

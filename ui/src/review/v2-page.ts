@@ -176,8 +176,27 @@ export function projectionRefusalOf(error: unknown): { readonly code: string; re
         return { code: failure.refusalCode, detail: failure.detail };
     if (failure?.code !== 'projection-error' || typeof failure.message !== 'string') return null;
     const match = /^(?:fractal-projection|indras-pearls-projection): ([a-z][a-z0-9-]*): ([\s\S]*)$/.exec(failure.message);
-    return match === null ? null : { code: match[1]!, detail: match[2]! };
+    if (match === null) return null;
+    const code = match[1]!;
+    const assembly = failure.message.startsWith('fractal-projection: ') ? 'fractal' : 'indra';
+    const refusalCodes = assembly === 'fractal' ? FRACTAL_LEGACY_REFUSAL_CODES : INDRA_LEGACY_REFUSAL_CODES;
+    return refusalCodes.has(code) ? { code, detail: match[2]! } : null;
 }
+
+// The old worker reports these assembly and delegated helper refusal codes in its error string.
+// Keep that compatibility path closed to the union actually emitted by the two assemblies.
+const FRACTAL_LEGACY_REFUSAL_CODES: ReadonlySet<string> = new Set([
+    'invalid-sector-partition', 'edge-locality-refusal', 'fiedler-solver-refused', 'invalid-request',
+    'uncertified-dynamics', 'parameter-mismatch', 'inverse-ray-failed', 'radial-spread-refusal',
+    'region-sample-failed', 'invalid-interval', 'invalid-potential-range', 'invalid-options',
+]);
+const INDRA_LEGACY_REFUSAL_CODES: ReadonlySet<string> = new Set([
+    'pole-in-disc', 'nonfinite-disc-image', 'unstable-word', 'invalid-request', 'stale-load-token',
+    'invalid-hierarchy', 'level-not-found', 'word-cap-exceeded', 'depth-cap-exceeded',
+    'fallback-packing-failure', 'geometry-containment', 'orbit-failure', 'member-conservation',
+    'invalid-genus', 'invalid-depth', 'invalid-parent-word', 'token-level-mismatch', 'node-budget-exceeded',
+    'assignment-refusal',
+]);
 /** A request the projection worker cancelled because a newer one superseded it. */
 function isCancelledProjection(error: unknown): boolean {
     return error instanceof Error && error.name === 'ProjectionClientError'

@@ -9,6 +9,7 @@ import type {
   AnalyticalDomain, MathematicalProjection, ProjectionResult, SemanticGraphSnapshot,
 } from "./contract-types.ts";
 import type { RegisteredProjectionId } from "./registry.ts";
+import { PROJECTION_WORKER_ENTRY_PROJECTIONS } from "./worker-entry.ts";
 import { ProjectionWorkerHost } from "./worker-host.ts";
 import {
   isProtocolRecord, isProtocolText, parseProjectionWorkerEvent,
@@ -19,6 +20,8 @@ import {
 
 /** Name of the global under which `npm run build:review` embeds the worker bundle as text. */
 export const PROJECTION_WORKER_SOURCE_GLOBAL = "__PROJECTION_WORKER_SOURCE__";
+/** The client retains at most four snapshot digests; eviction only causes a snapshot resend. */
+export const PROJECTION_CLIENT_SNAPSHOT_CAPACITY = 4;
 
 export interface ProjectionWorkerClientOptions {
   /** Externally owned port already wired to a host (tests, a real Worker, a MessagePort). */
@@ -90,24 +93,35 @@ interface PendingTask {
   retriedSnapshot: boolean;
 }
 
+interface WorkerFailureEvent { readonly message?: unknown }
+interface WorkerFailurePort {
+  addEventListener(type: "error" | "messageerror", listener: (event: WorkerFailureEvent) => void): void;
+  removeEventListener(type: "error" | "messageerror", listener: (event: WorkerFailureEvent) => void): void;
+}
+
 class ProtocolClient implements ProjectionWorkerClient {
-  readonly #port: ProjectionWorkerPort | null;
-  readonly #ownedWorker: { terminate(): void } | null = null;
-  readonly #host: ProjectionWorkerHost | null = null;
-  readonly #backend: ProjectionClientBackend;
+  #port: ProjectionWorkerPort | null;
+  readonly #ownedWorker: ProjectionWorkerHandle | null;
+  #host: ProjectionWorkerHost | null;
+  #backend: ProjectionClientBackend;
   readonly #listener = (event: ProjectionPortMessageEvent): void => { this.#receive(event.data); };
+  readonly #workerFailureListener = (event: WorkerFailureEvent): void => { this.#workerFailed(event); };
   readonly #pending = new Map<ProjectionRequestId, PendingTask>();
   readonly #slotRequest = new Map<ProjectionSlotId, ProjectionRequestId>();
-  readonly #knownSnapshots = new Set<string>();
+  readonly #knownSnapshots = new Map<string, true>();
+  readonly #fallbackProjections: readonly MathematicalProjection<any>[];
   #nextRequest = 0;
   #disposed = false;
 
   constructor(options: ProjectionWorkerClientOptions) {
+    this.#fallbackProjections = options.fallbackProjections ?? PROJECTION_WORKER_ENTRY_PROJECTIONS;
     if (options.port !== undefined) {
       if (typeof options.port.postMessage !== "function" || typeof options.port.addEventListener !== "function") {
         throw new TypeError("options.port must be a message port");
       }
       this.#port = options.port;
+      this.#ownedWorker = null;
+      this.#host = null;
       this.#backend = "external-port";
       this.#port.addEventListener("message", this.#listener);
       this.#port.start?.();
@@ -119,19 +133,21 @@ class ProtocolClient implements ProjectionWorkerClient {
       if (worker !== null) {
         this.#port = worker;
         this.#ownedWorker = worker;
+        this.#host = null;
         this.#backend = "worker";
         worker.addEventListener("message", this.#listener);
+        const failures = worker as unknown as WorkerFailurePort;
+        failures.addEventListener("error", this.#workerFailureListener);
+        failures.addEventListener("messageerror", this.#workerFailureListener);
         return;
       }
     }
-    if (options.fallbackProjections === undefined) {
-      throw new TypeError("no projection backend available: pass a port, workerSource or fallbackProjections");
-    }
     this.#port = null;
+    this.#ownedWorker = null;
     this.#backend = "main-thread";
     this.#host = new ProjectionWorkerHost({
       postEvent: event => this.#receive(event),
-      projections: options.fallbackProjections,
+      projections: this.#fallbackProjections,
     });
   }
 
@@ -164,7 +180,7 @@ class ProtocolClient implements ProjectionWorkerClient {
       }
     }
     const attachSnapshot = !this.#knownSnapshots.has(request.snapshot.digest);
-    if (attachSnapshot) this.#knownSnapshots.add(request.snapshot.digest);
+    this.#rememberSnapshot(request.snapshot.digest);
     const command: ProjectionWorkerProjectCommand = {
       kind: "project", requestId, slot, projectionId: request.projectionId,
       snapshotDigest: request.snapshot.digest, domain: request.domain, parameters: request.parameters,
@@ -203,6 +219,11 @@ class ProtocolClient implements ProjectionWorkerClient {
     // Clear local correlation first so synchronous fallback events cannot change the typed outcome.
     for (const [slot, requestId] of liveSlots) this.#send({ kind: "cancel", requestId, slot });
     if (this.#port !== null) this.#port.removeEventListener("message", this.#listener);
+    if (this.#ownedWorker !== null) {
+      const failures = this.#ownedWorker as unknown as WorkerFailurePort;
+      failures.removeEventListener("error", this.#workerFailureListener);
+      failures.removeEventListener("messageerror", this.#workerFailureListener);
+    }
     if (this.#ownedWorker !== null) this.#ownedWorker.terminate();
   }
 
@@ -236,6 +257,7 @@ class ProtocolClient implements ProjectionWorkerClient {
       // The host evicted (or never stored) the snapshot: re-attach once under the same request id.
       task.retriedSnapshot = true;
       this.#knownSnapshots.delete(task.command.snapshotDigest);
+      this.#rememberSnapshot(task.command.snapshotDigest);
       this.#send({ ...task.command, snapshot: task.snapshot });
       return;
     }
@@ -246,6 +268,36 @@ class ProtocolClient implements ProjectionWorkerClient {
   #finish(requestId: ProjectionRequestId, task: PendingTask): void {
     this.#pending.delete(requestId);
     if (this.#slotRequest.get(task.slot) === requestId) this.#slotRequest.delete(task.slot);
+  }
+
+  #rememberSnapshot(digest: string): void {
+    this.#knownSnapshots.delete(digest);
+    this.#knownSnapshots.set(digest, true);
+    if (this.#knownSnapshots.size > PROJECTION_CLIENT_SNAPSHOT_CAPACITY) {
+      const oldest = this.#knownSnapshots.keys().next().value as string | undefined;
+      if (oldest !== undefined) this.#knownSnapshots.delete(oldest);
+    }
+  }
+
+  #workerFailed(event: WorkerFailureEvent): void {
+    if (this.#disposed || this.#ownedWorker === null || this.#backend !== "worker") return;
+    const detail = typeof event.message === "string" && event.message.length > 0 ? event.message : "unknown worker failure";
+    const failure: ProjectionWorkerFailure = { code: "projection-error", message: `projection worker transport failed: ${detail}` };
+    const error = new ProjectionClientError(failure.code, describeFailure(failure), { failure });
+    const pending = [...this.#pending.values()];
+    this.#pending.clear();
+    this.#slotRequest.clear();
+    this.#port?.removeEventListener("message", this.#listener);
+    const failures = this.#ownedWorker as unknown as WorkerFailurePort;
+    failures.removeEventListener("error", this.#workerFailureListener);
+    failures.removeEventListener("messageerror", this.#workerFailureListener);
+    this.#ownedWorker.terminate();
+    this.#port = null;
+    this.#backend = "main-thread";
+    this.#host = new ProjectionWorkerHost({
+      postEvent: message => this.#receive(message), projections: this.#fallbackProjections,
+    });
+    for (const task of pending) task.reject(error);
   }
 
   #send(command: ProjectionWorkerCommand): void {
@@ -276,7 +328,7 @@ export function tryCreateProjectionWorkerPort(source: string): ProjectionWorkerH
   }
   let worker: Worker;
   let url = "";
-  const listeners = new Map<(event: ProjectionPortMessageEvent) => void, EventListener>();
+  const listeners = new Map<string, Map<Function, EventListener>>();
   try {
     const blob = new (BlobConstructor as new (parts: readonly string[], options: Readonly<{ type: string }>) => Blob)
       ([source], { type: "text/javascript" });
@@ -287,19 +339,23 @@ export function tryCreateProjectionWorkerPort(source: string): ProjectionWorkerH
   }
   return {
     postMessage: message => { worker.postMessage(message); },
-    addEventListener: (_type, listener) => {
-      let adapter = listeners.get(listener);
+    addEventListener: (type, listener) => {
+      let typed = listeners.get(type);
+      if (typed === undefined) { typed = new Map(); listeners.set(type, typed); }
+      let adapter = typed.get(listener);
       if (adapter === undefined) {
-        adapter = event => listener(event as unknown as ProjectionPortMessageEvent);
-        listeners.set(listener, adapter);
+        adapter = event => (listener as (event: unknown) => void)(event);
+        typed.set(listener, adapter);
       }
-      worker.addEventListener("message", adapter);
+      worker.addEventListener(type, adapter);
     },
-    removeEventListener: (_type, listener) => {
-      const adapter = listeners.get(listener);
+    removeEventListener: (type, listener) => {
+      const typed = listeners.get(type);
+      const adapter = typed?.get(listener);
       if (adapter !== undefined) {
-        worker.removeEventListener("message", adapter);
-        listeners.delete(listener);
+        worker.removeEventListener(type, adapter);
+        typed!.delete(listener);
+        if (typed!.size === 0) listeners.delete(type);
       }
     },
     terminate: () => {

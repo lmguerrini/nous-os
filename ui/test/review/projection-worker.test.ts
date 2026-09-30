@@ -13,7 +13,7 @@ import {
   type ProjectionWorkerEntryScope,
 } from "../../src/projection/worker-entry.ts";
 import {
-  ProjectionClientError, createProjectionWorkerClient, readEmbeddedWorkerSource,
+  PROJECTION_CLIENT_SNAPSHOT_CAPACITY, ProjectionClientError, createProjectionWorkerClient, readEmbeddedWorkerSource,
   tryCreateProjectionWorkerPort,
 } from "../../src/projection/worker-client.ts";
 import { ProjectionWorkerHost, type ProjectionWorkerHostOptions } from "../../src/projection/worker-host.ts";
@@ -550,8 +550,10 @@ test("main-thread fallback: the same host class runs when Worker is unavailable 
   assert.equal(state.calls[2]!.signal.aborted, true, "dispose aborts the fallback host's live task");
 });
 
-test("no backend at all is a construction error", () => {
-  assert.throws(() => createProjectionWorkerClient({}), TypeError);
+test("without Worker support the client uses its built-in main-thread projection host", () => {
+  const client = createProjectionWorkerClient({ workerSource: "" });
+  assert.equal(client.backend, "main-thread");
+  client.dispose();
 });
 
 test("Blob worker start: a fake Worker constructor receives a blob URL and the client terminates it", async () => {
@@ -561,11 +563,16 @@ test("Blob worker start: a fake Worker constructor receives a blob URL and the c
     readonly url: string;
     terminated = false;
     readonly messages: unknown[] = [];
-    readonly #listeners = new Set<(event: { data: unknown }) => void>();
+    readonly #listeners = new Map<string, Set<(event: any) => void>>();
     constructor(url: string) { this.url = url; created.push(this); }
     postMessage(message: unknown): void { this.messages.push(message); }
-    addEventListener(_type: string, listener: (event: { data: unknown }) => void): void { this.#listeners.add(listener); }
-    removeEventListener(_type: string, listener: (event: { data: unknown }) => void): void { this.#listeners.delete(listener); }
+    addEventListener(type: string, listener: (event: any) => void): void {
+      let listeners = this.#listeners.get(type);
+      if (listeners === undefined) { listeners = new Set(); this.#listeners.set(type, listeners); }
+      listeners.add(listener);
+    }
+    removeEventListener(type: string, listener: (event: any) => void): void { this.#listeners.get(type)?.delete(listener); }
+    emit(type: string, event: unknown): void { for (const listener of this.#listeners.get(type) ?? []) listener(event); }
     terminate(): void { this.terminated = true; }
   }
   (globalThis as { Worker?: unknown }).Worker = FakeBrowserWorker;
@@ -594,6 +601,81 @@ test("Blob worker start: a fake Worker constructor receives a blob URL and the c
     if (originalDescriptor === undefined) delete (globalThis as { Worker?: unknown }).Worker;
     else Object.defineProperty(globalThis, "Worker", originalDescriptor);
   }
+});
+
+test("owned worker death rejects every live request and later requests use the main-thread host", async () => {
+  const created: FakeBrowserWorker[] = [];
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Worker");
+  class FakeBrowserWorker {
+    readonly url: string;
+    terminated = false;
+    readonly messages: unknown[] = [];
+    readonly #listeners = new Map<string, Set<(event: any) => void>>();
+    constructor(url: string) { this.url = url; created.push(this); }
+    postMessage(message: unknown): void { this.messages.push(message); }
+    addEventListener(type: string, listener: (event: any) => void): void {
+      let listeners = this.#listeners.get(type);
+      if (listeners === undefined) { listeners = new Set(); this.#listeners.set(type, listeners); }
+      listeners.add(listener);
+    }
+    removeEventListener(type: string, listener: (event: any) => void): void { this.#listeners.get(type)?.delete(listener); }
+    emit(type: string, event: unknown): void { for (const listener of this.#listeners.get(type) ?? []) listener(event); }
+    terminate(): void { this.terminated = true; }
+  }
+  const fallback: MathematicalProjection<any> = {
+    id: "holographic", version: "fallback-test-v1",
+    async project(snapshot) { return stubResult(snapshot.digest); },
+  };
+  (globalThis as { Worker?: unknown }).Worker = FakeBrowserWorker;
+  try {
+    const client = createProjectionWorkerClient({ workerSource: "worker", fallbackProjections: [fallback] });
+    const first = client.project({ projectionId: "holographic", snapshot: fakeSnapshot("dead-1"), domain: fakeDomain("dead-1"), parameters: testParameters(), slot: "one" });
+    const second = client.project({ projectionId: "holographic", snapshot: fakeSnapshot("dead-2"), domain: fakeDomain("dead-2"), parameters: testParameters(), slot: "two" });
+    const firstError = assertClientError(first, "projection-error", error => assert.equal(error.failure?.code, "projection-error"));
+    const secondError = assertClientError(second, "projection-error", error => assert.equal(error.failure?.code, "projection-error"));
+    created[0]!.emit("error", { message: "script terminated" });
+    await Promise.all([firstError, secondError]);
+    assert.equal(client.isIdle, true);
+    assert.equal(client.backend, "main-thread");
+    assert.equal(created[0]!.terminated, true);
+    const outcome = await client.project({ projectionId: "holographic", snapshot: fakeSnapshot("after-death"), domain: fakeDomain("after-death"), parameters: testParameters() });
+    assert.equal(outcome.result.determinism.resultDigest, "result-after-death");
+    client.dispose();
+
+    const messageErrorClient = createProjectionWorkerClient({ workerSource: "worker", fallbackProjections: [fallback] });
+    const messageErrorPending = messageErrorClient.project({ projectionId: "holographic", snapshot: fakeSnapshot("message-error"), domain: fakeDomain("message-error"), parameters: testParameters() });
+    const rejectedMessageError = assertClientError(messageErrorPending, "projection-error");
+    created[1]!.emit("messageerror", {});
+    await rejectedMessageError;
+    assert.equal(messageErrorClient.backend, "main-thread");
+    messageErrorClient.dispose();
+  } finally {
+    if (originalDescriptor === undefined) delete (globalThis as { Worker?: unknown }).Worker;
+    else Object.defineProperty(globalThis, "Worker", originalDescriptor);
+  }
+});
+
+test("the bounded snapshot LRU resends an evicted snapshot", async () => {
+  const [clientPort] = SyncPort.pair();
+  const client = createProjectionWorkerClient({ port: clientPort });
+  assert.equal(PROJECTION_CLIENT_SNAPSHOT_CAPACITY, 4);
+  const request = (index: number, slot: string): void => {
+    const digest = `lru-${index}`;
+    const promise = client.project({ projectionId: "holographic", snapshot: fakeSnapshot(digest), domain: fakeDomain(digest), parameters: testParameters(), slot });
+    void assertClientError(promise, "cancelled");
+    client.cancel(slot);
+  };
+  for (let index = 1; index <= PROJECTION_CLIENT_SNAPSHOT_CAPACITY; index += 1) request(index, `slot-${index}`);
+  request(1, "touch-recent"); // refresh lru-1's recency
+  request(PROJECTION_CLIENT_SNAPSHOT_CAPACITY + 1, "new-snapshot"); // evicts lru-2
+  request(1, "recent-survived");
+  request(2, "least-recent-evicted");
+  const projects = clientPort.posted.filter((message): message is ProjectionWorkerCommand =>
+    typeof message === "object" && message !== null && (message as { kind?: unknown }).kind === "project");
+  assert.equal("snapshot" in projects[4]!, false, "touching a snapshot does not resend it");
+  assert.equal("snapshot" in projects[6]!, false, "the recent snapshot survives another insertion");
+  assert.ok("snapshot" in projects[7]!, "the least recently used snapshot is reattached after eviction");
+  client.dispose();
 });
 
 test("worker entry: installs on a worker-like scope and registers available projections", async () => {
