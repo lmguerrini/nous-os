@@ -61,8 +61,8 @@ export async function hub(page: Page): Promise<{ id: string; x: number; y: numbe
     domains.sort((a, b) => (b[1].radius ?? 0) - (a[1].radius ?? 0) || a[0].localeCompare(b[0]));
     return domains[0] ? { id: domains[0][0], x: domains[0][1].x, y: domains[0][1].y } : null;
   });
-  // nodeViewport is relative to #viewport; the mouse moves in page coordinates.
-  return { id: node?.id ?? '', x: node ? box!.x + node.x : box!.x + box!.width / 2, y: node ? box!.y + node.y : box!.y + box!.height / 2, box: box! };
+  // nodeViewport points are page (client) coordinates, the frame the mouse moves in.
+  return { id: node?.id ?? '', x: node?.x ?? box!.x + box!.width / 2, y: node?.y ?? box!.y + box!.height / 2, box: box! };
 }
 
 export async function wheel(page: Page, point: { x: number; y: number }, delta: number, count = 1): Promise<Witness> {
