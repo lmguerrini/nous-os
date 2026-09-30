@@ -10,9 +10,11 @@ import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, projectionPick, projectionVisibility, semanticZoom, typedV2Path, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
 import type { TypedPathStep } from './v2-relations.ts';
-import type { AnalyticalDomain, Dimension, NaturalArrangement, PickResult, ProjectionResult, ProjectionRenderer, RawJson, RecursiveLevel, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec3, VisualRelation } from '../projection/contract-types.ts';
+import type { AnalyticalDomain, Dimension, NaturalArrangement, PickResult, ProjectionRequest, ProjectionResult, ProjectionRenderer, RawJson, RecursiveLevel, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec3, VisualRelation } from '../projection/contract-types.ts';
 import { selectAnalyticalDomain } from '../projection/domain.ts';
 import { ProjectionRegistry } from '../projection/registry.ts';
+import { deriveFractalCommunities, fractalCommunityLevelId, FractalProjectionRefusal, fractalProjection } from '../projection/fractal.ts';
+import { certifyFractalDynamics, fractalContractParameters } from '../fractal/parameters.ts';
 import { naturalProjection, NATURAL_LAYOUT_VERSION, resolveNaturalArrangement } from '../projection/natural-bridge.ts';
 import { projectLegacyIndra } from '../projection/legacy-indra.ts';
 import type { LegacyIndraProjectionResult } from '../projection/legacy-indra.ts';
@@ -33,8 +35,8 @@ import { appendFlowLegend, renderTypedStructuralLegend } from './legend.ts';
 import { buildNodePanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
 import type { V2Category } from './palette.ts';
 import { v2CategoryColour } from './palette.ts';
-import type { Axes, AxesInput, CreateProductView, FullAxesInput, ProductView } from './view-contract.ts';
-import { normalizeAxesInput, normalizeFullAxesInput } from './view-contract.ts';
+import type { Axes, AxesInput, CreateProductView, FullAxesInput, Organization, PageAxes, ProductView, ViewOrganization } from './view-contract.ts';
+import { normalizeAxesInput, normalizeFullAxesInput, ORGANIZATION_PROJECTIONS } from './view-contract.ts';
 import type { AppearanceOptions } from '../engine/presentation-options.ts';
 import type { PaletteValues } from './palette.ts';
 const element = (id: string) => document.getElementById(id)!;
@@ -95,6 +97,43 @@ function emptyTypedVisualGraph(): VisualGraph {
         edges: [],
     };
 }
+/** A typed refusal of the Fractal assembly (`FractalProjectionRefusal`): its machine-readable code
+ * and the deterministic detail, or null for any other error, which the caller must not treat as one.
+ * Recognised by name and code so a bundled copy of the class is recognised too. */
+export function fractalRefusalOf(error: unknown): { readonly code: string; readonly detail: string } | null {
+    if (!(error instanceof Error) || error.name !== 'FractalProjectionRefusal') return null;
+    const code = (error as Error & { code?: unknown }).code;
+    if (typeof code !== 'string') return null;
+    const prefix = `fractal-projection: ${code}: `;
+    return { code, detail: error.message.startsWith(prefix) ? error.message.slice(prefix.length) : error.message };
+}
+/** The status line of a Fractal view: which view this is, that its positions are derived geometry
+ * (inverse external rays of the certified dynamics) and never a semantic claim, and the 3D limitation. */
+export function fractalDisclosureLine(result: ProjectionResult, dimension: Dimension): string {
+    const diagnostic = (code: string) => result.diagnostics.find(item => item.code === code)?.value;
+    const p = diagnostic('fractal:p'), c = diagnostic('fractal:c');
+    const dynamics = typeof p === 'number' && typeof c === 'number' ? `certificati p=${p}, c=${Number(c.toPrecision(4))}` : 'certificati';
+    return `Vista Fractal \u00B7 posizioni derivate dai raggi esterni inversi di ${dynamics} \u00B7 geometria derivata, non semantica`
+        + (dimension === '3d' ? ' \u00B7 3D: altezza = potenziale esterno (sollevamento scalare)' : '');
+}
+/** A genuinely lazy level: a promise (`loaded: false`, with its load token) whose children are missing or
+ * themselves unloaded. A promise whose child levels are all present and loaded in the same result is
+ * already open (the Fractal giant community, G5.1): it is never requested and never reported as unopened. */
+export function isLazyLevel(result: Pick<ProjectionResult, 'levels'>, level: RecursiveLevel): level is Extract<RecursiveLevel, { loaded: false }> {
+    if (level.loaded) return false;
+    const byId = new Map(result.levels.map(item => [item.id, item]));
+    return level.childLevelIds.length === 0 || level.childLevelIds.some(id => byId.get(id)?.loaded !== true);
+}
+/** Resolves after the browser had a chance to paint (or after a short bound, so a hidden tab never
+ * stalls a projection): the pending state must be on screen before a long synchronous assembly. */
+function afterPaint(): Promise<void> {
+    return new Promise(resolve => {
+        const bound = setTimeout(resolve, 50);
+        const done = () => { clearTimeout(bound); resolve(); };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => { setTimeout(done, 0); });
+        else setTimeout(done, 0);
+    });
+}
 /** D-072 R1: injection points for the page tests — a fake view factory that counts its mounts
  * and destroys, and a seam over the LOD selection so a throwing selection is observable. The
  * page's behaviour is identical with the defaults. */
@@ -106,6 +145,12 @@ export type V2PageDeps = {
     /** The same default pipeline the `?projection=natural` URL flag builds, as an explicit
      * opt-in — the browser harness and the unit tests share one construction path. */
     readonly useDefaultPipeline?: boolean;
+    /** The registry the page projects through; the page registers every projection it serves that
+     * the registry does not already hold, so a test can pre-register a fake Fractal assembly. */
+    readonly projectionRegistry?: ProjectionRegistry;
+    /** The pipeline a page that is not typed by default builds on its first Fractal selection;
+     * absent, it is the same default pipeline the `?projection=natural` flag builds. */
+    readonly fractalPipeline?: ProjectionPipelineInput;
 };
 export interface ProjectionPageRenderer extends ProjectionRenderer {
     onPick(handler: (pick: PickResult | null, shiftKey: boolean) => void): void;
@@ -196,7 +241,7 @@ export class V2Page {
     private view: ProductView | null = null;
     private viewHost: HTMLElement | null = null;
     private v2Colours: Partial<Record<V2Category, string>>;
-    private axes: Axes;
+    private axes: PageAxes;
     private appearance: AppearanceOptions;
     private palette: PaletteValues;
     private selected: string | null = null;
@@ -269,8 +314,12 @@ export class V2Page {
     private capMessage = false;
     private pointerDown = false;
     private hoverNeedsMove = false;
-    private readonly projectionInput: ProjectionPipelineInput | undefined;
-    private readonly projectionRegistry: ProjectionRegistry | null;
+    /** True when the flag or an injected pipeline serves every organization through the typed
+     * pipeline; false, only the views that are always typed (Fractal) leave the product view. */
+    private readonly typedByDefault: boolean;
+    private projectionInput: ProjectionPipelineInput | undefined;
+    private readonly fractalPipeline: ProjectionPipelineInput | undefined;
+    private readonly projectionRegistry: ProjectionRegistry;
     private projectionRenderer: ProjectionPageRenderer | null = null;
     private projectionHost: HTMLElement | null = null;
     private projectionResult: ProjectionResult | null = null;
@@ -292,6 +341,15 @@ export class V2Page {
      * A changed identity re-seeds from the last flat result (D-072 `previous` parity). */
     private naturalAnchorState: { key: string; anchors: Readonly<Record<string, Vec3>> | null } | null = null;
     private naturalPreviousFlat: ProjectionResult | null = null;
+    /** The request behind the mounted Fractal result: a level load repeats it with `requestedLevelId`. */
+    private fractalRequest: ProjectionRequest<'fractal'> | null = null;
+    /** The typed refusal the Fractal view is showing instead of a drawing, or null. */
+    private fractalRefusal: { readonly code: string; readonly detail: string } | null = null;
+    /** `resultDigest|levelId` of the levels the assembly refused to open for a result: never requested again. */
+    private readonly refusedLevels = new Map<string, { readonly code: string; readonly detail: string }>();
+    private projectionPending = false;
+    /** The camera key (dimension and view) of the mounted typed renderer: its camera belongs to it. */
+    private mountedCameraKey: string | null = null;
     constructor(manifest: GraphManifest, index: V2Index, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
         this.manifest = manifest;
         this.index = index;
@@ -302,21 +360,17 @@ export class V2Page {
         this.density = normalizeDensity(density);
         this.createView = deps.createView ?? createProductView;
         this.selectLod = deps.safeSelect ?? safeSelectNodes;
-        this.projectionInput = deps.projectionPipeline
-            ?? ((defaultPipelineEnabled() || deps.useDefaultPipeline === true) ? this.buildDefaultPipeline() : undefined);
-        this.projectionRegistry = this.projectionInput ? new ProjectionRegistry() : null;
-        if (this.projectionRegistry) {
-            this.projectionRegistry.register(naturalProjection);
+        this.typedByDefault = deps.projectionPipeline !== undefined || defaultPipelineEnabled() || deps.useDefaultPipeline === true;
+        this.projectionInput = deps.projectionPipeline ?? (this.typedByDefault ? this.buildDefaultPipeline() : undefined);
+        this.fractalPipeline = deps.fractalPipeline;
+        this.projectionRegistry = deps.projectionRegistry ?? new ProjectionRegistry();
+        if (!this.projectionRegistry.has('natural')) this.projectionRegistry.register(naturalProjection);
+        if (!this.projectionRegistry.has('indra-legacy'))
             this.projectionRegistry.register({ id: 'indra-legacy', version: 'layout-v2/indra-recursive',
                 project: (_snapshot, request: { parameters: { input: Parameters<typeof projectLegacyIndra>[0] } }) =>
                     projectLegacyIndra(request.parameters.input) });
-        }
-        if (this.projectionInput && typeof window === 'object' && window !== null) {
-            // The `?projection=natural` browser harness: a read-only diagnostic hook beside the
-            // `witness().projection` record, exactly what ui/test/browser/projection-b.spec.ts reads.
-            const target = window as typeof window & { __d073?: { projectionWitness?: () => unknown } };
-            (target.__d073 ??= {}).projectionWitness = () => this.projectionWitnessRecord();
-        }
+        if (!this.projectionRegistry.has('fractal')) this.projectionRegistry.register(fractalProjection);
+        if (this.projectionInput) this.installProjectionWitnessHook();
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
             root.addEventListener(type, () => { this.userMovedSinceFit = true; this.noteCameraIntent(); }, { passive: true });
@@ -361,6 +415,40 @@ export class V2Page {
     }
     private visible() { return v2Visible(this.index, this.history.state, this.auto); }
     /** B9 owns relation identity. Rehash the B5 result after replacing its temporary relation IDs. */
+    /** The `?projection=natural` browser harness: a read-only diagnostic hook beside the
+     * `witness().projection` record, exactly what ui/test/browser/projection-b.spec.ts reads. */
+    private installProjectionWitnessHook(): void {
+        if (typeof window !== 'object' || window === null) return;
+        const target = window as typeof window & { __d073?: { projectionWitness?: () => unknown } };
+        (target.__d073 ??= {}).projectionWitness = () => this.projectionWitnessRecord();
+    }
+    /** Whether the current view is drawn by the typed pipeline: every view under the flag or an
+     * injected pipeline, otherwise only the views the organization register marks as always typed. */
+    private typedActive(): boolean {
+        return this.typedByDefault || ORGANIZATION_PROJECTIONS[this.axes.organization].typed === 'always';
+    }
+    /** A view button exists only when its projection is registered: no dead control. */
+    supportsOrganization(organization: ViewOrganization): boolean {
+        return this.projectionRegistry.has(ORGANIZATION_PROJECTIONS[organization].projectionId);
+    }
+    /** The typed pipeline of a page that is not typed by default is built on its first Fractal use. */
+    private typedPipeline(): ProjectionPipelineInput {
+        if (!this.projectionInput) {
+            this.projectionInput = this.fractalPipeline ?? this.buildDefaultPipeline();
+            this.installProjectionWitnessHook();
+        }
+        return this.projectionInput;
+    }
+    /** The organization the product view draws; Fractal never reaches it. */
+    private legacyOrganization(): Organization {
+        const { organization } = this.axes;
+        if (organization === 'fractal') throw new Error('Fractal is only served by the typed projection pipeline');
+        return organization;
+    }
+    /** The camera of a typed renderer belongs to one dimension and one view; another view's camera is never reused. */
+    private cameraKey(): string {
+        return `${this.axes.projection}/${this.axes.organization === 'fractal' ? 'fractal' : 'natural'}`;
+    }
     private async withTypedRelations(raw: ProjectionResult, relations: readonly VisualRelation[]): Promise<ProjectionResult> {
         const oldIds = new Set(raw.visualRelations.map(item => item.explanationId));
         const explanations = Object.fromEntries(Object.entries(raw.explanations).filter(([id]) => !oldIds.has(id)));
@@ -387,8 +475,8 @@ export class V2Page {
         return this.axes.arrangement ?? this.naturalArrangement ?? resolveNaturalArrangement(this.axes.morphology);
     }
     private async refreshProjection(epoch: number): Promise<void> {
-        const input = this.projectionInput!;
-        const registry = this.projectionRegistry!;
+        const input = this.typedPipeline();
+        const registry = this.projectionRegistry;
         const snapshot = await input.snapshot();
         assertPageSnapshotIndex(this.index, snapshot);
         const disclosed = this.visible();
@@ -396,14 +484,16 @@ export class V2Page {
         // GATE-B audit 2: the typed relations honour the relation-detail control and the
         // legacy-style focus source (selected relation, its source node, the selection, hover).
         const active = this.projectionFocus();
-        const typedRelations = projectTypedRelations(this.index.nodes, this.index.edges, new Set(domain.nodeIds),
-            this.axes.reading, this.axes.organization, this.relationDetail, active).visualRelations;
+        const organization = this.axes.organization;
+        const typedRelations = organization === 'fractal' ? [] : projectTypedRelations(this.index.nodes, this.index.edges,
+            new Set(domain.nodeIds), this.axes.reading, organization, this.relationDetail, active).visualRelations;
         const dimension = this.axes.projection;
         let styled: StyledProjection;
         let arrangementToCommit: NaturalArrangement | null = null;
         let anchorKeyToCommit: string | null = null;
         let anchorsToCommit: Readonly<Record<string, Vec3>> | null = null;
-        if (this.axes.organization === 'natural') {
+        let fractalRequestToCommit: ProjectionRequest<'fractal'> | null = null;
+        if (organization === 'natural') {
             const arrangement = this.resolvedNaturalArrangement();
             arrangementToCommit = arrangement;
             const layoutRelationPolicy = this.axes.reading === 'attested' ? 'attested-essential' as const
@@ -449,6 +539,12 @@ export class V2Page {
             if (styled.projection !== typed) throw new Error('Morphology replaced the projection result');
             anchorKeyToCommit = anchorKey;
             anchorsToCommit = continuityAnchors;
+        } else if (organization === 'fractal') {
+            const outcome = await this.projectFractal(epoch, snapshot, domain, dimension);
+            if (outcome === null) return;
+            styled = input.style(outcome.result, snapshot);
+            if (styled.projection !== outcome.result) throw new Error('Morphology replaced the projection result');
+            fractalRequestToCommit = outcome.request;
         } else {
             const ids = new Set(domain.nodeIds);
             const relations = projectRelations(this.index.nodes, this.index.edges, ids,
@@ -490,7 +586,11 @@ export class V2Page {
             throw new Error('Projection lost its source ledger');
         // A new host starts at the fitted overview: the semantic level restarts at far, exactly as
         // the camera it is measured against does.
-        const mounted = this.projectionRenderer?.dimension === dimension ? this.projectionRenderer : null;
+        // Another view's camera is never reused: a renderer mounted for a different camera key (a
+        // Fractal view after a Natural one or the reverse) is replaced by a fresh host at the fit.
+        const cameraKey = this.cameraKey();
+        const mounted = this.projectionRenderer?.dimension === dimension && this.mountedCameraKey === cameraKey
+            ? this.projectionRenderer : null;
         if (!mounted) { this.lod = 'far'; this.pendingLod = null; }
         // D-073 C8b: the six-class revision follows the legacy semantic LOD (level, density budgets).
         const lod = this.typedLodVisibility(result, snapshot, disclosed.nodes, active, this.projectionRevision + 1);
@@ -513,14 +613,19 @@ export class V2Page {
             this.projectionHost?.remove();
             this.projectionRenderer = renderer;
             this.projectionHost = host;
+            this.mountedCameraKey = cameraKey;
             this.overviewRatio = null;
             this.programmaticCamera();
+            // The typed renderer is on screen: a product view left behind by the switch is retired.
+            this.retireLegacyView();
         }
         this.projectionRevision = visibility.revision;
         this.projectionResult = result;
         this.projectionSnapshot = snapshot;
         this.projectionDomain = domain;
         this.projectionVisibility = visibility;
+        this.fractalRequest = fractalRequestToCommit;
+        this.fractalRefusal = null;
         if (arrangementToCommit) this.naturalArrangement = arrangementToCommit;
         if (anchorKeyToCommit !== null) {
             this.naturalAnchorState = { key: anchorKeyToCommit, anchors: anchorsToCommit };
@@ -537,7 +642,170 @@ export class V2Page {
         this.lastNodeSelection = lod.selection;
         this.dropHiddenTypedSelection();
         this.renderPanel();
-        element('status').textContent = 'Grafo pronto';
+        element('status').textContent = organization === 'fractal' ? this.fractalStatusLine() : 'Grafo pronto';
+        if (organization === 'fractal') this.openFractalLevels();
+    }
+    /** The request behind a Fractal view: the certified dynamics of the disclosed domain, derived from
+     * the same stable features the assembly recertifies (community count, node count, attested
+     * induced edges). A domain outside 1..cap or with uncertified dynamics is refused here with the
+     * assembly's own typed codes, never projected. */
+    private fractalRequestFor(snapshot: SemanticGraphSnapshot, domain: AnalyticalDomain,
+        dimension: Dimension): ProjectionRequest<'fractal'> {
+        if (domain.nodeIds.length === 0 || domain.nodeIds.length > V2_CAP)
+            throw new FractalProjectionRefusal('invalid-request', `domain size ${domain.nodeIds.length} outside 1..${V2_CAP}`);
+        const { communities } = deriveFractalCommunities(snapshot, domain.nodeIds);
+        const inDomain = new Set(domain.edgeIds);
+        const attestedEdgeCount = snapshot.edges.filter(edge => inDomain.has(edge.id) && edge.attestation === 'attested').length;
+        const certification = certifyFractalDynamics({ communityCount: communities.length,
+            domainNodeCount: domain.nodeIds.length, attestedEdgeCount });
+        if (!certification.certified)
+            throw new FractalProjectionRefusal('uncertified-dynamics',
+                `c=${certification.code} (${certification.detail}) is not certified for this domain`);
+        return { id: 'fractal', snapshotDigest: snapshot.digest, domain,
+            parameters: { ...fractalContractParameters(certification, domain.nodeIds.length), dimension } };
+    }
+    /** Requests the Fractal projection of the disclosed domain through the registry. Null means the
+     * refresh was superseded, or the assembly refused: a typed refusal is then on screen instead of a
+     * drawing. Any other failure propagates. */
+    private async projectFractal(epoch: number, snapshot: SemanticGraphSnapshot, domain: AnalyticalDomain,
+        dimension: Dimension): Promise<{ readonly result: ProjectionResult; readonly request: ProjectionRequest<'fractal'> } | null> {
+        // A refresh superseded while queued never starts the assembly.
+        if (epoch !== this.projectionEpoch) return null;
+        this.setProjectionPending(true);
+        try {
+            await afterPaint();
+            if (epoch !== this.projectionEpoch) return null;
+            const request = this.fractalRequestFor(snapshot, domain, dimension);
+            const outcome = await this.projectionRegistry.project<ProjectionResult>('fractal', snapshot, request);
+            if (epoch !== this.projectionEpoch) return null;
+            const state = outcome.result.coordinateState;
+            if (state.kind === 'no-coordinates') {
+                this.showFractalRefusal({ code: state.code,
+                    detail: outcome.result.explanations[state.explanationId]?.summary ?? state.code });
+                return null;
+            }
+            return { result: outcome.result, request };
+        } catch (error) {
+            const refusal = fractalRefusalOf(error);
+            if (refusal === null) throw error;
+            if (epoch === this.projectionEpoch) this.showFractalRefusal(refusal);
+            return null;
+        } finally {
+            if (epoch === this.projectionEpoch) this.setProjectionPending(false);
+        }
+    }
+    /** The visible pending state of a projection that computes: the status line says so and the
+     * render root carries `aria-busy` and `data-projection-pending` until the result is committed. */
+    private setProjectionPending(pending: boolean): void {
+        this.projectionPending = pending;
+        const root = element('render-root');
+        root.setAttribute('aria-busy', String(pending));
+        root.toggleAttribute('data-projection-pending', pending);
+        if (pending) element('status').textContent = 'Fractal \u00B7 calcolo della proiezione in corso\u2026';
+    }
+    /** The Fractal view cannot be drawn: the canvas is cleared (no other view's picture stays under
+     * the Fractal label) and the typed refusal is shown as such. */
+    private showFractalRefusal(refusal: { readonly code: string; readonly detail: string }): void {
+        this.retireTypedRenderer();
+        this.retireLegacyView();
+        this.fractalRefusal = refusal;
+        this.rendered = new Set();
+        this.lodCounts = { nodes: { rendered: 0, available: 0, pinned: 0, pinnedIds: [] },
+            arcs: { rendered: 0, available: 0, pinned: 0, pinnedIds: [] } };
+        element('status').textContent = `Vista Fractal \u00B7 proiezione rifiutata [${refusal.code}]: ${refusal.detail} \u00B7 nessuna posizione mostrata`;
+        this.renderPanel();
+    }
+    /** The disclosure of the mounted Fractal result, plus the levels the assembly refused to open. */
+    private fractalStatusLine(): string {
+        const result = this.projectionResult;
+        if (!result) return '';
+        const refused = this.refusedLevelsOf(result);
+        return fractalDisclosureLine(result, this.axes.projection)
+            + (refused.length ? ` \u00B7 ${refused.length} livelli non aperti [${refused[0]!.code}]: ${refused[0]!.detail}` : '');
+    }
+    private refusedLevelsOf(result: ProjectionResult): { readonly levelId: string; readonly code: string; readonly detail: string }[] {
+        const prefix = `${result.determinism.resultDigest}|`;
+        return [...this.refusedLevels].filter(([key]) => key.startsWith(prefix))
+            .map(([key, refusal]) => ({ levelId: key.slice(prefix.length), ...refusal }));
+    }
+    /** Zoom or focus reaches a genuinely lazy level (see `isLazyLevel`): its load is requested by
+     * `requestedLevelId`. The near zoom band asks for every such level, a focus only for the level
+     * holding the focused node; one level per pass, then the next. A complete result requests nothing. */
+    private openFractalLevels(): void {
+        const result = this.projectionResult;
+        if (!result || result.determinism.algorithmId !== 'fractal') return;
+        const lazy = result.levels.filter(level => isLazyLevel(result, level))
+            .filter(level => !this.refusedLevels.has(`${result.determinism.resultDigest}|${level.id}`));
+        if (lazy.length === 0) return;
+        // A focus belongs to the community the source hierarchy puts it in; that community's level id names its level.
+        const snapshot = this.projectionSnapshot, domain = this.projectionDomain;
+        const focusLevel = this.selected !== null && snapshot && domain
+            ? (() => {
+                const community = deriveFractalCommunities(snapshot, domain.nodeIds).nodes.find(node => node.id === this.selected)?.communityId;
+                return community === undefined ? null : fractalCommunityLevelId(community);
+            })()
+            : null;
+        const wanted = lazy.filter(level => this.lod === 'near' || level.id === focusLevel).map(level => level.id).sort();
+        if (wanted[0] !== undefined) this.openFractalLevel(wanted[0]);
+    }
+    private openFractalLevel(levelId: string): void {
+        const cameraKey = this.mountedCameraKey;
+        const digest = this.projectionResult?.determinism.resultDigest;
+        if (cameraKey === null || digest === undefined) return;
+        void this.run(async () => {
+            const current = this.projectionResult;
+            const level = current?.levels.find(item => item.id === levelId);
+            // Superseded meanwhile: the level is already open, or the result it belonged to is gone.
+            if (!current || !level || !isLazyLevel(current, level) || current.determinism.resultDigest !== digest) return;
+            try {
+                await this.loadProjectionLevel(levelId, cameraKey);
+            } catch (error) {
+                const refusal = fractalRefusalOf(error);
+                if (refusal !== null) {
+                    this.refusedLevels.set(`${digest}|${levelId}`, refusal);
+                    if (this.projectionResult?.determinism.resultDigest === digest)
+                        element('status').textContent = this.fractalStatusLine();
+                    return;
+                }
+                if (error instanceof Error && /^Stale projection (level token|camera)/.test(error.message)) return;
+                throw error;
+            }
+            this.openFractalLevels();
+        // `run` has already put the failure in the status line and the error panel before rethrowing.
+        }).catch(() => { });
+    }
+    /** Leaves the typed renderer behind (the page goes back to the product view, or shows a refusal). */
+    private retireTypedRenderer(): void {
+        this.fractalRequest = null;
+        this.fractalRefusal = null;
+        const renderer = this.projectionRenderer, host = this.projectionHost;
+        if (!renderer && !host) return;
+        if (this.typedSelection && this.typedSelection.kind !== 'node' && this.typedSelection.kind !== 'semantic-edge')
+            this.selected = null;
+        this.projectionRenderer = null;
+        this.projectionHost = null;
+        this.projectionResult = null;
+        this.projectionSnapshot = null;
+        this.projectionDomain = null;
+        this.projectionVisibility = null;
+        this.typedSelection = null;
+        this.typedWhyResult = null;
+        this.mountedCameraKey = null;
+        this.overviewRatio = null;
+        this.lastZoomRatio = null;
+        try { renderer?.destroy(); }
+        finally { host?.remove(); }
+    }
+    /** Leaves the product view behind once the typed renderer that replaces it is on screen. */
+    private retireLegacyView(): void {
+        const view = this.view, host = this.viewHost;
+        if (!view && !host) return;
+        this.view = null;
+        this.viewHost = null;
+        this.lastLodKey = null;
+        this.renderedRelations = new Map();
+        try { view?.destroy(); }
+        finally { host?.remove(); }
     }
     /** A typed pick the new mask no longer shows has no panel to open: the selection ends with it. */
     private dropHiddenTypedSelection(): void {
@@ -620,7 +888,7 @@ export class V2Page {
             const id = pick.id;
             if (shiftKey && pick.kind === 'node' && this.selected && this.selected !== id)
                 this.why(this.selected, id);
-            else { this.typedSelection = pick; this.selected = id; this.renderPanel(); }
+            else { this.typedSelection = pick; this.selected = id; this.renderPanel(); this.openFractalLevels(); }
         } else {
             this.typedSelection = pick;
             this.selected = pick.visualId;
@@ -657,16 +925,37 @@ export class V2Page {
             case 'field': return mask.fieldIds.has(pick.visualId);
         }
     }
-    /** A finite level revision keeps the mounted host. The token must belong to the current result. */
-    async loadProjectionLevel(levelId: string): Promise<void> {
+    /** The loader of an unopened level: the pipeline's own, or for a Fractal result the registered
+     * assembly asked again for the same request with `requestedLevelId`. */
+    private levelLoader(result: ProjectionResult): ProjectionPipelineInput['loadLevel'] {
+        const own = this.projectionInput?.loadLevel;
+        if (own) return own;
+        const request = this.fractalRequest, input = this.projectionInput;
+        if (result.determinism.algorithmId !== 'fractal' || !request || !input) return undefined;
+        return async (level, snapshot, domain) => {
+            if (request.domain !== domain) throw new Error('Stale projection level token');
+            const outcome = await this.projectionRegistry.project<ProjectionResult>('fractal', snapshot,
+                { ...request, requestedLevelId: level.id });
+            return input.style(outcome.result, snapshot);
+        };
+    }
+    /** A finite level revision keeps the mounted host. The token must belong to the current result,
+     * and a caller that names the camera key it read (dimension and view) is refused when another
+     * view's camera is mounted now. */
+    async loadProjectionLevel(levelId: string, expectedCameraKey?: string): Promise<void> {
         const result = this.projectionResult, snapshot = this.projectionSnapshot, domain = this.projectionDomain;
-        const renderer = this.projectionRenderer, loader = this.projectionInput?.loadLevel;
+        const renderer = this.projectionRenderer;
+        const loader = result ? this.levelLoader(result) : undefined;
         if (!result || !snapshot || !domain || !renderer || !loader) throw new Error('Projection level loading unavailable');
+        const cameraKey = this.mountedCameraKey;
+        if (expectedCameraKey !== undefined && expectedCameraKey !== cameraKey) throw new Error('Stale projection camera');
         const level = result.levels.find(item => item.id === levelId);
         if (!level || level.loaded) throw new Error('Projection level is not unopened');
+        if (!isLazyLevel(result, level)) throw new Error('Projection level is already open');
         assertCurrentLevelToken(level, snapshot, domain, result);
         const epoch = this.projectionEpoch;
         const styled = await loader(level, snapshot, domain);
+        if (cameraKey !== this.mountedCameraKey || cameraKey !== this.cameraKey()) throw new Error('Stale projection camera');
         if (epoch !== this.projectionEpoch || this.projectionResult !== result ||
             this.projectionDomain !== domain || this.projectionSnapshot !== snapshot)
             throw new Error('Stale projection level token');
@@ -683,6 +972,7 @@ export class V2Page {
         this.lastNodeSelection = lod.selection;
         this.dropHiddenTypedSelection();
         this.renderPanel();
+        if (this.axes.organization === 'fractal') element('status').textContent = this.fractalStatusLine();
     }
     /** The read-only diagnostic record `window.__d073.projectionWitness()` and `witness().projection`
      * return under the flag — enabled, the current result digest, the resolved arrangement. */
@@ -693,11 +983,17 @@ export class V2Page {
             enabled: true,
             resultDigest: result?.determinism.resultDigest ?? null,
             algorithm: result?.determinism.algorithmId ?? null,
-            arrangement: this.axes.organization === 'indra' ? this.naturalArrangement : this.resolvedNaturalArrangement(),
+            arrangement: this.axes.organization === 'natural' ? this.resolvedNaturalArrangement() : this.naturalArrangement,
             revision: this.projectionRevision,
             revisionDigest: visibility?.projectionResultDigest ?? null,
             domainDigest: this.projectionDomain?.domainDigest ?? null,
             continuityAnchored: this.naturalAnchorState?.anchors != null,
+            organization: this.axes.organization,
+            cameraKey: this.mountedCameraKey,
+            pending: this.projectionPending,
+            refusal: this.fractalRefusal,
+            unopenedLevels: result ? result.levels.filter(level => isLazyLevel(result, level)).map(level => level.id).sort() : [],
+            refusedLevels: result ? this.refusedLevelsOf(result) : [],
         };
     }
     /** D-073 C4: the default `ProjectionPipelineInput` behind `?projection=natural`, built from the
@@ -963,7 +1259,10 @@ export class V2Page {
         this.refreshPending++;
         const projectionEpoch = ++this.projectionEpoch;
         return this.run(async () => {
-            if (this.projectionInput) { await this.refreshProjection(projectionEpoch); return; }
+            if (this.typedActive()) { await this.refreshProjection(projectionEpoch); return; }
+            // Back on the product view: the typed renderer a Fractal view left behind is retired.
+            this.retireTypedRenderer();
+            const organization = this.legacyOrganization();
             this.suppressZoomUntil = performance.now() + 900;
             const disclosed = this.visible();
             const ids = new Set(disclosed.nodes.map(n => n.id));
@@ -977,7 +1276,7 @@ export class V2Page {
                 this.index.nodes, this.index.edges, ids, this.axes.reading, 'natural', 'essential',
             ).edges;
             const projection = this.axes.projection;
-            const usePrevious = this.layoutSource === 'flat-community' && this.axes.organization === 'natural'
+            const usePrevious = this.layoutSource === 'flat-community' && organization === 'natural'
                 && this.layoutProjection === projection && this.axes.morphology === this.lastMorphology;
             const result = computeLayout({
                 nodes: disclosed.nodes.map(n => ({
@@ -987,17 +1286,17 @@ export class V2Page {
                 edges: layoutEdges.map(e => ({
                     id: e.id, source: e.source, target: e.target, class: e.class,
                 })),
-                organization: this.axes.organization,
+                organization,
                 morphology: this.axes.morphology,
                 projection,
-                ...(this.axes.organization === 'indra' ? { expandZ: this.appearance.expandZ } : {}),
+                ...(organization === 'indra' ? { expandZ: this.appearance.expandZ } : {}),
                 ...(usePrevious ? { previous: this.rawPositions } : {}),
             });
             // D-072 R1: everything this refresh computes is held in locals until the new view is
             // on screen — a refresh that fails mid-way must leave the page describing the view it
             // actually displays, not the one it wanted.
             const nextRawPositions = result.positions;
-            const flat3d = this.axes.organization === 'natural' && projection === '3d';
+            const flat3d = organization === 'natural' && projection === '3d';
             const nextCanonicalPositions = flat3d ? canonicalize(result.positions) : result.positions;
             const expanded = flat3d
                 ? applyExpansion(nextCanonicalPositions, { expandX: this.appearance.expandX, expandY: this.appearance.expandY, expandZ: this.appearance.expandZ })
@@ -1016,7 +1315,7 @@ export class V2Page {
             const budget = DENSITY_BUDGETS[this.density];
             const availableArcs = projectRelations(
                 this.index.nodes, this.index.edges, ids, this.axes.reading,
-                this.axes.organization, this.relationDetail, active,
+                organization, this.relationDetail, active,
             );
             const communityOf = communityResolver(this.index.nodes);
             const adjacency = adjacencyOf(disclosed.nodes, this.index.edges);
@@ -1048,7 +1347,7 @@ export class V2Page {
             } else if (this.restoreNeighbourhood && this.neighbourhoodBefore) renderedIds = new Set(this.neighbourhoodBefore.nodes);
             const pool = projectRelations(
                 this.index.nodes, this.index.edges, renderedIds, this.axes.reading,
-                this.axes.organization, this.relationDetail, active,
+                organization, this.relationDetail, active,
             );
             const focusRelations = focusPriority ? focusArcs(focusPriority, pool.edges, communityOf) : null;
             const focusArcPriority = focusRelations ? [
@@ -1173,7 +1472,7 @@ export class V2Page {
             element('render-root').append(nextHost);
             let mounted: ProductView;
             try {
-                mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(shown.map(edge => edge.id)), axes: this.axes, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
+                mounted = await this.createView({ container: nextHost, data: adapted.data, v2Prepared: adapted.prepared, v2Colours: this.v2Colours, layoutContainers: nextContainers as typeof result.containers, visibleNodeIds: renderedIds, visibleEdgeIds: new Set(shown.map(edge => edge.id)), axes: { ...this.axes, organization }, appearance: this.appearance, customPalette: this.palette, insets: { top: 0, right: 0, bottom: 0, left: 0 }, flowMotion: this.flowMotion, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, labelBudget: budget.labels, text: id => { const n = visibleById.get(id)!; const hint = this.axes.organization === 'indra' && hiddenCount(n) ? ` · +${hiddenCount(n)}` : ''; const text = presentationText(n); return { short: text.short + hint, full: text.full, family: n.level <= 3 ? 'aggregate' : n.level === 5 ? 'source' : 'concept' }; }, events: { onPick: target => { if (target) {
                             if (target.shiftKey && this.selected && this.selected !== target.id) {
                                 this.why(this.selected, target.id);
                             }
@@ -1445,7 +1744,7 @@ export class V2Page {
     why(a: string, b: string) {
         this.whyRequest = [a, b];
         const ids = new Set(this.visible().nodes.map(node => node.id));
-        if (this.projectionInput) {
+        if (this.typedActive()) {
             this.typedWhyResult = typedV2Path(this.index, a, b, ids);
             this.whyResult = null;
             this.renderPanel();
@@ -1532,7 +1831,7 @@ export class V2Page {
                 hovered: this.hovered, hoveredEdge: this.hoveredEdge,
                 relations: this.renderedRelations, nodes: this.visible().nodes,
                 containerIds: new Set(this.containers.map(container => container.id)),
-                organization: this.axes.organization, absoluteContainerId: ABSOLUTE_CONTAINER_ID,
+                organization: this.axes.organization === 'indra' ? 'indra' : 'natural', absoluteContainerId: ABSOLUTE_CONTAINER_ID,
             }) : null;
             this.view?.setEmphasis(resting);
             return;
@@ -1591,12 +1890,15 @@ export class V2Page {
         window.setTimeout(() => layer.remove(), 1000);
     }
     async setAxes(value: AxesInput) {
-        const merged: Axes = { ...this.axes, ...normalizeAxesInput(value) };
-        // D-073: the arrangement axis is Natural-only — the merged Indra view drops it, exactly
-        // like the main entry point's appliedAxes, so the axes the page keeps and hands to the
-        // product view never carry an arrangement on Indra.
-        this.axes = merged.organization === 'indra'
-            ? { projection: merged.projection, morphology: merged.morphology, organization: 'indra',
+        const merged: PageAxes = { ...this.axes, ...normalizeAxesInput(value) };
+        if (merged.organization !== this.axes.organization && !this.supportsOrganization(merged.organization))
+            throw new Error(`View is not registered: ${merged.organization}`);
+        // D-073: the arrangement axis is Natural-only — the merged Indra or Fractal view drops it,
+        // exactly like the main entry point's appliedAxes, so the axes the page keeps and hands to
+        // the product view never carry an arrangement outside Natural. The Natural arrangement
+        // already resolved stays with the page and returns with Natural.
+        this.axes = merged.organization !== 'natural'
+            ? { projection: merged.projection, morphology: merged.morphology, organization: merged.organization,
                 colour: merged.colour, labels: merged.labels, reading: merged.reading }
             : merged;
         await this.refresh();
@@ -1738,6 +2040,9 @@ export class V2Page {
     private tickProjectionZoom(): void {
         const renderer = this.projectionRenderer;
         if (!renderer?.readCameraState) return;
+        // A camera sample belongs to the view that was mounted when it was taken: while the axes
+        // name another dimension or view the mounted camera is stale and drives nothing.
+        if (this.mountedCameraKey !== this.cameraKey()) return;
         const camera = renderer.readCameraState();
         const ratio = camera?.ratio;
         if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0) return;
@@ -1786,7 +2091,7 @@ export class V2Page {
             ...this.view?.witness(),
             // The typed page keeps its own axes record; there is no product view to ask.
             ...(this.view ? {} : { axes: this.axes }),
-            ...(this.projectionInput ? { projection: this.projectionWitnessRecord() } : {}),
+            ...(this.typedActive() ? { projection: this.projectionWitnessRecord() } : {}),
             layoutSource: this.layoutSource,
             containers: this.containers,
             communities: this.communities,
@@ -1894,7 +2199,7 @@ export class V2Page {
         // D-073 B8/B10e: the typed pipeline's structural pick controls. The legend owns its own
         // visibility (hidden until a structural relation is actually visible); without the flag the
         // element stays absent, exactly as the off-path browser check expects.
-        if (this.projectionInput && this.projectionResult && this.projectionVisibility) {
+        if (this.typedActive() && this.projectionResult && this.projectionVisibility) {
             const structural = document.createElement('div');
             structural.id = 'structural-pick-controls';
             structural.className = 'legend structural-pick-controls';
@@ -1915,7 +2220,7 @@ export class V2Page {
         selectionHeading.id = 'selection-heading';
         selectionHeading.textContent = 'Selezione';
         host.append(selectionHeading);
-        if (this.projectionInput && this.typedSelection && this.projectionResult && this.projectionSnapshot &&
+        if (this.typedActive() && this.projectionInput && this.typedSelection && this.projectionResult && this.projectionSnapshot &&
             this.typedSelection.kind !== 'node' && this.typedSelection.kind !== 'semantic-edge') {
             this.projectionInput.panel.show(host, this.typedSelection, this.projectionResult, this.projectionSnapshot);
             return;
@@ -1951,7 +2256,7 @@ export class V2Page {
         } else if (e) {
             renderSelection(host, buildRelationPanel(e, byId, createEvidenceResolver(byId)), id => { void this.select(id); });
         }
-        if (this.projectionInput && this.typedWhyResult?.steps.length && this.projectionResult && this.projectionSnapshot) {
+        if (this.typedActive() && this.typedWhyResult?.steps.length && this.projectionResult && this.projectionSnapshot) {
             const path = document.createElement('section'); path.className = 'selection-section';
             const heading = document.createElement('h3'); heading.textContent = 'Percorso tra i nodi'; path.append(heading);
             for (const step of this.typedWhyResult.steps) {
@@ -1971,7 +2276,7 @@ export class V2Page {
                 path.append(button);
             }
             host.append(path);
-        } else if (this.whyRequest && !(this.projectionInput ? this.typedWhyResult : this.whyResult)) {
+        } else if (this.whyRequest && !(this.typedActive() ? this.typedWhyResult : this.whyResult)) {
             const p = document.createElement('p');
             p.textContent = 'Nessun percorso fra questi nodi nel grafo caricato.';
             host.append(p);

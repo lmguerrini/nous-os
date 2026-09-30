@@ -4,14 +4,20 @@ import {
   DEFAULT_AXES,
   LEGACY_ORGANIZATION,
   NATURAL_ORGANIZATION,
+  ORGANIZATION_PROJECTIONS,
   SAVED_AXES_VOCABULARIES,
   VIEW_INPUT_FIELD_REGISTER,
   assertViewInputFieldRegister,
+  normalizeAxesInput,
+  normalizeFullAxesInput,
+  normalizeOrganizationInput,
   parseSavedAxes,
   savedAxesRecord,
   serializeAxes,
 } from "../../src/review/view-contract.ts";
-import { defaultNaturalArrangement, resolveNaturalArrangement } from "../../src/projection/natural-bridge.ts";
+import type { PageAxes } from "../../src/review/view-contract.ts";
+import { defaultNaturalArrangement, naturalProjection, resolveNaturalArrangement } from "../../src/projection/natural-bridge.ts";
+import { fractalProjection } from "../../src/projection/fractal.ts";
 import { PALETTES } from "../../src/review/palette.ts";
 
 function inputFixture(): Record<string, unknown> {
@@ -48,7 +54,7 @@ test("the saved-view vocabulary register is closed and stays pinned to the live 
   assert.deepEqual(SAVED_AXES_VOCABULARIES, {
     projection: ["2d", "3d"],
     morphology: ["stellar", "neural", "mycelium"],
-    organization: ["natural", "indra"],
+    organization: ["natural", "indra", "fractal"],
     arrangement: ["constellation", "network", "mycelium"],
     reading: ["attested", "exploratory", "combined"],
     colour: ["bw", "warm", "earth", "gems", "night", "semantic", "amber", "old-gold", "ochre", "copper", "alchemical-red", "warm-twilight", "sepia", "brace", "miele", "custom"],
@@ -123,6 +129,52 @@ test("saved axes parsing keeps the register closed and rejects every unknown vie
   assert.throws(() => parseSavedAxes('{"projection":"2d","morphology":"stellar","organization":"natural","colour":"bw","labels":true,"reading":"rumoured"}'), /Saved axes\.reading is outside its closed vocabulary \[closed-vocabulary\]/);
   assert.throws(() => parseSavedAxes('{"projection":"2d","morphology":"stellar","organization":"natural","colour":"bw","labels":"yes","reading":"attested"}'), /Saved axes\.labels must be boolean \[labels-boolean\]/);
   assert.throws(() => parseSavedAxes(`${valid.slice(0, -1).replace('"arrangement":"constellation"', '"arrangement":"lattice"')}}`), /Saved axes\.arrangement is outside its closed vocabulary \[closed-vocabulary\]/);
+});
+
+const FRACTAL_AXES = '{"projection":"3d","morphology":"neural","organization":"fractal","colour":"sepia","labels":false,"reading":"combined"}';
+
+test("Fractal saved views round-trip byte-identically and keep no Natural arrangement", () => {
+  const parsed = parseSavedAxes(FRACTAL_AXES);
+  assert.equal(parsed.organization, "fractal");
+  assert.equal("arrangement" in parsed, false);
+  assert.equal(serializeAxes(parsed), FRACTAL_AXES, "the wire form is the register order, without an arrangement");
+  assert.equal(serializeAxes(parseSavedAxes(serializeAxes(parsed))), FRACTAL_AXES, "the round trip is a fixed point");
+  assert.deepEqual(Object.keys(savedAxesRecord(parsed)), [...VIEW_INPUT_FIELD_REGISTER.axes]);
+  // The URL carries the view percent-encoded; storage carries it verbatim.
+  const url = new URLSearchParams();
+  url.set("view", serializeAxes(parsed));
+  assert.equal(serializeAxes(parseSavedAxes(new URLSearchParams(url.toString()).get("view")!)), FRACTAL_AXES);
+  assert.throws(() => parseSavedAxes(FRACTAL_AXES.replace("}", ',"arrangement":"network"}')), /arrangement is only valid for the Natural view \[arrangement-requires-natural\]/);
+  assert.throws(() => serializeAxes({ ...parsed, arrangement: "network" }), /arrangement is only valid for the Natural view \[arrangement-requires-natural\]/);
+});
+
+test("the organization vocabulary refuses every value outside natural, indra, fractal and the flat read alias", () => {
+  for (const good of ["natural", "indra", "fractal"] as const) assert.equal(normalizeOrganizationInput(good), good);
+  assert.equal(normalizeOrganizationInput(LEGACY_ORGANIZATION), "natural", "the flat read alias is unchanged");
+  for (const bad of ["Fractal", "FRACTAL", "fractal ", "holographic", "indras-pearls", "julia", "", undefined, null, 3]) {
+    assert.throws(() => normalizeOrganizationInput(bad), /organization is outside its closed vocabulary/, String(bad));
+    if (typeof bad === "string" && bad !== "")
+      assert.throws(() => parseSavedAxes(FRACTAL_AXES.replace('"fractal"', JSON.stringify(bad))), /Saved axes\.organization is outside its closed vocabulary \[closed-vocabulary\]/, bad);
+  }
+  assert.deepEqual(normalizeAxesInput({ organization: "fractal", projection: "2d" }), { organization: "fractal", projection: "2d" });
+  const fractal: PageAxes = normalizeFullAxesInput({ ...DEFAULT_AXES, organization: "fractal" });
+  assert.equal(fractal.organization, "fractal");
+  assert.throws(() => normalizeAxesInput({ organization: "holographic" as never }), /closed vocabulary/);
+});
+
+test("a Natural saved view with an arrangement is not disturbed by the Fractal value", () => {
+  const explicit = '{"projection":"2d","morphology":"stellar","organization":"natural","colour":"bw","labels":true,"reading":"attested","arrangement":"network"}';
+  assert.equal(serializeAxes(parseSavedAxes(explicit)), explicit);
+  assert.equal(parseSavedAxes(explicit.replace('"natural"', '"flat"')).organization, "natural");
+});
+
+test("every view of the organization axis names the projection that serves it and how it is typed", () => {
+  assert.deepEqual(Object.keys(ORGANIZATION_PROJECTIONS).sort(), [...SAVED_AXES_VOCABULARIES.organization].sort(), "no view without a mapping");
+  assert.deepEqual(ORGANIZATION_PROJECTIONS.natural, { projectionId: "natural", typed: "flag" }, "Natural is typed only when the page asks for it");
+  assert.deepEqual(ORGANIZATION_PROJECTIONS.indra, { projectionId: "indra-legacy", typed: "flag" });
+  assert.deepEqual(ORGANIZATION_PROJECTIONS.fractal, { projectionId: "fractal", typed: "always" });
+  assert.equal(ORGANIZATION_PROJECTIONS.natural.projectionId, naturalProjection.id);
+  assert.equal(ORGANIZATION_PROJECTIONS.fractal.projectionId, fractalProjection.id, "the mapped id is the registered assembly's own");
 });
 
 /** This reads the in-memory organization under the saved vocabulary, where the live page still spells Natural as the legacy `flat`. */

@@ -2,7 +2,7 @@ import { humanLabel, initialState, searchNode, shortHumanLabel, visibleGraph } f
 import type { ReviewExport, ReviewNode } from "./model.ts";
 import { createProductView } from "./product-view.ts";
 import { DEFAULT_AXES, normalizeAxesInput, parseSavedAxes, savedAxesRecord, serializeAxes } from "./view-contract.ts";
-import type { Axes, AxesInput, ProductView, ViewWitness } from "./view-contract.ts";
+import type { Axes, AxesInput, PageAxes, ProductView, ViewWitness } from "./view-contract.ts";
 import { resolveNaturalArrangementWithSource } from "../projection/natural-bridge.ts";
 import type { ResolvedNaturalArrangement } from "../projection/natural-bridge.ts";
 import { FAMILY_OF, standingOf } from "./presentation.ts";
@@ -51,7 +51,7 @@ let liveActive = false;
 let liveResults: LiveFragment[] = [];
 let liveMessage = "";
 let view: ProductView | null = null;
-let axes: Axes;
+let axes: PageAxes;
 let debug = false;
 const storage = (() => { try { return localStorage; } catch { return null; } })();
 let appearance = normalizeAppearance(readLocal(storage, "d069.appearance", DEFAULT_APPEARANCE));
@@ -82,7 +82,7 @@ const errors: string[] = [];
 const VIEW_STORAGE_KEY = "d073.view";
 const VIEW_URL_PARAMETER = "view";
 const MORPHOLOGY_LABELS = { stellar: "Stellar", neural: "Neural", mycelium: "Mycelium" } as const;
-function readViewSource(raw: string): { axes: Axes; explicitArrangement: boolean } | null {
+function readViewSource(raw: string): { axes: PageAxes; explicitArrangement: boolean } | null {
   try {
     const explicitArrangement = typeof (JSON.parse(raw) as { arrangement?: unknown }).arrangement === "string";
     return { axes: parseSavedAxes(raw), explicitArrangement };
@@ -91,12 +91,12 @@ function readViewSource(raw: string): { axes: Axes; explicitArrangement: boolean
     return null;
   }
 }
-function readUrlView(): { axes: Axes; explicitArrangement: boolean } | null {
+function readUrlView(): { axes: PageAxes; explicitArrangement: boolean } | null {
   const hash = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : "");
   const raw = new URLSearchParams(location.search).get(VIEW_URL_PARAMETER) ?? hash.get(VIEW_URL_PARAMETER);
   return raw === null ? null : readViewSource(raw);
 }
-function readStoredView(): { axes: Axes; explicitArrangement: boolean } | null {
+function readStoredView(): { axes: PageAxes; explicitArrangement: boolean } | null {
   const raw = readLocal<string>(storage, VIEW_STORAGE_KEY, "");
   return raw ? readViewSource(raw) : null;
 }
@@ -118,14 +118,24 @@ else axes = { ...DEFAULT_AXES, arrangement: resolveNaturalArrangementWithSource(
 let resolvedArrangement: ResolvedNaturalArrangement | null = axes.organization === "natural"
   ? resolveNaturalArrangementWithSource(axes.morphology, initialView?.explicitArrangement === true ? axes.arrangement : undefined)
   : null;
-function appliedAxes(partial: Partial<Axes>): Axes {
-  const next: Axes = { ...axes, ...partial };
-  if (next.organization === "indra") {
-    return { projection: next.projection, morphology: next.morphology, organization: "indra", colour: next.colour, labels: next.labels, reading: next.reading };
+function appliedAxes(partial: Partial<PageAxes>): PageAxes {
+  const next: PageAxes = { ...axes, ...partial };
+  if (next.organization !== "natural") {
+    return { projection: next.projection, morphology: next.morphology, organization: next.organization, colour: next.colour, labels: next.labels, reading: next.reading };
   }
   if (partial.arrangement !== undefined) resolvedArrangement = resolveNaturalArrangementWithSource(next.morphology, partial.arrangement);
   if (resolvedArrangement === null) resolvedArrangement = resolveNaturalArrangementWithSource(next.morphology);
   return next.arrangement === undefined ? { ...next, arrangement: resolvedArrangement.arrangement } : next;
+}
+/** The export path draws with the product renderers, which know Natural and Indra only: Fractal is a distilled-graph view. */
+function productAxes(value: PageAxes = axes): Axes {
+  if (value.organization === "fractal") throw new Error("La vista Fractal richiede il grafo distillato");
+  return { ...value, organization: value.organization };
+}
+function productPartial(value: Partial<PageAxes>): Partial<Axes> {
+  const { organization, ...rest } = value;
+  if (organization === "fractal") throw new Error("La vista Fractal richiede il grafo distillato");
+  return organization === undefined ? rest : { ...rest, organization };
 }
 function writeViewUrl(): void {
   try {
@@ -400,7 +410,7 @@ function debugView(graph: ReturnType<typeof filterGraph>): ProductView {
   const witness = (): ViewWitness => {
     const rect = viewport.getBoundingClientRect();
     return {
-      axes,
+      axes: productAxes(),
       cameraKind: axes.projection === "2d" ? "orthographic" : "perspective",
       visibleRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
       nodeViewport: {},
@@ -449,7 +459,7 @@ async function mount() {
       container: renderRoot,
       data,
       visibleNodeIds: visibleIds,
-      axes,
+      axes: productAxes(),
       appearance,
       customPalette,
       insets: { top: 0, right: 0, bottom: 0, left: 0 },
@@ -560,6 +570,8 @@ function fit(): Promise<void> {
 }
 function setAxes(input: AxesInput): Promise<void> {
   const partial = normalizeAxesInput(input);
+  if (partial.organization === "fractal" && !v2?.supportsOrganization("fractal"))
+    return Promise.reject(new Error("La vista Fractal non è disponibile per questo grafo"));
   axes = appliedAxes(partial);
   persistView();
   syncArrangementInspector();
@@ -584,7 +596,7 @@ function setAxes(input: AxesInput): Promise<void> {
     }
     if (debug) await mount();
     else {
-      await view?.setAxes(partial);
+      await view?.setAxes(productPartial(partial));
       await stack.restore();
       syncFocusPresentation();
       updateSummary();
@@ -1210,6 +1222,9 @@ async function load() {
     if (manifest.schema !== "nousos.review-graph/2") throw new Error("Manifest del grafo non valido");
     v2 = await V2Page.load(manifest, axes, appearance, customPalette, v2Colours, density);
     v2.setFlowMotion(flowMotion);
+    // A view button exists only when its projection is registered: no dead control.
+    document.querySelectorAll<HTMLButtonElement>('[data-axis="organization"] button[data-value="fractal"]')
+      .forEach((button) => { button.hidden = !v2!.supportsOrganization("fractal"); });
     get<HTMLElement>("v2-controls-top").hidden = false;
     get<HTMLElement>("density-control").hidden = false;
     get<HTMLElement>("v2-relation-control").hidden = false;
@@ -1227,6 +1242,12 @@ async function load() {
   if (!payload || typeof payload !== "object" || !("schema" in payload) || payload.schema !== "nousos-graph-review-1")
     throw new Error("Formato export non valido");
   data = payload as ReviewExport;
+  if (axes.organization === "fractal") {
+    errors.push("Vista Fractal rifiutata: richiede il grafo distillato");
+    axes = appliedAxes({ organization: "natural" });
+    persistView();
+    syncArrangementInspector();
+  }
   liveGraph = new LiveGraph(data);
   const health = await fetch("/api/health");
   if (health.ok) liveActive = Boolean((await health.json()).live);

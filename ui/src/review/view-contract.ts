@@ -14,6 +14,7 @@ import type { ViewPreset } from "../render3f/camera.tsx";
 import type { PaletteValues } from "./palette.ts";
 import type { NaturalArrangement } from "../projection/contract-types.ts";
 import { defaultNaturalArrangement } from "../projection/natural-bridge.ts";
+import type { RegisteredProjectionId } from "../projection/registry.ts";
 
 /** How the scene is looked at. */
 export type Projection = "2d" | "3d";
@@ -22,14 +23,22 @@ export type Projection = "2d" | "3d";
 export type Morphology = "stellar" | "neural" | "mycelium";
 
 /**
- * How the scene is arranged; Indra draws real membership windows, never new relations. Natural is
- * the canonical name everywhere in the live path; the legacy spelling `flat` is only a read alias
- * that `normalizeOrganizationInput` turns into Natural at each entry point, and nothing writes it.
+ * How the scene is arranged by the product renderers; Indra draws real membership windows, never
+ * new relations. Natural is the canonical name everywhere in the live path; the legacy spelling
+ * `flat` is only a read alias that `normalizeOrganizationInput` turns into Natural at each entry
+ * point, and nothing writes it.
  */
 export type Organization = "natural" | "indra";
 
-/** The saved-view organization vocabulary: Natural under its canonical name, or Indra. */
-export type SavedOrganization = Organization;
+/**
+ * The page-level view on the organization axis: the product organizations plus Fractal, which has
+ * no product-renderer drawing of its own and is only ever served by the typed projection pipeline.
+ * The vocabulary grows additively as each projection assembly is registered.
+ */
+export type ViewOrganization = Organization | "fractal";
+
+/** The saved-view organization vocabulary: Natural under its canonical name, Indra or Fractal. */
+export type SavedOrganization = ViewOrganization;
 
 /**
  * How Natural places nodes: an explicit projection input, never the current style. A morphology
@@ -53,6 +62,9 @@ export type Axes = {
   readonly arrangement?: Arrangement;
 };
 
+/** The page's axes: the same record as `Axes`, with the organization allowed to be any page-level view. */
+export type PageAxes = Omit<Axes, "organization"> & { readonly organization: ViewOrganization };
+
 export const DEFAULT_AXES: Axes = {
   projection: "2d",
   morphology: "stellar",
@@ -68,7 +80,7 @@ export const DEFAULT_AXES: Axes = {
  */
 const PROJECTION_INDEX: Record<Projection, true> = { "2d": true, "3d": true };
 const MORPHOLOGY_INDEX: Record<Morphology, true> = { stellar: true, neural: true, mycelium: true };
-const ORGANIZATION_INDEX: Record<SavedOrganization, true> = { natural: true, indra: true };
+const ORGANIZATION_INDEX: Record<SavedOrganization, true> = { natural: true, indra: true, fractal: true };
 const ARRANGEMENT_INDEX: Record<Arrangement, true> = { constellation: true, network: true, mycelium: true };
 const READING_INDEX: Record<Reading, true> = { attested: true, exploratory: true, combined: true };
 const COLOUR_INDEX: Record<Colour, true> = {
@@ -88,7 +100,7 @@ export const SAVED_AXES_VOCABULARIES = {
 
 /**
  * The saved wire form of the view axes: exactly the registered axes fields, with Natural under its
- * canonical name plus an explicit arrangement, and never an arrangement on Indra.
+ * canonical name plus an explicit arrangement, and never an arrangement on Indra or Fractal.
  */
 export type SavedViewAxes = {
   readonly projection: Projection;
@@ -107,33 +119,49 @@ export const LEGACY_ORGANIZATION = "flat";
 export const NATURAL_ORGANIZATION: SavedOrganization = "natural";
 
 /** Axes as an entry point may receive them: the organization may still use the legacy read alias. */
-export type AxesInput = Partial<Omit<Axes, "organization">> & {
-  readonly organization?: Organization | typeof LEGACY_ORGANIZATION;
+export type AxesInput = Partial<Omit<PageAxes, "organization">> & {
+  readonly organization?: ViewOrganization | typeof LEGACY_ORGANIZATION;
+};
+
+/**
+ * What serves each view of the organization axis: the registered projection and whether the typed
+ * pipeline is engaged for it. Natural and Indra use the typed pipeline only when the page asks for
+ * it (the `projection=natural` hash flag or an injected pipeline); Fractal is always served by the
+ * registered typed projection. The record is exhaustive, so a new view cannot be added without
+ * saying what serves it.
+ */
+export const ORGANIZATION_PROJECTIONS: Readonly<Record<ViewOrganization, {
+  readonly projectionId: RegisteredProjectionId;
+  readonly typed: "flag" | "always";
+}>> = {
+  natural: { projectionId: "natural", typed: "flag" },
+  indra: { projectionId: "indra-legacy", typed: "flag" },
+  fractal: { projectionId: "fractal", typed: "always" },
 };
 
 /**
  * Reads an organization at an entry point (saved view, storage, URL, bookmark, hook argument): the
  * legacy `flat` alias becomes Natural here and every other spelling outside the closed vocabulary is
- * refused, so the live path only ever sees `natural` or `indra`.
+ * refused, so the live path only ever sees `natural`, `indra` or `fractal`.
  */
-export function normalizeOrganizationInput(value: unknown): Organization {
-  if (value === "natural" || value === "indra") return value;
+export function normalizeOrganizationInput(value: unknown): ViewOrganization {
+  if (value === "natural" || value === "indra" || value === "fractal") return value;
   if (value === LEGACY_ORGANIZATION) return NATURAL_ORGANIZATION;
   throw new TypeError(`organization is outside its closed vocabulary: ${String(value)}`);
 }
 
 /** Complete axes as an entry point may receive them, with the organization still allowed to be the legacy alias. */
-export type FullAxesInput = Omit<Axes, "organization"> & {
-  readonly organization: Organization | typeof LEGACY_ORGANIZATION;
+export type FullAxesInput = Omit<PageAxes, "organization"> & {
+  readonly organization: ViewOrganization | typeof LEGACY_ORGANIZATION;
 };
 
 /** Normalises the organization of complete axes from an entry point; other fields pass through. */
-export function normalizeFullAxesInput(value: FullAxesInput): Axes {
+export function normalizeFullAxesInput(value: FullAxesInput): PageAxes {
   return { ...value, organization: normalizeOrganizationInput(value.organization) };
 }
 
 /** Normalises the organization of a partial axes update from an entry point; other fields pass through. */
-export function normalizeAxesInput(value: AxesInput): Partial<Axes> {
+export function normalizeAxesInput(value: AxesInput): Partial<PageAxes> {
   if (value.organization === undefined) {
     const { organization: _absent, ...rest } = value;
     return rest;
@@ -147,20 +175,20 @@ export function normalizeAxesInput(value: AxesInput): Partial<Axes> {
  * morphology here, exactly as at request creation. The key order is the register order, so repeated
  * serialization of the same axes is byte-identical.
  */
-export function serializeAxes(axes: Axes): string {
+export function serializeAxes(axes: PageAxes): string {
   return JSON.stringify(savedAxesRecord(axes));
 }
 
 /** This builds the canonical saved record and does not mutate or retain the live axes. */
-export function savedAxesRecord(axes: Axes): SavedViewAxes {
-  if (axes.organization === "indra") {
+export function savedAxesRecord(axes: PageAxes): SavedViewAxes {
+  if (axes.organization === "indra" || axes.organization === "fractal") {
     if (axes.arrangement !== undefined) {
       throw new TypeError("ViewInput.axes.arrangement is only valid for the Natural view [arrangement-requires-natural]");
     }
     return {
       projection: axes.projection,
       morphology: axes.morphology,
-      organization: "indra",
+      organization: axes.organization,
       colour: axes.colour,
       labels: axes.labels,
       reading: axes.reading,
@@ -183,7 +211,7 @@ export function savedAxesRecord(axes: Axes): SavedViewAxes {
  * once, here, so a later style switch cannot change it. The field register stays closed and every
  * unknown view id is refused.
  */
-export function parseSavedAxes(serialized: string): Axes {
+export function parseSavedAxes(serialized: string): PageAxes {
   let value: unknown;
   try {
     value = JSON.parse(serialized) as unknown;
@@ -217,7 +245,7 @@ export function parseSavedAxes(serialized: string): Axes {
       arrangement: arrangement ?? defaultNaturalArrangement(record.morphology as Morphology),
     };
   }
-  if (organization !== "indra") {
+  if (organization !== "indra" && organization !== "fractal") {
     throw new TypeError("Saved axes.organization is outside its closed vocabulary [closed-vocabulary]");
   }
   if (record.arrangement !== undefined) {
@@ -226,7 +254,7 @@ export function parseSavedAxes(serialized: string): Axes {
   return {
     projection: record.projection as Projection,
     morphology: record.morphology as Morphology,
-    organization: "indra",
+    organization,
     colour: record.colour as Colour,
     labels: record.labels as boolean,
     reading: record.reading as Reading,

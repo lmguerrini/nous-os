@@ -8,7 +8,7 @@ import {
 } from '../../src/engine/visual-state.ts';
 import type { VisualGraph } from '../../src/engine/contract.ts';
 import {
-  normalizeAxesInput, parseSavedAxes, serializeAxes, type Axes,
+  normalizeAxesInput, parseSavedAxes, serializeAxes, type PageAxes,
 } from '../../src/review/view-contract.ts';
 
 const LEGACY_AXES = '{"projection":"2d","morphology":"neural","organization":"flat","colour":"bw","labels":true,"reading":"attested"}';
@@ -55,7 +55,7 @@ test('saved JSON, local-storage text, URL hash and page-hook axes input migrate 
   }
 
   // __d067.setAxes passes its hook argument through this shared input boundary.
-  const hookArgument: Partial<Axes> = normalizeAxesInput({ organization: 'flat', morphology: 'neural' });
+  const hookArgument: Partial<PageAxes> = normalizeAxesInput({ organization: 'flat', morphology: 'neural' });
   assert.equal(hookArgument.organization, 'natural');
   assert.throws(() => normalizeAxesInput({ organization: 'planar' as never }), /closed vocabulary/);
 });

@@ -12,7 +12,7 @@ import {
   savedAxesRecord,
   serializeAxes,
 } from "../../src/review/view-contract.ts";
-import type { Axes } from "../../src/review/view-contract.ts";
+import type { PageAxes } from "../../src/review/view-contract.ts";
 import { computeLayout } from "../../src/review/layout-v2.ts";
 import { projectRelations } from "../../src/review/v2-relations.ts";
 
@@ -56,7 +56,7 @@ test("the live default is natural and no default or saved record carries the leg
 
 test("saved state, local storage and URL entries read flat once and round-trip as natural", () => {
   for (const [legacy, arrangement] of [[LEGACY_AXES, "network"], [LEGACY_AXES_EXPLICIT, "mycelium"]] as const) {
-    const parsed: Axes = parseSavedAxes(legacy);
+    const parsed: PageAxes = parseSavedAxes(legacy);
     assert.equal(parsed.organization, "natural", "the live axes only ever hold natural");
     assert.equal(parsed.arrangement, arrangement);
 
