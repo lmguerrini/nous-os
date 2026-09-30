@@ -101,13 +101,14 @@ test("a Bookmark view identity carries Natural plus an explicit arrangement, or 
   assert.deepEqual(deserializeBookmark(serializeBookmark(indra)), indra);
 
   const arrangementless = loadBookmark({ ...nonDefaultBookmark(), view: { organization: "natural" } });
-  assert.deepEqual(arrangementless.view, { organization: "natural" });
+  assert.deepEqual(arrangementless.view, { organization: "natural", arrangement: "constellation" });
 });
 
-test("a legacy flat Bookmark view migrates to Natural without inventing an arrangement or moving the camera", () => {
+test("a legacy flat Bookmark view migrates to Natural with a resolved arrangement and preserves the camera", () => {
   const legacy = { ...nonDefaultBookmark(), view: { organization: "flat" } };
   const restored = deserializeBookmark(JSON.stringify(legacy));
-  assert.deepEqual(restored.view, { organization: "natural" }, "old Flat in, Natural out, and no arrangement invented for a record with no morphology");
+  assert.deepEqual(restored.view, { organization: "natural", arrangement: "constellation" },
+    "old Flat in, Natural out, and the page-default arrangement resolved for a record with no morphology");
   assert.deepEqual(restored.viewState, legacy.viewState, "the bookmarked camera is preserved byte for byte");
   assert.equal(serializeBookmark(restored).includes('"flat"'), false, "the wire never carries the legacy spelling");
 

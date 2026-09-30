@@ -10,12 +10,17 @@
  *
  * Like `#engine/control-state.ts`, this is storage- and transport-agnostic: `validateBookmark` /
  * `assertBookmark` reject an impossible shape, `normalizeBookmark` is idempotent, and
- * `serializeBookmark` / `deserializeBookmark` round-trip exactly through JSON. There is no apply stage
- * here, deliberately: a Bookmark is a record to return to, not a preference that changes what renders,
- * so there is nothing for it to resolve into. Restoring the view it names, and any highlighting of its
- * governed target, is wiring left to the capability that builds the application.
+ * `serializeBookmark` / `deserializeBookmark` round-trip through JSON after resolving a missing
+ * Natural arrangement. There is no apply stage here: a Bookmark is a record to return to, not a
+ * preference that changes what renders. Restoring its view and highlighting its governed target are
+ * wiring left to the capability that builds the application.
  */
 import type { NaturalArrangement } from "../projection/contract-types.ts";
+import { resolveNaturalArrangementWithSource } from "../projection/natural-bridge.ts";
+import type { Morphology } from "./morphology.ts";
+
+/** The review page's default morphology when a legacy Bookmark carries no morphology. */
+const DEFAULT_BOOKMARK_MORPHOLOGY: Morphology = "stellar";
 
 export type Bookmark = {
   readonly temporalPosition: string;
@@ -31,8 +36,8 @@ export type Bookmark = {
  * This is the saved-view identity a Bookmark may carry: the canonical view name and, for Natural, an
  * explicit arrangement. A legacy Bookmark that predates the views extension has no `view` at all, and
  * a legacy `flat` spelling is accepted only by the migration reader. A Bookmark records no morphology,
- * so a legacy `flat` view is migrated without inventing an arrangement: the restoring capability
- * resolves one once, exactly as the saved-visual-state reader does for its own legacy states.
+ * so a missing Natural arrangement resolves once at load with the page's resolver and default
+ * morphology. A restoring capability with a known morphology can pass it to the reader.
  */
 export type BookmarkView = {
   readonly organization: "natural" | "indra";
@@ -130,27 +135,30 @@ export function validateBookmark(value: unknown): Bookmark {
   return value;
 }
 
-/** This is the normalize stage and is idempotent: it trims leading and trailing whitespace from `title` and `note`, the only fields with more than one representation of the same meaning; every other field is already single-valued once validated. */
-export function normalizeBookmark(bookmark: Bookmark): Bookmark {
+/** This is the normalize stage and is idempotent: it trims title/note and resolves a missing Natural arrangement. */
+export function normalizeBookmark(bookmark: Bookmark, morphology: Morphology = DEFAULT_BOOKMARK_MORPHOLOGY): Bookmark {
   assertBookmark(bookmark);
   const title = bookmark.title.trim();
   const note = bookmark.note.trim();
-  return title === bookmark.title && note === bookmark.note ? bookmark : { ...bookmark, title, note };
+  const view = bookmark.view?.organization === NATURAL_VIEW_ORGANIZATION && bookmark.view.arrangement === undefined
+    ? { ...bookmark.view, arrangement: resolveNaturalArrangementWithSource(morphology).arrangement }
+    : bookmark.view;
+  if (title === bookmark.title && note === bookmark.note && view === bookmark.view) return bookmark;
+  return { ...bookmark, title, note, ...(view === undefined ? {} : { view }) };
 }
 
 /** This is the load stage: validate, then normalize, in one call. */
-export function loadBookmark(value: unknown): Bookmark {
-  return normalizeBookmark(validateBookmark(value));
+export function loadBookmark(value: unknown, morphology: Morphology = DEFAULT_BOOKMARK_MORPHOLOGY): Bookmark {
+  return normalizeBookmark(validateBookmark(value), morphology);
 }
 
-/** This is the serialize/export stage and does not normalize its input first, matching `#engine/visual-state.ts`'s own `serializeVisualState` precedent: a caller who wants a canonical wire form calls `normalizeBookmark` before this. */
+/** This is the serialize/export stage and writes a Natural view with its resolved arrangement. */
 export function serializeBookmark(bookmark: Bookmark): string {
-  assertExactFields(bookmark, "Bookmark", BOOKMARK_FIELD_REGISTER.state, BOOKMARK_FIELD_REGISTER.optionalState);
-  return JSON.stringify(bookmark);
+  return JSON.stringify(normalizeBookmark(bookmark));
 }
 
 /** This is deserialize-then-load: JSON parse, legacy view migration, then the full load stage (validate, normalize). */
-export function deserializeBookmark(serialized: string): Bookmark {
+export function deserializeBookmark(serialized: string, morphology: Morphology = DEFAULT_BOOKMARK_MORPHOLOGY): Bookmark {
   let value: unknown;
   try {
     value = JSON.parse(serialized) as unknown;
@@ -162,13 +170,13 @@ export function deserializeBookmark(serialized: string): Bookmark {
     if (typeof record.view === "object" && record.view !== null && !Array.isArray(record.view)) {
       const view = record.view as Record<string, unknown>;
       if (view.organization === LEGACY_VIEW_ORGANIZATION) {
-        // Old Flat in, Natural out; an arrangement already carried stays, and none is invented for a
-        // record that never had one — a Bookmark holds no morphology to select it.
+        // Old Flat in, Natural out; the load stage resolves a missing arrangement using this entry
+        // point's morphology (or the page default), while preserving an explicit arrangement.
         value = { ...record, view: { ...view, organization: NATURAL_VIEW_ORGANIZATION } };
       }
     }
   }
-  return loadBookmark(value);
+  return loadBookmark(value, morphology);
 }
 
 function assertTemporalPosition(value: unknown): void {

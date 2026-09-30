@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  syntheticNaturalLedger, type SyntheticNaturalLedger,
+  mulberry32, seededShuffle, syntheticNaturalLedger, type SyntheticNaturalLedger,
 } from './natural-synthetic-graph.ts';
 import {
   canonicalLedgerBytes, canonicalSourceBytes, createSemanticSnapshot, normalizeRawLedger,
@@ -73,6 +73,24 @@ function witnessesOf(result: ProjectionResult) {
       .filter(relation => relation.kind === 'lifted-route')
       .map(relation => [relation.visualId, relation.underlyingEdgeIds])),
   };
+}
+
+function assertCoordinatesWithinTolerance(
+  actual: ProjectionResult, expected: ProjectionResult, dimension: Dimension, tolerance = 1e-9,
+): void {
+  const actualPositions = actual.positions2 ?? actual.positions3!;
+  const expectedPositions = expected.positions2 ?? expected.positions3!;
+  assert.deepEqual(Object.keys(actualPositions).sort(compare), Object.keys(expectedPositions).sort(compare));
+  for (const id of Object.keys(expectedPositions)) {
+    const a = actualPositions[id]! as { readonly x: number; readonly y: number; readonly z?: number };
+    const b = expectedPositions[id]! as { readonly x: number; readonly y: number; readonly z?: number };
+    for (const axis of dimension === '2d' ? ['x', 'y'] as const : ['x', 'y', 'z'] as const) {
+      const actualValue = axis === 'z' ? a.z! : a[axis];
+      const expectedValue = axis === 'z' ? b.z! : b[axis];
+      assert.ok(Math.abs(actualValue - expectedValue) <= tolerance,
+        `${dimension}: ${id}.${axis} differs by ${Math.abs(actualValue - expectedValue)}`);
+    }
+  }
 }
 
 /**
@@ -207,6 +225,52 @@ test('the digest and coordinates repeat for an identical Natural request', async
   assert.deepEqual(repeat, first, 'a repeated request changed the result');
   assert.equal(repeat.determinism.resultDigest, first.determinism.resultDigest);
   assert.equal(repeat.determinism.parameterHash, first.determinism.parameterHash);
+});
+
+test('permuting nodes, edges and details preserves Natural within tolerance for each distinct snapshot', async () => {
+  const originalInput = syntheticNaturalLedger(4242);
+  const shuffledInput: SyntheticNaturalLedger = {
+    ...originalInput,
+    index: {
+      ...originalInput.index,
+      nodes: seededShuffle(originalInput.index.nodes, mulberry32(2)),
+      edges: seededShuffle(originalInput.index.edges, mulberry32(3)),
+    },
+    details: seededShuffle(originalInput.details, mulberry32(4)),
+  };
+  const original = await materialize(originalInput);
+  const shuffled = await materialize(shuffledInput);
+  assert.notEqual(original.snapshot.digest, shuffled.snapshot.digest,
+    'source array order is part of the snapshot, so a permutation is a distinct snapshot');
+
+  for (const dimension of ['2d', '3d'] as const) for (const arrangement of ARRANGEMENTS)
+    for (const layoutRelationPolicy of POLICIES) {
+      const originalResult = await naturalProjection.project(original.snapshot,
+        naturalRequest(original.domain, { dimension, arrangement, layoutRelationPolicy }));
+      const shuffledResult = await naturalProjection.project(shuffled.snapshot,
+        naturalRequest(shuffled.domain, { dimension, arrangement, layoutRelationPolicy }));
+      assert.deepEqual(shuffledResult.domainNodeIds, originalResult.domainNodeIds,
+        `${dimension}/${arrangement}/${layoutRelationPolicy}: node set changed`);
+      assert.deepEqual(shuffledResult.domainEdgeIds, originalResult.domainEdgeIds,
+        `${dimension}/${arrangement}/${layoutRelationPolicy}: semantic edge set changed`);
+      assert.deepEqual([...shuffledResult.visualRelations].sort((a, b) => compare(a.visualId, b.visualId)),
+        [...originalResult.visualRelations].sort((a, b) => compare(a.visualId, b.visualId)),
+        `${dimension}/${arrangement}/${layoutRelationPolicy}: visual relation set changed`);
+
+      assertCoordinatesWithinTolerance(shuffledResult, originalResult, dimension);
+      // The snapshot digest participates in result identity; permutation stability is geometric and
+      // structural, not digest equality. Input-order floating-point summation remains in D-072.
+      assert.notEqual(originalResult.determinism.resultDigest, shuffledResult.determinism.resultDigest);
+    }
+});
+
+test('permutation stability rejects a real coordinate change', async () => {
+  const { snapshot, domain } = await materialize(syntheticNaturalLedger(4242));
+  const result = await naturalProjection.project(snapshot,
+    naturalRequest(domain, { dimension: '2d', arrangement: 'network' }));
+  const changed = structuredClone(result) as any;
+  changed.positions2![changed.loadedNodeIds[0]!]!.x += 0.01;
+  assert.throws(() => assertCoordinatesWithinTolerance(changed, result, '2d'), /differs by/);
 });
 
 test('negative controls: a dropped node, an invented edge and a semantic relation each fail the property checks', async () => {

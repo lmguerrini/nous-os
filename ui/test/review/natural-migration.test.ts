@@ -81,12 +81,29 @@ test('legacy visual-state JSON and explicit arrangements migrate without style-d
   assert.equal(old.organization, 'flat', 'migration does not mutate caller data');
 });
 
-test('bookmark migration keeps a declared arrangement and serializes the canonical spelling', () => {
+test('bookmark migration resolves a missing legacy arrangement and preserves explicit choices', () => {
+  const defaulted = deserializeBookmark(JSON.stringify(bookmark('flat')));
+  assert.deepEqual(defaulted.view, { organization: 'natural', arrangement: 'constellation' },
+    'bookmarks without morphology use the page default morphology (Stellar)');
+  const defaultWire = serializeBookmark(defaulted);
+  assert.equal(serializeBookmark(deserializeBookmark(defaultWire)), defaultWire,
+    'resolved legacy bookmark round trips as a stable canonical wire form');
+
+  const morphologyDefault = deserializeBookmark(JSON.stringify(bookmark('flat')), 'neural');
+  assert.equal(morphologyDefault.view?.arrangement, 'network',
+    'a restoring entry point may provide the bookmark morphology');
+  assert.equal(serializeBookmark(deserializeBookmark(serializeBookmark(morphologyDefault))),
+    serializeBookmark(morphologyDefault));
+
   const old = bookmark('flat', 'constellation');
-  const loaded = deserializeBookmark(JSON.stringify(old));
+  const loaded = deserializeBookmark(JSON.stringify(old), 'mycelium');
   assert.equal(loaded.view?.organization, 'natural');
   assert.equal(loaded.view?.arrangement, 'constellation');
   const wire = serializeBookmark(loaded);
   assert.doesNotMatch(wire, NO_FLAT);
   assert.equal(serializeBookmark(deserializeBookmark(wire)), wire);
+
+  const naturalWithoutArrangement = bookmark('natural');
+  assert.equal(JSON.parse(serializeBookmark(naturalWithoutArrangement)).view.arrangement, 'constellation',
+    'serialization resolves a missing arrangement at its entry point too');
 });
