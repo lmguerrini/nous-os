@@ -137,6 +137,7 @@ export function renderTypedStructuralLegend(
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+export type LegendOrganization = "natural" | "indra";
 
 /**
  * The four semantic line kinds every drawn relation must resolve to, rendered with a small drawn
@@ -145,7 +146,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
  * the legend always matches the graph, preset or custom palette alike; the exploratory sample is
  * the same continuous line with a soft halo the canvas draws — one tone, no foreign accent.
  */
-export function renderFlowLegend(host: HTMLElement, palette: PaletteValues): void {
+export function renderFlowLegend(host: HTMLElement, palette: PaletteValues, organization: LegendOrganization = "natural"): void {
   host.replaceChildren();
   const entry = (label: string, title: string, build: (svg: SVGSVGElement) => void): HTMLElement => {
     const row = document.createElement("p");
@@ -196,6 +197,18 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues): voi
   entry("Contenimento Indra", "Contorno che racchiude una perla o un livello ricorsivo.", (svg) => {
     svg.append(circle(13, 7, 5.5, palette.container, 1.3));
   });
+  if (organization === "indra") {
+    const explanation = document.createElement("p");
+    explanation.className = "flow-legend-entry";
+    explanation.dataset.indraExplanation = "true";
+    explanation.textContent = "Come leggere Indra. Una perla rappresenta un nodo della gerarchia e contiene le sue perle figlie. " +
+      "Il raggio parte da 5 a 10 unità in base alla dimensione del nodo, aggiunge 3,1 volte la radice quadrata dei discendenti nascosti fino a 80 unità, poi cresce se serve a contenere i figli. " +
+      "Tra le perle figlie resta un margine di almeno 7 unità o l’8% del loro raggio medio, con un bordo esterno del 6%. " +
+      "I figli più grandi si dispongono per primi, con l’identificativo come spareggio, secondo posizioni ripetibili. " +
+      "Il +N indica quanti discendenti restano nascosti, non quanti collegamenti ha il nodo. " +
+      "Quando un estremo non è mostrato, il collegamento può salire alla perla visibile più vicina e conserva i collegamenti sorgente che lo giustificano.";
+    host.append(explanation);
+  }
   entry("Selezionato / focus", "Elemento evidenziato dalla selezione o dal focus.", (svg) => {
     svg.append(line(2, 7, 24, 7, palette.selection, 1.6));
     svg.append(circle(13, 7, 4, palette.selection, 1.6));
@@ -203,14 +216,14 @@ export function renderFlowLegend(host: HTMLElement, palette: PaletteValues): voi
 }
 
 /** A compact legend section appended to a panel; used by both the legacy and the v2 page. */
-export function appendFlowLegend(host: HTMLElement, palette: PaletteValues): void {
+export function appendFlowLegend(host: HTMLElement, palette: PaletteValues, organization: LegendOrganization = "natural"): void {
   const section = document.createElement("section");
   section.id = "flow-legend-section";
   const heading = document.createElement("h3");
   heading.textContent = "Legenda";
   const box = document.createElement("div");
   box.className = "legend flow-legend";
-  renderFlowLegend(box, palette);
+  renderFlowLegend(box, palette, organization);
   section.append(heading, box);
   host.append(section);
 }
