@@ -273,8 +273,12 @@ export class CameraRig {
     } else {
       const orbit = this.stateValue.orbit ?? [0, 0, 0, 1];
       const q = new THREE.Quaternion(...orbit);
+      const span = Math.max(
+        this.stateValue.bounds.x[1] - this.stateValue.bounds.x[0],
+        this.stateValue.bounds.y[1] - this.stateValue.bounds.y[0],
+      );
       const translation = perspectivePanVector(q, deltaXCssPx, deltaYCssPx,
-        this.widthCssPx, this.heightCssPx, this.stateValue.ratio, sensitivity);
+        this.widthCssPx, this.heightCssPx, span * this.stateValue.ratio, sensitivity);
       const target = perspectiveTarget(this.stateValue, this.worldCenterZ).add(translation);
       const normalized = createNormalizationFunction(copyMutableBounds(this.stateValue.bounds))(target);
       this.stateValue = {

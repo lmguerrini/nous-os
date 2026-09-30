@@ -65,18 +65,25 @@ for (const kind of [ORTHOGRAPHIC, PERSPECTIVE] as const) {
 }
 
 function drag(fire: ReturnType<typeof canvasFixture>["fire"], button: number, shiftKey = false) {
-  fire("pointerdown", { pointerId: 7, clientX: 300, clientY: 260, button, shiftKey });
-  fire("pointermove", { pointerId: 7, clientX: 340, clientY: 285, button, shiftKey });
-  fire("pointerup", { pointerId: 7 });
+  const buttons = button === 2 ? 2 : button === 1 ? 4 : 1;
+  fire("pointerdown", { pointerId: 7, clientX: 300, clientY: 260, button, buttons, shiftKey });
+  fire("pointermove", { pointerId: 7, clientX: 340, clientY: 285, button: -1, buttons, shiftKey });
+  fire("pointerup", { pointerId: 7, clientX: 340, clientY: 285, button, buttons: 0, shiftKey });
+  if (button === 2) assert.equal(fire("contextmenu", { button: 2 }), true);
 }
 
 for (const organization of ["Natural", "Indra", "Fractal"] as const) {
   for (const kind of [ORTHOGRAPHIC, PERSPECTIVE] as const) {
-    test(`${organization} ${kind} synthetic controls rotate, zoom at cursor and pan`, () => {
+    test(`${organization} ${kind} browser-style pointer sequence rotates, zooms and pans the projection`, () => {
       const rig = makeRig(kind);
       const fixture = canvasFixture();
       let changes = 0;
-      const detach = attachCameraInteractions(fixture.canvas, rig, () => { changes += 1; });
+      const rendered: { x: number; y: number }[] = [];
+      const witness = { x: 150, y: -110, z: 90 };
+      const detach = attachCameraInteractions(fixture.canvas, rig, () => {
+        changes += 1;
+        rendered.push(rig.graphToViewport(witness));
+      });
       const initial = rig.readCameraState();
 
       drag(fixture.fire, 0);
@@ -115,12 +122,17 @@ for (const organization of ["Natural", "Indra", "Fractal"] as const) {
 
       for (const [button, shift] of [[2, false], [1, false], [0, true]] as const) {
         const before = rig.readCameraState();
+        const targetBefore = rig.readPose().target;
+        const projectedBefore = rig.graphToViewport(witness);
         drag(fixture.fire, button, shift);
         const after = rig.readCameraState();
+        const projectedAfter = rig.graphToViewport(witness);
         assert.deepEqual(after.orbit, before.orbit, "pan leaves orbit fixed");
         assert.equal(after.ratio, before.ratio, "pan leaves zoom fixed");
-        assert.ok(after.x !== before.x || after.y !== before.y || after.targetZ !== before.targetZ,
-          "right, middle and shift drag move the target");
+        assert.notDeepEqual(rig.readPose().target, targetBefore, "browser-style pan moves the camera target");
+        assert.ok(projectedAfter.x - projectedBefore.x > 2 && projectedAfter.y - projectedBefore.y > 2,
+          `browser-style pan moves the rendered projection with the drag: ${JSON.stringify({ kind, button, shift, projectedBefore, projectedAfter })}`);
+        assert.deepEqual(rendered.at(-1), projectedAfter, "the change callback sees the live projection");
       }
       assert.equal(fixture.captured.size, 0);
       assert.equal(changes, 5);
