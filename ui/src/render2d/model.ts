@@ -30,16 +30,14 @@ import type { FilamentGeometry } from "#render2d/geometry.ts";
 import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
 import { validateRenderVisibility } from "../projection/contract.ts";
 import type { ProjectionResult, RenderVisibility, SemanticGraphSnapshot, StyledProjection, Vec2, VisualContainer, VisualCurve, VisualRelation, MathematicalField } from "../projection/contract-types.ts";
-import { disambiguateLabels, footprintDisc, placeLabels, shortLabelWithEllipsis } from "../review/labels.ts";
-import type { LabelCandidate, LabelDisc, PlacedLabel } from "../review/labels.ts";
-import type { LabelReason, ViewportRect } from "../review/view-contract.ts";
-import { TYPED_LABEL_DOM } from "../review/projection-style.ts";
+import { disambiguateLabels, footprintDisc, placeLabels, shortLabelWithEllipsis } from "#render-common/labels.ts";
+import type { LabelCandidate, LabelDisc, LabelReason, PlacedLabel, ViewportRect } from "#render-common/labels.ts";
+import { TYPED_LABEL_DOM } from "#render-common/projection-style.ts";
 
-// The style bridge is the review layer's own module; the governed mounts (render2d/index.ts,
-// render3f/mount.tsx) reach it only through this re-export, keeping one bridge and one boundary.
-export { readProjectionStyle, typedLabelKind, typedLabelTexts, typedRgbaColor } from "../review/projection-style.ts";
-export { TYPED_LABEL_CAMERA } from "../review/projection-style.ts";
-export type { ProjectionStyleScope } from "../review/projection-style.ts";
+// Typed style and label policy live below both renderers; this re-export preserves the 2D model API.
+export { readProjectionStyle, typedLabelKind, typedLabelTexts, typedRgbaColor } from "#render-common/projection-style.ts";
+export { TYPED_LABEL_CAMERA } from "#render-common/projection-style.ts";
+export type { ProjectionStyleScope } from "#render-common/projection-style.ts";
 
 /** This is one Sigma node payload and does not retain opaque semantic content. */
 export type RenderNodeAttributes = {

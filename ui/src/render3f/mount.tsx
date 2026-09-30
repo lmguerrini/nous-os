@@ -22,7 +22,8 @@ import type { ScaleNavigationPath } from "#engine/scale-topology.ts";
 import type { Palette, Temperature, Theme } from "#engine/tokens.ts";
 import { createVisualState } from "#engine/visual-state.ts";
 import type { VisualState, VisualStateCamera } from "#engine/visual-state.ts";
-import { EMPTY_LABEL_BOUNDS, SHIPPING_RENDER_DEFAULTS, mountProjectionLabelOverlay, readProjectionStyle, typedLabelKind, typedLabelTexts, TYPED_LABEL_CAMERA } from "#render2d/model.ts";
+import { EMPTY_LABEL_BOUNDS, SHIPPING_RENDER_DEFAULTS, mountProjectionLabelOverlay } from "#render2d/model.ts";
+import { readProjectionStyle, typedLabelKind, typedLabelTexts, TYPED_LABEL_CAMERA } from "#render-common/projection-style.ts";
 import type { ProjectionLabelCandidate, ProjectionLabelOverlay } from "#render2d/model.ts";
 import { createTypedProjectionLayer } from "#render-common/typed-layer.ts";
 import {

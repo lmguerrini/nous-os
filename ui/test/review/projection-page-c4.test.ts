@@ -326,12 +326,36 @@ test('the projection witness, camera bridge and tick read the mounted typed rend
   });
   assert.deepEqual(page.cameraState(), cameraState);
   assert.equal(page.camera(), null, 'the 2D adapter exposes no 3D pose');
-  const witness = page.witness() as { projection: { enabled: boolean; resultDigest: string | null } };
+  const witness = page.witness() as { projection: { enabled: boolean; resultDigest: string | null; algorithm: string; coordinateState: { kind: string } } };
   assert.equal(witness.projection.enabled, true);
   assert.equal(witness.projection.resultDigest, pageInternals(page).projectionResult!.determinism.resultDigest);
+  assert.equal(witness.projection.algorithm, 'natural');
+  assert.deepEqual(witness.projection.coordinateState, { kind: 'coordinates' });
   // A settled camera at the overview ratio neither crosses a band nor schedules anything.
   page.tickZoom();
   assert.equal((page.witness() as { lod: { level: string } }).lod.level, 'far');
+});
+
+test('the projection witness keeps explicit coordinate refusal and pending states', async () => {
+  const { page } = await typedPage(fixtureIndex());
+  const internals = page as unknown as {
+    axes: { organization: string };
+    projectionResult: ProjectionResult | null;
+    projectionPending: boolean;
+    fractalRefusal: { code: string; detail: string } | null;
+  };
+  internals.axes.organization = 'holographic';
+  internals.projectionResult = null;
+  internals.fractalRefusal = { code: 'rank-deficient', detail: 'fixture refusal' };
+  const refused = (page.witness() as { projection: { algorithm: string; coordinateState: unknown; refusal: { code: string } } }).projection;
+  assert.equal(refused.algorithm, 'holographic', 'the requested projection id survives result retirement');
+  assert.deepEqual(refused.coordinateState, { kind: 'no-coordinates', code: 'rank-deficient' });
+  assert.equal(refused.refusal.code, 'rank-deficient');
+
+  internals.projectionPending = true;
+  const pending = (page.witness() as { projection: { algorithm: string; coordinateState: unknown } }).projection;
+  assert.equal(pending.algorithm, 'holographic');
+  assert.deepEqual(pending.coordinateState, { kind: 'pending' });
 });
 
 test('typed 2D and 3D mounts report placed label IDs synchronously while density budget stays available', async () => {

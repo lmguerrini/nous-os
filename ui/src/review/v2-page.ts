@@ -1,4 +1,4 @@
-import { styleProjection } from './projection-style.ts';
+import { styleProjection } from '../render-common/projection-style.ts';
 import { displayLabel, presentationText, validateIndex } from './graph-v2.ts';
 import type { GraphManifest } from './graph-v2.ts';
 import { ABSOLUTE_CONTAINER_ID, computeLayout, layoutStats } from './layout-v2.ts';
@@ -1575,11 +1575,21 @@ export class V2Page {
      * return under the flag — enabled, the current result digest, the resolved arrangement. */
     private projectionWitnessRecord() {
         const result = this.projectionResult;
+        const refusedResult = this.holographicRefused?.result ?? null;
         const visibility = this.projectionVisibility;
+        const requestedAlgorithm = ORGANIZATION_PROJECTIONS[this.axes.organization].projectionId;
+        const coordinateResult = result ?? refusedResult;
+        const coordinateState = this.projectionPending
+            ? { kind: 'pending' as const }
+            : coordinateResult?.coordinateState.kind === 'coordinates'
+                ? { kind: 'coordinates' as const }
+                : { kind: 'no-coordinates' as const, code: coordinateResult?.coordinateState.kind === 'no-coordinates'
+                    ? coordinateResult.coordinateState.code : this.fractalRefusal?.code ?? 'projection-refused' };
         return {
             enabled: true,
             resultDigest: result?.determinism.resultDigest ?? null,
-            algorithm: result?.determinism.algorithmId ?? null,
+            algorithm: requestedAlgorithm,
+            coordinateState,
             arrangement: this.axes.organization === 'natural' ? this.resolvedNaturalArrangement() : this.naturalArrangement,
             revision: this.projectionRevision,
             revisionDigest: visibility?.projectionResultDigest ?? null,
