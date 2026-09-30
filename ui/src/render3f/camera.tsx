@@ -302,9 +302,13 @@ export class CameraRig {
   }
 
   /** This applies calibrated zoom, holding the world point below an optional cursor in place. */
-  zoomBy(deltaYCssPx: number, cursorXCssPx?: number, cursorYCssPx?: number): void {
+  zoomBy(deltaYCssPx: number, cursorXCssPx?: number, cursorYCssPx?: number,
+    hoveredNode?: Coordinates): void {
+    const depthPoint = this.kindValue !== ORTHOGRAPHIC && hoveredNode &&
+      Number.isFinite(hoveredNode.x) && Number.isFinite(hoveredNode.y) && Number.isFinite(hoveredNode.z)
+      ? new THREE.Vector3(hoveredNode.x, hoveredNode.y, hoveredNode.z) : undefined;
     const anchor = cursorXCssPx === undefined || cursorYCssPx === undefined
-      ? undefined : this.worldPointAtViewport(cursorXCssPx, cursorYCssPx);
+      ? undefined : this.worldPointAtViewport(cursorXCssPx, cursorYCssPx, depthPoint);
     const [sensitivityPermille, minimumPermille, maximumPermille] = this.requestValue.kind === "orthographic"
       ? [
           this.requestValue.navigation.zoomSensitivityPermille,
@@ -330,13 +334,13 @@ export class CameraRig {
     };
     this.updateCameras();
     if (anchor !== undefined) {
-      const shifted = this.worldPointAtViewport(cursorXCssPx!, cursorYCssPx!);
+      const shifted = this.worldPointAtViewport(cursorXCssPx!, cursorYCssPx!, depthPoint);
       this.translateTarget(anchor.sub(shifted));
       this.updateCameras();
     }
   }
 
-  private worldPointAtViewport(xCssPx: number, yCssPx: number): THREE.Vector3 {
+  private worldPointAtViewport(xCssPx: number, yCssPx: number, depthPoint?: THREE.Vector3): THREE.Vector3 {
     const clipX = xCssPx * bisectionDivisor() / this.widthCssPx - scalarCount();
     const clipY = scalarCount() - yCssPx * bisectionDivisor() / this.heightCssPx;
     const target = perspectiveTarget(this.stateValue, this.worldCenterZ);
@@ -352,8 +356,22 @@ export class CameraRig {
     const rayPoint = new THREE.Vector3(clipX, clipY, 0.5).unproject(this.perspective);
     const direction = rayPoint.sub(this.perspective.position).normalize();
     const normal = target.clone().sub(this.perspective.position).normalize();
+    const planePoint = depthPoint ?? target;
     return this.perspective.position.clone().addScaledVector(direction,
-      target.clone().sub(this.perspective.position).dot(normal) / direction.dot(normal));
+      planePoint.clone().sub(this.perspective.position).dot(normal) / direction.dot(normal));
+  }
+
+  /** Find a visible scene node beneath the cursor when the rig owns scene framing subjects. */
+  nodeAnchorAtViewport(xCssPx: number, yCssPx: number): Coordinates | undefined {
+    let nearest: CameraFramingSubject | undefined, best = Infinity;
+    for (const subject of this.worldFramingSubjects) {
+      if (!subject.id.startsWith("node:")) continue;
+      const screen = this.graphToViewport(subject.position);
+      const distance = Math.hypot(screen.x - xCssPx, screen.y - yCssPx);
+      const radius = Math.max(12, subject.extentCssPx * this.sizeScaleAt(subject.position));
+      if (distance <= radius && distance < best) { nearest = subject; best = distance; }
+    }
+    return nearest?.position;
   }
 
   private translateTarget(delta: THREE.Vector3): void {
@@ -455,7 +473,12 @@ export function attachCameraInteractions(
     const rect = canvas.getBoundingClientRect();
     const deltaY = event.deltaY * (event.deltaMode === 1 ? 16
       : event.deltaMode === 2 ? rect.height : 1);
-    rig.zoomBy(deltaY, event.clientX - rect.left, event.clientY - rect.top);
+    const x = event.clientX - rect.left, y = event.clientY - rect.top;
+    const hovered = (canvas as HTMLCanvasElement & { __reviewHoveredNode?: Coordinates }).__reviewHoveredNode;
+    const screen = hovered && rig.graphToViewport(hovered);
+    const anchor = screen && Math.hypot(screen.x - x, screen.y - y) <= 32
+      ? hovered : rig.nodeAnchorAtViewport(x, y);
+    rig.zoomBy(deltaY, x, y, anchor);
     changed();
   };
   const contextMenu = (event: MouseEvent): void => event.preventDefault();

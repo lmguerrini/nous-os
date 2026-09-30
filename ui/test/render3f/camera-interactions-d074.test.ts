@@ -41,13 +41,34 @@ function canvasFixture() {
   return { canvas, fire, captured };
 }
 
-function makeRig(kind: "orthographic" | "perspective", ratio = 1) {
+function makeRig(kind: "orthographic" | "perspective", ratio = 1,
+  subjects: ConstructorParameters<typeof CameraRig>[5] = []) {
   const frame = { x: 0.5, y: 0.5, angle: 0, ratio, bounds: BOUNDS };
   const request: SceneCameraRequest = kind === ORTHOGRAPHIC
     ? { ...frame, kind: "orthographic", navigation: DEFAULT_CALIBRATION.camera.orthographic }
     : { ...frame, kind: "perspective", navigation: DEFAULT_CALIBRATION.camera.perspective };
-  return new CameraRig(kind, request, WIDTH, HEIGHT, 1, []);
+  return new CameraRig(kind, request, WIDTH, HEIGHT, 1, subjects);
 }
+
+test('perspective wheel keeps the hovered off-plane hub at its screen position', () => {
+  const hub = { x: 150, y: -110, z: 180 };
+  for (const source of ['scene', 'typed'] as const) {
+    const rig = makeRig(PERSPECTIVE, 1, source === 'scene'
+      ? [{ id: 'node:hub', position: hub, extentCssPx: 18, sizeMode: 'node' }] : []);
+    const fixture = canvasFixture();
+    if (source === 'typed')
+      (fixture.canvas as HTMLCanvasElement & { __reviewHoveredNode?: typeof hub }).__reviewHoveredNode = hub;
+    const detach = attachCameraInteractions(fixture.canvas, rig, () => {});
+    const cursor = rig.graphToViewport(hub);
+    for (let notch = 0; notch < 3; notch++) {
+      fixture.fire('wheel', { clientX: cursor.x + 40, clientY: cursor.y + 30, deltaY: -120, deltaMode: 0 });
+      const after = rig.graphToViewport(hub);
+      assert.ok(Math.hypot(after.x - cursor.x, after.y - cursor.y) < 0.01,
+        `${source} hub drifted at notch ${notch}: ${JSON.stringify({ cursor, after })}`);
+    }
+    detach();
+  }
+});
 
 for (const kind of [ORTHOGRAPHIC, PERSPECTIVE] as const) {
   test(`${kind} first wheel step from an out-of-range fit does not jump to the calibration limit`, () => {

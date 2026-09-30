@@ -1931,6 +1931,15 @@ export class V2Page {
                     };
                 }
                 let handle: Render3fRendererHandle | null = null;
+                let mountedStyled: StyledProjection | null = null;
+                let hoveredNodeId: string | null = null;
+                const wheelAnchorCanvas = () => host.querySelector<HTMLCanvasElement>('canvas[data-render3f-canvas]');
+                const setWheelAnchor = (point: Vec3 | null) => {
+                    const canvas = wheelAnchorCanvas() as (HTMLCanvasElement & { __reviewHoveredNode?: Vec3 }) | null;
+                    if (!canvas) return;
+                    if (point) canvas.__reviewHoveredNode = point;
+                    else delete canvas.__reviewHoveredNode;
+                };
                 const typedInput = (styled: StyledProjection, visibility: RenderVisibility) => {
                     if (!currentSnapshot) throw new Error('Default 3D renderer mounted before its snapshot');
                     return { styled, visibility, semanticEdges: semanticEdgesFor(currentSnapshot) };
@@ -1940,15 +1949,22 @@ export class V2Page {
                     pickHandler(handle.pickAtPosition(local(event)), event.shiftKey);
                 });
                 host.addEventListener('pointermove', event => {
-                    if (!handle || !hoverHandler) return;
-                    hoverHandler(handle.pickAtPosition(local(event)), event.clientX, event.clientY);
+                    if (!handle) return;
+                    const pick = handle.pickAtPosition(local(event));
+                    hoveredNodeId = pick?.kind === 'node' ? pick.id : null;
+                    setWheelAnchor(hoveredNodeId
+                        ? mountedStyled?.projection.positions3?.[hoveredNodeId] ?? null : null);
+                    hoverHandler?.(pick, event.clientX, event.clientY);
                 });
-                host.addEventListener('pointerleave', () => hoverHandler?.(null, 0, 0));
+                host.addEventListener('pointerleave', () => {
+                    hoveredNodeId = null; setWheelAnchor(null); hoverHandler?.(null, 0, 0);
+                });
                 return {
                     dimension: '3d',
                     onPick(handler) { pickHandler = handler; },
                     onHover(handler) { hoverHandler = handler; },
                     mount(styled, visibility) {
+                        mountedStyled = styled;
                         const input = typedInput(styled, visibility);
                         const points = Object.values(styled.projection.positions3 ?? {})
                             .filter((point): point is Vec3 => !!point);
@@ -1958,14 +1974,19 @@ export class V2Page {
                                 temperature: 'balanced', theme: 'dark', lodBand: 'micro',
                                 reducedMotion: true, elapsedMilliseconds: 0 },
                             frame, undefined, undefined, input);
+                        if (hoveredNodeId) setWheelAnchor(styled.projection.positions3?.[hoveredNodeId] ?? null);
                     },
-                    updateVisibleSubset(styled, visibility) { handle?.updateVisibleSubset(typedInput(styled, visibility)); },
+                    updateVisibleSubset(styled, visibility) {
+                        mountedStyled = styled;
+                        handle?.updateVisibleSubset(typedInput(styled, visibility));
+                        if (hoveredNodeId) setWheelAnchor(styled.projection.positions3?.[hoveredNodeId] ?? null);
+                    },
                     readCameraState: () => handle?.readCameraState() ?? null,
                     projectNode: point => handle && handle.isWorldPointVisible(point)
                         ? handle.graphToViewport(point) : null,
                     readCameraPose: () => handle?.readReviewCameraPose() ?? null,
                     readPlacedLabelIds: () => handle?.readPlacedLabelIds() ?? [],
-                    destroy() { handle?.destroy(); handle = null; },
+                    destroy() { hoveredNodeId = null; setWheelAnchor(null); handle?.destroy(); handle = null; mountedStyled = null; },
                 };
             },
             style: (result, snapshot) => page.styleTypedProjection(result, snapshot),

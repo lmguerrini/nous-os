@@ -163,3 +163,57 @@ test('2D and 3D settled samples progress from sub-clusters through items to fetc
     assert.equal(v2Visible(loaded, disclosure, fetched.auto).counts[5], 1);
   }
 });
+
+test('a collapsed focused domain opens before deeper pages in Natural and Indra, 2D and 3D', () => {
+  for (const organization of ['Natural', 'Indra']) for (const dimension of ['2d', '3d']) {
+    const index = hierarchy();
+    const collapsed = emptyDisclosure();
+    collapsed.expanded.add('b');
+    const projected = new Map(positions);
+    const cursor = dimension === '3d' ? { x: 580, y: 280 } : { x: 80, y: 100 };
+    if (dimension === '3d') projected.set('a', { ...cursor, radius: 22 });
+    let state = emptyRevealState();
+    const counts: number[] = [];
+    let request: string | undefined;
+    for (const zoom of [2, 2.7, 3.8, 5]) {
+      const result = advance(index, state, zoom, {
+        disclosure: collapsed, positions: projected, cursor, pageSize: 2,
+      });
+      counts.push(result.disclosedIds.filter(id => id === 'a' || id.startsWith('a-')).length);
+      assert.equal(result.state.focusClusterId, 'a', `${organization} ${dimension} focus at ${zoom}`);
+      assert.equal(result.state.epoch, 1);
+      request = result.passageRequests[0] ?? request;
+      state = result.state;
+    }
+    assert.ok(counts[0]! > 1 && counts[1]! > counts[0]! && counts[2]! > counts[1]!,
+      `${organization} ${dimension}: ${counts}`);
+    assert.ok(request, `${organization} ${dimension} requests a passage`);
+    const loaded = { ...index, nodes: [...index.nodes, node(`${organization}-${dimension}-passage`, 5, request!)] };
+    const fetched = advance(loaded, state, 5, {
+      disclosure: collapsed, positions: projected, cursor, pageSize: 2,
+    });
+    assert.ok(fetched.disclosedIds.includes(`${organization}-${dimension}-passage`));
+  }
+});
+
+test('a neighbouring cursor hit must persist across two settled samples to change focus epoch', () => {
+  const index = hierarchy();
+  const first = advance(index, emptyRevealState(), 2);
+  const moving = advance(index, first.state, 2.4, {
+    settled: false, cursor: { x: 820, y: 100 },
+  });
+  assert.equal(moving.state.focusClusterId, 'a');
+  assert.equal(moving.state.epoch, 1);
+  const neighbouring = advance(index, moving.state, 2.7, { cursor: { x: 820, y: 100 } });
+  assert.equal(neighbouring.state.focusClusterId, 'a');
+  assert.equal(neighbouring.state.epoch, 1);
+  assert.equal(neighbouring.state.pendingFocusClusterId, 'b');
+  const recovered = advance(index, neighbouring.state, 3.8);
+  assert.equal(recovered.state.focusClusterId, 'a');
+  assert.equal(recovered.state.pendingFocusClusterId, null);
+  const next = advance(index, recovered.state, 5, { cursor: { x: 820, y: 100 } });
+  const confirmed = advance(index, next.state, 6.6, { cursor: { x: 820, y: 100 } });
+  assert.equal(next.state.epoch, 1);
+  assert.equal(confirmed.state.focusClusterId, 'b');
+  assert.equal(confirmed.state.epoch, 2);
+});

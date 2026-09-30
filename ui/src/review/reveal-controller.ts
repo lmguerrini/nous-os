@@ -11,6 +11,7 @@ export type RevealPosition = Readonly<{ x: number; y: number; radius?: number }>
 export type RevealAdmission = Readonly<{ parentId: string; count: number; threshold: number; clusterId: string; order: number }>;
 export type RevealState = Readonly<{
   epoch: number; focusClusterId: string | null; focusSource: RevealSource;
+  pendingFocusClusterId: string | null;
   lastZoom: number; band: RevealBand; tier: number; admissions: readonly RevealAdmission[];
   pendingPassages: readonly string[];
 }>;
@@ -68,7 +69,8 @@ export function revealClusterOf(index: V2Index, id: string): string | null {
   return hierarchy(index).cluster.get(id) ?? null;
 }
 export const emptyRevealState = (zoom = 1): RevealState => ({
-  epoch: 0, focusClusterId: null, focusSource: null, lastZoom: zoom, band: 'far', tier: -1,
+  epoch: 0, focusClusterId: null, focusSource: null, pendingFocusClusterId: null,
+  lastZoom: zoom, band: 'far', tier: -1,
   admissions: [], pendingPassages: [],
 });
 export function revealBand(zoom: number, previous: RevealBand = 'far'): RevealBand {
@@ -121,8 +123,16 @@ export function stepReveal(input: RevealInput): RevealDecision {
     ? input.previous.focusClusterId : null;
   const cursorCluster = cursorNode ? clusterOf(cursorNode.id) : null;
   const anchor = cursorNode?.id ?? selected ?? centered?.id ?? null;
-  const source: RevealSource = cursorCluster || sticky && input.cursor ? 'cursor' : selected ? 'selection' : centered ? 'viewport' : null;
-  const clusterId = cursorCluster ?? sticky ?? (anchor ? clusterOf(anchor) : null);
+  const proposedSource: RevealSource = cursorCluster || sticky && input.cursor ? 'cursor' : selected ? 'selection' : centered ? 'viewport' : null;
+  const proposedCluster = cursorCluster ?? sticky ?? (anchor ? clusterOf(anchor) : null);
+  // A single settled projection can hit a neighbouring hub while the camera moves. The next
+  // settled sample must confirm a cursor-driven switch before it starts a new reveal epoch.
+  const pendingFocusClusterId = input.settled && cursorCluster && input.previous.focusClusterId &&
+    cursorCluster !== input.previous.focusClusterId &&
+    input.previous.pendingFocusClusterId !== cursorCluster ? cursorCluster : null;
+  const clusterId = !input.settled || pendingFocusClusterId
+    ? input.previous.focusClusterId : proposedCluster;
+  const source = input.settled ? proposedSource : input.previous.focusSource;
   const epoch = input.previous.epoch + (clusterId !== input.previous.focusClusterId ? 1 : 0);
   const clusterOrder = [...new Set([
     clusterId,
@@ -178,6 +188,12 @@ export function stepReveal(input: RevealInput): RevealDecision {
   const chooseParent = (threshold: number): V2Node | undefined => {
     const maxLevel = threshold >= 3 ? 4 : threshold >= 2 ? 3 : 2;
     const all = v2Visible(input.index, input.disclosure, autoPages(admissions), cap).nodes;
+    // A collapsed focused domain has only its level-1 root on screen. Open its first page
+    // before looking for deeper parents; subsequent settled steps can follow those children.
+    const root = clusterId ? byId.get(clusterId) : undefined;
+    if (root && all.some(node => node.id === root.id) &&
+        !all.some(node => node.parent === root.id) &&
+        (children.get(root.id)?.length ?? 0) > 0) return root;
     for (const cluster of clusterId ? [clusterId] : clusterOrder) {
       const candidates = all.filter(node => clusterOf(node.id) === cluster && node.level >= 2 && node.level <= maxLevel &&
         !input.disclosure.expanded.has(node.id) &&
@@ -217,7 +233,7 @@ export function stepReveal(input: RevealInput): RevealDecision {
   const auto = autoPages(admissions);
   const after = v2Visible(input.index, input.disclosure, auto, cap);
   const band = input.settled ? revealBand(input.zoom, input.previous.band) : input.previous.band;
-  return { state: { epoch, focusClusterId: clusterId, focusSource: source,
+  return { state: { epoch, focusClusterId: clusterId, focusSource: source, pendingFocusClusterId,
       lastZoom: input.settled && Number.isFinite(input.zoom) ? input.zoom : input.previous.lastZoom, band, tier,
       admissions, pendingPassages: [...passages].sort(cmp) }, auto,
     admittedIds: after.nodes.map(node => node.id).filter(id => !visible.has(id)).sort(cmp),
