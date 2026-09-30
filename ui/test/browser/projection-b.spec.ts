@@ -80,10 +80,12 @@ test('D-073 structural controls open a visual panel and never an attested relati
   const pick = controls.locator('button[data-pick-kind="visual-relation"]').first();
   await expect(pick).toBeVisible();
   await pick.click();
-  await expect(page.locator('#details')).toContainText(/Co-appartenenza|Contenimento strutturale/);
-  await expect(page.locator('#details')).toContainText(/Non semantica/);
-  await expect(page.locator('#details')).toContainText(/non attestata/i);
-  await expect(page.locator('#details')).not.toContainText(/relazione attestata/i);
+  // The flow legend beside the selection names «Relazione attestata»; the visual panel is the card.
+  const panel = page.locator('#details .selection-card');
+  await expect(panel).toContainText(/Co-appartenenza|Contenimento strutturale/);
+  await expect(panel).toContainText(/Non semantica/);
+  await expect(panel).toContainText(/non attestata/i);
+  await expect(panel).not.toContainText(/relazione attestata/i);
   expect(errors).toEqual([]);
 });
 
@@ -95,16 +97,27 @@ test('D-073 density and camera-level revisions retain host and camera without re
   await typedHost(page).evaluate(node => { (node as HTMLElement).dataset.b12cHost = 'original'; });
   await waitForCameraRest(page);
   const camera = await page.evaluate(() => (window as any).__d067.cameraState());
-  const initialLevel = (await witness(page)).lod.level;
+  const initialLod = (await witness(page)).lod;
+  const initialLevel = initialLod.level;
+  expect(initialLod.nodes.available, 'the typed pipeline feeds the LOD witness').toBeGreaterThan(0);
+  expect(initialLod.nodes.rendered).toBeGreaterThan(0);
+  expect(initialLod.nodes.rendered).toBeLessThanOrEqual(initialLod.nodes.available);
   await page.evaluate(() => (window as any).__d067.setDensity('complete'));
   await expect.poll(async () => (await witness(page)).lod.density).toBe('complete');
+  const completeLod = (await witness(page)).lod;
+  expect(completeLod.nodes.rendered).toBeGreaterThanOrEqual(initialLod.nodes.rendered);
   expect(await typedHost(page).getAttribute('data-b12c-host')).toBe('original');
   expect(await page.evaluate(() => (window as any).__d067.cameraState())).toEqual(camera);
 
   const box = await page.locator('#viewport').boundingBox();
   expect(box).toBeTruthy();
   await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
-  await page.mouse.wheel(0, -960);
+  // One wheel event is one camera step (a 1.7x zoom in Sigma), below the first LOD band edge:
+  // a few steps cross it, and the level lands once the camera has been still.
+  for (let step = 0; step < 4; step += 1) {
+    await page.mouse.wheel(0, -960);
+    await page.waitForTimeout(150);
+  }
   await waitForCameraRest(page);
   await expect.poll(async () => (await witness(page)).lod.level).not.toBe(initialLevel);
   expect(await typedHost(page).getAttribute('data-b12c-host')).toBe('original');
@@ -119,7 +132,8 @@ test('D-073 typed pipeline renders 2D and 3D and settles without an idle RAF', a
   for (const projection of ['2d', '3d'] as const) {
     await setAxes(page, { projection, organization: 'flat', morphology: 'stellar', reading: 'attested' });
     await expect.poll(async () => (await projectionWitness(page)).enabled).toBe(true);
-    await expect(page.locator('#viewport canvas[data-morphology-canvas]')).toBeVisible();
+    // The typed host owns its canvases: Sigma's projection layer in 2D, the render3f scene in 3D.
+    await expect(typedHost(page).locator(projection === '2d' ? 'canvas.sigma-projection-visuals' : 'canvas').first()).toBeVisible();
     await waitForCameraRest(page);
     const idleFrames = await page.evaluate(async () => {
       const before = (window as any).__d073FrameCount as number;

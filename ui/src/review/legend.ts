@@ -12,14 +12,20 @@ import {
 } from "./presentation.ts";
 import type { FamilyId, Colour, Reading } from "./view-contract.ts";
 import type { PaletteValues } from "./palette.ts";
-import type { PickResult, ProjectionResult, RenderVisibility, VisualRelation } from "../projection/contract-types.ts";
+import type { PickResult, ProjectionResult, RenderVisibility, VisualContainer, VisualRelation } from "../projection/contract-types.ts";
 type StructuralVisualRelation = VisualRelation & Readonly<{ kind: 'co-membership' | 'synthetic-containment' }>;
-type VisualRelationPick = PickResult & Readonly<{ kind: 'visual-relation'; visualId: string }>;
+type StructuralPick = PickResult & Readonly<{ kind: 'visual-relation' | 'container'; visualId: string }>;
+/** The structural pick controls list at most this many entries per kind; the rest is counted. */
+export const STRUCTURAL_CONTROLS_LIMIT = 12;
 export function visibleStructuralRelations(projection: ProjectionResult, visibility: RenderVisibility): StructuralVisualRelation[] {
   if (visibility.projectionResultDigest !== projection.determinism.resultDigest) return [];
   return projection.visualRelations.filter((relation): relation is StructuralVisualRelation =>
     visibility.visualRelationIds.has(relation.visualId) && relation.semantic === false &&
     (relation.kind === 'co-membership' || relation.kind === 'synthetic-containment'));
+}
+export function visibleStructuralContainers(projection: ProjectionResult, visibility: RenderVisibility): VisualContainer[] {
+  if (visibility.projectionResultDigest !== projection.determinism.resultDigest) return [];
+  return projection.containers.filter(container => visibility.containerIds.has(container.visualId));
 }
 function rgb(values: readonly number[]) {
   return `rgb(${values.map((n) => Math.round(n * 255)).join(",")})`;
@@ -75,39 +81,59 @@ export function renderLegend(host: HTMLElement, colour: Colour, debug: boolean, 
   add(SPATIAL_NOTICE);
 }
 
-/** Mount the new projection legend and structural-pick controls only when typed visual relations exist. */
+/** Mount the typed projection's structural pick controls: the visible structural relations and
+ * containers, or a plain statement that this view has none. */
 export function renderTypedStructuralLegend(
   host: HTMLElement,
   projection: ProjectionResult,
   visibility: RenderVisibility,
-  onPick?: (pick: VisualRelationPick) => void,
+  onPick?: (pick: StructuralPick) => void,
 ): void {
   host.replaceChildren();
-  host.hidden = true;
-  const structural = visibleStructuralRelations(projection, visibility);
-  if (!structural.length) return;
   host.hidden = false;
+  const relations = visibleStructuralRelations(projection, visibility);
+  const containers = visibleStructuralContainers(projection, visibility);
   const notice = document.createElement('p');
   notice.textContent = STRUCTURAL_RELATION_TEXT.name;
   notice.title = STRUCTURAL_RELATION_TEXT.meaning;
   host.append(notice);
-  for (const relation of structural) {
+  if (!relations.length && !containers.length) {
+    const empty = document.createElement('p');
+    empty.dataset.structuralEmpty = 'true';
+    empty.textContent = 'Nessun elemento strutturale visibile in questa vista.';
+    host.append(empty);
+    return;
+  }
+  const add = (text: string, pick: StructuralPick, label: string) => {
     const row = document.createElement('div');
     row.className = 'structural-visual-legend-entry';
-    const text = document.createElement('span');
-    text.textContent = structuralRelationWording(relation);
-    row.append(text);
+    const span = document.createElement('span');
+    span.textContent = text;
+    row.append(span);
     if (onPick) {
       const button = document.createElement('button');
       button.type = 'button';
-      button.dataset.pickKind = 'visual-relation';
+      button.dataset.pickKind = pick.kind;
       button.textContent = 'Apri pannello strutturale';
-      button.setAttribute('aria-label', `Apri pannello strutturale: ${relation.visualId}`);
-      button.addEventListener('click', () => onPick({ kind: 'visual-relation', visualId: relation.visualId }));
+      button.setAttribute('aria-label', `Apri pannello strutturale: ${label}`);
+      button.addEventListener('click', () => onPick(pick));
       row.append(button);
     }
     host.append(row);
-  }
+  };
+  const more = (shown: number, total: number) => {
+    if (total <= shown) return;
+    const rest = document.createElement('p');
+    rest.textContent = `e altri ${total - shown} elementi strutturali visibili`;
+    host.append(rest);
+  };
+  for (const relation of relations.slice(0, STRUCTURAL_CONTROLS_LIMIT))
+    add(structuralRelationWording(relation), { kind: 'visual-relation', visualId: relation.visualId }, relation.visualId);
+  more(STRUCTURAL_CONTROLS_LIMIT, relations.length);
+  for (const container of containers.slice(0, STRUCTURAL_CONTROLS_LIMIT))
+    add(`Contenitore geometrico · ${container.memberCount} elementi; visualizzazione non semantica e non attestata.`,
+      { kind: 'container', visualId: container.visualId }, container.visualId);
+  more(STRUCTURAL_CONTROLS_LIMIT, containers.length);
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";

@@ -69,10 +69,6 @@ let mountFailureLogged = false;
 export function resetMountFailureLog(): void {
     mountFailureLogged = false;
 }
-/** B8's promised six-class density/level revision: the visibility ratio composes the density
- * setting with the camera LOD level, so the far band draws a sparser summary than near. */
-const PROJECTION_LEVEL_RATIOS: Record<LodLevel, number> = { far: 0.4, intermediate: 0.7, near: 1 };
-const DENSITY_RATIOS = { essential: 0.35, balanced: 0.7, complete: 1 } as const;
 /** The URL parameter that opts the page into the default typed projection pipeline. */
 const PROJECTION_FLAG_PARAM = 'projection';
 export function projectionFlagEnabled(search: string, hash: string): boolean {
@@ -399,9 +395,7 @@ export class V2Page {
         const domain = selectAnalyticalDomain(snapshot, disclosed.nodes.map(node => node.id));
         // GATE-B audit 2: the typed relations honour the relation-detail control and the
         // legacy-style focus source (selected relation, its source node, the selection, hover).
-        const active = this.renderedRelations.get(this.selected ?? '')?.source
-            ?? this.index.edges.find(edge => edge.id === this.selected)?.source
-            ?? this.selected ?? this.hovered;
+        const active = this.projectionFocus();
         const typedRelations = projectTypedRelations(this.index.nodes, this.index.edges, new Set(domain.nodeIds),
             this.axes.reading, this.axes.organization, this.relationDetail, active).visualRelations;
         const dimension = this.axes.projection;
@@ -494,12 +488,15 @@ export class V2Page {
         if (result.fullLedger.snapshotDigest !== snapshot.digest ||
             result.fullLedger.canonicalBytesDigest !== snapshot.rawLedger.canonicalBytesDigest)
             throw new Error('Projection lost its source ledger');
-        // B8's six-class density/level revision: density ratio × camera-level factor.
-        const visibility = projectionVisibility(result, snapshot, this.projectionRevision + 1,
-            DENSITY_RATIOS[this.density] * PROJECTION_LEVEL_RATIOS[this.lod]);
-        validateRenderVisibility(result, visibility, snapshot);
-        if (this.projectionRenderer?.dimension === dimension) {
-            this.projectionRenderer.updateVisibleSubset(styled, visibility);
+        // A new host starts at the fitted overview: the semantic level restarts at far, exactly as
+        // the camera it is measured against does.
+        const mounted = this.projectionRenderer?.dimension === dimension ? this.projectionRenderer : null;
+        if (!mounted) { this.lod = 'far'; this.pendingLod = null; }
+        // D-073 C8b: the six-class revision follows the legacy semantic LOD (level, density budgets).
+        const lod = this.typedLodVisibility(result, snapshot, disclosed.nodes, active, this.projectionRevision + 1);
+        const visibility = lod.visibility;
+        if (mounted) {
+            mounted.updateVisibleSubset(styled, visibility);
         } else {
             const host = document.createElement('div');
             host.className = 'view-host';
@@ -516,6 +513,8 @@ export class V2Page {
             this.projectionHost?.remove();
             this.projectionRenderer = renderer;
             this.projectionHost = host;
+            this.overviewRatio = null;
+            this.programmaticCamera();
         }
         this.projectionRevision = visibility.revision;
         this.projectionResult = result;
@@ -534,8 +533,83 @@ export class V2Page {
             this.overviewRatio = camera?.ratio ?? 1;
         }
         this.rendered = new Set(visibility.nodeIds);
+        this.lodCounts = lod.counts;
+        this.lastNodeSelection = lod.selection;
+        this.dropHiddenTypedSelection();
         this.renderPanel();
         element('status').textContent = 'Grafo pronto';
+    }
+    /** A typed pick the new mask no longer shows has no panel to open: the selection ends with it. */
+    private dropHiddenTypedSelection(): void {
+        if (this.typedSelection && !this.isVisibleProjectionPick(this.typedSelection)) {
+            this.typedSelection = null;
+            this.selected = null;
+        }
+    }
+    /** The legacy-style focus source: the selected relation's source node, the selection, the hover. */
+    private projectionFocus(): string | null {
+        return this.renderedRelations.get(this.selected ?? '')?.source
+            ?? this.index.edges.find(edge => edge.id === this.selected)?.source
+            ?? this.selected ?? this.hovered;
+    }
+    /** D-073 C8b: the typed pipeline's semantic level of detail. It reuses the legacy rules — the
+     * node selection of `lod.ts` for the camera level and the density budgets, the arc selection
+     * for the visual relations and the semantic edges — and only ever narrows the result: the
+     * coordinates, the digest and the source graph are untouched. Curves follow their relation;
+     * containers and fields are kept whole. */
+    private typedLodVisibility(result: ProjectionResult, snapshot: SemanticGraphSnapshot,
+        disclosed: readonly V2Node[], active: string | null, revision: number) {
+        const budget = DENSITY_BUDGETS[this.density];
+        const communityOf = communityResolver(this.index.nodes);
+        const infos = disclosed.map(node => ({ id: node.id, level: node.level, parent: node.parent, importance: node.importance.value }));
+        const tiers = manualExpansionTiers(infos, this.history.state.manualOrder, V2_PAGE);
+        const pinned = this.pinnedNodeIds(tiers);
+        const focusPriority = this.selected ? this.focusMembers(this.selected, disclosed as V2Node[]) : null;
+        const byImportance = new Map(infos.map(node => [node.id, node.importance]));
+        const priority = [...tiers.priorityChildren, ...[...(focusPriority ?? [])]
+            .sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
+        const selection = this.selectLod({
+            nodes: infos, level: this.lod, budget: budget.nodes, pinned, focus: active, priority,
+            adjacency: adjacencyOf(disclosed as V2Node[], this.index.edges), communityOf,
+        }, this.lastNodeSelection);
+        const base = projectionVisibility(result, snapshot, revision, 1, new Set(selection.rendered));
+        const edgeClass = new Map(this.index.edges.map(edge => [edge.id, edge.class]));
+        const semanticById = new Map(snapshot.edges.map(edge => [edge.id, edge]));
+        const semanticIds = new Set(selectArcs({
+            arcs: [...base.semanticEdgeIds].map(id => ({ id, source: semanticById.get(id)!.source,
+                target: semanticById.get(id)!.target, class: edgeClass.get(id) ?? 'attested' as const, count: 1 })),
+            budget: budget.arcs, pinned: new Set(this.selected ? [this.selected] : []), focus: active,
+            communityOf, keepExploratory: this.axes.reading !== 'attested',
+        }));
+        const arcInput = {
+            arcs: result.visualRelations.filter(relation => base.nodeIds.has(relation.source) && base.nodeIds.has(relation.target))
+                .map(relation => ({ id: relation.visualId, source: relation.source, target: relation.target,
+                    class: edgeClass.get(relation.underlyingEdgeIds[0] ?? '') ?? 'attested' as const, count: relation.count })),
+            budget: budget.arcs,
+            pinned: new Set([...[...this.pinnedArcIds(tiers)].map(id => `visual:relation:${id}`),
+                ...(this.selected ? [this.selected] : [])]),
+            focus: active,
+            priority: tiers.priorityChildren.map(id => `visual:relation:contains:${id}`),
+            communityOf, keepExploratory: this.axes.reading !== 'attested',
+        };
+        const visualRelationIds = new Set(selectArcs(arcInput));
+        const curveIds = new Set([...base.curveIds].filter(id => {
+            const curve = result.curves.find(item => item.visualId === id);
+            return !curve?.visualRelationId || visualRelationIds.has(curve.visualRelationId);
+        }));
+        const visibility: RenderVisibility = { ...base, semanticEdgeIds: semanticIds, visualRelationIds, curveIds,
+            density: result.loadedNodeIds.length ? base.nodeIds.size / result.loadedNodeIds.length : 1 };
+        validateRenderVisibility(result, visibility, snapshot);
+        const pinnedNodes = [...pinned].filter(id => visibility.nodeIds.has(id)).sort();
+        const forced = new Set(forcedArcIds(arcInput));
+        const pinnedArcs = [...visualRelationIds].filter(id => forced.has(id)).sort();
+        const counts = {
+            nodes: { rendered: visibility.nodeIds.size, available: result.domainNodeIds.length,
+                pinned: pinnedNodes.length, pinnedIds: pinnedNodes },
+            arcs: { rendered: visualRelationIds.size, available: result.visualRelations.length,
+                pinned: pinnedArcs.length, pinnedIds: pinnedArcs },
+        };
+        return { visibility, counts, selection };
     }
     private handleProjectionPick(pick: PickResult | null, shiftKey: boolean): void {
         const result = this.projectionResult;
@@ -597,13 +671,17 @@ export class V2Page {
             this.projectionDomain !== domain || this.projectionSnapshot !== snapshot)
             throw new Error('Stale projection level token');
         assertPageProjection(styled.projection, domain, renderer.dimension);
-        const visibility = projectionVisibility(styled.projection, snapshot, this.projectionRevision + 1,
-            DENSITY_RATIOS[this.density] * PROJECTION_LEVEL_RATIOS[this.lod]);
+        const lod = this.typedLodVisibility(styled.projection, snapshot, this.visible().nodes,
+            this.projectionFocus(), this.projectionRevision + 1);
+        const visibility = lod.visibility;
         renderer.updateVisibleSubset(styled, visibility);
         this.projectionRevision = visibility.revision;
         this.projectionResult = styled.projection;
         this.projectionVisibility = visibility;
         this.rendered = new Set(visibility.nodeIds);
+        this.lodCounts = lod.counts;
+        this.lastNodeSelection = lod.selection;
+        this.dropHiddenTypedSelection();
         this.renderPanel();
     }
     /** The read-only diagnostic record `window.__d073.projectionWitness()` and `witness().projection`

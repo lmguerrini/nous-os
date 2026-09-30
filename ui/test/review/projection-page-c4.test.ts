@@ -306,15 +306,15 @@ test('the flat spelling is a read alias at the page entry points: it is normalis
     /organization is outside its closed vocabulary/);
 });
 
-test('the six-class mask composes the density ratio with the camera level', async () => {
+test('the six-class mask follows the legacy LOD selection for the level and the density budget', async () => {
   const index = fixtureIndex();
   const { page } = await typedPage(index);
   const domain = selectAnalyticalDomain(await snapshotFor(index),
     (page as unknown as { visible: () => { nodes: V2Node[] } }).visible().nodes.map(n => n.id));
-  // density 'complete' at the initial 'far' level: ceil(N × 1 × 0.4). The projection path
-  // reports its mask through disclosure().lod.rendered (this.rendered is the mask node set).
-  const expected = Math.ceil(domain.nodeIds.length * 0.4);
-  assert.equal((page.disclosure() as unknown as { lod: { rendered: number } }).lod.rendered, expected);
+  // density 'complete' (850-node budget) at the initial 'far' level: the whole small domain fits
+  // the budget, so the legacy node selection keeps every node. The projection path reports its
+  // mask through disclosure().lod.rendered (this.rendered is the mask node set).
+  assert.equal((page.disclosure() as unknown as { lod: { rendered: number } }).lod.rendered, domain.nodeIds.length);
 });
 
 test('the projection witness, camera bridge and tick read the mounted typed renderer', async () => {
