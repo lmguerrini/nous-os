@@ -61,7 +61,9 @@ export interface LanczosOptions {
   /** Wanted nontrivial modes; clamped to min(k, n - c). Default 24. */
   readonly k?: number;
   /** Explicit Krylov restart size r. The default is min(n-c,max(2k+8,256));
-   * explicit values are respected, and values above 512 refuse typed. */
+   * explicit values are respected. Values above 512 refuse with
+   * `projected-size-above-cap`; values above n-c but at most 512 refuse with
+   * `invalid-input`. */
   readonly restartSize?: number;
   readonly maxRestarts?: number;
   /** Relative residual tolerance on max(1, ||L||_2 Gershgorin bound). Default 1e-8. */
