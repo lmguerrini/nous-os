@@ -10,16 +10,17 @@
  * clock or renderer access; identical inputs produce identical frozen outputs.
  */
 import type { Explanation } from '../projection/contract-types.ts';
-import { FRACTAL_3D_SCALAR_LIFT_LIMITATION } from './regions.ts';
 import { FRACTAL_POTENTIAL_FLOOR, FRACTAL_POTENTIAL_SPAN } from './parameters.ts';
 
 export const FRACTAL_EXPLAIN_VERSION = 'fractal-explain-v1';
 export const FRACTAL_EXPLAIN_PROVENANCE_NOTE =
-  'Source provenance and citations stay in the separate provenance section; this model explains placement only.';
+  'La provenienza sorgente e le citazioni sono nella sezione separata sulla provenienza; questo modello spiega solo la collocazione.';
 export const FRACTAL_EXPLAIN_VISUAL_LIMITATION =
-  'Layout distance is visual, not a semantic relation; no visual geometry becomes a source edge.';
+  'La distanza nel layout è visiva, non una relazione semantica; nessuna geometria visiva diventa un arco sorgente.';
 export const FRACTAL_EXPLAIN_DERIVED_GEOMETRY_LIMITATION =
-  'Declared derived geometry of the certified dynamics: a finite sample of the mathematical image, not a source edge, community boundary record or attested relation.';
+  'Geometria derivata dichiarata della dinamica certificata: campione finito dell’immagine matematica, non un arco sorgente, un record di confine della comunità o un legame documentato.';
+export const FRACTAL_EXPLAIN_3D_SCALAR_LIFT_LIMITATION =
+  'Sollevamento scalare 3D di G a titolo visivo; non aggiunge significato semantico né una relazione sorgente.';
 
 /** Dynamics descriptor shared by every explanation: the certified polynomial and its series depth. */
 export interface FractalExplainDynamics {
@@ -54,7 +55,7 @@ export interface FractalNodeExplainInput {
 }
 
 function dynamicsSummary(dynamics: FractalExplainDynamics): string {
-  return `F_c(z)=z^${dynamics.power}+c with c=${dynamics.c}, Böttcher depth N=${dynamics.rayIterations}`;
+  return `F_c(z)=z^${dynamics.power}+c con c=${dynamics.c}, profondità di Böttcher N=${dynamics.rayIterations}`;
 }
 
 /** The «why here» of one node: source feature (sector slot, importance midrank) plus the inverse-Böttcher witness. */
@@ -62,8 +63,8 @@ export function explainFractalNode(input: FractalNodeExplainInput): Explanation 
   return Object.freeze({
     elementId: input.nodeId,
     elementKind: 'node',
-    summary: `External coordinate of ${dynamicsSummary(input.dynamics)}: the node is the inverse Böttcher image of w=exp(G+i*theta), with G from its ${input.importancePolicy} importance midrank and theta from its strictly internal slot in community ${input.sector.communityId}'s sector`
-      + (input.sector.groupChildId === undefined ? '' : ` (sub-sector of real hierarchy child ${input.sector.groupChildId})`)
+    summary: `Coordinata esterna di ${dynamicsSummary(input.dynamics)}: il nodo è l’immagine inversa di Böttcher di w=exp(G+i*theta), con G ricavato dal rango mediano di importanza ${input.importancePolicy} e theta dalla sua posizione interna al settore della comunità ${input.sector.communityId}`
+      + (input.sector.groupChildId === undefined ? '' : ` (sotto-settore del figlio gerarchico reale ${input.sector.groupChildId})`)
       + '.',
     sourceIds: [input.sector.communityId, ...(input.sector.groupChildId === undefined ? [] : [input.sector.groupChildId])],
     parameterIds: ['fractal.p', 'fractal.c', 'fractal.G', 'fractal.theta', 'fractal.N', 'fractal.residualTolerance', 'sector-locality-v2', input.importancePolicy],
@@ -82,7 +83,7 @@ export function explainFractalNode(input: FractalNodeExplainInput): Explanation 
       sectorRight: input.sector.right,
     }),
     limitation: [FRACTAL_EXPLAIN_VISUAL_LIMITATION, FRACTAL_EXPLAIN_PROVENANCE_NOTE,
-      ...(input.dimension === '3d' ? [FRACTAL_3D_SCALAR_LIFT_LIMITATION] : [])].join(' '),
+      ...(input.dimension === '3d' ? [FRACTAL_EXPLAIN_3D_SCALAR_LIFT_LIMITATION] : [])].join(' '),
   });
 }
 
@@ -103,14 +104,14 @@ export interface FractalContainerExplainInput {
 
 /** The «why here» of a community region container: the sector it owns and the sampled mapped boundary witness. */
 export function explainFractalContainer(input: FractalContainerExplainInput): Explanation {
-  const scopeText = input.scope.kind === 'community' ? `community ${input.communityId}`
-    : input.scope.kind === 'group-sub-sector' ? `real hierarchy child ${input.scope.childId} of community ${input.communityId}`
-      : `residual span of community ${input.communityId} (leaf children and direct members)`;
+  const scopeText = input.scope.kind === 'community' ? `comunità ${input.communityId}`
+    : input.scope.kind === 'group-sub-sector' ? `figlio gerarchico reale ${input.scope.childId} della comunità ${input.communityId}`
+      : `intervallo residuo della comunità ${input.communityId} (figli foglia e membri diretti)`;
   return Object.freeze({
     elementId: input.visualId,
     elementKind: 'container',
-    summary: `External angular sector of ${scopeText} under ${dynamicsSummary(input.dynamics)}: the boundary samples the two external rays of the sector edges closed by the equipotential arcs at the potential range ends`
-      + (input.aggregateOnly ? '; the member count is aggregate over the subdivided sub-community levels' : '')
+    summary: `Settore angolare esterno di ${scopeText} con ${dynamicsSummary(input.dynamics)}: il bordo campiona i due raggi esterni dei margini del settore, chiusi dagli archi equipotenziali agli estremi dell’intervallo di potenziale`
+      + (input.aggregateOnly ? '; il numero dei membri è aggregato sui livelli della sottocomunità suddivisa' : '')
       + '.',
     sourceIds: [input.communityId, ...(input.scope.childId === undefined ? [] : [input.scope.childId])],
     parameterIds: ['fractal.p', 'fractal.c', 'fractal.N', 'fractal.potentialRange', 'sector-locality-v2'],
@@ -146,7 +147,7 @@ export function explainFractalEquipotentialCurve(input: FractalEquipotentialExpl
   return Object.freeze({
     elementId: input.curveId,
     elementKind: 'curve',
-    summary: `Sampled equipotential at G=${input.potential}: the inverse Böttcher image of the circle |w|=e^G under ${dynamicsSummary(input.dynamics)}, ${input.sampleCount} deterministic angle samples.`,
+    summary: `Equipotenziale campionata a G=${input.potential}: immagine inversa di Böttcher del cerchio |w|=e^G con ${dynamicsSummary(input.dynamics)}, ${input.sampleCount} campioni angolari deterministici.`,
     sourceIds: [],
     parameterIds: ['fractal.p', 'fractal.c', 'fractal.G', 'fractal.N'],
     numericalWitness: Object.freeze({
@@ -175,7 +176,7 @@ export function explainFractalPotentialField(input: FractalPotentialFieldExplain
   return Object.freeze({
     elementId: input.fieldId,
     elementKind: 'field',
-    summary: `Scalar external potential G=${FRACTAL_POTENTIAL_FLOOR}+${FRACTAL_POTENTIAL_SPAN}*q over ${input.nodeCount} domain nodes, q the midrank of ${input.importancePolicy} importance with codepoint-ID ties; G is independent of the angle.`,
+    summary: `Potenziale esterno scalare G=${FRACTAL_POTENTIAL_FLOOR}+${FRACTAL_POTENTIAL_SPAN}*q su ${input.nodeCount} nodi del dominio; q è il rango mediano dell’importanza ${input.importancePolicy}, con parità risolte per ID in ordine codepoint; G è indipendente dall’angolo.`,
     sourceIds: [],
     parameterIds: ['fractal.G', input.importancePolicy],
     numericalWitness: Object.freeze({
@@ -185,7 +186,7 @@ export function explainFractalPotentialField(input: FractalPotentialFieldExplain
       potentialFloor: FRACTAL_POTENTIAL_FLOOR,
       potentialSpan: FRACTAL_POTENTIAL_SPAN,
     }),
-    limitation: `A graph feature signal, not knowledge content inferred from topology; ${FRACTAL_EXPLAIN_PROVENANCE_NOTE}`,
+    limitation: `Segnale di una proprietà del grafo, non contenuto conoscitivo dedotto dalla topologia; ${FRACTAL_EXPLAIN_PROVENANCE_NOTE}`,
   });
 }
 
@@ -201,7 +202,7 @@ export function explainFractalRefusal(input: FractalRefusalExplainInput): Explan
   return Object.freeze({
     elementId: input.elementId,
     elementKind: 'field',
-    summary: `No Fractal coordinates: the sector assignment refused with ${input.code} (${input.detail}); the certified ${dynamicsSummary(input.dynamics)} is never substituted with a decorative position.`,
+    summary: `Coordinate Fractal non disponibili: l’assegnazione dei settori è stata rifiutata con ${input.code} (${input.detail}); la ${dynamicsSummary(input.dynamics)} certificata non viene sostituita da una posizione decorativa.`,
     sourceIds: [],
     parameterIds: ['sector-locality-v2', 'fractal.p', 'fractal.c', 'fractal.N'],
     numericalWitness: Object.freeze({
@@ -210,6 +211,6 @@ export function explainFractalRefusal(input: FractalRefusalExplainInput): Explan
       c: input.dynamics.c,
       N: input.dynamics.rayIterations,
     }),
-    limitation: 'A typed refusal: loadedNodeIds and both position maps stay empty until a valid sector partition is supplied.',
+    limitation: 'Rifiuto tipizzato: loadedNodeIds e le due mappe di posizione restano vuoti finché non viene fornita una partizione valida dei settori.',
   });
 }

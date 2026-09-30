@@ -9,9 +9,8 @@ import test from 'node:test';
 import {
   explainFractalContainer, explainFractalEquipotentialCurve, explainFractalNode,
   explainFractalPotentialField, explainFractalRefusal, FRACTAL_EXPLAIN_PROVENANCE_NOTE,
-  FRACTAL_EXPLAIN_VERSION,
+  FRACTAL_EXPLAIN_3D_SCALAR_LIFT_LIMITATION, FRACTAL_EXPLAIN_VERSION,
 } from '../../src/fractal/explain.ts';
-import { FRACTAL_3D_SCALAR_LIFT_LIMITATION } from '../../src/fractal/regions.ts';
 import { FRACTAL_POTENTIAL_FLOOR, FRACTAL_POTENTIAL_SPAN } from '../../src/fractal/parameters.ts';
 import type { Explanation } from '../../src/projection/contract-types.ts';
 
@@ -34,7 +33,7 @@ test('the node explanation carries the source feature and the full numerical wit
   assert.equal(explanation.elementId, 'n:a:g1:c01');
   assert.equal(explanation.elementKind, 'node');
   assert.ok(explanation.summary.includes('n:a'));
-  assert.ok(explanation.summary.includes('inverse'));
+  assert.ok(explanation.summary.includes('immagine inversa'));
   const witness = explanation.numericalWitness!;
   assert.equal(witness.p, dynamics.power);
   assert.equal(witness.c, dynamics.c);
@@ -53,7 +52,7 @@ test('the node explanation carries the source feature and the full numerical wit
     assert.ok(explanation.parameterIds.includes(parameterId), parameterId);
   }
   // Provenance stays separate: no citation, provenance payload or record appears in the model output.
-  assert.ok(explanation.summary.includes('placement') || explanation.limitation!.includes('provenance'));
+  assert.ok(explanation.summary.includes('collocazione') || explanation.limitation!.includes('provenienza'));
   assert.ok(explanation.limitation!.includes(FRACTAL_EXPLAIN_PROVENANCE_NOTE));
 });
 
@@ -66,8 +65,8 @@ test('a group-child membership names the real sub-sector in sources and summary'
 test('the 3D scalar lift limitation is labelled exactly in the 3D explanation', () => {
   const explanation2d = nodeExplanation('2d');
   const explanation3d = nodeExplanation('3d');
-  assert.ok(!explanation2d.limitation!.includes(FRACTAL_3D_SCALAR_LIFT_LIMITATION));
-  assert.ok(explanation3d.limitation!.includes(FRACTAL_3D_SCALAR_LIFT_LIMITATION));
+  assert.ok(!explanation2d.limitation!.includes(FRACTAL_EXPLAIN_3D_SCALAR_LIFT_LIMITATION));
+  assert.ok(explanation3d.limitation!.includes(FRACTAL_EXPLAIN_3D_SCALAR_LIFT_LIMITATION));
 });
 
 test('the model is pure: identical inputs produce identical frozen outputs', () => {
@@ -91,14 +90,14 @@ test('the container explanation witnesses the sampled region and says when it is
     ...base, visualId: 'visual:fractal:container:n:a:residual', memberCount: 3,
     scope: { kind: 'residual' }, sector: { left: 3.9, right: 4.19 }, aggregateOnly: false,
   });
-  assert.ok(community.summary.includes('aggregate'));
-  assert.ok(!subSector.summary.includes('aggregate'));
+  assert.ok(community.summary.includes('aggregato'));
+  assert.ok(!subSector.summary.includes('aggregato'));
   assert.ok(subSector.summary.includes('n:a:g1'));
-  assert.ok(residual.summary.includes('residual'));
+  assert.ok(residual.summary.includes('residuo'));
   for (const explanation of [community, subSector, residual]) {
     assert.ok(Object.isFrozen(explanation));
     assert.equal(explanation.elementKind, 'container');
-    assert.ok(explanation.limitation!.includes('derived geometry'));
+    assert.ok(explanation.limitation!.includes('Geometria derivata dichiarata'));
     assert.ok(explanation.limitation!.includes(FRACTAL_EXPLAIN_PROVENANCE_NOTE));
     const witness = explanation.numericalWitness!;
     assert.equal(witness.p, dynamics.power);
@@ -119,7 +118,7 @@ test('the equipotential explanation declares derived geometry with no source edg
   assert.deepEqual(curve.sourceIds, []);
   assert.equal(curve.numericalWitness!.G, 1.0);
   assert.equal(curve.numericalWitness!.sampleCount, 48);
-  assert.ok(curve.limitation!.includes('derived geometry'));
+  assert.ok(curve.limitation!.includes('Geometria derivata dichiarata'));
 });
 
 test('the field explanation names the importance policy behind G', () => {
@@ -131,7 +130,7 @@ test('the field explanation names the importance policy behind G', () => {
   assert.ok(field.summary.includes('v2-importance-value-passage-zero-v1'));
   assert.equal(field.numericalWitness!.potentialFloor, FRACTAL_POTENTIAL_FLOOR);
   assert.equal(field.numericalWitness!.potentialSpan, FRACTAL_POTENTIAL_SPAN);
-  assert.ok(field.limitation!.includes('graph feature signal'));
+  assert.ok(field.limitation!.includes('Segnale di una proprietà del grafo'));
 });
 
 test('the refusal explanation makes no position claim', () => {
@@ -140,7 +139,7 @@ test('the refusal explanation makes no position claim', () => {
     detail: 'fixture refusal', dynamics,
   });
   assert.ok(refusal.summary.includes('invalid-sector-partition'));
-  assert.ok(refusal.limitation!.includes('empty'));
+  assert.ok(refusal.limitation!.includes('restano vuoti'));
   assert.equal(refusal.numericalWitness!.p, dynamics.power);
   assert.equal(refusal.numericalWitness!.c, dynamics.c);
 });

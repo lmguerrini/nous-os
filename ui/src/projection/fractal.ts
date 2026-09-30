@@ -26,10 +26,10 @@ import {
   certifyFractalDynamics, fractalContractParameters, FRACTAL_POTENTIAL_FLOOR, FRACTAL_POTENTIAL_SPAN,
   type CertifiedFractalDynamics,
 } from '../fractal/parameters.ts';
-import { angleGrid, defaultSectorRegionOptions, FRACTAL_3D_SCALAR_LIFT_LIMITATION, FRACTAL_REGION_SAMPLE_POLICY, FRACTAL_REGIONS_VERSION, sampleSectorRegion } from '../fractal/regions.ts';
+import { angleGrid, defaultSectorRegionOptions, FRACTAL_REGION_SAMPLE_POLICY, FRACTAL_REGIONS_VERSION, sampleSectorRegion } from '../fractal/regions.ts';
 import {
   explainFractalContainer, explainFractalEquipotentialCurve, explainFractalNode, explainFractalPotentialField,
-  explainFractalRefusal, FRACTAL_EXPLAIN_VERSION,
+  explainFractalRefusal, FRACTAL_EXPLAIN_3D_SCALAR_LIFT_LIMITATION, FRACTAL_EXPLAIN_VERSION,
 } from '../fractal/explain.ts';
 import { DENSE_SYMMETRIC_SOLVER_VERSION } from '../holographic/dense.ts';
 import { LANCZOS_SOLVER_VERSION } from '../holographic/lanczos.ts';
@@ -644,7 +644,7 @@ export const fractalProjection: MathematicalProjection<'fractal'> = {
       { code: 'fractal:equipotential-max-level-agreement', value: curveMaxLevelAgreement, acceptable: curveMaxLevelAgreement <= DEFAULT_RESIDUAL_TOLERANCE },
       { code: 'fractal:ignored-non-giant-child-count', value: assignment.diagnostics.ignoredNonGiantChildCount, acceptable: true },
       ...(parameters.dimension === '3d'
-        ? [{ code: 'fractal:3d-scalar-lift', value: FRACTAL_3D_SCALAR_LIFT_LIMITATION, acceptable: true } as const]
+        ? [{ code: 'fractal:3d-scalar-lift', value: FRACTAL_EXPLAIN_3D_SCALAR_LIFT_LIMITATION, acceptable: true } as const]
         : []),
       // Measured per-community edge-locality over real original intra-community edges only.
       ...assignment.edgeLocality.map(report => ({

@@ -278,7 +278,7 @@ test("Indra's Pearls: selecting a node the result draws opens the explanation ca
   assert.equal(cards.length, 2, 'the explanation card and the source card, in that order');
   const [explanation, source] = [cards[0]!, cards[1]!];
   assert.match(textOf(explanation), /Nodo · spiegazione della proiezione/);
-  assert.match(textOf(explanation), /Placed in pearl/);
+  assert.match(textOf(explanation), /Collocato nella perla/);
   const provenance = findAll(explanation, item => (item.className ?? '').split(' ').includes('projection-provenance'));
   assert.equal(provenance.length, 1, 'the provenance is a separate section of the explanation card');
   assert.deepEqual(provenanceIds(provenance[0]!), result.explanations[inside]!.sourceIds.slice());
@@ -335,7 +335,7 @@ test('Fractal: selecting a node the result draws opens its explanation card with
     assert.deepEqual(internals(page).typedSelection, { kind: 'node', id: inside }, inside);
     const cards = selectionCard(elements.get('details')!);
     assert.equal(cards.length, 2, `${inside}: explanation card, then source card`);
-    assert.match(textOf(cards[0]!), /External coordinate of F_c\(z\)=z\^2\+c/);
+    assert.match(textOf(cards[0]!), /Coordinata esterna di F_c\(z\)=z\^2\+c/);
     const provenance = findAll(cards[0]!, item => (item.className ?? '').split(' ').includes('projection-provenance'));
     assert.equal(provenance.length, 1, `${inside}: provenance in its own section`);
     assert.deepEqual(provenanceIds(provenance[0]!), result.explanations[inside]!.sourceIds.slice());

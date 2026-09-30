@@ -71,7 +71,7 @@ test('the fallback model has no generator path and no Schottky witness', () => {
   assert.deepEqual(model.generatorPath, []);
   assert.equal(model.witness, null);
   const summary = whyHereSummary(model);
-  assert.ok(summary.includes('1+') && summary.includes('not a Kleinian limit set'));
+  assert.ok(summary.includes('1+') && summary.includes('non insieme limite kleiniano'));
   const numeric = whyHereNumericalWitness(model);
   assert.equal(numeric.mode, 'fallback-packing');
   assert.ok(!('genus' in numeric) && !('separationMargin' in numeric));
@@ -91,19 +91,19 @@ test('a Schottky pearl without its group, a fallback pearl with one, and a lette
 test('the summary and numerical witness state the word, depth and the honest limit-set limitation', () => {
   const certified = group();
   const depthOne = buildPearlExplanationModel({ word: [makeLetter(2, -1)], mode: 'schottky', centre: cx(1, 2), radius: 0.3, group: certified });
-  assert.ok(whyHereSummary(depthOne).includes('Word 2- at depth 1: the paired disc of letter 2-'));
+  assert.ok(whyHereSummary(depthOne).includes('Parola 2- a profondità 1: il disco accoppiato della lettera 2-'));
   const depthThree = buildPearlExplanationModel({
     word: [makeLetter(0, 1), makeLetter(1, 1), makeLetter(3, -1)], mode: 'schottky', centre: cx(0, 0), radius: 0.01, group: certified,
   });
   const summary = whyHereSummary(depthThree);
-  assert.ok(summary.includes('Word 0+1+3- at depth 3') && summary.includes('carried by 2 generator maps') && summary.includes('never the exact limit set'));
+  assert.ok(summary.includes('Parola 0+1+3- a profondità 3') && summary.includes('trasportato da 2 mappe generatrici') && summary.includes("mai l'insieme limite esatto"));
   const numeric = whyHereNumericalWitness(depthThree);
   assert.deepEqual(
     { word: numeric.word, depth: numeric.depth, centreRe: numeric.centreRe, centreIm: numeric.centreIm, radius: numeric.radius, genus: numeric.genus, mode: numeric.mode },
     { word: '0+1+3-', depth: 3, centreRe: 0, centreIm: 0, radius: 0.01, genus: 4, mode: 'schottky' });
   assert.equal(numeric.separationMargin, certified.separationMargin);
   assert.equal(pearlLimitation('schottky'), SCHOTTKY_LIMITATION);
-  assert.ok(SCHOTTKY_LIMITATION.includes('never displayed'));
+  assert.ok(SCHOTTKY_LIMITATION.includes('non viene mostrato'));
 });
 
 test('provenance source IDs are sorted and deduplicated and never enter the mathematical model', () => {
@@ -121,8 +121,8 @@ test('container and node explanations keep provenance only in sourceIds and stay
   assert.ok(Object.isFrozen(container) && Object.isFrozen(container.numericalWitness));
   assert.equal(container.elementKind, 'container');
   assert.deepEqual([...container.sourceIds], ['n:alpha', 'n:mu', 'n:zeta']);
-  assert.ok(container.summary.includes('Word 1+') && container.summary.includes('Opened pearl'));
-  assert.ok(container.limitation!.includes('hemisphere') && container.limitation!.includes('provenance'));
+  assert.ok(container.summary.includes('Parola 1+') && container.summary.includes('Perla aperta'));
+  assert.ok(container.limitation!.includes('emisfera') && container.limitation!.includes('provenienza'));
   assert.ok(container.parameterIds.includes('indra.expandZ') && container.parameterIds.includes('indra.schottky'));
   assert.equal(container.numericalWitness!.memberCount, 12);
   assert.equal(container.numericalWitness!.displayScale, 100);
@@ -130,7 +130,7 @@ test('container and node explanations keep provenance only in sourceIds and stay
   const flat = explainPearlContainer({
     visualId: 'visual:indra:pearl:1+', model, provenance: PROVENANCE, memberCount: 12, dimension: '2d', aggregateOnly: false, displayScale: 100,
   });
-  assert.ok(!flat.limitation!.includes('hemisphere') && !flat.summary.includes('Opened pearl') && !flat.parameterIds.includes('indra.expandZ'));
+  assert.ok(!flat.limitation!.includes('emisfera') && !flat.summary.includes('Perla aperta') && !flat.parameterIds.includes('indra.expandZ'));
 
   const node = explainPearlNode({
     nodeId: 'n:leaf', model, provenance: PROVENANCE, rank: 2, memberCount: 12, offsetRatio: 0.4, dimension: '3d', heightRatio: 0.6, heightClamped: false,
@@ -140,7 +140,7 @@ test('container and node explanations keep provenance only in sourceIds and stay
   assert.equal(node.numericalWitness!.rank, 2);
   assert.equal(node.numericalWitness!.heightRatio, 0.6);
   assert.equal(node.numericalWitness!.heightClamped, false);
-  assert.ok(node.summary.includes('rank 3 of 12'));
+  assert.ok(node.summary.includes('rango 3 di 12'));
   const flatNode = explainPearlNode({ nodeId: 'n:leaf', model, provenance: PROVENANCE, rank: 0, memberCount: 1, offsetRatio: 0, dimension: '2d' });
   assert.ok(!('heightRatio' in flatNode.numericalWitness!));
 });
@@ -155,13 +155,13 @@ test('orbit and lifted-route explanations are declared derived geometry and real
   assert.equal(orbit.elementKind, 'curve');
   assert.deepEqual([...orbit.sourceIds], []);
   assert.equal(orbit.numericalWitness!.finalStepDistance, 1e-6);
-  assert.ok(orbit.limitation!.includes('derived geometry') && orbit.limitation!.includes(SCHOTTKY_LIMITATION));
+  assert.ok(orbit.limitation!.includes('Geometria derivata dichiarata') && orbit.limitation!.includes(SCHOTTKY_LIMITATION));
 
   const route = explainLiftedRoute({ visualId: 'visual:indra:route:0+:1-', underlyingEdgeIds: ['e:2', 'e:1'], sourceWordKey: '0+', targetWordKey: '1-' });
   assert.equal(route.elementKind, 'visual-relation');
   assert.deepEqual([...route.sourceIds], ['e:1', 'e:2']);
   assert.equal(route.numericalWitness!.underlyingEdgeCount, 2);
-  assert.ok(route.summary.includes('never a new semantic edge') && route.limitation!.includes('never a source weight'));
-  assert.ok(structuralRelationSummary('lifted-route').includes('real source edges'));
+  assert.ok(route.summary.includes('mai un nuovo arco semantico') && route.limitation!.includes('mai un peso sorgente'));
+  assert.ok(structuralRelationSummary('lifted-route').includes('archi sorgente reali'));
   assert.ok(structuralRelationSummary('co-membership').includes(NO_UNDERLYING_SOURCE_EDGE));
 });

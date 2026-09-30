@@ -575,7 +575,7 @@ test('orbit curves follow the paired-disc map and converge to its attracting fix
     assert.equal(explanation.elementKind, 'curve');
     assert.ok(Number(explanation.numericalWitness!.finalStepDistance) < 1e-3, 'the orbit has contracted');
     assert.deepEqual([...explanation.sourceIds], []);
-    assert.ok(explanation.limitation!.includes('never displayed') && explanation.limitation!.includes('derived geometry'));
+    assert.ok(explanation.limitation!.includes('non viene mostrato') && explanation.limitation!.includes('Geometria derivata dichiarata'));
   }
 });
 
@@ -905,7 +905,7 @@ test('every container, curve, relation and node has a «why here» explanation w
     assert.ok(Number.isFinite(witness.maxConditionFrobenius as number));
     assert.ok(explanation.summary.includes(key));
     assert.deepEqual([...explanation.sourceIds], [container.sourceCommunityId]);
-    assert.ok(explanation.limitation!.includes('limit set') && explanation.limitation!.includes('provenance'));
+    assert.ok(explanation.limitation!.includes('insieme limite') && explanation.limitation!.includes('provenienza'));
     // Source provenance (the IDs) never appears in the mathematical witness.
     assert.ok(!JSON.stringify(witness).includes('n:'));
   }
@@ -958,8 +958,8 @@ test('a domain with too few hierarchy children uses the labelled fallback packin
     const explanation = result.explanations[container.visualId]!;
     assert.equal(explanation.numericalWitness!.mode, 'fallback-packing');
     assert.ok(!('genus' in explanation.numericalWitness!));
-    assert.ok(explanation.limitation!.includes('not a Schottky or Kleinian limit set'));
-    assert.ok(explanation.summary.includes('not a Kleinian limit set'));
+    assert.ok(explanation.limitation!.includes('non un insieme limite Schottky o kleiniano'));
+    assert.ok(explanation.summary.includes('non insieme limite kleiniano'));
     for (const id of container.memberNodeIds!) {
       const point = result.positions2![id]!;
       assert.ok(Math.hypot(point.x - container.center2!.x, point.y - container.center2!.y) < container.radius!);

@@ -120,14 +120,14 @@ export function buildPearlExplanationModel(input: PearlExplanationInput): PearlE
 /** Deterministic one-line «why here»: word, depth, geometry carrier and its honest limitation. */
 export function whyHereSummary(model: PearlExplanationModel): string {
   if (model.mode === 'fallback-packing') {
-    return `Word ${model.wordKeyValue} at depth ${model.depth}: deterministic nested-sphere packing slot, a Euclidean navigation metaphor and not a Kleinian limit set.`;
+    return `Parola ${model.wordKeyValue} a profondità ${model.depth}: posizione deterministica in un impacchettamento di sfere annidate, metafora euclidea di navigazione e non insieme limite kleiniano.`;
   }
   const lastLetter = model.letters[model.depth - 1];
   const last = lastLetter === undefined ? '' : `${lastLetter.generator}${lastLetter.direction === 1 ? '+' : '-'}`;
   const carrier = model.depth === 1
-    ? `the paired disc of letter ${last}`
-    : `the disc of letter ${last} carried by ${model.depth - 1} generator maps`;
-  return `Word ${model.wordKeyValue} at depth ${model.depth}: ${carrier}; a finite word of a genus-${model.witness?.genus ?? 0} Schottky group, never the exact limit set.`;
+    ? `il disco accoppiato della lettera ${last}`
+    : `il disco della lettera ${last}, trasportato da ${model.depth - 1} mappe generatrici`;
+  return `Parola ${model.wordKeyValue} a profondità ${model.depth}: ${carrier}; parola finita di un gruppo Schottky di genere ${model.witness?.genus ?? 0}, mai l'insieme limite esatto.`;
 }
 
 /** Numeric witness for the inspector: geometry facts first, Schottky checks only in Schottky mode. */
@@ -152,9 +152,9 @@ export function whyHereNumericalWitness(model: PearlExplanationModel): Readonly<
   return witness;
 }
 
-export const SCHOTTKY_LIMITATION = 'Finite word and orbit samples approximate the Schottky limit set from inside; the exact infinite limit set is never displayed.';
+export const SCHOTTKY_LIMITATION = 'Parole finite e campioni dell’orbita approssimano dall’interno l’insieme limite Schottky; l’insieme limite infinito esatto non viene mostrato.';
 
-export const FALLBACK_LIMITATION = 'Euclidean nested-sphere packing is a navigation metaphor, not a Schottky or Kleinian limit set.';
+export const FALLBACK_LIMITATION = 'L’impacchettamento euclideo di sfere annidate è una metafora di navigazione, non un insieme limite Schottky o kleiniano.';
 
 export function pearlLimitation(mode: PearlGeometryMode): string {
   return mode === 'schottky' ? SCHOTTKY_LIMITATION : FALLBACK_LIMITATION;
@@ -173,20 +173,20 @@ export function pearlSourceIds(provenance: PearlProvenance): readonly string[] {
 }
 
 /** Canonical wording required when a structural visual has no underlying source edge. */
-export const NO_UNDERLYING_SOURCE_EDGE = 'no underlying source edge';
+export const NO_UNDERLYING_SOURCE_EDGE = 'nessun arco sorgente sottostante';
 
 export function structuralRelationSummary(kind: 'lifted-route' | 'co-membership'): string {
   return kind === 'lifted-route'
-    ? 'Lifted route: real source edges drawn across pearl boundaries; a visual routing, never a new semantic edge.'
-    : `Co-membership: structural visual with ${NO_UNDERLYING_SOURCE_EDGE}; community membership is not an attested relation.`;
+    ? 'Percorso sollevato: archi sorgente reali tracciati oltre i confini delle perle; instradamento visivo, mai un nuovo arco semantico.'
+    : `Co-appartenenza: elemento visivo strutturale con ${NO_UNDERLYING_SOURCE_EDGE}; l’appartenenza alla comunità non è una relazione attestata.`;
 }
 
 export const INDRA_EXPLAIN_PROVENANCE_NOTE =
-  'Source provenance and citations stay in the separate provenance section; this model explains placement only.';
+  'La provenienza sorgente e le citazioni sono nella sezione separata sulla provenienza; questo modello spiega solo la collocazione.';
 export const INDRA_EXPLAIN_VISUAL_LIMITATION =
-  'Pearl geometry is visual, not a semantic relation; no visual geometry becomes a source edge.';
+  'La geometria delle perle è visiva, non una relazione semantica; nessuna geometria visiva diventa un arco sorgente.';
 export const INDRA_EXPLAIN_LIFT_LIMITATION =
-  'The 3D lift draws each pearl as the hemisphere over its boundary circle in upper half-space; node height is a presentation lift and never a semantic value.';
+  'Il sollevamento 3D rappresenta ogni perla come emisfera sopra il suo cerchio di bordo nel semispazio superiore; l’altezza del nodo è solo visiva, mai un valore semantico.';
 
 function parameterIdsOf(mode: PearlGeometryMode, dimension: '2d' | '3d'): string[] {
   return [
@@ -214,12 +214,12 @@ export interface PearlContainerExplainInput {
 /** The «why here» of a pearl container: word, generator path, centre, radius and Schottky witness; provenance only in `sourceIds`. */
 export function explainPearlContainer(input: PearlContainerExplainInput): Explanation {
   const sourceIds = pearlSourceIds(input.provenance);
-  const membership = `Membership: ${input.memberCount} members through ${sourceIds.length} hierarchy nodes (${input.provenance.mapping}).`;
+  const membership = `Appartenenza: ${input.memberCount} membri attraverso ${sourceIds.length} nodi gerarchici (${input.provenance.mapping}).`;
   return Object.freeze({
     elementId: input.visualId,
     elementKind: 'container',
     summary: [whyHereSummary(input.model), membership,
-      ...(input.aggregateOnly ? ['Opened pearl: the member coordinates live in its child levels.'] : [])].join(' '),
+      ...(input.aggregateOnly ? ['Perla aperta: le coordinate dei membri si trovano nei livelli figli.'] : [])].join(' '),
     sourceIds,
     parameterIds: parameterIdsOf(input.model.mode, input.dimension),
     numericalWitness: Object.freeze({
@@ -254,8 +254,8 @@ export function explainPearlNode(input: PearlNodeExplainInput): Explanation {
   return Object.freeze({
     elementId: input.nodeId,
     elementKind: 'node',
-    summary: `Placed in pearl ${input.model.wordKeyValue} (depth ${input.model.depth}) because its primary-hierarchy chain reaches the pearl's member set; `
-      + `rank ${input.rank + 1} of ${input.memberCount} by importance sets its slot on a deterministic phyllotaxis inside the pearl disc.`,
+    summary: `Collocato nella perla ${input.model.wordKeyValue} (profondità ${input.model.depth}) perché la sua catena gerarchica primaria raggiunge l’insieme dei membri della perla; `
+      + `il rango ${input.rank + 1} di ${input.memberCount} per importanza determina la posizione secondo una fillotassi deterministica nel disco della perla.`,
     sourceIds,
     parameterIds: parameterIdsOf(input.model.mode, input.dimension),
     numericalWitness: Object.freeze({
@@ -293,8 +293,8 @@ export function explainOrbitCurve(input: OrbitCurveExplainInput): Explanation {
   return Object.freeze({
     elementId: input.curveId,
     elementKind: 'curve',
-    summary: `Orbit of the base point 0 under generator ${input.generator}: z(k+1)=f(z(k)) for ${input.steps} steps, approaching the attracting fixed point of the paired-disc map; `
-      + 'a finite sample of derived geometry.',
+    summary: `Orbita del punto base 0 con il generatore ${input.generator}: z(k+1)=f(z(k)) per ${input.steps} passi, in avvicinamento al punto fisso attrattivo della mappa dei dischi accoppiati; `
+      + 'campione finito di geometria derivata.',
     sourceIds: [],
     parameterIds: [...parameterIdsOf('schottky', input.dimension), 'indra.orbitSteps'],
     numericalWitness: Object.freeze({
@@ -307,7 +307,7 @@ export function explainOrbitCurve(input: OrbitCurveExplainInput): Explanation {
       separationMargin: input.witness.separationMargin,
     }),
     limitation: joinLimitations([SCHOTTKY_LIMITATION,
-      'Declared derived geometry: not a source edge, community boundary record or attested relation.',
+      'Geometria derivata dichiarata: non è un arco sorgente, un record di confine della comunità o un legame registrato.',
       input.dimension === '3d' ? INDRA_EXPLAIN_LIFT_LIMITATION : null]),
   });
 }
@@ -324,8 +324,8 @@ export function explainLiftedRoute(input: LiftedRouteExplainInput): Explanation 
   return Object.freeze({
     elementId: input.visualId,
     elementKind: 'visual-relation',
-    summary: `${structuralRelationSummary('lifted-route')} ${input.underlyingEdgeIds.length} real source edges join pearl ${input.sourceWordKey} and pearl ${input.targetWordKey}; `
-      + 'the route is drawn between the highest-importance member of each pearl.',
+    summary: `${structuralRelationSummary('lifted-route')} ${input.underlyingEdgeIds.length} archi sorgente reali collegano la perla ${input.sourceWordKey} e la perla ${input.targetWordKey}; `
+      + 'il percorso è tracciato tra il membro più importante di ciascuna perla.',
     sourceIds: [...input.underlyingEdgeIds].sort(compareCodepointIds),
     parameterIds: ['indra.word', 'indra.generatorPolicy'],
     numericalWitness: Object.freeze({
@@ -333,6 +333,6 @@ export function explainLiftedRoute(input: LiftedRouteExplainInput): Explanation 
       targetPearl: input.targetWordKey,
       underlyingEdgeCount: input.underlyingEdgeIds.length,
     }),
-    limitation: `${INDRA_EXPLAIN_VISUAL_LIMITATION} The route count is a display statistic, never a source weight.`,
+    limitation: `${INDRA_EXPLAIN_VISUAL_LIMITATION} Il numero di percorsi è una statistica di visualizzazione, mai un peso sorgente.`,
   });
 }

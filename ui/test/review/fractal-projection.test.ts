@@ -25,7 +25,7 @@ import { codepointCompare, FRACTAL_ASSIGNMENT_VERSION } from '../../src/fractal/
 import { BOTCHER_VERSION } from '../../src/fractal/botcher.ts';
 import { INVERSE_RAYS_VERSION } from '../../src/fractal/inverse-rays.ts';
 import { certifyFractalDynamics, displayScaleForCount, fractalContractParameters, potentialRangeForCount, type CertifiedFractalDynamics } from '../../src/fractal/parameters.ts';
-import { FRACTAL_3D_SCALAR_LIFT_LIMITATION } from '../../src/fractal/regions.ts';
+import { FRACTAL_EXPLAIN_3D_SCALAR_LIFT_LIMITATION } from '../../src/fractal/explain.ts';
 import { digestPayload } from '../../src/engine/digest.ts';
 import type {
   AnalyticalDomain, ProjectionRequest, SemanticGraphSnapshot,
@@ -410,7 +410,7 @@ test('the 3D result is the labelled scalar lift of G and validates in 3D', async
     assert.equal(point.z, scale * field.values[index]!);
   });
   const lift = result.diagnostics.find(item => item.code === 'fractal:3d-scalar-lift')!;
-  assert.equal(lift.value, FRACTAL_3D_SCALAR_LIFT_LIMITATION);
+  assert.equal(lift.value, FRACTAL_EXPLAIN_3D_SCALAR_LIFT_LIMITATION);
   assert.equal(lift.acceptable, true);
   assert.doesNotThrow(() => validateProjectionResult(result, { ...context, request: request3 }));
 });
