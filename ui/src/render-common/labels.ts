@@ -13,8 +13,8 @@ export type LabelCandidate = {
   full?: boolean;
   /** Screen-space radius of the anchor node's disc; the label is offset outside it, never over it. */
   radius?: number;
-  /** Tier 1: a Flat domain, selection or hover is placed first and gets a few extra local
-   * positions. It is omitted if none clears the same hard obstacles as other labels. */
+  /** Tier 1: a Flat domain, selection or hover is placed first. When pearls or rims fill
+   * every clear slot, its name may sit above a foreign pearl rather than disappear. */
   tier1?: boolean;
   /** Visibility is decided by the view's LOD pass; these flags also guard direct callers. */
   visible?: boolean;
@@ -388,17 +388,20 @@ export function placeLabels(
       discCells.set(key, bucket);
     }
   }
-  const discBlocked = (rect: ViewportRect): boolean => {
+  const discBlocked = (rect: ViewportRect, ownId?: string): boolean => {
     const seen = new Set<LabelDisc>();
     for (const key of keys(rect.left - 2, rect.top - 2, rect.left + rect.width + 2, rect.top + rect.height + 2)) {
       for (const disc of discCells.get(key) ?? []) {
         if (seen.has(disc)) continue;
         seen.add(disc);
+        if (ownId !== undefined && disc.id === ownId) continue;
         if (rectOverlapsDisc(rect, disc.x, disc.y, disc.radius + PEARL_LABEL_MARGIN_PX - 2)) return true;
       }
     }
-    for (const disc of unbucketedDiscs)
-      if (rectOverlapsDisc(rect, disc.x, disc.y, disc.radius + PEARL_LABEL_MARGIN_PX - 2)) return true;
+    for (const disc of unbucketedDiscs) {
+      if ((ownId === undefined || disc.id !== ownId)
+        && rectOverlapsDisc(rect, disc.x, disc.y, disc.radius + PEARL_LABEL_MARGIN_PX - 2)) return true;
+    }
     return false;
   };
   // Radial width of rim bands touched by this rectangle. Zero means wholly inside or outside
@@ -421,7 +424,8 @@ export function placeLabels(
     (a, b) => (b.tier1 === true ? 1 : 0) - (a.tier1 === true ? 1 : 0)
       || priority[b.reason] - priority[a.reason] || b.priority - a.priority || a.id.localeCompare(b.id),
   )) {
-    if (placed.length >= budget) break;
+    // The density allowance is for optional tier-2 names; it cannot erase a domain or selection.
+    if (!c.tier1 && placed.length >= budget) continue;
     if (c.visible === false || c.collapsed === true) continue;
     const text = c.aggregateCount !== undefined && c.aggregateCount > 0 && !COUNT_SUFFIX.test(c.text)
       ? `${c.text} · +${Math.floor(c.aggregateCount)}` : c.text;
@@ -448,9 +452,9 @@ export function placeLabels(
       width: size.width,
       height: size.height,
     });
-    // Every tier shares the same constraints: inside the viewport, clear of glyphs and rims,
-    // with no placed label, title, panel or earlier leader under its rectangle.
-    const admissible = (rect: ViewportRect): boolean => {
+    // The viewport, own disc, labels, panel and earlier leaders are hard constraints. Foreign
+    // pearls and container rims are preferred clear; tier 1 may cross them as a last resort.
+    const admissible = (rect: ViewportRect, allowForeignGeometry: boolean): boolean => {
       if (
         rect.left < bounds.left ||
         rect.top < bounds.top ||
@@ -459,8 +463,7 @@ export function placeLabels(
       )
         return false;
       if (radius > 0 && rectOverlapsDisc(rect, c.x, c.y, radius)) return false;
-      if (rimOverlap(rect) > 0) return false;
-      if (discBlocked(rect)) return false;
+      if (!allowForeignGeometry && (rimOverlap(rect) > 0 || discBlocked(rect, c.tier1 ? c.id : undefined))) return false;
       const nearby = new Set(keys(rect.left - 3, rect.top - 3, rect.left + size.width + 3, rect.top + size.height + 3)
         .flatMap(key => cells.get(key) ?? []));
       if (
@@ -479,28 +482,54 @@ export function placeLabels(
         if (other.leader && lineTouchesRect(other.leader, rect)) return false;
       return true;
     };
-    const choice: { best: { rect: ViewportRect; leader?: LabelLeader } | null } = { best: null };
-    const consider = (dx: number, dy: number): boolean => {
+    const choice: { best: { rect: ViewportRect; leader?: LabelLeader; rim: number; covered: number } | null } = { best: null };
+    const consider = (dx: number, dy: number, allowForeignGeometry: boolean): boolean => {
       const rect = rectAt(dx, dy);
-      if (!admissible(rect)) return false;
+      if (!admissible(rect, allowForeignGeometry)) return false;
       const leader = nearLeader(c.x, c.y, radius, rect);
       if (leader) {
         if (reserved.some(other => lineTouchesRect(leader, other))) return false;
         if (placed.some(other => lineTouchesRect(leader, other.rect)
           || (other.leader && linesCross(leader, other.leader)))) return false;
-        if (discs.some(disc => disc.id !== c.id && Number.isFinite(disc.radius)
+        if (!allowForeignGeometry && discs.some(disc => disc.id !== c.id && Number.isFinite(disc.radius)
           && disc.radius >= 0 && disc.radius < span && lineTouchesDisc(leader, disc))) return false;
       }
-      choice.best = { rect, ...(leader ? { leader } : {}) };
-      return true;
+      const rim = allowForeignGeometry ? rimOverlap(rect) : 0;
+      const covered = allowForeignGeometry ? discs.reduce((area, disc) =>
+        disc.id === c.id || !Number.isFinite(disc.radius) || disc.radius >= span
+          ? area : area + discRectOverlapArea(rect, disc.x, disc.y, disc.radius), 0) : 0;
+      if (!choice.best || rim < choice.best.rim || (rim === choice.best.rim && covered < choice.best.covered))
+        choice.best = { rect, ...(leader ? { leader } : {}), rim, covered };
+      return !allowForeignGeometry || (rim === 0 && covered === 0);
     };
     let ideal = false;
-    for (const [dx, dy] of attempts) if (consider(dx, dy)) { ideal = true; break; }
+    for (const [dx, dy] of attempts) if (consider(dx, dy, false)) { ideal = true; break; }
     // Small fixed nudges rescue a label beside a rim without an unbounded search.
     if (!ideal && rims.length) {
       for (const [dx, dy] of attempts) {
-        for (const [nx, ny] of RIM_NUDGES) if (consider(dx + nx, dy + ny)) { ideal = true; break; }
+        for (const [nx, ny] of RIM_NUDGES) if (consider(dx + nx, dy + ny, false)) { ideal = true; break; }
         if (ideal) break;
+      }
+    }
+    if (!ideal && c.tier1) {
+      for (const [dx, dy] of attempts) if (consider(dx, dy, true)) { ideal = true; break; }
+      if (!ideal && rims.length) {
+        for (const [dx, dy] of attempts) {
+          for (const [nx, ny] of RIM_NUDGES) if (consider(dx + nx, dy + ny, true)) { ideal = true; break; }
+          if (ideal) break;
+        }
+      }
+      // Earlier names or the side panel can occupy every local slot. Widen the search only then;
+      // the first available ring keeps the name as close to its node as the hard constraints allow.
+      if (!choice.best) {
+        for (let extra = 80; extra <= span + size.width; extra += 24) {
+          const distance = radius + extra + 6;
+          for (let index = 0; index < 16; index += 1) {
+            const angle = index * Math.PI / 8;
+            consider(Math.cos(angle) * distance, Math.sin(angle) * distance, true);
+          }
+          if (choice.best) break;
+        }
       }
     }
     if (choice.best) {

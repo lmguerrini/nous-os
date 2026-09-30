@@ -95,3 +95,15 @@ test("hidden and collapsed nodes are suppressed before placement", () => {
   assert.deepEqual(placeLabels(candidates, bounds, measure).map(label => [label.id, label.text]),
     [["aggregate", "Group · +9"]]);
 });
+
+test("the density budget only drops optional labels, not visible tier-1 names", () => {
+  const candidates: LabelCandidate[] = [
+    { id: "domain:a", text: "Domain A", reason: "domain", tier1: true,
+      x: 150, y: 150, radius: 12, priority: 2 },
+    { id: "domain:b", text: "Domain B", reason: "domain", tier1: true,
+      x: 350, y: 150, radius: 12, priority: 1 },
+    { id: "main", text: "Optional", reason: "main", x: 550, y: 150, priority: 1 },
+  ];
+  const placed = placeLabels(candidates, bounds, measure, [], 1);
+  assert.deepEqual(placed.map(label => label.id), ["domain:a", "domain:b"]);
+});
