@@ -48,6 +48,7 @@ import {
 } from "#render3f/aggregate-material.ts";
 import {
   createFilamentRenderResources,
+  setFilamentNeuralWidthPx,
   updateFilamentProjectionUniforms,
   updateFilamentRenderResources,
 } from "#render3f/filament-material.ts";
@@ -229,6 +230,7 @@ export function mount(
   const registry = new ResourceRegistry();
   const aggregateResources = createAggregateRenderResources(live.buffers.aggregates);
   const filamentResources = createFilamentRenderResources(live.buffers.filaments);
+  setFilamentNeuralWidthPx(filamentResources.material, options.presentation?.appearance?.edgeWidth ?? 1);
   const nodeResources = createNodeRenderResources(live.buffers.nodes);
   registry.registerGeometry(aggregateResources.geometry);
   registry.registerGeometry(filamentResources.geometry);
@@ -326,6 +328,8 @@ export function mount(
       resolutionDevicePx: projection.resolutionDevicePx,
       devicePixelRatio: projection.devicePixelRatio,
       sizeScale: projection.filamentSizeScale,
+      perspective: projection.perspective,
+      referenceViewDepth: projection.referenceViewDepth,
     });
     updateNodeProjectionUniforms(nodeResources.material, {
       resolutionDevicePx: projection.resolutionDevicePx,
@@ -532,7 +536,11 @@ export function mount(
 
   return {
     readPlacedLabelIds(): readonly string[] { return typedLabelOverlay?.readLabelIds() ?? []; },
-    setAppearance(appearance: AppearanceOptions): void { distinct?.setAppearance(appearance); },
+    setAppearance(appearance: AppearanceOptions): void {
+      setFilamentNeuralWidthPx(filamentResources.material, appearance.edgeWidth);
+      distinct?.setAppearance(appearance);
+      if (filamentResources.mesh.visible) renderFrame();
+    },
     setDerivedMorphology(morphology: ProjectionVisualsMorphology): void {
       derivedMorphology = morphology;
       visuals?.setMorphology(morphology);

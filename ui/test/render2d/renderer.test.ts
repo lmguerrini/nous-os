@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { toVisualGraph } from "#adapter/projection.ts";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import { INSPECTED, RENDERED } from "#engine/partition.ts";
 import {
   ENGINE_ELEMENT_FIELD_ALLOW_LIST,
@@ -267,6 +268,21 @@ test("renderer uses graph-normalised prominence for both node mass and OKLCH lum
     ));
     assert.equal(degree.get(brightest.id), maximumDegree, `${morphology} brightest node is not highest-degree`);
   }
+});
+
+test("Neural native filament width starts at the appearance width and updates live without rebuilding", () => {
+  const appearance = { ...DEFAULT_APPEARANCE, edgeWidth: 3.75 };
+  const model = buildRenderModel(graph(), {
+    ...options(false),
+    presentation: { appearance },
+  });
+  assert.equal(model.filamentMaterial.neuralProfile, true);
+  assert.equal(model.filamentMaterial.neuralWidthPx, appearance.edgeWidth);
+
+  const source = readFileSync(join(process.cwd(), "src", "render2d", "index.ts"), "utf8");
+  assert.match(source, /model\.filamentMaterial\.neuralWidthPx = appearance\.edgeWidth;/);
+  assert.match(source, /if \(model\.graph\.order >= DENSE_SCENE_THRESHOLD\) sigma\.refresh\(\);/);
+  assert.match(source, /distinct\?\.setAppearance\(appearance\);/);
 });
 
 test("every rendered node token stays above the background contrast floor across the full cross-product", () => {

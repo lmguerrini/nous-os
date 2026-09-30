@@ -257,6 +257,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ])],
     ["#render3f/filament-material.ts", new Set([
       "createFilamentRenderResources",
+      "setFilamentNeuralWidthPx",
       "updateFilamentProjectionUniforms",
       "updateFilamentRenderResources",
     ])],

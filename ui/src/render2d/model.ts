@@ -302,6 +302,8 @@ export function buildRenderModel(
     wobbleAmplitude: filamentMaterial.filamentWobbleAmplitudePermille / materialScale,
     wobbleFrequency: filamentMaterial.wobbleFrequencyMilliradians / materialScale,
     hotColor: requiredTokenColor(tokenColors, "peak"),
+    neuralProfile: morphology.id === NEURAL.id,
+    neuralWidthPx: activeOptions.presentation?.appearance?.edgeWidth ?? 1,
   };
   const filaments = new Map<string, FilamentGeometry>();
   const propagation = new Map<string, FilamentPropagation>();

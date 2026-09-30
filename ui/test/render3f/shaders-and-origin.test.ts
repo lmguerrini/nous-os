@@ -15,6 +15,8 @@ import {
   FILAMENT_VERTEX_SHADER,
   createFilamentRenderResources,
   filamentMedialOffsetFraction,
+  setFilamentNeuralWidthPx,
+  updateFilamentProjectionUniforms,
 } from "#render3f/filament-material.ts";
 import {
   assertNoRendererMaterialLiterals,
@@ -247,6 +249,34 @@ test("live translucent materials use premultiplied source-over with depth writes
   nodes.geometry.dispose();
   nodes.material.dispose();
   nodes.haloStops.dispose();
+});
+
+test("Neural filament width updates in place and perspective reaches filament uniforms", () => {
+  const resources = createFilamentRenderResources(buildSceneBuffers(resolvedScene()).filaments);
+  try {
+    setFilamentNeuralWidthPx(resources.material, 4.25);
+    assert.equal(resources.material.uniforms.u_neuralWidthPx?.value, 4.25);
+    updateFilamentProjectionUniforms(resources.material, {
+      resolutionDevicePx: [1200, 800],
+      devicePixelRatio: 2,
+      sizeScale: 1,
+      perspective: true,
+      referenceViewDepth: 17.5,
+    });
+    assert.equal(resources.material.uniforms.u_isPerspective?.value, 1);
+    assert.equal(resources.material.uniforms.u_referenceViewDepth?.value, 17.5);
+
+    const mountSource = readFileSync(join(process.cwd(), "src", "render3f", "mount.tsx"), "utf8");
+    assert.match(mountSource, /setFilamentNeuralWidthPx\(filamentResources\.material, options\.presentation\?\.appearance\?\.edgeWidth \?\? 1\);/);
+    assert.match(mountSource, /setFilamentNeuralWidthPx\(filamentResources\.material, appearance\.edgeWidth\);/);
+    assert.match(mountSource, /distinct\?\.setAppearance\(appearance\);/);
+    assert.match(mountSource, /if \(filamentResources\.mesh\.visible\) renderFrame\(\);/);
+    assert.match(mountSource, /perspective: projection\.perspective,/);
+    assert.match(mountSource, /referenceViewDepth: projection\.referenceViewDepth,/);
+  } finally {
+    resources.geometry.dispose();
+    resources.material.dispose();
+  }
 });
 
 test("renderer source contains no local material literal and the introduced-literal control fails", () => {

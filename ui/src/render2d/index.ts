@@ -326,7 +326,11 @@ export function mount(
   sigma.refresh();
   return {
     model,
-    setAppearance(appearance: AppearanceOptions): void { distinct?.setAppearance(appearance); },
+    setAppearance(appearance: AppearanceOptions): void {
+      model.filamentMaterial.neuralWidthPx = appearance.edgeWidth;
+      if (model.graph.order >= DENSE_SCENE_THRESHOLD) sigma.refresh();
+      distinct?.setAppearance(appearance);
+    },
     updateVisibleSubset(update: DistinctSubsetUpdate): void { distinct?.updateVisibleSubset(update); },
     graphToViewport(point: Coordinates): { readonly x: number; readonly y: number } {
       return sigma.graphToViewport(point);
