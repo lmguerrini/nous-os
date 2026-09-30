@@ -69,6 +69,7 @@ for (const [id, hidden] of [["status", false], ["error", true], ["counter", fals
   ["expand", false], ["projection-focus", false], ["fullscreen-focus", false]] as const)
   elements.set(id, fakeElement(hidden));
 Object.assign(globalThis, {
+  location: { search: '', hash: '' },
   WebGL2RenderingContext: { BOOL: 1, BYTE: 2, UNSIGNED_BYTE: 3, SHORT: 4, UNSIGNED_SHORT: 5, INT: 6, UNSIGNED_INT: 7, FLOAT: 8 },
   WebGLRenderingContext: { TRIANGLES: 9 },
   document: {

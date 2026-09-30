@@ -8,6 +8,8 @@ import { validatePickResult, validateRenderVisibility } from '../projection/cont
  * about 5 s up to this size (measured curve in the D-069 dataset report). */
 export const V2_CAP = 850;
 export const V2_PAGE = 60;
+/** Automatic disclosure can page independently of explicit/manual expansion. */
+export type AutoDisclosure = ReadonlySet<string> | ReadonlyMap<string, number>;
 export type V2Node = Omit<GraphNode, "level"> & {
     level: 1 | 2 | 3 | 4 | 5;
     statement?: string;
@@ -35,7 +37,9 @@ export type V2Visible = {
 };
 const copy = (s: DisclosureState): DisclosureState => ({ expanded: new Set(s.expanded), pages: new Map(s.pages), manualOrder: [...s.manualOrder] });
 export const emptyDisclosure = (): DisclosureState => ({ expanded: new Set(), pages: new Map(), manualOrder: [] });
-export function v2Visible(index: V2Index, state: DisclosureState, auto: ReadonlySet<string> = new Set(), cap = V2_CAP): V2Visible {
+export function v2Visible(index: V2Index, state: DisclosureState, auto: AutoDisclosure = new Set(), cap = V2_CAP): V2Visible {
+    const autoHas = (id: string) => auto.has(id);
+    const autoPage = (id: string) => auto instanceof Map ? auto.get(id) ?? V2_PAGE : V2_PAGE;
     const byId = new Map(index.nodes.map(n => [n.id, n]));
     const children = new Map<string, V2Node[]>();
     for (const n of index.nodes)
@@ -54,12 +58,12 @@ export function v2Visible(index: V2Index, state: DisclosureState, auto: Readonly
         const n = queue[i]!;
         nodes.push(n);
         const all = children.get(n.id) ?? [];
-        if (state.expanded.has(n.id) || auto.has(n.id)) {
+        if (state.expanded.has(n.id) || autoHas(n.id)) {
             const page = state.pages.get(n.id) ?? V2_PAGE;
             // Semantic disclosure is one bounded page, including domains with many projects.
             // Explicit expansion retains its normal complete level-1/2 behavior.
-            const take = auto.has(n.id) && !state.expanded.has(n.id)
-                ? Math.min(150, all.length)
+            const take = autoHas(n.id) && !state.expanded.has(n.id)
+                ? Math.min(autoPage(n.id), all.length)
                 : n.level === 3 || n.level === 4 ? Math.min(page, all.length) : all.length;
             const room = Math.max(0, cap - nodes.length - (queue.length - i - 1));
             queue.push(...all.slice(0, Math.min(take, room)));
