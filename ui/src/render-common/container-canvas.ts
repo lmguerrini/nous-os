@@ -253,8 +253,8 @@ export function containerInkRgb(containerColor: string | null | undefined, field
 
 /** Peak alpha of the glass rim light at the shell limb. Discreet: the background stays dark. */
 export const CONTAINER_RIM_LIGHT_PEAK = 0.16;
-/** A small front-biased rim shoulder makes the illuminated side wider without adding a ring. */
-export const CONTAINER_RIM_LIGHT_OFFSET = 0.12;
+/** The displaced rim shoulder gathers the existing rim alpha on the lit hemisphere. */
+export const CONTAINER_RIM_LIGHT_OFFSET = 0.28;
 
 /** Deep 3D zoom only: an enclosing shell must not become a translucent full-screen wash.
  * Fit shells occupy less than 58% of the short viewport side and keep their exact old alpha.
@@ -275,17 +275,16 @@ export function deepZoomShellFillOpacity(radiusPx: number, bounds: { readonly wi
   return 1 - t * t * (3 - 2 * t);
 }
 
-/** The rim light of a container sphere: a thin radial gradient just inside the limb, brighter at
- * the rim and transparent toward the centre (soap-bubble glass). Nothing is added inside
- * `innerRadius × limbRadius`, so the total added alpha at the centre of the sphere is the first
- * stop's alpha — at most 0.04 by construction. */
+/** The rim light of a container sphere. Its smaller inner circle and displaced centre spread the
+ * existing stops across the lit hemisphere; the shadow side stays clear at the same depth. No
+ * alpha is added inside the inner circle, and the limb is still a separate thin stroke. */
 export function containerRimLight(level: number): {
   readonly innerRatio: number;
   readonly stops: readonly { readonly offset: number; readonly alpha: number }[];
 } {
   const peak = level === 0 ? CONTAINER_RIM_LIGHT_PEAK : clamp(CONTAINER_RIM_LIGHT_PEAK - level * 0.02, 0.06, CONTAINER_RIM_LIGHT_PEAK);
   return {
-    innerRatio: 0.7,
+    innerRatio: 0.5,
     stops: [
       { offset: 0, alpha: 0 },
       { offset: 0.62, alpha: peak * 0.25 },
@@ -295,15 +294,16 @@ export function containerRimLight(level: number): {
   };
 }
 
-/** Directional depth cues for Indra's 3D glass. These move only the existing gradients; their
- * palette ink, D-078 alpha stops and two fill operations remain unchanged. */
+/** Directional depth cues for Indra's 3D glass. The existing alpha stops and two fill operations
+ * remain unchanged. The small fill focus is the specular glint; the broader displaced rim gives
+ * a soft terminator and a visibly darker rear hemisphere without increasing peak brightness. */
 export function containerSphereShading(level: number): {
   readonly fillLightOffset: number;
   readonly rimShoulderOffset: number;
   readonly fillAlpha: number;
 } {
   return {
-    fillLightOffset: -0.46,
+    fillLightOffset: -0.25,
     rimShoulderOffset: CONTAINER_RIM_LIGHT_OFFSET,
     fillAlpha: level === 0 ? 0.07 : clamp(0.05 - level * 0.004, 0.02, 0.05),
   };
