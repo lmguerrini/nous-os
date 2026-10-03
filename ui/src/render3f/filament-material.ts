@@ -89,6 +89,7 @@ in vec3 a_hotColor;
 in float a_opacityPermille;
 in vec4 a_widthsAndPicking;
 in vec4 a_neuralProfile;
+in vec2 a_neuralRootRatios;
 in vec4 a_minimumAndJunctionPermille;
 in vec4 a_sheathAndCorePermille;
 in vec4 a_hotAndWobble;
@@ -108,6 +109,7 @@ flat out vec3 v_hotColor;
 flat out float v_opacity;
 flat out vec4 v_widthsAndPicking;
 flat out vec4 v_neuralProfile;
+flat out vec2 v_neuralRootRatios;
 flat out vec2 v_neuralRadiiDevicePx;
 flat out vec2 v_neuralScale;
 flat out vec4 v_minimumAndJunctionPermille;
@@ -149,7 +151,7 @@ void main() {
     maximumBaseWidth * maximumWidthFactor * 0.5
   );
   if (a_neuralProfile.w > 0.5) maximumBodyHalfWidth = max(maximumBodyHalfWidth,
-    max(u_neuralWidthPx, a_widthsAndPicking.z) * u_devicePixelRatio * 1.2);
+    max(u_neuralWidthPx, a_widthsAndPicking.z) * u_devicePixelRatio * max(a_neuralRootRatios.x, a_neuralRootRatios.y) * 0.5);
   float materialExtent = max(
     maximumBodyHalfWidth * a_sheathAndCorePermille.x / u_permilleScale,
     maximumBodyHalfWidth + (a_widthsAndPicking.w * u_devicePixelRatio)
@@ -171,6 +173,7 @@ void main() {
   v_opacity = a_opacityPermille / u_permilleScale;
   v_widthsAndPicking = a_widthsAndPicking;
   v_neuralProfile = a_neuralProfile;
+  v_neuralRootRatios = a_neuralRootRatios;
   v_neuralRadiiDevicePx = vec2(clamp(a_neuralProfile.y * startScale, 2.0, 24.0),
     clamp(a_neuralProfile.z * endScale, 2.0, 24.0)) * u_devicePixelRatio;
   v_neuralScale = vec2(startScale, endScale);
@@ -191,6 +194,7 @@ flat in vec3 v_hotColor;
 flat in float v_opacity;
 flat in vec4 v_widthsAndPicking;
 flat in vec4 v_neuralProfile;
+flat in vec2 v_neuralRootRatios;
 flat in vec2 v_neuralRadiiDevicePx;
 flat in vec2 v_neuralScale;
 flat in vec4 v_minimumAndJunctionPermille;
@@ -287,15 +291,19 @@ void main() {
     float ordinary = max(u_neuralWidthPx, v_widthsAndPicking.z) * u_devicePixelRatio;
     float startRadius = v_neuralRadiiDevicePx.x;
     float endRadius = v_neuralRadiiDevicePx.y;
-    float startRoot = max(ordinary, min(ordinary * 2.4, min(12.0 * u_devicePixelRatio, max(ordinary, startRadius * 2.0))));
-    float endRoot = max(ordinary, min(ordinary * 2.4, min(12.0 * u_devicePixelRatio, max(ordinary, endRadius * 2.0))));
+    float startRoot = max(ordinary, min(ordinary * v_neuralRootRatios.x, min(12.0 * u_devicePixelRatio, max(ordinary, startRadius * 2.0))));
+    float endRoot = max(ordinary, min(ordinary * v_neuralRootRatios.y, min(12.0 * u_devicePixelRatio, max(ordinary, endRadius * 2.0))));
     float span = max(length(v_cpC - v_cpA), 1.0);
     float startShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
       max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);
     float endShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
       max(12.0 * u_devicePixelRatio, endRadius * 2.5 + ordinary * 3.0)) / span);
-    float startEase = 1.0 - smoothstep(0.0, startShoulder, parameter);
-    float endEase = 1.0 - smoothstep(0.0, endShoulder, 1.0 - parameter);
+    // The path begins at the centre under the soma. Hold the root through its visible lobe
+    // boundary, then taper over the same shoulder that the canvas path uses from that boundary.
+    float startBoundary = min(0.2, startRadius / span);
+    float endBoundary = min(0.2, endRadius / span);
+    float startEase = 1.0 - smoothstep(startBoundary, startBoundary + startShoulder, parameter);
+    float endEase = 1.0 - smoothstep(endBoundary, endBoundary + endShoulder, 1.0 - parameter);
     bodyHalfWidth = max(v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
       0.5 * (ordinary + (startRoot - ordinary) * startEase
       + (endRoot - ordinary) * endEase));
@@ -353,6 +361,7 @@ export function createFilamentRenderResources(buffers: FilamentBuffers): Filamen
   geometry.setAttribute("a_opacityPermille", instanced(buffers.opacityPermille, scalarCount()));
   geometry.setAttribute("a_widthsAndPicking", instanced(buffers.widthsAndPicking, packedChannelCount()));
   geometry.setAttribute("a_neuralProfile", instanced(buffers.neuralProfile, packedChannelCount()));
+  geometry.setAttribute("a_neuralRootRatios", instanced(buffers.neuralRootRatios, 2));
   geometry.setAttribute("a_minimumAndJunctionPermille", instanced(buffers.arcAndJunctionPermille, packedChannelCount()));
   geometry.setAttribute("a_sheathAndCorePermille", instanced(buffers.sheathAndCorePermille, packedChannelCount()));
   geometry.setAttribute("a_hotAndWobble", instanced(buffers.hotAndWobble, packedChannelCount()));
@@ -393,6 +402,7 @@ export function updateFilamentRenderResources(resources: FilamentRenderResources
   copyAttribute(resources.geometry, "a_opacityPermille", buffers.opacityPermille);
   copyAttribute(resources.geometry, "a_widthsAndPicking", buffers.widthsAndPicking);
   copyAttribute(resources.geometry, "a_neuralProfile", buffers.neuralProfile);
+  copyAttribute(resources.geometry, "a_neuralRootRatios", buffers.neuralRootRatios);
   copyAttribute(resources.geometry, "a_minimumAndJunctionPermille", buffers.arcAndJunctionPermille);
   copyAttribute(resources.geometry, "a_sheathAndCorePermille", buffers.sheathAndCorePermille);
   copyAttribute(resources.geometry, "a_hotAndWobble", buffers.hotAndWobble);

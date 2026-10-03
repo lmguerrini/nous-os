@@ -3,6 +3,7 @@ import { floatColor, parseColor } from "sigma/utils";
 import type { EdgeDisplayData, NodeDisplayData, RenderParams } from "sigma/types";
 import type { InstancedProgramDefinition, ProgramInfo } from "sigma/rendering";
 import { DEFAULT_CALIBRATION } from "#engine/calibration.ts";
+import { neuralRootRatio } from "#engine/morphology-geometry.ts";
 import { liveFilamentGeometry } from "#render2d/geometry.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 
@@ -129,6 +130,7 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
         { name: "a_materialWidths", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.FLOAT },
         { name: "a_materialVariation", size: MATERIAL_VARIATION_COMPONENT_COUNT, type: WebGLRenderingContext.FLOAT },
         { name: "a_somaRadii", size: 2, type: WebGLRenderingContext.FLOAT },
+        { name: "a_rootRatios", size: 2, type: WebGLRenderingContext.FLOAT },
         { name: "a_color", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
         { name: "a_id", size: COLOR_CHANNEL_COUNT, type: WebGLRenderingContext.UNSIGNED_BYTE, normalized: true },
       ],
@@ -153,6 +155,7 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
       readonly junctionEnd?: number;
       readonly wobblePhase?: number;
       readonly hotCore?: number;
+      readonly neuralRootRatios?: readonly [number, number];
     };
     const array = this.array;
     array[startIndex++] = sourceData.x;
@@ -180,6 +183,8 @@ export class FilamentProgram extends EdgeProgram<(typeof FILAMENT_UNIFORMS)[numb
     array[startIndex++] = edgeData.hotCore ?? 0;
     array[startIndex++] = sourceData.size;
     array[startIndex++] = targetData.size;
+    array[startIndex++] = edgeData.neuralRootRatios?.[0] ?? neuralRootRatio(1);
+    array[startIndex++] = edgeData.neuralRootRatios?.[1] ?? neuralRootRatio(1);
     array[startIndex++] = floatColor(edgeData.color);
     array[startIndex] = edgeIndex;
   }
@@ -245,6 +250,7 @@ attribute float a_propagationArcPosition;
 attribute float a_propagationContinuous;
 attribute float a_afterglowDecayPermille;
 attribute vec2 a_somaRadii;
+attribute vec2 a_rootRatios;
 attribute vec4 a_materialWidths;
 attribute vec2 a_materialVariation;
 uniform mat3 u_matrix;
@@ -271,6 +277,7 @@ varying float v_afterglowDecayPermille;
 varying vec4 v_materialWidths;
 varying vec2 v_materialVariation;
 varying vec2 v_somaRadii;
+varying vec2 v_rootRatios;
 varying float v_neuralScale;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
@@ -313,6 +320,7 @@ void main() {
   v_materialWidths = a_materialWidths;
   v_materialVariation = a_materialVariation;
   v_somaRadii = clamp(a_somaRadii / u_sizeRatio, 2.0, 24.0) * u_pixelRatio;
+  v_rootRatios = a_rootRatios;
   v_neuralScale = 1.0 / u_sizeRatio;
   v_cpA = viewportSource;
   v_cpB = viewportControl;
@@ -375,6 +383,7 @@ varying float v_afterglowDecayPermille;
 varying vec4 v_materialWidths;
 varying vec2 v_materialVariation;
 varying vec2 v_somaRadii;
+varying vec2 v_rootRatios;
 varying float v_neuralScale;
 varying vec2 v_cpA;
 varying vec2 v_cpB;
@@ -428,10 +437,12 @@ void main(void) {
       max(12.0 * u_pixelRatio, v_somaRadii.x * 2.5 + v_thickness * 3.0)) / span);
     float endShoulder = min(0.28, min(48.0 * u_pixelRatio,
       max(12.0 * u_pixelRatio, v_somaRadii.y * 2.5 + v_thickness * 3.0)) / span);
-    float startEase = 1.0 - smoothstep(0.0, startShoulder, curveT);
-    float endEase = 1.0 - smoothstep(0.0, endShoulder, 1.0 - curveT);
-    float rootStart = max(v_thickness, min(v_thickness * 2.4, min(12.0 * u_pixelRatio, max(v_thickness, v_somaRadii.x * 2.0))));
-    float rootEnd = max(v_thickness, min(v_thickness * 2.4, min(12.0 * u_pixelRatio, max(v_thickness, v_somaRadii.y * 2.0))));
+    float startBoundary = min(0.2, v_somaRadii.x / span);
+    float endBoundary = min(0.2, v_somaRadii.y / span);
+    float startEase = 1.0 - smoothstep(startBoundary, startBoundary + startShoulder, curveT);
+    float endEase = 1.0 - smoothstep(endBoundary, endBoundary + endShoulder, 1.0 - curveT);
+    float rootStart = max(v_thickness, min(v_thickness * v_rootRatios.x, min(12.0 * u_pixelRatio, max(v_thickness, v_somaRadii.x * 2.0))));
+    float rootEnd = max(v_thickness, min(v_thickness * v_rootRatios.y, min(12.0 * u_pixelRatio, max(v_thickness, v_somaRadii.y * 2.0))));
     widthFactor = (v_thickness + (rootStart - v_thickness) * startEase
       + (rootEnd - v_thickness) * endEase) / v_thickness;
   }

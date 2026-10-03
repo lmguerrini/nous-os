@@ -3,7 +3,7 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { MorphologyContainerPath, MorphologyGeometry, MorphologyInput, MorphologyNodeShape, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
-import { SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralScreenWidthAt, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
+import { SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralRootRatio, neuralScreenWidthAt, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
@@ -917,6 +917,7 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
   somaFrames: ReadonlyMap<string, NeuralSomaFrame> | null): MorphologyEdgePaint[] {
   const simplified = geometry.nodes.length >= DENSE_SCENE_THRESHOLD;
   const endpointSomata = somaFrames ? neuralEndpointSomata(geometry) : null;
+  const neuralDegree = somaFrames ? new Map(geometry.nodes.map(node => [node.id, node.degree])) : null;
   const stellarArcs = geometry.morphology === "stellar" ? stellarArcClasses(geometry) : null;
   const paints: MorphologyEdgePaint[] = [];
   for (const part of geometry.drawnSegments) {
@@ -937,12 +938,15 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     // pass is about to draw under it — overlapping the boundary, so soma and dendrites read as one
     // shape with no suspended-egg gap. Screen space, so 2D and 3D share the exact grammar.
     let startRadius = 0, endRadius = 0;
+    let rootRatios: readonly [number, number] = [1.8, 1.8];
     if (somaFrames && endpointSomata) {
       const [segmentStart, segmentEnd] = segmentEnds(part);
       const startSoma = segmentStart ? endpointSomata.get(neuralEndpointKey(segmentStart)) : undefined;
       const endSoma = segmentEnd ? endpointSomata.get(neuralEndpointKey(segmentEnd)) : undefined;
       const startFrame = startSoma ? somaFrames.get(startSoma.id) : undefined;
       const endFrame = endSoma ? somaFrames.get(endSoma.id) : undefined;
+      rootRatios = [neuralRootRatio(neuralDegree?.get(startSoma?.id ?? "") ?? 1),
+        neuralRootRatio(neuralDegree?.get(endSoma?.id ?? "") ?? 1)];
       startRadius = startFrame?.radius ?? 0;
       endRadius = endFrame?.radius ?? 0;
       if (startFrame || endFrame) {
@@ -987,7 +991,7 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         // centre-line only; it cannot turn the shaft into a zoom-scaled band.
         const body = Math.max(0.3, appearance.edgeWidth * widthFactor
           * (emphasis?.radiusMultiplier ?? 1));
-        return neuralScreenWidthAt(t, body, startRadius, endRadius, contract.edge.taper, totalPx);
+        return neuralScreenWidthAt(t, body, startRadius, endRadius, rootRatios, totalPx);
       }
       const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
       return clamp(profile * factors * appearance.edgeWidth, 0.5, 16);

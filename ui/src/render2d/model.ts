@@ -26,6 +26,7 @@ import type { OklchToken, Palette, Temperature, Theme, TokenMap } from "#engine/
 import { assertVisualState } from "#engine/visual-state.ts";
 import type { VisualState } from "#engine/visual-state.ts";
 import { filamentGeometry, sampleFilament } from "#render2d/geometry.ts";
+import { neuralRootRatio } from "#engine/morphology-geometry.ts";
 import type { FilamentGeometry } from "#render2d/geometry.ts";
 import type { FilamentUniformMaterial } from "#render2d/filament-program.ts";
 import { validateRenderVisibility } from "../projection/contract.ts";
@@ -64,6 +65,8 @@ export type RenderEdgeAttributes = {
   readonly junctionEnd: number;
   readonly wobblePhase: number;
   readonly hotCore: number;
+  /** Neural root ratios derived from the drawn incident edges. */
+  readonly neuralRootRatios?: readonly [number, number];
   readonly color: string;
   readonly type: string;
   readonly curvature: number;
@@ -414,6 +417,12 @@ export function buildRenderModel(
       ),
     } : resolvedNode);
   }
+  // Pass the shared endpoint degree grammar to the Sigma filament.
+  const neuralDegree = new Map<string, number>();
+  for (const edge of engineGraph.edges) {
+    neuralDegree.set(edge.source, (neuralDegree.get(edge.source) ?? 0) + 1);
+    neuralDegree.set(edge.target, (neuralDegree.get(edge.target) ?? 0) + 1);
+  }
   for (const edge of engineGraph.edges) {
     const source = view.anchors.get(edge.source);
     const target = view.anchors.get(edge.target);
@@ -445,6 +454,8 @@ export function buildRenderModel(
       junctionEnd: edgeMaterial.junctionEndPermille / materialScale,
       wobblePhase: (edgeMaterial.phasePermille / materialScale) * Math.PI * 2,
       hotCore: edgeMaterial.hotCorePermille / materialScale,
+      neuralRootRatios: [neuralRootRatio(neuralDegree.get(edge.source) ?? 1),
+        neuralRootRatio(neuralDegree.get(edge.target) ?? 1)],
       color: edgeColorForMaterial(tokens, edgeMaterial, calibration),
       type: "filament",
       curvature,

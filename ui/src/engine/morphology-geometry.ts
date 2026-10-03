@@ -13,9 +13,11 @@ export type MorphologyColonyInput = { readonly id: string; readonly members: rea
 export type MorphologyInput = { readonly nodes: readonly MorphologyNodeInput[]; readonly edges: readonly MorphologyEdgeInput[]; readonly colonies: readonly MorphologyColonyInput[]; readonly containers: readonly MorphologyContainerInput[] };
 /** One low-frequency outline harmonic that deforms a soma away from a perfect ellipse. */
 export type SomaOutlineHarmonic = { readonly order: number; readonly amplitude: number; readonly phase: number };
+export type NeuralBundle = { readonly direction: Coordinates; readonly weight: number; readonly edgeIds: readonly string[] };
 export type MorphologyNodeShape = MorphologyNodeInput & {
   readonly degree: number; readonly axis: Coordinates; readonly eccentricity: number;
-  readonly outline: readonly SomaOutlineHarmonic[];
+  readonly outline: readonly SomaOutlineHarmonic[]; readonly bundles?: readonly NeuralBundle[];
+  readonly rootRatio?: number;
 };
 export type MorphologySegment = {
   readonly id: string; readonly edgeId: string; readonly source: Coordinates; readonly control: Coordinates; readonly target: Coordinates;
@@ -73,6 +75,8 @@ export const NEURAL_TAPER = { proximal: 1.7, mid: 0.5, distal: 1.2 } as const;
 export const NEURAL_TAPER_FRACTION = 0.28;
 export const NEURAL_ROOT_CAP_PX = 12;
 export const NEURAL_ROOT_RATIO = 2.4;
+export const NEURAL_HUB_DEGREE = 6;
+export function neuralRootRatio(degree: number): number { return degree >= NEURAL_HUB_DEGREE ? 2.6 : 1.8; }
 /** Cosmetic sprouts only resolve in a true close-up; they are never graph segments. */
 export function neuralDetailVisible(projectedScale: number, somaRadiusPx: number, spanPx: number): boolean {
   return projectedScale >= 1.75 && somaRadiusPx >= 5 && spanPx >= somaRadiusPx * 6;
@@ -114,21 +118,47 @@ export function somaOutlineHarmonics(id: string): readonly SomaOutlineHarmonic[]
     return { order, amplitude: 0.012 + raw * 0.022, phase: ((seed >>> (index * 5)) % 6283) / 1000 };
   });
 }
+/** Stable angular clustering. Each real drawn edge belongs to one bundle; the strongest three
+ * drive the outline, while the complete set remains available for endpoint placement. */
+export function neuralAngularBundles(incident: readonly { id: string; direction: Coordinates; weight: number }[]): readonly NeuralBundle[] {
+  const candidates = incident.filter(item => norm(item.direction) > 1e-9)
+    .map(item => ({ ...item, direction: unit(item.direction), weight: Math.max(0, item.weight) }))
+    .sort((a, b) => b.weight - a.weight || a.id.localeCompare(b.id));
+  const groups: { members: typeof candidates; sum: Coordinates; weight: number }[] = [];
+  for (const item of candidates) {
+    let best = -1, bestAlignment = Math.cos(Math.PI / 6);
+    for (let i = 0; i < groups.length; i++) {
+      const alignment = dot(item.direction, unit(groups[i]!.sum));
+      if (alignment > bestAlignment + 1e-12) { best = i; bestAlignment = alignment; }
+    }
+    if (best < 0) groups.push({ members: [item], sum: mul(item.direction, item.weight || 1), weight: item.weight });
+    else {
+      const group = groups[best]!;
+      group.members.push(item);
+      group.sum = add(group.sum, mul(item.direction, item.weight || 1));
+      group.weight += item.weight;
+    }
+  }
+  return groups.map(group => ({ direction: unit(group.sum), weight: group.weight,
+    edgeIds: group.members.map(item => item.id).sort() }))
+    .sort((a, b) => b.weight - a.weight || a.edgeIds[0]!.localeCompare(b.edgeIds[0]!));
+}
 /** Low order, bounded lobes from the actual incident directions, in the soma axis frame.
  * Width weights make a dominant bundle pull the outline toward itself. */
 export function incidentSomaHarmonics(axis: Coordinates, incident: readonly { direction: Coordinates; weight: number }[]): readonly SomaOutlineHarmonic[] {
   const axisAngle = Math.atan2(axis.y, axis.x);
-  const total = incident.reduce((sum, item) => sum + Math.max(0, item.weight), 0);
+  const primary = incident.slice(0, 3);
+  const total = primary.reduce((sum, item) => sum + Math.max(0, item.weight), 0);
   return [1, 2, 3].map((order): SomaOutlineHarmonic => {
     if (total <= 0) return { order, amplitude: 0, phase: 0 };
     let x = 0, y = 0;
-    for (const item of incident) {
+    for (const item of primary) {
       const angle = Math.atan2(item.direction.y, item.direction.x) - axisAngle;
       const weight = Math.max(0, item.weight) / total;
       x += weight * Math.cos(order * angle);
       y += weight * Math.sin(order * angle);
     }
-    const maximum = order === 1 ? 0.065 : order === 2 ? 0.028 : 0.018;
+    const maximum = order === 1 ? 0.075 : order === 2 ? 0.028 : 0.017;
     return { order, amplitude: maximum * Math.hypot(x, y), phase: -Math.atan2(y, x) };
   });
 }
@@ -219,11 +249,15 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
   }
   const shaped = nodes.map((node): MorphologyNodeShape => {
     const connections = incident.get(node.id)!.sort((a, b) => a.id.localeCompare(b.id));
-    const axisShape = somaAxis(node, connections);
+    const bundles = morphology === "neural" ? neuralAngularBundles(connections.map(item => ({
+      id: item.id, direction: sub(item.point, node.position), weight: item.weight,
+    }))) : [];
+    const covarianceShape = somaAxis(node, connections);
+    const axisShape = morphology === "neural" && bundles.length
+      ? { ...covarianceShape, axis: bundles[0]!.direction } : covarianceShape;
     return { ...node, degree: connections.length, ...axisShape,
-      outline: morphology === "neural" ? incidentSomaHarmonics(axisShape.axis, connections.map(item => ({
-        direction: unit(sub(item.point, node.position)), weight: item.weight,
-      }))) : somaOutlineHarmonics(node.id) };
+      bundles, rootRatio: neuralRootRatio(connections.length),
+      outline: morphology === "neural" ? incidentSomaHarmonics(axisShape.axis, bundles) : somaOutlineHarmonics(node.id) };
   });
   const shapes = new Map(shaped.map(node => [node.id, node]));
   const colonyByNode = new Map<string, MorphologyColonyInput>();

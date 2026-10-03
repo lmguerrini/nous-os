@@ -7,16 +7,11 @@ import type { Scene, SceneAggregate, SceneEdge, SceneNode, SceneTokenEncoding } 
 
 /** This stores deterministic instanced-node input arrays and does not allocate Three resources. */
 export type NodeBuffers = {
-  readonly ids: readonly string[];
-  readonly positions: Float32Array;
-  readonly coreRadiiPx: Float32Array;
-  readonly haloRadiiPx: Float32Array;
-  readonly haloCoreGapsPx: Float32Array;
-  readonly colorsSrgb: Float32Array;
-  readonly opacityPermille: Float32Array;
-  readonly haloIntensityPermille: Float32Array;
-  readonly coreSharpnessPermille: Float32Array;
-  readonly minimumCoreDeviceRadiiPx: Float32Array;
+  readonly ids: readonly string[]; readonly positions: Float32Array;
+  readonly coreRadiiPx: Float32Array; readonly haloRadiiPx: Float32Array;
+  readonly haloCoreGapsPx: Float32Array; readonly colorsSrgb: Float32Array;
+  readonly opacityPermille: Float32Array; readonly haloIntensityPermille: Float32Array;
+  readonly coreSharpnessPermille: Float32Array; readonly minimumCoreDeviceRadiiPx: Float32Array;
   /** Neural flag; the outline itself is carried by the incident-edge shape arrays. */
   readonly somaShape: Float32Array;
   readonly somaAxisAndEccentricity: Float32Array; readonly somaHarmonics12: Float32Array; readonly somaHarmonic3: Float32Array;
@@ -28,38 +23,24 @@ export type NodeBuffers = {
 
 /** This stores deterministic expanded-quad filament input arrays and does not tessellate in a shader. */
 export type FilamentBuffers = {
-  readonly edgeIds: readonly string[];
-  readonly sourceIds: readonly string[];
-  readonly targetIds: readonly string[];
-  readonly startPositions: Float32Array;
-  readonly controlPositions: Float32Array;
-  readonly endPositions: Float32Array;
-  readonly colorsSrgb: Float32Array;
-  readonly hotColorsSrgb: Float32Array;
-  readonly opacityPermille: Float32Array;
-  readonly widthsAndPicking: Float32Array;
+  readonly edgeIds: readonly string[]; readonly sourceIds: readonly string[]; readonly targetIds: readonly string[];
+  readonly startPositions: Float32Array; readonly controlPositions: Float32Array; readonly endPositions: Float32Array;
+  readonly colorsSrgb: Float32Array; readonly hotColorsSrgb: Float32Array;
+  readonly opacityPermille: Float32Array; readonly widthsAndPicking: Float32Array;
   /** Ordinary width, endpoint soma radii, and Neural flag for the screen-space profile. */
-  readonly neuralProfile: Float32Array;
-  readonly arcAndJunctionPermille: Float32Array;
-  readonly sheathAndCorePermille: Float32Array;
-  readonly hotAndWobble: Float32Array;
-  readonly phaseAndLuminancePermille: Float32Array;
+  readonly neuralProfile: Float32Array; readonly neuralRootRatios: Float32Array;
+  readonly arcAndJunctionPermille: Float32Array; readonly sheathAndCorePermille: Float32Array;
+  readonly hotAndWobble: Float32Array; readonly phaseAndLuminancePermille: Float32Array;
   readonly endLuminanceAndPropagation: Float32Array;
 };
 
 /** This stores deterministic aggregate-window input arrays and does not infer aggregate membership. */
 export type AggregateBuffers = {
-  readonly ids: readonly string[];
-  readonly centers: Float32Array;
-  readonly radii: Float32Array;
-  readonly windowPaddingPx: Float32Array;
-  readonly windowFillOpacityPermille: Float32Array;
-  readonly windowFillCoreRadiusFractionPermille: Float32Array;
-  readonly windowFillFalloffPermille: Float32Array;
-  readonly strokeWidthsPx: Float32Array;
-  readonly strokeOpacityPermille: Float32Array;
-  readonly colorsSrgb: Float32Array;
-  readonly bounds: Float32Array;
+  readonly ids: readonly string[]; readonly centers: Float32Array; readonly radii: Float32Array;
+  readonly windowPaddingPx: Float32Array; readonly windowFillOpacityPermille: Float32Array;
+  readonly windowFillCoreRadiusFractionPermille: Float32Array; readonly windowFillFalloffPermille: Float32Array;
+  readonly strokeWidthsPx: Float32Array; readonly strokeOpacityPermille: Float32Array;
+  readonly colorsSrgb: Float32Array; readonly bounds: Float32Array;
 };
 
 /** This stores every deterministic GPU input family and does not retain the source scene object. */
@@ -86,7 +67,7 @@ export function buildSceneBuffers(scene: Scene): SceneBuffers {
   return {
     nodes: buildNodeBuffers(scene.nodes, scene.tokenEncoding,
       new Set(neuralEdges.flatMap(edge => [edge.source, edge.target])), neuralShapes),
-    filaments: buildFilamentBuffers(scene.edges, scene.tokens.peak, scene.tokenEncoding, scene.nodes),
+    filaments: buildFilamentBuffers(scene.edges, scene.tokens.peak, scene.tokenEncoding, scene.nodes, neuralShapes),
     aggregates: buildAggregateBuffers(scene.aggregates, scene.tokenEncoding),
   };
 }
@@ -161,6 +142,7 @@ export function buildFilamentBuffers(
   hotToken: OklchToken,
   encoding: SceneTokenEncoding,
   nodes: readonly SceneNode[] = [],
+  neuralShapes: ReadonlyMap<string, MorphologyNodeShape> = new Map(),
 ): FilamentBuffers {
   const ordered = [...edges].sort(compareStackingPriority);
   const startPositions = new Float32Array(ordered.length * coordinateCount());
@@ -171,6 +153,7 @@ export function buildFilamentBuffers(
   const opacityPermille = new Float32Array(ordered.length);
   const widthsAndPicking = new Float32Array(ordered.length * packedChannelCount());
   const neuralProfile = new Float32Array(ordered.length * packedChannelCount());
+  const neuralRootRatios = new Float32Array(ordered.length * 2);
   const nodeRadii = new Map(nodes.map(node => [node.id, node.radiusPx]));
   const nodeCenters = new Map(nodes.map(node => [node.id, node.position]));
   const arcAndJunctionPermille = new Float32Array(ordered.length * packedChannelCount());
@@ -205,6 +188,8 @@ export function buildFilamentBuffers(
     writePacked(neuralProfile, edgeIndex, [edge.bodyWidthPx,
       nodeRadii.get(edge.source) ?? 0, nodeRadii.get(edge.target) ?? 0,
       edge.filament.hotMixPermille > 0 ? 1 : 0]);
+    neuralRootRatios.set([neuralShapes.get(edge.source)?.rootRatio ?? 1,
+      neuralShapes.get(edge.target)?.rootRatio ?? 1], edgeIndex * 2);
     writePacked(arcAndJunctionPermille, edgeIndex, [
       edge.filament.minimumWidthFactorPermille,
       edge.filament.junctionStartPermille,
@@ -248,6 +233,7 @@ export function buildFilamentBuffers(
     opacityPermille,
     widthsAndPicking,
     neuralProfile,
+    neuralRootRatios,
     arcAndJunctionPermille,
     sheathAndCorePermille,
     hotAndWobble,
