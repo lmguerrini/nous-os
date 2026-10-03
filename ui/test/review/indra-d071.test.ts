@@ -210,10 +210,9 @@ test("3D limbs draw at true projected size; small closed spheres draw none and k
   assert.ok(near(450, 376).length > 0);
   // The closed project sphere is 12 px on screen: below the LOD, no limb and no fill at all.
   assert.equal(near(510, 320).length, 0);
-  // Exactly the three LOD-visible spheres stroked a limb, each with one equator, all above the cutoff.
+  // Exactly the three LOD-visible spheres stroke a limb; none adds a decorative equator.
   assert.equal(hook.limbs, 3);
-  assert.equal(hook.equators, 3);
-  assert.ok((hook.minEquatorFlatness ?? 0) >= GREAT_CIRCLE_FLATNESS_CUTOFF);
+  assert.equal(hook.equators, 0);
   assert.equal(hook.dashed, 0);
   // The closed pearl keeps its name: anchored above the pearl itself (its projected radius plus a
   // gap), even though the sphere is narrow.

@@ -4,6 +4,14 @@ import type { AggregateBuffers } from "#render3f/buffers.ts";
 
 const AGGREGATE_RENDER_ORDER = 1;
 
+/** D-078: preserve fitted aggregate paint, but remove a viewport-sized 3D interior wash. */
+export function aggregateDeepZoomFillOpacity(radiusDevicePx: number, widthDevicePx: number, heightDevicePx: number): number {
+  const shortSide = Math.min(widthDevicePx, heightDevicePx);
+  if (!(shortSide > 0) || !Number.isFinite(radiusDevicePx)) return 0;
+  const t = Math.min(1, Math.max(0, (radiusDevicePx / shortSide - 0.58) / 0.17));
+  return 1 - t * t * (3 - 2 * t);
+}
+
 /** This owns one deterministic aggregate-window pass and does not infer aggregate geometry. */
 export type AggregateRenderResources = {
   readonly geometry: THREE.InstancedBufferGeometry;
@@ -82,7 +90,12 @@ void main() {
   v_radiusDevicePx = radiusDevicePx;
   v_strokeWidthDevicePx = strokeDevicePx;
   v_opacity = a_strokeOpacityPermille / u_permilleScale;
-  v_fillOpacity = a_windowFillOpacityPermille / u_permilleScale;
+  // Perspective only: a window spanning the viewport is no longer a local interior. Its rim
+  // remains untouched; orthographic/2D aggregate paint keeps the baseline values.
+  float fillFadeT = clamp((radiusDevicePx / min(u_resolutionDevicePx.x, u_resolutionDevicePx.y) - 0.58) / 0.17, 0.0, 1.0);
+  float fillFade = 1.0 - fillFadeT * fillFadeT * (3.0 - 2.0 * fillFadeT);
+  v_fillOpacity = (a_windowFillOpacityPermille / u_permilleScale) *
+    (projectionMatrix[3][3] < 0.5 ? fillFade : 1.0);
   v_fillCoreRadiusFraction = a_windowFillCoreRadiusFractionPermille / u_permilleScale;
   v_fillFalloffExponent = a_windowFillFalloffPermille / u_permilleScale;
 }`;

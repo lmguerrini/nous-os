@@ -125,7 +125,7 @@ test("D-072 V8: the segment count follows the projected radius, from the shared 
   assert.equal(sphereSegmentCount(199.9), 48);
   assert.equal(sphereSegmentCount(200), 64);
   assert.equal(sphereSegmentCount(2000), 64);
-  // A drawn sphere: front view, one px per world unit — limb and equator share the segment count.
+  // A drawn sphere: front view, one px per world unit — only its limb follows the segment count.
   for (const [radius, segments] of [[30, 24], [90, 32], [150, 48], [250, 64]] as const) {
     const containers = buildContainerGeometry("stellar", [
       { id: "sphere", level: 1, center: { x: 0, y: 0, z: 0 }, radius, open: true },
@@ -134,8 +134,8 @@ test("D-072 V8: the segment count follows the projected radius, from the shared 
     withHook(() => drawContainers(context, "stellar", containers,
       (point: { x: number; y: number }) => ({ x: 450 + point.x, y: 320 + point.y, scale: 1 }),
       "rgb(0,0,0)", { width: 900, height: 640 }, "3d"));
-    assert.equal(ops.filter(op => op.op === "lineTo").length, segments * 2,
-      `radius ${radius}: limb + equator lineTos`);
+    assert.equal(ops.filter(op => op.op === "lineTo").length, segments,
+      `radius ${radius}: limb lineTos`);
   }
 });
 
@@ -189,7 +189,7 @@ test("D-072 V8: quality \"moving\" draws only limbs — no gradients, no equator
   assert.equal(hook.quality, "moving");
   // Limbs only for levels ≤ 1 plus open or selected spheres: the closed 150 px pearl draws nothing.
   assert.equal(hook.limbs, 4, "nousos + domain + open + selected");
-  // The same scene at full quality draws all five spheres, with their equators — the moving pass
+  // The same scene at full quality draws all five spheres — the moving pass
   // really did skip the closed unselected one.
   const full = countingContext(true);
   const fullHook = { dashed: 0, draws: 0 } as Record<string, unknown>;
@@ -201,7 +201,7 @@ test("D-072 V8: quality \"moving\" draws only limbs — no gradients, no equator
     delete (globalThis as typeof globalThis & { __indraContainers?: unknown }).__indraContainers;
   }
   assert.equal(fullHook.limbs, 5);
-  assert.equal(fullHook.equators, 5);
+  assert.equal(fullHook.equators, 0);
   assert.ok(full.counters.gradients > 0, "the full pass does draw its gradients");
   // All title layout waits for the full frame; sphere structure still moves with the camera.
   const pearlBelowLod = buildContainerGeometry("stellar", [
@@ -227,24 +227,11 @@ test("D-072 V8: quality \"full\" (the default) is unchanged — the same op sequ
   const full = draw({ quality: "full" });
   assert.deepEqual(full.ops, withoutFlag.ops, "the flag with its default value changes no op");
   assert.deepEqual(draw(undefined).ops, withoutFlag.ops, "determinism: the same scene draws the same ops");
-  // The 64-tier equator is the layout's own circle: its vertices are exactly the projected points
-  // of the chosen great circle, the geometry every build before D-072 drew.
-  const nousos = scene.find(container => container.id === "nousos")!;
-  const shell = nousos.shell!;
-  const chosen = shell[0]!; // front view: the xy circle is the face-on one
-  const expected = chosen.map(flatProject);
   const { context, ops } = countingContext(true);
   withHook(() => drawContainers(context, "stellar", scene, flatProject, "rgb(0,0,0)", { width: 900, height: 640 }, "3d"));
   const vertices = ops.filter(op => op.op === "moveTo" || op.op === "lineTo").map(op => op.args as [number, number]);
-  // The NousOS sphere draws first (level order): its limb is one vertex per point (indices 0..64),
-  // its equator follows as one moveTo + one lineTo per segment, in circle order — and nothing else
-  // until the next sphere.
+  // The NousOS sphere draws first (level order): its limb is one vertex per table point.
   const limb = sphereSegmentCount(300);
-  const equatorVertices = vertices.slice(limb + 1, limb + 1 + limb * 2);
-  assert.deepEqual(equatorVertices.filter((_, index) => index % 2 === 0),
-    expected.slice(0, expected.length - 1).map(point => [point.x, point.y]), "equator moveTo points");
-  assert.deepEqual(equatorVertices.filter((_, index) => index % 2 === 1),
-    expected.slice(1).map(point => [point.x, point.y]), "equator lineTo points");
   // The limb itself is the unit-circle table around the projected centre.
   const limbVertices = vertices.slice(0, limb + 1);
   for (const [x, y] of limbVertices) {

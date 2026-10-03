@@ -307,27 +307,16 @@ test("the pearl paint cache warms within a frame and never grows past its cap", 
 
 // ---------------------------------------------------------------- run-batched equator strokes
 
-test("batched equator strokes cover every segment once, with the exact per-segment fade styles", () => {
+test("3D sphere strokes only its continuous limb, with no decorative equator", () => {
   const containers = buildContainerGeometry("stellar", [
     { id: "outer", level: 1, center: { x: 0, y: 0, z: 0 }, radius: 60 },
   ]);
   const { context, ops } = recordingContext(false);
   drawContainers(context, "stellar", containers, projectAt(2), "rgb(120, 130, 145)", { width: 800, height: 640 }, "3d");
-  const project = projectAt(2);
-  const equator = chosenEquator(containers[0]!.shell ?? [], project);
-  assert.ok(equator);
-  // One flat projection (scale 1 everywhere): every segment shares one style, so the whole circle
-  // collapses to a single stroked run next to the limb stroke.
-  const frontAlpha = clampN(0.3 - 0.035, 0.12, 0.3) * equator.fade;
-  const backAlpha = Math.min(0.12, Math.max(0.04, frontAlpha * 0.32));
-  const alpha = backAlpha + (frontAlpha - backAlpha) * 0.5;
   const strokes = ops.filter(o => o.op === "stroke").map(o => (o.args as [string, number]));
-  assert.deepEqual(strokes.map(s => s[0]).sort(), [`rgba(20, 20, 20, ${clampN(0.4 - 0.03, 0.16, 0.4)})`, `rgba(20, 20, 20, ${alpha})`].sort());
-  // D-072: the limb is a polyline of sphereSegmentCount(projected radius) segments (60 world units ×
-  // the projector's 4 px per unit = 240 px → 64), plus one lineTo per equator segment.
-  const segmentCount = equator.circle.length - 1;
+  assert.deepEqual(strokes.map(s => s[0]), [`rgba(20, 20, 20, ${clampN(0.4 - 0.03, 0.16, 0.4)})`]);
+  // The limb is a closed polyline at the adaptive 64-segment tier.
   assert.equal(sphereSegmentCount(240), 64);
-  assert.equal(ops.filter(o => o.op === "lineTo").length, sphereSegmentCount(240) + segmentCount);
-  // The equator keeps its own subpaths: one moveTo per segment, plus the limb's single one.
-  assert.equal(ops.filter(o => o.op === "moveTo").length, 1 + segmentCount);
+  assert.equal(ops.filter(o => o.op === "lineTo").length, sphereSegmentCount(240));
+  assert.equal(ops.filter(o => o.op === "moveTo").length, 1);
 });

@@ -264,6 +264,15 @@ export function deepZoomShellOpacity(radiusPx: number, bounds: { readonly width:
   return 1 - t * t * (3 - 2 * t);
 }
 
+/** Interior glass vanishes before an enclosing shell can tint the whole viewport. The limb keeps
+ * the independent shell opacity above, so a visible boundary remains a thin stroke. */
+export function deepZoomShellFillOpacity(radiusPx: number, bounds: { readonly width: number; readonly height: number }): number {
+  const shortSide = Math.min(bounds.width, bounds.height);
+  if (!(shortSide > 0) || !Number.isFinite(radiusPx)) return 0;
+  const t = clamp((radiusPx / shortSide - 0.58) / 0.17, 0, 1);
+  return 1 - t * t * (3 - 2 * t);
+}
+
 /** The rim light of a container sphere: a thin radial gradient just inside the limb, brighter at
  * the rim and transparent toward the centre (soap-bubble glass). Nothing is added inside
  * `innerRadius × limbRadius`, so the total added alpha at the centre of the sphere is the first
@@ -649,15 +658,10 @@ export function drawContainers(
   const ink = containerInkRgb(interaction?.containerColor, fieldColor);
   // Limb stroke styles vary only by (ink, level): one string per level per draw, not per sphere.
   const limbStyles = new Map<number, string>();
-  // At deep zoom only the spherical silhouette is a boundary. The great-circle equators
-  // become long Saturn-like arcs, so the small pearls retain their continuous thin limbs.
-  const root = projection === "3d" ? containers.find(container => container.level === 0) : undefined;
-  const deepZoom = root !== undefined
-    && root.radius * cachedLimbRadiusPx(cache, root, project) / Math.min(bounds.width, bounds.height) > 0.75;
   for (const container of containersInDrawOrder(containers).sorted) {
     context.globalAlpha = interaction?.dimFocus && !interaction.dimFocus.members.has(container.id) ? 0.15 : 1;
     if (projection === "3d") {
-      drawSphere(context, container, project, ink, interaction, bounds, cache, limbStyles, !deepZoom);
+      drawSphere(context, container, project, ink, interaction, bounds, cache, limbStyles);
     } else {
       const outline = container.points;
       if (!outline.length) continue;
@@ -706,12 +710,10 @@ export function drawContainers(
     return gradient;
   }
 
-  /** The projected limb circle plus a faint glass fill, a rim light just inside the limb, and at most
-   * one equator, chosen as the most face-on great circle and faded by its projected flatness; its
-   * back half is dimmer than its front half, always continuous, never dashed. Containers below the
+  /** The projected limb circle plus a faint glass fill and a rim light just inside the limb. Containers below the
    * sphere LOD draw no sphere at all: they are carried by their pearl and their «+N» title.
-   * D-072 V8: the limb and equator segment counts follow the projected radius (shared precomputed
-   * unit-circle tables); the `moving` quality draws limbs only (no gradients, no equator); a sphere
+   * D-072 V8: the limb segment count follows the projected radius (shared precomputed
+   * unit-circle tables); the `moving` quality draws limbs only (no gradients); a sphere
    * under `CONTAINER_SPHERE_TINY_PX` on screen is a single thin circle. */
   function drawSphere(
     context: CanvasRenderingContext2D,
@@ -722,7 +724,6 @@ export function drawContainers(
     bounds: { readonly width: number; readonly height: number },
     cache: ContainerFrameCache | undefined,
     limbStyles: Map<number, string>,
-    showEquator: boolean,
   ): void {
     const hook = dashHook();
     const center = project(container.center);
@@ -747,7 +748,10 @@ export function drawContainers(
     // Adaptive resolution: the segment count follows the projected radius, from the shared tables.
     const segments = sphereSegmentsForQuality(limbRadius, moving ? "moving" : "full");
     const table = circleTable(segments);
-    if (!tiny && !moving) {
+    const fillFade = deepZoomShellFillOpacity(limbRadius, bounds);
+    if (!tiny && !moving && fillFade > 0) {
+      const shellAlpha = context.globalAlpha;
+      context.globalAlpha *= fillFade;
       // Subtle radial gradient fill: a translucent glass sphere with the light gathered off-centre, and
       // a glass rim light brighter at the limb — both proportional to the limb radius, so one cached
       // unit gradient per (ink, level) serves every sphere, composed under translate + scale.
@@ -794,6 +798,7 @@ export function drawContainers(
           context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
         }
       }
+      context.globalAlpha = shellAlpha;
     }
     // The projected silhouette: the level-0 NousOS limb stays light and clearly visible. The circle
     // is a polyline from the shared unit-circle table — `segments` of them at this projected radius.
@@ -814,54 +819,6 @@ export function drawContainers(
     context.stroke();
     bump(hook, "limbs", 1);
     if (container.level === 0 && hook) hook.nousosLimb = { x: center.x, y: center.y, radiusPx: limbRadius };
-    if (tiny || moving || !showEquator) return;
-    // At most one equator, the most face-on great circle, faded by flatness so an edge-on circle
-    // (a long line with no identifiable meaning) is never drawn. It is sampled at the same adaptive
-    // segment count as the limb, from the circle's own world parametrization (cached, never rebuilt).
-    const equator = chosenEquator(container.shell ?? [], project);
-    if (!equator) return;
-    const samples = equatorSamples(equator.circle, container, segments);
-    // The NousOS equator never reaches outside the canvas: a tall narrow ellipse pressed against the
-    // border reads as geometry with no semantics, so it is not drawn at all there.
-    if (container.level === 0) {
-      for (const sample of samples) {
-        const point = project(sample);
-        if (point.x < -1 || point.x > bounds.width + 1 || point.y < -1 || point.y > bounds.height + 1) return;
-      }
-    }
-    bump(hook, "equators", 1);
-    if (hook) hook.minEquatorFlatness = Math.min(hook.minEquatorFlatness ?? Infinity, equator.flatness);
-    const centerScale = Math.max(center.scale, 1e-4);
-    const frontAlpha = (container.level === 0 ? 0.34 : clamp(0.3 - container.level * 0.035, 0.12, 0.3)) * equator.fade;
-    const backAlpha = clamp(frontAlpha * 0.32, 0.04, 0.12);
-    const band = Math.max(centerScale * 0.08, 1e-4);
-    // Consecutive segments whose style string is identical are stroked as subpaths of one path:
-    // each segment keeps its own butt-capped subpath (the same pixels as a stroke per segment), and
-    // the clamped front/back runs collapse from dozens of stroke calls to a couple. The samples are
-    // projected one at a time — no per-frame point array.
-    let runStyle: string | null = null;
-    let a = project(samples[0]!);
-    for (let index = 1; index < samples.length; index++) {
-      const b = project(samples[index]!);
-      const midScale = (a.scale + b.scale) / 2;
-      const front = clamp(0.5 + (midScale - centerScale) / band, 0, 1);
-      const alpha = backAlpha + (frontAlpha - backAlpha) * front;
-      const style = `rgba(${ink}, ${alpha})`;
-      if (style !== runStyle) {
-        if (runStyle !== null) {
-          context.strokeStyle = runStyle;
-          context.stroke();
-        }
-        context.beginPath();
-        runStyle = style;
-      }
-      context.moveTo(a.x, a.y); context.lineTo(b.x, b.y);
-      a = b;
-    }
-    if (runStyle !== null) {
-      context.strokeStyle = runStyle;
-      context.stroke();
-    }
   }
 }
 

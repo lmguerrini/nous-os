@@ -120,7 +120,7 @@ test("the framing subjects include the drawn shell radius under an oblique orbit
   }
 });
 
-test("the NousOS equator is never drawn when its projected ellipse would leave the canvas", () => {
+test("the NousOS limb remains continuous while decorative equators stay absent", () => {
   const containers = buildContainerGeometry("stellar", [
     { id: "nousos", level: 0, center: { x: 0, y: 0, z: 0 }, radius: 900, open: true, title: "NousOS" },
     { id: "domain", level: 1, center: { x: 500, y: 200, z: 0 }, radius: 200, open: true },
@@ -133,10 +133,9 @@ test("the NousOS equator is never drawn when its projected ellipse would leave t
   } finally {
     delete (globalThis as typeof globalThis & { __indraContainers?: unknown }).__indraContainers;
   }
-  // The NousOS equator reaches x ∈ [−50, 850]: outside the 800 px canvas, so only the domain's draws.
-  assert.equal(hook.equators, 1);
-  assert.ok((hook.nousosLimb as { radiusPx: number }).radiusPx > 0, "the limb witness is recorded even when the equator is not");
-  // With the whole ellipse inside, the NousOS equator draws again.
+  assert.equal(hook.equators, 0);
+  assert.ok((hook.nousosLimb as { radiusPx: number }).radiusPx > 0, "the limb witness is recorded");
+  // Fitting the whole sphere keeps the same no-equator rule.
   const fitting = buildContainerGeometry("stellar", [
     { id: "nousos", level: 0, center: { x: 0, y: 0, z: 0 }, radius: 300, open: true, title: "NousOS" },
     { id: "domain", level: 1, center: { x: 500, y: 200, z: 0 }, radius: 200, open: true },
@@ -148,7 +147,7 @@ test("the NousOS equator is never drawn when its projected ellipse would leave t
   } finally {
     delete (globalThis as typeof globalThis & { __indraContainers?: unknown }).__indraContainers;
   }
-  assert.equal(hook2.equators, 2);
+  assert.equal(hook2.equators, 0);
 });
 
 test("canvas container titles avoid pearls, drop when boxed in, and end with «…»", () => {
