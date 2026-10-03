@@ -10,7 +10,9 @@ export type RevealBand = 'far' | 'intermediate' | 'near' | 'deep';
  * numeric interval than Sigma's ratio, so map both to the same disclosure scale. */
 export function cameraRevealZoom(fitRatio: number, liveRatio: number, projection: '2d' | '3d'): number {
   if (!Number.isFinite(fitRatio) || !Number.isFinite(liveRatio) || fitRatio <= 0 || liveRatio <= 0) return 1;
-  return Math.max(0.1, Math.pow(fitRatio / liveRatio, projection === '3d' ? 2.5 : 1));
+  // On the review viewport nine −100 px wheel steps are 7.45× in Sigma and 6.40×
+  // with the former 2.5 exponent in Three. 2.71 aligns the disclosure bands.
+  return Math.max(0.1, Math.pow(fitRatio / liveRatio, projection === '3d' ? 2.71 : 1));
 }
 export type RevealSource = 'cursor' | 'selection' | 'viewport' | null;
 export type RevealPosition = Readonly<{ x: number; y: number; radius?: number }>;
@@ -231,6 +233,18 @@ export function stepReveal(input: RevealInput): RevealDecision {
     const root = clusterId ? byId.get(clusterId) : undefined;
     const rootHasHiddenChildren = !!root && all.some(node => node.id === root.id) &&
       (children.get(root.id)?.some(child => !all.some(node => node.id === child.id)) ?? false);
+    // A wide domain can still have an unfinished level-3 page at the deep step.
+    // Open the nearest already visible child with descendants, so deep zoom reaches
+    // proposals instead of spending its last step filling the domain's next page.
+    if (band === 'deep' && root && (children.get(root.id)?.length ?? 0) > page) {
+      const point = input.cursor ?? center;
+      const child = all.filter(node => node.parent === root.id && node.level === 3 &&
+          (children.get(node.id)?.length ?? 0) > (autoPages(admissions).get(node.id) ?? 0) &&
+          Number.isFinite(input.positions.get(node.id)?.x) && Number.isFinite(input.positions.get(node.id)?.y))
+        .sort((a, b) => distance(input.positions.get(a.id)!, point) -
+          distance(input.positions.get(b.id)!, point) || cmp(a.id, b.id))[0];
+      if (child) return child;
+    }
     if (rootHasHiddenChildren && (cursorNode?.id === root?.id ||
         !all.some(node => node.parent === root!.id))) return root;
     for (const cluster of clusterId ? [clusterId] : clusterOrder) {

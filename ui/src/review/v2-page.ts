@@ -394,6 +394,25 @@ export function revealPointInRoot(point: { readonly x: number; readonly y: numbe
     return { x: point.x - root.left, y: point.y - root.top };
 }
 
+/** The deepest mark centred on the wheel pointer is the disclosure anchor when pearls overlap. */
+export function admissionAnchorAtPointer(
+    points: Readonly<Record<string, { readonly x: number; readonly y: number; readonly radius?: number }>>,
+    levels: ReadonlyMap<string, number>, nextIds: ReadonlySet<string>,
+    cursor: { readonly x: number; readonly y: number } | null,
+): string | null {
+    if (!cursor) return null;
+    return Object.entries(points).filter(([id, point]) => nextIds.has(id) && levels.has(id) &&
+        Math.hypot(point.x - cursor.x, point.y - cursor.y) <= Math.max(12, point.radius ?? 0))
+        .sort(([a, pa], [b, pb]) => {
+            const da = Math.hypot(pa.x - cursor.x, pa.y - cursor.y);
+            const db = Math.hypot(pb.x - cursor.x, pb.y - cursor.y);
+            // Centres within one small pick region compete by depth. A large parent pearl
+            // can otherwise win by a fraction of a pixel and let its child jump on relayout.
+            return Math.floor(da / 8) - Math.floor(db / 8) ||
+                (levels.get(b)! - levels.get(a)!) || da - db || a.localeCompare(b);
+        })[0]?.[0] ?? null;
+}
+
 /** Reject missing, out-of-domain and nonfinite coordinates before either typed renderer sees them. */
 export function assertPageProjection(result: ProjectionResult, domain: AnalyticalDomain, dimension: '2d' | '3d'): void {
     if (result.determinism.domainDigest !== domain.domainDigest || result.determinism.snapshotDigest !== domain.snapshotDigest)
@@ -2464,10 +2483,8 @@ export class V2Page {
                 const witness = this.view.witness();
                 const rootRect = element('render-root').getBoundingClientRect();
                 const cursor = this.cursor && { x: this.cursor.x + rootRect.left, y: this.cursor.y + rootRect.top };
-                const underPointer = cursor && Object.entries(witness.nodeViewport)
-                    .map(([id, point]) => ({ id, point, distance: Math.hypot(point.x - cursor.x, point.y - cursor.y) }))
-                    .filter(item => item.distance <= Math.max(12, item.point.radius ?? 0))
-                    .sort((a, b) => a.distance - b.distance)[0]?.id;
+                const underPointer = admissionAnchorAtPointer(witness.nodeViewport,
+                    new Map(this.index.nodes.map(node => [node.id, node.level])), renderedIds, cursor);
                 const id = [underPointer, this.revealState.focusClusterId, this.selected]
                     .find(candidate => candidate && witness.nodeViewport[candidate] && next.has(candidate));
                 if (id) anchor = { id, point: witness.nodeViewport[id]! };
