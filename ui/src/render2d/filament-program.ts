@@ -437,12 +437,12 @@ void main(void) {
       max(12.0 * u_pixelRatio, v_somaRadii.x * 2.5 + v_thickness * 3.0)) / span);
     float endShoulder = min(0.28, min(48.0 * u_pixelRatio,
       max(12.0 * u_pixelRatio, v_somaRadii.y * 2.5 + v_thickness * 3.0)) / span);
-    float startBoundary = min(0.2, v_somaRadii.x / span);
-    float endBoundary = min(0.2, v_somaRadii.y / span);
+    float startBoundary = min(0.49, v_somaRadii.x * 1.5 / span);
+    float endBoundary = min(0.49, v_somaRadii.y * 1.5 / span);
     float startEase = 1.0 - smoothstep(startBoundary, startBoundary + startShoulder, curveT);
     float endEase = 1.0 - smoothstep(endBoundary, endBoundary + endShoulder, 1.0 - curveT);
-    float rootStart = max(v_thickness, min(v_thickness * v_rootRatios.x, min(12.0 * u_pixelRatio, max(v_thickness, v_somaRadii.x * 2.0))));
-    float rootEnd = max(v_thickness, min(v_thickness * v_rootRatios.y, min(12.0 * u_pixelRatio, max(v_thickness, v_somaRadii.y * 2.0))));
+    float rootStart = v_somaRadii.x > 0.0 ? v_thickness * v_rootRatios.x : v_thickness;
+    float rootEnd = v_somaRadii.y > 0.0 ? v_thickness * v_rootRatios.y : v_thickness;
     widthFactor = (v_thickness + (rootStart - v_thickness) * startEase
       + (rootEnd - v_thickness) * endEase) / v_thickness;
   }

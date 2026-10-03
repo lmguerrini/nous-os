@@ -3,7 +3,7 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { MorphologyContainerPath, MorphologyGeometry, MorphologyInput, MorphologyNodeShape, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
-import { SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralRootRatio, neuralScreenWidthAt, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
+import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralRootRatio, neuralScreenWidthAt, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
@@ -1421,16 +1421,20 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     // window of this node's degree, never above the basis (pick radius untouched), 2D and 3D alike.
     const radius = geometry.morphology === "stellar" ? stellarStarCoreRadiusPx(basis, node.degree) : basis;
     // A pearl wholly outside the canvas (with its glow halo) draws nothing a viewer could see.
-    const haloExtent = appearance.glow > 0 ? radius * contract.glow.maximumCoreRatio : radius;
+    const haloRatio = geometry.morphology === "neural"
+      ? Math.min(contract.glow.maximumCoreRatio, NEURAL_HALO_MAX_RADIUS_RATIO) : contract.glow.maximumCoreRatio;
+    const haloExtent = appearance.glow > 0 ? radius * haloRatio : radius;
     if (p.x + haloExtent < 0 || p.x - haloExtent > bounds.width
       || p.y + haloExtent < 0 || p.y - haloExtent > bounds.height) continue;
     context.globalAlpha = focusNodeOpacity(style.interaction?.dimFocus?.members ?? null, node.id);
     const color = visual?.color ?? "rgb(245, 245, 245)";
     const baseOpacity = visual?.opacity ?? 1;
     // The effective halo strength carries the Neural density falloff; other morphologies keep theirs.
-    const glowStrength = haloDensity
+    const requestedGlowStrength = haloDensity
       ? contract.glow.strength * neuralHaloAlphaFactor(haloDensity.get(node.id) ?? 1)
       : contract.glow.strength;
+    const glowStrength = geometry.morphology === "neural"
+      ? Math.min(requestedGlowStrength, NEURAL_HALO_MAX_ALPHA / Math.max(1, appearance.glow)) : requestedGlowStrength;
     // In Indra 3D every colour of the pearl comes from one cached paint entry (quantised depth);
     // elsewhere the exact per-node factors stay. The moving frame wants no pearl paint at all.
     const paint = indra3d && !moving
@@ -1448,7 +1452,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         ? clamp(Math.max(coreFloor, baseOpacity * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha), 0, 1)
         : clamp(Math.max(0.48, baseOpacity) * (emphasis?.brightnessMultiplier ?? 1) * depthAlpha, 0, 1);
     if (!simplified && appearance.glow > 0 && !testHook()?.hideEdges && !moving) {
-      const halo = radius * contract.glow.maximumCoreRatio;
+      const halo = radius * haloRatio;
       if (paint?.glow && canTransform) {
         fillUnitGradient(context, paint.glow, p.x, p.y, halo);
       } else {

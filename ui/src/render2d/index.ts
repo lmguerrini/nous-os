@@ -1,7 +1,7 @@
 import { mixTowardField } from "#engine/presentation-options.ts";
 import type { AppearanceOptions, EdgeCategory, EdgePresentation, NodeGlyph } from "#engine/presentation-options.ts";
 import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
-import { buildMorphologyGeometry } from "#engine/morphology-geometry.ts";
+import { buildMorphologyGeometry, NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO } from "#engine/morphology-geometry.ts";
 import type { MorphologyGeometry } from "#engine/morphology-geometry.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import { DENSE_SCENE_THRESHOLD, drawMorphologyCanvas, stellarStarCoreRadiusPx } from "#render-common/morphology-canvas.ts";
@@ -1069,13 +1069,15 @@ function mountNodeGlow(
         coreRadius,
         sigma.scaleSize(attributes.haloRadiusPx),
         profile,
+        model.filamentMaterial.neuralProfile ?? false,
       );
       if (haloRadius <= coreRadius) {
         continue;
       }
       const gradient = context.createRadialGradient(center.x, center.y, coreRadius, center.x, center.y, haloRadius);
       const color = parseColor(attributes.color);
-      const peakAlpha = (boundedPermille(attributes.haloIntensityPermille, profile) / permilleScale(profile)) * color.a;
+      const requestedAlpha = (boundedPermille(attributes.haloIntensityPermille, profile) / permilleScale(profile)) * color.a;
+      const peakAlpha = model.filamentMaterial.neuralProfile ? Math.min(requestedAlpha, NEURAL_HALO_MAX_ALPHA) : requestedAlpha;
       for (const stop of haloAlphaStops(profile, peakAlpha)) {
         gradient.addColorStop(stop.offset, `rgba(${color.r}, ${color.g}, ${color.b}, ${stop.alpha})`);
       }
@@ -1116,6 +1118,7 @@ function glowWitnesses(sigma: Sigma, model: RenderModel, profile: CalibrationPro
         coreRadiusPx,
         sigma.scaleSize(attributes.haloRadiusPx),
         profile,
+        model.filamentMaterial.neuralProfile ?? false,
       ),
     };
   });
@@ -1137,8 +1140,10 @@ function resolvedGlowHaloRadius(
   coreRadiusPx: number,
   requestedHaloRadiusPx: number,
   calibration: CalibrationProfile,
+  neural = false,
 ): number {
-  return Math.max(requestedHaloRadiusPx, coreRadiusPx + calibration.luminance.coreBeforeHaloMinimumPx);
+  const radius = Math.max(requestedHaloRadiusPx, coreRadiusPx + calibration.luminance.coreBeforeHaloMinimumPx);
+  return neural ? Math.min(radius, coreRadiusPx * NEURAL_HALO_MAX_RADIUS_RATIO) : radius;
 }
 
 type GlowLayer = {

@@ -18,6 +18,7 @@ export type MorphologyNodeShape = MorphologyNodeInput & {
   readonly degree: number; readonly axis: Coordinates; readonly eccentricity: number;
   readonly outline: readonly SomaOutlineHarmonic[]; readonly bundles?: readonly NeuralBundle[];
   readonly rootRatio?: number;
+  readonly haloRadiusRatio?: number; readonly haloAlphaLimit?: number;
 };
 export type MorphologySegment = {
   readonly id: string; readonly edgeId: string; readonly source: Coordinates; readonly control: Coordinates; readonly target: Coordinates;
@@ -73,10 +74,17 @@ function myceliumParts(edge: MorphologyEdgeInput, a: Coordinates, b: Coordinates
 export const NEURAL_TAPER = { proximal: 1.7, mid: 0.5, distal: 1.2 } as const;
 /** A short screen-space shoulder preserves a compact soma even on very long relations. */
 export const NEURAL_TAPER_FRACTION = 0.28;
-export const NEURAL_ROOT_CAP_PX = 12;
+/** Historical test bound; live roots use their ratios across the full width slider. */
+export const NEURAL_ROOT_CAP_PX = 32;
+/** Both projections preserve these widths at the visible soma boundary. */
+export const NEURAL_HALO_MAX_RADIUS_RATIO = 1.1;
+export const NEURAL_HALO_MAX_ALPHA = 0.05;
 export const NEURAL_ROOT_RATIO = 2.4;
 export const NEURAL_HUB_DEGREE = 6;
 export function neuralRootRatio(degree: number): number { return degree >= NEURAL_HUB_DEGREE ? 2.6 : 1.8; }
+export function neuralRootWidthPx(ordinaryPx: number, somaRadiusPx: number, ratio: number): number {
+  return somaRadiusPx > 0 ? Math.max(0, ordinaryPx) * ratio : Math.max(0, ordinaryPx);
+}
 /** Cosmetic sprouts only resolve in a true close-up; they are never graph segments. */
 export function neuralDetailVisible(projectedScale: number, somaRadiusPx: number, spanPx: number): boolean {
   return projectedScale >= 1.75 && somaRadiusPx >= 5 && spanPx >= somaRadiusPx * 6;
@@ -89,10 +97,8 @@ export function neuralScreenWidthAt(t: number, ordinaryPx: number, startSomaRadi
   endSomaRadiusPx: number, taper: readonly [number, number] = [NEURAL_ROOT_RATIO, NEURAL_ROOT_RATIO],
   spanPx = 100): number {
   const body = Math.max(0, ordinaryPx);
-  const root = (radius: number, ratio: number) => radius > 0
-    ? Math.max(body, Math.min(body * ratio, NEURAL_ROOT_CAP_PX, Math.max(body, radius * 2))) : body;
-  const start = root(startSomaRadiusPx, taper[0]);
-  const end = root(endSomaRadiusPx, taper[1]);
+  const start = neuralRootWidthPx(body, startSomaRadiusPx, taper[0]);
+  const end = neuralRootWidthPx(body, endSomaRadiusPx, taper[1]);
   const ease = (u: number) => { const x = Math.max(0, Math.min(1, u)); return x * x * (3 - 2 * x); };
   const position = Math.max(0, Math.min(1, t));
   const startShoulder = neuralShoulderFraction(spanPx, startSomaRadiusPx, body);
@@ -254,9 +260,12 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
     }))) : [];
     const covarianceShape = somaAxis(node, connections);
     const axisShape = morphology === "neural" && bundles.length
-      ? { ...covarianceShape, axis: bundles[0]!.direction } : covarianceShape;
+      ? { ...covarianceShape, axis: bundles[0]!.direction,
+        eccentricity: connections.length >= NEURAL_HUB_DEGREE
+          ? Math.max(1.24, covarianceShape.eccentricity) : covarianceShape.eccentricity } : covarianceShape;
     return { ...node, degree: connections.length, ...axisShape,
       bundles, rootRatio: neuralRootRatio(connections.length),
+      haloRadiusRatio: NEURAL_HALO_MAX_RADIUS_RATIO, haloAlphaLimit: NEURAL_HALO_MAX_ALPHA,
       outline: morphology === "neural" ? incidentSomaHarmonics(axisShape.axis, bundles) : somaOutlineHarmonics(node.id) };
   });
   const shapes = new Map(shaped.map(node => [node.id, node]));

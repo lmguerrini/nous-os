@@ -50,6 +50,7 @@ void main() {
   // Keep the halo outside the floored core.
   float haloGapRadius = coreRadius + (a_haloCoreGapPx * sizeScale * u_devicePixelRatio);
   float haloRadius = max(requestedHaloRadius, haloGapRadius);
+  if (a_somaShape.x > 0.5) haloRadius = min(haloRadius, coreRadius * 1.1);
   vec2 corner = vec2((position.x * 2.0) - 1.0, position.y);
   vec2 clipOffset = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.34 : 1.0) * 2.0 / u_resolutionDevicePx;
   gl_Position = clipCenter;
@@ -117,7 +118,9 @@ void main() {
     somaDistance = length(vec2(local.x / eccentricity, local.y)) / bulge;
   }
   // Preserve the governed gradient core and its sharpness.
-  float coreProfile = 1.0 - smoothstep(0.0, v_coreRadiusDevicePx, somaDistance);
+  float coreProfile = v_somaShape.x > 0.5
+    ? 1.0 - smoothstep(v_coreRadiusDevicePx - fwidth(somaDistance), v_coreRadiusDevicePx + fwidth(somaDistance), somaDistance)
+    : 1.0 - smoothstep(0.0, v_coreRadiusDevicePx, somaDistance);
   float coreSharpness = v_coreSharpnessPermille / u_permilleScale;
   float coreAlpha = pow(coreProfile, coreSharpness);
   float haloSpan = max(v_haloRadiusDevicePx - v_coreRadiusDevicePx, fwidth(radialDistance));

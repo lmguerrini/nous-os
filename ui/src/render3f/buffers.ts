@@ -96,15 +96,16 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
     writeCoordinates(positions, index, node.position);
     writeColor(colorsSrgb, index, tokenToSrgb(node.token, encoding));
     coreRadiiPx[index] = node.radiusPx;
-    haloRadiiPx[index] = node.haloRadiusPx;
-    haloCoreGapsPx[index] = node.haloCoreGapPx;
+    const neuralSoma = neuralNodeIds.has(node.id);
+    const shape = neuralShapes.get(node.id);
+    haloRadiiPx[index] = shape ? Math.min(node.haloRadiusPx, node.radiusPx * shape.haloRadiusRatio!) : node.haloRadiusPx;
+    haloCoreGapsPx[index] = shape ? Math.min(node.haloCoreGapPx, node.radiusPx * (shape.haloRadiusRatio! - 1)) : node.haloCoreGapPx;
     opacityPermille[index] = node.opacityPermille;
-    haloIntensityPermille[index] = node.haloIntensityPermille;
+    haloIntensityPermille[index] = shape ? Math.min(node.haloIntensityPermille, shape.haloAlphaLimit! * SCENE_PERMILLE_SCALE) : node.haloIntensityPermille;
     coreSharpnessPermille[index] = node.coreSharpnessPermille;
     minimumCoreDeviceRadiiPx[index] = node.minimumCoreDeviceRadiusPx;
     somaShape[index * 2] = neuralNodeIds.has(node.id) ? 1 : 0;
     somaShape[index * 2 + 1] = neuralNodeIds.has(node.id) ? 0 : (morphologyHash(node.id) % 6283) / 1000;
-    const shape = neuralShapes.get(node.id);
     if (shape) {
       somaAxisAndEccentricity.set([shape.axis.x, shape.axis.y, shape.axis.z, shape.eccentricity], index * 4);
       somaHarmonics12.set([shape.outline[0]?.amplitude ?? 0, shape.outline[0]?.phase ?? 0, shape.outline[1]?.amplitude ?? 0, shape.outline[1]?.phase ?? 0], index * 4); somaHarmonic3.set([shape.outline[2]?.amplitude ?? 0, shape.outline[2]?.phase ?? 0], index * 2);
@@ -113,7 +114,7 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
     for (const [stopIndex, stop] of node.haloAlphaStops.entries()) {
       const offset = (index * haloStopCount) + stopIndex;
       haloStopOffsets[offset] = stop.offset;
-      haloStopAlphaMultipliers[offset] = stop.alphaMultiplier;
+      haloStopAlphaMultipliers[offset] = shape ? Math.min(stop.alphaMultiplier, shape.haloAlphaLimit!) : stop.alphaMultiplier;
     }
   }
   return {

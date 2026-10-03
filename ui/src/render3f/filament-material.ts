@@ -291,8 +291,8 @@ void main() {
     float ordinary = max(u_neuralWidthPx, v_widthsAndPicking.z) * u_devicePixelRatio;
     float startRadius = v_neuralRadiiDevicePx.x;
     float endRadius = v_neuralRadiiDevicePx.y;
-    float startRoot = max(ordinary, min(ordinary * v_neuralRootRatios.x, min(12.0 * u_devicePixelRatio, max(ordinary, startRadius * 2.0))));
-    float endRoot = max(ordinary, min(ordinary * v_neuralRootRatios.y, min(12.0 * u_devicePixelRatio, max(ordinary, endRadius * 2.0))));
+    float startRoot = startRadius > 0.0 ? ordinary * v_neuralRootRatios.x : ordinary;
+    float endRoot = endRadius > 0.0 ? ordinary * v_neuralRootRatios.y : ordinary;
     float span = max(length(v_cpC - v_cpA), 1.0);
     float startShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
       max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);
@@ -300,8 +300,8 @@ void main() {
       max(12.0 * u_devicePixelRatio, endRadius * 2.5 + ordinary * 3.0)) / span);
     // The path begins at the centre under the soma. Hold the root through its visible lobe
     // boundary, then taper over the same shoulder that the canvas path uses from that boundary.
-    float startBoundary = min(0.2, startRadius / span);
-    float endBoundary = min(0.2, endRadius / span);
+    float startBoundary = min(0.49, startRadius * 1.5 / span);
+    float endBoundary = min(0.49, endRadius * 1.5 / span);
     float startEase = 1.0 - smoothstep(startBoundary, startBoundary + startShoulder, parameter);
     float endEase = 1.0 - smoothstep(endBoundary, endBoundary + endShoulder, 1.0 - parameter);
     bodyHalfWidth = max(v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
