@@ -14,7 +14,8 @@ export function cameraRevealZoom(fitRatio: number, liveRatio: number, projection
 }
 export type RevealSource = 'cursor' | 'selection' | 'viewport' | null;
 export type RevealPosition = Readonly<{ x: number; y: number; radius?: number }>;
-export type RevealAdmission = Readonly<{ parentId: string; count: number; threshold: number; clusterId: string; order: number }>;
+export type RevealAdmission = Readonly<{ parentId: string; count: number; threshold: number; band?: RevealBand; clusterId: string; order: number }>;
+export type RevealRelease = Readonly<{ parentId: string; clusterId: string; band: RevealBand; cause: 'band-exit' | 'fit' | 'cap-eviction' }>;
 export type RevealState = Readonly<{
   epoch: number; focusClusterId: string | null; focusSource: RevealSource;
   pendingFocusClusterId: string | null;
@@ -25,6 +26,9 @@ export type RevealInput = Readonly<{
   index: V2Index; disclosure: DisclosureState; zoom: number; settled: boolean;
   cursor: Readonly<{ x: number; y: number }> | null;
   selectionId: string | null; focusId: string | null;
+  /** Only an intentional selection may preserve a focus path; hover is merely a camera anchor. */
+  explicitFocusId?: string | null;
+  fit?: boolean;
   viewport: Readonly<{ x: number; y: number; width: number; height: number }>;
   positions: ReadonlyMap<string, RevealPosition>;
   previous: RevealState;
@@ -33,6 +37,7 @@ export type RevealInput = Readonly<{
 export type RevealDecision = Readonly<{
   state: RevealState; auto: ReadonlyMap<string, number>;
   admittedIds: readonly string[]; evictedParentIds: readonly string[];
+  released: readonly RevealRelease[];
   passageRequests: readonly string[]; disclosedIds: readonly string[];
   band: RevealBand; capped: boolean;
 }>;
@@ -156,16 +161,27 @@ export function stepReveal(input: RevealInput): RevealDecision {
   let admissions = [...input.previous.admissions];
   let tier = input.previous.tier;
   const evicted: string[] = [], requests: string[] = [];
-  const protectedIds = new Set([input.selectionId, input.focusId, ...input.disclosure.manualOrder].filter((id): id is string => !!id));
+  const protectedIds = new Set([input.selectionId, input.explicitFocusId, ...input.disclosure.manualOrder].filter((id): id is string => !!id));
   const protectedPath = new Set<string>();
   for (const id of protectedIds) {
     let node = byId.get(id); const seen = new Set<string>();
     while (node && !seen.has(node.id)) { seen.add(node.id); protectedPath.add(node.id); node = node.parent ? byId.get(node.parent) : undefined; }
   }
   const passages = new Set(input.previous.pendingPassages);
-  if (input.settled && input.zoom < input.previous.lastZoom) {
+  const band = input.fit ? 'far' : input.settled ? revealBand(input.zoom, input.previous.band) : input.previous.band;
+  const bandRank: Record<RevealBand, number> = { far: 0, intermediate: 1, near: 2, deep: 3 };
+  const admissionBand = (item: RevealAdmission): RevealBand => item.band ?? revealBand(REVEAL_THRESHOLDS[item.threshold] ?? 1);
+  const released: RevealRelease[] = [];
+  if (input.settled && (input.fit || input.zoom < input.previous.lastZoom)) {
     while (tier >= 0 && input.zoom < REVEAL_EXIT_THRESHOLDS[tier]!) tier--;
-    admissions = admissions.filter(item => item.threshold <= tier || protectedPath.has(item.parentId));
+    if (input.fit) tier = -1;
+    admissions = admissions.filter(item => {
+      if ((!input.fit && bandRank[admissionBand(item)] <= bandRank[band] && item.threshold <= tier) || protectedPath.has(item.parentId)) return true;
+      released.push({ parentId: item.parentId, clusterId: item.clusterId, band: admissionBand(item),
+        cause: input.fit ? 'fit' : 'band-exit' });
+      return false;
+    });
+    for (const id of passages) if (!protectedPath.has(id) && !admissions.some(item => item.parentId === id)) passages.delete(id);
   }
   const admit = (threshold: number, parent: V2Node): void => {
     const before = new Set(v2Visible(input.index, input.disclosure, autoPages(admissions), cap,
@@ -177,7 +193,7 @@ export function stepReveal(input: RevealInput): RevealDecision {
     if (existing >= available.length || input.disclosure.expanded.has(parent.id)) return;
     const proposal: RevealAdmission = { parentId: parent.id,
       count: Math.min(currentAuto === undefined ? existing + page : page, available.length - (currentAuto ?? 0)),
-      threshold, clusterId: clusterOf(parent.id)!, order: admissions.length ? Math.max(...admissions.map(a => a.order)) + 1 : 0 };
+      threshold, band, clusterId: clusterOf(parent.id)!, order: admissions.length ? Math.max(...admissions.map(a => a.order)) + 1 : 0 };
     let candidate = [...admissions, proposal];
     const wanted = Math.min(page, available.length - existing);
     const succeeds = (items: readonly RevealAdmission[]) => {
@@ -200,7 +216,11 @@ export function stepReveal(input: RevealInput): RevealDecision {
         if (succeeds(candidate)) break;
       }
     }
-    if (succeeds(candidate)) { admissions = candidate; evicted.push(...removed); }
+    if (succeeds(candidate)) {
+      admissions = candidate; evicted.push(...removed);
+      for (const victim of removed) for (const item of input.previous.admissions.filter(item => item.parentId === victim))
+        released.push({ parentId: item.parentId, clusterId: item.clusterId, band: admissionBand(item), cause: 'cap-eviction' });
+    }
   };
   const chooseParent = (threshold: number): V2Node | undefined => {
     const maxLevel = threshold >= 3 ? 4 : threshold >= 2 ? 3 : 2;
@@ -231,7 +251,7 @@ export function stepReveal(input: RevealInput): RevealDecision {
     if (rootHasHiddenChildren) return root;
     return undefined;
   };
-  if (input.settled && Number.isFinite(input.zoom) && input.zoom > input.previous.lastZoom &&
+  if (!input.fit && band !== 'far' && input.settled && Number.isFinite(input.zoom) && input.zoom > input.previous.lastZoom &&
       input.zoom >= input.previous.lastZoom * (input.minZoomStep ?? 1)) {
     // One admission per settled camera step, even if several numeric thresholds were crossed
     // or no threshold was crossed inside a broad LOD band.
@@ -248,7 +268,7 @@ export function stepReveal(input: RevealInput): RevealDecision {
     }
   }
   // A fetch completion can materialize its page at the same camera threshold.
-  for (const id of [...passages]) if ((children.get(id)?.length ?? 0) > (autoPages(admissions).get(id) ?? 0)) {
+  for (const id of input.fit ? [] : [...passages]) if ((children.get(id)?.length ?? 0) > (autoPages(admissions).get(id) ?? 0)) {
     const parent = byId.get(id);
     const previousCount = autoPages(admissions).get(id) ?? 0;
     if (parent && input.settled) admit(tier, parent);
@@ -256,11 +276,10 @@ export function stepReveal(input: RevealInput): RevealDecision {
   }
   const auto = autoPages(admissions);
   const after = v2Visible(input.index, input.disclosure, auto, cap, admissions.at(-1)?.parentId);
-  const band = input.settled ? revealBand(input.zoom, input.previous.band) : input.previous.band;
   return { state: { epoch, focusClusterId: clusterId, focusSource: source, pendingFocusClusterId,
       lastZoom: input.settled && Number.isFinite(input.zoom) ? input.zoom : input.previous.lastZoom, band, tier,
       admissions, pendingPassages: [...passages].sort(cmp) }, auto,
     admittedIds: after.nodes.map(node => node.id).filter(id => !visible.has(id)).sort(cmp),
-    evictedParentIds: [...new Set(evicted)].sort(cmp), passageRequests: requests.sort(cmp),
+    evictedParentIds: [...new Set(evicted)].sort(cmp), released, passageRequests: requests.sort(cmp),
     disclosedIds: after.nodes.map(node => node.id), band, capped: after.capped };
 }

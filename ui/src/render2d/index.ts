@@ -1407,6 +1407,8 @@ export type Projection2dHandle = {
   /** Samples a node through the mounted Sigma camera at settle time. */
   graphToViewport(point: Vec2): Vec2;
   readCameraState(): CameraState;
+  /** Restore the mounted fitted camera without remounting. */
+  restoreCameraState(state: CameraState): void;
   /** IDs placed by the most recent typed label pass; reading them schedules no render. */
   readPlacedLabelIds(): readonly string[];
   /** Appearance of the derived geometry (containers, curves, field rings); never moves it. */
@@ -1814,6 +1816,8 @@ export function mountProjection2d(
     },
     graphToViewport: point => sigma.graphToViewport(point),
     readCameraState: () => sigma.getCamera().getState(),
+    // Zoom recompaction uses the same mounted Sigma camera for Adatta.
+    restoreCameraState(state) { sigma.getCamera().setState(state); sigma.refresh(); redraw(); rebuildPickIndex(); },
     readPlacedLabelIds: () => labels.readLabelIds(),
     readSurfaceWitness: () => ({ nodeIds: graph.nodes(), semanticEdgeIds: graph.edges(),
       visualRelationIds: [...scene.visualRelations.keys()], curveIds: [...scene.curves.keys()],

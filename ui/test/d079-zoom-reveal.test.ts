@@ -97,3 +97,65 @@ test('each depth grows along one branch, shrinks back, and sub-notch jitter adds
     cursor: null, selectionId: null, focusId: null, viewport, positions: new Map(), minZoomStep: 1.08 });
   assert.deepEqual(out.disclosedIds, ['domain', 'project']);
 });
+
+test('settled outward crossings release automatic pages by entry band and restore exact fit ids', () => {
+  const index: V2Index = { nodes: [node('domain', 1, null), node('project', 2, 'domain'),
+    node('source', 3, 'project'), node('proposal', 4, 'source'), node('passage', 5, 'proposal'),
+    ...Array.from({ length: 100 }, (_, i) => node(`z-other:${String(i).padStart(3, '0')}`, 4, 'source'))], edges: [] };
+  const disclosure = emptyDisclosure(); disclosure.overview = true;
+  const fitIds = v2Visible(index, disclosure).nodes.map(item => item.id);
+  const positions = new Map([['source', { x: 100, y: 100, radius: 24 }],
+    ['proposal', { x: 100, y: 100, radius: 24 }]]);
+  let previous = emptyRevealState();
+  const step = (zoom: number, settled = true) => {
+    const decision = stepReveal({ index, disclosure, previous, zoom, settled,
+      cursor: { x: 100, y: 100 }, selectionId: null, focusId: 'source', viewport, positions });
+    previous = decision.state;
+    return decision;
+  };
+  for (const zoom of [2, 2.7, 3.8, 5, 6.6]) step(zoom);
+  assert.ok(previous.admissions.some(item => item.band === 'intermediate'));
+  assert.ok(previous.admissions.some(item => item.band === 'near'));
+  assert.ok(previous.admissions.some(item => item.band === 'deep'));
+  const moving = step(5.3, false);
+  assert.equal(moving.released.length, 0);
+  const near = step(5.3);
+  assert.ok(near.released.length > 0);
+  assert.ok(near.released.some(item => item.band === 'deep' && item.cause === 'band-exit'));
+  const intermediate = step(2.9);
+  assert.ok(intermediate.released.some(item => item.band === 'near'));
+  assert.ok(intermediate.state.admissions.every(item => item.band === 'intermediate'));
+  const far = step(1.1);
+  assert.ok(far.released.some(item => item.band === 'intermediate'));
+  assert.deepEqual(far.disclosedIds, fitIds);
+  assert.equal(far.state.admissions.length, 0);
+});
+
+test('explicit expansion and selected path survive outward zoom and Adatta compacts other pages', () => {
+  const index: V2Index = { nodes: [node('domain', 1, null), node('project', 2, 'domain'),
+    node('source', 3, 'project'), node('proposal', 4, 'source'), node('passage', 5, 'proposal')], edges: [] };
+  const disclosure = emptyDisclosure(); disclosure.overview = true;
+  let previous = emptyRevealState();
+  const positions = new Map([['source', { x: 100, y: 100, radius: 24 }]]);
+  const step = (zoom: number, selectionId: string | null = null, fit = false) => {
+    const decision = stepReveal({ index, disclosure, previous, zoom, settled: true, fit,
+      cursor: { x: 100, y: 100 }, selectionId, focusId: 'source', viewport, positions });
+    previous = decision.state;
+    return decision;
+  };
+  for (const zoom of [2, 2.7, 3.8, 5, 6.6]) step(zoom);
+  disclosure.expanded.add('source'); disclosure.manualOrder.push('source');
+  const out = step(1.1);
+  assert.ok(out.disclosedIds.includes('source'));
+  assert.ok(out.disclosedIds.includes('proposal'));
+  assert.ok(out.state.admissions.some(item => item.parentId === 'project'));
+  disclosure.expanded.clear(); disclosure.manualOrder.length = 0;
+  previous = emptyRevealState();
+  for (const zoom of [2, 2.7, 3.8, 5]) step(zoom);
+  const selected = step(1.1, 'passage');
+  assert.ok(selected.disclosedIds.includes('passage'));
+  assert.ok(selected.disclosedIds.includes('proposal'));
+  const fitted = step(1, 'passage', true);
+  assert.ok(fitted.disclosedIds.includes('passage'));
+  assert.ok(fitted.released.every(item => item.cause === 'fit'));
+});

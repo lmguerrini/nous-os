@@ -1,6 +1,6 @@
 import { styleProjection } from '../render-common/projection-style.ts';
 import { cameraRevealZoom, emptyRevealState, focusOnlyReveal, revealClusterOf, stepReveal } from './reveal-controller.ts';
-import type { RevealState } from './reveal-controller.ts';
+import type { RevealDecision, RevealState } from './reveal-controller.ts';
 import { buildRevealWitness, routeRelationsAfterLOD } from './relation-routing.ts';
 import type { RouteResult, RouteRelation, RevealWitnessInput } from './relation-routing.ts';
 import { displayLabel, presentationText, validateIndex } from './graph-v2.ts';
@@ -36,6 +36,7 @@ import type { LegacyIndraProjectionResult } from '../projection/legacy-indra.ts'
 import { validateRenderVisibility } from '../projection/contract.ts';
 import { canonicalRawJson, createSemanticSnapshot, normalizeRawLedger } from '../projection/normalize.ts';
 import { mountProjection2d } from '../render2d/index.ts';
+import type { Projection2dHandle } from '../render2d/index.ts';
 import { mount as mount3f } from '../render3f/mount.tsx';
 import type { Render3fRendererHandle } from '../render3f/mount.tsx';
 import { resolvedNodeBounds } from '../render3f/camera.tsx';
@@ -364,6 +365,8 @@ export interface ProjectionPageRenderer extends ProjectionRenderer {
     onHover(handler: (pick: PickResult | null, x: number, y: number) => void): void;
     /** The page's zoom-LOD tick reads the live camera ratio; absent on test fakes. */
     readonly readCameraState?: () => { readonly ratio: number } | null;
+    /** Restore the camera fitted when this typed renderer mounted, on the same host. */
+    readonly fitCamera?: () => void;
     /** Read-only projection through the live renderer camera, sampled only at settle. */
     readonly projectNode?: (point: Vec3) => { readonly x: number; readonly y: number } | null;
     /** The 3D pose shape the gizmo reads (`main.ts`); only the 3D adapter can supply it. */
@@ -523,6 +526,7 @@ export class V2Page {
     private autoPageCounts = new Map<string, number>();
     private structuralRoots = new Set<string>();
     private revealState: RevealState = emptyRevealState();
+    private revealReleased: RevealDecision['released'] = [];
     private revealCamera = { zoom: 1, band: 'far' as RevealState['band'], settled: true };
     private revealRevision = 0;
     private revealDrawnKey = '';
@@ -534,6 +538,7 @@ export class V2Page {
         band: RevealState['band']; zoom: number;
         cluster: { id: string | null; childrenShown: number };
         cap: { global: number; local: number }; inclusions: string[];
+        released: RevealDecision['released'];
     }) | null = null;
     private cursor: { x: number; y: number } | null = null;
     private zoomOn = true;
@@ -773,6 +778,7 @@ export class V2Page {
             cluster: { id: focus, childrenShown: focus ? [...rendered].filter(id =>
                 id !== focus && revealClusterOf(this.index, id) === focus).length : 0 },
             cap: { global: V2_CAP, local: V2_PAGE },
+            released: this.revealReleased,
             inclusions: [...rendered].sort(),
         };
     }
@@ -787,7 +793,8 @@ export class V2Page {
             this.revealState = { ...this.revealState, admissions: [...this.auto].map((parentId, order) => {
                 let node = byId.get(parentId);
                 while (node?.parent && byId.has(node.parent)) node = byId.get(node.parent);
-                return { parentId, count: V2_PAGE, threshold: -1, clusterId: node?.id ?? parentId, order };
+                return { parentId, count: V2_PAGE, threshold: -1, band: 'intermediate' as const,
+                    clusterId: node?.id ?? parentId, order };
             }) };
         }
         const root = document.getElementById('render-root');
@@ -816,6 +823,7 @@ export class V2Page {
         }
         const decision = stepReveal({ index: this.index, disclosure: this.history.state, zoom, settled,
             cursor: this.cursor, selectionId: this.selected, focusId: this.projectionFocus(),
+            explicitFocusId: this.selected ? this.projectionFocus() : null,
             viewport: { x: 0, y: 0, width, height }, positions, previous: this.revealState,
             minZoomStep: 1.08 });
         if (focusOnly) {
@@ -824,6 +832,7 @@ export class V2Page {
             return false;
         }
         this.revealState = decision.state;
+        this.revealReleased = decision.released;
         this.revealCamera = { zoom, band: decision.band, settled };
         const changed = [...decision.auto].some(([id, count]) => this.autoPageCounts.get(id) !== count) ||
             [...this.autoPageCounts.keys()].some(id => !decision.auto.has(id));
@@ -834,9 +843,11 @@ export class V2Page {
             void this.passages(id, this.index.nodes.filter(node => node.parent === id).length).then(() => {
                 const after = stepReveal({ index: this.index, disclosure: this.history.state, zoom, settled: true,
                     cursor: this.cursor, selectionId: this.selected, focusId: this.projectionFocus(),
+                    explicitFocusId: this.selected ? this.projectionFocus() : null,
                     viewport: { x: 0, y: 0, width, height }, positions, previous: this.revealState,
                     minZoomStep: 1.08 });
                 this.revealState = after.state;
+                this.revealReleased = after.released;
                 this.autoPageCounts = new Map(after.auto);
                 this.auto = new Set(after.auto.keys());
                 void this.refresh();
@@ -1983,6 +1994,7 @@ export class V2Page {
                 };
                 if (dimension === '2d') {
                     let handle: ReturnType<typeof mountProjection2d> | null = null;
+                    let fittedCamera: ReturnType<Projection2dHandle['readCameraState']> | null = null;
                     host.addEventListener('click', event => {
                         if (!handle || !pickHandler) return;
                         pickHandler(handle.pickAtPoint(local(event)), event.shiftKey);
@@ -1999,15 +2011,18 @@ export class V2Page {
                         mount(styled, visibility) {
                             if (!currentSnapshot) throw new Error('Default 2D renderer mounted before its snapshot');
                             handle = mountProjection2d(host, currentSnapshot, styled, visibility);
+                            fittedCamera = handle.readCameraState();
                         },
                         updateVisibleSubset(styled, visibility) { handle?.updateVisibleSubset(styled, visibility); },
                         readCameraState: () => handle?.readCameraState() ?? null,
+                        fitCamera: () => { if (fittedCamera) handle?.restoreCameraState(fittedCamera); },
                         projectNode: point => handle?.graphToViewport(point) ?? null,
                         readPlacedLabelIds: () => handle?.readPlacedLabelIds() ?? [],
-                        destroy() { handle?.destroy(); handle = null; },
+                        destroy() { handle?.destroy(); handle = null; fittedCamera = null; },
                     };
                 }
                 let handle: Render3fRendererHandle | null = null;
+                let fittedCamera: ReturnType<Render3fRendererHandle['readCameraState']> | null = null;
                 let mountedStyled: StyledProjection | null = null;
                 let hoveredNodeId: string | null = null;
                 const wheelAnchorCanvas = () => host.querySelector<HTMLCanvasElement>('canvas[data-render3f-canvas]');
@@ -2051,6 +2066,7 @@ export class V2Page {
                                 temperature: 'balanced', theme: 'dark', lodBand: 'micro',
                                 reducedMotion: true, elapsedMilliseconds: 0 },
                             frame, undefined, undefined, input);
+                        fittedCamera = handle.readCameraState();
                         if (hoveredNodeId) setWheelAnchor(styled.projection.positions3?.[hoveredNodeId] ?? null);
                     },
                     updateVisibleSubset(styled, visibility) {
@@ -2059,11 +2075,13 @@ export class V2Page {
                         if (hoveredNodeId) setWheelAnchor(styled.projection.positions3?.[hoveredNodeId] ?? null);
                     },
                     readCameraState: () => handle?.readCameraState() ?? null,
+                    fitCamera: () => { if (fittedCamera) handle?.restoreCameraState(fittedCamera); },
                     projectNode: point => handle && handle.isWorldPointVisible(point)
                         ? handle.graphToViewport(point) : null,
                     readCameraPose: () => handle?.readReviewCameraPose() ?? null,
                     readPlacedLabelIds: () => handle?.readPlacedLabelIds() ?? [],
-                    destroy() { hoveredNodeId = null; setWheelAnchor(null); handle?.destroy(); handle = null; mountedStyled = null; },
+                    destroy() { hoveredNodeId = null; setWheelAnchor(null); handle?.destroy(); handle = null;
+                        mountedStyled = null; fittedCamera = null; },
                 };
             },
             style: (result, snapshot) => page.styleTypedProjection(result, snapshot),
@@ -2943,14 +2961,33 @@ export class V2Page {
     async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
     async fit() {
         this.noteCameraIntent();
+        const compacted = stepReveal({ index: this.index, disclosure: this.history.state,
+            previous: this.revealState, zoom: 1, settled: true, fit: true,
+            cursor: null, selectionId: this.selected, focusId: this.selected ? this.projectionFocus() : null,
+            explicitFocusId: this.selected ? this.projectionFocus() : null,
+            viewport: { x: 0, y: 0, width: 1, height: 1 }, positions: new Map() });
+        const changed = [...compacted.auto].some(([id, count]) => this.autoPageCounts.get(id) !== count) ||
+            [...this.autoPageCounts.keys()].some(id => !compacted.auto.has(id));
+        this.revealState = compacted.state;
+        this.revealReleased = compacted.released;
+        this.revealCamera = { zoom: 1, band: 'far', settled: true };
+        this.autoPageCounts = new Map(compacted.auto);
+        this.auto = new Set(compacted.auto.keys());
+        this.lastRevealSampleKey = '';
+        if (changed) await this.refresh();
         const fitEpoch = this.cameraIntentEpoch;
         this.programmaticCamera();
-        await this.view?.fit();
+        if (this.view) await this.view.fit();
+        else this.projectionRenderer?.fitCamera?.();
         if (fitEpoch !== this.cameraIntentEpoch) return;
         this.programmaticCamera();
         this.lastFitCamera = this.view?.readCamera() ?? null;
         this.userMovedSinceFit = false;
-        this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
+        const fitRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ??
+            this.projectionRenderer?.readCameraState?.()?.ratio;
+        this.overviewRatio = fitRatio ?? this.overviewRatio;
+        this.lastZoomRatio = fitRatio ?? this.lastZoomRatio;
+        if (!changed && this.revealRoute) this.publishReveal(this.revealRoute, this.rendered);
     }
     async center() {
         const positionRecord = Object.fromEntries([...this.positions].map(([id, point]) => [id, point]));
