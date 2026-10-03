@@ -49,8 +49,27 @@ test('toolbar wraps at supported widths and selected labels remain visible', () 
   for (const width of [1024, 1080, 1280, 1336, 1440, 1920]) {
     assert.ok(width >= 1024 && width <= 1920);
   }
-  assert.match(html, /\.header-top,\.axes,\.tools,\.axis \{[^}]*flex-wrap:\s*wrap[^}]*min-width:\s*0/);
-  assert.match(html, /\.axes,\.tools \{ flex-wrap:wrap;overflow:visible/);
+  assert.match(html, /#toolbar-controls \{ display:flex; flex-wrap:wrap;[^}]*min-width:0/,
+    'all top-level control groups share one horizontal flow');
+  assert.match(html, /#toolbar-controls > \.axes \{ display:contents \}/,
+    'axis groups participate in that flow as whole groups');
+  assert.match(html, /#toolbar-controls \.axis \{ flex:0 0 auto;[^}]*min-height:30px/,
+    'groups do not stretch to full width and stay on one line');
+  assert.match(html, /#toolbar-controls \.axis strong \{[^}]*white-space:nowrap/,
+    'captions remain inline with each group');
+  assert.match(html, /#toolbar-controls \.tools \{[^}]*flex-wrap:nowrap/,
+    'search, panel, filters and more remain on one line');
+  assert.match(header, /id="advanced-controls"[^]*?<\/div><\/div><div class="axis" id="appearance-group"/,
+    'Aspetto is a separate toolbar group after the utility controls');
+  assert.match(html, /@media \(min-width:1336px\) \{\s*#toolbar-controls \{ row-gap:2px;/,
+    'wide layout budgets two 30px group rows plus a 2px gap');
+  assert.match(html, /@media \(max-width:1100px\) \{\s*#toolbar-controls \{ column-gap:4px; row-gap:3px/,
+    '1024px layout uses compact spacing for a maximum three-row fit');
+  assert.match(header, /<strong>Densità<\/strong>/);
+  assert.match(header, /<strong>Aspetto<\/strong>/);
+  assert.doesNotMatch(header, /Densità \/ Aspetto/);
+  assert.equal((header.match(/<strong>Densità<\/strong>/g) ?? []).length, 1,
+    'there is one density group');
   assert.match(html, /#status \{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/);
   assert.doesNotMatch(header, /style="[^"]*width:\s*\d{4,}px/);
 });
