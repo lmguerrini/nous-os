@@ -25,6 +25,7 @@ import type { AppearanceOptions } from "../engine/presentation-options.ts";
 import { PALETTES, hexRgb, v2CategoryColour } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
+import type { RelationClass } from "./reading.ts";
 import { buildVisibilityWitness, countAggregateRepresentation } from './visibility-witness.ts';
 import { cachedStarfieldStars } from '../render-common/starfield.ts';
 import type { ReviewEdge } from "./model.ts";
@@ -88,6 +89,39 @@ export function edgePresentationFloors(organization: Axes['organization'], morph
   if (organization === 'natural' && morphology !== 'stellar')
     return { opacityPermille: structural ? 300 : 440, widthPermille: 0 };
   return { opacityPermille: 0, widthPermille: 0 };
+}
+
+/** Native-resolution ink floors for the three actual relation classes. Both renderers consume
+ * this presentation, so the same limits apply in 2D and 3D and at every zoom band. Stellar's
+ * own arc window still caps its final width; these factors reach the upper part of that window
+ * without changing its shape or adding relations. */
+export function perceptibleEdgeFloors(organization: Axes['organization'], morphology: Axes['morphology'],
+  kind: RelationClass): { readonly opacityPermille: number; readonly widthPermille: number } {
+  if (organization === 'natural') {
+    if (morphology === 'stellar') return kind === 'structural'
+      ? { opacityPermille: 900, widthPermille: 900 }
+      : kind === 'attested' ? { opacityPermille: 960, widthPermille: 1000 }
+      : { opacityPermille: 1000, widthPermille: 1000 };
+    return kind === 'structural' ? { opacityPermille: 550, widthPermille: 900 }
+      : kind === 'attested' ? { opacityPermille: 720, widthPermille: 1000 }
+      : { opacityPermille: 900, widthPermille: 1000 };
+  }
+  if (morphology === 'stellar') return kind === 'structural'
+    ? { opacityPermille: 850, widthPermille: 850 }
+    : kind === 'attested' ? { opacityPermille: 930, widthPermille: 950 }
+    : { opacityPermille: 1000, widthPermille: 1000 };
+  return kind === 'structural' ? { opacityPermille: 440, widthPermille: 800 }
+    : kind === 'attested' ? { opacityPermille: 560, widthPermille: 900 }
+    : { opacityPermille: 700, widthPermille: 1000 };
+}
+
+export function applyPerceptibleEdgeFloors(
+  organization: Axes['organization'], morphology: Axes['morphology'], kind: RelationClass,
+  opacityPermille: number, widthPermille: number,
+): { readonly opacityPermille: number; readonly widthPermille: number } {
+  const floor = perceptibleEdgeFloors(organization, morphology, kind);
+  return { opacityPermille: Math.max(opacityPermille, floor.opacityPermille),
+    widthPermille: Math.max(widthPermille, floor.widthPermille) };
 }
 
 /** Observe wheel motion before Sigma consumes its bubbling event. */
@@ -1212,16 +1246,21 @@ export const createProductView: CreateProductView = async (input) => {
     // In Indra the pearls carry the structure: unselected semantic arcs recede (thinner, fainter) so rims and names read.
     const indraDim = axes.organization === 'indra' ? indraArcPresentation(axes.projection, exploratory) : null;
     const floor = edgePresentationFloors(axes.organization, axes.morphology, Boolean(structural));
+    const opacityPermille = input.v2Prepared ? Math.max(floor.opacityPermille, Math.round(SCENE_PERMILLE_SCALE
+      * (exploratory ? 0.9 : coMembership ? 0.62 : containment ? 0.5 : axes.reading === 'attested' ? 0.68 : 0.36)
+      * (indraDim?.opacityFactor ?? 1)))
+      : axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE;
+    const widthPermille = input.v2Prepared ? Math.max(floor.widthPermille, Math.round(SCENE_PERMILLE_SCALE
+      * (coMembership ? Math.min(1.4, (relation?.width ?? 1) * 0.75) : containment ? 0.8 : 1)
+      * (indraDim?.widthFactor ?? 1)))
+      : SCENE_PERMILLE_SCALE;
+    const legible = input.v2Prepared
+      ? applyPerceptibleEdgeFloors(axes.organization, axes.morphology,
+        structural ? 'structural' : exploratory ? 'exploratory' : 'attested', opacityPermille, widthPermille)
+      : { opacityPermille, widthPermille };
     return { category,
       // Width is never the only signal: exploratory reads through its halo and flow, not through extra thickness.
-      opacityPermille: input.v2Prepared ? Math.max(floor.opacityPermille, Math.round(SCENE_PERMILLE_SCALE
-        * (exploratory ? 0.9 : coMembership ? 0.62 : containment ? 0.5 : axes.reading === 'attested' ? 0.68 : 0.36)
-        * (indraDim?.opacityFactor ?? 1)))
-        : axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
-      widthPermille: input.v2Prepared ? Math.max(floor.widthPermille, Math.round(SCENE_PERMILLE_SCALE
-        * (coMembership ? Math.min(1.4, (relation?.width ?? 1) * 0.75) : containment ? 0.8 : 1)
-        * (indraDim?.widthFactor ?? 1)))
-        : SCENE_PERMILLE_SCALE,
+      ...legible,
       ...(axes.colour === "bw" && input.v2Prepared ? { tintSrgb: [0.64, 0.64, 0.64] as const }
         : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
     } as const;
