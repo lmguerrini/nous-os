@@ -37,13 +37,13 @@ import type { CanvasDisc } from "../render-common/container-canvas.ts";
 
 import { MORPHOLOGY_CONTRACT, stellarIndra3dNodeRadiusPx } from "../engine/morphology-contract.ts";
 import { drawFlowLayer, stellarStarCoreRadiusPx } from "../render-common/morphology-canvas.ts";
+import { InteractionQualityController } from "../render-common/interaction-quality.ts";
 import type { DistinctSubsetUpdate, MorphologyCanvasStyle } from "../render-common/morphology-canvas.ts";
 import type { Axes, CreateProductView, Insets, LabelWitness, ViewportRect, VisibleSubsetUpdate } from "./view-contract.ts";
 import { NATURAL_ORGANIZATION } from "./view-contract.ts";
 import {
   CAMERA_STILLNESS_MS,
   MovingLabelPassSchedule,
-  QualityGovernor,
   ScheduleMarks,
   cameraWatchShouldRun,
   movingLabelPassHasCandidates,
@@ -546,7 +546,6 @@ export const createProductView: CreateProductView = async (input) => {
   let destroyed = false;
   let lastCamera = "";
   let cameraLabelTimer: ReturnType<typeof setTimeout> | undefined;
-  let cameraLabelIdle: number | null = null;
   // D-072 P1a: the scheduled backing-store scale of the canvas layers. The view shadows
   // `window.devicePixelRatio` with a live getter for its whole lifetime: the only per-draw readers
   // of the global are the two morphology canvases (render2d and the 3D distinct overlay), so the
@@ -561,7 +560,16 @@ export const createProductView: CreateProductView = async (input) => {
   // (hidden tab, reduced motion, controls off, no animated edge left). The main morphology canvas
   // is touched only by camera, scene and appearance changes.
   let flowMotion = input.flowMotion ?? true;
-  const qualityGovernor = new QualityGovernor();
+  const qualityController = new InteractionQualityController(() => {
+    // A timer can win a race with the next camera-watch frame. Keep reduced drawing until that
+    // frame has observed the final camera state, then arm a fresh restore deadline.
+    if (handle !== null && JSON.stringify(handle.readCameraState()) !== lastCamera) {
+      qualityController.touch();
+      startCameraWatch();
+      return;
+    }
+    onQualityFull(performance.now());
+  });
   // D-072 R3 (X9): the moving label pass runs one frame after the camera change that requested
   // it, never synchronously inside a watch tick; and the scheduling events a test reads
   // through `__d072.marks()` — quality flips, resolution applies, label passes, remounts.
@@ -1067,24 +1075,17 @@ export const createProductView: CreateProductView = async (input) => {
   // pauses whenever nothing can animate.
   const cameraWatch = { running: false, lastChangeMs: null as number | null, motionUntilMs: 0 };
   const cameraFrameTimes: number[] = [];
-  // The settle label pass (D-072 P1a): deferred to idle time so the camera-settle frame itself
-  // stays light — one 100–340 ms hitch per interaction was exactly this pass running synchronously
-  // at settle. `requestIdleCallback` with a timeout keeps it within ~220 ms even under load; the
-  // setTimeout fallback keeps non-browser hosts on the old cadence. Coalesced: each new camera
-  // change cancels the pending pass and reschedules it.
+  // The full label pass runs in a task after the quality transition. Camera frames retain the
+  // reduced pass; a full placement and its morphology redraw run only once at rest.
   const cancelSettleLabelPass = () => {
-    if (cameraLabelIdle !== null && typeof cancelIdleCallback === "function") cancelIdleCallback(cameraLabelIdle);
-    cameraLabelIdle = null;
     if (cameraLabelTimer !== undefined) clearTimeout(cameraLabelTimer);
     cameraLabelTimer = undefined;
   };
   const scheduleSettleLabelPass = () => {
     cancelSettleLabelPass();
-    if (typeof requestIdleCallback === "function") {
-      cameraLabelIdle = requestIdleCallback(() => { cameraLabelIdle = null; if (!destroyed) labelPass(); }, { timeout: 220 });
-    } else {
-      cameraLabelTimer = setTimeout(() => { if (!destroyed) labelPass(); }, 200);
-    }
+    // The reduced pass has already kept the moving frame light. Finish the restored frame in
+    // the next task, inside the quality deadline, without a second 200 ms label delay.
+    cameraLabelTimer = setTimeout(() => { cameraLabelTimer = undefined; if (!destroyed) labelPass(); }, 0);
   };
   // Capped resolution (D-072 P1a / R3): the backing-store scale swap runs outside any frame
   // loop, on a debounce, and only at rest. D-072 R3 (X9) removed the mid-motion swap — the 90 ms
@@ -1107,6 +1108,7 @@ export const createProductView: CreateProductView = async (input) => {
   const onQualityMoving = () => {
     morphologyInteraction.quality = "moving";
     scheduleMarks.record("quality-moving", performance.now(), 0);
+    cancelSettleLabelPass();
     // X9: no backing-store swap during motion. A rest apply still pending from a previous
     // settle is cancelled here; the settle path schedules it again.
     if (resolutionTimer !== undefined) { clearTimeout(resolutionTimer); resolutionTimer = undefined; }
@@ -1118,15 +1120,14 @@ export const createProductView: CreateProductView = async (input) => {
       layer.replaceChildren();
     }
   };
-  const onQualityFull = (now: number) => {
+  const onQualityFull = (now: number, scheduleLabels = true) => {
     morphologyInteraction.quality = "full";
     scheduleMarks.record("quality-full", now, 0);
     scheduleResolution(40);
-    // The full drawing returns on this frame; the deferred full label pass brings the other labels
-    // back, and the flow overlay fades in with its clock uninterrupted.
+    // labelPass redraws the morphology canvas with the newly placed title discs. Avoid a second
+    // full morphology draw here, which used to double the settle cost.
     flowLoop.resumedAtMs = now;
-    redrawMorphology();
-    scheduleSettleLabelPass();
+    if (scheduleLabels) scheduleSettleLabelPass();
   };
   function startCameraWatch() {
     if (destroyed || cameraWatch.running || handle === null) return;
@@ -1145,6 +1146,7 @@ export const createProductView: CreateProductView = async (input) => {
   };
   const noteCameraMotion = () => {
     cameraWatch.motionUntilMs = performance.now() + CAMERA_STILLNESS_MS;
+    qualityController.defer();
     startCameraWatch();
   };
   function cameraWatchTick(now: number) {
@@ -1156,15 +1158,14 @@ export const createProductView: CreateProductView = async (input) => {
       cameraFrameTimes.push(now);
       if (cameraFrameTimes.length > 120) cameraFrameTimes.shift();
       cameraWatch.lastChangeMs = now;
-      if (qualityGovernor.touch(now) === "moving") onQualityMoving();
+      if (qualityController.touch() === "moving") onQualityMoving();
       // Labels track the camera while it moves — tier-1 only, throttled to the interval, and
       // always deferred to the next frame (see runMovingLabelPass), never synchronous here.
       if (movingLabelSchedule.request(now) === "defer") {
         if (movingLabelFrame) cancelAnimationFrame(movingLabelFrame);
         movingLabelFrame = requestAnimationFrame(runMovingLabelPass);
       }
-      scheduleSettleLabelPass();
-    } else if (qualityGovernor.poll(now) === "full") onQualityFull(now);
+    }
     if (!cameraWatchShouldRun({ nowMs: now, lastChangeMs: cameraWatch.lastChangeMs, pressed: pressedAt !== null, motionUntilMs: cameraWatch.motionUntilMs })) {
       cameraWatch.running = false;
       rebuildScreenPickIndex();
@@ -1621,6 +1622,7 @@ export const createProductView: CreateProductView = async (input) => {
   const onMove = (event: PointerEvent) => {
     if (pressedAt !== null) {
       if (Math.hypot(event.clientX - pressedAt.x, event.clientY - pressedAt.y) > CLICK_DRAG_TOLERANCE_PX) dragged = true;
+      qualityController.defer();
       return;
     }
     pendingHoverEvent = event;
@@ -1639,6 +1641,7 @@ export const createProductView: CreateProductView = async (input) => {
     hoverFrame = 0;
     pendingHoverEvent = null;
     pressedAt = { x: event.clientX, y: event.clientY };
+    qualityController.hold();
     dragged = false;
     // A press may become a drag: the camera watch loop starts observing from the press, not from
     // the first camera change.
@@ -1647,12 +1650,14 @@ export const createProductView: CreateProductView = async (input) => {
   const onRelease = (event: PointerEvent) => {
     if (pressedAt !== null && Math.hypot(event.clientX - pressedAt.x, event.clientY - pressedAt.y) > CLICK_DRAG_TOLERANCE_PX) dragged = true;
     pressedAt = null;
+    qualityController.release();
   };
-  const onCancel = () => { pressedAt = null; dragged = true; pendingHoverEvent = null; };
+  const onCancel = () => { pressedAt = null; qualityController.release(); dragged = true; pendingHoverEvent = null; };
   const onClick = (event: MouseEvent) => {
     if (overControl(event.target)) return;
     const moved = pressedAt === null ? 0 : Math.hypot(event.clientX - pressedAt.x, event.clientY - pressedAt.y);
     pressedAt = null;
+    qualityController.release();
     if (dragged || moved > CLICK_DRAG_TOLERANCE_PX) { dragged = false; return; }
     dragged = false;
     const r = container.getBoundingClientRect();
@@ -1705,6 +1710,7 @@ export const createProductView: CreateProductView = async (input) => {
   try { mount(); }
   catch (error) {
     destroyed = true;
+    qualityController.destroy();
     removeWheelMotion();
     resizeLabelObserver.disconnect();
     document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -1780,7 +1786,7 @@ export const createProductView: CreateProductView = async (input) => {
       if (validCamera(start)) current.restoreCameraState(start);
       // The programmatic motion is over either way: settle quality now so the closing pass below
       // is the full one — labels return with the framing, never a settle later.
-      if (qualityGovernor.endMotion(performance.now()) === "full") onQualityFull(performance.now());
+      if (qualityController.endMotion() === "full") onQualityFull(performance.now(), false);
       labelPass();
       return;
     }
@@ -1822,7 +1828,7 @@ export const createProductView: CreateProductView = async (input) => {
     // The programmatic framing has landed: nothing further will move the camera, so quality
     // returns to full now — the closing label pass below draws the full set, and secondary labels
     // return with the fit itself rather than through the stillness delay and the idle settle.
-    if (qualityGovernor.endMotion(performance.now()) === "full") onQualityFull(performance.now());
+    if (qualityController.endMotion() === "full") onQualityFull(performance.now(), false);
     labelPass();
   }
   return {
@@ -1957,12 +1963,11 @@ export const createProductView: CreateProductView = async (input) => {
     },
     destroy() {
       destroyed = true;
+      qualityController.destroy();
       stopFlowLoop();
       releaseFlowMotion(flowOwner);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       if (resolutionTimer !== undefined) clearTimeout(resolutionTimer);
-      if (cameraLabelIdle !== null && typeof cancelIdleCallback === "function") cancelIdleCallback(cameraLabelIdle);
-      cameraLabelIdle = null;
       resizeLabelObserver.disconnect();
       if (cameraLabelTimer !== undefined) clearTimeout(cameraLabelTimer);
       cancelAnimationFrame(frameId);
