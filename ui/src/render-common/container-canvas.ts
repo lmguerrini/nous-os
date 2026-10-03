@@ -253,6 +253,8 @@ export function containerInkRgb(containerColor: string | null | undefined, field
 
 /** Peak alpha of the glass rim light at the shell limb. Discreet: the background stays dark. */
 export const CONTAINER_RIM_LIGHT_PEAK = 0.16;
+/** A small front-biased rim shoulder makes the illuminated side wider without adding a ring. */
+export const CONTAINER_RIM_LIGHT_OFFSET = 0.12;
 
 /** Deep 3D zoom only: an enclosing shell must not become a translucent full-screen wash.
  * Fit shells occupy less than 58% of the short viewport side and keep their exact old alpha.
@@ -290,6 +292,20 @@ export function containerRimLight(level: number): {
       { offset: 0.9, alpha: peak },
       { offset: 1, alpha: peak * 0.5 },
     ],
+  };
+}
+
+/** Directional depth cues for Indra's 3D glass. These move only the existing gradients; their
+ * palette ink, D-078 alpha stops and two fill operations remain unchanged. */
+export function containerSphereShading(level: number): {
+  readonly fillLightOffset: number;
+  readonly rimShoulderOffset: number;
+  readonly fillAlpha: number;
+} {
+  return {
+    fillLightOffset: -0.46,
+    rimShoulderOffset: CONTAINER_RIM_LIGHT_OFFSET,
+    fillAlpha: level === 0 ? 0.07 : clamp(0.05 - level * 0.004, 0.02, 0.05),
   };
 }
 
@@ -658,10 +674,11 @@ export function drawContainers(
   const ink = containerInkRgb(interaction?.containerColor, fieldColor);
   // Limb stroke styles vary only by (ink, level): one string per level per draw, not per sphere.
   const limbStyles = new Map<number, string>();
+  const shadingStyles = new Map<number, ReturnType<typeof containerSphereShading>>();
   for (const container of containersInDrawOrder(containers).sorted) {
     context.globalAlpha = interaction?.dimFocus && !interaction.dimFocus.members.has(container.id) ? 0.15 : 1;
     if (projection === "3d") {
-      drawSphere(context, container, project, ink, interaction, bounds, cache, limbStyles);
+      drawSphere(context, container, project, ink, interaction, bounds, cache, limbStyles, shadingStyles);
     } else {
       const outline = container.points;
       if (!outline.length) continue;
@@ -724,6 +741,7 @@ export function drawContainers(
     bounds: { readonly width: number; readonly height: number },
     cache: ContainerFrameCache | undefined,
     limbStyles: Map<number, string>,
+    shadingStyles: Map<number, ReturnType<typeof containerSphereShading>>,
   ): void {
     const hook = dashHook();
     const center = project(container.center);
@@ -756,19 +774,26 @@ export function drawContainers(
       // a glass rim light brighter at the limb — both proportional to the limb radius, so one cached
       // unit gradient per (ink, level) serves every sphere, composed under translate + scale.
       if (typeof context.createRadialGradient === "function") {
-        const fillAlpha = container.level === 0 ? 0.07 : clamp(0.05 - container.level * 0.004, 0.02, 0.05);
+        let shading = shadingStyles.get(container.level);
+        if (!shading) {
+          shading = containerSphereShading(container.level);
+          shadingStyles.set(container.level, shading);
+        }
+        const fillAlpha = shading.fillAlpha;
         const rim = containerRimLight(container.level);
         // The unit gradients are only worth building where they can be composed (translate + scale);
         // a minimal context without them falls straight to the per-sphere construction.
         const compose = canComposeTransform(context);
-        const fill = compose ? unitGradient(`sphere-fill\u0000${ink}\u0000${container.level}`, -0.32, -0.32, 0.06, gradient => {
+        const fill = compose ? unitGradient(`sphere-fill\u0000${ink}\u0000${container.level}`,
+          shading.fillLightOffset, shading.fillLightOffset, 0.06, gradient => {
           gradient.addColorStop(0, `rgba(${ink}, ${fillAlpha})`);
           gradient.addColorStop(0.62, `rgba(${ink}, ${fillAlpha * 0.5})`);
           gradient.addColorStop(1, `rgba(${ink}, 0)`);
         }) : null;
-        // Unit geometry: light gathered off-centre at (−0.32, −0.32), from 0.06 out to the limb at 1;
-        // the rim light spans the outer 30 % of the radius, transparent toward the centre.
-        const rimGradient = compose ? unitGradient(`sphere-rim\u0000${ink}\u0000${container.level}`, 0, 0, rim.innerRatio, gradient => {
+        // Unit geometry: the light gathers at the front shoulder, from 0.06 out to the limb at 1;
+        // the rim light stays inside the limb and transparent toward the centre.
+        const rimGradient = compose ? unitGradient(`sphere-rim\u0000${ink}\u0000${container.level}`,
+          shading.rimShoulderOffset, shading.rimShoulderOffset, rim.innerRatio, gradient => {
           for (const stop of rim.stops) gradient.addColorStop(stop.offset, `rgba(${ink}, ${stop.alpha})`);
         }) : null;
         if (fill && rimGradient) {
@@ -782,17 +807,20 @@ export function drawContainers(
           context.restore();
         } else {
           const gradient = context.createRadialGradient(
-            center.x - limbRadius * 0.32, center.y - limbRadius * 0.32, limbRadius * 0.06,
+            center.x + limbRadius * shading.fillLightOffset,
+            center.y + limbRadius * shading.fillLightOffset, limbRadius * 0.06,
             center.x, center.y, limbRadius);
           gradient.addColorStop(0, `rgba(${ink}, ${fillAlpha})`);
           gradient.addColorStop(0.62, `rgba(${ink}, ${fillAlpha * 0.5})`);
           gradient.addColorStop(1, `rgba(${ink}, 0)`);
           context.fillStyle = gradient;
           context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
-          // Glass rim light: brighter at the rim, transparent toward the centre, so the shell reads as a
-          // volume instead of a flat disc. Nothing is added over the inner 70 % of the radius.
+          // Glass rim light: brighter at the rim, transparent toward the centre. The slightly
+          // displaced inner circle makes the front shoulder wider without raising peak alpha.
           const rimAbsolute = context.createRadialGradient(
-            center.x, center.y, limbRadius * rim.innerRatio, center.x, center.y, limbRadius);
+            center.x + limbRadius * shading.rimShoulderOffset,
+            center.y + limbRadius * shading.rimShoulderOffset,
+            limbRadius * rim.innerRatio, center.x, center.y, limbRadius);
           for (const stop of rim.stops) rimAbsolute.addColorStop(stop.offset, `rgba(${ink}, ${stop.alpha})`);
           context.fillStyle = rimAbsolute;
           context.beginPath(); context.arc(center.x, center.y, limbRadius, 0, Math.PI * 2); context.fill();
