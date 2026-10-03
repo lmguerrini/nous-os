@@ -6,7 +6,7 @@ import type { Axes, AxesInput, PageAxes, ProductView, ViewWitness } from "./view
 import type { ResolvedNaturalArrangement } from "../projection/natural-bridge.ts";
 import { FAMILY_OF, standingOf } from "./presentation.ts";
 import { FocusStack } from "./focus-stack.ts";
-import { renderPanel } from "./panel.ts";
+import { centeringNodeId, renderPanel, runCameraAction } from "./panel.ts";
 import { appendFlowLegend, renderFlowLegend, renderLegend } from "./legend.ts";
 import { DEFAULT_APPEARANCE } from "../engine/presentation-options.ts";
 import type { AppearanceOptions } from "../engine/presentation-options.ts";
@@ -219,6 +219,8 @@ function updateButtons() {
   }
   get<HTMLButtonElement>("labels").setAttribute("aria-pressed", String(axes.labels));
   get<HTMLSelectElement>("palette").value = axes.colour;
+  const fullscreenPalette = document.getElementById("fullscreen-palette") as HTMLSelectElement | null;
+  if (fullscreenPalette) fullscreenPalette.value = axes.colour;
   get<HTMLButtonElement>("projection-focus").disabled = !focusAvailable(axes.projection, selectedNode);
   get<HTMLButtonElement>("projection-focus").dataset.tooltip = selectedNode ? "Mostra il nodo e i vicini" : "Seleziona prima un nodo";
   get<HTMLButtonElement>("projection-focus").setAttribute("aria-pressed", String(focusMode));
@@ -238,6 +240,14 @@ function updateButtons() {
   get<HTMLButtonElement>("expand").dataset.tooltip = stack.depth === 0 ? "Seleziona prima un nodo" : "Espandi il vicinato";
   get<HTMLSelectElement>("fullscreen-preset").disabled = axes.projection !== "3d";
   get<HTMLSelectElement>("fullscreen-preset").dataset.tooltip = axes.projection === "3d" ? "Vista 3D" : "Disponibile nella vista 3D";
+  const brainAvailable = axes.organization === "natural" && axes.morphology === "neural" && axes.projection === "3d";
+  for (const id of ["brain", "fullscreen-brain"]) {
+    const brain = document.getElementById(id) as HTMLButtonElement | null;
+    if (brain) {
+      brain.hidden = !brainAvailable;
+      brain.setAttribute("aria-pressed", String(Boolean((axes as PageAxes & { brain?: boolean }).brain)));
+    }
+  }
   const current = stack.current;
   get<HTMLElement>("search-feedback").textContent = current?.capped ? "Vicinato limitato a 60 nodi." : "";
 }
@@ -593,6 +603,23 @@ function fit(): Promise<void> {
     announce(fitNotice(visibleIds.size));
   });
 }
+function center(): Promise<void> {
+  requestGizmoUpdate();
+  if (v2) return v2.center();
+  return enqueue(async () => {
+    if (!view) return;
+    const witness = view.witness();
+    const focused = stack?.current && data.nodes.some(node => node.id === stack.current?.id) ? stack.current.id : null;
+    const targetId = centeringNodeId(witness.positions, focused);
+    if (!targetId) return;
+    const keepNodeAt = (view as typeof view & {
+      keepNodeAt?: (id: string, point: { x: number; y: number }) => boolean;
+    }).keepNodeAt;
+    if (!keepNodeAt) return;
+    const bounds = viewport.getBoundingClientRect();
+    keepNodeAt.call(view, targetId, { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 });
+  });
+}
 function setAxes(input: AxesInput): Promise<void> {
   let partial = normalizeAxesInput(input);
   if (partial.organization === "holographic" || partial.organization === "fractal") {
@@ -885,8 +912,12 @@ document.querySelectorAll<HTMLButtonElement>("[data-preset]").forEach((button) =
 }));
 get<HTMLButtonElement>("projection-focus").addEventListener("click", () => { void toggleFocus(); });
 get<HTMLButtonElement>("fullscreen-focus").addEventListener("click", () => { void toggleFocus(); });
-get<HTMLSelectElement>("palette").addEventListener("change", (event) => {
-  const next = paletteName((event.target as HTMLSelectElement).value);
+get<HTMLButtonElement>("fit").addEventListener("click", () => { void runCameraAction("fit", { fit, center }); });
+get<HTMLButtonElement>("fullscreen-fit").addEventListener("click", () => { void runCameraAction("fit", { fit, center }); });
+get<HTMLButtonElement>("center").addEventListener("click", () => { void runCameraAction("center", { fit, center }); });
+get<HTMLButtonElement>("fullscreen-center").addEventListener("click", () => { void runCameraAction("center", { fit, center }); });
+function changePalette(value: string): void {
+  const next = paletteName(value);
   if (next === "custom" && axes.colour !== "custom") {
     customOrigin = { ...PALETTES[axes.colour] };
     customOriginName = get<HTMLSelectElement>("palette").querySelector<HTMLOptionElement>(`option[value="${axes.colour}"]`)?.textContent || axes.colour;
@@ -896,7 +927,16 @@ get<HTMLSelectElement>("palette").addEventListener("change", (event) => {
   }
   surfaceStack?.set("appearance", true);
   void setAxes({ colour: next }).then(async () => { if (next === "custom") await (v2 ? v2.setPalette(customPalette) : view?.setPalette(customPalette)); syncCustomColours(); }); updateInsets();
-});
+}
+get<HTMLSelectElement>("palette").addEventListener("change", (event) => changePalette((event.target as HTMLSelectElement).value));
+get<HTMLSelectElement>("fullscreen-palette").addEventListener("change", (event) => changePalette((event.target as HTMLSelectElement).value));
+for (const id of ["brain", "fullscreen-brain"]) {
+  const brain = document.getElementById(id);
+  brain?.addEventListener("click", () => {
+    const enabled = !Boolean((axes as PageAxes & { brain?: boolean }).brain);
+    void setAxes({ brain: enabled } as Partial<AxesInput>);
+  });
+}
 const canCloseColours = () => ![...get<HTMLElement>("custom-editor").querySelectorAll<HTMLInputElement>(".colour-row input[type=text]")]
   .some(input => input.getAttribute("aria-invalid") === "true");
 get<HTMLButtonElement>("edit-colours").addEventListener("click", () => {
@@ -1016,7 +1056,6 @@ document.querySelectorAll<HTMLButtonElement>("[data-full-projection]").forEach((
 get<HTMLSelectElement>("fullscreen-preset").addEventListener("change", (event) => {
   const name = (event.target as HTMLSelectElement).value; if (name) void viewPreset(name as ViewPreset);
 });
-get<HTMLButtonElement>("fullscreen-fit").addEventListener("click", () => { void fit(); });
 get<HTMLButtonElement>("fullscreen-reset").addEventListener("click", () => { void reset(); });
 get<HTMLElement>("gizmo").querySelectorAll<HTMLButtonElement>("button[data-axis-end]").forEach((button) => {
   button.addEventListener("click", () => { void viewPreset(({ x: "destra", y: "alto", z: "fronte" } as const)[button.dataset.axisEnd as "x" | "y" | "z"]); });

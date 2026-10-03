@@ -46,6 +46,7 @@ import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labe
 import { createProductView } from './product-view.ts';
 import { appendFlowLegend, renderTypedStructuralLegend } from './legend.ts';
 import { buildNodePanel, buildProjectionExplanationPanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
+import { centeringNodeId } from './panel.ts';
 import type { V2Category } from './palette.ts';
 import { v2CategoryColour } from './palette.ts';
 import type { Axes, AxesInput, CreateProductView, ExperimentalOrganization, FullAxesInput, Organization, PageAxes, ProductView, ViewOrganization } from './view-contract.ts';
@@ -2907,6 +2908,20 @@ export class V2Page {
         this.lastFitCamera = this.view?.readCamera() ?? null;
         this.userMovedSinceFit = false;
         this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio;
+    }
+    async center() {
+        const positionRecord = Object.fromEntries([...this.positions].map(([id, point]) => [id, point]));
+        const targetId = centeringNodeId(positionRecord, this.selected);
+        if (!targetId || !this.view || !this.viewHost) return;
+        const keepNodeAt = (this.view as typeof this.view & {
+            keepNodeAt?: (id: string, point: { x: number; y: number }) => boolean;
+        }).keepNodeAt;
+        if (!keepNodeAt) return;
+        const bounds = this.viewHost.getBoundingClientRect();
+        this.noteCameraIntent();
+        this.programmaticCamera();
+        keepNodeAt.call(this.view, targetId, { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 });
+        this.programmaticCamera();
     }
     async reset() { this.noteCameraIntent(); this.selected = null; if (this.typedActive()) this.typedSelection = null; this.neighbourhoodDepth = null; this.neighbourhoodBefore = null; this.neighbourhoodCamera = null; this.view?.select(null); this.updateEmphasis(); this.syncFocusControls(); this.renderPanel(); this.programmaticCamera(); await this.view?.resetCamera(); this.programmaticCamera(); this.lastFitCamera = this.view?.readCamera() ?? null; this.userMovedSinceFit = false; this.overviewRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ?? this.overviewRatio; }
     async frame(id: string) { this.noteCameraIntent(); this.programmaticCamera(); const members = focusMembers(this.visible().nodes, this.index.edges, id); const ids = [...members].filter(member => this.rendered.has(member)); await (this.view?.frameFocus?.(ids.length ? ids : [id]) ?? this.view?.frame(ids.length ? ids : [id])); this.programmaticCamera(); }

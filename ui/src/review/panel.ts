@@ -1,5 +1,28 @@
 import { attestationMeaning, humanLabel, readableSpan, related } from "./model.ts";
 import type { ReviewExport, ReviewNode } from "./model.ts";
+
+/** Select the requested focus, or the visible node closest to the graph centroid. */
+export function centeringNodeId(
+  positions: Readonly<Record<string, { readonly x: number; readonly y: number; readonly z?: number }>>,
+  focusedId: string | null,
+): string | null {
+  const entries = Object.entries(positions).filter(([, point]) =>
+    Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z ?? 0));
+  if (focusedId && positions[focusedId] && entries.some(([id]) => id === focusedId)) return focusedId;
+  if (!entries.length) return null;
+  const center = entries.reduce((sum, [, p]) => ({ x: sum.x + p.x, y: sum.y + p.y, z: sum.z + (p.z ?? 0) }),
+    { x: 0, y: 0, z: 0 });
+  center.x /= entries.length; center.y /= entries.length; center.z /= entries.length;
+  return entries.reduce((best, [id, p]) => {
+    const distance = (p.x - center.x) ** 2 + (p.y - center.y) ** 2 + ((p.z ?? 0) - center.z) ** 2;
+    return distance < best.distance ? { id, distance } : best;
+  }, { id: entries[0]![0], distance: Number.POSITIVE_INFINITY }).id;
+}
+
+/** Keep the two camera commands separate at the control boundary. */
+export function runCameraAction(action: "center" | "fit", operations: { center(): Promise<void>; fit(): Promise<void> }): Promise<void> {
+  return action === "center" ? operations.center() : operations.fit();
+}
 import { EVIDENCE_HELP, EVIDENCE_STATE, evidenceDescription } from "./evidence-state.ts";
 import { STANDING_TEXT, standingOf } from "./presentation.ts";
 import { navigationFor } from "./navigation.ts";
