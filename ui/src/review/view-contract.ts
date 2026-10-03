@@ -75,7 +75,7 @@ export type SavedOrganization = ViewOrganization;
 export type Arrangement = NaturalArrangement;
 
 /** Black and white is the default; semantic colour is an optional reading aid. */
-export type Colour = "bw" | "warm" | "earth" | "gems" | "night" | "semantic" | "amber" | "old-gold" | "ochre" | "copper" | "alchemical-red" | "warm-twilight" | "sepia" | "brace" | "miele" | "custom";
+export type Colour = "bw" | "warm" | "earth" | "gems" | "night" | "semantic" | "amber" | "old-gold" | "ochre" | "copper" | "alchemical-red" | "warm-twilight" | "sepia" | "brace" | "miele" | "stellar-cold" | "stellar-warm" | "custom";
 export type Reading = "attested" | "exploratory" | "combined";
 
 export type Axes = {
@@ -113,6 +113,7 @@ const READING_INDEX: Record<Reading, true> = { attested: true, exploratory: true
 const COLOUR_INDEX: Record<Colour, true> = {
   bw: true, warm: true, earth: true, gems: true, night: true, semantic: true, amber: true, "old-gold": true,
   ochre: true, copper: true, "alchemical-red": true, "warm-twilight": true, sepia: true, brace: true, miele: true, custom: true,
+  "stellar-cold": true, "stellar-warm": true,
 };
 
 /** This is the closed saved-view vocabulary register and does not accept an unknown view id. */

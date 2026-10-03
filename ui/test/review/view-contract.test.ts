@@ -64,7 +64,7 @@ test("the saved-view vocabulary register is closed and stays pinned to the live 
     organization: ["natural", "indra", "fractal", "holographic"],
     arrangement: ["constellation", "network", "mycelium"],
     reading: ["attested", "exploratory", "combined"],
-    colour: ["bw", "warm", "earth", "gems", "night", "semantic", "amber", "old-gold", "ochre", "copper", "alchemical-red", "warm-twilight", "sepia", "brace", "miele", "custom"],
+    colour: ["bw", "warm", "earth", "gems", "night", "semantic", "amber", "old-gold", "ochre", "copper", "alchemical-red", "warm-twilight", "sepia", "brace", "miele", "custom", "stellar-cold", "stellar-warm"],
   });
   // The colour vocabulary cannot drift from the palette table it names.
   assert.deepEqual([...Object.keys(PALETTES)].sort(), [...SAVED_AXES_VOCABULARIES.colour.filter((colour) => colour !== "custom")].sort());

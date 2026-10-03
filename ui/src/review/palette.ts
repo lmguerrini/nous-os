@@ -25,6 +25,8 @@ export const PALETTES: Readonly<Record<Exclude<Colour, "custom">, PaletteValues>
   // generated harmonies' hue-apart accent, which would put a cold line in a warm palette.
   brace: { ...harmonize("#f0a06a", "#140a06", "analogous"), exploratory: "#ffd166" },
   miele: { ...harmonize("#ffd38b", "#120b05", "analogous"), exploratory: "#f5e663" },
+  "stellar-cold": { background: "#05070b", aggregate: "#a7c5d5", concept: "#8baebf", attested: "#8297aa", exploratory: "#adc6cf", selection: "#e1f5ff", hover: "#bedce8", container: "#91afbc", text: "#dbe6ec" },
+  "stellar-warm": { background: "#090603", aggregate: "#d7b78d", concept: "#c99591", attested: "#b49a7f", exploratory: "#dbbb86", selection: "#ffedce", hover: "#e6c99d", container: "#bc9e7b", text: "#eadfcf" },
 };
 export function hexRgb(value: string): readonly [number, number, number] {
   const match = /^#([0-9a-f]{6})$/i.exec(value);
