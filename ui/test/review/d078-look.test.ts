@@ -16,10 +16,15 @@ test("D-078 Stellar palettes are named, dark, restrained and legible", () => {
   for (const name of ["stellar-cold", "stellar-warm"] as const) {
     assert.equal(paletteName(name), name);
     const palette = PALETTES[name];
+    const monochrome = PALETTES.bw;
     assert.ok(srgbToOklch(palette.background).L < 0.2);
     for (const role of PALETTE_ROLES) {
       if (role === "background") continue;
       assert.ok(contrast(palette[role], palette.background) >= (role === "text" ? 4.5 : 3), `${name} ${role} contrast`);
+      if (role !== "selection" && role !== "hover") {
+        assert.ok(contrast(palette[role], palette.background) >= contrast(monochrome[role], monochrome.background),
+          `${name} ${role} contrast is at least Monocromatico`);
+      }
       if (role !== "selection" && role !== "hover" && role !== "text")
         assert.ok(srgbToOklch(palette[role]).C < 0.08, `${name} ${role} chroma`);
     }
