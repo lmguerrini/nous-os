@@ -39,7 +39,8 @@ export type V2Visible = {
 };
 const copy = (s: DisclosureState): DisclosureState => ({ expanded: new Set(s.expanded), pages: new Map(s.pages), manualOrder: [...s.manualOrder] });
 export const emptyDisclosure = (): DisclosureState => ({ expanded: new Set(), pages: new Map(), manualOrder: [] });
-export function v2Visible(index: V2Index, state: DisclosureState, auto: AutoDisclosure = new Set(), cap = V2_CAP): V2Visible {
+export function v2Visible(index: V2Index, state: DisclosureState, auto: AutoDisclosure = new Set(), cap = V2_CAP,
+    preferredParentId?: string): V2Visible {
     const autoHas = (id: string) => auto.has(id);
     const autoPage = (id: string) => auto instanceof Map ? auto.get(id) ?? 0 : V2_AUTO_PAGE;
     const byId = new Map(index.nodes.map(n => [n.id, n]));
@@ -80,6 +81,48 @@ export function v2Visible(index: V2Index, state: DisclosureState, auto: AutoDisc
             hidden.set(n.id, Math.max(all.length, n.counts.children, n.counts.passages));
     }
     const ids = new Set(nodes.map(n => n.id));
+    // The overview and every uncapped disclosure retain their original ordering and shape.
+    // At the limit, give the active parent a sliding window. A cumulative page count is a
+    // cursor, not a promise that its first children occupy the renderer forever.
+    const preferred = preferredParentId ?? state.manualOrder.at(-1) ??
+        (auto instanceof Map ? [...auto.keys()].at(-1) : [...auto].at(-1));
+    if (capped && preferred && byId.has(preferred) && byId.get(preferred)!.level >= 3 &&
+        (state.expanded.has(preferred) || autoHas(preferred))) {
+        const path = new Set<string>();
+        let cursor: V2Node | undefined = byId.get(preferred);
+        while (cursor && !path.has(cursor.id)) {
+            path.add(cursor.id);
+            cursor = cursor.parent ? byId.get(cursor.parent) : undefined;
+        }
+        const base = new Map<string, V2Node>();
+        // Aggregates remain as counted entry points for every other branch.
+        for (const node of nodes) if (node.level <= 3) base.set(node.id, node);
+        for (const id of path) base.set(id, byId.get(id)!);
+        const siblings = children.get(preferred) ?? [];
+        const parent = byId.get(preferred)!;
+        const requested = autoHas(preferred) && !state.expanded.has(preferred)
+            ? Math.min(autoPage(preferred), siblings.length)
+            : parent.level >= 3 ? Math.min(state.pages.get(preferred) ?? V2_PAGE, siblings.length) : siblings.length;
+        const room = Math.max(0, cap - base.size);
+        const selected = siblings.slice(Math.max(0, requested - room), requested);
+        for (const child of selected) base.set(child.id, child);
+        // Earlier children of the active parent give way first; other branches remain
+        // represented by their visible ancestors and their hidden-member counts.
+        const windowNodes = [...base.values()];
+        const windowIds = new Set(base.keys());
+        const windowHidden = new Map<string, number>();
+        for (const node of windowNodes) {
+            const all = children.get(node.id) ?? [];
+            const shown = all.filter(child => windowIds.has(child.id)).length;
+            const missing = Math.max(all.length, node.counts.children,
+                node.level === 4 ? node.counts.passages : 0) - shown;
+            if (missing > 0) windowHidden.set(node.id, missing);
+        }
+        return { nodes: windowNodes,
+            edges: index.edges.filter(e => windowIds.has(e.source) && windowIds.has(e.target)),
+            hidden: windowHidden, capped: true,
+            counts: Object.fromEntries([1, 2, 3, 4, 5].map(level => [level, windowNodes.filter(n => n.level === level).length])) };
+    }
     return { nodes, edges: index.edges.filter(e => ids.has(e.source) && ids.has(e.target)), hidden, capped, counts: Object.fromEntries([1, 2, 3, 4, 5].map(level => [level, nodes.filter(n => n.level === level).length])) };
 }
 export class DisclosureHistory {
@@ -117,18 +160,23 @@ export class DisclosureHistory {
         this.change(s => {
             let child = byId.get(id);
             const seen = new Set<string>();
+            const path: { parent: V2Node; child: V2Node }[] = [];
             while (child?.parent && !seen.has(child.id)) {
                 seen.add(child.id);
                 const parent = byId.get(child.parent);
                 if (!parent)
                     break;
+                path.push({ parent, child });
+                child = parent;
+            }
+            for (const { parent, child: member } of path.reverse()) {
                 s.expanded.add(parent.id);
                 DisclosureHistory.recent(s, parent.id);
-                if (parent.level === 3) {
+                if (parent.level >= 3) {
                     const siblings = index.nodes.filter(n => n.parent === parent.id).sort((a, b) => a.id.localeCompare(b.id));
-                    s.pages.set(parent.id, Math.max(s.pages.get(parent.id) ?? V2_PAGE, Math.ceil((siblings.findIndex(n => n.id === (child!).id) + 1) / V2_PAGE) * V2_PAGE));
+                    s.pages.set(parent.id, Math.max(s.pages.get(parent.id) ?? V2_PAGE,
+                        Math.ceil((siblings.findIndex(n => n.id === member.id) + 1) / V2_PAGE) * V2_PAGE));
                 }
-                child = parent;
             }
         });
     }

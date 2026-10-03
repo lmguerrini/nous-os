@@ -39,6 +39,17 @@ export function normalizeDensity(value: unknown, fallback: Density = "balanced")
     : fallback;
 }
 
+/** Children on the newest disclosed page, admitted ahead of older LOD candidates. */
+export function recentDisclosedPage(
+  nodes: readonly { id: string; parent: string | null }[], parentId: string | undefined,
+  requested: number, pageSize: number,
+): string[] {
+  if (!parentId) return [];
+  const children = nodes.filter(node => node.parent === parentId).map(node => node.id).sort(compare);
+  const end = Math.min(children.length, Math.max(0, requested));
+  return children.slice(Math.max(0, end - pageSize), end);
+}
+
 /** Camera magnification (1 = fitted overview) at which a level is entered, and the lower edge of
  * its hysteresis band. Between the exit and the enter value the level never changes, so small
  * wheel movements back and forth — a notch is roughly a 1.1× step — can neither add nor remove

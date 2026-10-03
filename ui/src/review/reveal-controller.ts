@@ -102,7 +102,8 @@ export function stepReveal(input: RevealInput): RevealDecision {
   const inside = (p: RevealPosition) => p.x >= input.viewport.x && p.x <= input.viewport.x + input.viewport.width &&
     p.y >= input.viewport.y && p.y <= input.viewport.y + input.viewport.height;
   const center = { x: input.viewport.x + input.viewport.width / 2, y: input.viewport.y + input.viewport.height / 2 };
-  const current = v2Visible(input.index, input.disclosure, autoPages(input.previous.admissions), cap);
+  const current = v2Visible(input.index, input.disclosure, autoPages(input.previous.admissions), cap,
+    input.previous.admissions.at(-1)?.parentId);
   const visible = new Set(current.nodes.map(node => node.id));
   const placed = current.nodes.filter(node => {
     const p = input.positions.get(node.id); return p && inside(p);
@@ -160,7 +161,8 @@ export function stepReveal(input: RevealInput): RevealDecision {
     admissions = admissions.filter(item => item.threshold <= tier || protectedPath.has(item.parentId));
   }
   const admit = (threshold: number, parent: V2Node): void => {
-    const before = new Set(v2Visible(input.index, input.disclosure, autoPages(admissions), cap).nodes.map(node => node.id));
+    const before = new Set(v2Visible(input.index, input.disclosure, autoPages(admissions), cap,
+      admissions.at(-1)?.parentId).nodes.map(node => node.id));
     const existing = autoPages(admissions).get(parent.id) ?? 0;
     const available = children.get(parent.id) ?? [];
     if (existing >= available.length || input.disclosure.expanded.has(parent.id)) return;
@@ -169,12 +171,12 @@ export function stepReveal(input: RevealInput): RevealDecision {
     let candidate = [...admissions, proposal];
     const wanted = Math.min(page, available.length - existing);
     const succeeds = (items: readonly RevealAdmission[]) => {
-      const result = v2Visible(input.index, input.disclosure, autoPages(items), cap);
+      const result = v2Visible(input.index, input.disclosure, autoPages(items), cap, parent.id);
       const now = new Set(result.nodes.map(node => node.id));
       return result.nodes.length <= cap &&
         available.slice(existing, existing + wanted).every(node => now.has(node.id) && !before.has(node.id)) &&
-        [...autoPages(items)].every(([id, count]) =>
-          (children.get(id) ?? []).slice(0, count).every(node => now.has(node.id)));
+        (parent.level >= 3 && result.capped || [...autoPages(items)].every(([id, count]) =>
+          (children.get(id) ?? []).slice(0, count).every(node => now.has(node.id))));
     };
     const removed: string[] = [];
     if (!succeeds(candidate)) {
@@ -192,7 +194,8 @@ export function stepReveal(input: RevealInput): RevealDecision {
   };
   const chooseParent = (threshold: number): V2Node | undefined => {
     const maxLevel = threshold >= 3 ? 4 : threshold >= 2 ? 3 : 2;
-    const all = v2Visible(input.index, input.disclosure, autoPages(admissions), cap).nodes;
+    const all = v2Visible(input.index, input.disclosure, autoPages(admissions), cap,
+      admissions.at(-1)?.parentId).nodes;
     // A collapsed focused domain has only its level-1 root on screen. Open its first page
     // before looking for deeper parents; subsequent settled steps can follow those children.
     const root = clusterId ? byId.get(clusterId) : undefined;
@@ -207,7 +210,10 @@ export function stepReveal(input: RevealInput): RevealDecision {
       candidates.sort((a, b) => {
         const pa = input.positions.get(a.id), pb = input.positions.get(b.id);
         const point = cluster === clusterId && input.cursor ? input.cursor : center;
-        return b.level - a.level || (pa ? distance(pa, point) : Infinity) - (pb ? distance(pb, point) : Infinity) || cmp(a.id, b.id);
+        // Continue through the parent under the pointer before opening unrelated leaves.
+        return Number(cursorNode?.level && cursorNode.level >= 3 && b.id === cursorNode.id) -
+          Number(cursorNode?.level && cursorNode.level >= 3 && a.id === cursorNode.id) ||
+          b.level - a.level || (pa ? distance(pa, point) : Infinity) - (pb ? distance(pb, point) : Infinity) || cmp(a.id, b.id);
       });
       if (candidates[0]) return candidates[0];
     }
@@ -236,7 +242,7 @@ export function stepReveal(input: RevealInput): RevealDecision {
     if ((autoPages(admissions).get(id) ?? 0) > previousCount) passages.delete(id);
   }
   const auto = autoPages(admissions);
-  const after = v2Visible(input.index, input.disclosure, auto, cap);
+  const after = v2Visible(input.index, input.disclosure, auto, cap, admissions.at(-1)?.parentId);
   const band = input.settled ? revealBand(input.zoom, input.previous.band) : input.previous.band;
   return { state: { epoch, focusClusterId: clusterId, focusSource: source, pendingFocusClusterId,
       lastZoom: input.settled && Number.isFinite(input.zoom) ? input.zoom : input.previous.lastZoom, band, tier,

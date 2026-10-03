@@ -39,7 +39,7 @@ import type { Render3fRendererHandle } from '../render3f/mount.tsx';
 import { resolvedNodeBounds } from '../render3f/camera.tsx';
 import type { VisualGraph } from '../engine/contract.ts';
 import { structuralVisualPresentation } from '../engine/presentation-options.ts';
-import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, manualExpansionTiers, normalizeDensity, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
+import { adjacencyOf, communityResolver, DENSITY_BUDGETS, focusArcs, focusMembers, focusNeighbourhood, forcedArcIds, formatCount, lodLevelFromZoom, manualExpansionTiers, normalizeDensity, recentDisclosedPage, refreshCameraAction, restingEmphasis, safeSelectNodes, selectArcs } from './lod.ts';
 import { lodRefreshDue } from './render-schedule.ts';
 import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
 import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labels.ts';
@@ -703,7 +703,8 @@ export class V2Page {
     private visible() {
         const pages = new Map<string, number>([...this.auto].map(id => [id, V2_PAGE]));
         for (const [id, count] of this.autoPageCounts) pages.set(id, count);
-        return v2Visible(this.index, this.history.state, pages);
+        return v2Visible(this.index, this.history.state, pages, V2_CAP,
+            this.history.state.manualOrder.at(-1) ?? this.revealState.admissions.at(-1)?.parentId);
     }
     private disclosureKey() {
         const state = this.history.state;
@@ -719,7 +720,10 @@ export class V2Page {
         if (!cluster) return [];
         const byId = new Map(this.index.nodes.map(node => [node.id, node]));
         const eligible = new Set(disclosed.filter(node => revealClusterOf(this.index, node.id) === cluster).map(node => node.id));
-        return [...this.rendered].filter(id => eligible.has(id)).concat(
+        const parentId = this.history.state.manualOrder.at(-1) ?? this.revealState.admissions.at(-1)?.parentId;
+        const count = parentId ? this.history.state.pages.get(parentId) ?? this.autoPageCounts.get(parentId) ?? V2_PAGE : 0;
+        const newest = recentDisclosedPage(disclosed, parentId, count, V2_PAGE);
+        return [...newest, ...this.rendered].filter(id => eligible.has(id)).concat(
             [...eligible].filter(id => !this.rendered.has(id)).sort((a, b) =>
                 (byId.get(a)?.level ?? 0) - (byId.get(b)?.level ?? 0) || a.localeCompare(b)));
     }
@@ -2553,7 +2557,7 @@ export class V2Page {
             (element('v2-undo') as HTMLButtonElement).disabled = this.history.undoDepth === 0;
             (element('v2-redo') as HTMLButtonElement).disabled = this.history.redoDepth === 0;
             this.capMessage = disclosed.capped;
-            element('v2-cap').textContent = disclosed.capped ? `Limite di ${V2_CAP} nodi visibili raggiunto. Comprimi un ramo per continuare.` : '';
+            element('v2-cap').textContent = disclosed.capped ? `Finestra di ${V2_CAP} nodi visibili: continua a ingrandire o usa Mostra altri.` : '';
             this.renderPanel();
         }).finally(() => { this.refreshPending--; });
     }
@@ -3346,7 +3350,10 @@ export class V2Page {
                 button.onclick = () => { void (this.history.state.expanded.has(n.id) ? this.collapse(n.id) : this.expand(n.id)); };
                 host.append(button);
             }
-            if (shown.hidden.has(n.id) && this.history.state.expanded.has(n.id) && (n.level === 3 || n.level === 4)) {
+            if (shown.hidden.has(n.id) && this.history.state.expanded.has(n.id) &&
+                Math.max(this.index.nodes.filter(child => child.parent === n.id).length,
+                    n.level === 4 ? n.counts.passages : 0) > (this.history.state.pages.get(n.id) ?? V2_PAGE) &&
+                (n.level === 3 || n.level === 4)) {
                 const button = document.createElement('button');
                 button.textContent = `Mostra altri ${Math.min(V2_PAGE, shown.hidden.get(n.id)!)}`;
                 button.onclick = () => { void this.more(n.id); };
