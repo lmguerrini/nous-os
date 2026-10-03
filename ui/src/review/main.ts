@@ -94,6 +94,7 @@ function showExperimentalSuspensionNotice(): void {
 /** Whether the page draws Natural through the typed pipeline (`#projection=natural`); off, the legacy layout is drawn. */
 const typedPipelineFlag = projectionFlagEnabled(location.search, location.hash);
 const MORPHOLOGY_LABELS = { stellar: "Stellar", neural: "Neural", mycelium: "Mycelium" } as const;
+const ARRANGEMENT_LABELS = { constellation: "Costellazione", network: "Rete", mycelium: "Micelio" } as const;
 function readViewSource(raw: string): { axes: PageAxes; explicitArrangement: boolean } | null {
   try {
     const explicitArrangement = typeof (JSON.parse(raw) as { arrangement?: unknown }).arrangement === "string";
@@ -177,8 +178,8 @@ function syncArrangementInspector(): void {
   if (!host) return;
   if (!resolvedArrangement || axes.organization !== "natural") { host.hidden = true; host.textContent = ""; host.title = ""; return; }
   host.textContent = resolvedArrangement.source === "explicit"
-    ? `Natural · ${resolvedArrangement.arrangement} · esplicita · ${resolvedArrangement.layoutVersion}`
-    : `Natural · ${resolvedArrangement.arrangement} · predefinita da ${MORPHOLOGY_LABELS[axes.morphology]} · ${resolvedArrangement.layoutVersion}`;
+    ? `Natural · ${ARRANGEMENT_LABELS[resolvedArrangement.arrangement]} · esplicita · ${resolvedArrangement.layoutVersion}`
+    : `Natural · ${ARRANGEMENT_LABELS[resolvedArrangement.arrangement]} · predefinita da ${MORPHOLOGY_LABELS[axes.morphology]} · ${resolvedArrangement.layoutVersion}`;
   host.title = host.textContent;
   host.hidden = false;
 }
@@ -256,11 +257,15 @@ const BAR_LABELS = {
 } as const;
 function syncToolbarSummary(): void {
   const summary = get<HTMLElement>("toolbar-summary");
+  const density = document.querySelector<HTMLButtonElement>('#density-control button[data-density][aria-pressed="true"]')?.dataset.density ?? "balanced";
+  const detail = get<HTMLSelectElement>("v2-relation-detail").value;
   summary.textContent = [
     BAR_LABELS.projection[axes.projection],
     BAR_LABELS.morphology[axes.morphology],
     BAR_LABELS.organization[axes.organization],
     BAR_LABELS.reading[axes.reading],
+    ({ essential: "Essenziale", balanced: "Bilanciata", complete: "Completa" } as const)[density as "essential" | "balanced" | "complete"],
+    detail === "all" ? "Tutte" : "Essenziali",
   ].join(" · ");
 }
 syncToolbarSummary();
@@ -741,16 +746,20 @@ function updateInsets(): void {
     right: Math.max(appearanceInset, drawerInset, overlayInset), bottom: 0, left: 0 });
 }
 function syncPanel(): void {
+  const visible = fullscreen() ? fullscreenDrawer : !panelCollapsed;
   get<HTMLElement>("shell").classList.toggle("panel-collapsed", panelCollapsed);
   details.classList.toggle("drawer", fullscreen() ? fullscreenDrawer : !panelCollapsed && innerWidth <= 1100);
-  get<HTMLButtonElement>("panel-toggle").setAttribute("aria-pressed", String(!panelCollapsed));
+  const panelButtons = [get<HTMLButtonElement>("panel-toggle"), get<HTMLButtonElement>("fullscreen-panel")];
+  for (const button of panelButtons) {
+    button.setAttribute("aria-pressed", String(visible));
+    button.classList.toggle("surface-active", visible);
+  }
   const edge = get<HTMLButtonElement>("panel-edge-toggle");
-  edge.setAttribute("aria-pressed", String(!panelCollapsed));
+  edge.setAttribute("aria-pressed", String(visible));
+  edge.classList.toggle("surface-active", visible);
   edge.textContent = panelCollapsed ? "◀" : "▶";
   edge.title = panelCollapsed ? "Apri il pannello · scorciatoia P" : "Chiudi il pannello · scorciatoia P";
-  get<HTMLButtonElement>("fullscreen-panel").setAttribute("aria-pressed", String(fullscreenDrawer));
   writeLocal(storage, "d069.panelCollapsed", panelCollapsed);
-  const visible = fullscreen() ? fullscreenDrawer : !panelCollapsed;
   if (surfaceStack && surfaceStack.isOpen("panel") !== visible) surfaceStack.set("panel", visible);
   requestAnimationFrame(updateInsets);
 }
@@ -1101,6 +1110,7 @@ const densityButtons = [...document.querySelectorAll<HTMLButtonElement>("#densit
 function syncDensity(): void {
   for (const button of densityButtons)
     button.setAttribute("aria-pressed", String(button.dataset.density === density));
+  syncToolbarSummary();
 }
 function applyDensity(next: unknown): void {
   const value = normalizeDensity(next);
@@ -1113,7 +1123,10 @@ function applyDensity(next: unknown): void {
 for (const button of densityButtons)
   button.addEventListener("click", () => { applyDensity(button.dataset.density); });
 syncDensity();
-get<HTMLSelectElement>("v2-relation-detail").addEventListener("change", event => { void v2?.setRelationDetail((event.target as HTMLSelectElement).value as "essential" | "all"); });
+get<HTMLSelectElement>("v2-relation-detail").addEventListener("change", event => {
+  syncToolbarSummary();
+  void v2?.setRelationDetail((event.target as HTMLSelectElement).value as "essential" | "all");
+});
 get<HTMLButtonElement>("v2-undo").addEventListener("click", () => { void v2?.undo(); });
 get<HTMLButtonElement>("v2-redo").addEventListener("click", () => { void v2?.redo(); });
 get<HTMLButtonElement>("labels").addEventListener("click", () => {
