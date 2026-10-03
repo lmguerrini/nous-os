@@ -254,6 +254,16 @@ export function containerInkRgb(containerColor: string | null | undefined, field
 /** Peak alpha of the glass rim light at the shell limb. Discreet: the background stays dark. */
 export const CONTAINER_RIM_LIGHT_PEAK = 0.16;
 
+/** Deep 3D zoom only: an enclosing shell must not become a translucent full-screen wash.
+ * Fit shells occupy less than 58% of the short viewport side and keep their exact old alpha.
+ * Across the next 75% of that side, all of a shell's fill, rim and limb fade together. */
+export function deepZoomShellOpacity(radiusPx: number, bounds: { readonly width: number; readonly height: number }): number {
+  const shortSide = Math.min(bounds.width, bounds.height);
+  if (!(shortSide > 0) || !Number.isFinite(radiusPx)) return 0;
+  const t = clamp((radiusPx / shortSide - 0.58) / 0.75, 0, 1);
+  return 1 - t * t * (3 - 2 * t);
+}
+
 /** The rim light of a container sphere: a thin radial gradient just inside the limb, brighter at
  * the rim and transparent toward the centre (soap-bubble glass). Nothing is added inside
  * `innerRadius × limbRadius`, so the total added alpha at the centre of the sphere is the first
@@ -639,10 +649,15 @@ export function drawContainers(
   const ink = containerInkRgb(interaction?.containerColor, fieldColor);
   // Limb stroke styles vary only by (ink, level): one string per level per draw, not per sphere.
   const limbStyles = new Map<number, string>();
+  // At deep zoom only the spherical silhouette is a boundary. The great-circle equators
+  // become long Saturn-like arcs, so the small pearls retain their continuous thin limbs.
+  const root = projection === "3d" ? containers.find(container => container.level === 0) : undefined;
+  const deepZoom = root !== undefined
+    && root.radius * cachedLimbRadiusPx(cache, root, project) / Math.min(bounds.width, bounds.height) > 0.75;
   for (const container of containersInDrawOrder(containers).sorted) {
     context.globalAlpha = interaction?.dimFocus && !interaction.dimFocus.members.has(container.id) ? 0.15 : 1;
     if (projection === "3d") {
-      drawSphere(context, container, project, ink, interaction, bounds, cache, limbStyles);
+      drawSphere(context, container, project, ink, interaction, bounds, cache, limbStyles, !deepZoom);
     } else {
       const outline = container.points;
       if (!outline.length) continue;
@@ -707,6 +722,7 @@ export function drawContainers(
     bounds: { readonly width: number; readonly height: number },
     cache: ContainerFrameCache | undefined,
     limbStyles: Map<number, string>,
+    showEquator: boolean,
   ): void {
     const hook = dashHook();
     const center = project(container.center);
@@ -716,6 +732,8 @@ export function drawContainers(
     // True projected radius, measured on the projection itself (world radius × px per world unit).
     const limbRadius = Math.max(0.5, container.radius * cachedLimbRadiusPx(cache, container, project));
     if (!containerSphereLOD(container.level, open, selected, limbRadius)) return;
+    context.globalAlpha *= deepZoomShellOpacity(limbRadius, bounds);
+    if (context.globalAlpha <= 0) return;
     // The moving pass keeps only the limbs of the spheres that carry the structure: the absolute
     // shell and the domains always, any other pearl only while open or selected.
     if (moving && container.level > 1 && !open && !selected) return;
@@ -796,7 +814,7 @@ export function drawContainers(
     context.stroke();
     bump(hook, "limbs", 1);
     if (container.level === 0 && hook) hook.nousosLimb = { x: center.x, y: center.y, radiusPx: limbRadius };
-    if (tiny || moving) return;
+    if (tiny || moving || !showEquator) return;
     // At most one equator, the most face-on great circle, faded by flatness so an edge-on circle
     // (a long line with no identifiable meaning) is never drawn. It is sampled at the same adaptive
     // segment count as the limb, from the circle's own world parametrization (cached, never rebuilt).
