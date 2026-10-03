@@ -7,14 +7,16 @@ export const FLOW_ANIMATED_EDGE_BUDGET = 60;
 export const FLOW_PERIOD_MS = 2600;
 /** Half-width of the pulse envelope, as a share of the path length. */
 export const FLOW_PULSE_SIGMA = 0.07;
-/** The travelling core follows its filament instead of becoming a separate band. */
-export const FLOW_PULSE_WIDTH_MULTIPLIER = 1.1;
-/** A faint outer glow may soften the core, but stays inside twice the filament width. */
-export const FLOW_BEAM_GLOW_WIDTH_MULTIPLIER = 1.8;
-export const FLOW_BEAM_GLOW_ALPHA = 0.15;
+/** A small screen-space floor keeps thin Stellar arcs legible without widening thick filaments into ribbons. */
+export const FLOW_PULSE_WIDTH_MULTIPLIER = 1.3;
+export const FLOW_BEAM_CORE_MIN_PX = 1.8;
+/** The glow is faint and bounded relative to thick filaments; thin arcs need a CSS-pixel floor. */
+export const FLOW_BEAM_GLOW_WIDTH_MULTIPLIER = 2.2;
+export const FLOW_BEAM_GLOW_MIN_PX = 4.2;
+export const FLOW_BEAM_GLOW_ALPHA = 0.1;
 export function flowBeamWidthsPx(edgeWidthPx: number): { readonly core: number; readonly glow: number } {
-  return { core: edgeWidthPx * FLOW_PULSE_WIDTH_MULTIPLIER,
-    glow: edgeWidthPx * FLOW_BEAM_GLOW_WIDTH_MULTIPLIER };
+  return { core: Math.max(FLOW_BEAM_CORE_MIN_PX, edgeWidthPx * FLOW_PULSE_WIDTH_MULTIPLIER),
+    glow: Math.max(FLOW_BEAM_GLOW_MIN_PX, edgeWidthPx * FLOW_BEAM_GLOW_WIDTH_MULTIPLIER) };
 }
 /** How much wider than the base line the exploratory halo reads. */
 export const FLOW_HALO_WIDTH_MULTIPLIER = 2.6;
@@ -78,10 +80,10 @@ export function flowPulseAlpha(distanceNormalised: number, centre: number, inten
 export const FLOW_HEAD_SPEED_PX_S = 32;
 /** Reach of the bright head, in px along the path from the head backwards. */
 export const FLOW_HEAD_PX = 24;
-/** Peak alpha is capped below 70% of the Stellar hub core floor (0.9). */
-export const FLOW_HEAD_CORE_ALPHA_RATIO = 0.7;
-export const FLOW_HEAD_MAX_ALPHA = 0.42;
-/** Keep the cached head sprite compact so its bright centre cannot read as a second hub. */
+/** A narrow core can be substantially brighter than its base filament without obscuring nodes. */
+export const FLOW_HEAD_CORE_ALPHA_RATIO = 0.76;
+export const FLOW_HEAD_MAX_ALPHA = 0.68;
+/** Historical bound retained for the head-size contract; the live beam is a path stroke. */
 export const FLOW_HEAD_MAX_SIZE_PX = 18;
 /** Total reach of the fading tail behind the head, in px (head included). */
 export const FLOW_TAIL_PX = 72;
@@ -96,7 +98,7 @@ export function flowBeamLengthPx(arcLengthPx: number): number {
 }
 /** Peak opacity on the separate layer at the default intensity. */
 export function flowHeadAlpha(intensity: number): number {
-  return Math.min(FLOW_HEAD_MAX_ALPHA, 0.38 * Math.min(1, Math.max(0, intensity) / 0.6));
+  return Math.min(FLOW_HEAD_MAX_ALPHA, 0.68 * Math.min(1, Math.max(0, intensity) / 0.6));
 }
 /** The restart fade-in covers this much head travel, in px. */
 export const FLOW_RESTART_FADE_PX = 36;

@@ -52,18 +52,18 @@ test('2D and 3D travelling cores follow their filaments, with only a faint bound
     setFlowNow(3000);
     drawFlowLayer(context, geometry, point => ({ x: point.x + 20, y: point.y + 40, scale: 1 }),
       style, { ...DEFAULT_APPEARANCE, flowIntensity: 1, flowSpeed: 1 }, projection);
-    assert.equal(strokes.length, 2, `${projection} draws one glow and one core`);
-    const [glow, core] = strokes;
-    assert.ok(core!.width > 0 && core!.width <= 1.3, `${projection} core tracks the 1 px edge`);
-    assert.ok(glow!.width <= 2, `${projection} glow stays within twice the edge width`);
+    assert.equal(strokes.length, 6, `${projection} draws one glow and a five-section core`);
+    const glow = strokes[0]!, core = strokes[3]!;
+    assert.equal(core!.width, 1.8, `${projection} core clears the thin-edge pixel floor`);
+    assert.equal(glow!.width, 4.2, `${projection} glow has a faint, bounded pixel floor`);
     assert.ok(glow!.alpha < core!.alpha * 0.3, `${projection} glow stays faint`);
   }
-  assert.deepEqual(flowBeamWidthsPx(1), { core: 1.1, glow: 1.8 });
+  assert.deepEqual(flowBeamWidthsPx(1), { core: 1.8, glow: 4.2 });
   assert.ok(FLOW_BEAM_GLOW_ALPHA <= 0.15);
   setFlowMotionAllowed(false);
 });
 
-test('the dense 2D and 3D cached beam keeps the same narrow core and glow', () => {
+test('the dense 2D and 3D beam follows the same narrow path strokes', () => {
   const manyNodes = [{ id: 'hub', position: { x: 0, y: 0, z: 0 }, radius: 5 },
     ...Array.from({ length: 13 }, (_, i) => ({ id: `child:${i}`,
       position: { x: 100, y: i, z: 0 }, radius: 5 }))];
@@ -73,44 +73,28 @@ test('the dense 2D and 3D cached beam keeps the same narrow core and glow', () =
   const manyStyle = { ...style, edges: new Map(manyEdges.map(edge => [edge.id,
     { color: 'rgb(221, 221, 221)', presentation: {
       category: 'exploratory' as const, opacityPermille: 1000, widthPermille: 1000 } }] as const)) };
-  const fills: { alpha: number; y: number; height: number }[] = [];
-  class SpriteCanvas {
-    width = 0;
-    height = 0;
-    getContext() {
-      return { globalAlpha: 1, fillStyle: '',
-        createLinearGradient: () => ({ addColorStop() {} }),
-        fillRect(this: { globalAlpha: number }, _x: number, y: number, _width: number, height: number) {
-          fills.push({ alpha: this.globalAlpha, y, height });
-        } };
-    }
-  }
-  const prior = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
-  (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = SpriteCanvas;
   try {
     for (const projection of ['2d', '3d'] as const) {
-      const heights: number[] = [];
+      const widths: number[] = [];
+      let sprites = 0;
       const context = {
         canvas: { width: 200, height: 100,
           getBoundingClientRect: () => ({ width: 200, height: 100 }) },
-        drawImage(_sprite: unknown, _sx: number, _sy: number, _sw: number, _sh: number,
-          _dx: number, _dy: number, _dw: number, dh: number) { heights.push(dh); },
-        save() {}, restore() {}, translate() {}, rotate() {},
+        beginPath() {}, moveTo() {}, lineTo() {},
+        stroke(this: { lineWidth: number }) { widths.push(this.lineWidth); },
+        drawImage() { sprites++; },
         globalAlpha: 1, globalCompositeOperation: 'source-over',
+        lineWidth: 1, lineCap: 'butt', lineJoin: 'miter',
       } as unknown as CanvasRenderingContext2D;
       setFlowMotionAllowed(true);
       setFlowNow(3000);
       drawFlowLayer(context, manyGeometry, point => ({ x: point.x + 20, y: point.y + 40, scale: 1 }),
         manyStyle, { ...DEFAULT_APPEARANCE, flowIntensity: 1, flowSpeed: 1 }, projection);
-      assert.ok(heights.length >= 13, `${projection} takes the dense sprite path`);
-      assert.ok(heights.every(height => height <= 1.8), `${projection} glow stays bounded`);
+      assert.ok(widths.length >= 13, `${projection} draws each dense beam`);
+      assert.ok(widths.every(width => width === 1.8 || width === 4.2));
+      assert.equal(sprites, 0, `${projection} stays on the arc rather than a sprite chord`);
     }
-    assert.deepEqual(fills.slice(0, 2).map(fill => fill.alpha), [FLOW_BEAM_GLOW_ALPHA, 1]);
-    assert.equal(fills[1]!.height / (fills[0]!.height / 1.8), 1.1);
-  } finally {
-    (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = prior;
-    setFlowMotionAllowed(false);
-  }
+  } finally { setFlowMotionAllowed(false); }
 });
 
 test('Indra structural floors clear the fit threshold while semantic and Natural floors stay put', () => {

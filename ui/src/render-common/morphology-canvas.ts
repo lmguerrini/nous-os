@@ -20,7 +20,6 @@ import {
   flowBeamLengthPx,
   flowHeadAlpha,
   flowHeadPositionPx,
-  flowHighlightAlpha,
   flowMotionAllowedNow,
   flowNow,
   selectFlowEdges,
@@ -1109,80 +1108,8 @@ function drawNeuralDetail(context: CanvasRenderingContext2D, paint: MorphologyEd
   return drawn;
 }
 
-/** Fallback for contexts without image drawing (notably the small recording contexts in tests). */
-function drawEdgeTravellingHighlight(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
-  elapsedMilliseconds: number, speed: number, intensity: number): void {
-  const { points, cumulative, totalPx, color, widthAt } = paint;
-  const tailPx = flowBeamLengthPx(totalPx);
-  const cycle = totalPx + tailPx;
-  const head = flowHeadPositionPx(elapsedMilliseconds, speed, cycle);
-  const trailStart = Math.max(0, head - tailPx);
-  const trailEnd = Math.min(totalPx, head);
-  if (trailEnd <= trailStart) return;
-  const peak = flowHeadAlpha(intensity);
-  const stepPx = Math.max(4, tailPx / 12);
-  for (let i = 0; i < points.length - 1; i++) {
-    const from = Math.max(trailStart, cumulative[i]!);
-    const to = Math.min(trailEnd, cumulative[i + 1]!);
-    const length = cumulative[i + 1]! - cumulative[i]!;
-    if (to <= from || length <= 0) continue;
-    const subdivisions = Math.ceil((to - from) / stepPx);
-    for (let part = 0; part < subdivisions; part++) {
-      const start = from + (to - from) * part / subdivisions;
-      const end = from + (to - from) * (part + 1) / subdivisions;
-      const alpha = peak * flowHighlightAlpha((start + end) / 2, head, cycle, 1, tailPx);
-      if (alpha <= 0.004) continue;
-      const a = (start - cumulative[i]!) / length, b = (end - cumulative[i]!) / length;
-      const x0 = points[i]!.x, y0 = points[i]!.y;
-      const dx = points[i + 1]!.x - x0, dy = points[i + 1]!.y - y0;
-      const width = flowBeamWidthsPx(widthAt(i + 0.5));
-      // A soft, contained glow beneath the bright core. Neither pass inherits the faint base alpha.
-      context.strokeStyle = rgba(color, alpha * FLOW_BEAM_GLOW_ALPHA);
-      context.lineWidth = width.glow;
-      context.beginPath(); context.moveTo(x0 + dx * a, y0 + dy * a); context.lineTo(x0 + dx * b, y0 + dy * b); context.stroke();
-      context.strokeStyle = rgba(color, alpha);
-      context.lineWidth = width.core;
-      context.beginPath(); context.moveTo(x0 + dx * a, y0 + dy * a); context.lineTo(x0 + dx * b, y0 + dy * b); context.stroke();
-    }
-  }
-}
-
-/** Cached gradient strips keep the moving beam soft at high relation counts. */
-const FLOW_SPRITE_CACHE_CAP = 128;
-const flowTailSprites = new Map<string, OffscreenCanvas | HTMLCanvasElement>();
-function flowTailSprite(color: string, tailPx: number, dpr: number): OffscreenCanvas | HTMLCanvasElement | null {
-  const length = Math.max(24, Math.ceil(tailPx / 4) * 4);
-  const density = Math.max(1, Math.min(4, Math.round(dpr * 2) / 2));
-  const key = `${color}|${length}|${density}`;
-  const cached = flowTailSprites.get(key);
-  if (cached) return cached;
-  const canvas = typeof OffscreenCanvas !== "undefined"
-    ? new OffscreenCanvas(Math.ceil(length * density), Math.ceil(12 * density))
-    : typeof document !== "undefined" ? document.createElement("canvas") : null;
-  if (!canvas) return null;
-  canvas.width = Math.ceil(length * density);
-  canvas.height = Math.ceil(18 * density);
-  const brush = canvas.getContext("2d");
-  if (!brush) return null;
-  const tail = brush.createLinearGradient(0, 0, canvas.width, 0);
-  tail.addColorStop(0, rgba(color, 0));
-  tail.addColorStop(0.08, rgba(color, 0.58));
-  tail.addColorStop(0.88, rgba(color, 0.64));
-  tail.addColorStop(0.97, rgba(color, 0.5));
-  tail.addColorStop(1, rgba(color, 0));
-  brush.fillStyle = tail;
-  brush.globalAlpha = FLOW_BEAM_GLOW_ALPHA;
-  brush.fillRect(0, 0, canvas.width, canvas.height);
-  brush.globalAlpha = 1;
-  // The core occupies 11/18 of the sprite height: at a 1.8× destination it is 1.1× the filament.
-  brush.fillRect(0, 3.5 * density, canvas.width, 11 * density);
-  if (flowTailSprites.size >= FLOW_SPRITE_CACHE_CAP) flowTailSprites.clear();
-  flowTailSprites.set(key, canvas);
-  return canvas;
-}
-
 type FlowTrail = { readonly paint: MorphologyEdgePaint; readonly head: number; readonly tail: number };
-/** A constant-width cached beam never exceeds a locally thinner stretch of its filament. */
+/** A constant-width beam never exceeds a locally thinner stretch of its filament. */
 function flowTrailEdgeWidthPx(paint: MorphologyEdgePaint): number {
   let minimum = Infinity;
   for (let i = 0; i < paint.points.length - 1; i++) minimum = Math.min(minimum, paint.widthAt(i + 0.5));
@@ -1216,11 +1143,6 @@ function appendFlowTail(context: CanvasRenderingContext2D, trail: FlowTrail, fro
 function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: readonly MorphologyEdgePaint[],
   now: number, speed: number, intensity: number): void {
   if (!paints.length) return;
-  // Recording contexts without drawImage keep the original stroke semantics.
-  if (typeof context.drawImage !== "function") {
-    for (const paint of paints) drawEdgeTravellingHighlight(context, paint, now, speed, intensity);
-    return;
-  }
   const trails: FlowTrail[] = [];
   for (const paint of paints) {
     const tail = flowBeamLengthPx(paint.totalPx);
@@ -1231,55 +1153,36 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
   if (!trails.length) return;
   const peak = flowHeadAlpha(intensity);
   const previousAlpha = context.globalAlpha;
-  const canvas = context.canvas;
-  const bounds = canvas.getBoundingClientRect();
-  const dpr = bounds.width > 0 ? canvas.width / bounds.width : 1;
-  // At small counts the curved polyline reads best. Above 12 arcs, a cached gradient strip
-  // follows each tail chord: only one drawImage per tail, keeping the browser operation budget
-  // below the full-scene fraction even when all 30 selected arcs are luminous together.
-  if (paints.length <= 12) {
-    const byWidth = new Map<number, FlowTrail[]>();
-    for (const trail of trails) {
-      const edgeWidth = flowTrailEdgeWidthPx(trail.paint);
-      const group = byWidth.get(edgeWidth) ?? [];
-      group.push(trail);
-      byWidth.set(edgeWidth, group);
-    }
-    for (const [edgeWidth, group] of byWidth) {
-      const width = flowBeamWidthsPx(edgeWidth);
-      for (let band = 0; band < 2; band++) {
-        context.beginPath();
-        for (const trail of group) {
-          const end = Math.min(trail.head, trail.paint.totalPx);
-          const reach = band === 0 ? trail.tail : trail.tail * 0.48;
-          appendFlowTail(context, trail, Math.max(0, trail.head - reach), end);
-        }
-        context.strokeStyle = band === 0 ? "rgb(192, 192, 192)" : "rgb(238, 238, 238)";
-        context.lineWidth = band === 0 ? width.glow : width.core;
-        context.globalAlpha = previousAlpha * peak * (band === 0 ? FLOW_BEAM_GLOW_ALPHA : 0.72);
-        context.stroke();
-      }
-    }
-  } else for (const trail of trails) {
-    const from = Math.max(0, trail.head - trail.tail);
-    const to = Math.min(trail.head, trail.paint.totalPx);
+  const previousCap = context.lineCap;
+  context.lineCap = "butt"; // adjacent opacity sections meet without bright round-cap knots
+  for (const trail of trails) {
+    const { head, tail, paint } = trail;
+    const width = flowBeamWidthsPx(flowTrailEdgeWidthPx(paint));
+    // Keep the moving layer clear of node centres; the base filament still reaches each endpoint.
+    const clearance = Math.min(4, paint.totalPx * 0.1);
+    const from = Math.max(clearance, head - tail);
+    const to = Math.min(paint.totalPx - clearance, head);
     if (to <= from) continue;
-    const first = flowPointAt(trail, from), last = flowPointAt(trail, to);
-    const dx = last.x - first.x, dy = last.y - first.y;
-    const chord = Math.hypot(dx, dy);
-    if (chord <= 0) continue;
-    const sprite = flowTailSprite(trail.paint.color, trail.tail, dpr);
-    if (!sprite) continue;
-    const sourceWidth = (to - from) / trail.tail * sprite.width;
-    const sourceX = (trail.tail - trail.head + from) / trail.tail * sprite.width;
-    context.globalAlpha = previousAlpha * peak;
-    context.save();
-    context.translate(first.x, first.y);
-    context.rotate(Math.atan2(dy, dx));
-    const width = flowBeamWidthsPx(flowTrailEdgeWidthPx(trail.paint));
-    context.drawImage(sprite, sourceX, 0, sourceWidth, sprite.height, 0, -width.glow / 2, chord, width.glow);
-    context.restore();
+    const stroke = (start: number, end: number, px: number, alpha: number, color: string) => {
+      const clippedStart = Math.max(from, start), clippedEnd = Math.min(to, end);
+      if (clippedEnd <= clippedStart) return;
+      context.beginPath();
+      appendFlowTail(context, trail, clippedStart, clippedEnd);
+      context.strokeStyle = color;
+      context.lineWidth = px;
+      context.globalAlpha = previousAlpha * peak * alpha;
+      context.stroke();
+    };
+    stroke(head - tail, head, width.glow, FLOW_BEAM_GLOW_ALPHA, "rgb(192, 192, 192)");
+    // Most of the long core has one uniform luminance. Short sections soften both ends of
+    // the travelling segment and drain continuously at the ends of the arc.
+    const stops = [0, 0.05, 0.11, 0.89, 0.95, 1];
+    const alphas = [0.2, 0.62, 1, 0.62, 0.2];
+    for (let i = 0; i < alphas.length; i++)
+      stroke(head - tail + tail * stops[i]!, head - tail + tail * stops[i + 1]!,
+        width.core, alphas[i]!, "rgb(248, 248, 248)");
   }
+  context.lineCap = previousCap;
   context.globalAlpha = previousAlpha;
 }
 

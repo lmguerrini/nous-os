@@ -17,7 +17,7 @@ test("flow head advances toward the target and its tail follows projected arc le
       "nothing ahead of the head lights up");
     assert.ok(flowHighlightAlpha(positions[4]! - 5, positions[4]!, cycle, 1, tail) > 0);
   }
-  assert.equal(flowHeadAlpha(0.6), 0.38);
+  assert.equal(flowHeadAlpha(0.6), 0.68);
   assert.equal(flowHeadAlpha(0), 0);
 });
 

@@ -5,7 +5,7 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import { drawFlowLayer } from "#render-common/morphology-canvas.ts";
 import { setFlowMotionAllowed, setFlowNow } from "#render-common/flow.ts";
 
-test("dense beam draws one cached strip per arc and reuses gradients on steady frames", () => {
+test("dense beam stays on each arc with bounded, gradient-free path work", () => {
   const counts: Record<string, number> = {};
   const count = (name: string) => { counts[name] = (counts[name] ?? 0) + 1; };
   class FakeOffscreenCanvas {
@@ -52,22 +52,22 @@ test("dense beam draws one cached strip per arc and reuses gradients on steady f
     setFlowNow(500);
     drawFlowLayer(context, geometry, project, style, appearance);
     const first = { ...counts };
-    assert.equal(first.stroke ?? 0, 0, "dense flow uses cached tail images without any per-arc stroke");
-    assert.equal(first.beginPath ?? 0, 0);
-    assert.ok((first.drawImage ?? 0) >= 25 && (first.drawImage ?? 0) <= 30,
-      "dense flow draws one elongated beam strip per arc");
-    assert.ok((first.moveTo ?? 0) <= 60 && (first.lineTo ?? 0) <= 240,
+    assert.ok((first.stroke ?? 0) >= 25 && (first.stroke ?? 0) <= 180,
+      "dense flow draws a bounded number of sections per arc");
+    assert.equal(first.beginPath, first.stroke);
+    assert.equal(first.drawImage ?? 0, 0, "a sprite chord cannot leave a curved arc");
+    assert.ok((first.moveTo ?? 0) <= 180 && (first.lineTo ?? 0) <= 1500,
       "path commands scale with visible arcs and their bends");
     assert.equal(first.linear ?? 0, 0);
     assert.equal(first.contextRadial ?? 0, 0);
     assert.equal(first.radial ?? 0, 0, "the beam has no bright radial dot");
-    assert.ok((first.spriteLinear ?? 0) > 0, "the first frame builds a quantised tail gradient once");
+    assert.equal(first.spriteLinear ?? 0, 0);
 
     for (const key of Object.keys(counts)) counts[key] = 0;
     setFlowNow(900);
     drawFlowLayer(context, geometry, project, style, appearance);
-    assert.equal(counts.stroke ?? 0, 0);
-    assert.equal(counts.beginPath ?? 0, 0);
+    assert.ok((counts.stroke ?? 0) > 0 && (counts.stroke ?? 0) <= 180);
+    assert.equal(counts.beginPath, counts.stroke);
     assert.equal(counts.radial ?? 0, 0, "a steady second frame makes no gradient");
     assert.equal(counts.spriteLinear ?? 0, 0);
     assert.equal(counts.linear ?? 0, 0);
@@ -78,9 +78,9 @@ test("dense beam draws one cached strip per arc and reuses gradients on steady f
     for (const key of Object.keys(counts)) counts[key] = 0;
     const smallStyle = { ...style, edges: new Map([...style.edges].slice(0, 5)) };
     drawFlowLayer(context, geometry, project, smallStyle, appearance);
-    assert.equal(counts.stroke, 2, "five arcs share one stroke per tail band");
-    assert.equal(counts.beginPath, 2);
-    assert.ok((counts.moveTo ?? 0) <= 10 && (counts.lineTo ?? 0) <= 40);
+    assert.ok((counts.stroke ?? 0) > 0 && (counts.stroke ?? 0) <= 30);
+    assert.equal(counts.beginPath, counts.stroke);
+    assert.ok((counts.moveTo ?? 0) <= 30 && (counts.lineTo ?? 0) <= 240);
   } finally {
     setFlowMotionAllowed(false);
     global.OffscreenCanvas = original;
