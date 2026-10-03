@@ -127,6 +127,7 @@ export type Render3fRendererHandle = MultiCameraRendererHandle & ResourceCountin
   /** This copies the picker-held resolved relation geometry and does not rebuild scene geometry. */
   readRelationGeometryWitnesses(): readonly RelationGeometryWitness[];
   readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[];
+  readBrainEnvelopeFramingSphere(): { readonly center: Coordinates; readonly radius: number } | null;
   setEmphasis(ids: ReadonlySet<string> | null): void;
   setAppearance(options: AppearanceOptions): void;
   /** Appearance of the derived geometry (containers, curves, field rings) of a typed projection; never moves it. */
@@ -720,9 +721,8 @@ export function mount(
       }));
       return live.readRelationGeometryWitnesses(readSceneHeldByPicker(picker));
     },
-    readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[] {
-      return rig.projectFramingSubjects();
-    },
+    readProjectedCameraFramingSubjects(): readonly ProjectedCameraFramingSubject[] { return rig.projectFramingSubjects(); },
+    readBrainEnvelopeFramingSphere() { return brainEnvelope?.framingSphere() ?? null; },
     readWorldAnchorWitnesses(ids?: ReadonlySet<string>): readonly WorldAnchorWitness[] {
       if (typedPicker) return typedPicker.geometry.nodes.flatMap(node =>
         node.pick.kind === "node" && (!ids || ids.has(node.pick.id))

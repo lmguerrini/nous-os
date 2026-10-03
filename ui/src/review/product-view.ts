@@ -10,7 +10,7 @@ import type { ScreenPickIndex, ScreenPickSegment } from "../render2d/model.ts";
 import type { RenderHandle } from "../render2d/index.ts";
 import { mount as mount3d } from "../render3f/mount.tsx";
 import type { Render3fRendererHandle } from "../render3f/mount.tsx";
-import { framingSpherePoints, framingVolumePoints, solveFraming } from "./framing.ts";
+import { framingEnvelopeSpherePoints, framingSpherePoints, framingVolumePoints, solveFraming } from "./framing.ts";
 import { framingShellRingPoints } from "./framing-shell.ts";
 import { adaptReviewExport, restrictAnchors, subgraph } from "./product-adapter.ts";
 import { placeDynamic } from "./live-placement.ts";
@@ -1386,6 +1386,9 @@ export const createProductView: CreateProductView = async (input) => {
       const initialPoints = input.data.nodes.filter((n) => visible.has(n.id)).map((n) => anchors.get(n.id)!).filter(Boolean);
       if (axes.projection === '3d' && axes.organization === 'natural')
         initialPoints.push(...framingVolumePoints(initialPoints));
+      // D-078 W6: only a mounted envelope contributes its actual bounding sphere to the first fit.
+      const brainSphere = three?.readBrainEnvelopeFramingSphere();
+      if (brainSphere) initialPoints.push(...framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
       if (axes.organization === 'indra' && layoutContainers) {
         const outer = layoutContainers.find(item => item.level === 0);
         // The framing subjects include the whole drawn shell: in 3D the limb circle (radius ×
@@ -1765,6 +1768,9 @@ export const createProductView: CreateProductView = async (input) => {
     const points = ids.map((id) => layout.get(id) ?? byId.get(id)).filter((p): p is Coordinates => p !== undefined && finitePoint(p));
     if (ids.length === visible.size && axes.projection === '3d' && axes.organization === 'natural')
       points.push(...framingVolumePoints(points));
+    // D-078 W6: «Adatta» includes the glass; focus and «Centra» keep their prior framing.
+    const brainSphere = ids.length === visible.size ? three?.readBrainEnvelopeFramingSphere() : null;
+    if (brainSphere) points.push(...framingEnvelopeSpherePoints(brainSphere.center, brainSphere.radius));
     if (ids.length === visible.size && axes.organization === 'indra' && layoutContainers) {
       const outer = layoutContainers.find(item => item.level === 0);
       if (outer) points.push(...(axes.projection === '2d'
@@ -1848,6 +1854,9 @@ export const createProductView: CreateProductView = async (input) => {
       axes = merged;
       if (!productViewRemountsAxes(old, axes)) labelPass();
       else mount();
+      // D-078 W6: the newly mounted glass needs one initial full-envelope fit.
+      if (!brainRendererEnabled(old, input.brain) && brainRendererEnabled(axes, input.brain))
+        await frameIds([...visible], false);
     },
     async setVisible(ids) {
       saveCamera();

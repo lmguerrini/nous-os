@@ -44,6 +44,21 @@ export function framingSpherePoints(center: Coordinates, radius: number): Coordi
   return (['x', 'y', 'z'] as const).flatMap(axis => [-1, 1].map(sign =>
     ({ ...center, [axis]: center[axis] + sign * radius })));
 }
+/** Surface samples of the mounted glass sphere for the point-based fit solver. */
+export function framingEnvelopeSpherePoints(center: Coordinates, radius: number): Coordinates[] {
+  const points: Coordinates[] = [];
+  for (let latitude = 0; latitude <= 12; latitude += 1) {
+    const polar = Math.PI * latitude / 12;
+    const ring = radius * Math.sin(polar);
+    const count = latitude === 0 || latitude === 12 ? 1 : 24;
+    for (let longitude = 0; longitude < count; longitude += 1) {
+      const azimuth = Math.PI * 2 * longitude / count;
+      points.push({ x: center.x + ring * Math.cos(azimuth),
+        y: center.y + radius * Math.cos(polar), z: center.z + ring * Math.sin(azimuth) });
+    }
+  }
+  return points;
+}
 export function framingVolumePoints(points: readonly Coordinates[]): Coordinates[] {
   if (!points.length) return [];
   const bounds = (axis: keyof Coordinates) => [Math.min(...points.map(point => point[axis])), Math.max(...points.map(point => point[axis]))] as const;

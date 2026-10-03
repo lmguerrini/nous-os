@@ -2878,6 +2878,9 @@ export class V2Page {
     }
     async setAxes(value: AxesInput) {
         const merged: PageAxes = { ...this.axes, ...normalizeAxesInput(value) };
+        // D-078 W6: toggling the glass on changes fit bounds even when graph bounds are identical.
+        const brainTurnedOn = this.axes.brain !== true && merged.brain === true
+            && merged.organization === 'natural' && merged.morphology === 'neural' && merged.projection === '3d';
         if (merged.organization !== this.axes.organization && !this.supportsOrganization(merged.organization))
             throw new Error(`View is not registered: ${merged.organization}`);
         if (this.axes.organization === 'indra' && merged.organization !== 'indra')
@@ -2892,6 +2895,7 @@ export class V2Page {
                 ...(merged.brain !== undefined ? { brain: merged.brain } : {}) }
             : merged;
         await this.refresh();
+        if (brainTurnedOn) await this.fit();
         (element("projection-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;
         (element("fullscreen-focus") as HTMLButtonElement).disabled = this.axes.projection !== "3d" || !this.selected;
     }

@@ -1,12 +1,10 @@
 import * as THREE from "three";
 import { NEURAL_BRAIN_ENVELOPE_OPACITY } from "#engine/morphology-contract.ts";
 import type { SceneNode } from "#scene/contract.ts";
-
-/** The optional shell has no graph semantics and never participates in picking or framing. */
 export type BrainEnvelope = {
   readonly group: THREE.Group;
-  update(nodes: readonly SceneNode[]): void;
-  dispose(): void;
+  framingSphere(): THREE.Sphere | null;
+  update(nodes: readonly SceneNode[]): void; dispose(): void;
 };
 // The separated lobes each keep their interior within the glass alpha budget.
 export const BRAIN_GLASS_INTERIOR_ALPHA = Math.min(NEURAL_BRAIN_ENVELOPE_OPACITY, 0.03);
@@ -88,6 +86,7 @@ export function createBrainEnvelope(nodes: readonly SceneNode[]): BrainEnvelope 
   rebuild(nodes);
   return {
     group,
+    framingSphere(): THREE.Sphere | null { return group.children.length === 0 ? null : new THREE.Box3().setFromObject(group).getBoundingSphere(new THREE.Sphere()); },
     update: rebuild,
     dispose(): void {
       for (const geometry of geometries) geometry.dispose();
