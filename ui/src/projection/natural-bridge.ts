@@ -2,7 +2,7 @@
 import { computeLayout } from '../review/layout-v2.ts';
 import type { LayoutEdge, LayoutNode, LayoutResult, Point3 } from '../review/layout-v2.ts';
 import { applyExpansion, canonicalize } from '../review/volume.ts';
-import { projectRelations } from '../review/v2-relations.ts';
+import { projectLayoutRelations, projectRelations } from '../review/v2-relations.ts';
 import type { V2Node } from '../review/v2-core.ts';
 import type { GraphEdge } from '../review/graph-v2.ts';
 import { canonicalRawJson } from './normalize.ts';
@@ -151,13 +151,13 @@ function legacyNodes(snapshot: SemanticGraphSnapshot, selected: ReadonlySet<stri
 }
 
 function legacyRelations(snapshot: SemanticGraphSnapshot, selected: ReadonlySet<string>,
-  policy: ProjectionParameters['natural']['layoutRelationPolicy']) {
+  policy: ProjectionParameters['natural']['layoutRelationPolicy'], layoutOnly = false) {
   const nodes: V2Node[] = snapshot.nodes.map(node => node.sourceKind === 'index-node'
     ? node.rawNode.raw as V2Node : node.materializedV2Node as V2Node);
   const edges: GraphEdge[] = snapshot.edges.map(edge => edge.rawEdge.raw as GraphEdge);
   // D-072's exploratory reading includes both classes; only attested reading filters one out.
   const reading = policy === 'attested-essential' ? 'attested' : 'combined';
-  return projectRelations(nodes, edges, selected, reading, 'natural', 'essential').edges;
+  return (layoutOnly ? projectLayoutRelations : projectRelations)(nodes, edges, selected, reading, 'natural', 'essential').edges;
 }
 
 function visualRelations(relations: ReturnType<typeof legacyRelations>): VisualRelation[] {
@@ -182,9 +182,10 @@ export const naturalProjection: MathematicalProjection<'natural'> = {
     const selected = new Set(domain.nodeIds);
     const relations = legacyRelations(snapshot, selected, parameters.layoutRelationPolicy);
     const nodes = legacyNodes(snapshot, selected);
-    const edges: LayoutEdge[] = relations.map(edge => ({
-      id: edge.id, source: edge.source, target: edge.target, class: edge.class,
-    }));
+    // D-079: relation visibility gains provenance links; preserve the pinned layout topology.
+    const edges: LayoutEdge[] = legacyRelations(snapshot, selected, parameters.layoutRelationPolicy, true)
+      .map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
+        class: edge.class === 'exploratory' ? 'exploratory' : 'attested' }));
     const previous = parameters.continuityAnchors
       ? new Map(Object.entries(parameters.continuityAnchors).sort(([a], [b]) => compare(a, b))) : undefined;
     const dispatch = NATURAL_ARRANGEMENT_LAYOUT_DISPATCH[parameters.arrangement];

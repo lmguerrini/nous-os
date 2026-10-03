@@ -140,7 +140,7 @@ test('the typed witness reports the density budgets and a density change revises
   assert.equal(essential.nodes.rendered, DENSITY_BUDGETS.essential.nodes, 'the essential node budget binds exactly');
   assert.equal(visibilityOf(page).nodeIds.size, essential.nodes.rendered, 'the witness reports the mask that was applied');
   assert.ok(essential.arcs.available > DENSITY_BUDGETS.essential.arcs);
-  assert.ok(essential.arcs.rendered <= DENSITY_BUDGETS.essential.arcs + essential.arcs.pinned);
+  assert.ok(essential.arcs.rendered <= DENSITY_BUDGETS.essential.arcs + essential.nodes.rendered + essential.arcs.pinned);
   assert.equal(essential.arcs.rendered, visibilityOf(page).visualRelationIds.size);
   assert.equal(essential.labels.available, 20);
   const before = trace.updates.length;

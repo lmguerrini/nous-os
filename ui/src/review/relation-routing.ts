@@ -1,5 +1,6 @@
 /** Final relation selection after node LOD. This module never changes source provenance. */
 import { EXPLORATORY_RESERVE_SHARE } from './lod.ts';
+import { relationVisible, type RelationClass } from './reading.ts';
 import type { RevealBand, RevealSource } from './reveal-controller.ts';
 
 export type RouteChannel = 'semantic' | 'lifted' | 'visual';
@@ -7,7 +8,7 @@ export type RouteCause = 'endpoint-unrepresented' | 'self-aggregate' | 'line-bud
 export type RouteNode = Readonly<{ id: string; parent: string | null; level: 1 | 2 | 3 | 4 | 5; passageCount?: number }>;
 export type RouteRelation = Readonly<{
   id: string; channel: RouteChannel; source: string; target: string;
-  class: 'attested' | 'exploratory'; type: string; count?: number;
+  class: RelationClass; type: string; count?: number;
   explanationId?: string; sourceEdgeIds?: readonly string[];
 }>;
 export type RouteEndpoint = Readonly<{ id: string; kind: 'node' | 'aggregate' }>;
@@ -101,7 +102,7 @@ export function routeRelationsAfterLOD(input: RouteInput): RouteResult {
   const buckets = new Map<string, Bucket>();
   const suppressed: RouteSuppression[] = [];
   for (const relation of [...input.relations].sort((a, b) => cmp(a.id, b.id))) {
-    if (input.reading === 'attested' && relation.class === 'exploratory') {
+    if (input.reading && !relationVisible(relation.class, input.reading)) {
       suppressed.push({ id: relation.id, cause: 'reading-filter' }); continue;
     }
     const from = nearestGlyph(relation.source), to = nearestGlyph(relation.target);
@@ -122,26 +123,58 @@ export function routeRelationsAfterLOD(input: RouteInput): RouteResult {
     (bucket.from.id === input.focusId || bucket.to.id === input.focusId ||
       bucket.source.some(relation => relation.source === input.focusId || relation.target === input.focusId));
   const pinned = (bucket: Bucket) => bucket.source.some(relation => input.pinnedRelationIds?.has(relation.id));
-  const rank = (a: Bucket, b: Bucket) => Number(pinned(b)) - Number(pinned(a)) || Number(focused(b)) - Number(focused(a)) ||
+  const structuralPriority = (bucket: Bucket) => bucket.type === 'contains' || bucket.type === 'synthetic-containment' ? 2
+    : bucket.type === 'co_membership' || bucket.type === 'co-membership' ? 1 : 0;
+  const rank = (a: Bucket, b: Bucket) => Number(pinned(b)) - Number(pinned(a)) ||
+    Number(b.class !== 'structural') - Number(a.class !== 'structural') ||
+    (a.class === 'structural' && b.class === 'structural' ? structuralPriority(b) - structuralPriority(a) : 0) ||
+    Number(focused(b)) - Number(focused(a)) ||
     b.count - a.count || cmp(a.from.id, b.from.id) || cmp(a.to.id, b.to.id) || cmp(a.type, b.type);
   const all = [...buckets.values()].sort(rank);
   const budget = Math.max(0, Math.floor(input.budget));
   const fan = input.fanDegree ?? Math.max(2, Math.ceil(Math.sqrt(budget)));
+  const structuralCap = Math.min(budget, rendered.size + 32);
   const reserve = Math.min(all.filter(bucket => bucket.class === 'exploratory').length,
     Math.floor(budget * EXPLORATORY_RESERVE_SHARE));
   const exploratory = all.filter(bucket => bucket.class === 'exploratory');
   const queue = [...exploratory.slice(0, reserve), ...all.filter(bucket => !exploratory.slice(0, reserve).includes(bucket))];
   const degree = new Map<string, number>(), accepted: Bucket[] = [];
+  let structuralAccepted = 0;
   for (const bucket of queue) {
     if (accepted.length >= budget && !pinned(bucket)) {
       suppressed.push(...bucket.source.map(relation => ({ id: relation.id, cause: 'line-budget' as const }))); continue;
     }
-    if (!pinned(bucket) && ((degree.get(bucket.from.id) ?? 0) >= fan || (degree.get(bucket.to.id) ?? 0) >= fan)) {
+    if (!pinned(bucket) && bucket.class === 'structural' && structuralPriority(bucket) !== 2 &&
+      ((degree.get(bucket.from.id) ?? 0) >= fan || (degree.get(bucket.to.id) ?? 0) >= fan)) {
       suppressed.push(...bucket.source.map(relation => ({ id: relation.id, cause: 'fan-degree' as const }))); continue;
     }
+    if (bucket.class === 'structural' && structuralAccepted >= structuralCap && !pinned(bucket)) {
+      suppressed.push(...bucket.source.map(relation => ({ id: relation.id, cause: 'line-budget' as const }))); continue;
+    }
     accepted.push(bucket);
+    if (bucket.class === 'structural') structuralAccepted++;
     degree.set(bucket.from.id, (degree.get(bucket.from.id) ?? 0) + 1);
     degree.set(bucket.to.id, (degree.get(bucket.to.id) ?? 0) + 1);
+  }
+  // One existing, legitimate relation per still isolated glyph. A semantic edge in the
+  // selected reading wins; containment is the fallback. The reserve adds at most one
+  // bucket per node beyond the ordinary line budget, even when fan limits were reached.
+  const acceptedSet = new Set(accepted);
+  const visibleDegree = new Map<string, number>();
+  for (const bucket of accepted) for (const id of [bucket.from.id, bucket.to.id])
+    visibleDegree.set(id, (visibleDegree.get(id) ?? 0) + 1);
+  for (const id of [...rendered].sort(cmp)) {
+    if (visibleDegree.has(id)) continue;
+    const candidate = all.filter(bucket => !acceptedSet.has(bucket) && (bucket.from.id === id || bucket.to.id === id))
+      .sort((a, b) => Number(b.class !== 'structural') - Number(a.class !== 'structural') || rank(a, b))[0];
+    if (!candidate) continue;
+    accepted.push(candidate); acceptedSet.add(candidate);
+    for (const endpoint of [candidate.from.id, candidate.to.id])
+      visibleDegree.set(endpoint, (visibleDegree.get(endpoint) ?? 0) + 1);
+    for (const relation of candidate.source) {
+      const index = suppressed.findIndex(item => item.id === relation.id);
+      if (index >= 0) suppressed.splice(index, 1);
+    }
   }
   const edgeCounts = new Map<string, Set<string>>();
   for (const bucket of accepted) for (const endpoint of [bucket.from, bucket.to]) if (endpoint.kind === 'aggregate') {

@@ -30,7 +30,7 @@ test('a full window pages beyond the cap, retains ancestors, and every page is r
   assert.ok(v2Visible(index, state, new Map(), 10, 'conversation').nodes.some(item => item.id === 'leaf:00'));
 });
 
-test('attested reading excludes exploratory relations; exploratory reading adds permitted source relations', () => {
+test('attested and exploratory readings keep their semantic relation sets disjoint', () => {
   const nodes = [node('a', 1, null), node('b', 1, null), node('c', 1, null)];
   const relations = [
     { id: 'attested', channel: 'semantic' as const, source: 'a', target: 'b', class: 'attested' as const, type: 'link' },
@@ -41,7 +41,7 @@ test('attested reading excludes exploratory relations; exploratory reading adds 
   const attested = routeRelationsAfterLOD({ ...base, reading: 'attested' });
   const exploratory = routeRelationsAfterLOD({ ...base, reading: 'exploratory' });
   assert.deepEqual(attested.drawn.flatMap(edge => edge.sourceRelationIds), ['attested']);
-  assert.deepEqual(new Set(exploratory.drawn.flatMap(edge => edge.sourceRelationIds)), new Set(['attested', 'exploratory']));
+  assert.deepEqual(new Set(exploratory.drawn.flatMap(edge => edge.sourceRelationIds)), new Set(['exploratory']));
   assert.ok(attested.invariant.ok && exploratory.invariant.ok);
 });
 

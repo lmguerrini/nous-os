@@ -2,8 +2,9 @@ import type { GraphEdge } from './graph-v2.ts';
 import type { V2Node } from './v2-core.ts';
 import type { Reading } from './view-contract.ts';
 import type { VisualRelation } from '../projection/contract-types.ts';
+import { relationVisible, type RelationClass } from './reading.ts';
 
-export type LiftedRelation = GraphEdge & {
+export type LiftedRelation = Omit<GraphEdge, 'class'> & { class: RelationClass;
   count: number;
   underlying: readonly GraphEdge[];
   lifted: boolean;
@@ -27,7 +28,7 @@ export type TypedPathStep =
 
 /** Classify v2Path's temporary synthetic hierarchy steps before any new panel/pick consumes them. */
 export function typedPathSteps(steps: readonly (GraphEdge | {
-  class: 'attested'; type: 'contains'; source: string; target: string;
+  class: 'attested' | 'structural'; type: 'contains'; source: string; target: string;
 })[]): TypedPathStep[] {
   return steps.map(step => {
     if ('id' in step) return { kind: 'semantic-edge', edge: step };
@@ -40,6 +41,8 @@ export function typedPathSteps(steps: readonly (GraphEdge | {
   });
 }
 export const INDRA_ESSENTIAL_ARC_CAP = 160;
+/** Leave room for the structural reserve while keeping each semantic reading stable. */
+export const INDRA_SEMANTIC_CLASS_CAP = Math.floor((INDRA_ESSENTIAL_ARC_CAP - 32) / 2);
 
 /** Indra recedes its semantic arcs so the nested shells stay legible. Non-selected arcs are strongly
  * reduced: the opacity factor is at most half of the D-070 value (0.6 in 3D, 1.0 in 2D). */
@@ -72,8 +75,8 @@ export function projectTypedRelations(
   active: string | null = null,
 ): TypedRelationProjection {
   const legacy = projectRelations(nodes, edges, visible, reading, organization, detail, active);
-  const semanticEdges = edges.filter(edge => visible.has(edge.source) && visible.has(edge.target) &&
-    (reading !== 'attested' || edge.class === 'attested'));
+  const semanticEdges = edges.filter(edge => !['contains', 'classified_in', 'co_membership'].includes(edge.type) &&
+    visible.has(edge.source) && visible.has(edge.target) && relationVisible(edge.class, reading));
   const sourceIds = new Set(edges.map(edge => edge.id));
   const nodeIds = new Set(nodes.map(node => node.id));
   if (sourceIds.size !== edges.length) throw new Error('Duplicate source edge ID');
@@ -84,7 +87,7 @@ export function projectTypedRelations(
     // The typed record must still identify every original contributor to that chord.
     const contributors = kind === 'co-membership' ? [
       ...relation.underlying,
-      ...legacy.edges.filter(other => other !== relation && other.class === 'attested' &&
+      ...legacy.edges.filter(other => other !== relation && other.class === relation.class &&
         other.source === relation.source && other.target === relation.target &&
         other.type !== 'contains').flatMap(other => other.underlying),
     ] : relation.underlying;
@@ -119,7 +122,7 @@ export function coMembership(nodes: readonly V2Node[], visible: ReadonlySet<stri
   }
   return [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([key, count]) => {
     const [source, target] = key.split('\u0000');
-    return { id: `co:${source}:${target}`, source: source!, target: target!, class: 'attested',
+    return { id: `co:${source}:${target}`, source: source!, target: target!, class: 'structural',
       type: 'co_membership', directed: false, evidence: [], count, underlying: [], lifted: true, width: width(count) };
   });
 }
@@ -128,25 +131,27 @@ function projectLegacyRelations(
   nodes: readonly V2Node[], edges: readonly GraphEdge[], visible: ReadonlySet<string>,
   reading: Reading, organization: 'natural' | 'indra', detail: RelationDetail = 'essential',
   active: string | null = null,
+  layoutOnly = false,
 ): RelationProjection {
   const byNode = new Map(nodes.map(node => [node.id, node]));
-  const buckets = new Map<string, { source: string; target: string; class: GraphEdge['class']; type: string; items: GraphEdge[]; lifted: boolean }>();
-  const add = (source: string, target: string, edge: GraphEdge, type: string, lifted: boolean) => {
+  const buckets = new Map<string, { source: string; target: string; class: RelationClass; type: string; items: GraphEdge[]; lifted: boolean }>();
+  const add = (source: string, target: string, edge: GraphEdge, kind: RelationClass, type: string, lifted: boolean) => {
     const [a, b] = pair(source, target);
-    const key = `${a}\u0000${b}\u0000${edge.class}\u0000${type}`;
-    const bucket = buckets.get(key) ?? { source: a, target: b, class: edge.class, type, items: [], lifted: false };
+    const key = `${a}\u0000${b}\u0000${kind}\u0000${type}`;
+    const bucket = buckets.get(key) ?? { source: a, target: b, class: kind, type, items: [], lifted: false };
     bucket.items.push(edge);
     bucket.lifted ||= lifted;
     buckets.set(key, bucket);
   };
   for (const edge of edges) {
-    if (edge.type === 'contains' || edge.type === 'classified_in') continue;
-    if (reading === 'attested' && edge.class === 'exploratory') continue;
+    if (edge.type === 'contains' || (layoutOnly && edge.type === 'classified_in')) continue;
+    const kind: RelationClass = !layoutOnly && edge.type === 'classified_in' ? 'structural' : edge.class;
+    if (layoutOnly ? reading === 'attested' && edge.class === 'exploratory' : !relationVisible(kind, reading)) continue;
     if (organization === 'natural' && edge.type === 'mentions' && detail === 'essential' && active !== edge.source && active !== edge.target) continue;
     const source = visibleAncestor(edge.source, visible, byNode);
     const target = visibleAncestor(edge.target, visible, byNode);
     if (!source || !target || source === target) continue;
-    add(source, target, edge, edge.class === 'exploratory' ? 'exploratory_lift' : 'attested_lift', source !== edge.source || target !== edge.target);
+    add(source, target, edge, kind, kind === 'exploratory' ? 'exploratory_lift' : kind === 'structural' ? 'structural_lift' : 'attested_lift', source !== edge.source || target !== edge.target);
   }
   const projected: LiftedRelation[] = [...buckets].sort(([a], [b]) => a.localeCompare(b)).map(([key, bucket]) => ({
     id: `lift:${key}`, source: bucket.source, target: bucket.target, class: bucket.class,
@@ -154,16 +159,20 @@ function projectLegacyRelations(
     underlying: bucket.items, lifted: bucket.lifted || bucket.items.length > 1,
     width: width(bucket.items.length),
   }));
-  if (organization === 'natural') {
-    for (const node of nodes) if (visible.has(node.id) && node.parent && visible.has(node.parent)) {
-      projected.push({ id: `contains:${node.id}`, source: node.parent, target: node.id,
-        class: 'attested', type: 'contains', directed: true, evidence: [], count: 1,
+  if (organization === 'natural' || organization === 'indra') {
+    for (const node of nodes) if (visible.has(node.id) && node.parent) {
+      if (layoutOnly && (organization !== 'natural' || !visible.has(node.parent))) continue;
+      const ancestor = layoutOnly ? node.parent : visibleAncestor(node.parent, visible, byNode);
+      if (!ancestor || ancestor === node.id) continue;
+      projected.push({ id: `contains:${node.id}`, source: ancestor, target: node.id,
+        class: layoutOnly ? 'attested' : 'structural', type: 'contains', directed: true, evidence: [], count: 1,
         underlying: [], lifted: false, width: 0.65 });
     }
   }
   if (organization === 'natural' || organization === 'indra') {
-    for (const membership of coMembership(nodes, visible)) {
-      const duplicate = projected.findIndex(edge => edge.class === 'attested' &&
+    for (const base of coMembership(nodes, visible)) {
+      const membership = layoutOnly ? { ...base, class: 'attested' as const } : base;
+      const duplicate = projected.findIndex(edge => edge.class === membership.class &&
         edge.source === membership.source && edge.target === membership.target && edge.type !== 'contains');
       if (duplicate >= 0) {
         const extra = projected.splice(duplicate, 1)[0]!;
@@ -173,10 +182,18 @@ function projectLegacyRelations(
     }
   }
   const total = projected.length;
-  if (organization === 'indra' && detail === 'essential' && projected.length > INDRA_ESSENTIAL_ARC_CAP) {
+  if (layoutOnly && organization === 'indra' && detail === 'essential' && projected.length > INDRA_ESSENTIAL_ARC_CAP) {
     projected.sort((a, b) => b.count - a.count || a.id.localeCompare(b.id));
     projected.length = INDRA_ESSENTIAL_ARC_CAP;
   }
+  if (!layoutOnly && organization === 'indra' && detail === 'essential') {
+    const keep = new Set(projected.filter(edge => edge.class === 'structural').map(edge => edge.id));
+    for (const kind of ['attested', 'exploratory'] as const)
+      for (const edge of projected.filter(edge => edge.class === kind)
+        .sort((a, b) => b.count - a.count || a.id.localeCompare(b.id)).slice(0, INDRA_SEMANTIC_CLASS_CAP)) keep.add(edge.id);
+    for (let i = projected.length - 1; i >= 0; i--) if (!keep.has(projected[i]!.id)) projected.splice(i, 1);
+  }
+  // The post-LOD router owns the shared line budget and connectivity reserve.
   const byId = new Map(projected.map(edge => [edge.id, edge]));
   return { edges: projected, byId, total };
 }
@@ -188,4 +205,13 @@ export function projectRelations(
   active: string | null = null,
 ): RelationProjection {
   return projectLegacyRelations(nodes, edges, visible, reading, organization, detail, active);
+}
+
+/** Fixed D-072 layout input; new visible provenance lines cannot move established coordinates. */
+export function projectLayoutRelations(
+  nodes: readonly V2Node[], edges: readonly GraphEdge[], visible: ReadonlySet<string>,
+  reading: Reading, organization: 'natural' | 'indra', detail: RelationDetail = 'essential',
+  active: string | null = null,
+): RelationProjection {
+  return projectLegacyRelations(nodes, edges, visible, reading, organization, detail, active, true);
 }

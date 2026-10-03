@@ -18,7 +18,7 @@ export type LayoutEdge = {
     readonly id: string;
     readonly source: string;
     readonly target: string;
-    readonly class: 'attested' | 'exploratory';
+    readonly class: 'attested' | 'exploratory' | 'structural';
 };
 export type LayoutInput = {
     readonly nodes: readonly LayoutNode[];

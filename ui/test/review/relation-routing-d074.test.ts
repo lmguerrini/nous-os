@@ -67,21 +67,21 @@ test('reading-filtered source relations remain accounted for as suppressions', (
   assert.equal(result.invariant.ok, true);
 });
 
-test('unrepresented, collapsed self-pairs, line budget and fan-degree have explicit causes', () => {
+test('unrepresented and collapsed self-pairs have causes; reserve rescues isolated endpoints', () => {
   const result = routeRelationsAfterLOD({ ...base, relations: [
     relation('missing', 'unknown', 'b-q'), relation('self', 'a-q', 'a-s'),
     relation('one', 'a-q', 'b-q'), relation('two', 'a-c', 'b'),
   ], budget: 1 });
-  assert.equal(result.drawn.length, 1);
+  assert.equal(result.drawn.length, 2);
   assert.deepEqual(Object.fromEntries(result.suppressed.map(item => [item.id, item.cause])), {
-    missing: 'endpoint-unrepresented', self: 'self-aggregate', one: 'line-budget',
+    missing: 'endpoint-unrepresented', self: 'self-aggregate',
   });
   const fan = routeRelationsAfterLOD({ ...base, nodes: [...nodes, { id: 'c', level: 1, parent: null },
     { id: 'd', level: 1, parent: null }], renderedNodeIds: new Set([...base.renderedNodeIds, 'c', 'd']),
     relations: [relation('a', 'a-q', 'b'), relation('b', 'a-q', 'c'), relation('c', 'a-q', 'd')],
     budget: 5, fanDegree: 2 });
-  assert.equal(fan.drawn.length, 2);
-  assert.deepEqual(fan.suppressed, [{ id: 'c', cause: 'fan-degree' }]);
+  assert.equal(fan.drawn.length, 3);
+  assert.deepEqual(fan.suppressed, []);
 });
 
 test('the invariant detects a crafted missing glyph and unexplained aggregate', () => {

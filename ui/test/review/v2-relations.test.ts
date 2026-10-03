@@ -40,16 +40,17 @@ test('lifting merges underlying evidence and applies readings after aggregation'
   const attested = projectRelations(nodes, edges, visible, 'attested', 'natural');
   assert.equal(attested.edges.filter(item => item.class === 'exploratory').length, 0);
   const lifted = attested.edges.find(item => item.type === 'co_membership' && item.source === 'domain:a');
-  assert.deepEqual(lifted?.underlying.map(item => item.id), ['a', 'b']);
+  assert.deepEqual(lifted?.underlying.map(item => item.id), ['e']);
   assert.equal(lifted?.count, 2);
-  assert.equal(attested.edges.some(item => item.underlying.some(source => source.id === 'd' || source.id === 'e')), false);
+  assert.ok(attested.edges.some(item => item.class === 'attested' && item.underlying.some(source => source.id === 'a' || source.id === 'b')));
+  assert.equal(attested.edges.some(item => item.underlying.some(source => source.id === 'd')), false);
   const exploratory = projectRelations(nodes, edges, visible, 'exploratory', 'natural');
   assert.ok(exploratory.edges.some(item => item.class === 'exploratory' && item.underlying[0]?.id === 'c'));
   const all = projectRelations(nodes, edges, visible, 'combined', 'natural', 'all');
   assert.ok(all.edges.some(item => item.underlying.some(source => source.id === 'd')));
 });
 
-test('Indra shows semantic arcs without an active node and never draws containment', () => {
+test('Indra shows semantic arcs and keeps containment in its structural class', () => {
   const visible = new Set(['domain:a', 'domain:b']);
   const idle = projectRelations(nodes, edges, visible, 'exploratory', 'indra');
   assert.ok(idle.edges.length > 0);
@@ -62,19 +63,21 @@ test('Indra shows semantic arcs without an active node and never draws containme
   assert.deepEqual(idle, projectRelations(nodes, edges, visible, 'exploratory', 'indra'));
   const expanded = new Set(nodes.map(n => n.id));
   const intra = projectRelations(nodes, edges, expanded, 'combined', 'indra', 'all');
+  assert.ok(intra.edges.some(item => item.type === 'contains' && item.class === 'structural'));
   assert.ok(intra.edges.some(item => item.source.startsWith('proposal:') && item.target.startsWith('proposal:')));
   assert.ok(intra.edges.some(item => item.source.startsWith('domain:') && item.target.startsWith('domain:')));
 });
 
-test('Indra essential arc cap is deterministic and all mode is uncapped', () => {
+test('Indra essential projection caps each semantic class before the post-LOD line budget', () => {
   const many = Array.from({ length: 210 }, (_, i) => node(`synthetic:${i}`, 3, 'domain:a'));
   const graph = [...nodes, ...many];
   const relations = many.map((item, i) => edge(`many:${i}`, item.id, 'domain:b', 'attested'));
   const visible = new Set(graph.map(item => item.id));
   const essential = projectRelations(graph, relations, visible, 'attested', 'indra');
   const all = projectRelations(graph, relations, visible, 'attested', 'indra', 'all');
-  assert.equal(essential.edges.length, INDRA_ESSENTIAL_ARC_CAP);
+  assert.ok(essential.edges.length > INDRA_ESSENTIAL_ARC_CAP);
   assert.ok(essential.total > essential.edges.length);
+  assert.ok(essential.edges.filter(item => item.class === 'attested').length <= 64);
   assert.equal(all.edges.length, all.total);
   assert.deepEqual(essential, projectRelations(graph, relations, visible, 'attested', 'indra'));
 });
@@ -89,7 +92,7 @@ test('Indra keeps intra-pearl and inter-pearl semantics separate from hierarchy'
   const projected = projectRelations(localNodes, localEdges, new Set(localNodes.map(item => item.id)), 'attested', 'indra');
   assert.ok(projected.edges.some(item => item.underlying.some(edge => edge.id === 'within')));
   assert.ok(projected.edges.some(item => item.underlying.some(edge => edge.id === 'between')));
-  assert.ok(projected.edges.every(item => item.type !== 'contains'));
+  assert.ok(projected.edges.some(item => item.type === 'contains' && item.class === 'structural'));
 });
 
 test('typed lifted relation records every source contributor without rewriting semantic records', () => {
@@ -98,7 +101,9 @@ test('typed lifted relation records every source contributor without rewriting s
   const result = projectTypedRelations(nodes, sources, visible, 'attested', 'natural');
   const pair = result.visualRelations.find(relation => relation.kind === 'co-membership' &&
     relation.source === 'domain:a' && relation.target === 'domain:b');
-  assert.deepEqual(pair?.underlyingEdgeIds, ['a', 'b', 'f']);
+  assert.deepEqual(pair?.underlyingEdgeIds, ['e']);
+  assert.ok(result.visualRelations.some(relation => relation.kind === 'lifted-route' &&
+    JSON.stringify(relation.underlyingEdgeIds) === JSON.stringify(['a', 'b', 'f'])));
   assert.equal(pair?.semantic, false);
   assert.ok(pair?.visualId.startsWith('visual:relation:'));
   assert.deepEqual(result.semanticEdges, []); // Hidden endpoints remain in the source ledger, not the visible semantic set.

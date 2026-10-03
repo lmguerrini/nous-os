@@ -25,6 +25,8 @@ import type { AppearanceOptions } from "../engine/presentation-options.ts";
 import { PALETTES, hexRgb, v2CategoryColour } from "./palette.ts";
 import type { PaletteValues } from "./palette.ts";
 import { relationClass, relationVisible } from "./reading.ts";
+import { buildVisibilityWitness, countAggregateRepresentation } from './visibility-witness.ts';
+import { cachedStarfieldStars } from '../render-common/starfield.ts';
 import type { ReviewEdge } from "./model.ts";
 import { indraArcPresentation } from "./v2-relations.ts";
 import { v2Encoding } from "./v2-adapter.ts";
@@ -515,8 +517,8 @@ export const createProductView: CreateProductView = async (input) => {
   let drawnEdges: readonly ReviewEdge[];
   let drawnEdgeIds: ReadonlySet<string>;
   const readingAllows = (edge: ReviewEdge): boolean => {
-    const kind = input.v2Prepared ? edge.attested_by as "attested" | "exploratory" : relationClass(edge, nodesById);
-    return input.v2Prepared ? axes.reading !== "attested" || kind === "attested" : relationVisible(kind, axes.reading);
+    const kind = input.v2Prepared ? edge.attested_by as import('./reading.ts').RelationClass : relationClass(edge, nodesById);
+    return relationVisible(kind, axes.reading);
   };
   const initialDrawn = input.data.edges.filter((edge) => visible.has(edge.source) && visible.has(edge.target) && readingAllows(edge));
   drawnEdges = initialDrawn;
@@ -1193,18 +1195,20 @@ export const createProductView: CreateProductView = async (input) => {
     const relation = edge.v2 as import('./v2-relations.ts').LiftedRelation | undefined;
     const coMembership = Boolean(input.v2Prepared && relation?.type === 'co_membership');
     const containment = Boolean(input.v2Prepared && relation?.type === 'contains');
-    const category = classifyEdgeCategory(exploratory, containment);
+    const structural = input.v2Prepared && (containment || coMembership || relation?.class === 'structural');
+    const category = classifyEdgeCategory(exploratory, Boolean(structural));
     // In Indra the pearls carry the structure: unselected semantic arcs recede (thinner, fainter) so rims and names read.
     const indraDim = axes.organization === 'indra' ? indraArcPresentation(axes.projection, exploratory) : null;
     return { category,
       // Width is never the only signal: exploratory reads through its halo and flow, not through extra thickness.
-      opacityPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE
+      opacityPermille: input.v2Prepared ? Math.max(axes.organization === 'indra' && axes.morphology !== 'stellar' ? (structural ? 250 : 360)
+        : axes.organization === 'natural' && axes.morphology !== 'stellar' ? (structural ? 300 : 440) : 0, Math.round(SCENE_PERMILLE_SCALE
         * (exploratory ? 0.9 : coMembership ? 0.62 : containment ? 0.5 : axes.reading === 'attested' ? 0.68 : 0.36)
-        * (indraDim?.opacityFactor ?? 1))
+        * (indraDim?.opacityFactor ?? 1)))
         : axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
-      widthPermille: input.v2Prepared ? Math.round(SCENE_PERMILLE_SCALE
+      widthPermille: input.v2Prepared ? Math.max(axes.organization === 'indra' && axes.morphology !== 'stellar' ? (structural ? 550 : 800) : 0, Math.round(SCENE_PERMILLE_SCALE
         * (coMembership ? Math.min(1.4, (relation?.width ?? 1) * 0.75) : containment ? 0.8 : 1)
-        * (indraDim?.widthFactor ?? 1))
+        * (indraDim?.widthFactor ?? 1)))
         : SCENE_PERMILLE_SCALE,
       ...(axes.colour === "bw" && input.v2Prepared ? { tintSrgb: [0.64, 0.64, 0.64] as const }
         : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
@@ -1946,6 +1950,21 @@ export const createProductView: CreateProductView = async (input) => {
       const zs = mounted.map((p) => p.position.z);
       const zMean = mean(zs);
       const windows = sigma?.model.windows ?? three?.readReviewWindows() ?? [];
+      const represented = countAggregateRepresentation(input.data.nodes.map(node => { const v2 = node.v2 as import('./v2-core.ts').V2Node | undefined;
+        return { id: node.id, parent: v2?.parent }; }), visible);
+      const visibility = buildVisibilityWitness({
+        axes, relationDetail: 'essential', density: 'complete',
+        nodes: input.data.nodes.map(node => { const v2 = node.v2 as import('./v2-core.ts').V2Node | undefined;
+          return { id: node.id, level: v2?.level, kind: v2?.kind ?? node.type, parent: v2?.parent }; }),
+        renderedNodeIds: visible,
+        submittedEdges: drawnEdges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
+          class: input.v2Prepared ? edge.attested_by as import('./reading.ts').RelationClass : relationClass(edge, nodesById) })),
+        labels: placed.length + visibleTitleCount,
+        aggregateCount: represented.drawn,
+        representedCount: represented.represented,
+        starCount: axes.morphology === 'stellar' && appearance.starfieldBrightness > 0
+          ? cachedStarfieldStars(r.width, r.height, appearance.starfieldDensity).length : 0,
+      });
       return {
         axes,
         cameraKind: handle.cameraKind,
@@ -1974,6 +1993,7 @@ export const createProductView: CreateProductView = async (input) => {
               ? "engine-flat+depth"
               : "engine-flat",
         palette: "monochrome",
+        visibility,
       };
     },
     destroy() {

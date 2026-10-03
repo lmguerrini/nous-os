@@ -93,12 +93,13 @@ export function epistemicLabel(value: unknown): string {
 }
 const badge = (state: string, kind: string): string => {
   if (kind === 'exploratory') return 'Esplorativo';
+  if (kind === 'structural') return 'strutturale · provenienza';
   if (/proposal|candidat/i.test(state)) return 'Candidato';
   if (/canon/i.test(state)) return 'Canonico';
   return 'Non classificato';
 };
 const typeName = (kind: string): string => ({ domain: 'Dominio', project: 'Progetto', work: 'Opera', conversation: 'Conversazione', proposal: 'Proposta', passage: 'Passaggio', CONCEPT: 'Concetto', DECISION: 'Decisione', REQUIREMENT: 'Requisito', RELATIONSHIP: 'Relazione' } as Record<string, string>)[kind] ?? 'Elemento';
-const relationName = (kind: string): string => ({ classified_in: 'classificati', contains: 'contenuti', mentions: 'menzioni', co_membership: 'conversazioni condivise', exploratory_lift: 'collegamenti esplorativi', attested_lift: 'relazioni attestate' } as Record<string, string>)[kind] ?? 'collegamenti';
+const relationName = (kind: string): string => ({ classified_in: 'classificati', contains: 'contenuti', mentions: 'menzioni', co_membership: 'conversazioni condivise', exploratory_lift: 'collegamenti esplorativi', attested_lift: 'relazioni attestate', structural_lift: 'relazioni strutturali' } as Record<string, string>)[kind] ?? 'collegamenti';
 const conversationFor = (id: string, nodes: ReadonlyMap<string, V2Node>): V2Node | undefined => {
   let cursor = nodes.get(id);
   const seen = new Set<string>();

@@ -101,7 +101,7 @@ test("palette contrast uses WCAG luminance and flags dim custom choices", () => 
   assert.ok(contrast(PALETTES.bw.text, "#050505") >= 4.5);
   assert.ok(contrast("#333333", "#050505") < 3);
 });
-test("D-065 editorial links are exploratory; provenance and canon are attested", () => {
+test("D-065 editorial links are exploratory; provenance is structural and semantic canon is attested", () => {
   const nodes = new Map<string, ReviewNode>([
     ["card", { id: "card", type: "connection", label: "card", epistemic: "A" }],
     ["source", { id: "source", type: "evidence", label: "source", epistemic: "source" }],
@@ -110,7 +110,8 @@ test("D-065 editorial links are exploratory; provenance and canon are attested",
   const edge = (source: string, target: string, attested_by: string, type = "quotes"): ReviewEdge =>
     ({ id: `${source}:${target}`, type, source, target, attested_by, weight: 1, evidence_ids: [] });
   assert.equal(relationClass(edge("card", "source", "d065-card", "supported_by"), nodes), "exploratory");
-  assert.equal(relationClass(edge("source", "canon", "canon.assertions"), nodes), "attested");
+  assert.equal(relationClass(edge("source", "canon", "canon.assertions"), nodes), "structural");
+  assert.equal(relationClass(edge("source", "canon", "canon.assertions", "relates"), nodes), "attested");
   assert.equal(relationVisible("exploratory", "attested"), false);
   assert.equal(relationVisible("exploratory", "combined"), true);
 });

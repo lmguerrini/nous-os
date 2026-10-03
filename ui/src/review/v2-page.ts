@@ -11,7 +11,9 @@ import { typedNodeViewport } from './typed-node-viewport.ts';
 import { applyExpansion, canonicalize, equilibrate, formatVolumeProportions, volumeStats, VOLUME_READOUT_HELP } from './volume.ts';
 import type { Expansion } from './volume.ts';
 import { adaptV2 } from './v2-adapter.ts';
-import { projectRelations, projectTypedRelations } from './v2-relations.ts';
+import { INDRA_ESSENTIAL_ARC_CAP, coMembership, projectLayoutRelations, projectRelations, projectTypedRelations } from './v2-relations.ts';
+import { relationVisible } from './reading.ts';
+import { buildVisibilityWitness, countAggregateRepresentation, countExcludedRelations } from './visibility-witness.ts';
 import type { LiftedRelation, RelationDetail } from './v2-relations.ts';
 import { DisclosureHistory, italianDate, nodeRadius, projectionPick, projectionVisibility, semanticZoom, typedV2Path, V2_CAP, V2_PAGE, v2Path, v2Visible } from './v2-core.ts';
 import type { V2Index, V2Node } from './v2-core.ts';
@@ -519,6 +521,7 @@ export class V2Page {
     private confirmFitTimer: number | null = null;
     private auto = new Set<string>();
     private autoPageCounts = new Map<string, number>();
+    private structuralRoots = new Set<string>();
     private revealState: RevealState = emptyRevealState();
     private revealCamera = { zoom: 1, band: 'far' as RevealState['band'], settled: true };
     private revealRevision = 0;
@@ -656,6 +659,13 @@ export class V2Page {
         // The overview exposes every level-2 entry point, including domains whose direct
         // sources skip that level; those sources remain represented by their domain aggregate.
         this.history.state.overview = true;
+        // D-079 containment: a root with no level-2 entry and no relation of its own keeps one
+        // real child on the page, so its containment edge is drawn instead of an isolated glyph.
+        for (const n of index.nodes)
+            if (n.level === 1 && !index.nodes.some(child => child.level === 2 && child.parent === n.id)
+                && !index.edges.some(edge => edge.source === n.id || edge.target === n.id)
+                && index.nodes.some(child => child.level === 3 && child.parent === n.id))
+                this.structuralRoots.add(n.id);
         root?.addEventListener('pointermove', event => {
             const rect = root.getBoundingClientRect();
             this.cursor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -707,6 +717,7 @@ export class V2Page {
     private visible() {
         const pages = new Map<string, number>([...this.auto].map(id => [id, V2_PAGE]));
         for (const [id, count] of this.autoPageCounts) pages.set(id, count);
+        for (const id of this.structuralRoots) pages.set(id, Math.max(1, pages.get(id) ?? 0));
         return v2Visible(this.index, this.history.state, pages, V2_CAP,
             this.history.state.manualOrder.at(-1) ?? this.revealState.admissions.at(-1)?.parentId);
     }
@@ -988,7 +999,7 @@ export class V2Page {
             indraToCommit = { request: outcome.request, levelId: outcome.levelId };
         } else {
             const ids = new Set(domain.nodeIds);
-            const relations = projectRelations(this.index.nodes, this.index.edges, ids,
+            const relations = projectLayoutRelations(this.index.nodes, this.index.edges, ids,
                 this.axes.reading, 'indra', 'essential').edges;
             // GATE-B audit 1: reproduce the legacy hidden-count max-up — a collapsed hub whose
             // children no page node discloses keeps `pearlRadius` at its descendant count.
@@ -1002,7 +1013,7 @@ export class V2Page {
                     parent: node.parent, size: node.size, domains: node.domains,
                     hiddenDescendants: hiddenCount(node) })),
                 edges: relations.map(edge => ({ id: edge.id, source: edge.source,
-                    target: edge.target, class: edge.class })),
+                    target: edge.target, class: edge.class === 'exploratory' ? 'exploratory' as const : 'attested' as const })),
                 morphology: this.axes.morphology, projection: dimension, expandZ: this.appearance.expandZ,
             };
             const outcome = await registry.project<LegacyIndraProjectionResult>('indra-legacy', snapshot,
@@ -1632,7 +1643,8 @@ export class V2Page {
             adjacency: adjacencyOf(disclosed as V2Node[], this.index.edges), communityOf,
         }, this.lastNodeSelection);
         const base = projectionVisibility(result, snapshot, revision, 1, new Set(selection.rendered));
-        const edgeClass = new Map(this.index.edges.map(edge => [edge.id, edge.class]));
+        const edgeClass = new Map(this.index.edges.map(edge => [edge.id,
+            edge.type === 'classified_in' ? 'structural' as const : edge.class]));
         const routeRelations: RouteRelation[] = [
             ...snapshot.edges.filter(edge => result.domainEdgeIds.includes(edge.id))
                 .map(edge => ({ id: edge.id, channel: 'semantic' as const, source: edge.source,
@@ -1640,7 +1652,8 @@ export class V2Page {
                     type: 'semantic', count: 1 })),
             ...result.visualRelations.map(relation => ({ id: relation.visualId, channel: 'visual' as const,
                 source: relation.source, target: relation.target,
-                class: edgeClass.get(relation.underlyingEdgeIds[0] ?? '') ?? 'attested' as const,
+                class: relation.kind === 'co-membership' || relation.kind === 'synthetic-containment'
+                    ? 'structural' as const : edgeClass.get(relation.underlyingEdgeIds[0] ?? '') ?? 'attested' as const,
                 type: relation.kind, count: relation.count, explanationId: relation.explanationId,
                 sourceEdgeIds: relation.underlyingEdgeIds })),
         ];
@@ -2230,7 +2243,7 @@ export class V2Page {
                 const hidden = disclosed.hidden.get(node.id) ?? 0;
                 return hidden && !visibleParents.has(node.id) ? Math.max(hidden, node.counts.descendants) : hidden;
             };
-            const layoutEdges = projectRelations(
+            const layoutEdges = projectLayoutRelations(
                 this.index.nodes, this.index.edges, ids, this.axes.reading, 'natural', 'essential',
             ).edges;
             const projection = this.axes.projection;
@@ -2241,9 +2254,8 @@ export class V2Page {
                     id: n.id, level: n.level, parent: n.parent, size: n.size, domains: n.domains,
                     hiddenDescendants: hiddenCount(n),
                 })),
-                edges: layoutEdges.map(e => ({
-                    id: e.id, source: e.source, target: e.target, class: e.class,
-                })),
+                edges: layoutEdges.map(e => ({ id: e.id, source: e.source, target: e.target,
+                        class: e.class === 'exploratory' ? 'exploratory' as const : 'attested' as const })),
                 organization,
                 morphology: this.axes.morphology,
                 projection,
@@ -2300,7 +2312,8 @@ export class V2Page {
             }, this.lastNodeSelection);
             let renderedIds = new Set(selection.rendered);
             if (this.neighbourhoodDepth && focusPriority) {
-                const allowed = this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested');
+                // D-079 reading contract: focus traverses exactly the selected semantic class.
+                const allowed = this.index.edges.filter(edge => relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading));
                 renderedIds = focusNeighbourhood(focusPriority, disclosed.nodes, allowed, this.neighbourhoodDepth).nodes;
             } else if (this.restoreNeighbourhood && this.neighbourhoodBefore) renderedIds = new Set(this.neighbourhoodBefore.nodes);
             const routedInput: RouteRelation[] = availableArcs.edges.map(edge => ({
@@ -2310,12 +2323,14 @@ export class V2Page {
             }));
             // The reading mask belongs to routing's audit as well as its drawing. Keep the
             // source relations that the older projector omitted so each has a suppression cause.
-            if (this.axes.reading === 'attested') for (const edge of this.index.edges)
-                if (edge.class === 'exploratory')
+            if (this.axes.reading !== 'combined') for (const edge of this.index.edges)
+                if (!relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading))
                     routedInput.push({ id: edge.id, channel: 'semantic', source: edge.source,
                         target: edge.target, class: edge.class, type: edge.type, count: 1 });
             const route = routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
-                renderedNodeIds: renderedIds, relations: routedInput, reading: this.axes.reading, budget: budget.arcs,
+                renderedNodeIds: renderedIds, relations: routedInput, reading: this.axes.reading,
+                budget: organization === 'indra' && this.relationDetail === 'essential'
+                    ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
                 focusId: active, pinnedRelationIds: this.pinnedArcIds(tiers) });
             const relationById = new Map(availableArcs.edges.map(edge => [edge.id, edge]));
             let shown: LiftedRelation[] = route.drawn.map(edge => {
@@ -2827,7 +2842,8 @@ export class V2Page {
     }
     private focusMembers(id: string, nodes = this.visible().nodes): Set<string> {
         if (id === ABSOLUTE_CONTAINER_ID) return new Set(nodes.map(node => node.id));
-        return focusMembers(nodes, this.index.edges.filter(edge => this.axes.reading !== 'attested' || edge.class === 'attested'), id);
+        // D-079 reading contract: the semantic focus set follows the active reading.
+        return focusMembers(nodes, this.index.edges.filter(edge => relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading)), id);
     }
     private updateEmphasis() {
         if (!this.selected) {
@@ -2869,7 +2885,7 @@ export class V2Page {
         tip.hidden = !relation;
         if (!relation)
             return;
-        tip.textContent = relation.type === 'co_membership' ? `${relation.count} conversazioni in comune` : `${relation.class === 'exploratory' ? 'Esplorativa \u00B7 non canonica' : 'Attestata'} · ${relationBadge(relation.count)}`;
+        tip.textContent = relation.type === 'co_membership' ? `${relation.count} conversazioni in comune` : `${relation.class === 'structural' ? 'Strutturale · provenienza' : relation.class === 'exploratory' ? 'Esplorativa · non canonica' : 'Attestata'} · ${relationBadge(relation.count)}`;
         tip.style.left = `${Math.min(innerWidth - 220, (target!).x + 12)}px`;
         tip.style.top = `${Math.min(innerHeight - 35, (target!).y + 12)}px`;
     }
@@ -3102,8 +3118,38 @@ export class V2Page {
                 this.rendered, point => this.projectionRenderer!.projectNode!(point),
                 this.projectionHost?.getBoundingClientRect() ?? { left: 0, top: 0 })
             : {};
+        const viewWitness = this.view?.witness();
+        const productVisibility = (viewWitness as typeof viewWitness & { visibility?: { stars: { drawn: number }; labels: { drawn: number } } })?.visibility;
+        const drawnSourceIds = new Set([...this.renderedRelations.values()].flatMap(edge =>
+            [edge.id, ...edge.underlying.map(source => source.id)]));
+        const omitted = countExcludedRelations({ nodes: this.index.nodes, renderedNodeIds: this.rendered,
+            relations: [
+                ...this.index.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
+                    class: edge.type === 'classified_in' ? 'structural' as const : edge.class, type: edge.type })),
+                ...this.index.nodes.filter(node => node.parent).map(node => ({ id: `contains:${node.id}`,
+                    source: node.parent!, target: node.id, class: 'structural' as const, type: 'contains' })),
+                ...coMembership(this.index.nodes, new Set(this.index.nodes.filter(node => node.level === 1).map(node => node.id)))
+                    .map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
+                        class: 'structural' as const, type: 'co_membership' })),
+            ], drawnSourceIds, reading: this.axes.reading, relationDetail: this.relationDetail,
+            organization: this.axes.organization as Axes['organization'], activeId: this.selected });
+        const represented = countAggregateRepresentation(this.index.nodes, this.rendered);
+        const visibility = this.view ? buildVisibilityWitness({
+            axes: this.axes as Axes, relationDetail: this.relationDetail, density: this.density,
+            nodes: this.index.nodes, renderedNodeIds: this.rendered,
+            submittedEdges: [...this.renderedRelations.values()].map(edge => ({ id: edge.id,
+                source: edge.source, target: edge.target, class: edge.class })),
+            sourceEdges: [...this.renderedRelations.values()].map(edge => ({ id: edge.id,
+                source: edge.source, target: edge.target, class: edge.class })),
+            labels: productVisibility?.labels.drawn ?? this.labelCount(),
+            aggregateCount: represented.drawn,
+            representedCount: represented.represented,
+            starCount: productVisibility?.stars.drawn ?? 0,
+            excluded: omitted,
+        }) : undefined;
         return {
-            ...this.view?.witness(),
+            ...viewWitness,
+            ...(visibility ? { visibility } : {}),
             // The typed page keeps its own axes record; there is no product view to ask.
             ...(this.view ? {} : { axes: this.axes, nodeViewport: typedPositions }),
             ...(this.typedActive() ? { projection: this.projectionWitnessRecord() } : {}),
@@ -3364,7 +3410,7 @@ export class V2Page {
             host.append(p);
             return;
         }
-        const n = byId.get(this.selected), e = this.renderedRelations.get(this.selected) ?? this.index.edges.find(e => e.id === this.selected) ?? (this.selected.startsWith('contains:') ? (() => { const child = byId.get(this.selected.slice(9)); return child?.parent ? { id: this.selected, source: child.parent, target: child.id, class: 'attested' as const, type: 'contains', directed: true, evidence: [] } : undefined; })() : undefined);
+        const n = byId.get(this.selected), e = this.renderedRelations.get(this.selected) ?? this.index.edges.find(e => e.id === this.selected) ?? (this.selected.startsWith('contains:') ? (() => { const child = byId.get(this.selected.slice(9)); return child?.parent ? { id: this.selected, source: child.parent, target: child.id, class: 'structural' as const, type: 'contains', directed: true, evidence: [], count: 1, underlying: [], lifted: false, width: 0.65 } : undefined; })() : undefined);
         if (n) {
             renderSelection(host, buildNodePanel(n, this.detailCache.get(n.id), this.index.edges, byId, createEvidenceResolver(byId)), id => { void this.select(id); });
             if (n.counts.children || n.counts.passages) {
