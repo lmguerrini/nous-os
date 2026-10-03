@@ -218,6 +218,8 @@ function updateButtons() {
           || (button.dataset.value === "indra-pearls" && axes.organization === "indra" && indraPearlsSelected)
         : button.dataset.value === axes[axis])));
   }
+  document.querySelectorAll<HTMLButtonElement>("[data-full-projection]").forEach((button) =>
+    button.setAttribute("aria-pressed", String(button.dataset.fullProjection === axes.projection)));
   get<HTMLButtonElement>("labels").setAttribute("aria-pressed", String(axes.labels));
   get<HTMLSelectElement>("palette").value = axes.colour;
   const fullscreenPalette = document.getElementById("fullscreen-palette") as HTMLSelectElement | null;
@@ -244,7 +246,31 @@ function updateButtons() {
   syncBrainControls();
   const current = stack.current;
   get<HTMLElement>("search-feedback").textContent = current?.capped ? "Vicinato limitato a 60 nodi." : "";
+  syncToolbarSummary();
 }
+const BAR_LABELS = {
+  projection: { "2d": "2D", "3d": "3D" },
+  morphology: { stellar: "Stellar", neural: "Neural", mycelium: "Mycelium" },
+  organization: { natural: "Natural", indra: "Indra", fractal: "Fractal", holographic: "Holographic" },
+  reading: { attested: "Attestata", exploratory: "Esplorativa", combined: "Combinata" },
+} as const;
+function syncToolbarSummary(): void {
+  const summary = get<HTMLElement>("toolbar-summary");
+  summary.textContent = [
+    BAR_LABELS.projection[axes.projection],
+    BAR_LABELS.morphology[axes.morphology],
+    BAR_LABELS.organization[axes.organization],
+    BAR_LABELS.reading[axes.reading],
+  ].join(" · ");
+}
+syncToolbarSummary();
+get<HTMLButtonElement>("toolbar-toggle").addEventListener("click", () => {
+  const header = get<HTMLElement>("review-toolbar");
+  const collapsed = header.classList.toggle("toolbar-collapsed");
+  const button = get<HTMLButtonElement>("toolbar-toggle");
+  button.setAttribute("aria-expanded", String(!collapsed));
+  button.textContent = collapsed ? "Apri barra" : "Chiudi barra";
+});
 function syncBrainControls(): void {
   const available = axes.organization === "natural" && axes.morphology === "neural" && axes.projection === "3d";
   for (const id of ["brain", "fullscreen-brain"]) {
@@ -638,8 +664,11 @@ function setAxes(input: AxesInput): Promise<void> {
     return Promise.reject(new Error(`La vista ${viewLabel(partial.organization)} non è disponibile per questo grafo`));
   axes = appliedAxes(partial);
   syncBrainControls();
-  refreshFlowLegends();
   persistView();
+  syncToolbarSummary();
+  document.querySelectorAll<HTMLButtonElement>("[data-full-projection]").forEach((button) =>
+    button.setAttribute("aria-pressed", String(button.dataset.fullProjection === axes.projection)));
+  refreshFlowLegends();
   syncArrangementInspector();
   if (partial.projection === "2d") stopGizmoUpdate();
   else requestGizmoUpdate();

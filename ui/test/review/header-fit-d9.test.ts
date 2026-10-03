@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
  * can shrink and break inside a long token, and Indra's Pearls added no toolbar control.
  */
 const html = readFileSync(new URL('../../review/index.html', import.meta.url), 'utf8');
-const header = html.slice(html.indexOf('<header>'), html.indexOf('</header>'));
+const header = html.slice(html.indexOf('<header'), html.indexOf('</header>'));
 
 test('the header rows wrap and the status line can shrink', () => {
   assert.match(html, /\.header-top,\.axes,\.tools,\.axis \{[^}]*flex-wrap:\s*wrap[^}]*min-width:\s*0/);
