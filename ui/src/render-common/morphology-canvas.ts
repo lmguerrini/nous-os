@@ -16,7 +16,7 @@ import {
   FLOW_HALO_WIDTH_MULTIPLIER,
   FLOW_PULSE_WIDTH_MULTIPLIER,
   FLOW_STATIC_CORE_ALPHA,
-  flowTailLengthPx,
+  flowBeamLengthPx,
   flowHeadAlpha,
   flowHeadPositionPx,
   flowHighlightAlpha,
@@ -1100,7 +1100,7 @@ function drawNeuralDetail(context: CanvasRenderingContext2D, paint: MorphologyEd
 function drawEdgeTravellingHighlight(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   elapsedMilliseconds: number, speed: number, intensity: number): void {
   const { points, cumulative, totalPx, color, widthAt } = paint;
-  const tailPx = flowTailLengthPx(totalPx);
+  const tailPx = flowBeamLengthPx(totalPx);
   const cycle = totalPx + tailPx;
   const head = flowHeadPositionPx(elapsedMilliseconds, speed, cycle);
   const trailStart = Math.max(0, head - tailPx);
@@ -1153,9 +1153,9 @@ function flowTailSprite(color: string, tailPx: number, dpr: number): OffscreenCa
   if (!brush) return null;
   const tail = brush.createLinearGradient(0, 0, canvas.width, 0);
   tail.addColorStop(0, rgba(color, 0));
-  tail.addColorStop(0.12, rgba(color, 0.28));
-  tail.addColorStop(0.72, rgba(color, 0.34));
-  tail.addColorStop(0.92, rgba(color, 0.27));
+  tail.addColorStop(0.08, rgba(color, 0.58));
+  tail.addColorStop(0.88, rgba(color, 0.64));
+  tail.addColorStop(0.97, rgba(color, 0.5));
   tail.addColorStop(1, rgba(color, 0));
   brush.fillStyle = tail;
   brush.fillRect(0, 2 * density, canvas.width, 8 * density);
@@ -1201,7 +1201,7 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
   }
   const trails: FlowTrail[] = [];
   for (const paint of paints) {
-    const tail = flowTailLengthPx(paint.totalPx);
+    const tail = flowBeamLengthPx(paint.totalPx);
     const cycle = paint.totalPx + tail;
     const head = flowHeadPositionPx(now, speed, cycle);
     if (head > 0 && head - tail < paint.totalPx) trails.push({ paint, head, tail });
@@ -1225,7 +1225,7 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
       }
       context.strokeStyle = band === 0 ? "rgb(192, 192, 192)" : "rgb(238, 238, 238)";
       context.lineWidth = band === 0 ? 7 : 3.4;
-      context.globalAlpha = previousAlpha * peak * (band === 0 ? 0.27 : 0.38);
+      context.globalAlpha = previousAlpha * peak * (band === 0 ? 0.5 : 0.72);
       context.stroke();
     }
   } else for (const trail of trails) {
@@ -1240,7 +1240,7 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
     if (!sprite) continue;
     const sourceWidth = (to - from) / trail.tail * sprite.width;
     const sourceX = (trail.tail - trail.head + from) / trail.tail * sprite.width;
-    context.globalAlpha = previousAlpha * peak * Math.min(1, trail.head / 36);
+    context.globalAlpha = previousAlpha * peak;
     context.save();
     context.translate(first.x, first.y);
     context.rotate(Math.atan2(dy, dx));

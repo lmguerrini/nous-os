@@ -41,7 +41,11 @@ export function flowAnimates(state: {
   readonly motionEnabled: boolean;
   readonly reducedMotion: boolean;
 }): boolean {
-  return state.motionEnabled && !state.reducedMotion && state.intensity > 0 && state.speed > 0;
+  return state.motionEnabled && !state.reducedMotion && !prefersReducedMotionNow() && state.intensity > 0 && state.speed > 0;
+}
+
+function prefersReducedMotionNow(): boolean {
+  return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 /** Soft luminous pulse envelope: brightness at a normalised arc distance from the pulse centre.
@@ -64,7 +68,7 @@ export function flowPulseAlpha(distanceNormalised: number, centre: number, inten
 // before the head re-enters at the source — nothing ahead of the head, ever.
 
 /** Head travel speed at speed 1, in screen px/s. Every edge shares it: uniform speed, per-edge cycle. */
-export const FLOW_HEAD_SPEED_PX_S = 52;
+export const FLOW_HEAD_SPEED_PX_S = 32;
 /** Reach of the bright head, in px along the path from the head backwards. */
 export const FLOW_HEAD_PX = 24;
 /** Peak alpha is capped below 70% of the Stellar hub core floor (0.9). */
@@ -77,6 +81,11 @@ export const FLOW_TAIL_PX = 72;
 /** A visible trail follows 16% of the projected arc, with a 24 px floor. */
 export function flowTailLengthPx(arcLengthPx: number): number {
   return Math.max(48, Math.min(112, arcLengthPx * 0.28));
+}
+/** Drawn beam is longer than the legacy tail envelope while retaining its path-relative scaling. */
+export const FLOW_BEAM_LENGTH_FACTOR = 1.7;
+export function flowBeamLengthPx(arcLengthPx: number): number {
+  return flowTailLengthPx(arcLengthPx) * FLOW_BEAM_LENGTH_FACTOR;
 }
 /** Peak opacity on the separate layer at the default intensity. */
 export function flowHeadAlpha(intensity: number): number {
@@ -111,10 +120,9 @@ export function flowHighlightAlpha(atPx: number, headPx: number, cyclePx: number
   let behind = headPx - atPx;
   if (behind < 0) behind += cyclePx;
   if (behind > tailPx) return 0;
-  const fade = smoothstep((tailPx - behind) / Math.max(12, tailPx * 0.26))
-    * smoothstep(behind / Math.max(10, tailPx * 0.2));
-  const fadeIn = smoothstep(headPx / FLOW_RESTART_FADE_PX);
-  return Math.min(1, Math.max(0, intensity)) * fade * fadeIn;
+  const fade = smoothstep((tailPx - behind) / Math.max(6, tailPx * 0.1))
+    * smoothstep(behind / Math.max(5, tailPx * 0.08));
+  return Math.min(1, Math.max(0, intensity)) * fade;
 }
 
 /** One candidate edge for the animation budget. Lower priority animates first. */
@@ -189,7 +197,7 @@ export function setFlowNow(milliseconds: number): void {
   flowNowMilliseconds = milliseconds;
 }
 export function flowMotionAllowedNow(): boolean {
-  return flowMotionAllowed;
+  return flowMotionAllowed && !prefersReducedMotionNow();
 }
 /** The most recent view claim owns the shared motion flag until it releases it. */
 export function claimFlowMotion(owner: object, allowed: boolean): void {

@@ -148,7 +148,8 @@ void main() {
     a_widthsAndPicking.z * u_devicePixelRatio * 0.5,
     maximumBaseWidth * maximumWidthFactor * 0.5
   );
-  if (a_neuralProfile.w > 0.5) maximumBodyHalfWidth = 6.0 * u_devicePixelRatio;
+  if (a_neuralProfile.w > 0.5) maximumBodyHalfWidth = max(maximumBodyHalfWidth,
+    max(u_neuralWidthPx, a_widthsAndPicking.z) * u_devicePixelRatio * 1.2);
   float materialExtent = max(
     maximumBodyHalfWidth * a_sheathAndCorePermille.x / u_permilleScale,
     maximumBodyHalfWidth + (a_widthsAndPicking.w * u_devicePixelRatio)
@@ -157,7 +158,7 @@ void main() {
     materialExtent = max(materialExtent, 16.0 * u_devicePixelRatio);
   float medialExtent = chordLength * abs(a_hotAndWobble.z / u_permilleScale);
   if (a_neuralProfile.w > 0.5) medialExtent = min(medialExtent,
-    clamp(u_neuralWidthPx, 0.3, 10.0) * u_devicePixelRatio * 5.0);
+    max(u_neuralWidthPx, 0.3) * u_devicePixelRatio * 5.0);
   float normalExtent = (curveOffset * 0.5) + medialExtent + materialExtent;
   float endpointExtent = mix(-materialExtent, materialExtent, position.x);
   vec2 chordPoint = mix(deviceStart, deviceEnd, position.x);
@@ -245,7 +246,7 @@ float filamentMedialOffsetPx(float parameter, float span) {
   // excursion by the filament's own width keeps the meander fine at every span and every zoom, so
   // the irregularity reads as material character rather than as a waveform drawn over the graph.
   float widthPx = v_neuralProfile.w > 0.5
-    ? clamp(u_neuralWidthPx, 0.3, 10.0) * u_devicePixelRatio
+    ? max(u_neuralWidthPx, 0.3) * u_devicePixelRatio
     : mix(v_widthsAndPicking.x, v_widthsAndPicking.y, parameter) * u_sizeScale * u_devicePixelRatio;
   float excursionPx = min(
     span * (v_hotAndWobble.z / u_permilleScale),
@@ -283,20 +284,21 @@ void main() {
     baseWidth * widthFactor * 0.5
   );
   if (v_neuralProfile.w > 0.5) {
-    float ordinary = clamp(u_neuralWidthPx, 0.3, 10.0) * u_devicePixelRatio;
+    float ordinary = max(u_neuralWidthPx, v_widthsAndPicking.z) * u_devicePixelRatio;
     float startRadius = v_neuralRadiiDevicePx.x;
     float endRadius = v_neuralRadiiDevicePx.y;
-    float startRoot = min(ordinary * 3.0, min(14.0 * u_devicePixelRatio, max(ordinary, startRadius * 1.5)));
-    float endRoot = min(ordinary * 3.0, min(14.0 * u_devicePixelRatio, max(ordinary, endRadius * 1.5)));
+    float startRoot = max(ordinary, min(ordinary * 2.4, min(12.0 * u_devicePixelRatio, max(ordinary, startRadius * 2.0))));
+    float endRoot = max(ordinary, min(ordinary * 2.4, min(12.0 * u_devicePixelRatio, max(ordinary, endRadius * 2.0))));
     float span = max(length(v_cpC - v_cpA), 1.0);
-    float startShoulder = min(0.36, min(72.0 * u_devicePixelRatio,
-      max(16.0 * u_devicePixelRatio, startRadius * 3.0 + ordinary * 3.0)) / span);
-    float endShoulder = min(0.36, min(72.0 * u_devicePixelRatio,
-      max(16.0 * u_devicePixelRatio, endRadius * 3.0 + ordinary * 3.0)) / span);
+    float startShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
+      max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);
+    float endShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
+      max(12.0 * u_devicePixelRatio, endRadius * 2.5 + ordinary * 3.0)) / span);
     float startEase = 1.0 - smoothstep(0.0, startShoulder, parameter);
     float endEase = 1.0 - smoothstep(0.0, endShoulder, 1.0 - parameter);
-    bodyHalfWidth = 0.5 * (ordinary + (startRoot - ordinary) * startEase
-      + (endRoot - ordinary) * endEase);
+    bodyHalfWidth = max(v_widthsAndPicking.z * u_devicePixelRatio * 0.5,
+      0.5 * (ordinary + (startRoot - ordinary) * startEase
+      + (endRoot - ordinary) * endEase));
   }
   float medialOffset = filamentMedialOffsetPx(parameter, length(v_cpC - v_cpA));
   float distance = abs(distanceSample.x - medialOffset);
@@ -412,7 +414,7 @@ export function updateFilamentProjectionUniforms(
 
 /** Apply the live edge-width slider without rebuilding any relation buffer. */
 export function setFilamentNeuralWidthPx(material: THREE.RawShaderMaterial, widthPx: number): void {
-  requiredUniform(material, "u_neuralWidthPx").value = Math.max(0.3, Math.min(10, widthPx));
+  requiredUniform(material, "u_neuralWidthPx").value = Math.max(0.3, widthPx);
 }
 
 function copyAttribute(geometry: THREE.InstancedBufferGeometry, name: string, values: Float32Array): void {

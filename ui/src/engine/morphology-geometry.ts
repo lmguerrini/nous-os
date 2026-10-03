@@ -84,9 +84,9 @@ export function neuralShoulderFraction(spanPx: number, somaRadiusPx: number, ord
 export function neuralScreenWidthAt(t: number, ordinaryPx: number, startSomaRadiusPx: number,
   endSomaRadiusPx: number, taper: readonly [number, number] = [NEURAL_ROOT_RATIO, NEURAL_ROOT_RATIO],
   spanPx = 100): number {
-  const body = Math.min(NEURAL_ROOT_CAP_PX, Math.max(0, ordinaryPx));
+  const body = Math.max(0, ordinaryPx);
   const root = (radius: number, ratio: number) => radius > 0
-    ? Math.min(body * ratio, NEURAL_ROOT_CAP_PX, Math.max(body, radius * 2)) : body;
+    ? Math.max(body, Math.min(body * ratio, NEURAL_ROOT_CAP_PX, Math.max(body, radius * 2))) : body;
   const start = root(startSomaRadiusPx, taper[0]);
   const end = root(endSomaRadiusPx, taper[1]);
   const ease = (u: number) => { const x = Math.max(0, Math.min(1, u)); return x * x * (3 - 2 * x); };
@@ -114,25 +114,48 @@ export function somaOutlineHarmonics(id: string): readonly SomaOutlineHarmonic[]
     return { order, amplitude: 0.012 + raw * 0.022, phase: ((seed >>> (index * 5)) % 6283) / 1000 };
   });
 }
+/** Low order, bounded lobes from the actual incident directions, in the soma axis frame.
+ * Width weights make a dominant bundle pull the outline toward itself. */
+export function incidentSomaHarmonics(axis: Coordinates, incident: readonly { direction: Coordinates; weight: number }[]): readonly SomaOutlineHarmonic[] {
+  const axisAngle = Math.atan2(axis.y, axis.x);
+  const total = incident.reduce((sum, item) => sum + Math.max(0, item.weight), 0);
+  return [1, 2, 3].map((order): SomaOutlineHarmonic => {
+    if (total <= 0) return { order, amplitude: 0, phase: 0 };
+    let x = 0, y = 0;
+    for (const item of incident) {
+      const angle = Math.atan2(item.direction.y, item.direction.x) - axisAngle;
+      const weight = Math.max(0, item.weight) / total;
+      x += weight * Math.cos(order * angle);
+      y += weight * Math.sin(order * angle);
+    }
+    const maximum = order === 1 ? 0.065 : order === 2 ? 0.028 : 0.018;
+    return { order, amplitude: maximum * Math.hypot(x, y), phase: -Math.atan2(y, x) };
+  });
+}
 /** Radial outline deviation in [−SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL] at ellipse parameter angle θ. */
 export function somaOutlineIrregularity(harmonics: readonly SomaOutlineHarmonic[], theta: number): number {
   let value = 0;
   for (const harmonic of harmonics) value += harmonic.amplitude * Math.cos(harmonic.order * theta + harmonic.phase);
   return value;
 }
-function somaAxis(node: MorphologyNodeInput, incident: readonly Coordinates[]): { axis: Coordinates; eccentricity: number } {
-  const vectors = incident.map(point => unit(sub(point, node.position))).filter(vector => norm(vector) > 0);
+function somaAxis(node: MorphologyNodeInput, incident: readonly { point: Coordinates; weight: number }[]): { axis: Coordinates; eccentricity: number } {
+  const vectors = incident.map(item => ({ vector: unit(sub(item.point, node.position)), weight: Math.max(0, item.weight) }))
+    .filter(item => norm(item.vector) > 0);
   if (!vectors.length) return { axis: { x: 1, y: 0, z: 0 }, eccentricity: 1 };
-  const xx = vectors.reduce((v, u) => v + u.x * u.x, 0) / vectors.length;
-  const xy = vectors.reduce((v, u) => v + u.x * u.y, 0) / vectors.length;
-  const xz = vectors.reduce((v, u) => v + u.x * u.z, 0) / vectors.length;
-  const yy = vectors.reduce((v, u) => v + u.y * u.y, 0) / vectors.length;
-  const yz = vectors.reduce((v, u) => v + u.y * u.z, 0) / vectors.length;
-  const zz = vectors.reduce((v, u) => v + u.z * u.z, 0) / vectors.length;
+  const weighted = vectors.some(item => item.weight > 0);
+  const totalWeight = weighted ? vectors.reduce((sum, item) => sum + item.weight, 0) : vectors.length;
+  const moment = (component: (vector: Coordinates) => number) => vectors.reduce((sum, item) =>
+    sum + component(item.vector) * (weighted ? item.weight : 1), 0) / totalWeight;
+  const xx = moment(u => u.x * u.x);
+  const xy = moment(u => u.x * u.y);
+  const xz = moment(u => u.x * u.z);
+  const yy = moment(u => u.y * u.y);
+  const yz = moment(u => u.y * u.z);
+  const zz = moment(u => u.z * u.z);
   let axis: Coordinates = xx >= yy && xx >= zz ? { x: 1, y: 0, z: 0 } : yy >= zz ? { x: 0, y: 1, z: 0 } : { x: 0, y: 0, z: 1 };
   for (let i = 0; i < 14; i++) axis = unit({ x: xx * axis.x + xy * axis.y + xz * axis.z, y: xy * axis.x + yy * axis.y + yz * axis.z, z: xz * axis.x + yz * axis.y + zz * axis.z });
   if (axis.x < 0 || (axis.x === 0 && axis.y < 0) || (axis.x === 0 && axis.y === 0 && axis.z < 0)) axis = mul(axis, -1);
-  const lambda = vectors.reduce((v, u) => v + dot(u, axis) ** 2, 0) / vectors.length;
+  const lambda = moment(u => dot(u, axis) ** 2);
   const squareTrace = xx * xx + yy * yy + zz * zz + 2 * (xy * xy + xz * xz + yz * yz);
   const rest = 1 - lambda;
   const second = (rest + Math.sqrt(Math.max(0, 2 * (squareTrace - lambda * lambda) - rest * rest))) / 2;
@@ -187,13 +210,21 @@ function segment(id: string, edgeId: string, a: Coordinates, b: Coordinates, wid
 export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly MorphologyNodeInput[], edges: readonly MorphologyEdgeInput[],
   colonies: readonly MorphologyColonyInput[] = [], curvature = 1, containers: readonly MorphologyContainerInput[] = []): MorphologyGeometry {
   const byId = new Map(nodes.map(node => [node.id, node]));
-  const incident = new Map(nodes.map(node => [node.id, [] as Coordinates[]]));
+  const incident = new Map(nodes.map(node => [node.id, [] as { id: string; point: Coordinates; weight: number }[]]));
   for (const edge of edges) {
     const a = byId.get(edge.source), b = byId.get(edge.target);
     if (!a || !b) throw new TypeError(`morphology edge ${edge.id} lacks an endpoint`);
-    incident.get(a.id)!.push(b.position); incident.get(b.id)!.push(a.position);
+    incident.get(a.id)!.push({ id: edge.id, point: b.position, weight: edge.width });
+    incident.get(b.id)!.push({ id: edge.id, point: a.position, weight: edge.width });
   }
-  const shaped = nodes.map((node): MorphologyNodeShape => ({ ...node, degree: incident.get(node.id)!.length, ...somaAxis(node, incident.get(node.id)!), outline: somaOutlineHarmonics(node.id) }));
+  const shaped = nodes.map((node): MorphologyNodeShape => {
+    const connections = incident.get(node.id)!.sort((a, b) => a.id.localeCompare(b.id));
+    const axisShape = somaAxis(node, connections);
+    return { ...node, degree: connections.length, ...axisShape,
+      outline: morphology === "neural" ? incidentSomaHarmonics(axisShape.axis, connections.map(item => ({
+        direction: unit(sub(item.point, node.position)), weight: item.weight,
+      }))) : somaOutlineHarmonics(node.id) };
+  });
   const shapes = new Map(shaped.map(node => [node.id, node]));
   const colonyByNode = new Map<string, MorphologyColonyInput>();
   for (const colony of [...colonies].sort((a, b) => a.id.localeCompare(b.id)))

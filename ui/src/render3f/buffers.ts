@@ -1,6 +1,7 @@
 import type { Coordinates } from "#engine/contract.ts";
 import type { OklchToken } from "#engine/tokens.ts";
 import { morphologyHash } from "#engine/stable-hash.ts";
+import { buildMorphologyGeometry, type MorphologyNodeShape } from "#engine/morphology-geometry.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import type { Scene, SceneAggregate, SceneEdge, SceneNode, SceneTokenEncoding } from "#scene/contract.ts";
 
@@ -16,8 +17,9 @@ export type NodeBuffers = {
   readonly haloIntensityPermille: Float32Array;
   readonly coreSharpnessPermille: Float32Array;
   readonly minimumCoreDeviceRadiiPx: Float32Array;
-  /** Neural flag and deterministic outline phase; geometric only. */
+  /** Neural flag; the outline itself is carried by the incident-edge shape arrays. */
   readonly somaShape: Float32Array;
+  readonly somaAxisAndEccentricity: Float32Array; readonly somaHarmonics12: Float32Array; readonly somaHarmonic3: Float32Array;
   readonly haloStopOffsets: Float32Array;
   readonly haloStopAlphaMultipliers: Float32Array;
   readonly haloStopCounts: Float32Array;
@@ -76,9 +78,14 @@ export type SrgbColor = {
 
 /** This converts the complete scene into deterministic typed arrays and does not allocate renderer resources. */
 export function buildSceneBuffers(scene: Scene): SceneBuffers {
+  const neuralEdges = scene.edges.filter(edge => edge.filament.hotMixPermille > 0);
+  const neuralShapes = neuralEdges.length ? new Map(buildMorphologyGeometry("neural",
+    scene.nodes.map(node => ({ id: node.id, position: node.position, radius: node.radiusPx })),
+    neuralEdges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, width: edge.bodyWidthPx }))).nodes
+    .map(node => [node.id, node])) : new Map<string, MorphologyNodeShape>();
   return {
     nodes: buildNodeBuffers(scene.nodes, scene.tokenEncoding,
-      new Set(scene.edges.filter(edge => edge.filament.hotMixPermille > 0).flatMap(edge => [edge.source, edge.target]))),
+      new Set(neuralEdges.flatMap(edge => [edge.source, edge.target])), neuralShapes),
     filaments: buildFilamentBuffers(scene.edges, scene.tokens.peak, scene.tokenEncoding, scene.nodes),
     aggregates: buildAggregateBuffers(scene.aggregates, scene.tokenEncoding),
   };
@@ -86,7 +93,7 @@ export function buildSceneBuffers(scene: Scene): SceneBuffers {
 
 /** This converts resolved nodes into stable instanced attributes and does not recompute node material. */
 export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTokenEncoding,
-  neuralNodeIds: ReadonlySet<string> = new Set()): NodeBuffers {
+  neuralNodeIds: ReadonlySet<string> = new Set(), neuralShapes: ReadonlyMap<string, MorphologyNodeShape> = new Map()): NodeBuffers {
   const ordered = [...nodes].sort(compareStackingPriority);
   const positions = new Float32Array(ordered.length * coordinateCount());
   const colorsSrgb = new Float32Array(ordered.length * colorChannelCount());
@@ -98,6 +105,8 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
   const coreSharpnessPermille = new Float32Array(ordered.length);
   const minimumCoreDeviceRadiiPx = new Float32Array(ordered.length);
   const somaShape = new Float32Array(ordered.length * 2);
+  const somaAxisAndEccentricity = new Float32Array(ordered.length * 4);
+  const somaHarmonics12 = new Float32Array(ordered.length * 4); const somaHarmonic3 = new Float32Array(ordered.length * 2);
   const haloStopCount = ordered.reduce((maximum, node) => Math.max(maximum, node.haloAlphaStops.length), 0);
   const haloStopOffsets = new Float32Array(ordered.length * haloStopCount);
   const haloStopAlphaMultipliers = new Float32Array(ordered.length * haloStopCount);
@@ -113,7 +122,12 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
     coreSharpnessPermille[index] = node.coreSharpnessPermille;
     minimumCoreDeviceRadiiPx[index] = node.minimumCoreDeviceRadiusPx;
     somaShape[index * 2] = neuralNodeIds.has(node.id) ? 1 : 0;
-    somaShape[index * 2 + 1] = (morphologyHash(node.id) % 6283) / 1000;
+    somaShape[index * 2 + 1] = neuralNodeIds.has(node.id) ? 0 : (morphologyHash(node.id) % 6283) / 1000;
+    const shape = neuralShapes.get(node.id);
+    if (shape) {
+      somaAxisAndEccentricity.set([shape.axis.x, shape.axis.y, shape.axis.z, shape.eccentricity], index * 4);
+      somaHarmonics12.set([shape.outline[0]?.amplitude ?? 0, shape.outline[0]?.phase ?? 0, shape.outline[1]?.amplitude ?? 0, shape.outline[1]?.phase ?? 0], index * 4); somaHarmonic3.set([shape.outline[2]?.amplitude ?? 0, shape.outline[2]?.phase ?? 0], index * 2);
+    } else if (neuralNodeIds.has(node.id)) somaAxisAndEccentricity.set([1, 0, 0, 1], index * 4);
     haloStopCounts[index] = node.haloAlphaStops.length;
     for (const [stopIndex, stop] of node.haloAlphaStops.entries()) {
       const offset = (index * haloStopCount) + stopIndex;
@@ -133,6 +147,7 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
     coreSharpnessPermille,
     minimumCoreDeviceRadiiPx,
     somaShape,
+    somaAxisAndEccentricity, somaHarmonics12, somaHarmonic3,
     haloStopOffsets,
     haloStopAlphaMultipliers,
     haloStopCounts,

@@ -26,58 +26,35 @@ export const NODE_VERTEX_SHADER = `precision highp float;
 in vec3 position;
 in vec3 a_worldPosition;
 in vec3 a_color;
-in float a_coreRadiusPx;
-in float a_haloRadiusPx;
-in float a_haloCoreGapPx;
-in float a_opacityPermille;
-in float a_haloIntensityPermille;
-in float a_coreSharpnessPermille;
-in float a_minimumCoreDeviceRadiusPx;
-in float a_haloStopCount;
-in float a_instanceIndex;
+in float a_coreRadiusPx, a_haloRadiusPx, a_haloCoreGapPx, a_opacityPermille, a_haloIntensityPermille, a_coreSharpnessPermille, a_minimumCoreDeviceRadiusPx, a_haloStopCount, a_instanceIndex;
 in vec2 a_somaShape;
+in vec4 a_somaAxisAndEccentricity, a_somaHarmonics12; in vec2 a_somaHarmonic3;
 uniform mat4 modelViewMatrix;
 uniform mat4 projectionMatrix;
 uniform vec2 u_resolutionDevicePx;
-uniform float u_devicePixelRatio;
-uniform float u_orthographicSizeScale;
-uniform float u_isPerspective;
-uniform float u_referenceViewDepth;
-uniform float u_permilleScale;
+uniform float u_devicePixelRatio, u_orthographicSizeScale, u_isPerspective, u_referenceViewDepth, u_permilleScale;
 out vec2 v_localDevicePx;
 flat out vec3 v_color;
-flat out float v_coreRadiusDevicePx;
-flat out float v_haloRadiusDevicePx;
-flat out float v_opacity;
-flat out float v_haloIntensityPermille;
-flat out float v_coreSharpnessPermille;
-flat out int v_haloStopCount;
-flat out int v_instanceIndex;
+flat out float v_coreRadiusDevicePx, v_haloRadiusDevicePx, v_opacity, v_haloIntensityPermille, v_coreSharpnessPermille;
+flat out int v_haloStopCount, v_instanceIndex;
 flat out vec2 v_somaShape;
+flat out vec2 v_somaAxisScreen, v_somaHarmonic3; flat out float v_somaEccentricity; flat out vec4 v_somaHarmonics12;
 void main() {
   vec4 viewCenter = modelViewMatrix * vec4(a_worldPosition, 1.0);
   vec4 clipCenter = projectionMatrix * viewCenter;
   float perspectiveScale = u_referenceViewDepth / max(-viewCenter.z, u_referenceViewDepth / u_permilleScale);
   float sizeScale = mix(u_orthographicSizeScale, perspectiveScale, u_isPerspective);
-  // A node's SCENE-space radius (a_coreRadiusPx) is shrunk by the same camera projection every other
-  // node is, so a minimum-degree node framed by a wide camera can resolve under one device pixel and
-  // read as a glowing line termination rather than a discrete node -- CAP-13 F82's own measured
-  // finding. Flooring here, in DEVICE space after projection, is the node-radius counterpart of the
-  // identical minimumDeviceWidthPx floor filament-material.ts already applies to relation width; it
-  // changes only how small a core is ever ALLOWED to resolve on screen, never a node's own scene-space
-  // size or a larger node's own (unaffected) prominence.
+  // Floor the projected core in device pixels, matching the filament visibility floor.
   float coreRadius = max(a_coreRadiusPx * sizeScale * u_devicePixelRatio, a_minimumCoreDeviceRadiusPx * u_devicePixelRatio);
   float requestedHaloRadius = a_haloRadiusPx * sizeScale * u_devicePixelRatio;
-  // Derived from the FLOORED coreRadius, not the raw scene-space one: a halo whose gap radius still
-  // followed the unfloored core would resolve smaller than the floored core it is meant to surround,
-  // clipping the very core this floor exists to make visible.
+  // Keep the halo outside the floored core.
   float haloGapRadius = coreRadius + (a_haloCoreGapPx * sizeScale * u_devicePixelRatio);
   float haloRadius = max(requestedHaloRadius, haloGapRadius);
   vec2 corner = vec2((position.x * 2.0) - 1.0, position.y);
-  vec2 clipOffset = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.1 : 1.0) * 2.0 / u_resolutionDevicePx;
+  vec2 clipOffset = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.34 : 1.0) * 2.0 / u_resolutionDevicePx;
   gl_Position = clipCenter;
   gl_Position.xy += clipOffset * clipCenter.w;
-  v_localDevicePx = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.1 : 1.0);
+  v_localDevicePx = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.34 : 1.0);
   v_color = a_color;
   v_coreRadiusDevicePx = coreRadius;
   v_haloRadiusDevicePx = haloRadius;
@@ -87,22 +64,29 @@ void main() {
   v_haloStopCount = int(a_haloStopCount);
   v_instanceIndex = int(a_instanceIndex);
   v_somaShape = a_somaShape;
+  vec4 axisClip = projectionMatrix * (modelViewMatrix * vec4(a_worldPosition + a_somaAxisAndEccentricity.xyz, 1.0));
+  vec2 projectedAxis = axisClip.xy / axisClip.w - clipCenter.xy / clipCenter.w;
+  vec4 basisX = projectionMatrix * (modelViewMatrix * vec4(a_worldPosition + vec3(1.0, 0.0, 0.0), 1.0));
+  vec4 basisY = projectionMatrix * (modelViewMatrix * vec4(a_worldPosition + vec3(0.0, 1.0, 0.0), 1.0));
+  vec4 basisZ = projectionMatrix * (modelViewMatrix * vec4(a_worldPosition + vec3(0.0, 0.0, 1.0), 1.0));
+  float basisLength = max(length(basisX.xy / basisX.w - clipCenter.xy / clipCenter.w), max(length(basisY.xy / basisY.w - clipCenter.xy / clipCenter.w), length(basisZ.xy / basisZ.w - clipCenter.xy / clipCenter.w)));
+  float axisLength = length(projectedAxis);
+  v_somaAxisScreen = axisLength > 0.00001 ? projectedAxis / axisLength : vec2(1.0, 0.0);
+  v_somaEccentricity = sqrt(1.0 + (a_somaAxisAndEccentricity.w * a_somaAxisAndEccentricity.w - 1.0) * clamp(axisLength * axisLength / max(basisLength * basisLength, 0.00000001), 0.0, 1.0));
+  v_somaHarmonics12 = a_somaHarmonics12; v_somaHarmonic3 = a_somaHarmonic3;
 }`;
 
 /** This composes a fuller-centred soft core with scene-sampled halo alpha and does not invent a bloom magnitude. */
 export const NODE_FRAGMENT_SHADER = `precision highp float;
 in vec2 v_localDevicePx;
 flat in vec3 v_color;
-flat in float v_coreRadiusDevicePx;
-flat in float v_haloRadiusDevicePx;
-flat in float v_opacity;
-flat in float v_haloIntensityPermille;
-flat in float v_coreSharpnessPermille;
-flat in int v_haloStopCount;
-flat in int v_instanceIndex;
+flat in float v_coreRadiusDevicePx, v_haloRadiusDevicePx, v_opacity, v_haloIntensityPermille, v_coreSharpnessPermille;
+flat in int v_haloStopCount, v_instanceIndex;
 flat in vec2 v_somaShape;
+flat in vec2 v_somaAxisScreen, v_somaHarmonic3; flat in float v_somaEccentricity; flat in vec4 v_somaHarmonics12;
 uniform sampler2D u_haloStops;
 uniform float u_permilleScale;
+uniform float u_devicePixelRatio;
 out vec4 outputColor;
 float sampledHaloAlpha(float offset) {
   if (v_haloStopCount <= 0 || v_haloIntensityPermille <= 0.0) {
@@ -123,28 +107,25 @@ void main() {
   float radialDistance = length(v_localDevicePx);
   float somaDistance = radialDistance;
   if (v_somaShape.x > 0.5) {
-    float angle = atan(v_localDevicePx.y, v_localDevicePx.x);
-    float visibility = smoothstep(2.0, 7.0, v_coreRadiusDevicePx);
-    float outline = 1.0 + visibility * (0.085 * sin(3.0 * angle + v_somaShape.y)
-      + 0.045 * cos(4.0 * angle - v_somaShape.y));
-    somaDistance /= outline;
+    vec2 local = vec2(dot(v_localDevicePx, v_somaAxisScreen), dot(v_localDevicePx, vec2(-v_somaAxisScreen.y, v_somaAxisScreen.x)));
+    float jitter = 1.0 + 0.04 * sin(v_somaHarmonics12.y + 2.0 * v_somaHarmonics12.w + 3.0 * v_somaHarmonic3.y);
+    float eccentricity = clamp(v_somaEccentricity * jitter, v_somaEccentricity, 1.32);
+    float theta = atan(local.y, local.x / eccentricity);
+    float irregularity = v_somaHarmonics12.x * cos(theta + v_somaHarmonics12.y) + v_somaHarmonics12.z * cos(2.0 * theta + v_somaHarmonics12.w) + v_somaHarmonic3.x * cos(3.0 * theta + v_somaHarmonic3.y);
+    float visibility = clamp(v_coreRadiusDevicePx / (11.0 * u_devicePixelRatio), 0.55, 1.0);
+    float bulge = 1.0 + clamp(irregularity * visibility * 1.3, -0.12, 0.12);
+    somaDistance = length(vec2(local.x / eccentricity, local.y)) / bulge;
   }
-  // A GRADIENT core, weighted toward the centre — not a hard-edged disc. An anti-aliased disc was
-  // tried and measured a fourteenfold better core-concentration ratio while making every node read
-  // as a flat grey circle, which is precisely the identity this engine exists to replace. The
-  // SAME smoothstep gradient still runs across the whole core radius; only how quickly its alpha
-  // rises toward the centre is governed, per morphology, as coreSharpness. Raising it concentrates
-  // and sharpens the readable centre without ever collapsing the gradient into that rejected edge.
+  // Preserve the governed gradient core and its sharpness.
   float coreProfile = 1.0 - smoothstep(0.0, v_coreRadiusDevicePx, somaDistance);
   float coreSharpness = v_coreSharpnessPermille / u_permilleScale;
   float coreAlpha = pow(coreProfile, coreSharpness);
   float haloSpan = max(v_haloRadiusDevicePx - v_coreRadiusDevicePx, fwidth(radialDistance));
   float haloOffset = clamp((radialDistance - v_coreRadiusDevicePx) / haloSpan, 0.0, 1.0);
-  // Sampled linearly. Taking a square root here walked the halo profile faster than the geometry,
-  // dimming the bloom nearest the core, which is the part that makes a node read as a point of light.
+  // Sample the tight halo linearly.
   float haloAlpha = sampledHaloAlpha(haloOffset) * (1.0 - coreAlpha);
   float alpha = (coreAlpha + haloAlpha) * v_opacity;
-  if (alpha <= 0.0 || radialDistance > v_haloRadiusDevicePx) {
+  if (alpha <= 0.0 || somaDistance > v_haloRadiusDevicePx) {
     discard;
   }
   outputColor = vec4(v_color * alpha, alpha);
@@ -158,6 +139,7 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
   geometry.setAttribute("a_color", instanced(buffers.colorsSrgb, colorChannelCount()));
   geometry.setAttribute("a_coreRadiusPx", instanced(buffers.coreRadiiPx, scalarCount()));
   geometry.setAttribute("a_somaShape", instanced(buffers.somaShape, 2));
+  geometry.setAttribute("a_somaAxisAndEccentricity", instanced(buffers.somaAxisAndEccentricity, 4)); geometry.setAttribute("a_somaHarmonics12", instanced(buffers.somaHarmonics12, 4)); geometry.setAttribute("a_somaHarmonic3", instanced(buffers.somaHarmonic3, 2));
   geometry.setAttribute("a_haloRadiusPx", instanced(buffers.haloRadiiPx, scalarCount()));
   geometry.setAttribute("a_haloCoreGapPx", instanced(buffers.haloCoreGapsPx, scalarCount()));
   geometry.setAttribute("a_opacityPermille", instanced(buffers.opacityPermille, scalarCount()));
@@ -200,6 +182,7 @@ export function updateNodeRenderResources(resources: NodeRenderResources, buffer
   copyAttribute(resources.geometry, "a_color", buffers.colorsSrgb);
   copyAttribute(resources.geometry, "a_coreRadiusPx", buffers.coreRadiiPx);
   copyAttribute(resources.geometry, "a_somaShape", buffers.somaShape);
+  copyAttribute(resources.geometry, "a_somaAxisAndEccentricity", buffers.somaAxisAndEccentricity); copyAttribute(resources.geometry, "a_somaHarmonics12", buffers.somaHarmonics12); copyAttribute(resources.geometry, "a_somaHarmonic3", buffers.somaHarmonic3);
   copyAttribute(resources.geometry, "a_haloRadiusPx", buffers.haloRadiiPx);
   copyAttribute(resources.geometry, "a_haloCoreGapPx", buffers.haloCoreGapsPx);
   copyAttribute(resources.geometry, "a_opacityPermille", buffers.opacityPermille);

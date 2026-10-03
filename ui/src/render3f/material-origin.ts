@@ -37,7 +37,7 @@ const TYPE_ONLY_RENDERER_IMPORTS = new Set(["../projection/contract-types.ts"]);
 const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["aggregate-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts"])],
   ["brain-envelope.ts", new Set(["three", "#engine/morphology-contract.ts", "#scene/contract.ts"])],
-  ["buffers.ts", new Set(["#engine/contract.ts", "#engine/tokens.ts", "#engine/stable-hash.ts", "#scene/contract.ts"])],
+  ["buffers.ts", new Set(["#engine/contract.ts", "#engine/tokens.ts", "#engine/stable-hash.ts", "#engine/morphology-geometry.ts", "#scene/contract.ts"])],
   ["camera-framing.ts", new Set(["#engine/contract.ts", "#scene/contract.ts"])],
   ["camera.tsx", new Set([
     "three",
@@ -145,6 +145,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["#engine/contract.ts", new Set(["Coordinates"])],
     ["#engine/tokens.ts", new Set(["OklchToken"])],
     ["#engine/stable-hash.ts", new Set(["morphologyHash"])],
+    ["#engine/morphology-geometry.ts", new Set(["buildMorphologyGeometry", "MorphologyNodeShape"])],
     ["#scene/contract.ts", new Set([
       "SCENE_PERMILLE_SCALE",
       "Scene",
