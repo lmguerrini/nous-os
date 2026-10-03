@@ -9,7 +9,7 @@ import { placeLabels, shortLabelWithEllipsis } from "../../src/review/labels.ts"
 test("flow head advances toward the target and its tail follows projected arc length", () => {
   for (const length of [80, 250, 800]) {
     const tail = flowTailLengthPx(length);
-    assert.equal(tail, Math.max(24, length * 0.16));
+    assert.equal(tail, Math.max(48, Math.min(112, length * 0.28)));
     const cycle = length + tail;
     const positions = [0, 100, 200, 300, 400].map(ms => flowHeadPositionPx(ms, 1, cycle));
     for (let i = 1; i < positions.length; i++) assert.ok(positions[i]! > positions[i - 1]!);
@@ -17,7 +17,7 @@ test("flow head advances toward the target and its tail follows projected arc le
       "nothing ahead of the head lights up");
     assert.ok(flowHighlightAlpha(positions[4]! - 5, positions[4]!, cycle, 1, tail) > 0);
   }
-  assert.equal(flowHeadAlpha(0.6), 0.56);
+  assert.equal(flowHeadAlpha(0.6), 0.38);
   assert.equal(flowHeadAlpha(0), 0);
 });
 

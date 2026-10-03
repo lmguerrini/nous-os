@@ -470,7 +470,7 @@ test("M1b flow: the highlight head advances monotonically from source to target"
   const { geometry, style } = neuralScene();
   setFlowMotionAllowed(true);
   const centres: number[] = [];
-  for (const milliseconds of [100, 300, 500, 700, 900]) {
+  for (const milliseconds of [200, 400, 600, 800, 1000]) {
     setFlowNow(milliseconds);
     const { context, ops } = recordingContext();
     drawMorphologyCanvas(context, geometry, project, style, appearance({ flowIntensity: 1, flowSpeed: 1 }));

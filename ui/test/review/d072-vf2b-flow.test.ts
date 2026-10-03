@@ -5,7 +5,7 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import { drawFlowLayer } from "#render-common/morphology-canvas.ts";
 import { setFlowMotionAllowed, setFlowNow } from "#render-common/flow.ts";
 
-test("dense flow draws two cached images per arc and reuses gradients on steady frames", () => {
+test("dense beam draws one cached strip per arc and reuses gradients on steady frames", () => {
   const counts: Record<string, number> = {};
   const count = (name: string) => { counts[name] = (counts[name] ?? 0) + 1; };
   class FakeOffscreenCanvas {
@@ -54,13 +54,13 @@ test("dense flow draws two cached images per arc and reuses gradients on steady 
     const first = { ...counts };
     assert.equal(first.stroke ?? 0, 0, "dense flow uses cached tail images without any per-arc stroke");
     assert.equal(first.beginPath ?? 0, 0);
-    assert.ok((first.drawImage ?? 0) >= 50 && (first.drawImage ?? 0) <= 60,
-      "dense flow draws at most one cached tail and one cached head per arc");
+    assert.ok((first.drawImage ?? 0) >= 25 && (first.drawImage ?? 0) <= 30,
+      "dense flow draws one elongated beam strip per arc");
     assert.ok((first.moveTo ?? 0) <= 60 && (first.lineTo ?? 0) <= 240,
       "path commands scale with visible arcs and their bends");
     assert.equal(first.linear ?? 0, 0);
     assert.equal(first.contextRadial ?? 0, 0);
-    assert.ok((first.radial ?? 0) > 0, "the first frame builds the sprite once");
+    assert.equal(first.radial ?? 0, 0, "the beam has no bright radial dot");
     assert.ok((first.spriteLinear ?? 0) > 0, "the first frame builds a quantised tail gradient once");
 
     for (const key of Object.keys(counts)) counts[key] = 0;

@@ -14,7 +14,6 @@ import {
   EDGE_CATEGORY_SET,
   FLOW_HALO_ALPHA,
   FLOW_HALO_WIDTH_MULTIPLIER,
-  FLOW_HEAD_MAX_SIZE_PX,
   FLOW_PULSE_WIDTH_MULTIPLIER,
   FLOW_STATIC_CORE_ALPHA,
   flowTailLengthPx,
@@ -1124,40 +1123,9 @@ function drawEdgeTravellingHighlight(context: CanvasRenderingContext2D, paint: M
   }
 }
 
-/** The browser's flow pass uses two shared paths, irrespective of the number of arcs. The moving
- * head is a small cached radial sprite: its gradient is built on an offscreen canvas once per
- * colour, width bucket and DPR, never on the flow context during a frame. */
+/** Cached gradient strips keep the moving beam soft at high relation counts. */
 const FLOW_SPRITE_CACHE_CAP = 128;
-const flowHeadSprites = new Map<string, CanvasImageSource>();
 const flowTailSprites = new Map<string, OffscreenCanvas | HTMLCanvasElement>();
-function flowHeadSprite(color: string, widthPx: number, dpr: number): CanvasImageSource | null {
-  const widthBucket = Math.max(1, Math.min(8, Math.round(widthPx * 2) / 2));
-  const density = Math.max(1, Math.min(4, Math.round(dpr * 2) / 2));
-  const key = `${color}|${widthBucket}|${density}`;
-  const cached = flowHeadSprites.get(key);
-  if (cached) return cached;
-  const diameter = Math.min(FLOW_HEAD_MAX_SIZE_PX, Math.max(18, Math.ceil(widthBucket * 7)));
-  const canvas = typeof OffscreenCanvas !== "undefined"
-    ? new OffscreenCanvas(Math.ceil(diameter * density), Math.ceil(diameter * density))
-    : typeof document !== "undefined" ? document.createElement("canvas") : null;
-  if (!canvas) return null;
-  canvas.width = Math.ceil(diameter * density);
-  canvas.height = Math.ceil(diameter * density);
-  const brush = canvas.getContext("2d");
-  if (!brush) return null;
-  const cx = canvas.width / 2, cy = canvas.height / 2, radius = Math.min(cx, cy);
-  const glow = brush.createRadialGradient(cx, cy, 0, cx, cy, radius);
-  glow.addColorStop(0, rgba(color, 0.82));
-  glow.addColorStop(0.18, rgba(color, 0.68));
-  glow.addColorStop(0.42, rgba(color, 0.22));
-  glow.addColorStop(1, rgba(color, 0));
-  brush.fillStyle = glow;
-  brush.fillRect(0, 0, canvas.width, canvas.height);
-  if (flowHeadSprites.size >= FLOW_SPRITE_CACHE_CAP) flowHeadSprites.clear();
-  flowHeadSprites.set(key, canvas);
-  return canvas;
-}
-
 function flowTailSprite(color: string, tailPx: number, dpr: number): OffscreenCanvas | HTMLCanvasElement | null {
   const length = Math.max(24, Math.ceil(tailPx / 4) * 4);
   const density = Math.max(1, Math.min(4, Math.round(dpr * 2) / 2));
@@ -1174,9 +1142,10 @@ function flowTailSprite(color: string, tailPx: number, dpr: number): OffscreenCa
   if (!brush) return null;
   const tail = brush.createLinearGradient(0, 0, canvas.width, 0);
   tail.addColorStop(0, rgba(color, 0));
-  tail.addColorStop(0.18, rgba(color, 0.05));
-  tail.addColorStop(0.6, rgba(color, 0.14));
-  tail.addColorStop(1, rgba(color, 0.38));
+  tail.addColorStop(0.12, rgba(color, 0.28));
+  tail.addColorStop(0.72, rgba(color, 0.34));
+  tail.addColorStop(0.92, rgba(color, 0.27));
+  tail.addColorStop(1, rgba(color, 0));
   brush.fillStyle = tail;
   brush.fillRect(0, 2 * density, canvas.width, 8 * density);
   brush.fillRect(0, 4.5 * density, canvas.width, 3 * density);
@@ -1244,8 +1213,8 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
         appendFlowTail(context, trail, Math.max(0, trail.head - reach), end);
       }
       context.strokeStyle = band === 0 ? "rgb(192, 192, 192)" : "rgb(238, 238, 238)";
-      context.lineWidth = band === 0 ? 6 : 2.8;
-      context.globalAlpha = previousAlpha * peak * (band === 0 ? 0.22 : 0.48);
+      context.lineWidth = band === 0 ? 7 : 3.4;
+      context.globalAlpha = previousAlpha * peak * (band === 0 ? 0.27 : 0.38);
       context.stroke();
     }
   } else for (const trail of trails) {
@@ -1260,23 +1229,12 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
     if (!sprite) continue;
     const sourceWidth = (to - from) / trail.tail * sprite.width;
     const sourceX = (trail.tail - trail.head + from) / trail.tail * sprite.width;
-    context.globalAlpha = previousAlpha * peak * Math.min(1, trail.head / 14);
+    context.globalAlpha = previousAlpha * peak * Math.min(1, trail.head / 36);
     context.save();
     context.translate(first.x, first.y);
     context.rotate(Math.atan2(dy, dx));
     context.drawImage(sprite, sourceX, 0, sourceWidth, sprite.height, 0, -6, chord, 12);
     context.restore();
-  }
-  for (const trail of trails) {
-    if (trail.head > trail.paint.totalPx) continue;
-    const head = flowPointAt(trail, trail.head);
-    const width = trail.paint.widthAt((trail.paint.points.length - 1) / 2) * FLOW_PULSE_WIDTH_MULTIPLIER;
-    const sprite = flowHeadSprite(trail.paint.color, width, dpr);
-    if (!sprite) continue;
-    const diameter = Math.min(FLOW_HEAD_MAX_SIZE_PX,
-      Math.max(18, Math.ceil(Math.max(1, Math.min(8, Math.round(width * 2) / 2)) * 7)));
-    context.globalAlpha = previousAlpha * peak * Math.min(1, trail.head / 14);
-    context.drawImage(sprite, head.x - diameter / 2, head.y - diameter / 2, diameter, diameter);
   }
   context.globalAlpha = previousAlpha;
 }
@@ -1511,7 +1469,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
         eccentricity = somaDrawnElongation(projectedEccentricity, harmonics);
       }
       const major = radius * eccentricity, minor = radius;
-      const steps = simplified ? 12 : moving ? 16 : 24;
+      const steps = simplified ? 12 : moving ? 16 : 32;
       const cosA = Math.cos(angle), sinA = Math.sin(angle);
       const irregularityScale = somaIrregularityScale(radius);
       const somaPath = () => {

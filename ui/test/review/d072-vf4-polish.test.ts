@@ -20,7 +20,7 @@ test('Stellar importance raises the opaque core above the travelling head', () =
   assert.ok(leaf < middle && middle < hub);
   assert.ok(hub >= 0.97);
   assert.ok(flowHeadAlpha(0.6) * 0.82 < hub);
-  assert.ok(flowHeadAlpha(0.6) > 0.4, 'head remains visible');
+  assert.ok(flowHeadAlpha(0.6) > 0.3, 'beam remains visible');
 });
 
 test('labels choose a rim-clear slot and survive when every slot straddles Indra rims', () => {

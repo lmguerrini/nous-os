@@ -64,26 +64,26 @@ export function flowPulseAlpha(distanceNormalised: number, centre: number, inten
 // before the head re-enters at the source — nothing ahead of the head, ever.
 
 /** Head travel speed at speed 1, in screen px/s. Every edge shares it: uniform speed, per-edge cycle. */
-export const FLOW_HEAD_SPEED_PX_S = 90;
+export const FLOW_HEAD_SPEED_PX_S = 52;
 /** Reach of the bright head, in px along the path from the head backwards. */
-export const FLOW_HEAD_PX = 9;
+export const FLOW_HEAD_PX = 24;
 /** Peak alpha is capped below 70% of the Stellar hub core floor (0.9). */
 export const FLOW_HEAD_CORE_ALPHA_RATIO = 0.7;
-export const FLOW_HEAD_MAX_ALPHA = 0.63;
+export const FLOW_HEAD_MAX_ALPHA = 0.42;
 /** Keep the cached head sprite compact so its bright centre cannot read as a second hub. */
 export const FLOW_HEAD_MAX_SIZE_PX = 18;
 /** Total reach of the fading tail behind the head, in px (head included). */
-export const FLOW_TAIL_PX = 46;
+export const FLOW_TAIL_PX = 72;
 /** A visible trail follows 16% of the projected arc, with a 24 px floor. */
 export function flowTailLengthPx(arcLengthPx: number): number {
-  return Math.max(24, arcLengthPx * 0.16);
+  return Math.max(48, Math.min(112, arcLengthPx * 0.28));
 }
 /** Peak opacity on the separate layer at the default intensity. */
 export function flowHeadAlpha(intensity: number): number {
-  return Math.min(FLOW_HEAD_MAX_ALPHA, 0.56 * Math.min(1, Math.max(0, intensity) / 0.6));
+  return Math.min(FLOW_HEAD_MAX_ALPHA, 0.38 * Math.min(1, Math.max(0, intensity) / 0.6));
 }
 /** The restart fade-in covers this much head travel, in px. */
-export const FLOW_RESTART_FADE_PX = 14;
+export const FLOW_RESTART_FADE_PX = 36;
 
 /** Position of the head along a path whose cycle (projected length + tail) is `cyclePx`, at
  * `elapsedMilliseconds` of flow clock and the live speed control. Pure and monotone in time modulo
@@ -111,8 +111,9 @@ export function flowHighlightAlpha(atPx: number, headPx: number, cyclePx: number
   let behind = headPx - atPx;
   if (behind < 0) behind += cyclePx;
   if (behind > tailPx) return 0;
-  const fade = behind <= FLOW_HEAD_PX ? 1 : 1 - smoothstep((behind - FLOW_HEAD_PX) / (tailPx - FLOW_HEAD_PX));
-  const fadeIn = Math.min(1, Math.max(0, headPx) / FLOW_RESTART_FADE_PX);
+  const fade = smoothstep((tailPx - behind) / Math.max(12, tailPx * 0.26))
+    * smoothstep(behind / Math.max(10, tailPx * 0.2));
+  const fadeIn = smoothstep(headPx / FLOW_RESTART_FADE_PX);
   return Math.min(1, Math.max(0, intensity)) * fade * fadeIn;
 }
 
