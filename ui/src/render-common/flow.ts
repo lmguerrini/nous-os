@@ -7,8 +7,15 @@ export const FLOW_ANIMATED_EDGE_BUDGET = 60;
 export const FLOW_PERIOD_MS = 2600;
 /** Half-width of the pulse envelope, as a share of the path length. */
 export const FLOW_PULSE_SIGMA = 0.07;
-/** How much wider than the base line the moving pulse reads. */
-export const FLOW_PULSE_WIDTH_MULTIPLIER = 1.7;
+/** The travelling core follows its filament instead of becoming a separate band. */
+export const FLOW_PULSE_WIDTH_MULTIPLIER = 1.1;
+/** A faint outer glow may soften the core, but stays inside twice the filament width. */
+export const FLOW_BEAM_GLOW_WIDTH_MULTIPLIER = 1.8;
+export const FLOW_BEAM_GLOW_ALPHA = 0.15;
+export function flowBeamWidthsPx(edgeWidthPx: number): { readonly core: number; readonly glow: number } {
+  return { core: edgeWidthPx * FLOW_PULSE_WIDTH_MULTIPLIER,
+    glow: edgeWidthPx * FLOW_BEAM_GLOW_WIDTH_MULTIPLIER };
+}
 /** How much wider than the base line the exploratory halo reads. */
 export const FLOW_HALO_WIDTH_MULTIPLIER = 2.6;
 /** Halo opacity as a share of the base line opacity. */

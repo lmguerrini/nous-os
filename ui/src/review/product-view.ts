@@ -78,6 +78,18 @@ import {
   setFlowNow,
 } from "#render-common/flow.ts";
 
+/** Indra containment needs enough ink to join small pearls at fit; semantic floors stay intact. */
+export function edgePresentationFloors(organization: Axes['organization'], morphology: Axes['morphology'],
+  structural: boolean): { readonly opacityPermille: number; readonly widthPermille: number } {
+  if (organization === 'indra') return structural
+    ? { opacityPermille: 330, widthPermille: 720 }
+    : { opacityPermille: morphology === 'stellar' ? 0 : 360,
+      widthPermille: morphology === 'stellar' ? 0 : 800 };
+  if (organization === 'natural' && morphology !== 'stellar')
+    return { opacityPermille: structural ? 300 : 440, widthPermille: 0 };
+  return { opacityPermille: 0, widthPermille: 0 };
+}
+
 /** Observe wheel motion before Sigma consumes its bubbling event. */
 export function captureWheelMotion(target: EventTarget, listener: EventListener): () => void {
   target.addEventListener("wheel", listener, { passive: true, capture: true });
@@ -1199,14 +1211,14 @@ export const createProductView: CreateProductView = async (input) => {
     const category = classifyEdgeCategory(exploratory, Boolean(structural));
     // In Indra the pearls carry the structure: unselected semantic arcs recede (thinner, fainter) so rims and names read.
     const indraDim = axes.organization === 'indra' ? indraArcPresentation(axes.projection, exploratory) : null;
+    const floor = edgePresentationFloors(axes.organization, axes.morphology, Boolean(structural));
     return { category,
       // Width is never the only signal: exploratory reads through its halo and flow, not through extra thickness.
-      opacityPermille: input.v2Prepared ? Math.max(axes.organization === 'indra' && axes.morphology !== 'stellar' ? (structural ? 250 : 360)
-        : axes.organization === 'natural' && axes.morphology !== 'stellar' ? (structural ? 300 : 440) : 0, Math.round(SCENE_PERMILLE_SCALE
+      opacityPermille: input.v2Prepared ? Math.max(floor.opacityPermille, Math.round(SCENE_PERMILLE_SCALE
         * (exploratory ? 0.9 : coMembership ? 0.62 : containment ? 0.5 : axes.reading === 'attested' ? 0.68 : 0.36)
         * (indraDim?.opacityFactor ?? 1)))
         : axes.reading !== "attested" && !exploratory ? Math.round(SCENE_PERMILLE_SCALE * 0.45) : SCENE_PERMILLE_SCALE,
-      widthPermille: input.v2Prepared ? Math.max(axes.organization === 'indra' && axes.morphology !== 'stellar' ? (structural ? 550 : 800) : 0, Math.round(SCENE_PERMILLE_SCALE
+      widthPermille: input.v2Prepared ? Math.max(floor.widthPermille, Math.round(SCENE_PERMILLE_SCALE
         * (coMembership ? Math.min(1.4, (relation?.width ?? 1) * 0.75) : containment ? 0.8 : 1)
         * (indraDim?.widthFactor ?? 1)))
         : SCENE_PERMILLE_SCALE,

@@ -14,8 +14,9 @@ import {
   EDGE_CATEGORY_SET,
   FLOW_HALO_ALPHA,
   FLOW_HALO_WIDTH_MULTIPLIER,
-  FLOW_PULSE_WIDTH_MULTIPLIER,
+  FLOW_BEAM_GLOW_ALPHA,
   FLOW_STATIC_CORE_ALPHA,
+  flowBeamWidthsPx,
   flowBeamLengthPx,
   flowHeadAlpha,
   flowHeadPositionPx,
@@ -1126,13 +1127,13 @@ function drawEdgeTravellingHighlight(context: CanvasRenderingContext2D, paint: M
       const a = (start - cumulative[i]!) / length, b = (end - cumulative[i]!) / length;
       const x0 = points[i]!.x, y0 = points[i]!.y;
       const dx = points[i + 1]!.x - x0, dy = points[i + 1]!.y - y0;
-      const width = widthAt(i + 0.5) * FLOW_PULSE_WIDTH_MULTIPLIER;
+      const width = flowBeamWidthsPx(widthAt(i + 0.5));
       // A soft, contained glow beneath the bright core. Neither pass inherits the faint base alpha.
-      context.strokeStyle = rgba(color, alpha * 0.22);
-      context.lineWidth = width * 2.1;
+      context.strokeStyle = rgba(color, alpha * FLOW_BEAM_GLOW_ALPHA);
+      context.lineWidth = width.glow;
       context.beginPath(); context.moveTo(x0 + dx * a, y0 + dy * a); context.lineTo(x0 + dx * b, y0 + dy * b); context.stroke();
       context.strokeStyle = rgba(color, alpha);
-      context.lineWidth = width;
+      context.lineWidth = width.core;
       context.beginPath(); context.moveTo(x0 + dx * a, y0 + dy * a); context.lineTo(x0 + dx * b, y0 + dy * b); context.stroke();
     }
   }
@@ -1152,7 +1153,7 @@ function flowTailSprite(color: string, tailPx: number, dpr: number): OffscreenCa
     : typeof document !== "undefined" ? document.createElement("canvas") : null;
   if (!canvas) return null;
   canvas.width = Math.ceil(length * density);
-  canvas.height = Math.ceil(12 * density);
+  canvas.height = Math.ceil(18 * density);
   const brush = canvas.getContext("2d");
   if (!brush) return null;
   const tail = brush.createLinearGradient(0, 0, canvas.width, 0);
@@ -1162,14 +1163,23 @@ function flowTailSprite(color: string, tailPx: number, dpr: number): OffscreenCa
   tail.addColorStop(0.97, rgba(color, 0.5));
   tail.addColorStop(1, rgba(color, 0));
   brush.fillStyle = tail;
-  brush.fillRect(0, 2 * density, canvas.width, 8 * density);
-  brush.fillRect(0, 4.5 * density, canvas.width, 3 * density);
+  brush.globalAlpha = FLOW_BEAM_GLOW_ALPHA;
+  brush.fillRect(0, 0, canvas.width, canvas.height);
+  brush.globalAlpha = 1;
+  // The core occupies 11/18 of the sprite height: at a 1.8× destination it is 1.1× the filament.
+  brush.fillRect(0, 3.5 * density, canvas.width, 11 * density);
   if (flowTailSprites.size >= FLOW_SPRITE_CACHE_CAP) flowTailSprites.clear();
   flowTailSprites.set(key, canvas);
   return canvas;
 }
 
 type FlowTrail = { readonly paint: MorphologyEdgePaint; readonly head: number; readonly tail: number };
+/** A constant-width cached beam never exceeds a locally thinner stretch of its filament. */
+function flowTrailEdgeWidthPx(paint: MorphologyEdgePaint): number {
+  let minimum = Infinity;
+  for (let i = 0; i < paint.points.length - 1; i++) minimum = Math.min(minimum, paint.widthAt(i + 0.5));
+  return minimum;
+}
 function flowPointAt(trail: FlowTrail, distance: number): { x: number; y: number } {
   const { points, cumulative } = trail.paint;
   for (let i = 0; i < cumulative.length - 1; i++) {
@@ -1220,17 +1230,27 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
   // follows each tail chord: only one drawImage per tail, keeping the browser operation budget
   // below the full-scene fraction even when all 30 selected arcs are luminous together.
   if (paints.length <= 12) {
-    for (let band = 0; band < 2; band++) {
-      context.beginPath();
-      for (const trail of trails) {
-        const end = Math.min(trail.head, trail.paint.totalPx);
-        const reach = band === 0 ? trail.tail : trail.tail * 0.48;
-        appendFlowTail(context, trail, Math.max(0, trail.head - reach), end);
+    const byWidth = new Map<number, FlowTrail[]>();
+    for (const trail of trails) {
+      const edgeWidth = flowTrailEdgeWidthPx(trail.paint);
+      const group = byWidth.get(edgeWidth) ?? [];
+      group.push(trail);
+      byWidth.set(edgeWidth, group);
+    }
+    for (const [edgeWidth, group] of byWidth) {
+      const width = flowBeamWidthsPx(edgeWidth);
+      for (let band = 0; band < 2; band++) {
+        context.beginPath();
+        for (const trail of group) {
+          const end = Math.min(trail.head, trail.paint.totalPx);
+          const reach = band === 0 ? trail.tail : trail.tail * 0.48;
+          appendFlowTail(context, trail, Math.max(0, trail.head - reach), end);
+        }
+        context.strokeStyle = band === 0 ? "rgb(192, 192, 192)" : "rgb(238, 238, 238)";
+        context.lineWidth = band === 0 ? width.glow : width.core;
+        context.globalAlpha = previousAlpha * peak * (band === 0 ? FLOW_BEAM_GLOW_ALPHA : 0.72);
+        context.stroke();
       }
-      context.strokeStyle = band === 0 ? "rgb(192, 192, 192)" : "rgb(238, 238, 238)";
-      context.lineWidth = band === 0 ? 7 : 3.4;
-      context.globalAlpha = previousAlpha * peak * (band === 0 ? 0.5 : 0.72);
-      context.stroke();
     }
   } else for (const trail of trails) {
     const from = Math.max(0, trail.head - trail.tail);
@@ -1248,7 +1268,8 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
     context.save();
     context.translate(first.x, first.y);
     context.rotate(Math.atan2(dy, dx));
-    context.drawImage(sprite, sourceX, 0, sourceWidth, sprite.height, 0, -6, chord, 12);
+    const width = flowBeamWidthsPx(flowTrailEdgeWidthPx(trail.paint));
+    context.drawImage(sprite, sourceX, 0, sourceWidth, sprite.height, 0, -width.glow / 2, chord, width.glow);
     context.restore();
   }
   context.globalAlpha = previousAlpha;
