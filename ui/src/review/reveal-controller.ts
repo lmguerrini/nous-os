@@ -6,6 +6,12 @@ import type { DisclosureState, V2Index, V2Node } from './v2-core.ts';
 export const REVEAL_THRESHOLDS = [LOD_ENTER_INTERMEDIATE, 2.6, 3.7, LOD_ENTER_NEAR, 6.5, 8] as const;
 export const REVEAL_EXIT_THRESHOLDS = [LOD_EXIT_INTERMEDIATE, 2, LOD_EXIT_NEAR, 4.2, 5.4, 6.8] as const;
 export type RevealBand = 'far' | 'intermediate' | 'near' | 'deep';
+/** Perspective ratio is a dolly distance. Its calibrated wheel gesture travels a shorter
+ * numeric interval than Sigma's ratio, so map both to the same disclosure scale. */
+export function cameraRevealZoom(fitRatio: number, liveRatio: number, projection: '2d' | '3d'): number {
+  if (!Number.isFinite(fitRatio) || !Number.isFinite(liveRatio) || fitRatio <= 0 || liveRatio <= 0) return 1;
+  return Math.max(0.1, Math.pow(fitRatio / liveRatio, projection === '3d' ? 2.5 : 1));
+}
 export type RevealSource = 'cursor' | 'selection' | 'viewport' | null;
 export type RevealPosition = Readonly<{ x: number; y: number; radius?: number }>;
 export type RevealAdmission = Readonly<{ parentId: string; count: number; threshold: number; clusterId: string; order: number }>;
@@ -22,7 +28,7 @@ export type RevealInput = Readonly<{
   viewport: Readonly<{ x: number; y: number; width: number; height: number }>;
   positions: ReadonlyMap<string, RevealPosition>;
   previous: RevealState;
-  cap?: number; pageSize?: number;
+  cap?: number; pageSize?: number; minZoomStep?: number;
 }>;
 export type RevealDecision = Readonly<{
   state: RevealState; auto: ReadonlyMap<string, number>;
@@ -44,7 +50,8 @@ function hierarchy(index: V2Index): Hierarchy {
     const list = children.get(node.parent) ?? [];
     list.push(node); children.set(node.parent, list);
   }
-  for (const list of children.values()) list.sort((a, b) => cmp(a.id, b.id));
+  for (const [parentId, list] of children) list.sort((a, b) =>
+    (byId.get(parentId)?.level === 1 ? a.level - b.level : 0) || cmp(a.id, b.id));
   const clusterOf = (id: string): string | null => {
     const known = cluster.get(id);
     if (known) return known;
@@ -163,10 +170,13 @@ export function stepReveal(input: RevealInput): RevealDecision {
   const admit = (threshold: number, parent: V2Node): void => {
     const before = new Set(v2Visible(input.index, input.disclosure, autoPages(admissions), cap,
       admissions.at(-1)?.parentId).nodes.map(node => node.id));
-    const existing = autoPages(admissions).get(parent.id) ?? 0;
+    const currentAuto = autoPages(admissions).get(parent.id);
     const available = children.get(parent.id) ?? [];
+    const existing = currentAuto ?? (input.disclosure.overview && parent.level === 1
+      ? available.filter(node => node.level === 2).length : 0);
     if (existing >= available.length || input.disclosure.expanded.has(parent.id)) return;
-    const proposal: RevealAdmission = { parentId: parent.id, count: Math.min(page, available.length - existing),
+    const proposal: RevealAdmission = { parentId: parent.id,
+      count: Math.min(currentAuto === undefined ? existing + page : page, available.length - (currentAuto ?? 0)),
       threshold, clusterId: clusterOf(parent.id)!, order: admissions.length ? Math.max(...admissions.map(a => a.order)) + 1 : 0 };
     let candidate = [...admissions, proposal];
     const wanted = Math.min(page, available.length - existing);
@@ -199,9 +209,10 @@ export function stepReveal(input: RevealInput): RevealDecision {
     // A collapsed focused domain has only its level-1 root on screen. Open its first page
     // before looking for deeper parents; subsequent settled steps can follow those children.
     const root = clusterId ? byId.get(clusterId) : undefined;
-    if (root && all.some(node => node.id === root.id) &&
-        !all.some(node => node.parent === root.id) &&
-        (children.get(root.id)?.length ?? 0) > 0) return root;
+    const rootHasHiddenChildren = !!root && all.some(node => node.id === root.id) &&
+      (children.get(root.id)?.some(child => !all.some(node => node.id === child.id)) ?? false);
+    if (rootHasHiddenChildren && (cursorNode?.id === root?.id ||
+        !all.some(node => node.parent === root!.id))) return root;
     for (const cluster of clusterId ? [clusterId] : clusterOrder) {
       const candidates = all.filter(node => clusterOf(node.id) === cluster && node.level >= 2 && node.level <= maxLevel &&
         !input.disclosure.expanded.has(node.id) &&
@@ -217,9 +228,11 @@ export function stepReveal(input: RevealInput): RevealDecision {
       });
       if (candidates[0]) return candidates[0];
     }
+    if (rootHasHiddenChildren) return root;
     return undefined;
   };
-  if (input.settled && Number.isFinite(input.zoom) && input.zoom > input.previous.lastZoom) {
+  if (input.settled && Number.isFinite(input.zoom) && input.zoom > input.previous.lastZoom &&
+      input.zoom >= input.previous.lastZoom * (input.minZoomStep ?? 1)) {
     // One admission per settled camera step, even if several numeric thresholds were crossed
     // or no threshold was crossed inside a broad LOD band.
     const reached = REVEAL_THRESHOLDS.reduce((last, threshold, index) => input.zoom >= threshold ? index : last, -1);

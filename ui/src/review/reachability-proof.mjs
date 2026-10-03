@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { emptyDisclosure, V2_CAP, V2_PAGE, v2Visible } from './v2-core.ts';
+import { emptyRevealState, stepReveal } from './reveal-controller.ts';
 import { DENSITY_BUDGETS, recentDisclosedPage, selectNodes } from './lod.ts';
 
 const source = process.argv[2];
@@ -15,8 +16,7 @@ for (const node of index.nodes) if (node.parent) {
 }
 for (const list of children.values()) list.sort((a, b) => a.id.localeCompare(b.id));
 const initial = emptyDisclosure();
-for (const node of index.nodes) if (node.level === 1 && (children.get(node.id) ?? []).some(child => child.level === 2))
-  initial.expanded.add(node.id);
+initial.overview = true;
 const distances = new Map();
 const renderedDistances = new Map();
 const check = (state, focus, steps, requested = 0) => {
@@ -46,6 +46,7 @@ for (const parent of index.nodes.filter(node => node.level <= 3).sort((a, b) => 
   const members = children.get(parent.id) ?? [];
   if (!members.length) continue;
   const state = emptyDisclosure();
+  state.overview = true;
   state.expanded = new Set(initial.expanded);
   const ancestors = []; let cursor = parent;
   while (cursor.parent) {
@@ -80,12 +81,52 @@ const missing = index.nodes.filter(node => !distances.has(node.id)).map(node => 
 assert.deepEqual(missing, []);
 const unrendered = index.nodes.filter(node => !renderedDistances.has(node.id)).map(node => node.id);
 assert.deepEqual(unrendered, []);
+// Exercise the same settled camera disclosure used by the page, on 50 distinct local
+// branches. Navigation selects a branch; wheel/pinch magnification then reveals its
+// children without opening unrelated branches. The exhaustive walk above proves every id.
+const candidates = index.nodes.filter(node => node.level === 3 && (children.get(node.id)?.length ?? 0) > 0)
+  .sort((a, b) => a.id.localeCompare(b.id));
+const zoomSamples = Array.from({ length: Math.min(50, candidates.length) }, (_, sample) =>
+  candidates[Math.floor(sample * candidates.length / Math.min(50, candidates.length))]);
+let zoomReached = 0, zoomPeak = 0;
+const zoomDepths = Object.fromEntries([2, 2.7, 3.8, 5, 6.6, 8, 9, 10]
+  .map(zoom => [zoom, { level3: [Infinity, 0], level4: [Infinity, 0], level5: [Infinity, 0] }]));
+for (const target of zoomSamples) {
+  const disclosure = emptyDisclosure(); disclosure.overview = true;
+  let parent = target;
+  while (parent.parent) {
+    parent = byId.get(parent.parent);
+    assert.ok(parent, `missing ancestor of ${target.id}`);
+    disclosure.expanded.add(parent.id);
+  }
+  const positions = new Map([[target.id, { x: 100, y: 100, radius: 24 }]]);
+  let previous = emptyRevealState();
+  const discovered = new Set();
+  for (const zoom of [2, 2.7, 3.8, 5, 6.6, 8, 9, 10]) {
+    const frame = stepReveal({ index, disclosure, previous, zoom, settled: true,
+      cursor: { x: 100, y: 100 }, selectionId: target.id, focusId: target.id,
+      viewport: { x: 0, y: 0, width: 1000, height: 800 }, positions, cap: V2_CAP });
+    previous = frame.state;
+    assert.ok(frame.disclosedIds.length <= V2_CAP, `zoom cap exceeded at ${target.id}`);
+    frame.disclosedIds.forEach(id => discovered.add(id));
+    zoomPeak = Math.max(zoomPeak, frame.disclosedIds.length);
+    for (const level of [3, 4, 5]) {
+      const count = frame.disclosedIds.filter(id => byId.get(id)?.level === level).length;
+      const range = zoomDepths[zoom][`level${level}`];
+      range[0] = Math.min(range[0], count); range[1] = Math.max(range[1], count);
+    }
+  }
+  const member = children.get(target.id)[0];
+  assert.ok(discovered.has(member.id), `zoom cannot reveal child of ${target.id}`);
+  zoomReached++;
+}
 const distribution = Object.fromEntries([...new Set(distances.values())].sort((a, b) => a - b)
   .map(steps => [steps, [...distances.values()].filter(value => value === steps).length]));
-const result = { schema: 'd078-reachability/1', total: index.nodes.length, reached: distances.size,
+const result = { schema: 'd079-zoom-reachability/1', total: index.nodes.length, reached: distances.size,
   renderedReachable: renderedDistances.size, balancedRenderBudget: DENSITY_BUDGETS.balanced.nodes,
   firstView: first.nodes.length, cap: V2_CAP, page: V2_PAGE, frames, peak, limitedFrames,
   maxReachedButWindowed: maxWindowed,
+  zoomPaths: zoomReached, zoomPeak, zoomDepths,
   maxActions: Math.max(...distances.values()), pathLengthDistribution: distribution,
   levels: Object.fromEntries([1, 2, 3, 4, 5].map(level => [level, index.nodes.filter(node => node.level === level).length])) };
 if (process.argv[3]) await writeFile(process.argv[3], JSON.stringify(result, null, 2) + '\n');

@@ -29,6 +29,8 @@ export type DisclosureState = {
     pages: Map<string, number>;
     /** Oldest to newest explicit expansion; initial open domains are absent. */
     manualOrder: string[];
+    /** At fit, show only level-2 children; direct level-3 sources remain counted aggregates. */
+    overview?: boolean;
 };
 export type V2Visible = {
     nodes: V2Node[];
@@ -37,7 +39,7 @@ export type V2Visible = {
     capped: boolean;
     counts: Record<number, number>;
 };
-const copy = (s: DisclosureState): DisclosureState => ({ expanded: new Set(s.expanded), pages: new Map(s.pages), manualOrder: [...s.manualOrder] });
+const copy = (s: DisclosureState): DisclosureState => ({ expanded: new Set(s.expanded), pages: new Map(s.pages), manualOrder: [...s.manualOrder], overview: s.overview ?? false });
 export const emptyDisclosure = (): DisclosureState => ({ expanded: new Set(), pages: new Map(), manualOrder: [] });
 export function v2Visible(index: V2Index, state: DisclosureState, auto: AutoDisclosure = new Set(), cap = V2_CAP,
     preferredParentId?: string): V2Visible {
@@ -61,16 +63,18 @@ export function v2Visible(index: V2Index, state: DisclosureState, auto: AutoDisc
         const n = queue[i]!;
         nodes.push(n);
         const all = children.get(n.id) ?? [];
-        if (state.expanded.has(n.id) || autoHas(n.id)) {
+        if (state.expanded.has(n.id) || autoHas(n.id) || (state.overview && n.level === 1)) {
             const page = state.pages.get(n.id) ?? V2_PAGE;
             // Legacy semantic zoom opens at most 150 children. The reveal controller's map
             // records cumulative bounded pages across settled thresholds. Explicit level-1/2
             // expansion remains complete.
-            const take = autoHas(n.id) && !state.expanded.has(n.id)
+            const overviewOnly = state.overview && n.level === 1 && !state.expanded.has(n.id) && !autoHas(n.id);
+            const take = overviewOnly ? all.filter(child => child.level === 2).length : autoHas(n.id) && !state.expanded.has(n.id)
                 ? Math.min(autoPage(n.id), all.length)
                 : n.level === 3 || n.level === 4 ? Math.min(page, all.length) : all.length;
             const room = Math.max(0, cap - nodes.length - (queue.length - i - 1));
-            queue.push(...all.slice(0, Math.min(take, room)));
+            const ordered = n.level === 1 && state.overview ? [...all].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id)) : all;
+            queue.push(...ordered.slice(0, Math.min(take, room)));
             if (take > room)
                 capped = true;
             const total = n.level === 4 ? Math.max(all.length, n.counts.passages) : all.length;

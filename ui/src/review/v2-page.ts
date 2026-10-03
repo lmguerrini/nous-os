@@ -1,5 +1,5 @@
 import { styleProjection } from '../render-common/projection-style.ts';
-import { emptyRevealState, focusOnlyReveal, revealClusterOf, stepReveal } from './reveal-controller.ts';
+import { cameraRevealZoom, emptyRevealState, focusOnlyReveal, revealClusterOf, stepReveal } from './reveal-controller.ts';
 import type { RevealState } from './reveal-controller.ts';
 import { buildRevealWitness, routeRelationsAfterLOD } from './relation-routing.ts';
 import type { RouteResult, RouteRelation, RevealWitnessInput } from './relation-routing.ts';
@@ -527,7 +527,11 @@ export class V2Page {
     private pointerFocusTimer: number | null = null;
     private revealRoute: RouteResult | null = null;
     private routePickById = new Map<string, PickResult>();
-    private revealRecord: ReturnType<typeof buildRevealWitness> | null = null;
+    private revealRecord: (ReturnType<typeof buildRevealWitness> & {
+        band: RevealState['band']; zoom: number;
+        cluster: { id: string | null; childrenShown: number };
+        cap: { global: number; local: number }; inclusions: string[];
+    }) | null = null;
     private cursor: { x: number; y: number } | null = null;
     private zoomOn = true;
     private overviewRatio: number | null = null;
@@ -649,9 +653,9 @@ export class V2Page {
             this.userMovedSinceFit = true;
             this.noteCameraIntent();
         });
-        for (const n of index.nodes)
-            if (n.level === 1 && index.nodes.some(child => child.level === 2 && child.parent === n.id))
-                this.history.state.expanded.add(n.id);
+        // The overview exposes every level-2 entry point, including domains whose direct
+        // sources skip that level; those sources remain represented by their domain aggregate.
+        this.history.state.overview = true;
         root?.addEventListener('pointermove', event => {
             const rect = root.getBoundingClientRect();
             this.cursor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -743,11 +747,23 @@ export class V2Page {
             revealableInFocus: focus ? this.index.nodes.filter(node => inFocus(node.id) && !rendered.has(node.id)).length : 0,
             renderedInFocus: focus ? [...rendered].filter(inFocus).length : rendered.size,
             nodeBudget: DENSITY_BUDGETS[this.density].nodes, route,
-            openParentIds: new Set([...this.history.state.expanded, ...this.auto]),
+            openParentIds: new Set([...this.history.state.expanded, ...this.auto,
+                ...this.index.nodes.filter(node => this.history.state.overview && node.level === 1).map(node => node.id)]),
             ...(exclusions ? { exclusions } : {}),
         };
         this.revealRoute = route;
-        this.revealRecord = buildRevealWitness(input);
+        const record = buildRevealWitness(input);
+        this.revealRecord = {
+            ...record,
+            band: this.revealCamera.band,
+            zoom: this.revealCamera.zoom,
+            levels: Object.fromEntries([1, 2, 3, 4, 5].map(level => [level,
+                this.index.nodes.filter(node => node.level === level && rendered.has(node.id)).length])) as typeof record.levels,
+            cluster: { id: focus, childrenShown: focus ? [...rendered].filter(id =>
+                id !== focus && revealClusterOf(this.index, id) === focus).length : 0 },
+            cap: { global: V2_CAP, local: V2_PAGE },
+            inclusions: [...rendered].sort(),
+        };
     }
     /** Settled samples alone may change disclosure; an already mounted camera supplies the positions. */
     private sampleReveal(zoom: number, settled: boolean, focusOnly = false): boolean {
@@ -789,7 +805,8 @@ export class V2Page {
         }
         const decision = stepReveal({ index: this.index, disclosure: this.history.state, zoom, settled,
             cursor: this.cursor, selectionId: this.selected, focusId: this.projectionFocus(),
-            viewport: { x: 0, y: 0, width, height }, positions, previous: this.revealState });
+            viewport: { x: 0, y: 0, width, height }, positions, previous: this.revealState,
+            minZoomStep: 1.08 });
         if (focusOnly) {
             this.revealState = focusOnlyReveal(this.revealState, decision.state);
             if (this.revealRoute) this.publishReveal(this.revealRoute, this.rendered);
@@ -806,7 +823,8 @@ export class V2Page {
             void this.passages(id, this.index.nodes.filter(node => node.parent === id).length).then(() => {
                 const after = stepReveal({ index: this.index, disclosure: this.history.state, zoom, settled: true,
                     cursor: this.cursor, selectionId: this.selected, focusId: this.projectionFocus(),
-                    viewport: { x: 0, y: 0, width, height }, positions, previous: this.revealState });
+                    viewport: { x: 0, y: 0, width, height }, positions, previous: this.revealState,
+                    minZoomStep: 1.08 });
                 this.revealState = after.state;
                 this.autoPageCounts = new Map(after.auto);
                 this.auto = new Set(after.auto.keys());
@@ -3003,7 +3021,7 @@ export class V2Page {
         // D-072 R2 (X8): the crossing itself is only noted while the camera still moves; the
         // refresh (an in-place subset change on the mounted view) lands once the camera has
         // been still `LOD_REFRESH_IDLE_MS`, and a zoom back inside the band cancels it.
-        const zoom = Math.max(0.1, (this.overviewRatio ?? ratio) / ratio);
+        const zoom = cameraRevealZoom(this.overviewRatio ?? ratio, ratio, this.axes.projection);
         const next = lodLevelFromZoom(zoom, this.lod);
         this.pendingLod = next === this.lod ? null : next;
         const settled = lodRefreshDue({ nowMs: performance.now(), pending: true,
@@ -3040,7 +3058,7 @@ export class V2Page {
             this.cameraChangedAt = performance.now();
         if (performance.now() < this.suppressZoomUntil || previous === null)
             return;
-        const zoom = Math.max(0.1, (this.overviewRatio ?? ratio) / ratio);
+        const zoom = cameraRevealZoom(this.overviewRatio ?? ratio, ratio, this.axes.projection);
         const next = lodLevelFromZoom(zoom, this.lod);
         this.pendingLod = next === this.lod ? null : next;
         const settled = lodRefreshDue({ nowMs: performance.now(), pending: true,
