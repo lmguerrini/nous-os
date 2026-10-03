@@ -558,6 +558,7 @@ export class V2Page {
         cluster: { id: string | null; childrenShown: number };
         cap: { global: number; local: number }; inclusions: string[];
         released: RevealDecision['released'];
+        catchUp: RevealState['catchUp'];
     }) | null = null;
     private cursor: { x: number; y: number } | null = null;
     private zoomOn = true;
@@ -798,6 +799,7 @@ export class V2Page {
                 id !== focus && revealClusterOf(this.index, id) === focus).length : 0 },
             cap: { global: V2_CAP, local: V2_PAGE },
             released: this.revealReleased,
+            catchUp: this.revealState.catchUp,
             inclusions: [...rendered].sort(),
         };
     }

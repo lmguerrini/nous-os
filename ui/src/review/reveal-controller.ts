@@ -23,6 +23,7 @@ export type RevealState = Readonly<{
   pendingFocusClusterId: string | null;
   lastZoom: number; band: RevealBand; tier: number; admissions: readonly RevealAdmission[];
   pendingPassages: readonly string[];
+  catchUp: Readonly<{ from: number; to: number; admissions: number }> | null;
 }>;
 export type RevealInput = Readonly<{
   index: V2Index; disclosure: DisclosureState; zoom: number; settled: boolean;
@@ -85,7 +86,7 @@ export function revealClusterOf(index: V2Index, id: string): string | null {
 export const emptyRevealState = (zoom = 1): RevealState => ({
   epoch: 0, focusClusterId: null, focusSource: null, pendingFocusClusterId: null,
   lastZoom: zoom, band: 'far', tier: -1,
-  admissions: [], pendingPassages: [],
+  admissions: [], pendingPassages: [], catchUp: null,
 });
 /** A stationary pointer may change focus after confirmation, but cannot spend a zoom admission. */
 export function focusOnlyReveal(previous: RevealState, sampled: RevealState): RevealState {
@@ -162,6 +163,25 @@ export function stepReveal(input: RevealInput): RevealDecision {
   ].filter((id): id is string => id !== null))];
   let admissions = [...input.previous.admissions];
   let tier = input.previous.tier;
+  let catchUp: RevealState['catchUp'] = input.zoom === input.previous.lastZoom ? input.previous.catchUp : null;
+  let catchingUp = false;
+  let activeCatchUp = false;
+  let admissionCount = 0;
+  const admittedThisSample = new Set<string>();
+  // A newly disclosed child has no renderer position until relayout. Keep its branch
+  // at the nearest placed ancestor for the remaining thresholds of this sample.
+  const positionOf = (node: V2Node): RevealPosition | undefined => {
+    const direct = input.positions.get(node.id);
+    if (direct && Number.isFinite(direct.x) && Number.isFinite(direct.y)) return direct;
+    if (!admittedThisSample.has(node.id)) return undefined;
+    let ancestor = node.parent ? byId.get(node.parent) : undefined;
+    while (ancestor) {
+      const placed = input.positions.get(ancestor.id);
+      if (placed && Number.isFinite(placed.x) && Number.isFinite(placed.y)) return placed;
+      ancestor = ancestor.parent ? byId.get(ancestor.parent) : undefined;
+    }
+    return clusterId && input.positions.get(clusterId) || input.cursor || undefined;
+  };
   const evicted: string[] = [], requests: string[] = [];
   const protectedIds = new Set([input.selectionId, input.explicitFocusId, ...input.disclosure.manualOrder].filter((id): id is string => !!id));
   const protectedPath = new Set<string>();
@@ -202,6 +222,7 @@ export function stepReveal(input: RevealInput): RevealDecision {
       const result = v2Visible(input.index, input.disclosure, autoPages(items), cap, parent.id);
       const now = new Set(result.nodes.map(node => node.id));
       return result.nodes.length <= cap &&
+        (!catchingUp || [...admittedThisSample].every(id => now.has(id))) &&
         available.slice(existing, existing + wanted).every(node => now.has(node.id) && !before.has(node.id)) &&
         (parent.level >= 3 && result.capped || [...autoPages(items)].every(([id, count]) =>
           (children.get(id) ?? []).slice(0, count).every(node => now.has(node.id))));
@@ -220,6 +241,9 @@ export function stepReveal(input: RevealInput): RevealDecision {
     }
     if (succeeds(candidate)) {
       admissions = candidate; evicted.push(...removed);
+      admissionCount++;
+      for (const node of v2Visible(input.index, input.disclosure, autoPages(admissions), cap, parent.id).nodes)
+        if (!before.has(node.id)) admittedThisSample.add(node.id);
       for (const victim of removed) for (const item of input.previous.admissions.filter(item => item.parentId === victim))
         released.push({ parentId: item.parentId, clusterId: item.clusterId, band: admissionBand(item), cause: 'cap-eviction' });
     }
@@ -240,9 +264,9 @@ export function stepReveal(input: RevealInput): RevealDecision {
       const point = input.cursor ?? center;
       const child = all.filter(node => node.parent === root.id && node.level === 3 &&
           (children.get(node.id)?.length ?? 0) > (autoPages(admissions).get(node.id) ?? 0) &&
-          Number.isFinite(input.positions.get(node.id)?.x) && Number.isFinite(input.positions.get(node.id)?.y))
-        .sort((a, b) => distance(input.positions.get(a.id)!, point) -
-          distance(input.positions.get(b.id)!, point) || cmp(a.id, b.id))[0];
+          positionOf(node) !== undefined)
+        .sort((a, b) => distance(positionOf(a)!, point) -
+          distance(positionOf(b)!, point) || cmp(a.id, b.id))[0];
       if (child) return child;
     }
     if (rootHasHiddenChildren && (cursorNode?.id === root?.id ||
@@ -253,7 +277,7 @@ export function stepReveal(input: RevealInput): RevealDecision {
         ((children.get(node.id)?.length ?? 0) > (autoPages(admissions).get(node.id) ?? 0) ||
           (node.level === 4 && !passages.has(node.id) && node.counts.passages > (children.get(node.id)?.length ?? 0))));
       candidates.sort((a, b) => {
-        const pa = input.positions.get(a.id), pb = input.positions.get(b.id);
+        const pa = positionOf(a), pb = positionOf(b);
         const point = cluster === clusterId && input.cursor ? input.cursor : center;
         // Continue through the parent under the pointer before opening unrelated leaves.
         return Number(cursorNode?.level && cursorNode.level >= 3 && b.id === cursorNode.id) -
@@ -267,22 +291,38 @@ export function stepReveal(input: RevealInput): RevealDecision {
   };
   if (!input.fit && band !== 'far' && input.settled && Number.isFinite(input.zoom) && input.zoom > input.previous.lastZoom &&
       input.zoom >= input.previous.lastZoom * (input.minZoomStep ?? 1)) {
-    // One admission per settled camera step, even if several numeric thresholds were crossed
-    // or no threshold was crossed inside a broad LOD band.
     const reached = REVEAL_THRESHOLDS.reduce((last, threshold, index) => input.zoom >= threshold ? index : last, -1);
-    tier = Math.min(REVEAL_THRESHOLDS.length - 1, Math.max(tier + 1, reached));
-    const parent = chooseParent(tier);
-    if (parent) {
+    const from = tier;
+    catchingUp = !!clusterId && reached > tier + 1;
+    activeCatchUp = catchingUp;
+    const to = Math.min(REVEAL_THRESHOLDS.length - 1, Math.max(tier + 1, reached));
+    for (let threshold = Math.min(tier + 1, REVEAL_THRESHOLDS.length - 1); threshold <= to; threshold++) {
+      tier = threshold;
+      const parent = chooseParent(tier);
+      if (!parent) continue;
       const loaded = children.get(parent.id)?.length ?? 0;
       if (parent.level === 4 && parent.counts.passages > loaded &&
           (autoPages(admissions).get(parent.id) ?? 0) >= loaded) {
         if (!passages.has(parent.id)) requests.push(parent.id);
         passages.add(parent.id);
       } else admit(tier, parent);
+      // Without a pointer cluster, preserve the old single-step fallback.
+      if (!clusterId) break;
     }
+    if (!clusterId) tier = to;
+    if (catchingUp) {
+      // The final crossed depth may only request an unloaded passage. Associate the
+      // last page in this burst with that depth so an outward crossing can undo it.
+      if (admissionCount && admissions.at(-1)!.threshold < tier)
+        admissions[admissions.length - 1] = { ...admissions.at(-1)!, threshold: tier };
+      catchUp = { from, to: tier, admissions: admissionCount };
+    }
+    catchingUp = false;
   }
   // A fetch completion can materialize its page at the same camera threshold.
-  for (const id of input.fit ? [] : [...passages]) if ((children.get(id)?.length ?? 0) > (autoPages(admissions).get(id) ?? 0)) {
+  for (const id of input.fit ? [] : [...passages]) if (admissionCount < REVEAL_THRESHOLDS.length &&
+      (!activeCatchUp || clusterOf(id) === clusterId) &&
+      (children.get(id)?.length ?? 0) > (autoPages(admissions).get(id) ?? 0)) {
     const parent = byId.get(id);
     const previousCount = autoPages(admissions).get(id) ?? 0;
     if (parent && input.settled) admit(tier, parent);
@@ -292,7 +332,7 @@ export function stepReveal(input: RevealInput): RevealDecision {
   const after = v2Visible(input.index, input.disclosure, auto, cap, admissions.at(-1)?.parentId);
   return { state: { epoch, focusClusterId: clusterId, focusSource: source, pendingFocusClusterId,
       lastZoom: input.settled && Number.isFinite(input.zoom) ? input.zoom : input.previous.lastZoom, band, tier,
-      admissions, pendingPassages: [...passages].sort(cmp) }, auto,
+      admissions, pendingPassages: [...passages].sort(cmp), catchUp }, auto,
     admittedIds: after.nodes.map(node => node.id).filter(id => !visible.has(id)).sort(cmp),
     evictedParentIds: [...new Set(evicted)].sort(cmp), released, passageRequests: requests.sort(cmp),
     disclosedIds: after.nodes.map(node => node.id), band, capped: after.capped };
