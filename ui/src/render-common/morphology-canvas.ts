@@ -429,6 +429,15 @@ export const STELLAR_CLUSTER_GLOW_ALPHA = 0.05;
 /** A community smaller than this on screen reads through its stars and dust alone: no glow disc. */
 export const STELLAR_CLUSTER_GLOW_MIN_RADIUS_PX = 12;
 
+/** A 3D community glow is decorative mass, not an ambient field. Its projected disc fades before
+ * it spans the viewport; the 2D glow and ordinary 3D sizes retain their approved paint. */
+export function stellarClusterGlowZoomOpacity(radiusPx: number, width: number, height: number): number {
+  const shortSide = Math.min(width, height);
+  if (!(shortSide > 0) || !Number.isFinite(radiusPx)) return 0;
+  const t = clamp((radiusPx / shortSide - 0.58) / 0.17, 0, 1);
+  return 1 - t * t * (3 - 2 * t);
+}
+
 /**
  * The optional, subtle cluster mass (D-072 M1b): one very faint large radial glow per community,
  * beneath the dust, so a cluster reads as gathered brightness rather than scattered points. One
@@ -437,7 +446,7 @@ export const STELLAR_CLUSTER_GLOW_MIN_RADIUS_PX = 12;
  */
 export function drawStellarClusterGlow(context: CanvasRenderingContext2D, clusters: readonly StellarDustCluster[],
   project: (point: Coordinates) => ProjectedPoint, nodeColour: (hubId: string) => string | undefined,
-  width: number, height: number): void {
+  width: number, height: number, projection: "2d" | "3d" = "2d"): void {
   const canTransform = canComposeTransform(context);
   for (const cluster of clusters) {
     const centre = project(cluster.center);
@@ -445,10 +454,12 @@ export function drawStellarClusterGlow(context: CanvasRenderingContext2D, cluste
     const rim = project({ x: cluster.center.x + cluster.radius, y: cluster.center.y, z: cluster.center.z });
     const radius = Math.hypot(rim.x - centre.x, rim.y - centre.y);
     if (!(radius >= STELLAR_CLUSTER_GLOW_MIN_RADIUS_PX)) continue;
+    const zoomOpacity = projection === "3d" ? stellarClusterGlowZoomOpacity(radius, width, height) : 1;
+    if (zoomOpacity <= 0) continue;
     if (centre.x + radius < 0 || centre.x - radius > width || centre.y + radius < 0 || centre.y - radius > height) continue;
     const colour = nodeColour(cluster.hubId) ?? STELLAR_DUST_FALLBACK_COLOUR;
     const channels = colourChannels(colour);
-    const alpha = quantisedAlpha(STELLAR_CLUSTER_GLOW_ALPHA);
+    const alpha = quantisedAlpha(STELLAR_CLUSTER_GLOW_ALPHA * zoomOpacity);
     const stops = [
       { offset: 0, colour: rgbaChannels(channels, alpha) },
       { offset: 0.55, colour: rgbaChannels(channels, alpha * 0.35) },
@@ -1302,7 +1313,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
     && appearance.starfieldDensity > 0 && appearance.starfieldBrightness > 0) {
     const clusters = cachedStellarDustClusters(geometry);
     drawStellarClusterGlow(context, clusters, project,
-      hubId => style.nodes.get(hubId)?.color, bounds.width, bounds.height);
+      hubId => style.nodes.get(hubId)?.color, bounds.width, bounds.height, projection);
     drawStellarDust(context, clusters, project,
       hubId => style.nodes.get(hubId)?.color, bounds.width, bounds.height,
       appearance.starfieldDensity, appearance.starfieldBrightness);
