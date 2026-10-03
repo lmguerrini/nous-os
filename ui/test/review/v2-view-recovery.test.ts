@@ -215,6 +215,23 @@ function makePage(deps: V2PageDeps = {}, discloseConversations = false): V2Page 
   return page;
 }
 
+test("the V2 page sends brain to each product view mount and starts with it off", async () => {
+  failMounts = false;
+  const received: boolean[] = [];
+  const page = makePage({ createView: async input => {
+    received.push(input.brain === true);
+    return fakeCreateView(input);
+  } });
+  await page.refresh();
+  assert.equal(received.at(-1), false);
+  await page.setAxes({ projection: "3d", morphology: "neural", brain: true });
+  assert.equal(received.at(-1), true);
+  await page.setAxes({ organization: "indra" });
+  assert.equal(received.at(-1), true, "the view remembers the preference for a return to Natural");
+  await page.setAxes({ brain: false });
+  assert.equal(received.at(-1), false);
+});
+
 function deferredFitView() {
   let releaseFit: (() => void) | null = null;
   let fitStarted: (() => void) | null = null;

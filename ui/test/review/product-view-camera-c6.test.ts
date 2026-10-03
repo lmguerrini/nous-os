@@ -29,7 +29,7 @@ const bundled = await build({
     resolveDir: dirname(fileURLToPath(source)),
     sourcefile: "d073-c6-camera-entry.ts",
     loader: "ts",
-    contents: `export { assertNaturalArrangementAxis, commitProductCamera, forgetProductCamera, productCameraKey, productViewRemountsAxes, replayProductCamera, resolvedViewArrangement } from ${JSON.stringify(fileURLToPath(source))};`,
+    contents: `export { assertNaturalArrangementAxis, brainRendererEnabled, commitProductCamera, forgetProductCamera, productCameraKey, productViewRemountsAxes, replayProductCamera, resolvedViewArrangement } from ${JSON.stringify(fileURLToPath(source))};`,
   },
 });
 writeFileSync(bundlePath, bundled.outputFiles[0]!.text);
@@ -38,7 +38,7 @@ Object.assign(globalThis, {
   WebGLRenderingContext: { TRIANGLES: 9 },
 });
 const {
-  assertNaturalArrangementAxis, commitProductCamera, forgetProductCamera, productCameraKey,
+  assertNaturalArrangementAxis, brainRendererEnabled, commitProductCamera, forgetProductCamera, productCameraKey,
   productViewRemountsAxes, replayProductCamera, resolvedViewArrangement,
 } = await import(pathToFileURL(bundlePath).href) as typeof import("../../src/review/product-view.ts");
 
@@ -53,6 +53,17 @@ const axes = (overrides: Partial<Axes> = {}): Axes => ({
 });
 const camera = (x: number): VisualStateCamera => ({
   x, y: 0, angle: 0, ratio: 2, bounds: { x: [-10, 10], y: [-10, 10] },
+});
+
+test("brain renderer gate is off by default and only accepts Natural Neural 3D", () => {
+  const eligible = axes({ projection: "3d", morphology: "neural" });
+  assert.equal(brainRendererEnabled(eligible), false);
+  assert.equal(brainRendererEnabled(eligible, true), true);
+  assert.equal(brainRendererEnabled(axes({ ...eligible, brain: false }), true), false);
+  assert.equal(brainRendererEnabled(axes({ ...eligible, organization: "indra" }), true), false);
+  assert.equal(brainRendererEnabled(axes({ ...eligible, morphology: "stellar" }), true), false);
+  assert.equal(brainRendererEnabled(axes({ ...eligible, projection: "2d" }), true), false);
+  assert.equal(productViewRemountsAxes(eligible, axes({ ...eligible, brain: true })), true);
 });
 
 test("the camera key is arrangement-qualified for Natural and unchanged in form for Indra", () => {

@@ -142,7 +142,8 @@ let resolvedArrangement: ResolvedNaturalArrangement | null = axes.organization =
 function appliedAxes(partial: Partial<PageAxes>): PageAxes {
   const next: PageAxes = { ...axes, ...partial };
   if (next.organization !== "natural") {
-    return { projection: next.projection, morphology: next.morphology, organization: next.organization, colour: next.colour, labels: next.labels, reading: next.reading };
+    return { projection: next.projection, morphology: next.morphology, organization: next.organization, colour: next.colour, labels: next.labels, reading: next.reading,
+      ...(next.brain !== undefined ? { brain: next.brain } : {}) };
   }
   // The readout follows the layout drawn: without the typed pipeline that layout follows the morphology.
   resolvedArrangement = resolveArrangementReadout(resolvedArrangement, next.morphology, typedPipelineFlag, partial.arrangement);
@@ -240,16 +241,18 @@ function updateButtons() {
   get<HTMLButtonElement>("expand").dataset.tooltip = stack.depth === 0 ? "Seleziona prima un nodo" : "Espandi il vicinato";
   get<HTMLSelectElement>("fullscreen-preset").disabled = axes.projection !== "3d";
   get<HTMLSelectElement>("fullscreen-preset").dataset.tooltip = axes.projection === "3d" ? "Vista 3D" : "Disponibile nella vista 3D";
-  const brainAvailable = axes.organization === "natural" && axes.morphology === "neural" && axes.projection === "3d";
-  for (const id of ["brain", "fullscreen-brain"]) {
-    const brain = document.getElementById(id) as HTMLButtonElement | null;
-    if (brain) {
-      brain.hidden = !brainAvailable;
-      brain.setAttribute("aria-pressed", String(Boolean((axes as PageAxes & { brain?: boolean }).brain)));
-    }
-  }
+  syncBrainControls();
   const current = stack.current;
   get<HTMLElement>("search-feedback").textContent = current?.capped ? "Vicinato limitato a 60 nodi." : "";
+}
+function syncBrainControls(): void {
+  const available = axes.organization === "natural" && axes.morphology === "neural" && axes.projection === "3d";
+  for (const id of ["brain", "fullscreen-brain"]) {
+    const button = document.getElementById(id) as HTMLButtonElement | null;
+    if (!button) continue;
+    button.hidden = !available;
+    button.setAttribute("aria-pressed", String(available && axes.brain === true));
+  }
 }
 function updatePanel() {
   renderPanel({
@@ -495,6 +498,7 @@ async function mount() {
       data,
       visibleNodeIds: visibleIds,
       axes: productAxes(),
+      brain: axes.brain === true,
       appearance,
       customPalette,
       insets: { top: 0, right: 0, bottom: 0, left: 0 },
@@ -633,6 +637,7 @@ function setAxes(input: AxesInput): Promise<void> {
   if ((partial.organization === "fractal" || partial.organization === "holographic") && !v2?.supportsOrganization(partial.organization))
     return Promise.reject(new Error(`La vista ${viewLabel(partial.organization)} non è disponibile per questo grafo`));
   axes = appliedAxes(partial);
+  syncBrainControls();
   refreshFlowLegends();
   persistView();
   syncArrangementInspector();
@@ -933,8 +938,7 @@ get<HTMLSelectElement>("fullscreen-palette").addEventListener("change", (event) 
 for (const id of ["brain", "fullscreen-brain"]) {
   const brain = document.getElementById(id);
   brain?.addEventListener("click", () => {
-    const enabled = !Boolean((axes as PageAxes & { brain?: boolean }).brain);
-    void setAxes({ brain: enabled } as Partial<AxesInput>);
+    void setAxes({ brain: axes.brain !== true });
   });
 }
 const canCloseColours = () => ![...get<HTMLElement>("custom-editor").querySelectorAll<HTMLInputElement>(".colour-row input[type=text]")]
@@ -1188,6 +1192,7 @@ syncPanel();
 refreshFlowLegends();
 if (initialUrlView) writeLocal(storage, "d069.palette", axes.colour);
 else axes = { ...axes, colour: paletteName(readLocal(storage, "d069.palette", "bw")) };
+syncBrainControls();
 persistView();
 syncArrangementInspector();
 let gizmoFrame: number | null = null;

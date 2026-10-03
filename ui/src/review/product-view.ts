@@ -452,8 +452,15 @@ export function productViewRemountsAxes(previous: Axes, next: Axes): boolean {
     || previous.organization !== next.organization
     || previous.colour !== next.colour
     || previous.reading !== next.reading
+    || (previous.brain ?? false) !== (next.brain ?? false)
     || oldDepth !== newDepth
     || resolvedViewArrangement(previous) !== resolvedViewArrangement(next);
+}
+
+/** The optional shell is a renderer input only for the one eligible product view. */
+export function brainRendererEnabled(axes: Axes, inputBrain?: boolean): boolean {
+  return axes.organization === "natural" && axes.morphology === "neural"
+    && axes.projection === "3d" && (axes.brain ?? inputBrain) === true;
 }
 
 export const createProductView: CreateProductView = async (input) => {
@@ -1318,8 +1325,7 @@ export const createProductView: CreateProductView = async (input) => {
       organization: input.v2Prepared ? "natural" as const : axes.organization,
       reducedMotion: input.reducedMotion,
       // D-078 W1-edges: pass the optional view flag only to the eligible renderer.
-      brain: axes.organization === "natural" && axes.morphology === "neural"
-        && axes.projection === "3d" && (input as typeof input & { readonly brain?: boolean }).brain === true,
+      brain: brainRendererEnabled(axes, input.brain),
       presentation: sharedPresentation,
     };
     // Each renderer derives its own first camera; framing below then works in whatever convention it uses.

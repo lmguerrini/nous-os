@@ -37,10 +37,10 @@ function inputFixture(): Record<string, unknown> {
 
 test("ViewInput has an exact envelope, axes, insets, and event register", () => {
   assert.deepEqual(VIEW_INPUT_FIELD_REGISTER, {
-    input: ["container", "data", "v2Prepared", "v2Colours", "layoutContainers", "visibleNodeIds", "visibleEdgeIds", "axes", "insets", "text", "events", "reducedMotion", "flowMotion", "appearance", "customPalette", "labelBudget"],
-    optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "flowMotion", "appearance", "customPalette", "labelBudget"],
+    input: ["container", "data", "v2Prepared", "v2Colours", "layoutContainers", "visibleNodeIds", "visibleEdgeIds", "axes", "brain", "insets", "text", "events", "reducedMotion", "flowMotion", "appearance", "customPalette", "labelBudget"],
+    optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "brain", "flowMotion", "appearance", "customPalette", "labelBudget"],
     axes: ["projection", "morphology", "organization", "colour", "labels", "reading"],
-    optionalAxes: ["arrangement"],
+    optionalAxes: ["arrangement", "brain"],
     insets: ["top", "right", "bottom", "left"],
     events: ["onPick", "onDoublePick", "onHover"],
     optionalEvents: ["onDoublePick"],
@@ -65,6 +65,7 @@ test("the saved-view vocabulary register is closed and stays pinned to the live 
     arrangement: ["constellation", "network", "mycelium"],
     reading: ["attested", "exploratory", "combined"],
     colour: ["bw", "warm", "earth", "gems", "night", "semantic", "amber", "old-gold", "ochre", "copper", "alchemical-red", "warm-twilight", "sepia", "brace", "miele", "custom", "stellar-cold", "stellar-warm"],
+    brain: [1],
   });
   // The colour vocabulary cannot drift from the palette table it names.
   assert.deepEqual([...Object.keys(PALETTES)].sort(), [...SAVED_AXES_VOCABULARIES.colour.filter((colour) => colour !== "custom")].sort());

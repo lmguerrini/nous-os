@@ -26,7 +26,7 @@ export function createBrainEnvelope(nodes: readonly SceneNode[]): BrainEnvelope 
     transparent: true,
     opacity: NEURAL_BRAIN_ENVELOPE_OPACITY,
     side: THREE.DoubleSide,
-    depthTest: false,
+    depthTest: true,
     depthWrite: false,
   });
   const geometries: THREE.BufferGeometry[] = [];
@@ -61,7 +61,8 @@ export function createBrainEnvelope(nodes: readonly SceneNode[]): BrainEnvelope 
       geometry.computeVertexNormals();
       geometries.push(geometry);
       const mesh = new THREE.Mesh(geometry, material);
-      mesh.renderOrder = 5;
+      // Paint before the graph's ordered transparent layers, which keep their strokes crisp.
+      mesh.renderOrder = 0;
       mesh.frustumCulled = false;
       group.add(mesh);
     }

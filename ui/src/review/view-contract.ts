@@ -85,6 +85,8 @@ export type Axes = {
   readonly colour: Colour;
   readonly labels: boolean;
   readonly reading: Reading;
+  /** Optional Natural Neural 3D envelope; absent is false. */
+  readonly brain?: boolean;
   /** Explicit Natural arrangement; absent means unresolved (Indra never carries one). */
   readonly arrangement?: Arrangement;
 };
@@ -124,6 +126,7 @@ export const SAVED_AXES_VOCABULARIES = {
   arrangement: Object.keys(ARRANGEMENT_INDEX) as readonly Arrangement[],
   reading: Object.keys(READING_INDEX) as readonly Reading[],
   colour: Object.keys(COLOUR_INDEX) as readonly Colour[],
+  brain: [1] as const,
 } as const;
 
 /**
@@ -137,6 +140,8 @@ export type SavedViewAxes = {
   readonly colour: Colour;
   readonly labels: boolean;
   readonly reading: Reading;
+  /** Present only when enabled, to preserve existing saved URLs. */
+  readonly brain?: 1;
   readonly arrangement?: Arrangement;
 };
 
@@ -265,6 +270,7 @@ export function savedAxesRecord(axes: PageAxes): SavedViewAxes {
       colour: axes.colour,
       labels: axes.labels,
       reading: axes.reading,
+      ...(axes.brain === true ? { brain: 1 as const } : {}),
     };
   }
   return {
@@ -275,6 +281,7 @@ export function savedAxesRecord(axes: PageAxes): SavedViewAxes {
     labels: axes.labels,
     reading: axes.reading,
     arrangement: axes.arrangement ?? defaultNaturalArrangement(axes.morphology),
+    ...(axes.brain === true ? { brain: 1 as const } : {}),
   };
 }
 
@@ -303,6 +310,9 @@ export function parseSavedAxes(serialized: string): PageAxes {
   if (typeof record.labels !== "boolean") {
     throw new TypeError("Saved axes.labels must be boolean [labels-boolean]");
   }
+  if (record.brain !== undefined && record.brain !== 1) {
+    throw new TypeError("Saved axes.brain is outside its closed vocabulary [closed-vocabulary]");
+  }
   const organization = record.organization;
   if (organization === LEGACY_ORGANIZATION || organization === NATURAL_ORGANIZATION) {
     const arrangement = record.arrangement === undefined
@@ -316,6 +326,7 @@ export function parseSavedAxes(serialized: string): PageAxes {
       labels: record.labels as boolean,
       reading: record.reading as Reading,
       arrangement: arrangement ?? defaultNaturalArrangement(record.morphology as Morphology),
+      ...(record.brain === 1 ? { brain: true } : {}),
     };
   }
   if (organization !== "indra" && organization !== "fractal" && organization !== "holographic") {
@@ -331,6 +342,7 @@ export function parseSavedAxes(serialized: string): PageAxes {
     colour: record.colour as Colour,
     labels: record.labels as boolean,
     reading: record.reading as Reading,
+    ...(record.brain === 1 ? { brain: true } : {}),
   };
 }
 
@@ -446,6 +458,8 @@ export type ViewInput = {
    * of a remount. Absent (the main mode), the view mounts exactly the visible subset as before. */
   readonly visibleEdgeIds?: ReadonlySet<string>;
   readonly axes: Axes;
+  /** Optional envelope switch; absent is off. */
+  readonly brain?: boolean;
   readonly insets: Insets;
   readonly text: (id: string) => NodeText;
   readonly events: ViewEvents;
@@ -465,12 +479,12 @@ export type ViewInput = {
 export const VIEW_INPUT_FIELD_REGISTER = {
   input: [
     "container", "data", "v2Prepared", "v2Colours", "layoutContainers", "visibleNodeIds", "visibleEdgeIds",
-    "axes", "insets", "text", "events", "reducedMotion", "flowMotion", "appearance", "customPalette", "labelBudget",
+    "axes", "brain", "insets", "text", "events", "reducedMotion", "flowMotion", "appearance", "customPalette", "labelBudget",
   ],
-  optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "flowMotion", "appearance", "customPalette", "labelBudget"],
+  optionalInput: ["v2Prepared", "v2Colours", "layoutContainers", "visibleEdgeIds", "brain", "flowMotion", "appearance", "customPalette", "labelBudget"],
   axes: ["projection", "morphology", "organization", "colour", "labels", "reading"],
   /** Producer-optional axes: the explicit Natural arrangement, absent until a producer resolves it. */
-  optionalAxes: ["arrangement"],
+  optionalAxes: ["arrangement", "brain"],
   insets: ["top", "right", "bottom", "left"],
   events: ["onPick", "onDoublePick", "onHover"],
   optionalEvents: ["onDoublePick"],
