@@ -73,3 +73,8 @@ test('toolbar wraps at supported widths and selected labels remain visible', () 
   assert.match(html, /#status \{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/);
   assert.doesNotMatch(header, /style="[^"]*width:\s*\d{4,}px/);
 });
+
+test("D-079 collapsed toolbar hides the control groups despite their id-level flex rule", () => {
+  const html = readFileSync(new URL("../review/index.html", import.meta.url), "utf8");
+  assert.match(html, /header\.toolbar-collapsed #toolbar-controls \{display:none\}/);
+});
