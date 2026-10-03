@@ -36,6 +36,7 @@ import type { Render3fFramingBox } from "#render3f/camera.tsx";
 import { sceneCameraFramingSubjects } from "#render3f/camera-framing.ts";
 import type { ProjectedCameraFramingSubject } from "#render3f/camera-framing.ts";
 import { tokenToSrgb } from "#render3f/buffers.ts";
+import { createBrainEnvelope } from "#render3f/brain-envelope.ts";
 import { mountDistinctOverlay } from "#render3f/distinct-overlay.ts";
 import type { DistinctSubsetUpdate } from "#render-common/morphology-canvas.ts";
 import { DENSE_SCENE_THRESHOLD } from "#render-common/morphology-canvas.ts";
@@ -81,6 +82,8 @@ export type Render3fOptions = {
   readonly theme: Theme;
   readonly lodBand: LodBand;
   readonly reducedMotion: boolean;
+  /** Optional Natural Neural shell. False and absent share the baseline path. */
+  readonly brain?: boolean;
   readonly elapsedMilliseconds: number;
   readonly calibration?: CalibrationProfile;
   readonly presentation?: PresentationOptions;
@@ -242,6 +245,11 @@ export function mount(
 
   const world = new THREE.Group();
   world.add(aggregateResources.mesh, filamentResources.mesh, nodeResources.mesh);
+  // D-078 W1-edges: the optional envelope exists only for Natural Neural 3D.
+  const brainEnvelope = options.brain === true && options.organization === "natural"
+    && options.morphology === "neural" && typedInput === undefined
+    ? createBrainEnvelope(live.scene.nodes) : null;
+  if (brainEnvelope) world.add(brainEnvelope.group);
   const threeScene = new THREE.Scene();
   const renderer = new THREE.WebGLRenderer({
     canvas,
@@ -524,6 +532,7 @@ export function mount(
       options.temporalInstant, suppliedAnchors, { ...options.presentation, emphasisIds },
     );
     live.replaceScenes(scenes, suppliedAnchors === undefined ? cameraKindCount() : 0);
+    brainEnvelope?.update(live.scene.nodes);
     const nextRenderDpr = renderPixelRatio(live.scene, requiredDevicePixelRatio());
     if (nextRenderDpr !== currentRenderDpr) {
       const nextDimensions = containerDimensions(container);
@@ -763,6 +772,7 @@ export function mount(
       labels.destroy();
       distinct?.destroy();
       typedLayer.dispose();
+      brainEnvelope?.dispose();
       fiberRoot.unmount();
       registry.disposeAll();
       renderer.dispose();

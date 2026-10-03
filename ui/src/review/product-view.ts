@@ -1316,6 +1316,9 @@ export const createProductView: CreateProductView = async (input) => {
       // engine's own membership windows stay off in both organizations.
       organization: input.v2Prepared ? "natural" as const : axes.organization,
       reducedMotion: input.reducedMotion,
+      // D-078 W1-edges: pass the optional view flag only to the eligible renderer.
+      brain: axes.organization === "natural" && axes.morphology === "neural"
+        && axes.projection === "3d" && (input as typeof input & { readonly brain?: boolean }).brain === true,
       presentation: sharedPresentation,
     };
     // Each renderer derives its own first camera; framing below then works in whatever convention it uses.

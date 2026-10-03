@@ -36,6 +36,7 @@ const TYPE_ONLY_RENDERER_IMPORTS = new Set(["../projection/contract-types.ts"]);
 
 const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["aggregate-material.ts", new Set(["three", "#scene/contract.ts", "#render3f/buffers.ts"])],
+  ["brain-envelope.ts", new Set(["three", "#engine/morphology-contract.ts", "#scene/contract.ts"])],
   ["buffers.ts", new Set(["#engine/contract.ts", "#engine/tokens.ts", "#engine/stable-hash.ts", "#scene/contract.ts"])],
   ["camera-framing.ts", new Set(["#engine/contract.ts", "#scene/contract.ts"])],
   ["camera.tsx", new Set([
@@ -88,6 +89,7 @@ const RENDERER_IMPORT_ALLOW_LIST: ReadonlyMap<string, ReadonlySet<string>> = new
     "#render3f/camera.tsx",
     "#render3f/camera-framing.ts",
     "#render3f/buffers.ts",
+    "#render3f/brain-envelope.ts",
     "#render3f/aggregate-material.ts",
     "#render3f/filament-material.ts",
     "#render3f/distinct-overlay.ts",
@@ -133,6 +135,11 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["three", new Set(["*"])],
     ["#scene/contract.ts", new Set(["SCENE_PERMILLE_SCALE"])],
     ["#render3f/buffers.ts", new Set(["AggregateBuffers"])],
+  ])],
+  ["brain-envelope.ts", new Map([
+    ["three", new Set(["*"])],
+    ["#engine/morphology-contract.ts", new Set(["NEURAL_BRAIN_ENVELOPE_OPACITY"])],
+    ["#scene/contract.ts", new Set(["SceneNode"])],
   ])],
   ["buffers.ts", new Map([
     ["#engine/contract.ts", new Set(["Coordinates"])],
@@ -252,6 +259,7 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ])],
     ["#render3f/camera-framing.ts", new Set(["ProjectedCameraFramingSubject", "sceneCameraFramingSubjects"])],
     ["#render3f/buffers.ts", new Set(["tokenToSrgb"])],
+    ["#render3f/brain-envelope.ts", new Set(["createBrainEnvelope"])],
     ["#render3f/aggregate-material.ts", new Set([
       "createAggregateRenderResources",
       "updateAggregateProjectionUniforms",

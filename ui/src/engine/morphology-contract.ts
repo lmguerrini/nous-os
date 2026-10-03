@@ -3,6 +3,8 @@ import type { Organization } from "#engine/organization.ts";
 
 /** Core-size adjustment for Stellar pearls inside the 3D Indra shells. */
 export const STELLAR_INDRA_3D_NODE_SCALE = 0.65;
+/** Optional Natural Neural brain shell opacity; absent shell keeps the shipping view unchanged. */
+export const NEURAL_BRAIN_ENVELOPE_OPACITY = 0.075;
 /** Style-only path: the scale reads the morphology style and the canonical organization name, accepting the legacy `flat` alias of `natural` with identical pixels. */
 export function stellarIndra3dNodeRadiusPx(radius: number, morphology: Morphology,
   organization: Organization, projection: "2d" | "3d"): number {
