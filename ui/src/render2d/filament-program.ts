@@ -313,7 +313,7 @@ void main() {
   v_afterglowDecayPermille = a_afterglowDecayPermille;
   v_materialWidths = a_materialWidths;
   v_materialVariation = a_materialVariation;
-  v_somaRadii = clamp(a_somaRadii / u_sizeRatio, 2.0, 9.0) * u_pixelRatio;
+  v_somaRadii = clamp(a_somaRadii / u_sizeRatio, 2.0, 24.0) * u_pixelRatio;
   v_neuralScale = 1.0 / u_sizeRatio;
   v_cpA = viewportSource;
   v_cpB = viewportControl;
@@ -425,14 +425,14 @@ void main(void) {
   float widthFactor = max(u_minimumWidthFactor, taper + wobble + junction);
   if (u_neuralProfile > 0.5) {
     float span = max(length(v_cpC - v_cpA), 1.0);
-    float startShoulder = min(0.28, min(48.0 * u_pixelRatio,
-      max(12.0 * u_pixelRatio, v_somaRadii.x * 2.5 + v_thickness * 3.0)) / span);
-    float endShoulder = min(0.28, min(48.0 * u_pixelRatio,
-      max(12.0 * u_pixelRatio, v_somaRadii.y * 2.5 + v_thickness * 3.0)) / span);
+    float startShoulder = min(0.36, min(72.0 * u_pixelRatio,
+      max(16.0 * u_pixelRatio, v_somaRadii.x * 3.0 + v_thickness * 3.0)) / span);
+    float endShoulder = min(0.36, min(72.0 * u_pixelRatio,
+      max(16.0 * u_pixelRatio, v_somaRadii.y * 3.0 + v_thickness * 3.0)) / span);
     float startEase = 1.0 - smoothstep(0.0, startShoulder, curveT);
     float endEase = 1.0 - smoothstep(0.0, endShoulder, 1.0 - curveT);
-    float rootStart = min(v_thickness * 2.4, min(12.0 * u_pixelRatio, max(v_thickness, v_somaRadii.x * 2.0)));
-    float rootEnd = min(v_thickness * 2.4, min(12.0 * u_pixelRatio, max(v_thickness, v_somaRadii.y * 2.0)));
+    float rootStart = min(v_thickness * 3.0, min(14.0 * u_pixelRatio, max(v_thickness, v_somaRadii.x * 1.5)));
+    float rootEnd = min(v_thickness * 3.0, min(14.0 * u_pixelRatio, max(v_thickness, v_somaRadii.y * 1.5)));
     widthFactor = (v_thickness + (rootStart - v_thickness) * startEase
       + (rootEnd - v_thickness) * endEase) / v_thickness;
   }

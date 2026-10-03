@@ -170,8 +170,8 @@ void main() {
   v_opacity = a_opacityPermille / u_permilleScale;
   v_widthsAndPicking = a_widthsAndPicking;
   v_neuralProfile = a_neuralProfile;
-  v_neuralRadiiDevicePx = vec2(clamp(a_neuralProfile.y * startScale, 2.0, 9.0),
-    clamp(a_neuralProfile.z * endScale, 2.0, 9.0)) * u_devicePixelRatio;
+  v_neuralRadiiDevicePx = vec2(clamp(a_neuralProfile.y * startScale, 2.0, 24.0),
+    clamp(a_neuralProfile.z * endScale, 2.0, 24.0)) * u_devicePixelRatio;
   v_neuralScale = vec2(startScale, endScale);
   v_minimumAndJunctionPermille = a_minimumAndJunctionPermille;
   v_sheathAndCorePermille = a_sheathAndCorePermille;
@@ -286,13 +286,13 @@ void main() {
     float ordinary = clamp(u_neuralWidthPx, 0.3, 10.0) * u_devicePixelRatio;
     float startRadius = v_neuralRadiiDevicePx.x;
     float endRadius = v_neuralRadiiDevicePx.y;
-    float startRoot = min(ordinary * 2.4, min(12.0 * u_devicePixelRatio, max(ordinary, startRadius * 2.0)));
-    float endRoot = min(ordinary * 2.4, min(12.0 * u_devicePixelRatio, max(ordinary, endRadius * 2.0)));
+    float startRoot = min(ordinary * 3.0, min(14.0 * u_devicePixelRatio, max(ordinary, startRadius * 1.5)));
+    float endRoot = min(ordinary * 3.0, min(14.0 * u_devicePixelRatio, max(ordinary, endRadius * 1.5)));
     float span = max(length(v_cpC - v_cpA), 1.0);
-    float startShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
-      max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);
-    float endShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
-      max(12.0 * u_devicePixelRatio, endRadius * 2.5 + ordinary * 3.0)) / span);
+    float startShoulder = min(0.36, min(72.0 * u_devicePixelRatio,
+      max(16.0 * u_devicePixelRatio, startRadius * 3.0 + ordinary * 3.0)) / span);
+    float endShoulder = min(0.36, min(72.0 * u_devicePixelRatio,
+      max(16.0 * u_devicePixelRatio, endRadius * 3.0 + ordinary * 3.0)) / span);
     float startEase = 1.0 - smoothstep(0.0, startShoulder, parameter);
     float endEase = 1.0 - smoothstep(0.0, endShoulder, 1.0 - parameter);
     bodyHalfWidth = 0.5 * (ordinary + (startRoot - ordinary) * startEase

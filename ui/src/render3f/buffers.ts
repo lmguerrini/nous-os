@@ -157,6 +157,7 @@ export function buildFilamentBuffers(
   const widthsAndPicking = new Float32Array(ordered.length * packedChannelCount());
   const neuralProfile = new Float32Array(ordered.length * packedChannelCount());
   const nodeRadii = new Map(nodes.map(node => [node.id, node.radiusPx]));
+  const nodeCenters = new Map(nodes.map(node => [node.id, node.position]));
   const arcAndJunctionPermille = new Float32Array(ordered.length * packedChannelCount());
   const sheathAndCorePermille = new Float32Array(ordered.length * packedChannelCount());
   const hotAndWobble = new Float32Array(ordered.length * packedChannelCount());
@@ -169,9 +170,12 @@ export function buildFilamentBuffers(
     }
     const start = requiredItem(edge.path, 0, `scene edge ${edge.id} start`);
     const end = requiredLast(edge.path, `scene edge ${edge.id} end`);
-    writeCoordinates(startPositions, edgeIndex, start);
+    const neural = edge.filament.hotMixPermille > 0;
+    // A Neural shaft grows from the soma centre. The node pass covers its hidden interior,
+    // leaving a continuous visible root even when projection enlarges the soma.
+    writeCoordinates(startPositions, edgeIndex, neural ? nodeCenters.get(edge.source) ?? start : start);
     writeCoordinates(controlPositions, edgeIndex, edge.controlPoint);
-    writeCoordinates(endPositions, edgeIndex, end);
+    writeCoordinates(endPositions, edgeIndex, neural ? nodeCenters.get(edge.target) ?? end : end);
     writeColor(colorsSrgb, edgeIndex, tokenToSrgb(edge.token, encoding));
     writeColor(hotColorsSrgb, edgeIndex, hotColor);
     opacityPermille[edgeIndex] = edge.opacityPermille;

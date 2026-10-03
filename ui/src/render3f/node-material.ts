@@ -121,12 +121,13 @@ float sampledHaloAlpha(float offset) {
 }
 void main() {
   float radialDistance = length(v_localDevicePx);
+  float somaDistance = radialDistance;
   if (v_somaShape.x > 0.5) {
     float angle = atan(v_localDevicePx.y, v_localDevicePx.x);
     float visibility = smoothstep(2.0, 7.0, v_coreRadiusDevicePx);
-    float outline = 1.0 + visibility * (0.05 * sin(3.0 * angle + v_somaShape.y)
-      + 0.03 * cos(4.0 * angle - v_somaShape.y));
-    radialDistance /= outline;
+    float outline = 1.0 + visibility * (0.085 * sin(3.0 * angle + v_somaShape.y)
+      + 0.045 * cos(4.0 * angle - v_somaShape.y));
+    somaDistance /= outline;
   }
   // A GRADIENT core, weighted toward the centre — not a hard-edged disc. An anti-aliased disc was
   // tried and measured a fourteenfold better core-concentration ratio while making every node read
@@ -134,7 +135,7 @@ void main() {
   // SAME smoothstep gradient still runs across the whole core radius; only how quickly its alpha
   // rises toward the centre is governed, per morphology, as coreSharpness. Raising it concentrates
   // and sharpens the readable centre without ever collapsing the gradient into that rejected edge.
-  float coreProfile = 1.0 - smoothstep(0.0, v_coreRadiusDevicePx, radialDistance);
+  float coreProfile = 1.0 - smoothstep(0.0, v_coreRadiusDevicePx, somaDistance);
   float coreSharpness = v_coreSharpnessPermille / u_permilleScale;
   float coreAlpha = pow(coreProfile, coreSharpness);
   float haloSpan = max(v_haloRadiusDevicePx - v_coreRadiusDevicePx, fwidth(radialDistance));
