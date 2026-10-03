@@ -81,7 +81,9 @@ import {
 
 /** Indra containment needs enough ink to join small pearls at fit; semantic floors stay intact. */
 export function edgePresentationFloors(organization: Axes['organization'], morphology: Axes['morphology'],
-  structural: boolean): { readonly opacityPermille: number; readonly widthPermille: number } {
+  structural: boolean, projection: Axes['projection'] = '2d'): { readonly opacityPermille: number; readonly widthPermille: number } {
+  if (organization === 'indra' && projection === '3d' && structural)
+    return { opacityPermille: morphology === 'stellar' ? 450 : 500, widthPermille: 800 };
   if (organization === 'indra') return structural
     ? { opacityPermille: 330, widthPermille: 720 }
     : { opacityPermille: morphology === 'stellar' ? 0 : 360,
@@ -96,7 +98,7 @@ export function edgePresentationFloors(organization: Axes['organization'], morph
  * own arc window still caps its final width; these factors reach the upper part of that window
  * without changing its shape or adding relations. */
 export function perceptibleEdgeFloors(organization: Axes['organization'], morphology: Axes['morphology'],
-  kind: RelationClass): { readonly opacityPermille: number; readonly widthPermille: number } {
+  kind: RelationClass, projection: Axes['projection'] = '2d'): { readonly opacityPermille: number; readonly widthPermille: number } {
   if (organization === 'natural') {
     if (morphology === 'stellar') return kind === 'structural'
       ? { opacityPermille: 900, widthPermille: 900 }
@@ -106,6 +108,9 @@ export function perceptibleEdgeFloors(organization: Axes['organization'], morpho
       : kind === 'attested' ? { opacityPermille: 720, widthPermille: 1000 }
       : { opacityPermille: 900, widthPermille: 1000 };
   }
+  if (organization === 'indra' && projection === '3d' && kind === 'structural')
+    return morphology === 'stellar' ? { opacityPermille: 900, widthPermille: 850 }
+      : { opacityPermille: 530, widthPermille: 850 };
   if (morphology === 'stellar') return kind === 'structural'
     ? { opacityPermille: 850, widthPermille: 850 }
     : kind === 'attested' ? { opacityPermille: 930, widthPermille: 950 }
@@ -117,11 +122,17 @@ export function perceptibleEdgeFloors(organization: Axes['organization'], morpho
 
 export function applyPerceptibleEdgeFloors(
   organization: Axes['organization'], morphology: Axes['morphology'], kind: RelationClass,
-  opacityPermille: number, widthPermille: number,
+  opacityPermille: number, widthPermille: number, projection: Axes['projection'] = '2d',
 ): { readonly opacityPermille: number; readonly widthPermille: number } {
-  const floor = perceptibleEdgeFloors(organization, morphology, kind);
+  const floor = perceptibleEdgeFloors(organization, morphology, kind, projection);
   return { opacityPermille: Math.max(opacityPermille, floor.opacityPermille),
     widthPermille: Math.max(widthPermille, floor.widthPermille) };
+}
+
+/** D-079: a canvas-space floor is needed after perspective and Stellar's width window. */
+export function structuralSpokeScreenWidthPx(organization: Axes['organization'], projection: Axes['projection'],
+  structural: boolean): number | undefined {
+  return organization === 'indra' && projection === '3d' && structural ? 0.75 : undefined;
 }
 
 /** Observe wheel motion before Sigma consumes its bubbling event. */
@@ -1242,10 +1253,12 @@ export const createProductView: CreateProductView = async (input) => {
     const coMembership = Boolean(input.v2Prepared && relation?.type === 'co_membership');
     const containment = Boolean(input.v2Prepared && relation?.type === 'contains');
     const structural = input.v2Prepared && (containment || coMembership || relation?.class === 'structural');
+    const spoke = containment || relation?.type === 'structural_lift';
     const category = classifyEdgeCategory(exploratory, Boolean(structural));
     // In Indra the pearls carry the structure: unselected semantic arcs recede (thinner, fainter) so rims and names read.
     const indraDim = axes.organization === 'indra' ? indraArcPresentation(axes.projection, exploratory) : null;
-    const floor = edgePresentationFloors(axes.organization, axes.morphology, Boolean(structural));
+    const floorProjection = spoke ? axes.projection : '2d';
+    const floor = edgePresentationFloors(axes.organization, axes.morphology, Boolean(structural), floorProjection);
     const opacityPermille = input.v2Prepared ? Math.max(floor.opacityPermille, Math.round(SCENE_PERMILLE_SCALE
       * (exploratory ? 0.9 : coMembership ? 0.62 : containment ? 0.5 : axes.reading === 'attested' ? 0.68 : 0.36)
       * (indraDim?.opacityFactor ?? 1)))
@@ -1256,11 +1269,14 @@ export const createProductView: CreateProductView = async (input) => {
       : SCENE_PERMILLE_SCALE;
     const legible = input.v2Prepared
       ? applyPerceptibleEdgeFloors(axes.organization, axes.morphology,
-        structural ? 'structural' : exploratory ? 'exploratory' : 'attested', opacityPermille, widthPermille)
+        structural ? 'structural' : exploratory ? 'exploratory' : 'attested', opacityPermille, widthPermille, floorProjection)
       : { opacityPermille, widthPermille };
+    const minimumScreenWidthPx = structuralSpokeScreenWidthPx(axes.organization, axes.projection, spoke);
     return { category,
       // Width is never the only signal: exploratory reads through its halo and flow, not through extra thickness.
       ...legible,
+      // The distinct 3D canvas uses projected widths; far pearls need a fixed CSS-pixel spoke floor.
+      ...(minimumScreenWidthPx === undefined ? {} : { minimumScreenWidthPx }),
       ...(axes.colour === "bw" && input.v2Prepared ? { tintSrgb: [0.64, 0.64, 0.64] as const }
         : axes.colour === "bw" ? {} : { tintSrgb: hexRgb(exploratory ? palette.exploratory : palette.attested) }),
     } as const;

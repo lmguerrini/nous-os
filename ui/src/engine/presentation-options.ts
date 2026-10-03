@@ -20,6 +20,8 @@ export type EdgePresentation = {
   readonly category: EdgeCategory;
   readonly opacityPermille: number;
   readonly widthPermille: number;
+  /** D-079: optional distinct-canvas CSS-pixel floor for Indra 3D structural spokes. */
+  readonly minimumScreenWidthPx?: number;
   readonly tintSrgb?: readonly [number, number, number];
 };
 /** A visual relation has no source-edge category, evidence, or semantic carrier. */

@@ -28,6 +28,10 @@ import {
 } from "#render-common/flow.ts";
 
 export type ProjectedPoint = { readonly x: number; readonly y: number; readonly scale: number };
+/** D-079: retain a specified screen-space spoke width after perspective scaling. */
+export function screenSpaceEdgeWidthPx(widthPx: number, minimumScreenWidthPx = 0): number {
+  return Math.max(widthPx, minimumScreenWidthPx);
+}
 export const DENSE_SCENE_THRESHOLD = 1200;
 export type MorphologyCanvasStyle = {
   readonly fieldColor: string;
@@ -969,7 +973,7 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     const totalPx = cumulative[cumulative.length - 1]! || 1;
     // The Neural profile retains its full width at both soma ends, including high-degree hubs.
     const neuralTaper = geometry.morphology === "neural";
-    const widthAt = (i: number) => {
+    const projectedWidthAt = (i: number) => {
       const index = Math.min(points.length - 1, Math.max(0, Math.floor(i)));
       const fraction = Math.min(1, Math.max(0, i - index));
       const t = neuralTaper
@@ -997,6 +1001,10 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
       const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
       return clamp(profile * factors * appearance.edgeWidth, 0.5, 16);
     };
+    // D-079: only the Indra 3D structural presentation sets this floor. It is applied after
+    // Stellar's class window and perspective scaling, and also reaches the moving Neural stroke.
+    const widthAt = (i: number) => screenSpaceEdgeWidthPx(projectedWidthAt(i),
+      projection === "3d" ? presentation?.minimumScreenWidthPx : 0);
     // D-072 V13: the base alpha of a line is constant across frames — presentation-derived factors
     // only. D-072 M1b: a Stellar arc's base alpha is its class window (intra faint, bridges near
     // 0.5), the presentation's opacity mapping inside it; emphasis may push above the window.
