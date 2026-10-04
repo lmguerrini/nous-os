@@ -595,6 +595,22 @@ export class V2Page {
     private d081LastFullMs = 0;
     private d081Quality: 'movimento' | 'recupero' | 'completa' = 'completa';
     private d081QualityTimer: ReturnType<typeof setTimeout> | null = null;
+    // D081-P3g BEGIN: a 3D status cannot become full before its settled label pass.
+    private d081LabelsReady = true;
+    private d081PointerMoved = false;
+    private d081FinishIfReady() {
+        if (!this.d081LastInteraction) return;
+        const quality = completeQuality(performance.now(), this.d081LastInteraction,
+            this.refreshPending > 0, this.d081LabelsReady);
+        if (quality === 'movimento') return;
+        if (quality !== this.d081Quality) {
+            this.d081Quality = quality;
+            if (quality === 'completa')
+                this.d081LastFullMs = Math.round(performance.now() - this.d081LastInteraction);
+            this.d081Emit();
+        }
+    }
+    // D081-P3g END
     private d081Status() {
         // D081-P3b BEGIN: both typed renderers suppress dense lines while the camera moves.
         const movingIndra = this.d081Quality === 'movimento' && this.density === 'complete'
@@ -614,13 +630,15 @@ export class V2Page {
     private d081Interaction() {
         this.d081LastInteraction = performance.now();
         this.d081Quality = 'movimento';
+        // D081-P3g BEGIN: 2D label placement is synchronous with its renderer update;
+        // 3D reports completion from its own settled pass.
+        this.d081LabelsReady = this.axes.projection === '2d';
+        // D081-P3g END
         this.d081Emit();
         if (this.d081QualityTimer !== null) clearTimeout(this.d081QualityTimer);
         this.d081QualityTimer = setTimeout(() => {
             this.d081QualityTimer = null;
-            this.d081Quality = completeQuality(performance.now(), this.d081LastInteraction, this.refreshPending > 0);
-            if (this.d081Quality === 'completa') this.d081LastFullMs = Math.round(performance.now() - this.d081LastInteraction);
-            this.d081Emit();
+            this.d081FinishIfReady();
         }, COMPLETE_IDLE_MS + 1);
     }
     private d081Publish(route: RouteResult, eligibleEdges: number, eligibleNodes: number) {
@@ -649,10 +667,8 @@ export class V2Page {
         };
         const counter = typeof document !== 'undefined' ? document.getElementById('counter') : null;
         if (counter) counter.textContent = `${formatCount(visible)} visibili · ${formatCount(represented)}/${formatCount(this.index.nodes.length)} rappresentati · ${formatCount(route.drawn.length)} archi`;
-        if (this.d081Quality !== 'movimento') {
-            this.d081Quality = 'completa';
-            if (this.d081LastInteraction) this.d081LastFullMs = Math.round(performance.now() - this.d081LastInteraction);
-        }
+        if (this.d081Quality !== 'movimento' && this.d081LastInteraction) this.d081FinishIfReady();
+        else if (!this.d081LastInteraction) this.d081Quality = 'completa';
         this.d081Emit();
     }
     // D081-P3 END status contract
@@ -813,6 +829,13 @@ export class V2Page {
         if (typeof window !== 'undefined')
             (window as typeof window & { __d081?: { status?: () => unknown } }).__d081 =
                 { ...(window as typeof window & { __d081?: object }).__d081, status: () => this.d081Status() };
+        // D081-P3g BEGIN: the event is sent only after the label DOM pass completes.
+        if (typeof window !== 'undefined') window.addEventListener('d081:labels-settled', () => {
+            if (this.axes.projection !== '3d' || !this.d081LastInteraction) return;
+            this.d081LabelsReady = true;
+            this.d081FinishIfReady();
+        });
+        // D081-P3g END
         this.createView = deps.createView ?? createProductView;
         this.selectLod = deps.safeSelect ?? safeSelectNodes;
         this.onNodePicked = deps.onNodePicked;
@@ -848,15 +871,27 @@ export class V2Page {
             // D081-P6 BEGIN.
             this.wheelGesture = null;
             // D081-P6 END.
-            this.pointerDown = true; this.hoverNeedsMove = true; this.edgeTooltip(null);
+            this.pointerDown = true; this.d081PointerMoved = false;
+            this.hoverNeedsMove = true; this.edgeTooltip(null);
             if (this.pointerFocusTimer !== null) window.clearTimeout(this.pointerFocusTimer);
             this.pointerFocusTimer = null;
         }, true);
         for (const type of ['pointerup', 'pointercancel'] as const)
-            root?.addEventListener(type, () => { this.pointerDown = false; this.edgeTooltip(null); }, true);
+            root?.addEventListener(type, () => {
+                // D081-P3g BEGIN: the drag's last input is its release. Preserve a
+                // label pass already completed while the pointer was held.
+                if (this.pointerDown && this.d081PointerMoved) {
+                    const labelsReady = this.d081LabelsReady;
+                    this.d081Interaction();
+                    this.d081LabelsReady = labelsReady;
+                }
+                this.pointerDown = false; this.d081PointerMoved = false;
+                // D081-P3g END
+                this.edgeTooltip(null);
+            }, true);
         root?.addEventListener('pointermove', () => {
             if (!this.pointerDown) this.hoverNeedsMove = false;
-            else this.d081Interaction();
+            else { this.d081PointerMoved = true; this.d081Interaction(); }
         }, true);
         root?.addEventListener('keydown', event => {
             if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
@@ -3057,9 +3092,7 @@ export class V2Page {
         }).finally(() => {
             this.refreshPending--;
             if (this.d081Quality === 'recupero' && this.refreshPending === 0) {
-                this.d081Quality = 'completa';
-                this.d081LastFullMs = Math.round(performance.now() - this.d081LastInteraction);
-                this.d081Emit();
+                this.d081FinishIfReady();
             }
         });
     }

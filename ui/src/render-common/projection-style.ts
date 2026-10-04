@@ -57,7 +57,9 @@ export type ProjectionStyleOptions = {
 /** The reserved `visualStyle` key carrying the whole-scene options the renderers need. */
 export const PROJECTION_STYLE_SCOPE = "projection:style";
 /** Complete typed Indra labels and return to still quality share one presentation policy. */
-export const TYPED_COMPLETE_BUNDLE_LABEL = { font: '11px sans-serif', offsetPx: 3, alpha: 0.9, idleMs: 350 } as const;
+// D081-P3g BEGIN: the dense 3D scene restores before the status deadline.
+export const TYPED_COMPLETE_BUNDLE_LABEL = { font: '11px sans-serif', offsetPx: 3, alpha: 0.9, idleMs: 240 } as const;
+// D081-P3g END
 
 /** D-072 node gray levels (bw palette): structural mass by graph level. */
 export const TYPED_NODE_GRAY = { aggregate: 0.88, body: 0.7, leaf: 0.56 } as const;

@@ -309,6 +309,14 @@ function rectOverlapsDisc(
 export function discRectOverlapArea(rect: ViewportRect, cx: number, cy: number, radius: number): number {
   if (!(radius > 0) || !Number.isFinite(radius)) return 0;
   const right = rect.left + rect.width, bottom = rect.top + rect.height;
+  // D081-P3g BEGIN: a grid cell can touch the disc's X range while its Y range
+  // misses entirely. Reject that common case before the 1 px integral.
+  if (bottom <= cy - radius || rect.top >= cy + radius) return 0;
+  const nearestX = Math.min(Math.max(cx, rect.left), right);
+  const nearestY = Math.min(Math.max(cy, rect.top), bottom);
+  const dx = cx - nearestX, dy = cy - nearestY;
+  if (dx * dx + dy * dy > radius * radius * (1 + 1e-12)) return 0;
+  // D081-P3g END
   const from = Math.max(rect.left, cx - radius), to = Math.min(right, cx + radius);
   if (to <= from) return 0;
   let area = 0;
@@ -334,11 +342,19 @@ class LabelGeometryGrid {
   private readonly cells = new Map<string, number[]>();
   private readonly global: number[] = [];
   private readonly boxes = new Map<number, readonly [number, number, number, number]>();
+  // D081-P3g BEGIN: reuse a per-grid visitation table instead of allocating a
+  // Set on every query. Query results still preserve the original index order.
+  private readonly seen: number[] = [];
+  private querySerial = 0;
+  // D081-P3g END
   private inserts = 0;
-  private readonly size = 64;
+  private readonly size: number;
+  constructor(size = 64) { this.size = size; }
 
   add(index: number, left: number, top: number, right: number, bottom: number): void {
-    if (![left, top, right, bottom].every(Number.isFinite)) {
+    // D081-P3g: avoid a four-item allocation for every one of 11,199 discs.
+    if (!Number.isFinite(left) || !Number.isFinite(top)
+      || !Number.isFinite(right) || !Number.isFinite(bottom)) {
       this.global.push(index);
       return;
     }
@@ -354,22 +370,47 @@ class LabelGeometryGrid {
     this.inserts += count;
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
       const key = `${x}:${y}`;
-      const bucket = this.cells.get(key) ?? [];
+      let bucket = this.cells.get(key);
+      if (!bucket) { bucket = []; this.cells.set(key, bucket); }
       bucket.push(index);
-      this.cells.set(key, bucket);
     }
   }
 
   nearby(left: number, top: number, right: number, bottom: number): number[] {
-    const found = new Set(this.global);
+    const serial = ++this.querySerial;
+    const found: number[] = [];
+    const add = (index: number) => {
+      if (this.seen[index] === serial) return;
+      this.seen[index] = serial;
+      const box = this.boxes.get(index);
+      if (!box || (box[0] <= right && box[2] >= left && box[1] <= bottom && box[3] >= top))
+        found.push(index);
+    };
+    for (const index of this.global) add(index);
     const x0 = Math.floor(left / this.size), x1 = Math.floor(right / this.size);
     const y0 = Math.floor(top / this.size), y1 = Math.floor(bottom / this.size);
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++)
-      for (const index of this.cells.get(`${x}:${y}`) ?? []) found.add(index);
-    return [...found].filter(index => {
+      for (const index of this.cells.get(`${x}:${y}`) ?? []) add(index);
+    return found.sort((a, b) => a - b);
+  }
+
+  /** D081-P3g: boolean collision checks can stop at the first hit and need no ordered array. */
+  someNearby(left: number, top: number, right: number, bottom: number,
+    predicate: (index: number) => boolean): boolean {
+    const serial = ++this.querySerial;
+    const check = (index: number): boolean => {
+      if (this.seen[index] === serial) return false;
+      this.seen[index] = serial;
       const box = this.boxes.get(index);
-      return !box || (box[0] <= right && box[2] >= left && box[1] <= bottom && box[3] >= top);
-    }).sort((a, b) => a - b);
+      return (!box || (box[0] <= right && box[2] >= left && box[1] <= bottom && box[3] >= top))
+        && predicate(index);
+    };
+    for (const index of this.global) if (check(index)) return true;
+    const x0 = Math.floor(left / this.size), x1 = Math.floor(right / this.size);
+    const y0 = Math.floor(top / this.size), y1 = Math.floor(bottom / this.size);
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++)
+      for (const index of this.cells.get(`${x}:${y}`) ?? []) if (check(index)) return true;
+    return false;
   }
 }
 
@@ -414,7 +455,9 @@ export function placeLabels(
   // Pearl and soma discs and container rims share bounded screen-space grids. Large projected
   // shapes use the always-checked list, so no radius can create unbounded bucket work.
   const span = Math.max(bounds.width, bounds.height);
-  const discGrid = new LabelGeometryGrid();
+  // D081-P3g: the dense pearl field benefits from smaller cells; each label
+  // query sees fewer unrelated discs while final predicate order stays sorted.
+  const discGrid = new LabelGeometryGrid(discs.length > 1_200 ? 32 : 64);
   const rimGrid = new LabelGeometryGrid();
   const ownDiscRadii = new Map<string, number>();
   for (let index = 0; index < discs.length; index++) {
@@ -427,29 +470,55 @@ export function placeLabels(
     // blocks nothing — the node is the environment at that scale, not an obstacle.
     if (disc.radius >= span) continue;
     const reach = disc.radius + PEARL_LABEL_MARGIN_PX;
+    // D081-P3g BEGIN: every candidate slot and leader stays inside bounds. A
+    // projected obstacle wholly outside those bounds can never enter a query.
+    if (disc.x + reach < bounds.left || disc.x - reach > bounds.left + bounds.width
+      || disc.y + reach < bounds.top || disc.y - reach > bounds.top + bounds.height) continue;
+    // D081-P3g END
     discGrid.add(index, disc.x - reach, disc.y - reach, disc.x + reach, disc.y + reach);
   }
   for (let index = 0; index < rims.length; index++) {
     const rim = rims[index]!;
     if (!(rim.radius > 0) || !Number.isFinite(rim.radius)) continue;
     const reach = rim.radius + 3;
+    // D081-P3g BEGIN
+    if (rim.x + reach < bounds.left || rim.x - reach > bounds.left + bounds.width
+      || rim.y + reach < bounds.top || rim.y - reach > bounds.top + bounds.height) continue;
+    // D081-P3g END
     rimGrid.add(index, rim.x - reach, rim.y - reach, rim.x + reach, rim.y + reach);
   }
   const nearbyDiscs = (rect: ViewportRect): number[] => discGrid.nearby(
     rect.left, rect.top, rect.left + rect.width, rect.top + rect.height);
-  const discBlocked = (rect: ViewportRect, ownId?: string): boolean => {
-    for (const index of nearbyDiscs(rect)) {
-      const disc = discs[index]!;
-      if (ownId !== undefined && disc.id === ownId) continue;
-      if (operations) operations.discBlock++;
-      if (rectOverlapsDisc(rect, disc.x, disc.y, disc.radius + PEARL_LABEL_MARGIN_PX - 2)) return true;
+  // D081-P3g BEGIN: a fully contained pearl contributes the same exact sampled
+  // area to every slot. Cache that integral per projected disc for this pass.
+  const fullDiscAreas = new Map<number, number>();
+  const discArea = (rect: ViewportRect, index: number): number => {
+    const disc = discs[index]!;
+    if (rect.left <= disc.x - disc.radius && rect.left + rect.width >= disc.x + disc.radius
+      && rect.top <= disc.y - disc.radius && rect.top + rect.height >= disc.y + disc.radius) {
+      let area = fullDiscAreas.get(index);
+      if (area === undefined) {
+        area = discRectOverlapArea(rect, disc.x, disc.y, disc.radius);
+        fullDiscAreas.set(index, area);
+      }
+      return area;
     }
-    return false;
+    return discRectOverlapArea(rect, disc.x, disc.y, disc.radius);
+  };
+  // D081-P3g END
+  const discBlocked = (rect: ViewportRect, ownId?: string): boolean => {
+    return discGrid.someNearby(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height, index => {
+      const disc = discs[index]!;
+      if (ownId !== undefined && disc.id === ownId) return false;
+      if (operations) operations.discBlock++;
+      return rectOverlapsDisc(rect, disc.x, disc.y, disc.radius + PEARL_LABEL_MARGIN_PX - 2);
+    });
   };
   // Radial width of rim bands touched by this rectangle. Zero means wholly inside or outside
   // every rim; a crossed rim disqualifies the slot.
   const rimOverlap = (rect: ViewportRect): number => {
     if (operations) operations.rimQueries++;
+    if (!rims.length) return 0;
     return rimGrid.nearby(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height).reduce((overlap, index) => {
     const rim = rims[index]!;
     if (operations) operations.rim++;
@@ -471,12 +540,21 @@ export function placeLabels(
     }, 0);
   };
   const priority = { hover: 6, selected: 5, neighbour: 4, domain: 3, main: 2, zoom: 1 };
-  for (const c of [...candidates].sort(
+  // D081-P3g BEGIN: a dense pass should sort only anchors that can reach the viewport.
+  // For smaller scenes keep the established candidate stream byte-for-byte equivalent.
+  const ordered = (candidates.length > 1_200 ? candidates.filter(c =>
+    c.visible !== false && c.collapsed !== true
+    && c.x >= bounds.left && c.y >= bounds.top
+    && c.x <= bounds.left + bounds.width && c.y <= bounds.top + bounds.height) : [...candidates]).sort(
     (a, b) => (b.tier1 === true ? 1 : 0) - (a.tier1 === true ? 1 : 0)
       || priority[b.reason] - priority[a.reason] || b.priority - a.priority || a.id.localeCompare(b.id),
-  )) {
+  );
+  for (const c of ordered) {
     // The density allowance is for optional tier-2 names; it cannot erase a domain or selection.
-    if (!c.tier1 && placed.length >= budget) continue;
+    // All tier-1 names are sorted first. Once the budget is filled, no remaining tier-2
+    // candidate can affect the result; stop before its costly geometry search.
+    if (!c.tier1 && placed.length >= budget) break;
+    // D081-P3g END
     if (c.visible === false || c.collapsed === true) continue;
     const text = c.aggregateCount !== undefined && c.aggregateCount > 0 && !COUNT_SUFFIX.test(c.text)
       ? `${c.text} · +${Math.floor(c.aggregateCount)}` : c.text;
@@ -554,10 +632,10 @@ export function placeLabels(
           return lineTouchesRect(leader, other.rect)
             || (other.leader !== undefined && linesCross(leader, other.leader));
         })) return false;
-        if (!allowForeignGeometry && discGrid.nearby(
+        if (!allowForeignGeometry && discGrid.someNearby(
           Math.min(leader.from.x, leader.to.x), Math.min(leader.from.y, leader.to.y),
           Math.max(leader.from.x, leader.to.x), Math.max(leader.from.y, leader.to.y),
-        ).some(index => {
+          index => {
           const disc = discs[index]!;
           if (disc.id === c.id) return false;
           if (operations) operations.discLeader++;
@@ -565,13 +643,22 @@ export function placeLabels(
         })) return false;
       }
       const rim = allowForeignGeometry ? rimOverlap(rect) : 0;
+      // D081-P3g BEGIN: covered area is only a tie-break after rim overlap. Once a
+      // clearer slot exists, this slot cannot win and the expensive disc integral is moot.
+      if (allowForeignGeometry && choice.best && rim > choice.best.rim) return false;
+      // D081-P3g END
       if (allowForeignGeometry && operations) operations.discAreaQueries++;
-      const covered = allowForeignGeometry ? nearbyDiscs(rect).reduce((area, index) => {
+      let covered = 0;
+      if (allowForeignGeometry) for (const index of nearbyDiscs(rect)) {
         const disc = discs[index]!;
-        if (disc.id === c.id) return area;
+        if (disc.id === c.id) continue;
         if (operations) operations.discArea++;
-        return area + discRectOverlapArea(rect, disc.x, disc.y, disc.radius);
-      }, 0) : 0;
+        covered += discArea(rect, index);
+        // D081-P3g BEGIN: overlap areas are nonnegative. A slot that already
+        // exceeds the best same-rim score cannot recover by visiting more discs.
+        if (choice.best && rim === choice.best.rim && covered > choice.best.covered) break;
+        // D081-P3g END
+      }
       if (!choice.best || rim < choice.best.rim || (rim === choice.best.rim && covered < choice.best.covered))
         choice.best = { rect, ...(leader ? { leader } : {}), rim, covered };
       return !allowForeignGeometry || (rim === 0 && covered === 0);
@@ -600,7 +687,10 @@ export function placeLabels(
           const distance = radius + extra + 6;
           for (let index = 0; index < 16; index += 1) {
             const angle = index * Math.PI / 8;
-            consider(Math.cos(angle) * distance, Math.sin(angle) * distance, true);
+            // D081-P3g BEGIN: zero rim and zero covered area is the absolute
+            // minimum. Later angles cannot improve this first winning slot.
+            if (consider(Math.cos(angle) * distance, Math.sin(angle) * distance, true)) break;
+            // D081-P3g END
           }
           if (choice.best) break;
         }

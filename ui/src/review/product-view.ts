@@ -1184,6 +1184,9 @@ export const createProductView: CreateProductView = async (input) => {
     const labelMs = performance.now() - began;
     scheduleMarks.record(moving ? "label-pass-moving" : "label-pass-full", began, labelMs);
     perfRecord.phase(moving ? "labelMoving" : "firstLabelPass", labelMs);
+    // D081-P3g BEGIN: the page's recovery clock includes the settled label and canvas pass.
+    if (!moving) window.dispatchEvent(new CustomEvent("d081:labels-settled"));
+    // D081-P3g END
   }
   // D-072 P1a: no polling at rest. The camera watch loop runs only while something moves — a
   // pressed pointer on the canvas, an open motion window (wheel, keys, a programmatic camera

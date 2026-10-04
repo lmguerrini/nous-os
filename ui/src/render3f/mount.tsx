@@ -459,7 +459,14 @@ export function mount(
     updateProjection();
     if (typedPicker && typedLayer.group.parent !== threeScene) threeScene.add(typedLayer.group);
     if (labelTimer !== undefined) clearTimeout(labelTimer);
-    labelTimer = setTimeout(() => { if (!destroyed) updateLabels(); }, 160);
+    labelTimer = setTimeout(() => {
+      if (!destroyed) {
+        updateLabels();
+        // D081-P3g BEGIN: typed 3D placement is synchronous; report its completed pass.
+        window.dispatchEvent(new CustomEvent("d081:labels-settled"));
+        // D081-P3g END
+      }
+    }, 160);
     renderer.render(threeScene, rig.camera);
     if (!typedPicker) distinct?.draw();
     visuals?.draw();
@@ -491,13 +498,24 @@ export function mount(
     if (visuals || brainEnvelope) {
       typedLayer.setQuality("moving");
       if (visualsStillTimer !== undefined) clearTimeout(visualsStillTimer);
-      // D081-P3b BEGIN: dense typed Indra returns at the status contract's 350 ms boundary.
-      const denseIndra = currentStyled?.projection.determinism.algorithmId === "indras-pearls"
-        && readProjectionStyle(currentStyled)?.density === "complete";
+      // D081-P3b BEGIN
+      // D081-P3g BEGIN: restore every dense typed scene early enough for its label pass.
+      const denseComplete = currentStyled !== null && readProjectionStyle(currentStyled)?.density === "complete";
       visualsStillTimer = setTimeout(() => {
         visualsStillTimer = undefined;
-        if (!destroyed) { typedMoving = false; visuals?.setQuality("full"); typedLayer.setQuality("full"); brainEnvelope?.setLod("full"); renderFrame(); }
-      }, denseIndra ? TYPED_COMPLETE_BUNDLE_LABEL.idleMs : DERIVED_STILL_MS);
+        if (!destroyed) {
+          typedMoving = false; visuals?.setQuality("full"); typedLayer.setQuality("full"); brainEnvelope?.setLod("full"); renderFrame();
+          if (denseComplete) {
+            // renderFrame's ordinary 160 ms debounce would postpone labels past the
+            // 400 ms contract. Complete this one placement with the restored scene.
+            if (labelTimer !== undefined) clearTimeout(labelTimer);
+            labelTimer = undefined;
+            updateLabels();
+            window.dispatchEvent(new CustomEvent("d081:labels-settled"));
+          }
+        }
+      }, denseComplete ? TYPED_COMPLETE_BUNDLE_LABEL.idleMs : DERIVED_STILL_MS);
+      // D081-P3g END
       // D081-P3b END
     }
     currentState = createVisualState(visualGraph, {

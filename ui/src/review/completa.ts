@@ -6,10 +6,12 @@ import type { Reading } from './view-contract.ts';
 import { relationVisible } from './reading.ts';
 import type { RouteResult, RoutedEdge } from './relation-routing.ts';
 
-export const COMPLETE_IDLE_MS = 350;
-export function completeQuality(nowMs: number, lastInteractionMs: number, renderPending: boolean): 'movimento' | 'recupero' | 'completa' {
+// D081-P3g: reserve the rest of the 400 ms recovery window for scene and label work.
+export const COMPLETE_IDLE_MS = 250;
+export function completeQuality(nowMs: number, lastInteractionMs: number, renderPending: boolean,
+  labelsReady = true): 'movimento' | 'recupero' | 'completa' {
   if (nowMs - lastInteractionMs < COMPLETE_IDLE_MS) return 'movimento';
-  return renderPending ? 'recupero' : 'completa';
+  return renderPending || !labelsReady ? 'recupero' : 'completa';
 }
 
 export function completeVisible(index: V2Index): V2Visible {

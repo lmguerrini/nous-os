@@ -34,11 +34,15 @@ test('Completa represents every eligible node as a glyph and accounts for every 
   assert.ok(zoomed.drawn.every(edge => edge.count === 1));
 });
 
-test('movement settles by 351 ms and legacy density budgets are unchanged', () => {
+test('movement settles after 250 ms only when the scene and labels are ready', () => {
   assert.equal(COMPLETE_IDLE_MS + 1 <= 400, true);
-  assert.equal(completeQuality(349, 0, false), 'movimento');
-  assert.equal(completeQuality(350, 0, true), 'recupero');
-  assert.equal(completeQuality(351, 0, false), 'completa');
+  assert.equal(completeQuality(249, 0, false), 'movimento');
+  assert.equal(completeQuality(250, 0, true), 'recupero');
+  assert.equal(completeQuality(250, 0, false, false), 'recupero');
+  assert.equal(completeQuality(251, 0, false, true), 'completa');
+  // Each wheel or drag event moves the origin, so a previous deadline cannot finish the burst.
+  assert.equal(completeQuality(390, 200, false, true), 'movimento');
+  assert.equal(completeQuality(451, 200, false, true), 'completa');
   assert.deepEqual(DENSITY_BUDGETS.essential, { nodes: 150, arcs: 150, labels: 20 });
   assert.deepEqual(DENSITY_BUDGETS.balanced, { nodes: 400, arcs: 450, labels: 40 });
 });
