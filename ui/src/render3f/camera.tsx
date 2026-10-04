@@ -33,7 +33,14 @@ export type CameraProjectionState = {
   readonly filamentSizeScale: number;
   readonly perspective: boolean;
   readonly referenceViewDepth: number;
+  readonly nodeReferenceViewDepth: number;
+  readonly nodeScaleCap: number;
 };
+
+// The D-079 closest dolly (80 permille) is the last distance at which node sizing
+// follows the original target-depth rule. Closer views retain that reference.
+const NODE_REFERENCE_FLOOR_RATIO = 0.08;
+const CLOSE_NODE_SCALE_CAP = 6;
 
 export type ReviewCameraState = VisualStateCamera & {
   readonly orbit?: readonly [number, number, number, number];
@@ -254,6 +261,8 @@ export class CameraRig {
     const orthographicSizeScale = scalarCount() / DEFAULT_SETTINGS.zoomToSizeRatioFunction(this.stateValue.ratio);
     const target = perspectiveTarget(this.stateValue, this.worldCenterZ);
     const targetView = target.clone().applyMatrix4(this.perspective.matrixWorldInverse);
+    const targetDepth = Math.max(-targetView.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
+    const closeNodes = this.kindValue !== ORTHOGRAPHIC && this.stateValue.ratio < NODE_REFERENCE_FLOOR_RATIO;
     return {
       resolutionDevicePx: [
         this.widthCssPx * this.devicePixelRatio,
@@ -263,7 +272,9 @@ export class CameraRig {
       orthographicSizeScale,
       filamentSizeScale: this.kindValue === ORTHOGRAPHIC ? orthographicSizeScale : scalarCount(),
       perspective: this.kindValue !== ORTHOGRAPHIC,
-      referenceViewDepth: Math.max(-targetView.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE),
+      referenceViewDepth: targetDepth,
+      nodeReferenceViewDepth: closeNodes ? this.nodeReferenceDepth(targetDepth) : targetDepth,
+      nodeScaleCap: closeNodes ? CLOSE_NODE_SCALE_CAP : SCENE_PERMILLE_SCALE,
     };
   }
 
@@ -274,8 +285,10 @@ export class CameraRig {
     }
     const target = perspectiveTarget(this.stateValue, this.worldCenterZ).applyMatrix4(this.perspective.matrixWorldInverse);
     const pointView = new THREE.Vector3(point.x, point.y, point.z).applyMatrix4(this.perspective.matrixWorldInverse);
-    return Math.max(-target.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE)
-      / Math.max(-pointView.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
+    const targetDepth = Math.max(-target.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
+    const pointDepth = Math.max(-pointView.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
+    if (this.stateValue.ratio >= NODE_REFERENCE_FLOOR_RATIO) return targetDepth / pointDepth;
+    return Math.min(CLOSE_NODE_SCALE_CAP, this.nodeReferenceDepth(targetDepth) / pointDepth);
   }
 
   /** Drawn node scale for wheel picking, without constructing a camera target or view point. */
@@ -290,8 +303,17 @@ export class CameraRig {
     const span = Math.max(this.stateValue.bounds.x[1] - this.stateValue.bounds.x[0],
       this.stateValue.bounds.y[1] - this.stateValue.bounds.y[0]);
     const reference = span * this.stateValue.ratio * Math.SQRT2;
-    return Math.max(reference, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE)
-      / Math.max(depth, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
+    const targetDepth = Math.max(reference, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
+    const pointDepth = Math.max(depth, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
+    if (this.stateValue.ratio >= NODE_REFERENCE_FLOOR_RATIO) return targetDepth / pointDepth;
+    return Math.min(CLOSE_NODE_SCALE_CAP, this.nodeReferenceDepth(targetDepth, span) / pointDepth);
+  }
+
+  private nodeReferenceDepth(targetDepth: number, span = Math.max(
+    this.stateValue.bounds.x[1] - this.stateValue.bounds.x[0],
+    this.stateValue.bounds.y[1] - this.stateValue.bounds.y[0],
+  )): number {
+    return Math.max(targetDepth, span * NODE_REFERENCE_FLOOR_RATIO * Math.SQRT2);
   }
 
   /** This projects resolved framing subjects with their live screen-space drawn extents. */

@@ -11,6 +11,9 @@ export type NodeProjectionUniforms = {
   readonly orthographicSizeScale: number;
   readonly perspective: boolean;
   readonly referenceViewDepth: number;
+  // A1b outside-ownership bridge: cap only the close-range node projection.
+  readonly nodeScaleCap?: number;
+  // End A1b outside-ownership bridge.
 };
 
 /** This owns one instanced luminous-node pass and does not retain scene objects. */
@@ -33,6 +36,9 @@ uniform mat4 modelViewMatrix;
 uniform mat4 projectionMatrix;
 uniform vec2 u_resolutionDevicePx;
 uniform float u_devicePixelRatio, u_orthographicSizeScale, u_isPerspective, u_referenceViewDepth, u_permilleScale;
+// A1b outside-ownership bridge: the camera supplies 6 at close range, 1000 otherwise.
+uniform float u_nodeScaleCap;
+// End A1b outside-ownership bridge.
 out vec2 v_localDevicePx;
 flat out vec3 v_color;
 flat out float v_coreRadiusDevicePx, v_haloRadiusDevicePx, v_opacity, v_haloIntensityPermille, v_coreSharpnessPermille;
@@ -43,7 +49,9 @@ void main() {
   vec4 viewCenter = modelViewMatrix * vec4(a_worldPosition, 1.0);
   vec4 clipCenter = projectionMatrix * viewCenter;
   float perspectiveScale = u_referenceViewDepth / max(-viewCenter.z, u_referenceViewDepth / u_permilleScale);
-  float sizeScale = mix(u_orthographicSizeScale, perspectiveScale, u_isPerspective);
+  // A1b outside-ownership bridge: keep drawn radius aligned with CPU picking and labels.
+  float sizeScale = mix(u_orthographicSizeScale, min(perspectiveScale, u_nodeScaleCap), u_isPerspective);
+  // End A1b outside-ownership bridge.
   // Floor the projected core in device pixels, matching the filament visibility floor.
   float coreRadius = max(a_coreRadiusPx * sizeScale * u_devicePixelRatio, a_minimumCoreDeviceRadiusPx * u_devicePixelRatio);
   float requestedHaloRadius = a_haloRadiusPx * sizeScale * u_devicePixelRatio;
@@ -162,6 +170,9 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
       u_orthographicSizeScale: { value: scalarCount() },
       u_isPerspective: { value: 0 },
       u_referenceViewDepth: { value: scalarCount() },
+      // A1b outside-ownership bridge: the legacy shader already saturates at permilleScale.
+      u_nodeScaleCap: { value: SCENE_PERMILLE_SCALE },
+      // End A1b outside-ownership bridge.
       u_permilleScale: { value: SCENE_PERMILLE_SCALE },
       u_haloStops: { value: haloStops },
     },
@@ -211,6 +222,9 @@ export function updateNodeProjectionUniforms(material: THREE.RawShaderMaterial, 
   requiredUniform(material, "u_orthographicSizeScale").value = values.orthographicSizeScale;
   requiredUniform(material, "u_isPerspective").value = values.perspective ? scalarCount() : 0;
   requiredUniform(material, "u_referenceViewDepth").value = values.referenceViewDepth;
+  // A1b outside-ownership bridge: default preserves existing direct callers.
+  requiredUniform(material, "u_nodeScaleCap").value = values.nodeScaleCap ?? SCENE_PERMILLE_SCALE;
+  // End A1b outside-ownership bridge.
 }
 
 function haloStopTexture(buffers: NodeBuffers): THREE.DataTexture {

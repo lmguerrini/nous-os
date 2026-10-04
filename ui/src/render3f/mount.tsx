@@ -354,7 +354,11 @@ export function mount(
       devicePixelRatio: projection.devicePixelRatio,
       orthographicSizeScale: projection.orthographicSizeScale,
       perspective: projection.perspective,
-      referenceViewDepth: projection.referenceViewDepth,
+      // A1b outside-ownership bridge: node sizing has a close-range reference;
+      // filament sizing keeps its existing target-depth reference above.
+      referenceViewDepth: projection.nodeReferenceViewDepth,
+      nodeScaleCap: projection.nodeScaleCap,
+      // End A1b outside-ownership bridge.
     });
   };
   const updateLabels = (): void => {
