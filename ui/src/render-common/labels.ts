@@ -98,9 +98,8 @@ const RIM_NUDGES: readonly [number, number][] = [
   [6, 0], [-6, 0], [0, 6], [0, -6], [6, 6], [6, -6], [-6, 6], [-6, -6],
 ];
 
-/** Hard caps on the disc spatial-hash work per placement pass, so no loop can depend on a radius
- * value. A viewport grid holds at most ~2 100 cells on a 4 K canvas; a disc clipped to the
- * viewport never needs more than that plus a pad ring, and one that would is viewport-covering. */
+/** Legacy public caps retained for callers; the shared grid below has a stricter per-shape cap
+ * and this insertion cap, so a projected radius cannot create unbounded buckets. */
 export const MAX_DISC_CELLS = 4_096;
 export const MAX_DISC_BUCKET_INSERTS = 120_000;
 
@@ -324,6 +323,56 @@ export function discRectOverlapArea(rect: ViewportRect, cx: number, cy: number, 
   return area;
 }
 
+/** Counters for the exact geometry predicates, used by the large-scene regression test. */
+export type LabelPlacementOperations = {
+  rim: number; rimQueries: number;
+  discBlock: number; discLeader: number; discArea: number; discAreaQueries: number;
+};
+
+/** Broad-phase only: all final predicates still use their original coordinates and order. */
+class LabelGeometryGrid {
+  private readonly cells = new Map<string, number[]>();
+  private readonly global: number[] = [];
+  private readonly boxes = new Map<number, readonly [number, number, number, number]>();
+  private inserts = 0;
+  private readonly size = 64;
+
+  add(index: number, left: number, top: number, right: number, bottom: number): void {
+    if (![left, top, right, bottom].every(Number.isFinite)) {
+      this.global.push(index);
+      return;
+    }
+    this.boxes.set(index, [left, top, right, bottom]);
+    const x0 = Math.floor(left / this.size), x1 = Math.floor(right / this.size);
+    const y0 = Math.floor(top / this.size), y1 = Math.floor(bottom / this.size);
+    const count = (x1 - x0 + 1) * (y1 - y0 + 1);
+    // Wide rings and projected discs remain cheap to build and are checked on every query.
+    if (count > 64 || this.inserts + count > MAX_DISC_BUCKET_INSERTS) {
+      this.global.push(index);
+      return;
+    }
+    this.inserts += count;
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+      const key = `${x}:${y}`;
+      const bucket = this.cells.get(key) ?? [];
+      bucket.push(index);
+      this.cells.set(key, bucket);
+    }
+  }
+
+  nearby(left: number, top: number, right: number, bottom: number): number[] {
+    const found = new Set(this.global);
+    const x0 = Math.floor(left / this.size), x1 = Math.floor(right / this.size);
+    const y0 = Math.floor(top / this.size), y1 = Math.floor(bottom / this.size);
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++)
+      for (const index of this.cells.get(`${x}:${y}`) ?? []) found.add(index);
+    return [...found].filter(index => {
+      const box = this.boxes.get(index);
+      return !box || (box[0] <= right && box[2] >= left && box[1] <= bottom && box[3] >= top);
+    }).sort((a, b) => a - b);
+  }
+}
+
 /** Offsets that place the label just outside a node disc of the given radius, in eight directions. */
 function discOffsets(radius: number): readonly [number, number][] {
   const m = radius + 6;
@@ -342,10 +391,19 @@ export function placeLabels(
   budget: number = Number.POSITIVE_INFINITY,
   discs: readonly LabelDisc[] = [],
   rims: readonly LabelRim[] = [],
+  operations?: LabelPlacementOperations,
 ): PlacedLabel[] {
   const placed: PlacedLabel[] = [];
   const cellSize = 64;
   const cells = new Map<string, PlacedLabel[]>();
+  const reservedGrid = new LabelGeometryGrid();
+  const placedRectGrid = new LabelGeometryGrid();
+  const placedLeaderGrid = new LabelGeometryGrid();
+  for (let index = 0; index < reserved.length; index++) {
+    const rect = reserved[index]!;
+    reservedGrid.add(index, rect.left - 3, rect.top - 3,
+      rect.left + rect.width + 3, rect.top + rect.height + 3);
+  }
   const keys = (left: number, top: number, right: number, bottom: number) => {
     const result: string[] = [];
     for (let x = Math.floor(left / cellSize); x <= Math.floor(right / cellSize); x++)
@@ -353,17 +411,14 @@ export function placeLabels(
         result.push(`${x}:${y}`);
     return result;
   };
-  // Pearl and soma discs, bucketed by cell: a label rectangle must avoid every one of them, not only
-  // other labels (requirement: «nessuna etichetta coperta dal proprio nodo o da altre perle»).
-  // Every range is clipped to the viewport rect (only cells a label can occupy matter) and the work
-  // is hard-capped, so a runaway projected radius — near the camera the footprint can be enormous
-  // or, behind the camera plane, infinite — can neither hang the pass nor exhaust memory.
+  // Pearl and soma discs and container rims share bounded screen-space grids. Large projected
+  // shapes use the always-checked list, so no radius can create unbounded bucket work.
   const span = Math.max(bounds.width, bounds.height);
-  const discCells = new Map<string, LabelDisc[]>();
-  const unbucketedDiscs: LabelDisc[] = [];
+  const discGrid = new LabelGeometryGrid();
+  const rimGrid = new LabelGeometryGrid();
   const ownDiscRadii = new Map<string, number>();
-  let inserts = 0;
-  for (const disc of discs) {
+  for (let index = 0; index < discs.length; index++) {
+    const disc = discs[index]!;
     if (!Number.isFinite(disc.x) || !Number.isFinite(disc.y)) continue;
     if (!Number.isFinite(disc.radius) || disc.radius < 0) continue;
     if (disc.id) ownDiscRadii.set(disc.id, Math.max(ownDiscRadii.get(disc.id) ?? 0, disc.radius));
@@ -371,54 +426,50 @@ export function placeLabels(
     // can reach 12.5× magnification). Treating it as an obstacle would blank every label, so it
     // blocks nothing — the node is the environment at that scale, not an obstacle.
     if (disc.radius >= span) continue;
-    const reach = disc.radius + PEARL_LABEL_MARGIN_PX + 8;
-    const left = Math.max(disc.x - reach, bounds.left - cellSize);
-    const right = Math.min(disc.x + reach, bounds.left + bounds.width + cellSize);
-    const top = Math.max(disc.y - reach, bounds.top - cellSize);
-    const bottom = Math.min(disc.y + reach, bounds.top + bounds.height + cellSize);
-    if (right < left || bottom < top) continue;
-    const cellsNeeded = (Math.floor(right / cellSize) - Math.floor(left / cellSize) + 1)
-      * (Math.floor(bottom / cellSize) - Math.floor(top / cellSize) + 1);
-    if (cellsNeeded > MAX_DISC_CELLS) { unbucketedDiscs.push(disc); continue; }
-    inserts += cellsNeeded;
-    if (inserts > MAX_DISC_BUCKET_INSERTS) { unbucketedDiscs.push(disc); continue; }
-    for (const key of keys(left, top, right, bottom)) {
-      const bucket = discCells.get(key) ?? [];
-      bucket.push(disc);
-      discCells.set(key, bucket);
-    }
+    const reach = disc.radius + PEARL_LABEL_MARGIN_PX;
+    discGrid.add(index, disc.x - reach, disc.y - reach, disc.x + reach, disc.y + reach);
   }
+  for (let index = 0; index < rims.length; index++) {
+    const rim = rims[index]!;
+    if (!(rim.radius > 0) || !Number.isFinite(rim.radius)) continue;
+    const reach = rim.radius + 3;
+    rimGrid.add(index, rim.x - reach, rim.y - reach, rim.x + reach, rim.y + reach);
+  }
+  const nearbyDiscs = (rect: ViewportRect): number[] => discGrid.nearby(
+    rect.left, rect.top, rect.left + rect.width, rect.top + rect.height);
   const discBlocked = (rect: ViewportRect, ownId?: string): boolean => {
-    const seen = new Set<LabelDisc>();
-    for (const key of keys(rect.left - 2, rect.top - 2, rect.left + rect.width + 2, rect.top + rect.height + 2)) {
-      for (const disc of discCells.get(key) ?? []) {
-        if (seen.has(disc)) continue;
-        seen.add(disc);
-        if (ownId !== undefined && disc.id === ownId) continue;
-        if (rectOverlapsDisc(rect, disc.x, disc.y, disc.radius + PEARL_LABEL_MARGIN_PX - 2)) return true;
-      }
-    }
-    for (const disc of unbucketedDiscs) {
-      if ((ownId === undefined || disc.id !== ownId)
-        && rectOverlapsDisc(rect, disc.x, disc.y, disc.radius + PEARL_LABEL_MARGIN_PX - 2)) return true;
+    for (const index of nearbyDiscs(rect)) {
+      const disc = discs[index]!;
+      if (ownId !== undefined && disc.id === ownId) continue;
+      if (operations) operations.discBlock++;
+      if (rectOverlapsDisc(rect, disc.x, disc.y, disc.radius + PEARL_LABEL_MARGIN_PX - 2)) return true;
     }
     return false;
   };
   // Radial width of rim bands touched by this rectangle. Zero means wholly inside or outside
   // every rim; a crossed rim disqualifies the slot.
-  const rimOverlap = (rect: ViewportRect): number => rims.reduce((overlap, rim) => {
-    if (!(rim.radius > 0) || !Number.isFinite(rim.radius)) return overlap;
+  const rimOverlap = (rect: ViewportRect): number => {
+    if (operations) operations.rimQueries++;
+    return rimGrid.nearby(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height).reduce((overlap, index) => {
+    const rim = rims[index]!;
+    if (operations) operations.rim++;
     const nearestX = Math.min(Math.max(rim.x, rect.left), rect.left + rect.width);
     const nearestY = Math.min(Math.max(rim.y, rect.top), rect.top + rect.height);
+    const nearDx = nearestX - rim.x, nearDy = nearestY - rim.y;
+    const outer = rim.radius + 3;
+    // Conservative squared-distance rejection avoids five hypot calls for rings whose bounding
+    // boxes touch the slot but whose actual band cannot. The slack leaves boundary arithmetic to
+    // the original predicate below, preserving exact scores and tie-breaks.
+    if (nearDx * nearDx + nearDy * nearDy > outer * outer * (1 + 1e-12)) return overlap;
+    const farDx = Math.max(Math.abs(rect.left - rim.x), Math.abs(rect.left + rect.width - rim.x));
+    const farDy = Math.max(Math.abs(rect.top - rim.y), Math.abs(rect.top + rect.height - rim.y));
+    const inner = rim.radius - 3;
+    if (inner > 0 && farDx * farDx + farDy * farDy < inner * inner * (1 - 1e-12)) return overlap;
     const minimum = Math.hypot(nearestX - rim.x, nearestY - rim.y);
-    const farthest = Math.max(
-      Math.hypot(rect.left - rim.x, rect.top - rim.y),
-      Math.hypot(rect.left + rect.width - rim.x, rect.top - rim.y),
-      Math.hypot(rect.left - rim.x, rect.top + rect.height - rim.y),
-      Math.hypot(rect.left + rect.width - rim.x, rect.top + rect.height - rim.y),
-    );
+    const farthest = Math.hypot(farDx, farDy);
     return overlap + Math.max(0, Math.min(farthest, rim.radius + 3) - Math.max(minimum, rim.radius - 3));
-  }, 0);
+    }, 0);
+  };
   const priority = { hover: 6, selected: 5, neighbour: 4, domain: 3, main: 2, zoom: 1 };
   for (const c of [...candidates].sort(
     (a, b) => (b.tier1 === true ? 1 : 0) - (a.tier1 === true ? 1 : 0)
@@ -474,12 +525,14 @@ export function placeLabels(
             rect.top < other.rect.top + other.rect.height + 3 &&
             rect.top + rect.height + 3 > other.rect.top,
         )
-        || reserved.some(other => rect.left < other.left + other.width + 3 && rect.left + rect.width + 3 > other.left
-          && rect.top < other.top + other.height + 3 && rect.top + rect.height + 3 > other.top)
+        || reservedGrid.nearby(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height)
+          .some(index => { const other = reserved[index]!; return rect.left < other.left + other.width + 3 && rect.left + rect.width + 3 > other.left
+            && rect.top < other.top + other.height + 3 && rect.top + rect.height + 3 > other.top; })
       )
         return false;
-      for (const other of placed)
-        if (other.leader && lineTouchesRect(other.leader, rect)) return false;
+      for (const index of placedLeaderGrid.nearby(rect.left - 2, rect.top - 2,
+        rect.left + rect.width + 2, rect.top + rect.height + 2))
+        if (lineTouchesRect(placed[index]!.leader!, rect)) return false;
       return true;
     };
     const choice: { best: { rect: ViewportRect; leader?: LabelLeader; rim: number; covered: number } | null } = { best: null };
@@ -488,16 +541,37 @@ export function placeLabels(
       if (!admissible(rect, allowForeignGeometry)) return false;
       const leader = nearLeader(c.x, c.y, radius, rect);
       if (leader) {
-        if (reserved.some(other => lineTouchesRect(leader, other))) return false;
-        if (placed.some(other => lineTouchesRect(leader, other.rect)
-          || (other.leader && linesCross(leader, other.leader)))) return false;
-        if (!allowForeignGeometry && discs.some(disc => disc.id !== c.id && Number.isFinite(disc.radius)
-          && disc.radius >= 0 && disc.radius < span && lineTouchesDisc(leader, disc))) return false;
+        const lineLeft = Math.min(leader.from.x, leader.to.x), lineRight = Math.max(leader.from.x, leader.to.x);
+        const lineTop = Math.min(leader.from.y, leader.to.y), lineBottom = Math.max(leader.from.y, leader.to.y);
+        if (reservedGrid.nearby(lineLeft - 2, lineTop - 2, lineRight + 2, lineBottom + 2)
+          .some(index => lineTouchesRect(leader, reserved[index]!))) return false;
+        const nearbyPlaced = new Set([
+          ...placedRectGrid.nearby(lineLeft - 2, lineTop - 2, lineRight + 2, lineBottom + 2),
+          ...placedLeaderGrid.nearby(lineLeft, lineTop, lineRight, lineBottom),
+        ]);
+        if ([...nearbyPlaced].some(index => {
+          const other = placed[index]!;
+          return lineTouchesRect(leader, other.rect)
+            || (other.leader !== undefined && linesCross(leader, other.leader));
+        })) return false;
+        if (!allowForeignGeometry && discGrid.nearby(
+          Math.min(leader.from.x, leader.to.x), Math.min(leader.from.y, leader.to.y),
+          Math.max(leader.from.x, leader.to.x), Math.max(leader.from.y, leader.to.y),
+        ).some(index => {
+          const disc = discs[index]!;
+          if (disc.id === c.id) return false;
+          if (operations) operations.discLeader++;
+          return lineTouchesDisc(leader, disc);
+        })) return false;
       }
       const rim = allowForeignGeometry ? rimOverlap(rect) : 0;
-      const covered = allowForeignGeometry ? discs.reduce((area, disc) =>
-        disc.id === c.id || !Number.isFinite(disc.radius) || disc.radius >= span
-          ? area : area + discRectOverlapArea(rect, disc.x, disc.y, disc.radius), 0) : 0;
+      if (allowForeignGeometry && operations) operations.discAreaQueries++;
+      const covered = allowForeignGeometry ? nearbyDiscs(rect).reduce((area, index) => {
+        const disc = discs[index]!;
+        if (disc.id === c.id) return area;
+        if (operations) operations.discArea++;
+        return area + discRectOverlapArea(rect, disc.x, disc.y, disc.radius);
+      }, 0) : 0;
       if (!choice.best || rim < choice.best.rim || (rim === choice.best.rim && covered < choice.best.covered))
         choice.best = { rect, ...(leader ? { leader } : {}), rim, covered };
       return !allowForeignGeometry || (rim === 0 && covered === 0);
@@ -536,6 +610,11 @@ export function placeLabels(
       const { rect, leader } = choice.best;
       const label: PlacedLabel = { id: c.id, text, reason: c.reason, rect, ...(leader ? { leader } : {}) };
       placed.push(label);
+      placedRectGrid.add(placed.length - 1, rect.left - 2, rect.top - 2,
+        rect.left + rect.width + 2, rect.top + rect.height + 2);
+      if (leader) placedLeaderGrid.add(placed.length - 1,
+        Math.min(leader.from.x, leader.to.x), Math.min(leader.from.y, leader.to.y),
+        Math.max(leader.from.x, leader.to.x), Math.max(leader.from.y, leader.to.y));
       for (const key of keys(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height)) {
         const bucket = cells.get(key) ?? [];
         bucket.push(label);
