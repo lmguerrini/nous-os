@@ -32,7 +32,7 @@ export type BrainEnvelope = {
 export const BRAIN_GLASS_INTERIOR_ALPHA = Math.min(NEURAL_BRAIN_ENVELOPE_OPACITY, 0.03);
 export const BRAIN_GLASS_RIM_ALPHA = 0.12;
 export const BRAIN_TRIANGLE_BUDGET = 20_000;
-export const BRAIN_LINE_SEGMENT_BUDGET = 6_000;
+export const BRAIN_LINE_SEGMENT_BUDGET = 8_000;
 export const BRAIN_PREFERENCES_KEY = "d080.brain-by-mode";
 export type BrainViewName = "front" | "side" | "top" | "iso";
 /** Local anatomy: +Z anterior/frontal, +Y superior, +X anatomical left.
@@ -98,48 +98,53 @@ const smoothMax = (a: number, b: number, k: number): number => {
   const h = Math.max(k - Math.abs(a - b), 0) / k;
   return Math.max(a, b) + h * h * k * 0.25;
 };
+const smoothstep = (lo: number, hi: number, v: number): number => {
+  const t = Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
+  return t * t * (3 - 2 * t);
+};
+
+function cerebralParts(p: Point) {
+  // The posterior pole is broad and high; the frontal pole tapers and sits lower.
+  const anterior = smoothstep(-0.86, 0.86, p.z);
+  const width = 0.77 - 0.13 * anterior;
+  const height = 0.79 - 0.12 * anterior;
+  const cy = 0.14 - 0.09 * anterior;
+  const left = ellipsoid(p, -0.34, cy, -0.025, width, height, 1.11);
+  const right = ellipsoid(p, 0.34, cy, -0.025, width, height, 1.11);
+  const mantle = Math.min(smoothMax(left, right, 0.045), p.y + 0.49);
+  // The two temporal lobes project below and outside the orbital base.
+  const temporalLeft = Math.min(ellipsoid(p, -0.72, -0.35, 0.08, 0.39, 0.34, 0.62), p.y + 0.64);
+  const temporalRight = Math.min(ellipsoid(p, 0.72, -0.35, 0.08, 0.39, 0.34, 0.62), p.y + 0.64);
+  const cerebrum = smoothMax(smoothMax(mantle, temporalLeft, 0.07), temporalRight, 0.07);
+  const cerebellum = ellipsoid(p, 0, -0.57, -0.86, 0.67, 0.265, 0.36);
+  // The short stalk descends forward from the cerebellum, not from its rear pole.
+  const stemZ = -0.43 + 0.29 * (-p.y - 0.68);
+  const stem = ellipsoid(p, 0, -0.78, stemZ, 0.18, 0.255, 0.215);
+  return { cerebrum, cerebellum, stem };
+}
 
 /** The volume enclosed by the outer silhouette includes the empty sagittal fissure. */
 export function brainContainmentField(p: Point): number {
-  const frontal = 1 + 0.10 * Math.max(0, p.z);
-  const occipital = 1 - 0.08 * Math.max(0, -p.z);
-  const halfWidth = frontal * occipital;
-  const left = ellipsoid(p, -0.37, 0.11, 0.02, 0.74 * halfWidth, 0.77, 1.13);
-  const right = ellipsoid(p, 0.37, 0.11, 0.02, 0.74 * halfWidth, 0.77, 1.13);
-  const cerebellum = ellipsoid(p, 0, -0.54, -0.79, 0.57, 0.34, 0.43);
-  const stem = ellipsoid(p, 0, -0.87, -0.43, 0.18, 0.42, 0.23);
-  return smoothMax(smoothMax(smoothMax(left, right, 0.055), cerebellum, 0.055), stem, 0.07);
+  const { cerebrum, cerebellum, stem } = cerebralParts(p);
+  return smoothMax(smoothMax(cerebrum, cerebellum, 0.045), stem, 0.055);
 }
 
 /** Positive inside tissue. Local +Z is frontal, -Z occipital, +Y superior. */
 export function brainField(p: Point): number {
-  const frontal = 1 + 0.10 * Math.max(0, p.z);
-  const occipital = 1 - 0.08 * Math.max(0, -p.z);
-  const halfWidth = frontal * occipital;
-  const left = ellipsoid(p, -0.37, 0.11, 0.02, 0.74 * halfWidth, 0.77, 1.13);
-  const right = ellipsoid(p, 0.37, 0.11, 0.02, 0.74 * halfWidth, 0.77, 1.13);
-  let cerebrum = smoothMax(left, right, 0.055);
-  // A cut through the upper 40% of the hemispheres; the lower callosal bridge joins them.
-  // Its narrow opening avoids making the graph's central points determine the fit.
-  const midline = Math.max(Math.abs(p.x) - 0.075, 0.275 - p.y);
+  const parts = cerebralParts(p);
+  let cerebrum = parts.cerebrum;
+  // A deep, narrow sagittal separation, with a lower bridge between hemispheres.
+  const midline = Math.max(Math.abs(p.x) - 0.082, 0.20 - p.y);
   cerebrum = Math.min(cerebrum, midline);
-  // Bilateral Sylvian grooves divide temporal tissue from frontal/parietal tissue.
-  const lateral = Math.exp(-Math.pow((Math.abs(p.x) - 0.71) / 0.15, 2))
-    * Math.exp(-Math.pow((p.y + 0.27 + 0.12 * p.z) / 0.09, 2))
-    * Math.max(0, 1 - Math.abs(p.z) / 1.05);
-  cerebrum -= 0.12 * lateral;
-  // Shallow, coherent grooves: the visible crest/sulcus contrast is in the glass shader.
-  // These do not distort the overall silhouette into a wavy cloud.
-  const crown = Math.max(0, Math.min(1, (p.y - 0.23) / 0.28));
-  const crownGroove = Math.pow(Math.max(0,
-    Math.cos(15 * p.z + 1.5 * Math.sin(3.5 * Math.abs(p.x)))), 10);
-  cerebrum -= 0.013 * crown * crownGroove;
-  const cerebellum = ellipsoid(p, 0, -0.54, -0.79, 0.57, 0.34, 0.43)
-    - 0.018 * Math.pow(Math.cos(35 * (p.y + 0.035 * Math.sin(5 * p.x))), 8);
-  const stem = ellipsoid(p, 0, -0.87, -0.43, 0.18, 0.42, 0.23);
-  const transverse = Math.exp(-Math.pow((p.y + 0.40) / 0.055, 2))
-    * Math.max(0, Math.min(1, (-p.z - 0.44) / 0.20));
-  return smoothMax(smoothMax(cerebrum, cerebellum, 0.055) - 0.045 * transverse, stem, 0.07);
+  // The Sylvian cut starts near the temporal pole and rises toward the back.
+  const sylvianY = -0.25 + 0.18 * (0.50 - p.z);
+  const lateral = smoothstep(0.48, 0.82, Math.abs(p.x))
+    * smoothstep(-0.77, -0.57, p.z) * (1 - smoothstep(0.46, 0.66, p.z));
+  cerebrum -= 0.115 * lateral * Math.exp(-Math.pow((p.y - sylvianY) / 0.055, 2));
+  const transverse = smoothstep(0.58, 0.78, -p.z)
+    * Math.exp(-Math.pow((p.y + 0.36) / 0.048, 2));
+  const rear = smoothMax(cerebrum, parts.cerebellum, 0.038) - 0.055 * transverse;
+  return smoothMax(rear, parts.stem, 0.055);
 }
 
 const GRID: Record<BrainLod, number> = { full: 30, moving: 18 };
@@ -211,13 +216,25 @@ function meshField(resolution: number): THREE.BufferGeometry {
   return geometry;
 }
 
+/** Seeded, smooth, band-limited 3D field. Its zero contour on the cortical
+ * mesh forms winding sulci without a preferred latitude or longitude.
+ */
+export function brainSulcusNoise(p: Point): number {
+  return 0.38 * Math.sin(15.8*p.x + 5.1*p.y + 6.7*p.z + 0.73)
+    + 0.31 * Math.sin(-7.3*p.x + 17.9*p.y - 4.8*p.z + 2.41)
+    + 0.27 * Math.sin(6.2*p.x - 8.1*p.y + 18.4*p.z + 4.09)
+    + 0.24 * Math.sin(13.1*p.x + 11.7*p.y - 9.6*p.z + 1.67)
+    + 0.18 * Math.sin(-10.9*p.x + 4.7*p.y + 14.3*p.z + 5.38)
+    + 0.15 * Math.sin(4.3*p.x + 7.2*p.y - 5.9*p.z + 3.14);
+}
+
 /** Surface traces are sampled once per LOD in anatomical coordinates. Every
  * vertex lies just outside the field and carries its outward surface normal.
  * A view-facing shader removes the far-side traces without another shell pass.
  */
-function brainLineGeometry(lod: BrainLod): THREE.BufferGeometry {
+function brainLineGeometry(lod: BrainLod, surface: THREE.BufferGeometry): THREE.BufferGeometry {
   const positions: number[] = [], normals: number[] = [];
-  const step = lod === "full" ? 0.035 : 0.09;
+  const step = lod === "full" ? 0.035 : 0.075;
   const field = (p: THREE.Vector3) => brainField(p);
   const trace = (origin: THREE.Vector3, direction: THREE.Vector3, distance: number): THREE.Vector3 | null => {
     let previous = origin, previousField = field(previous);
@@ -247,7 +264,6 @@ function brainLineGeometry(lod: BrainLod): THREE.BufferGeometry {
   const top=(x:number,z:number)=>trace(new THREE.Vector3(x,1.12,z),new THREE.Vector3(0,-1,0),1.42);
   const side=(sign:number,y:number,z:number)=>trace(new THREE.Vector3(sign*1.28,y,z),
     new THREE.Vector3(-sign,0,0),1.28);
-  const front=(x:number,y:number)=>trace(new THREE.Vector3(x,y,1.28),new THREE.Vector3(0,0,-1),1.52);
   const add=(points: readonly (THREE.Vector3|null)[])=>{
     for(let i=1;i<points.length;i++) {
       const a=points[i-1],b=points[i];
@@ -267,42 +283,64 @@ function brainLineGeometry(lod: BrainLod): THREE.BufferGeometry {
   const curve=(count:number,sample:(t:number)=>THREE.Vector3|null)=>
     add(Array.from({length:count+1},(_,i)=>sample(i/count)));
   const count=(length:number)=>Math.ceil(length/step);
-  // Longitudinal fissure: two distinct lips run from the frontal to occipital pole.
+  // Fixed landmarks: two sagittal lips, a central sulcus, and a rising Sylvian cut.
   for(const sign of [-1,1]) {
-    curve(count(2.10),t=>top(sign*(0.115+0.012*Math.sin(t*Math.PI)),1.04-2.08*t));
-    // Superior frontal/parietal gyri, approximately transverse to the midline.
-    for(let row=0;row<9;row++) {
-      const z=-0.88+row*0.215;
-      curve(count(0.80),t=>top(sign*(0.16+0.76*t),z+0.045*Math.sin(Math.PI*t+row*0.63)));
-    }
-    // Lateral central and Sylvian sulci; neighbouring loops wrap the insula.
-    curve(count(0.85),t=>side(sign,-0.05+0.52*t,0.08+0.18*(-0.05+0.52*t)));
-    curve(count(1.75),t=>side(sign,-0.27-0.12*(-0.86+1.72*t),-0.86+1.72*t));
-    for(let ring=0;ring<5;ring++) {
-      const radius=0.16+ring*0.115;
-      curve(count(2.3*radius),t=>{
-        const a=(-0.35+1.72*t)*Math.PI;
-        return side(sign,-0.15+radius*Math.sin(a),0.06+radius*1.55*Math.cos(a));
-      });
-    }
-    // Frontal gyri remain legible from a true frontal pose.
-    for(let row=0;row<4;row++) {
-      const y=0.05+row*0.16;
-      curve(count(0.75),t=>front(sign*(0.14+0.76*t),y+0.055*Math.sin(t*Math.PI)));
-    }
-    // Short stem strokes terminate below the cerebellum.
-    for(const z of [-0.52,-0.38])
-      curve(count(0.45),t=>side(sign,-0.80-0.43*t,z));
+    curve(count(2.02),t=>top(sign*(0.108+0.009*Math.sin(Math.PI*t)),0.99-1.98*t));
+    curve(count(0.83),t=>side(sign,0.46-0.70*t,0.10+0.19*t));
+    curve(count(1.23),t=>{
+      const z=0.48-1.17*t;
+      return side(sign,-0.25+0.18*(0.50-z),z);
+    });
   }
-  // Transverse cerebellar fissure and the finer, near-parallel folia.
-  for(let row=0;row<8;row++) {
-    const y=-0.47-row*0.045;
-    for(const sign of [-1,1])
-      curve(count(0.82),t=>side(sign,y+0.018*Math.sin(Math.PI*t),-1.18+0.78*t));
+  // March each surface triangle against the same scalar field. Mesh interpolation
+  // keeps every ink vertex on the generated shell without a second shell pass.
+  const vertex=surface.getAttribute("position"), vertexNormal=surface.getAttribute("normal");
+  const contour=(scalar:(p:Point)=>number,accept:(p:Point)=>boolean)=>{
+    for(let i=0;i<vertex.count;i+=3) {
+      const ps=[0,1,2].map(j=>new THREE.Vector3(vertex.getX(i+j),vertex.getY(i+j),vertex.getZ(i+j)));
+      const center=ps[0]!.clone().add(ps[1]!).add(ps[2]!).multiplyScalar(1/3);
+      if(!accept(center))continue;
+      const values=ps.map(scalar), hits:{p:THREE.Vector3;n:THREE.Vector3}[]=[];
+      for(const [a,b] of [[0,1],[1,2],[2,0]] as const) {
+        const va=values[a]!,vb=values[b]!;
+        if((va<0)===(vb<0))continue;
+        const f=va/(va-vb);
+        const n=new THREE.Vector3(vertexNormal.getX(i+a),vertexNormal.getY(i+a),vertexNormal.getZ(i+a))
+          .lerp(new THREE.Vector3(vertexNormal.getX(i+b),vertexNormal.getY(i+b),vertexNormal.getZ(i+b)),f).normalize();
+        const point=ps[a]!.clone().lerp(ps[b]!,f);
+        // A coarse marching-tetrahedron facet can sit inside the curved field.
+        // Project its ink to the actual surface before adding the small depth lift.
+        for(let iteration=0;iteration<5;iteration++) {
+          const value=brainField(point);
+          if(Math.abs(value)<0.001)break;
+          const h=0.004;
+          const slope=(brainField(point.clone().addScaledVector(n,-h))
+            -brainField(point.clone().addScaledVector(n,h)))/(2*h);
+          if(slope<0.08)break;
+          point.addScaledVector(n,Math.max(-0.08,Math.min(0.08,value/slope)));
+        }
+        hits.push({p:point.addScaledVector(n,0.004),n});
+      }
+      if(hits.length!==2)continue;
+      for(const hit of hits) {
+        positions.push(hit.p.x,hit.p.y,hit.p.z);
+        normals.push(hit.n.x,hit.n.y,hit.n.z);
+      }
+    }
+  };
+  contour(brainSulcusNoise,p=>{
+    const parts=cerebralParts(p);
+    return parts.cerebrum>parts.cerebellum+0.015 && parts.cerebrum>parts.stem+0.015;
+  });
+  // Trace fine transverse folia against the actual curved cerebellar surface.
+  // Direct tracing is smoother here than contours on the coarse moving mesh.
+  for(let row=0;row<7;row++) for(const sign of [-1,1]) {
+    const y=-0.42-row*0.055;
+    curve(count(0.70),t=>side(sign,y+0.018*Math.sin(Math.PI*t),-1.17+0.54*t));
   }
-  for(let row=0;row<5;row++) {
-    const z=-0.72-row*0.085;
-    curve(count(0.93),t=>top(-0.47+0.94*t,z));
+  // A visible transverse boundary above the folia.
+  for(const sign of [-1,1]) {
+    curve(count(0.75),t=>side(sign,-0.35+0.015*Math.sin(Math.PI*t),-1.12+0.60*t));
   }
   const geometry=new THREE.BufferGeometry();
   geometry.setAttribute("position",new THREE.Float32BufferAttribute(positions,3));
@@ -315,7 +353,7 @@ function brainLineGeometry(lod: BrainLod): THREE.BufferGeometry {
 function resources() {
   if (shared === null) {
     const full = meshField(GRID.full), moving = meshField(GRID.moving);
-    const lines={full:brainLineGeometry("full"),moving:brainLineGeometry("moving")};
+    const lines={full:brainLineGeometry("full",full),moving:brainLineGeometry("moving",moving)};
     full.computeBoundingBox();
     if (full.getAttribute("position").count / 3 > BRAIN_TRIANGLE_BUDGET)
       throw new Error("Brain triangle budget exceeded");
@@ -330,33 +368,13 @@ function resources() {
         void main() { float f = abs(dot(normalize(vNormal), normalize(vView)));
           float rim = pow(1.0 - f, 1.9);
           rim *= rim;
-          float lateral = smoothstep(0.48, 0.70, abs(vLocal.x));
-          float sylvianLine = vLocal.y + 0.27 + 0.12 * vLocal.z;
-          float sylvian = lateral * exp(-pow(sylvianLine / 0.065, 2.0))
-            * (1.0 - smoothstep(0.65, 1.05, abs(vLocal.z)));
-          float centralLine = vLocal.z - (0.07 + 0.18 * vLocal.y);
-          float central = lateral * smoothstep(-0.35, 0.05, vLocal.y)
-            * exp(-pow(centralLine / 0.055, 2.0));
-          float crown = smoothstep(0.22, 0.50, vLocal.y);
-          float crownPhase = 15.0 * vLocal.z + 1.5 * sin(3.5 * abs(vLocal.x));
-          float crownSulci = crown * pow(max(0.0, cos(crownPhase)), 10.0);
-          float crownCrest = crown * pow(max(0.0, cos(crownPhase + 0.72)), 10.0);
-          float sideWall = smoothstep(0.52, 0.76, abs(vLocal.x));
-          float sidePhase = 13.0 * vLocal.y + 1.25 * sin(4.5 * vLocal.z);
-          float sideSulci = sideWall * pow(max(0.0, cos(sidePhase)), 12.0);
-          float sideCrest = sideWall * pow(max(0.0, cos(sidePhase + 0.70)), 12.0);
-          float posterior = (1.0 - smoothstep(-0.62, -0.43, vLocal.z))
-            * (1.0 - smoothstep(-0.33, -0.22, vLocal.y));
-          float folia = posterior * pow(abs(cos(35.0 *
-            (vLocal.y + 0.035 * sin(5.0 * vLocal.x)))), 8.0);
-          float transverse = posterior * exp(-pow((vLocal.y + 0.40) / 0.055, 2.0));
-          float cuts = max(max(sylvian, central), max(0.75 * crownSulci,
-            max(0.75 * sideSulci, max(0.70 * folia, transverse))));
-          float folds = max(crownCrest, sideCrest);
-          float anatomy = clamp(0.96 + 0.22 * folds - 0.76 * cuts, 0.15, 1.16);
-          // The rim belongs to the silhouette, not to every translucent fold.
+          // The former shader folds are zero: anatomical contrast now belongs
+          // exclusively to the single surface-bound ink layer.
+          float sylvian = 0.0;
+          float central = 0.0;
+          float folds = max(sylvian, central);
+          float anatomy = 1.0 - folds;
           float alpha = min(0.15, interiorAlpha * anatomy + rimAlpha * rim);
-          alpha = min(0.18, alpha + 0.045 * rim * anatomy);
           // Premultiply for MAX blending: overlapping front faces keep their strongest glass
           // sample instead of adding brightness across the fissure or cerebellum.
           gl_FragColor = vec4(vec3(0.84, 0.87, 0.91) * alpha, alpha); }`,
@@ -367,7 +385,7 @@ function resources() {
       blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor,
     });
     const lineMaterial = new THREE.ShaderMaterial({
-      uniforms:{ lineAlpha:{value:0.26} },
+      uniforms:{ lineAlpha:{value:0.35} },
       vertexShader:`varying vec3 vNormal, vView;
         void main() { vec4 p=modelViewMatrix*vec4(position,1.0);
           vNormal=normalize(normalMatrix*normal); vView=-p.xyz;
@@ -376,8 +394,12 @@ function resources() {
         void main() { float facing=dot(normalize(vNormal),normalize(vView));
           float alpha=lineAlpha*smoothstep(0.02,0.22,facing);
           if(alpha<0.012) discard;
-          gl_FragColor=vec4(0.74,0.80,0.86,alpha); }`,
+          gl_FragColor=vec4(vec3(0.69,0.76,0.82)*alpha,alpha); }`,
       transparent:true,depthTest:true,depthWrite:false,
+      blending:THREE.CustomBlending,blendEquation:THREE.MaxEquation,
+      blendSrc:THREE.OneFactor,blendDst:THREE.OneFactor,
+      blendEquationAlpha:THREE.MaxEquation,
+      blendSrcAlpha:THREE.OneFactor,blendDstAlpha:THREE.OneFactor,
     });
     // The shell writes depth once before its glass/ink layers. The ink clears
     // that decorative depth before graph geometry, so interior nodes stay visible.
@@ -450,7 +472,15 @@ export function fitBrain(points: readonly Point[]): { center: THREE.Vector3; axe
     let hi=1;
     for(const p of relative) hi=Math.max(hi,Math.hypot(p.x,p.y,p.z));
     while(!clears(hi))hi*=2;
-    let lo=0;
+    // Lobes and stalk make the containment field non-convex. Find its first
+    // valid scale rather than assuming validity is monotone from zero to hi.
+    let lo=0, first=hi;
+    for(let i=1;i<=24;i++) {
+      const probe=hi*i/24;
+      if(clears(probe)) { first=probe; break; }
+      lo=probe;
+    }
+    hi=first;
     for(let i=0;i<25;i++) {
       const mid=(lo+hi)/2;
       if(clears(mid))hi=mid;else lo=mid;
