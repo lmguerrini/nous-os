@@ -60,10 +60,10 @@ void main() {
   float haloRadius = max(requestedHaloRadius, haloGapRadius);
   if (a_somaShape.x > 0.5) haloRadius = min(haloRadius, coreRadius * 1.1);
   vec2 corner = vec2((position.x * 2.0) - 1.0, position.y);
-  vec2 clipOffset = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.52 : 1.0) * 2.0 / u_resolutionDevicePx;
+  vec2 clipOffset = corner * haloRadius * (a_somaShape.x > 0.5 ? 2.1 : 1.0) * 2.0 / u_resolutionDevicePx;
   gl_Position = clipCenter;
   gl_Position.xy += clipOffset * clipCenter.w;
-  v_localDevicePx = corner * haloRadius * (a_somaShape.x > 0.5 ? 1.52 : 1.0);
+  v_localDevicePx = corner * haloRadius * (a_somaShape.x > 0.5 ? 2.1 : 1.0);
   v_color = a_color;
   v_coreRadiusDevicePx = coreRadius;
   v_haloRadiusDevicePx = haloRadius;
@@ -118,10 +118,18 @@ void main() {
   if (v_somaShape.x > 0.5) {
     vec2 local = vec2(dot(v_localDevicePx, v_somaAxisScreen), dot(v_localDevicePx, vec2(-v_somaAxisScreen.y, v_somaAxisScreen.x)));
     float jitter = 1.0 + 0.04 * sin(v_somaHarmonics12.y + 2.0 * v_somaHarmonics12.w + 3.0 * v_somaHarmonic3.y);
-    float eccentricity = clamp(v_somaEccentricity * jitter, v_somaEccentricity, 1.32);
+    float eccentricity = clamp(v_somaEccentricity * jitter, v_somaEccentricity, 1.9);
     float theta = atan(local.y, local.x / eccentricity);
     float irregularity = v_somaHarmonics12.x * cos(theta + v_somaHarmonics12.y) + v_somaHarmonics12.z * cos(2.0 * theta + v_somaHarmonics12.w) + v_somaHarmonic3.x * cos(3.0 * theta + v_somaHarmonic3.y);
-    float bulge = 1.0 + clamp(irregularity * 1.6, -0.12, 0.12);
+    // D081-P1 BEGIN: connected-trunk harmonics drive a smooth primary root lobe.
+    float primary = max(0.0, cos(theta + v_somaHarmonics12.y));
+    float rootLobe = 0.24 * primary * primary * primary * primary;
+    float secondary = max(0.0, cos(2.0 * theta + v_somaHarmonics12.w));
+    rootLobe += min(0.09, v_somaHarmonics12.z * 3.0) * pow(secondary, 6.0);
+    float spindle = 1.0 + 0.16 * cos(theta) - 0.045 * cos(2.0 * theta);
+    float bulge = (1.0 + clamp(irregularity * 1.6, -0.12, 0.12))
+      * spindle * (1.0 + rootLobe);
+    // D081-P1 END
     somaDistance = length(vec2(local.x / eccentricity, local.y)) / bulge;
   }
   // Preserve the governed gradient core and its sharpness.

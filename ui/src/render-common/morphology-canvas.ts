@@ -14,8 +14,8 @@ import {
   EDGE_CATEGORY_SET,
   FLOW_HALO_ALPHA,
   FLOW_HALO_WIDTH_MULTIPLIER,
-  FLOW_BEAM_GLOW_ALPHA,
   FLOW_STATIC_CORE_ALPHA,
+  FLOW_BEAM_GLOW_ALPHA,
   flowBeamWidthsPx,
   flowBeamLengthPx,
   flowHeadAlpha,
@@ -510,6 +510,7 @@ export type NeuralSomaFrame = {
   readonly eccentricity: number;
   readonly harmonics: readonly SomaOutlineHarmonic[];
   readonly spindle?: boolean;
+  readonly lobes?: readonly { readonly angle: number; readonly strength: number }[];
 };
 
 /** A broad, smooth lobe extends the leading soma pole into its strongest real process. */
@@ -548,11 +549,21 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
       ? clamp(node.spindleRatio * somaElongationFactor(node.outline ?? []), 1.6, 2.2)
       : node.spindleRatio ? clamp(projectedEccentricity * somaElongationFactor(node.outline ?? []), 1.04, 1.9)
         : somaDrawnElongation(projectedEccentricity, node.outline ?? []);
+    const strongest = (node.trunks ?? []).slice(0, 3);
+    const maximum = Math.max(1, ...strongest.map(trunk => trunk.weight));
+    const lobes = strongest.flatMap(trunk => {
+      const tip = project({ x: node.position.x + trunk.direction.x,
+        y: node.position.y + trunk.direction.y, z: node.position.z + trunk.direction.z });
+      return Math.hypot(tip.x - p.x, tip.y - p.y) < 1e-6 ? []
+        : [{ angle: Math.atan2(tip.y - p.y, tip.x - p.x),
+          strength: 0.12 + 0.18 * Math.sqrt(trunk.weight / maximum) }];
+    });
     frames.set(node.id, {
       x: p.x, y: p.y, angle, radius,
       eccentricity,
       harmonics: node.outline ?? [],
       spindle: !!node.spindleRatio,
+      lobes,
     });
   }
   return frames;
@@ -571,8 +582,20 @@ export function somaOutlineRadiusAtAngle(frame: NeuralSomaFrame, polarAngle: num
   const bulge = 1 + clamp(
     somaOutlineIrregularity(frame.harmonics, parameter) * somaIrregularityScale(frame.radius) * SOMA_IRREGULARITY_BOOST,
     -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
-  return bulge * (frame.spindle ? somaSpindleFactor(parameter) : 1)
+  const lobes = somaLobeFactor(frame.lobes ?? [], polarAngle);
+  return bulge * (frame.spindle ? somaSpindleFactor(parameter) : 1) * lobes
     * Math.hypot(major * Math.cos(parameter), minor * Math.sin(parameter));
+}
+
+/** Smooth union-like radial extension toward at most three actual projected trunk directions. */
+export function somaLobeFactor(lobes: readonly { readonly angle: number; readonly strength: number }[], angle: number): number {
+  let extension = 0;
+  for (const lobe of lobes) {
+    const delta = Math.atan2(Math.sin(angle - lobe.angle), Math.cos(angle - lobe.angle));
+    const shoulder = Math.exp(-0.5 * (delta / 0.34) ** 2);
+    extension = Math.max(extension, lobe.strength * shoulder);
+  }
+  return 1 + extension;
 }
 
 /**
@@ -588,6 +611,15 @@ export function neuralEdgeEndOnSoma(frame: NeuralSomaFrame, endPoint: { readonly
   const target = Math.max(NEURAL_EDGE_SOMA_OVERLAP_PX, outline - NEURAL_EDGE_SOMA_OVERLAP_PX);
   const scale = target / distance;
   return { x: frame.x + dx * scale, y: frame.y + dy * scale };
+}
+
+/** The paint-only root begins under the soma fill; public edge endpoints keep their old contract. */
+export function neuralRootInsideSoma(frame: NeuralSomaFrame,
+  endPoint: { readonly x: number; readonly y: number }): { readonly x: number; readonly y: number } {
+  const boundary = neuralEdgeEndOnSoma(frame, endPoint);
+  const dx = boundary.x - frame.x, dy = boundary.y - frame.y;
+  const inset = Math.min(0.58, Math.max(0.2, 2 / Math.max(Math.hypot(dx, dy), 1)));
+  return { x: frame.x + dx * (1 - inset), y: frame.y + dy * (1 - inset) };
 }
 
 // ---------------------------------------------------------------- cached unit gradients
@@ -851,6 +883,7 @@ export type MorphologyEdgePaint = {
   readonly part: MorphologySegment;
   readonly edgeId: string;
   readonly category: EdgeCategory;
+  readonly neural?: boolean;
   readonly points: readonly ProjectedPoint[];
   readonly cumulative: readonly number[];
   readonly totalPx: number;
@@ -987,11 +1020,11 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
       if (startFrame || endFrame) {
         let first = points[0]!, last = points[points.length - 1]!;
         if (startFrame) {
-          const adjusted = neuralEdgeEndOnSoma(startFrame, points[1]!);
+          const adjusted = neuralRootInsideSoma(startFrame, points[1]!);
           first = { x: adjusted.x, y: adjusted.y, scale: first.scale };
         }
         if (endFrame) {
-          const adjusted = neuralEdgeEndOnSoma(endFrame, points[points.length - 2]!);
+          const adjusted = neuralRootInsideSoma(endFrame, points[points.length - 2]!);
           last = { x: adjusted.x, y: adjusted.y, scale: last.scale };
         }
         points = [first, ...points.slice(1, -1), last];
@@ -1050,15 +1083,64 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         : Math.max(0.14, opacity * appearance.edgeOpacity * (emphasis?.brightnessMultiplier ?? 1))),
       0, 1);
     const alpha = focusArcOpacity(focus ?? null, part.edgeId, baseAlpha);
-    paints.push({ part, edgeId: part.edgeId, category, points, cumulative, totalPx, color, alpha, widthAt,
+    paints.push({ part, edgeId: part.edgeId, category, neural: neuralTaper, points, cumulative, totalPx, color, alpha, widthAt,
       detailStartPx: neuralTaper && neuralDetailVisible(points[0]!.scale, startRadius, totalPx) ? startRadius : 0,
       detailEndPx: neuralTaper && neuralDetailVisible(points[points.length - 1]!.scale, endRadius, totalPx) ? endRadius : 0 });
   }
   return paints;
 }
 
-/** The exploratory halo ribbon and constant-alpha base ribbon of one paint. The moving frame
- * strokes one cheap smooth path at the middle width; full quality draws the tapered ribbon. */
+/** One C1 radial density shared by the static filament and travelling modulation. */
+export function neuralEdgeDensity(radialFraction: number): number {
+  const x = clamp(Math.abs(radialFraction), 0, 1);
+  const shoulder = 1 - x * x * (3 - 2 * x);
+  return shoulder * shoulder;
+}
+
+/** A beam changes only longitudinal brightness inside the existing edge density. */
+export function neuralFlowModulation(behindPx: number, tailPx: number, peak: number): number {
+  if (behindPx < 0 || behindPx > tailPx || tailPx <= 0) return 0;
+  const rise = Math.min(1, behindPx / Math.max(4, tailPx * 0.06));
+  const decay = Math.min(1, (tailPx - behindPx) / Math.max(8, tailPx * 0.24));
+  return peak * rise * rise * (3 - 2 * rise) * decay * decay * (3 - 2 * decay);
+}
+
+/** Paint adjacent tapered quads with one continuously sampled cross-section. */
+function drawNeuralProfile(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
+  modulation?: (distancePx: number) => number): void {
+  const { points, cumulative, totalPx } = paint;
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i]!, b = points[i + 1]!;
+    const dx = b.x - a.x, dy = b.y - a.y, span = Math.hypot(dx, dy);
+    if (span < 1e-5) continue;
+    const nx = -dy / span, ny = dx / span;
+    const halfA = paint.widthAt(i) * 0.5, halfB = paint.widthAt(i + 1) * 0.5;
+    const half = Math.max(halfA, halfB);
+    const midX = (a.x + b.x) * 0.5, midY = (a.y + b.y) * 0.5;
+    const gradient = context.createLinearGradient(midX - nx * half, midY - ny * half,
+      midX + nx * half, midY + ny * half);
+    const along = (cumulative[i]! + cumulative[i + 1]!) * 0.5;
+    const endFade = Math.min(1, along / Math.max(2, halfA), (totalPx - along) / Math.max(2, halfB));
+    const light = modulation ? Math.max(modulation(along),
+      0.65 * modulation(cumulative[i]!), 0.65 * modulation(cumulative[i + 1]!)) : 1;
+    if (light <= 0) continue;
+    for (let stop = 0; stop <= 12; stop++) {
+      const radial = Math.abs(stop / 6 - 1);
+      const density = neuralEdgeDensity(radial);
+      gradient.addColorStop(stop / 12, rgba(paint.color,
+        clamp(paint.alpha * endFade * density * light, 0, 1)));
+    }
+    context.fillStyle = gradient;
+    context.beginPath();
+    context.moveTo(a.x - nx * halfA, a.y - ny * halfA);
+    context.lineTo(b.x - nx * halfB, b.y - ny * halfB);
+    context.lineTo(b.x + nx * halfB, b.y + ny * halfB);
+    context.lineTo(a.x + nx * halfA, a.y + ny * halfA);
+    context.closePath(); context.fill();
+  }
+}
+
+/** The moving frame strokes one cheap path; full Neural quality uses a continuous profile. */
 function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint, simple = false): void {
   const { points, color, alpha } = paint;
   const fillRibbon = (widthAt: (i: number) => number): void => {
@@ -1074,8 +1156,12 @@ function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePa
     for (const side of sides.slice().reverse()) context.lineTo(side.right.x, side.right.y);
     context.closePath?.(); context.fill();
   };
-  // Exploratory relations carry a slightly stronger halo, then the flow, over the same continuous base line.
-  if (paint.category === "exploratory") {
+  if (paint.neural && !simple && typeof context.createLinearGradient === "function") {
+    drawNeuralProfile(context, paint);
+    return;
+  }
+  // Preserve the accepted non-Neural morphology output exactly.
+  if (!paint.neural && paint.category === "exploratory") {
     context.fillStyle = rgba(color, clamp(paint.alpha * FLOW_HALO_ALPHA, 0, 1));
     fillRibbon((i) => paint.widthAt(i) * FLOW_HALO_WIDTH_MULTIPLIER);
   }
@@ -1193,6 +1279,10 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
   context.lineCap = "butt"; // adjacent opacity sections meet without bright round-cap knots
   for (const trail of trails) {
     const { head, tail, paint } = trail;
+    if (paint.neural) {
+      drawNeuralProfile(context, paint, distance => neuralFlowModulation(head - distance, tail, peak));
+      continue;
+    }
     const width = flowBeamWidthsPx(flowTrailEdgeWidthPx(paint));
     // Keep the moving layer clear of node centres; the base filament still reaches each endpoint.
     const clearance = Math.min(4, paint.totalPx * 0.1);
@@ -1226,6 +1316,11 @@ function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: rea
  * toward the target of the relation, so the direction stays readable with no animation (V13). */
 function drawEdgeStaticCue(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   intensity: number, gradientCapable: boolean): void {
+  if (paint.neural && gradientCapable) {
+    drawNeuralProfile(context, paint, distance => FLOW_STATIC_CORE_ALPHA * intensity
+      * (0.4 + 0.6 * distance / paint.totalPx));
+    return;
+  }
   const { points, color, alpha, widthAt } = paint;
   const first = points[0]!, last = points[points.length - 1]!;
   const chord = Math.hypot(last.x - first.x, last.y - first.y);
@@ -1457,7 +1552,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
           : somaDrawnElongation(projectedEccentricity, harmonics);
       }
       const major = radius * eccentricity, minor = radius;
-      const steps = simplified ? 12 : moving ? 16 : 32;
+      const steps = simplified ? 24 : moving ? 32 : 64;
       const cosA = Math.cos(angle), sinA = Math.sin(angle);
       const irregularityScale = somaIrregularityScale(radius);
       const somaPath = () => {
@@ -1467,7 +1562,9 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
           const bulge = 1 + clamp(
             somaOutlineIrregularity(harmonics, theta) * irregularityScale * SOMA_IRREGULARITY_BOOST,
             -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
-          const silhouette = bulge * (node.spindleRatio ? somaSpindleFactor(theta) : 1);
+          const polarAngle = Math.atan2(minor * Math.sin(theta), major * Math.cos(theta)) + angle;
+          const silhouette = bulge * (node.spindleRatio ? somaSpindleFactor(theta) : 1)
+            * somaLobeFactor(frame?.lobes ?? [], polarAngle);
           const ex = major * Math.cos(theta) * silhouette;
           const ey = minor * Math.sin(theta) * silhouette;
           const x = p.x + cosA * ex - sinA * ey;

@@ -319,6 +319,30 @@ void main() {
   float medialOffset = filamentMedialOffsetPx(parameter, length(v_cpC - v_cpA));
   float distance = abs(distanceSample.x - medialOffset);
   float feather = max(fwidth(distance), 1.0 / u_permilleScale);
+  if (v_neuralProfile.w > 0.5) {
+    // D081-P1 BEGIN: one radial density for body, sheath and exploratory light.
+    // The moving light varies luminance along the path; it never adds an inner bar.
+    float radial = 1.0 - smoothstep(0.0, 1.0, distance / max(bodyHalfWidth, feather));
+    radial *= radial;
+    float span = max(length(v_cpC - v_cpA), 1.0);
+    float fade = min(0.08, max(bodyHalfWidth * 1.5, 2.0 * u_devicePixelRatio) / span);
+    float longitudinal = smoothstep(0.0, fade, parameter)
+      * smoothstep(0.0, fade, 1.0 - parameter);
+    float lightPosition = v_propagationPermille.z > 0.0
+      ? v_propagationPermille.x / u_permilleScale : 1.0;
+    float trail = max(v_propagationPermille.y / u_permilleScale, 0.025);
+    float behind = lightPosition - parameter;
+    float beam = smoothstep(0.0, min(trail * 0.25, 0.04), behind)
+      * (1.0 - smoothstep(trail * 0.35, trail, behind));
+    float hot = (v_hotAndWobble.x / u_permilleScale) * beam;
+    float alpha = clamp(v_opacity * radial * longitudinal
+      * luminanceWeightedAlpha(alongLengthLuminance(parameter)) * (1.0 + hot), 0.0, 1.0);
+    if (alpha <= 0.0) discard;
+    vec3 color = mix(v_color, v_hotColor, clamp(hot * 0.35, 0.0, 0.35));
+    outputColor = vec4(color * alpha, alpha);
+    return;
+    // D081-P1 END
+  }
   float sheathHalfWidth = bodyHalfWidth * v_sheathAndCorePermille.x / u_permilleScale;
   float sheathCoverage = 1.0 - smoothstep(sheathHalfWidth - feather, sheathHalfWidth + feather, distance);
   float bodyCoverage = 1.0 - smoothstep(bodyHalfWidth - feather, bodyHalfWidth + feather, distance);
