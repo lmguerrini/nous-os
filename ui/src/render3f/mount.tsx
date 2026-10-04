@@ -442,6 +442,7 @@ export function mount(
     if (!typedPicker) distinct?.draw();
     visuals?.draw();
   };
+  brainEnvelope?.setRefitCallback(renderFrame);
   const syncCameraState = (): void => {
     if (brainEnvelope) brainEnvelope.setLod("moving");
     if (visuals) visuals.setQuality("moving", false);

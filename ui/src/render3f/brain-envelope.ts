@@ -23,6 +23,7 @@ export type BrainEnvelope = {
   framingSphere(): THREE.Sphere | null;
   update(nodes: readonly SceneNode[], edges?: readonly SceneEdge[]): void;
   setLod(lod: BrainLod): void;
+  setRefitCallback(callback: () => void): void;
   witness(): BrainWitness;
   axes(): readonly THREE.Vector3[];
   center(): THREE.Vector3;
@@ -471,6 +472,25 @@ function principalAxes(points: readonly Point[]): THREE.Vector3[] {
 
 export function fitBrain(points: readonly Point[]): { center: THREE.Vector3; axes: THREE.Vector3[]; scale: number; margin: number } {
   const baseAxes = principalAxes(points);
+  // The silhouette fit is determined by its outer points. Include the extreme
+  // point in each fixed PCA-frame direction, and all points for small sets.
+  const candidateIndices = new Set<number>();
+  if (points.length < 200) points.forEach((_,i)=>candidateIndices.add(i));
+  else {
+    const golden = Math.PI * (3 - Math.sqrt(5));
+    for (let d=0;d<64;d++) {
+      const y=1-2*(d+.5)/64, r=Math.sqrt(1-y*y), theta=d*golden;
+      const direction=baseAxes[0]!.clone().multiplyScalar(r*Math.cos(theta))
+        .addScaledVector(baseAxes[1]!,y).addScaledVector(baseAxes[2]!,r*Math.sin(theta));
+      let best=-Infinity,index=0;
+      for(let i=0;i<points.length;i++) {
+        const p=points[i]!,value=p.x*direction.x+p.y*direction.y+p.z*direction.z;
+        if(value>best){best=value;index=i;}
+      }
+      candidateIndices.add(index);
+    }
+  }
+  const candidates=[...candidateIndices].map(i=>points[i]!);
   // PCA's longest direction should first follow the brain's anterior axis.
   // Try every assignment because the asymmetric silhouette can favour another one.
   const permutations = [[0,1,2],[1,0,2],[0,2,1],[2,0,1],[1,2,0],[2,1,0]];
@@ -482,9 +502,9 @@ export function fitBrain(points: readonly Point[]): { center: THREE.Vector3; axe
     if (axes[2]!.x < 0) { axes[0]!.negate(); axes[2]!.negate(); }
     axisChoices.push(axes, [axes[0]!.clone().negate(),axes[1]!.clone(),axes[2]!.clone().negate()]);
   }
-  const fitWithAxes = (axes: THREE.Vector3[]) => {
+  const fitWithAxes = (axes: THREE.Vector3[], selected: readonly Point[], steps: readonly number[]) => {
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-    const local = points.map(p => axes.map(a => p.x*a.x + p.y*a.y + p.z*a.z));
+    const local = selected.map(p => axes.map(a => p.x*a.x + p.y*a.y + p.z*a.z));
     for (const q of local) for (let i=0;i<3;i++) {
       min[i]=Math.min(min[i]!,q[i]!);max[i]=Math.max(max[i]!,q[i]!);
     }
@@ -500,13 +520,13 @@ export function fitBrain(points: readonly Point[]): { center: THREE.Vector3; axe
       while(!clears(hi,shiftY,shiftZ))hi*=2;
       // The field is non-convex: scan for the first valid interval before bisecting.
       let lo=0, first=hi;
-      for(let i=1;i<=24;i++) {
-        const probe=hi*i/24;
+      for(let i=1;i<=10;i++) {
+        const probe=hi*i/10;
         if(clears(probe,shiftY,shiftZ)) { first=probe; break; }
         lo=probe;
       }
       hi=first;
-      for(let i=0;i<25;i++) {
+      for(let i=0;i<9;i++) {
         const mid=(lo+hi)/2;
         if(clears(mid,shiftY,shiftZ))hi=mid;else lo=mid;
       }
@@ -516,7 +536,7 @@ export function fitBrain(points: readonly Point[]): { center: THREE.Vector3; axe
     // offset and the front/back asymmetry; two shrinking grids refine the result.
     let best={scale:Infinity,shiftY:0,shiftZ:0};
     let originY=0,originZ=0;
-    for(const step of [0.18,0.09,0.045]) {
+    for(const step of steps) {
       for(const dy of [-1,0,1]) for(const dz of [-1,0,1]) {
         const shiftY=originY+dy*step,shiftZ=originZ+dz*step;
         const scale=fitShift(shiftY,shiftZ);
@@ -528,13 +548,47 @@ export function fitBrain(points: readonly Point[]): { center: THREE.Vector3; axe
     for(let i=0;i<3;i++) center.addScaledVector(axes[i]!,middle[i]!);
     center.addScaledVector(axes[1]!,best.shiftY*best.scale);
     center.addScaledVector(axes[2]!,best.shiftZ*best.scale);
-    let minField=Infinity;
-    for(const p of relative) minField=Math.min(minField,
-      brainContainmentField({x:p.x/best.scale,y:p.y/best.scale-best.shiftY,z:p.z/best.scale-best.shiftZ}));
-    return {center,axes,scale:best.scale,margin:Number.isFinite(minField)?minField*best.scale:0};
+    return {center,axes,scale:best.scale,margin:0};
   };
-  const fits = axisChoices.map(fitWithAxes);
-  return fits.reduce((best,fit)=>fit.scale<best.scale-1e-9?fit:best);
+  const coarse=axisChoices.map((axes,index)=>({index,fit:fitWithAxes(axes,candidates,[0.18])}))
+    .sort((a,b)=>a.fit.scale-b.fit.scale || a.index-b.index);
+  const ranked=coarse.slice(0,4).map(({index})=>({index,
+    fit:fitWithAxes(axisChoices[index]!,candidates,[0.18,0.09,0.045])}))
+    .sort((a,b)=>a.fit.scale-b.fit.scale || a.index-b.index);
+  // The extreme set ranks candidates; the finalists' scales are certified on
+  // every point. Check two assignments because concavities can make a
+  // sparse extreme set favour the wrong anatomical orientation.
+  let winner: ReturnType<typeof fitWithAxes> | null=null;
+  for(const {fit} of ranked.slice(0,2)) {
+    const [x,y,z]=fit.axes;
+    const local=points.map(p=>{
+      const dx=p.x-fit.center.x,dy=p.y-fit.center.y,dz=p.z-fit.center.z;
+      return {x:dx*x!.x+dy*x!.y+dz*x!.z,
+        y:dx*y!.x+dy*y!.y+dz*y!.z,z:dx*z!.x+dy*z!.y+dz*z!.z};
+    });
+    const clears=(scale:number)=>local.every(p=>brainContainmentField({
+      x:p.x/scale,y:p.y/scale,z:p.z/scale})>=0.055);
+    let hi=fit.scale;
+    if(!clears(hi)) {
+      let lo=hi;
+      do {hi*=1.1;} while(!clears(hi));
+      for(let i=0;i<12;i++) {
+        const mid=(lo+hi)/2;
+        if(clears(mid))hi=mid;else lo=mid;
+      }
+    }
+    // A final full-set check also covers floating-point rounding at the rim.
+    while(!clears(hi)) hi*=1.0001;
+    if(!winner || hi<winner.scale-1e-9) winner={...fit,scale:hi};
+  }
+  const chosen=winner!, [x,y,z]=chosen.axes;
+  let minField=Infinity;
+  for(const p of points){const dx=p.x-chosen.center.x,dy=p.y-chosen.center.y,dz=p.z-chosen.center.z;
+    minField=Math.min(minField,brainContainmentField({
+      x:(dx*x!.x+dy*x!.y+dz*x!.z)/chosen.scale,
+      y:(dx*y!.x+dy*y!.y+dz*y!.z)/chosen.scale,
+      z:(dx*z!.x+dy*z!.y+dz*z!.z)/chosen.scale}));}
+  return {...chosen,margin:Number.isFinite(minField)?minField*chosen.scale:0};
 }
 
 export function brainEdgeSamples(edges: readonly SceneEdge[]): { id: string; point: Point }[] {
@@ -577,58 +631,101 @@ export function createBrainEnvelope(nodes: readonly SceneNode[], edges: readonly
   mesh.add(lines);
   mesh.add(depthShell);
   group.add(mesh);
-  let lod:BrainLod="full", fit=fitBrain(nodes.map(n=>n.position)), report:BrainWitness;
-  let geometrySignature="";
-  const update=(currentNodes:readonly SceneNode[],currentEdges:readonly SceneEdge[]=[])=>{
-    const signature=JSON.stringify([
-      currentNodes.map(n=>[n.id,n.position.x,n.position.y,n.position.z]),
-      currentEdges.map(e=>[e.id,e.path.map(p=>[p.x,p.y,p.z]),
-        e.controlPoint.x,e.controlPoint.y,e.controlPoint.z]),
-    ]);
-    if(signature===geometrySignature)return;
-    geometrySignature=signature;
-    group.visible=currentNodes.length>0;
-    const samples=brainEdgeSamples(currentEdges);
-    fit=fitBrain([...currentNodes.map(n=>n.position),...samples.map(s=>s.point)]);
+  let lod:BrainLod="full";
+  let currentNodes=nodes, samples=brainEdgeSamples(edges);
+  let points:Point[]=[...nodes.map(n=>n.position),...samples.map(s=>s.point)];
+  let fit=fitBrain(points), lastFitSpan=[0,0,0];
+  let restTimer:ReturnType<typeof setTimeout>|undefined, idleHandle:number|undefined;
+  let updatedAt=0, needsRefit=false, disposed=false, onRefit:(()=>void)|undefined;
+  const applyFit=()=>{
     const [x,y,z]=fit.axes;
     mesh.position.copy(fit.center);
     mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x!,y!,z!));
     mesh.scale.setScalar(fit.scale);
-    const inside=(p:Point)=>{
-      const v=new THREE.Vector3(p.x,p.y,p.z).sub(fit.center);
-      return brainContainmentField({x:v.dot(x!)/fit.scale,y:v.dot(y!)/fit.scale,z:v.dot(z!)/fit.scale});
-    };
-    const nodeMargins=currentNodes.map(n=>({id:n.id,margin:inside(n.position)}));
-    const edgeMargins=samples.map(s=>({id:s.id,margin:inside(s.point)}));
-    const outside=[...new Set([...nodeMargins,...edgeMargins].filter(v=>v.margin<0).map(v=>v.id))];
-    const contour=pool.full.boundingBox!;
-    const extentRatios=[x!,y!,z!].map((axis,i)=>{
-      let lo=Infinity,hi=-Infinity;
-      for(const point of [...currentNodes.map(n=>n.position),...samples.map(s=>s.point)]) {
-        const projection=point.x*axis.x+point.y*axis.y+point.z*axis.z;
-        lo=Math.min(lo,projection);hi=Math.max(hi,projection);
-      }
-      const shellSpan=(contour.max.getComponent(i)-contour.min.getComponent(i))*fit.scale;
-      return Number.isFinite(lo)&&shellSpan>0?(hi-lo)/shellSpan:0;
-    });
-    report={enabled:true,lod,triangles:mesh.geometry.getAttribute("position").count/3,
-      lineSegments:lines.geometry.getAttribute("position").count/2,
-      center:fit.center.toArray(),axes:fit.axes.map(a=>a.toArray()),scale:fit.scale,
-      extentRatios,
-      contained:{nodes:[nodeMargins.filter(v=>v.margin>=0).length,nodeMargins.length],
-        edgeSamples:[edgeMargins.filter(v=>v.margin>=0).length,edgeMargins.length]},
-      minMargin:nodeMargins.length+edgeMargins.length
-        ? Math.min(...[...nodeMargins,...edgeMargins].map(v=>v.margin))*fit.scale : 0,outside};
   };
-  update(nodes,edges);
+  const field=(p:Point):number=>{
+    const dx=p.x-fit.center.x,dy=p.y-fit.center.y,dz=p.z-fit.center.z;
+    const [x,y,z]=fit.axes, inverse=1/fit.scale;
+    return brainContainmentField({x:(dx*x!.x+dy*x!.y+dz*x!.z)*inverse,
+      y:(dx*y!.x+dy*y!.y+dz*y!.z)*inverse,
+      z:(dx*z!.x+dy*z!.y+dz*z!.z)*inverse});
+  };
+  const spans=():number[]=>fit.axes.map(axis=>{
+    let min=Infinity,max=-Infinity;
+    for(const p of points){const v=p.x*axis.x+p.y*axis.y+p.z*axis.z;
+      if(v<min)min=v;if(v>max)max=v;}
+    return Number.isFinite(min)?max-min:0;
+  });
+  const cancelPending=()=>{
+    if(restTimer!==undefined){clearTimeout(restTimer);restTimer=undefined;}
+    if(idleHandle!==undefined){cancelIdleCallback(idleHandle);idleHandle=undefined;}
+  };
+  const refit=()=>{
+    if(disposed || !needsRefit || lod!=="full")return;
+    fit=fitBrain(points);lastFitSpan=spans();applyFit();needsRefit=false;onRefit?.();
+  };
+  const schedule=()=>{
+    if(!needsRefit || lod!=="full" || disposed)return;
+    const delay=Math.max(0,300-(performance.now()-updatedAt));
+    restTimer=setTimeout(()=>{
+      restTimer=undefined;
+      if(lod!=="full" || disposed)return;
+      if(typeof requestIdleCallback==="function")
+        idleHandle=requestIdleCallback(()=>{idleHandle=undefined;refit();},{timeout:1000});
+      else restTimer=setTimeout(()=>{restTimer=undefined;refit();},0);
+    },delay);
+  };
+  applyFit();lastFitSpan=spans();group.visible=nodes.length>0;
+  const update=(nextNodes:readonly SceneNode[],nextEdges:readonly SceneEdge[]=[])=>{
+    const pendingRefit=needsRefit;
+    cancelPending();
+    currentNodes=nextNodes;samples=brainEdgeSamples(nextEdges);
+    points=[...nextNodes.map(n=>n.position),...samples.map(s=>s.point)];
+    group.visible=nextNodes.length>0;updatedAt=performance.now();
+    let outside=false;
+    for(const p of points)if(field(p)<0.055){outside=true;break;}
+    if(outside){
+      // A uniform expansion keeps the visible graph inside during motion. The
+      // anatomical search then restores a snug fit after the renderer rests.
+      if(fit.scale<1e-3){
+        let maxDistance=0;
+        for(const p of points)maxDistance=Math.max(maxDistance,
+          Math.hypot(p.x-fit.center.x,p.y-fit.center.y,p.z-fit.center.z));
+        fit={...fit,scale:Math.max(1,maxDistance/.18)};
+      }
+      do{fit={...fit,scale:fit.scale*1.15};}while(points.some(p=>field(p)<0.055));
+      applyFit();
+    }
+    const span=spans();
+    // A 15% loss of occupied span along any anatomical axis is a cheap
+    // conservative signal that the old fit may now be visibly loose.
+    needsRefit=pendingRefit || outside || span.some((v,i)=>v<lastFitSpan[i]!*0.85);
+    schedule();
+  };
   return {group, update, axes:()=>fit.axes, center:()=>fit.center,
+    setRefitCallback(callback){onRefit=callback;},
     framingSphere:()=>group.visible ? new THREE.Sphere(fit.center.clone(),fullOriginRadius*fit.scale*1.05) : null,
     setLod(next){if(lod===next)return; lod=next;mesh.geometry=pool[next];depthShell.geometry=pool[next];
       lines.geometry=pool.lines[next];
-      report.lod=lod;report.triangles=mesh.geometry.getAttribute("position").count/3;
-      report.lineSegments=lines.geometry.getAttribute("position").count/2;},
-    witness:()=>({...report,extentRatios:[...report.extentRatios],contained:{nodes:[...report.contained.nodes],edgeSamples:[...report.contained.edgeSamples]},outside:[...report.outside]}),
+      if(next==="full")schedule();else cancelPending();},
+    witness:()=>{
+      const outside=new Set<string>();let minMargin=Infinity,nodeCount=0,edgeCount=0;
+      for(const node of currentNodes){const margin=field(node.position);
+        if(margin>=0)nodeCount++;else outside.add(node.id);
+        minMargin=Math.min(minMargin,margin);}
+      for(const sample of samples){const margin=field(sample.point);
+        if(margin>=0)edgeCount++;else outside.add(sample.id);
+        minMargin=Math.min(minMargin,margin);}
+      const contour=pool.full.boundingBox!,span=spans();
+      return {enabled:true,lod,triangles:mesh.geometry.getAttribute("position").count/3,
+        lineSegments:lines.geometry.getAttribute("position").count/2,
+        center:fit.center.toArray(),axes:fit.axes.map(a=>a.toArray()),scale:fit.scale,
+        extentRatios:span.map((value,i)=>value/((contour.max.getComponent(i)-contour.min.getComponent(i))*fit.scale)),
+        contained:{nodes:[nodeCount,currentNodes.length] as [number,number],
+          edgeSamples:[edgeCount,samples.length] as [number,number]},
+        minMargin:Number.isFinite(minMargin)?minMargin*fit.scale:0,outside:[...outside]};
+    },
     // Keep the deterministic meshes cached across an off/on toggle; an off view creates no draw call.
-    dispose(){group.remove(mesh);pool.uses--;}
+    dispose(){disposed=true;cancelPending();group.remove(mesh);pool.uses--;}
   };
 }
