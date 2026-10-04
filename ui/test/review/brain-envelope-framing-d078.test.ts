@@ -15,7 +15,7 @@ const pointsFor = (envelope: ReturnType<typeof createBrainEnvelope> | null): Coo
   return sphere ? framingEnvelopeSpherePoints(sphere.center, sphere.radius) : [];
 };
 
-test("only a mounted envelope supplies fit points, and its vertices lie inside their sphere", () => {
+test("only a mounted envelope supplies fit points, and its vertices lie inside their sphere", async () => {
   assert.deepEqual(pointsFor(null), [],
     "the flag-off renderer contributes no sphere");
   const envelope = createBrainEnvelope(nodes);
@@ -38,6 +38,8 @@ test("only a mounted envelope supplies fit points, and its vertices lie inside t
     }
     const before = envelope.framingSphere();
     envelope.update([{ position: { x: 0, y: 0, z: 0 } }] as SceneNode[]);
+    // D-080: a still-containing brain stays put while the graph moves and refits once the scene rests.
+    await new Promise(resolve => setTimeout(resolve, 450));
     assert.notDeepEqual(envelope.framingSphere(), before, "bounds follow rebuilt geometry");
   } finally {
     envelope.dispose();
