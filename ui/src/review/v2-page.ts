@@ -2,6 +2,7 @@ import { styleProjection } from '../render-common/projection-style.ts';
 import { cameraRevealZoom, emptyRevealState, focusOnlyReveal, revealClusterOf, stepReveal } from './reveal-controller.ts';
 import type { RevealDecision, RevealState } from './reveal-controller.ts';
 import { buildRevealWitness, routeRelationsAfterLOD } from './relation-routing.ts';
+import { COMPLETE_IDLE_MS, completeQuality, completeRelations, completeRoute, completeVisible } from './completa.ts';
 import type { RouteResult, RouteRelation, RevealWitnessInput } from './relation-routing.ts';
 import { displayLabel, presentationText, validateIndex } from './graph-v2.ts';
 import type { GraphManifest } from './graph-v2.ts';
@@ -578,6 +579,70 @@ export class V2Page {
     private pendingLod: LodLevel | null = null;
     /** The last tickZoom sample at which the camera ratio actually changed. */
     private cameraChangedAt: number | null = null;
+    // D081-P3 BEGIN status contract
+    private d081Metrics = {
+        nodes: { visible: 0, represented: 0, total: 0, eligible: 0, aggregated: 0, aggregates: 0 },
+        edges: { drawn: 0, bundled: 0, bundles: 0, eligible: 0, total: 0 },
+        depth: { level: 1, label: 'Panoramica' },
+        limit: null as null | { kind: string; value: number; reason: string },
+        hint: null as string | null,
+    };
+    private d081LastInteraction = 0;
+    private d081LastFullMs = 0;
+    private d081Quality: 'movimento' | 'recupero' | 'completa' = 'completa';
+    private d081QualityTimer: ReturnType<typeof setTimeout> | null = null;
+    private d081Status() {
+        return { ...this.d081Metrics, quality: this.d081Quality,
+            msSinceInteraction: this.d081LastInteraction ? Math.round(performance.now() - this.d081LastInteraction) : 0,
+            msToFullQuality: this.d081LastFullMs };
+    }
+    private d081Emit() {
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function')
+            window.dispatchEvent(new CustomEvent('d081:status', { detail: this.d081Status() }));
+    }
+    private d081Interaction() {
+        this.d081LastInteraction = performance.now();
+        this.d081Quality = 'movimento';
+        this.d081Emit();
+        if (this.d081QualityTimer !== null) clearTimeout(this.d081QualityTimer);
+        this.d081QualityTimer = setTimeout(() => {
+            this.d081QualityTimer = null;
+            this.d081Quality = completeQuality(performance.now(), this.d081LastInteraction, this.refreshPending > 0);
+            if (this.d081Quality === 'completa') this.d081LastFullMs = Math.round(performance.now() - this.d081LastInteraction);
+            this.d081Emit();
+        }, COMPLETE_IDLE_MS + 1);
+    }
+    private d081Publish(route: RouteResult, eligibleEdges: number, eligibleNodes: number) {
+        const visible = this.rendered.size;
+        const aggregated = route.aggregates.reduce((sum, item) => sum + item.memberCount - 1, 0);
+        const bundles = route.drawn.filter(edge => edge.count > 1);
+        const represented = Math.min(eligibleNodes, visible + aggregated);
+        this.d081Metrics = {
+            nodes: { visible, represented, total: this.index.nodes.length, eligible: eligibleNodes,
+                aggregated, aggregates: route.aggregates.length },
+            edges: { drawn: route.drawn.length, bundled: bundles.reduce((sum, edge) => sum + edge.count, 0),
+                bundles: bundles.length, eligible: eligibleEdges,
+                total: this.index.edges.length + this.index.nodes.filter(node => node.parent !== null).length },
+            depth: { level: this.lod === 'far' ? 1 : this.lod === 'intermediate' ? 2 : 3,
+                label: this.lod === 'far' ? 'Panoramica' : this.lod === 'intermediate' ? 'Intermedia' : 'Ravvicinata' },
+            limit: this.density === 'complete' && !this.typedActive() ? null
+                : this.density === 'complete'
+                    ? { kind: 'proiezione', value: V2_CAP, reason: 'Il dominio della proiezione corrente è ancora limitato.' }
+                    : { kind: 'densità', value: DENSITY_BUDGETS[this.density].nodes,
+                        reason: 'La densità scelta limita i glyph individuali.' },
+            hint: represented === eligibleNodes ? null : this.density === 'complete' && this.typedActive()
+                ? 'La proiezione corrente limita ancora i nodi; apri un contenitore per rivelarne altri.'
+                : 'Ingrandisci o apri un contenitore per rivelare altri nodi; scegli Completa per rappresentare tutti i nodi.',
+        };
+        const counter = typeof document !== 'undefined' ? document.getElementById('counter') : null;
+        if (counter) counter.textContent = `${formatCount(visible)} visibili · ${formatCount(represented)}/${formatCount(this.index.nodes.length)} rappresentati · ${formatCount(route.drawn.length)} archi`;
+        if (this.d081Quality !== 'movimento') {
+            this.d081Quality = 'completa';
+            if (this.d081LastInteraction) this.d081LastFullMs = Math.round(performance.now() - this.d081LastInteraction);
+        }
+        this.d081Emit();
+    }
+    // D081-P3 END status contract
     /** D-072 R1: how this page creates its views and selects its LOD set; injectable for tests. */
     private readonly createView: CreateProductView;
     private readonly selectLod: typeof safeSelectNodes;
@@ -732,6 +797,9 @@ export class V2Page {
         this.palette = palette;
         this.v2Colours = colours;
         this.density = normalizeDensity(density);
+        if (typeof window !== 'undefined')
+            (window as typeof window & { __d081?: { status?: () => unknown } }).__d081 =
+                { ...(window as typeof window & { __d081?: object }).__d081, status: () => this.d081Status() };
         this.createView = deps.createView ?? createProductView;
         this.selectLod = deps.safeSelect ?? safeSelectNodes;
         this.onNodePicked = deps.onNodePicked;
@@ -759,7 +827,7 @@ export class V2Page {
         if (this.projectionInput) this.installProjectionWitnessHook();
         const root = document.getElementById('render-root');
         if (root) for (const type of ['pointerdown', 'wheel'] as const)
-            root.addEventListener(type, () => { this.userMovedSinceFit = true; this.noteCameraIntent(); }, { passive: true, capture: true });
+            root.addEventListener(type, () => { this.userMovedSinceFit = true; this.noteCameraIntent(); this.d081Interaction(); }, { passive: true, capture: true });
         // D081-P6 BEGIN: root capture runs before the canvas resolves the dolly anchor.
         root?.addEventListener('wheel', event => this.setGestureWheelAnchor(event), { passive: true, capture: true });
         // D081-P6 END.
@@ -773,12 +841,16 @@ export class V2Page {
         }, true);
         for (const type of ['pointerup', 'pointercancel'] as const)
             root?.addEventListener(type, () => { this.pointerDown = false; this.edgeTooltip(null); }, true);
-        root?.addEventListener('pointermove', () => { if (!this.pointerDown) this.hoverNeedsMove = false; }, true);
+        root?.addEventListener('pointermove', () => {
+            if (!this.pointerDown) this.hoverNeedsMove = false;
+            else this.d081Interaction();
+        }, true);
         root?.addEventListener('keydown', event => {
             if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
             if (!CAMERA_NAVIGATION_KEYS.has(event.key)) return;
             this.userMovedSinceFit = true;
             this.noteCameraIntent();
+            this.d081Interaction();
         });
         // The overview exposes every level-2 entry point, including domains whose direct
         // sources skip that level; those sources remain represented by their domain aggregate.
@@ -837,6 +909,7 @@ export class V2Page {
                     const camera = proofWindow.__d080Renderer?.brainView(name);
                     if (!camera) return;
                     this.noteCameraIntent();
+                    this.d081Interaction();
                     this.userMovedSinceFit = true;
                     this.view.restoreCamera(camera);
                     this.cameraChangedAt = performance.now();
@@ -873,6 +946,7 @@ export class V2Page {
         });
     }
     private visible() {
+        if (this.density === 'complete' && !this.typedActive()) return completeVisible(this.index);
         const pages = new Map<string, number>([...this.auto].map(id => [id, V2_PAGE]));
         for (const [id, count] of this.autoPageCounts) pages.set(id, count);
         for (const id of this.structuralRoots) pages.set(id, Math.max(1, pages.get(id) ?? 0));
@@ -1325,6 +1399,8 @@ export class V2Page {
         }
         this.rendered = new Set(visibility.nodeIds);
         this.publishReveal(lod.route, this.rendered);
+        this.d081Publish(lod.route, this.index.edges.length,
+            this.density === 'complete' ? this.index.nodes.length : this.visible().nodes.length);
         this.routePickById = lod.pickMap;
         this.lodCounts = lod.counts;
         this.lastNodeSelection = lod.selection;
@@ -2141,6 +2217,8 @@ export class V2Page {
         this.projectionVisibility = visibility;
         this.rendered = new Set(visibility.nodeIds);
         this.publishReveal(lod.route, this.rendered);
+        this.d081Publish(lod.route, this.index.edges.length,
+            this.density === 'complete' ? this.index.nodes.length : this.visible().nodes.length);
         this.routePickById = lod.pickMap;
         this.lodCounts = lod.counts;
         this.lastNodeSelection = lod.selection;
@@ -2569,10 +2647,10 @@ export class V2Page {
             // incremental stability — existing positions are seeds, only fresh nodes are placed).
             const budget = DENSITY_BUDGETS[this.density];
             const routingBegan = performance.now();
-            const availableArcs = projectRelations(
-                this.index.nodes, this.index.edges, ids, this.axes.reading,
-                organization, this.relationDetail, active,
-            );
+            const availableArcs = this.density === 'complete'
+                ? completeRelations(this.index, this.axes.reading)
+                : projectRelations(this.index.nodes, this.index.edges, ids, this.axes.reading,
+                    organization, this.relationDetail, active);
             const communityOf = communityResolver(this.index.nodes);
             const adjacency = adjacencyOf(disclosed.nodes, this.index.edges);
             const tiers = manualExpansionTiers(
@@ -2586,7 +2664,9 @@ export class V2Page {
             const byImportance = new Map(disclosed.nodes.map(node => [node.id, node.importance.value]));
             const priority = [...tiers.priorityChildren, ...this.focusedRenderPriority(disclosed.nodes),
                 ...[...(focusPriority ?? [])].sort((a, b) => (byImportance.get(b) ?? 0) - (byImportance.get(a) ?? 0) || a.localeCompare(b))];
-            const selection = this.selectLod({
+            const selection = this.density === 'complete'
+                ? { rendered: disclosed.nodes.map(node => node.id), dropped: [] }
+                : this.selectLod({
                 nodes: disclosed.nodes.map(n => ({ id: n.id, level: n.level, parent: n.parent, importance: n.importance.value })),
                 level: this.lod,
                 budget: budget.nodes,
@@ -2597,11 +2677,11 @@ export class V2Page {
                 communityOf,
             }, this.lastNodeSelection);
             let renderedIds = new Set(selection.rendered);
-            if (this.neighbourhoodDepth && focusPriority) {
+            if (this.density !== 'complete' && this.neighbourhoodDepth && focusPriority) {
                 // D-079 reading contract: focus traverses exactly the selected semantic class.
                 const allowed = this.index.edges.filter(edge => relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading));
                 renderedIds = focusNeighbourhood(focusPriority, disclosed.nodes, allowed, this.neighbourhoodDepth).nodes;
-            } else if (this.restoreNeighbourhood && this.neighbourhoodBefore) renderedIds = new Set(this.neighbourhoodBefore.nodes);
+            } else if (this.density !== 'complete' && this.restoreNeighbourhood && this.neighbourhoodBefore) renderedIds = new Set(this.neighbourhoodBefore.nodes);
             const routedInput: RouteRelation[] = availableArcs.edges.map(edge => ({
                 id: edge.id, channel: 'lifted', source: edge.source, target: edge.target,
                 class: edge.class, type: edge.type, count: edge.count,
@@ -2613,7 +2693,9 @@ export class V2Page {
                 if (!relationVisible(edge.type === 'classified_in' ? 'structural' : edge.class, this.axes.reading))
                     routedInput.push({ id: edge.id, channel: 'semantic', source: edge.source,
                         target: edge.target, class: edge.class, type: edge.type, count: 1 });
-            const route = routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
+            const route = this.density === 'complete'
+                ? completeRoute(availableArcs.edges, renderedIds)
+                : routeRelationsAfterLOD({ nodes: this.routeNodes(), disclosedIds: ids,
                 renderedNodeIds: renderedIds, relations: routedInput, reading: this.axes.reading,
                 budget: organization === 'indra' && this.relationDetail === 'essential'
                     ? Math.min(budget.arcs, INDRA_ESSENTIAL_ARC_CAP) : budget.arcs,
@@ -2696,6 +2778,7 @@ export class V2Page {
                     this.lodCounts = nextLodCounts;
                     this.renderedRelations = nextRenderedRelations;
                     this.publishReveal(route, renderedIds);
+                    this.d081Publish(route, availableArcs.total, this.density === 'complete' ? this.index.nodes.length : disclosed.nodes.length);
                     this.arcTotal = nextArcTotal;
                     this.containers = nextContainers;
                     this.previousVisible = renderedIds;
@@ -2816,6 +2899,7 @@ export class V2Page {
             this.lodCounts = nextLodCounts;
             this.renderedRelations = nextRenderedRelations;
             this.publishReveal(route, renderedIds);
+            this.d081Publish(route, availableArcs.total, this.density === 'complete' ? this.index.nodes.length : disclosed.nodes.length);
             this.arcTotal = nextArcTotal;
             this.containers = nextContainers;
             this.layoutSource = nextLayoutSource;
@@ -2895,16 +2979,23 @@ export class V2Page {
             if (added.length && this.positions.size > added.length)
                 this.pulse(added);
             element('status').textContent = 'Grafo pronto';
-            const total = this.index.nodes.filter(n => n.level !== 5).length;
-            element('counter').textContent = `${disclosed.nodes.length}/${total} nodi · livelli ${[1, 2, 3, 4, 5].map(l => `${l}: ${disclosed.counts[l]}`).join(' \u00B7 ')} · limite ${V2_CAP}`;
+            const status = this.d081Status();
+            element('counter').textContent = `${formatCount(status.nodes.visible)} visibili · ${formatCount(status.nodes.represented)}/${formatCount(status.nodes.total)} rappresentati · ${formatCount(status.edges.drawn)} archi`;
             element('focus-chip').hidden = !shown.some(e => e.class === 'exploratory');
             (element('back') as HTMLButtonElement).disabled = this.history.undoDepth === 0;
             (element('v2-undo') as HTMLButtonElement).disabled = this.history.undoDepth === 0;
             (element('v2-redo') as HTMLButtonElement).disabled = this.history.redoDepth === 0;
             this.capMessage = disclosed.capped;
-            element('v2-cap').textContent = disclosed.capped ? `Finestra di ${V2_CAP} nodi visibili: continua a ingrandire o usa Mostra altri.` : '';
+            element('v2-cap').textContent = this.density === 'complete' ? '' : disclosed.capped ? `Finestra di ${V2_CAP} nodi visibili: continua a ingrandire o usa Mostra altri.` : '';
             this.renderPanel();
-        }).finally(() => { this.refreshPending--; });
+        }).finally(() => {
+            this.refreshPending--;
+            if (this.d081Quality === 'recupero' && this.refreshPending === 0) {
+                this.d081Quality = 'completa';
+                this.d081LastFullMs = Math.round(performance.now() - this.d081LastInteraction);
+                this.d081Emit();
+            }
+        });
     }
     async expand(id: string) {
         this.suppressZoomUntil = performance.now() + 900;
@@ -3387,6 +3478,20 @@ export class V2Page {
         // been still `LOD_REFRESH_IDLE_MS`, and a zoom back inside the band cancels it.
         const zoom = cameraRevealZoom(this.overviewRatio ?? ratio, ratio, this.axes.projection);
         const next = lodLevelFromZoom(zoom, this.lod);
+        // D081-P3 BEGIN complete camera path: all glyphs and bundles are already resident.
+        if (this.density === 'complete') {
+            const settled = lodRefreshDue({ nowMs: performance.now(), pending: true,
+                lastCameraChangeMs: this.cameraChangedAt });
+            this.pendingLod = settled || next === this.lod ? null : next;
+            if (settled && next !== this.lod) {
+                this.lod = next;
+                this.d081Metrics.depth = { level: next === 'far' ? 1 : next === 'intermediate' ? 2 : 3,
+                    label: next === 'far' ? 'Panoramica' : next === 'intermediate' ? 'Intermedia' : 'Ravvicinata' };
+                this.d081Emit();
+            }
+            return;
+        }
+        // D081-P3 END complete camera path.
         this.pendingLod = next === this.lod ? null : next;
         const settled = lodRefreshDue({ nowMs: performance.now(), pending: true,
             lastCameraChangeMs: this.cameraChangedAt });
@@ -3669,7 +3774,11 @@ export class V2Page {
         line(controls, 'Archi', `${formatCount(this.lodCounts.arcs.rendered)} di ${formatCount(this.lodCounts.arcs.available)} disponibili · ${formatCount(this.lodCounts.arcs.pinned)} fissati`);
         line(controls, 'Etichette', formatLabelCounts(this.labelCount(), this.titleCount(), labelBudgetOf(this.density)));
         line(controls, 'Densità', { essential: 'Essenziale', balanced: 'Bilanciata', complete: 'Completa' }[this.density]);
-        line(controls, 'Grafo', `${formatCount(this.index.nodes.filter(n => n.level !== 5).length)} nodi · limite ${V2_CAP}`);
+        // D081-P3 BEGIN complete graph metric; P5 owns the surrounding panel rows.
+        line(controls, 'Grafo', this.density === 'complete'
+            ? `${formatCount(this.index.nodes.length)} nodi · nessun limite di densità`
+            : `${formatCount(this.index.nodes.filter(n => n.level !== 5).length)} nodi · limite ${V2_CAP}`);
+        // D081-P3 END complete graph metric.
         if (this.axes.projection === '3d') {
             const volume = volumeStats(this.positions);
             const volumeRow = line(controls, 'Volume 3D', formatVolumeProportions(volume.ratios));
