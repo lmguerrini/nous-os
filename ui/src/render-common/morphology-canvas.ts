@@ -1086,15 +1086,70 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
   return paints;
 }
 
-/** One C1 radial density shared by the static filament and travelling modulation. */
+/** Legacy smooth radial reference retained for non-Neural flow and shader contract tests. */
 export function neuralEdgeDensity(radialFraction: number): number {
   const x = clamp(Math.abs(radialFraction), 0, 1);
   const shoulder = 1 - x * x * (3 - 2 * x);
   return shoulder * shoulder;
 }
 
-/** Paint adjacent tapered quads with one continuously sampled cross-section. */
-function drawNeuralProfile(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
+/** Two concentric premultiplied-alpha bands approximate a centre-peaked density: the outer
+ * coverage is 0.6a; inside 62% width it is 1-(1-0.6a)(1-0.4a). Both bands share the exact
+ * tapered outline, so no segment boundary can create a dash. Below 2 px the subpixel inner band
+ * is omitted. The travelling light is one further fill, confined to that same inner outline. */
+export function neuralRibbonProfile(widthPx: number): readonly { width: number; alpha: number }[] {
+  return widthPx < 2 ? [{ width: 1, alpha: 1 }]
+    : [{ width: 1, alpha: 0.6 }, { width: 0.62, alpha: 0.4 }];
+}
+
+/** Fill one whole tapered outline. Each point contributes its own width, including soma roots. */
+function fillRibbon(context: CanvasRenderingContext2D, points: readonly ProjectedPoint[],
+  widthAt: (i: number) => number): void {
+  const sides = points.map((point, i) => {
+    const before = points[Math.max(0, i - 1)]!, after = points[Math.min(points.length - 1, i + 1)]!;
+    const dx = after.x - before.x, dy = after.y - before.y, length = Math.hypot(dx, dy) || 1;
+    const half = widthAt(i) / 2;
+    return { left: { x: point.x - dy / length * half, y: point.y + dx / length * half },
+      right: { x: point.x + dy / length * half, y: point.y - dx / length * half } };
+  });
+  context.beginPath(); context.moveTo(sides[0]!.left.x, sides[0]!.left.y);
+  for (const side of sides.slice(1)) context.lineTo(side.left.x, side.left.y);
+  for (const side of sides.slice().reverse()) context.lineTo(side.right.x, side.right.y);
+  context.closePath?.(); context.fill();
+}
+
+function neuralProfileWidth(paint: MorphologyEdgePaint): number {
+  let width = Infinity;
+  for (let i = 0; i < paint.points.length; i++) width = Math.min(width, paint.widthAt(i));
+  return width;
+}
+
+export function drawNeuralProfile(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint): void {
+  for (const layer of neuralRibbonProfile(neuralProfileWidth(paint))) {
+    context.fillStyle = rgba(paint.color, clamp(paint.alpha * layer.alpha, 0, 1));
+    fillRibbon(context, paint.points, i => paint.widthAt(i) * layer.width);
+  }
+}
+
+/** A single chord gradient gives the whole inner ribbon one smooth travelling brightness bump.
+ * The wave has a two-edge-length period and at most 0.24 amplitude. Curved paths retain their
+ * continuous outline; the chord is only the gradient coordinate, never a geometry substitute. */
+export function drawNeuralLight(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
+  modulation: (distancePx: number) => number): void {
+  const start = paint.points[0]!, end = paint.points[paint.points.length - 1]!;
+  const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
+  for (let stop = 0; stop <= 24; stop++) {
+    const fraction = stop / 24;
+    gradient.addColorStop(fraction, rgba(paint.color,
+      clamp(paint.alpha * modulation(fraction * paint.totalPx), 0, 1)));
+  }
+  context.fillStyle = gradient;
+  const innerWidth = neuralRibbonProfile(neuralProfileWidth(paint)).at(-1)!.width;
+  fillRibbon(context, paint.points, i => paint.widthAt(i) * innerWidth);
+}
+
+/** Preserve the pre-existing flow treatment for non-Neural morphologies. */
+function drawLegacyFlowProfile(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   modulation?: (distancePx: number) => number): void {
   const { points, cumulative, totalPx } = paint;
   for (let i = 0; i < points.length - 1; i++) {
@@ -1136,19 +1191,6 @@ function drawNeuralProfile(context: CanvasRenderingContext2D, paint: MorphologyE
 /** The moving frame strokes one cheap path; full Neural quality uses a continuous profile. */
 function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint, simple = false): void {
   const { points, color, alpha } = paint;
-  const fillRibbon = (widthAt: (i: number) => number): void => {
-    const sides = points.map((point, i) => {
-      const before = points[Math.max(0, i - 1)]!, after = points[Math.min(points.length - 1, i + 1)]!;
-      const dx = after.x - before.x, dy = after.y - before.y, length = Math.hypot(dx, dy) || 1;
-      const half = widthAt(i) / 2;
-      return { left: { x: point.x - dy / length * half, y: point.y + dx / length * half },
-        right: { x: point.x + dy / length * half, y: point.y - dx / length * half } };
-    });
-    context.beginPath(); context.moveTo(sides[0]!.left.x, sides[0]!.left.y);
-    for (const side of sides.slice(1)) context.lineTo(side.left.x, side.left.y);
-    for (const side of sides.slice().reverse()) context.lineTo(side.right.x, side.right.y);
-    context.closePath?.(); context.fill();
-  };
   if (paint.neural && !simple && typeof context.createLinearGradient === "function") {
     drawNeuralProfile(context, paint);
     return;
@@ -1156,7 +1198,7 @@ function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePa
   // Preserve the accepted non-Neural morphology output exactly.
   if (!paint.neural && paint.category === "exploratory") {
     context.fillStyle = rgba(color, clamp(paint.alpha * FLOW_HALO_ALPHA, 0, 1));
-    fillRibbon((i) => paint.widthAt(i) * FLOW_HALO_WIDTH_MULTIPLIER);
+    fillRibbon(context, points, (i) => paint.widthAt(i) * FLOW_HALO_WIDTH_MULTIPLIER);
   }
   if (simple) {
     // One curve stroke at the dendrite's mid width: the moving frame's cheap neural base.
@@ -1178,7 +1220,7 @@ function drawEdgeBase(context: CanvasRenderingContext2D, paint: MorphologyEdgePa
     return;
   }
   context.fillStyle = rgba(color, paint.alpha);
-  fillRibbon(paint.widthAt);
+  fillRibbon(context, points, paint.widthAt);
 }
 
 /** One cosmetic offshoot per visible endpoint, rooted on a real relation. No geometry, ID or hit
@@ -1226,20 +1268,33 @@ function drawNeuralDetail(context: CanvasRenderingContext2D, paint: MorphologyEd
 function drawTravellingHighlights(context: CanvasRenderingContext2D, paints: readonly MorphologyEdgePaint[],
   now: number, speed: number, intensity: number): void {
   for (const paint of paints) {
-    drawNeuralProfile(context, paint,
+    if (paint.neural) {
+      if (typeof context.createLinearGradient === "function")
+        drawNeuralLight(context, paint, distance => flowWaveAlpha(distance, paint.totalPx, now, speed, intensity));
+      else {
+        context.fillStyle = rgba(paint.color, clamp(paint.alpha * FLOW_WAVE_MAX_ALPHA * 0.5 * intensity, 0, 1));
+        fillRibbon(context, paint.points, i => paint.widthAt(i));
+      }
+    } else drawLegacyFlowProfile(context, paint,
       distance => flowWaveAlpha(distance, paint.totalPx, now, speed, intensity));
   }
 }
 
 /** Reduced motion keeps the entire exploratory profile continuously and uniformly lit. */
-function drawEdgeStaticCue(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
+export function drawEdgeStaticCue(context: CanvasRenderingContext2D, paint: MorphologyEdgePaint,
   intensity: number, gradientCapable: boolean): void {
   const staticAlpha = FLOW_WAVE_MAX_ALPHA * 0.65 * intensity;
   if (gradientCapable) {
-    drawNeuralProfile(context, paint, () => staticAlpha);
+    if (paint.neural) drawNeuralLight(context, paint, () => staticAlpha);
+    else drawLegacyFlowProfile(context, paint, () => staticAlpha);
     return;
   }
   const { points, color, alpha, widthAt } = paint;
+  if (paint.neural) {
+    context.fillStyle = rgba(color, clamp(alpha * staticAlpha, 0, 1));
+    fillRibbon(context, points, widthAt);
+    return;
+  }
   context.strokeStyle = rgba(color, clamp(alpha * staticAlpha, 0, 1));
   context.lineWidth = widthAt((points.length - 1) / 2);
   context.beginPath(); context.moveTo(points[0]!.x, points[0]!.y);
@@ -1669,7 +1724,8 @@ function flowProjectionAnchors(geometry: MorphologyGeometry,
  * shared budget selected (same deterministic selection the inline pass would draw, so both layers
  * agree without coordination). Reads the shared flow clock (`setFlowNow`/`setFlowMotionAllowed`,
  * driven today by the product view's animation loop). Nothing else is drawn: no base lines, no
- * static cue, no nodes. Each overlay quad uses the base edge's cross-section and width.
+ * static cue, no nodes. Neural uses one continuous inner ribbon per edge; other morphologies
+ * retain their established overlay cross-section.
  *
  * Signature:
  * `drawFlowLayer(context, geometry, project, style, appearance = DEFAULT_APPEARANCE, projection = "2d")`
