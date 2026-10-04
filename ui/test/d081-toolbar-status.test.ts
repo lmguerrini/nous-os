@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatD081GraphStatus, formatLegacyToolbarStatus, parseGraphToolbarCounts } from '../src/review/toolbar-status.ts';
+import { formatD081GraphStatus, formatLegacyToolbarStatus, parseGraphToolbarCounts, summarizeD081Bundles } from '../src/review/toolbar-status.ts';
 
 const contract = {
   nodes: { visible: 950, represented: 11199, total: 11199, eligible: 11199, aggregated: 120, aggregates: 4 },
@@ -20,8 +20,44 @@ test('STATUS-CONTRACT mock produces the complete human status and reveal hint', 
   assert.ok(details.some((entry) => entry.includes('Profondità: completa')));
   assert.ok(details.some((entry) => entry.includes('4 gruppi con 120 elementi')));
   assert.ok(details.some((entry) => entry.includes('Qualità: Completa')));
-  assert.ok(details.some((entry) => entry.includes('GPU · 850 · interazione in corso')));
+  assert.ok(details.some((entry) => entry.includes('GPU · 850 · interazione in corso.')));
+  assert.ok(details.every((entry) => !entry.includes('..')));
   assert.equal(details.at(-1), contract.hint);
+});
+
+test('lower density status exposes the full eligible set and explains how to reveal hidden nodes', () => {
+  const { line, details } = formatD081GraphStatus({
+    ...contract,
+    nodes: { visible: 39, represented: 39, total: 11199, eligible: 11199, aggregated: 0, aggregates: 0 },
+    edges: { drawn: 90, bundled: 3600, bundles: 40, eligible: 300, total: 15800 },
+    quality: 'completa',
+    limit: { kind: 'densità', value: 400, reason: 'La densità scelta limita i glyph individuali.' },
+    hint: 'La panoramica mostra domini e progetti; gli altri nodi restano dentro i domini chiusi. Zooma su un dominio per aprirlo, oppure scegli «Completa» per rappresentarli tutti.',
+  });
+  assert.match(line, /39 visibili · 39 rappresentati \/ 11\.199 totali/);
+  assert.match(line, /90 disegnati \/ 300 eleggibili \/ 15\.800 totali/);
+  assert.match(details[0], /39 rappresentati su 11\.199 totali \(11\.199 eleggibili\)/);
+  assert.match(details[1], /3\.600 in 40 fasci contati/);
+  assert.match(details[5], /densità · 400 · La densità scelta limita i glyph individuali\./);
+  assert.match(details[6], /Zooma su un dominio.*«Completa»/);
+  assert.ok(details.every((entry) => !entry.includes('..')));
+});
+
+test('bundle totals include only rendered records with an explicit count above one', () => {
+  assert.deepEqual(summarizeD081Bundles([{ count: 1 }, { count: 3 }, { count: 12 }, { count: 0 }]),
+    { bundled: 15, bundles: 2 });
+});
+
+test('fully declared +N aggregates still explain why few individual glyphs are visible', () => {
+  const { details } = formatD081GraphStatus({
+    ...contract,
+    nodes: { visible: 39, represented: 11199, total: 11199, eligible: 11199, aggregated: 11160, aggregates: 10 },
+    quality: 'completa', limit: { kind: 'densità', value: 400, reason: 'La densità scelta limita i glyph individuali.' },
+    hint: null,
+  });
+  assert.match(details[6], /39 come glyph e 11\.160 dichiarati nei 10 aggregati \+N/);
+  assert.match(details[6], /Zooma su un contenitore/);
+  assert.ok(details.every((entry) => !entry.includes('..')));
 });
 
 test('legacy fallback labels visible and represented counts without implying completeness', () => {

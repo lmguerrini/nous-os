@@ -22,14 +22,27 @@ export function formatD081GraphStatus(status: D081GraphStatus): { line: string; 
   const line = `Nodi ${count(nodes.visible)} visibili · ${count(nodes.represented)} rappresentati / ${count(nodes.total)} totali; Archi ${count(edges.drawn)} disegnati / ${count(edges.eligible)} eleggibili / ${count(edges.total)} totali`;
   const details: [string, string, string, string, string, string, string] = [
     `Nodi: ${count(nodes.visible)} visibili, ${count(nodes.represented)} rappresentati su ${count(nodes.total)} totali (${count(nodes.eligible)} eleggibili).`,
-    `Archi: ${count(edges.drawn)} disegnati, ${count(edges.eligible)} eleggibili su ${count(edges.total)} totali.`,
+    `Archi: ${count(edges.drawn)} disegnati, ${count(edges.eligible)} eleggibili su ${count(edges.total)} totali${edges.bundles > 0 ? `; ${count(edges.bundled)} in ${count(edges.bundles)} fasci contati` : ""}.`,
     `Profondità: ${depth.label || `livello ${depth.level}`}.`,
     `Aggregati: ${count(nodes.aggregates)} gruppi con ${count(nodes.aggregated)} elementi rappresentati.`,
     `Qualità: ${{ movimento: "Movimento", recupero: "Recupero", completa: "Completa" }[quality]}.`,
-    limit ? `Limite attivo: ${limit.kind} · ${count(limit.value)} · ${limit.reason}.` : "Limite attivo: nessuno.",
-    hint ?? "Tutti gli elementi eleggibili sono rappresentati.",
+    limit ? `Limite attivo: ${limit.kind} · ${count(limit.value)} · ${sentence(limit.reason)}` : "Limite attivo: nessuno.",
+    hint ? sentence(hint) : nodes.visible < nodes.represented && nodes.aggregated > 0
+      ? sentence(`Tutti gli elementi eleggibili sono rappresentati: ${count(nodes.visible)} come glyph e ${count(nodes.aggregated)} dichiarati nei ${count(nodes.aggregates)} aggregati +N. Zooma su un contenitore per aprirlo e vedere i nodi individuali`)
+      : "Tutti gli elementi eleggibili sono rappresentati.",
   ];
   return { line, details };
+}
+
+/** Collapse trailing punctuation so caller-provided reasons and hints never produce `..`. */
+function sentence(value: string): string {
+  return `${value.trim().replace(/[.!?…]+\s*$/, "")}.`;
+}
+
+/** Count only drawn relation records that declare a multi-edge bundle. */
+export function summarizeD081Bundles(edges: readonly { count: number }[]): { bundled: number; bundles: number } {
+  const bundles = edges.map(edge => Math.trunc(edge.count)).filter(count => Number.isFinite(count) && count > 1);
+  return { bundled: bundles.reduce((sum, count) => sum + count, 0), bundles: bundles.length };
 }
 
 /** Read the existing page-owned status fields without introducing another source of graph counts. */

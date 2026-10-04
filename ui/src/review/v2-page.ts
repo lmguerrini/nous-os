@@ -55,6 +55,7 @@ import type { Density, LodLevel, LodNodeSelection } from './lod.ts';
 import { anyPointOutsideInsets, initialViewInsets } from './insets.ts';
 import type { Insets } from './view-contract.ts';
 import { formatLabelCounts, labelBudgetOf, shortLabelWithEllipsis } from './labels.ts';
+import { summarizeD081Bundles } from './toolbar-status.ts';
 import { createProductView } from './product-view.ts';
 import { appendFlowLegend, renderTypedStructuralLegend } from './legend.ts';
 import { buildNodePanel, buildProjectionExplanationPanel, buildRelationPanel, buildStructuralPickPanel, createEvidenceResolver, focusChipLabel, relationBadge, renderSelection } from './panel-view.ts';
@@ -595,6 +596,7 @@ export class V2Page {
         limit: null as null | { kind: string; value: number; reason: string },
         hint: null as string | null,
     };
+    private d081EligibleEdgeCounts = new Map<'attested' | 'exploratory' | 'combined', number>();
     private d081LastInteraction = 0;
     private d081LastFullMs = 0;
     private d081Quality: 'movimento' | 'recupero' | 'completa' = 'completa';
@@ -645,19 +647,31 @@ export class V2Page {
             this.d081FinishIfReady();
         }, COMPLETE_IDLE_MS + 1);
     }
-    private d081Publish(route: RouteResult, eligibleEdges: number, eligibleNodes: number) {
+    private d081Publish(route: RouteResult, eligibleEdges: number, eligibleNodes: number,
+        declaredAggregateMembers = 0, declaredAggregateGroups = 0) {
         // D081-P6c BEGIN: level-5 passage rows are detail, not dataset nodes.
         const visible = [...this.rendered].filter(id => this.datasetNodeIds.has(id)).length;
-        eligibleNodes = Math.min(eligibleNodes, this.datasetNodeCount);
+        // Disclosure and LOD decide what is visible; they must not shrink the denominator and
+        // make a partial overview look complete. Reading controls relations, not node eligibility.
+        eligibleNodes = this.datasetNodeCount;
+        const reading = this.axes?.reading ?? 'combined';
+        const edgeCountCache = this.d081EligibleEdgeCounts ?? (this.d081EligibleEdgeCounts = new Map());
+        let fullEligibleEdges = edgeCountCache.get(reading);
+        if (fullEligibleEdges === undefined) {
+            fullEligibleEdges = completeRelations(this.index, reading).total;
+            edgeCountCache.set(reading, fullEligibleEdges);
+        }
+        eligibleEdges = fullEligibleEdges;
         // D081-P6c END.
-        const aggregated = route.aggregates.reduce((sum, item) => sum + item.memberCount - 1, 0);
-        const bundles = route.drawn.filter(edge => edge.count > 1);
+        // Route lifting alone is not a node aggregate. Count hidden members only when the
+        // mounted container title explicitly declares them with the visible +N marker.
+        const aggregated = Math.min(Math.max(0, eligibleNodes - visible), declaredAggregateMembers);
+        const bundleCounts = summarizeD081Bundles(route.drawn);
         const represented = Math.min(eligibleNodes, visible + aggregated);
         this.d081Metrics = {
             nodes: { visible, represented, total: this.datasetNodeCount, eligible: eligibleNodes,
-                aggregated, aggregates: route.aggregates.length },
-            edges: { drawn: route.drawn.length, bundled: bundles.reduce((sum, edge) => sum + edge.count, 0),
-                bundles: bundles.length, eligible: eligibleEdges,
+                aggregated, aggregates: aggregated === 0 ? 0 : declaredAggregateGroups },
+            edges: { drawn: route.drawn.length, ...bundleCounts, eligible: eligibleEdges,
                 total: this.index.edges.length + this.index.nodes.filter(node => node.parent !== null).length },
             depth: { level: this.lod === 'far' ? 1 : this.lod === 'intermediate' ? 2 : 3,
                 label: this.lod === 'far' ? 'Panoramica' : this.lod === 'intermediate' ? 'Intermedia' : 'Ravvicinata' },
@@ -668,8 +682,10 @@ export class V2Page {
                     : { kind: 'densità', value: DENSITY_BUDGETS[this.density].nodes,
                         reason: 'La densità scelta limita i glyph individuali.' },
             hint: represented === eligibleNodes ? null : this.density === 'complete' && this.typedActive()
-                ? 'La proiezione corrente limita ancora i nodi; apri un contenitore per rivelarne altri.'
-                : 'Ingrandisci o apri un contenitore per rivelare altri nodi; scegli Completa per rappresentare tutti i nodi.',
+                ? 'La proiezione corrente non ha ancora rappresentato tutti i nodi; attendi il recupero oppure apri un contenitore per rivelare il resto.'
+                : this.density !== 'complete' && this.lod === 'far'
+                    ? 'La panoramica mostra domini e progetti; gli altri nodi restano dentro i domini chiusi. Zooma su un dominio per aprirlo, oppure scegli «Completa» per rappresentarli tutti.'
+                    : `La densità ${this.density === 'essential' ? 'Essenziale' : 'Bilanciata'} mostra una selezione dei nodi. Zooma o apri un contenitore per rivelarne altri, oppure scegli «Completa» per rappresentarli tutti.`,
             // D081-P3b END
         };
         const counter = typeof document !== 'undefined' ? document.getElementById('counter') : null;
@@ -2856,6 +2872,11 @@ export class V2Page {
                 return Object.freeze({ ...c, center: Object.freeze({ ...c.center }), open,
                     ...(title ? { title: hidden ? `${title} · +${hidden}` : title } : {}) });
             }));
+            const declaredAggregateCounts = nextContainers.reduce((counts, container) => {
+                const match = container.title?.match(/ · \+(\d+)$/);
+                if (match) { counts.members += Number(match[1]); counts.groups++; }
+                return counts;
+            }, { members: 0, groups: 0 });
             const nextLayoutSource = result.source;
             // D-080 A5b result adaptation timing.
             const adaptationBegan = performance.now();
@@ -2898,7 +2919,8 @@ export class V2Page {
                     this.lodCounts = nextLodCounts;
                     this.renderedRelations = nextRenderedRelations;
                     this.publishReveal(route, renderedIds);
-                    this.d081Publish(route, availableArcs.total, this.density === 'complete' ? this.index.nodes.length : disclosed.nodes.length);
+                    this.d081Publish(route, availableArcs.total, this.density === 'complete' ? this.index.nodes.length : disclosed.nodes.length,
+                        declaredAggregateCounts.members, declaredAggregateCounts.groups);
                     this.arcTotal = nextArcTotal;
                     this.containers = nextContainers;
                     this.previousVisible = renderedIds;
@@ -3024,7 +3046,8 @@ export class V2Page {
             this.lodCounts = nextLodCounts;
             this.renderedRelations = nextRenderedRelations;
             this.publishReveal(route, renderedIds);
-            this.d081Publish(route, availableArcs.total, this.density === 'complete' ? this.index.nodes.length : disclosed.nodes.length);
+            this.d081Publish(route, availableArcs.total, this.density === 'complete' ? this.index.nodes.length : disclosed.nodes.length,
+                declaredAggregateCounts.members, declaredAggregateCounts.groups);
             this.arcTotal = nextArcTotal;
             this.containers = nextContainers;
             this.layoutSource = nextLayoutSource;
@@ -3943,8 +3966,10 @@ export class V2Page {
         line(controls, 'Densità', { essential: 'Essenziale', balanced: 'Bilanciata', complete: 'Completa' }[this.density]);
         // D081-P3 BEGIN complete graph metric; P5 owns the surrounding panel rows.
         line(controls, 'Grafo', this.density === 'complete'
-            ? `${formatCount(this.index.nodes.length)} nodi · nessun limite di densità`
-            : `${formatCount(this.index.nodes.filter(n => n.level !== 5).length)} nodi · limite ${V2_CAP}`);
+            ? this.typedActive() && !this.indraPearlsView()
+                ? `${formatCount(this.index.nodes.length)} nodi · limite proiezione ${formatCount(V2_CAP)}`
+                : `${formatCount(this.index.nodes.length)} nodi · budget glyph completo`
+            : `${formatCount(this.index.nodes.length)} nodi · budget ${formatCount(DENSITY_BUDGETS[this.density].nodes)} glyph`);
         // D081-P3 END complete graph metric.
         if (this.axes.projection === '3d') {
             const volume = volumeStats(this.positions);
