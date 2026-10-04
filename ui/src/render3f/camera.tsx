@@ -38,13 +38,16 @@ export type CameraProjectionState = {
 };
 
 // The D-079 closest dolly (80 permille) is the last distance at which node sizing
-// follows the original target-depth rule. Closer views retain that reference.
+// follows the original target-depth rule. Closer wheel views follow their world anchor.
 const NODE_REFERENCE_FLOOR_RATIO = 0.08;
 const CLOSE_NODE_SCALE_CAP = 6;
 
 export type ReviewCameraState = VisualStateCamera & {
   readonly orbit?: readonly [number, number, number, number];
   readonly targetZ?: number;
+  readonly closeSizeAnchor?: Coordinates;
+  readonly closeSizeStartRatio?: number;
+  readonly closeSizeStartScale?: number;
   /**
    * The framing half-angle tangent this view was deliberately framed at (first mount, a kind
    * switch's fresh construction, a fit or reset remount). It travels with saved camera states so
@@ -140,6 +143,7 @@ export class CameraRig {
   private worldFramingSubjects: readonly CameraFramingSubject[];
   private worldFramingBounds: FramingBounds3d | null;
   private framingTangentValue: number;
+  private closeNodeReferenceDepthValue: number | undefined;
 
   /** This creates both projections over copied state and does not modify a world object. */
   constructor(
@@ -289,7 +293,9 @@ export class CameraRig {
     const targetDepth = Math.max(-target.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
     const pointDepth = Math.max(-pointView.z, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
     if (this.stateValue.ratio >= NODE_REFERENCE_FLOOR_RATIO) return targetDepth / pointDepth;
-    return Math.min(CLOSE_NODE_SCALE_CAP, this.nodeReferenceDepth(targetDepth) / pointDepth);
+    const reference = this.nodeReferenceDepth(targetDepth);
+    return Math.min(CLOSE_NODE_SCALE_CAP, reference / Math.max(-pointView.z,
+      reference / SCENE_PERMILLE_SCALE));
   }
 
   /** Drawn node scale for wheel picking, without constructing a camera target or view point. */
@@ -307,14 +313,24 @@ export class CameraRig {
     const targetDepth = Math.max(reference, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
     const pointDepth = Math.max(depth, SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
     if (this.stateValue.ratio >= NODE_REFERENCE_FLOOR_RATIO) return targetDepth / pointDepth;
-    return Math.min(CLOSE_NODE_SCALE_CAP, this.nodeReferenceDepth(targetDepth, span) / pointDepth);
+    const nodeReference = this.nodeReferenceDepth(targetDepth, span);
+    return Math.min(CLOSE_NODE_SCALE_CAP, nodeReference / Math.max(depth,
+      nodeReference / SCENE_PERMILLE_SCALE));
   }
 
   private nodeReferenceDepth(targetDepth: number, span = Math.max(
     this.stateValue.bounds.x[1] - this.stateValue.bounds.x[0],
     this.stateValue.bounds.y[1] - this.stateValue.bounds.y[0],
   )): number {
+    if (this.closeNodeReferenceDepthValue !== undefined) return this.closeNodeReferenceDepthValue;
     return Math.max(targetDepth, span * NODE_REFERENCE_FLOOR_RATIO * Math.SQRT2);
+  }
+
+  private perspectiveViewDepth(point: Coordinates): number {
+    const view = this.perspective.matrixWorldInverse.elements;
+    const position = this.perspective.position;
+    return -(view[2] * (point.x - position.x) + view[6] * (point.y - position.y)
+      + view[10] * (point.z - position.z));
   }
 
   /** This projects resolved framing subjects with their live screen-space drawn extents. */
@@ -393,12 +409,36 @@ export class CameraRig {
     // step proportional instead of snapping straight to the nearest configured limit.
     const minimum = Math.min(minimumPermille / SCENE_PERMILLE_SCALE, this.stateValue.ratio);
     const maximum = Math.max(maximumPermille / SCENE_PERMILLE_SCALE, this.stateValue.ratio);
+    const previousRatio = this.stateValue.ratio;
+    const nextRatio = Math.max(minimum, Math.min(maximum, previousRatio * factor));
+    const sizeAnchor = this.kindValue !== ORTHOGRAPHIC ? depthPoint ?? anchor : undefined;
+    if (sizeAnchor && nextRatio < NODE_REFERENCE_FLOOR_RATIO && nextRatio < previousRatio) {
+      const previousAnchor = this.stateValue.closeSizeAnchor;
+      const sameAnchor = previousAnchor && Math.hypot(previousAnchor.x - sizeAnchor.x,
+        previousAnchor.y - sizeAnchor.y, previousAnchor.z - sizeAnchor.z) <
+        Math.max(this.stateValue.bounds.x[1] - this.stateValue.bounds.x[0],
+          this.stateValue.bounds.y[1] - this.stateValue.bounds.y[0]) * 1e-9;
+      if (previousRatio >= NODE_REFERENCE_FLOOR_RATIO || !sameAnchor ||
+        !this.stateValue.closeSizeStartRatio || !this.stateValue.closeSizeStartScale) {
+        const targetDepth = Math.max(this.perspective.position.distanceTo(
+          perspectiveTarget(this.stateValue, this.worldCenterZ)), SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE);
+        const anchorDepth = this.perspectiveViewDepth(sizeAnchor);
+        const startRatio = previousRatio >= NODE_REFERENCE_FLOOR_RATIO
+          ? NODE_REFERENCE_FLOOR_RATIO : previousRatio;
+        // Wheel translation stays parallel to the anchor's view plane. Project its current
+        // depth to the 0.08 crossing without changing the wheel's one-step camera motion.
+        const crossingDepth = Math.max(SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE,
+          anchorDepth + targetDepth * (startRatio / previousRatio - 1));
+        const startScale = previousRatio >= NODE_REFERENCE_FLOOR_RATIO
+          ? targetDepth * startRatio / previousRatio / crossingDepth
+          : this.sizeScaleAt(sizeAnchor);
+        this.stateValue = { ...this.stateValue, closeSizeAnchor: { ...sizeAnchor },
+          closeSizeStartRatio: startRatio, closeSizeStartScale: startScale };
+      }
+    }
     this.stateValue = {
       ...this.stateValue,
-      ratio: Math.max(
-        minimum,
-        Math.min(maximum, this.stateValue.ratio * factor),
-      ),
+      ratio: nextRatio,
     };
     this.updateCameras();
     if (anchor !== undefined) {
@@ -466,6 +506,13 @@ export class CameraRig {
       this.framingTangentValue,
       this.worldFramingBounds,
     );
+    const { closeSizeAnchor, closeSizeStartRatio, closeSizeStartScale } = this.stateValue;
+    this.closeNodeReferenceDepthValue = closeSizeAnchor && closeSizeStartRatio && closeSizeStartScale &&
+      this.stateValue.ratio < NODE_REFERENCE_FLOOR_RATIO
+      ? Math.max(this.perspectiveViewDepth(closeSizeAnchor),
+          SCENE_PERMILLE_QUANTUM / SCENE_PERMILLE_SCALE) * Math.min(CLOSE_NODE_SCALE_CAP,
+          closeSizeStartScale * closeSizeStartRatio / this.stateValue.ratio)
+      : undefined;
   }
 
   /** This derives the framing tangent from bounds, subjects and viewport and does not store it. */
@@ -788,6 +835,12 @@ function copyCameraState(state: VisualStateCamera | SceneCameraRequest): ReviewC
     bounds: copyBounds(state.bounds),
     ...(validOrbit(review.orbit) ? { orbit: normalisedOrbit(review.orbit) } : {}),
     ...(Number.isFinite(review.targetZ) ? { targetZ: review.targetZ } : {}),
+    ...(review.closeSizeAnchor && [review.closeSizeAnchor.x, review.closeSizeAnchor.y,
+      review.closeSizeAnchor.z].every(Number.isFinite) && Number.isFinite(review.closeSizeStartRatio) &&
+      Number.isFinite(review.closeSizeStartScale) && (review.closeSizeStartRatio ?? 0) > 0 &&
+      (review.closeSizeStartScale ?? 0) > 0
+      ? { closeSizeAnchor: { ...review.closeSizeAnchor }, closeSizeStartRatio: review.closeSizeStartRatio,
+          closeSizeStartScale: review.closeSizeStartScale } : {}),
     ...(validFramingTangent(review.framingTangent) ? { framingTangent: review.framingTangent } : {}),
   };
 }
