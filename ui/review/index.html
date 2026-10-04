@@ -227,6 +227,10 @@
     @media(max-width:1350px) {#review-toolbar {display:block}.header-top {display:flex;flex-basis:auto}.axes,.tools {display:flex;flex-wrap:wrap}.axis {flex-wrap:wrap;white-space:normal}#toolbar-controls .tools {flex-wrap:wrap;white-space:normal}}
     @media(max-width:1100px) {#review-toolbar {max-height:39vh;padding:7px 9px}#toolbar-controls {gap:5px}#toolbar-controls .axis {min-height:0}#human-status {font-size:11px}#details,#details.drawer {right:10px;bottom:10px}}
     @media(max-width:700px) {#review-toolbar {max-height:42vh}#toolbar-controls .tools {display:flex}#header-top h1 {font-size:13px}}
+    /* D-080 A6d: preserve the full palette name and search hint inside their controls. */
+    #toolbar-controls .tools { flex-wrap:wrap; white-space:normal }
+    #toolbar-controls #search { width:200px; min-width:200px; max-width:100% }
+    #toolbar-controls #palette { min-width:156px; max-width:none }
   </style>
 </head>
 <body>
