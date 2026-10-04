@@ -3,12 +3,49 @@ type DrawerResponse = { node?: unknown; detail?: unknown; relations?: unknown; r
 type PassagePage = { children?: unknown; passages?: unknown; total?: unknown; has_more?: unknown; next_offset?: unknown };
 const record = (value: unknown): JsonRecord => value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : {};
 const text = (value: unknown): string => typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+/** Decode text fields that contain one JSON-string escaping layer, without changing the source record. */
+export const displayText = (raw: unknown): string => text(raw).replace(/\\(?:u[\da-fA-F]{4}|["\\/bfnrt])/g, escape => {
+  if (escape.startsWith('\\u')) return String.fromCharCode(Number.parseInt(escape.slice(2), 16));
+  return ({ '\\"': '"', '\\\\': '\\', '\\/': '/', '\\b': '\b', '\\f': '\f', '\\n': '\n', '\\r': '\r', '\\t': '\t' } as Record<string, string>)[escape] ?? escape;
+});
+/** Context is an excerpt: mark its cut edge and remove punctuation stranded at the quote boundary. */
+export const contextExcerpt = (raw: unknown, side: 'before' | 'after'): string => {
+  let excerpt = displayText(raw).trim();
+  if (!excerpt) return '';
+  if (side === 'before') excerpt = excerpt.replace(/[\s,;:–—-]+$/u, '').trimEnd();
+  else excerpt = excerpt.replace(/^[\s,;:–—-]+/u, '').trimStart();
+  if (!excerpt) return '';
+  return side === 'before' ? `…${excerpt}` : `${excerpt}…`;
+};
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const value = (...items: unknown[]): string => items.map(text).find(item => item.trim()) ?? '';
+const passageKey = (item: JsonRecord): string => {
+  const citation = record(item.citation);
+  const span = value(citation.span, item.span, item.text, item.context);
+  const source = value(citation.source_id, item.source_id);
+  const digest = value(citation.snapshot_digest, item.snapshot_digest);
+  const start = value(citation.start_byte, item.start_byte);
+  const end = value(citation.end_byte, item.end_byte);
+  return source || digest || start || end || span ? [source, digest, start, end, span].join('\u0000') : '';
+};
+const passageRichness = (item: JsonRecord): number => Number(Boolean(item.context_before)) + Number(Boolean(item.context_after));
+export const mergePassageItems = (citations: JsonRecord[], passages: JsonRecord[]): JsonRecord[] => {
+  const merged: JsonRecord[] = [];
+  const positions = new Map<string, number>();
+  for (const item of [...citations, ...passages]) {
+    const key = passageKey(item);
+    const position = key ? positions.get(key) : undefined;
+    if (position === undefined) {
+      if (key) positions.set(key, merged.length);
+      merged.push(item);
+    } else if (passageRichness(item) > passageRichness(merged[position]!)) merged[position] = item;
+  }
+  return merged;
+};
 const label = (item: JsonRecord): string => value(item.title, item.label, item.name, item.statement);
 const KIND: Record<string, string> = { domain: 'Dominio', project: 'Progetto', work: 'Opera', conversation: 'Conversazione', proposal: 'Proposta', passage: 'Passaggio', canon: 'Canone', memory: 'Memoria', note: 'Nota' };
 const kindName = (node: JsonRecord): string => KIND[value(node.kind, node.type, node.level).toLowerCase()] ?? value(node.kind, node.type, node.level, 'Elemento');
-const badgeName = (detail: JsonRecord, node: JsonRecord): string => {
+export const badgeName = (detail: JsonRecord, node: JsonRecord): string => {
   const status = value(detail.canonical_status, detail.overlay_status, detail.standing, detail.epistemic_status, node.status, node.standing).toLowerCase();
   if (status.includes('explor')) return 'Esplorativo · non canonico';
   if (status.includes('proposal') || status.includes('candidat') || kindName(node) === 'Proposta') return 'Proposta · non canonica';
@@ -120,7 +157,10 @@ export class NodeDrawer {
     this.host.replaceChildren(root);
   }
   private line(host: HTMLElement, heading: string, raw: unknown): void {
-    const shown = text(raw); if (!shown) return;
+    this.lineText(host, heading, displayText(raw));
+  }
+  private lineText(host: HTMLElement, heading: string, shown: string): void {
+    if (!shown) return;
     const p = this.host.ownerDocument.createElement('p'); const strong = this.host.ownerDocument.createElement('strong'); strong.textContent = `${heading}: `;
     p.append(strong, this.host.ownerDocument.createTextNode(shown)); host.append(p);
   }
@@ -153,7 +193,7 @@ export class NodeDrawer {
     const input = this.host.ownerDocument.createElement('input'); input.type = 'search'; input.placeholder = 'Filtra il contenuto caricato'; input.setAttribute('aria-label', 'Filtra il contenuto caricato'); input.dataset.action = 'filter'; input.value = this.query; host.append(input);
     if (this.childrenError) { const error = this.host.ownerDocument.createElement('p'); error.className = 'drawer-error'; error.textContent = `Errore nel caricamento dei passaggi: ${this.childrenError}`; host.append(error); }
     const citations = list(detail.citations).map(record);
-    const items = [...citations, ...this.pageItems];
+    const items = mergePassageItems(citations, this.pageItems);
     const needle = this.query.trim().toLocaleLowerCase();
     const filtered = items.filter(item => `${value(item.span, item.text, item.context, item.source_id)} ${value(item.context_before, item.context_after)}`.toLocaleLowerCase().includes(needle));
     for (const item of filtered) this.renderPassage(host, item);
@@ -163,10 +203,10 @@ export class NodeDrawer {
   }
   private renderPassage(host: HTMLElement, item: JsonRecord): void {
     const article = this.host.ownerDocument.createElement('article'); article.className = 'node-drawer-passage';
-    this.line(article, 'Contesto precedente', item.context_before);
+    this.lineText(article, 'Contesto precedente', contextExcerpt(item.context_before, 'before'));
     const quote = this.host.ownerDocument.createElement('blockquote'); const span = value(record(item.citation).span, item.span, item.text, item.context);
-    const mark = this.host.ownerDocument.createElement('mark'); mark.textContent = span; quote.append(mark); article.append(quote);
-    this.line(article, 'Contesto successivo', item.context_after);
+    const mark = this.host.ownerDocument.createElement('mark'); mark.textContent = displayText(span); quote.append(mark); article.append(quote);
+    this.lineText(article, 'Contesto successivo', contextExcerpt(item.context_after, 'after'));
     const citation = record(item.citation); this.line(article, 'Citazione verificata', citation.start_byte !== undefined ? `${text(citation.start_byte)}–${text(citation.end_byte)} byte · ${text(citation.snapshot_digest)}` : '');
     host.append(article);
   }
