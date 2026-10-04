@@ -302,6 +302,12 @@ void main() {
       min(startRadius * 1.1, ordinary * 6.0)) : ordinary;
     float endRoot = v_neuralRootRatios.y < 0.0 ? ordinary * -v_neuralRootRatios.y : endRadius > 0.0 ? max(ordinary * v_neuralRootRatios.y,
       min(endRadius * 1.1, ordinary * 6.0)) : ordinary;
+    // D081-P1E BEGIN: low-degree roots fit inside the soma protrusion at the joint.
+    if (v_neuralRootRatios.x > 0.0 && v_neuralRootRatios.x <= 1.8 && startRadius > 0.0)
+      startRoot = min(startRoot, max(ordinary, startRadius * 0.9));
+    if (v_neuralRootRatios.y > 0.0 && v_neuralRootRatios.y <= 1.8 && endRadius > 0.0)
+      endRoot = min(endRoot, max(ordinary, endRadius * 0.9));
+    // D081-P1E END
     float span = max(length(v_cpC - v_cpA), 1.0);
     float startShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
       max(12.0 * u_devicePixelRatio, startRadius * 2.5 + ordinary * 3.0)) / span);

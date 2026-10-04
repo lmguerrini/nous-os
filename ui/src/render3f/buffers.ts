@@ -1,7 +1,9 @@
 import type { Coordinates } from "#engine/contract.ts";
 import type { OklchToken } from "#engine/tokens.ts";
 import { morphologyHash } from "#engine/stable-hash.ts";
-import { buildMorphologyGeometry, type MorphologyNodeShape } from "#engine/morphology-geometry.ts";
+// D081-P1E BEGIN: share the area normalization with canvas without another renderer import.
+import { buildMorphologyGeometry, somaLobeAreaScale, type MorphologyNodeShape } from "#engine/morphology-geometry.ts";
+// D081-P1E END
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import type { Scene, SceneAggregate, SceneEdge, SceneNode, SceneTokenEncoding } from "#scene/contract.ts";
 type NeuralRoute = ReturnType<typeof buildMorphologyGeometry>["drawnSegments"][number];
@@ -16,6 +18,9 @@ export type NodeBuffers = {
   /** Neural flag; the outline itself is carried by the incident-edge shape arrays. */
   readonly somaShape: Float32Array;
   readonly somaAxisAndEccentricity: Float32Array; readonly somaHarmonics12: Float32Array; readonly somaHarmonic3: Float32Array;
+  // D081-P1E BEGIN: bounded, real trunk directions for the Neural GPU silhouette.
+  readonly somaLobe0: Float32Array; readonly somaLobe1: Float32Array; readonly somaLobe2: Float32Array;
+  // D081-P1E END
   readonly haloStopOffsets: Float32Array;
   readonly haloStopAlphaMultipliers: Float32Array;
   readonly haloStopCounts: Float32Array;
@@ -90,6 +95,11 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
   const somaShape = new Float32Array(ordered.length * 2);
   const somaAxisAndEccentricity = new Float32Array(ordered.length * 4);
   const somaHarmonics12 = new Float32Array(ordered.length * 4); const somaHarmonic3 = new Float32Array(ordered.length * 2);
+  // D081-P1E BEGIN
+  const somaLobe0 = new Float32Array(ordered.length * 4);
+  const somaLobe1 = new Float32Array(ordered.length * 4);
+  const somaLobe2 = new Float32Array(ordered.length * 4);
+  // D081-P1E END
   const haloStopCount = ordered.reduce((maximum, node) => Math.max(maximum, node.haloAlphaStops.length), 0);
   const haloStopOffsets = new Float32Array(ordered.length * haloStopCount);
   const haloStopAlphaMultipliers = new Float32Array(ordered.length * haloStopCount);
@@ -107,10 +117,29 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
     coreSharpnessPermille[index] = node.coreSharpnessPermille;
     minimumCoreDeviceRadiiPx[index] = node.minimumCoreDeviceRadiusPx;
     somaShape[index * 2] = neuralNodeIds.has(node.id) ? 1 : 0;
-    somaShape[index * 2 + 1] = neuralNodeIds.has(node.id) ? 0 : (morphologyHash(node.id) % 6283) / 1000;
+    // D081-P1E BEGIN: the second channel carries Neural outline area normalization.
+    somaShape[index * 2 + 1] = neuralNodeIds.has(node.id) ? 1 : (morphologyHash(node.id) % 6283) / 1000;
+    // D081-P1E END
     if (shape) {
       somaAxisAndEccentricity.set([shape.axis.x, shape.axis.y, shape.axis.z, shape.eccentricity], index * 4);
       somaHarmonics12.set([shape.outline[0]?.amplitude ?? 0, shape.outline[0]?.phase ?? 0, shape.outline[1]?.amplitude ?? 0, shape.outline[1]?.phase ?? 0], index * 4); somaHarmonic3.set([shape.outline[2]?.amplitude ?? 0, shape.outline[2]?.phase ?? 0], index * 2);
+      // D081-P1E BEGIN: only three clustered principal trunks, with no new scene semantics.
+      const trunks = (shape.trunks ?? []).slice(0, 3);
+      const maximum = Math.max(1, ...trunks.map(trunk => trunk.weight));
+      const lobes = trunks.map(trunk => ({ angle: Math.atan2(trunk.direction.y, trunk.direction.x),
+        strength: 0.34 + 0.10 * Math.sqrt(trunk.weight / maximum) }));
+      const axisAngle = Math.atan2(shape.axis.y, shape.axis.x);
+      somaShape[index * 2 + 1] = somaLobeAreaScale(lobes,
+        angle => {
+          const local = angle - axisAngle;
+          const eccentricity = shape.eccentricity;
+          return eccentricity / Math.hypot(Math.cos(local), eccentricity * Math.sin(local));
+        });
+      trunks.forEach((trunk, lobeIndex) => [somaLobe0, somaLobe1, somaLobe2][lobeIndex]!.set([
+        trunk.direction.x, trunk.direction.y, trunk.direction.z,
+        0.34 + 0.10 * Math.sqrt(trunk.weight / maximum),
+      ], index * 4));
+      // D081-P1E END
     } else if (neuralNodeIds.has(node.id)) somaAxisAndEccentricity.set([1, 0, 0, 1], index * 4);
     haloStopCounts[index] = node.haloAlphaStops.length;
     for (const [stopIndex, stop] of node.haloAlphaStops.entries()) {
@@ -132,6 +161,9 @@ export function buildNodeBuffers(nodes: readonly SceneNode[], encoding: SceneTok
     minimumCoreDeviceRadiiPx,
     somaShape,
     somaAxisAndEccentricity, somaHarmonics12, somaHarmonic3,
+    // D081-P1E BEGIN
+    somaLobe0, somaLobe1, somaLobe2,
+    // D081-P1E END
     haloStopOffsets,
     haloStopAlphaMultipliers,
     haloStopCounts,

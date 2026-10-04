@@ -145,7 +145,9 @@ const RENDERER_IMPORT_SYMBOL_ALLOW_LIST: ReadonlyMap<string, ReadonlyMap<string,
     ["#engine/contract.ts", new Set(["Coordinates"])],
     ["#engine/tokens.ts", new Set(["OklchToken"])],
     ["#engine/stable-hash.ts", new Set(["morphologyHash"])],
-    ["#engine/morphology-geometry.ts", new Set(["buildMorphologyGeometry", "MorphologyNodeShape"])],
+    // D081-P1E BEGIN: the GPU buffer shares the pure soma-area normalization.
+    ["#engine/morphology-geometry.ts", new Set(["buildMorphologyGeometry", "MorphologyNodeShape", "somaLobeAreaScale"])],
+    // D081-P1E END
     ["#scene/contract.ts", new Set([
       "SCENE_PERMILLE_SCALE",
       "Scene",

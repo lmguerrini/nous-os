@@ -38,6 +38,8 @@ uniform vec2 u_resolutionDevicePx;
 uniform float u_devicePixelRatio, u_orthographicSizeScale, u_isPerspective, u_referenceViewDepth, u_permilleScale;
 // A1b outside-ownership bridge: the camera supplies 6 at close range, 1000 otherwise.
 uniform float u_nodeScaleCap;
+uniform sampler2D u_haloStops;
+uniform int u_somaLobeOffset;
 // End A1b outside-ownership bridge.
 out vec2 v_localDevicePx;
 flat out vec3 v_color;
@@ -45,6 +47,19 @@ flat out float v_coreRadiusDevicePx, v_haloRadiusDevicePx, v_opacity, v_haloInte
 flat out int v_haloStopCount, v_instanceIndex;
 flat out vec2 v_somaShape;
 flat out vec2 v_somaAxisScreen, v_somaHarmonic3; flat out float v_somaEccentricity; flat out vec4 v_somaHarmonics12;
+flat out vec3 v_somaLobe0, v_somaLobe1, v_somaLobe2;
+vec3 projectedLobe(vec4 lobe, vec3 center, vec4 clipCenter) {
+  if (lobe.w <= 0.0) return vec3(0.0);
+  vec4 clipTip = projectionMatrix * (modelViewMatrix * vec4(center + lobe.xyz, 1.0));
+  vec2 direction = clipTip.xy / clipTip.w - clipCenter.xy / clipCenter.w;
+  float lengthPx = length(direction);
+  return lengthPx > 0.000001 ? vec3(direction / lengthPx, lobe.w) : vec3(0.0);
+}
+vec4 somaLobe(int slot, int instanceIndex) {
+  vec2 xy = texelFetch(u_haloStops, ivec2(u_somaLobeOffset + slot * 2, instanceIndex), 0).rg;
+  vec2 zw = texelFetch(u_haloStops, ivec2(u_somaLobeOffset + slot * 2 + 1, instanceIndex), 0).rg;
+  return vec4(xy, zw);
+}
 void main() {
   vec4 viewCenter = modelViewMatrix * vec4(a_worldPosition, 1.0);
   vec4 clipCenter = projectionMatrix * viewCenter;
@@ -83,6 +98,9 @@ void main() {
   v_somaAxisScreen = axisLength > 0.00001 ? projectedAxis / axisLength : vec2(1.0, 0.0);
   v_somaEccentricity = sqrt(1.0 + (a_somaAxisAndEccentricity.w * a_somaAxisAndEccentricity.w - 1.0) * clamp(axisLength * axisLength / max(basisLength * basisLength, 0.00000001), 0.0, 1.0));
   v_somaHarmonics12 = a_somaHarmonics12; v_somaHarmonic3 = a_somaHarmonic3;
+  v_somaLobe0 = projectedLobe(somaLobe(0, int(a_instanceIndex)), a_worldPosition, clipCenter);
+  v_somaLobe1 = projectedLobe(somaLobe(1, int(a_instanceIndex)), a_worldPosition, clipCenter);
+  v_somaLobe2 = projectedLobe(somaLobe(2, int(a_instanceIndex)), a_worldPosition, clipCenter);
 }`;
 
 /** This composes a fuller-centred soft core with scene-sampled halo alpha and does not invent a bloom magnitude. */
@@ -93,6 +111,7 @@ flat in float v_coreRadiusDevicePx, v_haloRadiusDevicePx, v_opacity, v_haloInten
 flat in int v_haloStopCount, v_instanceIndex;
 flat in vec2 v_somaShape;
 flat in vec2 v_somaAxisScreen, v_somaHarmonic3; flat in float v_somaEccentricity; flat in vec4 v_somaHarmonics12;
+flat in vec3 v_somaLobe0, v_somaLobe1, v_somaLobe2;
 uniform sampler2D u_haloStops;
 uniform float u_permilleScale;
 uniform float u_devicePixelRatio;
@@ -112,6 +131,12 @@ float sampledHaloAlpha(float offset) {
   }
   return previous.y;
 }
+float somaLobe(vec3 lobe, vec2 radial) {
+  if (lobe.z <= 0.0) return 0.0;
+  float delta = atan(radial.y, radial.x) - atan(lobe.y, lobe.x);
+  delta = atan(sin(delta), cos(delta));
+  return lobe.z * exp(-0.5 * pow(delta / 0.42, 2.0));
+}
 void main() {
   float radialDistance = length(v_localDevicePx);
   float somaDistance = radialDistance;
@@ -121,15 +146,13 @@ void main() {
     float eccentricity = clamp(v_somaEccentricity * jitter, v_somaEccentricity, 1.9);
     float theta = atan(local.y, local.x / eccentricity);
     float irregularity = v_somaHarmonics12.x * cos(theta + v_somaHarmonics12.y) + v_somaHarmonics12.z * cos(2.0 * theta + v_somaHarmonics12.w) + v_somaHarmonic3.x * cos(3.0 * theta + v_somaHarmonic3.y);
-    // D081-P1 BEGIN: connected-trunk harmonics drive a smooth primary root lobe.
-    float primary = max(0.0, cos(theta + v_somaHarmonics12.y));
-    float rootLobe = 0.24 * primary * primary * primary * primary;
-    float secondary = max(0.0, cos(2.0 * theta + v_somaHarmonics12.w));
-    rootLobe += min(0.09, v_somaHarmonics12.z * 3.0) * pow(secondary, 6.0);
+    // D081-P1E BEGIN: the canvas and GPU use the same bounded radial lobe function.
+    float rootLobe = max(somaLobe(v_somaLobe0, v_localDevicePx),
+      max(somaLobe(v_somaLobe1, v_localDevicePx), somaLobe(v_somaLobe2, v_localDevicePx)));
     float spindle = 1.0 + 0.16 * cos(theta) - 0.045 * cos(2.0 * theta);
     float bulge = (1.0 + clamp(irregularity * 1.6, -0.12, 0.12))
-      * spindle * (1.0 + rootLobe);
-    // D081-P1 END
+      * spindle * (1.0 + rootLobe) * v_somaShape.y;
+    // D081-P1E END
     somaDistance = length(vec2(local.x / eccentricity, local.y)) / bulge;
   }
   // Preserve the governed gradient core and its sharpness.
@@ -183,6 +206,7 @@ export function createNodeRenderResources(buffers: NodeBuffers): NodeRenderResou
       // End A1b outside-ownership bridge.
       u_permilleScale: { value: SCENE_PERMILLE_SCALE },
       u_haloStops: { value: haloStops },
+      u_somaLobeOffset: { value: Math.max(1, buffers.haloStopCount) },
     },
     transparent: true,
     depthTest: true,
@@ -212,7 +236,7 @@ export function updateNodeRenderResources(resources: NodeRenderResources, buffer
   copyAttribute(resources.geometry, "a_minimumCoreDeviceRadiusPx", buffers.minimumCoreDeviceRadiiPx);
   copyAttribute(resources.geometry, "a_haloStopCount", buffers.haloStopCounts);
   const textureData = resources.haloStops.image.data;
-  const expectedTextureLength = Math.max(scalarCount(), buffers.haloStopCount)
+  const expectedTextureLength = (Math.max(scalarCount(), buffers.haloStopCount) + 6)
     * Math.max(scalarCount(), buffers.ids.length)
     * textureChannelCount();
   if (!(textureData instanceof Float32Array)
@@ -236,7 +260,7 @@ export function updateNodeProjectionUniforms(material: THREE.RawShaderMaterial, 
 }
 
 function haloStopTexture(buffers: NodeBuffers): THREE.DataTexture {
-  const width = Math.max(scalarCount(), buffers.haloStopCount);
+  const width = Math.max(scalarCount(), buffers.haloStopCount) + 6;
   const height = Math.max(scalarCount(), buffers.ids.length);
   const data = new Float32Array(width * height * textureChannelCount());
   writeHaloTextureData(data, buffers);
@@ -250,13 +274,21 @@ function haloStopTexture(buffers: NodeBuffers): THREE.DataTexture {
 
 function writeHaloTextureData(target: Float32Array, buffers: NodeBuffers): void {
   target.fill(0);
+  const rowWidth = (Math.max(scalarCount(), buffers.haloStopCount) + 6) * textureChannelCount();
   for (const [index, offset] of buffers.haloStopOffsets.entries()) {
-    target[index * textureChannelCount()] = offset;
-    target[(index * textureChannelCount()) + 1] = requiredNumber(
+    const nodeIndex = Math.floor(index / buffers.haloStopCount);
+    const stopIndex = index % buffers.haloStopCount;
+    const destination = nodeIndex * rowWidth + stopIndex * textureChannelCount();
+    target[destination] = offset;
+    target[destination + 1] = requiredNumber(
       buffers.haloStopAlphaMultipliers[index],
       "node halo alpha multiplier",
     );
   }
+  const offset = Math.max(scalarCount(), buffers.haloStopCount) * textureChannelCount();
+  for (let index = 0; index < buffers.ids.length; index++)
+    for (const [slot, source] of [buffers.somaLobe0, buffers.somaLobe1, buffers.somaLobe2].entries())
+      target.set(source.subarray(index * 4, index * 4 + 4), index * rowWidth + offset + slot * 4);
 }
 
 function copyAttribute(geometry: THREE.InstancedBufferGeometry, name: string, values: Float32Array): void {

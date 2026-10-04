@@ -3,7 +3,8 @@ import { DEFAULT_APPEARANCE } from "#engine/presentation-options.ts";
 import type { Coordinates } from "#engine/contract.ts";
 import type { Morphology } from "#engine/morphology.ts";
 import type { MorphologyContainerPath, MorphologyGeometry, MorphologyInput, MorphologyNodeShape, MorphologySegment, SomaOutlineHarmonic } from "#engine/morphology-geometry.ts";
-import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralJoinedRootWidthPx, neuralRootRatio, neuralScreenWidthAt, somaOutlineIrregularity } from "#engine/morphology-geometry.ts";
+import { NEURAL_HALO_MAX_ALPHA, NEURAL_HALO_MAX_RADIUS_RATIO, SOMA_OUTLINE_MAX_RADIAL, morphologyHash, neuralDetailVisible, neuralJoinedRootWidthPx, neuralRootRatio, neuralScreenWidthAt, somaOutlineIrregularity, somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
+export { somaLobeAreaScale, somaLobeFactor } from "#engine/morphology-geometry.ts";
 import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { SCENE_PERMILLE_SCALE } from "#scene/contract.ts";
 import { createContainerFrameCache, drawContainers, drawContainerTitles } from "#render-common/container-canvas.ts";
@@ -507,7 +508,9 @@ export type NeuralSomaFrame = {
   readonly harmonics: readonly SomaOutlineHarmonic[];
   readonly spindle?: boolean;
   readonly lobes?: readonly { readonly angle: number; readonly strength: number }[];
+  readonly lobeAreaScale?: number;
 };
+export const NEURAL_SOMA_MAX_VERTICES = 64;
 
 /** A broad, smooth lobe extends the leading soma pole into its strongest real process. */
 export function somaSpindleFactor(theta: number): number {
@@ -552,15 +555,17 @@ export function neuralSomaFrames(geometry: MorphologyGeometry, project: (point: 
         y: node.position.y + trunk.direction.y, z: node.position.z + trunk.direction.z });
       return Math.hypot(tip.x - p.x, tip.y - p.y) < 1e-6 ? []
         : [{ angle: Math.atan2(tip.y - p.y, tip.x - p.x),
-          strength: 0.12 + 0.18 * Math.sqrt(trunk.weight / maximum) }];
+          strength: 0.34 + 0.10 * Math.sqrt(trunk.weight / maximum) }];
     });
-    frames.set(node.id, {
+    const frame: NeuralSomaFrame = {
       x: p.x, y: p.y, angle, radius,
       eccentricity,
       harmonics: node.outline ?? [],
       spindle: !!node.spindleRatio,
       lobes,
-    });
+    };
+    frames.set(node.id, { ...frame, lobeAreaScale: somaLobeAreaScale(lobes,
+      polarAngle => somaOutlineRadiusAtAngle({ ...frame, lobes: [] }, polarAngle)) });
   }
   return frames;
 }
@@ -578,20 +583,9 @@ export function somaOutlineRadiusAtAngle(frame: NeuralSomaFrame, polarAngle: num
   const bulge = 1 + clamp(
     somaOutlineIrregularity(frame.harmonics, parameter) * somaIrregularityScale(frame.radius) * SOMA_IRREGULARITY_BOOST,
     -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
-  const lobes = somaLobeFactor(frame.lobes ?? [], polarAngle);
+  const lobes = somaLobeFactor(frame.lobes ?? [], polarAngle, frame.lobeAreaScale);
   return bulge * (frame.spindle ? somaSpindleFactor(parameter) : 1) * lobes
     * Math.hypot(major * Math.cos(parameter), minor * Math.sin(parameter));
-}
-
-/** Smooth union-like radial extension toward at most three actual projected trunk directions. */
-export function somaLobeFactor(lobes: readonly { readonly angle: number; readonly strength: number }[], angle: number): number {
-  let extension = 0;
-  for (const lobe of lobes) {
-    const delta = Math.atan2(Math.sin(angle - lobe.angle), Math.cos(angle - lobe.angle));
-    const shoulder = Math.exp(-0.5 * (delta / 0.34) ** 2);
-    extension = Math.max(extension, lobe.strength * shoulder);
-  }
-  return 1 + extension;
 }
 
 /**
@@ -998,6 +992,7 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
     // pass is about to draw under it — overlapping the boundary, so soma and dendrites read as one
     // shape with no suspended-egg gap. Screen space, so 2D and 3D share the exact grammar.
     let startRadius = 0, endRadius = 0;
+    let startRootCap = Infinity, endRootCap = Infinity;
     let rootRatios: readonly [number, number] = [1.8, 1.8];
     if (somaFrames && endpointSomata) {
       const [segmentStart, segmentEnd] = segmentEnds(part);
@@ -1013,6 +1008,10 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         rootRatios = [rootRatios[0], part.trunkTargetWidthFactor ?? rootRatios[1]];
       startRadius = startFrame?.radius ?? 0;
       endRadius = endFrame?.radius ?? 0;
+      // D081-P1E BEGIN: the low-degree ribbon fits inside the teardrop shoulder.
+      if (startFrame && (startSoma?.degree ?? 0) <= 3) startRootCap = startRadius * 0.9;
+      if (endFrame && (endSoma?.degree ?? 0) <= 3) endRootCap = endRadius * 0.9;
+      // D081-P1E END
       if (startFrame || endFrame) {
         let first = points[0]!, last = points[points.length - 1]!;
         if (startFrame) {
@@ -1057,10 +1056,10 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
           * (emphasis?.radiusMultiplier ?? 1));
         const ordinary = neuralScreenWidthAt(t, body, startRadius, endRadius, rootRatios, totalPx,
           [(part.trunkSourceCount ?? 1) <= 1, (part.trunkTargetCount ?? 1) <= 1]);
-        return Math.max(ordinary,
+        return Math.min(Math.max(body, t < 0.5 ? startRootCap : endRootCap), Math.max(ordinary,
           neuralBranchedWidthPx(i, points.length, part.sourceBranches?.length ?? 0, body, startRadius, rootRatios[0]),
           neuralBranchedWidthPx(points.length - 1 - i, points.length, part.targetBranches?.length ?? 0,
-            body, endRadius, rootRatios[1]));
+            body, endRadius, rootRatios[1])));
       }
       const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
       return clamp(profile * factors * appearance.edgeWidth, 0.5, 16);
@@ -1546,7 +1545,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
           : somaDrawnElongation(projectedEccentricity, harmonics);
       }
       const major = radius * eccentricity, minor = radius;
-      const steps = simplified ? 24 : moving ? 32 : 64;
+      const steps = simplified ? 24 : moving ? 32 : NEURAL_SOMA_MAX_VERTICES;
       const cosA = Math.cos(angle), sinA = Math.sin(angle);
       const irregularityScale = somaIrregularityScale(radius);
       const somaPath = () => {
@@ -1558,7 +1557,7 @@ export function drawMorphologyCanvas(context: CanvasRenderingContext2D, geometry
             -SOMA_OUTLINE_MAX_RADIAL, SOMA_OUTLINE_MAX_RADIAL);
           const polarAngle = Math.atan2(minor * Math.sin(theta), major * Math.cos(theta)) + angle;
           const silhouette = bulge * (node.spindleRatio ? somaSpindleFactor(theta) : 1)
-            * somaLobeFactor(frame?.lobes ?? [], polarAngle);
+            * somaLobeFactor(frame?.lobes ?? [], polarAngle, frame?.lobeAreaScale);
           const ex = major * Math.cos(theta) * silhouette;
           const ey = minor * Math.sin(theta) * silhouette;
           const x = p.x + cosA * ex - sinA * ey;

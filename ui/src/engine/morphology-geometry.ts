@@ -131,6 +131,37 @@ export const MYCELIUM_AMPLITUDE_CAP_PX = 48;
  * organic shape stays visible at overview without deforming tiny cells. */
 export const SOMA_OUTLINE_MAX_RADIAL = 0.12;
 
+// D081-P1E BEGIN: pure lobe profile shared by the canvas and GPU buffer builder.
+export type SomaLobe = { readonly angle: number; readonly strength: number };
+export function somaLobeAreaScale(lobes: readonly SomaLobe[],
+  baseRadiusAtAngle: (angle: number) => number = () => 1): number {
+  if (!lobes.length) return 1;
+  let before = 0, after = 0;
+  for (let i = 0; i < 64; i++) {
+    const angle = 2 * Math.PI * i / 64;
+    const extension = (old: boolean) => Math.max(0, ...lobes.map(lobe => {
+      const delta = Math.atan2(Math.sin(angle - lobe.angle), Math.cos(angle - lobe.angle));
+      const strength = old ? 0.12 + 1.8 * (lobe.strength - 0.34) : lobe.strength;
+      return strength * Math.exp(-0.5 * (delta / (old ? 0.34 : 0.42)) ** 2);
+    }));
+    const baseArea = baseRadiusAtAngle(angle) ** 2;
+    before += baseArea * (1 + extension(true)) ** 2;
+    after += baseArea * (1 + extension(false)) ** 2;
+  }
+  return Math.sqrt(before / after);
+}
+export function somaLobeFactor(lobes: readonly SomaLobe[], angle: number,
+  areaScale = somaLobeAreaScale(lobes)): number {
+  let extension = 0;
+  for (const lobe of lobes) {
+    const delta = Math.atan2(Math.sin(angle - lobe.angle), Math.cos(angle - lobe.angle));
+    const shoulder = Math.exp(-0.5 * (delta / 0.42) ** 2);
+    extension = Math.max(extension, lobe.strength * shoulder);
+  }
+  return (1 + extension) * areaScale;
+}
+// D081-P1E END
+
 const SOMA_OUTLINE_ORDERS = [2, 3, 4] as const;
 /** Deterministic per-node low-frequency outline harmonics, so no two somata are identical. */
 export function somaOutlineHarmonics(id: string): readonly SomaOutlineHarmonic[] {
