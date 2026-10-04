@@ -1919,7 +1919,11 @@ export const createProductView: CreateProductView = async (input) => {
     ...((globalThis as typeof globalThis & { __d080?: Record<string, unknown> }).__d080 ?? {}),
     perf: () => perfRecord.snapshot(morphologyInteraction.quality, scheduledDevicePixelRatio),
   };
+  // D081-P6c BEGIN: superseded frame animations must never commit after a newer fit.
+  let frameEpoch = 0;
   async function frameIds(ids: readonly string[], anchorFirst: boolean, marginPx = 32, fill = 0.9) {
+    const thisFrame = ++frameEpoch;
+    // D081-P6c END.
     // The framing belongs to the renderer mounted now; a remount during the animation must not receive a camera
     // interpolated in another renderer's convention.
     const current = handle;
@@ -1972,7 +1976,7 @@ export const createProductView: CreateProductView = async (input) => {
       await new Promise<void>((resolve) => {
         const begun = performance.now();
         const tick = (now: number) => {
-          if (destroyed || handle !== current) {
+          if (destroyed || handle !== current || thisFrame !== frameEpoch) {
             resolve();
             return;
           }
@@ -1997,7 +2001,7 @@ export const createProductView: CreateProductView = async (input) => {
         requestAnimationFrame(tick);
       });
     }
-    if (handle !== current) return;
+    if (handle !== current || thisFrame !== frameEpoch) return;
     current.restoreCameraState(final);
     // D-073 C6: the explicit framing lands under the current key and its legacy mirror, so it — not
     // some older camera — is what a later replay offers.
@@ -2041,9 +2045,15 @@ export const createProductView: CreateProductView = async (input) => {
     camera() { return three?.readReviewCameraPose() ?? null; },
     readCamera() { return handle?.readCameraState() ?? null; },
     restoreCamera(state) { if (handle && validCamera(state as VisualStateCamera)) {
+      // D081-P6c BEGIN.
+      frameEpoch++;
+      // D081-P6c END.
       handle.restoreCameraState(state as VisualStateCamera); noteCameraMotion(); labelPass();
     } },
     keepNodeAt(id: string, screenPoint: ScreenPoint) {
+      // D081-P6c BEGIN.
+      frameEpoch++;
+      // D081-P6c END.
       if (!handle || !visible.has(id)) return false;
       const anchor = handle.readWorldAnchorWitnesses().find(item => item.id === id)?.position;
       if (!anchor) return false;

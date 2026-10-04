@@ -367,7 +367,11 @@ export function solveFraming(handle: CameraHandle, request: FrameRequest): Frame
     const pixels = projectAll(handle, request.points);
     const anchor = anchorOf(pixels, request.anchorFirst);
     const centred = Math.hypot(anchor.x - target.x, anchor.y - target.y) <= CENTRE_TOLERANCE_PX * 2;
-    if (centred && fitsInside(pixels, request)) {
+    // D081-P6c BEGIN: being contained is insufficient after a close wheel dolly.
+    // A tiny graph is also contained; keep solving until it fills the requested view.
+    const fillError = Math.abs(Math.log(overflow(pixels, request) / request.fill));
+    if (centred && fitsInside(pixels, request) && fillError < 0.04) {
+      // D081-P6c END.
       return { camera, fits: true, iterations: iterations + 1 };
     }
     const miss = framingMiss(pixels, request, target);

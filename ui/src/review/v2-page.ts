@@ -526,6 +526,10 @@ export class V2Page {
     readonly history = new DisclosureHistory();
     readonly index: V2Index;
     readonly manifest: GraphManifest;
+    // D081-P6c BEGIN: lazy passage rows never change the dataset node total.
+    private readonly datasetNodeCount: number;
+    private readonly datasetNodeIds: ReadonlySet<string>;
+    // D081-P6c END.
     private view: ProductView | null = null;
     private viewHost: HTMLElement | null = null;
     private v2Colours: Partial<Record<V2Category, string>>;
@@ -642,12 +646,15 @@ export class V2Page {
         }, COMPLETE_IDLE_MS + 1);
     }
     private d081Publish(route: RouteResult, eligibleEdges: number, eligibleNodes: number) {
-        const visible = this.rendered.size;
+        // D081-P6c BEGIN: level-5 passage rows are detail, not dataset nodes.
+        const visible = [...this.rendered].filter(id => this.datasetNodeIds.has(id)).length;
+        eligibleNodes = Math.min(eligibleNodes, this.datasetNodeCount);
+        // D081-P6c END.
         const aggregated = route.aggregates.reduce((sum, item) => sum + item.memberCount - 1, 0);
         const bundles = route.drawn.filter(edge => edge.count > 1);
         const represented = Math.min(eligibleNodes, visible + aggregated);
         this.d081Metrics = {
-            nodes: { visible, represented, total: this.index.nodes.length, eligible: eligibleNodes,
+            nodes: { visible, represented, total: this.datasetNodeCount, eligible: eligibleNodes,
                 aggregated, aggregates: route.aggregates.length },
             edges: { drawn: route.drawn.length, bundled: bundles.reduce((sum, edge) => sum + edge.count, 0),
                 bundles: bundles.length, eligible: eligibleEdges,
@@ -666,7 +673,7 @@ export class V2Page {
             // D081-P3b END
         };
         const counter = typeof document !== 'undefined' ? document.getElementById('counter') : null;
-        if (counter) counter.textContent = `${formatCount(visible)} visibili · ${formatCount(represented)}/${formatCount(this.index.nodes.length)} rappresentati · ${formatCount(route.drawn.length)} archi`;
+        if (counter) counter.textContent = `${formatCount(visible)} visibili · ${formatCount(represented)}/${formatCount(this.datasetNodeCount)} rappresentati · ${formatCount(route.drawn.length)} archi`;
         if (this.d081Quality !== 'movimento' && this.d081LastInteraction) this.d081FinishIfReady();
         else if (!this.d081LastInteraction) this.d081Quality = 'completa';
         this.d081Emit();
@@ -678,9 +685,18 @@ export class V2Page {
     private readonly onNodePicked: ((id: string) => void) | undefined;
     private insets: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
     private lastFitCamera: ReturnType<ProductView['readCamera']> = null;
+    // D081-P6c BEGIN: an explicit fit reuses the exact settled camera for this scene.
+    private readonly canonicalFitCameras = new Map<string, ReturnType<ProductView['readCamera']>>();
+    private canonicalFitKey(): string {
+        return `${this.lastBoundsKey}|${JSON.stringify(this.insets)}|${this.axes.brain === true}`;
+    }
+    // D081-P6c END.
     /** Set by the user's own camera gestures; an automatic refit only happens while it is false. */
     private userMovedSinceFit = false;
     private cameraIntentEpoch = 0;
+    // D081-P6c BEGIN: invalidate delayed passage disclosures across an explicit fit.
+    private fitRequestEpoch = 0;
+    // D081-P6c END.
     private confirmFitTimer: number | null = null;
     private auto = new Set<string>();
     private autoPageCounts = new Map<string, number>();
@@ -813,6 +829,10 @@ export class V2Page {
     constructor(manifest: GraphManifest, index: V2Index, axes: FullAxesInput, appearance: AppearanceOptions, palette: PaletteValues, colours: Partial<Record<V2Category, string>> = {}, density: Density = 'balanced', deps: V2PageDeps = {}) {
         this.manifest = manifest;
         this.index = index;
+        // D081-P6c BEGIN.
+        this.datasetNodeIds = new Set(index.nodes.filter(node => node.level !== 5).map(node => node.id));
+        this.datasetNodeCount = this.datasetNodeIds.size;
+        // D081-P6c END.
         // D081-P6 BEGIN: depth lookup is reused by each 3D wheel sample.
         this.wheelLevels = new Map(index.nodes.map(node => [node.id, node.level]));
         // D081-P6 END.
@@ -1175,8 +1195,11 @@ export class V2Page {
         if (!changed && this.revealRoute) this.publishReveal(this.revealRoute, this.rendered);
         this.autoPageCounts = new Map(decision.auto);
         this.auto = new Set(decision.auto.keys());
+        // D081-P6c BEGIN: a passage fetched for a close zoom cannot replay that zoom after Adatta.
+        const requestedBeforeFit = this.fitRequestEpoch;
         if (decision.passageRequests.length) for (const id of decision.passageRequests)
             void this.passages(id, this.index.nodes.filter(node => node.parent === id).length).then(() => {
+                if (requestedBeforeFit !== this.fitRequestEpoch) return;
                 const after = stepReveal({ index: this.index, disclosure: this.history.state, zoom, settled: true,
                     cursor: this.cursor, selectionId: this.selected, focusId: this.projectionFocus(),
                     explicitFocusId: this.selected ? this.projectionFocus() : null,
@@ -1188,6 +1211,7 @@ export class V2Page {
                 this.auto = new Set(after.auto.keys());
                 void this.refresh();
             });
+        // D081-P6c END.
         return changed;
     }
     /** B9 owns relation identity. Rehash the B5 result after replacing its temporary relation IDs. */
@@ -3063,6 +3087,9 @@ export class V2Page {
             }
             if (!old) {
                 this.lastFitCamera = this.view.readCamera(); this.userMovedSinceFit = false;
+                // D081-P6c BEGIN.
+                this.canonicalFitCameras.set(this.canonicalFitKey(), this.lastFitCamera);
+                // D081-P6c END.
                 if (cameraAction !== 'refit' && (this.insets.top > 0 || this.insets.right > 0
                     || this.insets.bottom > 0 || this.insets.left > 0))
                     this.confirmFit(this.view, this.cameraIntentEpoch);
@@ -3473,10 +3500,17 @@ export class V2Page {
     async setPalette(value: PaletteValues) { this.palette = value; await this.refresh(); }
     async setCategoryColours(value: Partial<Record<V2Category, string>>) { this.v2Colours = value; await this.refresh(); }
     async fit() {
-        // D081-P6 BEGIN.
+        // D081-P6c BEGIN: drain any queued semantic refresh before framing and make late
+        // passage completions inert. A second fit supersedes the first animation/refresh.
+        const request = ++this.fitRequestEpoch;
         this.wheelGesture = null;
-        // D081-P6 END.
         this.noteCameraIntent();
+        this.pendingLod = null;
+        if (this.pointerFocusTimer !== null) window.clearTimeout(this.pointerFocusTimer);
+        this.pointerFocusTimer = null;
+        if (this.refreshPending > 0) await this.pending;
+        if (request !== this.fitRequestEpoch) return;
+        // D081-P6c END.
         const compacted = stepReveal({ index: this.index, disclosure: this.history.state,
             previous: this.revealState, zoom: 1, settled: true, fit: true,
             cursor: null, selectionId: this.selected, focusId: this.selected ? this.projectionFocus() : null,
@@ -3491,13 +3525,25 @@ export class V2Page {
         this.auto = new Set(compacted.auto.keys());
         this.lastRevealSampleKey = '';
         if (changed) await this.refresh();
+        if (request !== this.fitRequestEpoch) return;
         const fitEpoch = this.cameraIntentEpoch;
         this.programmaticCamera();
+        // D081-P6c BEGIN: the opening fit is the canonical camera for its visible set.
+        // Replaying it also removes close-dolly targetZ and anchor corrections exactly.
+        const key = this.canonicalFitKey();
+        const canonical = this.view ? this.canonicalFitCameras.get(key) : null;
         if (this.view) await this.view.fit();
+        // D081-P6c END.
         else this.projectionRenderer?.fitCamera?.();
         if (fitEpoch !== this.cameraIntentEpoch) return;
+        // D081-P6c BEGIN: complete the ordinary fit animation, then land exactly.
+        if (this.view && canonical) this.view.restoreCamera(canonical);
+        // D081-P6c END.
         this.programmaticCamera();
         this.lastFitCamera = this.view?.readCamera() ?? null;
+        // D081-P6c BEGIN.
+        if (this.view && this.lastFitCamera) this.canonicalFitCameras.set(key, this.lastFitCamera);
+        // D081-P6c END.
         this.userMovedSinceFit = false;
         const fitRatio = (this.lastFitCamera as { ratio?: number } | null)?.ratio ??
             this.projectionRenderer?.readCameraState?.()?.ratio;
