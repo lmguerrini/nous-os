@@ -106,3 +106,11 @@ test('drawer cards, provenance quotes, and relation rows expose readable fields'
   assert.match(source, /this\.technical\(host, technical\.map\(record\)\)/);
   assert.match(html, /\.node-drawer-quote\.clamped \{[^}]*max-height:9em/);
 });
+
+test('aggregate provenance presents conversations and derived proposal counts before attachments', () => {
+  assert.match(source, /conversation_proposals/);
+  assert.match(source, /items\.filter\(item => text\(item\.kind_label\) === 'Conversazione'\)/);
+  assert.match(source, /items\.filter\(item => text\(item\.kind_label\) !== 'Conversazione'\)/);
+  assert.match(source, /proposte derivate/);
+  assert.match(source, /this\.technical\(row, list\(item\.technical\)/);
+});

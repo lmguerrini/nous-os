@@ -58,6 +58,8 @@ def _sanitize_fields(record: dict, fields: tuple[str, ...], technical: list[dict
     for key in fields:
         if isinstance(record.get(key), str):
             record[key] = _display_safe(record[key], technical)
+            if key == 'title':
+                record[key] = record[key].replace('‹identificativo›', 'riferimento omesso').replace('‹impronta›', 'riferimento omesso')
 
 
 def _dedupe_technical(entries: list[dict]) -> list[dict]:
@@ -134,6 +136,32 @@ def _title(node: dict) -> str:
     return ' · '.join(parts)
 
 
+GENERATED_FILE_STEM = re.compile(
+    r'(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|'
+    r'[0-9a-fA-F]{16,64})')
+FILE_TYPE = {'.pdf': 'PDF', '.txt': 'testo', '.md': 'testo', '.markdown': 'testo',
+             '.png': 'immagine', '.jpg': 'immagine', '.jpeg': 'immagine', '.gif': 'immagine',
+             '.webp': 'immagine', '.svg': 'immagine', '.zip': 'archivio', '.tar': 'archivio',
+             '.gz': 'archivio', '.7z': 'archivio', '.rar': 'archivio'}
+
+
+def _generated_attachment_title(filename: object, conversation_title: str = '', number: str = '') -> str | None:
+    raw = str(filename or '').strip()
+    if not raw:
+        return None
+    suffix = Path(raw).suffix.lower()
+    stem = raw[:-len(suffix)] if suffix else raw
+    if not GENERATED_FILE_STEM.fullmatch(stem):
+        return None
+    kind = FILE_TYPE.get(suffix, 'file')
+    title = f'Allegato {kind} senza nome'
+    if conversation_title:
+        title += f' · da “{conversation_title}”'
+    if number:
+        title += f' · n. {number}'
+    return title
+
+
 class DrawerData:
     def __init__(self, index: dict, offsets: dict, detail_file: Path, manifest: dict | None = None):
         self.nodes = {node["id"]: node for node in index["nodes"]}
@@ -168,6 +196,19 @@ class DrawerData:
     def node(self, identifier: str) -> dict | None:
         return self.nodes.get(identifier) or self.detail(identifier)
 
+    def _title(self, identifier: str) -> str:
+        node = self.node(identifier) or {}
+        title = _title(node)
+        if node.get('kind') != 'attachment_source':
+            return title
+        detail = self.detail(identifier) or {}
+        filename = detail.get('file_name') or title
+        owner = detail.get('owner_conversation')
+        conversation = self.nodes.get('conversation:' + str(owner)) if owner else None
+        number = re.search(r' · n\. (\d+)$', title)
+        return _generated_attachment_title(filename, _title(conversation) if conversation else '',
+                                          number.group(1) if number else '') or title
+
     def descendants(self, identifier: str) -> list[str]:
         found: list[str] = []
         pending = list(reversed(self.children.get(identifier, [])))
@@ -188,7 +229,18 @@ class DrawerData:
         node = self.node(identifier) or {}
         kind = node.get("kind", "")
         detail = self.detail(identifier) or {}
-        item = {"id": identifier, "title": _title(node), "kind_label": KIND.get(kind, "Elemento")}
+        title = self._title(identifier)
+        if kind == 'attachment_source':
+            filename = detail.get('file_name') or _title(node)
+            if title != _title(node):
+                item_technical = [{'label': 'Nome file originale', 'value': str(filename)}]
+            else:
+                item_technical = []
+        else:
+            item_technical = []
+        item = {"id": identifier, "title": title, "kind_label": KIND.get(kind, "Elemento")}
+        if item_technical:
+            item['technical'] = item_technical
         if _technical_text(item['title']):
             item['technical'] = [{"label": 'Titolo originale', "value": item['title']}]
             item['title'] = 'Impronta tecnica del file (nessun testo leggibile)'
@@ -277,6 +329,8 @@ class DrawerData:
             count = (node.get("counts") or {}).get("children")
             if count is not None:
                 item["children_count"] = count
+            if kind == 'conversation':
+                item['proposals_count'] = int((node.get('counts') or {}).get('live_proposals') or 0)
         elif node.get("date"):
             item["date"] = _date(node["date"])
         technical = item.setdefault('technical', [])
@@ -501,9 +555,11 @@ class DrawerData:
             for evidence in (detail.get("evidence") or [])[:1]:
                 if evidence.get("span"):
                     chain.append({"step": "passaggio", "label": "Passaggio attestato", "value": _short(_readable(evidence["span"]), 300)})
-            listed = sorted(conversations + sources, key=lambda x: (_title(x).casefold(), x["id"]))
+            listed = (sorted(conversations, key=lambda x: (_title(x).casefold(), x['id'])) +
+                      sorted(sources, key=lambda x: (self._title(x['id']).casefold(), x['id'])))
             aggregate = {"conversations": len(conversations), "sources": len(sources),
                          "attachments": sum(x.get("kind") == "attachment_source" for x in sources),
+                         "conversation_proposals": sum(int((x.get('counts') or {}).get('live_proposals') or 0) for x in conversations),
                          "items": [self._item(x["id"], with_text=False) for x in listed[offset:offset + limit]],
                          "total": len(listed), "offset": offset, "limit": limit}
             chain.append({"step": "acquisizione", "label": "Acquisizione", "value": "Elementi presenti nel dataset di revisione verificato"})
@@ -574,7 +630,10 @@ class DrawerData:
                 cid = "conversation:" + str(owner)
                 if cid in self.nodes:
                     chain.append({"step": "conversazione", "label": "Conversazione di origine", "value": _title(self.nodes[cid]), "id": cid})
-                chain.append({"step": "allegato" if kind == "attachment_source" else "file", "label": "Allegato" if kind == "attachment_source" else "Fonte", "value": detail.get("file_name") or _title(node), "id": identifier})
+                filename = detail.get('file_name') or _title(node)
+                chain.append({"step": "allegato" if kind == "attachment_source" else "file", "label": "Allegato" if kind == "attachment_source" else "Fonte", "value": self._title(identifier), "id": identifier})
+                if kind == 'attachment_source' and self._title(identifier) != _title(node):
+                    technical.append({'label': 'Nome file originale', 'value': str(filename)})
                 spans = detail.get("spans") or []
                 span = next((s.get("span") for s in spans if s.get("span") and not re.fullmatch(r"[a-f0-9]{64}", s["span"])), None)
                 if span:
