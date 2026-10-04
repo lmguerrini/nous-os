@@ -18,7 +18,7 @@ test('toolbar offers persistent top and left positions with an accessible chevro
 test('left dock creates independently collapsible sections and rows with its own scroll region', () => {
   assert.match(main, /function installToolbarSections\(\)/);
   assert.match(main, /section\.className = 'toolbar-section'/);
-  assert.match(main, /new MutationObserver\(syncVisibility\)/);
+  assert.match(main, /observeToolbarSectionVisibility\(\[\.\.\.toolbarSections\]/);
   assert.match(html, /#review-toolbar\.toolbar-left #toolbar-controls \{display:block;flex:1;min-height:0;overflow:auto/);
   assert.match(html, /#review-toolbar\.toolbar-left #toolbar-controls \.axis button,[\s\S]*?width:100%;max-width:100%;min-width:0/);
   assert.match(html, /#review-toolbar\.toolbar-left #toolbar-controls \.toolbar-section > summary/);

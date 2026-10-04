@@ -38,6 +38,7 @@ import { GIZMO_IDLE_GRACE_MS, gizmoShouldRun } from "./gizmo-schedule.ts";
 import { formatD081GraphStatus, formatGraphPanelCounts, formatLegacyToolbarStatus, parseGraphToolbarCounts } from "./toolbar-status.ts";
 import type { D081GraphStatus } from "./toolbar-status.ts";
 import { NodeDrawer } from "./node-drawer.ts";
+import { observeToolbarSectionVisibility } from "./toolbar-sections.ts";
 
 const get = <T extends Element>(id: string): T => {
   const item = document.getElementById(id);
@@ -338,11 +339,7 @@ function installToolbarSections(): void {
     section.append(target);
     toolbarSections.set(target, section);
   }
-  const syncVisibility = () => toolbarSections.forEach((section, target) => {
-    section.hidden = target.hidden;
-  });
-  new MutationObserver(syncVisibility).observe(controls, { attributes: true, subtree: true, attributeFilter: ['hidden'] });
-  syncVisibility();
+  observeToolbarSectionVisibility([...toolbarSections].map(([target, section]) => ({ target, section })));
 }
 installToolbarSections();
 const toolbarPosition = get<HTMLSelectElement>('toolbar-position');
