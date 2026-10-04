@@ -278,6 +278,10 @@ get<HTMLButtonElement>("toolbar-toggle").addEventListener("click", () => {
 });
 function syncBrainControls(): void {
   const available = axes.organization === "natural" && axes.morphology === "neural" && axes.projection === "3d";
+  const environment = document.getElementById("environment-control");
+  const fullscreenEnvironment = document.getElementById("fullscreen-environment");
+  if (environment) environment.hidden = !available;
+  if (fullscreenEnvironment) fullscreenEnvironment.hidden = !available;
   for (const id of ["brain", "fullscreen-brain"]) {
     const button = document.getElementById(id) as HTMLButtonElement | null;
     if (!button) continue;
@@ -456,8 +460,27 @@ function updateSummary() {
   const graph = filterGraph();
   const byId = new Map(data.nodes.map((node) => [node.id, node]));
   get<HTMLElement>("focus-chip").hidden = axes.reading === "attested" || !graph.edges.some((edge) => relationClass(edge, byId) === "exploratory");
-  get<HTMLElement>("counter").textContent =
-    `${graph.nodes.length}/${data.nodes.length} nodi · ${graph.edges.length}/${data.edges.length} relazioni`;
+  const counter = get<HTMLElement>("counter");
+  const statusText = get<HTMLElement>("human-status");
+  statusText.textContent = graph.nodes.length
+    ? `${graph.nodes.length.toLocaleString("it-IT")} di ${data.nodes.length.toLocaleString("it-IT")} elementi`
+    : "Nessun elemento con questi filtri";
+  const counts = get<HTMLElement>("graph-status-counts");
+  const counterText = counter.textContent;
+  const counterMatch = counterText.match(/^(\d+)\/(\d+) nodi(?: · (\d+)\/(\d+) relazioni)?/);
+  const visibleNodes = counterMatch ? Number(counterMatch[1]) : graph.nodes.length;
+  const totalNodes = counterMatch ? Number(counterMatch[2]) : data.nodes.length;
+  const visibleEdges = counterMatch?.[3] ? Number(counterMatch[3]) : graph.edges.length;
+  const totalEdges = counterMatch?.[4] ? Number(counterMatch[4]) : data.edges.length;
+  counts.textContent = `Sono visibili ${visibleNodes.toLocaleString("it-IT")} nodi su ${totalNodes.toLocaleString("it-IT")} e ${visibleEdges.toLocaleString("it-IT")} relazioni su ${totalEdges.toLocaleString("it-IT")}.`;
+  const levels = get<HTMLElement>("graph-status-levels");
+  const match = counterText.match(/livelli ([^·]+)/);
+  levels.textContent = match ? `Elementi per livello: ${match[1]!.split(" · ").map(part => { const [level, count] = part.split(": "); return `livello ${level}: ${count} elementi`; }).join("; ")}.` : "Il conteggio per livello è disponibile nei dettagli del grafo quando il dettaglio progressivo è attivo.";
+  const cap = get<HTMLElement>("graph-status-cap");
+  cap.textContent = get<HTMLElement>("v2-cap").textContent || "Limite di dettaglio: nessun avviso attivo.";
+  get<HTMLElement>("graph-status-identity").textContent = `Identificativo dell’esportazione: ${data.export_digest}.`;
+  const layoutText = get<HTMLElement>("arrangement-inspector").textContent.trim();
+  get<HTMLElement>("graph-status-layout").textContent = layoutText ? `Disposizione: ${layoutText}.` : `Disposizione attiva: ${axes.organization === "indra" ? "Indra" : axes.organization === "natural" ? "Natural" : axes.organization}.`;
   updateButtons();
   updatePanel();
 }
@@ -562,7 +585,7 @@ async function mount() {
   syncFocusPresentation();
   updateSummary();
   updateInsets();
-  status.textContent = debug ? "Grafo pronto · vista tecnica" : "Grafo pronto";
+  get<HTMLElement>("human-status").textContent = `${filterGraph().nodes.length.toLocaleString("it-IT")} di ${data.nodes.length.toLocaleString("it-IT")} elementi`;
 }
 function select(id: string): Promise<void> {
   requestGizmoUpdate();
@@ -1152,6 +1175,10 @@ get<HTMLInputElement>("debug").addEventListener("change", (event) => {
   void setDebug((event.target as HTMLInputElement).checked);
 });
 const surfaceBindings: SurfaceBinding[] = [
+  { id: "graph-status", surface: get("graph-status-panel"), openers: [get("graph-status-toggle")],
+    readOpen: () => !get<HTMLElement>("graph-status-panel").hidden,
+    writeOpen: open => { get<HTMLElement>("graph-status-panel").hidden = !open;
+      get<HTMLButtonElement>("graph-status-toggle").setAttribute("aria-expanded", String(open)); } },
   { id: "panel", surface: details,
     openers: [get("panel-toggle"), get("panel-edge-toggle"), get("fullscreen-panel")],
     readOpen: () => fullscreen() ? fullscreenDrawer : !panelCollapsed,
