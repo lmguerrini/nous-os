@@ -4,6 +4,7 @@ import { MORPHOLOGY_CONTRACT } from "#engine/morphology-contract.ts";
 import { buildContainerGeometry } from "#engine/container-geometry.ts";
 import type { MorphologyContainerInput, MorphologyContainerPath } from "#engine/container-geometry.ts";
 import { morphologyHash } from "#engine/stable-hash.ts";
+import { clusterNeuralTrunks, type NeuralTrunk } from "#engine/neural-trunks.ts";
 
 export { buildContainerGeometry, morphologyHash };
 export type { MorphologyContainerInput, MorphologyContainerPath };
@@ -17,6 +18,7 @@ export type NeuralBundle = { readonly direction: Coordinates; readonly weight: n
 export type MorphologyNodeShape = MorphologyNodeInput & {
   readonly degree: number; readonly axis: Coordinates; readonly eccentricity: number;
   readonly outline: readonly SomaOutlineHarmonic[]; readonly bundles?: readonly NeuralBundle[];
+  readonly trunks?: readonly NeuralTrunk[];
   readonly rootRatio?: number;
   readonly haloRadiusRatio?: number; readonly haloAlphaLimit?: number;
 };
@@ -24,6 +26,8 @@ export type MorphologySegment = {
   readonly id: string; readonly edgeId: string; readonly source: Coordinates; readonly control: Coordinates; readonly target: Coordinates;
   readonly samples: readonly Coordinates[]; readonly widthStart: number; readonly widthEnd: number; readonly widthMid: number; readonly sharedKey: string | null;
   readonly curvature: number; readonly path: "straight" | "soft-curve" | "wave";
+  readonly trunkSourceCount?: number; readonly trunkTargetCount?: number;
+  readonly trunkSourceWidthFactor?: number | undefined; readonly trunkTargetWidthFactor?: number | undefined;
 };
 export type MorphologyGeometry = {
   readonly morphology: Morphology; readonly nodes: readonly MorphologyNodeShape[];
@@ -102,11 +106,11 @@ export function neuralShoulderFraction(spanPx: number, somaRadiusPx: number, ord
 }
 export function neuralScreenWidthAt(t: number, ordinaryPx: number, startSomaRadiusPx: number,
   endSomaRadiusPx: number, taper: readonly [number, number] = [NEURAL_ROOT_RATIO, NEURAL_ROOT_RATIO],
-  spanPx = 100, joinedRoots = false): number {
+  spanPx = 100, joinedRoots: boolean | readonly [boolean, boolean] = false): number {
   const body = Math.max(0, ordinaryPx);
-  const rootWidth = joinedRoots ? neuralJoinedRootWidthPx : neuralRootWidthPx;
-  const start = rootWidth(body, startSomaRadiusPx, taper[0]);
-  const end = rootWidth(body, endSomaRadiusPx, taper[1]);
+  const joined = typeof joinedRoots === "boolean" ? [joinedRoots, joinedRoots] : joinedRoots;
+  const start = (joined[0] ? neuralJoinedRootWidthPx : neuralRootWidthPx)(body, startSomaRadiusPx, taper[0]);
+  const end = (joined[1] ? neuralJoinedRootWidthPx : neuralRootWidthPx)(body, endSomaRadiusPx, taper[1]);
   const ease = (u: number) => { const x = Math.max(0, Math.min(1, u)); return x * x * (3 - 2 * x); };
   const position = Math.max(0, Math.min(1, t));
   const startShoulder = neuralShoulderFraction(spanPx, startSomaRadiusPx, body);
@@ -265,18 +269,22 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
   }
   const shaped = nodes.map((node): MorphologyNodeShape => {
     const connections = incident.get(node.id)!.sort((a, b) => a.id.localeCompare(b.id));
+    const trunks = morphology === "neural" ? clusterNeuralTrunks(connections.map(item => ({
+      id: item.id, direction: sub(item.point, node.position),
+      length: norm(sub(item.point, node.position)), weight: item.weight,
+    }))) : [];
     const bundles = morphology === "neural" ? neuralAngularBundles(connections.map(item => ({
       id: item.id, direction: sub(item.point, node.position), weight: item.weight,
     }))) : [];
     const covarianceShape = somaAxis(node, connections);
-    const axisShape = morphology === "neural" && bundles.length
-      ? { ...covarianceShape, axis: bundles[0]!.direction,
+    const axisShape = morphology === "neural" && trunks.length
+      ? { ...covarianceShape, axis: trunks[0]!.direction,
         eccentricity: connections.length >= NEURAL_HUB_DEGREE
           ? Math.max(1.24, covarianceShape.eccentricity) : covarianceShape.eccentricity } : covarianceShape;
     return { ...node, degree: connections.length, ...axisShape,
-      bundles, rootRatio: neuralRootRatio(connections.length),
+      bundles, trunks, rootRatio: neuralRootRatio(connections.length),
       haloRadiusRatio: NEURAL_HALO_MAX_RADIUS_RATIO, haloAlphaLimit: NEURAL_HALO_MAX_ALPHA,
-      outline: morphology === "neural" ? incidentSomaHarmonics(axisShape.axis, bundles) : somaOutlineHarmonics(node.id) };
+      outline: morphology === "neural" ? incidentSomaHarmonics(axisShape.axis, trunks) : somaOutlineHarmonics(node.id) };
   });
   const shapes = new Map(shaped.map(node => [node.id, node]));
   const colonyByNode = new Map<string, MorphologyColonyInput>();
@@ -290,10 +298,36 @@ export function buildMorphologyGeometry(morphology: Morphology, nodes: readonly 
     if (morphology === "stellar") return { id: edge.id, source: edge.source, target: edge.target, segments: [segment(edge.id, edge.id, a.position, b.position, edge.width, edge.width, morphology, 0)] };
     if (morphology === "neural") {
       const proximal = a.degree >= b.degree;
-      return { id: edge.id, source: edge.source, target: edge.target, segments: [segment(edge.id, edge.id, a.position, b.position,
+      const startTrunk = a.degree >= 8 ? a.trunks?.find(trunk => trunk.edgeIds.includes(edge.id)) : undefined;
+      const endTrunk = b.degree >= 8 ? b.trunks?.find(trunk => trunk.edgeIds.includes(edge.id)) : undefined;
+      const original = segment(edge.id, edge.id, a.position, b.position,
         edge.width * (proximal ? NEURAL_TAPER.proximal : NEURAL_TAPER.distal),
         edge.width * (proximal ? NEURAL_TAPER.distal : NEURAL_TAPER.proximal),
-        morphology, curvature, null, insetA, insetB, edge.width * NEURAL_TAPER.mid)] };
+        morphology, curvature, null, insetA, insetB, edge.width * NEURAL_TAPER.mid);
+      const samples = [...original.samples];
+      const routeEnd = (trunk: NeuralTrunk | undefined, node: MorphologyNodeShape, reverse: boolean) => {
+        if (!trunk || trunk.edgeIds.length < 2) return;
+        const branch = add(node.position, mul(trunk.direction, trunk.branchDistance));
+        const root = reverse ? samples.length - 1 : 0;
+        samples[root] = add(node.position, mul(trunk.direction, somaRadius(node, trunk.direction)));
+        for (let j = 1; j <= 5; j++) {
+          const index = reverse ? root - j : j;
+          const t = j / 5;
+          samples[index] = mix(samples[root]!, branch, t * t * (3 - 2 * t));
+        }
+        for (let j = 6; j <= 8; j++) {
+          const index = reverse ? root - j : j;
+          samples[index] = mix(branch, samples[index]!, (j - 5) / 3);
+        }
+      };
+      routeEnd(startTrunk, a, false);
+      routeEnd(endTrunk, b, true);
+      return { id: edge.id, source: edge.source, target: edge.target, segments: [{ ...original,
+        source: samples[0]!, target: samples[samples.length - 1]!, samples,
+        trunkSourceCount: startTrunk?.edgeIds.length ?? 1,
+        trunkTargetCount: endTrunk?.edgeIds.length ?? 1,
+        trunkSourceWidthFactor: startTrunk?.rootWidthFactor,
+        trunkTargetWidthFactor: endTrunk?.rootWidthFactor }] };
     }
     const sourceColony = colonyByNode.get(a.id), targetColony = colonyByNode.get(b.id);
     const branched = Boolean(sourceColony && sourceColony.id === targetColony?.id);

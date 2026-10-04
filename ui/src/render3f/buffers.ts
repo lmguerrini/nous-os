@@ -173,7 +173,24 @@ export function buildFilamentBuffers(
     // A Neural shaft grows from the soma centre. The node pass covers its hidden interior,
     // leaving a continuous visible root even when projection enlarges the soma.
     writeCoordinates(startPositions, edgeIndex, neural ? nodeCenters.get(edge.source) ?? start : start);
-    writeCoordinates(controlPositions, edgeIndex, edge.controlPoint);
+    // BEGIN D-080 A2b visual-routing exception: shared trunk tangent and width.
+    // A shared incident trunk supplies the initial tangent of each real
+    // relation. This changes visual routing only; the instance, ID and endpoint stay real.
+    const sourceNode = neuralShapes.get(edge.source), targetNode = neuralShapes.get(edge.target);
+    const sourceTrunk = neural && (sourceNode?.degree ?? 0) >= 8 ? sourceNode?.trunks?.find(trunk => trunk.edgeIds.includes(edge.id)) : undefined;
+    const targetTrunk = neural && (targetNode?.degree ?? 0) >= 8 ? targetNode?.trunks?.find(trunk => trunk.edgeIds.includes(edge.id)) : undefined;
+    const sourceBranch = sourceTrunk && sourceTrunk.edgeIds.length > 1 && sourceNode ? {
+      x: sourceNode.position.x + sourceTrunk.direction.x * sourceTrunk.branchDistance,
+      y: sourceNode.position.y + sourceTrunk.direction.y * sourceTrunk.branchDistance,
+      z: sourceNode.position.z + sourceTrunk.direction.z * sourceTrunk.branchDistance } : null;
+    const targetBranch = targetTrunk && targetTrunk.edgeIds.length > 1 && targetNode ? {
+      x: targetNode.position.x + targetTrunk.direction.x * targetTrunk.branchDistance,
+      y: targetNode.position.y + targetTrunk.direction.y * targetTrunk.branchDistance,
+      z: targetNode.position.z + targetTrunk.direction.z * targetTrunk.branchDistance } : null;
+    const control = sourceBranch && targetBranch ? {
+      x: (sourceBranch.x + targetBranch.x) / 2, y: (sourceBranch.y + targetBranch.y) / 2,
+      z: (sourceBranch.z + targetBranch.z) / 2 } : sourceBranch ?? targetBranch ?? edge.controlPoint;
+    writeCoordinates(controlPositions, edgeIndex, control);
     writeCoordinates(endPositions, edgeIndex, neural ? nodeCenters.get(edge.target) ?? end : end);
     writeColor(colorsSrgb, edgeIndex, tokenToSrgb(edge.token, encoding));
     writeColor(hotColorsSrgb, edgeIndex, hotColor);
@@ -189,8 +206,13 @@ export function buildFilamentBuffers(
     writePacked(neuralProfile, edgeIndex, [edge.bodyWidthPx,
       nodeRadii.get(edge.source) ?? 0, nodeRadii.get(edge.target) ?? 0,
       edge.filament.hotMixPermille > 0 ? 1 : 0]);
-    neuralRootRatios.set([neuralShapes.get(edge.source)?.rootRatio ?? 1,
-      neuralShapes.get(edge.target)?.rootRatio ?? 1], edgeIndex * 2);
+    // Negative ratios flag a shared root to the shader: it uses bounded trunk width
+    // and suppresses the per-edge cosmetic sprouts that made dense hubs starburst.
+    neuralRootRatios.set([
+      sourceTrunk && sourceTrunk.edgeIds.length > 1 ? -sourceTrunk.rootWidthFactor : sourceNode?.rootRatio ?? 1,
+      targetTrunk && targetTrunk.edgeIds.length > 1 ? -targetTrunk.rootWidthFactor : targetNode?.rootRatio ?? 1,
+    ], edgeIndex * 2);
+    // END D-080 A2b visual-routing exception.
     writePacked(arcAndJunctionPermille, edgeIndex, [
       edge.filament.minimumWidthFactorPermille,
       edge.filament.junctionStartPermille,

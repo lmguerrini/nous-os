@@ -950,6 +950,10 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
       const endFrame = endSoma ? somaFrames.get(endSoma.id) : undefined;
       rootRatios = [neuralRootRatio(neuralDegree?.get(startSoma?.id ?? "") ?? 1),
         neuralRootRatio(neuralDegree?.get(endSoma?.id ?? "") ?? 1)];
+      if ((part.trunkSourceCount ?? 1) > 1)
+        rootRatios = [part.trunkSourceWidthFactor ?? rootRatios[0], rootRatios[1]];
+      if ((part.trunkTargetCount ?? 1) > 1)
+        rootRatios = [rootRatios[0], part.trunkTargetWidthFactor ?? rootRatios[1]];
       startRadius = startFrame?.radius ?? 0;
       endRadius = endFrame?.radius ?? 0;
       if (startFrame || endFrame) {
@@ -994,7 +998,8 @@ function buildEdgePaints(geometry: MorphologyGeometry, style: MorphologyCanvasSt
         // centre-line only; it cannot turn the shaft into a zoom-scaled band.
         const body = Math.max(0.3, appearance.edgeWidth * widthFactor
           * (emphasis?.radiusMultiplier ?? 1));
-        return neuralScreenWidthAt(t, body, startRadius, endRadius, rootRatios, totalPx, true);
+        return neuralScreenWidthAt(t, body, startRadius, endRadius, rootRatios, totalPx,
+          [(part.trunkSourceCount ?? 1) <= 1, (part.trunkTargetCount ?? 1) <= 1]);
       }
       const profile = part.widthStart + (part.widthEnd - part.widthStart) * smooth;
       return clamp(profile * factors * appearance.edgeWidth, 0.5, 16);

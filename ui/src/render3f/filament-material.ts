@@ -152,9 +152,9 @@ void main() {
   );
   if (a_neuralProfile.w > 0.5) {
     float ordinary = max(u_neuralWidthPx, a_widthsAndPicking.z) * u_devicePixelRatio;
-    float rootStart = max(ordinary * a_neuralRootRatios.x,
+    float rootStart = a_neuralRootRatios.x < 0.0 ? ordinary * -a_neuralRootRatios.x : max(ordinary * a_neuralRootRatios.x,
       min(clamp(a_neuralProfile.y * startScale, 2.0, 24.0) * u_devicePixelRatio * 1.1, ordinary * 6.0));
-    float rootEnd = max(ordinary * a_neuralRootRatios.y,
+    float rootEnd = a_neuralRootRatios.y < 0.0 ? ordinary * -a_neuralRootRatios.y : max(ordinary * a_neuralRootRatios.y,
       min(clamp(a_neuralProfile.z * endScale, 2.0, 24.0) * u_devicePixelRatio * 1.1, ordinary * 6.0));
     maximumBodyHalfWidth = max(maximumBodyHalfWidth, max(rootStart, rootEnd) * 0.5);
   }
@@ -297,9 +297,9 @@ void main() {
     float ordinary = max(u_neuralWidthPx, v_widthsAndPicking.z) * u_devicePixelRatio;
     float startRadius = v_neuralRadiiDevicePx.x;
     float endRadius = v_neuralRadiiDevicePx.y;
-    float startRoot = startRadius > 0.0 ? max(ordinary * v_neuralRootRatios.x,
+    float startRoot = v_neuralRootRatios.x < 0.0 ? ordinary * -v_neuralRootRatios.x : startRadius > 0.0 ? max(ordinary * v_neuralRootRatios.x,
       min(startRadius * 1.1, ordinary * 6.0)) : ordinary;
-    float endRoot = endRadius > 0.0 ? max(ordinary * v_neuralRootRatios.y,
+    float endRoot = v_neuralRootRatios.y < 0.0 ? ordinary * -v_neuralRootRatios.y : endRadius > 0.0 ? max(ordinary * v_neuralRootRatios.y,
       min(endRadius * 1.1, ordinary * 6.0)) : ordinary;
     float span = max(length(v_cpC - v_cpA), 1.0);
     float startShoulder = min(0.28, min(48.0 * u_devicePixelRatio,
@@ -325,8 +325,8 @@ void main() {
   float branchCoverage = 0.0;
   if (v_neuralProfile.w > 0.5) {
     float span = length(v_cpC - v_cpA);
-    branchCoverage = max(neuralBranchCoverage(v_neuralRadiiDevicePx.x, v_neuralScale.x, true, span),
-      neuralBranchCoverage(v_neuralRadiiDevicePx.y, v_neuralScale.y, false, span));
+    branchCoverage = max(v_neuralRootRatios.x < 0.0 ? 0.0 : neuralBranchCoverage(v_neuralRadiiDevicePx.x, v_neuralScale.x, true, span),
+      v_neuralRootRatios.y < 0.0 ? 0.0 : neuralBranchCoverage(v_neuralRadiiDevicePx.y, v_neuralScale.y, false, span));
     bodyCoverage = max(bodyCoverage, branchCoverage * 0.55);
   }
   float coreHalfWidth = bodyHalfWidth * v_sheathAndCorePermille.z / u_permilleScale;
