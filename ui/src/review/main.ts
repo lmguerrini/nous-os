@@ -26,7 +26,9 @@ import { LiveGraph } from "./live-graph.ts";
 import type { LiveFragment } from "./live-graph.ts";
 import { V2Page, projectionFlagEnabled, projectionRefusalOf } from "./v2-page.ts";
 import { bindSurfaces } from "./popover.ts";
-import { mountPerformanceOverlay } from "./perf-overlay.ts";
+// D081-P4 BEGIN
+import { mountPerformanceHud } from "./perf-hud.ts";
+// D081-P4 END
 import type { PopoverStack, SurfaceBinding } from "./popover.ts";
 import { displayLabel } from "./graph-v2.ts";
 import type { GraphManifest } from "./graph-v2.ts";
@@ -1286,16 +1288,21 @@ const surfaceBindings: SurfaceBinding[] = [
     writeOpen: open => { get<HTMLElement>("advanced-controls").hidden = !open;
       get<HTMLButtonElement>("advanced-button").setAttribute("aria-expanded", String(open)); } },
 ];
+// D081-P4 BEGIN
 const performanceSurface = document.getElementById("performance-overlay");
 const performanceOpener = document.getElementById("performance-toggle");
-const performanceOverlay = performanceSurface ? mountPerformanceOverlay(performanceSurface, viewport) : null;
+const performanceHud = performanceSurface && performanceOpener instanceof HTMLButtonElement
+  ? mountPerformanceHud(performanceSurface, performanceOpener) : null;
+// D081-P4 END
 const diagnostics = globalThis as typeof globalThis & { __d072?: Record<string, unknown> };
 diagnostics.__d072 = { ...(diagnostics.__d072 ?? {}), flowActive: () =>
   flowMotion && axes.reading !== "attested" && appearance.flowIntensity > 0 && appearance.flowSpeed > 0 &&
   !document.hidden && !window.matchMedia("(prefers-reduced-motion: reduce)").matches };
+// D081-P4 BEGIN
 if (performanceSurface && performanceOpener) surfaceBindings.push({ id: "performance", surface: performanceSurface,
   openers: [performanceOpener], readOpen: () => !performanceSurface.hidden,
-  writeOpen: open => { performanceSurface.hidden = !open; performanceOverlay?.setOpen(open); } });
+  writeOpen: open => { performanceSurface.hidden = !open; performanceHud?.setOpen(open); } });
+// D081-P4 END
 surfaceStack = bindSurfaces(surfaceBindings, () => Boolean(v2?.selectedId), () => { void v2?.exitFocus(); });
 surfaceStack.subscribe(() => requestAnimationFrame(updateInsets));
 document.addEventListener("keydown", (event) => {

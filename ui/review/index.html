@@ -87,9 +87,13 @@
     .colour-swatch {width:24px;height:24px;padding:0;border:1px solid #aaa} .hex-error {grid-column:1/-1;color:#ffb3a1} .hex-error:empty {display:none}
     .custom-actions {display:flex;flex-wrap:wrap;gap:5px}.custom-actions input {width:130px} .custom-actions select {max-width:170px}
     #panel-edge-toggle {position:absolute;z-index:26;top:50%;right:0;transform:translateY(-50%);padding:14px 7px;min-width:38px;text-align:center;border-radius:6px;background:#16161cf0;font-size:12px;line-height:1;color:#fff}
-    #performance-overlay {position:absolute;z-index:22;top:44px;right:12px;width:min(250px,calc(100% - 24px));max-height:min(310px,calc(50% - 96px));overflow:auto;padding:10px;background:#111e;border:1px solid #777;border-radius:6px;box-shadow:0 8px 24px #000}
-    #performance-overlay h2 {font-size:14px;margin:0 28px 8px 0} #performance-overlay dl {display:grid;grid-template-columns:auto 1fr;gap:5px 12px;margin:0;font:12px ui-monospace,monospace}
-    #performance-overlay dt {color:#bbb} #performance-overlay dd {margin:0;text-align:right;font-variant-numeric:tabular-nums}
+    /* D081-P4 BEGIN */
+    #performance-overlay {position:absolute;z-index:22;top:48px;right:12px;width:min(310px,calc(100% - 24px));max-height:min(300px,calc(50% - 80px));overflow:auto;padding:9px 11px;background:rgba(15,17,21,.82);backdrop-filter:blur(14px);border:1px solid #ffffff38;border-radius:8px;box-shadow:0 8px 24px #0008;color:#eee}
+    #performance-overlay h2 {font-size:12px;letter-spacing:.04em;color:#ccc;margin:0 28px 7px 0} #performance-overlay > .surface-close {position:absolute;top:5px;right:6px;min-width:22px;padding:0 5px;line-height:20px}
+    #performance-overlay dl {display:grid;grid-template-columns:minmax(92px,auto) minmax(0,1fr);gap:4px 9px;margin:0;font:11px/1.35 ui-monospace,SFMono-Regular,monospace}
+    #performance-overlay dt {color:#aaa} #performance-overlay dd {margin:0;text-align:right;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:#f0e8d9}
+    #performance-overlay .performance-hint {margin:7px 0 0;padding-top:6px;border-top:1px solid #ffffff20;color:#bcb6a9;font-size:10px;line-height:1.35}
+    /* D081-P4 END */
     #viewport:fullscreen #panel-edge-toggle {display:none}
     #panel-edge-toggle:hover,#panel-edge-toggle:focus-visible {border-color:#aaa;color:#fff;background:#222e}
     #harmony-controls {border-top:1px solid #444;margin-top:10px;padding-top:8px} #harmony-controls h4 {margin:0 0 6px;font-size:13px}
